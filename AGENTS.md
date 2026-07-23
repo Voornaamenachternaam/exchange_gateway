@@ -88,6 +88,25 @@ gets wiped between shell sessions. To avoid re-installing Rust every command:
   single contiguous `Range` honoured (multi-range unsupported, falls back to
   whole file). NOT yet wired: the audit's broader §2d GAL/NSPI stub (out of
   scope for the OABUrl gap).
+
+- **ECP (Exchange Control Panel) settings surface** -- `src/ecp.rs` (closes
+  audit gap §1.3 / "No `<EcpUrl>` real value"). Autodiscover now advertises
+  a real ECP base URL instead of the EWS SOAP endpoint: `autodiscover::ecp_url(host)`
+  -> `https://{host}/ecp/` (trailing slash; it is a virtual directory like `<OABUrl>`).
+  `handle_outlook_xml` emits `<EcpUrl>{ecp_url}</EcpUrl>` in BOTH EXCH + EXPR Protocol
+  blocks, and `handle_autodiscover_soap` emits `ExternalEcpUrl`/`InternalEcpUrl` user
+  settings carrying the same value (no longer `/EWS/Exchange.asmx`). Outlook / New
+  Outlook deep-link OOF / OptIn / Regional panels by appending to `<EcpUrl>`; the
+  endpoint `/ecp`, `/ecp/`, `/ecp/{*path}` (GET) -> `main::ecp_root`/`ecp_path` ->
+  `ecp::handle_ecp` serves the backing virtual directory so the panels never 404.
+  Auth: Basic auth + the shared `AuthVerifier` (mirrors `oab::handle_oab`; no creds
+  => 401 `Basic realm="Exchange Gateway"`). The page is a **fully static, semantic
+  HTML** document with NO inline scripts/styles/external resources (the gateway's
+  global CSP is `default-src 'none'; frame-ancestors 'none'; sandbox`, so a
+  resource-free doc is the only CSP-clean shape that always renders) and NO form
+  (`form-action` defaults to `none` under that CSP). The trailing deep-link path is
+  HTML-escaped (5-metachar escaper `html_escape`) and echoed as page context only;
+  authoritative OOF/regional writes stay on EWS SOAP (`SetUserOofSettings`).
 - **Autodiscover AuthPackage / HMA advertisement** — closes audit gap §1.2.
   `handle_outlook_xml` (and `handle_autodiscover_xml` which delegates to it)
   takes an `&AuthAdvert` describing what the EXCH + EXPR `<Protocol>` blocks

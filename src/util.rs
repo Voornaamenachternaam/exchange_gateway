@@ -147,6 +147,35 @@ pub fn format_ews_datetime(dt: &chrono::DateTime<Utc>) -> String {
     dt.format("%Y-%m-%dT%H:%M:%SZ").to_string()
 }
 
+/// Redact an email address (or bare username) for safe inclusion in logs and
+/// tracing spans, so PII never reaches the structured-log sink. Shared by the
+/// binary's request logging and the ECP settings page handler.
+///
+/// Behaviour:
+///   * empty -> ""
+///   * has '@' -> "{local-part}@***" (local-part kept, domain masked)
+///   * no '@' and len >= 2 -> "{first-char}***" (bare username)
+///   * no '@' and len < 2 -> "***"
+///
+/// Uses `chars().next()` for the first char so multi-byte (UTF-8) usernames
+/// do not panic.
+pub fn redact_email(email: &str) -> String {
+    if email.is_empty() {
+        return String::default();
+    }
+    match email.find('@') {
+        Some(pos) => format!("{}@***", &email[..pos]),
+        None => {
+            let first = email.chars().next().unwrap_or('?');
+            if email.len() >= 2 {
+                format!("{first}***")
+            } else {
+                "***".to_string()
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -263,5 +292,20 @@ mod tests {
         assert_eq!(escape_ical_text("a,b\\c"), "a\\,b\\\\c");
         assert_eq!(escape_ical_text("line1\nline2"), "line1\\nline2");
         assert_eq!(escape_ical_text("cr\r\nlf"), "cr\\nlf");
+    }
+
+    #[test]
+    fn test_redact_email() {
+        assert_eq!(redact_email(""), "");
+        // Standard address: local-part preserved, domain fully masked.
+        assert_eq!(redact_email("alice@example.com"), "alice@***");
+        assert_eq!(redact_email("first.last@sub.example.org"), "first.last@***");
+        // Bare username (no '@'): first char kept, rest masked (len >= 2).
+        assert_eq!(redact_email("bob"), "b***");
+        assert_eq!(redact_email("zz"), "z***");
+        // Single-char username: too short for the prefix, fully masked.
+        assert_eq!(redact_email("a"), "***");
+        // Multi-byte first char does not panic and is preserved.
+        assert_eq!(redact_email("ñuser"), "ñ***");
     }
 }

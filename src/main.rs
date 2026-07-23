@@ -14,8 +14,8 @@ use axum::{
     routing::{any, get, post},
 };
 use exchange_gateway::{
-    autodiscover, config::Config, eas, ews, logging, metrics::REGISTRY, metrics::record_http,
-    models::AppState, oab, rate_limit::check_rate_limit, storage::Storage,
+    autodiscover, config::Config, eas, ecp, ews, logging, metrics::REGISTRY, metrics::record_http,
+    models::AppState, oab, rate_limit::check_rate_limit, storage::Storage, util,
     validation::validate_request,
 };
 use prometheus::{Encoder, TextEncoder};
@@ -27,35 +27,6 @@ use tower_http::{
     timeout::RequestBodyTimeoutLayer, trace::TraceLayer,
 };
 use tracing::{debug, info, warn};
-
-/// Redact an email address for logging.
-/// Shows username and masked domain to preserve some context while protecting PII.
-/// Examples: "user@example.com" -> "user@***", "user@sub.example.co.uk" -> "user@***"
-fn redact_email(email: &str) -> String {
-    if email.is_empty() {
-        return String::new();
-    }
-    // Split on '@' to separate username from domain
-    let at_pos = email.find('@');
-    match at_pos {
-        Some(pos) => {
-            let username = &email[..pos];
-            // Show username (first part) but mask the domain entirely
-            // This preserves some debugging context (which user) without exposing domain
-            format!("{}@***", username)
-        }
-        None => {
-            // No '@' means it's not a valid email; show masked prefix (maybe it's a username)
-            // Use char iteration to safely handle UTF-8, avoiding panic on multi-byte chars
-            let first_char = email.chars().next().unwrap_or('?');
-            if email.len() >= 2 {
-                format!("{}***", first_char)
-            } else {
-                "***".to_string()
-            }
-        }
-    }
-}
 
 const MAX_BODY_BYTES: usize = 4 * 1024 * 1024;
 const REQUEST_TIMEOUT_SECS: u64 = 60;
@@ -112,7 +83,7 @@ async fn autodiscover_xml(
         method = %method,
         path = "/autodiscover/autodiscover.xml",
         body_len = body.len(),
-        email = %redact_email(&email),
+        email = %util::redact_email(&email),
         "Autodiscover XML request received"
     );
 
@@ -137,7 +108,7 @@ async fn autodiscover_xml(
             status = status.as_u16(),
             elapsed_ms = elapsed_ms,
             response_len = body_out.len(),
-            email = %redact_email(&email),
+            email = %util::redact_email(&email),
             "Autodiscover XML completed"
         );
     } else {
@@ -147,7 +118,7 @@ async fn autodiscover_xml(
             path = "/autodiscover/autodiscover.xml",
             status = status.as_u16(),
             elapsed_ms = elapsed_ms,
-            email = %redact_email(&email),
+            email = %util::redact_email(&email),
             "Autodiscover XML failed"
         );
     }
@@ -208,7 +179,7 @@ async fn autodiscover_json(
         method = "GET",
         path = "/autodiscover/autodiscover.json",
         protocol = ?params.protocol,
-        email = ?params.email.as_deref().map(redact_email),
+        email = ?params.email.as_deref().map(util::redact_email),
         "Autodiscover JSON request received"
     );
 
@@ -266,7 +237,7 @@ async fn autodiscover_json_v1(
         method = "GET",
         path = "/autodiscover/autodiscover.json/v1.0/{email}",
         protocol = ?params.protocol,
-        email = %redact_email(&email),
+        email = %util::redact_email(&email),
         "Autodiscover JSON V2 path request received"
     );
 
@@ -320,6 +291,28 @@ async fn oab_download(
     headers: axum::http::HeaderMap,
 ) -> Response {
     oab::handle_oab(State(state), guid, file, headers).await
+}
+
+/// ECP (Exchange Control Panel) landing page (no trailing path). Delegates to
+/// `ecp::handle_ecp` with `path = None` so the bare `/ecp` and `/ecp/` routes
+/// render the same authenticated landing page as a deep-linked path.
+async fn ecp_root(
+    State(state): State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
+) -> Response {
+    ecp::handle_ecp(State(state), None, headers).await
+}
+
+/// ECP deep-link handler: New Outlook appends path segments + query strings
+/// to the advertised `<EcpUrl>` base, producing requests like `/ecp/Options/`
+/// or `/ecp/?rfr=ool&exsc=1`. The trailing-path capture is opaque to the
+/// gateway; it is recorded as page context so the panel never 404s.
+async fn ecp_path(
+    State(state): State<Arc<AppState>>,
+    Path(path): Path<String>,
+    headers: axum::http::HeaderMap,
+) -> Response {
+    ecp::handle_ecp(State(state), Some(path), headers).await
 }
 
 fn build_response(
@@ -655,6 +648,17 @@ async fn main() -> anyhow::Result<()> {
         // cap used by MAPI/HTTP so a large GAL serialisation is never clipped
         // by the route itself.
         .route("/OAB/{guid}/{file}", get(oab_download))
+        // Exchange Control Panel (ECP) settings surface — closes audit gap
+        // §1.3 ("No `<EcpUrl>` real value`"). Autodiscover advertises
+        // `<EcpUrl>{gateway}/ecp/</EcpUrl>` (see `autodiscover::ecp_url`) and
+        // `ecp::handle_ecp` serves the backing virtual directory so the
+        // Out-of-Office / OptIn / Regional deep-links Outlook constructs by
+        // appending to that base resolve to a real authenticated page
+        // instead of the EWS SOAP endpoint. The body limit matches the
+        // other small-payload endpoints; the page is static HTML.
+        .route("/ecp", get(ecp_root))
+        .route("/ecp/", get(ecp_root))
+        .route("/ecp/{*path}", get(ecp_path))
         .with_state(app_state.clone())
         .layer(middleware::from_fn_with_state(
             app_state.clone(),
