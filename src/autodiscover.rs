@@ -40,6 +40,29 @@ pub fn oab_url(host: &str) -> String {
     format!("https://{}/OAB/{}/", host, OAB_SERVER_GUID)
 }
 
+/// Build the Exchange Control Panel (ECP) base URL advertised in
+/// Autodiscover as `<EcpUrl>` (MS-OXDSCLI §2.2.4.1.1.2 `<EcpUrl>`,
+/// `ExternalEcpUrl`/`InternalEcpUrl` SOAP user settings).
+///
+/// `<EcpUrl>` is the **base URL** of the Exchange Control Panel settings
+/// surface — a virtual directory, not a single SOAP endpoint. Outlook and
+/// New Outlook for Windows append suffixes to this base to deep-link into
+/// specific settings panels (Out-of-Office / signature, telemetry OptIn,
+/// Regional/timezone and working-hours settings). Advertising the EWS SOAP
+/// endpoint (`/EWS/Exchange.asmx`) here is wrong: those panel links then
+/// resolve to a SOAP XML fault and render as broken panes inside the client
+/// (audit §1.3 — "the current response will make some of those panel links
+/// 404 inside the client").
+///
+/// The gateway serves a real, directory-authenticated ECP surface under
+/// `/ecp/` (see `src/ecp.rs`), so the advertised value points there. The
+/// trailing slash is significant: like `<OABUrl>`, this is a virtual
+/// directory and clients append relative path segments and query strings
+/// (e.g. `?rfr=ool&exsc=1`, `Options/?id=ps`) directly to it.
+pub fn ecp_url(host: &str) -> String {
+    format!("https://{}/ecp/", host)
+}
+
 /// What the EXCH/EXPR `<Protocol>` blocks advertise under `<AuthPackage>` and
 /// the surrounding Modern-Auth elements.
 ///
@@ -466,6 +489,8 @@ fn handle_outlook_xml(
     let mail_host_escaped = xml_escape(mail_host);
     let oab_base = oab_url(host);
     let oab_url_escaped = xml_escape(&oab_base);
+    let ecp_base = ecp_url(host);
+    let ecp_url_escaped = xml_escape(&ecp_base);
     let auth_package = auth_advert.auth_package_value();
     let auth_extra = auth_advert.extra_elements();
     let xml = format!(
@@ -489,7 +514,7 @@ fn handle_outlook_xml(
 <ASUrl>https://{host}/Microsoft-Server-ActiveSync</ASUrl>
 <EwsUrl>https://{host}/EWS/Exchange.asmx</EwsUrl>
 <EmwsUrl>https://{host}/EWS/Exchange.asmx</EmwsUrl>
-<EcpUrl>https://{host}/EWS/Exchange.asmx</EcpUrl>
+<EcpUrl>{ecp_url}</EcpUrl>
 <OOFUrl>https://{host}/EWS/Exchange.asmx</OOFUrl>
 <UMUrl>https://{host}/EWS/Exchange.asmx</UMUrl>
 <EwsPartnerUrl>https://{host}/EWS/Exchange.asmx</EwsPartnerUrl>
@@ -515,7 +540,7 @@ fn handle_outlook_xml(
 <ASUrl>https://{host}/Microsoft-Server-ActiveSync</ASUrl>
 <EwsUrl>https://{host}/EWS/Exchange.asmx</EwsUrl>
 <EmwsUrl>https://{host}/EWS/Exchange.asmx</EmwsUrl>
-<EcpUrl>https://{host}/EWS/Exchange.asmx</EcpUrl>
+<EcpUrl>{ecp_url}</EcpUrl>
 <OOFUrl>https://{host}/EWS/Exchange.asmx</OOFUrl>
 <EwsPartnerUrl>https://{host}/EWS/Exchange.asmx</EwsPartnerUrl>
 <OABUrl>{oab_url}</OABUrl>
@@ -544,6 +569,7 @@ fn handle_outlook_xml(
         host = host_escaped,
         email = email_escaped,
         oab_url = oab_url_escaped,
+        ecp_url = ecp_url_escaped,
         auth_package = auth_package,
         auth_extra = auth_extra,
         imap_smtp_protocols = if include_imap_smtp && !mail_host_escaped.is_empty() {
@@ -584,6 +610,8 @@ pub fn handle_autodiscover_soap(host: &str, body: &str) -> AdResponse {
     let host_escaped = xml_escape(host);
     let oab_base = oab_url(host);
     let oab_url_escaped = xml_escape(&oab_base);
+    let ecp_base = ecp_url(host);
+    let ecp_url_escaped = xml_escape(&ecp_base);
 
     let settings = format!(
         r#"<a:UserSetting><a:Name>UserDisplayName</a:Name><a:Value>Stalwart Mail</a:Value></a:UserSetting>
@@ -594,8 +622,8 @@ pub fn handle_autodiscover_soap(host: &str, body: &str) -> AdResponse {
               <a:UserSetting><a:Name>InternalEwsUrl</a:Name><a:Value>https://{host}/EWS/Exchange.asmx</a:Value></a:UserSetting>
               <a:UserSetting><a:Name>ExternalEmwsUrl</a:Name><a:Value>https://{host}/EWS/Exchange.asmx</a:Value></a:UserSetting>
               <a:UserSetting><a:Name>InternalEmwsUrl</a:Name><a:Value>https://{host}/EWS/Exchange.asmx</a:Value></a:UserSetting>
-              <a:UserSetting><a:Name>ExternalEcpUrl</a:Name><a:Value>https://{host}/EWS/Exchange.asmx</a:Value></a:UserSetting>
-              <a:UserSetting><a:Name>InternalEcpUrl</a:Name><a:Value>https://{host}/EWS/Exchange.asmx</a:Value></a:UserSetting>
+              <a:UserSetting><a:Name>ExternalEcpUrl</a:Name><a:Value>{ecp_url}</a:Value></a:UserSetting>
+              <a:UserSetting><a:Name>InternalEcpUrl</a:Name><a:Value>{ecp_url}</a:Value></a:UserSetting>
               <a:UserSetting><a:Name>OABUrl</a:Name><a:Value>{oab_url}</a:Value></a:UserSetting>
               <a:UserSetting><a:Name>ExternalOABUrl</a:Name><a:Value>{oab_url}</a:Value></a:UserSetting>
               <a:UserSetting><a:Name>InternalOABUrl</a:Name><a:Value>{oab_url}</a:Value></a:UserSetting>
@@ -610,6 +638,7 @@ pub fn handle_autodiscover_soap(host: &str, body: &str) -> AdResponse {
         email = email_escaped,
         host = host_escaped,
         oab_url = oab_url_escaped,
+        ecp_url = ecp_url_escaped,
     );
 
     let xml = format!(
@@ -773,6 +802,51 @@ mod tests {
     }
 
     #[test]
+    fn test_ecp_url_helper_format() {
+        // The EcpUrl is a virtual-directory base URL: it MUST end with a
+        // trailing slash because Outlook / New Outlook append relative path
+        // segments and query strings (e.g. `?rfr=ool&exsc=1`, `Options/`) to
+        // it directly. It MUST NOT point at the EWS SOAP endpoint.
+        let url = ecp_url("mail.example.com");
+        assert!(url.starts_with("https://mail.example.com/ecp/"));
+        assert!(url.ends_with('/'));
+        assert_eq!(url, "https://mail.example.com/ecp/");
+        assert!(!url.contains("/EWS/Exchange.asmx"));
+    }
+
+    #[test]
+    fn test_outlook_response_advertises_real_ecp_url() {
+        // Both EXCH and EXPR Protocol blocks MUST advertise a real ECP
+        // settings surface under `<EcpUrl>` (audit §1.3). The old value
+        // pointed at `/EWS/Exchange.asmx` — the EWS SOAP endpoint — so the
+        // OOF / OptIn / Regional settings deep-links Outlook builds by
+        // appending to `<EcpUrl>` resolved to a SOAP XML fault and rendered
+        // as broken panes. The correct value is the gateway's `/ecp/`
+        // virtual directory (served by `src/ecp.rs`).
+        let (status, _hdrs, body) = handle_outlook_xml(
+            "mail.example.com",
+            "user@example.com",
+            "mail.example.com",
+            false,
+            &AuthAdvert::Basic,
+        );
+        assert_eq!(status, StatusCode::OK);
+        let expected = ecp_url("mail.example.com");
+        // Two occurrences: one in EXCH, one in EXPR.
+        let occurrences = body.matches(&expected).count();
+        assert_eq!(
+            occurrences, 2,
+            "EcpUrl must be advertised in both EXCH and EXPR Protocol blocks"
+        );
+        // The EWS SOAP endpoint MUST NOT be advertised as the EcpUrl.
+        let ews_as_ecp = body.matches("<EcpUrl>https://mail.example.com/EWS/Exchange.asmx</EcpUrl>").count();
+        assert_eq!(
+            ews_as_ecp, 0,
+            "EcpUrl must not point at the EWS SOAP endpoint"
+        );
+    }
+
+    #[test]
     fn test_outlook_response_advertises_modern_auth_when_configured() {
         // When HMA is configured the EXCH/EXPR blocks MUST advertise
         // `<AuthPackage>OAuth2/CertificateBased</AuthPackage>` together with
@@ -844,6 +918,32 @@ mod tests {
         assert!(out.contains("<a:Name>ExternalOABUrl</a:Name>"));
         assert!(out.contains("<a:Name>InternalOABUrl</a:Name>"));
         assert!(out.contains(&oab_url("mail.example.com")));
+    }
+
+    #[test]
+    fn test_soap_response_advertises_real_ecp_url() {
+        // The SOAP autodiscover GetUserSettings MUST advertise a real ECP
+        // surface under `ExternalEcpUrl` / `InternalEcpUrl` (audit §1.3) — NOT
+        // the EWS SOAP endpoint. Clients consuming the SOAP user-settings
+        // payload build the same OOF / OptIn / Regional deep-links Outlook's
+        // Outlook-XML path does, so the wrong value breaks the same panels.
+        let body = "<Autodiscover xmlns=\"http://schemas.microsoft.com/exchange/autodiscover/outlook/requestschema/2006\"><Request><EMailAddress>user@example.com</EMailAddress></Request></Autodiscover>";
+        let (status, _hdrs, out) = handle_autodiscover_soap("mail.example.com", body);
+        assert_eq!(status, StatusCode::OK);
+        let expected = ecp_url("mail.example.com");
+        assert!(out.contains("<a:Name>ExternalEcpUrl</a:Name>"));
+        assert!(out.contains("<a:Name>InternalEcpUrl</a:Name>"));
+        // Both External + Internal EcpUrl settings carry the real /ecp/ URL.
+        assert_eq!(out.matches(&expected).count(), 2);
+        // The EWS SOAP endpoint must never appear as an EcpUrl value. Both
+        // EcpUrl settings carry the /ecp/ URL, so the EWS value must NOT sit
+        // adjacent to an EcpUrl Name element in the output.
+        assert!(
+            !out.contains("a:Name>ExternalEcpUrl</a:Name><a:Value>https://mail.example.com/EWS/Exchange.asmx</a:Value>")
+        );
+        assert!(
+            !out.contains("a:Name>InternalEcpUrl</a:Name><a:Value>https://mail.example.com/EWS/Exchange.asmx</a:Value>")
+        );
     }
 
     #[test]

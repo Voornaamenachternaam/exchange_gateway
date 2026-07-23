@@ -11,6 +11,7 @@ pub mod delegate_ews;
 pub mod directory;
 pub mod eas;
 pub mod email;
+pub mod ecp;
 pub mod error;
 pub mod ews;
 pub mod ews_folders;
