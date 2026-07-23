@@ -148,7 +148,7 @@ fn render_ecp_page(host: &str, email: &str, deep_link: Option<&str>) -> String {
 
     // Deep-link context section: only rendered when New Outlook appended a
     // suffix to the base URL. Keeps the bare landing page clean.
-    let deep_section = if deep_link.map(|d| !d.is_empty()).unwrap_or(false) {
+    let deep_section = if deep_link.is_some_and(|d| !d.is_empty()) {
         format!(
             "<section>\n\
              <h2>Requested settings area</h2>\n\
@@ -159,7 +159,7 @@ fn render_ecp_page(host: &str, email: &str, deep_link: Option<&str>) -> String {
              </section>\n"
         )
     } else {
-        String::new()
+        String::default()
     };
 
     format!(

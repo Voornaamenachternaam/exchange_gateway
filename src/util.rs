@@ -161,7 +161,7 @@ pub fn format_ews_datetime(dt: &chrono::DateTime<Utc>) -> String {
 /// do not panic.
 pub fn redact_email(email: &str) -> String {
     if email.is_empty() {
-        return String::new();
+        return String::default();
     }
     match email.find('@') {
         Some(pos) => format!("{}@***", &email[..pos]),
