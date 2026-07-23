@@ -15,7 +15,7 @@ use axum::{
 };
 use exchange_gateway::{
     autodiscover, config::Config, eas, ecp, ews, logging, metrics::REGISTRY, metrics::record_http,
-    models::AppState, oab, rate_limit::check_rate_limit, storage::Storage,
+    models::AppState, oab, rate_limit::check_rate_limit, storage::Storage, util,
     validation::validate_request,
 };
 use prometheus::{Encoder, TextEncoder};
@@ -27,35 +27,6 @@ use tower_http::{
     timeout::RequestBodyTimeoutLayer, trace::TraceLayer,
 };
 use tracing::{debug, info, warn};
-
-/// Redact an email address for logging.
-/// Shows username and masked domain to preserve some context while protecting PII.
-/// Examples: "user@example.com" -> "user@***", "user@sub.example.co.uk" -> "user@***"
-fn redact_email(email: &str) -> String {
-    if email.is_empty() {
-        return String::new();
-    }
-    // Split on '@' to separate username from domain
-    let at_pos = email.find('@');
-    match at_pos {
-        Some(pos) => {
-            let username = &email[..pos];
-            // Show username (first part) but mask the domain entirely
-            // This preserves some debugging context (which user) without exposing domain
-            format!("{}@***", username)
-        }
-        None => {
-            // No '@' means it's not a valid email; show masked prefix (maybe it's a username)
-            // Use char iteration to safely handle UTF-8, avoiding panic on multi-byte chars
-            let first_char = email.chars().next().unwrap_or('?');
-            if email.len() >= 2 {
-                format!("{}***", first_char)
-            } else {
-                "***".to_string()
-            }
-        }
-    }
-}
 
 const MAX_BODY_BYTES: usize = 4 * 1024 * 1024;
 const REQUEST_TIMEOUT_SECS: u64 = 60;
@@ -112,7 +83,7 @@ async fn autodiscover_xml(
         method = %method,
         path = "/autodiscover/autodiscover.xml",
         body_len = body.len(),
-        email = %redact_email(&email),
+        email = %util::redact_email(&email),
         "Autodiscover XML request received"
     );
 
@@ -137,7 +108,7 @@ async fn autodiscover_xml(
             status = status.as_u16(),
             elapsed_ms = elapsed_ms,
             response_len = body_out.len(),
-            email = %redact_email(&email),
+            email = %util::redact_email(&email),
             "Autodiscover XML completed"
         );
     } else {
@@ -147,7 +118,7 @@ async fn autodiscover_xml(
             path = "/autodiscover/autodiscover.xml",
             status = status.as_u16(),
             elapsed_ms = elapsed_ms,
-            email = %redact_email(&email),
+            email = %util::redact_email(&email),
             "Autodiscover XML failed"
         );
     }
@@ -208,7 +179,7 @@ async fn autodiscover_json(
         method = "GET",
         path = "/autodiscover/autodiscover.json",
         protocol = ?params.protocol,
-        email = ?params.email.as_deref().map(redact_email),
+        email = ?params.email.as_deref().map(util::redact_email),
         "Autodiscover JSON request received"
     );
 
@@ -266,7 +237,7 @@ async fn autodiscover_json_v1(
         method = "GET",
         path = "/autodiscover/autodiscover.json/v1.0/{email}",
         protocol = ?params.protocol,
-        email = %redact_email(&email),
+        email = %util::redact_email(&email),
         "Autodiscover JSON V2 path request received"
     );
 

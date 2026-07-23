@@ -48,6 +48,7 @@
 
 use crate::auth::AuthVerifier;
 use crate::models::AppState;
+use crate::util::redact_email;
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
@@ -86,26 +87,6 @@ fn parse_basic_auth(headers: &HeaderMap) -> Option<(String, String)> {
 /// is not accidentally logged, matching `oab::to_secret`.
 fn to_secret(p: String) -> SecretString {
     SecretString::from(p)
-}
-
-/// Redact an email address for logging, mirroring `main::redact_email`. The
-/// library cannot reach the binary's `redact_email`, so the settings-page
-/// log line uses this local copy: keep username context, mask the domain.
-fn redact_email(email: &str) -> String {
-    if email.is_empty() {
-        return String::new();
-    }
-    match email.find('@') {
-        Some(pos) => format!("{}@***", &email[..pos]),
-        None => {
-            let first = email.chars().next().unwrap_or('?');
-            if email.len() >= 2 {
-                format!("{first}***")
-            } else {
-                "***".to_string()
-            }
-        }
-    }
 }
 
 /// Build a 401 response that challenges for Basic auth. Matches the realm
@@ -291,6 +272,10 @@ pub async fn handle_ecp(
 #[cfg(test)]
 mod tests {
     use super::*;
+    // Exercises the real autodiscover::ecp_url rather than a local
+    // re-implementation, so the test cannot silently drift from the
+    // advertised value.
+    use crate::autodiscover::ecp_url as ecp_url_pub;
 
     #[test]
     fn test_ecp_url_helper_format() {
@@ -421,10 +406,4 @@ mod tests {
         assert_eq!(redact_email("ku"), "k***");
     }
 
-    // Re-export the module-private-ish helper for tests via a thin shim, so
-    // the test does not depend on `autodiscover::ecp_url` directly — it
-    // exercises the same shape the autodiscover unit tests do.
-    fn ecp_url_pub(host: &str) -> String {
-        format!("https://{}/ecp/", host)
-    }
 }
