@@ -32,6 +32,7 @@ use crate::sync::generate_server_id;
 use crate::util::{
     canonicalize_username, format_ews_datetime, nfc, normalize_username, xml_escape,
 };
+use crate::version;
 use anyhow::anyhow;
 use axum::{
     extract::State,
@@ -225,10 +226,10 @@ fn operation_error_response(
     let xml = format!(
         r#"<?xml version="1.0" encoding="utf-8"?>
 <s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
-  <s:Header><t:ServerVersionInfo MajorVersion="15" MinorVersion="20" MajorBuildNumber="0" MinorBuildNumber="0" Version="Exchange2016" xmlns:t="{type_ns}" /></s:Header>
+  <s:Header>{svi}</s:Header>
   <s:Body>{body}</s:Body>
 </s:Envelope>"#,
-        type_ns = EWS_TYPE_NS,
+        svi = version::current().render_ews_header(EWS_TYPE_NS),
         body = body
     );
     ews_response(status, xml)
@@ -1506,11 +1507,11 @@ fn soap_ok(inner: String) -> Response {
         r#"<?xml version="1.0" encoding="utf-8"?>
 <s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
   <s:Header>
-    <t:ServerVersionInfo MajorVersion="15" MinorVersion="20" MajorBuildNumber="0" MinorBuildNumber="0" Version="Exchange2016" xmlns:t="{type_ns}" />
+    {svi}
   </s:Header>
   <s:Body>{inner}</s:Body>
 </s:Envelope>"#,
-        type_ns = EWS_TYPE_NS,
+        svi = version::current().render_ews_header(EWS_TYPE_NS),
         inner = inner
     );
     ews_response(StatusCode::OK, xml)
@@ -1520,13 +1521,13 @@ fn soap_fault(code: &str, message: &str, status: StatusCode) -> Response {
     let xml = format!(
         r#"<?xml version="1.0" encoding="utf-8"?>
 <s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
-  <s:Header><t:ServerVersionInfo MajorVersion="15" MinorVersion="20" MajorBuildNumber="0" MinorBuildNumber="0" Version="Exchange2016" xmlns:t="{type_ns}" /></s:Header>
+  <s:Header>{svi}</s:Header>
   <s:Body><s:Fault><faultcode>s:Client</faultcode><faultstring>{}</faultstring><detail><m:ResponseCode xmlns:m="{}">{}</m:ResponseCode></detail></s:Fault></s:Body>
 </s:Envelope>"#,
         xml_escape(message),
         EWS_MSG_NS,
         xml_escape(code),
-        type_ns = EWS_TYPE_NS
+        svi = version::current().render_ews_header(EWS_TYPE_NS)
     );
     ews_response(status, xml)
 }
@@ -5034,11 +5035,11 @@ fn streaming_header() -> String {
         r#"<?xml version="1.0" encoding="utf-8"?>
 <s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
   <s:Header>
-    <t:ServerVersionInfo MajorVersion="15" MinorVersion="20" MajorBuildNumber="0" MinorBuildNumber="0" Version="Exchange2016" xmlns:t="{type_ns}" />
+    {svi}
   </s:Header>
   <s:Body>
 "#,
-        type_ns = EWS_TYPE_NS
+        svi = version::current().render_ews_header(EWS_TYPE_NS)
     )
 }
 
@@ -7919,7 +7920,7 @@ async fn handle_get_user_configuration(
         r#"<?xml version="1.0" encoding="utf-8"?>
 <s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
   <s:Header>
-    <t:ServerVersionInfo MajorVersion="15" MinorVersion="20" MajorBuildNumber="0" MinorBuildNumber="0" Version="Exchange2016" xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types" />
+    {svi}
   </s:Header>
   <s:Body>
     <m:GetUserConfigurationResponse xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages" xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types">
@@ -7941,7 +7942,8 @@ async fn handle_get_user_configuration(
         folder_ref_xml,
         parent_folder_id_xml,
         STANDARD.encode(&synthetic_id),
-        change_key
+        change_key,
+        svi = version::current().render_ews_header(EWS_TYPE_NS),
     );
 
     Response::builder()

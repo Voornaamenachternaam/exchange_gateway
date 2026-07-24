@@ -12,6 +12,7 @@
 // return a response matching the requested schema or the client will treat it as an
 // error (MS-ASCMD §4.2.5, error code 601 "provider not found").
 use crate::util::{nfc, xml_escape};
+use crate::version;
 use axum::http::StatusCode;
 use serde::Deserialize;
 
@@ -509,7 +510,7 @@ fn handle_outlook_xml(
 <Type>EXCH</Type>
 <Server>{host}</Server>
 <ServerDN>/o=ExchangeLabs/ou=Exchange Administrative Group/cn=Configuration/cn=Servers/cn={host}</ServerDN>
-<ServerVersion>15.20.0.0</ServerVersion>
+<ServerVersion>{server_version}</ServerVersion>
 <MdbDN>/o=ExchangeLabs/ou=Exchange Administrative Group/cn=Configuration/cn=Servers/cn={host}/cn=Microsoft Private MDB</MdbDN>
 <ASUrl>https://{host}/Microsoft-Server-ActiveSync</ASUrl>
 <EwsUrl>https://{host}/EWS/Exchange.asmx</EwsUrl>
@@ -530,6 +531,7 @@ fn handle_outlook_xml(
 <Protocol>
 <Type>EXPR</Type>
 <Server>{host}</Server>
+<ServerVersion>{server_version}</ServerVersion>
 <SSL>on</SSL>
 <SPA>off</SPA>
 <CertPrincipalName>None</CertPrincipalName>
@@ -572,6 +574,7 @@ fn handle_outlook_xml(
         ecp_url = ecp_url_escaped,
         auth_package = auth_package,
         auth_extra = auth_extra,
+        server_version = version::current().render_server_version_element(),
         imap_smtp_protocols = if include_imap_smtp && !mail_host_escaped.is_empty() {
             format!(
                 r#"<Protocol>
@@ -630,15 +633,17 @@ pub fn handle_autodiscover_soap(host: &str, body: &str) -> AdResponse {
               <a:UserSetting><a:Name>MobileSyncServer</a:Name><a:Value>{host}</a:Value></a:UserSetting>
               <a:UserSetting><a:Name>ExternalMobileSyncUrl</a:Name><a:Value>https://{host}/Microsoft-Server-ActiveSync</a:Value></a:UserSetting>
               <a:UserSetting><a:Name>InternalMobileSyncUrl</a:Name><a:Value>https://{host}/Microsoft-Server-ActiveSync</a:Value></a:UserSetting>
-              <a:UserSetting><a:Name>ExternalEwsVersion</a:Name><a:Value>Exchange2016</a:Value></a:UserSetting>
-              <a:UserSetting><a:Name>InternalEwsVersion</a:Name><a:Value>Exchange2016</a:Value></a:UserSetting>
-              <a:UserSetting><a:Name>EwsSupportedSchemas</a:Name><a:Value>Exchange2007,Exchange2007_SP1,Exchange2010,Exchange2010_SP1,Exchange2010_SP2,Exchange2013,Exchange2013_SP1,Exchange2016</a:Value></a:UserSetting>
+              <a:UserSetting><a:Name>ExternalEwsVersion</a:Name><a:Value>{ews_version}</a:Value></a:UserSetting>
+              <a:UserSetting><a:Name>InternalEwsVersion</a:Name><a:Value>{ews_version}</a:Value></a:UserSetting>
+              <a:UserSetting><a:Name>EwsSupportedSchemas</a:Name><a:Value>{supported_schemas}</a:Value></a:UserSetting>
               <a:UserSetting><a:Name>PublicFolderServer</a:Name><a:Value>{host}</a:Value></a:UserSetting>
               <a:UserSetting><a:Name>ActiveDirectoryServer</a:Name><a:Value>{host}</a:Value></a:UserSetting>"#,
         email = email_escaped,
         host = host_escaped,
         oab_url = oab_url_escaped,
         ecp_url = ecp_url_escaped,
+        ews_version = version::current().exchange_version(),
+        supported_schemas = version::current().supported_schemas_csv(),
     );
 
     let xml = format!(
@@ -646,8 +651,7 @@ pub fn handle_autodiscover_soap(host: &str, body: &str) -> AdResponse {
 <s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope"
             xmlns:a="http://schemas.microsoft.com/exchange/2010/Autodiscover">
   <s:Header>
-    <a:ServerVersionInfo MajorVersion="15" MinorVersion="20" MajorBuildNumber="0"
-                         MinorBuildNumber="0" Version="Exchange2016" />
+    {svi}
   </s:Header>
   <s:Body>
     <a:GetUserSettingsResponseMessage xmlns:a="http://schemas.microsoft.com/exchange/2010/Autodiscover">
@@ -669,6 +673,7 @@ pub fn handle_autodiscover_soap(host: &str, body: &str) -> AdResponse {
     </a:GetUserSettingsResponseMessage>
   </s:Body>
 </s:Envelope>"#,
+        svi = version::current().render_autodiscover_soap_header(),
         settings = settings
     );
     (StatusCode::OK, content_type_soap(), xml)
@@ -747,6 +752,31 @@ mod tests {
         // By default (Basic) the EXCH/EXPR blocks advertise Basic auth only.
         assert_eq!(body.matches("<AuthPackage>Basic</AuthPackage>").count(), 2);
         assert!(!body.contains("OAuth2"));
+    }
+
+    #[test]
+    fn test_outlook_response_advertises_server_version_in_both_blocks() {
+        // MS-OXDSCLI puts `<ServerVersion>` in BOTH the EXCH and EXPR Protocol
+        // blocks so an external (EXPR) client receives the same version stamp as
+        // an internal (EXCH) one; omitting it from EXPR left external Outlook
+        // with inconsistent/incomplete version metadata.
+        let (status, _hdrs, body) = handle_outlook_xml(
+            "mail.example.com",
+            "user@example.com",
+            "mail.example.com",
+            true,
+            &AuthAdvert::Basic,
+        );
+        assert_eq!(status, StatusCode::OK);
+        let sv = format!(
+            "<ServerVersion>{}</ServerVersion>",
+            crate::version::current().render_server_version_element()
+        );
+        assert_eq!(
+            body.matches(&sv).count(),
+            2,
+            "<ServerVersion> must appear in both EXCH and EXPR Protocol blocks"
+        );
     }
 
     #[test]

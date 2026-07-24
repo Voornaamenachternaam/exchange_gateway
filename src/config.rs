@@ -44,6 +44,21 @@ const ENV_MAPI_OIDC_ISSUER: &str = "GATEWAY_MAPI_OIDC_ISSUER";
 const ENV_MAPI_OIDC_AUDIENCE: &str = "GATEWAY_MAPI_OIDC_AUDIENCE";
 const ENV_MAPI_ORG: &str = "GATEWAY_MAPI_ORG";
 
+/// Exchange server version string ("Major.Minor.Build.Revision") advertised in
+/// Autodiscover outlook `<ServerVersion>` and parsed into the numeric
+/// `<ServerVersionInfo>` attributes. Default is the latest stable on-premises
+/// build the gateway emulates — Exchange Server SE `15.2.2562.45`.
+const ENV_SERVER_VERSION: &str = "GATEWAY_SERVER_VERSION";
+/// EWS `RequestServerVersion` enum token advertised in the
+/// `<ServerVersionInfo Version="…">` attribute and the
+/// `ExternalEwsVersion`/`InternalEwsVersion` Autodiscover SOAP user settings.
+/// Default `Exchange2016` — the highest universally-valid `RequestServerVersion`
+/// (`ExchangeVersionType`) enum token. There is no published `Exchange2019`
+/// member: real 15.2.x servers reject it with `ErrorInvalidRequest`, so the
+/// gateway advertises `Exchange2016` even though the *build* is the Exchange
+/// Server SE 15.2.2562.45 line.
+const ENV_SERVER_EXCHANGE_VERSION: &str = "GATEWAY_SERVER_EXCHANGE_VERSION";
+
 #[derive(Clone, Debug, Deserialize)]
 pub struct Config {
     #[serde(default)]
@@ -137,6 +152,30 @@ pub struct Config {
     /// rejecting every legitimate logon.
     #[serde(default)]
     pub mapi_org: String,
+    /// Exchange server version string ("Major.Minor.Build.Revision", e.g.
+    /// "15.2.2562.45") advertised across all protocol surfaces. Defaults to
+    /// the latest stable on-premises build the gateway emulates —
+    /// **Exchange Server SE** `15.2.2562.45`. Configurable via
+    /// `GATEWAY_SERVER_VERSION`; validated at load time.
+    #[serde(default = "default_server_version")]
+    pub server_version: String,
+    /// EWS `RequestServerVersion` enum token (e.g. "Exchange2016") advertised in
+    /// the `<ServerVersionInfo Version="…">` attribute and the
+    /// `ExternalEwsVersion`/`InternalEwsVersion` Autodiscover SOAP user
+    /// settings. Defaults to `Exchange2016` (the highest universally-valid enum
+    /// token; there is no published `Exchange2019` member). Configurable via
+    /// `GATEWAY_SERVER_EXCHANGE_VERSION`; must be a valid enum token at or below
+    /// `Exchange2016`.
+    #[serde(default = "default_server_exchange_version")]
+    pub server_exchange_version: String,
+}
+
+fn default_server_version() -> String {
+    crate::version::DEFAULT_VERSION_STRING.to_string()
+}
+
+fn default_server_exchange_version() -> String {
+    crate::version::DEFAULT_EXCHANGE_VERSION.to_string()
 }
 
 fn default_max_attachment_bytes() -> usize {
@@ -315,6 +354,15 @@ impl Config {
         self.max_attachment_bytes.max(1024)
     }
 
+    /// Build the validated `ServerVersion` advertised across every protocol
+    /// surface from the configured `server_version` and `server_exchange_version`
+    /// values. Returns an error (so `Config::load` fails closed) when the
+    /// operator-supplied values are malformed.
+    pub fn server_version_info(&self) -> anyhow::Result<crate::version::ServerVersion> {
+        crate::version::ServerVersion::from_strings(&self.server_version, &self.server_exchange_version)
+            .map_err(|e| anyhow::anyhow!("Config: server version invalid: {}", e))
+    }
+
     fn validate(&self) -> anyhow::Result<()> {
         if self.bind.is_empty() {
             return Err(anyhow::anyhow!(
@@ -392,6 +440,10 @@ impl Config {
                 self.smtp_port
             ));
         }
+        // Validate the advertised Exchange server version stamps so a malformed
+        // GATEWAY_SERVER_VERSION / GATEWAY_SERVER_EXCHANGE_VERSION fails closed
+        // at startup instead of emitting a broken version stamp on the wire.
+        self.server_version_info()?;
         Ok(())
     }
 }
@@ -723,6 +775,20 @@ fn apply_environment_overrides(cfg: &mut Config) {
             cfg.mapi_hma_enabled
         );
     }
+
+    // Advertised Exchange server version stamps (Exchange Server SE
+    // `15.2.2562.45` / `Exchange2016` by default). Validated later in
+    // `Config::validate`, so a malformed env override fails closed at startup.
+    apply_env_string(cfg, get_env_with_fallback(ENV_SERVER_VERSION, None), |c, v| {
+        c.server_version = v;
+    });
+    apply_env_string(
+        cfg,
+        get_env_with_fallback(ENV_SERVER_EXCHANGE_VERSION, None),
+        |c, v| {
+            c.server_exchange_version = v;
+        },
+    );
 }
 
 fn extract_host_from_caldav(url_str: &str) -> Option<String> {
@@ -819,6 +885,8 @@ impl Default for Config {
             mapi_oidc_issuer: String::new(),
             mapi_oidc_audience: String::new(),
             mapi_org: String::new(),
+            server_version: default_server_version(),
+            server_exchange_version: default_server_exchange_version(),
         }
     }
 }
@@ -847,6 +915,83 @@ mod tests {
         assert_eq!(config.bind, "[::]:8134");
         assert_eq!(config.database_path, "/var/lib/exchange-gateway/gateway.db");
         assert!(config.room_booking_enabled);
+        // The default advertised server version is Exchange Server SE 15.2.2562.45.
+        assert_eq!(config.server_version, crate::version::DEFAULT_VERSION_STRING);
+        assert_eq!(config.server_exchange_version, crate::version::DEFAULT_EXCHANGE_VERSION);
+    }
+
+    #[test]
+    fn test_default_config_server_version_info_is_exchange_server_se() {
+        let config = Config::default();
+        let info = config
+            .server_version_info()
+            .expect("default ServerVersion must parse");
+        assert_eq!(info.version_string(), "15.2.2562.45");
+        // Build is the SE 15.2.x line; the advertised EWS schema token is
+        // Exchange2016 (the highest valid RequestServerVersion enum value).
+        assert_eq!(info.exchange_version(), "Exchange2016");
+    }
+
+    #[test]
+    fn test_server_version_env_override_applies_and_validates() {
+        // A valid override is applied and round-trips through server_version_info().
+        with_var("GATEWAY_SERVER_VERSION", Some("14.1.100.10"), || {
+            with_var(
+                "GATEWAY_SERVER_EXCHANGE_VERSION",
+                Some("Exchange2010_SP2"),
+                || {
+                    let mut cfg = Config::default();
+                    apply_environment_overrides(&mut cfg);
+                    assert_eq!(cfg.server_version, "14.1.100.10");
+                    assert_eq!(cfg.server_exchange_version, "Exchange2010_SP2");
+                    let info = cfg
+                        .server_version_info()
+                        .expect("valid override must parse");
+                    assert_eq!(info.version_string(), "14.1.100.10");
+                    assert_eq!(info.exchange_version(), "Exchange2010_SP2");
+                },
+            );
+        });
+    }
+
+    #[test]
+    fn test_server_version_env_override_rejects_invalid_version() {
+        // A malformed build number must fail closed in server_version_info()
+        // (the exact fail-closed path validate() calls at startup).
+        with_var("GATEWAY_SERVER_VERSION", Some("15.2.NaN.45"), || {
+            let mut cfg = Config::default();
+            apply_environment_overrides(&mut cfg);
+            let err = cfg
+                .server_version_info()
+                .expect_err("non-numeric version segment must fail");
+            assert!(
+                err.to_string().to_lowercase().contains("version"),
+                "expected a version-related error, got: {err}"
+            );
+        });
+    }
+
+    #[test]
+    fn test_server_version_env_override_rejects_unknown_schema_token() {
+        // An unknown EWS schema token must fail closed. Use a syntactically
+        // valid version so only the schema token fails.
+        with_var("GATEWAY_SERVER_VERSION", Some("15.2.2562.45"), || {
+            with_var(
+                "GATEWAY_SERVER_EXCHANGE_VERSION",
+                Some("Exchange2099"),
+                || {
+                    let mut cfg = Config::default();
+                    apply_environment_overrides(&mut cfg);
+                    let err = cfg
+                        .server_version_info()
+                        .expect_err("unknown EWS schema token must fail");
+                    assert!(
+                        err.to_string().to_lowercase().contains("exchange"),
+                        "expected an exchange-version error, got: {err}"
+                    );
+                },
+            );
+        });
     }
 
     #[test]

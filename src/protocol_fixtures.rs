@@ -1,13 +1,24 @@
 // src/protocol_fixtures.rs
 
 use crate::util::xml_escape;
+use crate::version;
 
-pub const EWS_SOAP_ENVELOPE_HEADER: &str = r#"<?xml version="1.0" encoding="utf-8"?>
+/// XML prologue + SOAP envelope opening carrying a `<t:ServerVersionInfo>`
+/// header rendered from the single source of truth (`version::current()`), so
+/// every EWS SOAP helper advertises the configured Exchange server version
+/// (default Exchange Server SE build `15.2.2562.45` with the `Exchange2016`
+/// schema token) rather than a hard-coded stamp.
+pub fn ews_soap_envelope_header() -> String {
+    format!(
+        r#"<?xml version="1.0" encoding="utf-8"?>
 <s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
 <s:Header>
-<t:ServerVersionInfo xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types" MajorVersion="15" MinorVersion="20" MajorBuildNumber="0" MinorBuildNumber="0" Version="Exchange2016" />
+{}
 </s:Header>
-<s:Body>"#;
+<s:Body>"#,
+        version::current().render_ews_header(EWS_TYPE_NS)
+    )
+}
 
 pub const EWS_SOAP_ENVELOPE_FOOTER: &str = r#"</s:Body>
 </s:Envelope>"#;
@@ -59,13 +70,14 @@ pub fn ews_soap_response(inner: &str) -> String {
         r#"<?xml version="1.0" encoding="utf-8"?>
 <s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
 <s:Header>
-<t:ServerVersionInfo xmlns:t="{}" MajorVersion="15" MinorVersion="20" MajorBuildNumber="0" MinorBuildNumber="0" Version="Exchange2016" />
+{}
 </s:Header>
 <s:Body>
 {}
 </s:Body>
 </s:Envelope>"#,
-        EWS_TYPE_NS, inner
+        version::current().render_ews_header(EWS_TYPE_NS),
+        inner
     )
 }
 
@@ -166,6 +178,30 @@ mod tests {
         assert!(resp.contains("Envelope"));
         assert!(resp.contains("ServerVersionInfo"));
         assert!(resp.contains(inner));
+    }
+
+    #[test]
+    fn test_ews_soap_response_advertises_exchange_server_se_version() {
+        // The EWS SOAP header MUST advertise the Exchange Server SE *build*
+        // (`15.2.2562.45`) from the single source of truth in `version::current()`,
+        // with the `Exchange2016` schema token (the highest universally-valid
+        // `RequestServerVersion` enum value — `Exchange2019` is not a published
+        // member) — not a leftover hard-coded `15.20.0.0` stamp.
+        let resp = ews_soap_response("<x/>");
+        assert!(
+            resp.contains(r#"MajorVersion="15" MinorVersion="2" MajorBuildNumber="2562" MinorBuildNumber="45" Version="Exchange2016""#),
+            "EWS SOAP header should advertise Exchange Server SE 15.2.2562.45 / Exchange2016, got: {}",
+            resp
+        );
+        // The old hard-coded legacy stamp must never appear.
+        assert!(!resp.contains("MinorVersion=\"20\""));
+    }
+
+    #[test]
+    fn test_ews_soap_envelope_header_advertises_se_version() {
+        let header = ews_soap_envelope_header();
+        assert!(header.contains(r#"Version="Exchange2016""#), "{}", header);
+        assert!(header.contains(r#"MajorBuildNumber="2562""#), "{}", header);
     }
 
     #[test]

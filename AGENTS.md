@@ -123,6 +123,40 @@ gets wiped between shell sessions. To avoid re-installing Rust every command:
   `Basic`. The SOAP `handle_autodiscover_soap` advertises Basic as before
   (EWS clients use the SOAP GetUserSettings surface, not the EXCH/EXPR
   Protocol blocks, so HMA advertisement there is not required for §1.2).
+- **Server version advertisement — single source of truth** — closes audit
+  gap §4 ("`ServerVersion` is hard-coded to `15.20.0.0` and `Exchange2016`").
+  `src/version.rs` owns `ServerVersion`, the ONE place the Exchange server
+  version is defined; every EWS `<t:ServerVersionInfo>`,
+  Autodiscover SOAP `<a:ServerVersionInfo>`, Autodiscover Outlook
+  `<ServerVersion>` (emitted in BOTH the EXCH and EXPR Protocol blocks), and
+  the `ExternalEwsVersion`/`InternalEwsVersion`/`EwsSupportedSchemas` user
+  settings render from `version::current()` — the old hard-coded `15.20.0.0`
+  *build stamp* literal is gone from every stamp site. (`Exchange2016` is NOT
+  a stray literal here: it is the intentionally-advertised EWS schema token and
+  the intentional top of the supported-schema matrix — see below.)
+  Defaults match the latest stable on-premises build the gateway emulates:
+  **Exchange Server SE** `15.2.2562.45` (Major=15 Minor=2 MajorBuildNumber=2562
+  MinorBuildNumber=45). The advertised EWS schema token is `Exchange2016` — the
+  highest universally-valid `RequestServerVersion` (`ExchangeVersionType`) enum
+  value. There is NO published `Exchange2019` enum member: real 15.2.x servers
+  reject `RequestServerVersion Version="Exchange2019"` with
+  `ErrorInvalidRequest`, so `Exchange2016` is the correct on-premises schema
+  token even though the *build* is the SE 15.2.x line — the gateway stamps the
+  SE build number and product name but advertises the `Exchange2016` schema.
+  Operators can pin a different build via `GATEWAY_SERVER_VERSION`
+  ("Major.Minor.Build.Revision") and `GATEWAY_SERVER_EXCHANGE_VERSION` (any valid
+  EWS enum token at or below `Exchange2016`); both are validated in
+  `Config::validate` (fail-closed at startup — pinning `Exchange2019` is
+  rejected). `EwsSupportedSchemas` is truncated at the configured schema token
+  so a pinned older build never advertises schemas newer than itself.
+  `version::init` is called once from `main` after `Config::load`;
+  `version::current()` lazily defaults to the SE build when a caller (e.g. a
+  unit test) never calls `init`, so leaf render helpers in `ews.rs`,
+  `autodiscover.rs`, and `protocol_fixtures.rs` always emit a valid stamp with
+  NO per-caller plumbing. When adding a new EWS/Autodiscover envelope, do NOT
+  inline a `<ServerVersionInfo>` literal — call
+  `version::current().render_ews_header(EWS_TYPE_NS)` (or
+  `render_autodiscover_soap_header()` / `render_server_version_element()`).
 
 ## MAPI/HTTP dispatcher & ROP codec conventions (IMPORTANT)
 - **RPC types** (transport.rs): Connect / Execute / Disconnect / NotificationWait / PING. The
