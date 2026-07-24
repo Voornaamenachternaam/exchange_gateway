@@ -87,15 +87,40 @@ async fn autodiscover_xml(
         "Autodiscover XML request received"
     );
 
-    let (status, hdrs, body_out) = autodiscover::handle_autodiscover_xml(
-        host,
-        &body,
-        &email,
+    // Resolve the mobilesync <User>/<DisplayName> (MS-ASCMD §2.2.3.49.1) for
+    // ActiveSync / Outlook Android provisioning. Per MS-ASCMD the element is
+    // "the user's display name in the directory service", so when a directory
+    // service is configured we resolve the account's real name; otherwise we
+    // fall back to a name derived from the request email (never the gateway
+    // product brand, which would be presented as the account owner's
+    // identity). `DirectoryLookup::resolve_email_blocking` is a blocking call
+    // and must run off the async runtime (per the trait contract), so it is
+    // dispatched on `spawn_blocking`. The resolved `String` is passed into the
+    // pure render path so the mobilesync response carries the real user name.
+    // The directory is `Clone`-able via the `Arc`, so we clone the `Option`
+    // itself (None when unconfigured) into the blocking task.
+    let display_name = {
+        let email_for_resolve = email.clone();
+        let dir = state.directory.clone();
+        tokio::task::spawn_blocking(move || {
+            autodiscover::resolve_user_display_name(dir.as_ref(), &email_for_resolve)
+        })
+        .await
+        .ok()
+    };
+
+    let auth_advert = autodiscover_auth_advert(&state.cfg);
+    let req = autodiscover::AutodiscoverXmlRequest {
+        host: host.as_str(),
+        body: &body,
+        email: &email,
         accept_language,
-        &state.cfg.mail_host,
-        state.smtp_client.is_some(),
-        &autodiscover_auth_advert(&state.cfg),
-    );
+        mail_host: &state.cfg.mail_host,
+        include_imap_smtp: state.smtp_client.is_some(),
+        auth_advert: &auth_advert,
+        mobilesync_display_name: display_name.as_deref().unwrap_or(""),
+    };
+    let (status, hdrs, body_out) = autodiscover::handle_autodiscover_xml(&req);
 
     let elapsed_ms = start.elapsed().as_millis();
     let success = status.is_success();

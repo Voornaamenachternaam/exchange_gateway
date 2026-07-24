@@ -108,11 +108,10 @@ gets wiped between shell sessions. To avoid re-installing Rust every command:
   HTML-escaped (5-metachar escaper `html_escape`) and echoed as page context only;
   authoritative OOF/regional writes stay on EWS SOAP (`SetUserOofSettings`).
 - **Autodiscover AuthPackage / HMA advertisement** — closes audit gap §1.2.
-  `handle_outlook_xml` (and `handle_autodiscover_xml` which delegates to it)
-  takes an `&AuthAdvert` describing what the EXCH + EXPR `<Protocol>` blocks
-  advertise under `<AuthPackage>`. `AuthAdvert::Basic` keeps the legacy
-  `<AuthPackage>Basic</AuthPackage>` (default, backwards-compatible).
-  `AuthAdvert::Modern { oauth_url }` renders
+  `handle_outlook_xml` takes an `&AuthAdvert` describing what the EXCH + EXPR
+  `<Protocol>` blocks advertise under `<AuthPackage>`. `AuthAdvert::Basic`
+  keeps the legacy `<AuthPackage>Basic</AuthPackage>` (default,
+  backwards-compatible). `AuthAdvert::Modern { oauth_url }` renders
   `<AuthPackage>OAuth2/CertificateBased</AuthPackage>` plus sibling
   `<OauthUrl>{oauth_url}</OauthUrl>` and
   `<CompactDomain>{issuer_host}</CompactDomain>` (issuer host extracted by
@@ -123,6 +122,33 @@ gets wiped between shell sessions. To avoid re-installing Rust every command:
   `Basic`. The SOAP `handle_autodiscover_soap` advertises Basic as before
   (EWS clients use the SOAP GetUserSettings surface, not the EXCH/EXPR
   Protocol blocks, so HMA advertisement there is not required for §1.2).
+- **Mobilesync `<User>/<DisplayName>` resolution** — closes audit gap §1.5
+  ("the mobilesync path doesn't include a `<DisplayName>`/picture and the
+  `User` block is minimal"). The mobilesync `User` block's only children per
+  MS-ASCMD §2.2.3.189 are `<DisplayName>` (§2.2.3.49.1 — "the user's display
+  name in the directory service", optional 0…1) and `<EMailAddress>`; there is
+  NO picture element in this schema (a client's contact photo arrives via the
+  EAS Settings/ResolveRecipients/Find `Picture` element, not mobilesync
+  Autodiscover). The handler previously hard-coded the gateway product brand
+  "Stalwart Mail" as `<DisplayName>`, which is not the user's name. Now
+  `handle_mobilesync_xml(host, email, accept_language, display_name)` renders
+  the *user's* resolved name: `autodiscover::resolve_user_display_name(dir,
+  email)` runs `DirectoryLookup::resolve_email_blocking(email)` (on a
+  `spawn_blocking` task in `main::autodiscover_xml`, never on the async
+  runtime) → `Contact.display_name`; when no directory is configured or the
+  account is unresolvable it falls back to `autodiscover::derive_display_name
+  (email)` (title-cased local-part of the *client-supplied request* email,
+  capped at 512 chars, never leaks anything the client didn't send). An empty
+  resolved name **omits** the optional `<DisplayName>` (spec 0…1) so the
+  response never advertises a fabricated identity; a non-empty name is
+  XML-escaped via `xml_escape`. The `Outlook` desktop path
+  (`handle_outlook_xml`) keeps its own server-brand `<DisplayName>`. Because
+  dispatching needs 8 inputs (host/body/email/accept_language/mail_host/
+  include_imap_smtp/auth_advert/mobilesync_display_name), `handle_autodiscover_xml`
+  now takes a single `AutodiscoverXmlRequest<'a>` struct built by a struct
+  literal at each call site (intentionally no positional constructor, so
+  clippy's argument-count threshold is not re-tripped; no `#[allow]`
+  suppression).
 - **Server version advertisement — single source of truth** — closes audit
   gap §4 ("`ServerVersion` is hard-coded to `15.20.0.0` and `Exchange2016`").
   `src/version.rs` owns `ServerVersion`, the ONE place the Exchange server

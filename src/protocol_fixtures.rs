@@ -155,16 +155,19 @@ pub fn eas_provision_response(policy_key: &str, status: &str) -> String {
 }
 
 pub fn autodiscover_response(host: &str, email: &str) -> String {
-    crate::autodiscover::handle_autodiscover_xml(
+    let mail_host = format!("mail.{}", email.rsplit('@').next().unwrap_or(host));
+    let display_name = crate::autodiscover::derive_display_name(email);
+    let req = crate::autodiscover::AutodiscoverXmlRequest {
         host,
-        "",
+        body: "",
         email,
-        None,
-        &format!("mail.{}", email.rsplit('@').next().unwrap_or(host)),
-        true,
-        &crate::autodiscover::AuthAdvert::Basic,
-    )
-    .2
+        accept_language: None,
+        mail_host: &mail_host,
+        include_imap_smtp: true,
+        auth_advert: &crate::autodiscover::AuthAdvert::Basic,
+        mobilesync_display_name: &display_name,
+    };
+    crate::autodiscover::handle_autodiscover_xml(&req).2
 }
 
 #[cfg(test)]
