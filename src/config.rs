@@ -52,8 +52,11 @@ const ENV_SERVER_VERSION: &str = "GATEWAY_SERVER_VERSION";
 /// EWS `RequestServerVersion` enum token advertised in the
 /// `<ServerVersionInfo Version="…">` attribute and the
 /// `ExternalEwsVersion`/`InternalEwsVersion` Autodiscover SOAP user settings.
-/// Default `Exchange2019` (the highest valid enum value; Exchange Server SE is
-/// the 15.2.x product line and reuses the `Exchange2019` schema token).
+/// Default `Exchange2016` — the highest universally-valid `RequestServerVersion`
+/// (`ExchangeVersionType`) enum token. There is no published `Exchange2019`
+/// member: real 15.2.x servers reject it with `ErrorInvalidRequest`, so the
+/// gateway advertises `Exchange2016` even though the *build* is the Exchange
+/// Server SE 15.2.2562.45 line.
 const ENV_SERVER_EXCHANGE_VERSION: &str = "GATEWAY_SERVER_EXCHANGE_VERSION";
 
 #[derive(Clone, Debug, Deserialize)]
@@ -156,11 +159,13 @@ pub struct Config {
     /// `GATEWAY_SERVER_VERSION`; validated at load time.
     #[serde(default = "default_server_version")]
     pub server_version: String,
-    /// EWS `RequestServerVersion` enum token (e.g. "Exchange2019") advertised in
+    /// EWS `RequestServerVersion` enum token (e.g. "Exchange2016") advertised in
     /// the `<ServerVersionInfo Version="…">` attribute and the
     /// `ExternalEwsVersion`/`InternalEwsVersion` Autodiscover SOAP user
-    /// settings. Defaults to `Exchange2019`. Configurable via
-    /// `GATEWAY_SERVER_EXCHANGE_VERSION`; must be a valid enum token.
+    /// settings. Defaults to `Exchange2016` (the highest universally-valid enum
+    /// token; there is no published `Exchange2019` member). Configurable via
+    /// `GATEWAY_SERVER_EXCHANGE_VERSION`; must be a valid enum token at or below
+    /// `Exchange2016`.
     #[serde(default = "default_server_exchange_version")]
     pub server_exchange_version: String,
 }
@@ -772,7 +777,7 @@ fn apply_environment_overrides(cfg: &mut Config) {
     }
 
     // Advertised Exchange server version stamps (Exchange Server SE
-    // `15.2.2562.45` / `Exchange2019` by default). Validated later in
+    // `15.2.2562.45` / `Exchange2016` by default). Validated later in
     // `Config::validate`, so a malformed env override fails closed at startup.
     apply_env_string(cfg, get_env_with_fallback(ENV_SERVER_VERSION, None), |c, v| {
         c.server_version = v;
@@ -922,7 +927,9 @@ mod tests {
             .server_version_info()
             .expect("default ServerVersion must parse");
         assert_eq!(info.version_string(), "15.2.2562.45");
-        assert_eq!(info.exchange_version(), "Exchange2019");
+        // Build is the SE 15.2.x line; the advertised EWS schema token is
+        // Exchange2016 (the highest valid RequestServerVersion enum value).
+        assert_eq!(info.exchange_version(), "Exchange2016");
     }
 
     #[test]

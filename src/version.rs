@@ -8,10 +8,20 @@
 // specific build via environment variables.
 //
 // Defaults match the latest stable on-premises release the gateway emulates:
-// **Exchange Server SE** build *15.2.2562.45*, advertising the `Exchange2019`
-// EWS schema (the highest valid `RequestServerVersion` enum value — there is no
-// `Exchange2019_SP1` and no `ExchangeServerSE` enum synonym; Exchange Server SE
-// is the 15.2.x product line and reuses the `Exchange2019` schema token).
+// **Exchange Server SE** build *15.2.2562.45*, advertising the `Exchange2016`
+// EWS schema token.
+//
+// Note on the schema token: although the *product* is Exchange Server SE (the
+// 15.2.x line, the same lineage as Exchange 2019), the EWS `RequestServerVersion`
+// enum (the `ExchangeVersionType` simple type in `Types.xsd`) was never extended
+// past `Exchange2016` — there is no published `Exchange2019` enum member. Real
+// 15.2.x servers reject `RequestServerVersion Version="Exchange2019"` with
+// `ErrorInvalidRequest`, and the highest universally-accepted on-premises token
+// is `Exchange2016`. The gateway therefore advertises `Exchange2016` as its
+// schema token (matching what every real Exchange 2016/2019/SE server accepts)
+// while still stamping the *build* as 15.2.2562.45 and the *product* as
+// "Exchange Server SE". An operator may override the token via
+// `GATEWAY_SERVER_EXCHANGE_VERSION` to any value at or below `Exchange2016`.
 //
 // The active `ServerVersion` is installed once at process start
 // (`version::init`) and is immutable thereafter; `version::current()` returns
@@ -36,17 +46,25 @@ pub const DEFAULT_BUILD: u32 = 2562;
 /// Minor build (revision) number of the default build.
 pub const DEFAULT_MINOR_BUILD: u16 = 45;
 /// EWS `RequestServerVersion` enum token advertised by the default build.
-pub const DEFAULT_EXCHANGE_VERSION: &str = "Exchange2019";
+///
+/// `Exchange2016` is the highest universally-valid `RequestServerVersion`
+/// (`ExchangeVersionType`) token accepted by every on-premises Exchange build the
+/// gateway emulates (Exchange 2016 / 2019 / SE, i.e. the 15.x and 15.2.x lines).
+/// `Exchange2019` is not a published enum member and is rejected with
+/// `ErrorInvalidRequest` by real 15.2.x servers, so it is deliberately not used
+/// as the default even though the stamped *build* is the SE 15.2.2562.45 line.
+pub const DEFAULT_EXCHANGE_VERSION: &str = "Exchange2016";
 
-/// Dot-delimited default version string used by the Autodiscover outlook
+/// Dot-delimited default version string used by the Autodiscover Outlook
 /// `<ServerVersion>` element ("Major.Minor.Build.Revision").
 pub const DEFAULT_VERSION_STRING: &str = "15.2.2562.45";
 
-/// The complete, ordered set of EWS schema versions advertised under the
-/// Autodiscover SOAP `EwsSupportedSchemas` user setting. Ordered oldest →
-/// newest and always terminated by `Exchange2019`, mirroring the real Exchange
-/// Server SE enumeration so strict clients (New Outlook, AutoDetect) accept
-/// the advertised schema matrix.
+/// The ordered set of valid EWS `RequestServerVersion` enum tokens, oldest →
+/// newest. This is the closed `ExchangeVersionType` set the gateway accepts and
+/// advertises; it terminates at `Exchange2016` (no `Exchange2019` member is
+/// published). `EwsSupportedSchemas` advertised in the Autodiscover SOAP
+/// response is truncated at the configured (`exchange_version`) token so a
+/// pinned older build does not advertise schemas newer than itself.
 pub const SUPPORTED_SCHEMAS: &[&str] = &[
     "Exchange2007",
     "Exchange2007_SP1",
@@ -56,7 +74,6 @@ pub const SUPPORTED_SCHEMAS: &[&str] = &[
     "Exchange2013",
     "Exchange2013_SP1",
     "Exchange2016",
-    "Exchange2019",
 ];
 
 /// All valid `RequestServerVersion` enum tokens accepted for the
@@ -108,7 +125,7 @@ impl ServerVersion {
             ));
         }
         // Canonicalise the enum token to the exact-cased schema spelling
-        // (e.g. tolerate "exchange2019" from env and emit "Exchange2019").
+        // (e.g. tolerate "exchange2016" from env and emit "Exchange2016").
         let canonical = VALID_EXCHANGE_VERSIONS
             .iter()
             .copied()
@@ -181,21 +198,31 @@ impl ServerVersion {
     pub fn minor_build(&self) -> u16 {
         self.minor_build
     }
-    /// EWS schema enum token (e.g. "Exchange2019") used in the `Version`
+    /// EWS schema enum token (e.g. "Exchange2016") used in the `Version`
     /// attribute and the `ExternalEwsVersion`/`InternalEwsVersion` settings.
     pub fn exchange_version(&self) -> &str {
         &self.exchange_version
     }
     /// Dot-delimited version string ("Major.Minor.Build.Revision"), e.g.
-    /// "15.2.2562.45" — used by the Autodiscover outlook `<ServerVersion>`.
+    /// "15.2.2562.45" — used by the Autodiscover Outlook `<ServerVersion>`.
     pub fn version_string(&self) -> String {
         format!("{}.{}.{}.{}", self.major, self.minor, self.build, self.minor_build)
     }
 
     /// The comma-separated `EwsSupportedSchemas` user-setting value advertised
     /// in the Autodiscover SOAP response.
+    ///
+    /// Truncated at the configured `exchange_version` token so a pinned older
+    /// build does not advertise schemas newer than itself (an EXPR/EXCH block
+    /// that stamps `Version="Exchange2013"` must not list `Exchange2016`). When
+    /// the configured token is the newest (`Exchange2016`) the full ordered list
+    /// is returned, preserving the default behaviour.
     pub fn supported_schemas_csv(&self) -> String {
-        SUPPORTED_SCHEMAS.join(",")
+        let cutoff = SUPPORTED_SCHEMAS
+            .iter()
+            .position(|v| v.eq_ignore_ascii_case(self.exchange_version.as_str()))
+            .unwrap_or(SUPPORTED_SCHEMAS.len().saturating_sub(1));
+        SUPPORTED_SCHEMAS[..=cutoff].join(",")
     }
 
     /// Render the EWS SOAP header `<t:ServerVersionInfo … />` self-closing
@@ -279,7 +306,9 @@ mod tests {
         assert_eq!(v.minor(), 2);
         assert_eq!(v.build(), 2562);
         assert_eq!(v.minor_build(), 45);
-        assert_eq!(v.exchange_version(), "Exchange2019");
+        // Build is the Exchange Server SE line (15.2.x); the advertised EWS
+        // schema token is Exchange2016 (see DEFAULT_EXCHANGE_VERSION docs).
+        assert_eq!(v.exchange_version(), "Exchange2016");
         assert_eq!(v.version_string(), "15.2.2562.45");
     }
 
@@ -290,21 +319,31 @@ mod tests {
 
     #[test]
     fn try_new_rejects_zero_major_or_build() {
-        assert!(ServerVersion::try_new(0, 2, 2562, 45, "Exchange2019").is_err());
-        assert!(ServerVersion::try_new(15, 2, 0, 45, "Exchange2019").is_err());
+        assert!(ServerVersion::try_new(0, 2, 2562, 45, "Exchange2016").is_err());
+        assert!(ServerVersion::try_new(15, 2, 0, 45, "Exchange2016").is_err());
     }
 
     #[test]
     fn try_new_rejects_unknown_exchange_version_token() {
+        // "ExchangeServerSE" and "Exchange2019_SP1" were never published enum
+        // members and must be rejected; an empty token is rejected too.
         assert!(ServerVersion::try_new(15, 2, 2562, 45, "ExchangeServerSE").is_err());
         assert!(ServerVersion::try_new(15, 2, 2562, 45, "Exchange2019_SP1").is_err());
         assert!(ServerVersion::try_new(15, 2, 2562, 45, "").is_err());
     }
 
     #[test]
+    fn try_new_rejects_exchange2019_token() {
+        // Exchange2019 is NOT a valid RequestServerVersion enum member: real
+        // 15.2.x servers reject it with ErrorInvalidRequest. The gateway must
+        // fail closed if an operator tries to pin it.
+        assert!(ServerVersion::try_new(15, 2, 2562, 45, "Exchange2019").is_err());
+    }
+
+    #[test]
     fn try_new_canonicalises_case_insensitive_token() {
-        let v = ServerVersion::try_new(15, 2, 2562, 45, "exchange2019").unwrap();
-        assert_eq!(v.exchange_version(), "Exchange2019");
+        let v = ServerVersion::try_new(15, 2, 2562, 45, "exchange2016").unwrap();
+        assert_eq!(v.exchange_version(), "Exchange2016");
     }
 
     #[test]
@@ -322,15 +361,17 @@ mod tests {
 
     #[test]
     fn from_strings_builds_valid_version() {
-        let v = ServerVersion::from_strings("15.2.2562.45", "Exchange2019").unwrap();
-        assert_eq!(v.exchange_version(), "Exchange2019");
+        let v = ServerVersion::from_strings("15.2.2562.45", "Exchange2016").unwrap();
+        assert_eq!(v.exchange_version(), "Exchange2016");
         assert_eq!(v.version_string(), "15.2.2562.45");
     }
 
     #[test]
     fn from_strings_propagates_errors() {
-        assert!(ServerVersion::from_strings("15.2.2562", "Exchange2019").is_err());
+        assert!(ServerVersion::from_strings("15.2.2562", "Exchange2016").is_err());
         assert!(ServerVersion::from_strings("15.2.2562.45", "Bogus").is_err());
+        // Exchange2019 is not a valid enum token and must fail closed.
+        assert!(ServerVersion::from_strings("15.2.2562.45", "Exchange2019").is_err());
     }
 
     #[test]
@@ -342,7 +383,7 @@ mod tests {
         assert!(header.contains(r#"MinorVersion="2""#), "{}", header);
         assert!(header.contains(r#"MajorBuildNumber="2562""#), "{}", header);
         assert!(header.contains(r#"MinorBuildNumber="45""#), "{}", header);
-        assert!(header.contains(r#"Version="Exchange2019""#), "{}", header);
+        assert!(header.contains(r#"Version="Exchange2016""#), "{}", header);
         assert!(header.contains(&format!(r#"xmlns:t="{}""#, ns)), "{}", header);
         // No line-continuation artifact leaks into emitted XML.
         assert!(!header.contains('\\'), "{}", header);
@@ -353,7 +394,7 @@ mod tests {
     fn render_autodiscover_soap_header_has_no_xmlns() {
         let v = ServerVersion::default();
         let header = v.render_autodiscover_soap_header();
-        assert!(header.contains(r#"Version="Exchange2019""#));
+        assert!(header.contains(r#"Version="Exchange2016""#));
         assert!(header.contains(r#"MajorBuildNumber="2562""#));
         assert!(!header.contains("xmlns:t"), "{}", header);
         assert!(!header.contains('\\'), "{}", header);
@@ -365,11 +406,34 @@ mod tests {
     }
 
     #[test]
-    fn supported_schemas_csv_is_ordered_and_terminates_with_2019() {
+    fn supported_schemas_csv_is_ordered_and_terminates_with_2016() {
         let csv = ServerVersion::default().supported_schemas_csv();
         let entries: Vec<&str> = csv.split(',').collect();
         assert_eq!(entries, SUPPORTED_SCHEMAS);
-        assert_eq!(entries.last().copied(), Some("Exchange2019"));
+        assert_eq!(entries.last().copied(), Some("Exchange2016"));
+    }
+
+    #[test]
+    fn supported_schemas_csv_truncates_at_pinned_token() {
+        // A pinned older build must not advertise schemas newer than itself.
+        let v = ServerVersion::try_new(15, 0, 847, 32, "Exchange2013_SP1").unwrap();
+        let csv = v.supported_schemas_csv();
+        let entries: Vec<&str> = csv.split(',').collect();
+        assert_eq!(
+            entries,
+            &[
+                "Exchange2007",
+                "Exchange2007_SP1",
+                "Exchange2010",
+                "Exchange2010_SP1",
+                "Exchange2010_SP2",
+                "Exchange2013",
+                "Exchange2013_SP1",
+            ]
+        );
+        // The pinned-2016 default still returns the full list.
+        let full = ServerVersion::default().supported_schemas_csv();
+        assert!(full.ends_with("Exchange2016"));
     }
 
     #[test]
@@ -378,6 +442,6 @@ mod tests {
         // of test execution order because the default is deterministic.
         let v = current();
         assert_eq!(v.version_string(), "15.2.2562.45");
-        assert_eq!(v.exchange_version(), "Exchange2019");
+        assert_eq!(v.exchange_version(), "Exchange2016");
     }
 }

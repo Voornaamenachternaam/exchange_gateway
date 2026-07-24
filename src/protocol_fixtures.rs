@@ -6,8 +6,8 @@ use crate::version;
 /// XML prologue + SOAP envelope opening carrying a `<t:ServerVersionInfo>`
 /// header rendered from the single source of truth (`version::current()`), so
 /// every EWS SOAP helper advertises the configured Exchange server version
-/// (default Exchange Server SE `15.2.2562.45` / `Exchange2019`) rather than a
-/// hard-coded stamp.
+/// (default Exchange Server SE build `15.2.2562.45` with the `Exchange2016`
+/// schema token) rather than a hard-coded stamp.
 pub fn ews_soap_envelope_header() -> String {
     format!(
         r#"<?xml version="1.0" encoding="utf-8"?>
@@ -182,25 +182,26 @@ mod tests {
 
     #[test]
     fn test_ews_soap_response_advertises_exchange_server_se_version() {
-        // The EWS SOAP header MUST advertise Exchange Server SE
-        // (`15.2.2562.45` / `Exchange2019`) — the single source of truth in
-        // `version::current()` — not a leftover hard-coded `15.20.0.0` /
-        // `Exchange2016` stamp.
+        // The EWS SOAP header MUST advertise the Exchange Server SE *build*
+        // (`15.2.2562.45`) from the single source of truth in `version::current()`,
+        // with the `Exchange2016` schema token (the highest universally-valid
+        // `RequestServerVersion` enum value — `Exchange2019` is not a published
+        // member) — not a leftover hard-coded `15.20.0.0` stamp.
         let resp = ews_soap_response("<x/>");
         assert!(
-            resp.contains(r#"MajorVersion="15" MinorVersion="2" MajorBuildNumber="2562" MinorBuildNumber="45" Version="Exchange2019""#),
-            "EWS SOAP header should advertise Exchange Server SE 15.2.2562.45 / Exchange2019, got: {}",
+            resp.contains(r#"MajorVersion="15" MinorVersion="2" MajorBuildNumber="2562" MinorBuildNumber="45" Version="Exchange2016""#),
+            "EWS SOAP header should advertise Exchange Server SE 15.2.2562.45 / Exchange2016, got: {}",
             resp
         );
-        assert!(!resp.contains("Exchange2016"));
+        // The old hard-coded legacy stamp must never appear.
         assert!(!resp.contains("MinorVersion=\"20\""));
     }
 
     #[test]
     fn test_ews_soap_envelope_header_advertises_se_version() {
         let header = ews_soap_envelope_header();
-        assert!(header.contains(r#"Version="Exchange2019""#));
-        assert!(header.contains(r#"MajorBuildNumber="2562""#));
+        assert!(header.contains(r#"Version="Exchange2016""#), "{}", header);
+        assert!(header.contains(r#"MajorBuildNumber="2562""#), "{}", header);
     }
 
     #[test]

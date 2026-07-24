@@ -531,6 +531,7 @@ fn handle_outlook_xml(
 <Protocol>
 <Type>EXPR</Type>
 <Server>{host}</Server>
+<ServerVersion>{server_version}</ServerVersion>
 <SSL>on</SSL>
 <SPA>off</SPA>
 <CertPrincipalName>None</CertPrincipalName>
@@ -751,6 +752,31 @@ mod tests {
         // By default (Basic) the EXCH/EXPR blocks advertise Basic auth only.
         assert_eq!(body.matches("<AuthPackage>Basic</AuthPackage>").count(), 2);
         assert!(!body.contains("OAuth2"));
+    }
+
+    #[test]
+    fn test_outlook_response_advertises_server_version_in_both_blocks() {
+        // MS-OXDSCLI puts `<ServerVersion>` in BOTH the EXCH and EXPR Protocol
+        // blocks so an external (EXPR) client receives the same version stamp as
+        // an internal (EXCH) one; omitting it from EXPR left external Outlook
+        // with inconsistent/incomplete version metadata.
+        let (status, _hdrs, body) = handle_outlook_xml(
+            "mail.example.com",
+            "user@example.com",
+            "mail.example.com",
+            true,
+            &AuthAdvert::Basic,
+        );
+        assert_eq!(status, StatusCode::OK);
+        let sv = format!(
+            "<ServerVersion>{}</ServerVersion>",
+            crate::version::current().render_server_version_element()
+        );
+        assert_eq!(
+            body.matches(&sv).count(),
+            2,
+            "<ServerVersion> must appear in both EXCH and EXPR Protocol blocks"
+        );
     }
 
     #[test]
