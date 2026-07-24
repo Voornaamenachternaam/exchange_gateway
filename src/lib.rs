@@ -38,6 +38,7 @@ pub mod timezone;
 pub mod traits;
 pub mod util;
 pub mod vcard;
+pub mod version;
 
 pub mod validation;
 pub mod wbxml;

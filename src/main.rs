@@ -546,6 +546,18 @@ async fn main() -> anyhow::Result<()> {
         }
     };
 
+    // Install the process-wide advertised Exchange server version (already
+    // validated in `Config::load`). All EWS/Autodiscover version stamps render
+    // from this single source of truth (`version::current()`).
+    let server_version = config.server_version_info()?;
+    exchange_gateway::version::init(server_version.clone());
+    tracing::info!(
+        "Advertising Exchange server version {} ({}) — product: {}",
+        server_version.version_string(),
+        server_version.exchange_version(),
+        exchange_gateway::version::PRODUCT_NAME,
+    );
+
     tracing::info!(
         "Exchange Gateway starting. bind={} gateway_host={}",
         config.bind,

@@ -7,7 +7,7 @@ fn test_ews_getfolder_calendar_response() {
     let response = r#"<?xml version="1.0" encoding="utf-8"?>
 <s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
     <s:Header>
-        <t:ServerVersionInfo MajorVersion="15" MinorVersion="20" MajorBuildNumber="0" MinorBuildNumber="0" Version="Exchange2016" xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types" />
+        <t:ServerVersionInfo MajorVersion="15" MinorVersion="2" MajorBuildNumber="2562" MinorBuildNumber="45" Version="Exchange2019" xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types" />
     </s:Header>
     <s:Body>
         <m:GetFolderResponse xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages" xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types">
@@ -36,7 +36,7 @@ fn test_ews_syncfolderitems_response() {
     let response = r#"<?xml version="1.0" encoding="utf-8"?>
 <s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
     <s:Header>
-        <t:ServerVersionInfo MajorVersion="15" MinorVersion="20" MajorBuildNumber="0" MinorBuildNumber="0" Version="Exchange2016" xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types" />
+        <t:ServerVersionInfo MajorVersion="15" MinorVersion="2" MajorBuildNumber="2562" MinorBuildNumber="45" Version="Exchange2019" xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types" />
     </s:Header>
     <s:Body>
         <m:SyncFolderItemsResponse xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages" xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types">
@@ -69,7 +69,7 @@ fn test_ews_createitem_calendar_response() {
     let response = r#"<?xml version="1.0" encoding="utf-8"?>
 <s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
     <s:Header>
-        <t:ServerVersionInfo MajorVersion="15" MinorVersion="20" MajorBuildNumber="0" MinorBuildNumber="0" Version="Exchange2016" xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types" />
+        <t:ServerVersionInfo MajorVersion="15" MinorVersion="2" MajorBuildNumber="2562" MinorBuildNumber="45" Version="Exchange2019" xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types" />
     </s:Header>
     <s:Body>
         <m:CreateItemResponse xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages" xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types">
@@ -212,7 +212,7 @@ fn test_ews_error_response() {
     let response = r#"<?xml version="1.0" encoding="utf-8"?>
 <s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
     <s:Header>
-        <t:ServerVersionInfo MajorVersion="15" MinorVersion="20" MajorBuildNumber="0" MinorBuildNumber="0" Version="Exchange2016" xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types" />
+        <t:ServerVersionInfo MajorVersion="15" MinorVersion="2" MajorBuildNumber="2562" MinorBuildNumber="45" Version="Exchange2019" xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types" />
     </s:Header>
     <s:Body>
         <m:GetItemResponse xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages" xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types">
