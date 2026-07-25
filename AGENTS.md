@@ -149,6 +149,27 @@ gets wiped between shell sessions. To avoid re-installing Rust every command:
   literal at each call site (intentionally no positional constructor, so
   clippy's argument-count threshold is not re-tripped; no `#[allow]`
   suppression).
+  - **Review hardening (PR #1821)** — `main::autodiscover_xml` gates displayName
+    resolution three ways: (1) **schema-gated** — `autodiscover::is_mobilesync_schema
+    (body)` pre-checks so Outlook-desktop requests (which never read
+    `mobilesync_display_name`) skip the work entirely, and `derive_display_name`
+    (the no-directory fallback, pure string work) is never offloaded to
+    `spawn_blocking`; only the directory `resolve_email_blocking` path uses a
+    blocking thread. (2) **security-gated** — the directory is consulted ONLY when
+    the request carries Basic creds that authenticate against Stalwart via
+    `AuthVerifier::verify` AND the authenticated principal's canonical email
+    (`util::canonicalize_username(user, mail_domain)`) matches the requested
+    email; anonymous or mismatched callers get only the disclosure-free
+    `derive_display_name` fallback (built solely from the client-supplied email),
+    closing a directory-name enumeration / PII-disclosure vector. (3)
+    `spawn_blocking` `JoinError`s are logged (`tracing::warn!`, redacted email)
+    rather than silently dropped (`.await.ok()` removed) and fall back to
+    `derive_display_name`. `derive_display_name` now takes the **leading run** of
+    name chars (stops at the first disallowed char) and caps the **rendered
+    output** to 512 chars after case expansion (not the input bytes), so the
+    documented bound holds even for `ß`→`SS`-style Unicode expansion.
+    `resolve_user_display_name` drops the intermediate `trim().to_string()`
+    (one allocation instead of two).
 - **Server version advertisement — single source of truth** — closes audit
   gap §4 ("`ServerVersion` is hard-coded to `15.20.0.0` and `Exchange2016`").
   `src/version.rs` owns `ServerVersion`, the ONE place the Exchange server

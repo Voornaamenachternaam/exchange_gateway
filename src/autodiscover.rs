@@ -176,6 +176,12 @@ fn content_type_soap() -> Vec<(&'static str, &'static str)> {
 /// - Namespaced tag: `<a:AcceptableResponseSchema>...</a:AcceptableResponseSchema>`
 /// - Tag with attributes: `<AcceptableResponseSchema xmlns="...">...</AcceptableResponseSchema>`
 /// - Mixed: `<a:AcceptableResponseSchema xmlns:a="...">...</a:AcceptableResponseSchema>`
+///
+/// Pure (no I/O). Exposed to the crate only via the `pub`/`bool`
+/// `is_mobilesync_schema` adapter so the async `main` dispatcher can pre-check
+/// the schema before deciding to resolve the mobilesync display name; the
+/// returned enum is not part of the public API and is not leaked across crate
+/// boundaries.
 fn detect_response_schema(body: &str) -> ResponseSchema {
     // Scan for any opening tag whose local name is "AcceptableResponseSchema",
     // regardless of namespace prefix or extra attributes.
@@ -318,39 +324,51 @@ pub fn extract_email_from_body_xml(body: &str) -> Option<String> {
 /// Mail"), which is *not* the user's name and would be presented to the
 /// Android account owner as their identity. Instead we title-case the
 /// local-part of the email address the client itself supplied in the
-/// request body, capped to 512 characters (the spec length bound for the
-/// sibling `UserDisplayName` Settings element; `DisplayName` is an
-/// unbounded `xs:string` but 512 is a safe sane ceiling). This never
-/// discloses anything the client did not already send, and degrades
-/// gracefully to an empty (omitted) element when no usable token remains.
+/// request body, capped to 512 characters of the **rendered output** (the
+/// spec length bound for the sibling `UserDisplayName` Settings element;
+/// `DisplayName` itself is an unbounded `xs:string` but 512 is a safe sane
+/// ceiling). Because `char::to_uppercase()`/`to_lowercase()` can expand a
+/// single character into several output characters (e.g. `ß` → `"SS"`),
+/// the cap is applied to the final cased string, not the input bytes; this
+/// makes the documented 512-char output guarantee actually hold.
+///
+/// Only the **leading run** of "name" characters is consumed — once a
+/// character that is not a letter, digit, or one of the personal-handle
+/// separators `.`, `_`, `-`, `+` is encountered, parsing stops. This keeps
+/// `"john.doe"` → `"John Doe"` while `"john!doe"` → `"John"` (truncate at the
+/// mail-system special) rather than silently fusing it into `"Johndoe"`.
+/// This never discloses anything the client did not already send, and
+/// degrades gracefully to an empty (omitted) element when no usable token
+/// remains.
 pub fn derive_display_name(email: &str) -> String {
     let local = email.split('@').next().unwrap_or("");
-    // Keep only the leading run of "name" characters: letters, digits and
-    // the common personal-handle separators '.', '_', '-', '+'. Splitting on
-    // those lets "john.doe" / "john_doe" / "user+tag" render as "John Doe" /
-    // "User Tag". Other punctuation (mail-system specials) is dropped.
-    let cleaned: String = local
-        .chars()
-        .take(512)
-        .filter(|c| c.is_alphanumeric() || matches!(c, '.' | '_' | '-' | '+'))
-        .collect();
-    if cleaned.is_empty() {
-        return String::new();
-    }
-    let mut out = String::with_capacity(cleaned.len());
+    // Take the leading run of "name" characters: letters, digits and the
+    // common personal-handle separators '.', '_', '-', '+'. Splitting on the
+    // separators lets "john.doe" / "john_doe" / "user+tag" render as
+    // "John Doe" / "John Doe" / "User Tag"; any other punctuation (mail-system
+    // specials) ends the run so we never fuse two unrelated tokens.
+    let mut out = String::new();
     let mut capitalize = true;
-    for ch in cleaned.chars() {
+    for ch in local.chars() {
         if matches!(ch, '.' | '_' | '-' | '+') {
             out.push(' ');
             capitalize = true;
-        } else if capitalize {
-            out.extend(ch.to_uppercase());
-            capitalize = false;
+        } else if ch.is_alphanumeric() {
+            if capitalize {
+                out.extend(ch.to_uppercase());
+                capitalize = false;
+            } else {
+                out.extend(ch.to_lowercase());
+            }
         } else {
-            out.extend(ch.to_lowercase());
+            // First disallowed character ends the leading run.
+            break;
         }
     }
-    out.trim().to_string()
+    // Cap the rendered OUTPUT after casing/separator expansion, and trim
+    // leading/trailing separator whitespace so "+user" → "User" not " User".
+    let trimmed = out.trim();
+    trimmed.chars().take(512).collect()
 }
 
 /// Resolve the account's display name for the mobilesync `<User>` block.
@@ -358,9 +376,21 @@ pub fn derive_display_name(email: &str) -> String {
 /// Returns the directory-resolved display name (when an actual directory is
 /// configured and the account is found with a non-empty name), otherwise the
 /// safe `derive_display_name` fallback derived from the request email. The
-/// result is always trimmed and length-bounded; an empty `String` is only
-/// produced when the email itself yields no usable token, in which case the
-/// caller omits the optional `<DisplayName>` element (spec: 0…1).
+/// result is always trimmed and length-bounded to 512 output characters; an
+/// empty `String` is only produced when the email itself yields no usable
+/// token, in which case the caller omits the optional `<DisplayName>` element
+/// (spec: 0…1).
+///
+/// # Security note — caller responsibility
+/// This performs a directory lookup for `email` and returns the matched
+/// account's real display name. To avoid exposing directory names (PII) to
+/// unauthenticated callers or to callers who supply *another* user's email
+/// (directory-name enumeration), the async caller in `main` MUST only invoke
+/// this with `Some(directory)` when the request is authenticated and the
+/// authenticated principal's canonical email matches `email`. Anonymous or
+/// mismatched callers pass `None`, which yields the disclosure-free
+/// `derive_display_name` fallback (built solely from the client-supplied
+/// email itself).
 ///
 /// This is a thin adapter over the blocking `DirectoryLookup` trait so the
 /// async handler can run it on `spawn_blocking` and pass a plain `String`
@@ -374,12 +404,27 @@ pub fn resolve_user_display_name(
         && dir.is_available()
         && let Ok(Some(contact)) = dir.resolve_email_blocking(email)
     {
-        let name = contact.display_name.trim().to_string();
+        // Collect directly from the trimmed &str (one allocation) instead of
+        // trim().to_string() then re-iterating its chars (two allocations).
+        // Directory names are not re-cased here, so char-count == output count
+        // and the 512 cap holds on the produced String.
+        let name: String = contact.display_name.trim().chars().take(512).collect();
         if !name.is_empty() {
-            return name.chars().take(512).collect();
+            return name;
         }
     }
     derive_display_name(email)
+}
+
+/// Cheap pre-check used by the async `autodiscover_xml` dispatcher to decide
+/// whether the mobilesync `<User>/<DisplayName>` needs resolving at all.
+/// Reuses the robust `detect_response_schema` parser so the gating decision is
+/// always consistent with the actual response branch taken by
+/// `handle_autodiscover_xml`. Outlook-schema requests do not use
+/// `mobilesync_display_name`, so the caller skips the display-name work for
+/// them entirely.
+pub fn is_mobilesync_schema(body: &str) -> bool {
+    matches!(detect_response_schema(body), ResponseSchema::MobileSync)
 }
 
 fn extract_email_from_v1_xml(body: &str) -> Option<String> {
@@ -929,10 +974,42 @@ mod tests {
         assert_eq!(derive_display_name("MARY@example.com"), "Mary");
         assert_eq!(derive_display_name("a.b.c@example.com"), "A B C");
         assert_eq!(derive_display_name("user+tag@example.com"), "User Tag");
+        // Leading run: stop at the first disallowed character so a mail-system
+        // special never fuses two tokens — "john!doe" → "John", not "Johndoe".
+        assert_eq!(derive_display_name("john!doe@example.com"), "John");
+        // Leading separator is trimmed away: "+user" → "User".
+        assert_eq!(derive_display_name("+user@example.com"), "User");
         // No usable local-part token → empty (element omitted by caller).
         assert_eq!(derive_display_name("@example.com"), "");
         assert_eq!(derive_display_name(""), "");
         assert_eq!(derive_display_name("---@@@"), "");
+        assert_eq!(derive_display_name("!nope@example.com"), "");
+    }
+
+    #[test]
+    fn test_derive_display_name_output_cap_holds_after_case_expansion() {
+        // The 512-char cap is on the RENDERED output. Lowercasing a long run of
+        // ASCII is 1:1 (no expansion), so a 600-char local part is truncated to
+        // 512 in the output, not silently allowed to exceed it.
+        let local: String = "a".repeat(600);
+        let name = derive_display_name(&format!("{local}@example.com"));
+        assert_eq!(name.chars().count(), 512);
+    }
+
+    #[test]
+    fn test_is_mobilesync_schema_matches_dispatcher() {
+        let ms = r#"<Autodiscover><Request>
+<EMailAddress>user@example.com</EMailAddress>
+<AcceptableResponseSchema>http://schemas.microsoft.com/exchange/autodiscover/mobilesync/responseschema/2006</AcceptableResponseSchema>
+</Request></Autodiscover>"#;
+        let outlook = r#"<Autodiscover><Request>
+<EMailAddress>user@example.com</EMailAddress>
+<AcceptableResponseSchema>http://schemas.microsoft.com/exchange/autodiscover/outlook/responseschema/2006a</AcceptableResponseSchema>
+</Request></Autodiscover>"#;
+        assert!(is_mobilesync_schema(ms));
+        assert!(!is_mobilesync_schema(outlook));
+        // No schema hint → defaults to Outlook (matches detect_response_schema).
+        assert!(!is_mobilesync_schema(""));
     }
 
     #[test]

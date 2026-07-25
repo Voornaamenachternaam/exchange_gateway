@@ -93,20 +93,72 @@ async fn autodiscover_xml(
     // service is configured we resolve the account's real name; otherwise we
     // fall back to a name derived from the request email (never the gateway
     // product brand, which would be presented as the account owner's
-    // identity). `DirectoryLookup::resolve_email_blocking` is a blocking call
-    // and must run off the async runtime (per the trait contract), so it is
-    // dispatched on `spawn_blocking`. The resolved `String` is passed into the
-    // pure render path so the mobilesync response carries the real user name.
-    // The directory is `Clone`-able via the `Arc`, so we clone the `Option`
-    // itself (None when unconfigured) into the blocking task.
-    let display_name = {
-        let email_for_resolve = email.clone();
-        let dir = state.directory.clone();
-        tokio::task::spawn_blocking(move || {
-            autodiscover::resolve_user_display_name(dir.as_ref(), &email_for_resolve)
-        })
-        .await
-        .ok()
+    // identity). Three gating rules avoid wasted/unsafe work:
+    //
+    //  1. Schema: `mobilesync_display_name` is consumed ONLY by the mobilesync
+    //     response branch; Outlook-desktop requests never read it. Detect the
+    //     schema first and skip the whole resolution for Outlook requests.
+    //  2. Blocking work: `derive_display_name` (the no-directory fallback) is
+    //     pure string manipulation — never offload it to `spawn_blocking`.
+    //     Only the directory `resolve_email_blocking` path needs a blocking
+    //     thread (the trait contract is blocking).
+    //  3. Security: a directory lookup for an arbitrary client-supplied email
+    //     discloses that account's real display name (PII) and enables
+    //     directory-name enumeration by anonymous callers or by callers who
+    //     supply *another* user's email. So the directory is only consulted
+    //     when the request carries Basic credentials that authenticate against
+    //     Stalwart AND the authenticated principal's canonical email matches
+    //     the requested email. Anonymous or mismatched callers get only the
+    //     disclosure-free `derive_display_name` fallback (built solely from
+    //     the email they themselves supplied).
+    let display_name = if !autodiscover::is_mobilesync_schema(&body) {
+        // Outlook-desktop path does not use mobilesync_display_name at all.
+        String::new()
+    } else if state.directory.is_none() {
+        // No directory configured → pure derivation, no blocking thread.
+        autodiscover::derive_display_name(&email)
+    } else {
+        // Directory present → only let it disclose a name to the account's
+        // own authenticated owner. Verify Basic creds against Stalwart and
+        // require the canonical principal email to match the requested email.
+        let dir_eligible = match extract_basic_credentials(&headers) {
+            Some((user, pass)) => {
+                let auth_user = util::canonicalize_username(&user, &state.cfg.mail_domain);
+                let request_canonical = util::canonicalize_username(&email, &state.cfg.mail_domain);
+                let creds_valid = state.auth_verifier.verify(&user, &pass).await;
+                creds_valid && !auth_user.is_empty() && auth_user == request_canonical
+            }
+            None => false,
+        };
+        if dir_eligible {
+            let email_for_resolve = email.clone();
+            let dir = state.directory.clone();
+            let handle = tokio::task::spawn_blocking(move || {
+                autodiscover::resolve_user_display_name(dir.as_ref(), &email_for_resolve)
+            });
+            match handle.await {
+                Ok(name) => name,
+                Err(err) => {
+                    // JoinError (panic / cancellation / pool exhaustion) —
+                    // never silently drop it. Log with the redacted email so
+                    // runtime instability is diagnosable, then fall back to
+                    // the disclosure-free derive so the response still carries
+                    // a name instead of being silently emptied.
+                    warn!(
+                        target: "http",
+                        email = %util::redact_email(&email),
+                        error = %err,
+                        "spawn_blocking display-name resolution failed; \
+                         falling back to derived name"
+                    );
+                    autodiscover::derive_display_name(&email)
+                }
+            }
+        } else {
+            // Anonymous / unauthenticated / principal mismatch → do NOT
+            // consult the directory; derive solely from the supplied email.
+            autodiscover::derive_display_name(&email)
+        }
     };
 
     let auth_advert = autodiscover_auth_advert(&state.cfg);
@@ -118,7 +170,7 @@ async fn autodiscover_xml(
         mail_host: &state.cfg.mail_host,
         include_imap_smtp: state.smtp_client.is_some(),
         auth_advert: &auth_advert,
-        mobilesync_display_name: display_name.as_deref().unwrap_or(""),
+        mobilesync_display_name: &display_name,
     };
     let (status, hdrs, body_out) = autodiscover::handle_autodiscover_xml(&req);
 
@@ -502,6 +554,29 @@ fn strip_auth_scheme_basic(raw: &str) -> Option<&str> {
     // Skip the single separating SP/HT; treat the rest as the credential.
     let rest = rest.strip_prefix(' ').or_else(|| rest.strip_prefix('\t'))?;
     Some(rest)
+}
+
+/// Decode an `Authorization: Basic <b64>` header into its `(username, password)`
+/// pair. Returns `None` for absent, malformed, non-Basic, invalid base64/UTF-8,
+/// or a missing password separator. Per RFC 7235 the auth-scheme token is
+/// case-insensitive (match the `Basic ` prefix case-insensitively, mirroring
+/// `extract_basic_password`). The username is taken verbatim up to the first
+/// `:` (RFC 7617 credentials are `user:pass`); an empty username still decodes,
+/// since callers verify it themselves.
+fn extract_basic_credentials(headers: &axum::http::HeaderMap) -> Option<(String, String)> {
+    use base64::Engine;
+    let raw = headers.get(header::AUTHORIZATION)?.to_str().ok()?;
+    let rest = strip_auth_scheme_basic(raw)?;
+    let decoded = base64::engine::general_purpose::STANDARD
+        .decode(rest)
+        .ok()?;
+    let plain = String::from_utf8(decoded).ok()?;
+    let (user, pass) = plain.split_once(':')?;
+    if pass.is_empty() {
+        None
+    } else {
+        Some((user.to_string(), pass.to_string()))
+    }
 }
 
 /// Reject RPC-family/endpoint mismatches (MS-OXCMAPIHTTP §2.2.5): mailbox
