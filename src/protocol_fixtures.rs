@@ -155,16 +155,24 @@ pub fn eas_provision_response(policy_key: &str, status: &str) -> String {
 }
 
 pub fn autodiscover_response(host: &str, email: &str) -> String {
-    crate::autodiscover::handle_autodiscover_xml(
+    // `email.rsplit('@')` always yields at least one element (the whole string
+    // when there is no '@'), so `.next()` is always `Some` — the previous
+    // `unwrap_or(host)` fallback was unreachable dead code. An email with no
+    // '@' produces "mail.<email>" here, which is only ever exercised by the
+    // protocol-fixture test harness.
+    let mail_host = format!("mail.{}", email.rsplit('@').next().unwrap());
+    let display_name = crate::autodiscover::derive_display_name(email);
+    let req = crate::autodiscover::AutodiscoverXmlRequest {
         host,
-        "",
+        body: "",
         email,
-        None,
-        &format!("mail.{}", email.rsplit('@').next().unwrap_or(host)),
-        true,
-        &crate::autodiscover::AuthAdvert::Basic,
-    )
-    .2
+        accept_language: None,
+        mail_host: &mail_host,
+        include_imap_smtp: true,
+        auth_advert: &crate::autodiscover::AuthAdvert::Basic,
+        mobilesync_display_name: &display_name,
+    };
+    crate::autodiscover::handle_autodiscover_xml(&req).2
 }
 
 #[cfg(test)]

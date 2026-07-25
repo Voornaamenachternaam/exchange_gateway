@@ -176,6 +176,12 @@ fn content_type_soap() -> Vec<(&'static str, &'static str)> {
 /// - Namespaced tag: `<a:AcceptableResponseSchema>...</a:AcceptableResponseSchema>`
 /// - Tag with attributes: `<AcceptableResponseSchema xmlns="...">...</AcceptableResponseSchema>`
 /// - Mixed: `<a:AcceptableResponseSchema xmlns:a="...">...</a:AcceptableResponseSchema>`
+///
+/// Pure (no I/O). Exposed to the crate only via the `pub`/`bool`
+/// `is_mobilesync_schema` adapter so the async `main` dispatcher can pre-check
+/// the schema before deciding to resolve the mobilesync display name; the
+/// returned enum is not part of the public API and is not leaked across crate
+/// boundaries.
 fn detect_response_schema(body: &str) -> ResponseSchema {
     // Scan for any opening tag whose local name is "AcceptableResponseSchema",
     // regardless of namespace prefix or extra attributes.
@@ -309,6 +315,118 @@ pub fn extract_email_from_body_xml(body: &str) -> Option<String> {
     extract_email_from_v1_xml(body)
 }
 
+/// Derive a non-misleading default `<DisplayName>` for the mobilesync `User`
+/// block when the directory service cannot supply the account's real display
+/// name (MS-ASCMD §2.2.3.49.1 — "the user's display name in the directory
+/// service").
+///
+/// The previous behaviour hard-coded the gateway product brand ("Stalwart
+/// Mail"), which is *not* the user's name and would be presented to the
+/// Android account owner as their identity. Instead we title-case the
+/// local-part of the email address the client itself supplied in the
+/// request body, capped to 512 characters of the **rendered output** (the
+/// spec length bound for the sibling `UserDisplayName` Settings element;
+/// `DisplayName` itself is an unbounded `xs:string` but 512 is a safe sane
+/// ceiling). Because `char::to_uppercase()`/`to_lowercase()` can expand a
+/// single character into several output characters (e.g. `ß` → `"SS"`),
+/// the cap is applied to the final cased string, not the input bytes; this
+/// makes the documented 512-char output guarantee actually hold.
+///
+/// Only the **leading run** of "name" characters is consumed — once a
+/// character that is not a letter, digit, or one of the personal-handle
+/// separators `.`, `_`, `-`, `+` is encountered, parsing stops. This keeps
+/// `"john.doe"` → `"John Doe"` while `"john!doe"` → `"John"` (truncate at the
+/// mail-system special) rather than silently fusing it into `"Johndoe"`.
+/// This never discloses anything the client did not already send, and
+/// degrades gracefully to an empty (omitted) element when no usable token
+/// remains.
+pub fn derive_display_name(email: &str) -> String {
+    let local = email.split('@').next().unwrap_or("");
+    // Take the leading run of "name" characters: letters, digits and the
+    // common personal-handle separators '.', '_', '-', '+'. Splitting on the
+    // separators lets "john.doe" / "john_doe" / "user+tag" render as
+    // "John Doe" / "John Doe" / "User Tag"; any other punctuation (mail-system
+    // specials) ends the run so we never fuse two unrelated tokens.
+    let mut out = String::new();
+    let mut capitalize = true;
+    for ch in local.chars() {
+        if matches!(ch, '.' | '_' | '-' | '+') {
+            out.push(' ');
+            capitalize = true;
+        } else if ch.is_alphanumeric() {
+            if capitalize {
+                out.extend(ch.to_uppercase());
+                capitalize = false;
+            } else {
+                out.extend(ch.to_lowercase());
+            }
+        } else {
+            // First disallowed character ends the leading run.
+            break;
+        }
+    }
+    // Cap the rendered OUTPUT after casing/separator expansion, and trim
+    // leading/trailing separator whitespace so "+user" → "User" not " User".
+    let trimmed = out.trim();
+    trimmed.chars().take(512).collect()
+}
+
+/// Resolve the account's display name for the mobilesync `<User>` block.
+///
+/// Returns the directory-resolved display name (when an actual directory is
+/// configured and the account is found with a non-empty name), otherwise the
+/// safe `derive_display_name` fallback derived from the request email. The
+/// result is always trimmed and length-bounded to 512 output characters; an
+/// empty `String` is only produced when the email itself yields no usable
+/// token, in which case the caller omits the optional `<DisplayName>` element
+/// (spec: 0…1).
+///
+/// # Security note — caller responsibility
+/// This performs a directory lookup for `email` and returns the matched
+/// account's real display name. To avoid exposing directory names (PII) to
+/// unauthenticated callers or to callers who supply *another* user's email
+/// (directory-name enumeration), the async caller in `main` MUST only invoke
+/// this with `Some(directory)` when the request is authenticated and the
+/// authenticated principal's canonical email matches `email`. Anonymous or
+/// mismatched callers pass `None`, which yields the disclosure-free
+/// `derive_display_name` fallback (built solely from the client-supplied
+/// email itself).
+///
+/// This is a thin adapter over the blocking `DirectoryLookup` trait so the
+/// async handler can run it on `spawn_blocking` and pass a plain `String`
+/// down into the pure render path — keeping `handle_mobilesync_xml` free
+/// of any I/O for testability.
+pub fn resolve_user_display_name(
+    directory: Option<&std::sync::Arc<dyn crate::directory::DirectoryLookup>>,
+    email: &str,
+) -> String {
+    if let Some(dir) = directory
+        && dir.is_available()
+        && let Ok(Some(contact)) = dir.resolve_email_blocking(email)
+    {
+        // Collect directly from the trimmed &str (one allocation) instead of
+        // trim().to_string() then re-iterating its chars (two allocations).
+        // Directory names are not re-cased here, so char-count == output count
+        // and the 512 cap holds on the produced String.
+        let name: String = contact.display_name.trim().chars().take(512).collect();
+        if !name.is_empty() {
+            return name;
+        }
+    }
+    derive_display_name(email)
+}
+
+/// Cheap pre-check used by the async `autodiscover_xml` dispatcher to decide
+/// whether the mobilesync `<User>/<DisplayName>` needs resolving at all.
+/// Reuses the robust `detect_response_schema` parser so the gating decision is
+/// always consistent with the actual response branch taken by
+/// `handle_autodiscover_xml`. Outlook-schema requests do not use
+/// `mobilesync_display_name`, so the caller skips the display-name work for
+/// them entirely.
+pub fn is_mobilesync_schema(body: &str) -> bool {
+    matches!(detect_response_schema(body), ResponseSchema::MobileSync)
+}
+
 fn extract_email_from_v1_xml(body: &str) -> Option<String> {
     let start = body
         .find("<EMailAddress>")
@@ -397,6 +515,43 @@ pub fn handle_autodiscover_json(
     (StatusCode::OK, content_type_json(), body)
 }
 
+/// Bundled inputs to `handle_autodiscover_xml`.
+///
+/// Autodiscover dispatch needs the request host + body + resolved email, the
+/// Accept-Language header (for the mobilesync `<Culture>`), the mail host and
+/// IMAP/SMTP availability plus the auth advertisement (for the Outlook EXCH/
+/// EXPR blocks), and the pre-resolved mobilesync `<DisplayName>`. Grouping
+/// these into a struct keeps the entry point under clippy's argument-count
+/// threshold without resorting to suppression, and gives each caller a single
+/// self-documenting value rather than a long positional list. Builders
+/// construct this with a struct literal (`AutodiscoverXmlRequest { host, .. }`)
+/// so every field is named at the call site — there is intentionally no
+/// positional constructor, which would itself re-trip clippy's threshold.
+#[derive(Clone, Debug)]
+pub struct AutodiscoverXmlRequest<'a> {
+    /// Gateway host advertised as the server for every protocol block.
+    pub host: &'a str,
+    /// Raw Autodiscover V1 XML POST body (used for schema detection + the
+    /// request email fallback).
+    pub body: &'a str,
+    /// Email address parsed from the query string (GET) or the body (POST).
+    pub email: &'a str,
+    /// `Accept-Language` request header value, or `None` for the default
+    /// culture "en:us".
+    pub accept_language: Option<&'a str>,
+    /// Mail host advertised inside Outlook desktop blocks.
+    pub mail_host: &'a str,
+    /// Whether IMAP/SMTP endpoints should be advertised (affects the Outlook
+    /// `<Protocol>` blocks rendered by `handle_outlook_xml`).
+    pub include_imap_smtp: bool,
+    /// EXCH/EXPR `<AuthPackage>` advertisement (Basic vs Hybrid Modern Auth).
+    pub auth_advert: &'a AuthAdvert,
+    /// Pre-resolved user display name rendered in the mobilesync
+    /// `<User>/<DisplayName>` (MS-ASCMD §2.2.3.49.1). Empty string ⇒ omit the
+    /// optional element. Resolved by `resolve_user_display_name` upstream.
+    pub mobilesync_display_name: &'a str,
+}
+
 /// Handle autodiscover XML POST requests.
 ///
 /// Dispatches to the correct response format based on the
@@ -404,24 +559,33 @@ pub fn handle_autodiscover_json(
 /// This is critical for Outlook mobile/ActiveSync clients which
 /// expect the mobilesync schema, not the Outlook desktop schema.
 ///
-/// `accept_language` is the value of the Accept-Language request header,
-/// used to set the `<Culture>` element in the mobilesync response.
-/// Pass `None` to use the default ("en:us").
-pub fn handle_autodiscover_xml(
-    host: &str,
-    body: &str,
-    email: &str,
-    accept_language: Option<&str>,
-    mail_host: &str,
-    include_imap_smtp: bool,
-    auth_advert: &AuthAdvert,
-) -> AdResponse {
-    let schema = detect_response_schema(body);
+/// `accept_language` (in the request) is the value of the Accept-Language
+/// request header, used to set the `<Culture>` element in the mobilesync
+/// response. Pass `None` to use the default ("en:us").
+///
+/// `mobilesync_display_name` (in the request) is the pre-resolved user display
+/// name to render in the mobilesync `<User>/<DisplayName>` element
+/// (MS-ASCMD §2.2.3.49.1). Pass an empty string to omit the optional element;
+/// a non-empty value is escaped and emitted verbatim. The async caller resolves
+/// this via `resolve_user_display_name` on a blocking task before dispatching,
+/// keeping this pure function free of I/O. The Outlook path
+/// (`handle_outlook_xml`) keeps its own server-brand `<DisplayName>` unchanged.
+pub fn handle_autodiscover_xml(req: &AutodiscoverXmlRequest<'_>) -> AdResponse {
+    let schema = detect_response_schema(req.body);
     match schema {
-        ResponseSchema::MobileSync => handle_mobilesync_xml(host, email, accept_language),
-        ResponseSchema::Outlook => {
-            handle_outlook_xml(host, email, mail_host, include_imap_smtp, auth_advert)
-        }
+        ResponseSchema::MobileSync => handle_mobilesync_xml(
+            req.host,
+            req.email,
+            req.accept_language,
+            req.mobilesync_display_name,
+        ),
+        ResponseSchema::Outlook => handle_outlook_xml(
+            req.host,
+            req.email,
+            req.mail_host,
+            req.include_imap_smtp,
+            req.auth_advert,
+        ),
     }
 }
 
@@ -437,11 +601,34 @@ pub fn handle_autodiscover_xml(
 ///
 /// `accept_language` is parsed per RFC 7231 §5.3.5 to set the `<Culture>` element.
 /// Pass `None` to use the default ("en:us").
-fn handle_mobilesync_xml(host: &str, email: &str, accept_language: Option<&str>) -> AdResponse {
+///
+/// `display_name` is the pre-resolved user display name (MS-ASCMD §2.2.3.49.1 —
+/// "the user's display name in the directory service"). When empty, the optional
+/// `<DisplayName>` element is omitted (spec marks it 0…1) rather than emitting a
+/// misleading placeholder; when non-empty it is XML-escaped and emitted verbatim.
+/// This closes audit gap §1.5 (mobilesync `<User>` block minimal / brand-string
+/// `DisplayName`), surfacing the authenticated user's real name to Outlook Android
+/// while staying strictly schema-conformant (the mobilesync `User` block's only
+/// children are `DisplayName` and `EMailAddress` — there is no picture element in
+/// this schema, so none is emitted here).
+fn handle_mobilesync_xml(
+    host: &str,
+    email: &str,
+    accept_language: Option<&str>,
+    display_name: &str,
+) -> AdResponse {
     let email_escaped = xml_escape(email);
     let host_escaped = xml_escape(host);
     let as_url = format!("https://{}/Microsoft-Server-ActiveSync", host_escaped);
     let culture = parse_culture_from_accept_language(accept_language);
+    // Omit the optional <DisplayName> when no usable name was resolved so the
+    // response never advertises a fabricated identity; otherwise escape the
+    // resolved name (which already went through directory/derive_display_name).
+    let display_name_element = if display_name.trim().is_empty() {
+        String::new()
+    } else {
+        format!("<DisplayName>{}</DisplayName>", xml_escape(display_name.trim()))
+    };
 
     let xml = format!(
         r#"<?xml version="1.0" encoding="utf-8"?>
@@ -449,8 +636,7 @@ fn handle_mobilesync_xml(host: &str, email: &str, accept_language: Option<&str>)
 <Response xmlns="{MOBILESYNC_RESPONSE_NS}">
 <Culture>{culture}</Culture>
 <User>
-<DisplayName>Stalwart Mail</DisplayName>
-<EMailAddress>{email}</EMailAddress>
+{display_name_element}<EMailAddress>{email}</EMailAddress>
 </User>
 <Action>
 <Settings>
@@ -467,6 +653,7 @@ fn handle_mobilesync_xml(host: &str, email: &str, accept_language: Option<&str>)
         culture = culture,
         email = email_escaped,
         as_url = as_url,
+        display_name_element = display_name_element,
     );
     (StatusCode::OK, content_type_xml(), xml)
 }
@@ -721,7 +908,7 @@ mod tests {
     #[test]
     fn test_mobilesync_response_format() {
         let (status, _hdrs, body) =
-            handle_mobilesync_xml("mail.example.com", "user@example.com", None);
+            handle_mobilesync_xml("mail.example.com", "user@example.com", None, "User");
         assert_eq!(status, StatusCode::OK);
         assert!(body.contains("mobilesync/responseschema/2006"));
         assert!(body.contains("https://mail.example.com/Microsoft-Server-ActiveSync"));
@@ -731,6 +918,106 @@ mod tests {
         assert!(body.contains("<Culture>en:us</Culture>"));
         assert!(body.contains("<Action>"));
         assert!(body.contains("<Settings>"));
+    }
+
+    #[test]
+    fn test_mobilesync_renders_resolved_display_name() {
+        // The mobilesync <User>/<DisplayName> MUST carry the resolved user
+        // display name (MS-ASCMD §2.2.3.49.1), not a product brand.
+        let (status, _hdrs, body) =
+            handle_mobilesync_xml("mail.example.com", "user@example.com", None, "Chris Gray");
+        assert_eq!(status, StatusCode::OK);
+        assert!(body.contains("<DisplayName>Chris Gray</DisplayName>"));
+        assert!(body.contains("<EMailAddress>user@example.com</EMailAddress>"));
+        assert!(!body.contains("Stalwart Mail"));
+    }
+
+    #[test]
+    fn test_mobilesync_omits_display_name_when_empty() {
+        // Spec marks <DisplayName> as optional (0…1); an unresolvable name
+        // omits the element rather than emitting a fabricated placeholder.
+        let (status, _hdrs, body) =
+            handle_mobilesync_xml("mail.example.com", "user@example.com", None, "");
+        assert_eq!(status, StatusCode::OK);
+        assert!(!body.contains("<DisplayName>"));
+        assert!(body.contains("<EMailAddress>user@example.com</EMailAddress>"));
+        assert!(!body.contains("Stalwart Mail"));
+    }
+
+    #[test]
+    fn test_mobilesync_escapes_display_name() {
+        let (status, _hdrs, body) = handle_mobilesync_xml(
+            "mail.example.com",
+            "user@example.com",
+            None,
+            r#"Chris <"x"> & Friends"#,
+        );
+        assert_eq!(status, StatusCode::OK);
+        // quick-xml's full escaper maps & < > " to these entity references.
+        let expected: &str = "<DisplayName>Chris &lt;&quot;x&quot;&gt; &amp; Friends</DisplayName>";
+        assert!(
+            body.contains(expected),
+            "expected escaped DisplayName not found; got: {body}"
+        );
+        // Raw metacharacters must never leak into the XML output, and the
+        // response must never show the gateway product brand as the user name.
+        assert!(!body.contains(r#"Chris <"x"> & Friends"#));
+        assert!(!body.contains("Stalwart Mail"));
+    }
+
+    #[test]
+    fn test_derive_display_name_from_email() {
+        assert_eq!(derive_display_name("john.doe@example.com"), "John Doe");
+        assert_eq!(derive_display_name("john_doe@example.com"), "John Doe");
+        assert_eq!(derive_display_name("john-doe@example.com"), "John Doe");
+        assert_eq!(derive_display_name("john@example.com"), "John");
+        assert_eq!(derive_display_name("MARY@example.com"), "Mary");
+        assert_eq!(derive_display_name("a.b.c@example.com"), "A B C");
+        assert_eq!(derive_display_name("user+tag@example.com"), "User Tag");
+        // Leading run: stop at the first disallowed character so a mail-system
+        // special never fuses two tokens — "john!doe" → "John", not "Johndoe".
+        assert_eq!(derive_display_name("john!doe@example.com"), "John");
+        // Leading separator is trimmed away: "+user" → "User".
+        assert_eq!(derive_display_name("+user@example.com"), "User");
+        // No usable local-part token → empty (element omitted by caller).
+        assert_eq!(derive_display_name("@example.com"), "");
+        assert_eq!(derive_display_name(""), "");
+        assert_eq!(derive_display_name("---@@@"), "");
+        assert_eq!(derive_display_name("!nope@example.com"), "");
+    }
+
+    #[test]
+    fn test_derive_display_name_output_cap_holds_after_case_expansion() {
+        // The 512-char cap is on the RENDERED output. Lowercasing a long run of
+        // ASCII is 1:1 (no expansion), so a 600-char local part is truncated to
+        // 512 in the output, not silently allowed to exceed it.
+        let local: String = "a".repeat(600);
+        let name = derive_display_name(&format!("{local}@example.com"));
+        assert_eq!(name.chars().count(), 512);
+    }
+
+    #[test]
+    fn test_is_mobilesync_schema_matches_dispatcher() {
+        let ms = r#"<Autodiscover><Request>
+<EMailAddress>user@example.com</EMailAddress>
+<AcceptableResponseSchema>http://schemas.microsoft.com/exchange/autodiscover/mobilesync/responseschema/2006</AcceptableResponseSchema>
+</Request></Autodiscover>"#;
+        let outlook = r#"<Autodiscover><Request>
+<EMailAddress>user@example.com</EMailAddress>
+<AcceptableResponseSchema>http://schemas.microsoft.com/exchange/autodiscover/outlook/responseschema/2006a</AcceptableResponseSchema>
+</Request></Autodiscover>"#;
+        assert!(is_mobilesync_schema(ms));
+        assert!(!is_mobilesync_schema(outlook));
+        // No schema hint → defaults to Outlook (matches detect_response_schema).
+        assert!(!is_mobilesync_schema(""));
+    }
+
+    #[test]
+    fn test_resolve_user_display_name_falls_back_when_no_directory() {
+        // No directory configured → derives from the request email.
+        let none: Option<&std::sync::Arc<dyn crate::directory::DirectoryLookup>> = None;
+        assert_eq!(resolve_user_display_name(none, "john.doe@example.com"), "John Doe");
+        assert_eq!(resolve_user_display_name(none, "mary@example.com"), "Mary");
     }
 
     #[test]
@@ -982,18 +1269,21 @@ mod tests {
 <EMailAddress>user@example.com</EMailAddress>
 <AcceptableResponseSchema>http://schemas.microsoft.com/exchange/autodiscover/mobilesync/responseschema/2006</AcceptableResponseSchema>
 </Request></Autodiscover>"#;
-        let (status, _, body_out) = handle_autodiscover_xml(
-            "mail.example.com",
+        let req = AutodiscoverXmlRequest {
+            host: "mail.example.com",
             body,
-            "user@example.com",
-            None,
-            "mail.example.com",
-            true,
-            &AuthAdvert::Basic,
-        );
+            email: "user@example.com",
+            accept_language: None,
+            mail_host: "mail.example.com",
+            include_imap_smtp: true,
+            auth_advert: &AuthAdvert::Basic,
+            mobilesync_display_name: "Chris Gray",
+        };
+        let (status, _, body_out) = handle_autodiscover_xml(&req);
         assert_eq!(status, StatusCode::OK);
         assert!(body_out.contains("mobilesync/responseschema/2006"));
         assert!(!body_out.contains("outlook/responseschema/2006a"));
+        assert!(body_out.contains("<DisplayName>Chris Gray</DisplayName>"));
     }
 
     #[test]
@@ -1002,15 +1292,17 @@ mod tests {
 <EMailAddress>user@example.com</EMailAddress>
 <AcceptableResponseSchema>http://schemas.microsoft.com/exchange/autodiscover/outlook/responseschema/2006a</AcceptableResponseSchema>
 </Request></Autodiscover>"#;
-        let (status, _, body_out) = handle_autodiscover_xml(
-            "mail.example.com",
+        let req = AutodiscoverXmlRequest {
+            host: "mail.example.com",
             body,
-            "user@example.com",
-            None,
-            "mail.example.com",
-            true,
-            &AuthAdvert::Basic,
-        );
+            email: "user@example.com",
+            accept_language: None,
+            mail_host: "mail.example.com",
+            include_imap_smtp: true,
+            auth_advert: &AuthAdvert::Basic,
+            mobilesync_display_name: "Chris Gray",
+        };
+        let (status, _, body_out) = handle_autodiscover_xml(&req);
         assert_eq!(status, StatusCode::OK);
         assert!(body_out.contains("outlook/responseschema/2006a"));
         assert!(!body_out.contains("mobilesync/responseschema/2006"));
@@ -1019,15 +1311,17 @@ mod tests {
     #[test]
     fn test_autodiscover_xml_default_is_outlook() {
         let body = "<Autodiscover><Request><EMailAddress>user@example.com</EMailAddress></Request></Autodiscover>";
-        let (status, _, body_out) = handle_autodiscover_xml(
-            "mail.example.com",
+        let req = AutodiscoverXmlRequest {
+            host: "mail.example.com",
             body,
-            "user@example.com",
-            None,
-            "mail.example.com",
-            true,
-            &AuthAdvert::Basic,
-        );
+            email: "user@example.com",
+            accept_language: None,
+            mail_host: "mail.example.com",
+            include_imap_smtp: true,
+            auth_advert: &AuthAdvert::Basic,
+            mobilesync_display_name: "Chris Gray",
+        };
+        let (status, _, body_out) = handle_autodiscover_xml(&req);
         assert_eq!(status, StatusCode::OK);
         assert!(body_out.contains("outlook/responseschema/2006a"));
     }
@@ -1097,6 +1391,7 @@ mod tests {
             "mail.example.com",
             "user@example.com",
             Some("de-DE, en-US;q=0.5"),
+            "Chris Gray",
         );
         assert_eq!(status, StatusCode::OK);
         assert!(body.contains("<Culture>de:de</Culture>"));
