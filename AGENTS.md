@@ -169,7 +169,16 @@ gets wiped between shell sessions. To avoid re-installing Rust every command:
     output** to 512 chars after case expansion (not the input bytes), so the
     documented bound holds even for `ß`→`SS`-style Unicode expansion.
     `resolve_user_display_name` drops the intermediate `trim().to_string()`
-    (one allocation instead of two).
+    (one allocation instead of two). A follow-up commit on PR #1821 further
+    hardened the auth gate: the old `extract_basic_credentials` was folded
+    into a single shared `decode_basic_auth` decoder (`extract_basic_password`
+    delegates to it, so MAPI and Autodiscover can no longer drift in
+    malformed-header handling); the gating `&&` chain was reordered to
+    short-circuit the canonical-principal match BEFORE the Stalwart
+    `verifyCredentials` round-trip (DoS-amplification guard), it now verifies
+    the canonical username (consistent with every other authenticated path),
+    and the password is held in a zeroized `secrecy::SecretString` for the
+    lifetime of the check rather than a bare `String`.
 - **Server version advertisement — single source of truth** — closes audit
   gap §4 ("`ServerVersion` is hard-coded to `15.20.0.0` and `Exchange2016`").
   `src/version.rs` owns `ServerVersion`, the ONE place the Exchange server

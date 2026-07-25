@@ -55,6 +55,7 @@ async fn autodiscover_xml(
     Query(params): Query<HashMap<String, String>>,
     body: String,
 ) -> Response {
+    use secrecy::ExposeSecret;
     let start = std::time::Instant::now();
     let host = &state.cfg.gateway_host;
 
@@ -119,14 +120,25 @@ async fn autodiscover_xml(
         autodiscover::derive_display_name(&email)
     } else {
         // Directory present → only let it disclose a name to the account's
-        // own authenticated owner. Verify Basic creds against Stalwart and
-        // require the canonical principal email to match the requested email.
-        let dir_eligible = match extract_basic_credentials(&headers) {
+        // own authenticated owner. Decode Basic creds, then short-circuit on
+        // the principal match BEFORE the backend auth round-trip (so a caller
+        // supplying *another* user's email never triggers a Stalwart
+        // verifyCredentials call — a DoS-amplification guard). Verify the
+        // CANONICAL username (matching the gateway's other authenticated
+        // paths), and hold the password in a zeroized `SecretString` for the
+        // lifetime of this check rather than a bare `String`.
+        let dir_eligible = match decode_basic_auth(&headers) {
             Some((user, pass)) => {
                 let auth_user = util::canonicalize_username(&user, &state.cfg.mail_domain);
-                let request_canonical = util::canonicalize_username(&email, &state.cfg.mail_domain);
-                let creds_valid = state.auth_verifier.verify(&user, &pass).await;
-                creds_valid && !auth_user.is_empty() && auth_user == request_canonical
+                let request_canonical =
+                    util::canonicalize_username(&email, &state.cfg.mail_domain);
+                let secret_pass = secrecy::SecretString::from(pass);
+                !auth_user.is_empty()
+                    && auth_user == request_canonical
+                    && state
+                        .auth_verifier
+                        .verify(&auth_user, secret_pass.expose_secret())
+                        .await
             }
             None => false,
         };
@@ -517,53 +529,17 @@ fn render_mapi(
     resp
 }
 
-/// Extract the password from an `Authorization: Basic <b64>` header, returning
-/// only the password component (the username lives in the ROP's Essdn). Returns
-/// `None` for absent, malformed, non-Basic, or invalid base64/UTF-8 — the
-/// MAPI logon handler treats `None` as anonymous and rejects with
-/// `AnonymousNotAllowed`.
-///
-/// Per RFC 7235 the auth-scheme token is case-insensitive; Outlook and curl
-/// both send `Basic ` but other conformant clients may use any case
-/// (`basic `, `BASIC `). Match the prefix case-insensitively rather than
-/// enumerating only two spellings.
-fn extract_basic_password(headers: &axum::http::HeaderMap) -> Option<String> {
-    use base64::Engine;
-    let raw = headers.get(header::AUTHORIZATION)?.to_str().ok()?;
-    let rest = strip_auth_scheme_basic(raw)?;
-    let decoded = base64::engine::general_purpose::STANDARD
-        .decode(rest)
-        .ok()?;
-    let plain = String::from_utf8(decoded).ok()?;
-    let (_user, pass) = plain.split_once(':')?;
-    if pass.is_empty() {
-        None
-    } else {
-        Some(pass.to_string())
-    }
-}
-
-/// Strip a case-insensitive `Basic ` auth-scheme prefix from the
-/// `Authorization` header value, returning the credential remainder.
-fn strip_auth_scheme_basic(raw: &str) -> Option<&str> {
-    let scheme_end = raw.find([' ', '\t']).filter(|&i| i > 0)?;
-    let (scheme, rest) = raw.split_at(scheme_end);
-    if !scheme.eq_ignore_ascii_case("Basic") {
-        return None;
-    }
-    // Skip the single separating SP/HT; treat the rest as the credential.
-    let rest = rest.strip_prefix(' ').or_else(|| rest.strip_prefix('\t'))?;
-    Some(rest)
-}
-
-/// Decode an `Authorization: Basic <b64>` header into its `(username, password)`
-/// pair. Returns `None` for absent, malformed, non-Basic, invalid base64/UTF-8,
-/// or a missing password separator. Per RFC 7235 the auth-scheme token is
-/// case-insensitive (match the `Basic ` prefix case-insensitively, mirroring
-/// `extract_basic_password`). The username is taken verbatim up to the first
-/// `:` (RFC 7617 credentials are `user:pass`); an empty username still decodes,
-/// since callers verify it themselves.
-fn extract_basic_credentials(headers: &axum::http::HeaderMap) -> Option<(String, String)> {
+/// Shared decoder for an `Authorization: Basic <b64>` header that returns BOTH
+/// the username (verbatim, up to the first `:`) and the password. This is the
+/// single source of truth for the Basic-credential decode shape (scheme
+/// stripping, base64 STANDARD, UTF-8, `user:pass` split — RFC 7617) so the
+/// MAPI path (`extract_basic_password`) and the Autodiscover auth-gating path
+/// cannot drift apart in malformed-header handling. Returns `None` for absent,
+/// malformed, non-Basic, invalid base64/UTF-8, or a missing password
+/// separator. The password is returned as a **plain** `String`; callers that
+/// need defense-in-depth MUST wrap it in `secrecy::SecretString` (zeroized on
+/// drop) — the established pattern in `auth.rs` / `mapi/handler.rs`.
+fn decode_basic_auth(headers: &axum::http::HeaderMap) -> Option<(String, String)> {
     use base64::Engine;
     let raw = headers.get(header::AUTHORIZATION)?.to_str().ok()?;
     let rest = strip_auth_scheme_basic(raw)?;
@@ -577,6 +553,31 @@ fn extract_basic_credentials(headers: &axum::http::HeaderMap) -> Option<(String,
     } else {
         Some((user.to_string(), pass.to_string()))
     }
+}
+
+/// Extract the password from an `Authorization: Basic <b64>` header, returning
+/// only the password component (the username lives in the ROP's Essdn). Returns
+/// `None` for absent, malformed, non-Basic, or invalid base64/UTF-8 — the
+/// MAPI logon handler treats `None` as anonymous and rejects with
+/// `AnonymousNotAllowed`.
+///
+/// Delegates to the shared `decode_basic_auth` decoder so the Basic-credential
+/// shape stays identical across every endpoint.
+fn extract_basic_password(headers: &axum::http::HeaderMap) -> Option<String> {
+    decode_basic_auth(headers).map(|(_, pass)| pass)
+}
+
+/// Strip a case-insensitive `Basic ` auth-scheme prefix from the
+/// `Authorization` header value, returning the credential remainder.
+fn strip_auth_scheme_basic(raw: &str) -> Option<&str> {
+    let scheme_end = raw.find([' ', '\t']).filter(|&i| i > 0)?;
+    let (scheme, rest) = raw.split_at(scheme_end);
+    if !scheme.eq_ignore_ascii_case("Basic") {
+        return None;
+    }
+    // Skip the single separating SP/HT; treat the rest as the credential.
+    let rest = rest.strip_prefix(' ').or_else(|| rest.strip_prefix('\t'))?;
+    Some(rest)
 }
 
 /// Reject RPC-family/endpoint mismatches (MS-OXCMAPIHTTP §2.2.5): mailbox
