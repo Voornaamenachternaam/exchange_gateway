@@ -160,6 +160,132 @@ pub enum PropertyValue {
 }
 
 impl PropertyValue {
+    /// Decode a single fixed-size or variable-length scalar `PropertyValue`
+    /// for the given `PropertyTag` from a ROP request body, per
+    /// MS-OXCDATA §2.11.2.1. This is the inverse of [`PropertyValue::encode`]
+    /// and is used by `RopSetProperties`/`RopCopyTo` to read the typed
+    /// property values the client supplies. Multi-value properties (`PTYP_MV_*`)
+    /// are decoded as `PropertyValue::Opaque` carrying the raw MV_INSTANCE
+    /// payload: the gateway's write paths only act on the scalar write props
+    /// Outlook composes mail with (subject, body, importance, flags), so
+    /// passing multi-value bytes through verbatim keeps the wire shape
+    /// intact without committing to full MV decode.
+    pub fn decode(cur: &mut Buf<'_>, tag: &PropertyTag) -> Result<Self, DecodeError> {
+        use PropertyType as T;
+        let t = tag.property_type;
+        // The MV_INSTANCE bit (0x2000) marks an MV variant of an otherwise
+        // scalar type; the wire payload is a count-prefixed array. We carry
+        // it through opaquely to avoid drop-on-floor behaviour.
+        if t.to_u16() & Self::MV_INSTANCE_MARKER != 0 {
+            return Self::decode_opaque(cur, t);
+        }
+        Ok(match t {
+            T::PTYP_UNSPECIFIED => {
+                // Unspecified/PT_NULL is empty on the wire.
+                Self::Null
+            }
+            T::PTYP_NULL => Self::Null,
+            T::PTYP_BOOLEAN => Self::Boolean(cur.take_u8()? != 0),
+            T::PTYP_INTEGER16 => {
+                let v = cur.take_u16_le()?;
+                Self::Integer16(i16::try_from(v).map_err(|_| DecodeError::InvalidValue)?)
+            }
+            T::PTYP_INTEGER32 => {
+                let v = cur.take_u32_le()?;
+                Self::Integer32(i32::try_from(v).map_err(|_| DecodeError::InvalidValue)?)
+            }
+            T::PTYP_ERROR_CODE => Self::ErrorCode(cur.take_u32_le()?),
+            T::PTYP_INTEGER64 => {
+                let v = cur.take_u64_le()?;
+                let s = i64::try_from(v).map_err(|_| DecodeError::InvalidValue)?;
+                Self::Integer64(s)
+            }
+            T::PTYP_FLOATING64 => {
+                let raw = cur.take_u64_le()?;
+                Self::Floating64(f64::from_bits(raw))
+            }
+            T::PTYP_FLOATING32 => {
+                let raw = cur.take_u32_le()?;
+                Self::Floating32(f32::from_bits(raw))
+            }
+            T::PTYP_CURRENCY => {
+                let raw = cur.take_u64_le()?;
+                let s = i64::try_from(raw).map_err(|_| DecodeError::InvalidValue)?;
+                Self::Currency(s)
+            }
+            T::PTYP_TIME => {
+                let raw = cur.take_u64_le()?;
+                Self::Time(raw)
+            }
+            T::PTYP_GUID => {
+                let mut g = [0u8; 16];
+                g.copy_from_slice(cur.take_bytes(16)?);
+                Self::Guid(g)
+            }
+            // PtypString8: 1-byte-count-prefixed? No — MS-OXCDATA §2.11.2.1
+            // wire form: a 2-byte count (number of CHARS, NOT including the
+            // terminator) followed by the chars and a trailing 0x00.
+            T::PTYP_STRING8 => {
+                let n = usize::from(cur.take_u16_le()?);
+                if cur.remaining() < n.checked_add(1).ok_or(DecodeError::ExcessLength)? {
+                    return Err(DecodeError::Insufficient);
+                }
+                let raw = cur.take_bytes(n)?.to_vec();
+                cur.take_u8()?; // terminating NUL
+                let s = String::from_utf8_lossy(&raw).into_owned();
+                Self::String8(s)
+            }
+            T::PTYP_STRING => {
+                // 2-byte count of UTF-16 CODE UNITS (not including terminator).
+                let n = usize::from(cur.take_u16_le()?);
+                let want = n.checked_mul(2).ok_or(DecodeError::ExcessLength)?;
+                if cur.remaining() < want.checked_add(2).ok_or(DecodeError::ExcessLength)? {
+                    return Err(DecodeError::Insufficient);
+                }
+                let mut units = Vec::with_capacity(n);
+                for _ in 0..n {
+                    units.push(cur.take_u16_le()?);
+                }
+                cur.take_u16_le()?; // terminating 0x0000
+                let s = String::from_utf16_lossy(&units);
+                Self::String(s)
+            }
+            T::PTYP_BINARY => {
+                let n = usize::from(cur.take_u16_le()?);
+                let bytes = cur.take_bytes(n)?.to_vec();
+                Self::Binary(bytes)
+            }
+            // Anything else (PTYP_SERVER_ID/RESTRICTION/RULE_ACTION/unknowns):
+            // return Null and leave the cursor where we are, since the wire
+            // length is unknown to a generic decoder. The caller is expected
+            // to skip such tags explicitly rather than request a typed value.
+            other => return Self::decode_opaque(cur, other),
+        })
+    }
+
+    /// Read the raw bytes for a property whose type the codec does not yet
+    /// understand. The fixed-size variants are read inline; otherwise we
+    /// surface nothing and let the caller handle the residual cursor.
+    fn decode_opaque(cur: &mut Buf<'_>, t: PropertyType) -> Result<Self, DecodeError> {
+        Ok(match t.fixed_size() {
+            Some(0) => Self::Null,
+            Some(n) => {
+                let bytes = cur.take_bytes(n)?.to_vec();
+                Self::Opaque {
+                    property_type: t,
+                    bytes,
+                }
+            }
+            None => Self::Opaque {
+                property_type: t,
+                bytes: Vec::new(),
+            },
+        })
+    }
+
+    /// The multi-value-instance marker bit per MS-OXCDATA §2.11.1.
+    pub const MV_INSTANCE_MARKER: u16 = 0x2000;
+    
     /// Encode the value for a `GetPropertiesSpecific`/`All` response row,
     /// emitting the typed payload bytes (no PropertyTag prefix — the row
     /// struct in MS-OXCDATA prefixes each value with its reflected tag, done
