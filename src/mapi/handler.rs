@@ -883,6 +883,21 @@ async fn execute_one_rop(
             let outcome: RopErrorCode;
             let partial: u8;
             match (jmap, password, parent_kind == FolderKind::Mail && !parent_backend.is_empty()) {
+                (_, _, false) => {
+                    // Non-mail folder: Email/destroy is conceptually invalid
+                    // (MAPI_E_NO_SUPPORT), independent of backend availability,
+                    // so a folder-kind check wins over the no-backend gate.
+                    outcome = RopErrorCode::NoSupport;
+                    partial = 0;
+                }
+                (None, _, _) => {
+                    outcome = RopErrorCode::NotFound;
+                    partial = 0;
+                }
+                (_, None, _) => {
+                    outcome = RopErrorCode::AccessDenied;
+                    partial = 0;
+                }
                 (Some(jc), Some(pw), true) => {
                     let account_id = jc
                         .get_account_id(username, pw)
@@ -943,18 +958,6 @@ async fn execute_one_rop(
                         }
                     }
                 }
-                (None, _, _) => {
-                    outcome = RopErrorCode::NotFound;
-                    partial = 0;
-                }
-                (_, None, _) => {
-                    outcome = RopErrorCode::AccessDenied;
-                    partial = 0;
-                }
-                (_, _, false) => {
-                    outcome = RopErrorCode::NoSupport;
-                    partial = 0;
-                }
             }
             RopDeleteMessagesResponse {
                 input_handle_index: req.input_handle_index,
@@ -990,6 +993,22 @@ async fn execute_one_rop(
                 src_kind == FolderKind::Mail && !src_backend.is_empty(),
                 dest_kind == FolderKind::Mail && !dest_backend.is_empty(),
             ) {
+                (_, _, false, _) | (_, _, _, false) => {
+                    // Either endpoint is not a mail folder: the move/copy is
+                    // conceptually invalid (MAPI_E_NO_SUPPORT) and that beats the
+                    // backend-availability gate so Outlook surfaces the structural
+                    // error rather than a misleading NotFound.
+                    outcome = RopErrorCode::NoSupport;
+                    partial = 0;
+                }
+                (None, _, _, _) => {
+                    outcome = RopErrorCode::NotFound;
+                    partial = 0;
+                }
+                (_, None, _, _) => {
+                    outcome = RopErrorCode::AccessDenied;
+                    partial = 0;
+                }
                 (Some(jc), Some(pw), true, true) => {
                     let account_id = jc
                         .get_account_id(username, pw)
@@ -1057,18 +1076,6 @@ async fn execute_one_rop(
                         }
                     }
                 }
-                (None, _, _, _) => {
-                    outcome = RopErrorCode::NotFound;
-                    partial = 0;
-                }
-                (_, None, _, _) => {
-                    outcome = RopErrorCode::AccessDenied;
-                    partial = 0;
-                }
-                (_, _, false, _) | (_, _, _, false) => {
-                    outcome = RopErrorCode::NoSupport;
-                    partial = 0;
-                }
             }
             RopMoveCopyMessagesResponse {
                 source_handle_index: req.source_handle_index,
@@ -1090,6 +1097,10 @@ async fn execute_one_rop(
                 })
                 .unwrap_or((String::new(), false));
             let outcome: RopErrorCode = match (jmap, password, is_new, !backend_id.is_empty()) {
+                (_, _, true, _) => RopErrorCode::InvalidParameter, // unsaved draft
+                (_, _, _, false) => RopErrorCode::NotFound,        // no backend id
+                (None, _, false, true) => RopErrorCode::NotFound, // backend id but no JMAP client
+                (_, None, false, true) => RopErrorCode::AccessDenied,
                 (Some(jc), Some(pw), false, true) => {
                     let account_id = jc
                         .get_account_id(username, pw)
@@ -1135,10 +1146,6 @@ async fn execute_one_rop(
                         }
                     }
                 }
-                (None, _, _, _) => RopErrorCode::NotFound,
-                (_, None, _, _) => RopErrorCode::AccessDenied,
-                (_, _, true, _) => RopErrorCode::InvalidParameter, // unsaved draft
-                (_, _, _, false) => RopErrorCode::NotFound,        // no backend id
             };
             RopSubmitMessageResponse {
                 input_handle_index: req.input_handle_index,
@@ -1161,6 +1168,10 @@ async fn execute_one_rop(
                 })
                 .unwrap_or((String::new(), false));
             let outcome: RopErrorCode = match (jmap, password, is_new, !backend_id.is_empty()) {
+                (_, _, true, _) => RopErrorCode::InvalidParameter, // unsaved draft
+                (_, _, _, false) => RopErrorCode::NotFound,        // no backend id
+                (None, _, false, true) => RopErrorCode::NotFound,
+                (_, None, false, true) => RopErrorCode::AccessDenied,
                 (Some(jc), Some(pw), false, true) => {
                     let account_id = jc
                         .get_account_id(username, pw)
@@ -1208,10 +1219,6 @@ async fn execute_one_rop(
                         }
                     }
                 }
-                (None, _, _, _) => RopErrorCode::NotFound,
-                (_, None, _, _) => RopErrorCode::AccessDenied,
-                (_, _, true, _) => RopErrorCode::InvalidParameter,
-                (_, _, _, false) => RopErrorCode::NotFound,
             };
             if outcome == RopErrorCode::Success {
                 RopTransportSendSuccess {
@@ -2167,31 +2174,33 @@ mod tests {
     #[test]
     fn email_recipients_dedupes_and_skips_empty() {
         use crate::jmap::{JmapEmail, JmapEmailAddress};
-        let mut e = JmapEmail::default();
-        e.to = Some(vec![
-            JmapEmailAddress {
+        let e = JmapEmail {
+            to: Some(vec![
+                JmapEmailAddress {
+                    name: None,
+                    email: Some("a@x.com".into()),
+                },
+                JmapEmailAddress {
+                    name: None,
+                    email: Some("b@x.com".into()),
+                },
+            ]),
+            cc: Some(vec![
+                JmapEmailAddress {
+                    name: None,
+                    email: Some("a@x.com".into()),
+                }, // dup of to
+                JmapEmailAddress {
+                    name: None,
+                    email: Some("".into()),
+                }, // empty, skipped
+            ]),
+            bcc: Some(vec![JmapEmailAddress {
                 name: None,
-                email: Some("a@x.com".into()),
-            },
-            JmapEmailAddress {
-                name: None,
-                email: Some("b@x.com".into()),
-            },
-        ]);
-        e.cc = Some(vec![
-            JmapEmailAddress {
-                name: None,
-                email: Some("a@x.com".into()),
-            }, // dup of to
-            JmapEmailAddress {
-                name: None,
-                email: Some("".into()),
-            }, // empty, skipped
-        ]);
-        e.bcc = Some(vec![JmapEmailAddress {
-            name: None,
-            email: Some("c@x.com".into()),
-        }]);
+                email: Some("c@x.com".into()),
+            }]),
+            ..Default::default()
+        };
         let rcpts = super::email_recipients(&e);
         assert_eq!(rcpts, vec!["a@x.com", "b@x.com", "c@x.com"]);
     }
