@@ -1199,16 +1199,20 @@ impl JmapClient {
         Ok(())
     }
 
-    /// Destroy emails via JMAP Email/set (RFC 8621 §4.5).
-    ///
-    /// `destroy` is a list of email IDs to permanently delete.
+    /// Destroy emails via JMAP `Email/set` `destroy` (RFC 8621 §4.5). Returns
+    /// the count of ids the server reports as `destroyed` (i.e. successfully
+    /// removed). Per-item failures land in `notDestroyed`; they are NOT a hard
+    /// error here so the `RopDeleteMessages` dispatcher can encode a partial
+    /// completion (`PartialCompletion=1`) for the subset that didn't delete,
+    /// matching MS-OXCROPS §2.2.4.11.2 semantics — previously `Ok(())` hid
+    /// partial server-side failures as a full success.
     pub async fn destroy_emails(
         &self,
         account_id: &str,
         destroy: &[String],
         username: &str,
         password: &SecretString,
-    ) -> Result<()> {
+    ) -> Result<usize> {
         let session = self.get_session(username, password).await?;
         let api_url = &session.api_url;
 
@@ -1221,7 +1225,7 @@ impl JmapClient {
             "es0",
         )];
 
-        let _resp = self
+        let resp = self
             .api_call(
                 api_url,
                 &["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:mail"],
@@ -1231,7 +1235,26 @@ impl JmapClient {
             )
             .await?;
 
-        Ok(())
+        let mut destroyed = 0usize;
+        for (method, data, _) in resp.method_responses {
+            if method == "Email/set" {
+                if let Some(arr) = data.get("destroyed").and_then(|v| v.as_array()) {
+                    destroyed = arr.len();
+                }
+                if let Some(not_destroyed) = data.get("notDestroyed")
+                    && !not_destroyed.is_null()
+                    && not_destroyed.as_object().is_none_or(|o| !o.is_empty())
+                {
+                    tracing::warn!(
+                        "JMAP Email/destroy partial failure: {} of {} not destroyed: {}",
+                        destroy.len().saturating_sub(destroyed),
+                        destroy.len(),
+                        not_destroyed
+                    );
+                }
+            }
+        }
+        Ok(destroyed)
     }
 
     /// Create a draft email via JMAP `Email/set` (RFC 8621 §4.5), returning
@@ -1363,14 +1386,15 @@ impl JmapClient {
                 password,
             )
             .await?;
-        let mut current: Vec<Vec<String>> = Vec::new();
+        let mut current: std::collections::HashMap<String, Vec<String>> =
+            std::collections::HashMap::new();
         for (method, data, _) in &resp.method_responses {
             if method == "Email/get"
                 && let Some(list) = data.get("list").and_then(|v| v.as_array())
             {
                 for e in list {
                     let e_id = e.get("id").and_then(|v| v.as_str()).unwrap_or("");
-                    if !email_ids.iter().any(|i| i == e_id) {
+                    if e_id.is_empty() {
                         continue;
                     }
                     let mids = e
@@ -1378,26 +1402,24 @@ impl JmapClient {
                         .and_then(|v| v.as_object())
                         .map(|o| o.keys().cloned().collect())
                         .unwrap_or_default();
-                    current.push(mids);
+                    current.insert(e_id.to_string(), mids);
                 }
             }
         }
-        if current.is_empty() {
-            return Err(anyhow!("Email/get returned none of the requested ids"));
-        }
-        // Build the update patch. RFC 8621 §4.5 mailboxIds patch:
-        //   { id: { "mailboxIds/<oldid>": null, "mailboxIds/<newid>": true } }
-        let mut update = serde_json::Map::new();
-        for (eid, mids) in email_ids.iter().zip(current.iter()) {
-            let mut patch = serde_json::Map::new();
-            for old in mids {
-                patch.insert(format!("mailboxIds/{old}"), json!(null));
-            }
-            patch.insert(
-                format!("mailboxIds/{target_mailbox_id}"),
-                json!(true),
-            );
-            update.insert(eid.clone(), Value::Object(patch));
+        // Build the update patch keyed BY email id (not by response order). A
+        // naive `zip(email_ids, current)` would silently mis-associate patches
+        // (or drop them) when Email/get returns fewer entries than requested
+        // or in a different order — see PR #1825 review. `build_move_update_patch`
+        // is a pure helper so the partial/reorder-safe semantics are unit-tested
+        // in `build_move_update_patch_skips_missing_and_keys_by_id`.
+        let update = build_move_update_patch(email_ids, &current, target_mailbox_id);
+        if update.is_empty() {
+            // None of the requested ids were found on the server; nothing to
+            // move. Report zero (the dispatcher encodes Success with
+            // PartialCompletion reflecting the gap), NOT a hard error — a hard
+            // error here would turn a benign "messages already gone" into a
+            // DiskError.
+            return Ok(0);
         }
         let set_calls = vec![(
             "Email/set",
@@ -1419,14 +1441,23 @@ impl JmapClient {
         let mut updated = 0usize;
         for (method, data, _) in set_resp.method_responses {
             if method == "Email/set" {
+                if let Some(u) = data.get("updated").and_then(|v| v.as_object()) {
+                    updated = u.len();
+                }
                 if let Some(not_updated) = data.get("notUpdated")
                     && !not_updated.is_null()
                     && not_updated.as_object().is_none_or(|o| !o.is_empty())
                 {
-                    return Err(anyhow!("Email/set move failed: {}", not_updated));
-                }
-                if let Some(u) = data.get("updated").and_then(|v| v.as_object()) {
-                    updated = u.len();
+                    // Per-item failures are NOT a hard error: return the
+                    // partial `updated` count so the dispatcher encodes
+                    // PartialCompletion=1 (MS-OXCROPS §2.2.4.6.4) instead of a
+                    // DiskError that hides the ids that did move.
+                    tracing::warn!(
+                        "JMAP Email/set move partial failure: {} of {} not updated: {}",
+                        email_ids.len().saturating_sub(updated),
+                        email_ids.len(),
+                        not_updated
+                    );
                 }
             }
         }
@@ -1481,14 +1512,21 @@ impl JmapClient {
         let mut created = 0usize;
         for (method, data, _) in resp.method_responses {
             if method == "Email/set" {
+                if let Some(c) = data.get("created").and_then(|v| v.as_object()) {
+                    created = c.len();
+                }
                 if let Some(not_created) = data.get("notCreated")
                     && !not_created.is_null()
                     && not_created.as_object().is_none_or(|o| !o.is_empty())
                 {
-                    return Err(anyhow!("Email/set copy failed: {}", not_created));
-                }
-                if let Some(c) = data.get("created").and_then(|v| v.as_object()) {
-                    created = c.len();
+                    // Per-item copy failures are partial completion, not a hard
+                    // error, matching RopMoveCopyMessages semantics.
+                    tracing::warn!(
+                        "JMAP Email/set copy partial failure: {} of {} not created: {}",
+                        email_ids.len().saturating_sub(created),
+                        email_ids.len(),
+                        not_created
+                    );
                 }
             }
         }
@@ -2574,6 +2612,40 @@ impl JmapClient {
     }
 }
 
+/// Build the JMAP `Email/set` `update` patch for a mailbox *move*, keyed by
+/// email id (NOT by response order). For each requested id present in
+/// `current` it nulls every existing `mailboxIds/<old>` and sets
+/// `mailboxIds/<target>=true`; ids missing from `current` are silently
+/// skipped (the caller reports partial completion).
+///
+/// This is a pure helper extracted from `move_emails` so the
+/// partial/reorder-safe semantics — fixing the `zip`-mis-association bug
+/// flagged in PR #1825 — are unit-testable without a live JMAP server.
+/// RFC 8621 §4.5 mailboxIds patch:
+///   `{ id: { "mailboxIds/<oldid>": null, "mailboxIds/<newid>": true } }`
+fn build_move_update_patch(
+    email_ids: &[String],
+    current: &std::collections::HashMap<String, Vec<String>>,
+    target_mailbox_id: &str,
+) -> serde_json::Map<String, Value> {
+    let mut update = serde_json::Map::new();
+    for eid in email_ids {
+        let Some(mids) = current.get(eid) else {
+            continue;
+        };
+        let mut patch = serde_json::Map::new();
+        for old in mids {
+            patch.insert(format!("mailboxIds/{old}"), json!(null));
+        }
+        patch.insert(
+            format!("mailboxIds/{target_mailbox_id}"),
+            json!(true),
+        );
+        update.insert(eid.clone(), Value::Object(patch));
+    }
+    update
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2846,5 +2918,78 @@ mod tests {
         let json_empty = r#"{"values": []}"#;
         let w: Wrapper = serde_json::from_str(json_empty).unwrap();
         assert_eq!(w.values, Some(vec![] as Vec<String>));
+    }
+
+    /// Regression for PR #1825 review: `move_emails` must key the `Email/set`
+    /// update patch by email id — NOT zip `email_ids` with the `Email/get`
+    /// response list. When the response is partial (an id is missing) or
+    /// reordered, the old `zip` either swapped mailboxIds patches between
+    /// unrelated emails or silently dropped ids. The pure helper builds the
+    /// patch keyed-by-id and skips missing ids.
+    #[test]
+    fn build_move_update_patch_skips_missing_and_keys_by_id() {
+        use std::collections::HashMap;
+        // Client wants to move a, b, c.
+        let email_ids = vec!["a".to_string(), "b".to_string(), "c".to_string()];
+        // Server's Email/get returned only a and c, AND in reversed order
+        // (c before a). "b" is missing entirely.
+        let mut current: HashMap<String, Vec<String>> = HashMap::new();
+        current.insert("a".to_string(), vec!["inbox".to_string()]);
+        current.insert("c".to_string(), vec!["drafts".to_string()]);
+        // (no "b")
+
+        let update = super::build_move_update_patch(&email_ids, &current, "archive");
+
+        // Exactly the two present ids are patched; the missing id is skipped
+        // (no silent drop of the others, no entry for "b").
+        assert_eq!(update.len(), 2);
+        assert!(update.contains_key("a"));
+        assert!(update.contains_key("c"));
+        assert!(!update.contains_key("b"));
+
+        // And the patches are associated with the CORRECT current mailboxIds
+        // — the zip bug would have applied c's "drafts" removal to a.
+        let patch_a = update.get("a").and_then(|v| v.as_object()).unwrap();
+        assert_eq!(patch_a.get("mailboxIds/inbox"), Some(&json!(null)));
+        assert_eq!(patch_a.get("mailboxIds/archive"), Some(&json!(true)));
+        assert!(
+            patch_a.get("mailboxIds/drafts").is_none(),
+            "a's patch must not pick up c's drafts id"
+        );
+
+        let patch_c = update.get("c").and_then(|v| v.as_object()).unwrap();
+        assert_eq!(patch_c.get("mailboxIds/drafts"), Some(&json!(null)));
+        assert_eq!(patch_c.get("mailboxIds/archive"), Some(&json!(true)));
+        assert!(
+            patch_c.get("mailboxIds/inbox").is_none(),
+            "c's patch must not pick up a's inbox id"
+        );
+    }
+
+    /// All requested ids absent → empty update (move_emails returns Ok(0),
+    /// dispatch encodes PartialCompletion rather than a hard error).
+    #[test]
+    fn build_move_update_patch_empty_when_no_ids_resolved() {
+        use std::collections::HashMap;
+        let email_ids = vec!["x".to_string(), "y".to_string()];
+        let current: HashMap<String, Vec<String>> = HashMap::new();
+        let update = super::build_move_update_patch(&email_ids, &current, "archive");
+        assert!(update.is_empty());
+    }
+
+    /// A removed-from-everything move still adds the target, so the email is
+    /// only in the target mailbox afterwards.
+    #[test]
+    fn build_move_update_patch_multi_mailbox_source() {
+        use std::collections::HashMap;
+        let email_ids = vec!["m".to_string()];
+        let mut current: HashMap<String, Vec<String>> = HashMap::new();
+        current.insert("m".to_string(), vec!["i1".to_string(), "i2".to_string()]);
+        let update = super::build_move_update_patch(&email_ids, &current, "t");
+        assert_eq!(update.len(), 1);
+        let patch = update.get("m").and_then(|v| v.as_object()).unwrap();
+        assert_eq!(patch.get("mailboxIds/i1"), Some(&json!(null)));
+        assert_eq!(patch.get("mailboxIds/i2"), Some(&json!(null)));
+        assert_eq!(patch.get("mailboxIds/t"), Some(&json!(true)));
     }
 }

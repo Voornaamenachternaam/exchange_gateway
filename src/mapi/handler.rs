@@ -931,9 +931,20 @@ async fn execute_one_rop(
                                         .destroy_emails(&account_id, &to_destroy, username, pw)
                                         .await
                                     {
-                                        Ok(()) => {
+                                        Ok(destroyed) => {
                                             outcome = RopErrorCode::Success;
-                                            partial = if found == req.message_ids.len() {
+                                            // PartialCompletion=1 when the
+                                            // server did not destroy every
+                                            // requested id (some weren't in
+                                            // this folder OR `notDestroyed`
+                                            // rejected a subset). MS-OXCROPS
+                                            // §2.2.4.11.2: a value of 1 means
+                                            // the operation completed at least
+                                            // one but not all of the requested
+                                            // messages.
+                                            partial = if destroyed == req.message_ids.len()
+                                                && found == req.message_ids.len()
+                                            {
                                                 0
                                             } else {
                                                 1
@@ -1035,7 +1046,7 @@ async fn execute_one_rop(
                                     .collect();
                                 if jids.is_empty() {
                                     outcome = RopErrorCode::Success;
-                                    partial = 0;
+                                    partial = if req.message_ids.is_empty() { 0 } else { 1 };
                                 } else if req.want_copy != 0 {
                                     match jc
                                         .copy_emails(&account_id, &jids, &dest_backend, username, pw)
@@ -1043,7 +1054,12 @@ async fn execute_one_rop(
                                     {
                                         Ok(n) => {
                                             outcome = RopErrorCode::Success;
-                                            partial = if n == jids.len() { 0 } else { 1 };
+                                            // PartialCompletion=1 unless the
+                                            // server created a copy for every
+                                            // requested id (found + processed).
+                                            // MS-OXCROPS §2.2.4.6.4.
+                                            partial =
+                                                if n == req.message_ids.len() { 0 } else { 1 };
                                         }
                                         Err(e) => {
                                             tracing::warn!(error = %e, "JMAP copy failed");
@@ -1058,7 +1074,8 @@ async fn execute_one_rop(
                                     {
                                         Ok(n) => {
                                             outcome = RopErrorCode::Success;
-                                            partial = if n == jids.len() { 0 } else { 1 };
+                                            partial =
+                                                if n == req.message_ids.len() { 0 } else { 1 };
                                         }
                                         Err(e) => {
                                             tracing::warn!(error = %e, "JMAP move failed");
