@@ -1855,4 +1855,407 @@ mod tests {
             other => panic!("output handle not a Folder: {other:?}"),
         }
     }
+
+    /// `RopCreateMessage` must install a `Message { is_new: true }` handle at the
+    /// client's OutputHandleIndex and echo `RopId(0x06) · OutputHandleIndex
+    /// · Success · HasMessageId=1 · MessageId(8 LE=0 placeholder)`, even with
+    /// no JMAP backend configured — the draft is not persisted until the
+    /// subsequent `RopSaveChangesMessage`.
+    #[tokio::test]
+    async fn execute_rop_create_message_installs_new_message_handle() {
+        let mut cfg = Config::test_with_mail_domain("example.com");
+        cfg.mapi_enabled = true;
+        let state = MapiState::new(
+            cfg,
+            std::sync::Arc::new(AuthVerifier::new(&Config::default())),
+        );
+        let sid = state
+            .sessions
+            .create(crate::mapi::session::SessionPrincipal {
+                email: "u@example.com".into(),
+                basic_auth: true,
+            });
+        const INPUT_HANDLE: u8 = 3;
+        const OUTPUT_HANDLE: u8 = 9;
+        const FOLDER_ID: u64 = 0x0123_4567_89AB_CDEF;
+        state.sessions.with_session_mut(&sid, |s| {
+            s.set_handle(
+                INPUT_HANDLE,
+                crate::mapi::session::Handle::Folder {
+                    backend_id: "drafts-mbox".into(),
+                    kind: crate::mapi::session::FolderKind::Mail,
+                },
+            );
+        });
+        // Wire: RopId(0x06) · LogonId(0) · InputHandle(3) · OutputHandle(9)
+        // · CodePageId(2 LE=0) · FolderId(8 LE) · AssociatedFlag(1=0) = 13 bytes.
+        let mut body = vec![0x06u8, 0x00, INPUT_HANDLE, OUTPUT_HANDLE];
+        body.extend_from_slice(&0u16.to_le_bytes()); // CodePageId
+        body.extend_from_slice(&FOLDER_ID.to_le_bytes());
+        body.push(0); // AssociatedFlag
+        let req = MapiRequest {
+            kind: RpcKind::Mailbox(MapiRequestType::Execute),
+            request_id: "{G}:1".into(),
+            client_application: None,
+            client_info: Some(format!("{{{}}}:0", sid.as_hyphenated())),
+            password: None,
+            cookies: Vec::new(),
+            body,
+        };
+        let resp = handle(req, &state).await;
+        assert_eq!(resp.code, ResponseCode::Success);
+        let (_status, _h, _ct, body_out) = resp.render();
+        let payload = &body_out[4..];
+        // RopCreateMessageSuccess: RopId · OutputHandleIndex · RV(4) ·
+        // HasMessageId(1) · MessageId(8 LE placeholder).
+        assert_eq!(payload[0], 0x06, "echoed RopId");
+        assert_eq!(payload[1], OUTPUT_HANDLE, "output handle (NOT shifted)");
+        let rv = u32::from_le_bytes([payload[2], payload[3], payload[4], payload[5]]);
+        assert_eq!(RopErrorCode::from_u32(rv), RopErrorCode::Success);
+        assert_eq!(payload[6], 1, "HasMessageId present");
+        let mid = u64::from_le_bytes(payload[7..15].try_into().unwrap());
+        assert_eq!(mid, 0, "placeholder MessageId until SaveChanges");
+        // The OUTPUT handle is a new Message bound to the drafts mailbox.
+        let snap = state.sessions.get(&sid).expect("session");
+        match snap.handles.get(&OUTPUT_HANDLE) {
+            Some(crate::mapi::session::Handle::Message {
+                backend_id,
+                mailbox_id,
+                is_new,
+                ..
+            }) => {
+                assert!(backend_id.is_empty(), "no backend id until save");
+                assert_eq!(mailbox_id, "drafts-mbox");
+                assert!(*is_new, "is_new until SaveChanges");
+            }
+            other => panic!("output handle not a new Message: {other:?}"),
+        }
+    }
+
+    /// `RopSaveChangesMessage` without a JMAP backend must emit
+    /// `RopNotFound` instead of a silent Success, and must NOT corrupt the
+    /// session. This guards against the regression where the write path
+    /// reported `Success` with no work done.
+    #[tokio::test]
+    async fn execute_rop_save_changes_message_without_backend_emits_not_found() {
+        let mut cfg = Config::test_with_mail_domain("example.com");
+        cfg.mapi_enabled = true;
+        // No jmap_base → jmap backend is None at dispatch time.
+        let state = MapiState::new(
+            cfg,
+            std::sync::Arc::new(AuthVerifier::new(&Config::default())),
+        );
+        let sid = state
+            .sessions
+            .create(crate::mapi::session::SessionPrincipal {
+                email: "u@example.com".into(),
+                basic_auth: true,
+            });
+        const RESPONSE_HANDLE: u8 = 2;
+        const INPUT_HANDLE: u8 = 4;
+        state.sessions.with_session_mut(&sid, |s| {
+            s.set_handle(
+                INPUT_HANDLE,
+                crate::mapi::session::Handle::Message {
+                    backend_id: String::new(),
+                    mailbox_id: "drafts-mbox".into(),
+                    kind: crate::mapi::session::FolderKind::Mail,
+                    is_new: true,
+                },
+            );
+        });
+        // Wire: RopId(0x0C) · LogonId(0) · ResponseHandleIndex(2)
+        // · InputHandleIndex(4) · SaveFlags(0).
+        let body: Vec<u8> = vec![0x0C, 0, RESPONSE_HANDLE, INPUT_HANDLE, 0];
+        let req = MapiRequest {
+            kind: RpcKind::Mailbox(MapiRequestType::Execute),
+            request_id: "{G}:1".into(),
+            client_application: None,
+            client_info: Some(format!("{{{}}}:0", sid.as_hyphenated())),
+            password: Some("pw".into()),
+            cookies: Vec::new(),
+            body,
+        };
+        let resp = handle(req, &state).await;
+        assert_eq!(resp.code, ResponseCode::Success);
+        let (_status, _h, _ct, body_out) = resp.render();
+        let payload = &body_out[4..];
+        assert_eq!(payload[0], 0x0C, "echoed RopId");
+        // RopSaveChangesMessageSuccess: RopId · ResponseHandleIndex · RV(4) ·
+        // InputHandleIndex · MessageId(8).
+        assert_eq!(payload[1], RESPONSE_HANDLE, "response handle echoed");
+        let rv = u32::from_le_bytes([payload[2], payload[3], payload[4], payload[5]]);
+        assert_eq!(
+            RopErrorCode::from_u32(rv),
+            RopErrorCode::NotFound,
+            "no JMAP backend ⇒ NotFound, not silent Success"
+        );
+        assert_eq!(payload[6], INPUT_HANDLE, "input handle echoed");
+    }
+
+    /// `RopDeleteMessages` against a non-mail folder (e.g. a root handle)
+    /// must yield `RopNoSupport` so the client reacts instead of a silent
+    /// success, and the cursor must be advanced exactly past the message-id
+    /// array so a chained ROP can resume.
+    #[tokio::test]
+    async fn execute_rop_delete_messages_non_mail_folder_emits_no_support() {
+        let mut cfg = Config::test_with_mail_domain("example.com");
+        cfg.mapi_enabled = true;
+        let state = MapiState::new(
+            cfg,
+            std::sync::Arc::new(AuthVerifier::new(&Config::default())),
+        );
+        let sid = state
+            .sessions
+            .create(crate::mapi::session::SessionPrincipal {
+                email: "u@example.com".into(),
+                basic_auth: true,
+            });
+        const INPUT_HANDLE: u8 = 1;
+        state.sessions.with_session_mut(&sid, |s| {
+            s.set_handle(
+                INPUT_HANDLE,
+                crate::mapi::session::Handle::Folder {
+                    backend_id: "ROOT".into(),
+                    kind: crate::mapi::session::FolderKind::Root,
+                },
+            );
+        });
+        // Wire: RopId(0x1E) · LogonId(0) · InputHandle(1) · WantAsynchronous(0)
+        // · NotifyNonRead(0) · MessageIdCount(2 LE=1) · MessageId(8 LE=42).
+        let mut body = vec![0x1Eu8, 0, INPUT_HANDLE, 0, 0];
+        body.extend_from_slice(&1u16.to_le_bytes());
+        body.extend_from_slice(&42u64.to_le_bytes());
+        let req = MapiRequest {
+            kind: RpcKind::Mailbox(MapiRequestType::Execute),
+            request_id: "{G}:1".into(),
+            client_application: None,
+            client_info: Some(format!("{{{}}}:0", sid.as_hyphenated())),
+            password: Some("pw".into()),
+            cookies: Vec::new(),
+            body,
+        };
+        let resp = handle(req, &state).await;
+        assert_eq!(resp.code, ResponseCode::Success);
+        let (_status, _h, _ct, body_out) = resp.render();
+        let payload = &body_out[4..];
+        assert_eq!(payload[0], 0x1E, "echoed RopId");
+        assert_eq!(payload[1], INPUT_HANDLE, "input handle echoed");
+        let rv = u32::from_le_bytes([payload[2], payload[3], payload[4], payload[5]]);
+        assert_eq!(
+            RopErrorCode::from_u32(rv),
+            RopErrorCode::NoSupport,
+            "non-mail folder ⇒ NoSupport"
+        );
+        assert_eq!(payload[6], 0, "PartialCompletion=0");
+    }
+
+    /// `RopSubmitMessage` against an unsaved (`is_new`) draft must emit
+    /// `InvalidParameter` rather than attempting to submit a draft with no
+    /// backend id — guarding the EmailSubmission path against an envelope
+    /// built from an empty/stale email object.
+    #[tokio::test]
+    async fn execute_rop_submit_message_unsaved_draft_emits_invalid_parameter() {
+        let mut cfg = Config::test_with_mail_domain("example.com");
+        cfg.mapi_enabled = true;
+        let state = MapiState::new(
+            cfg,
+            std::sync::Arc::new(AuthVerifier::new(&Config::default())),
+        );
+        let sid = state
+            .sessions
+            .create(crate::mapi::session::SessionPrincipal {
+                email: "u@example.com".into(),
+                basic_auth: true,
+            });
+        const INPUT_HANDLE: u8 = 7;
+        state.sessions.with_session_mut(&sid, |s| {
+            s.set_handle(
+                INPUT_HANDLE,
+                crate::mapi::session::Handle::Message {
+                    backend_id: String::new(),
+                    mailbox_id: "drafts-mbox".into(),
+                    kind: crate::mapi::session::FolderKind::Mail,
+                    is_new: true,
+                },
+            );
+        });
+        // Wire: RopId(0x32) · LogonId(0) · InputHandle(7) · SubmitFlags(0).
+        let body: Vec<u8> = vec![0x32, 0, INPUT_HANDLE, 0];
+        let req = MapiRequest {
+            kind: RpcKind::Mailbox(MapiRequestType::Execute),
+            request_id: "{G}:1".into(),
+            client_application: None,
+            client_info: Some(format!("{{{}}}:0", sid.as_hyphenated())),
+            password: Some("pw".into()),
+            cookies: Vec::new(),
+            body,
+        };
+        let resp = handle(req, &state).await;
+        assert_eq!(resp.code, ResponseCode::Success);
+        let (_status, _h, _ct, body_out) = resp.render();
+        let payload = &body_out[4..];
+        assert_eq!(payload[0], 0x32, "echoed RopId");
+        assert_eq!(payload[1], INPUT_HANDLE, "input handle echoed");
+        let rv = u32::from_le_bytes([payload[2], payload[3], payload[4], payload[5]]);
+        assert_eq!(
+            RopErrorCode::from_u32(rv),
+            RopErrorCode::InvalidParameter,
+            "unsaved draft ⇒ InvalidParameter"
+        );
+    }
+
+    /// `RopTransportSend` failure (no JMAP backend) must emit the FAILURE
+    /// response shape `RopId · InputHandleIndex · ReturnValue(4)` — NOT the
+    /// success shape that adds `NoPropertiesReturned · PropertyValueCount`.
+    /// A regression earlier emitted the success envelope with a non-Success
+    /// return value, which Outlook misparsed.
+    #[tokio::test]
+    async fn execute_rop_transport_send_failure_emits_failure_envelope() {
+        let mut cfg = Config::test_with_mail_domain("example.com");
+        cfg.mapi_enabled = true;
+        let state = MapiState::new(
+            cfg,
+            std::sync::Arc::new(AuthVerifier::new(&Config::default())),
+        );
+        let sid = state
+            .sessions
+            .create(crate::mapi::session::SessionPrincipal {
+                email: "u@example.com".into(),
+                basic_auth: true,
+            });
+        const INPUT_HANDLE: u8 = 5;
+        state.sessions.with_session_mut(&sid, |s| {
+            s.set_handle(
+                INPUT_HANDLE,
+                crate::mapi::session::Handle::Message {
+                    backend_id: "MABC".into(),
+                    mailbox_id: "sent-mbox".into(),
+                    kind: crate::mapi::session::FolderKind::Mail,
+                    is_new: false,
+                },
+            );
+        });
+        // Wire: RopId(0x4A) · LogonId(0) · InputHandle(5).
+        let body: Vec<u8> = vec![0x4A, 0, INPUT_HANDLE];
+        let req = MapiRequest {
+            kind: RpcKind::Mailbox(MapiRequestType::Execute),
+            request_id: "{G}:1".into(),
+            client_application: None,
+            client_info: Some(format!("{{{}}}:0", sid.as_hyphenated())),
+            password: Some("pw".into()),
+            cookies: Vec::new(),
+            body,
+        };
+        let resp = handle(req, &state).await;
+        assert_eq!(resp.code, ResponseCode::Success);
+        let (_status, _h, _ct, body_out) = resp.render();
+        let payload = &body_out[4..];
+        // Failure envelope is exactly 6 bytes: RopId · InputHandleIndex · RV(4).
+        assert_eq!(payload.len(), 6, "transport-send failure envelope length");
+        assert_eq!(payload[0], 0x4A, "echoed RopId");
+        assert_eq!(payload[1], INPUT_HANDLE, "input handle echoed");
+        let rv = u32::from_le_bytes([payload[2], payload[3], payload[4], payload[5]]);
+        assert_eq!(
+            RopErrorCode::from_u32(rv),
+            RopErrorCode::NotFound,
+            "no JMAP backend ⇒ NotFound"
+        );
+    }
+
+    /// `email_recipients` dedupes across to/cc/bcc and skips empty addresses.
+    #[test]
+    fn email_recipients_dedupes_and_skips_empty() {
+        use crate::jmap::{JmapEmail, JmapEmailAddress};
+        let mut e = JmapEmail::default();
+        e.to = Some(vec![
+            JmapEmailAddress {
+                name: None,
+                email: Some("a@x.com".into()),
+            },
+            JmapEmailAddress {
+                name: None,
+                email: Some("b@x.com".into()),
+            },
+        ]);
+        e.cc = Some(vec![
+            JmapEmailAddress {
+                name: None,
+                email: Some("a@x.com".into()),
+            }, // dup of to
+            JmapEmailAddress {
+                name: None,
+                email: Some("".into()),
+            }, // empty, skipped
+        ]);
+        e.bcc = Some(vec![JmapEmailAddress {
+            name: None,
+            email: Some("c@x.com".into()),
+        }]);
+        let rcpts = super::email_recipients(&e);
+        assert_eq!(rcpts, vec!["a@x.com", "b@x.com", "c@x.com"]);
+    }
+
+    /// A `RopMoveCopyMessages` request against two non-mail handles must
+    /// emit `NoSupport` and echo the SOURCE handle index (per §2.2.4.6.2 the
+    /// response's first byte after RopId is the SourceHandleIndex, NOT the
+    /// dest).
+    #[tokio::test]
+    async fn execute_rop_move_copy_messages_non_mail_emits_no_support() {
+        let mut cfg = Config::test_with_mail_domain("example.com");
+        cfg.mapi_enabled = true;
+        let state = MapiState::new(
+            cfg,
+            std::sync::Arc::new(AuthVerifier::new(&Config::default())),
+        );
+        let sid = state
+            .sessions
+            .create(crate::mapi::session::SessionPrincipal {
+                email: "u@example.com".into(),
+                basic_auth: true,
+            });
+        const SRC_HANDLE: u8 = 2;
+        const DEST_HANDLE: u8 = 8;
+        state.sessions.with_session_mut(&sid, |s| {
+            s.set_handle(
+                SRC_HANDLE,
+                crate::mapi::session::Handle::Folder {
+                    backend_id: "ROOT".into(),
+                    kind: crate::mapi::session::FolderKind::Root,
+                },
+            );
+            s.set_handle(
+                DEST_HANDLE,
+                crate::mapi::session::Handle::Folder {
+                    backend_id: "ROOT".into(),
+                    kind: crate::mapi::session::FolderKind::Root,
+                },
+            );
+        });
+        // Wire: RopId(0x33) · LogonId(0) · SourceHandle(2) · DestHandle(8)
+        // · MessageIdCount(2 LE=1) · MessageId(8 LE=7) · WantAsync(0) · WantCopy(0).
+        let mut body = vec![0x33u8, 0, SRC_HANDLE, DEST_HANDLE];
+        body.extend_from_slice(&1u16.to_le_bytes());
+        body.extend_from_slice(&7u64.to_le_bytes());
+        body.push(0); // WantAsynchronous
+        body.push(0); // WantCopy (move)
+        let req = MapiRequest {
+            kind: RpcKind::Mailbox(MapiRequestType::Execute),
+            request_id: "{G}:1".into(),
+            client_application: None,
+            client_info: Some(format!("{{{}}}:0", sid.as_hyphenated())),
+            password: Some("pw".into()),
+            cookies: Vec::new(),
+            body,
+        };
+        let resp = handle(req, &state).await;
+        assert_eq!(resp.code, ResponseCode::Success);
+        let (_status, _h, _ct, body_out) = resp.render();
+        let payload = &body_out[4..];
+        assert_eq!(payload[0], 0x33, "echoed RopId");
+        assert_eq!(payload[1], SRC_HANDLE, "SOURCE handle echoed (not dest)");
+        let rv = u32::from_le_bytes([payload[2], payload[3], payload[4], payload[5]]);
+        assert_eq!(RopErrorCode::from_u32(rv), RopErrorCode::NoSupport);
+        assert_eq!(payload[6], 0, "PartialCompletion=0");
+    }
 }
