@@ -1568,7 +1568,24 @@ impl JmapClient {
                     "onSuccess_updateEmail": {
                         (email_id): { "keywords/$draft": null },
                     },
-                }),
+let mut submission_created = false;
+for (method, data, _) in resp.method_responses {
+    if method == "EmailSubmission/set" {
+        if let Some(not_created) = data.get("notCreated")
+            && !not_created.is_null()
+            && not_created.as_object().is_none_or(|o| !o.is_empty())
+        {
+            return Err(anyhow!("EmailSubmission/set submit failed: {not_created}"));
+        }
+        if data.get("created").and_then(|v| v.as_object()).is_some_and(|o| !o.is_empty()) {
+            submission_created = true;
+        }
+    }
+}
+if !submission_created {
+    return Err(anyhow!("EmailSubmission/set returned no created submission"));
+}
+Ok(())
                 "ess0",
             ),
         ];
