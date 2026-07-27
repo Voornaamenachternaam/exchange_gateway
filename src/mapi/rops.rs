@@ -1040,6 +1040,157 @@ impl RopDeleteMessagesResponse {
     }
 }
 
+// ---- RopMoveCopyMessages (0x33) ----------------------------------------------
+
+/// `RopMoveCopyMessages` request, MS-OXCROPS §2.2.4.6.1. Wire after the
+/// RopId byte is `LogonId(1) · SourceHandleIndex(1) · DestHandleIndex(1)
+/// · MessageIdCount(2 LE) · MessageIds[count×8 LE] · WantAsynchronous(1)
+/// · WantCopy(1)`. The dispatcher consumes the leading RopId byte before
+/// entering the arm, so `decode_after_ropid` reads only the trailing bytes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RopMoveCopyMessagesRequest {
+    pub source_handle_index: u8,
+    pub dest_handle_index: u8,
+    pub message_ids: Vec<u64>,
+    pub want_asynchronous: u8,
+    pub want_copy: u8,
+}
+impl RopMoveCopyMessagesRequest {
+    /// Decode the body after the dispatcher has consumed the leading RopId
+    /// byte (and the LogonId byte). Caller passes `_logon` for symmetry.
+    pub fn decode_after_ropid(cur: &mut Buf<'_>) -> Result<Self, DecodeError> {
+        let source_handle_index = cur.take_u8()?;
+        let dest_handle_index = cur.take_u8()?;
+        let count = cur.take_u16_le()?;
+        let count_us = usize::from(count);
+        if count_us > 4096 {
+            return Err(DecodeError::ExcessLength);
+        }
+        let mut message_ids = Vec::with_capacity(count_us);
+        for _ in 0..count_us {
+            message_ids.push(cur.take_u64_le()?);
+        }
+        let want_asynchronous = cur.take_u8()?;
+        let want_copy = cur.take_u8()?;
+        Ok(Self {
+            source_handle_index,
+            dest_handle_index,
+            message_ids,
+            want_asynchronous,
+            want_copy,
+        })
+    }
+}
+
+/// `RopMoveCopyMessages` response, MS-OXCROPS §2.2.4.6.2:
+///   RopId · SourceHandleIndex · ReturnValue(4) · PartialCompletion(1)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RopMoveCopyMessagesResponse {
+    pub source_handle_index: u8,
+    pub return_value: RopErrorCode,
+    pub partial_completion: u8,
+}
+impl RopMoveCopyMessagesResponse {
+    pub fn encode(&self, out: &mut Vec<u8>) {
+        out.push(RopId::ROP_MOVE_COPY_MESSAGES.to_u8());
+        out.push(self.source_handle_index);
+        out.extend_from_slice(&self.return_value.to_u32().to_le_bytes());
+        out.push(self.partial_completion);
+    }
+}
+
+// ---- RopSubmitMessage (0x32) ------------------------------------------------
+
+/// `RopSubmitMessage` request, MS-OXCROPS §2.2.7.1.1. Wire after the RopId
+/// byte is `LogonId(1) · InputHandleIndex(1) · SubmitFlags(1)`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RopSubmitMessageRequest {
+    pub input_handle_index: u8,
+    pub submit_flags: u8,
+}
+impl RopSubmitMessageRequest {
+    /// Decode the body after the dispatcher has consumed the leading RopId
+    /// byte (and the LogonId byte).
+    pub fn decode_after_ropid(cur: &mut Buf<'_>) -> Result<Self, DecodeError> {
+        let input_handle_index = cur.take_u8()?;
+        let submit_flags = cur.take_u8()?;
+        Ok(Self {
+            input_handle_index,
+            submit_flags,
+        })
+    }
+}
+
+/// `RopSubmitMessage` response, MS-OXCROPS §2.2.7.1.2:
+///   RopId · InputHandleIndex · ReturnValue(4)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RopSubmitMessageResponse {
+    pub input_handle_index: u8,
+    pub return_value: RopErrorCode,
+}
+impl RopSubmitMessageResponse {
+    pub fn encode(&self, out: &mut Vec<u8>) {
+        out.push(RopId::ROP_SUBMIT_MESSAGE.to_u8());
+        out.push(self.input_handle_index);
+        out.extend_from_slice(&self.return_value.to_u32().to_le_bytes());
+    }
+}
+
+// ---- RopTransportSend (0x4A) ------------------------------------------------
+
+/// `RopTransportSend` request, MS-OXCROPS §2.2.7.6.1. Wire after the RopId
+/// byte is `LogonId(1) · InputHandleIndex(1)`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RopTransportSendRequest {
+    pub input_handle_index: u8,
+}
+impl RopTransportSendRequest {
+    /// Decode the body after the dispatcher has consumed the leading RopId
+    /// byte (and the LogonId byte).
+    pub fn decode_after_ropid(cur: &mut Buf<'_>) -> Result<Self, DecodeError> {
+        let input_handle_index = cur.take_u8()?;
+        Ok(Self { input_handle_index })
+    }
+}
+
+/// `RopTransportSend` success response, MS-OXCROPS §2.2.7.6.2:
+///   RopId · InputHandleIndex · ReturnValue(4) · NoPropertiesReturned(1)
+///   · PropertyValueCount(2 LE) · PropertyValues(variable)
+/// The gateway returns no transport properties (the message itself, once
+/// submitted, is the property set), so `NoPropertiesReturned = 1` and the
+/// count is zero.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RopTransportSendSuccess {
+    pub input_handle_index: u8,
+    pub return_value: RopErrorCode,
+    pub no_properties_returned: u8,
+    pub property_value_count: u16,
+}
+impl RopTransportSendSuccess {
+    pub fn encode(&self, out: &mut Vec<u8>) {
+        out.push(RopId::ROP_TRANSPORT_SEND.to_u8());
+        out.push(self.input_handle_index);
+        out.extend_from_slice(&self.return_value.to_u32().to_le_bytes());
+        out.push(self.no_properties_returned);
+        out.extend_from_slice(&self.property_value_count.to_le_bytes());
+    }
+}
+
+/// `RopTransportSend` failure response, MS-OXCROPS §2.2.7.6.3:
+///   RopId · InputHandleIndex · ReturnValue(4)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RopTransportSendFailure {
+    pub input_handle_index: u8,
+    pub return_value: RopErrorCode,
+}
+impl RopTransportSendFailure {
+    pub fn encode(&self, out: &mut Vec<u8>) {
+        out.push(RopId::ROP_TRANSPORT_SEND.to_u8());
+        out.push(self.input_handle_index);
+        out.extend_from_slice(&self.return_value.to_u32().to_le_bytes());
+    }
+}
+
 // ---- RopGetMessageStatus (0x1F) / RopSetMessageStatus (0x20) ----------------
 
 /// `RopGetMessageStatus` request, MS-OXCROPS §2.2.6.9.1. Body after the
