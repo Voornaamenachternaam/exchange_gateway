@@ -1234,6 +1234,333 @@ impl JmapClient {
         Ok(())
     }
 
+    /// Create a draft email via JMAP `Email/set` (RFC 8621 §4.5), returning
+    /// the server-assigned email id. `email_obj` is the full Email object;
+    /// the caller supplies the draft `mailboxIds`, `keywords`, headers and
+    /// bodyValues. This is the backend op `RopCreateMessage`/
+    /// `RopSaveChangesMessage` use to persist a New Outlook compose.
+    pub async fn create_email(
+        &self,
+        account_id: &str,
+        email_obj: Value,
+        username: &str,
+        password: &SecretString,
+    ) -> Result<String> {
+        let session = self.get_session(username, password).await?;
+        let api_url = &session.api_url;
+        let method_calls = vec![(
+            "Email/set",
+            json!({
+                "accountId": account_id,
+                "create": { "d0": email_obj },
+            }),
+            "es0",
+        )];
+        let resp = self
+            .api_call(
+                api_url,
+                &["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:mail"],
+                method_calls,
+                username,
+                password,
+            )
+            .await?;
+        for (method, data, _) in resp.method_responses {
+            if method == "Email/set" {
+                if let Some(not_created) = data.get("notCreated")
+                    && !not_created.is_null()
+                    && not_created.as_object().is_none_or(|o| !o.is_empty())
+                {
+                    return Err(anyhow!("Email/set create failed: {}", not_created));
+                }
+                if let Some(created) = data.get("created")
+                    && let Some(d0) = created.get("d0")
+                {
+                    let id = d0.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    if !id.is_empty() {
+                        return Ok(id);
+                    }
+                }
+            }
+        }
+        Err(anyhow!("Email/set create returned no id"))
+    }
+
+    /// Map JMAP email ids to MAPI message ids is a one-way FNV hash, so to
+    /// resolve the JMAP ids for a set of MAPI ids the caller enumerates the
+    /// source folder via `Email/query`+`Email/get` and we match. This helper
+    /// returns the `(jmap_id, mailbox_ids)` pair for every message currently
+    /// in `mailbox_id`, keyed by the MAPI id derived via
+    /// `store::message_id_from_jmap`. Used by `RopDeleteMessages` /
+    /// `RopMoveCopyMessages` to translate the client's MAPI ids back to JMAP.
+    pub async fn list_email_ids_in_mailbox(
+        &self,
+        account_id: &str,
+        mailbox_id: &str,
+        username: &str,
+        password: &SecretString,
+    ) -> Result<Vec<(String, Vec<String>)>> {
+        let params = QueryEmailsParams {
+            account_id,
+            filter: Some(json!({"inMailbox": mailbox_id})),
+            sort: None,
+            position: 0,
+            limit: 500,
+            username,
+            password,
+        };
+        let list = self.query_emails(params).await?;
+        Ok(list
+            .emails
+            .into_iter()
+            .filter_map(|e| {
+                let jid = e.id.clone()?;
+                let mids = e
+                    .mailbox_ids
+                    .as_ref()
+                    .map(|m| m.keys().cloned().collect())
+                    .unwrap_or_default();
+                Some((jid, mids))
+            })
+            .collect())
+    }
+
+    /// Move emails from their current mailbox(es) to a target mailbox by
+    /// patching `mailboxIds`: `add {target: true}` and `remove` every current
+    /// mailbox id. RFC 8621 §4.5 `Email/set` `update` semantics. Returns the
+    /// count of emails whose mailboxIds were actually patched.
+    pub async fn move_emails(
+        &self,
+        account_id: &str,
+        email_ids: &[String],
+        target_mailbox_id: &str,
+        username: &str,
+        password: &SecretString,
+    ) -> Result<usize> {
+        if email_ids.is_empty() {
+            return Ok(0);
+        }
+        // We need the current mailboxIds for each id to construct the patch
+        // (RFC 8621 update merges; to *move* we must clear the old ids).
+        let ids_args: Vec<Value> = email_ids.iter().map(|i| json!(i)).collect();
+        let session = self.get_session(username, password).await?;
+        let api_url = &session.api_url;
+        let get_calls = vec![(
+            "Email/get",
+            json!({
+                "accountId": account_id,
+                "ids": ids_args,
+                "properties": ["id", "mailboxIds"],
+            }),
+            "g0",
+        )];
+        let resp = self
+            .api_call(
+                api_url,
+                &["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:mail"],
+                get_calls,
+                username,
+                password,
+            )
+            .await?;
+        let mut current: Vec<Vec<String>> = Vec::new();
+        for (method, data, _) in &resp.method_responses {
+            if method == "Email/get"
+                && let Some(list) = data.get("list").and_then(|v| v.as_array())
+            {
+                for e in list {
+                    let e_id = e.get("id").and_then(|v| v.as_str()).unwrap_or("");
+                    if !email_ids.iter().any(|i| i == e_id) {
+                        continue;
+                    }
+                    let mids = e
+                        .get("mailboxIds")
+                        .and_then(|v| v.as_object())
+                        .map(|o| o.keys().cloned().collect())
+                        .unwrap_or_default();
+                    current.push(mids);
+                }
+            }
+        }
+        if current.is_empty() {
+            return Err(anyhow!("Email/get returned none of the requested ids"));
+        }
+        // Build the update patch. RFC 8621 §4.5 mailboxIds patch:
+        //   { id: { "mailboxIds/<oldid>": null, "mailboxIds/<newid>": true } }
+        let mut update = serde_json::Map::new();
+        for (eid, mids) in email_ids.iter().zip(current.iter()) {
+            let mut patch = serde_json::Map::new();
+            for old in mids {
+                patch.insert(format!("mailboxIds/{old}"), json!(null));
+            }
+            patch.insert(
+                format!("mailboxIds/{target_mailbox_id}"),
+                json!(true),
+            );
+            update.insert(eid.clone(), Value::Object(patch));
+        }
+        let set_calls = vec![(
+            "Email/set",
+            json!({
+                "accountId": account_id,
+                "update": Value::Object(update),
+            }),
+            "es0",
+        )];
+        let set_resp = self
+            .api_call(
+                api_url,
+                &["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:mail"],
+                set_calls,
+                username,
+                password,
+            )
+            .await?;
+        let mut updated = 0usize;
+        for (method, data, _) in set_resp.method_responses {
+            if method == "Email/set" {
+                if let Some(not_updated) = data.get("notUpdated")
+                    && !not_updated.is_null()
+                    && not_updated.as_object().is_none_or(|o| !o.is_empty())
+                {
+                    return Err(anyhow!("Email/set move failed: {}", not_updated));
+                }
+                if let Some(u) = data.get("updated").and_then(|v| v.as_object()) {
+                    updated = u.len();
+                }
+            }
+        }
+        Ok(updated)
+    }
+
+    /// Copy emails to a target mailbox using JMAP `Email/set` with
+    /// `copyFrom_emailId`. RFC 8621 §4.5 supports server-side copy via the
+    /// `copyFrom` create argument. Returns the count of new emails created,
+    /// keyed by the source id order.
+    pub async fn copy_emails(
+        &self,
+        account_id: &str,
+        email_ids: &[String],
+        target_mailbox_id: &str,
+        username: &str,
+        password: &SecretString,
+    ) -> Result<usize> {
+        if email_ids.is_empty() {
+            return Ok(0);
+        }
+        let session = self.get_session(username, password).await?;
+        let api_url = &session.api_url;
+        let mut create = serde_json::Map::new();
+        for (i, src) in email_ids.iter().enumerate() {
+            let key = format!("c{i}");
+            create.insert(
+                key,
+                json!({
+                    "copyFrom": src,
+                    "mailboxIds": { (target_mailbox_id): true },
+                }),
+            );
+        }
+        let calls = vec![(
+            "Email/set",
+            json!({
+                "accountId": account_id,
+                "create": Value::Object(create),
+            }),
+            "es0",
+        )];
+        let resp = self
+            .api_call(
+                api_url,
+                &["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:mail"],
+                calls,
+                username,
+                password,
+            )
+            .await?;
+        let mut created = 0usize;
+        for (method, data, _) in resp.method_responses {
+            if method == "Email/set" {
+                if let Some(not_created) = data.get("notCreated")
+                    && !not_created.is_null()
+                    && not_created.as_object().is_none_or(|o| !o.is_empty())
+                {
+                    return Err(anyhow!("Email/set copy failed: {}", not_created));
+                }
+                if let Some(c) = data.get("created").and_then(|v| v.as_object()) {
+                    created = c.len();
+                }
+            }
+        }
+        Ok(created)
+    }
+
+    /// Submit an already-saved email (draft) for delivery via JMAP
+    /// `EmailSubmission/set` (RFC 8621 §2.7), referencing the existing
+    /// `email_id`. `envelope_to` is the recipient address list for the
+    /// envelope (`rcptTo`). This is the `RopSubmitMessage` / `RopTransportSend`
+    /// backend op.
+    pub async fn submit_existing_email(
+        &self,
+        account_id: &str,
+        email_id: &str,
+        envelope_from: &str,
+        envelope_to: &[String],
+        username: &str,
+        password: &SecretString,
+    ) -> Result<()> {
+        let session = self.get_session(username, password).await?;
+        let api_url = &session.api_url;
+        // Send + tidy: emailSubmission/sendMail uses emailId, then `onSuccess_destroyEmail`
+        // would delete the draft copy — we keep the Sent copy and remove $draft.
+        let calls = vec![
+            (
+                "EmailSubmission/set",
+                json!({
+                    "accountId": account_id,
+                    "create": {
+                        "s0": {
+                            "emailId": email_id,
+                            "envelope": {
+                                "mailFrom": { "email": envelope_from },
+                                "rcptTo": envelope_to.iter().map(|a| json!({ "email": a })).collect::<Vec<_>>(),
+                            },
+                        },
+                    },
+                    "onSuccess_updateEmail": {
+                        (email_id): { "keywords/$draft": null },
+                    },
+                }),
+                "ess0",
+            ),
+        ];
+        let resp = self
+            .api_call(
+                api_url,
+                &[
+                    "urn:ietf:params:jmap:core",
+                    "urn:ietf:params:jmap:mail",
+                    "urn:ietf:params:jmap:submission",
+                ],
+                calls,
+                username,
+                password,
+            )
+            .await?;
+        for (method, data, _) in resp.method_responses {
+            if method == "EmailSubmission/set"
+                && let Some(not_created) = data.get("notCreated")
+                    && !not_created.is_null()
+                    && not_created.as_object().is_none_or(|o| !o.is_empty())
+            {
+                return Err(anyhow!(
+                    "EmailSubmission/set submit failed: {not_created}"
+                ));
+            }
+        }
+        Ok(())
+    }
+
     /// Get the current JMAP Email data state token.
     ///
     /// Per RFC 8621 §4.1, `Email/get` with `ids: []` returns the current

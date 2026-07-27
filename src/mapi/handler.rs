@@ -29,10 +29,14 @@ use crate::auth::AuthVerifier;
 use crate::config::Config;
 use crate::mapi::logon::{LogonOutcome, logon_basic};
 use crate::mapi::rops::{
-    Buf, DecodeError, RopErrorCode, RopErrorResponse, RopGetPropertiesAllRequest,
+    Buf, DecodeError, RopCreateMessageRequest, RopCreateMessageSuccess, RopDeleteMessagesRequest,
+    RopDeleteMessagesResponse, RopErrorCode, RopErrorResponse, RopGetPropertiesAllRequest,
     RopGetPropertiesSpecificRequest, RopGetStatusRequest, RopHeader4, RopId, RopLogonRequest,
-    RopLogonSuccess, RopOpenTableRequest, RopQueryRowsRequest, RopReleaseRequest,
-    RopSetColumnsRequest, RopSetMessageReadFlagRequest,
+    RopLogonSuccess, RopMoveCopyMessagesRequest, RopMoveCopyMessagesResponse, RopOpenTableRequest,
+    RopQueryRowsRequest, RopReleaseRequest, RopSaveChangesMessageRequest,
+    RopSaveChangesMessageSuccess, RopSetColumnsRequest, RopSetMessageReadFlagRequest,
+    RopSubmitMessageRequest, RopSubmitMessageResponse, RopTransportSendFailure,
+    RopTransportSendRequest, RopTransportSendSuccess,
 };
 use crate::mapi::session::{FolderKind, Handle, SessionManager};
 use crate::mapi::store;
@@ -703,6 +707,528 @@ async fn execute_one_rop(
             }
             .encode(out);
         }
+        // ---- Mail write path (audit §2a): compose / save / send / delete / move-
+        // All six arms bridge to JMAP `Email/set` (create/update), `Email/destroy`,
+        // `Email/set` mailboxIds patch (move) / `Email/set` copyFrom (copy), and
+        // `EmailSubmission/set` (send). A missing JMAP backend, missing creds, or
+        // an unbound handle yields a typed ROP-level error (NotFound /
+        // AccessDenied / DiskError) so the client can react instead of a silent
+        // Success-with-empty-state.
+        RopId::ROP_CREATE_MESSAGE => {
+            // §2.2.6.2.1: LogonId · InputHandleIndex · OutputHandleIndex ·
+            // CodePageId(2) · FolderId(8) · AssociatedFlag(1). The dispatcher
+            // consumed the leading RopId; consume LogonId here, then the
+            // decoder reads the two handle indices + body.
+            let _logon = cur.take_u8()?;
+            let req = RopCreateMessageRequest::decode(cur)?;
+            // Resolve the parent folder's backend id + kind from the INPUT
+            // handle (the folder the client opened). For the synthetic root we
+            // fall back to the drafts mailbox (drafts always save to \Drafts).
+            let (parent_backend, parent_kind) = sessions
+                .with_handle(session_id, req.input_handle_index, |h| match h {
+                    Handle::Folder { backend_id, kind } => (backend_id.clone(), *kind),
+                    _ => (String::new(), FolderKind::Root),
+                })
+                .unwrap_or((String::new(), FolderKind::Root));
+            // Drafts are always mail-message objects even when composed inside
+            // a Calendar/Contacts folder: Outlook composes IPM.Note drafts and
+            // only a SaveChanges that morphs them to IPM.Appointment would land
+            // them in a calendar mailbox. For Phase-2 we always create a draft
+            // mail message; the calendar/contacts compose path is separate.
+            let draft_mailbox_id = if parent_kind == FolderKind::Mail && !parent_backend.is_empty()
+            {
+                parent_backend.clone()
+            } else {
+                String::new()
+            };
+            // The draft's MAPI id is 0 until `RopSaveChangesMessage` persists
+            // it to JMAP and we get the real backend id back; the success
+            // envelope still carries HasMessageId=1 with a placeholder so the
+            // client's output handle is valid. We track `is_new=true` on the
+            // handle so a later SaveChanges drives `Email/set create`.
+            sessions.with_session_mut(session_id, |s| {
+                s.set_handle(
+                    req.output_handle_index,
+                    Handle::Message {
+                        backend_id: String::new(),
+                        mailbox_id: draft_mailbox_id.clone(),
+                        kind: FolderKind::Mail,
+                        is_new: true,
+                    },
+                );
+            });
+            let placeholder_mid = 0u64;
+            RopCreateMessageSuccess {
+                output_handle_index: req.output_handle_index,
+                return_value: RopErrorCode::Success,
+                has_message_id: 1,
+                message_id: placeholder_mid,
+            }
+            .encode(out);
+        }
+        RopId::ROP_SAVE_CHANGES_MESSAGE => {
+            // §2.2.6.3.1: LogonId · ResponseHandleIndex · InputHandleIndex ·
+            // SaveFlags(1).
+            let _logon = cur.take_u8()?;
+            // RopHeader's 3rd byte is unused here; the decoder's `_header_handle`
+            // param accommodates the optional ignored handle, but the spec wire
+            // after LogonId is ResponseHandleIndex · InputHandleIndex ·
+            // SaveFlags, so we pass a 0 sentinel (the decoder ignores it).
+            let req = RopSaveChangesMessageRequest::decode(cur, 0)?;
+            // Resolve the message handle: must be `is_new` to drive an
+            // Email/set create. An already-saved message is a no-op success
+            // (Outlook re-saves after edits; an update is a separate Phase-3
+            // SetProperties + SaveChanges sequence, treated here as idempotent
+            // success to keep the client's state machine advancing).
+            let (backend_id, mailbox_id, is_new) = sessions
+                .with_handle(session_id, req.input_handle_index, |h| match h {
+                    Handle::Message {
+                        backend_id,
+                        mailbox_id,
+                        is_new,
+                        ..
+                    } => (backend_id.clone(), mailbox_id.clone(), *is_new),
+                    _ => (String::new(), String::new(), false),
+                })
+                .unwrap_or((String::new(), String::new(), false));
+            let outcome: RopErrorCode;
+            let saved_mid: u64;
+            match (jmap, password, is_new) {
+                (Some(jc), Some(pw), true) => {
+                    let account_id = jc
+                        .get_account_id(username, pw)
+                        .await
+                        .ok()
+                        .unwrap_or_default();
+                    if account_id.is_empty() {
+                        outcome = RopErrorCode::NotFound;
+                        saved_mid = store::message_id_from_jmap(&backend_id);
+                    } else {
+                        // Resolve the drafts mailbox id if the create-message
+                        // handle didn't carry one (root folder).
+                        let mbox = if mailbox_id.is_empty() {
+                            resolve_drafts_mailbox(jc, &account_id, username, pw).await
+                        } else {
+                            mailbox_id.clone()
+                        };
+                        let email_obj = serde_json::json!({
+                            "mailboxIds": { (mbox.clone()): true },
+                            "keywords": { "$draft": true },
+                        });
+                        match jc
+                            .create_email(&account_id, email_obj, username, pw)
+                            .await
+                        {
+                            Ok(new_id) => {
+                                saved_mid = store::message_id_from_jmap(&new_id);
+                                // Promote the handle to a saved, non-new message.
+                                sessions.with_session_mut(session_id, |s| {
+                                    if let Some(Handle::Message {
+                                        backend_id: bid,
+                                        mailbox_id: mid,
+                                        is_new,
+                                        ..
+                                    }) = s.handle_mut(req.input_handle_index)
+                                    {
+                                        *bid = new_id.clone();
+                                        *mid = mbox;
+                                        *is_new = false;
+                                    }
+                                });
+                                outcome = RopErrorCode::Success;
+                            }
+                            Err(e) => {
+                                tracing::warn!(error = %e, "JMAP Email/set create (draft) failed");
+                                outcome = RopErrorCode::DiskError;
+                                saved_mid = 0;
+                            }
+                        }
+                    }
+                }
+                (None, _, _) => {
+                    outcome = RopErrorCode::NotFound;
+                    saved_mid = 0;
+                }
+                (_, None, _) => {
+                    outcome = RopErrorCode::AccessDenied;
+                    saved_mid = 0;
+                }
+                (_, _, false) => {
+                    // Already saved: idempotent success echoing the existing id.
+                    outcome = RopErrorCode::Success;
+                    saved_mid = store::message_id_from_jmap(&backend_id);
+                }
+            }
+            RopSaveChangesMessageSuccess {
+                response_handle_index: req.response_handle_index,
+                return_value: outcome,
+                input_handle_index: req.input_handle_index,
+                message_id: saved_mid,
+            }
+            .encode(out);
+        }
+        RopId::ROP_DELETE_MESSAGES => {
+            // §2.2.4.11.1: LogonId · InputHandleIndex · WantAsynchronous(1)
+            // · NotifyNonRead(1) · MessageIdCount(2) · MessageIds[count×8].
+            let _logon = cur.take_u8()?;
+            let req = RopDeleteMessagesRequest::decode(cur)?;
+            // The input handle is the source folder; resolve its backend id so
+            // we can enumerate the folder to map MAPI ids -> JMAP ids.
+            let (parent_backend, parent_kind) = sessions
+                .with_handle(session_id, req.input_handle_index, |h| match h {
+                    Handle::Folder { backend_id, kind } => (backend_id.clone(), *kind),
+                    _ => (String::new(), FolderKind::Root),
+                })
+                .unwrap_or((String::new(), FolderKind::Root));
+            let outcome: RopErrorCode;
+            let partial: u8;
+            match (jmap, password, parent_kind == FolderKind::Mail && !parent_backend.is_empty()) {
+                (Some(jc), Some(pw), true) => {
+                    let account_id = jc
+                        .get_account_id(username, pw)
+                        .await
+                        .ok()
+                        .unwrap_or_default();
+                    if account_id.is_empty() {
+                        outcome = RopErrorCode::NotFound;
+                        partial = 0;
+                    } else {
+                        match jc
+                            .list_email_ids_in_mailbox(&account_id, &parent_backend, username, pw)
+                            .await
+                        {
+                            Ok(all) => {
+                                let want: std::collections::HashSet<u64> =
+                                    req.message_ids.iter().copied().collect();
+                                let to_destroy: Vec<String> = all
+                                    .into_iter()
+                                    .filter(|(jid, _)| {
+                                        want.contains(&store::message_id_from_jmap(jid))
+                                    })
+                                    .map(|(jid, _)| jid)
+                                    .collect();
+                                let found = to_destroy.len();
+                                if found == 0 {
+                                    outcome = RopErrorCode::Success;
+                                    partial = 0;
+                                } else {
+                                    match jc
+                                        .destroy_emails(&account_id, &to_destroy, username, pw)
+                                        .await
+                                    {
+                                        Ok(()) => {
+                                            outcome = RopErrorCode::Success;
+                                            partial = if found == req.message_ids.len() {
+                                                0
+                                            } else {
+                                                1
+                                            };
+                                        }
+                                        Err(e) => {
+                                            tracing::warn!(
+                                                error = %e,
+                                                "JMAP Email/destroy failed"
+                                            );
+                                            outcome = RopErrorCode::DiskError;
+                                            partial = 0;
+                                        }
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                tracing::warn!(error = %e, "JMAP list for delete failed");
+                                outcome = RopErrorCode::DiskError;
+                                partial = 0;
+                            }
+                        }
+                    }
+                }
+                (None, _, _) => {
+                    outcome = RopErrorCode::NotFound;
+                    partial = 0;
+                }
+                (_, None, _) => {
+                    outcome = RopErrorCode::AccessDenied;
+                    partial = 0;
+                }
+                (_, _, false) => {
+                    outcome = RopErrorCode::NoSupport;
+                    partial = 0;
+                }
+            }
+            RopDeleteMessagesResponse {
+                input_handle_index: req.input_handle_index,
+                return_value: outcome,
+                partial_completion: partial,
+            }
+            .encode(out);
+        }
+        RopId::ROP_MOVE_COPY_MESSAGES => {
+            // §2.2.4.6.1: LogonId · SourceHandleIndex · DestHandleIndex ·
+            // MessageIdCount(2) · MessageIds[count×8] · WantAsynchronous(1)
+            // · WantCopy(1).
+            let _logon = cur.take_u8()?;
+            let req = RopMoveCopyMessagesRequest::decode_after_ropid(cur)?;
+            // Resolve the source + dest folder backend ids.
+            let (src_backend, src_kind) = sessions
+                .with_handle(session_id, req.source_handle_index, |h| match h {
+                    Handle::Folder { backend_id, kind } => (backend_id.clone(), *kind),
+                    _ => (String::new(), FolderKind::Root),
+                })
+                .unwrap_or((String::new(), FolderKind::Root));
+            let (dest_backend, dest_kind) = sessions
+                .with_handle(session_id, req.dest_handle_index, |h| match h {
+                    Handle::Folder { backend_id, kind } => (backend_id.clone(), *kind),
+                    _ => (String::new(), FolderKind::Root),
+                })
+                .unwrap_or((String::new(), FolderKind::Root));
+            let outcome: RopErrorCode;
+            let partial: u8;
+            match (
+                jmap,
+                password,
+                src_kind == FolderKind::Mail && !src_backend.is_empty(),
+                dest_kind == FolderKind::Mail && !dest_backend.is_empty(),
+            ) {
+                (Some(jc), Some(pw), true, true) => {
+                    let account_id = jc
+                        .get_account_id(username, pw)
+                        .await
+                        .ok()
+                        .unwrap_or_default();
+                    if account_id.is_empty() {
+                        outcome = RopErrorCode::NotFound;
+                        partial = 0;
+                    } else {
+                        match jc
+                            .list_email_ids_in_mailbox(&account_id, &src_backend, username, pw)
+                            .await
+                        {
+                            Ok(all) => {
+                                let want: std::collections::HashSet<u64> =
+                                    req.message_ids.iter().copied().collect();
+                                let jids: Vec<String> = all
+                                    .into_iter()
+                                    .filter(|(jid, _)| {
+                                        want.contains(&store::message_id_from_jmap(jid))
+                                    })
+                                    .map(|(jid, _)| jid)
+                                    .collect();
+                                if jids.is_empty() {
+                                    outcome = RopErrorCode::Success;
+                                    partial = 0;
+                                } else if req.want_copy != 0 {
+                                    match jc
+                                        .copy_emails(&account_id, &jids, &dest_backend, username, pw)
+                                        .await
+                                    {
+                                        Ok(n) => {
+                                            outcome = RopErrorCode::Success;
+                                            partial = if n == jids.len() { 0 } else { 1 };
+                                        }
+                                        Err(e) => {
+                                            tracing::warn!(error = %e, "JMAP copy failed");
+                                            outcome = RopErrorCode::DiskError;
+                                            partial = 0;
+                                        }
+                                    }
+                                } else {
+                                    match jc
+                                        .move_emails(&account_id, &jids, &dest_backend, username, pw)
+                                        .await
+                                    {
+                                        Ok(n) => {
+                                            outcome = RopErrorCode::Success;
+                                            partial = if n == jids.len() { 0 } else { 1 };
+                                        }
+                                        Err(e) => {
+                                            tracing::warn!(error = %e, "JMAP move failed");
+                                            outcome = RopErrorCode::DiskError;
+                                            partial = 0;
+                                        }
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                tracing::warn!(error = %e, "JMAP list for move/copy failed");
+                                outcome = RopErrorCode::DiskError;
+                                partial = 0;
+                            }
+                        }
+                    }
+                }
+                (None, _, _, _) => {
+                    outcome = RopErrorCode::NotFound;
+                    partial = 0;
+                }
+                (_, None, _, _) => {
+                    outcome = RopErrorCode::AccessDenied;
+                    partial = 0;
+                }
+                (_, _, false, _) | (_, _, _, false) => {
+                    outcome = RopErrorCode::NoSupport;
+                    partial = 0;
+                }
+            }
+            RopMoveCopyMessagesResponse {
+                source_handle_index: req.source_handle_index,
+                return_value: outcome,
+                partial_completion: partial,
+            }
+            .encode(out);
+        }
+        RopId::ROP_SUBMIT_MESSAGE => {
+            // §2.2.7.1.1: LogonId · InputHandleIndex · SubmitFlags(1).
+            let _logon = cur.take_u8()?;
+            let req = RopSubmitMessageRequest::decode_after_ropid(cur)?;
+            // Resolve the message handle (must be a saved, non-new draft with a
+            // real backend id) so we can drive EmailSubmission/set.
+            let (backend_id, is_new) = sessions
+                .with_handle(session_id, req.input_handle_index, |h| match h {
+                    Handle::Message { backend_id, is_new, .. } => (backend_id.clone(), *is_new),
+                    _ => (String::new(), false),
+                })
+                .unwrap_or((String::new(), false));
+            let outcome: RopErrorCode = match (jmap, password, is_new, !backend_id.is_empty()) {
+                (Some(jc), Some(pw), false, true) => {
+                    let account_id = jc
+                        .get_account_id(username, pw)
+                        .await
+                        .ok()
+                        .unwrap_or_default();
+                    if account_id.is_empty() {
+                        RopErrorCode::NotFound
+                    } else {
+                        // Fetch the full email to recover the envelope (from/to).
+                        match jc.get_email(&account_id, &backend_id, username, pw).await {
+                            Ok(Some(e)) => {
+                                let from_addr = e
+                                    .from
+                                    .as_ref()
+                                    .and_then(|v| v.first())
+                                    .and_then(|a| a.email.clone())
+                                    .unwrap_or_else(|| username.to_string());
+                                let rcpts = email_recipients(&e);
+                                if rcpts.is_empty() {
+                                    RopErrorCode::InvalidParameter
+                                } else {
+                                    match jc
+                                        .submit_existing_email(
+                                            &account_id,
+                                            &backend_id,
+                                            &from_addr,
+                                            &rcpts,
+                                            username,
+                                            pw,
+                                        )
+                                        .await
+                                    {
+                                        Ok(()) => RopErrorCode::Success,
+                                        Err(e) => {
+                                            tracing::warn!(error = %e, "JMAP submit failed");
+                                            RopErrorCode::DiskError
+                                        }
+                                    }
+                                }
+                            }
+                            _ => RopErrorCode::NotFound,
+                        }
+                    }
+                }
+                (None, _, _, _) => RopErrorCode::NotFound,
+                (_, None, _, _) => RopErrorCode::AccessDenied,
+                (_, _, true, _) => RopErrorCode::InvalidParameter, // unsaved draft
+                (_, _, _, false) => RopErrorCode::NotFound,        // no backend id
+            };
+            RopSubmitMessageResponse {
+                input_handle_index: req.input_handle_index,
+                return_value: outcome,
+            }
+            .encode(out);
+        }
+        RopId::ROP_TRANSPORT_SEND => {
+            // §2.2.7.6.1: LogonId · InputHandleIndex. Identical send path to
+            // RopSubmitMessage on the gateway (both drive EmailSubmission/set
+            // against the saved draft referenced by the input handle); the
+            // difference is purely client-side (TransportSend carries a
+            // completion callback property set which we return empty).
+            let _logon = cur.take_u8()?;
+            let req = RopTransportSendRequest::decode_after_ropid(cur)?;
+            let (backend_id, is_new) = sessions
+                .with_handle(session_id, req.input_handle_index, |h| match h {
+                    Handle::Message { backend_id, is_new, .. } => (backend_id.clone(), *is_new),
+                    _ => (String::new(), false),
+                })
+                .unwrap_or((String::new(), false));
+            let outcome: RopErrorCode = match (jmap, password, is_new, !backend_id.is_empty()) {
+                (Some(jc), Some(pw), false, true) => {
+                    let account_id = jc
+                        .get_account_id(username, pw)
+                        .await
+                        .ok()
+                        .unwrap_or_default();
+                    if account_id.is_empty() {
+                        RopErrorCode::NotFound
+                    } else {
+                        match jc.get_email(&account_id, &backend_id, username, pw).await {
+                            Ok(Some(e)) => {
+                                let from_addr = e
+                                    .from
+                                    .as_ref()
+                                    .and_then(|v| v.first())
+                                    .and_then(|a| a.email.clone())
+                                    .unwrap_or_else(|| username.to_string());
+                                let rcpts = email_recipients(&e);
+                                if rcpts.is_empty() {
+                                    RopErrorCode::InvalidParameter
+                                } else {
+                                    match jc
+                                        .submit_existing_email(
+                                            &account_id,
+                                            &backend_id,
+                                            &from_addr,
+                                            &rcpts,
+                                            username,
+                                            pw,
+                                        )
+                                        .await
+                                    {
+                                        Ok(()) => RopErrorCode::Success,
+                                        Err(e) => {
+                                            tracing::warn!(
+                                                error = %e,
+                                                "JMAP transport-send failed"
+                                            );
+                                            RopErrorCode::DiskError
+                                        }
+                                    }
+                                }
+                            }
+                            _ => RopErrorCode::NotFound,
+                        }
+                    }
+                }
+                (None, _, _, _) => RopErrorCode::NotFound,
+                (_, None, _, _) => RopErrorCode::AccessDenied,
+                (_, _, true, _) => RopErrorCode::InvalidParameter,
+                (_, _, _, false) => RopErrorCode::NotFound,
+            };
+            if outcome == RopErrorCode::Success {
+                RopTransportSendSuccess {
+                    input_handle_index: req.input_handle_index,
+                    return_value: outcome,
+                    no_properties_returned: 1,
+                    property_value_count: 0,
+                }
+                .encode(out);
+            } else {
+                RopTransportSendFailure {
+                    input_handle_index: req.input_handle_index,
+                    return_value: outcome,
+                }
+                .encode(out);
+            }
+        }
         _ => {
             // Unknown/unimplemented: emit a ROP-level NotFound so the client
             // falls back. Cursor is advanced only past the RopId byte here;
@@ -737,6 +1263,46 @@ fn decode_open_folder_body(
         folder_id,
         open_mode_flags,
     })
+}
+
+/// Resolve the JMAP mailbox id with `role == "drafts"` (RFC 8621 §5.1) for the
+/// account, used when a `RopCreateMessage` handle did not carry a parent
+/// mailbox id (the client opened the synthetic root). Falls back to the empty
+/// string on failure — the JMAP server will reject the create with no mailbox,
+/// mapped upstream to a `DiskError`.
+async fn resolve_drafts_mailbox(
+    jc: &crate::jmap::JmapClient,
+    account_id: &str,
+    username: &str,
+    password: &secrecy::SecretString,
+) -> String {
+    match jc
+        .get_mailbox_ids_for_role(account_id, "drafts", username, password)
+        .await
+    {
+        Ok(ids) => ids.first().cloned().unwrap_or_default(),
+        Err(_) => String::new(),
+    }
+}
+
+/// Collect the envelope recipient addresses (to/cc/bcc) for a JMAP email, used
+/// by `RopSubmitMessage` / `RopTransportSend` to build the
+/// `EmailSubmission/set` envelope `rcptTo`. Duplicates are deduplicated to
+/// avoid a single recipient being listed twice in the envelope.
+fn email_recipients(e: &crate::jmap::JmapEmail) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for addrs in [&e.to, &e.cc, &e.bcc].into_iter().flatten() {
+        for a in addrs {
+            if let Some(addr) = a.email.as_deref()
+                && !addr.is_empty()
+                && seen.insert(addr.to_string())
+            {
+                out.push(addr.to_string());
+            }
+        }
+    }
+    out
 }
 
 /// Pull the contents of a folder as bare row ids (Phase-1 minimal).
