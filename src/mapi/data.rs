@@ -378,6 +378,55 @@ impl PropertyRowEntry {
     }
 }
 
+/// `TaggedPropertyValue` (MS-OXCDATA §2.11.4): a self-describing
+/// `(PropertyTag, PropertyValue)` pair that carries its own tag inline. This
+/// is the array element of the `RopSetProperties` request `PropertyValues`
+/// field — unlike the implicit-tag rows of `RopQueryRows`, each entry
+/// names the property it sets so the server can apply them out of column-set
+/// order.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TaggedPropertyValue {
+    pub tag: PropertyTag,
+    pub value: PropertyValue,
+}
+
+impl TaggedPropertyValue {
+    /// Decode a single `TaggedPropertyValue`: the 4-byte `PropertyTag` then
+    /// the typed `PropertyValue` for that tag (MS-OXCDATA §2.11.4).
+    pub fn decode(cur: &mut Buf<'_>) -> Result<Self, DecodeError> {
+        let tag = PropertyTag::decode(cur)?;
+        let value = PropertyValue::decode(cur, &tag)?;
+        Ok(Self { tag, value })
+    }
+
+    pub fn encode(&self, out: &mut Vec<u8>) {
+        self.tag.encode(out);
+        self.value.encode(out);
+    }
+}
+
+/// `PropertyProblem` (MS-OXCDATA §2.7): the per-property error block returned
+/// by `RopSetProperties` / `RopDeleteProperties` / `RopCopyTo`. `index` is the
+/// 0-based position of the offending entry in the request's property array,
+/// `tag` echoes the property, and `error_code` is the MAPI HRESULT for that
+/// property alone (the ROP-level `ReturnValue` reports the aggregate).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PropertyProblem {
+    pub index: u16,
+    pub tag: PropertyTag,
+    pub error_code: u32,
+}
+
+impl PropertyProblem {
+    pub const SIZE: usize = 2 + 4 + 4;
+
+    pub fn encode(&self, out: &mut Vec<u8>) {
+        out.extend_from_slice(&self.index.to_le_bytes());
+        self.tag.encode(out);
+        out.extend_from_slice(&self.error_code.to_le_bytes());
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -23,7 +23,9 @@
 // values use `u32::try_from`/`usize::try_from` (no `as` casts on untrusted
 // data).
 
-use crate::mapi::data::PropertyTag;
+use crate::mapi::data::{PropertyProblem, PropertyTag,
+    TaggedPropertyValue, PropertyValue
+};
 
 /// The complete RopId table per MS-OXCROPS §2.2.2. Reserved ids remain in
 /// the un-named id space; any byte is carried through verbatim so the
@@ -1370,6 +1372,210 @@ impl RopGetPropertiesSuccess {
         out.extend_from_slice(&self.row_data);
     }
 }
+
+// ---- RopSetProperties (0x0A) / RopDeleteProperties (0x0B) -------------------
+//
+// The two general property-write ROPs (MS-OXCROPS 2.2.8.6 / 2.2.8.8) bridge
+// Outlook's compose/edit flow - subject, body, importance, follow-up flags,
+// categories - to the JMAP backend. The success/failure envelopes share the
+// common RopId + InputHandleIndex + ReturnValue shape; the success body
+// carries a PropertyProblemCount + PropertyProblems array (MS-OXCDATA 2.7)
+// the gateway emits empty (count=0) on a clean apply.
+
+/// Thin re-export of MS-OXCDATA 2.7 PropertyProblem so the codec layer and
+/// the handler share a single definition for the per-property failure block
+/// returned by SetProperties / DeleteProperties / CopyTo.
+pub use crate::mapi::data::PropertyProblem as RopPropertyProblem;
+
+/// Small capacity hint used to size the rental Vec for the (usually tiny)
+/// client-supplied property arrays. The decoding still honours the wire
+/// count up to MAX_*; this constant only avoids a 0..1024 capacity for the
+/// common small case.
+struct SubGuard;
+impl SubGuard {
+    const TYPICAL: usize = 32;
+}
+
+/// RopSetProperties request, MS-OXCROPS 2.2.8.6.1. Body after the 3-byte
+/// RopHeader (RopId + LogonId + InputHandleIndex) is
+/// PropertyValueSize(2 LE) + PropertyValueCount(2 LE) + PropertyValues.
+/// PropertyValues is an array of TaggedPropertyValue (2.11.4) and occupies
+/// exactly PropertyValueSize - 2 bytes; the decoder fails closed
+/// (ExcessLength) when the decoded entries do not land on that boundary,
+/// so a malformed MV or opaque-typed entry cannot desynchronise the
+/// ROP-chain cursor.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RopSetPropertiesRequest {
+    pub input_handle_index: u8,
+    pub property_values: Vec<TaggedPropertyValue>,
+}
+
+impl RopSetPropertiesRequest {
+    /// Maximum number of tagged property values a single RopSetProperties may
+    /// carry. Outlook compose forms send a small set (subject/body/flags);
+    /// the cap resists a pathological client that overruns the wire count.
+    pub const MAX_VALUES: usize = 1024;
+
+    pub fn decode(cur: &mut Buf<'_>) -> Result<Self, DecodeError> {
+        let property_value_size = cur.take_u16_le()?;
+        let property_value_count = cur.take_u16_le()?;
+        let count_us = usize::from(property_value_count);
+        if count_us > Self::MAX_VALUES {
+            return Err(DecodeError::ExcessLength);
+        }
+        // PropertyValueSize counts the bytes of the count field PLUS the
+        // property-values payload; bounds-check it against the remaining
+        // buffer and require at least the 2-byte count field.
+        let size = usize::from(property_value_size);
+        if size < 2 {
+            return Err(DecodeError::ExcessLength);
+        }
+        let payload = size.checked_sub(2).ok_or(DecodeError::ExcessLength)?;
+        if cur.remaining() < payload {
+            return Err(DecodeError::Insufficient);
+        }
+        // Decode the count-prefixed payload from a bounded sub-cursor so the
+        // outer chain cursor lands exactly at the next ROP even if an entry
+        // was decoded opaquely.
+        let payload_bytes = cur.take_bytes(payload)?;
+        let mut sub = Buf::new(payload_bytes);
+        let mut values = Vec::with_capacity(count_us.min(SubGuard::TYPICAL));
+        for _ in 0..count_us {
+            let start = sub.position();
+            let tv = TaggedPropertyValue::decode(&mut sub)?;
+            // Push-back guard: a variable-length opaque/MV entry that the
+            // typed decoder could not size must not silently advance the
+            // sub-cursor to a wrong offset. An opaque entry that decoded to
+            // zero payload bytes (unknown variable length) or any entry
+            // that consumed no wire bytes would desynchronise the chain;
+            // refuse it so the cursor fails closed rather than mis-stating
+            // the apply.
+            let opaque_empty = matches!(tv.value, PropertyValue::Opaque { ref bytes, .. } if bytes.is_empty());
+            if opaque_empty || sub.position() == start {
+                return Err(DecodeError::InvalidValue);
+            }
+            values.push(tv);
+        }
+        if sub.remaining() != 0 {
+            // The declared PropertyValueSize disagrees with the entries the
+            // client wrote; refuse rather than desyncing the chain.
+            return Err(DecodeError::ExcessLength);
+        }
+        Ok(Self {
+            input_handle_index: 0,
+            property_values: values,
+        })
+    }
+}
+
+/// Shared success/failure envelope for the property-write ROPs
+/// (2.2.8.6.2 / 2.2.8.8.2 / 2.2.8.12.2): RopId + HandleIndex +
+/// ReturnValue(4) + PropertyProblemCount(2 LE) + PropertyProblems. On a
+/// clean apply the problem array is empty (count=0). A non-success
+/// ReturnValue is emitted via the 6-byte failure envelope (no problem
+/// array), per 2.2.8.6.3 / 2.2.8.8.3.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RopPropertyWriteSuccess {
+    pub rop_id: RopId,
+    pub handle_index: u8,
+    pub return_value: RopErrorCode,
+    pub problems: Vec<PropertyProblem>,
+}
+
+impl RopPropertyWriteSuccess {
+    pub fn encode(&self, out: &mut Vec<u8>) {
+        out.push(self.rop_id.to_u8());
+        out.push(self.handle_index);
+        out.extend_from_slice(&self.return_value.to_u32().to_le_bytes());
+        let count = u16::try_from(self.problems.len()).unwrap_or(u16::MAX);
+        out.extend_from_slice(&count.to_le_bytes());
+        for p in &self.problems {
+            p.encode(out);
+        }
+    }
+}
+
+/// RopDeleteProperties request, MS-OXCROPS 2.2.8.8.1. Body after the
+/// 3-byte RopHeader is PropertyTagCount(2 LE) + PropertyTags[count].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RopDeletePropertiesRequest {
+    pub input_handle_index: u8,
+    pub property_tags: Vec<PropertyTag>,
+}
+
+impl RopDeletePropertiesRequest {
+    pub const MAX_TAGS: usize = 1024;
+
+    pub fn decode(cur: &mut Buf<'_>) -> Result<Self, DecodeError> {
+        let count = cur.take_u16_le()?;
+        let count_us = usize::from(count);
+        if count_us > Self::MAX_TAGS {
+            return Err(DecodeError::ExcessLength);
+        }
+        let mut tags = Vec::with_capacity(count_us.min(SubGuard::TYPICAL));
+        for _ in 0..count_us {
+            tags.push(PropertyTag::decode(cur)?);
+        }
+        Ok(Self {
+            input_handle_index: 0,
+            property_tags: tags,
+        })
+    }
+}
+
+// ---- RopCopyTo (0x39) -------------------------------------------------------
+
+/// RopCopyTo request, MS-OXCROPS 2.2.8.12.1. The dispatcher consumes the
+/// leading RopId and LogonId bytes; this decoder reads the two handle
+/// indices first (SourceHandleIndex, DestHandleIndex), then the body
+/// WantAsynchronous(1) + WantSubObjects(1) + CopyFlags(1)
+/// + ExcludedTagCount(2 LE) + ExcludedTags[count].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RopCopyToRequest {
+    pub source_handle_index: u8,
+    pub dest_handle_index: u8,
+    pub want_asynchronous: u8,
+    pub want_sub_objects: u8,
+    pub copy_flags: u8,
+    pub excluded_tags: Vec<PropertyTag>,
+}
+
+impl RopCopyToRequest {
+    pub const MAX_EXCLUDED_TAGS: usize = 1024;
+
+    pub fn decode(cur: &mut Buf<'_>) -> Result<Self, DecodeError> {
+        let source_handle_index = cur.take_u8()?;
+        let dest_handle_index = cur.take_u8()?;
+        let want_asynchronous = cur.take_u8()?;
+        let want_sub_objects = cur.take_u8()?;
+        let copy_flags = cur.take_u8()?;
+        let count = cur.take_u16_le()?;
+        let count_us = usize::from(count);
+        if count_us > Self::MAX_EXCLUDED_TAGS {
+            return Err(DecodeError::ExcessLength);
+        }
+        let mut excluded_tags = Vec::with_capacity(count_us.min(SubGuard::TYPICAL));
+        for _ in 0..count_us {
+            excluded_tags.push(PropertyTag::decode(cur)?);
+        }
+        Ok(Self {
+            source_handle_index,
+            dest_handle_index,
+            want_asynchronous,
+            want_sub_objects,
+            copy_flags,
+            excluded_tags,
+        })
+    }
+}
+
+/// RopCopyTo success response, MS-OXCROPS 2.2.8.12.2:
+///   RopId + SourceHandleIndex + ReturnValue(4) + PropertyProblemCount(2)
+///   + PropertyProblems (variable). The null-destination failure
+///   (2.2.8.12.3, code 0x00000503) and the generic failure (2.2.8.12.4)
+///   are emitted as a plain RopErrorResponse by the dispatcher; the clean
+///   path uses this envelope with an empty problem array.
+pub type RopCopyToSuccess = RopPropertyWriteSuccess;
 
 #[cfg(test)]
 mod tests {
