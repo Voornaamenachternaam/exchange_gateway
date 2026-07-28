@@ -23,9 +23,7 @@
 // values use `u32::try_from`/`usize::try_from` (no `as` casts on untrusted
 // data).
 
-use crate::mapi::data::{PropertyProblem, PropertyTag,
-    TaggedPropertyValue, PropertyValue
-};
+use crate::mapi::data::{PropertyProblem, PropertyTag, TaggedPropertyValue};
 
 /// The complete RopId table per MS-OXCROPS §2.2.2. Reserved ids remain in
 /// the un-named id space; any byte is carried through verbatim so the
@@ -1443,15 +1441,14 @@ impl RopSetPropertiesRequest {
         for _ in 0..count_us {
             let start = sub.position();
             let tv = TaggedPropertyValue::decode(&mut sub)?;
-            // Push-back guard: a variable-length opaque/MV entry that the
-            // typed decoder could not size must not silently advance the
-            // sub-cursor to a wrong offset. An opaque entry that decoded to
-            // zero payload bytes (unknown variable length) or any entry
-            // that consumed no wire bytes would desynchronise the chain;
-            // refuse it so the cursor fails closed rather than mis-stating
-            // the apply.
-            let opaque_empty = matches!(tv.value, PropertyValue::Opaque { ref bytes, .. } if bytes.is_empty());
-            if opaque_empty || sub.position() == start {
+            // Push-back guard: any entry that consumed zero wire bytes
+            // (an unknown variable-length type we cannot size) would make
+            // the declared PropertyValueSize land on a wrong boundary; refuse
+            // it so the chain fails closed rather than silently mis-stating
+            // the apply. Multi-value entries are sized and skipped by
+            // `PropertyValue::skip_multivalue`, so they DO advance the cursor
+            // and are tolerated here.
+            if sub.position() == start {
                 return Err(DecodeError::InvalidValue);
             }
             values.push(tv);

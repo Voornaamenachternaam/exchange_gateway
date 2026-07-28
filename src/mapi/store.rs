@@ -89,6 +89,17 @@ pub const PR_HAS_ATTACHMENTS: u16 = 0x0E1B;
 pub const PR_MESSAGE_FLAGS: u16 = 0x0E07;
 /// PidTagImportance — 0017 (Integer32).
 pub const PR_IMPORTANCE: u16 = 0x0017;
+/// PidTagFlagStatus — 0x1090 (Integer32). MS-OXOFLAG 2.2.1.1: 0x01
+/// followupComplete, 0x02 followupFlagged; absence means unflagged.
+pub const PR_FLAG_STATUS: u16 = 0x1090;
+/// PidTagFollowupIcon — 0x1095 (Integer32). MS-OXOFLAG 2.2.1.2: flag color
+/// (0..6). No JMAP keyword equivalent; the gateway accepts the value but
+/// does not persist it across the JMAP backend.
+pub const PR_FOLLOWUP_ICON: u16 = 0x1095;
+/// PidTagToDoItemFlags — 0x0E2B (Integer32). MS-OXOFLAG 2.2.1.6: bit-field
+/// describing the to-do entry kind. Tolerated on SetProperties (no JMAP
+/// analogue); persistence is Phase 2.
+pub const PR_TODO_ITEM_FLAGS: u16 = 0x0E2B;
 /// PidTagSensitivity — 0036 (Integer32).
 pub const PR_SENSITIVITY: u16 = 0x0036;
 /// PidTagInternetMessageId — 1035 (String).

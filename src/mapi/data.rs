@@ -255,12 +255,85 @@ impl PropertyValue {
                 let bytes = cur.take_bytes(n)?.to_vec();
                 Self::Binary(bytes)
             }
+            // Multi-value properties (PtypMultiple*, the 0x1000 bit set)
+            // use a 32-bit element count followed by `count` per-element
+            // encodings. The gateway's write paths only act on the scalar
+            // compose props; MV values (e.g. PidLidCategories) are
+            // sized-and-skipped into an Opaque carrying the consumed bytes
+            // so a SetProperties array that includes a categories entry
+            // does not desynchronise the cursor. Named-property persistence
+            // of categories is Phase 2.
+            mv if Self::is_multivalue(mv) => Self::skip_multivalue(cur, mv)?,
             // Anything else (PTYP_SERVER_ID/RESTRICTION/RULE_ACTION/unknowns):
             // return Null and leave the cursor where we are, since the wire
             // length is unknown to a generic decoder. The caller is expected
             // to skip such tags explicitly rather than request a typed value.
             other => return Self::decode_opaque(cur, other),
         })
+    }
+
+    /// True iff `t` is a PtypMultiple* property type (the 0x1000
+    /// Multivalue bit, MS-OXCDATA 2.11.1), excluding the table-only
+    /// 0x2000 MultivalueInstance flag handled separately above.
+    fn is_multivalue(t: PropertyType) -> bool {
+        t.to_u16() & 0x1000 != 0 && t.to_u16() & Self::MV_INSTANCE_MARKER == 0
+    }
+
+    /// Walk one multi-value value off the cursor, returning the raw bytes
+    /// consumed as an `Opaque` so the caller's array stays byte-aligned.
+    /// Per MS-OXCDATA 2.11.1.1 ROP buffers use a 32-bit element count; each
+    /// element mirrors its scalar encoding (String/String8 are
+    /// NUL-terminated, Binary is a 2-byte count prefix).
+    fn skip_multivalue(cur: &mut Buf<'_>, t: PropertyType) -> Result<Self, DecodeError> {
+        use PropertyType as T;
+        let count = u32::try_from(cur.take_u32_le()?).map_err(|_| DecodeError::ExcessLength)?;
+        // The element count for a single SetProperties MV value is bounded
+        // by a sane upper limit; Outlook categories are a handful of strings.
+        const MAX_MV_ELEMENTS: u32 = 1 << 20;
+        if count > MAX_MV_ELEMENTS {
+            return Err(DecodeError::ExcessLength);
+        }
+        let elem_type = PropertyType::from_u16(t.to_u16() & 0x0FFF);
+        for _ in 0..count {
+            match elem_type {
+                T::PTYP_STRING => Self::skip_terminated_utf16(cur)?,
+                T::PTYP_STRING8 => Self::skip_terminated_string8(cur)?,
+                T::PTYP_BINARY => {
+                    let n = usize::from(cur.take_u16_le()?);
+                    let _ = cur.take_bytes(n)?;
+                }
+                fixed if fixed.fixed_size().is_some() => {
+                    let n = fixed.fixed_size().unwrap();
+                    let _ = cur.take_bytes(n)?;
+                }
+                _ => return Err(DecodeError::InvalidValue),
+            }
+        }
+        Ok(Self::Opaque {
+            property_type: t,
+            bytes: Vec::new(),
+        })
+    }
+
+    /// Skip a NUL-terminated UTF-16 (PtypString) value: UTF-16LE code
+    /// units up to and including the terminating 0x0000.
+    fn skip_terminated_utf16(cur: &mut Buf<'_>) -> Result<(), DecodeError> {
+        loop {
+            let u = cur.take_u16_le()?;
+            if u == 0 {
+                return Ok(());
+            }
+        }
+    }
+
+    /// Skip a NUL-terminated String8 value: bytes up to and including 0x00.
+    fn skip_terminated_string8(cur: &mut Buf<'_>) -> Result<(), DecodeError> {
+        loop {
+            let b = cur.take_u8()?;
+            if b == 0 {
+                return Ok(());
+            }
+        }
     }
 
     /// Read the raw bytes for a property whose type the codec does not yet
