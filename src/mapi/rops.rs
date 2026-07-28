@@ -1567,11 +1567,11 @@ impl RopCopyToRequest {
 }
 
 /// RopCopyTo success response, MS-OXCROPS 2.2.8.12.2:
-///   RopId + SourceHandleIndex + ReturnValue(4) + PropertyProblemCount(2)
-///   + PropertyProblems (variable). The null-destination failure
-///   (2.2.8.12.3, code 0x00000503) and the generic failure (2.2.8.12.4)
-///   are emitted as a plain RopErrorResponse by the dispatcher; the clean
-///   path uses this envelope with an empty problem array.
+/// `RopId`, `SourceHandleIndex`, `ReturnValue(4)`, `PropertyProblemCount(2)`,
+/// and `PropertyProblems` (variable). The null-destination failure
+/// (2.2.8.12.3, code 0x00000503) and the generic failure (2.2.8.12.4) are
+/// emitted as a plain `RopErrorResponse` by the dispatcher; the clean path
+/// uses this envelope with an empty problem array.
 pub type RopCopyToSuccess = RopPropertyWriteSuccess;
 
 #[cfg(test)]

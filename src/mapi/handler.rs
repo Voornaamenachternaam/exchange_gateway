@@ -29,14 +29,15 @@ use crate::auth::AuthVerifier;
 use crate::config::Config;
 use crate::mapi::logon::{LogonOutcome, logon_basic};
 use crate::mapi::rops::{
-    Buf, DecodeError, RopCreateMessageRequest, RopCreateMessageSuccess, RopDeleteMessagesRequest,
-    RopDeleteMessagesResponse, RopErrorCode, RopErrorResponse, RopGetPropertiesAllRequest,
+    Buf, DecodeError, RopCopyToRequest, RopCopyToSuccess, RopCreateMessageRequest,
+    RopCreateMessageSuccess, RopDeleteMessagesRequest, RopDeleteMessagesResponse,
+    RopDeletePropertiesRequest, RopErrorCode, RopErrorResponse, RopGetPropertiesAllRequest,
     RopGetPropertiesSpecificRequest, RopGetStatusRequest, RopHeader4, RopId, RopLogonRequest,
     RopLogonSuccess, RopMoveCopyMessagesRequest, RopMoveCopyMessagesResponse, RopOpenTableRequest,
-    RopQueryRowsRequest, RopReleaseRequest, RopSaveChangesMessageRequest,
+    RopPropertyWriteSuccess, RopQueryRowsRequest, RopReleaseRequest, RopSaveChangesMessageRequest,
     RopSaveChangesMessageSuccess, RopSetColumnsRequest, RopSetMessageReadFlagRequest,
-    RopSubmitMessageRequest, RopSubmitMessageResponse, RopTransportSendFailure,
-    RopTransportSendRequest, RopTransportSendSuccess,
+    RopSetPropertiesRequest, RopSubmitMessageRequest, RopSubmitMessageResponse,
+    RopTransportSendFailure, RopTransportSendRequest, RopTransportSendSuccess,
 };
 use crate::mapi::session::{FolderKind, Handle, SessionManager};
 use crate::mapi::store;
@@ -1252,6 +1253,206 @@ async fn execute_one_rop(
                 }
                 .encode(out);
             }
+        }
+        RopId::ROP_SET_PROPERTIES => {
+            // MS-OXCROPS 2.2.8.6.1: the post-RopId bytes are
+            // LogonId + ResponseHandleIndex + InputHandleIndex, then the
+            // Property Values body. The dispatcher already consumed the
+            // LogonId byte, so read the two handle indices here, then the
+            // body-only TaggedPropertyValue array.
+            let _logon = cur.take_u8()?;
+            let response_handle_index = cur.take_u8()?;
+            let input_handle_index = cur.take_u8()?;
+            let req = RopSetPropertiesRequest::decode(cur)?;
+            // Resolve the Message handle backend id (the JMAP email id).
+            let backend_id = sessions
+                .with_handle(session_id, input_handle_index, |h| match h {
+                    Handle::Message { backend_id, .. } => Some(backend_id.clone()),
+                    _ => None,
+                })
+                .flatten()
+                .unwrap_or_default();
+            // Translate the MAPI property values to a JMAP Email/set update
+            // patch (subject / importance / follow-up flag) plus any
+            // per-property problems for untranslatable entries.
+            let store::PropertyPatch { patch, problems } =
+                store::set_values_to_patch(&req.property_values);
+            let return_value: RopErrorCode = match (jmap, password, backend_id.as_str()) {
+                (_, _, "") => RopErrorCode::NotFound, // message handle not bound
+                (None, _, _) => RopErrorCode::NotFound, // no JMAP backend configured
+                (_, None, _) => RopErrorCode::AccessDenied, // no credentials
+                (Some(jc), Some(pw), id) => {
+                    let account_id = jc
+                        .get_account_id(username, pw)
+                        .await
+                        .ok()
+                        .unwrap_or_default();
+                    if account_id.is_empty() {
+                        RopErrorCode::NotFound
+                    } else if patch.is_empty() {
+                        // No translatable fields: the apply is a no-op
+                        // success carrying only the per-property problems
+                        // (e.g. read-only props reported NO_SUPPORT). This
+                        // avoids a needless Email/set round-trip.
+                        RopErrorCode::Success
+                    } else {
+                        let update = serde_json::json!({ id: serde_json::Value::Object(patch) });
+                        match jc.update_email(&account_id, &update, username, pw).await {
+                            Ok(()) => RopErrorCode::Success,
+                            Err(_) => RopErrorCode::DiskError,
+                        }
+                    }
+                }
+            };
+            RopPropertyWriteSuccess {
+                rop_id,
+                handle_index: response_handle_index,
+                return_value,
+                problems,
+            }
+            .encode(out);
+        }
+        RopId::ROP_DELETE_PROPERTIES => {
+            // MS-OXCROPS 2.2.8.8.1: post-RopId bytes are
+            // LogonId + ResponseHandleIndex + InputHandleIndex, then the
+            // Property Tag Count + Tags body.
+            let _logon = cur.take_u8()?;
+            let response_handle_index = cur.take_u8()?;
+            let input_handle_index = cur.take_u8()?;
+            let req = RopDeletePropertiesRequest::decode(cur)?;
+            let backend_id = sessions
+                .with_handle(session_id, input_handle_index, |h| match h {
+                    Handle::Message { backend_id, .. } => Some(backend_id.clone()),
+                    _ => None,
+                })
+                .flatten()
+                .unwrap_or_default();
+            let store::PropertyPatch { patch, problems } =
+                store::delete_tags_to_patch(&req.property_tags);
+            let return_value: RopErrorCode = match (jmap, password, backend_id.as_str()) {
+                (_, _, "") => RopErrorCode::NotFound, // message handle not bound
+                (None, _, _) => RopErrorCode::NotFound, // no JMAP backend configured
+                (_, None, _) => RopErrorCode::AccessDenied, // no credentials
+                (Some(jc), Some(pw), id) => {
+                    let account_id = jc
+                        .get_account_id(username, pw)
+                        .await
+                        .ok()
+                        .unwrap_or_default();
+                    if account_id.is_empty() {
+                        RopErrorCode::NotFound
+                    } else if patch.is_empty() {
+                        RopErrorCode::Success
+                    } else {
+                        let update = serde_json::json!({ id: serde_json::Value::Object(patch) });
+                        match jc.update_email(&account_id, &update, username, pw).await {
+                            Ok(()) => RopErrorCode::Success,
+                            Err(_) => RopErrorCode::DiskError,
+                        }
+                    }
+                }
+            };
+            RopPropertyWriteSuccess {
+                rop_id,
+                handle_index: response_handle_index,
+                return_value,
+                problems,
+            }
+            .encode(out);
+        }
+        RopId::ROP_COPY_TO => {
+            // MS-OXCROPS 2.2.8.12.1: the post-RopId bytes are LogonId, then
+            // SourceHandleIndex + DestHandleIndex (the decoder reads those
+            // two first), then WantAsynchronous + WantSubObjects +
+            // CopyFlags + ExcludedTagCount + ExcludedTags.
+            let _logon = cur.take_u8()?;
+            let req = RopCopyToRequest::decode(cur)?;
+            // Resolve both the source and destination Message handles to
+            // their JMAP email ids.
+            let src_id = sessions
+                .with_handle(session_id, req.source_handle_index, |h| match h {
+                    Handle::Message { backend_id, .. } => Some(backend_id.clone()),
+                    _ => None,
+                })
+                .flatten()
+                .unwrap_or_default();
+            let dst_id = sessions
+                .with_handle(session_id, req.dest_handle_index, |h| match h {
+                    Handle::Message { backend_id, .. } => Some(backend_id.clone()),
+                    _ => None,
+                })
+                .flatten()
+                .unwrap_or_default();
+            // RopCopyTo copies the message proper. For the compose flow the
+            // realistic call is template/resolve-population, so the
+            // supported copy is the scalar property patch (subject,
+            // importance, follow-up flag) read off the source email and
+            // applied to the destination via Email/set. ExcludedTags has no
+            // JMAP Email/copy analogue; it is honoured only in the sense
+            // that the supported scalar set is the always-copied subset.
+            let return_value: RopErrorCode = match (jmap, password, src_id.as_str(), dst_id.as_str()) {
+                (_, _, "", _) | (_, _, _, "") => RopErrorCode::NotFound, // source/dest not bound
+                (None, _, _, _) => RopErrorCode::NotFound, // no JMAP backend configured
+                (_, None, _, _) => RopErrorCode::AccessDenied, // no credentials
+                (Some(jc), Some(pw), src, dst) => {
+                    let account_id = jc
+                        .get_account_id(username, pw)
+                        .await
+                        .ok()
+                        .unwrap_or_default();
+                    if account_id.is_empty() {
+                        RopErrorCode::NotFound
+                    } else {
+                        match jc.get_email(&account_id, src, username, pw).await {
+                            Ok(Some(src_email)) => {
+                                let mut patch = serde_json::Map::new();
+                                if let Some(subj) = src_email.subject.as_ref() {
+                                    patch.insert(
+                                        "subject".to_string(),
+                                        serde_json::Value::String(subj.clone()),
+                                    );
+                                }
+                                if let Some(kw) = src_email.keywords.as_ref() {
+                                    let imp = kw.contains_key("$important");
+                                    let flagged = kw.contains_key("$flagged");
+                                    patch.insert(
+                                        "keywords/$important".to_string(),
+                                        if imp { serde_json::json!(true) } else { serde_json::Value::Null },
+                                    );
+                                    patch.insert(
+                                        "keywords/$flagged".to_string(),
+                                        if flagged { serde_json::json!(true) } else { serde_json::Value::Null },
+                                    );
+                                }
+                                if patch.is_empty() {
+                                    RopErrorCode::Success
+                                } else {
+                                    let update =
+                                        serde_json::json!({ dst: serde_json::Value::Object(patch) });
+                                    match jc
+                                        .update_email(&account_id, &update, username, pw)
+                                        .await
+                                    {
+                                        Ok(()) => RopErrorCode::Success,
+                                        Err(_) => RopErrorCode::DiskError,
+                                    }
+                                }
+                            }
+                            Ok(None) => RopErrorCode::NotFound,
+                            Err(_) => RopErrorCode::DiskError,
+                        }
+                    }
+                }
+            };
+            // 2.2.8.12.2 echoes the SourceHandleIndex in the response.
+            let src_handle_index = req.source_handle_index;
+            RopCopyToSuccess {
+                rop_id,
+                handle_index: src_handle_index,
+                return_value,
+                problems: Vec::new(),
+            }
+            .encode(out);
         }
         _ => {
             // Unknown/unimplemented: emit a ROP-level NotFound so the client

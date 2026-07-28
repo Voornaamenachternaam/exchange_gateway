@@ -286,7 +286,7 @@ impl PropertyValue {
     /// NUL-terminated, Binary is a 2-byte count prefix).
     fn skip_multivalue(cur: &mut Buf<'_>, t: PropertyType) -> Result<Self, DecodeError> {
         use PropertyType as T;
-        let count = u32::try_from(cur.take_u32_le()?).map_err(|_| DecodeError::ExcessLength)?;
+        let count = cur.take_u32_le()?;
         // The element count for a single SetProperties MV value is bounded
         // by a sane upper limit; Outlook categories are a handful of strings.
         const MAX_MV_ELEMENTS: u32 = 1 << 20;
