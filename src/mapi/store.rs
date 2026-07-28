@@ -1223,4 +1223,149 @@ mod tests {
         assert!(iso8601_to_filetime(None).is_none());
         assert!(iso8601_to_filetime(Some("garbage")).is_none());
     }
+
+    // ---- set_values_to_patch / delete_tags_to_patch (audit gap 2a) ----
+    // The translator maps the MAPI scalar compose props to JMAP Email/set
+    // update patches and reports NO_SUPPORT for intrinsic/read-only/body
+    // props via the PropertyProblem array (MS-OXCDATA 2.7).
+
+    fn ttag(id: u16, ty: crate::mapi::data::PropertyType) -> crate::mapi::data::PropertyTag {
+        crate::mapi::data::PropertyTag::new(ty, id)
+    }
+
+    #[test]
+    fn set_values_subject_maps_to_jmap_subject() {
+        use crate::mapi::data::{PropertyValue, TaggedPropertyValue};
+        let values = vec![TaggedPropertyValue {
+            tag: ttag(PR_SUBJECT, crate::mapi::data::PropertyType::PTYP_STRING),
+            value: PropertyValue::String("Hello".to_string()),
+        }];
+        let patch = set_values_to_patch(&values);
+        assert_eq!(patch.patch.get("subject"), Some(&serde_json::json!("Hello")));
+        assert!(patch.problems.is_empty());
+    }
+
+    #[test]
+    fn set_values_importance_high_sets_dollar_important() {
+        use crate::mapi::data::{PropertyValue, TaggedPropertyValue};
+        let values = vec![TaggedPropertyValue {
+            tag: ttag(PR_IMPORTANCE, crate::mapi::data::PropertyType::PTYP_INTEGER32),
+            value: PropertyValue::Integer32(2),
+        }];
+        let patch = set_values_to_patch(&values);
+        assert_eq!(
+            patch.patch.get("keywords/$important"),
+            Some(&serde_json::json!(true))
+        );
+    }
+
+    #[test]
+    fn set_values_importance_normal_clears_dollar_important() {
+        use crate::mapi::data::{PropertyValue, TaggedPropertyValue};
+        let values = vec![TaggedPropertyValue {
+            tag: ttag(PR_IMPORTANCE, crate::mapi::data::PropertyType::PTYP_INTEGER32),
+            value: PropertyValue::Integer32(1),
+        }];
+        let patch = set_values_to_patch(&values);
+        assert_eq!(
+            patch.patch.get("keywords/$important"),
+            Some(&serde_json::Value::Null)
+        );
+    }
+
+    #[test]
+    fn set_values_followup_flag_sets_dollar_flagged() {
+        // MS-OXOFLAG 2.2.1.1: 0x02 followupFlagged sets the flag.
+        use crate::mapi::data::{PropertyValue, TaggedPropertyValue};
+        let values = vec![TaggedPropertyValue {
+            tag: ttag(PR_FLAG_STATUS, crate::mapi::data::PropertyType::PTYP_INTEGER32),
+            value: PropertyValue::Integer32(0x02),
+        }];
+        let patch = set_values_to_patch(&values);
+        assert_eq!(
+            patch.patch.get("keywords/$flagged"),
+            Some(&serde_json::json!(true))
+        );
+    }
+
+    #[test]
+    fn set_values_body_reports_no_support_problem() {
+        // PR_BODY (and PR_BODY_HTML) report MAPI_E_NO_SUPPORT because the
+        // stream ROPs own body editing; the body must never corrupt a
+        // partial patch.
+        use crate::mapi::data::{PropertyValue, TaggedPropertyValue};
+        let values = vec![TaggedPropertyValue {
+            tag: ttag(PR_BODY, crate::mapi::data::PropertyType::PTYP_STRING8),
+            value: PropertyValue::String8("body".to_string()),
+        }];
+        let patch = set_values_to_patch(&values);
+        assert!(patch.patch.is_empty());
+        assert_eq!(patch.problems.len(), 1);
+        assert_eq!(patch.problems[0].error_code, 0x8004_0102);
+        assert_eq!(patch.problems[0].tag.property_id, PR_BODY);
+    }
+
+    #[test]
+    fn set_values_readonly_intrinsic_reports_no_support() {
+        use crate::mapi::data::{PropertyValue, TaggedPropertyValue};
+        let values = vec![TaggedPropertyValue {
+            tag: ttag(PR_ENTRYID, crate::mapi::data::PropertyType::PTYP_BINARY),
+            value: PropertyValue::Binary(vec![0u8; 16]),
+        }];
+        let patch = set_values_to_patch(&values);
+        assert!(patch.patch.is_empty());
+        assert_eq!(patch.problems.len(), 1);
+        assert_eq!(patch.problems[0].error_code, 0x8004_0102);
+    }
+
+    #[test]
+    fn set_values_named_property_no_op_success() {
+        // A named property (0x8000 id bit, e.g. PidLidCategories as an MV
+        // string) is tolerated as a no-op success: the translator records
+        // neither a patch field nor a problem (Phase 2 will persist it once
+        // the named-property GUID/LID table is wired).
+        use crate::mapi::data::{PropertyValue, TaggedPropertyValue};
+        let values = vec![TaggedPropertyValue {
+            tag: ttag(0x8001, crate::mapi::data::PropertyType::from_u16(0x101E)),
+            value: PropertyValue::Opaque {
+                property_type: crate::mapi::data::PropertyType::from_u16(0x101E),
+                bytes: vec![1, 0, 0, 0, b'a', 0],
+            },
+        }];
+        let patch = set_values_to_patch(&values);
+        assert!(patch.patch.is_empty());
+        assert!(patch.problems.is_empty());
+    }
+
+    #[test]
+    fn delete_tags_subject_clears_importance_and_flag() {
+        let tags = [
+            ttag(PR_SUBJECT, crate::mapi::data::PropertyType::PTYP_STRING),
+            ttag(PR_IMPORTANCE, crate::mapi::data::PropertyType::PTYP_INTEGER32),
+            ttag(PR_FLAG_STATUS, crate::mapi::data::PropertyType::PTYP_INTEGER32),
+        ];
+        let patch = delete_tags_to_patch(&tags);
+        assert_eq!(patch.patch.get("subject"), Some(&serde_json::json!("")));
+        assert_eq!(
+            patch.patch.get("keywords/$important"),
+            Some(&serde_json::Value::Null)
+        );
+        assert_eq!(
+            patch.patch.get("keywords/$flagged"),
+            Some(&serde_json::Value::Null)
+        );
+        assert!(patch.problems.is_empty());
+    }
+
+    #[test]
+    fn delete_tags_readonly_reports_no_support() {
+        let tags = [ttag(
+            PR_ENTRYID,
+            crate::mapi::data::PropertyType::PTYP_BINARY,
+        )];
+        let patch = delete_tags_to_patch(&tags);
+        assert!(patch.patch.is_empty());
+        assert_eq!(patch.problems.len(), 1);
+        assert_eq!(patch.problems[0].error_code, 0x8004_0102);
+    }
 }

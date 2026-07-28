@@ -1667,6 +1667,253 @@ mod tests {
         assert!(LogonFlags::parse(0x1F).is_ok());
     }
 
+    // ---- RopSetProperties / RopDeleteProperties / RopCopyTo codec round-trips ----
+    // These exercise the new property-write ROP codecs (audit gap 2a). The
+    // request decoders read the count-prefixed bodies; the success envelope
+    // (`RopPropertyWriteSuccess`) encodes the problem array.
+
+    fn tag(t: crate::mapi::data::PropertyType, id: u16) -> crate::mapi::data::PropertyTag {
+        crate::mapi::data::PropertyTag::new(t, id)
+    }
+
+    /// Encode a `TaggedPropertyValue` for a *ROP buffer* context
+    /// (RopSetProperties request body, MS-OXCDATA 2.11.1.1 / 2.11.2.1). This
+    /// differs from `PropertyValue::encode`, which targets the
+    /// no-length-prefix *property-row* form: in a ROP buffer a PtypString is
+    /// a 2-byte code-unit count + units + 0x0000, and PtypString8 is a
+    /// 2-byte char count + chars + 0x00. PtypInteger32 is identical in both
+    /// forms (4 LE bytes). We hand-build the scalar forms the decoder reads
+    /// so the test exercises the real wire shape rather than the asymmetric
+    /// row encoder.
+    fn tv_bytes_rop(tv: &crate::mapi::data::TaggedPropertyValue) -> Vec<u8> {
+        use crate::mapi::data::PropertyValue;
+        let mut out = Vec::new();
+        tv.tag.encode(&mut out);
+        match &tv.value {
+            PropertyValue::String(s) => {
+                let units: Vec<u16> = s.encode_utf16().collect();
+                let n = u16::try_from(units.len()).unwrap_or(u16::MAX);
+                out.extend_from_slice(&n.to_le_bytes());
+                for u in &units {
+                    out.extend_from_slice(&u.to_le_bytes());
+                }
+                out.extend_from_slice(&0u16.to_le_bytes());
+            }
+            PropertyValue::String8(s) => {
+                let n = u16::try_from(s.len()).unwrap_or(u16::MAX);
+                out.extend_from_slice(&n.to_le_bytes());
+                out.extend_from_slice(s.as_bytes());
+                out.push(0);
+            }
+            PropertyValue::Integer32(i) => out.extend_from_slice(&i.to_le_bytes()),
+            PropertyValue::Integer16(i) => out.extend_from_slice(&i.to_le_bytes()),
+            PropertyValue::Null => {}
+            PropertyValue::Opaque { bytes, .. } => out.extend_from_slice(bytes),
+            other => {
+                // For any other scalar, fall back to the row encoder (the
+                // decoder reads the same fixed/length-prefixed form for
+                // Boolean/Time/Binary/Guid as the row encoder writes, so the
+                // two only diverge for String/String8).
+                other.encode(&mut out);
+            }
+        }
+        out
+    }
+
+    fn encode_set_properties_body(values: &[crate::mapi::data::TaggedPropertyValue]) -> Vec<u8> {
+        let mut payload = Vec::new();
+        for tv in values {
+            payload.extend_from_slice(&tv_bytes_rop(tv));
+        }
+        let size = u16::try_from(2 + payload.len()).unwrap_or(u16::MAX);
+        let count = u16::try_from(values.len()).unwrap_or(u16::MAX);
+        let mut out = Vec::new();
+        out.extend_from_slice(&size.to_le_bytes());
+        out.extend_from_slice(&count.to_le_bytes());
+        out.extend_from_slice(&payload);
+        out
+    }
+
+    #[test]
+    fn rop_set_properties_decodes_subject_and_importance() {
+        // PR_SUBJECT (PtypString, 0x0037) = "Hi" and PR_IMPORTANCE
+        // (PtypInteger32, 0x0017) = 2 (High). Both are translatable compose
+        // props the Outlook write path sends.
+        use crate::mapi::data::{PropertyType, PropertyValue, TaggedPropertyValue};
+        let values = vec![
+            TaggedPropertyValue {
+                tag: tag(PropertyType::PTYP_STRING, 0x0037),
+                value: PropertyValue::String("Hi".to_string()),
+            },
+            TaggedPropertyValue {
+                tag: tag(PropertyType::PTYP_INTEGER32, 0x0017),
+                value: PropertyValue::Integer32(2),
+            },
+        ];
+        let body = encode_set_properties_body(&values);
+        let mut cur = Buf::new(&body);
+        let req = RopSetPropertiesRequest::decode(&mut cur).expect("decode");
+        assert_eq!(req.property_values.len(), 2);
+        assert_eq!(req.property_values[0].tag, values[0].tag);
+        assert_eq!(req.property_values[1].tag, values[1].tag);
+        // The scalar subject round-trips through the count-prefixed wire
+        // form the ROP buffer uses.
+        assert_eq!(
+            req.property_values[0].value,
+            PropertyValue::String("Hi".to_string())
+        );
+        assert_eq!(req.property_values[1].value, PropertyValue::Integer32(2));
+        // Cursor must be fully consumed (no chain desync).
+        assert_eq!(cur.remaining(), 0);
+    }
+
+    #[test]
+    fn rop_set_properties_rejects_size_count_mismatch() {
+        // Declare a PropertyValueSize that swallows fewer bytes than the
+        // declared count actually encodes -> the codec must fail closed
+        // rather than desynchronising the chain.
+        use crate::mapi::data::{PropertyType, PropertyValue, TaggedPropertyValue};
+        let values = vec![TaggedPropertyValue {
+            tag: tag(PropertyType::PTYP_INTEGER32, 0x0017),
+            value: PropertyValue::Integer32(1),
+        }];
+        let mut body = encode_set_properties_body(&values);
+        // Corrupt the size field to 2 (only the count word) so the payload
+        // is declared empty while count=1.
+        body[0] = 2;
+        body[1] = 0;
+        let mut cur = Buf::new(&body);
+        assert!(RopSetPropertiesRequest::decode(&mut cur).is_err());
+    }
+
+    #[test]
+    fn rop_set_properties_tolerates_mv_value() {
+        // A PtypMultipleString8 value (type 0x101E) in the ROP-buffer form:
+        // a 32-bit element count + NUL-terminated String8 elements. The
+        // decoder sizes-and-skips it so the following scalar entry still
+        // decodes and the chain cursor stays aligned (audit 2a).
+        use crate::mapi::data::{PropertyType, PropertyValue, TaggedPropertyValue};
+        let mut mv_payload: Vec<u8> = Vec::new();
+        mv_payload.extend_from_slice(&1u32.to_le_bytes()); // 1 element
+        // one String8 element "x" with a terminating 0x00 (no count prefix
+        // for MV elements per MS-OXCDATA 2.11.1.1).
+        mv_payload.push(b'x');
+        mv_payload.push(0);
+        let mv_tv = TaggedPropertyValue {
+            tag: tag(PropertyType::from_u16(0x101E), 0x8001),
+            value: PropertyValue::Opaque {
+                property_type: PropertyType::from_u16(0x101E),
+                bytes: mv_payload,
+            },
+        };
+        let scalar_tv = TaggedPropertyValue {
+            tag: tag(PropertyType::PTYP_INTEGER32, 0x0017),
+            value: PropertyValue::Integer32(0),
+        };
+        let values = vec![mv_tv, scalar_tv];
+        let body = encode_set_properties_body(&values);
+        let mut cur = Buf::new(&body);
+        let req = RopSetPropertiesRequest::decode(&mut cur).expect("decode");
+        assert_eq!(req.property_values.len(), 2);
+        assert_eq!(cur.remaining(), 0);
+    }
+
+    #[test]
+    fn rop_delete_properties_decodes_tag_array() {
+        use crate::mapi::data::PropertyType;
+        let mut body = Vec::new();
+        let tags = [
+            tag(PropertyType::PTYP_STRING, 0x0037),
+            tag(PropertyType::PTYP_INTEGER32, 0x0017),
+        ];
+        body.extend_from_slice(&u16::try_from(tags.len()).unwrap().to_le_bytes());
+        for t in &tags {
+            t.encode(&mut body);
+        }
+        let mut cur = Buf::new(&body);
+        let req = RopDeletePropertiesRequest::decode(&mut cur).expect("decode");
+        assert_eq!(req.property_tags.len(), 2);
+        assert_eq!(req.property_tags[0], tags[0]);
+        assert_eq!(req.property_tags[1], tags[1]);
+        assert_eq!(cur.remaining(), 0);
+    }
+
+    #[test]
+    fn rop_copy_to_decodes_handles_and_flags() {
+        // SourceHandleIndex=3, DestHandleIndex=4, WantAsynchronous=1,
+        // WantSubObjects=0, CopyFlags=0, two excluded tags.
+        use crate::mapi::data::PropertyType;
+        let excluded = [
+            tag(PropertyType::PTYP_BINARY, 0x0E20),
+            tag(PropertyType::PTYP_INTEGER32, 0x0E08),
+        ];
+        let mut body: Vec<u8> = vec![3, 4, 1, 0, 0];
+        // head bytes: source handle, dest handle, want async, want sub
+        // objects, copy flags (the two excluded tags are appended below).
+        body.extend_from_slice(&u16::try_from(excluded.len()).unwrap().to_le_bytes());
+        for t in &excluded {
+            t.encode(&mut body);
+        }
+        let mut cur = Buf::new(&body);
+        let req = RopCopyToRequest::decode(&mut cur).expect("decode");
+        assert_eq!(req.source_handle_index, 3);
+        assert_eq!(req.dest_handle_index, 4);
+        assert_eq!(req.want_asynchronous, 1);
+        assert_eq!(req.want_sub_objects, 0);
+        assert_eq!(req.copy_flags, 0);
+        assert_eq!(req.excluded_tags.len(), 2);
+        assert_eq!(req.excluded_tags[0], excluded[0]);
+        assert_eq!(req.excluded_tags[1], excluded[1]);
+        assert_eq!(cur.remaining(), 0);
+    }
+
+    #[test]
+    fn rop_property_write_success_envelope_encodes_problems() {
+        // RopId + HandleIndex + ReturnValue(4 LE) + ProblemCount(2 LE) +
+        // problems[index(2 LE) + tag(4) + code(4 LE)].
+        use crate::mapi::data::{PropertyProblem, PropertyType};
+        let problems = vec![PropertyProblem {
+            index: 2,
+            tag: tag(PropertyType::PTYP_STRING, 0x1000), // PR_BODY -> NO_SUPPORT
+            error_code: 0x8004_0102,
+        }];
+        let resp = RopPropertyWriteSuccess {
+            rop_id: RopId::ROP_SET_PROPERTIES,
+            handle_index: 7,
+            return_value: RopErrorCode::Success,
+            problems,
+        };
+        let mut buf = Vec::new();
+        resp.encode(&mut buf);
+        assert_eq!(buf[0], RopId::ROP_SET_PROPERTIES.to_u8());
+        assert_eq!(buf[1], 7);
+        let rv = u32::from_le_bytes([buf[2], buf[3], buf[4], buf[5]]);
+        assert_eq!(rv, RopErrorCode::Success.to_u32());
+        let count = u16::from_le_bytes([buf[6], buf[7]]);
+        assert_eq!(count, 1);
+        let idx = u16::from_le_bytes([buf[8], buf[9]]);
+        assert_eq!(idx, 2);
+        let code = u32::from_le_bytes([buf[14], buf[15], buf[16], buf[17]]);
+        assert_eq!(code, 0x8004_0102);
+    }
+
+    #[test]
+    fn rop_property_write_success_empty_problems() {
+        let resp = RopPropertyWriteSuccess {
+            rop_id: RopId::ROP_COPY_TO,
+            handle_index: 9,
+            return_value: RopErrorCode::Success,
+            problems: Vec::new(),
+        };
+        let mut buf = Vec::new();
+        resp.encode(&mut buf);
+        // 1 + 1 + 4 + 2 = 8 bytes, count=0.
+        assert_eq!(buf.len(), 8);
+        assert_eq!(buf[0], RopId::ROP_COPY_TO.to_u8());
+        assert_eq!(buf[1], 9);
+        assert_eq!(u16::from_le_bytes([buf[6], buf[7]]), 0);
+    }
+
     proptest::proptest! {
         #[test]
         fn rop_header_roundtrip(rop_id in 0u8..=255u8, logon_id in 0u8..=255u8, handle in 0u8..=255u8) {
