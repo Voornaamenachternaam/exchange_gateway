@@ -553,6 +553,199 @@ fn cell_for_email(
     }
 }
 
+// ---------------------------------------------------------------------------
+// SetProperties / DeleteProperties -> JMAP Email/set update patch
+// ---------------------------------------------------------------------------
+//
+// These pure converters turn the MAPI property values Outlook sends in a
+// RopSetProperties / RopDeleteProperties on an open Message object into the
+// JMAP Email/set `update` patch object (RFC 8621 4.5) the handler hands to
+// JmapClient::update_email. The translateable scalar compose props Outlook
+// edits on a draft/reply or toggles via the ribbon -- subject, importance,
+// follow-up flag -- map directly to JMAP fields; the remaining props fall
+// into three buckets so a single untranslatable entry never drops the rest:
+//
+//   * PR_BODY / PR_BODY_HTML (the long-text body): JMAP represents the body
+//     as a `Blob/upload`-backed part referenced by `textBody`/`htmlBody` plus
+//     a `bodyValues` entry. Coordinating the blob upload with the property
+//     patch is the OpenStream/WriteStream path (audit 2a #2), so here these
+//     props report NO_SUPPORT so Outlook edits the body through the stream
+//     ROPs rather than corrupting a partial patch.
+//   * Read-only / intrinsic props (PR_MESSAGE_FLAGS, PR_ENTRYID, PR_MID,
+//     change keys, delivery/submit times): NO_SUPPORT, surfaced as a
+//     PropertyProblem per MS-OXCDATA 2.7 so Outlook's state machine learns
+//     the value did not take.
+//   * Named properties (0x8000 bit, e.g. PidLidCategories) and unknowns:
+//     tolerated as a no-op success; named-property persistence is Phase 2.
+//
+// MS-OXOFLAG 2.2.1.1 PidTagFlagStatus: 0x01 followupComplete, 0x02
+// followupFlagged, absent = unflagged. Maps to the JMAP keyword $flagged.
+// MS-OXOMSG importance: 0 Low, 1 Normal (default), 2 High; 2 sets $important.
+//
+// This module is the wire-array -> JSON-bridge half of the property-write
+// ROPs; it stays I/O-free so it is fully unit-testable.
+
+use crate::mapi::data::TaggedPropertyValue;
+
+/// The MAPI->JMAP translation outcome for one property-write ROP: the patch
+/// object to merge into a JMAP Email/set `update` entry keyed by email id,
+/// and the per-property problems for entries that could not be applied.
+#[derive(Debug, Clone, Default)]
+pub struct PropertyPatch {
+    /// A JSON object of { "jmapField": <value> } entries collected from the
+    /// translatable MAPI props, suitable as the inner value of an
+    /// `update: { <emailId>: <this> }` Email/set call.
+    pub patch: serde_json::Map<String, serde_json::Value>,
+    /// Per-property failures (PropertyProblem) for entries the gateway could
+    /// not translate; the handler folds these into the response envelope's
+    /// PropertyProblem array.
+    pub problems: Vec<crate::mapi::data::PropertyProblem>,
+}
+
+impl PropertyPatch {
+    pub fn is_empty(&self) -> bool {
+        self.patch.is_empty()
+    }
+
+    /// Record a per-property problem without aborting the loop; a single
+    /// untranslatable tag must not drop the rest of the SetProperties payload.
+    fn problem(&mut self, index: u16, tag: crate::mapi::data::PropertyTag, code: u32) {
+        self.problems.push(crate::mapi::data::PropertyProblem {
+            index,
+            tag,
+            error_code: code,
+        });
+    }
+}
+
+/// MAPI_E_NO_SUPPORT (0x80040102). Props that are intrinsic/read-only and
+/// cannot be set client side (PR_MESSAGE_FLAGS, PR_ENTRYID, PR_MID, ...)
+/// translate to this HRESULT in the PropertyProblem array.
+const ERR_NO_SUPPORT: u32 = 0x8004_0102;
+/// MAPI_E_INVALID_TYPE (0x80040028) when the client sends a value type that
+/// does not match the canonical type the gateway applies.
+const ERR_INVALID_TYPE: u32 = 0x8004_0028;
+
+/// Translate a RopSetProperties TaggedPropertyValue array into a JMAP
+/// Email/set update patch. `index` in the returned problems is the 0-based
+/// position of the offending entry in the request `PropertyValues` array,
+/// per MS-OXCDATA 2.7 PropertyProblem.
+pub fn set_values_to_patch(values: &[TaggedPropertyValue]) -> PropertyPatch {
+    use crate::mapi::data::PropertyValue;
+    let mut out = PropertyPatch::default();
+    for (idx, tv) in values.iter().enumerate() {
+        let index = u16::try_from(idx).unwrap_or(u16::MAX);
+        let tag = tv.tag;
+        match tag.property_id {
+            PR_SUBJECT => match &tv.value {
+                PropertyValue::String(s) | PropertyValue::String8(s) => {
+                    out.patch
+                        .insert("subject".to_string(), serde_json::Value::String(s.clone()));
+                }
+                PropertyValue::Null => {}
+                _ => out.problem(index, tag, ERR_INVALID_TYPE),
+            },
+            PR_IMPORTANCE => match int32_value(&tv.value) {
+                Some(2) => out.set_keyword(true, "$important"),
+                Some(0) | Some(1) => out.set_keyword(false, "$important"),
+                Some(_) => out.problem(index, tag, ERR_INVALID_TYPE),
+                None if matches!(tv.value, PropertyValue::Null) => {}
+                None => out.problem(index, tag, ERR_INVALID_TYPE),
+            },
+            PR_FLAG_STATUS => match int32_value(&tv.value) {
+                // MS-OXOFLAG 2.2.1.1: 0x02 followupFlagged sets the flag; 0x01
+                // followupComplete marks it done (no JMAP keyword analogue -
+                // clear the flag); any other value clears the flag too.
+                Some(0x02) => out.set_keyword(true, "$flagged"),
+                Some(_) => out.set_keyword(false, "$flagged"),
+                None if matches!(tv.value, PropertyValue::Null) => {}
+                None => out.problem(index, tag, ERR_INVALID_TYPE),
+            },
+            PR_FOLLOWUP_ICON | PR_TODO_ITEM_FLAGS => {
+                // No JMAP keyword analogue; tolerated as a no-op success. The
+                // read path synthesises defaults so the client view stays
+                // coherent across the read-modify-write cycle.
+            }
+            // Body long-text props report NO_SUPPORT: JMAP bodies are
+            // Blob/upload-backed, coordinated through the OpenStream/
+            // WriteStream ROPs (audit 2a #2). Reporting NO_SUPPORT (rather
+            // than silently dropping) lets Outlook edit the body through the
+            // stream path rather than corrupt a partial patch.
+            PR_BODY | PR_BODY_HTML => out.problem(index, tag, ERR_NO_SUPPORT),
+            // Read-only / intrinsic props.
+            PR_MESSAGE_FLAGS | PR_ENTRYID | PR_PARENT_ENTRYID | PR_RECORD_KEY
+            | PR_SEARCH_KEY | PR_MID | PR_CHANGE_KEY | PR_CONVERSATION_ID
+            | PR_MESSAGE_DELIVERY_TIME | PR_CLIENT_SUBMIT_TIME => {
+                out.problem(index, tag, ERR_NO_SUPPORT)
+            }
+            _ => {
+                // Unknown or named property (0x8000 bit, e.g. PidLidCategories
+                // as an MV string): tolerated as a no-op success; persistence
+                // lands in Phase 2 once the named-property GUID/LID table is
+                // wired. The MV bytes were sized-and-skipped by the decoder so
+                // the chain already advanced past them.
+            }
+        }
+    }
+    out
+}
+
+impl PropertyPatch {
+    /// Set/clear a JMAP keyword via the RFC 8621 `_keyword$NAME` patch form.
+    /// Setting `true` adds the keyword; `Value::Null` removes it.
+    fn set_keyword(&mut self, set: bool, name: &str) {
+        let key = format!("keywords/{name}");
+        self.patch.insert(
+            key,
+            if set {
+                serde_json::json!(true)
+            } else {
+                serde_json::Value::Null
+            },
+        );
+    }
+}
+
+/// Translate a RopDeleteProperties tag array into a JMAP Email/set update
+/// patch clearing the translateable props (subject -> empty; importance /
+/// follow-up flag keywords removed). Read-only / intrinsic props report
+/// NO_SUPPORT; unknown props are tolerated as no-op successes (MAPI delete
+/// of a missing prop is a no-op).
+pub fn delete_tags_to_patch(tags: &[crate::mapi::data::PropertyTag]) -> PropertyPatch {
+    let mut out = PropertyPatch::default();
+    for (idx, tag) in tags.iter().enumerate() {
+        let index = u16::try_from(idx).unwrap_or(u16::MAX);
+        match tag.property_id {
+            PR_SUBJECT => {
+                out.patch.insert(
+                    "subject".to_string(),
+                    serde_json::Value::String(String::new()),
+                );
+            }
+            PR_IMPORTANCE => out.set_keyword(false, "$important"),
+            PR_FLAG_STATUS => out.set_keyword(false, "$flagged"),
+            PR_BODY | PR_BODY_HTML => out.problem(index, *tag, ERR_NO_SUPPORT),
+            PR_MESSAGE_FLAGS | PR_ENTRYID | PR_PARENT_ENTRYID | PR_RECORD_KEY
+            | PR_SEARCH_KEY | PR_MID | PR_CHANGE_KEY | PR_CONVERSATION_ID
+            | PR_MESSAGE_DELIVERY_TIME | PR_CLIENT_SUBMIT_TIME => {
+                out.problem(index, *tag, ERR_NO_SUPPORT)
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+/// Extract a signed 32-bit integer from a PtypInteger32 / PtypInteger16 value.
+fn int32_value(v: &crate::mapi::data::PropertyValue) -> Option<i32> {
+    use crate::mapi::data::PropertyValue;
+    match v {
+        PropertyValue::Integer32(i) => Some(*i),
+        PropertyValue::Integer16(i) => Some(i32::from(*i)),
+        _ => None,
+    }
+}
+
 fn importance_for(email: &JmapEmail) -> i32 {
     // JMAP `$important` keyword maps to 1 (Normal). 0 == Low, 2 == High.
     if email
