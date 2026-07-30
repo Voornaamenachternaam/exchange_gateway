@@ -526,6 +526,25 @@ pub struct JmapClient {
     session_cache: Arc<DashMap<String, (Instant, JmapSession)>>,
 }
 
+/// Outcome of a JMAP `Email/set` update, surfaced by
+/// [`JmapClient::update_email_checked`]. Carries the ids the server reports
+/// as `updated`, the (`id`, `description`) pairs it rejected with
+/// `notUpdated`, and any method-level `error` rejection. Lets the MAPI
+/// property-write handlers distinguish a real success from a silent
+/// server-side rejection instead of masking failure as success
+/// (qodo #3/#5, cubic #23).
+#[derive(Debug, Clone, Default)]
+pub struct EmailSetOutcome {
+    /// Ids the server accepted in the `updated` array.
+    pub updated: Vec<String>,
+    /// (`id`, `description`) pairs the server refused to update
+    /// (the `notUpdated` map, RFC 8621 §4.5).
+    pub not_updated: Vec<(String, String)>,
+    /// Non-empty when the server rejected the whole method (e.g. rate limit,
+    /// `accountNotFound`). `None` means no method-level error.
+    pub method_error: Option<String>,
+}
+
 impl JmapClient {
     /// Standard Email/get property list (RFC 8621 §4.1.3) covering everything
     /// the gateway needs to render EWS/EAS: the metadata used by SyncFolderItems
@@ -1197,6 +1216,44 @@ impl JmapClient {
             .await?;
 
         Ok(())
+    }
+
+    /// Inspectable `Email/set` update: returns an [`EmailSetOutcome`] so the
+    /// MAPI property-write handlers can detect a per-id `notUpdated`
+    /// rejection or a method-level `error` instead of masking every `Ok` as
+    /// success. The parsing is delegated to the pure module-level
+    /// [`parse_email_set_outcome`] helper so unit tests can exercise the
+    /// rejection-handling without a live server (qodo #3/#5, cubic #23).
+    pub async fn update_email_checked(
+        &self,
+        account_id: &str,
+        update: &serde_json::Value,
+        username: &str,
+        password: &SecretString,
+    ) -> Result<EmailSetOutcome> {
+        let session = self.get_session(username, password).await?;
+        let api_url = &session.api_url;
+
+        let method_calls = vec![(
+            "Email/set",
+            serde_json::json!({
+                "accountId": account_id,
+                "update": update,
+            }),
+            "es0",
+        )];
+
+        let resp = self
+            .api_call(
+                api_url,
+                &["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:mail"],
+                method_calls,
+                username,
+                password,
+            )
+            .await?;
+
+        Ok(parse_email_set_outcome(resp.method_responses))
     }
 
     /// Destroy emails via JMAP `Email/set` `destroy` (RFC 8621 §4.5). Returns
@@ -2612,6 +2669,53 @@ impl JmapClient {
     }
 }
 
+/// Pure parser: extract `updated` / `notUpdated` / method-level `error` from
+/// the Email/set method responses into an [`EmailSetOutcome`]. Pure (no I/O)
+/// so unit tests exercise the rejection-handling without a live server or
+/// mock — invoked by [`JmapClient::update_email_checked`]. (qodo #3/#5,
+/// cubic #23.)
+pub fn parse_email_set_outcome(
+    method_responses: Vec<(String, serde_json::Value, String)>,
+) -> EmailSetOutcome {
+    let mut out = EmailSetOutcome::default();
+    for (method, data, _) in method_responses {
+        if method != "Email/set" {
+            continue;
+        }
+        if let Some(arr) = data.get("updated").and_then(|v| v.as_array()) {
+            out.updated = arr
+                .iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect();
+        }
+        if let Some(nu) = data.get("notUpdated")
+            && !nu.is_null()
+            && let Some(obj) = nu.as_object()
+        {
+            for (id, err) in obj {
+                let desc = err
+                    .get("description")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown")
+                    .to_string();
+                out.not_updated.push((id.clone(), desc));
+            }
+        }
+        if let Some(err) = data.get("error")
+            && !err.is_null()
+        {
+            let desc = err
+                .get("description")
+                .and_then(|v| v.as_str())
+                .or_else(|| err.as_str())
+                .unwrap_or("Email/set method rejected")
+                .to_string();
+            out.method_error = Some(desc);
+        }
+    }
+    out
+}
+
 /// Build the JMAP `Email/set` `update` patch for a mailbox *move*, keyed by
 /// email id (NOT by response order). For each requested id present in
 /// `current` it nulls every existing `mailboxIds/<old>` and sets
@@ -2991,5 +3095,76 @@ mod tests {
         assert_eq!(patch.get("mailboxIds/i1"), Some(&json!(null)));
         assert_eq!(patch.get("mailboxIds/i2"), Some(&json!(null)));
         assert_eq!(patch.get("mailboxIds/t"), Some(&json!(true)));
+    }
+
+    #[test]
+    fn parse_email_set_outcome_success_records_updated() {
+        // A clean Email/set reply with `updated` => fully-applied success.
+        let resp = vec![(
+            "Email/set".to_string(),
+            json!({ "accountId": "a", "updated": ["M-1"] }),
+            "es0".to_string(),
+        )];
+        let o = super::parse_email_set_outcome(resp);
+        assert_eq!(o.updated, vec!["M-1"]);
+        assert!(o.not_updated.is_empty());
+        assert!(o.method_error.is_none());
+    }
+
+    #[test]
+    fn parse_email_set_outcome_records_per_id_rejection() {
+        // `notUpdated` => the server refused an id; the MAPI property-write
+        // handlers must NOT mask this as success.
+        let resp = vec![(
+            "Email/set".to_string(),
+            json!({
+                "accountId": "a",
+                "updated": [],
+                "notUpdated": {
+                    "M-2": { "type": "notFound", "description": "no such email" }
+                }
+            }),
+            "es0".to_string(),
+        )];
+        let o = super::parse_email_set_outcome(resp);
+        assert!(o.updated.is_empty());
+        assert_eq!(o.not_updated.len(), 1);
+        assert_eq!(o.not_updated[0].0, "M-2");
+        assert_eq!(o.not_updated[0].1, "no such email");
+        assert!(o.method_error.is_none());
+    }
+
+    #[test]
+    fn parse_email_set_outcome_records_method_error() {
+        // A method-level `error` (rate limit / serverFail) => the whole
+        // apply failed.
+        let resp = vec![(
+            "Email/set".to_string(),
+            json!({ "accountId": "a", "error": { "type": "serverFail", "description": "boom" } }),
+            "es0".to_string(),
+        )];
+        let o = super::parse_email_set_outcome(resp);
+        assert!(o.updated.is_empty());
+        assert!(o.not_updated.is_empty());
+        assert_eq!(o.method_error.as_deref(), Some("boom"));
+    }
+
+    #[test]
+    fn parse_email_set_outcome_ignores_other_methods() {
+        // A non-Email/set response must not pollute the outcome.
+        let resp = vec![
+            (
+                "error".to_string(),
+                json!(""),
+                "es0".to_string(),
+            ),
+            (
+                "Email/set".to_string(),
+                json!({ "accountId": "a", "updated": ["M-9"] }),
+                "es0".to_string(),
+            ),
+        ];
+        let o = super::parse_email_set_outcome(resp);
+        assert_eq!(o.updated, vec!["M-9"]);
     }
 }

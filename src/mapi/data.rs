@@ -79,12 +79,10 @@ impl PropertyType {
     pub const fn fixed_size(self) -> Option<usize> {
         Some(match self {
             Self::PTYP_INTEGER16 | Self::PTYP_UNSPECIFIED | Self::PTYP_NULL => 2,
-            Self::PTYP_INTEGER32
-            | Self::PTYP_FLOATING32
-            | Self::PTYP_FLOATING_TIME
-            | Self::PTYP_ERROR_CODE => 4,
+            Self::PTYP_INTEGER32 | Self::PTYP_FLOATING32 | Self::PTYP_ERROR_CODE => 4,
             Self::PTYP_INTEGER64
             | Self::PTYP_FLOATING64
+            | Self::PTYP_FLOATING_TIME
             | Self::PTYP_CURRENCY
             | Self::PTYP_TIME => 8,
             Self::PTYP_BOOLEAN => 1,
@@ -187,18 +185,25 @@ impl PropertyValue {
             T::PTYP_NULL => Self::Null,
             T::PTYP_BOOLEAN => Self::Boolean(cur.take_u8()? != 0),
             T::PTYP_INTEGER16 => {
-                let v = cur.take_u16_le()?;
-                Self::Integer16(i16::try_from(v).map_err(|_| DecodeError::InvalidValue)?)
+                // Bit-reinterpret the two's-complement bytes directly: the
+                // prior `take_u16_le` + `i16::try_from` rejected valid
+                // negative values, so a SetProperties carrying a negative
+                // PtypInteger16 failed to decode (cubic/code review).
+                let raw = cur.take_bytes(2)?;
+                Self::Integer16(i16::from_le_bytes([raw[0], raw[1]]))
             }
             T::PTYP_INTEGER32 => {
-                let v = cur.take_u32_le()?;
-                Self::Integer32(i32::try_from(v).map_err(|_| DecodeError::InvalidValue)?)
+                let raw = cur.take_bytes(4)?;
+                Self::Integer32(i32::from_le_bytes([
+                    raw[0], raw[1], raw[2], raw[3],
+                ]))
             }
             T::PTYP_ERROR_CODE => Self::ErrorCode(cur.take_u32_le()?),
             T::PTYP_INTEGER64 => {
-                let v = cur.take_u64_le()?;
-                let s = i64::try_from(v).map_err(|_| DecodeError::InvalidValue)?;
-                Self::Integer64(s)
+                let raw = cur.take_bytes(8)?;
+                Self::Integer64(i64::from_le_bytes([
+                    raw[0], raw[1], raw[2], raw[3], raw[4], raw[5], raw[6], raw[7],
+                ]))
             }
             T::PTYP_FLOATING64 => {
                 let raw = cur.take_u64_le()?;
@@ -209,11 +214,17 @@ impl PropertyValue {
                 Self::Floating32(f32::from_bits(raw))
             }
             T::PTYP_CURRENCY => {
-                let raw = cur.take_u64_le()?;
-                let s = i64::try_from(raw).map_err(|_| DecodeError::InvalidValue)?;
-                Self::Currency(s)
+                let raw = cur.take_bytes(8)?;
+                Self::Currency(i64::from_le_bytes([
+                    raw[0], raw[1], raw[2], raw[3], raw[4], raw[5], raw[6], raw[7],
+                ]))
             }
-            T::PTYP_TIME => {
+            T::PTYP_TIME | T::PTYP_FLOATING_TIME => {
+                // Both PtypTime (0x0040) and PtypFloatingTime (0x0007) are
+                // 64-bit FILETIME values on the wire (MS-OXCDATA 2.11.1):
+                // 100-ns ticks since 1601-01-01. Treat the floating variant
+                // identically so it decodes to `Time` rather than an 8-byte
+                // Opaque (which would drop the typed value on re-encode).
                 let raw = cur.take_u64_le()?;
                 Self::Time(raw)
             }
@@ -286,6 +297,12 @@ impl PropertyValue {
     /// NUL-terminated, Binary is a 2-byte count prefix).
     fn skip_multivalue(cur: &mut Buf<'_>, t: PropertyType) -> Result<Self, DecodeError> {
         use PropertyType as T;
+        // Capture the consumed span (count + per-element encodings) into the
+        // returned `Opaque.bytes` so a future re-encode of the value
+        // round-trips verbatim; prior to this the placeholder carried
+        // `Vec::new()`, silently dropping the payload on any encode path
+        // (sourcery / cubic / coderabbit review).
+        let start = cur.position();
         let count = cur.take_u32_le()?;
         // The element count for a single SetProperties MV value is bounded
         // by a sane upper limit; Outlook categories are a handful of strings.
@@ -309,9 +326,11 @@ impl PropertyValue {
                 _ => return Err(DecodeError::InvalidValue),
             }
         }
+        let end = cur.position();
+        let bytes = cur.slice(start, end).map(|s| s.to_vec()).unwrap_or_default();
         Ok(Self::Opaque {
             property_type: t,
-            bytes: Vec::new(),
+            bytes,
         })
     }
 
@@ -414,6 +433,58 @@ impl PropertyValue {
         }
     }
 
+    /// ROP-buffer encoding (MS-OXCDATA section 2.11.4): the per-type bytes in
+    /// the shape used inside `RopSetProperties`/`RopDeleteProperties`/
+    /// `RopGetPropertiesSpecific` payloads. The difference from the row
+    /// [`encode`] is the `PtypString`/`PtypString8` element: in a ROP buffer
+    /// it is prefixed by a 2-byte count (UTF-16 code units for String, bytes
+    /// for String8), while in table rows the same value is NUL-terminated
+    /// without a prefix (cubic review #31).
+    pub fn encode_rop_buffer(&self, out: &mut Vec<u8>) {
+        match self {
+            Self::Null => {}
+            Self::Boolean(b) => out.push(u8::from(*b)),
+            Self::Integer16(v) => out.extend_from_slice(&v.to_le_bytes()),
+            Self::Integer32(v) => out.extend_from_slice(&v.to_le_bytes()),
+            Self::Integer64(v) => out.extend_from_slice(&v.to_le_bytes()),
+            Self::Floating32(v) => out.extend_from_slice(&v.to_le_bytes()),
+            Self::Floating64(v) => out.extend_from_slice(&v.to_le_bytes()),
+            Self::Currency(v) => out.extend_from_slice(&v.to_le_bytes()),
+            Self::Time(v) => out.extend_from_slice(&v.to_le_bytes()),
+            Self::Guid(g) => out.extend_from_slice(g),
+            Self::ErrorCode(v) => out.extend_from_slice(&v.to_le_bytes()),
+            Self::String(s) => {
+                let max_units = (u16::MAX as usize) / 2;
+                let units: Vec<u16> = s.encode_utf16().take(max_units).collect();
+                let count =
+                    u16::try_from(units.len()).expect("take capped at u16::MAX/2 code units");
+                out.extend_from_slice(&count.to_le_bytes());
+                for u in &units {
+                    out.extend_from_slice(&u.to_le_bytes());
+                }
+                out.extend_from_slice(&0u16.to_le_bytes()); // terminating NUL
+            }
+            Self::String8(s) => {
+                let max = u16::MAX as usize;
+                let bytes = s.as_bytes();
+                let take = bytes.len().min(max);
+                let count = u16::try_from(take).unwrap_or(u16::MAX);
+                out.extend_from_slice(&count.to_le_bytes());
+                out.extend_from_slice(&bytes[..take]);
+                out.push(0); // terminating NUL
+            }
+            Self::Binary(b) => {
+                let max = u16::MAX as usize;
+                let take = b.len().min(max);
+                out.extend_from_slice(&u16::try_from(take).unwrap_or(u16::MAX).to_le_bytes());
+                out.extend_from_slice(&b[..take]);
+            }
+            Self::Opaque { bytes, .. } => {
+                out.extend_from_slice(bytes);
+            }
+        }
+    }
+
     /// The PropertyType this value serialises as.
     pub const fn property_type(&self) -> PropertyType {
         match self {
@@ -475,6 +546,20 @@ impl TaggedPropertyValue {
     pub fn encode(&self, out: &mut Vec<u8>) {
         self.tag.encode(out);
         self.value.encode(out);
+    }
+
+    /// ROP-buffer encoding (MS-OXCDATA §2.11.4 / §2.11.2.1): the tag followed
+    /// by the value in its count-prefixed form (`PtypString`/`PtypString8`
+    /// carry a 2-byte char/byte count, then the payload, then the NUL
+    /// terminator). This is the shape used inside the `RopSetProperties` /
+    /// `RopDeleteProperties` request `PropertyValues` array — distinct from
+    /// the NUL-terminated-without-prefix row form emitted by `encode`
+    /// (table rows, `RopQueryRows`). Added because the plain `encode` used
+    /// the row form, which a future re-encode of a decoded SetProperties
+    /// payload would silently shrink (cubic review #31).
+    pub fn encode_rop_buffer(&self, out: &mut Vec<u8>) {
+        self.tag.encode(out);
+        self.value.encode_rop_buffer(out);
     }
 }
 
@@ -577,6 +662,148 @@ mod tests {
         PropertyValue::Binary(vec![0xDE, 0xAD, 0xBE, 0xEF]).encode(&mut b);
         assert_eq!(u16::from_le_bytes([b[0], b[1]]), 4);
         assert_eq!(&b[2..], &[0xDE, 0xAD, 0xBE, 0xEF]);
+    }
+
+    #[test]
+    fn floating_time_is_8_bytes() {
+        // PidTagAutoForwarded / PtypFloatingTime (0x000D) is an 8-byte IEEE
+        // double used as a fractional-day time; the size table regrouped it
+        // from 4 to 8 bytes so multivalue sizing matched the single-element
+        // width (qodo #6 / cubic #3).
+        assert_eq!(PropertyType::PTYP_FLOATING_TIME.fixed_size(), Some(8));
+    }
+
+    #[test]
+    fn floating_time_decodes_as_time_variant() {
+        // PTYP_FLOATING_TIME carries an unsigned 64-bit payload the same way
+        // PTYP_TIME does; collapsing it into the Time variant (instead of an
+        // untyped Opaque) keeps the value typed for callers. Encode a u64,
+        // decode under the FLOATING_TIME tag, expect Time.
+        let raw: u64 = 132555555550000000;
+        let tag = PropertyTag::new(PropertyType::PTYP_FLOATING_TIME, 0x3000);
+        let le = raw.to_le_bytes();
+        let mut cur = Buf::new(&le);
+        let pv = PropertyValue::decode(&mut cur, &tag).expect("decode");
+        assert_eq!(pv, PropertyValue::Time(raw));
+        assert_eq!(cur.remaining(), 0);
+    }
+
+    #[test]
+    fn integer16_negative_decodes_signed() {
+        // PtypInteger16 (0x0002) is signed; the read must bit-reinterpret the
+        // little-endian u16 into i16 (a naive i16::try_from(u16) rejects
+        // values 0x8000?0xFFFF and would have lost negatives). Encode -1 and
+        // round-trip.
+        let tag = PropertyTag::new(PropertyType::PTYP_INTEGER16, 0x3001);
+        let le: [u8; 2] = 0xFFFFu16.to_le_bytes();
+        let mut cur = Buf::new(&le);
+        let pv = PropertyValue::decode(&mut cur, &tag).expect("decode");
+        assert_eq!(pv, PropertyValue::Integer16(-1));
+        assert_eq!(cur.remaining(), 0);
+    }
+
+    #[test]
+    fn integer64_negative_decodes_signed() {
+        // PtypInteger64 (0x0014) signed: encode -7 as u64 LE and decode.
+        let tag = PropertyTag::new(PropertyType::PTYP_INTEGER64, 0x3002);
+        let raw: i64 = -7;
+        let le = raw.to_le_bytes();
+        let mut cur = Buf::new(&le);
+        let pv = PropertyValue::decode(&mut cur, &tag).expect("decode");
+        assert_eq!(pv, PropertyValue::Integer64(-7));
+    }
+
+    #[test]
+    fn currency_negative_decodes_signed() {
+        // PtypCurrency (0x0006) signed 64-bit (cents). Encode a negative.
+        let tag = PropertyTag::new(PropertyType::PTYP_CURRENCY, 0x3003);
+        let raw: i64 = -123456;
+        let le = raw.to_le_bytes();
+        let mut cur = Buf::new(&le);
+        let pv = PropertyValue::decode(&mut cur, &tag).expect("decode");
+        assert_eq!(pv, PropertyValue::Currency(-123456));
+    }
+
+    #[test]
+    fn multivalue_opaque_captures_consumed_bytes() {
+        // An MV element decodes to Opaque carrying the *exact* consumed span
+        // (u32 element count + per-element encodings), not an empty blob, so a
+        // future re-encode round-trips byte-for-byte and the chain cursor stays
+        // aligned (cubic #15). Build an MV String8 (PTYP_MV_STRING8 = 0x101E):
+        // a 4-byte LE element count (1) followed by one NUL-terminated String8
+        // element ("XY" + 0x00). Total 7 bytes; the decoder captures all 7.
+        let tag = PropertyTag::new(
+            PropertyType::from_u16(0x101E),
+            0x3004,
+        );
+        let bytes: Vec<u8> = vec![0x01, 0x00, 0x00, 0x00, b'X', b'Y', 0x00];
+        assert_eq!(bytes.len(), 7);
+        let mut cur = Buf::new(&bytes);
+        let pv = PropertyValue::decode(&mut cur, &tag).expect("decode");
+        match pv {
+            PropertyValue::Opaque { property_type, bytes: got } => {
+                assert_eq!(property_type, PropertyType::from_u16(0x101E));
+                assert_eq!(got, bytes, "Opaque must capture the full consumed span");
+            }
+            other => panic!("expected Opaque, got {other:?}"),
+        }
+        assert_eq!(cur.remaining(), 0);
+    }
+
+    #[test]
+    fn encode_rop_buffer_string_is_count_prefixed() {
+        // ROP-buffer form: 2-byte UTF-16 code-unit count, then the units,
+        // then the 0x0000 terminator (cubic review #31). The row form omits
+        // the count prefix; this asserts they differ and that the buffer
+        // form decodes back via a manual prefix-stripping reader.
+        let mut row = Vec::new();
+        let mut rop = Vec::new();
+        PropertyValue::String("A".into()).encode(&mut row);
+        PropertyValue::String("A".into()).encode_rop_buffer(&mut rop);
+        // "A" = 0x0041 (1 UTF-16 unit). row = 41 00 00 00 ; rop = 01 00 41 00 00 00
+        assert_eq!(row, vec![0x41, 0x00, 0x00, 0x00]);
+        assert_eq!(rop, vec![0x01, 0x00, 0x41, 0x00, 0x00, 0x00]);
+    }
+
+    #[test]
+    fn encode_rop_buffer_string8_is_count_prefixed() {
+        let mut row = Vec::new();
+        let mut rop = Vec::new();
+        PropertyValue::String8("AB".into()).encode(&mut row);
+        PropertyValue::String8("AB".into()).encode_rop_buffer(&mut rop);
+        // row = 41 42 00 ; rop = 02 00 41 42 00
+        assert_eq!(row, vec![b'A', b'B', 0x00]);
+        assert_eq!(rop, vec![0x02, 0x00, b'A', b'B', 0x00]);
+    }
+
+    #[test]
+    fn encode_rop_buffer_binary_matches_row_form() {
+        // Binary is count-prefixed in BOTH forms (the prefix is part of the
+        // value itself), so the two encoders agree here.
+        let mut row = Vec::new();
+        let mut rop = Vec::new();
+        PropertyValue::Binary(vec![0x01, 0x02]).encode(&mut row);
+        PropertyValue::Binary(vec![0x01, 0x02]).encode_rop_buffer(&mut rop);
+        assert_eq!(row, rop);
+        assert_eq!(row, vec![0x02, 0x00, 0x01, 0x02]);
+    }
+
+    #[test]
+    fn tagged_value_rop_buffer_roundtrips_through_rops_decoder() {
+        // Sanity: TaggedPropertyValue::encode_rop_buffer produces a
+        // count-prefixed String the existing (count-prefixed) decoder can
+        // parse back exactly — the asymmetry that motivated the new encoder.
+        use crate::mapi::rops as r;
+        let tv = TaggedPropertyValue {
+            tag: PropertyTag::new(PropertyType::PTYP_STRING, 0x0037),
+            value: PropertyValue::String("Hello".into()),
+        };
+        let mut out = Vec::new();
+        tv.encode_rop_buffer(&mut out);
+        let mut cur = r::Buf::new(&out);
+        let got = TaggedPropertyValue::decode(&mut cur).expect("decode");
+        assert_eq!(got, tv);
+        assert_eq!(cur.remaining(), 0);
     }
 
     proptest::proptest! {

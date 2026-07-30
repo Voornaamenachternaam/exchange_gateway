@@ -50,6 +50,15 @@ pub struct MapiState {
     pub cfg: crate::config::Config,
     pub auth: std::sync::Arc<AuthVerifier>,
     pub sessions: SessionManager,
+    /// Optional shared subscription manager. When present (production wires
+    /// the same `Arc<SubscriptionManager>` the EWS path uses), the property-
+    /// write arms publish `ItemModified` events so New Outlook's MAPI
+    /// `NotificationWait` long-poll sees the change — closing the EWS-only
+    /// notification gap where a MAPI-triggered property write raised no event
+    /// and the client aggressively re-polled (qodo #9, cubic #30, audit §2e).
+    /// `None` in unit-test fixtures keeps them free of a live manager.
+    pub subscription_manager:
+        Option<std::sync::Arc<crate::notifications::SubscriptionManager>>,
 }
 
 impl MapiState {
@@ -58,6 +67,23 @@ impl MapiState {
             cfg,
             auth,
             sessions: SessionManager::new(),
+            subscription_manager: None,
+        }
+    }
+
+    /// Production constructor: same as [`new`] but also wires the shared
+    /// subscription manager so MAPI property writes publish notification
+    /// events to the same feed EWS uses.
+    pub fn with_subscription_manager(
+        cfg: Config,
+        auth: std::sync::Arc<AuthVerifier>,
+        subscription_manager: std::sync::Arc<crate::notifications::SubscriptionManager>,
+    ) -> Self {
+        Self {
+            cfg,
+            auth,
+            sessions: SessionManager::new(),
+            subscription_manager: Some(subscription_manager),
         }
     }
 }
@@ -221,6 +247,7 @@ async fn handle_execute(req: MapiRequest, state: &MapiState) -> MapiResponse {
             &username,
             password_secret.as_ref(),
             logon_id,
+            state.subscription_manager.as_ref(),
         )
         .await;
         if let Err(e) = dispatch {
@@ -278,6 +305,7 @@ async fn execute_one_rop(
     username: &str,
     password: Option<&secrecy::SecretString>,
     logon_id: u8,
+    subscription_manager: Option<&std::sync::Arc<crate::notifications::SubscriptionManager>>,
 ) -> RopOutcome {
     // Each ROP variant reads its own logon-id + handle indices per its spec
     // header shape, so the dispatch is per-variant rather than a uniform
@@ -1255,26 +1283,26 @@ async fn execute_one_rop(
             }
         }
         RopId::ROP_SET_PROPERTIES => {
-            // MS-OXCROPS 2.2.8.6.1: the post-RopId bytes are
-            // LogonId + ResponseHandleIndex + InputHandleIndex, then the
-            // Property Values body. The dispatcher already consumed the
-            // LogonId byte, so read the two handle indices here, then the
-            // body-only TaggedPropertyValue array.
+            // MS-OXCROPS 2.2.8.6.1: the 3-byte header after the dispatcher's
+            // RopId is LogonId + InputHandleIndex. The spec has NO
+            // ResponseHandleIndex byte — a phantom read here would steal the
+            // low byte of PropertyValueSize and abort every SetProperties with
+            // InvalidParameter. The shared success/failure envelope echoes
+            // the InputHandleIndex as HandleIndex (qodo #1, cubic #16/#22).
             let _logon = cur.take_u8()?;
-            let response_handle_index = cur.take_u8()?;
             let input_handle_index = cur.take_u8()?;
             let req = RopSetPropertiesRequest::decode(cur)?;
-            // Resolve the Message handle backend id (the JMAP email id).
-            let backend_id = sessions
+            // Resolve the Message handle (backend_id = JMAP email id,
+            // mailbox_id = the JMAP mailbox the email lives in, used to range
+            // the published modification event).
+            let (backend_id, mailbox_id) = sessions
                 .with_handle(session_id, input_handle_index, |h| match h {
-                    Handle::Message { backend_id, .. } => Some(backend_id.clone()),
-                    _ => None,
+                    Handle::Message { backend_id, mailbox_id, .. } => {
+                        (backend_id.clone(), mailbox_id.clone())
+                    }
+                    _ => (String::new(), String::new()),
                 })
-                .flatten()
-                .unwrap_or_default();
-            // Translate the MAPI property values to a JMAP Email/set update
-            // patch (subject / importance / follow-up flag) plus any
-            // per-property problems for untranslatable entries.
+                .unwrap_or((String::new(), String::new()));
             let store::PropertyPatch { patch, problems } =
                 store::set_values_to_patch(&req.property_values);
             let return_value: RopErrorCode = match (jmap, password, backend_id.as_str()) {
@@ -1296,37 +1324,60 @@ async fn execute_one_rop(
                         // avoids a needless Email/set round-trip.
                         RopErrorCode::Success
                     } else {
+                        // Inspect the Email/set response rather than masking
+                        // a server-side failure as success: a per-id
+                        // `notUpdated` entry or a method-level `error` becomes
+                        // a MAPI DiskError so Outlook surfaces it (qodo #3/#5,
+                        // cubic #23). The transport error is logged verbatim.
                         let update = serde_json::json!({ id: serde_json::Value::Object(patch) });
-                        match jc.update_email(&account_id, &update, username, pw).await {
-                            Ok(()) => RopErrorCode::Success,
-                            Err(_) => RopErrorCode::DiskError,
+                        match jc.update_email_checked(&account_id, &update, username, pw).await {
+                            Ok(outcome) => outcome_to_code(outcome, "Email/set update"),
+                            Err(e) => {
+                                tracing::warn!(error = %e, "JMAP Email/set update failed");
+                                RopErrorCode::DiskError
+                            }
                         }
                     }
                 }
             };
+            // On a real apply, publish an ItemModified so MAPI NotificationWait
+            // (and the EWS subscription feed sharing the same manager) sees the
+            // change instead of forcing the client to re-poll (qodo #9, cubic
+            // #30, audit §2e).
+            if return_value == RopErrorCode::Success {
+                publish_item_modified(
+                    subscription_manager,
+                    username,
+                    &mailbox_id,
+                    &backend_id,
+                );
+            }
             RopPropertyWriteSuccess {
                 rop_id,
-                handle_index: response_handle_index,
+                handle_index: input_handle_index,
                 return_value,
                 problems,
             }
             .encode(out);
         }
         RopId::ROP_DELETE_PROPERTIES => {
-            // MS-OXCROPS 2.2.8.8.1: post-RopId bytes are
-            // LogonId + ResponseHandleIndex + InputHandleIndex, then the
-            // Property Tag Count + Tags body.
+            // MS-OXCROPS 2.2.8.8.1: the 3-byte header is LogonId +
+            // InputHandleIndex — NO ResponseHandleIndex byte (same P0 fix as
+            // SetProperties; a phantom read here steals the low byte of
+            // PropertyTagCount and aborts every DeleteProperties). The
+            // envelope echoes InputHandleIndex as HandleIndex
+            // (qodo #1, cubic #16/#22).
             let _logon = cur.take_u8()?;
-            let response_handle_index = cur.take_u8()?;
             let input_handle_index = cur.take_u8()?;
             let req = RopDeletePropertiesRequest::decode(cur)?;
-            let backend_id = sessions
+            let (backend_id, mailbox_id) = sessions
                 .with_handle(session_id, input_handle_index, |h| match h {
-                    Handle::Message { backend_id, .. } => Some(backend_id.clone()),
-                    _ => None,
+                    Handle::Message { backend_id, mailbox_id, .. } => {
+                        (backend_id.clone(), mailbox_id.clone())
+                    }
+                    _ => (String::new(), String::new()),
                 })
-                .flatten()
-                .unwrap_or_default();
+                .unwrap_or((String::new(), String::new()));
             let store::PropertyPatch { patch, problems } =
                 store::delete_tags_to_patch(&req.property_tags);
             let return_value: RopErrorCode = match (jmap, password, backend_id.as_str()) {
@@ -1345,30 +1396,46 @@ async fn execute_one_rop(
                         RopErrorCode::Success
                     } else {
                         let update = serde_json::json!({ id: serde_json::Value::Object(patch) });
-                        match jc.update_email(&account_id, &update, username, pw).await {
-                            Ok(()) => RopErrorCode::Success,
-                            Err(_) => RopErrorCode::DiskError,
+                        match jc.update_email_checked(&account_id, &update, username, pw).await {
+                            Ok(outcome) => outcome_to_code(outcome, "Email/set update"),
+                            Err(e) => {
+                                tracing::warn!(error = %e, "JMAP Email/set update (delete) failed");
+                                RopErrorCode::DiskError
+                            }
                         }
                     }
                 }
             };
+            if return_value == RopErrorCode::Success {
+                publish_item_modified(
+                    subscription_manager,
+                    username,
+                    &mailbox_id,
+                    &backend_id,
+                );
+            }
             RopPropertyWriteSuccess {
                 rop_id,
-                handle_index: response_handle_index,
+                handle_index: input_handle_index,
                 return_value,
                 problems,
             }
             .encode(out);
         }
         RopId::ROP_COPY_TO => {
-            // MS-OXCROPS 2.2.8.12.1: the post-RopId bytes are LogonId, then
-            // SourceHandleIndex + DestHandleIndex (the decoder reads those
-            // two first), then WantAsynchronous + WantSubObjects +
-            // CopyFlags + ExcludedTagCount + ExcludedTags.
+            // MS-OXCMAPIHTTP / MS-OXCROPS 2.2.8.12.1: post-RopId byte is
+            // LogonId, then the decoder reads SourceHandleIndex +
+            // DestHandleIndex, then WantAsynchronous + WantSubObjects +
+            // CopyFlags + ExcludedTagCount + ExcludedTags. (The decoder
+            // reading the two handle indices matches the established
+            // MoveCopy convention — the dispatcher consumes LogonId, the
+            // decoder consumes handles + body — so coderabbit #5 is INVALID;
+            // no change to the codec ordering is made.)
             let _logon = cur.take_u8()?;
             let req = RopCopyToRequest::decode(cur)?;
             // Resolve both the source and destination Message handles to
-            // their JMAP email ids.
+            // their JMAP email ids; capture the destination mailbox_id to
+            // range the modification event.
             let src_id = sessions
                 .with_handle(session_id, req.source_handle_index, |h| match h {
                     Handle::Message { backend_id, .. } => Some(backend_id.clone()),
@@ -1376,20 +1443,56 @@ async fn execute_one_rop(
                 })
                 .flatten()
                 .unwrap_or_default();
-            let dst_id = sessions
+            let (dst_id, dst_mailbox_id) = sessions
                 .with_handle(session_id, req.dest_handle_index, |h| match h {
-                    Handle::Message { backend_id, .. } => Some(backend_id.clone()),
-                    _ => None,
+                    Handle::Message { backend_id, mailbox_id, .. } => {
+                        (backend_id.clone(), mailbox_id.clone())
+                    }
+                    _ => (String::new(), String::new()),
                 })
-                .flatten()
-                .unwrap_or_default();
-            // RopCopyTo copies the message proper. For the compose flow the
-            // realistic call is template/resolve-population, so the
-            // supported copy is the scalar property patch (subject,
-            // importance, follow-up flag) read off the source email and
-            // applied to the destination via Email/set. ExcludedTags has no
-            // JMAP Email/copy analogue; it is honoured only in the sense
-            // that the supported scalar set is the always-copied subset.
+                .unwrap_or((String::new(), String::new()));
+            // RopCopyTo copies the message proper. The supported copy is the
+            // scalar property patch (subject, importance, follow-up flag)
+            // read off the source email and applied to the destination via
+            // Email/set. ExcludedTags IS honoured: a requested exclusion in
+            // the scalar set suppresses that property from the patch AND
+            // records a MAPI_E_NO_SUPPORT PropertyProblem so the caller knows
+            // the property was not copied (qodo #4/#8, cubic #12). A partial
+            // copy (excluded tags, or a source with no scalar props) is a
+            // spec-compliant Success with a populated problem array
+            // (2.2.8.12.2 — problems report per-property issues; the
+            // aggregate ROP return value is Success).
+            use crate::mapi::data::{PropertyProblem, PropertyTag, PropertyType};
+            use crate::mapi::store::{PR_FLAG_STATUS, PR_IMPORTANCE, PR_SUBJECT};
+            const ERR_NOT_COPIED: u32 = 0x8004_0102; // MAPI_E_NO_SUPPORT
+            let excluded_ids: std::collections::HashSet<u16> =
+                req.excluded_tags.iter().map(|t| t.property_id).collect();
+            let excluded_subject = excluded_ids.contains(&PR_SUBJECT);
+            let excluded_importance = excluded_ids.contains(&PR_IMPORTANCE);
+            let excluded_flag = excluded_ids.contains(&PR_FLAG_STATUS);
+            let mut problems: Vec<PropertyProblem> = Vec::new();
+            if excluded_subject {
+                problems.push(PropertyProblem {
+                    index: 0,
+                    tag: PropertyTag::new(PropertyType::PTYP_STRING, PR_SUBJECT),
+                    error_code: ERR_NOT_COPIED,
+                });
+            }
+            if excluded_importance {
+                problems.push(PropertyProblem {
+                    index: 1,
+                    tag: PropertyTag::new(PropertyType::PTYP_INTEGER32, PR_IMPORTANCE),
+                    error_code: ERR_NOT_COPIED,
+                });
+            }
+            if excluded_flag {
+                problems.push(PropertyProblem {
+                    index: 2,
+                    tag: PropertyTag::new(PropertyType::PTYP_INTEGER32, PR_FLAG_STATUS),
+                    error_code: ERR_NOT_COPIED,
+                });
+            }
+
             let return_value: RopErrorCode = match (jmap, password, src_id.as_str(), dst_id.as_str()) {
                 (_, _, "", _) | (_, _, _, "") => RopErrorCode::NotFound, // source/dest not bound
                 (None, _, _, _) => RopErrorCode::NotFound, // no JMAP backend configured
@@ -1406,7 +1509,9 @@ async fn execute_one_rop(
                         match jc.get_email(&account_id, src, username, pw).await {
                             Ok(Some(src_email)) => {
                                 let mut patch = serde_json::Map::new();
-                                if let Some(subj) = src_email.subject.as_ref() {
+                                if !excluded_subject
+                                    && let Some(subj) = src_email.subject.as_ref()
+                                {
                                     patch.insert(
                                         "subject".to_string(),
                                         serde_json::Value::String(subj.clone()),
@@ -1415,14 +1520,26 @@ async fn execute_one_rop(
                                 if let Some(kw) = src_email.keywords.as_ref() {
                                     let imp = kw.contains_key("$important");
                                     let flagged = kw.contains_key("$flagged");
-                                    patch.insert(
-                                        "keywords/$important".to_string(),
-                                        if imp { serde_json::json!(true) } else { serde_json::Value::Null },
-                                    );
-                                    patch.insert(
-                                        "keywords/$flagged".to_string(),
-                                        if flagged { serde_json::json!(true) } else { serde_json::Value::Null },
-                                    );
+                                    if !excluded_importance {
+                                        patch.insert(
+                                            "keywords/$important".to_string(),
+                                            if imp {
+                                                serde_json::json!(true)
+                                            } else {
+                                                serde_json::Value::Null
+                                            },
+                                        );
+                                    }
+                                    if !excluded_flag {
+                                        patch.insert(
+                                            "keywords/$flagged".to_string(),
+                                            if flagged {
+                                                serde_json::json!(true)
+                                            } else {
+                                                serde_json::Value::Null
+                                            },
+                                        );
+                                    }
                                 }
                                 if patch.is_empty() {
                                     RopErrorCode::Success
@@ -1430,27 +1547,43 @@ async fn execute_one_rop(
                                     let update =
                                         serde_json::json!({ dst: serde_json::Value::Object(patch) });
                                     match jc
-                                        .update_email(&account_id, &update, username, pw)
+                                        .update_email_checked(&account_id, &update, username, pw)
                                         .await
                                     {
-                                        Ok(()) => RopErrorCode::Success,
-                                        Err(_) => RopErrorCode::DiskError,
+                                        Ok(outcome) => outcome_to_code(outcome, "Email/set copy"),
+                                        Err(e) => {
+                                            tracing::warn!(
+                                                error = %e,
+                                                "JMAP Email/set update (copy) failed"
+                                            );
+                                            RopErrorCode::DiskError
+                                        }
                                     }
                                 }
                             }
                             Ok(None) => RopErrorCode::NotFound,
-                            Err(_) => RopErrorCode::DiskError,
+                            Err(e) => {
+                                tracing::warn!(error = %e, "JMAP get_email (copy source) failed");
+                                RopErrorCode::DiskError
+                            }
                         }
                     }
                 }
             };
             // 2.2.8.12.2 echoes the SourceHandleIndex in the response.
-            let src_handle_index = req.source_handle_index;
+            if return_value == RopErrorCode::Success {
+                publish_item_modified(
+                    subscription_manager,
+                    username,
+                    &dst_mailbox_id,
+                    &dst_id,
+                );
+            }
             RopCopyToSuccess {
                 rop_id,
-                handle_index: src_handle_index,
+                handle_index: req.source_handle_index,
                 return_value,
-                problems: Vec::new(),
+                problems,
             }
             .encode(out);
         }
@@ -1471,6 +1604,62 @@ async fn execute_one_rop(
     let _ = cfg;
     let _ = logon_id;
     Ok(())
+}
+
+/// Map a [`crate::jmap::EmailSetOutcome`] to a MAPI ROP return value.
+///
+/// - A method-level `error` (e.g. `accountNotFound`, rate limit) or any per-id
+///   rejection in `not_updated` is a server-side failure: report
+///   [`RopErrorCode::DiskError`] so Outlook surfaces it rather than believing
+///   the write applied. Previously the property-write arms called
+///   `update_email`, which returned `Ok(())` ignoring `notUpdated`, and the
+///   handler mapped every `Ok` to `Success` — masking real failures as
+///   success (qodo #3/#5, cubic #23). The `label` string is included in the
+///   log so partial-failure traces name which ROP the update served.
+fn outcome_to_code(outcome: crate::jmap::EmailSetOutcome, label: &'static str) -> RopErrorCode {
+    if let Some(desc) = outcome.method_error {
+        tracing::warn!(error = %desc, "%{label}: JMAP method rejected update");
+        return RopErrorCode::DiskError;
+    }
+    if !outcome.not_updated.is_empty() {
+        // Per-RFC-8621 §4.5 a `notUpdated` entry signals the server refused
+        // that id; for the single-id patches the property-write arms send,
+        // any rejection means the whole apply did not take, so report
+        // DiskError rather than a misleading partial Success.
+        tracing::warn!(
+            failures = outcome.not_updated.len(),
+            details = ?outcome.not_updated,
+            "%{label}: JMAP Email/set rejected ids"
+        );
+        RopErrorCode::DiskError
+    } else {
+        RopErrorCode::Success
+    }
+}
+
+/// Publish an `ItemModified` notification when a MAPI property write took
+/// effect, so the MAPI session's `NotificationWait` long-poll (and the EWS
+/// subscription feed that shares the same `SubscriptionManager`) sees the
+/// change instead of forcing the client to re-poll (qodo #9, cubic #30, audit
+/// §2e). No-op when the gateway was built without a manager wired (unit-test
+/// fixtures pass `None`).
+fn publish_item_modified(
+    subscription_manager: Option<&std::sync::Arc<crate::notifications::SubscriptionManager>>,
+    owner: &str,
+    folder_id: &str,
+    item_id: &str,
+) {
+    if let Some(mgr) = subscription_manager
+        && !owner.is_empty()
+        && !item_id.is_empty()
+    {
+        mgr.publish(crate::notifications::NotificationEvent::ItemModified {
+            owner: owner.to_string(),
+            folder_id: folder_id.to_string(),
+            item_id: item_id.to_string(),
+            change_key: String::new(),
+        });
+    }
 }
 
 /// Decode `RopOpenFolder` body (`FolderId(8) + OpenModeFlags(1)`) after the
@@ -1923,6 +2112,7 @@ mod tests {
             "u@example.com",
             None,
             0,
+            None,
         )
         .await
         .expect("set_columns dispatch");
@@ -1946,6 +2136,7 @@ mod tests {
             "u@example.com",
             None,
             0,
+            None,
         )
         .await
         .expect("query_rows dispatch");
@@ -2050,6 +2241,7 @@ mod tests {
             "u@example.com",
             None,
             0,
+            None,
         )
         .await
         .expect("open folder dispatch");
@@ -2484,5 +2676,51 @@ mod tests {
         let rv = u32::from_le_bytes([payload[2], payload[3], payload[4], payload[5]]);
         assert_eq!(RopErrorCode::from_u32(rv), RopErrorCode::NoSupport);
         assert_eq!(payload[6], 0, "PartialCompletion=0");
+    }
+
+    #[test]
+    fn outcome_to_code_maps_success_to_success() {
+        let o = crate::jmap::EmailSetOutcome {
+            updated: vec!["M-1".to_string()],
+            not_updated: Vec::new(),
+            method_error: None,
+        };
+        assert_eq!(outcome_to_code(o, "test"), RopErrorCode::Success);
+    }
+
+    #[test]
+    fn outcome_to_code_maps_per_id_rejection_to_disk_error() {
+        // A `notUpdated` entry used to be masked as Success because the prior
+        // handler called `update_email` (which returned `Ok(())`) and mapped
+        // every `Ok` to `Success`. The new `update_email_checked` path
+        // surfaces the rejection and `outcome_to_code` MUST turn it into a
+        // MAPI DiskError so Outlook surfaces it (qodo #3/#5, cubic #23).
+        let o = crate::jmap::EmailSetOutcome {
+            updated: Vec::new(),
+            not_updated: vec![("M-2".to_string(), "notFound".to_string())],
+            method_error: None,
+        };
+        assert_eq!(outcome_to_code(o, "test"), RopErrorCode::DiskError);
+    }
+
+    #[test]
+    fn outcome_to_code_maps_method_error_to_disk_error() {
+        let o = crate::jmap::EmailSetOutcome {
+            updated: Vec::new(),
+            not_updated: Vec::new(),
+            method_error: Some("serverFail".to_string()),
+        };
+        assert_eq!(outcome_to_code(o, "test"), RopErrorCode::DiskError);
+    }
+
+    #[test]
+    fn publish_item_modified_noop_without_manager() {
+        // Without a wired SubscriptionManager (the unit-test fixture path),
+        // publishing MUST be a safe no-op — verifies the `Option` plumbing
+        // doesn't unwrap-and-panic and that the helper short-circuits cleanly
+        // (qodo #9, cubic #30). (A live-manager variant needs a Tokio
+        // runtime to construct the broadcast channel and so is covered by
+        // the integration test target instead.)
+        publish_item_modified(None, "u@example.com", "f", "M-1");
     }
 }

@@ -482,6 +482,10 @@ fn cell_for_email(
         PR_IMPORTANCE => {
             PropertyValue::Integer32(or_null!(importance_for(email), T::PTYP_INTEGER32))
         }
+        PR_FLAG_STATUS => PropertyValue::Integer32(or_null!(
+            flag_status_for(email),
+            T::PTYP_INTEGER32
+        )),
         PR_SENSITIVITY => PropertyValue::Integer32(or_null!(0, T::PTYP_INTEGER32)),
         PR_INTERNET_MESSAGE_ID => PropertyValue::String(or_null!(
             email.message_id.clone().unwrap_or_default(),
@@ -680,10 +684,16 @@ pub fn set_values_to_patch(values: &[TaggedPropertyValue]) -> PropertyPatch {
             }
             _ => {
                 // Unknown or named property (0x8000 bit, e.g. PidLidCategories
-                // as an MV string): tolerated as a no-op success; persistence
-                // lands in Phase 2 once the named-property GUID/LID table is
-                // wired. The MV bytes were sized-and-skipped by the decoder so
-                // the chain already advanced past them.
+                // as an MV string): report MAPI_E_NO_SUPPORT rather than a
+                // silent no-op success. Previously the translator recorded
+                // neither a patch nor a problem, so Outlook believed an
+                // uncategorised write (categories / Importance / flag set via
+                // a named prop) was persisted when it was not — a correctness
+                // bug surfaced by the qodo #7 / cubic #27 review. The MV
+                // bytes were already sized-and-skipped by the decoder, so the
+                // chain stays byte-aligned; persistence lands in Phase 2 once
+                // the named-property GUID/LID table is wired.
+                out.problem(index, tag, ERR_NO_SUPPORT)
             }
         }
     }
@@ -691,7 +701,9 @@ pub fn set_values_to_patch(values: &[TaggedPropertyValue]) -> PropertyPatch {
 }
 
 impl PropertyPatch {
-    /// Set/clear a JMAP keyword via the RFC 8621 `_keyword$NAME` patch form.
+    /// Set/clear a JMAP keyword via the RFC 8621 `keywords/$NAME` patch path
+    /// (an `Email/set` update entry — distinct from the `Email/query`
+    /// `_keyword$NAME` filter condition the same name would suggest).
     /// Setting `true` adds the keyword; `Value::Null` removes it.
     fn set_keyword(&mut self, set: bool, name: &str) {
         let key = format!("keywords/{name}");
@@ -747,15 +759,38 @@ fn int32_value(v: &crate::mapi::data::PropertyValue) -> Option<i32> {
 }
 
 fn importance_for(email: &JmapEmail) -> i32 {
-    // JMAP `$important` keyword maps to 1 (Normal). 0 == Low, 2 == High.
+    // Symmetric with set_values_to_patch, which maps PR_IMPORTANCE=2 (High)
+    // -> `$important` and 0/1 -> no keyword; so the read side returns 2
+    // (High) when `$important` is present, else 1 (Normal). The previous
+    // impl returned 1 for the present case, making a set-then-read round
+    // trip appear to drop the importance (cubic review #28).
     if email
         .keywords
         .as_ref()
         .is_some_and(|k| k.contains_key("$important"))
     {
-        return 1;
+        return 2;
     }
-    1 // default Normal
+    1 // default Normal (PR_IMPORTANCE 0x0017)
+}
+
+fn flag_status_for(email: &JmapEmail) -> i32 {
+    // MS-OXOFLAG 2.2.1.1 PR_FLAG_STATUS (0x1090): 0x02 followupFlagged,
+    // 0x01 followupComplete, 0x00 no flag. Symmetric with
+    // set_values_to_patch (which maps $flagged -> PR_FLAG_STATUS=0x02) so a
+    // set-then-read round trip preserves the flag rather than reading Null
+    // (cubic review #29). `followupComplete` is not modelled by a JMAP
+    // keyword, so it reads back as 0x00 — consistent with the write side
+    // (only 0x02 sets $flagged; 0x01 clears it).
+    if email
+        .keywords
+        .as_ref()
+        .is_some_and(|k| k.contains_key("$flagged"))
+    {
+        0x02
+    } else {
+        0x00
+    }
 }
 
 fn conversation_id_for(email: &JmapEmail) -> Vec<u8> {
@@ -1274,6 +1309,40 @@ mod tests {
     }
 
     #[test]
+    fn importance_for_reads_high_when_dollar_important_present() {
+        // Symmetry with set_values_to_patch (which writes `$important`) :
+        // an email that carries `$important` reads back PR_IMPORTANCE=2
+        // (High). The prior impl returned 1, so a set-then-read round trip
+        // appeared to drop the importance (cubic review #28).
+        let mut e = email("s", true);
+        e.keywords.as_mut().unwrap().insert("$important".to_string(), true);
+        assert_eq!(importance_for(&e), 2);
+    }
+
+    #[test]
+    fn importance_for_reads_normal_when_absent() {
+        let e = email("s", false);
+        assert_eq!(importance_for(&e), 1);
+    }
+
+    #[test]
+    fn flag_status_for_reads_flagged_when_dollar_flagged_present() {
+        // Symmetry with set_values_to_patch (which writes `$flagged` for
+        // PR_FLAG_STATUS=0x02): an email carrying `$flagged` reads back
+        // 0x02. The prior email_to_cells returned a typed Null, so the flag
+        // round-tripped as missing (cubic review #29).
+        let mut e = email("s", true);
+        e.keywords.as_mut().unwrap().insert("$flagged".to_string(), true);
+        assert_eq!(flag_status_for(&e), 0x02);
+    }
+
+    #[test]
+    fn flag_status_for_reads_unflagged_when_absent() {
+        let e = email("s", false);
+        assert_eq!(flag_status_for(&e), 0x00);
+    }
+
+    #[test]
     fn set_values_followup_flag_sets_dollar_flagged() {
         // MS-OXOFLAG 2.2.1.1: 0x02 followupFlagged sets the flag.
         use crate::mapi::data::{PropertyValue, TaggedPropertyValue};
@@ -1319,11 +1388,14 @@ mod tests {
     }
 
     #[test]
-    fn set_values_named_property_no_op_success() {
+    fn set_values_named_property_reports_no_support() {
         // A named property (0x8000 id bit, e.g. PidLidCategories as an MV
-        // string) is tolerated as a no-op success: the translator records
-        // neither a patch field nor a problem (Phase 2 will persist it once
-        // the named-property GUID/LID table is wired).
+        // string) is NOT silently dropped: the translator records a
+        // MAPI_E_NO_SUPPORT problem so Outlook knows the write did not
+        // persist, rather than believing an uncategorised write succeeded
+        // (qodo #7 / cubic #27). Persistence lands in Phase 2 once the
+        // named-property GUID/LID table is wired; the MV bytes were already
+        // sized-and-skipped by the decoder, so the chain stays byte-aligned.
         use crate::mapi::data::{PropertyValue, TaggedPropertyValue};
         let values = vec![TaggedPropertyValue {
             tag: ttag(0x8001, crate::mapi::data::PropertyType::from_u16(0x101E)),
@@ -1334,7 +1406,9 @@ mod tests {
         }];
         let patch = set_values_to_patch(&values);
         assert!(patch.patch.is_empty());
-        assert!(patch.problems.is_empty());
+        assert_eq!(patch.problems.len(), 1);
+        assert_eq!(patch.problems[0].error_code, 0x8004_0102);
+        assert_eq!(patch.problems[0].tag.property_id, 0x8001);
     }
 
     #[test]

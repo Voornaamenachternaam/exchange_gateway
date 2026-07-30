@@ -163,8 +163,15 @@ impl AppState {
         // `mapi_enabled`; the session/logon runtime is in `crate::mapi`.
         // We clone the Config and the shared AuthVerifier — the Config is a
         // cheap Clone (mostly small Strings), and AuthVerifier is `Arc`-shared.
+        // The same `Arc<SubscriptionManager>` the EWS path uses is wired in
+        // so MAPI property-write ROPs publish `ItemModified` events to the
+        // shared feed, closing the EWS-only notification gap (audit §2e).
         let mapi = if cfg.mapi_enabled {
-            Some(Arc::new(MapiState::new(cfg.clone(), auth_verifier.clone())))
+            Some(Arc::new(MapiState::with_subscription_manager(
+                cfg.clone(),
+                auth_verifier.clone(),
+                subscription_manager.clone(),
+            )))
         } else {
             None
         };
