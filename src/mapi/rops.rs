@@ -309,6 +309,17 @@ impl<'a> Buf<'a> {
         self.pos += 8;
         Ok(u64::from_le_bytes(arr))
     }
+    /// Read a signed 8-byte little-endian integer. Used by `RopSeekStream`
+    /// whose Offset field is a signed LONGLONG (MS-OXCROPS 2.2.9.8.1).
+    pub fn take_i64_le(&mut self) -> Result<i64, DecodeError> {
+        if self.remaining() < 8 {
+            return Err(DecodeError::Insufficient);
+        }
+        let mut arr = [0u8; 8];
+        arr.copy_from_slice(&self.buf[self.pos..self.pos + 8]);
+        self.pos += 8;
+        Ok(i64::from_le_bytes(arr))
+    }
     pub fn take_bytes(&mut self, n: usize) -> Result<&'a [u8], DecodeError> {
         if self.remaining() < n {
             return Err(DecodeError::Insufficient);
@@ -1605,28 +1616,36 @@ pub type RopCopyToSuccess = RopPropertyWriteSuccess;
 /// `ByteCount` when the field is any other value).
 pub const READ_STREAM_EXTENDED_BYTECOUNT: u16 = 0xBABE;
 
-/// `RopOpenStream` request, MS-OXCROPS §2.2.9.1.1. Wire after the leading
-/// `RopId` byte is `LogonId(1) · InputHandleIndex(1) · OutputHandleIndex(1)
-/// · PropertyTag(4) · OpenModeFlags(1)` (a 4-byte `RopHeader4` body followed by
-/// the open-mode flag). The dispatcher consumes the RopId before entering the
-/// arm, so `decode_after_ropid` reads only the trailing bytes.
+/// `RopOpenStream` request, MS-OXCROPS 2.2.9.1.1. Wire after the leading
+/// `RopId` byte is `LogonId(1)`, `InputHandleIndex(1)`, `OutputHandleIndex(1)`,
+/// `PropertyTag(4)`, `OpenModeFlags(1)`: a 4-byte `RopHeader4` body
+/// (LogonId, Input, Output) followed by the open-mode flag. Per the dispatcher
+/// convention (AGENTS.md), the handler consumes the LogonId, InputHandleIndex
+/// and OutputHandleIndex via `RopHeader4::decode_after_ropid`, and only the body
+/// fields (`PropertyTag` + `OpenModeFlags`) are decoded here, so the codec
+/// never re-takes dispatcher-owned header bytes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RopOpenStreamRequest {
     pub input_handle_index: u8,
     pub output_handle_index: u8,
     /// Tag identifying the property to stream (`PR_BODY`, `PR_BODY_HTML`,
     /// `PR_RTF_COMPRESSED`, `PR_ATTACH_DATA_BIN`, ...). Type-first wire order
-    /// per MS-OXCDATA §2.9.
+    /// per MS-OXCDATA 2.9.
     pub property_tag: PropertyTag,
     pub open_mode_flags: u8,
 }
 
 impl RopOpenStreamRequest {
-    /// Decode the body after the dispatcher has consumed the leading RopId
-    /// and LogonId bytes (a `RopHeader4` minus the RopId).
-    pub fn decode_after_ropid(cur: &mut Buf<'_>) -> Result<Self, DecodeError> {
-        let input_handle_index = cur.take_u8()?;
-        let output_handle_index = cur.take_u8()?;
+    /// Decode the body (`PropertyTag(4) + OpenModeFlags(1)`) after the
+    /// dispatcher has consumed the leading `RopId` and the `RopHeader4`
+    /// (`LogonId-InputHandleIndex-OutputHandleIndex`). The consumed handle
+    /// indices are threaded in so the assembled request still carries them
+    /// for the handler and the round-trip tests.
+    pub fn decode_body(
+        cur: &mut Buf<'_>,
+        input_handle_index: u8,
+        output_handle_index: u8,
+    ) -> Result<Self, DecodeError> {
         let property_tag = PropertyTag::decode(cur)?;
         let open_mode_flags = cur.take_u8()?;
         Ok(Self {
@@ -1654,7 +1673,12 @@ impl RopOpenStreamSuccess {
         out.push(RopId::ROP_OPEN_STREAM.to_u8());
         out.push(self.output_handle_index);
         out.extend_from_slice(&self.return_value.to_u32().to_le_bytes());
-        out.extend_from_slice(&self.stream_size.to_le_bytes());
+        // On a non-success ReturnValue the spec mandates the 6-byte failure
+        // envelope (RopId + HandleIndex + ReturnValue, 2.2.9.1.3): NO
+        // StreamSize. Emitting it corrupts the chain cursor on failure.
+        if self.return_value == RopErrorCode::Success {
+            out.extend_from_slice(&self.stream_size.to_le_bytes());
+        }
     }
 }
 
@@ -1721,6 +1745,13 @@ impl RopReadStreamSuccess {
         out.push(RopId::ROP_READ_STREAM.to_u8());
         out.push(self.input_handle_index);
         out.extend_from_slice(&self.return_value.to_u32().to_le_bytes());
+        // On a non-success ReturnValue (2.2.9.2.3) the response is the 6-byte
+        // failure envelope: NO DataSize/Data. The handler caps the chunk at
+        // u16::MAX so this truncation is a defence-in-depth guard only; on the
+        // success path the data fits a 2-byte DataSize by construction.
+        if self.return_value != RopErrorCode::Success {
+            return;
+        }
         let data_size = u16::try_from(self.data.len()).unwrap_or(u16::MAX);
         out.extend_from_slice(&data_size.to_le_bytes());
         out.extend_from_slice(&self.data[..usize::from(data_size)]);
@@ -1738,7 +1769,7 @@ pub struct RopWriteStreamRequest {
 
 impl RopWriteStreamRequest {
     /// Decode the body after the dispatcher has consumed the leading RopId
-    /// and LogonId bytes. `DataSize` (a 2-byte count, so ≤ 65535) is bounds
+    /// and LogonId bytes. `DataSize` (a 2-byte count, so <= 65535) is bounds
     /// checked against the remaining buffer by `take_bytes`; a count the
     /// client declares but does not supply yields `Insufficient`.
     pub fn decode_after_ropid(cur: &mut Buf<'_>) -> Result<Self, DecodeError> {
@@ -1751,13 +1782,6 @@ impl RopWriteStreamRequest {
         })
     }
 }
-
-/// Upper bound on a single `RopWriteStream` chunk enforced by the wire: the
-/// 2-byte `DataSize` cannot exceed `u16::MAX`, so a client writing more than
-/// ~64 KiB chunks the payload across repeated `RopWriteStream` calls. Exported
-/// so the dispatcher's `WriteStream` arm and tests reference one canonical
-/// ceiling (the dispatcher uses it to bound the staging buffer).
-pub const WRITE_STREAM_MAX_CHUNK: usize = u16::MAX as usize;
 
 /// `RopWriteStream` response, MS-OXCROPS §2.2.9.3.2:
 ///   `RopId · InputHandleIndex · ReturnValue(4) · WrittenSize(2 LE)`
@@ -1773,7 +1797,11 @@ impl RopWriteStreamSuccess {
         out.push(RopId::ROP_WRITE_STREAM.to_u8());
         out.push(self.input_handle_index);
         out.extend_from_slice(&self.return_value.to_u32().to_le_bytes());
-        out.extend_from_slice(&self.written_size.to_le_bytes());
+        // On a non-success ReturnValue (2.2.9.3.3) the response is the 6-byte
+        // failure envelope: NO WrittenSize.
+        if self.return_value == RopErrorCode::Success {
+            out.extend_from_slice(&self.written_size.to_le_bytes());
+        }
     }
 }
 
@@ -1789,39 +1817,74 @@ pub struct RopSeekStreamRequest {
 
 impl RopSeekStreamRequest {
     /// Decode the body after the dispatcher has consumed the leading RopId
-    /// and LogonId bytes.
+    /// and LogonId bytes. The `Offset` field is a signed 8-byte LONGLONG, so
+    /// it is read directly as `i64` (a `u64` read + `as i64` cast would wrap
+    /// for values above `i64::MAX` into a negative offset).
     pub fn decode_after_ropid(cur: &mut Buf<'_>) -> Result<Self, DecodeError> {
         let input_handle_index = cur.take_u8()?;
         let origin = cur.take_u8()?;
-        let raw = cur.take_u64_le()?;
+        let offset = cur.take_i64_le()?;
         Ok(Self {
             input_handle_index,
             origin,
-            offset: raw as i64,
+            offset,
         })
     }
 
     /// Resolve the requested origin enumeration against the current cursor and
     /// stream length, returning the absolute 0-based cursor the seek moves to.
-    /// Per MS-OXCPRPT §2.2.21.1: `0x00` = beginning, `0x01` = current,
-    /// `0x02` = end. An out-of-range absolute is clamped to `[0, len]` (the
-    /// stream semantics Outlook relies on); an unknown origin yields
-    /// `InvalidValue` so the dispatcher returns `InvalidParameter`.
+    /// Per MS-OXCPRPT 2.2.21.1: `0x00` = beginning, `0x01` = current,
+    /// `0x02` = end. Out-of-range absolutes are clamped to `[0, len]`:
+    /// positive overflow lands at `len`, negative overflow lands at `0` (the
+    /// stream semantics Outlook relies on, rather than the raw signed offset
+    /// which could desync the cursor on `checked_add_signed` overflow). An
+    /// unknown origin yields `InvalidValue` so the dispatcher returns
+    /// `InvalidParameter`.
     pub fn resolve(&self, current: u64, len: u64) -> Result<u64, DecodeError> {
-        let target = match self.origin {
-            0x00 => self.offset,
-            0x01 => current
-                .checked_add_signed(self.offset)
-                .map(|n| n as i64)
-                .unwrap_or(self.offset),
-            0x02 => len
-                .checked_add_signed(self.offset)
-                .map(|n| n as i64)
-                .unwrap_or(self.offset),
+        // Compute the requested absolute position as an unsigned value per origin
+        // (0x00 = absolute, 0x01 = relative to cursor, 0x02 = relative to end),
+        // then clamp to `[0, len]` applying the *requested sign* on overflow.
+        //
+        // `checked_add_signed` returns None on arithmetic overflow; on overflow we
+        // clamp by the sign of `self.offset` (positive -> past `len`, negative ->
+        // below 0) so the final `.min(len)` / `0` clamp lands predictably rather
+        // than at a stale raw offset (coderabbit). Crucially we never reinterpret
+        // a `u64` above `i64::MAX` back through `as i64` (that is a *bitwise* cast,
+        // not a saturating one, and wraps to a negative), so we keep the working
+        // value in `u64`/`Option<u64>` and only consult the offset's sign. An
+        // unknown origin yields `InvalidValue` so the dispatcher returns
+        // `InvalidParameter`.
+        let target: u64 = match self.origin {
+            0x00 => {
+                if self.offset >= 0 {
+                    self.offset as u64
+                } else {
+                    0
+                }
+            }
+            0x01 => match current.checked_add_signed(self.offset) {
+                Some(n) => n,
+                None => {
+                    if self.offset >= 0 {
+                        u64::MAX
+                    } else {
+                        0
+                    }
+                }
+            },
+            0x02 => match len.checked_add_signed(self.offset) {
+                Some(n) => n,
+                None => {
+                    if self.offset >= 0 {
+                        u64::MAX
+                    } else {
+                        0
+                    }
+                }
+            },
             _ => return Err(DecodeError::InvalidValue),
         };
-        let abs = if target < 0 { 0u64 } else { target as u64 };
-        Ok(abs.min(len))
+        Ok(target.min(len))
     }
 }
 
@@ -1839,7 +1902,11 @@ impl RopSeekStreamSuccess {
         out.push(RopId::ROP_SEEK_STREAM.to_u8());
         out.push(self.input_handle_index);
         out.extend_from_slice(&self.return_value.to_u32().to_le_bytes());
-        out.extend_from_slice(&self.new_position.to_le_bytes());
+        // On a non-success ReturnValue (2.2.9.8.3) the response is the 6-byte
+        // failure envelope: NO NewPosition.
+        if self.return_value == RopErrorCode::Success {
+            out.extend_from_slice(&self.new_position.to_le_bytes());
+        }
     }
 }
 
@@ -1908,7 +1975,11 @@ impl RopGetStreamSizeSuccess {
         out.push(RopId::ROP_GET_STREAM_SIZE.to_u8());
         out.push(self.input_handle_index);
         out.extend_from_slice(&self.return_value.to_u32().to_le_bytes());
-        out.extend_from_slice(&self.stream_size.to_le_bytes());
+        // On a non-success ReturnValue (2.2.9.6.3) the response is the 6-byte
+        // failure envelope: NO StreamSize.
+        if self.return_value == RopErrorCode::Success {
+            out.extend_from_slice(&self.stream_size.to_le_bytes());
+        }
     }
 }
 
@@ -2427,23 +2498,18 @@ mod tests {
         )
     }
 
-    /// Build a RopOpenStream request body as the dispatcher sees it (the
-    /// leading RopId + LogonId are consumed before `decode_after_ropid`).
-    fn open_stream_body(input: u8, output: u8, tag: crate::mapi::data::PropertyTag, flags: u8) -> Vec<u8> {
-        let mut b = Vec::new();
-        b.push(input);
-        b.push(output);
-        tag.encode(&mut b);
-        b.push(flags);
-        b
-    }
-
     #[test]
     fn rop_open_stream_roundtrip() {
         let tag = body_tag();
-        let body = open_stream_body(3, 7, tag, 0x00);
+        // decode_body takes Input/Output as parameters and reads only the
+        // PropertyTag + OpenModeFlags from the cursor, so the body bytes are
+        // exactly the tag + flags (no LogonId/Input/Output prefix).
+        let mut body = Vec::new();
+        tag.encode(&mut body);
+        body.push(0x00);
         let mut cur = Buf::new(&body);
-        let req = RopOpenStreamRequest::decode_after_ropid(&mut cur).expect("decode");
+        let req =
+            RopOpenStreamRequest::decode_body(&mut cur, 3, 7).expect("decode");
         assert_eq!(req.input_handle_index, 3);
         assert_eq!(req.output_handle_index, 7);
         assert_eq!(req.property_tag, tag);
@@ -2597,6 +2663,28 @@ mod tests {
             offset: 0,
         };
         assert!(req.resolve(0, 100).is_err());
+        // Positive overflow on a relative (current) seek clamps to len, not a
+        // wrapped/garbage position: cursor near u64::MAX + a large offset.
+        let req = RopSeekStreamRequest {
+            input_handle_index: 1,
+            origin: 0x01,
+            offset: i64::MAX,
+        };
+        assert_eq!(req.resolve(u64::MAX - 10, 100).unwrap(), 100);
+        // Negative overflow on a relative seek clamps to 0.
+        let req = RopSeekStreamRequest {
+            input_handle_index: 1,
+            origin: 0x01,
+            offset: i64::MIN,
+        };
+        assert_eq!(req.resolve(10, 100).unwrap(), 0);
+        // End origin with positive overflow clamps to len.
+        let req = RopSeekStreamRequest {
+            input_handle_index: 1,
+            origin: 0x02,
+            offset: i64::MAX,
+        };
+        assert_eq!(req.resolve(0, 100).unwrap(), 100);
     }
 
     #[test]

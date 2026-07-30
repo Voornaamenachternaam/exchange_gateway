@@ -15,7 +15,7 @@
 //     roster for the connection, and a handle table for open folders/
 //     messages. The session's auth principal is zeroized when the session is
 //     dropped.
-//   * All sessions are per-process only (no persistence) Б─■ consistent with
+//   * All sessions are per-process only (no persistence) — consistent with
 //     the MAPI/HTTP model where a `Connect` failure means the client rebuilds
 //     a new session.
 
@@ -77,22 +77,26 @@ pub enum Handle {
         /// drafts mailbox only as a pending JMAP creation.
         is_new: bool,
     },
-    /// A stream handle (`RopOpenStream`, MS-OXCROPS §2.2.9). Backs the
+    /// A stream handle (`RopOpenStream`, MS-OXCROPS 2.2.9). Backs the
     /// `RopReadStream` / `RopWriteStream` / `RopSeekStream` /
     /// `RopGetStreamSize` / `RopSetStreamSize` / `RopCommitStream` round-trip
     /// the client uses to fetch `PR_BODY` / `PR_BODY_HTML` / `PR_RTF_COMPRESSED`
-    /// (MS-OXBBODY) and attachment binaries (MS-OXCMSG §3.x).
+    /// (MS-OXBBODY) and attachment binaries (MS-OXCMSG 3.x).
     ///
-    /// `source_handle` records the message handle owning the streamed property;
-    /// the dispatcher reads it (not the stream itself) to resolve the JMAP
-    /// email id / attachment blob id. `data` is the lazily-materialised byte
-    /// buffer of the property value (`None` until first read so an OpenStream on
-    /// a property the client never reads costs zero network round-trip); `cursor`
-    /// is the absolute byte position the next `RopReadStream` continues from and
-    /// that `RopSeekStream` repositions; `is_dirty` distinguishes a read-only
-    /// stream (no flush needed at `RopSaveChangesMessage`) from one a
-    /// `RopWriteStream`/`RopSetStreamSize` mutated (the buffered bytes are
-    /// flushed back to JMAP on the next `SaveChanges`).
+    /// `source_handle_index` records the message handle owning the streamed
+    /// property; the dispatcher reads it (not the stream itself) to resolve
+    /// the JMAP email id / attachment blob id. `data` is the lazily-materialised
+    /// byte buffer of the property value (`None` until first read so an
+    /// OpenStream on a property the client never reads costs zero network
+    /// round-trip); `cursor` is the absolute byte position the next
+    /// `RopReadStream` continues from and that `RopSeekStream` repositions.
+    /// `is_dirty` distinguishes a read-only stream from one a
+    /// `RopWriteStream`/`RopSetStreamSize` mutated: writes are staged in the
+    /// in-memory buffer and are NOT yet flushed back to JMAP at
+    /// `RopSaveChangesMessage` (the Blob/upload-backed Email/set body-values
+    /// flush is pending the separate compose/write-back bridge); SaveChanges
+    /// reports `NoSupport` when a dirty body stream is present so the client is
+    /// never told Success while bytes are dropped.
     Stream {
         /// Session handle index of the owning Message/Folder handle. Resolved on
         /// first read so the body/attachment bytes are fetched once per stream.
@@ -114,10 +118,19 @@ pub enum Handle {
         /// Lazily-materialised stream bytes (`None` = not fetched yet). Once
         /// populated, `cursor` / `is_dirty` mutate the buffer in place.
         data: Option<Vec<u8>>,
+        /// The stream's known length when it can be determined without a fetch:
+        /// for an attachment stream this is the JMAP `attachments[].size`
+        /// captured at OpenStream (so `OpenStream`/`GetStreamSize` report the
+        /// real size before the first `ReadStream` downloads the blob, and the
+        /// download can be rejected up front when it exceeds `max_attachment_bytes`).
+        /// `None` for body streams whose length is only known once materialised.
+        known_len: Option<u64>,
         /// Absolute byte position the next ReadStream continues from.
         cursor: u64,
-        /// True once `RopWriteStream`/`RopSetStreamSize` mutated `data`; flush
-        /// back to JMAP at `RopSaveChangesMessage`.
+        /// True once `RopWriteStream`/`RopSetStreamSize` mutated `data`. Writes
+        /// are staged in-memory only; the JMAP persist happens via a separate
+        /// write-back bridge not yet wired, so SaveChanges reports `NoSupport`
+        /// rather than faking a commit of dropped bytes.
         is_dirty: bool,
         /// Whether `data` was populated from an attachment blob download (the
         /// OpenStream arm records this so a `Set/Write` on an attachment stream
@@ -166,7 +179,7 @@ impl Handle {
     }
 }
 
-/// Which backend owns a mailbox object Б─■ drives the ROPБ├▓backend routing in
+/// Which backend owns a mailbox object — drives the ROP→backend routing in
 /// `store.rs`. Maps to the JMAP `Mailbox` role / CalDAV collection / CardDAV
 /// addressbook naming in `store.rs::resolve_folder_kind`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -219,7 +232,7 @@ pub enum HandleKind {
     Table,
 }
 
-/// An entry in a session's handle table Б─■ kept for source compatibility with
+/// An entry in a session's handle table — kept for source compatibility with
 /// the wider crate; new code uses `Handle` directly.
 #[derive(Debug, Clone)]
 pub struct HandleEntry {
@@ -228,7 +241,7 @@ pub struct HandleEntry {
 }
 
 /// The authenticated principal bound to a session. Carries the user's email
-/// address only Б─■ never a password; passwords are validated once during the
+/// address only — never a password; passwords are validated once during the
 /// `Connect` and discarded. Bearer/HMA principals carry the token's `oid`/
 /// `upn` instead.
 #[derive(Debug, Clone, Zeroize)]
@@ -257,7 +270,7 @@ pub struct Session {
     /// at RopLogon time; `with_session_mut` is the supported mutation path.
     pub handles: HashMap<u8, Handle>,
     /// Last-seen timestamp encoded as nanos since `EPOCH` to avoid a
-    /// `parking_lot::Mutex` here Б─■ read/written from paths that already
+    /// `parking_lot::Mutex` here — read/written from paths that already
     /// hold the `SessionManager` `RwLock` guard.
     pub last_seen: AtomicU64,
     pub created_at: Instant,
@@ -267,7 +280,7 @@ impl Session {
     pub fn touch(&self) {
         // Lock-free: store nanos since `EPOCH` into the atomic. This avoids
         // acquiring a Mutex while the caller may already hold the
-        // `SessionManager` RwLock (read or write) Б─■ eliminating the
+        // `SessionManager` RwLock (read or write) — eliminating the
         // potential for lock-ordering surprises across `get`, `with_*`, and
         // `sweep_idle`. The atomic is monotonic enough for idle-TTL
         // comparisons; sub-millisecond precision loss at startup is fine.

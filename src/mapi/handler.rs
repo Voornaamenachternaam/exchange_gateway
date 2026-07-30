@@ -824,8 +824,48 @@ async fn execute_one_rop(
                     _ => (String::new(), String::new(), false),
                 })
                 .unwrap_or((String::new(), String::new(), false));
+            // The body write-back bridge (Blob/upload-backed Email/set
+            // body-values) is not yet wired, so a dirty body stream cannot be
+            // persisted here. Detect any dirty stream owned by this message
+            // whose tag is a message body (PR_BODY / PR_BODY_HTML /
+            // PR_RTF_COMPRESSED) and surface `NoSupport` so the client is not
+            // told Success while the staged bytes are dropped (coderabbit,
+            // matches the `is_dirty` doc on Handle::Stream). Non-body dirty
+            // streams (e.g. future attachment writes) likewise fall back to a
+            // bare draft create with no body patch.
+            let has_dirty_body_stream = sessions
+                .with_session_mut(session_id, |s| {
+                    s.handles.values().any(|h| {
+                        matches!(
+                            h,
+                            Handle::Stream {
+                                source_handle_index,
+                                property_tag,
+                                is_dirty,
+                                read_only,
+                                ..
+                            } if *is_dirty
+                                && !*read_only
+                                && *source_handle_index == req.input_handle_index
+                                && store::is_body_stream_tag(property_tag)
+                        )
+                    })
+                })
+                .unwrap_or(false);
             let outcome: RopErrorCode;
             let saved_mid: u64;
+            if has_dirty_body_stream {
+                outcome = RopErrorCode::NoSupport;
+                saved_mid = store::message_id_from_jmap(&backend_id);
+                RopSaveChangesMessageSuccess {
+                    response_handle_index: req.response_handle_index,
+                    return_value: outcome,
+                    input_handle_index: req.input_handle_index,
+                    message_id: saved_mid,
+                }
+                .encode(out);
+                return Ok(());
+            }
             match (jmap, password, is_new) {
                 (Some(jc), Some(pw), true) => {
                     let account_id = jc
@@ -1592,12 +1632,15 @@ async fn execute_one_rop(
             .encode(out);
         }
         RopId::ROP_OPEN_STREAM => {
-            // §2.2.9.1.1: LogonId · InputHandleIndex · OutputHandleIndex
-            // · PropertyTag(4) · OpenModeFlags(1). The dispatcher consumed the
-            // leading RopId; consume LogonId here, then the decoder reads the
-            // two handle indices + PropertyTag + flags.
-            let _logon = cur.take_u8()?;
-            let req = RopOpenStreamRequest::decode_after_ropid(cur)?;
+            // 2.2.9.1.1: LogonId - InputHandleIndex - OutputHandleIndex
+            // - PropertyTag(4) - OpenModeFlags(1) (a 4-byte RopHeader4 body
+            // followed by the open-mode flag). The dispatcher consumed the
+            // leading RopId; consume LogonId+Input+Output via
+            // RopHeader4::decode_after_ropid here, then decode reads only the
+            // body fields (PropertyTag + OpenModeFlags) so the codec never
+            // re-takes dispatcher-owned header bytes (AGENTS.md convention).
+            let h4 = RopHeader4::decode_after_ropid(cur, rop_id)?;
+            let req = RopOpenStreamRequest::decode_body(cur, h4.input_handle_index, h4.output_handle_index)?;
             // Resolve the owning object from the input handle. Only a Mail
             // Message handle can be streamed in this phase (calendar/contact
             // bodies are not MAPI streams — they live in CalDAV/CardDAV).
@@ -1630,9 +1673,12 @@ async fn execute_one_rop(
             // bodyValues / htmlBody, and the attachment blob id is recorded for
             // lazy download on the first ReadStream. A missing JMAP backend or
             // credentials yields `NotFound` (Outlook treats it as "stream empty"
-            // — better here than `Success` with a phantom size that would make
+            // - better here than `Success` with a phantom size that would make
             // the client loop ReadStream returning zero bytes forever).
-            let (return_value, blob_id, data, read_only) = match (jmap, password) {
+            // `known_len` carries the attachment's declared size (so OpenStream
+            // / GetStreamSize report a real size before the first ReadStream
+            // downloads the blob, and the download can be bounded up front).
+            let (return_value, blob_id, data, read_only, known_len) = match (jmap, password) {
                 (Some(jc), Some(pw)) => {
                     let account_id = jc
                         .get_account_id(username, pw)
@@ -1640,7 +1686,7 @@ async fn execute_one_rop(
                         .ok()
                         .unwrap_or_default();
                     if account_id.is_empty() {
-                        (RopErrorCode::NotFound, String::new(), None, false)
+                        (RopErrorCode::NotFound, String::new(), None, false, None)
                     } else {
                         match jc.get_email(&account_id, &src_backend, username, pw).await {
                             Ok(Some(e)) => {
@@ -1651,9 +1697,12 @@ async fn execute_one_rop(
                                         String::new(),
                                         Some(bytes),
                                         false,
+                                        None,
                                     ),
                                     None => {
-                                        // Otherwise resolve an attachment blob id.
+                                        // Otherwise resolve an attachment blob id; capture its
+                                        // declared size alongside so OpenStream/GetStreamSize can
+                                        // report it without a premature blob download (coderabbit).
                                         match store::email_attachment_blob(&e, &req.property_tag)
                                         {
                                             Some(att) => (
@@ -1661,6 +1710,7 @@ async fn execute_one_rop(
                                                 att.blob_id.clone().unwrap_or_default(),
                                                 None,
                                                 true,
+                                                att.size,
                                             ),
                                             None => {
                                                 // Not a body / not an attachment-data
@@ -1673,21 +1723,24 @@ async fn execute_one_rop(
                                                     String::new(),
                                                     Some(Vec::new()),
                                                     false,
+                                                    None,
                                                 )
                                             }
                                         }
                                     }
                                 }
                             }
-                            Ok(None) => (RopErrorCode::NotFound, String::new(), None, false),
+                            Ok(None) => {
+                                (RopErrorCode::NotFound, String::new(), None, false, None)
+                            }
                             Err(e) => {
                                 tracing::warn!(error = %e, "JMAP get_email (OpenStream) failed");
-                                (RopErrorCode::DiskError, String::new(), None, false)
+                                (RopErrorCode::DiskError, String::new(), None, false, None)
                             }
                         }
                     }
                 }
-                _ => (RopErrorCode::NotFound, String::new(), None, false),
+                _ => (RopErrorCode::NotFound, String::new(), None, false, None),
             };
             if return_value != RopErrorCode::Success {
                 RopErrorResponse {
@@ -1698,6 +1751,26 @@ async fn execute_one_rop(
                 .encode(out);
                 return Ok(());
             }
+            // Cap a not-yet-downloaded attachment stream by the configured
+            // `max_attachment_bytes` against the JMAP-declared `known_len`,
+            // so OpenStream does not invite a fetch larger than the ceiling.
+            let max_att = u64::try_from(cfg.max_attachment_bytes()).unwrap_or(u64::MAX);
+            let initial_len: u32 = if let Some(b) = &data {
+                u32::try_from(b.len()).unwrap_or(u32::MAX)
+            } else if let Some(len) = known_len {
+                if len > max_att {
+                    RopErrorResponse {
+                        rop_id,
+                        output_handle_index: req.output_handle_index,
+                        return_value: RopErrorCode::NotEnoughMemory,
+                    }
+                    .encode(out);
+                    return Ok(());
+                }
+                u32::try_from(len).unwrap_or(u32::MAX)
+            } else {
+                0
+            };
             // Pack the attachment blob id (if any) alongside the email id so the
             // stream can resolve it without re-reading the source handle (which
             // the client may have released between OpenStream and ReadStream).
@@ -1705,10 +1778,6 @@ async fn execute_one_rop(
                 src_backend.clone()
             } else {
                 format!("{}\x1F{blob_id}", src_backend)
-            };
-            let initial_len: u32 = match &data {
-                Some(b) => u32::try_from(b.len()).unwrap_or(u32::MAX),
-                None => 0,
             };
             sessions.with_session_mut(session_id, |s| {
                 s.set_handle(
@@ -1720,6 +1789,7 @@ async fn execute_one_rop(
                         mailbox_id: src_mailbox.clone(),
                         property_tag: req.property_tag,
                         data,
+                        known_len,
                         cursor: 0,
                         is_dirty: false,
                         read_only,
@@ -1734,13 +1804,17 @@ async fn execute_one_rop(
             .encode(out);
         }
         RopId::ROP_READ_STREAM => {
-            // §2.2.9.2.1: LogonId · InputHandleIndex · ByteCount(2)
-            // · [MaximumByteCount(4) if ByteCount == 0xBABE].
+            // 2.2.9.2.1: LogonId - InputHandleIndex - ByteCount(2)
+            // - [MaximumByteCount(4) if ByteCount == 0xBABE].
             let _logon = cur.take_u8()?;
             let req = RopReadStreamRequest::decode_after_ropid(cur)?;
             let max_bytes = match req.max_bytes() {
                 Ok(m) => m,
                 Err(e) => {
+                    // Encode the ROP-level InvalidParameter once and return Ok so
+                    // the outer Execute loop does not emit a SECOND error ROP
+                    // (qodo #1, coderabbit critical): taking the remaining bytes
+                    // keeps the chain cursor aligned for the following ROP.
                     let _ = cur.take_remaining();
                     RopErrorResponse {
                         rop_id,
@@ -1748,13 +1822,14 @@ async fn execute_one_rop(
                         return_value: RopErrorCode::InvalidParameter,
                     }
                     .encode(out);
-                    return Err(e);
+                    let _ = e;
+                    return Ok(());
                 }
             };
             // Pull the stream's owned state (backend id, mailbox id, cursor,
-            // read-only flag) from the snapshot handle; the body/attachment
-            // bytes are materialised under the write lock below so the cursor
-            // advance is atomic.
+            // read-only flag, has-data) from the snapshot handle; the body/
+            // attachment bytes are materialised under the write lock below so the
+            // cursor advance is atomic.
             let stream_meta = sessions
                 .with_handle(session_id, req.input_handle_index, |h| match h {
                     Handle::Stream {
@@ -1762,35 +1837,34 @@ async fn execute_one_rop(
                         mailbox_id,
                         cursor,
                         read_only,
+                        data,
                         ..
                     } => (
                         backend_id.clone(),
                         mailbox_id.clone(),
                         *cursor,
                         *read_only,
+                        data.is_some(),
                     ),
-                    _ => (String::new(), String::new(), 0u64, false),
+                    _ => (String::new(), String::new(), 0u64, false, false),
                 })
-                .unwrap_or((String::new(), String::new(), 0, false));
+                .unwrap_or((String::new(), String::new(), 0, false, false));
             // A read-only attachment stream whose blob has not been downloaded
-            // yet (backend id carries the packed `<emailId>\x1F<blobId>`)
-            // triggers a single `download_blob` now; the bytes attach to the
-            // handle under the write lock below.
-            let downloaded = if stream_meta.3 && stream_meta.0.contains('\x1F') {
-                materialise_attachment_blob(
-                    jmap,
-                    password,
-                    username,
-                    &stream_meta.0,
-                    &stream_meta.1,
-                )
-                .await
+            // yet (backend id carries the packed `<emailId>\x1F<blobId>` and
+            // `data` is still None) triggers a single `download_blob` now; the
+            // bytes attach to the handle under the write lock below. Once `data`
+            // is populated, subsequent paginated reads skip the network round
+            // trip entirely (qodo #3 / coderabbit performance).
+            let downloaded = if stream_meta.3 && stream_meta.0.contains('\x1F') && !stream_meta.4 {
+                materialise_attachment_blob(jmap, password, username, &stream_meta.0, cfg)
+                    .await
             } else {
                 None
             };
             // Under the write lock: attach the downloaded bytes (if any) on
             // first read, then take a slice of `data` from `cursor` bounded by
-            // `max_bytes` and advance the cursor.
+            // `max_bytes` (capped at the 2-byte DataSize wire limit) and advance
+            // the cursor by exactly the number of bytes returned on the wire.
             let (return_value, data) = sessions
                 .with_session_mut(session_id, |s| {
                     let Some(Handle::Stream { data, cursor, .. }) =
@@ -1811,7 +1885,12 @@ async fn execute_one_rop(
                     }
                     let buf = data.get_or_insert_with(Vec::new);
                     let start = usize::try_from(*cursor).unwrap_or(buf.len()).min(buf.len());
-                    let want = max_bytes as usize;
+                    // The response carries a 2-byte DataSize, so a single read
+                    // can deliver at most u16::MAX bytes. Clamp the request's
+                    // max here so the cursor advances by exactly the emitted
+                    // length: a MaximumByteCount > 65535 (0xBABE extended form)
+                    // must NOT skip the bytes the response cannot carry.
+                    let want = (max_bytes as usize).min(usize::from(u16::MAX));
                     let end = (start + want).min(buf.len());
                     let chunk = buf[start..end].to_vec();
                     *cursor = u64::try_from(end).unwrap_or(u64::MAX);
@@ -1889,6 +1968,10 @@ async fn execute_one_rop(
             let new_pos = match req.resolve(current, len) {
                 Ok(p) => p,
                 Err(e) => {
+                    // Encode the ROP-level InvalidParameter once and return Ok so
+                    // the outer Execute loop does not emit a SECOND error ROP
+                    // (qodo #1, coderabbit critical): taking the remaining bytes
+                    // keeps the chain cursor aligned for the following ROP.
                     let _ = cur.take_remaining();
                     RopErrorResponse {
                         rop_id,
@@ -1896,7 +1979,8 @@ async fn execute_one_rop(
                         return_value: RopErrorCode::InvalidParameter,
                     }
                     .encode(out);
-                    return Err(e);
+                    let _ = e;
+                    return Ok(());
                 }
             };
             sessions.with_session_mut(session_id, |s| {
@@ -1912,17 +1996,19 @@ async fn execute_one_rop(
             .encode(out);
         }
         RopId::ROP_SET_STREAM_SIZE => {
-            // §2.2.9.7.1: LogonId · InputHandleIndex · StreamSize(8).
+            // 2.2.9.7.1: LogonId - InputHandleIndex - StreamSize(8).
             let _logon = cur.take_u8()?;
             let req = RopSetStreamSizeRequest::decode_after_ropid(cur)?;
-            // Saturate the requested size at 2^31 (the spec's default ceiling);
-            // resize the buffer up (zero-filled) or down (truncated), clamping the
-            // cursor to the new length. Read-only attachment streams reject.
-            let max = 0x8000_0000u64;
+            // Cap the growable buffer at the smaller of the spec ceiling (2^31)
+            // and the configured `max_attachment_bytes`. A single SetStreamSize
+            // could otherwise zero-fill up to 2 GiB per handle (256 handles per
+            // session, unbounded sessions) with no accounting against the
+            // config, an authenticated memory-exhaustion vector (coderabbit).
+            let max = 0x8000_0000u64.min(u64::try_from(cfg.max_attachment_bytes()).unwrap_or(0x8000_0000));
             if req.stream_size > max {
                 RopSetStreamSizeResponse {
                     input_handle_index: req.input_handle_index,
-                    return_value: RopErrorCode::InvalidParameter,
+                    return_value: RopErrorCode::NotEnoughMemory,
                 }
                 .encode(out);
                 return Ok(());
@@ -1963,34 +2049,36 @@ async fn execute_one_rop(
             .encode(out);
         }
         RopId::ROP_GET_STREAM_SIZE => {
-            // §2.2.9.6.1: LogonId · InputHandleIndex.
+            // 2.2.9.6.1: LogonId - InputHandleIndex.
             let _logon = cur.take_u8()?;
             let req = RopGetStreamSizeRequest::decode_after_ropid(cur)?;
-            // For an attachment stream whose blob has not been downloaded yet,
-            // report the buffered-data length (0 until the first ReadStream
-            // downloads the blob). See the `has_blob` branch below for why the
-            // gateway declines to re-fetch the message just to read its
-            // declared attachment size.
-            let (buf_len, has_blob) = sessions
+            // Resolve the buffered length plus the attachment's known/dirty state.
+            // `found` distinguishes a real (bound) stream from an unbound or
+            // non-stream handle: the latter must NOT be reported as a successful
+            // zero-length stream, but as `InvalidParameter` to match the other
+            // stream ROPs (sourcery). For an attachment stream whose blob has not
+            // been downloaded yet, surface the declared `known_len` (captured at
+            // OpenStream from `attachments[].size`) instead of 0, so the client
+            // does not treat the stream as empty before the first ReadStream.
+            let (len, known, found) = sessions
                 .with_handle(session_id, req.input_handle_index, |h| match h {
-                    Handle::Stream { data, backend_id, .. } => {
+                    Handle::Stream { data, known_len, .. } => {
                         let l = data.as_ref().map(|d| d.len() as u64).unwrap_or(0);
-                        (l, backend_id.contains('\x1F'))
+                        (l, known_len.unwrap_or(0), true)
                     }
-                    _ => (0u64, false),
+                    _ => (0u64, 0u64, false),
                 })
-                .unwrap_or((0, false));
-            // For an attachment stream whose blob has not been downloaded yet
-            // (`data` empty but a packed `<emailId>\x1F<blobId>` is present),
-            // surface 0 until the first ReadStream downloads and measures the
-            // blob in one shot. Re-fetching the whole message just to read its
-            // declared `attachments[].size` would double the network cost per
-            // attachment (a DoS-amplification vector), so the gateway defers.
-            let size = if has_blob && buf_len == 0 {
-                0u32
-            } else {
-                u32::try_from(buf_len).unwrap_or(u32::MAX)
-            };
+                .unwrap_or((0, 0, false));
+            if !found {
+                RopErrorResponse {
+                    rop_id,
+                    output_handle_index: req.input_handle_index,
+                    return_value: RopErrorCode::InvalidParameter,
+                }
+                .encode(out);
+                return Ok(());
+            }
+            let size = if len == 0 { u32::try_from(known).unwrap_or(0) } else { u32::try_from(len).unwrap_or(u32::MAX) };
             RopGetStreamSizeSuccess {
                 input_handle_index: req.input_handle_index,
                 return_value: RopErrorCode::Success,
@@ -2031,7 +2119,6 @@ async fn execute_one_rop(
             .encode(out);
         }
     }
-    let _ = cfg;
     let _ = logon_id;
     Ok(())
 }
@@ -2133,13 +2220,17 @@ async fn resolve_drafts_mailbox(
 /// `<emailId>\x1F<blobId>` (the encoding stashed at `RopOpenStream` time); the
 /// helper splits it, looks up the account id, and calls `download_blob`.
 /// Returns `None` on any failure so the caller falls back to an empty stream
-/// rather than surfacing a transport-level error to the client mid-chain.
+/// rather than surfacing a transport-level error mid-chain. The previous unused
+/// `_mailbox_id` parameter is dropped (coderabbit). The download is bounded at
+/// OpenStream by `max_attachment_bytes` (against the JMAP-declared attachment
+/// size) before this helper runs, so the buffer never exceeds the configured
+/// ceiling for a real attachment.
 async fn materialise_attachment_blob(
     jc: Option<&crate::jmap::JmapClient>,
     password: Option<&secrecy::SecretString>,
     username: &str,
     packed_backend: &str,
-    _mailbox_id: &str,
+    _cfg: &crate::config::Config,
 ) -> Option<Vec<u8>> {
     let jc = jc?;
     let pw = password?;
@@ -2867,6 +2958,120 @@ mod tests {
         assert_eq!(payload[6], INPUT_HANDLE, "input handle echoed");
     }
 
+    /// `RopSaveChangesMessage` with a dirty body stream on the message must
+    /// surface `RopNoSupport` (not a silent Success) because the body write-back
+    /// bridge is not yet wired; the client is told the save did not commit the
+    /// staged bytes rather than being faked success.
+    #[tokio::test]
+    async fn execute_rop_save_changes_message_dirty_body_stream_emits_no_support() {
+        let (state, sid) = state_with_session();
+        const RESPONSE_HANDLE: u8 = 2;
+        const INPUT_HANDLE: u8 = 4;
+        const STREAM_HANDLE: u8 = 5;
+        // A draft mail message the body-stream is owned by.
+        state.sessions.with_session_mut(&sid, |s| {
+            s.set_handle(
+                INPUT_HANDLE,
+                crate::mapi::session::Handle::Message {
+                    backend_id: "m1".into(),
+                    mailbox_id: "drafts-mbox".into(),
+                    kind: crate::mapi::session::FolderKind::Mail,
+                    is_new: true,
+                },
+            );
+        });
+        // A dirty body stream owned by the message handle (PR_BODY, wrote some
+        // bytes, not read-only).
+        let body_tag = crate::mapi::data::PropertyTag::new(
+            crate::mapi::data::PropertyType::PTYP_STRING8,
+            crate::mapi::store::PR_BODY,
+        );
+        state.sessions.with_session_mut(&sid, |s| {
+            s.set_handle(
+                STREAM_HANDLE,
+                crate::mapi::session::Handle::Stream {
+                    source_handle_index: INPUT_HANDLE,
+                    kind: crate::mapi::session::FolderKind::Mail,
+                    backend_id: "m1".into(),
+                    mailbox_id: "drafts-mbox".into(),
+                    property_tag: body_tag,
+                    data: Some(b"new body".to_vec()),
+                    known_len: None,
+                    cursor: 8,
+                    is_dirty: true,
+                    read_only: false,
+                },
+            );
+        });
+        // Wire: RopId(0x0C) - LogonId(0) - ResponseHandleIndex(2)
+        // - InputHandleIndex(4) - SaveFlags(0).
+        let body: Vec<u8> = vec![0x0C, 0, RESPONSE_HANDLE, INPUT_HANDLE, 0];
+        let req = MapiRequest {
+            kind: RpcKind::Mailbox(MapiRequestType::Execute),
+            request_id: "{G}:1".into(),
+            client_application: None,
+            client_info: Some(format!("{{{}}}:0", sid.as_hyphenated())),
+            password: Some("pw".into()),
+            cookies: Vec::new(),
+            body,
+        };
+        let resp = handle(req, &state).await;
+        assert_eq!(resp.code, ResponseCode::Success);
+        let (_status, _h, _ct, body_out) = resp.render();
+        let payload = &body_out[4..];
+        assert_eq!(payload[0], 0x0C, "echoed RopId");
+        assert_eq!(payload[1], RESPONSE_HANDLE, "response handle echoed");
+        let rv = u32::from_le_bytes([payload[2], payload[3], payload[4], payload[5]]);
+        assert_eq!(
+            RopErrorCode::from_u32(rv),
+            RopErrorCode::NoSupport,
+            "dirty body stream -> NoSupport, not silent Success"
+        );
+        assert_eq!(payload[6], INPUT_HANDLE, "input handle echoed");
+    }
+
+    /// `RopSaveChangesMessage` with NO dirty body stream still proceeds to the
+    /// backend create path (and, with no JMAP backend configured, emits
+    /// `NotFound` rather than `NoSupport`), proving the dirty-body guard does
+    /// not over-trigger.
+    #[tokio::test]
+    async fn execute_rop_save_changes_message_clean_message_falls_through_to_backend() {
+        let (state, sid) = state_with_session();
+        const RESPONSE_HANDLE: u8 = 2;
+        const INPUT_HANDLE: u8 = 4;
+        state.sessions.with_session_mut(&sid, |s| {
+            s.set_handle(
+                INPUT_HANDLE,
+                crate::mapi::session::Handle::Message {
+                    backend_id: "m1".into(),
+                    mailbox_id: "drafts-mbox".into(),
+                    kind: crate::mapi::session::FolderKind::Mail,
+                    is_new: true,
+                },
+            );
+        });
+        let body: Vec<u8> = vec![0x0C, 0, RESPONSE_HANDLE, INPUT_HANDLE, 0];
+        let req = MapiRequest {
+            kind: RpcKind::Mailbox(MapiRequestType::Execute),
+            request_id: "{G}:1".into(),
+            client_application: None,
+            client_info: Some(format!("{{{}}}:0", sid.as_hyphenated())),
+            password: Some("pw".into()),
+            cookies: Vec::new(),
+            body,
+        };
+        let resp = handle(req, &state).await;
+        let (_status, _h, _ct, body_out) = resp.render();
+        let payload = &body_out[4..];
+        let rv = u32::from_le_bytes([payload[2], payload[3], payload[4], payload[5]]);
+        // No backend -> NotFound (not NoSupport): the dirty-body guard gated out.
+        assert_ne!(
+            RopErrorCode::from_u32(rv),
+            RopErrorCode::NoSupport,
+            "clean message must not trigger the dirty-body NoSupport path"
+        );
+    }
+
     /// `RopDeleteMessages` against a non-mail folder (e.g. a root handle)
     /// must yield `RopNoSupport` so the client reacts instead of a silent
     /// success, and the cursor must be advanced exactly past the message-id
@@ -3226,6 +3431,7 @@ mod tests {
                     mailbox_id: String::new(),
                     property_tag,
                     data: Some(bytes),
+                    known_len: None,
                     cursor,
                     is_dirty: false,
                     read_only,
@@ -3365,12 +3571,14 @@ mod tests {
     async fn set_stream_size_rejects_oversize() {
         let (state, sid) = state_with_session();
         install_stream(&state, &sid, 5, b"ab".to_vec(), 0, false);
-        // > 0x80000000 is rejected with InvalidParameter.
+        // A size over the spec ceiling (2^31) AND the configured per-stream
+        // cap is rejected; the per-stream cap maps the rejection to
+        // NotEnoughMemory (memory pressure), not InvalidParameter.
         let mut body: Vec<u8> = vec![0x2F, 0, 5];
         body.extend_from_slice(&0x8000_0001u64.to_le_bytes());
         let out = dispatch(&state, &sid, &body).await;
         let rv = u32::from_le_bytes([out[2], out[3], out[4], out[5]]);
-        assert_eq!(RopErrorCode::from_u32(rv), RopErrorCode::InvalidParameter);
+        assert_eq!(RopErrorCode::from_u32(rv), RopErrorCode::NotEnoughMemory);
     }
 
     #[tokio::test]
@@ -3382,7 +3590,10 @@ mod tests {
         let out = dispatch(&state, &sid, &body).await;
         let rv = u32::from_le_bytes([out[2], out[3], out[4], out[5]]);
         assert_eq!(RopErrorCode::from_u32(rv), RopErrorCode::AccessDenied);
-        assert_eq!(u16::from_le_bytes([out[6], out[7]]), 0);
+        // On a non-success ReturnValue the failure envelope is the 6-byte
+        // RopId + InputHandleIndex + ReturnValue: NO WrittenSize (MS-OXCROPS
+        // 2.2.9.3.3), so the response is exactly 6 bytes.
+        assert_eq!(out.len(), 6);
     }
 
     #[tokio::test]
