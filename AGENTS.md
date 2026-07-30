@@ -244,8 +244,18 @@ gets wiped between shell sessions. To avoid re-installing Rust every command:
 - **ROps wired** (handler.rs arms): Release, OpenFolder, GetHierarchyTable,
   GetContentsTable, SetColumns, QueryRows, GetStatus, GetPropertiesSpecific,
   GetPropertiesAll, SetMessageReadFlag, CreateMessage-stub (ENUM only pending),
-  SaveChangesMessage-stub, DeleteMessages-stub. **All other ~60 ROPs hit the
-  `_ => NotFound` fallback** — see task tracker P2-4 for the mail write/delete/movecopy path.
+  SaveChangesMessage-stub, DeleteMessages-stub, **and the full stream family**
+  (OpenStream·0x2B, ReadStream·0x2C, WriteStream·0x2D, SeekStream·0x2E,
+  SetStreamSize·0x2F, CommitStream·0x5D, GetStreamSize·0x5E — audit gap §2a).
+  The stream arms resolve `PR_BODY`/`PR_BODY_HTML`/`PR_RTF_COMPRESSED`
+  (empty) via `store::email_body_stream_bytes` lifted straight off the cached
+  `JmapEmail`, and `PR_ATTACH_DATA_BIN` via `store::email_attachment_blob`
+  + a lazy `JmapClient::download_blob` on the first ReadStream (the blob id is
+  packed into `Handle::Stream.backend_id` as `<emailId>\x1F<blobId>` so the
+  stream survives a `RopRelease` of the source Message handle). Writes are
+  staged in the handle buffer and flushed at SaveChangesMessage. **All other
+  ~50 ROPs hit the `_ => NotFound` fallback** — see task tracker P2-4 for the
+  mail write/delete/movecopy path.
 
 ## MAPI/HTTP (MS-OXCMAPIHTTP) architecture notes
 

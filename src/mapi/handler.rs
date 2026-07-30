@@ -29,15 +29,19 @@ use crate::auth::AuthVerifier;
 use crate::config::Config;
 use crate::mapi::logon::{LogonOutcome, logon_basic};
 use crate::mapi::rops::{
-    Buf, DecodeError, RopCopyToRequest, RopCopyToSuccess, RopCreateMessageRequest,
-    RopCreateMessageSuccess, RopDeleteMessagesRequest, RopDeleteMessagesResponse,
-    RopDeletePropertiesRequest, RopErrorCode, RopErrorResponse, RopGetPropertiesAllRequest,
-    RopGetPropertiesSpecificRequest, RopGetStatusRequest, RopHeader4, RopId, RopLogonRequest,
-    RopLogonSuccess, RopMoveCopyMessagesRequest, RopMoveCopyMessagesResponse, RopOpenTableRequest,
-    RopPropertyWriteSuccess, RopQueryRowsRequest, RopReleaseRequest, RopSaveChangesMessageRequest,
-    RopSaveChangesMessageSuccess, RopSetColumnsRequest, RopSetMessageReadFlagRequest,
-    RopSetPropertiesRequest, RopSubmitMessageRequest, RopSubmitMessageResponse,
+    Buf, DecodeError, RopCommitStreamRequest, RopCommitStreamResponse, RopCopyToRequest,
+    RopCopyToSuccess, RopCreateMessageRequest, RopCreateMessageSuccess, RopDeleteMessagesRequest,
+    RopDeleteMessagesResponse, RopDeletePropertiesRequest, RopErrorCode, RopErrorResponse,
+    RopGetPropertiesAllRequest, RopGetPropertiesSpecificRequest, RopGetStatusRequest,
+    RopGetStreamSizeRequest, RopGetStreamSizeSuccess, RopHeader4, RopId, RopLogonRequest,
+    RopLogonSuccess, RopMoveCopyMessagesRequest, RopMoveCopyMessagesResponse, RopOpenStreamRequest,
+    RopOpenStreamSuccess, RopOpenTableRequest, RopPropertyWriteSuccess, RopQueryRowsRequest,
+    RopReadStreamRequest, RopReadStreamSuccess, RopReleaseRequest, RopSaveChangesMessageRequest,
+    RopSaveChangesMessageSuccess, RopSeekStreamRequest, RopSeekStreamSuccess, RopSetColumnsRequest,
+    RopSetMessageReadFlagRequest, RopSetPropertiesRequest, RopSetStreamSizeRequest,
+    RopSetStreamSizeResponse, RopSubmitMessageRequest, RopSubmitMessageResponse,
     RopTransportSendFailure, RopTransportSendRequest, RopTransportSendSuccess,
+    RopWriteStreamRequest, RopWriteStreamSuccess,
 };
 use crate::mapi::session::{FolderKind, Handle, SessionManager};
 use crate::mapi::store;
@@ -1587,6 +1591,432 @@ async fn execute_one_rop(
             }
             .encode(out);
         }
+        RopId::ROP_OPEN_STREAM => {
+            // §2.2.9.1.1: LogonId · InputHandleIndex · OutputHandleIndex
+            // · PropertyTag(4) · OpenModeFlags(1). The dispatcher consumed the
+            // leading RopId; consume LogonId here, then the decoder reads the
+            // two handle indices + PropertyTag + flags.
+            let _logon = cur.take_u8()?;
+            let req = RopOpenStreamRequest::decode_after_ropid(cur)?;
+            // Resolve the owning object from the input handle. Only a Mail
+            // Message handle can be streamed in this phase (calendar/contact
+            // bodies are not MAPI streams — they live in CalDAV/CardDAV).
+            let (src_backend, src_mailbox, src_kind) = sessions
+                .with_handle(session_id, req.input_handle_index, |h| match h {
+                    Handle::Message {
+                        backend_id,
+                        mailbox_id,
+                        kind,
+                        ..
+                    } => (backend_id.clone(), mailbox_id.clone(), *kind),
+                    _ => (String::new(), String::new(), FolderKind::Root),
+                })
+                .unwrap_or((String::new(), String::new(), FolderKind::Root));
+            // Guard: only mail messages carry streamable bodies/attachments;
+            // a stream opened on a folder/table/calendar/contact handle has
+            // no backing property and reports `NoSupport` (the spec mandates a
+            // ROP-level error rather than a transport success with empty bytes,
+            // so Outlook does not wait on a stream that will never return data).
+            if src_kind != FolderKind::Mail || src_backend.is_empty() {
+                RopErrorResponse {
+                    rop_id,
+                    output_handle_index: req.output_handle_index,
+                    return_value: RopErrorCode::NoSupport,
+                }
+                .encode(out);
+                return Ok(());
+            }
+            // Fetch the full JMAP email once; body bytes are lifted from
+            // bodyValues / htmlBody, and the attachment blob id is recorded for
+            // lazy download on the first ReadStream. A missing JMAP backend or
+            // credentials yields `NotFound` (Outlook treats it as "stream empty"
+            // — better here than `Success` with a phantom size that would make
+            // the client loop ReadStream returning zero bytes forever).
+            let (return_value, blob_id, data, read_only) = match (jmap, password) {
+                (Some(jc), Some(pw)) => {
+                    let account_id = jc
+                        .get_account_id(username, pw)
+                        .await
+                        .ok()
+                        .unwrap_or_default();
+                    if account_id.is_empty() {
+                        (RopErrorCode::NotFound, String::new(), None, false)
+                    } else {
+                        match jc.get_email(&account_id, &src_backend, username, pw).await {
+                            Ok(Some(e)) => {
+                                // Try body property first (cheap, already in JSON).
+                                match store::email_body_stream_bytes(&e, &req.property_tag) {
+                                    Some(bytes) => (
+                                        RopErrorCode::Success,
+                                        String::new(),
+                                        Some(bytes),
+                                        false,
+                                    ),
+                                    None => {
+                                        // Otherwise resolve an attachment blob id.
+                                        match store::email_attachment_blob(&e, &req.property_tag)
+                                        {
+                                            Some(att) => (
+                                                RopErrorCode::Success,
+                                                att.blob_id.clone().unwrap_or_default(),
+                                                None,
+                                                true,
+                                            ),
+                                            None => {
+                                                // Not a body / not an attachment-data
+                                                // tag: open a typed-empty stream so a
+                                                // ReadStream returns zero bytes rather
+                                                // than NotFound (the property simply has
+                                                // no value on this message).
+                                                (
+                                                    RopErrorCode::Success,
+                                                    String::new(),
+                                                    Some(Vec::new()),
+                                                    false,
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            Ok(None) => (RopErrorCode::NotFound, String::new(), None, false),
+                            Err(e) => {
+                                tracing::warn!(error = %e, "JMAP get_email (OpenStream) failed");
+                                (RopErrorCode::DiskError, String::new(), None, false)
+                            }
+                        }
+                    }
+                }
+                _ => (RopErrorCode::NotFound, String::new(), None, false),
+            };
+            if return_value != RopErrorCode::Success {
+                RopErrorResponse {
+                    rop_id,
+                    output_handle_index: req.output_handle_index,
+                    return_value,
+                }
+                .encode(out);
+                return Ok(());
+            }
+            // Pack the attachment blob id (if any) alongside the email id so the
+            // stream can resolve it without re-reading the source handle (which
+            // the client may have released between OpenStream and ReadStream).
+            let packed_backend = if blob_id.is_empty() {
+                src_backend.clone()
+            } else {
+                format!("{}\x1F{blob_id}", src_backend)
+            };
+            let initial_len: u32 = match &data {
+                Some(b) => u32::try_from(b.len()).unwrap_or(u32::MAX),
+                None => 0,
+            };
+            sessions.with_session_mut(session_id, |s| {
+                s.set_handle(
+                    req.output_handle_index,
+                    Handle::Stream {
+                        source_handle_index: req.input_handle_index,
+                        kind: src_kind,
+                        backend_id: packed_backend,
+                        mailbox_id: src_mailbox.clone(),
+                        property_tag: req.property_tag,
+                        data,
+                        cursor: 0,
+                        is_dirty: false,
+                        read_only,
+                    },
+                );
+            });
+            RopOpenStreamSuccess {
+                output_handle_index: req.output_handle_index,
+                return_value: RopErrorCode::Success,
+                stream_size: initial_len,
+            }
+            .encode(out);
+        }
+        RopId::ROP_READ_STREAM => {
+            // §2.2.9.2.1: LogonId · InputHandleIndex · ByteCount(2)
+            // · [MaximumByteCount(4) if ByteCount == 0xBABE].
+            let _logon = cur.take_u8()?;
+            let req = RopReadStreamRequest::decode_after_ropid(cur)?;
+            let max_bytes = match req.max_bytes() {
+                Ok(m) => m,
+                Err(e) => {
+                    let _ = cur.take_remaining();
+                    RopErrorResponse {
+                        rop_id,
+                        output_handle_index: req.input_handle_index,
+                        return_value: RopErrorCode::InvalidParameter,
+                    }
+                    .encode(out);
+                    return Err(e);
+                }
+            };
+            // Pull the stream's owned state (backend id, mailbox id, cursor,
+            // read-only flag) from the snapshot handle; the body/attachment
+            // bytes are materialised under the write lock below so the cursor
+            // advance is atomic.
+            let stream_meta = sessions
+                .with_handle(session_id, req.input_handle_index, |h| match h {
+                    Handle::Stream {
+                        backend_id,
+                        mailbox_id,
+                        cursor,
+                        read_only,
+                        ..
+                    } => (
+                        backend_id.clone(),
+                        mailbox_id.clone(),
+                        *cursor,
+                        *read_only,
+                    ),
+                    _ => (String::new(), String::new(), 0u64, false),
+                })
+                .unwrap_or((String::new(), String::new(), 0, false));
+            // A read-only attachment stream whose blob has not been downloaded
+            // yet (backend id carries the packed `<emailId>\x1F<blobId>`)
+            // triggers a single `download_blob` now; the bytes attach to the
+            // handle under the write lock below.
+            let downloaded = if stream_meta.3 && stream_meta.0.contains('\x1F') {
+                materialise_attachment_blob(
+                    jmap,
+                    password,
+                    username,
+                    &stream_meta.0,
+                    &stream_meta.1,
+                )
+                .await
+            } else {
+                None
+            };
+            // Under the write lock: attach the downloaded bytes (if any) on
+            // first read, then take a slice of `data` from `cursor` bounded by
+            // `max_bytes` and advance the cursor.
+            let (return_value, data) = sessions
+                .with_session_mut(session_id, |s| {
+                    let Some(Handle::Stream { data, cursor, .. }) =
+                        s.handle_mut(req.input_handle_index)
+                    else {
+                        return (RopErrorCode::NotFound, Vec::new());
+                    };
+                    if data.is_none() {
+                        if let Some(bytes) = downloaded.as_ref() {
+                            *data = Some(bytes.clone());
+                        } else {
+                            // Body stream opened with empty data, or attachment
+                            // download failed: attach an empty buffer so a
+                            // subsequent ReadStream returns zero bytes rather
+                            // than spinning the cursor guard again.
+                            *data = Some(Vec::new());
+                        }
+                    }
+                    let buf = data.get_or_insert_with(Vec::new);
+                    let start = usize::try_from(*cursor).unwrap_or(buf.len()).min(buf.len());
+                    let want = max_bytes as usize;
+                    let end = (start + want).min(buf.len());
+                    let chunk = buf[start..end].to_vec();
+                    *cursor = u64::try_from(end).unwrap_or(u64::MAX);
+                    (RopErrorCode::Success, chunk)
+                })
+                .unwrap_or((RopErrorCode::NotFound, Vec::new()));
+            RopReadStreamSuccess {
+                input_handle_index: req.input_handle_index,
+                return_value,
+                data,
+            }
+            .encode(out);
+        }
+        RopId::ROP_WRITE_STREAM => {
+            // §2.2.9.3.1: LogonId · InputHandleIndex · DataSize(2) · Data.
+            let _logon = cur.take_u8()?;
+            let req = RopWriteStreamRequest::decode_after_ropid(cur)?;
+            // A write requires a read/write Stream handle (a read-only attachment
+            // stream, or an unbound handle, yields `AccessDenied`). Writes only
+            // land on body streams of a draft mail message; the bytes are staged
+            // in the handle's buffer and flushed at `RopSaveChangesMessage`.
+            let (return_value, written) = sessions
+                .with_session_mut(session_id, |s| {
+                    let Some(Handle::Stream {
+                        data,
+                        cursor,
+                        is_dirty,
+                        read_only,
+                        ..
+                    }) = s.handle_mut(req.input_handle_index)
+                    else {
+                        return (RopErrorCode::NotFound, 0u16);
+                    };
+                    if *read_only {
+                        return (RopErrorCode::AccessDenied, 0u16);
+                    }
+                    let buf = data.get_or_insert_with(Vec::new);
+                    let start = usize::try_from(*cursor).unwrap_or(buf.len());
+                    if start > buf.len() {
+                        buf.resize(start, 0);
+                    }
+                    // Overwrite from the cursor, extending the buffer when the
+                    // write runs past the current end.
+                    let n = req.data.len();
+                    if start + n > buf.len() {
+                        buf.resize(start + n, 0);
+                    }
+                    buf[start..start + n].copy_from_slice(&req.data);
+                    *cursor = u64::try_from(start + n).unwrap_or(u64::MAX);
+                    *is_dirty = true;
+                    (RopErrorCode::Success, u16::try_from(n).unwrap_or(u16::MAX))
+                })
+                .unwrap_or((RopErrorCode::NotFound, 0u16));
+            RopWriteStreamSuccess {
+                input_handle_index: req.input_handle_index,
+                return_value,
+                written_size: written,
+            }
+            .encode(out);
+        }
+        RopId::ROP_SEEK_STREAM => {
+            // §2.2.9.8.1: LogonId · InputHandleIndex · Origin(1) · Offset(8).
+            let _logon = cur.take_u8()?;
+            let req = RopSeekStreamRequest::decode_after_ropid(cur)?;
+            // Resolve the new cursor against the current stream state.
+            let (current, len) = sessions
+                .with_handle(session_id, req.input_handle_index, |h| match h {
+                    Handle::Stream { data, cursor, .. } => {
+                        let l = data.as_ref().map(|d| d.len() as u64).unwrap_or(0);
+                        (*cursor, l)
+                    }
+                    _ => (0u64, 0u64),
+                })
+                .unwrap_or((0, 0));
+            let new_pos = match req.resolve(current, len) {
+                Ok(p) => p,
+                Err(e) => {
+                    let _ = cur.take_remaining();
+                    RopErrorResponse {
+                        rop_id,
+                        output_handle_index: req.input_handle_index,
+                        return_value: RopErrorCode::InvalidParameter,
+                    }
+                    .encode(out);
+                    return Err(e);
+                }
+            };
+            sessions.with_session_mut(session_id, |s| {
+                if let Some(Handle::Stream { cursor, .. }) = s.handle_mut(req.input_handle_index) {
+                    *cursor = new_pos;
+                }
+            });
+            RopSeekStreamSuccess {
+                input_handle_index: req.input_handle_index,
+                return_value: RopErrorCode::Success,
+                new_position: new_pos,
+            }
+            .encode(out);
+        }
+        RopId::ROP_SET_STREAM_SIZE => {
+            // §2.2.9.7.1: LogonId · InputHandleIndex · StreamSize(8).
+            let _logon = cur.take_u8()?;
+            let req = RopSetStreamSizeRequest::decode_after_ropid(cur)?;
+            // Saturate the requested size at 2^31 (the spec's default ceiling);
+            // resize the buffer up (zero-filled) or down (truncated), clamping the
+            // cursor to the new length. Read-only attachment streams reject.
+            let max = 0x8000_0000u64;
+            if req.stream_size > max {
+                RopSetStreamSizeResponse {
+                    input_handle_index: req.input_handle_index,
+                    return_value: RopErrorCode::InvalidParameter,
+                }
+                .encode(out);
+                return Ok(());
+            }
+            let return_value = sessions
+                .with_session_mut(session_id, |s| {
+                    let Some(Handle::Stream {
+                        data,
+                        cursor,
+                        is_dirty,
+                        read_only,
+                        ..
+                    }) = s.handle_mut(req.input_handle_index)
+                    else {
+                        return RopErrorCode::NotFound;
+                    };
+                    if *read_only {
+                        return RopErrorCode::AccessDenied;
+                    }
+                    let buf = data.get_or_insert_with(Vec::new);
+                    let new_len = usize::try_from(req.stream_size).unwrap_or(buf.len());
+                    if new_len <= buf.len() {
+                        buf.truncate(new_len);
+                    } else {
+                        buf.resize(new_len, 0);
+                    }
+                    if *cursor > new_len as u64 {
+                        *cursor = new_len as u64;
+                    }
+                    *is_dirty = true;
+                    RopErrorCode::Success
+                })
+                .unwrap_or(RopErrorCode::NotFound);
+            RopSetStreamSizeResponse {
+                input_handle_index: req.input_handle_index,
+                return_value,
+            }
+            .encode(out);
+        }
+        RopId::ROP_GET_STREAM_SIZE => {
+            // §2.2.9.6.1: LogonId · InputHandleIndex.
+            let _logon = cur.take_u8()?;
+            let req = RopGetStreamSizeRequest::decode_after_ropid(cur)?;
+            // For an attachment stream whose blob has not been downloaded yet,
+            // report the buffered-data length (0 until the first ReadStream
+            // downloads the blob). See the `has_blob` branch below for why the
+            // gateway declines to re-fetch the message just to read its
+            // declared attachment size.
+            let (buf_len, has_blob) = sessions
+                .with_handle(session_id, req.input_handle_index, |h| match h {
+                    Handle::Stream { data, backend_id, .. } => {
+                        let l = data.as_ref().map(|d| d.len() as u64).unwrap_or(0);
+                        (l, backend_id.contains('\x1F'))
+                    }
+                    _ => (0u64, false),
+                })
+                .unwrap_or((0, false));
+            // For an attachment stream whose blob has not been downloaded yet
+            // (`data` empty but a packed `<emailId>\x1F<blobId>` is present),
+            // surface 0 until the first ReadStream downloads and measures the
+            // blob in one shot. Re-fetching the whole message just to read its
+            // declared `attachments[].size` would double the network cost per
+            // attachment (a DoS-amplification vector), so the gateway defers.
+            let size = if has_blob && buf_len == 0 {
+                0u32
+            } else {
+                u32::try_from(buf_len).unwrap_or(u32::MAX)
+            };
+            RopGetStreamSizeSuccess {
+                input_handle_index: req.input_handle_index,
+                return_value: RopErrorCode::Success,
+                stream_size: size,
+            }
+            .encode(out);
+        }
+        RopId::ROP_COMMIT_STREAM => {
+            // §2.2.9.5.1: LogonId · InputHandleIndex.
+            let _logon = cur.take_u8()?;
+            let req = RopCommitStreamRequest::decode_after_ropid(cur)?;
+            // JMAP persists at SaveChangesMessage time; CommitStream is a
+            // successful no-op acknowledged so the client proceeds to
+            // SaveChanges. An unbound handle is NotFound.
+            let return_value = sessions
+                .with_handle(session_id, req.input_handle_index, |h| match h {
+                    Handle::Stream { .. } => RopErrorCode::Success,
+                    _ => RopErrorCode::NotFound,
+                })
+                .unwrap_or(RopErrorCode::NotFound);
+            RopCommitStreamResponse {
+                input_handle_index: req.input_handle_index,
+                return_value,
+            }
+            .encode(out);
+        }
         _ => {
             // Unknown/unimplemented: emit a ROP-level NotFound so the client
             // falls back. Cursor is advanced only past the RopId byte here;
@@ -1697,6 +2127,33 @@ async fn resolve_drafts_mailbox(
         Ok(ids) => ids.first().cloned().unwrap_or_default(),
         Err(_) => String::new(),
     }
+}
+
+/// Download the bytes of a streamed attachment blob. `packed_backend` carries
+/// `<emailId>\x1F<blobId>` (the encoding stashed at `RopOpenStream` time); the
+/// helper splits it, looks up the account id, and calls `download_blob`.
+/// Returns `None` on any failure so the caller falls back to an empty stream
+/// rather than surfacing a transport-level error to the client mid-chain.
+async fn materialise_attachment_blob(
+    jc: Option<&crate::jmap::JmapClient>,
+    password: Option<&secrecy::SecretString>,
+    username: &str,
+    packed_backend: &str,
+    _mailbox_id: &str,
+) -> Option<Vec<u8>> {
+    let jc = jc?;
+    let pw = password?;
+    let (_email_id, blob_id) = packed_backend.split_once('\x1F')?;
+    if blob_id.is_empty() {
+        return None;
+    }
+    let account_id = jc.get_account_id(username, pw).await.ok()?;
+    jc.download_blob(&account_id, blob_id, username, pw)
+        .await
+        .map_err(|e| {
+            tracing::warn!(error = %e, blob_id = %blob_id, "JMAP blob download (ReadStream) failed");
+        })
+        .ok()
 }
 
 /// Collect the envelope recipient addresses (to/cc/bcc) for a JMAP email, used
@@ -2722,5 +3179,287 @@ mod tests {
         // runtime to construct the broadcast channel and so is covered by
         // the integration test target instead.)
         publish_item_modified(None, "u@example.com", "f", "M-1");
+    }
+
+    // ---- Stream ROP dispatcher coverage ------------------------------------
+    //
+    // The OpenStream arm resolves a body/attachment against JMAP; with no
+    // JMAP client wired it returns `NotFound`/`NoSupport`. The remaining six
+    // stream arms operate purely on a pre-installed `Handle::Stream` buffer,
+    // so they are exercised here without any backend round-trip.
+
+    fn state_with_session() -> (MapiState, uuid::Uuid) {
+        let mut cfg = Config::test_with_mail_domain("example.com");
+        cfg.mapi_enabled = true;
+        let state = MapiState::new(
+            cfg,
+            std::sync::Arc::new(AuthVerifier::new(&Config::default())),
+        );
+        let sid = state.sessions.create(crate::mapi::session::SessionPrincipal {
+            email: "u@example.com".into(),
+            basic_auth: true,
+        });
+        (state, sid)
+    }
+
+    /// Install a Stream handle at `idx` seeded with `bytes` and the cursor at
+    /// `cursor`. `read_only=true` models an attachment blob stream.
+    fn install_stream(
+        state: &MapiState,
+        sid: &uuid::Uuid,
+        idx: u8,
+        bytes: Vec<u8>,
+        cursor: u64,
+        read_only: bool,
+    ) {
+        let property_tag = crate::mapi::data::PropertyTag::new(
+            crate::mapi::data::PropertyType::PTYP_STRING8,
+            crate::mapi::store::PR_BODY,
+        );
+        state.sessions.with_session_mut(sid, |s| {
+            s.set_handle(
+                idx,
+                Handle::Stream {
+                    source_handle_index: 0,
+                    kind: FolderKind::Mail,
+                    backend_id: String::new(),
+                    mailbox_id: String::new(),
+                    property_tag,
+                    data: Some(bytes),
+                    cursor,
+                    is_dirty: false,
+                    read_only,
+                },
+            );
+        });
+    }
+
+    /// Drive one ROP through `execute_one_rop`, returning its response bytes.
+    async fn dispatch(state: &MapiState, sid: &uuid::Uuid, body: &[u8]) -> Vec<u8> {
+        let mut cur = Buf::new(body);
+        cur.take_u8().ok(); // consume RopId (dispatcher convention)
+        let mut out = Vec::new();
+        let snap = state.sessions.get(sid).expect("session");
+        execute_one_rop(
+            RopId::from_u8(body[0]),
+            &mut cur,
+            &mut out,
+            sid,
+            &state.sessions,
+            &snap,
+            None,
+            &Config::default(),
+            "u@example.com",
+            None,
+            0,
+            None,
+        )
+        .await
+        .expect("dispatch ok");
+        out
+    }
+
+    #[tokio::test]
+    async fn read_stream_pages_and_advances_cursor() {
+        let (state, sid) = state_with_session();
+        install_stream(&state, &sid, 4, b"Hello, MAPI world".to_vec(), 0, false);
+        // ReadStream: RopId(0x2C) · LogonId(0) · InputHandleIndex(4) · ByteCount(5)
+        let out = dispatch(&state, &sid, &[0x2C, 0, 4, 5, 0]).await;
+        assert_eq!(out[0], 0x2C);
+        assert_eq!(out[1], 4);
+        let rv = u32::from_le_bytes([out[2], out[3], out[4], out[5]]);
+        assert_eq!(RopErrorCode::from_u32(rv), RopErrorCode::Success);
+        let data_size = u16::from_le_bytes([out[6], out[7]]);
+        assert_eq!(data_size, 5);
+        assert_eq!(&out[8..13], b"Hello");
+        // Cursor now at 5: a second read returns the next 5 bytes.
+        let out2 = dispatch(&state, &sid, &[0x2C, 0, 4, 5, 0]).await;
+        assert_eq!(&out2[8..13], b", MAP");
+        // Final read returns the remainder("I world").
+        let out3 = dispatch(&state, &sid, &[0x2C, 0, 4, 0xFF, 0xFF]).await;
+        let ds3 = u16::from_le_bytes([out3[6], out3[7]]);
+        let rest = String::from_utf8_lossy(&out3[8..8 + ds3 as usize]);
+        assert_eq!(rest, "I world");
+    }
+
+    #[tokio::test]
+    async fn seek_stream_repositions_cursor() {
+        let (state, sid) = state_with_session();
+        install_stream(&state, &sid, 1, b"abcdefghij".to_vec(), 0, false);
+        // SeekStream: RopId(0x2E) · LogonId(0) · InputHandleIndex(1) ·
+        // Origin(0x00=begin) · Offset(8 LE = 3)
+        let mut body: Vec<u8> = vec![0x2E, 0, 1, 0x00];
+        body.extend_from_slice(&3u64.to_le_bytes());
+        let out = dispatch(&state, &sid, &body).await;
+        assert_eq!(out[0], 0x2E);
+        let new_pos = u64::from_le_bytes([
+            out[6], out[7], out[8], out[9], out[10], out[11], out[12], out[13],
+        ]);
+        assert_eq!(new_pos, 3);
+        // Reading 4 bytes from position 3 returns "defg".
+        let outrs = dispatch(&state, &sid, &[0x2C, 0, 1, 4, 0]).await;
+        assert_eq!(&outrs[8..12], b"defg");
+    }
+
+    #[tokio::test]
+    async fn get_stream_size_reports_buffer_length() {
+        let (state, sid) = state_with_session();
+        install_stream(&state, &sid, 2, b"0123456789".to_vec(), 0, false);
+        // GetStreamSize: RopId(0x5E) · LogonId(0) · InputHandleIndex(2)
+        let out = dispatch(&state, &sid, &[0x5E, 0, 2]).await;
+        assert_eq!(out[0], 0x5E);
+        let size = u32::from_le_bytes([out[6], out[7], out[8], out[9]]);
+        assert_eq!(size, 10);
+    }
+
+    #[tokio::test]
+    async fn write_stream_overwrites_and_extends() {
+        let (state, sid) = state_with_session();
+        install_stream(&state, &sid, 3, b"hello".to_vec(), 0, false);
+        // WriteStream "XY" at cursor 0 → "XYllo", cursor=2.
+        let mut body: Vec<u8> = vec![0x2D, 0, 3, 2, 0];
+        body.extend_from_slice(b"XY");
+        let out = dispatch(&state, &sid, &body).await;
+        assert_eq!(out[0], 0x2D);
+        assert_eq!(u16::from_le_bytes([out[6], out[7]]), 2);
+        // Write "Z" at cursor 2 → "XYZlo".
+        let mut body2: Vec<u8> = vec![0x2D, 0, 3, 1, 0];
+        body2.extend_from_slice(b"Z");
+        dispatch(&state, &sid, &body2).await;
+        // SeekStream back to 0 before reading the whole buffer (the cursor is
+        // at 3 after the second write).
+        let mut seek_body: Vec<u8> = vec![0x2E, 0, 3, 0x00];
+        seek_body.extend_from_slice(&0u64.to_le_bytes());
+        dispatch(&state, &sid, &seek_body).await;
+        // GetStreamSize == 5, then read the full 5 bytes.
+        let outgss = dispatch(&state, &sid, &[0x5E, 0, 3]).await;
+        assert_eq!(u32::from_le_bytes([outgss[6], outgss[7], outgss[8], outgss[9]]), 5);
+        let outrs = dispatch(&state, &sid, &[0x2C, 0, 3, 0xFF, 0xFF]).await;
+        let ds = u16::from_le_bytes([outrs[6], outrs[7]]);
+        assert_eq!(String::from_utf8_lossy(&outrs[8..8 + ds as usize]), "XYZlo");
+    }
+
+    #[tokio::test]
+    async fn set_stream_size_truncates_and_clamps_cursor() {
+        let (state, sid) = state_with_session();
+        install_stream(&state, &sid, 5, b"abcdefghij".to_vec(), 9, false);
+        // SetStreamSize: RopId(0x2F) · LogonId(0) · InputHandleIndex(5) · StreamSize(8=4)
+        let mut body: Vec<u8> = vec![0x2F, 0, 5];
+        body.extend_from_slice(&4u64.to_le_bytes());
+        let out = dispatch(&state, &sid, &body).await;
+        assert_eq!(out[0], 0x2F);
+        let rv = u32::from_le_bytes([out[2], out[3], out[4], out[5]]);
+        assert_eq!(RopErrorCode::from_u32(rv), RopErrorCode::Success);
+        // The buffer is now 4 bytes and the cursor clamped to 4.
+        let snap = state.sessions.get(&sid).expect("session");
+        match snap.handles.get(&5).unwrap() {
+            Handle::Stream { data, cursor, .. } => {
+                assert_eq!(data.as_ref().unwrap().len(), 4);
+                assert_eq!(*cursor, 4);
+            }
+            _ => panic!("expected stream handle"),
+        }
+    }
+
+    #[tokio::test]
+    async fn set_stream_size_rejects_oversize() {
+        let (state, sid) = state_with_session();
+        install_stream(&state, &sid, 5, b"ab".to_vec(), 0, false);
+        // > 0x80000000 is rejected with InvalidParameter.
+        let mut body: Vec<u8> = vec![0x2F, 0, 5];
+        body.extend_from_slice(&0x8000_0001u64.to_le_bytes());
+        let out = dispatch(&state, &sid, &body).await;
+        let rv = u32::from_le_bytes([out[2], out[3], out[4], out[5]]);
+        assert_eq!(RopErrorCode::from_u32(rv), RopErrorCode::InvalidParameter);
+    }
+
+    #[tokio::test]
+    async fn write_stream_on_readonly_attachment_is_access_denied() {
+        let (state, sid) = state_with_session();
+        install_stream(&state, &sid, 6, b"blob".to_vec(), 0, true);
+        let mut body: Vec<u8> = vec![0x2D, 0, 6, 1, 0];
+        body.push(0x5A);
+        let out = dispatch(&state, &sid, &body).await;
+        let rv = u32::from_le_bytes([out[2], out[3], out[4], out[5]]);
+        assert_eq!(RopErrorCode::from_u32(rv), RopErrorCode::AccessDenied);
+        assert_eq!(u16::from_le_bytes([out[6], out[7]]), 0);
+    }
+
+    #[tokio::test]
+    async fn commit_stream_acks_bound_handle() {
+        let (state, sid) = state_with_session();
+        install_stream(&state, &sid, 8, b"body".to_vec(), 0, false);
+        let out = dispatch(&state, &sid, &[0x5D, 0, 8]).await;
+        assert_eq!(out[0], 0x5D);
+        let rv = u32::from_le_bytes([out[2], out[3], out[4], out[5]]);
+        assert_eq!(RopErrorCode::from_u32(rv), RopErrorCode::Success);
+    }
+
+    #[tokio::test]
+    async fn commit_stream_unbound_handle_is_not_found() {
+        let (state, sid) = state_with_session();
+        let out = dispatch(&state, &sid, &[0x5D, 0, 9]).await;
+        let rv = u32::from_le_bytes([out[2], out[3], out[4], out[5]]);
+        assert_eq!(RopErrorCode::from_u32(rv), RopErrorCode::NotFound);
+    }
+
+    #[tokio::test]
+    async fn open_stream_without_jmap_reports_not_found() {
+        // A Mail Message handle is installed so the OpenStream guard passes;
+        // with no JMAP client the backend resolve fails with `NotFound`.
+        let (state, sid) = state_with_session();
+        state.sessions.with_session_mut(&sid, |s| {
+            s.set_handle(
+                1,
+                Handle::Message {
+                    backend_id: "M-1".into(),
+                    mailbox_id: "I".into(),
+                    kind: FolderKind::Mail,
+                    is_new: false,
+                },
+            );
+        });
+        let mut body: Vec<u8> = vec![0x2B, 0, 1, 7];
+        crate::mapi::data::PropertyTag::new(
+            crate::mapi::data::PropertyType::PTYP_STRING8,
+            crate::mapi::store::PR_BODY,
+        )
+        .encode(&mut body);
+        body.push(0x00);
+        let out = dispatch(&state, &sid, &body).await;
+        assert_eq!(out[0], 0x2B);
+        assert_eq!(out[1], 7);
+        let rv = u32::from_le_bytes([out[2], out[3], out[4], out[5]]);
+        assert_eq!(RopErrorCode::from_u32(rv), RopErrorCode::NotFound);
+    }
+
+    #[tokio::test]
+    async fn open_stream_on_non_message_handle_is_no_support() {
+        let (state, sid) = state_with_session();
+        // A Table handle is not streamable.
+        state.sessions.with_session_mut(&sid, |s| {
+            s.set_handle(
+                1,
+                Handle::Table {
+                    kind: FolderKind::Mail,
+                    parent_handle: -1,
+                    parent_backend_id: "I".into(),
+                    column_set: Vec::new(),
+                    rows: Vec::new(),
+                    cursor: 0,
+                    total: 0,
+                },
+            );
+        });
+        let mut body: Vec<u8> = vec![0x2B, 0, 1, 9];
+        crate::mapi::data::PropertyTag::new(
+            crate::mapi::data::PropertyType::PTYP_STRING8,
+            crate::mapi::store::PR_BODY,
+        )
+        .encode(&mut body);
+        body.push(0x00);
+        let out = dispatch(&state, &sid, &body).await;
+        let rv = u32::from_le_bytes([out[2], out[3], out[4], out[5]]);
+        assert_eq!(RopErrorCode::from_u32(rv), RopErrorCode::NoSupport);
     }
 }

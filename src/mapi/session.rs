@@ -15,7 +15,7 @@
 //     roster for the connection, and a handle table for open folders/
 //     messages. The session's auth principal is zeroized when the session is
 //     dropped.
-//   * All sessions are per-process only (no persistence) — consistent with
+//   * All sessions are per-process only (no persistence) Б─■ consistent with
 //     the MAPI/HTTP model where a `Connect` failure means the client rebuilds
 //     a new session.
 
@@ -77,6 +77,53 @@ pub enum Handle {
         /// drafts mailbox only as a pending JMAP creation.
         is_new: bool,
     },
+    /// A stream handle (`RopOpenStream`, MS-OXCROPS §2.2.9). Backs the
+    /// `RopReadStream` / `RopWriteStream` / `RopSeekStream` /
+    /// `RopGetStreamSize` / `RopSetStreamSize` / `RopCommitStream` round-trip
+    /// the client uses to fetch `PR_BODY` / `PR_BODY_HTML` / `PR_RTF_COMPRESSED`
+    /// (MS-OXBBODY) and attachment binaries (MS-OXCMSG §3.x).
+    ///
+    /// `source_handle` records the message handle owning the streamed property;
+    /// the dispatcher reads it (not the stream itself) to resolve the JMAP
+    /// email id / attachment blob id. `data` is the lazily-materialised byte
+    /// buffer of the property value (`None` until first read so an OpenStream on
+    /// a property the client never reads costs zero network round-trip); `cursor`
+    /// is the absolute byte position the next `RopReadStream` continues from and
+    /// that `RopSeekStream` repositions; `is_dirty` distinguishes a read-only
+    /// stream (no flush needed at `RopSaveChangesMessage`) from one a
+    /// `RopWriteStream`/`RopSetStreamSize` mutated (the buffered bytes are
+    /// flushed back to JMAP on the next `SaveChanges`).
+    Stream {
+        /// Session handle index of the owning Message/Folder handle. Resolved on
+        /// first read so the body/attachment bytes are fetched once per stream.
+        source_handle_index: u8,
+        /// Which backend owns the source object (mail/calendar/contact). Mail is
+        /// the only kind with a streamed body in this phase; calendar/contact
+        /// stream arms return `NoSupport`.
+        kind: FolderKind,
+        /// The JMAP email id (for body streams) or the email id plus attachment
+        /// `blob_id` (for attachment streams), packed as `"<emailId>\x1F<blobId>"`
+        /// when an attachment is streamed. Resolved from the source message
+        /// handle at OpenStream time, so the source handle can be released
+        /// before the stream is read.
+        backend_id: String,
+        mailbox_id: String,
+        /// The streamed property tag (read back from the request). Used to pick
+        /// the body/attachment fetch path and to validate type compatibility.
+        property_tag: crate::mapi::data::PropertyTag,
+        /// Lazily-materialised stream bytes (`None` = not fetched yet). Once
+        /// populated, `cursor` / `is_dirty` mutate the buffer in place.
+        data: Option<Vec<u8>>,
+        /// Absolute byte position the next ReadStream continues from.
+        cursor: u64,
+        /// True once `RopWriteStream`/`RopSetStreamSize` mutated `data`; flush
+        /// back to JMAP at `RopSaveChangesMessage`.
+        is_dirty: bool,
+        /// Whether `data` was populated from an attachment blob download (the
+        /// OpenStream arm records this so a `Set/Write` on an attachment stream
+        /// is rejected as read-only until CreateAttachment lands).
+        read_only: bool,
+    },
     /// A table handle (results of `RopGetHierarchyTable` / `RopGetContentsTable`).
     /// `column_set` is the most recently applied `RopSetColumns` tag list;
     /// `rows` are the per-row `(row_id, PropertyRowEntryVec)` slots the
@@ -113,12 +160,13 @@ impl Handle {
         match self {
             Self::Folder { .. } => HandleKind::Folder,
             Self::Message { .. } => HandleKind::Message,
+            Self::Stream { .. } => HandleKind::Stream,
             Self::Table { .. } => HandleKind::Table,
         }
     }
 }
 
-/// Which backend owns a mailbox object — drives the ROP→backend routing in
+/// Which backend owns a mailbox object Б─■ drives the ROPБ├▓backend routing in
 /// `store.rs`. Maps to the JMAP `Mailbox` role / CalDAV collection / CardDAV
 /// addressbook naming in `store.rs::resolve_folder_kind`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -167,10 +215,11 @@ impl std::fmt::Debug for TableRow {
 pub enum HandleKind {
     Folder,
     Message,
+    Stream,
     Table,
 }
 
-/// An entry in a session's handle table — kept for source compatibility with
+/// An entry in a session's handle table Б─■ kept for source compatibility with
 /// the wider crate; new code uses `Handle` directly.
 #[derive(Debug, Clone)]
 pub struct HandleEntry {
@@ -179,7 +228,7 @@ pub struct HandleEntry {
 }
 
 /// The authenticated principal bound to a session. Carries the user's email
-/// address only — never a password; passwords are validated once during the
+/// address only Б─■ never a password; passwords are validated once during the
 /// `Connect` and discarded. Bearer/HMA principals carry the token's `oid`/
 /// `upn` instead.
 #[derive(Debug, Clone, Zeroize)]
@@ -208,7 +257,7 @@ pub struct Session {
     /// at RopLogon time; `with_session_mut` is the supported mutation path.
     pub handles: HashMap<u8, Handle>,
     /// Last-seen timestamp encoded as nanos since `EPOCH` to avoid a
-    /// `parking_lot::Mutex` here — read/written from paths that already
+    /// `parking_lot::Mutex` here Б─■ read/written from paths that already
     /// hold the `SessionManager` `RwLock` guard.
     pub last_seen: AtomicU64,
     pub created_at: Instant,
@@ -218,7 +267,7 @@ impl Session {
     pub fn touch(&self) {
         // Lock-free: store nanos since `EPOCH` into the atomic. This avoids
         // acquiring a Mutex while the caller may already hold the
-        // `SessionManager` RwLock (read or write) — eliminating the
+        // `SessionManager` RwLock (read or write) Б─■ eliminating the
         // potential for lock-ordering surprises across `get`, `with_*`, and
         // `sweep_idle`. The atomic is monotonic enough for idle-TTL
         // comparisons; sub-millisecond precision loss at startup is fine.

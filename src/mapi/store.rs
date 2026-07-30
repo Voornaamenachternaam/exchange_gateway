@@ -63,6 +63,39 @@ pub const PR_BODY: u16 = 0x1000;
 pub const PR_BODY_HTML: u16 = 0x1013;
 /// PidTagNativeBody — 0x1016 — content type hint we leave NULL for Phase 1.
 pub const PR_NATIVE_BODY: u16 = 0x1016;
+/// PidTagRtfCompressed — 1009 (Binary). The RTF body, held compressed per
+/// MS-OXBBODY §2. The gateway does not synthesise RTF from the plain/HTML body
+/// (no Rust RTF-compression codec); Outlook therefore honours `PR_BODY`/
+/// `PR_BODY_HTML` and skips RTF. The constant is exported so the stream codec
+/// can return an empty `PTYP_BINARY` stream for an OpenStream on it rather than
+/// `NotFound` (which would make Outlook fall back to RTF-only rendering).
+pub const PR_RTF_COMPRESSED: u16 = 0x1009;
+
+/// PidTagAttachDataBinary — 3702 (Binary). The raw attachment payload fetched
+/// via JMAP `/download/{accountId}/{blobId}`.
+pub const PR_ATTACH_DATA_BIN: u16 = 0x3702;
+/// PidTagAttachDataObj — 3701 (Object). OLE attachments; unsupported (treated
+/// as a typed NULL). Exported so the stream codec can identify it.
+pub const PR_ATTACH_DATA_OBJ: u16 = 0x3701;
+/// PidTagAttachEncoding — 3703 (Binary). MIME encoding hints; passed through.
+pub const PR_ATTACH_ENCODING: u16 = 0x3703;
+/// PidTagAttachExtension — 3703 is encoding; AttachExtension = 370B (Binary).
+pub const PR_ATTACH_EXTENSION: u16 = 0x370B;
+/// PidTagAttachFilename — 3704 (String8). The short (8.3) attachment file name.
+pub const PR_ATTACH_FILENAME: u16 = 0x3704;
+/// PidTagAttachLongFilename — 3707 (String). The long attachment file name.
+pub const PR_ATTACH_LONG_FILENAME: u16 = 0x3707;
+/// PidTagAttachMimeTag — 3712 (String). The attachment MIME content type.
+pub const PR_ATTACH_MIME_TAG: u16 = 0x3712;
+/// PidTagAttachMethod — 3705 (Integer32). 0=by value, 1=by reference, 6=OLE.
+pub const PR_ATTACH_METHOD: u16 = 0x3705;
+/// PidTagAttachNumber — 0E21 (Integer32). Sequential attachment index.
+pub const PR_ATTACH_NUM: u16 = 0x0E21;
+/// PidTagAttachSize — 0E20 (Integer32). Attachment size incl. overhead.
+pub const PR_ATTACH_SIZE: u16 = 0x0E20;
+/// PidTagAttachFlags — 3710 (Bitmap). Flags controlling display of the
+/// attachment; passed through opaquely.
+pub const PR_ATTACH_FLAGS: u16 = 0x3710;
 
 /// PidTagSenderName — 0C1A (String).
 pub const PR_SENDER_NAME: u16 = 0x0C1A;
@@ -312,7 +345,7 @@ fn saturate_i32(n: u64) -> i32 {
 /// Plain-text body per RFC 8621 §4.1.4: `textBody[0].partId` indexes
 /// `bodyValues`. Falls back to the HTML body's partId only when no text
 /// part exists, mirroring the email::from_jmap helper used elsewhere.
-fn email_body_text(email: &JmapEmail) -> Option<String> {
+pub fn email_body_text(email: &JmapEmail) -> Option<String> {
     let bv = email.body_values.as_ref()?;
     if let Some(part) = email.text_body.as_ref().and_then(|t| t.first())
         && let Some(v) = bv.get(&part.part_id)
@@ -328,7 +361,7 @@ fn email_body_text(email: &JmapEmail) -> Option<String> {
 }
 
 /// HTML body per RFC 8621 §4.1.4: `htmlBody[0].partId` indexes `bodyValues`.
-fn email_body_html(email: &JmapEmail) -> Option<String> {
+pub fn email_body_html(email: &JmapEmail) -> Option<String> {
     let bv = email.body_values.as_ref()?;
     email
         .html_body
@@ -336,6 +369,59 @@ fn email_body_html(email: &JmapEmail) -> Option<String> {
         .and_then(|h| h.first())
         .and_then(|part| bv.get(&part.part_id))
         .map(|v| v.value.clone())
+}
+
+/// Resolve the streaming bytes for a body property on a mail message, per the
+/// MS-OXBBODY precedence. `PR_BODY` returns the plain text (UTF-8 bytes);
+/// `PR_BODY_HTML` returns the HTML bytes; `PR_RTF_COMPRESSED` returns empty
+/// (the gateway synthesises no RTF — Outlook honours HTML instead, per
+/// MS-OXBBODY §2 best-value rule). `None` means the tag is not a body property
+/// (or its type is incompatible) so the caller resolves it as an attachment
+/// stream instead; an empty `Some` signals a body that is intentionally empty.
+pub fn email_body_stream_bytes(
+    email: &JmapEmail,
+    property_tag: &crate::mapi::data::PropertyTag,
+) -> Option<Vec<u8>> {
+    use crate::mapi::data::PropertyType as T;
+    match property_tag.property_id {
+        PR_BODY => {
+            ttype_matches(property_tag.property_type, T::PTYP_STRING8)
+                .then(|| email_body_text(email).unwrap_or_default().into_bytes())
+        }
+        PR_BODY_HTML => {
+            ttype_matches(property_tag.property_type, T::PTYP_STRING)
+                .then(|| email_body_html(email).unwrap_or_default().into_bytes())
+        }
+        PR_RTF_COMPRESSED => {
+            // PTYP_BINARY; the gateway emits an empty RTF stream so Outlook's
+            // best-value resolution falls back to the HTML body we provide.
+            ttype_matches(property_tag.property_type, T::PTYP_BINARY).then(Vec::new)
+        }
+        _ => None,
+    }
+}
+
+/// Find the JMAP attachment blob id on a mail message matching the requested
+/// streaming property. The attachment table is keyed by index via `PR_ATTACH_NUM`,
+/// but a stream opened directly on `PR_ATTACH_DATA_BIN` resolves against the
+/// first attachment by index; the gateway returns the blob id + content type
+/// so the handler can `download_blob`. `None` when the message has no
+/// attachments, the property is not an attachment-data tag, or the requested
+/// type is incompatible with `PTYP_BINARY`.
+pub fn email_attachment_blob<'a>(
+    email: &'a JmapEmail,
+    property_tag: &crate::mapi::data::PropertyTag,
+) -> Option<&'a crate::jmap::JmapAttachment> {
+    if property_tag.property_id != PR_ATTACH_DATA_BIN {
+        return None;
+    }
+    if !ttype_matches(
+        property_tag.property_type,
+        crate::mapi::data::PropertyType::PTYP_BINARY,
+    ) {
+        return None;
+    }
+    email.attachments.as_ref().and_then(|a| a.first())
 }
 
 /// Convert a JmapEmail into the `PropertyValue` cell set for the requested
