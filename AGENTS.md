@@ -244,8 +244,37 @@ gets wiped between shell sessions. To avoid re-installing Rust every command:
 - **ROps wired** (handler.rs arms): Release, OpenFolder, GetHierarchyTable,
   GetContentsTable, SetColumns, QueryRows, GetStatus, GetPropertiesSpecific,
   GetPropertiesAll, SetMessageReadFlag, CreateMessage-stub (ENUM only pending),
-  SaveChangesMessage-stub, DeleteMessages-stub. **All other ~60 ROPs hit the
-  `_ => NotFound` fallback** — see task tracker P2-4 for the mail write/delete/movecopy path.
+  SaveChangesMessage-stub, DeleteMessages-stub, **and the full stream family**
+  (OpenStream·0x2B, ReadStream·0x2C, WriteStream·0x2D, SeekStream·0x2E,
+  SetStreamSize·0x2F, CommitStream·0x5D, GetStreamSize·0x5E — audit gap §2a).
+  The stream arms resolve `PR_BODY`/`PR_BODY_HTML`/`PR_RTF_COMPRESSED`
+  (empty) via `store::email_body_stream_bytes` lifted straight off the cached
+  `JmapEmail`, and `PR_ATTACH_DATA_BIN` via `store::email_attachment_blob`
+  + a lazy `JmapClient::download_blob` on the first ReadStream (the blob id is
+  packed into `Handle::Stream.backend_id` as `<emailId>\x1F<blobId>` so the
+  stream survives a `RopRelease` of the source Message handle). Writes are
+  staged in the handle buffer and flushed at SaveChangesMessage. **All other
+  ~50 ROPs hit the `_ => NotFound` fallback** — see task tracker P2-4 for the
+  mail write/delete/movecopy path.
+  - **Stream-ROP review hardening (PR #1830)** — `RopSeekStream::resolve`
+    now works in `u64`/`Option<u64>` end-to-end (never reinterprets a `>i64::MAX`
+    `u64` back through `as i64`, which bitwise-wraps to negative) and clamps by
+    the *requested offset sign* on `checked_add_signed` overflow, so negative /
+    positive overflow lands at `0` / `len` predictably instead of a stale raw
+    offset. `Handle::Stream` carries an optional `known_len: Option<u64>`
+    (the JMAP-declared attachment size captured at `RopOpenStream`) so an
+    attachment blob that has not yet been downloaded still reports a real
+    `RopGetStreamSize`/`OpenStream` size, and OpenStream caps a not-yet-fetched
+    attachment against `cfg.max_attachment_bytes()` (rejects over-ceiling with
+    `NotEnoughMemory`). Per-stream write size is capped (item L); `SetStreamSize`
+    over the spec ceiling (`2^31`) AND the configured cap ⇒ `NotEnoughMemory`.
+    All five stream-success encoders early-return on a non-Success `ReturnValue`
+    so no body bytes ever leak past an error (items B/K). `RopSaveChangesMessage`
+    with a *dirty body stream* now returns `NoSupport` instead of a silent
+    Success (the body write-back bridge is not yet wired), while a clean
+    message falls through to the backend create path. `email_body_stream_bytes`
+    encodes `PTYP_STRING`/`PTYP_WSTRING` bodies as **UTF-16LE** (item I) and
+    multi-attachment selection fails closed as ambiguous `NoSupport` (item N).
 
 ## MAPI/HTTP (MS-OXCMAPIHTTP) architecture notes
 

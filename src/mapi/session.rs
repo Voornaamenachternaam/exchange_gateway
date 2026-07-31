@@ -77,6 +77,66 @@ pub enum Handle {
         /// drafts mailbox only as a pending JMAP creation.
         is_new: bool,
     },
+    /// A stream handle (`RopOpenStream`, MS-OXCROPS 2.2.9). Backs the
+    /// `RopReadStream` / `RopWriteStream` / `RopSeekStream` /
+    /// `RopGetStreamSize` / `RopSetStreamSize` / `RopCommitStream` round-trip
+    /// the client uses to fetch `PR_BODY` / `PR_BODY_HTML` / `PR_RTF_COMPRESSED`
+    /// (MS-OXBBODY) and attachment binaries (MS-OXCMSG 3.x).
+    ///
+    /// `source_handle_index` records the message handle owning the streamed
+    /// property; the dispatcher reads it (not the stream itself) to resolve
+    /// the JMAP email id / attachment blob id. `data` is the lazily-materialised
+    /// byte buffer of the property value (`None` until first read so an
+    /// OpenStream on a property the client never reads costs zero network
+    /// round-trip); `cursor` is the absolute byte position the next
+    /// `RopReadStream` continues from and that `RopSeekStream` repositions.
+    /// `is_dirty` distinguishes a read-only stream from one a
+    /// `RopWriteStream`/`RopSetStreamSize` mutated: writes are staged in the
+    /// in-memory buffer and are NOT yet flushed back to JMAP at
+    /// `RopSaveChangesMessage` (the Blob/upload-backed Email/set body-values
+    /// flush is pending the separate compose/write-back bridge); SaveChanges
+    /// reports `NoSupport` when a dirty body stream is present so the client is
+    /// never told Success while bytes are dropped.
+    Stream {
+        /// Session handle index of the owning Message/Folder handle. Resolved on
+        /// first read so the body/attachment bytes are fetched once per stream.
+        source_handle_index: u8,
+        /// Which backend owns the source object (mail/calendar/contact). Mail is
+        /// the only kind with a streamed body in this phase; calendar/contact
+        /// stream arms return `NoSupport`.
+        kind: FolderKind,
+        /// The JMAP email id (for body streams) or the email id plus attachment
+        /// `blob_id` (for attachment streams), packed as `"<emailId>\x1F<blobId>"`
+        /// when an attachment is streamed. Resolved from the source message
+        /// handle at OpenStream time, so the source handle can be released
+        /// before the stream is read.
+        backend_id: String,
+        mailbox_id: String,
+        /// The streamed property tag (read back from the request). Used to pick
+        /// the body/attachment fetch path and to validate type compatibility.
+        property_tag: crate::mapi::data::PropertyTag,
+        /// Lazily-materialised stream bytes (`None` = not fetched yet). Once
+        /// populated, `cursor` / `is_dirty` mutate the buffer in place.
+        data: Option<Vec<u8>>,
+        /// The stream's known length when it can be determined without a fetch:
+        /// for an attachment stream this is the JMAP `attachments[].size`
+        /// captured at OpenStream (so `OpenStream`/`GetStreamSize` report the
+        /// real size before the first `ReadStream` downloads the blob, and the
+        /// download can be rejected up front when it exceeds `max_attachment_bytes`).
+        /// `None` for body streams whose length is only known once materialised.
+        known_len: Option<u64>,
+        /// Absolute byte position the next ReadStream continues from.
+        cursor: u64,
+        /// True once `RopWriteStream`/`RopSetStreamSize` mutated `data`. Writes
+        /// are staged in-memory only; the JMAP persist happens via a separate
+        /// write-back bridge not yet wired, so SaveChanges reports `NoSupport`
+        /// rather than faking a commit of dropped bytes.
+        is_dirty: bool,
+        /// Whether `data` was populated from an attachment blob download (the
+        /// OpenStream arm records this so a `Set/Write` on an attachment stream
+        /// is rejected as read-only until CreateAttachment lands).
+        read_only: bool,
+    },
     /// A table handle (results of `RopGetHierarchyTable` / `RopGetContentsTable`).
     /// `column_set` is the most recently applied `RopSetColumns` tag list;
     /// `rows` are the per-row `(row_id, PropertyRowEntryVec)` slots the
@@ -113,6 +173,7 @@ impl Handle {
         match self {
             Self::Folder { .. } => HandleKind::Folder,
             Self::Message { .. } => HandleKind::Message,
+            Self::Stream { .. } => HandleKind::Stream,
             Self::Table { .. } => HandleKind::Table,
         }
     }
@@ -167,6 +228,7 @@ impl std::fmt::Debug for TableRow {
 pub enum HandleKind {
     Folder,
     Message,
+    Stream,
     Table,
 }
 
