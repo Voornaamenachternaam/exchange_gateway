@@ -545,17 +545,26 @@ fn cell_for_attachment(
             T::PTYP_STRING
         )),
         PR_ATTACH_EXTENSION => {
-            // Derive the extension (without dot) from the attachment name.
+            // MS-OXPROPS PidTagAttachExtension: the file-name extension
+            // INCLUDING the leading period (e.g. ".txt"); an empty string
+            // when the name has no extension. Derive it from the name by
+            // taking the substring from the last '.' onward (not the suffix
+            // after the dot), so the dot is preserved.
             let ext = att
                 .name
                 .as_deref()
-                .and_then(|n| n.rsplit_once('.'))
-                .map(|(_, e)| e.to_string())
+                .and_then(|n| n.rfind('.'))
+                .map(|i| att.name.as_deref().unwrap_or("")[i..].to_string())
                 .unwrap_or_default();
             PropertyValue::String8(or_null!(ext, T::PTYP_STRING8))
         }
         PR_ATTACH_SIZE => {
-            let size = att.size.unwrap_or(0) as i32;
+            // PR_ATTACH_SIZE is PtypInteger32; an attachment ≥ 2 GiB would
+            // wrap to a negative value under `as i32`. Saturate at i32::MAX
+            // (the existing `saturate_i32` helper used by
+            // PR_CONTENT_COUNT/PR_MESSAGE_SIZE) so the client sees a large but
+            // valid size.
+            let size = saturate_i32(att.size.unwrap_or(0));
             PropertyValue::Integer32(or_null!(size, T::PTYP_INTEGER32))
         }
         PR_ATTACH_METHOD => {
@@ -1750,6 +1759,38 @@ mod tests {
             panic!("method");
         };
         assert_eq!(*method, 0); // attByValue
+    }
+
+    #[test]
+    fn attachment_to_cells_extension_includes_leading_dot() {
+        // MS-OXPROPS PidTagAttachExtension: the extension INCLUDING the
+        // leading period; empty when the name has no extension.
+        let a = att(Some("archive.tar.gz"), None, None);
+        let tag = ttag(PR_ATTACH_EXTENSION, crate::mapi::data::PropertyType::PTYP_STRING8);
+        let cells = attachment_to_cells(&a, 0, &[tag]);
+        let crate::mapi::data::PropertyValue::String8(ext) = &cells[0] else {
+            panic!("extension");
+        };
+        assert_eq!(ext, ".gz");
+        let a2 = att(Some("noext"), None, None);
+        let cells2 = attachment_to_cells(&a2, 0, &[tag]);
+        let crate::mapi::data::PropertyValue::String8(ext2) = &cells2[0] else {
+            panic!("extension no-dot");
+        };
+        assert_eq!(ext2, "");
+    }
+
+    #[test]
+    fn attachment_to_cells_size_saturates_at_i32_max() {
+        // An attachment ≥ 2 GiB must NOT wrap to a negative PR_ATTACH_SIZE;
+        // it saturates at i32::MAX so the client sees a large-but-valid size.
+        let a = att(Some("big.bin"), None, Some(u64::from(i32::MAX as u32) + 1));
+        let tag = ttag(PR_ATTACH_SIZE, crate::mapi::data::PropertyType::PTYP_INTEGER32);
+        let cells = attachment_to_cells(&a, 0, &[tag]);
+        let crate::mapi::data::PropertyValue::Integer32(sz) = &cells[0] else {
+            panic!("size");
+        };
+        assert_eq!(*sz, i32::MAX);
     }
 
     #[test]

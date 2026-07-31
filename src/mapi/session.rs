@@ -87,16 +87,24 @@ pub enum Handle {
     /// `PR_ATTACH_NUM` (the JMAP `attachments[]` index for a JMAP-native
     /// attachment, or a freshly-assigned index for one created via MAPI and
     /// not yet persisted); `blob_id` is the JMAP blob id for the attachment
-    /// bytes (the id Stalwart assigned at `Blob/upload` for a MAPI-created
-    /// attachment, enabling a `RopOpenStream`+`RopReadStream` download without
-    /// re-reading the source message handle); `name`/`content_type` capture
-    /// the attachment metadata the client set via `RopSetProperties` before
-    /// `RopSaveChangesAttachment`. `is_new` distinguishes a JMAP-native
-    /// attachment (`false`, immutable — `RopSaveChangesAttachment` is an
-    /// idempotent success and `RopDeleteAttachment` is `NoSupport` because the
-    /// MIME-rewrite bridge is pending) from one created via MAPI (`true`,
-    /// staged in `blob_id`/`name`/`content_type` until
-    /// `RopSaveChangesAttachment` uploads + persists it).
+    /// bytes (the id Stalwart assigned for a JMAP-native attachment, enabling
+    /// a `RopOpenStream`+`RopReadStream` download without re-reading the
+    /// source message handle); `name`/`content_type`/`size` are the
+    /// read-only metadata captured from JMAP at `RopOpenAttachment` time so
+    /// `RopGetProperties*` and `RopOpenStream` (for `known_len`/`stream_size`
+    /// and the `max_attachment_bytes` ceiling) need no extra JMAP round-trip.
+    /// `is_new` distinguishes a JMAP-native attachment (`false`, immutable —
+    /// `RopSaveChangesAttachment` is an idempotent success and
+    /// `RopDeleteAttachment` is `NoSupport` because the MIME-rewrite bridge is
+    /// pending) from one created via MAPI (`true`, staged in
+    /// `blob_id`/`name`/`content_type` until the write-back bridge persists
+    /// it).
+    ///
+    /// Note: writes via `RopSetProperties` against this handle are not
+    /// supported in this phase (the body/MIME-rewrite bridge is pending);
+    /// `RopSetProperties` returns `NoSupport` for an attachment handle rather
+    /// than mutating the cached metadata, which is therefore the JMAP source
+    /// of truth, not client-settable through MAPI.
     Attachment {
         /// Owning message JMAP email id.
         email_id: String,
@@ -111,10 +119,21 @@ pub enum Handle {
         /// JMAP blob id of the attachment bytes (Stalwart-assigned). Empty for
         /// a freshly-created attachment before `RopSaveChangesAttachment`.
         blob_id: String,
-        // The attachment's display name and MIME content type, set by the
-        // client via `RopSetProperties` before save.
+        /// The attachment's display name (read-only capture from JMAP
+        /// `attachments[].name`).
         name: String,
+        /// The attachment's MIME content type (read-only capture from JMAP
+        /// `attachments[].contentType`).
         content_type: String,
+        /// The attachment's declared byte length, captured from JMAP
+        /// `attachments[].size` at `RopOpenAttachment` so the attachment
+        /// stream reports a real length (`RopOpenStream` `stream_size` /
+        /// `RopGetStreamSize`) before the blob is downloaded, and the
+        /// `max_attachment_bytes` ceiling can reject an oversized blob with
+        /// `NotEnoughMemory` before the download. `None` when the size is
+        /// not declared (then the stream reports 0 and the length is
+        /// discovered on the first `RopReadStream`).
+        size: Option<u64>,
         // True when created via `RopCreateAttachment` and not yet saved.
         is_new: bool,
     },

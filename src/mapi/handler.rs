@@ -595,7 +595,16 @@ async fn execute_one_rop(
             // Resolve the live backend object from the input handle. We track
             // the handle *shape* (Message vs Folder) because the same
             // FolderKind discriminant can mean either over the live session.
-            let (handle_shape, kind, backend_id, mailbox_id) = sessions
+            // One handle snapshot carries everything GetProperties needs:
+            // shape/kind/backend/mailbox for the message/folder paths, plus
+            // `attach_num` and the cached attachment metadata (name /
+            // content_type / size, captured at `RopOpenAttachment`) for the
+            // attachment path. The latter lets an Attachment handle's cells be
+            // materialised from the cached metadata with NO JMAP round-trip
+            // (Outlook issues GetPropertiesSpecific repeatedly per
+            // attachment), falling back to Email/get only when the cached
+            // metadata is absent.
+            let (handle_shape, kind, backend_id, mailbox_id, attach_num, cached_name) = sessions
                 .with_handle(session_id, input_handle_index, |h| match h {
                     Handle::Message {
                         backend_id,
@@ -607,30 +616,46 @@ async fn execute_one_rop(
                         *kind,
                         backend_id.clone(),
                         mailbox_id.clone(),
+                        0,
+                        None,
                     ),
                     Handle::Folder { backend_id, kind } => (
                         HandleShape::Folder,
                         *kind,
                         backend_id.clone(),
                         String::new(),
+                        0,
+                        None,
                     ),
-                    // An Attachment handle resolves GetPropertiesSpecific
-                    // against the live JMAP email's indexed attachment. The
-                    // `_attach_num` is captured only to document the field's
-                    // role here — the real value is re-read in a second
-                    // snapshot below (the 4-tuple has no slot for it without
-                    // re-plumbing the whole message/folder cells path).
                     Handle::Attachment {
                         email_id,
                         kind,
-                        attach_num: _attach_num,
+                        attach_num,
+                        name,
+                        content_type,
+                        size,
                         ..
-                    } => (HandleShape::Attachment, *kind, email_id.clone(), String::new()),
+                    } => (
+                        HandleShape::Attachment,
+                        *kind,
+                        email_id.clone(),
+                        String::new(),
+                        *attach_num,
+                        Some(crate::jmap::JmapAttachment {
+                            id: None,
+                            blob_id: None,
+                            size: *size,
+                            content_type: Some(content_type.clone()),
+                            name: Some(name.clone()),
+                        }),
+                    ),
                     _ => (
                         HandleShape::Neither,
                         FolderKind::Root,
                         String::new(),
                         String::new(),
+                        0,
+                        None,
                     ),
                 })
                 .unwrap_or((
@@ -638,21 +663,9 @@ async fn execute_one_rop(
                     FolderKind::Root,
                     String::new(),
                     String::new(),
+                    0,
+                    None,
                 ));
-            // For an Attachment handle, `attach_num` is needed to pick the
-            // indexed attachment out of the email's `attachments[]`; resolve it
-            // in a second read-side snapshot (cheap — one String + small table
-            // clone).
-            let attach_num = if handle_shape == HandleShape::Attachment {
-                sessions
-                    .with_handle(session_id, input_handle_index, |h| match h {
-                        Handle::Attachment { attach_num, .. } => *attach_num,
-                        _ => 0,
-                    })
-                    .unwrap_or(0)
-            } else {
-                0
-            };
             let cells = match (handle_shape, jmap, password) {
                 // Mail message handle -> Email/get -> email_to_cells (body,
                 // sender, subject, flags, entry-id, etc.).
@@ -690,32 +703,44 @@ async fn execute_one_rop(
                         Err(_) => Vec::new(),
                     }
                 }
-                // Mail attachment handle -> Email/get -> resolve the indexed
-                // attachment (by PR_ATTACH_NUM) -> attachment_to_cells
-                // (PR_ATTACH_LONG_FILENAME/PR_ATTACH_MIME_TAG/PR_ATTACH_SIZE/
-                // PR_ATTACH_METHOD/PR_ATTACH_NUM/...). A MAPI-created
-                // attachment whose bytes were staged and uploaded, or one that
-                // the gateway's AttachmentManager owns by email id, is also
-                // surfaced here so GetProperties is consistent with the table.
+                // Mail attachment handle: serve the cells from the metadata
+                // cached on the handle at `RopOpenAttachment` time (name /
+                // content_type / size) with NO JMAP round-trip — Outlook
+                // issues GetPropertiesSpecific repeatedly per attachment. Only
+                // fall back to Email/get when the handle carries no cached
+                // metadata (a degenerate handle) so we still resolve the
+                // indexed `attachments[]` entry; `Ok(None)` and JMAP errors
+                // surface typed NULLs rather than a fabricated "no metadata".
                 (HandleShape::Attachment, Some(jc), Some(pw))
                     if kind == FolderKind::Mail && !backend_id.is_empty() =>
                 {
-                    let account_id = jc
-                        .get_account_id(username, pw)
-                        .await
-                        .ok()
-                        .unwrap_or_default();
-                    if account_id.is_empty() {
-                        Vec::new()
+                    if let Some(att) = &cached_name {
+                        store::attachment_to_cells(att, attach_num, &req.property_tags)
                     } else {
-                        match jc.get_email(&account_id, &backend_id, username, pw).await {
-                            Ok(Some(e)) => match store::email_attachment_by_num(&e, attach_num) {
-                                Some(att) => {
-                                    store::attachment_to_cells(att, attach_num, &req.property_tags)
+                        let account_id = jc
+                            .get_account_id(username, pw)
+                            .await
+                            .ok()
+                            .unwrap_or_default();
+                        if account_id.is_empty() {
+                            store::typed_null_cells(&req.property_tags)
+                        } else {
+                            match jc.get_email(&account_id, &backend_id, username, pw).await {
+                                Ok(Some(e)) => match store::email_attachment_by_num(&e, attach_num) {
+                                    Some(att) => {
+                                        store::attachment_to_cells(att, attach_num, &req.property_tags)
+                                    }
+                                    None => store::typed_null_cells(&req.property_tags),
+                                },
+                                Ok(None) => store::typed_null_cells(&req.property_tags),
+                                Err(e) => {
+                                    tracing::warn!(
+                                        error = %e,
+                                        "JMAP get_email (GetPropertiesSpecific attachment) failed"
+                                    );
+                                    store::typed_null_cells(&req.property_tags)
                                 }
-                                None => store::typed_null_cells(&req.property_tags),
-                            },
-                            _ => store::typed_null_cells(&req.property_tags),
+                            }
                         }
                     }
                 }
@@ -789,44 +814,77 @@ async fn execute_one_rop(
                 return Ok(());
             }
             // Fetch the live JmapEmail so the attachment table enumerates the
-            // real `attachments[]`; on any failure install an empty table so
-            // the client sees "no attachments" rather than NotFound.
-            let rows = if let (Some(jc), Some(pw)) = (jmap, password) {
+            // real `attachments[]`. Distinguish the three `Email/get` outcomes:
+            // `Ok(Some)` builds the rows; `Ok(None)` (email genuinely absent)
+            // installs an empty table (the client sees "no attachments");
+            // `Err` (transient backend failure) returns a typed `DiskError`
+            // rather than a fabricated empty table that would make Outlook
+            // believe a message with attachments has none — matching the
+            // `RopOpenAttachment` arm's error handling.
+            enum AttachFetch {
+                Rows(Vec<crate::mapi::session::TableRow>),
+                Empty,
+                Failed,
+            }
+            let fetched = if let (Some(jc), Some(pw)) = (jmap, password) {
                 let account_id = jc
                     .get_account_id(username, pw)
                     .await
                     .ok()
                     .unwrap_or_default();
                 if account_id.is_empty() {
-                    Vec::new()
+                    AttachFetch::Empty
                 } else {
                     match jc.get_email(&account_id, &email_id, username, pw).await {
-                        Ok(Some(e)) => store::email_attach_nums(&e)
-                            .into_iter()
-                            .map(|num| {
-                                let att =
-                                    store::email_attachment_by_num(&e, num).cloned();
-                                let row_id = u64::from(num);
-                                // Stash the JmapAttachment as the row source so
-                                // QueryRows lazily materialises
-                                // attachment_to_cells once SetColumns fixes the
-                                // column set.
-                                let source = att.map(|a| {
-                                    std::sync::Arc::new(a)
-                                        as std::sync::Arc<dyn std::any::Any + Send + Sync>
-                                });
-                                crate::mapi::session::TableRow {
-                                    row_id,
-                                    cells: Vec::new(),
-                                    source,
-                                }
-                            })
-                            .collect::<Vec<_>>(),
-                        _ => Vec::new(),
+                        Ok(Some(e)) => AttachFetch::Rows(
+                            store::email_attach_nums(&e)
+                                .into_iter()
+                                .map(|num| {
+                                    let att =
+                                        store::email_attachment_by_num(&e, num).cloned();
+                                    let row_id = u64::from(num);
+                                    // Stash the JmapAttachment as the row source so
+                                    // QueryRows lazily materialises
+                                    // attachment_to_cells once SetColumns fixes the
+                                    // column set.
+                                    let source = att.map(|a| {
+                                        std::sync::Arc::new(a)
+                                            as std::sync::Arc<dyn std::any::Any + Send + Sync>
+                                    });
+                                    crate::mapi::session::TableRow {
+                                        row_id,
+                                        cells: Vec::new(),
+                                        source,
+                                    }
+                                })
+                                .collect::<Vec<_>>(),
+                        ),
+                        Ok(None) => AttachFetch::Empty,
+                        Err(e) => {
+                            tracing::warn!(
+                                error = %e,
+                                "JMAP get_email (GetAttachmentTable) failed"
+                            );
+                            AttachFetch::Failed
+                        }
                     }
                 }
             } else {
-                Vec::new()
+                AttachFetch::Empty
+            };
+            if matches!(fetched, AttachFetch::Failed) {
+                RopErrorResponse {
+                    rop_id,
+                    output_handle_index: req.output_handle_index,
+                    return_value: RopErrorCode::DiskError,
+                }
+                .encode(out);
+                return Ok(());
+            }
+            let rows = match fetched {
+                AttachFetch::Rows(r) => r,
+                AttachFetch::Empty => Vec::new(),
+                AttachFetch::Failed => unreachable!("returned above"),
             };
             let total = rows.len() as u64;
             sessions.with_session_mut(session_id, |s| {
@@ -883,11 +941,12 @@ async fn execute_one_rop(
                 return Ok(());
             }
             // Verify the requested PR_ATTACH_NUM exists on the message; on
-            // success capture the JMAP blob id so a subsequent
+            // success capture the JMAP blob id + declared size so a subsequent
             // `RopOpenStream(PR_ATTACH_DATA_BIN)` resolves the specific blob
             // (and the >1-attachment case that previously failed closed now
-            // works through this handle).
-            let (return_value, blob_id, name, content_type) = match (jmap, password) {
+            // works through this handle) and reports a real `stream_size` /
+            // enforces `max_attachment_bytes` without an extra round-trip.
+            let (return_value, blob_id, name, content_type, size) = match (jmap, password) {
                 (Some(jc), Some(pw)) => {
                     let account_id = jc
                         .get_account_id(username, pw)
@@ -895,7 +954,13 @@ async fn execute_one_rop(
                         .ok()
                         .unwrap_or_default();
                     if account_id.is_empty() {
-                        (RopErrorCode::NotFound, String::new(), String::new(), String::new())
+                        (
+                            RopErrorCode::NotFound,
+                            String::new(),
+                            String::new(),
+                            String::new(),
+                            None,
+                        )
                     } else {
                         match jc.get_email(&account_id, &email_id, username, pw).await {
                             Ok(Some(e)) => match store::email_attachment_by_num(&e, req.attachment_id) {
@@ -907,12 +972,14 @@ async fn execute_one_rop(
                                         .content_type
                                         .clone()
                                         .unwrap_or_else(|| "application/octet-stream".to_string()),
+                                    att.size,
                                 ),
                                 None => (
                                     RopErrorCode::NotFound,
                                     String::new(),
                                     String::new(),
                                     String::new(),
+                                    None,
                                 ),
                             },
                             Ok(None) => (
@@ -920,6 +987,7 @@ async fn execute_one_rop(
                                 String::new(),
                                 String::new(),
                                 String::new(),
+                                None,
                             ),
                             Err(e) => {
                                 tracing::warn!(error = %e, "JMAP get_email (OpenAttachment) failed");
@@ -928,6 +996,7 @@ async fn execute_one_rop(
                                     String::new(),
                                     String::new(),
                                     String::new(),
+                                    None,
                                 )
                             }
                         }
@@ -938,6 +1007,7 @@ async fn execute_one_rop(
                     String::new(),
                     String::new(),
                     String::new(),
+                    None,
                 ),
             };
             if return_value != RopErrorCode::Success {
@@ -960,6 +1030,7 @@ async fn execute_one_rop(
                         blob_id,
                         name,
                         content_type,
+                        size,
                         is_new: false,
                     },
                 );
@@ -1002,7 +1073,20 @@ async fn execute_one_rop(
                 } else {
                     match jc.get_email(&account_id, &email_id, username, pw).await {
                         Ok(Some(e)) => store::email_attach_nums(&e),
-                        _ => Vec::new(),
+                        Ok(None) => Vec::new(),
+                        Err(e) => {
+                            tracing::warn!(
+                                error = %e,
+                                "JMAP get_email (GetValidAttachments) failed"
+                            );
+                            RopErrorResponse {
+                                rop_id,
+                                output_handle_index: req.input_handle_index,
+                                return_value: RopErrorCode::DiskError,
+                            }
+                            .encode(out);
+                            return Ok(());
+                        }
                     }
                 }
             } else {
@@ -1685,15 +1769,42 @@ async fn execute_one_rop(
             let req = RopSetPropertiesRequest::decode(cur)?;
             // Resolve the Message handle (backend_id = JMAP email id,
             // mailbox_id = the JMAP mailbox the email lives in, used to range
-            // the published modification event).
-            let (backend_id, mailbox_id) = sessions
+            // the published modification event). An Attachment handle is NOT
+            // settable through MAPI in this phase (the body/MIME-rewrite
+            // bridge is pending): return a typed `NoSupport` rather than an
+            // empty backend id masquerading as `NotFound`, so the client gets
+            // a meaningful result and `handle_index` is correct.
+            enum SetPropsTarget {
+                Message { backend_id: String, mailbox_id: String },
+                Attachment,
+                None,
+            }
+            let target = sessions
                 .with_handle(session_id, input_handle_index, |h| match h {
-                    Handle::Message { backend_id, mailbox_id, .. } => {
-                        (backend_id.clone(), mailbox_id.clone())
-                    }
-                    _ => (String::new(), String::new()),
+                    Handle::Message { backend_id, mailbox_id, .. } => SetPropsTarget::Message {
+                        backend_id: backend_id.clone(),
+                        mailbox_id: mailbox_id.clone(),
+                    },
+                    Handle::Attachment { .. } => SetPropsTarget::Attachment,
+                    _ => SetPropsTarget::None,
                 })
-                .unwrap_or((String::new(), String::new()));
+                .unwrap_or(SetPropsTarget::None);
+            if matches!(target, SetPropsTarget::Attachment) {
+                let store::PropertyPatch { problems, .. } =
+                    store::set_values_to_patch(&req.property_values);
+                RopPropertyWriteSuccess {
+                    rop_id,
+                    handle_index: input_handle_index,
+                    return_value: RopErrorCode::NoSupport,
+                    problems,
+                }
+                .encode(out);
+                return Ok(());
+            }
+            let (backend_id, mailbox_id) = match target {
+                SetPropsTarget::Message { backend_id, mailbox_id } => (backend_id, mailbox_id),
+                _ => (String::new(), String::new()),
+            };
             let store::PropertyPatch { patch, problems } =
                 store::set_values_to_patch(&req.property_values);
             let return_value: RopErrorCode = match (jmap, password, backend_id.as_str()) {
@@ -2029,9 +2140,10 @@ async fn execute_one_rop(
         }
         RopId::ROP_DELETE_ATTACHMENT => {
             // §2.2.6.14.1: RopId · LogonId · InputHandleIndex ·
-            // AttachmentID(4 LE). The dispatcher consumed the RopId and
-            // LogonId, so decode_after_ropid reads InputHandleIndex +
-            // AttachmentID.
+            // AttachmentID(4 LE). The dispatcher consumed only RopId, so
+            // consume LogonId here then let `decode_after_ropid` read
+            // InputHandleIndex + AttachmentID (body-only — per-codec contract).
+            let _logon = cur.take_u8()?;
             let req = RopDeleteAttachmentRequest::decode_after_ropid(cur)?;
             // The input handle MUST be a mail Message; AttachmentID is the
             // PR_ATTACH_NUM the client wants to remove.
@@ -2065,9 +2177,11 @@ async fn execute_one_rop(
         }
         RopId::ROP_SAVE_CHANGES_ATTACHMENT => {
             // §2.2.6.15.1: RopId · LogonId · ResponseHandleIndex
-            // · InputHandleIndex · SaveFlags(1). The dispatcher consumed the
-            // RopId and LogonId, so decode_after_ropid reads
-            // ResponseHandleIndex · InputHandleIndex · SaveFlags.
+            // · InputHandleIndex · SaveFlags(1). The dispatcher consumed only
+            // RopId, so consume LogonId here then let `decode_after_ropid`
+            // read ResponseHandleIndex · InputHandleIndex · SaveFlags
+            // (body-only).
+            let _logon = cur.take_u8()?;
             let req = RopSaveChangesAttachmentRequest::decode_after_ropid(cur)?;
             // The input handle MUST be an Attachment handle (opened by
             // RopCreateAttachment). A JMAP-native attachment opened by
@@ -2120,7 +2234,7 @@ async fn execute_one_rop(
             // below intentionally fails closed for >1 attachment).
             enum StreamOwner {
                 Message(String, String, FolderKind),
-                Attachment(String, String, FolderKind, String),
+                Attachment(String, String, FolderKind, String, Option<u64>),
                 Other,
             }
             let owner = sessions
@@ -2136,12 +2250,14 @@ async fn execute_one_rop(
                         mailbox_id,
                         kind,
                         blob_id,
+                        size,
                         ..
                     } => StreamOwner::Attachment(
                         email_id.clone(),
                         mailbox_id.clone(),
                         *kind,
                         blob_id.clone(),
+                        *size,
                     ),
                     _ => StreamOwner::Other,
                 })
@@ -2149,32 +2265,50 @@ async fn execute_one_rop(
             // Fast path: an Attachment handle streaming PR_ATTACH_DATA_BIN (the
             // usual New Outlook "download this attachment" flow). The handle
             // already carries the JMAP blob id (Stalwart-assigned, captured at
-            // `RopOpenAttachment` for a JMAP-native attachment or at
-            // `RopSaveChangesAttachment` after `Blob/upload` for a MAPI-created
-            // one), so we install a read-only Stream resolved to that specific
-            // blob without re-reading the message body. `known_len` is `None`
-            // (the precise length lands on the first `RopReadStream` when the
-            // blob is materialised), so `OpenStream`'s StreamSize is 0 and the
-            // client pages through the bytes the download returns.
-            if let StreamOwner::Attachment(email_id, mailbox_id, kind, blob_id) = &owner
+            // `RopOpenAttachment`), so we install a read-only Stream resolved
+            // to that specific blob without re-reading the message body. The
+            // handle's captured `size` becomes `known_len` so `OpenStream`'s
+            // `StreamSize` (and `RopGetStreamSize`) report the real length
+            // before the blob is materialised, and the `max_attachment_bytes`
+            // ceiling rejects an oversized blob with `NotEnoughMemory` before
+            // any download — matching the message-scoped path's enforcement.
+            //
+            // Gate strictly on `PR_ATTACH_DATA_BIN`/`PTYP_BINARY` so requests
+            // for attachment *metadata* (`PR_ATTACH_LONG_FILENAME`, etc.) or a
+            // type-mismatched data-bin never receive the binary payload; those
+            // fall through to the legacy path which returns the property (or a
+            // typed empty/error for unsupported tags). An empty `blob_id` means
+            // there are no downloadable bytes (a not-yet-saved MAPI-created
+            // attachment); fall through rather than packing the email id alone.
+            if let StreamOwner::Attachment(email_id, mailbox_id, kind, blob_id, att_size) = &owner
                 && kind == &FolderKind::Mail
                 && !email_id.is_empty()
+                && !blob_id.is_empty()
+                && req.property_tag.property_id == store::PR_ATTACH_DATA_BIN
+                && req.property_tag.property_type
+                    == crate::mapi::data::PropertyType::PTYP_BINARY
             {
-                let packed = if blob_id.is_empty() {
-                    email_id.clone()
-                } else {
-                    format!("{email_id}\x1F{blob_id}")
-                };
-                // For a JMAP-native attachment the precise byte length is only
-                // known once the blob is downloaded (the JMAP `attachments[]`
-                // size is available on the message, but re-fetching the whole
-                // Email/get at OpenStream time would add a round-trip per
-                // attachment); record `None` so the first `RopReadStream`
-                // materialises the blob and the stream size becomes exact then.
-                // The message-scoped path above already provides the
-                // optimised `known_len`-from-`attachments[].size` flow when
-                // the client streams a body/attachment off the Message handle.
-                let known_len: Option<u64> = None;
+                // Enforce the configured/spec attachment byte ceiling before
+                // the download: a declared size over the cap is rejected with
+                // `NotEnoughMemory` (item L / audit §2a), mirroring the
+                // message-scoped RopOpenStream path. A `RopErrorResponse`
+                // envelope is used (not the success shape) so no stream size
+                // leaks past the error and the chain cursor stays aligned.
+                let cap = cfg.max_attachment_bytes() as u64;
+                if let Some(len) = att_size
+                    && cap > 0
+                    && *len > cap
+                {
+                    RopErrorResponse {
+                        rop_id,
+                        output_handle_index: req.output_handle_index,
+                        return_value: RopErrorCode::NotEnoughMemory,
+                    }
+                    .encode(out);
+                    return Ok(());
+                }
+                let known_len = *att_size;
+                let packed = format!("{email_id}\x1F{blob_id}");
                 sessions.with_session_mut(session_id, |s| {
                     s.set_handle(
                         req.output_handle_index,
@@ -2192,10 +2326,14 @@ async fn execute_one_rop(
                         },
                     );
                 });
+                let initial_len = match known_len {
+                    Some(len) => u32::try_from(len).unwrap_or(u32::MAX),
+                    None => 0,
+                };
                 RopOpenStreamSuccess {
                     output_handle_index: req.output_handle_index,
                     return_value: RopErrorCode::Success,
-                    stream_size: 0,
+                    stream_size: initial_len,
                 }
                 .encode(out);
                 return Ok(());
@@ -4228,5 +4366,143 @@ mod tests {
         let out = dispatch(&state, &sid, &body).await;
         let rv = u32::from_le_bytes([out[2], out[3], out[4], out[5]]);
         assert_eq!(RopErrorCode::from_u32(rv), RopErrorCode::NoSupport);
+    }
+
+    /// Install a JMAP-native `Handle::Attachment` at `idx` carrying `blob_id`
+    /// and a declared `size` (as captured by `RopOpenAttachment`).
+    fn install_attachment(state: &MapiState, sid: &uuid::Uuid, idx: u8, blob_id: &str, size: Option<u64>) {
+        state.sessions.with_session_mut(sid, |s| {
+            s.set_handle(
+                idx,
+                Handle::Attachment {
+                    email_id: "M-att".into(),
+                    mailbox_id: "I".into(),
+                    kind: FolderKind::Mail,
+                    attach_num: 0,
+                    blob_id: blob_id.into(),
+                    name: "doc.pdf".into(),
+                    content_type: "application/pdf".into(),
+                    size,
+                    is_new: false,
+                },
+            );
+        });
+    }
+
+    /// Build the `RopOpenStream` body for a given property tag.
+    fn open_stream_body(input: u8, output: u8, prop_id: u16, prop_type: u16) -> Vec<u8> {
+        let mut body: Vec<u8> = vec![0x2B, 0, input, output];
+        crate::mapi::data::PropertyTag::new(
+            crate::mapi::data::PropertyType(prop_type),
+            prop_id,
+        )
+        .encode(&mut body);
+        body.push(0x00); // OpenModeFlags
+        body
+    }
+
+    #[tokio::test]
+    async fn open_stream_on_attachment_packs_email_blob_and_reports_size() {
+        // The Attachment-handle OpenStream fast path must:
+        //   * install a read-only Stream whose `backend_id` is
+        //     `<emailId>\x1F<blobId>` (never the email id alone),
+        //   * report the JMAP-declared `size` as the initial `StreamSize`,
+        //   * only fire for `PR_ATTACH_DATA_BIN`/`PTYP_BINARY`.
+        let (state, sid) = state_with_session();
+        install_attachment(&state, &sid, 1, "blob-xyz", Some(4096));
+        let out = dispatch(
+            &state,
+            &sid,
+            &open_stream_body(
+                1,
+                7,
+                crate::mapi::store::PR_ATTACH_DATA_BIN,
+                crate::mapi::data::PropertyType::PTYP_BINARY.0,
+            ),
+        )
+        .await;
+        assert_eq!(out[0], 0x2B);
+        assert_eq!(out[1], 7); // OutputHandleIndex
+        let rv = u32::from_le_bytes([out[2], out[3], out[4], out[5]]);
+        assert_eq!(RopErrorCode::from_u32(rv), RopErrorCode::Success);
+        let stream_size = u32::from_le_bytes([out[6], out[7], out[8], out[9]]);
+        assert_eq!(stream_size, 4096); // from the handle's captured size
+        // The installed Stream handle carries the packed email#blob id and is
+        // read-only.
+        let snap = state.sessions.get(&sid).expect("session");
+        match snap.handles.get(&7).unwrap() {
+            Handle::Stream {
+                backend_id,
+                read_only,
+                known_len,
+                ..
+            } => {
+                assert_eq!(backend_id, "M-att\u{1F}blob-xyz");
+                assert!(*read_only);
+                assert_eq!(*known_len, Some(4096));
+            }
+            _ => panic!("expected stream handle"),
+        }
+    }
+
+    #[tokio::test]
+    async fn open_stream_on_attachment_non_data_bin_falls_through() {
+        // A metadata property (`PR_ATTACH_LONG_FILENAME`) on an Attachment
+        // handle must NOT receive the binary blob — the fast path is gated to
+        // `PR_ATTACH_DATA_BIN`/`PTYP_BINARY`, so the request falls through to
+        // the legacy message-scoped path. There the Attachment handle maps to
+        // a non-Mail source kind, so the `NoSupport` guard fires (the critical
+        // assertion: no attachment bytes are returned for a metadata query and
+        // no Stream handle is installed).
+        let (state, sid) = state_with_session();
+        install_attachment(&state, &sid, 1, "blob-xyz", Some(4096));
+        let out = dispatch(
+            &state,
+            &sid,
+            &open_stream_body(
+                1,
+                7,
+                crate::mapi::store::PR_ATTACH_LONG_FILENAME,
+                crate::mapi::data::PropertyType::PTYP_STRING.0,
+            ),
+        )
+        .await;
+        assert_eq!(out[0], 0x2B);
+        let rv = u32::from_le_bytes([out[2], out[3], out[4], out[5]]);
+        assert_eq!(RopErrorCode::from_u32(rv), RopErrorCode::NoSupport);
+        // No Stream handle was installed at the output index.
+        let snap = state.sessions.get(&sid).expect("session");
+        assert!(!snap.handles.contains_key(&7));
+    }
+
+    #[tokio::test]
+    async fn open_stream_on_attachment_oversize_is_not_enough_memory() {
+        // A declared size over `max_attachment_bytes` is rejected with
+        // `NotEnoughMemory` (a RopErrorResponse, not the success shape)
+        // before any download — matching the message-scoped path.
+        let (state, sid) = state_with_session();
+        // `Config::default()` caps attachments well below u32::MAX; a 256 MiB
+        // attachment exceeds the default ceiling.
+        install_attachment(&state, &sid, 1, "blob-big", Some(256 * 1024 * 1024));
+        let out = dispatch(
+            &state,
+            &sid,
+            &open_stream_body(
+                1,
+                7,
+                crate::mapi::store::PR_ATTACH_DATA_BIN,
+                crate::mapi::data::PropertyType::PTYP_BINARY.0,
+            ),
+        )
+        .await;
+        assert_eq!(out[0], 0x2B);
+        // RopErrorResponse envelope: RopId · OutputHandleIndex · ReturnValue(4)
+        // (no StreamSize tail on a non-Success).
+        assert_eq!(out[1], 7);
+        let rv = u32::from_le_bytes([out[2], out[3], out[4], out[5]]);
+        assert_eq!(RopErrorCode::from_u32(rv), RopErrorCode::NotEnoughMemory);
+        assert_eq!(out.len(), 6);
+        let snap = state.sessions.get(&sid).expect("session");
+        assert!(!snap.handles.contains_key(&7));
     }
 }

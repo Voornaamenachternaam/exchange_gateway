@@ -270,19 +270,6 @@ pub struct JmapAttachment {
     pub name: Option<String>,
 }
 
-/// Result of a successful `Blob/upload` (RFC 8621 §6.1). The `blob_id`
-/// references the uploaded bytes for a subsequent `Email/set` create/update
-/// or for a `download_blob` fetch; `size` is the server-recorded octet count
-/// (used to size the MAPI `PR_ATTACH_SIZE`); `content_type` is the MIME type
-/// the server stored (defaults to the request's `Content-Type`).
-#[derive(Clone, Debug)]
-pub struct UploadedBlob {
-    pub account_id: String,
-    pub blob_id: String,
-    pub size: u64,
-    pub content_type: String,
-}
-
 /// JMAP Mailbox object (RFC 8621 §5.1)
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -703,97 +690,6 @@ impl JmapClient {
             .await
             .map_err(|e| anyhow!("JMAP blob download body read failed: {}", e))?
             .to_vec())
-    }
-
-    /// Upload raw bytes to Stalwart as a JMAP blob (RFC 8621 §6.1 `Blob/upload`).
-    /// The `uploadUrl` session template carries an `{accountId}` placeholder and
-    /// expects a `POST` whose body is the raw bytes and whose `Content-Type` is
-    /// the attachment's MIME type (defaulting to `application/octet-stream`).
-    /// On success the server returns the canonical `Blob/upload` triple:
-    /// `(accountId, blobId, size)`. The returned `blobId` is what an
-    /// `Email/set` create/update or the MAPI attachment read path references to
-    /// materialise the bytes via `download_blob`.
-    ///
-    /// This is the backend op the MAPI `RopSaveChangesAttachment` write path
-    /// uses to persist a client-composed attachment to Stalwart so the bytes
-    /// are real (downloadable) rather than staged only in the gateway session.
-    /// Failures surface the HTTP status and body so the caller maps them to a
-    /// `RopErrorCode::DiskError` rather than masking a missed upload as success.
-    pub async fn upload_blob(
-        &self,
-        account_id: &str,
-        bytes: &[u8],
-        content_type: &str,
-        username: &str,
-        password: &SecretString,
-    ) -> Result<UploadedBlob> {
-        let session = self.get_session(username, password).await?;
-        let ct = if content_type.is_empty() {
-            "application/octet-stream"
-        } else {
-            content_type
-        };
-        let template = if session.upload_url.is_empty() {
-            format!(
-                "{}/upload/{{accountId}}",
-                self.base_url.trim_end_matches('/')
-            )
-        } else {
-            session.upload_url.clone()
-        };
-        // Internalize to the configured base_url so the upload stays on the
-        // Docker network, exactly as the download path does.
-        let internal = Self::internalize_template(&template, &self.base_url)
-            .unwrap_or_else(|| template.clone());
-        let url = internal.replace("{accountId}", account_id);
-        let auth = Self::basic_auth_header(username, password);
-
-        trace!(target: "jmap", url = %url, size = bytes.len(), "Uploading JMAP blob");
-
-        let resp = self
-            .client
-            .post(&url)
-            .header(AUTHORIZATION, &auth)
-            .header(CONTENT_TYPE, ct)
-            .header("Content-Length", bytes.len().to_string())
-            .body(bytes.to_vec())
-            .send()
-            .await
-            .map_err(|e| anyhow!("JMAP blob upload failed: {}", e))?;
-
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
-            return Err(anyhow!("JMAP blob upload returned {}: {}", status, body));
-        }
-
-        #[derive(serde::Deserialize)]
-        #[serde(rename_all = "camelCase")]
-        struct UploadResp {
-            #[serde(default)]
-            account_id: Option<String>,
-            #[serde(default)]
-            blob_id: Option<String>,
-            #[serde(default)]
-            size: Option<u64>,
-            #[serde(default, rename = "type")]
-            content_type: Option<String>,
-        }
-        let parsed: UploadResp = resp
-            .json()
-            .await
-            .map_err(|e| anyhow!("Failed to parse JMAP blob upload response: {}", e))?;
-        let blob_id = parsed
-            .blob_id
-            .ok_or_else(|| anyhow!("JMAP blob upload response missing blobId"))?;
-        Ok(UploadedBlob {
-            account_id: parsed.account_id.unwrap_or_else(|| account_id.to_string()),
-            blob_id,
-            size: parsed.size.unwrap_or(bytes.len() as u64),
-            content_type: parsed
-                .content_type
-                .unwrap_or_else(|| ct.to_string()),
-        })
     }
 
     /// Fetch the JMAP session object (RFC 8621 §2.1).
