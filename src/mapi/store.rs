@@ -468,6 +468,121 @@ pub fn email_attachment_blob<'a>(
     atts.first()
 }
 
+/// Resolve the JMAP attachment at the given `PR_ATTACH_NUM` (0-based index)
+/// on a mail message. `RopOpenAttachment` / `RopGetAttachmentTable` enumerate
+/// attachments by index: per MS-OXCMSG §2.2.2.6 `PR_ATTACH_NUM` is a
+/// sequential integer identifying the attachment within the message, and
+/// JMAP `email.attachments[]` is an ordered array, so the attachment at
+/// array index `i` carries `PR_ATTACH_NUM == i`. Returns `None` when the
+/// message has no attachments or `attach_num` is out of range.
+pub fn email_attachment_by_num(
+    email: &JmapEmail,
+    attach_num: u32,
+) -> Option<&crate::jmap::JmapAttachment> {
+    let atts = email.attachments.as_ref()?;
+    let idx = usize::try_from(attach_num).ok()?;
+    atts.get(idx)
+}
+
+/// The set of `PR_ATTACH_NUM` values present on a message, in order. Used by
+/// `RopGetValidAttachments` and `RopGetAttachmentTable` to enumerate the
+/// attachment indices a client may pass to `RopOpenAttachment`.
+pub fn email_attach_nums(email: &JmapEmail) -> Vec<u32> {
+    match email.attachments.as_ref() {
+        Some(atts) => (0..atts.len() as u32).collect(),
+        None => Vec::new(),
+    }
+}
+
+/// Convert a single JMAP attachment into the `PropertyValue` cell set for the
+/// requested MAPI column tags (column-order), used by the attachment-table
+/// rows and by `RopGetProperties{Specific,All}` on an Attachment handle.
+/// `attach_num` is the attachment's `PR_ATTACH_NUM` (its array index).
+/// Unknown / incompatible tags fall back to a typed NULL exactly as
+/// `email_to_cells` does, so the row decoder stays aligned.
+pub fn attachment_to_cells(
+    att: &crate::jmap::JmapAttachment,
+    attach_num: u32,
+    column_set: &[PropertyTag],
+) -> Vec<PropertyValue> {
+    let mut out = Vec::with_capacity(column_set.len());
+    for tag in column_set {
+        out.push(cell_for_attachment(att, attach_num, tag));
+    }
+    out
+}
+
+fn cell_for_attachment(
+    att: &crate::jmap::JmapAttachment,
+    attach_num: u32,
+    tag: &PropertyTag,
+) -> PropertyValue {
+    use crate::mapi::data::PropertyType as T;
+    let id = tag.property_id;
+    let want = tag.property_type;
+    macro_rules! or_null {
+        ($val:expr, $pat:expr) => {{
+            if !ttype_matches(want, $pat) {
+                return PropertyValue::Null;
+            }
+            $val
+        }};
+    }
+    match id {
+        PR_ATTACH_NUM => {
+            PropertyValue::Integer32(or_null!(attach_num as i32, T::PTYP_INTEGER32))
+        }
+        PR_ATTACH_LONG_FILENAME => PropertyValue::String(or_null!(
+            att.name.clone().unwrap_or_default(),
+            T::PTYP_STRING
+        )),
+        PR_ATTACH_FILENAME => PropertyValue::String8(or_null!(
+            att.name.clone().unwrap_or_default(),
+            T::PTYP_STRING8
+        )),
+        PR_ATTACH_MIME_TAG => PropertyValue::String(or_null!(
+            att.content_type.clone().unwrap_or_else(|| "application/octet-stream".to_string()),
+            T::PTYP_STRING
+        )),
+        PR_ATTACH_EXTENSION => {
+            // MS-OXPROPS PidTagAttachExtension: the file-name extension
+            // INCLUDING the leading period (e.g. ".txt"); an empty string
+            // when the name has no extension. Derive it from the name by
+            // taking the substring from the last '.' onward (not the suffix
+            // after the dot), so the dot is preserved.
+            let ext = att
+                .name
+                .as_deref()
+                .and_then(|n| n.rfind('.'))
+                .map(|i| att.name.as_deref().unwrap_or("")[i..].to_string())
+                .unwrap_or_default();
+            PropertyValue::String8(or_null!(ext, T::PTYP_STRING8))
+        }
+        PR_ATTACH_SIZE => {
+            // PR_ATTACH_SIZE is PtypInteger32; an attachment ≥ 2 GiB would
+            // wrap to a negative value under `as i32`. Saturate at i32::MAX
+            // (the existing `saturate_i32` helper used by
+            // PR_CONTENT_COUNT/PR_MESSAGE_SIZE) so the client sees a large but
+            // valid size.
+            let size = saturate_i32(att.size.unwrap_or(0));
+            PropertyValue::Integer32(or_null!(size, T::PTYP_INTEGER32))
+        }
+        PR_ATTACH_METHOD => {
+            // 0 = attByValue (file). JMAP attachments are by-value; reference
+            // (1) and OLE (6) are not modelled by JMAP.
+            PropertyValue::Integer32(or_null!(0i32, T::PTYP_INTEGER32))
+        }
+        PR_ATTACH_FLAGS => PropertyValue::Integer32(or_null!(0i32, T::PTYP_INTEGER32)),
+        PR_ATTACH_ENCODING => PropertyValue::Binary(or_null!(Vec::new(), T::PTYP_BINARY)),
+        // PR_ATTACH_DATA_BIN is only relevant for streaming (OpenStream), not
+        // for table cells or GetProperties (it can be arbitrarily large); emit
+        // a typed NULL so a client asking for it via GetProperties gets a
+        // safe placeholder and opens a stream for the real bytes.
+        PR_ATTACH_DATA_BIN => PropertyValue::Null,
+        _ => crate::mapi::data::PropertyValue::Null,
+    }
+}
+
 /// Convert a JmapEmail into the `PropertyValue` cell set for the requested
 /// MAPI column tags, in column-order. Unknown tags return
 /// `PropertyValue::Null` so the row's StandardPropertyRow stays aligned; the
@@ -1571,5 +1686,128 @@ mod tests {
         assert!(patch.patch.is_empty());
         assert_eq!(patch.problems.len(), 1);
         assert_eq!(patch.problems[0].error_code, 0x8004_0102);
+    }
+
+    // ---- Attachment enumeration + cell materialisation (audit gap §2a) ----
+
+    fn att(name: Option<&str>, ct: Option<&str>, size: Option<u64>) -> crate::jmap::JmapAttachment {
+        crate::jmap::JmapAttachment {
+            id: Some("f-att".to_string()),
+            blob_id: Some("B-fatt".to_string()),
+            size,
+            content_type: ct.map(String::from),
+            name: name.map(String::from),
+        }
+    }
+
+    fn email_with_attachments(atts: Vec<crate::jmap::JmapAttachment>) -> JmapEmail {
+        let mut e = email("with-attachments", false);
+        e.attachments = Some(atts);
+        e
+    }
+
+    #[test]
+    fn email_attach_nums_are_sequential_indices() {
+        let e = email_with_attachments(vec![att(None, None, None), att(None, None, None)]);
+        assert_eq!(email_attach_nums(&e), vec![0, 1]);
+        let no = email("none", false);
+        assert!(email_attach_nums(&no).is_empty());
+    }
+
+    #[test]
+    fn email_attachment_by_num_resolves_index() {
+        let e = email_with_attachments(vec![
+            att(Some("a.pdf"), None, Some(10)),
+            att(Some("b.png"), None, Some(20)),
+        ]);
+        assert_eq!(
+            email_attachment_by_num(&e, 1).and_then(|a| a.name.clone()),
+            Some("b.png".to_string())
+        );
+        assert!(email_attachment_by_num(&e, 5).is_none());
+    }
+
+    #[test]
+    fn attachment_to_cells_materialises_metadata() {
+        let a = att(Some("report.pdf"), Some("application/pdf"), Some(4096));
+        let cols = [
+            ttag(PR_ATTACH_NUM, crate::mapi::data::PropertyType::PTYP_INTEGER32),
+            ttag(PR_ATTACH_LONG_FILENAME, crate::mapi::data::PropertyType::PTYP_STRING),
+            ttag(PR_ATTACH_MIME_TAG, crate::mapi::data::PropertyType::PTYP_STRING),
+            ttag(PR_ATTACH_SIZE, crate::mapi::data::PropertyType::PTYP_INTEGER32),
+            ttag(PR_ATTACH_METHOD, crate::mapi::data::PropertyType::PTYP_INTEGER32),
+        ];
+        let cells = attachment_to_cells(&a, 2, &cols);
+        assert_eq!(cells.len(), 5);
+        let crate::mapi::data::PropertyValue::Integer32(num) = &cells[0] else {
+            panic!("attach num");
+        };
+        assert_eq!(*num, 2);
+        let crate::mapi::data::PropertyValue::String(name) = &cells[1] else {
+            panic!("long filename");
+        };
+        assert_eq!(name, "report.pdf");
+        let crate::mapi::data::PropertyValue::String(mt) = &cells[2] else {
+            panic!("mime tag");
+        };
+        assert_eq!(mt, "application/pdf");
+        let crate::mapi::data::PropertyValue::Integer32(sz) = &cells[3] else {
+            panic!("size");
+        };
+        assert_eq!(*sz, 4096);
+        let crate::mapi::data::PropertyValue::Integer32(method) = &cells[4] else {
+            panic!("method");
+        };
+        assert_eq!(*method, 0); // attByValue
+    }
+
+    #[test]
+    fn attachment_to_cells_extension_includes_leading_dot() {
+        // MS-OXPROPS PidTagAttachExtension: the extension INCLUDING the
+        // leading period; empty when the name has no extension.
+        let a = att(Some("archive.tar.gz"), None, None);
+        let tag = ttag(PR_ATTACH_EXTENSION, crate::mapi::data::PropertyType::PTYP_STRING8);
+        let cells = attachment_to_cells(&a, 0, &[tag]);
+        let crate::mapi::data::PropertyValue::String8(ext) = &cells[0] else {
+            panic!("extension");
+        };
+        assert_eq!(ext, ".gz");
+        let a2 = att(Some("noext"), None, None);
+        let cells2 = attachment_to_cells(&a2, 0, &[tag]);
+        let crate::mapi::data::PropertyValue::String8(ext2) = &cells2[0] else {
+            panic!("extension no-dot");
+        };
+        assert_eq!(ext2, "");
+    }
+
+    #[test]
+    fn attachment_to_cells_size_saturates_at_i32_max() {
+        // An attachment ≥ 2 GiB must NOT wrap to a negative PR_ATTACH_SIZE;
+        // it saturates at i32::MAX so the client sees a large-but-valid size.
+        let a = att(Some("big.bin"), None, Some(u64::from(i32::MAX as u32) + 1));
+        let tag = ttag(PR_ATTACH_SIZE, crate::mapi::data::PropertyType::PTYP_INTEGER32);
+        let cells = attachment_to_cells(&a, 0, &[tag]);
+        let crate::mapi::data::PropertyValue::Integer32(sz) = &cells[0] else {
+            panic!("size");
+        };
+        assert_eq!(*sz, i32::MAX);
+    }
+
+    #[test]
+    fn attachment_to_cells_pr_attach_data_bin_is_null_not_streamed() {
+        // PR_ATTACH_DATA_BIN must NOT materialise via cells (it can be
+        // arbitrarily large and is delivered through OpenStream+ReadStream).
+        let a = att(Some("x.bin"), None, Some(8));
+        let tag = ttag(PR_ATTACH_DATA_BIN, crate::mapi::data::PropertyType::PTYP_BINARY);
+        let cells = attachment_to_cells(&a, 0, &[tag]);
+        assert!(matches!(cells[0], crate::mapi::data::PropertyValue::Null));
+    }
+
+    #[test]
+    fn attachment_to_cells_unknown_tag_is_null() {
+        let a = att(Some("y.txt"), None, None);
+        let tag = ttag(0xFFFF, crate::mapi::data::PropertyType::PTYP_INTEGER32);
+        let cells = attachment_to_cells(&a, 0, &[tag]);
+        assert!(matches!(cells[0], crate::mapi::data::PropertyValue::Null));
     }
 }

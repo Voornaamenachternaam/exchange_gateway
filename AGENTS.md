@@ -275,6 +275,42 @@ gets wiped between shell sessions. To avoid re-installing Rust every command:
     message falls through to the backend create path. `email_body_stream_bytes`
     encodes `PTYP_STRING`/`PTYP_WSTRING` bodies as **UTF-16LE** (item I) and
     multi-attachment selection fails closed as ambiguous `NoSupport` (item N).
+  - **Attachment-ROP review hardening (PR #1832)** — the
+    `RopDeleteAttachment`/`RopSaveChangesAttachment` dispatcher arms MUST
+    consume the per-ROP `LogonId` byte (`let _logon = cur.take_u8()?;`)
+    immediately before `<Req>::decode_after_ropid(cur)` — `decode_after_ropid`
+    reads body-only (after RopId+LogonId), exactly like every other
+    `decode_after_ropid` arm (`RopCommitStream`/`RopReadStream`/…). Skipping
+    the consume shifts every request field by one byte and desyncs the ROP
+    chain; this is the #1 architectural trap for new arms (caught by cubic +
+    coderabbit on #1832). `Handle::Attachment` now carries
+    `size: Option<u64>` captured at `RopOpenAttachment` from JMAP
+    `attachments[].size`, so the Attachment-handle `RopOpenStream`
+    fast-path reports a real `StreamSize`/`RopGetStreamSize` AND caps the
+    blob against `cfg.max_attachment_bytes()` → `NotEnoughMemory` (a
+    `RopErrorResponse`, not a success-shape envelope) before any download.
+    That fast-path is **gated to `PR_ATTACH_DATA_BIN` + `PTYP_BINARY`** (a
+    non-data-bin/metadata query on an Attachment handle falls through to the
+    legacy path → `NoSupport`, never the binary payload), requires a
+    **non-empty `blob_id`** (an empty blob_id falls through rather than
+    packing `<email>` alone), and packs `backend_id` as the invariant
+    `<emailId>\x1F<blobId>`. `RopGetAttachmentTable`/`RopGetValidAttachments`
+    **split `Ok(None)` (empty result) from `Err` (typed `DiskError` + `warn!`)**
+    rather than masking a transient JMAP failure as "no attachments"
+    (`RopOpenAttachment` already did this; both now match).
+    `RopSetProperties` on an `Handle::Attachment` returns a typed `NoSupport`
+    (not a silent `NotFound`) since attachment metadata is read-only JMAP
+    capture until the body/MIME-rewrite bridge lands. `RopGetPropertiesSpecific`
+    on an Attachment handle serves cells from the **cached handle metadata**
+    (name/content_type/size, rebuilt into a `JmapAttachment` for
+    `store::attachment_to_cells`) with NO `Email/get` round-trip — reserving the
+    fetch as a fallback only for a degenerate handle. `store::PR_ATTACH_SIZE`
+    uses `saturate_i32` (not `as i32`) so a ≥2 GiB attachment never wraps
+    negative; `PR_ATTACH_EXTENSION` keeps the **leading dot** (`.txt`, not
+    `txt`) per MS-OXPROPS. The `JmapClient::upload_blob`/`UploadedBlob`
+    draft was **removed** as dead code (no caller; `Blob/upload` write-back
+    is not wired) — re-add when the MAPI→JMAP attachment write-back bridge
+    lands and wire+test the caller at the same time.
 
 ## MAPI/HTTP (MS-OXCMAPIHTTP) architecture notes
 
