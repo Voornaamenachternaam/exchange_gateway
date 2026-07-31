@@ -167,11 +167,14 @@ impl AppState {
         // so MAPI property-write ROPs publish `ItemModified` events to the
         // shared feed, closing the EWS-only notification gap (audit §2e).
         let mapi = if cfg.mapi_enabled {
-            Some(Arc::new(MapiState::with_subscription_manager(
-                cfg.clone(),
-                auth_verifier.clone(),
-                subscription_manager.clone(),
-            )))
+            Some(Arc::new(
+                MapiState::with_subscription_manager(
+                    cfg.clone(),
+                    auth_verifier.clone(),
+                    subscription_manager.clone(),
+                )
+                .with_attachment_manager(attachment_manager.clone()),
+            ))
         } else {
             None
         };

@@ -77,6 +77,47 @@ pub enum Handle {
         /// drafts mailbox only as a pending JMAP creation.
         is_new: bool,
     },
+    /// An attachment handle (`RopOpenAttachment` / `RopCreateAttachment`,
+    /// MS-OXCMSG §2.2.3). Backs `RopGetProperties{Specific,All}` /
+    /// `RopSetProperties` / `RopOpenStream` (on `PR_ATTACH_DATA_BIN`) /
+    /// `RopSaveChangesAttachment` / `RopDeleteAttachment` against the owning
+    /// message's attachment.
+    ///
+    /// `email_id` is the owning JMAP email id; `attach_num` is the
+    /// `PR_ATTACH_NUM` (the JMAP `attachments[]` index for a JMAP-native
+    /// attachment, or a freshly-assigned index for one created via MAPI and
+    /// not yet persisted); `blob_id` is the JMAP blob id for the attachment
+    /// bytes (the id Stalwart assigned at `Blob/upload` for a MAPI-created
+    /// attachment, enabling a `RopOpenStream`+`RopReadStream` download without
+    /// re-reading the source message handle); `name`/`content_type` capture
+    /// the attachment metadata the client set via `RopSetProperties` before
+    /// `RopSaveChangesAttachment`. `is_new` distinguishes a JMAP-native
+    /// attachment (`false`, immutable — `RopSaveChangesAttachment` is an
+    /// idempotent success and `RopDeleteAttachment` is `NoSupport` because the
+    /// MIME-rewrite bridge is pending) from one created via MAPI (`true`,
+    /// staged in `blob_id`/`name`/`content_type` until
+    /// `RopSaveChangesAttachment` uploads + persists it).
+    Attachment {
+        /// Owning message JMAP email id.
+        email_id: String,
+        /// Owning message JMAP mailbox id (carried so SaveChangesAttachment can
+        /// re-thread the parent mailbox if a draft create was needed).
+        mailbox_id: String,
+        /// Which backend owns the source message (mail/calendar/contact). Mail
+        /// is the only kind with attachment streams in this phase.
+        kind: FolderKind,
+        /// The `PR_ATTACH_NUM` of this attachment.
+        attach_num: u32,
+        /// JMAP blob id of the attachment bytes (Stalwart-assigned). Empty for
+        /// a freshly-created attachment before `RopSaveChangesAttachment`.
+        blob_id: String,
+        // The attachment's display name and MIME content type, set by the
+        // client via `RopSetProperties` before save.
+        name: String,
+        content_type: String,
+        // True when created via `RopCreateAttachment` and not yet saved.
+        is_new: bool,
+    },
     /// A stream handle (`RopOpenStream`, MS-OXCROPS 2.2.9). Backs the
     /// `RopReadStream` / `RopWriteStream` / `RopSeekStream` /
     /// `RopGetStreamSize` / `RopSetStreamSize` / `RopCommitStream` round-trip
@@ -173,6 +214,7 @@ impl Handle {
         match self {
             Self::Folder { .. } => HandleKind::Folder,
             Self::Message { .. } => HandleKind::Message,
+            Self::Attachment { .. } => HandleKind::Attachment,
             Self::Stream { .. } => HandleKind::Stream,
             Self::Table { .. } => HandleKind::Table,
         }
@@ -228,6 +270,7 @@ impl std::fmt::Debug for TableRow {
 pub enum HandleKind {
     Folder,
     Message,
+    Attachment,
     Stream,
     Table,
 }

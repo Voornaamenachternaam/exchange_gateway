@@ -1061,6 +1061,279 @@ impl RopDeleteMessagesResponse {
     }
 }
 
+// ---- Attachment ROPs (0x21 / 0x22 / 0x23 / 0x24 / 0x25 / 0x52) -------------
+//
+// MS-OXCROPS §2.2.6 — the attachment CRUD/family Outlook enumerates a
+// message's attachments through. `RopGetAttachmentTable` (0x21) opens a table
+// handle over the message's attachments keyed by `PR_ATTACH_NUM`;
+// `RopOpenAttachment` (0x22) opens a per-attachment handle by `PR_ATTACH_NUM`
+// the client then streams via `RopOpenStream`+`RopReadStream` on
+// `PR_ATTACH_DATA_BIN`, or reads metadata via `RopGetPropertiesSpecific`;
+// `RopCreateAttachment` (0x23) starts a NEW attachment handle (the bytes are
+// staged via `RopOpenStream`+`RopWriteStream` then committed by
+// `RopSaveChangesAttachment` 0x25 to Stalwart); `RopDeleteAttachment` (0x24)
+// removes an attachment by `PR_ATTACH_NUM`; `RopGetValidAttachments` (0x52)
+// lists the valid `PR_ATTACH_NUM` ids on a message.
+//
+// Per the dispatcher convention (AGENTS.md), the arm consumes the leading
+// `RopId` byte and, depending on header shape, the `LogonId` (3-byte-header
+// variants) OR the trailing `LogonId·Input·Output` via `RopHeader4` decode
+// (4-byte-header variants); each `*Request::decode` reads only the body
+// bytes after that. `GetAttachmentTable` / `OpenAttachment` use a 4-byte
+// header; `CreateAttachment` is header-only (4 bytes, no body);
+// `DeleteAttachment` uses a 3-byte header + AttachmentID body;
+// `SaveChangesAttachment` uses a 4-byte-ish header where the third byte is
+// `ResponseHandleIndex` (not `OutputHandleIndex`).
+
+/// `RopGetAttachmentTable` request, MS-OXCROPS §2.2.6.17.1. Body after the
+/// `RopHeader4` (`RopId·LogonId·Input·Output`) is a single `TableFlags`
+/// byte ([MS-OXCMSG] §2.2.3.17.1). The dispatcher consumed the `RopId`; it
+/// calls `RopHeader4::decode_after_ropid` to bind Input/Output, then this
+/// helper reads only `TableFlags`. The handle indices are threaded in so the
+/// assembled request carries them for the handler and round-trip tests.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RopGetAttachmentTableRequest {
+    pub input_handle_index: u8,
+    pub output_handle_index: u8,
+    pub table_flags: u8,
+}
+impl RopGetAttachmentTableRequest {
+    pub fn decode_body(after_header: &mut Buf<'_>, input: u8, output: u8) -> Result<Self, DecodeError> {
+        let table_flags = after_header.take_u8()?;
+        Ok(Self {
+            input_handle_index: input,
+            output_handle_index: output,
+            table_flags,
+        })
+    }
+    pub fn encode(&self, out: &mut Vec<u8>) {
+        out.push(RopId::ROP_GET_ATTACHMENT_TABLE.to_u8());
+        // LogonId is the caller's concern; encode omits it (used for tests).
+        out.push(self.input_handle_index);
+        out.push(self.output_handle_index);
+        out.push(self.table_flags);
+    }
+}
+
+/// `RopGetAttachmentTable` response (success OR failure), MS-OXCROPS
+/// §2.2.6.17.2 / §2.2.6.17.3: `RopId · OutputHandleIndex · ReturnValue(4)`.
+/// The success and failure envelopes are byte-identical; only the
+/// `ReturnValue` distinguishes them, so one codec covers both.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RopGetAttachmentTableSuccess {
+    pub output_handle_index: u8,
+    pub return_value: RopErrorCode,
+}
+impl RopGetAttachmentTableSuccess {
+    pub fn encode(&self, out: &mut Vec<u8>) {
+        out.push(RopId::ROP_GET_ATTACHMENT_TABLE.to_u8());
+        out.push(self.output_handle_index);
+        out.extend_from_slice(&self.return_value.to_u32().to_le_bytes());
+    }
+}
+
+/// `RopOpenAttachment` request, MS-OXCROPS §2.2.6.12.1. Body after the
+/// `RopHeader4` is `OpenAttachmentFlags(1) · AttachmentID(4 LE)` where
+/// `AttachmentID` is the `PR_ATTACH_NUM` ([MS-OXCMSG] §2.2.2.6).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RopOpenAttachmentRequest {
+    pub input_handle_index: u8,
+    pub output_handle_index: u8,
+    pub open_attachment_flags: u8,
+    pub attachment_id: u32,
+}
+impl RopOpenAttachmentRequest {
+    pub fn decode_body(after_header: &mut Buf<'_>, input: u8, output: u8) -> Result<Self, DecodeError> {
+        let open_attachment_flags = after_header.take_u8()?;
+        let attachment_id = after_header.take_u32_le()?;
+        Ok(Self {
+            input_handle_index: input,
+            output_handle_index: output,
+            open_attachment_flags,
+            attachment_id,
+        })
+    }
+    pub fn encode(&self, out: &mut Vec<u8>) {
+        out.push(RopId::ROP_OPEN_ATTACHMENT.to_u8());
+        out.push(self.input_handle_index);
+        out.push(self.output_handle_index);
+        out.push(self.open_attachment_flags);
+        out.extend_from_slice(&self.attachment_id.to_le_bytes());
+    }
+}
+
+/// `RopOpenAttachment` response (success OR failure), MS-OXCROPS §2.2.6.12.2:
+/// `RopId · OutputHandleIndex · ReturnValue(4)`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RopOpenAttachmentSuccess {
+    pub output_handle_index: u8,
+    pub return_value: RopErrorCode,
+}
+impl RopOpenAttachmentSuccess {
+    pub fn encode(&self, out: &mut Vec<u8>) {
+        out.push(RopId::ROP_OPEN_ATTACHMENT.to_u8());
+        out.push(self.output_handle_index);
+        out.extend_from_slice(&self.return_value.to_u32().to_le_bytes());
+    }
+}
+
+/// `RopCreateAttachment` request, MS-OXCROPS §2.2.6.13.1. The request is
+/// header-ONLY: `RopId · LogonId · InputHandleIndex · OutputHandleIndex` —
+/// there is NO body. The dispatcher consumed the `RopId`; it reads the
+/// remaining `LogonId · Input · Output` via `RopHeader4::decode_after_ropid`,
+/// so this struct only carries the resolved indices (no decoder body).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RopCreateAttachmentRequest {
+    pub input_handle_index: u8,
+    pub output_handle_index: u8,
+}
+
+/// `RopCreateAttachment` success response, MS-OXCROPS §2.2.6.13.2:
+/// `RopId · OutputHandleIndex · ReturnValue(4) · AttachmentID(4 LE)`.
+/// `AttachmentID` is the new `PR_ATTACH_NUM` the server assigned. The failure
+/// envelope (§2.2.6.13.3) is the 6-byte `RopErrorResponse` (no AttachmentID),
+/// emitted by the dispatcher for a non-success return.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RopCreateAttachmentSuccess {
+    pub output_handle_index: u8,
+    pub return_value: RopErrorCode,
+    pub attachment_id: u32,
+}
+impl RopCreateAttachmentSuccess {
+    pub fn encode(&self, out: &mut Vec<u8>) {
+        out.push(RopId::ROP_CREATE_ATTACHMENT.to_u8());
+        out.push(self.output_handle_index);
+        out.extend_from_slice(&self.return_value.to_u32().to_le_bytes());
+        out.extend_from_slice(&self.attachment_id.to_le_bytes());
+    }
+}
+
+/// `RopDeleteAttachment` request, MS-OXCROPS §2.2.6.14.1. Wire after the
+/// `RopId` byte is `LogonId(1) · InputHandleIndex(1) · AttachmentID(4 LE)`.
+/// The dispatcher consumed the `RopId`; it consumes `LogonId` itself, so this
+/// decoder reads `InputHandleIndex · AttachmentID`. The response uses
+/// `InputHandleIndex` (no output handle is created).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RopDeleteAttachmentRequest {
+    pub input_handle_index: u8,
+    pub attachment_id: u32,
+}
+impl RopDeleteAttachmentRequest {
+    pub fn decode_after_ropid(cur: &mut Buf<'_>) -> Result<Self, DecodeError> {
+        let input_handle_index = cur.take_u8()?;
+        let attachment_id = cur.take_u32_le()?;
+        Ok(Self {
+            input_handle_index,
+            attachment_id,
+        })
+    }
+    pub fn encode(&self, out: &mut Vec<u8>) {
+        out.push(RopId::ROP_DELETE_ATTACHMENT.to_u8());
+        out.push(self.input_handle_index);
+        out.extend_from_slice(&self.attachment_id.to_le_bytes());
+    }
+}
+
+/// `RopDeleteAttachment` response, MS-OXCROPS §2.2.6.14.2:
+/// `RopId · InputHandleIndex · ReturnValue(4)`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RopDeleteAttachmentResponse {
+    pub input_handle_index: u8,
+    pub return_value: RopErrorCode,
+}
+impl RopDeleteAttachmentResponse {
+    pub fn encode(&self, out: &mut Vec<u8>) {
+        out.push(RopId::ROP_DELETE_ATTACHMENT.to_u8());
+        out.push(self.input_handle_index);
+        out.extend_from_slice(&self.return_value.to_u32().to_le_bytes());
+    }
+}
+
+/// `RopSaveChangesAttachment` request, MS-OXCROPS §2.2.6.15.1. Wire after the
+/// `RopId` byte is `LogonId(1) · ResponseHandleIndex(1) · InputHandleIndex(1)
+/// · SaveFlags(1)`. The dispatcher consumed the `RopId` and `LogonId`, so this
+/// decoder reads `ResponseHandleIndex · InputHandleIndex · SaveFlags`.
+/// `ResponseHandleIndex` is the handle index echoed in the response (NOT an
+/// output-table slot).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RopSaveChangesAttachmentRequest {
+    pub response_handle_index: u8,
+    pub input_handle_index: u8,
+    pub save_flags: u8,
+}
+impl RopSaveChangesAttachmentRequest {
+    pub fn decode_after_ropid(cur: &mut Buf<'_>) -> Result<Self, DecodeError> {
+        let response_handle_index = cur.take_u8()?;
+        let input_handle_index = cur.take_u8()?;
+        let save_flags = cur.take_u8()?;
+        Ok(Self {
+            response_handle_index,
+            input_handle_index,
+            save_flags,
+        })
+    }
+    pub fn encode(&self, out: &mut Vec<u8>) {
+        out.push(RopId::ROP_SAVE_CHANGES_ATTACHMENT.to_u8());
+        out.push(self.response_handle_index);
+        out.push(self.input_handle_index);
+        out.push(self.save_flags);
+    }
+}
+
+/// `RopSaveChangesAttachment` response, MS-OXCROPS §2.2.6.15.2:
+/// `RopId · ResponseHandleIndex · ReturnValue(4)`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RopSaveChangesAttachmentResponse {
+    pub response_handle_index: u8,
+    pub return_value: RopErrorCode,
+}
+impl RopSaveChangesAttachmentResponse {
+    pub fn encode(&self, out: &mut Vec<u8>) {
+        out.push(RopId::ROP_SAVE_CHANGES_ATTACHMENT.to_u8());
+        out.push(self.response_handle_index);
+        out.extend_from_slice(&self.return_value.to_u32().to_le_bytes());
+    }
+}
+
+/// `RopGetValidAttachments` request, MS-OXCROPS §2.2.6.18.1. Wire after the
+/// `RopId` byte is `LogonId(1) · InputHandleIndex(1)`. The dispatcher consumed
+/// the `RopId` and `LogonId`, so this decoder reads `InputHandleIndex`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RopGetValidAttachmentsRequest {
+    pub input_handle_index: u8,
+}
+impl RopGetValidAttachmentsRequest {
+    pub fn decode_after_ropid(cur: &mut Buf<'_>) -> Result<Self, DecodeError> {
+        let input_handle_index = cur.take_u8()?;
+        Ok(Self { input_handle_index })
+    }
+}
+
+/// `RopGetValidAttachments` success response, MS-OXCROPS §2.2.6.18.2:
+/// `RopId · InputHandleIndex · ReturnValue(4) · AttachmentIdCount(2 LE)
+/// · AttachmentIdArray(count×4 LE)`. The failure envelope (§2.2.6.18.3) is the
+/// 6-byte `RopErrorResponse` (no count/array); the dispatcher emits that for
+/// a non-success return.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RopGetValidAttachmentsSuccess {
+    pub input_handle_index: u8,
+    pub return_value: RopErrorCode,
+    pub attachment_ids: Vec<u32>,
+}
+impl RopGetValidAttachmentsSuccess {
+    pub fn encode(&self, out: &mut Vec<u8>) {
+        out.push(RopId::ROP_GET_VALID_ATTACHMENTS.to_u8());
+        out.push(self.input_handle_index);
+        out.extend_from_slice(&self.return_value.to_u32().to_le_bytes());
+        let count = u16::try_from(self.attachment_ids.len()).unwrap_or(u16::MAX);
+        out.extend_from_slice(&count.to_le_bytes());
+        for id in &self.attachment_ids[..usize::from(count)] {
+            out.extend_from_slice(&id.to_le_bytes());
+        }
+    }
+}
+
+
 // ---- RopMoveCopyMessages (0x33) ----------------------------------------------
 
 /// `RopMoveCopyMessages` request, MS-OXCROPS §2.2.4.6.1. Wire after the
@@ -2758,5 +3031,170 @@ mod tests {
         .encode(&mut out);
         assert_eq!(out[0], 0x5D);
         assert_eq!(out.len(), 6);
+    }
+
+    // ---- Attachment ROP codec round-trips (MS-OXCROPS §2.2.6) ----
+
+    #[test]
+    fn rop_get_attachment_table_roundtrip() {
+        // Body after RopHeader4 = TableFlags(1). The caller supplied the
+        // Input/Output indices; the body cursor holds only the flag.
+        let body: Vec<u8> = vec![0x00]; // TableFlags
+        let mut cur = Buf::new(&body);
+        let req = RopGetAttachmentTableRequest::decode_body(&mut cur, 4, 9).expect("decode");
+        assert_eq!(req.input_handle_index, 4);
+        assert_eq!(req.output_handle_index, 9);
+        assert_eq!(req.table_flags, 0x00);
+        assert_eq!(cur.remaining(), 0);
+
+        // Success response: RopId · OutputHandleIndex · ReturnValue(4).
+        let mut out = Vec::new();
+        RopGetAttachmentTableSuccess {
+            output_handle_index: 9,
+            return_value: RopErrorCode::Success,
+        }
+        .encode(&mut out);
+        assert_eq!(out[0], 0x21);
+        assert_eq!(out[1], 9);
+        assert_eq!(out.len(), 6);
+    }
+
+    #[test]
+    fn rop_open_attachment_roundtrip() {
+        // Body after RopHeader4 = OpenAttachmentFlags(1) · AttachmentID(4 LE).
+        let mut body = Vec::new();
+        body.push(0x00); // OpenAttachmentFlags
+        body.extend_from_slice(&3u32.to_le_bytes()); // AttachmentID = 3
+        let mut cur = Buf::new(&body);
+        let req = RopOpenAttachmentRequest::decode_body(&mut cur, 2, 5).expect("decode");
+        assert_eq!(req.input_handle_index, 2);
+        assert_eq!(req.output_handle_index, 5);
+        assert_eq!(req.open_attachment_flags, 0x00);
+        assert_eq!(req.attachment_id, 3);
+        assert_eq!(cur.remaining(), 0);
+
+        // Response: RopId · OutputHandleIndex · ReturnValue(4).
+        let mut out = Vec::new();
+        RopOpenAttachmentSuccess {
+            output_handle_index: 5,
+            return_value: RopErrorCode::Success,
+        }
+        .encode(&mut out);
+        assert_eq!(out[0], 0x22);
+        assert_eq!(out[1], 5);
+        assert_eq!(out.len(), 6);
+    }
+
+    #[test]
+    fn rop_create_attachment_roundtrip() {
+        // The request is header-only (no body), so the codec only carries the
+        // resolved Input/Output indices; the dispatcher reads them via
+        // RopHeader4::decode_after_ropid. Verify the struct round-trips as a
+        // plain value.
+        let req = RopCreateAttachmentRequest {
+            input_handle_index: 1,
+            output_handle_index: 6,
+        };
+        assert_eq!(req.input_handle_index, 1);
+        assert_eq!(req.output_handle_index, 6);
+
+        // Success response: RopId · OutputHandleIndex · ReturnValue(4)
+        // · AttachmentID(4 LE).
+        let mut out = Vec::new();
+        RopCreateAttachmentSuccess {
+            output_handle_index: 6,
+            return_value: RopErrorCode::NoSupport,
+            attachment_id: 0,
+        }
+        .encode(&mut out);
+        assert_eq!(out[0], 0x23);
+        assert_eq!(out[1], 6);
+        assert_eq!(out.len(), 10);
+    }
+
+    #[test]
+    fn rop_delete_attachment_roundtrip() {
+        // Body after RopId+LogonId = InputHandleIndex · AttachmentID(4 LE).
+        let mut body = Vec::new();
+        body.push(2); // InputHandleIndex
+        body.extend_from_slice(&7u32.to_le_bytes()); // AttachmentID = 7
+        let mut cur = Buf::new(&body);
+        let req = RopDeleteAttachmentRequest::decode_after_ropid(&mut cur).expect("decode");
+        assert_eq!(req.input_handle_index, 2);
+        assert_eq!(req.attachment_id, 7);
+        assert_eq!(cur.remaining(), 0);
+
+        // Response: RopId · InputHandleIndex · ReturnValue(4).
+        let mut out = Vec::new();
+        RopDeleteAttachmentResponse {
+            input_handle_index: 2,
+            return_value: RopErrorCode::NoSupport,
+        }
+        .encode(&mut out);
+        assert_eq!(out[0], 0x24);
+        assert_eq!(out[1], 2);
+        assert_eq!(out.len(), 6);
+    }
+
+    #[test]
+    fn rop_save_changes_attachment_roundtrip() {
+        // Body after RopId+LogonId = ResponseHandleIndex · InputHandleIndex
+        // · SaveFlags(1).
+        let body: Vec<u8> = vec![8, 1, 0x01];
+        let mut cur = Buf::new(&body);
+        let req = RopSaveChangesAttachmentRequest::decode_after_ropid(&mut cur).expect("decode");
+        assert_eq!(req.response_handle_index, 8);
+        assert_eq!(req.input_handle_index, 1);
+        assert_eq!(req.save_flags, 0x01);
+        assert_eq!(cur.remaining(), 0);
+
+        // Response: RopId · ResponseHandleIndex · ReturnValue(4).
+        let mut out = Vec::new();
+        RopSaveChangesAttachmentResponse {
+            response_handle_index: 8,
+            return_value: RopErrorCode::Success,
+        }
+        .encode(&mut out);
+        assert_eq!(out[0], 0x25);
+        assert_eq!(out[1], 8);
+        assert_eq!(out.len(), 6);
+    }
+
+    #[test]
+    fn rop_get_valid_attachments_roundtrip() {
+        // Body after RopId+LogonId = InputHandleIndex.
+        let body: Vec<u8> = vec![3];
+        let mut cur = Buf::new(&body);
+        let req = RopGetValidAttachmentsRequest::decode_after_ropid(&mut cur).expect("decode");
+        assert_eq!(req.input_handle_index, 3);
+        assert_eq!(cur.remaining(), 0);
+
+        // Success response: RopId · InputHandleIndex · ReturnValue(4)
+        // · Count(2 LE) · Array(count×4 LE).
+        let mut out = Vec::new();
+        RopGetValidAttachmentsSuccess {
+            input_handle_index: 3,
+            return_value: RopErrorCode::Success,
+            attachment_ids: vec![0, 1, 2],
+        }
+        .encode(&mut out);
+        assert_eq!(out[0], 0x52);
+        assert_eq!(out[1], 3);
+        let count = u16::from_le_bytes([out[6], out[7]]);
+        assert_eq!(count, 3);
+        // attachment_id[0] = 0, [1] = 1, [2] = 2 (the vec we supplied).
+        assert_eq!(
+            u32::from_le_bytes([out[8], out[9], out[10], out[11]]),
+            0
+        );
+        assert_eq!(
+            u32::from_le_bytes([out[12], out[13], out[14], out[15]]),
+            1
+        );
+        assert_eq!(
+            u32::from_le_bytes([out[16], out[17], out[18], out[19]]),
+            2
+        );
+        assert_eq!(out.len(), 6 + 2 + 3 * 4);
     }
 }
