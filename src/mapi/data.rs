@@ -433,6 +433,99 @@ impl PropertyValue {
         }
     }
 
+    /// Decode a property value in the **row form** (MS-OXCDATA §2.11.2.1
+    /// PropertyValue Structure): `PtypString`/`PtypString8` are NUL-terminated
+    /// with NO length prefix and `PtypBinary` is a 2-byte count prefix + bytes.
+    /// This is the exact inverse of [`Self::encode`] and is the form embedded
+    /// inside `SRestriction` Content/Property arms (MS-OXCDATA §2.12.3) and
+    /// inside FastTransfer propValue elements (MS-OXCFXICS §2.2.4.1). The
+    /// ROP-buffer [`Self::decode`] (2-byte count prefix for strings) is a
+    /// different shape and must NOT be re-used here.
+    ///
+    /// Bounds-checked and fail-closed: a missing terminator, an over-long
+    /// binary count, or an oversized multi-value array is rejected rather
+    /// than driving the caller past the buffer end.
+    pub fn decode_row(cur: &mut Buf<'_>, tag: &PropertyTag) -> Result<Self, DecodeError> {
+        use PropertyType as T;
+        let t = tag.property_type;
+        // Multi-value-instance marker is informational; the underlying MV
+        // payload uses the MV count form.
+        if t.to_u16() & Self::MV_INSTANCE_MARKER != 0 {
+            return Self::skip_multivalue(cur, t);
+        }
+        Ok(match t {
+            T::PTYP_UNSPECIFIED | T::PTYP_NULL => Self::Null,
+            T::PTYP_BOOLEAN => Self::Boolean(cur.take_u8()? != 0),
+            T::PTYP_INTEGER16 => {
+                let raw = cur.take_bytes(2)?;
+                Self::Integer16(i16::from_le_bytes([raw[0], raw[1]]))
+            }
+            T::PTYP_INTEGER32 => {
+                let raw = cur.take_bytes(4)?;
+                Self::Integer32(i32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]]))
+            }
+            T::PTYP_ERROR_CODE => Self::ErrorCode(cur.take_u32_le()?),
+            T::PTYP_INTEGER64 => {
+                let raw = cur.take_bytes(8)?;
+                Self::Integer64(i64::from_le_bytes([
+                    raw[0], raw[1], raw[2], raw[3], raw[4], raw[5], raw[6], raw[7],
+                ]))
+            }
+            T::PTYP_FLOATING64 => Self::Floating64(f64::from_bits(cur.take_u64_le()?)),
+            T::PTYP_FLOATING32 => Self::Floating32(f32::from_bits(cur.take_u32_le()?)),
+            T::PTYP_CURRENCY => {
+                let raw = cur.take_bytes(8)?;
+                Self::Currency(i64::from_le_bytes([
+                    raw[0], raw[1], raw[2], raw[3], raw[4], raw[5], raw[6], raw[7],
+                ]))
+            }
+            T::PTYP_TIME | T::PTYP_FLOATING_TIME => Self::Time(cur.take_u64_le()?),
+            T::PTYP_GUID => {
+                let mut g = [0u8; 16];
+                g.copy_from_slice(cur.take_bytes(16)?);
+                Self::Guid(g)
+            }
+            T::PTYP_STRING8 => {
+                let raw = Self::take_terminated_string8(cur)?;
+                Self::String8(String::from_utf8_lossy(&raw).into_owned())
+            }
+            T::PTYP_STRING => Self::String(Self::take_terminated_utf16(cur)?),
+            T::PTYP_BINARY => {
+                let n = usize::from(cur.take_u16_le()?);
+                Self::Binary(cur.take_bytes(n)?.to_vec())
+            }
+            other => return Self::decode_opaque(cur, other),
+        })
+    }
+
+    /// Read a NUL-terminated UTF-16 (PtypString) value in row form, returning
+    /// the decoded `String` (without the terminating 0x0000).
+    fn take_terminated_utf16(cur: &mut Buf<'_>) -> Result<String, DecodeError> {
+        let mut units = Vec::new();
+        loop {
+            let u = cur.take_u16_le()?;
+            if u == 0 {
+                break;
+            }
+            units.push(u);
+        }
+        Ok(String::from_utf16_lossy(&units))
+    }
+
+    /// Read a NUL-terminated String8 value in row form, returning the raw
+    /// bytes (without the terminating 0x00).
+    fn take_terminated_string8(cur: &mut Buf<'_>) -> Result<Vec<u8>, DecodeError> {
+        let mut bytes = Vec::new();
+        loop {
+            let b = cur.take_u8()?;
+            if b == 0 {
+                break;
+            }
+            bytes.push(b);
+        }
+        Ok(bytes)
+    }
+
     /// ROP-buffer encoding (MS-OXCDATA section 2.11.4): the per-type bytes in
     /// the shape used inside `RopSetProperties`/`RopDeleteProperties`/
     /// `RopGetPropertiesSpecific` payloads. The difference from the row

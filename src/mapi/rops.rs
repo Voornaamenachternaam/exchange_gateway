@@ -2286,6 +2286,694 @@ impl RopCommitStreamResponse {
     }
 }
 
+
+// ---- Table navigation ROPs (§2.2.5.x and §2.2.7.x) --------------------------
+//
+// These ROPs drive the Table handle's cursor / restriction / sort order /
+// bookmarks that Outlook relies on for scroll, virtualisation, and filtering
+// of contents and hierarchy tables. All operate over the in-session Table
+// handle populated by RopGet{Hierarchy,Contents}Table; none need a backend
+// round-trip beyond the rows already materialised when the table was opened.
+//
+// The request bodies follow the "body only" convention used elsewhere: the
+// dispatcher consumes LogonId + InputHandleIndex (+ OutputHandleIndex for
+// the bookmark-producing ROPs) before calling `*::decode`, which reads the
+// remaining fields.
+
+/// `RopRestrict` request (0x14, MS-OXCROPS §2.2.5.3.1). Body after
+/// LogonId + InputHandleIndex: `RestrictFlags(1) · RestrictionData` (an
+/// `SRestriction` tree). `RestrictFlags` bit 0x01 = `PRIOR_RESTRICTION`
+/// (combine with the prior restriction via AND).
+#[derive(Debug, Clone)]
+pub struct RopRestrictRequest {
+    pub input_handle_index: u8,
+    pub restrict_flags: u8,
+    pub restriction: crate::mapi::restrict::SRestriction,
+}
+
+impl RopRestrictRequest {
+    pub fn decode(cur: &mut Buf<'_>) -> Result<Self, DecodeError> {
+        let restrict_flags = cur.take_u8()?;
+        let restriction = crate::mapi::restrict::SRestriction::decode(cur)?;
+        Ok(Self {
+            input_handle_index: 0,
+            restrict_flags,
+            restriction,
+        })
+    }
+}
+
+/// `RopRestrict` success response: `RopId · InputHandleIndex · ReturnValue(4)
+/// · TableStatus(1)`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RopRestrictResponse {
+    pub input_handle_index: u8,
+    pub return_value: RopErrorCode,
+    pub table_status: u8,
+}
+
+impl RopRestrictResponse {
+    pub fn encode(&self, out: &mut Vec<u8>) {
+        out.push(RopId::ROP_RESTRICT.to_u8());
+        out.push(self.input_handle_index);
+        out.extend_from_slice(&self.return_value.to_u32().to_le_bytes());
+        out.push(self.table_status);
+    }
+}
+
+/// `RopSortTable` request (0x13, MS-OXCROPS §2.2.5.2.1). Body after LogonId +
+/// InputHandleIndex: `SortFlags(1) · SortOrder`. `SortFlags` bit 0x01 =
+/// `SORT_FLAG_AS_FOLDER`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RopSortTableRequest {
+    pub input_handle_index: u8,
+    pub sort_flags: u8,
+    pub sort_orders: Vec<SortOrder>,
+}
+
+impl RopSortTableRequest {
+    pub fn decode(cur: &mut Buf<'_>) -> Result<Self, DecodeError> {
+        let sort_flags = cur.take_u8()?;
+        let count = usize::from(cur.take_u16_le()?);
+        let mut sort_orders = Vec::with_capacity(count.min(64));
+        for _ in 0..count {
+            sort_orders.push(SortOrder::decode(cur)?);
+        }
+        Ok(Self {
+            input_handle_index: 0,
+            sort_flags,
+            sort_orders,
+        })
+    }
+}
+
+/// `RopSortTable` success response: `RopId · InputHandleIndex · ReturnValue(4)
+/// · TableStatus(1)`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RopSortTableResponse {
+    pub input_handle_index: u8,
+    pub return_value: RopErrorCode,
+    pub table_status: u8,
+}
+
+impl RopSortTableResponse {
+    pub fn encode(&self, out: &mut Vec<u8>) {
+        out.push(RopId::ROP_SORT_TABLE.to_u8());
+        out.push(self.input_handle_index);
+        out.extend_from_slice(&self.return_value.to_u32().to_le_bytes());
+        out.push(self.table_status);
+    }
+}
+
+/// `RopSeekRow` request (0x18, MS-OXCROPS §2.2.7.2.1). Body after LogonId +
+/// InputHandleIndex: `SeekFlags(1) · RowCount(4 LE signed)`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RopSeekRowRequest {
+    pub input_handle_index: u8,
+    pub seek_flags: u8,
+    pub row_count: i32,
+}
+
+impl RopSeekRowRequest {
+    pub fn decode(cur: &mut Buf<'_>) -> Result<Self, DecodeError> {
+        let seek_flags = cur.take_u8()?;
+        let raw = cur.take_bytes(4)?;
+        let row_count = i32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]]);
+        Ok(Self {
+            input_handle_index: 0,
+            seek_flags,
+            row_count,
+        })
+    }
+}
+
+/// `RopSeekRow` success response (§2.2.7.2.2):
+///   `RopId · InputHandleIndex · ReturnValue(4) · HasSoughtLess(1)` — note
+///   `RowsSought` is omitted because the gateway clamps to the table bounds
+///   and the client derives the new position from `QueryPosition`.
+///   `SeekFlags` bit 0x01 = `SEEK_ROW_FROM_BEGINNING`, 0x02 has no
+///   per-response incidence; the loader treats the table cursor as
+///   absolute already, so the member is explained when it appears.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RopSeekRowResponse {
+    pub input_handle_index: u8,
+    pub return_value: RopErrorCode,
+    pub has_sought_less: u8,
+}
+
+impl RopSeekRowResponse {
+    pub fn encode(&self, out: &mut Vec<u8>) {
+        out.push(RopId::ROP_SEEK_ROW.to_u8());
+        out.push(self.input_handle_index);
+        out.extend_from_slice(&self.return_value.to_u32().to_le_bytes());
+        out.push(self.has_sought_less);
+    }
+}
+
+/// `RopSeekRowBookmark` request (0x19, §2.2.7.3.1). Body after LogonId +
+/// InputHandleIndex: `SeekFlags(1) · Bookmark(4 LE) · RowCount(4 LE signed)`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RopSeekRowBookmarkRequest {
+    pub input_handle_index: u8,
+    pub seek_flags: u8,
+    pub bookmark: u32,
+    pub row_count: i32,
+}
+
+impl RopSeekRowBookmarkRequest {
+    pub fn decode(cur: &mut Buf<'_>) -> Result<Self, DecodeError> {
+        let seek_flags = cur.take_u8()?;
+        let bookmark = cur.take_u32_le()?;
+        let raw = cur.take_bytes(4)?;
+        let row_count = i32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]]);
+        Ok(Self {
+            input_handle_index: 0,
+            seek_flags,
+            bookmark,
+            row_count,
+        })
+    }
+}
+
+/// `RopSeekRowBookmark` success response (§2.2.7.3.2):
+///   `RopId · InputHandleIndex · ReturnValue(4) · RowsSought(4 LE) ·
+///   HasSoughtLess(1)`. The true `RowsSought` count is echoed so the client
+///   can detect clamped seeks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RopSeekRowBookmarkResponse {
+    pub input_handle_index: u8,
+    pub return_value: RopErrorCode,
+    pub rows_sought: i32,
+    pub has_sought_less: u8,
+}
+
+impl RopSeekRowBookmarkResponse {
+    pub fn encode(&self, out: &mut Vec<u8>) {
+        out.push(RopId::ROP_SEEK_ROW_BOOKMARK.to_u8());
+        out.push(self.input_handle_index);
+        out.extend_from_slice(&self.return_value.to_u32().to_le_bytes());
+        out.extend_from_slice(&self.rows_sought.to_le_bytes());
+        out.push(self.has_sought_less);
+    }
+}
+
+/// `RopSeekRowFractional` request (0x1A, §2.2.7.4.1). Body after LogonId +
+/// InputHandleIndex: `Numerator(4 LE) · Denominator(4 LE)`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RopSeekRowFractionalRequest {
+    pub input_handle_index: u8,
+    pub numerator: u32,
+    pub denominator: u32,
+}
+
+impl RopSeekRowFractionalRequest {
+    pub fn decode(cur: &mut Buf<'_>) -> Result<Self, DecodeError> {
+        let numerator = cur.take_u32_le()?;
+        let denominator = cur.take_u32_le()?;
+        Ok(Self {
+            input_handle_index: 0,
+            numerator,
+            denominator,
+        })
+    }
+}
+
+/// `RopSeekRowFractional` success response (§2.2.7.4.2):
+///   `RopId · InputHandleIndex · ReturnValue(4)`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RopSeekRowFractionalResponse {
+    pub input_handle_index: u8,
+    pub return_value: RopErrorCode,
+}
+
+impl RopSeekRowFractionalResponse {
+    pub fn encode(&self, out: &mut Vec<u8>) {
+        out.push(RopId::ROP_SEEK_ROW_FRACTIONAL.to_u8());
+        out.push(self.input_handle_index);
+        out.extend_from_slice(&self.return_value.to_u32().to_le_bytes());
+    }
+}
+
+/// `RopQueryPosition` request (0x17, §2.2.7.1.1). Body: none (header only).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RopQueryPositionRequest {
+    pub input_handle_index: u8,
+}
+
+impl RopQueryPositionRequest {
+    pub fn decode(_cur: &mut Buf<'_>) -> Result<Self, DecodeError> {
+        Ok(Self {
+            input_handle_index: 0,
+        })
+    }
+}
+
+/// `RopQueryPosition` success response (§2.2.7.1.2):
+///   `RopId · InputHandleIndex · ReturnValue(4) · Numerator(4 LE) ·
+///   Denominator(4 LE)`. Numerator/Denominator approximate the fractional
+///   position; the gateway echoes the live cursor over the row count.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RopQueryPositionResponse {
+    pub input_handle_index: u8,
+    pub return_value: RopErrorCode,
+    pub numerator: u32,
+    pub denominator: u32,
+}
+
+impl RopQueryPositionResponse {
+    pub fn encode(&self, out: &mut Vec<u8>) {
+        out.push(RopId::ROP_QUERY_POSITION.to_u8());
+        out.push(self.input_handle_index);
+        out.extend_from_slice(&self.return_value.to_u32().to_le_bytes());
+        out.extend_from_slice(&self.numerator.to_le_bytes());
+        out.extend_from_slice(&self.denominator.to_le_bytes());
+    }
+}
+
+/// `RopCreateBookmark` request (0x1B, §2.2.7.5.1) uses the 4-byte header
+/// (it produces an output handle). After the dispatcher consumes
+/// `RopId · LogonId · InputHandleIndex · OutputHandleIndex` there is no body.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RopCreateBookmarkRequest {
+    pub input_handle_index: u8,
+}
+
+impl RopCreateBookmarkRequest {
+    pub fn decode(_cur: &mut Buf<'_>) -> Result<Self, DecodeError> {
+        Ok(Self {
+            input_handle_index: 0,
+        })
+    }
+}
+
+/// `RopCreateBookmark` success response (§2.2.7.5.2):
+///   `RopId · OutputHandleIndex · ReturnValue(4) · Bookmark(8 LE)`.
+///   The 8-byte bookmark carries the absolute row index the bookmark pins.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RopCreateBookmarkResponse {
+    pub output_handle_index: u8,
+    pub return_value: RopErrorCode,
+    pub bookmark: u64,
+}
+
+impl RopCreateBookmarkResponse {
+    pub fn encode(&self, out: &mut Vec<u8>) {
+        out.push(RopId::ROP_CREATE_BOOKMARK.to_u8());
+        out.push(self.output_handle_index);
+        out.extend_from_slice(&self.return_value.to_u32().to_le_bytes());
+        out.extend_from_slice(&self.bookmark.to_le_bytes());
+    }
+}
+
+/// `RopFreeBookmark` request (0x89, §2.2.7.6.1). Body after LogonId +
+/// InputHandleIndex: `Bookmark(8 LE)`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RopFreeBookmarkRequest {
+    pub input_handle_index: u8,
+    pub bookmark: u64,
+}
+
+impl RopFreeBookmarkRequest {
+    pub fn decode(cur: &mut Buf<'_>) -> Result<Self, DecodeError> {
+        let raw = cur.take_bytes(8)?;
+        let bookmark = u64::from_le_bytes([
+            raw[0], raw[1], raw[2], raw[3], raw[4], raw[5], raw[6], raw[7],
+        ]);
+        Ok(Self {
+            input_handle_index: 0,
+            bookmark,
+        })
+    }
+}
+
+/// `RopFreeBookmark` success response (§2.2.7.6.2):
+///   `RopId · InputHandleIndex · ReturnValue(4)`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RopFreeBookmarkResponse {
+    pub input_handle_index: u8,
+    pub return_value: RopErrorCode,
+}
+
+impl RopFreeBookmarkResponse {
+    pub fn encode(&self, out: &mut Vec<u8>) {
+        out.push(RopId::ROP_FREE_BOOKMARK.to_u8());
+        out.push(self.input_handle_index);
+        out.extend_from_slice(&self.return_value.to_u32().to_le_bytes());
+    }
+}
+
+/// `RopResetTable` request (0x81, §2.2.5.7.1). Body: none (header only).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RopResetTableRequest {
+    pub input_handle_index: u8,
+}
+
+impl RopResetTableRequest {
+    pub fn decode(_cur: &mut Buf<'_>) -> Result<Self, DecodeError> {
+        Ok(Self {
+            input_handle_index: 0,
+        })
+    }
+}
+
+/// `RopResetTable` success response (§2.2.5.7.2):
+///   `RopId · InputHandleIndex · ReturnValue(4)`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RopResetTableResponse {
+    pub input_handle_index: u8,
+    pub return_value: RopErrorCode,
+}
+
+impl RopResetTableResponse {
+    pub fn encode(&self, out: &mut Vec<u8>) {
+        out.push(RopId::ROP_RESET_TABLE.to_u8());
+        out.push(self.input_handle_index);
+        out.extend_from_slice(&self.return_value.to_u32().to_le_bytes());
+    }
+}
+
+/// A single `SortOrderItem` (MS-OXCDATA §2.12.1). Per the USPSerializer
+/// `sortItem`: a `SortFlags(1)` byte (the low nibble is the ascending/
+/// descending flag, 0x01 = descending) followed by a `PropertyTag(4)`.
+/// The high nibble may carry additional flags (case-sensitivity, collating
+/// sequence); we preserve the byte verbatim and lift it into the comparator.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SortOrder {
+    pub sort_flags: u8,
+    pub tag: PropertyTag,
+}
+
+impl SortOrder {
+    pub fn decode(cur: &mut Buf<'_>) -> Result<Self, DecodeError> {
+        let sort_flags = cur.take_u8()?;
+        let tag = PropertyTag::decode(cur)?;
+        Ok(Self { sort_flags, tag })
+    }
+}
+
+// ---- FastTransfer / ICS sync ROPs (MS-OXCFXICS) ---------------------------
+//
+// The FastTransfer "source" ROPs (0x4B/0x4C/0x4D/0x69) hand a connected
+// client a serialized ICS stream describing a folder's children (or a single
+// message / a property set). The client polls `RopFastTransferSourceGetBuffer`
+// (0x4E) for successive ≤16 KiB chunks until the source signals completion
+// (a zero-length buffer OR a terminal `TransferStatus = Done`). The
+// "destination" family (0x53/0x54) plus the `RopSynchronization*` upload
+// ROPs (0x72–0x77) is how Outlook *pushes* local changes back to the server;
+// the gateway accepts the upload stream onto a FastTransferDestination,
+// decodes it via the fxics Tokenizer, and applies the resulting
+// message/hierarchy/read-state deltas to JMAP.
+//
+// All codecs follow the "body only" convention: the dispatcher consumes
+// LogonId + InputHandleIndex (+ OutputHandleIndex where the ROP yields a
+// handle) before calling `*::decode`.
+
+/// `RopFastTransferSourceCopyMessages` request (0x4B, MS-OXCFXICS §3.1.1.1).
+/// Body after LogonId + InputHandleIndex + OutputHandleIndex:
+/// `Flags(1) · MessageIdCount(2 LE) · MessageIds (MessageIdCount × 8-byte
+/// long-term ids)`. The gateway ignores the per-message long-term ids (it
+/// serves the folder's contents as an incremental sync stream keyed by the
+/// folder handle) and uses the flags only to decide full vs. partial copy.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RopFastTransferSourceCopyMessagesRequest {
+    pub input_handle_index: u8,
+    pub output_handle_index: u8,
+    pub flags: u8,
+    pub message_ids: Vec<u64>,
+}
+
+impl RopFastTransferSourceCopyMessagesRequest {
+    pub fn decode(cur: &mut Buf<'_>) -> Result<Self, DecodeError> {
+        let flags = cur.take_u8()?;
+        let count = usize::from(cur.take_u16_le()?);
+        let mut message_ids = Vec::with_capacity(count.min(2048));
+        for _ in 0..count {
+            message_ids.push(cur.take_u64_le()?);
+        }
+        Ok(Self {
+            input_handle_index: 0,
+            output_handle_index: 0,
+            flags,
+            message_ids,
+        })
+    }
+}
+
+/// `RopFastTransferSourceCopyFolder` request (0x4C, MS-OXCFXICS §3.1.1.2).
+/// Body after the 4-byte header: `Flags(1)`. The source copies the whole
+/// subfolder (messages + subfolders) as a hierarchy+contents ICS stream.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RopFastTransferSourceCopyFolderRequest {
+    pub input_handle_index: u8,
+    pub output_handle_index: u8,
+    pub flags: u8,
+}
+
+impl RopFastTransferSourceCopyFolderRequest {
+    pub fn decode(cur: &mut Buf<'_>) -> Result<Self, DecodeError> {
+        let flags = cur.take_u8()?;
+        Ok(Self {
+            input_handle_index: 0,
+            output_handle_index: 0,
+            flags,
+        })
+    }
+}
+
+/// `RopFastTransferSourceCopyTo` request (0x4D, MS-OXCFXICS §3.1.1.3). Body
+/// after the 4-byte header: `Flags(1) · CopyToFlags(1) · PropertyTagCount(2
+/// LE) · PropertyTags[count]`. The client lists the property *groups* to
+/// copy; the gateway serves a property-only ICS stream built from the cached
+/// message object.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RopFastTransferSourceCopyToRequest {
+    pub input_handle_index: u8,
+    pub output_handle_index: u8,
+    pub flags: u8,
+    pub copy_to_flags: u8,
+    pub property_tags: Vec<PropertyTag>,
+}
+
+impl RopFastTransferSourceCopyToRequest {
+    pub fn decode(cur: &mut Buf<'_>) -> Result<Self, DecodeError> {
+        let flags = cur.take_u8()?;
+        let copy_to_flags = cur.take_u8()?;
+        let count = usize::from(cur.take_u16_le()?);
+        let mut property_tags = Vec::with_capacity(count.min(1024));
+        for _ in 0..count {
+            property_tags.push(PropertyTag::decode(cur)?);
+        }
+        Ok(Self {
+            input_handle_index: 0,
+            output_handle_index: 0,
+            flags,
+            copy_to_flags,
+            property_tags,
+        })
+    }
+}
+
+/// `RopFastTransferSourceCopyProperties` request (0x69). Body after the
+/// 4-byte header: `Flags(1) · PropertyTagCount(2 LE) · PropertyTags[count]`.
+/// A property-only transfer that serialises just the listed tags.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RopFastTransferSourceCopyPropertiesRequest {
+    pub input_handle_index: u8,
+    pub output_handle_index: u8,
+    pub flags: u8,
+    pub property_tags: Vec<PropertyTag>,
+}
+
+impl RopFastTransferSourceCopyPropertiesRequest {
+    pub fn decode(cur: &mut Buf<'_>) -> Result<Self, DecodeError> {
+        let flags = cur.take_u8()?;
+        let count = usize::from(cur.take_u16_le()?);
+        let mut property_tags = Vec::with_capacity(count.min(1024));
+        for _ in 0..count {
+            property_tags.push(PropertyTag::decode(cur)?);
+        }
+        Ok(Self {
+            input_handle_index: 0,
+            output_handle_index: 0,
+            flags,
+            property_tags,
+        })
+    }
+}
+
+/// `RopFastTransferSourceGetBuffer` request (0x4E, MS-OXCFXICS §3.1.1.5).
+/// Body after LogonId + InputHandleIndex: `BufferSize(2 LE) · TransferFlags
+/// (1)`. The client polls with the maximum chunk size it can accept.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RopFastTransferSourceGetBufferRequest {
+    pub input_handle_index: u8,
+    pub buffer_size: u16,
+    pub transfer_flags: u8,
+}
+
+impl RopFastTransferSourceGetBufferRequest {
+    pub fn decode(cur: &mut Buf<'_>) -> Result<Self, DecodeError> {
+        let buffer_size = cur.take_u16_le()?;
+        let transfer_flags = cur.take_u8()?;
+        Ok(Self {
+            input_handle_index: 0,
+            buffer_size,
+            transfer_flags,
+        })
+    }
+}
+
+/// `RopFastTransferSourceGetBuffer` success response (§3.1.1.5.2):
+///   `RopId · InputHandleIndex · ReturnValue(4) · TransferStatus(1) ·
+///   TerminatorLow(1) · TerminatorHigh(1) · Padding(1) · DataSize(2 LE) ·
+///   Data(DataSize)`. `TransferStatus` is 0=InProgress, 1=Done, 2=Error.
+/// `DataSize` is clamped to the available remaining bytes and the requested
+/// `buffer_size`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RopFastTransferSourceGetBufferSuccess {
+    pub input_handle_index: u8,
+    pub return_value: RopErrorCode,
+    pub transfer_status: u8,
+    pub terminator_low: u8,
+    pub terminator_high: u8,
+    pub data_size: u16,
+    pub data: Vec<u8>,
+}
+
+impl RopFastTransferSourceGetBufferSuccess {
+    pub fn encode(&self, out: &mut Vec<u8>) {
+        out.push(RopId::ROP_FAST_TRANSFER_SOURCE_GET_BUFFER.to_u8());
+        out.push(self.input_handle_index);
+        out.extend_from_slice(&self.return_value.to_u32().to_le_bytes());
+        out.push(self.transfer_status);
+        out.push(self.terminator_low);
+        out.push(self.terminator_high);
+        out.push(0u8); // padding
+        out.extend_from_slice(&self.data_size.to_le_bytes());
+        out.extend_from_slice(&self.data);
+    }
+}
+
+/// `RopFastTransferDestinationConfigure` request (0x53, MS-OXCFXICS
+/// §3.1.2.1). Body after the 4-byte header: `Source_FMT(1) · SyncFlags(1)`.
+/// The gateway accepts the configure; the upload stream is fed by
+/// `RopFastTransferDestinationPutBuffer`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RopFastTransferDestinationConfigureRequest {
+    pub input_handle_index: u8,
+    pub output_handle_index: u8,
+    pub source_fmt: u8,
+    pub sync_flags: u8,
+}
+
+impl RopFastTransferDestinationConfigureRequest {
+    pub fn decode_after_ropid(cur: &mut Buf<'_>) -> Result<Self, DecodeError> {
+        let source_fmt = cur.take_u8()?;
+        let sync_flags = cur.take_u8()?;
+        Ok(Self { input_handle_index: 0, output_handle_index: 0, source_fmt, sync_flags })
+    }
+}
+
+/// `RopFastTransferDestinationPutBuffer` request (0x54, §3.1.2.2). Body after
+/// LogonId + InputHandleIndex: `DataSize(2 LE) · Data(DataSize)`. The
+/// destination accumulates the bytes until the client signals completion (a
+/// zero-length PutBuffer following a terminal marker), at which point the
+/// gateway tokenises and applies the deltas.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RopFastTransferDestinationPutBufferRequest {
+    pub input_handle_index: u8,
+    pub data: Vec<u8>,
+}
+
+impl RopFastTransferDestinationPutBufferRequest {
+    pub fn decode_after_ropid(cur: &mut Buf<'_>) -> Result<Self, DecodeError> {
+        let size = usize::from(cur.take_u16_le()?);
+        let data = cur.take_bytes(size)?.to_vec();
+        Ok(Self { input_handle_index: 0, data })
+    }
+}
+
+/// `RopFastTransferDestinationPutBuffer` success response (§3.1.2.2.2):
+///   `RopId · InputHandleIndex · ReturnValue(4) · TransferStatus(1) ·
+///   DataRemaining(4 LE)`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RopFastTransferDestinationPutBufferResponse {
+    pub input_handle_index: u8,
+    pub return_value: RopErrorCode,
+    pub transfer_status: u8,
+    pub data_remaining: u32,
+}
+
+impl RopFastTransferDestinationPutBufferResponse {
+    pub fn encode(&self, out: &mut Vec<u8>) {
+        out.push(RopId::ROP_FAST_TRANSFER_DESTINATION_PUT_BUFFER.to_u8());
+        out.push(self.input_handle_index);
+        out.extend_from_slice(&self.return_value.to_u32().to_le_bytes());
+        out.push(self.transfer_status);
+        out.extend_from_slice(&self.data_remaining.to_le_bytes());
+    }
+}
+
+/// Generic success envelope shared by the FastTransfer source ROPs that only
+/// need to acknowledge handle installation: `RopId · OutputHandleIndex ·
+/// ReturnValue(4)`. Used by CopyMessages / CopyFolder / CopyTo /
+/// CopyProperties on success.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RopFastTransferSourceOpenResponse {
+    pub output_handle_index: u8,
+    pub return_value: RopErrorCode,
+}
+
+impl RopFastTransferSourceOpenResponse {
+    pub fn encode(&self, out: &mut Vec<u8>, rop_id: RopId) {
+        out.push(rop_id.to_u8());
+        out.push(self.output_handle_index);
+        out.extend_from_slice(&self.return_value.to_u32().to_le_bytes());
+    }
+}
+
+/// `RopSynchronizationConfigure` request (0x70, §3.3.1.1). Body after the
+/// 4-byte header: `SyncFlags(1) · SyncType(1) · SynchronizationStateLength(2
+/// LE) · SynchronizationState(...)`. The gateway accepts the configured
+/// upload/download context; the state blob (Outlook's last sync watermark)
+/// is carried on the destination/source handle for replay.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RopSynchronizationConfigureRequest {
+    pub input_handle_index: u8,
+    pub output_handle_index: u8,
+    pub sync_flags: u8,
+    pub sync_type: u8,
+    pub sync_state: Vec<u8>,
+}
+
+impl RopSynchronizationConfigureRequest {
+    pub fn decode_after_ropid(cur: &mut Buf<'_>) -> Result<Self, DecodeError> {
+        let sync_flags = cur.take_u8()?;
+        let sync_type = cur.take_u8()?;
+        let len = usize::from(cur.take_u16_le()?);
+        let sync_state = cur.take_bytes(len)?.to_vec();
+        Ok(Self { input_handle_index: 0, output_handle_index: 0, sync_flags, sync_type, sync_state })
+    }
+}
+
+/// Shared success envelope for the Synchronization upload ROPs (Import*
+/// / UploadStateStream*) and SynchronizationConfigure:
+///   `RopId · InputHandleIndex · ReturnValue(4)`. These are server-side
+/// applies that the client only needs acknowledged.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RopSynchronizationAckResponse {
+    pub input_handle_index: u8,
+    pub return_value: RopErrorCode,
+}
+
+impl RopSynchronizationAckResponse {
+    pub fn encode(&self, out: &mut Vec<u8>, rop_id: RopId) {
+        out.push(rop_id.to_u8());
+        out.push(self.input_handle_index);
+        out.extend_from_slice(&self.return_value.to_u32().to_le_bytes());
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3196,5 +3884,347 @@ mod tests {
             2
         );
         assert_eq!(out.len(), 6 + 2 + 3 * 4);
+    }
+
+    // ---- table-navigation ROP round-trips ---------------------------------
+
+    #[test]
+    fn rop_query_position_roundtrip() {
+        // Request body: empty (header only).
+        let body: Vec<u8> = vec![];
+        let mut cur = Buf::new(&body);
+        let _ = RopQueryPositionRequest::decode(&mut cur).expect("decode");
+        assert_eq!(cur.remaining(), 0);
+
+        // Response: RopId(0x17) · InputHandleIndex · ReturnValue(4) · Num(4) · Den(4).
+        let mut out = Vec::new();
+        RopQueryPositionResponse {
+            input_handle_index: 2,
+            return_value: RopErrorCode::Success,
+            numerator: 3,
+            denominator: 10,
+        }
+        .encode(&mut out);
+        assert_eq!(out[0], 0x17);
+        assert_eq!(out[1], 2);
+        assert_eq!(u32::from_le_bytes([out[6], out[7], out[8], out[9]]), 3);
+        assert_eq!(u32::from_le_bytes([out[10], out[11], out[12], out[13]]), 10);
+        assert_eq!(out.len(), 2 + 4 + 4 + 4);
+    }
+
+    #[test]
+    fn rop_seek_row_decode() {
+        // SeekFlags(1) + RowCount(4 LE signed). Forward-by-3.
+        let body: Vec<u8> = vec![0x00, 3, 0, 0, 0];
+        let mut cur = Buf::new(&body);
+        let req = RopSeekRowRequest::decode(&mut cur).expect("decode");
+        assert_eq!(req.seek_flags, 0);
+        assert_eq!(req.row_count, 3);
+        assert_eq!(cur.remaining(), 0);
+
+        // Negative (seek-back 2) with FROM_BEGINNING flag (0x01).
+        let body2: Vec<u8> = vec![0x01, 0xFE, 0xFF, 0xFF, 0xFF];
+        let mut cur2 = Buf::new(&body2);
+        let req2 = RopSeekRowRequest::decode(&mut cur2).expect("decode neg");
+        assert_eq!(req2.seek_flags, 0x01);
+        assert_eq!(req2.row_count, -2);
+    }
+
+    #[test]
+    fn rop_seek_row_fractional_roundtrip() {
+        let body: Vec<u8> = vec![1, 0, 0, 0, 4, 0, 0, 0];
+        let mut cur = Buf::new(&body);
+        let req = RopSeekRowFractionalRequest::decode(&mut cur).expect("decode");
+        assert_eq!(req.numerator, 1);
+        assert_eq!(req.denominator, 4);
+        let mut out = Vec::new();
+        RopSeekRowFractionalResponse {
+            input_handle_index: 5,
+            return_value: RopErrorCode::Success,
+        }
+        .encode(&mut out);
+        assert_eq!(out[0], 0x1A);
+        assert_eq!(out[1], 5);
+        assert_eq!(out.len(), 2 + 4);
+    }
+
+    #[test]
+    fn rop_seek_row_bookmark_decode() {
+        // SeekFlags(1) + Bookmark(4 LE) + RowCount(4 LE signed) = forward 1 from bookmark 7.
+        let body: Vec<u8> = vec![0x00, 7, 0, 0, 0, 1, 0, 0, 0];
+        let mut cur = Buf::new(&body);
+        let req = RopSeekRowBookmarkRequest::decode(&mut cur).expect("decode");
+        assert_eq!(req.seek_flags, 0);
+        assert_eq!(req.bookmark, 7);
+        assert_eq!(req.row_count, 1);
+
+        let mut out = Vec::new();
+        RopSeekRowBookmarkResponse {
+            input_handle_index: 1,
+            return_value: RopErrorCode::Success,
+            rows_sought: 1,
+            has_sought_less: 0,
+        }
+        .encode(&mut out);
+        assert_eq!(out[0], 0x19);
+        assert_eq!(out.len(), 2 + 4 + 4 + 1);
+    }
+
+    #[test]
+    fn rop_create_bookmark_roundtrip() {
+        // Request body: empty (header only; the 4-byte dispatcher header includes OutputHandleIndex).
+        let body: Vec<u8> = vec![];
+        let mut cur = Buf::new(&body);
+        let _ = RopCreateBookmarkRequest::decode(&mut cur).expect("decode");
+        assert_eq!(cur.remaining(), 0);
+
+        let mut out = Vec::new();
+        RopCreateBookmarkResponse {
+            output_handle_index: 9,
+            return_value: RopErrorCode::Success,
+            bookmark: 0x0000000200000003,
+        }
+        .encode(&mut out);
+        assert_eq!(out[0], 0x1B);
+        assert_eq!(out[1], 9);
+        assert_eq!(
+            u64::from_le_bytes([
+                out[6], out[7], out[8], out[9], out[10], out[11], out[12], out[13]
+            ]),
+            0x0000000200000003
+        );
+        assert_eq!(out.len(), 2 + 4 + 8);
+    }
+
+    #[test]
+    fn rop_free_bookmark_roundtrip() {
+        let bm: u64 = 0x0000000200000003;
+        let mut body = Vec::new();
+        body.extend_from_slice(&bm.to_le_bytes());
+        let mut cur = Buf::new(&body);
+        let req = RopFreeBookmarkRequest::decode(&mut cur).expect("decode");
+        assert_eq!(req.bookmark, bm);
+        assert_eq!(cur.remaining(), 0);
+
+        let mut out = Vec::new();
+        RopFreeBookmarkResponse {
+            input_handle_index: 4,
+            return_value: RopErrorCode::Success,
+        }
+        .encode(&mut out);
+        assert_eq!(out[0], 0x89);
+        assert_eq!(out[1], 4);
+        assert_eq!(out.len(), 2 + 4);
+    }
+
+    #[test]
+    fn rop_reset_table_roundtrip() {
+        // Request body: empty.
+        let body: Vec<u8> = vec![];
+        let mut cur = Buf::new(&body);
+        let _ = RopResetTableRequest::decode(&mut cur).expect("decode");
+        assert_eq!(cur.remaining(), 0);
+
+        let mut out = Vec::new();
+        RopResetTableResponse {
+            input_handle_index: 7,
+            return_value: RopErrorCode::Success,
+        }
+        .encode(&mut out);
+        assert_eq!(out[0], 0x81);
+        assert_eq!(out[1], 7);
+        assert_eq!(out.len(), 2 + 4);
+    }
+
+    #[test]
+    fn rop_sort_table_decode() {
+        // SortFlags(1) + SortCount(2 LE) + SortOrders[] (each SortFlags(1)+Tag(4)).
+        let tag = PropertyTag::new(crate::mapi::data::PropertyType::PTYP_STRING, 0x0037);
+        let mut tag_bytes = Vec::new();
+        tag.encode(&mut tag_bytes);
+        let mut body = Vec::new();
+        body.push(0x00); // sort flags
+        body.extend_from_slice(&1u16.to_le_bytes()); // 1 sort order
+        body.push(0x01); // descending
+        body.extend_from_slice(&tag_bytes);
+        let mut cur = Buf::new(&body);
+        let req = RopSortTableRequest::decode(&mut cur).expect("decode");
+        assert_eq!(req.sort_flags, 0);
+        assert_eq!(req.sort_orders.len(), 1);
+        assert_eq!(req.sort_orders[0].sort_flags, 0x01);
+        assert_eq!(req.sort_orders[0].tag, tag);
+        assert_eq!(cur.remaining(), 0);
+    }
+
+    #[test]
+    fn rop_restrict_decode_property_restriction() {
+        // RestrictFlags(1) + SRestriction: a Property restriction (type 4)
+        // RelOp(1)=EQ + Tag(4) + PropertyValue (Integer32: type word + i32).
+        let tag = PropertyTag::new(crate::mapi::data::PropertyType::PTYP_INTEGER32, 0x0017);
+        let mut tag_bytes = Vec::new();
+        tag.encode(&mut tag_bytes);
+        let mut body = Vec::new();
+        body.push(0x00); // restrict flags
+        body.push(crate::mapi::restrict::RestrictionType::Property.to_u8());
+        body.push(2); // RelOp EQ
+        body.extend_from_slice(&tag_bytes);
+        // PropertyValue in row form: decode_row reads the value per the TAG's
+        // property type (Integer32 => 4 LE bytes, NO type-word prefix).
+        body.extend_from_slice(&42i32.to_le_bytes());
+        let mut cur = Buf::new(&body);
+        let req = RopRestrictRequest::decode(&mut cur).expect("decode");
+        assert_eq!(req.restrict_flags, 0);
+        let crate::mapi::restrict::SRestriction::Property { relop, tag: rtag, .. } = &req.restriction else {
+            panic!("expected Property restriction, got {:?}", req.restriction);
+        };
+        assert_eq!(*relop, crate::mapi::restrict::RelOp::EQ);
+        assert_eq!(*rtag, tag);
+        assert_eq!(cur.remaining(), 0);
+    }
+
+    // ---- FastTransfer / Synchronization codec round-trips ------------------
+
+    #[test]
+    fn rop_fast_transfer_source_get_buffer_roundtrip() {
+        // Request: BufferSize(2 LE) + TransferFlags(1).
+        let body: Vec<u8> = vec![0x00, 0x10, 0x00];
+        let mut cur = Buf::new(&body);
+        let req = RopFastTransferSourceGetBufferRequest::decode(&mut cur).expect("decode");
+        assert_eq!(req.buffer_size, 0x1000);
+        assert_eq!(req.transfer_flags, 0);
+        assert_eq!(cur.remaining(), 0);
+
+        // Response: RopId(0x4E) · InHandle · RV(4) · Status(1) · TermLo(1)
+        // · TermHi(1) · Pad(1) · DataSize(2 LE) · Data.
+        let mut out = Vec::new();
+        RopFastTransferSourceGetBufferSuccess {
+            input_handle_index: 1,
+            return_value: RopErrorCode::Success,
+            transfer_status: 0,
+            terminator_low: 0,
+            terminator_high: 0,
+            data_size: 2,
+            data: vec![0xAB, 0xCD],
+        }
+        .encode(&mut out);
+        assert_eq!(out[0], 0x4E);
+        assert_eq!(out[1], 1);
+        assert_eq!(u16::from_le_bytes([out[10], out[11]]), 2);
+        assert_eq!(&out[12..14], &[0xAB, 0xCD]);
+        assert_eq!(out.len(), 2 + 4 + 1 + 1 + 1 + 1 + 2 + 2);
+    }
+
+    #[test]
+    fn rop_fast_transfer_destination_put_buffer_roundtrip() {
+        // Request: DataSize(2 LE) + Data.
+        let body: Vec<u8> = vec![2, 0, 0xAA, 0xBB];
+        let mut cur = Buf::new(&body);
+        let req = RopFastTransferDestinationPutBufferRequest::decode_after_ropid(&mut cur).expect("decode");
+        assert_eq!(req.data, vec![0xAA, 0xBB]);
+        assert_eq!(cur.remaining(), 0);
+
+        // Empty-data (end-of-stream) marker.
+        let body2: Vec<u8> = vec![0, 0];
+        let mut cur2 = Buf::new(&body2);
+        let req2 = RopFastTransferDestinationPutBufferRequest::decode_after_ropid(&mut cur2).expect("decode empty");
+        assert!(req2.data.is_empty());
+
+        let mut out = Vec::new();
+        RopFastTransferDestinationPutBufferResponse {
+            input_handle_index: 3,
+            return_value: RopErrorCode::Success,
+            transfer_status: 1,
+            data_remaining: 0,
+        }
+        .encode(&mut out);
+        assert_eq!(out[0], 0x54);
+        assert_eq!(out[1], 3);
+        assert_eq!(out.len(), 2 + 4 + 1 + 4);
+    }
+
+    #[test]
+    fn rop_fast_transfer_destination_configure_decode() {
+        // SourceFmt(1) + SyncFlags(1).
+        let body: Vec<u8> = vec![0x00, 0x01];
+        let mut cur = Buf::new(&body);
+        let req = RopFastTransferDestinationConfigureRequest::decode_after_ropid(&mut cur).expect("decode");
+        assert_eq!(req.source_fmt, 0);
+        assert_eq!(req.sync_flags, 1);
+        assert_eq!(cur.remaining(), 0);
+    }
+
+    #[test]
+    fn rop_fast_transfer_source_copy_messages_decode() {
+        // Flags(1) + MessageIdCount(2 LE)=2 + two 8-byte ids.
+        let mut body = Vec::new();
+        body.push(0x00);
+        body.extend_from_slice(&2u16.to_le_bytes());
+        body.extend_from_slice(&100u64.to_le_bytes());
+        body.extend_from_slice(&200u64.to_le_bytes());
+        let mut cur = Buf::new(&body);
+        let req = RopFastTransferSourceCopyMessagesRequest::decode(&mut cur).expect("decode");
+        assert_eq!(req.flags, 0);
+        assert_eq!(req.message_ids, vec![100, 200]);
+        assert_eq!(cur.remaining(), 0);
+    }
+
+    #[test]
+    fn rop_fast_transfer_source_copy_to_decode() {
+        // Flags(1) + CopyToFlags(1) + TagCount(2)=1 + one PropertyTag.
+        let tag = PropertyTag::new(crate::mapi::data::PropertyType::PTYP_STRING, 0x0037);
+        let mut tagb = Vec::new();
+        tag.encode(&mut tagb);
+        let mut body = Vec::new();
+        body.push(0x00);
+        body.push(0x00);
+        body.extend_from_slice(&1u16.to_le_bytes());
+        body.extend_from_slice(&tagb);
+        let mut cur = Buf::new(&body);
+        let req = RopFastTransferSourceCopyToRequest::decode(&mut cur).expect("decode");
+        assert_eq!(req.property_tags.len(), 1);
+        assert_eq!(req.property_tags[0], tag);
+        assert_eq!(cur.remaining(), 0);
+    }
+
+    #[test]
+    fn rop_synchronization_configure_decode() {
+        // SyncFlags(1) + SyncType(1) + StateLen(2)=3 + state bytes.
+        let mut body = Vec::new();
+        body.push(0x01);
+        body.push(0x02);
+        body.extend_from_slice(&3u16.to_le_bytes());
+        body.extend_from_slice(&[0xDE, 0xAD, 0xBE]);
+        let mut cur = Buf::new(&body);
+        let req = RopSynchronizationConfigureRequest::decode_after_ropid(&mut cur).expect("decode");
+        assert_eq!(req.sync_flags, 1);
+        assert_eq!(req.sync_type, 2);
+        assert_eq!(req.sync_state, vec![0xDE, 0xAD, 0xBE]);
+        assert_eq!(cur.remaining(), 0);
+    }
+
+    #[test]
+    fn rop_fast_transfer_source_open_response_shape() {
+        // The generic open-response envelope [RopId · OutHandle · RV(4)] is
+        // used by all four source-copy ROPs + the destination configure. Verify
+        // the RopId echoes back through the encode(.., rop_id) parameter.
+        let mut out = Vec::new();
+        RopFastTransferSourceOpenResponse {
+            output_handle_index: 7,
+            return_value: RopErrorCode::Success,
+        }
+        .encode(&mut out, RopId::ROP_FAST_TRANSFER_SOURCE_COPY_FOLDER);
+        assert_eq!(out[0], 0x4C);
+        assert_eq!(out[1], 7);
+        assert_eq!(out.len(), 2 + 4);
+
+        let mut out2 = Vec::new();
+        RopSynchronizationAckResponse {
+            input_handle_index: 4,
+            return_value: RopErrorCode::Success,
+        }
+        .encode(&mut out2, RopId::ROP_SYNCHRONIZATION_IMPORT_MESSAGE_CHANGE);
+        assert_eq!(out2[0], 0x72);
+        assert_eq!(out2[1], 4);
+        assert_eq!(out2.len(), 2 + 4);
     }
 }

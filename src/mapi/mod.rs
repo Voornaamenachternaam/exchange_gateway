@@ -35,6 +35,7 @@ pub mod data;
 pub mod fxics;
 pub mod handler;
 pub mod logon;
+pub mod restrict;
 pub mod rops;
 pub mod session;
 pub mod store;
