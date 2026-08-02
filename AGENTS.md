@@ -256,6 +256,33 @@ gets wiped between shell sessions. To avoid re-installing Rust every command:
   staged in the handle buffer and flushed at SaveChangesMessage. **All other
   ~50 ROPs hit the `_ => NotFound` fallback** — see task tracker P2-4 for the
   mail write/delete/movecopy path.
+  - **Table-navigation + FastTransfer ROPs (audit gap §2b)** — `execute_one_rop`
+    now also drives the table-navigation family: `RopSortTable`·0x13,
+    `RopRestrict`·0x14, `RopQueryPosition`·0x17, `RopSeekRow`·0x18,
+    `RopSeekRowBookmark`·0x19, `RopSeekRowFractional`·0x1A,
+    `RopCreateBookmark`·0x1B, `RopFreeBookmark`·0x89, `RopResetTable`·0x81.
+    `Handle::Table` carries `restriction: SRestriction`, `sort_orders:
+    Vec<SortOrder>`, `next_bookmark: u64`; the `RopQueryRows` arm honours the
+    active restriction by building a filtered row-index view
+    (`matcher_cells` + `SRestriction::matches`), and `RopSortTable` stable-sorts
+    the row buffer in place via `sort_rows`/`scalar_ord_for_sort` (bit 0x01 of
+    `SortOrder.sort_flags` ⇒ descending). `RopSeekRow*` clamp the cursor at the
+    (post-restrict) table bounds and report `has_sought_less` on clamping.
+    `RopCreateBookmark` packs `(row_index | (next_id<<32))` into the 8-byte
+    bookmark; `RopFreeBookmark` is a stateless ack. The FastTransfer *source*
+    family (`RopFastTransferSourceCopy{Messages,Folder,To,Properties}`
+    0x4B/0x4C/0x4D/0x69 + `RopFastTransferSourceGetBuffer` 0x4E) install a
+    `Handle::FastTransferSource` carrying the ICS byte stream built by
+    `build_ics_stream`; GetBuffer serves chunks up to `BufferSize` and flips
+    `TransferStatus` to Done. The FastTransfer *destination* +
+    `RopSynchronization*` upload ROPs (0x53/0x54/0x70/0x72-0x78/0x77/0x80)
+    accumulate onto `Handle::FastTransferDestination` and tokenise via
+    `fxics::Tokenizer` (best-effort; JMAP write-back bridge is Phase-2 #4).
+    The decoders follow the body-only convention; the dispatcher consumes the
+    3- or 4-byte ROP header (LogonId + InputHandleIndex [+ OutputHandleIndex])
+    before `*::decode`/`*::decode_after_ropid` reads the body — exactly like
+    every other arm, so adding a new FastTransfer arm MUST `cur.take_u8()` the
+    LogonId/handle bytes first or the chain desyncs by one byte.
   - **Stream-ROP review hardening (PR #1830)** — `RopSeekStream::resolve`
     now works in `u64`/`Option<u64>` end-to-end (never reinterprets a `>i64::MAX`
     `u64` back through `as i64`, which bitwise-wraps to negative) and clamps by
@@ -440,19 +467,37 @@ STILL GAPS to 100% perfect Outlook-for-Windows + Outlook-Android fidelity:
 6. Contacts contents-table rows must enumerate via
    `CarddavClient::list_contacts` and convert each vCard to MAPI
    `IPM.Contact` cells (PR_FILE_AS, PR_EMAIL_*, PR_GIVEN_NAME, etc.).
-7. MAPI property restrictions (`RopRestrict` / SRestriction in
-   MS-OXCDATA §2.12.3) — Outlook filters message tables with these;
-   Phase-1 ignores them and returns the whole contents set, capped at 200
-   rows (`fetch_contents_rows`). Add a restriction-to-JMAP-filter
-   translator.
+7. ~~MAPI property restrictions (`RopRestrict` / SRestriction in
+   MS-OXCDATA §2.12.3)~~ — **DONE Phase-2**: `src/mapi/restrict.rs` owns the
+   typed `SRestriction` codec (And/Or/Not/Exist/{Property,Content,BitMask,Size,
+   CompareProperties}Restriction/SubRestriction/Comment/Count) with a
+   `matches(&[CellForMatcher])` evaluator (RelOp over i64/f64/bool/string
+   scalars, FL_IGNORECASE substring/prefix content match, bitmask EqZero/EqNonZero,
+   size relops). `RopRestrict` stores the restriction on `Handle::Table` and the
+   `RopQueryRows` arm now serves only rows the active restriction admits (cursor
+   indexes the filtered view; `total` re-derived to the filtered count). Audit
+   gap §2b `RopRestrict` closed.
 8. `RopNotify` / `RopRegisterNotification` / `NotificationWait` — the
    codecs and envelope exist but the dispatcher returns an empty
    notification; Phase-2 needs a per-session notification queue fed by JMAP
    `Email/changes` + CalDAV `sync-collection`.
-9. FXICS (`fxics.rs`) bulk message/folder sync (MS-OXCFXICS) — the codecs
-   exist; the Execute dispatcher does not yet drive them. New Outlook
-   falls back to ROP-by-ROP when FXICS is `NotFound`'d, so this is not
-   day-one-blocking, but it is the bandwidth-optimal sync path.
+9. ~~FXICS (`fxics.rs`) bulk message/folder sync (MS-OXCFXICS)~~ — **Phase-2
+   download path DONE**: the Execute dispatcher now drives the FastTransfer
+   *source* ROPs (`RopFastTransferSourceCopy{Messages,Folder,To,Properties}`
+   0x4B/0x4C/0x4D/0x69 + `RopFastTransferSourceGetBuffer` 0x4E). A source
+   handle is installed under the client's `OutputHandleIndex` carrying the
+   fully-serialised ICS byte stream built by `build_ics_stream` from the
+   table's cached rows via `fxics::IcsStreamBuilder`
+   (`IncrSyncChg`/`IncrSyncMessage`/`propValue`/`EndMessage`/`IncrSyncEnd`);
+   `GetBuffer` serves successive chunks up to the client `BufferSize` and
+   transitions `TransferStatus` to `Done` (1) when exhausted. The
+   FastTransfer *destination* + `RopSynchronization*` upload ROPs
+   (0x53/0x54/0x70/0x72-0x78/0x77/0x80) are wired to accumulate the upload
+   stream on `Handle::FastTransferDestination` and tokenise it via
+   `fxics::Tokenizer` (best-effort apply; the JMAP `Email/set`+`Email/destroy`
+   write-back bridge is the larger Phase-2 #4 mail-write path and is
+   intentionally not asserted against real Stalwart traffic). Audit gap §2b
+   FXICS download closed.
 10. Address-book endpoint (`RpcKind::AddressBook`) is rejected by the
     transport; Phase-2 needs an offline GAL stub so Outlook can resolve
     sender addresses against the JMAP `Mailbox/get` ACL set.

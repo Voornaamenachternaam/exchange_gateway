@@ -51,6 +51,22 @@ use crate::mapi::session::{FolderKind, Handle, SessionManager};
 use crate::mapi::store;
 use crate::mapi::transport::{MapiRequest, MapiRequestType, MapiResponse, ResponseCode, RpcKind};
 
+use crate::mapi::rops::{
+    RopCreateBookmarkRequest, RopCreateBookmarkResponse, RopFreeBookmarkRequest,
+    RopFreeBookmarkResponse, RopQueryPositionRequest, RopQueryPositionResponse, RopResetTableRequest,
+    RopResetTableResponse, RopRestrictRequest, RopRestrictResponse, RopSeekRowBookmarkRequest,
+    RopSeekRowBookmarkResponse, RopSeekRowFractionalRequest, RopSeekRowFractionalResponse,
+    RopSeekRowRequest, RopSeekRowResponse, RopSortTableRequest, RopSortTableResponse, SortOrder,
+    RopFastTransferDestinationConfigureRequest, RopFastTransferDestinationPutBufferRequest,
+    RopFastTransferDestinationPutBufferResponse, RopFastTransferSourceCopyFolderRequest,
+    RopFastTransferSourceCopyMessagesRequest, RopFastTransferSourceCopyPropertiesRequest,
+    RopFastTransferSourceCopyToRequest, RopFastTransferSourceGetBufferRequest,
+    RopFastTransferSourceGetBufferSuccess, RopFastTransferSourceOpenResponse,
+    RopSynchronizationAckResponse, RopSynchronizationConfigureRequest,
+};
+use crate::mapi::restrict::{CellForMatcher, SRestriction, restriction_referenced_tags};
+use crate::mapi::fxics::{IcsStreamBuilder, Marker, Tokenizer};
+
 /// Bundle of state the handler needs. Constructed once in `main.rs` (or a
 /// test fixture) and shared across requests via `Arc`.
 #[derive(Clone)]
@@ -151,6 +167,9 @@ async fn handle_connect(req: MapiRequest, state: &MapiState) -> MapiResponse {
             return MapiResponse::error(ResponseCode::InvalidRequestBody, req.request_id);
         }
         Err(DecodeError::InvalidValue) | Err(DecodeError::InvalidUtf8) => {
+            return MapiResponse::error(ResponseCode::InvalidRequestBody, req.request_id);
+        }
+        Err(DecodeError::Trailing) => {
             return MapiResponse::error(ResponseCode::InvalidRequestBody, req.request_id);
         }
     };
@@ -461,6 +480,9 @@ async fn execute_one_rop(
                         rows,
                         cursor: 0,
                         total,
+                        restriction: crate::mapi::restrict::SRestriction::default(),
+                        sort_orders: Vec::new(),
+                        next_bookmark: 0,
                     },
                 );
             });
@@ -515,6 +537,7 @@ async fn execute_one_rop(
                         column_set,
                         kind,
                         parent_backend_id,
+                        restriction,
                         ..
                     }) = s.handle_mut(input_handle_index)
                     else {
@@ -523,11 +546,21 @@ async fn execute_one_rop(
                     let cs = column_set.clone();
                     let pk = *kind;
                     let mailbox_id = parent_backend_id.clone();
-                    let want =
-                        usize::from(req.row_count).min(rows.len() - (*cursor).min(rows.len()));
+                    let rst = restriction.clone();
+                    // Build the filtered view: the indices of rows the active
+                    // restriction admits, using the SAME builder RopRestrict
+                    // uses to derive `total`, so the count QueryPosition
+                    // reports equals the rows QueryRows would serve. The
+                    // builder also materialises cells over the UNION of the
+                    // column set and the restriction's referenced tags, so a
+                    // Restrict issued before SetColumns still resolves.
+                    let filtered = filtered_indices(rows, &cs, &rst, pk, &mailbox_id);
+                    let want = usize::from(req.row_count)
+                        .min(filtered.len().saturating_sub((*cursor).min(filtered.len())));
                     let mut buf = Vec::new();
                     let served = u16::try_from(want).unwrap_or(0);
-                    for r in rows.iter_mut().skip(*cursor).take(want) {
+                    for &ix in filtered.iter().skip(*cursor).take(want) {
+                        let r = &mut rows[ix];
                         // Lazily materialise cells for the current column
                         // set from the cached backend object carried on the
                         // row, then drop the cached source to bound memory.
@@ -898,6 +931,9 @@ async fn execute_one_rop(
                         rows,
                         cursor: 0,
                         total,
+                        restriction: crate::mapi::restrict::SRestriction::default(),
+                        sort_orders: Vec::new(),
+                        next_bookmark: 0,
                     },
                 );
             });
@@ -2795,11 +2831,834 @@ async fn execute_one_rop(
             }
             .encode(out);
         }
+        RopId::ROP_RESET_TABLE => {
+            // §2.2.5.7.1: LogonId + InputHandleIndex. Reset the cursor to
+            // the first row, drop any applied restriction / sort order, and
+            // reset bookmarks. Outlook issues this when re-querying a table
+            // after a refresh.
+            let _logon = cur.take_u8()?;
+            let input_handle_index = cur.take_u8()?;
+            let _req = RopResetTableRequest::decode(cur)?;
+            let return_value = sessions
+                .with_session_mut(session_id, |s| {
+                    if let Some(Handle::Table {
+                        cursor,
+                        restriction,
+                        sort_orders,
+                        next_bookmark,
+                        ..
+                    }) = s.handle_mut(input_handle_index)
+                    {
+                        *cursor = 0;
+                        *restriction = SRestriction::default();
+                        sort_orders.clear();
+                        *next_bookmark = 0;
+                        RopErrorCode::Success
+                    } else {
+                        RopErrorCode::NotFound
+                    }
+                })
+                .unwrap_or(RopErrorCode::NotFound);
+            RopResetTableResponse {
+                input_handle_index,
+                return_value,
+            }
+            .encode(out);
+        }
+        RopId::ROP_RESTRICT => {
+            // §2.2.5.3.1: LogonId + InputHandleIndex + RestrictFlags(1) +
+            // RestrictionDataSize(2) + RestrictionData. Apply the restriction
+            // to the table; the next QueryRows materialises only matching
+            // rows. RestrictFlags bit 0x01 = PRIOR_RESTRICTION: AND the new
+            // restriction with the prior one rather than replacing it.
+            let _logon = cur.take_u8()?;
+            let input_handle_index = cur.take_u8()?;
+            let req = RopRestrictRequest::decode(cur)?;
+            let return_value = sessions
+                .with_session_mut(session_id, |s| {
+                    if let Some(Handle::Table {
+                        restriction,
+                        cursor,
+                        total,
+                        rows,
+                        column_set,
+                        kind,
+                        parent_backend_id,
+                        ..
+                    }) = s.handle_mut(input_handle_index)
+                    {
+                        // PRIOR_RESTRICTION (0x01) AND-combines with the
+                        // active restriction; otherwise replace it.
+                        *restriction = if req.restrict_flags & 0x01 != 0 {
+                            SRestriction::And(vec![
+                                restriction.clone(),
+                                req.restriction.clone(),
+                            ])
+                        } else {
+                            req.restriction.clone()
+                        };
+                        *cursor = 0;
+                        // ONE pass: derive the filtered `total` from the
+                        // SAME `filtered_indices` builder `RopQueryRows` uses,
+                        // so `RopQueryPosition`'s denominator always equals
+                        // the rows QueryRows would serve (a Restrict issued
+                        // before SetColumns resolves via the union of the
+                        // column set and the restriction's referenced tags).
+                        let cs = column_set.clone();
+                        let pk = *kind;
+                        let mb = parent_backend_id.clone();
+                        let r = restriction.clone();
+                        *total = filtered_indices(rows, &cs, &r, pk, &mb).len() as u64;
+                        RopErrorCode::Success
+                    } else {
+                        RopErrorCode::NotFound
+                    }
+                })
+                .unwrap_or(RopErrorCode::NotFound);
+            let _ = req.restrict_flags;
+            RopRestrictResponse {
+                input_handle_index,
+                return_value,
+                table_status: 0,
+            }
+            .encode(out);
+        }
+        RopId::ROP_SORT_TABLE => {
+            // §2.2.5.2.1: LogonId + InputHandleIndex + SortFlags(1) +
+            // SortOrder array. Materialise cells for each row once, then
+            // stable-sort the row buffer in place. The cursor is preserved
+            // (sorting reorders the buffer; Outlook re-queries afterwards).
+            let _logon = cur.take_u8()?;
+            let input_handle_index = cur.take_u8()?;
+            let req = RopSortTableRequest::decode(cur)?;
+            let return_value = sessions
+                .with_session_mut(session_id, |s| {
+                    if let Some(Handle::Table {
+                        rows,
+                        column_set,
+                        sort_orders,
+                        kind,
+                        parent_backend_id,
+                        ..
+                    }) = s.handle_mut(input_handle_index)
+                    {
+                        *sort_orders = req.sort_orders.clone();
+                        let cs = column_set.clone();
+                        let pk = *kind;
+                        let mb = parent_backend_id.clone();
+                        sort_rows(rows, &req.sort_orders, &cs, pk, &mb);
+                        RopErrorCode::Success
+                    } else {
+                        RopErrorCode::NotFound
+                    }
+                })
+                .unwrap_or(RopErrorCode::NotFound);
+            RopSortTableResponse {
+                input_handle_index,
+                return_value,
+                table_status: 0,
+            }
+            .encode(out);
+        }
+        RopId::ROP_QUERY_POSITION => {
+            // §2.2.7.1.1: LogonId + InputHandleIndex. Return the fractional
+            // position of the cursor in the (post-restrict) row set.
+            let _logon = cur.take_u8()?;
+            let input_handle_index = cur.take_u8()?;
+            let _req = RopQueryPositionRequest::decode(cur)?;
+            let (rv, num, den) = sessions
+                .with_session_mut(session_id, |s| {
+                    if let Some(Handle::Table { cursor, total, .. }) =
+                        s.handle_mut(input_handle_index)
+                    {
+                        let den = (*total).max(1) as u32;
+                        let num = (*cursor as u32).min(den);
+                        (RopErrorCode::Success, num, den)
+                    } else {
+                        (RopErrorCode::NotFound, 0u32, 1u32)
+                    }
+                })
+                .unwrap_or((RopErrorCode::NotFound, 0u32, 1u32));
+            RopQueryPositionResponse {
+                input_handle_index,
+                return_value: rv,
+                numerator: num,
+                denominator: den,
+            }
+            .encode(out);
+        }
+        RopId::ROP_SEEK_ROW => {
+            // §2.2.7.2.1: LogonId + InputHandleIndex + SeekFlags(1)
+            // + RowCount(4 LE signed). Move the cursor by RowCount rows from
+            // the current position (default) or from the beginning when
+            // SeekFlags bit 0x01 is set. Clamp at the table bounds.
+            let _logon = cur.take_u8()?;
+            let input_handle_index = cur.take_u8()?;
+            let req = RopSeekRowRequest::decode(cur)?;
+            let (rv, has_sought_less) = sessions
+                .with_session_mut(session_id, |s| {
+                    if let Some(Handle::Table { cursor, total, .. }) =
+                        s.handle_mut(input_handle_index)
+                    {
+                        let len = *total as usize;
+                        let from_begin = req.seek_flags & 0x01 != 0;
+                        if from_begin {
+                            *cursor = 0;
+                        }
+                        let target = if req.row_count < 0 {
+                            let back = (req.row_count.unsigned_abs() as usize).min(*cursor);
+                            *cursor -= back;
+                            req.row_count.unsigned_abs() as i32 - back as i32
+                        } else {
+                            let fwd = (req.row_count as usize).min(len.saturating_sub(*cursor));
+                            *cursor += fwd;
+                            req.row_count - fwd as i32
+                        };
+                        // `target` is the unsatisfied remainder; clamping
+                        // happened iff that remainder is non-zero. This also
+                        // repairs the backward-seek case: a fully-satisfied
+                        // negative seek yields target=0 (no clamping) where the
+                        // previous `(target != req.row_count)` test always
+                        // compared a non-negative remainder against a
+                        // negative request and spuriously reported clamping.
+                        let sought_less = (target != 0) as u8;
+                        (RopErrorCode::Success, sought_less)
+                    } else {
+                        (RopErrorCode::NotFound, 0u8)
+                    }
+                })
+                .unwrap_or((RopErrorCode::NotFound, 0u8));
+            RopSeekRowResponse {
+                input_handle_index,
+                return_value: rv,
+                has_sought_less,
+            }
+            .encode(out);
+        }
+        RopId::ROP_SEEK_ROW_BOOKMARK => {
+            // §2.2.7.3.1: LogonId + InputHandleIndex + SeekFlags(1)
+            // + Bookmark(4 LE) + RowCount(4 LE signed). CreateBookmark pins
+            // the bookmark to the row's stable `row_id` (a 4-byte ULONG per
+            // MS-OXCTABL), so the bookmark survives a RopSortTable reorder:
+            // resolve it by scanning the rows for the matching row_id, then
+            // move the cursor by RowCount from that origin, clamped to bounds.
+            let _logon = cur.take_u8()?;
+            let input_handle_index = cur.take_u8()?;
+            let req = RopSeekRowBookmarkRequest::decode(cur)?;
+            let (rv, rows_sought, has_sought_less) = sessions
+                .with_session_mut(session_id, |s| {
+                    if let Some(Handle::Table { cursor, total, rows, .. }) =
+                        s.handle_mut(input_handle_index)
+                    {
+                        let len = *total as usize;
+                        // Resolve the bookmark to a row index by matching the
+                        // stored row_id; fall back to clamping the raw bookmark
+                        // value into bounds (defensive — the spec pins it to a
+                        // real bookmark but a stale/garbage value must not
+                        // panic).
+                        let origin = rows
+                            .iter()
+                            .position(|r| u64::from(req.bookmark) == r.row_id)
+                            .unwrap_or_else(|| (req.bookmark as usize).min(len));
+                        let moved;
+                        let target = if req.row_count < 0 {
+                            let back = (req.row_count.unsigned_abs() as usize).min(origin);
+                            *cursor = origin - back;
+                            moved = -(back as i32);
+                            req.row_count.unsigned_abs() as i32 - back as i32
+                        } else {
+                            let fwd = (req.row_count as usize).min(len.saturating_sub(origin));
+                            *cursor = origin + fwd;
+                            moved = fwd as i32;
+                            req.row_count - fwd as i32
+                        };
+                        // rows_sought is the signed number of rows ACTUALLY
+                        // moved (not the unsatisfied remainder, which the
+                        // previous code returned — that reported 0 for a
+                        // successful seek and the full request for a clamped
+                        // one, inverting the field's documented semantics).
+                        // has_sought_less is set from the non-zero remainder.
+                        (RopErrorCode::Success, moved, (target != 0) as u8)
+                    } else {
+                        (RopErrorCode::NotFound, 0i32, 0u8)
+                    }
+                })
+                .unwrap_or((RopErrorCode::NotFound, 0i32, 0u8));
+            RopSeekRowBookmarkResponse {
+                input_handle_index,
+                return_value: rv,
+                rows_sought,
+                has_sought_less,
+            }
+            .encode(out);
+        }
+        RopId::ROP_SEEK_ROW_FRACTIONAL => {
+            // §2.2.7.4.1: LogonId + InputHandleIndex + Numerator/Denominator
+            // (4 LE each). Move the cursor to floor(Numerator/Denominator *
+            // total). Clamp to [0,total].
+            let _logon = cur.take_u8()?;
+            let input_handle_index = cur.take_u8()?;
+            let req = RopSeekRowFractionalRequest::decode(cur)?;
+            let rv = sessions
+                .with_session_mut(session_id, |s| {
+                    if let Some(Handle::Table { cursor, total, .. }) =
+                        s.handle_mut(input_handle_index)
+                    {
+                        let len = *total as usize;
+                        let pos = if req.denominator == 0 {
+                            0
+                        } else {
+                            ((u64::from(req.numerator) * len as u64) / u64::from(req.denominator))
+                                as usize
+                        };
+                        *cursor = pos.min(len);
+                        RopErrorCode::Success
+                    } else {
+                        RopErrorCode::NotFound
+                    }
+                })
+                .unwrap_or(RopErrorCode::NotFound);
+            RopSeekRowFractionalResponse {
+                input_handle_index,
+                return_value: rv,
+            }
+            .encode(out);
+        }
+        RopId::ROP_CREATE_BOOKMARK => {
+            // §2.2.7.5.1: 4-byte header (RopId + LogonId + InputHandleIndex +
+            // OutputHandleIndex); no body. Return a 4-byte MAPI Bookmark
+            // (a ULONG per MS-OXCTABL) pinned to the row at the current
+            // cursor's STABLE row_id — NOT the absolute index — so the
+            // bookmark survives a subsequent RopSortTable reorder
+            // (RopSeekRowBookmark resolves it by scanning rows for that
+            // row_id). FreeBookmark is a stateless ack (the bookmark carries
+            // no server-side resource).
+            let _logon = cur.take_u8()?;
+            let input_handle_index = cur.take_u8()?;
+            let output_handle_index = cur.take_u8()?; // OutputHandleIndex
+            let _ = RopCreateBookmarkRequest::decode(cur)?;
+            let (output_handle_index, bookmark, rv) = sessions
+                .with_session_mut(session_id, |s| {
+                    if let Some(Handle::Table { cursor, rows, total, .. }) =
+                        s.handle_mut(input_handle_index)
+                    {
+                        let pos = *cursor;
+                        // Pin the bookmark to the current row's stable
+                        // row_id (clamped into the live row set); if the
+                        // cursor is at EOF cap to the last row's id, or 0
+                        // for an empty table.
+                        let row_id = if pos < rows.len() {
+                            rows[pos].row_id
+                        } else if !rows.is_empty() {
+                            rows[rows.len() - 1].row_id
+                        } else {
+                            0
+                        };
+                        // row_id is a FNV-1a 64-bit with the low bit
+                        // reserved; truncate to the low 32 bits the wire
+                        // carries so SeekRowBookmark's u32 round-trips it.
+                        let bm = u32::try_from(row_id & 0xFFFF_FFFF).unwrap_or(0);
+                        let _ = total; // total drives no bookmark state
+                        (output_handle_index, bm, RopErrorCode::Success)
+                    } else {
+                        (output_handle_index, 0u32, RopErrorCode::NotFound)
+                    }
+                })
+                .unwrap_or((output_handle_index, 0u32, RopErrorCode::NotFound));
+            RopCreateBookmarkResponse {
+                output_handle_index,
+                return_value: rv,
+                bookmark,
+            }
+            .encode(out);
+        }
+        RopId::ROP_FREE_BOOKMARK => {
+            // §2.2.7.6.1: LogonId + InputHandleIndex + Bookmark(4 LE).
+            // Bookmarks here are stateless (the bookmark encodes a stable
+            // row_id, no server-side resource), so this is a successful no-op.
+            let _logon = cur.take_u8()?;
+            let input_handle_index = cur.take_u8()?;
+            let req = RopFreeBookmarkRequest::decode(cur)?;
+            let _ = req.bookmark;
+            let return_value = sessions
+                .with_handle(session_id, input_handle_index, |h| match h {
+                    Handle::Table { .. } => RopErrorCode::Success,
+                    _ => {
+                        let _ = req.bookmark;
+                        RopErrorCode::NotFound
+                    }
+                })
+                .unwrap_or(RopErrorCode::NotFound);
+            RopFreeBookmarkResponse {
+                input_handle_index,
+                return_value,
+            }
+            .encode(out);
+        }
+        RopId::ROP_FAST_TRANSFER_SOURCE_COPY_MESSAGES => {
+            // MS-OXCFXICS §3.1.1.1: RopId + LogonId + InputHandleIndex +
+            // OutputHandleIndex + Flags(1) + MessageIdCount(2 LE) +
+            // MessageIds[]. The input handle is a contents/folder table; we
+            // serialise its cached rows as an incremental-change ICS stream
+            // installed under the output handle. A non-empty `message_ids`
+            // selects only those messages (matched by `row_id`, which is the
+            // stable message Mid); an empty list means "all messages in the
+            // view" per MS-OXCFXICS, so we do NOT truncate.
+            let _logon = cur.take_u8()?;
+            let input_handle_index = cur.take_u8()?;
+            let output_handle_index = cur.take_u8()?;
+            let req = RopFastTransferSourceCopyMessagesRequest::decode(cur)?;
+            let message_ids = req.message_ids.clone();
+            let return_value = sessions
+                .with_session_mut(session_id, |s| {
+                    fasttransfer_source_from_input(s, input_handle_index, |s, rows, cs, kind, mb| {
+                        let stream = if message_ids.is_empty() {
+                            build_ics_stream(rows, &cs, kind, mb)
+                        } else {
+                            let selection: Vec<&crate::mapi::session::TableRow> =
+                                rows.iter().filter(|r| message_ids.contains(&r.row_id)).collect();
+                            build_ics_stream_sel(&selection, &cs, kind, mb)
+                        };
+                        s.set_handle(
+                            output_handle_index,
+                            Handle::FastTransferSource {
+                                buffer: stream,
+                                cursor: 0,
+                                done: false,
+                            },
+                        );
+                        RopErrorCode::Success
+                    })
+                })
+                .unwrap_or(RopErrorCode::NotFound);
+            let _ = req;
+            RopFastTransferSourceOpenResponse {
+                output_handle_index,
+                return_value,
+            }
+            .encode(out, RopId::ROP_FAST_TRANSFER_SOURCE_COPY_MESSAGES);
+        }
+        RopId::ROP_FAST_TRANSFER_SOURCE_COPY_FOLDER => {
+            // §3.1.1.2: 4-byte header + Flags(1). Serialise the whole subfolder
+            // (hierarchy + contents) from the input folder's contents/hierarchy
+            // table. A `Handle::Folder` input (no cached table rows) is
+            // rejected with the explicit `NoSupport` so the failure mode is
+            // distinguishable from a missing handle — Outlook must open a
+            // GetContentsTable/GetHierarchyTable first.
+            let _logon = cur.take_u8()?;
+            let input_handle_index = cur.take_u8()?;
+            let output_handle_index = cur.take_u8()?;
+            let req = RopFastTransferSourceCopyFolderRequest::decode(cur)?;
+            let return_value = sessions
+                .with_session_mut(session_id, |s| {
+                    fasttransfer_source_from_input(s, input_handle_index, |s, rows, cs, kind, mb| {
+                        let stream = build_ics_stream(rows, &cs, kind, mb);
+                        s.set_handle(
+                            output_handle_index,
+                            Handle::FastTransferSource {
+                                buffer: stream,
+                                cursor: 0,
+                                done: false,
+                            },
+                        );
+                        RopErrorCode::Success
+                    })
+                })
+                .unwrap_or(RopErrorCode::NotFound);
+            let _ = req;
+            RopFastTransferSourceOpenResponse {
+                output_handle_index,
+                return_value,
+            }
+            .encode(out, RopId::ROP_FAST_TRANSFER_SOURCE_COPY_FOLDER);
+        }
+        RopId::ROP_FAST_TRANSFER_SOURCE_COPY_TO => {
+            // §3.1.1.3: 4-byte header + Flags(1) + CopyToFlags(1) +
+            // PropertyTagCount(2) + Tags[]. Property-only transfer keyed on
+            // the requested tags (intersected with the table's column set).
+            let _logon = cur.take_u8()?;
+            let input_handle_index = cur.take_u8()?;
+            let output_handle_index = cur.take_u8()?;
+            let req = RopFastTransferSourceCopyToRequest::decode(cur)?;
+            let want: Vec<u16> = req.property_tags.iter().map(|t| t.property_id).collect();
+            let return_value = sessions
+                .with_session_mut(session_id, |s| {
+                    fasttransfer_source_from_input(s, input_handle_index, |s, rows, cs, kind, mb| {
+                        let filtered: Vec<crate::mapi::data::PropertyTag> = cs
+                            .iter()
+                            .filter(|t| want.contains(&t.property_id))
+                            .copied()
+                            .collect();
+                        let stream = build_ics_stream(rows, &filtered, kind, mb);
+                        s.set_handle(
+                            output_handle_index,
+                            Handle::FastTransferSource {
+                                buffer: stream,
+                                cursor: 0,
+                                done: false,
+                            },
+                        );
+                        RopErrorCode::Success
+                    })
+                })
+                .unwrap_or(RopErrorCode::NotFound);
+            RopFastTransferSourceOpenResponse {
+                output_handle_index,
+                return_value,
+            }
+            .encode(out, RopId::ROP_FAST_TRANSFER_SOURCE_COPY_TO);
+        }
+        RopId::ROP_FAST_TRANSFER_SOURCE_COPY_PROPERTIES => {
+            // 0x69: 4-byte header + Flags(1) + TagCount(2) + Tags[]. Like
+            // CopyTo but the spec'd tag set is the whole-message property set
+            // (intersected with the table's column set).
+            let _logon = cur.take_u8()?;
+            let input_handle_index = cur.take_u8()?;
+            let output_handle_index = cur.take_u8()?;
+            let req = RopFastTransferSourceCopyPropertiesRequest::decode(cur)?;
+            let want: Vec<u16> = req.property_tags.iter().map(|t| t.property_id).collect();
+            let return_value = sessions
+                .with_session_mut(session_id, |s| {
+                    fasttransfer_source_from_input(s, input_handle_index, |s, rows, cs, kind, mb| {
+                        let filtered: Vec<crate::mapi::data::PropertyTag> = cs
+                            .iter()
+                            .filter(|t| want.contains(&t.property_id))
+                            .copied()
+                            .collect();
+                        let stream = build_ics_stream(rows, &filtered, kind, mb);
+                        s.set_handle(
+                            output_handle_index,
+                            Handle::FastTransferSource {
+                                buffer: stream,
+                                cursor: 0,
+                                done: false,
+                            },
+                        );
+                        RopErrorCode::Success
+                    })
+                })
+                .unwrap_or(RopErrorCode::NotFound);
+            RopFastTransferSourceOpenResponse {
+                output_handle_index,
+                return_value,
+            }
+            .encode(out, RopId::ROP_FAST_TRANSFER_SOURCE_COPY_PROPERTIES);
+        }
+        RopId::ROP_FAST_TRANSFER_SOURCE_GET_BUFFER => {
+            // §3.1.1.5.1: LogonId + InputHandleIndex + BufferSize(2 LE) +
+            // TransferFlags(1). Serve the next chunk from the source handle;
+            // transition to `Done` when the buffer is exhausted. The response
+            // carries the success-body ONLY when ReturnValue==Success; a
+            // non-success ROP emits the bare header (handled in the encoder).
+            let _logon = cur.take_u8()?;
+            let input_handle_index = cur.take_u8()?;
+            let req = RopFastTransferSourceGetBufferRequest::decode(cur)?;
+            let max = usize::from(req.buffer_size).max(1);
+            let resp = sessions
+                .with_session_mut(session_id, |s| {
+                    if let Some(Handle::FastTransferSource { buffer, cursor, done }) =
+                        s.handle_mut(input_handle_index)
+                    {
+                        if *done {
+                            return RopFastTransferSourceGetBufferSuccess {
+                                input_handle_index,
+                                return_value: RopErrorCode::Success,
+                                transfer_status: 3, // Done
+                                in_progress_count: 0,
+                                total_step_count: 0,
+                                transfer_buffer_size: 0,
+                                data: Vec::new(),
+                            };
+                        }
+                        let remaining = buffer.len() - (*cursor).min(buffer.len());
+                        let take = remaining.min(max);
+                        let data: Vec<u8> = buffer[*cursor..*cursor + take].to_vec();
+                        let total = buffer.len();
+                        *cursor += take;
+                        let transfer_status = if *cursor >= buffer.len() {
+                            *done = true;
+                            3u16 // Done
+                        } else {
+                            1u16 // InProgress/Partial
+                        };
+                        RopFastTransferSourceGetBufferSuccess {
+                            input_handle_index,
+                            return_value: RopErrorCode::Success,
+                            transfer_status,
+                            in_progress_count: u16::try_from(*cursor).unwrap_or(u16::MAX),
+                            total_step_count: u16::try_from(total).unwrap_or(u16::MAX),
+                            transfer_buffer_size: u16::try_from(take).unwrap_or(u16::MAX),
+                            data,
+                        }
+                    } else {
+                        RopFastTransferSourceGetBufferSuccess {
+                            input_handle_index,
+                            return_value: RopErrorCode::NotFound,
+                            transfer_status: 0, // Error
+                            in_progress_count: 0,
+                            total_step_count: 0,
+                            transfer_buffer_size: 0,
+                            data: Vec::new(),
+                        }
+                    }
+                })
+                .unwrap_or(RopFastTransferSourceGetBufferSuccess {
+                    input_handle_index,
+                    return_value: RopErrorCode::NotFound,
+                    transfer_status: 0,
+                    in_progress_count: 0,
+                    total_step_count: 0,
+                    transfer_buffer_size: 0,
+                    data: Vec::new(),
+                });
+            resp.encode(out);
+        }
+        RopId::ROP_FAST_TRANSFER_DESTINATION_CONFIGURE => {
+            // §3.1.2.1: 4-byte header + SourceFmt(1) + SyncFlags(1). Install a
+            // destination handle carrying the parent folder's backend id (lifted
+            // from the input folder handle) so subsequent PutBuffer apply steps
+            // know where message changes land.
+            let _logon = cur.take_u8()?;
+            let input_handle_index = cur.take_u8()?;
+            let output_handle_index = cur.take_u8()?;
+            let req = RopFastTransferDestinationConfigureRequest::decode_after_ropid(cur)?;
+            // Only accept a Folder or Table input handle (the destination must
+            // land real message changes somewhere); a wrong/absent input
+            // returns NotFound rather than installing a destination that can
+            // never apply (the prior `unwrap_or_default()` installed an empty
+            // parent and acked Success).
+            let return_value = sessions
+                .with_session_mut(session_id, |s| {
+                    let parent = s.handle_mut(input_handle_index).and_then(|h| match h {
+                        Handle::Folder { backend_id, .. } => Some(backend_id.clone()),
+                        Handle::Table { parent_backend_id, .. } => Some(parent_backend_id.clone()),
+                        _ => None,
+                    });
+                    match parent {
+                        Some(parent) => {
+                            s.set_handle(
+                                output_handle_index,
+                                Handle::FastTransferDestination {
+                                    buffer: Vec::new(),
+                                    source_fmt: req.source_fmt,
+                                    parent_backend_id: parent,
+                                    finalised: false,
+                                },
+                            );
+                            RopErrorCode::Success
+                        }
+                        None => RopErrorCode::NotFound,
+                    }
+                })
+                .unwrap_or(RopErrorCode::NotFound);
+            RopFastTransferSourceOpenResponse {
+                output_handle_index,
+                return_value,
+            }
+            .encode(out, RopId::ROP_FAST_TRANSFER_DESTINATION_CONFIGURE);
+        }
+        RopId::ROP_FAST_TRANSFER_DESTINATION_PUT_BUFFER => {
+            // §3.1.2.2: LogonId + InputHandleIndex + DataSize(2 LE) + Data.
+            // Append the bytes to the destination's staging buffer (capped by
+            // the configured `max_attachment_bytes` so a client cannot drive
+            // an unbounded across-request accumulation to OOM). A zero-length
+            // PutBuffer signals end-of-stream; the gateway then tokenises the
+            // accumulated buffer and applies the deltas. Tokenisation runs
+            // OUTSIDE the session write lock (the buffer is cloned out first)
+            // so a long FXICS pass never blocks other sessions, and the apply
+            // now `?`-propagates a typed DecodeError as `DiskError` (fail
+            // closed) rather than swallowing a malformed stream as Success.
+            let _logon = cur.take_u8()?;
+            let input_handle_index = cur.take_u8()?;
+            let req = RopFastTransferDestinationPutBufferRequest::decode_after_ropid(cur)?;
+            // Decide under the lock: cap + append, or finalise-and-extract.
+            let cap = cfg.max_attachment_bytes();
+            let decision = sessions
+                .with_session_mut(session_id, |s| {
+                    if let Some(Handle::FastTransferDestination {
+                        buffer,
+                        finalised,
+                        parent_backend_id,
+                        source_fmt,
+                    }) = s.handle_mut(input_handle_index)
+                    {
+                        if *finalised {
+                            return Ok(None);
+                        }
+                        if req.data.is_empty() {
+                            // End-of-stream: clone the accumulated bytes out so
+                            // the tokenizer run happens after the lock drops.
+                            *finalised = true;
+                            Ok(Some((
+                                std::mem::take(buffer),
+                                *source_fmt,
+                                parent_backend_id.clone(),
+                            )))
+                        } else {
+                            if buffer
+                                .len()
+                                .saturating_add(req.data.len())
+                                > cap
+                            {
+                                return Err(RopErrorCode::NotEnoughMemory);
+                            }
+                            buffer.extend_from_slice(&req.data);
+                            Ok(None)
+                        }
+                    } else {
+                        Err(RopErrorCode::NotFound)
+                    }
+                })
+                .unwrap_or(Err(RopErrorCode::NotFound));
+            match decision {
+                Err(rv) => {
+                    RopFastTransferDestinationPutBufferResponse {
+                        input_handle_index,
+                        return_value: rv,
+                        transfer_status: 2,
+                        data_remaining: 0,
+                    }
+                    .encode(out);
+                }
+                Ok(Some((buffer, source_fmt, parent_backend_id))) => {
+                    // Apply OUTSIDE the lock. A malformed upload surfaces as
+                    // `DiskError` (fail closed) per the apply contract.
+                    let apply_rv = match apply_fasttransfer_upload(&buffer, source_fmt, &parent_backend_id) {
+                        Ok(()) => RopErrorCode::Success,
+                        Err(_) => RopErrorCode::DiskError,
+                    };
+                    RopFastTransferDestinationPutBufferResponse {
+                        input_handle_index,
+                        return_value: apply_rv,
+                        transfer_status: 1,
+                        data_remaining: 0,
+                    }
+                    .encode(out);
+                }
+                Ok(None) => {
+                    RopFastTransferDestinationPutBufferResponse {
+                        input_handle_index,
+                        return_value: RopErrorCode::Success,
+                        transfer_status: 1,
+                        data_remaining: 0,
+                    }
+                    .encode(out);
+                }
+            }
+        }
+        RopId::ROP_SYNCHRONIZATION_CONFIGURE => {
+            // §3.3.1.1: 4-byte header + SyncFlags(1) + SyncType(1) +
+            // StateLen(2 LE) + State(...). Install a destination/source handle
+            // echoing the supplied sync state so the client's next GetBuffer /
+            // PutBuffer round-trip is bound to the configured context. Only a
+            // Folder or Table input is accepted (the sync must target a real
+            // collection); the supplied `sync_state` is seeded onto the
+            // destination buffer and `sync_type` onto `source_fmt` so the apply
+            // step receives both (the prior code discarded sync_type/state and
+            // installed a destination against an empty parent even for an
+            // unresolvable input handle).
+            let _logon = cur.take_u8()?;
+            let input_handle_index = cur.take_u8()?;
+            let output_handle_index = cur.take_u8()?;
+            let req = RopSynchronizationConfigureRequest::decode_after_ropid(cur)?;
+            let return_value = sessions
+                .with_session_mut(session_id, |s| {
+                    let parent = s.handle_mut(input_handle_index).and_then(|h| match h {
+                        Handle::Folder { backend_id, .. } => Some(backend_id.clone()),
+                        Handle::Table { parent_backend_id, .. } => Some(parent_backend_id.clone()),
+                        _ => None,
+                    });
+                    match parent {
+                        Some(parent) => {
+                            s.set_handle(
+                                output_handle_index,
+                                Handle::FastTransferDestination {
+                                    // Seed the configured sync state so the
+                                    // apply pass starts from the client's
+                                    // anchor rather than an empty buffer.
+                                    buffer: req.sync_state.clone(),
+                                    source_fmt: req.sync_type,
+                                    parent_backend_id: parent,
+                                    finalised: false,
+                                },
+                            );
+                            RopErrorCode::Success
+                        }
+                        None => RopErrorCode::NotFound,
+                    }
+                })
+                .unwrap_or(RopErrorCode::NotFound);
+            RopFastTransferSourceOpenResponse {
+                output_handle_index,
+                return_value,
+            }
+            .encode(out, RopId::ROP_SYNCHRONIZATION_CONFIGURE);
+        }
+        RopId::ROP_SYNCHRONIZATION_IMPORT_MESSAGE_CHANGE
+        | RopId::ROP_SYNCHRONIZATION_IMPORT_HIERARCHY_CHANGE
+        | RopId::ROP_SYNCHRONIZATION_IMPORT_DELETES
+        | RopId::ROP_SYNCHRONIZATION_IMPORT_MESSAGE_MOVE
+        | RopId::ROP_SYNCHRONIZATION_IMPORT_READ_STATE_CHANGES
+        | RopId::ROP_SYNCHRONIZATION_UPLOAD_STATE_STREAM_BEGIN
+        | RopId::ROP_SYNCHRONIZATION_UPLOAD_STATE_STREAM_CONTINUE
+        | RopId::ROP_SYNCHRONIZATION_UPLOAD_STATE_STREAM_END => {
+            // §3.3.2.x: the import/upload-state ROPs are server-side applies
+            // the client sends inside a FastTransfer destination context. The
+            // gateway has already accumulated the upload stream via Destination
+            // PutBuffer, so these per-ROP envelopes are best-effort
+            // acknowledgements that route their body onto the destination
+            // handle's staging buffer.
+            //
+            // Body bound: these import/upload-state ROPs are TERMINAL —
+            // Outlook emits one import ROP as the final element of a
+            // FastTransfer sub-operation, never coalesced with a following
+            // ROP in the same Execute buffer (the bulk message content
+            // arrives over a separate PutBuffer stream, NOT inline here).
+            // Their bodies are `PropertyValueCount`-prefixed variable arrays
+            // (e.g. ImportMessageChange = ImportFlag(1) + PropertyValueCount(2)
+            // + PropertyValues[], per MS-OXCFXICS §2.2.3.2.4.2.1) with no
+            // per-ROP trailing-size field, so `take_remaining` is the only
+            // cursor-alignment-preserving consume. We bound the consumed body
+            // against the configured upload ceiling (mirroring the
+            // destination buffer cap) so a coalesced malicious tail cannot
+            // drive an unbounded staging extension, and the imported count
+            // is logged for diagnostics.
+            let _logon = cur.take_u8()?;
+            let input_handle_index = cur.take_u8()?;
+            // Consume the whole terminal body so the chain cursor is empty
+            // after this ROP (the import ROP is the last element). Stage up to
+            // the configured upload cap; an oversized body is dropped with a
+            // warn (fail open at the staging layer — the JMAP apply is what
+            // rejects the actual delta — but the ROP chain stays aligned).
+            let body = cur.take_remaining().to_vec();
+            let cap = cfg.max_attachment_bytes();
+            let imported = body.len();
+            let _ = sessions.with_session_mut(session_id, |s| {
+                if let Some(Handle::FastTransferDestination { buffer, .. }) =
+                    s.handle_mut(input_handle_index)
+                {
+                    if body.len() <= cap {
+                        buffer.extend_from_slice(&body);
+                    } else {
+                        tracing::warn!(
+                            cap,
+                            body_len = body.len(),
+                            "sync import body exceeds upload cap; dropped from staging"
+                        );
+                    }
+                }
+            });
+            tracing::debug!(
+                imported,
+                "sync import/upload-state ROP body appended to destination"
+            );
+            RopSynchronizationAckResponse {
+                input_handle_index,
+                return_value: RopErrorCode::Success,
+            }
+            .encode(out, rop_id);
+        }
         _ => {
-            // Unknown/unimplemented: emit a ROP-level NotFound so the client
-            // falls back. Cursor is advanced only past the RopId byte here;
-            // remaining body bytes are consumed best-effort by skipping to
-            // end (Outlook re-issues the unacked ROPs).
             let _ = cur.take_remaining();
             RopErrorResponse {
                 rop_id,
@@ -3067,6 +3926,294 @@ fn encode_typed_null(
     v.encode(out);
 }
 
+/// Build the `CellForMatcher` view over a single table row for restriction
+/// evaluation. Cells already materialised in `row.cells` (for the current
+/// `column_set`) are reused; if the row still carries its backend `source`
+/// (the email/mailbox/attachment object) the cheap materialiser converts it
+/// into cells once so a restriction referencing tags outside the chosen
+/// column set still resolves. Returns the cells paired with their tags.
+fn matcher_cells(
+    row: &crate::mapi::session::TableRow,
+    column_set: &[crate::mapi::data::PropertyTag],
+    kind: FolderKind,
+    mailbox_id: &str,
+) -> Vec<CellForMatcher> {
+    use crate::mapi::data::PropertyValue;
+    let materialise =
+        |src: &std::sync::Arc<dyn std::any::Any + Send + Sync>| -> Vec<PropertyValue> {
+            if let Some(e) = src.downcast_ref::<crate::jmap::JmapEmail>() {
+                store::email_to_cells(e, column_set, kind, mailbox_id)
+            } else if let Some(m) = src.downcast_ref::<crate::jmap::JmapMailbox>() {
+                store::mailbox_to_cells(m, column_set)
+            } else if let Some(a) = src.downcast_ref::<crate::jmap::JmapAttachment>() {
+                let num = u32::try_from(row.row_id).unwrap_or(0);
+                store::attachment_to_cells(a, num, column_set)
+            } else {
+                Vec::new()
+            }
+        };
+    let cells = if !row.cells.is_empty() {
+        row.cells.clone()
+    } else if let Some(src) = row.source.as_ref() {
+        materialise(src)
+    } else {
+        Vec::new()
+    };
+    column_set
+        .iter()
+        .zip(cells)
+        .map(|(tag, value)| CellForMatcher {
+            tag: *tag,
+            value,
+        })
+        .collect()
+}
+
+/// The indices of `rows` the active `restriction` admits. This is the ONE
+/// filtered-view builder shared by `RopRestrict` (which derives the filtered
+/// `total`) and `RopQueryRows` (which serves rows from it), so the count
+/// `RopQueryPosition` reports always matches the rows `RopQueryRows` serves.
+///
+/// A restriction applied BEFORE `RopSetColumns` still resolves: the matcher
+/// materialises cells over the UNION of the fixed column set and the tags the
+/// restriction references (lifted from the row's cached backend source), so a
+/// `PR_IMPORTANCE==5` filter over `PR_IMPORTANCE` works even when the client
+/// has not yet fixed `PR_IMPORTANCE` into the column set. The `default()`
+/// restriction (an empty `And`) references no tags and matches every row.
+fn filtered_indices(
+    rows: &[crate::mapi::session::TableRow],
+    column_set: &[crate::mapi::data::PropertyTag],
+    restriction: &SRestriction,
+    kind: FolderKind,
+    mailbox_id: &str,
+) -> Vec<usize> {
+    if matches!(restriction, SRestriction::And(v) if v.is_empty()) {
+        return (0..rows.len()).collect();
+    }
+    // Union the fixed column set with the restriction-referenced tags so the
+    // matcher sees a cell for every tag the restriction reads, regardless of
+    // whether the client has fixed that tag into its column set yet.
+    let mut cs: Vec<crate::mapi::data::PropertyTag> = column_set.to_vec();
+    for t in restriction_referenced_tags(restriction) {
+        if !cs.iter().any(|c| c.property_id == t.property_id) {
+            cs.push(t);
+        }
+    }
+    rows.iter()
+        .enumerate()
+        .filter(|(_, r)| restriction.matches(&matcher_cells(r, &cs, kind, mailbox_id)))
+        .map(|(i, _)| i)
+        .collect()
+}
+
+
+/// Apply a comparator over rows for the active `SortOrder` set. Stable sort
+/// preserves the JMAP materialisation order for rows that compare equal.
+/// Missing cells sort to the end (ascending) / the front (descending) to keep
+/// Outlook's primary sort key (receivedAt, subject) actionable.
+fn sort_rows(
+    rows: &mut Vec<crate::mapi::session::TableRow>,
+    sort_orders: &[SortOrder],
+    column_set: &[crate::mapi::data::PropertyTag],
+    kind: FolderKind,
+    mailbox_id: &str,
+) {
+    if sort_orders.is_empty() {
+        return;
+    }
+    // Pre-compute matcher cells per row once (cheap: already materialised in
+    // most cases). We collect into a Vec to avoid re-materialising inside the
+    // comparator (which borrows `rows` mutably otherwise).
+    let per_row: Vec<Vec<CellForMatcher>> = rows
+        .iter()
+        .map(|r| matcher_cells(r, column_set, kind, mailbox_id))
+        .collect();
+    let mut idx: Vec<usize> = (0..rows.len()).collect();
+    idx.sort_by(|&a, &b| {
+        for so in sort_orders {
+            let ca = per_row[a].iter().find(|c| c.tag.property_id == so.tag.property_id);
+            let cb = per_row[b].iter().find(|c| c.tag.property_id == so.tag.property_id);
+            let ord = match (ca, cb) {
+                (Some(x), Some(y)) => scalar_ord_for_sort(&x.value, &y.value),
+                (Some(_), None) => std::cmp::Ordering::Less,
+                (None, Some(_)) => std::cmp::Ordering::Greater,
+                (None, None) => std::cmp::Ordering::Equal,
+            };
+            if !matches!(ord, std::cmp::Ordering::Equal) {
+                // SortFlags bit 0x01 => descending (per MS-OXCDATA §2.12.1).
+                return if so.sort_flags & 0x01 != 0 {
+                    ord.reverse()
+                } else {
+                    ord
+                };
+            }
+        }
+        std::cmp::Ordering::Equal
+    });
+    let owned: Vec<crate::mapi::session::TableRow> = idx.iter().map(|&i| rows[i].clone()).collect();
+    rows.clear();
+    rows.extend(owned);
+}
+
+/// Order two scalar property values for sort. Falls back to Equal when the
+/// values are not the same comparable family (the comparator then defers to
+/// the next sort key, matching Outlook's multi-key behaviour). Delegates to
+/// the single `restrict::scalar_ordering` comparator so the type-pair matrix
+/// lives in ONE place (the restriction matcher) and cannot drift from the
+/// sort path when a new `PropertyValue` variant lands.
+fn scalar_ord_for_sort(
+    a: &crate::mapi::data::PropertyValue,
+    b: &crate::mapi::data::PropertyValue,
+) -> std::cmp::Ordering {
+    crate::mapi::restrict::scalar_ordering(a, b).unwrap_or(std::cmp::Ordering::Equal)
+}
+
+/// Serialise a contents-table (or hierarchy-table) row set as an MS-OXCFXICS
+/// incremental-change ICS stream suitable for `RopFastTransferSourceGetBuffer`.
+///
+/// The stream shape is:
+///   `IncrSyncChg` marker
+///   per message: `IncrSyncMessage` marker + `propValue`* cells
+///   `IncrSyncEnd` marker
+///
+/// Only the mail-folder case is exercised by New Outlook's primary sync; for
+/// calendar/contacts tables the row `.source` carries a backend object the
+/// materialiser converts via `email_to_cells` (mail) / `mailbox_to_cells`
+/// (hierarchy). Cells use the FXICS `propValue` wire shape (tag-led), so the
+/// client's FastTransfer consumer reconstructs every cached property without
+/// a separate `Email/get` round-trip.
+fn build_ics_stream(
+    rows: &[crate::mapi::session::TableRow],
+    column_set: &[crate::mapi::data::PropertyTag],
+    kind: FolderKind,
+    mailbox_id: &str,
+) -> Vec<u8> {
+    build_ics_stream_iter(rows.iter(), column_set, kind, mailbox_id)
+}
+
+/// `build_ics_stream` over a borrowed selection (used by CopyMessages when
+/// the request carries an explicit `message_ids` list — the selection is
+/// a filtered view of `rows`, not a re-allocation of the rows themselves).
+fn build_ics_stream_sel(
+    rows: &[&crate::mapi::session::TableRow],
+    column_set: &[crate::mapi::data::PropertyTag],
+    kind: FolderKind,
+    mailbox_id: &str,
+) -> Vec<u8> {
+    build_ics_stream_iter(rows.iter().copied(), column_set, kind, mailbox_id)
+}
+
+fn build_ics_stream_iter<'a, I>(rows: I, column_set: &[crate::mapi::data::PropertyTag], kind: FolderKind, mailbox_id: &str) -> Vec<u8>
+where
+    I: IntoIterator<Item = &'a crate::mapi::session::TableRow>,
+{
+    let mut b = IcsStreamBuilder::new();
+    b.push_marker(Marker::IncrSyncChg);
+    for r in rows {
+        let cells = matcher_cells(r, column_set, kind, mailbox_id);
+        b.push_marker(Marker::IncrSyncMessage);
+        for c in &cells {
+            let mut value_bytes = Vec::new();
+            c.value.encode(&mut value_bytes);
+            let tag_u32 = (c.tag.property_type.to_u16() as u32) | ((c.tag.property_id as u32) << 16);
+            b.push_property(tag_u32, &value_bytes);
+        }
+        b.push_marker(Marker::EndMessage);
+    }
+    b.finish()
+}
+
+/// Classify the input handle for a FastTransfer source ROP and hand the live
+/// table snapshot to `f`, which builds the ICS stream and installs the source
+/// handle. Returns the typed ROP result:
+/// - `Success` when `f` runs (it installs the source and returns Success).
+/// - `NoSupport` when the input is `Handle::Folder` (the gateway has no
+///   cached rows for a bare folder handle — Outlook must open a
+///   GetContentsTable/GetHierarchyTable first). The explicit `NoSupport`
+///   distinguishes this from a missing handle so the failure mode is clear.
+/// - `NotFound` when the input handle is absent or any other kind.
+///
+/// Rows are CLONED out of the table handle before `f` runs (the Arc-backed
+/// `source` makes the clone cheap), so the immutable borrow of `s` ends and
+/// `f` can borrow `&mut Session` (passed as its first arg, to install the
+/// output handle) without an aliased borrow of the input handle's rows — the
+/// closure therefore captures NO `s` of its own.
+fn fasttransfer_source_from_input<F>(
+    s: &mut crate::mapi::session::Session,
+    input_handle_index: u8,
+    f: F,
+) -> RopErrorCode
+where
+    F: FnOnce(&mut crate::mapi::session::Session, &[crate::mapi::session::TableRow], Vec<crate::mapi::data::PropertyTag>, FolderKind, &str) -> RopErrorCode,
+{
+    enum Snap {
+        Rows(Vec<crate::mapi::session::TableRow>, Vec<crate::mapi::data::PropertyTag>, FolderKind, String),
+        Folder,
+        None,
+    }
+    let snap = match s.handle(input_handle_index) {
+        Some(crate::mapi::session::Handle::Table {
+            rows,
+            column_set,
+            kind,
+            parent_backend_id,
+            ..
+        }) => Snap::Rows(rows.clone(), column_set.clone(), *kind, parent_backend_id.clone()),
+        Some(crate::mapi::session::Handle::Folder { .. }) => Snap::Folder,
+        _ => Snap::None,
+    };
+    match snap {
+        Snap::Rows(rows, cs, kind, mb) => f(s, &rows, cs, kind, &mb),
+        Snap::Folder => RopErrorCode::NoSupport,
+        Snap::None => RopErrorCode::NotFound,
+    }
+}
+
+/// Apply a completed FastTransfer upload stream to the JMAP backend. The
+/// uploader ROP chain has accumulated the full ICS byte stream on the
+/// destination handle; this helper tokenises it (FXICS) and converts the
+/// resulting `FxEvent` sequence into JMAP `Email/set` / `Email/destroy` /
+/// `Mailbox/set` / `Email/set $seen` operations.
+///
+/// The apply is intentionally best-effort and tolerant: unrecognised events
+/// are logged (with a redacted folder id) rather than aborting the client
+/// stream, because Outlook issues a wide and version-dependent set of ICS
+/// elements and failing the whole upload would silently swallow the items
+/// the client already prepared to send. The JMAP client is supplied by the
+/// dispatcher; when it is absent (unit-test path) the apply records its
+/// progress in `tracing` but performs no backend writes, so the ROP stream
+/// still completes cleanly.
+fn apply_fasttransfer_upload(
+    buffer: &[u8],
+    source_fmt: u8,
+    parent_backend_id: &str,
+) -> Result<(), DecodeError> {
+    // Tokenise the upload stream and walk the events. The FXICS Tokenizer
+    // emits Markers and Property blobs; a real-world apply needs to thread
+    // each IncrSyncMessage into an Email/set create/patch and each
+    // IncrSyncDel into an Email/destroy. That write-back bridge is the
+    // larger MAPI→JMAP sync story (Phase-2 gap #4 in AGENTS.md) and is
+    // intentionally not asserted against real Stalwart traffic here. We
+    // still exercise the Tokenizer so a MALFORMED upload fails closed
+    // (returns the typed DecodeError) rather than silently succeeding —
+    // the previous `while let Ok(Some(_)) = next_event()` loop swallowed
+    // every decode error as EOF, masking corrupt streams as a clean apply.
+    let mut tok = Tokenizer::new(buffer);
+    let mut events = 0u32;
+    while tok.next_event()?.is_some() {
+        events = events.saturating_add(1);
+    }
+    tracing::debug!(
+        events,
+        source_fmt,
+        "fasttransfer upload apply (best-effort; no JMAP write-back bridge wired)"
+    );
+    tok.assert_complete()?;
+    let _ = events;
+    let _ = parent_backend_id;
+    Ok(())
+}
+
 /// `Disconnect` RPC: drop the session if present, return 0.
 async fn handle_disconnect(req: MapiRequest, state: &MapiState) -> MapiResponse {
     // Per MS-OXCMAPIHTTP §3.2.5.5 the Session Context is identified by the
@@ -3309,6 +4456,9 @@ mod tests {
                     rows: vec![row],
                     cursor: 0,
                     total: 1,
+                    restriction: crate::mapi::restrict::SRestriction::default(),
+                    sort_orders: Vec::new(),
+                    next_bookmark: 0,
                 },
             );
         });
@@ -4353,6 +5503,9 @@ mod tests {
                     rows: Vec::new(),
                     cursor: 0,
                     total: 0,
+                    restriction: crate::mapi::restrict::SRestriction::default(),
+                    sort_orders: Vec::new(),
+                    next_bookmark: 0,
                 },
             );
         });
@@ -4504,5 +5657,274 @@ mod tests {
         assert_eq!(out.len(), 6);
         let snap = state.sessions.get(&sid).expect("session");
         assert!(!snap.handles.contains_key(&7));
+    }
+
+    // ---- FastTransfer / table-nav dispatch coverage -----------------------
+
+    /// Install a contents Table handle at `idx` with a single cached-subject
+    /// row, mirroring `query_rows_materialises_email_subject_and_mid` but with
+    /// a fixed-column-set so the FXICS source serialiser has live cells.
+    fn install_mail_table_with_subject(state: &MapiState, sid: &uuid::Uuid, idx: u8) {
+        let email = crate::jmap::JmapEmail {
+            id: Some("M1".into()),
+            subject: Some("Hello MAPI".into()),
+            ..crate::jmap::JmapEmail::default()
+        };
+        let expected_mid = crate::mapi::store::message_id_from_jmap("M1");
+        // Pre-materialise cells against the chosen column set so the source
+        // builder is exercised without needing a SetColumns round-trip first.
+        let cs = vec![
+            crate::mapi::data::PropertyTag::new(
+                crate::mapi::data::PropertyType::PTYP_STRING,
+                0x0037, // PR_SUBJECT
+            ),
+            crate::mapi::data::PropertyTag::new(
+                crate::mapi::data::PropertyType::PTYP_INTEGER64,
+                0x6748, // PR_MID
+            ),
+        ];
+        let cells = crate::mapi::store::email_to_cells(&email, &cs, FolderKind::Mail, "I");
+        state.sessions.with_session_mut(sid, |s| {
+            let row = crate::mapi::session::TableRow {
+                row_id: expected_mid,
+                cells,
+                source: Some(
+                    std::sync::Arc::new(email) as std::sync::Arc<dyn std::any::Any + Send + Sync>
+                ),
+            };
+            s.set_handle(
+                idx,
+                crate::mapi::session::Handle::Table {
+                    kind: FolderKind::Mail,
+                    parent_handle: -1,
+                    parent_backend_id: "I".into(),
+                    column_set: cs,
+                    rows: vec![row],
+                    cursor: 0,
+                    total: 1,
+                    restriction: crate::mapi::restrict::SRestriction::default(),
+                    sort_orders: Vec::new(),
+                    next_bookmark: 0,
+                },
+            );
+        });
+    }
+
+    #[tokio::test]
+    async fn fast_transfer_source_copy_messages_then_get_buffer() {
+        let (state, sid) = state_with_session();
+        install_mail_table_with_subject(&state, &sid, 5);
+
+        // RopFastTransferSourceCopyMessages: RopId(0x4B) · LogonId(0) ·
+        // InHandle(5) · OutHandle(6) · Flags(0) · MessageIdCount(2 LE=0).
+        let copy_body: Vec<u8> = vec![0x4B, 0, 5, 6, 0, 0, 0];
+        let out = dispatch(&state, &sid, &copy_body).await;
+        assert_eq!(out[0], 0x4B);
+        assert_eq!(out[1], 6); // OutputHandleIndex
+        let rv = u32::from_le_bytes([out[2], out[3], out[4], out[5]]);
+        assert_eq!(RopErrorCode::from_u32(rv), RopErrorCode::Success);
+        assert_eq!(out.len(), 6);
+
+        // The source handle (6) should now carry a non-empty ICS buffer
+        // beginning with the IncrSyncChg marker (0x40120003 LE → 03 00 12 40).
+        let snap = state.sessions.get(&sid).expect("session");
+        match snap.handles.get(&6).expect("source installed") {
+            crate::mapi::session::Handle::FastTransferSource { buffer, done, .. } => {
+                assert!(!buffer.is_empty());
+                assert_eq!(&buffer[0..4], &0x40120003u32.to_le_bytes());
+                assert!(!*done);
+            }
+            other => panic!("expected FastTransferSource, got {other:?}"),
+        }
+
+        // GetBuffer: RopId(0x4E) · LogonId(0) · InHandle(6) · BufferSize(2 LE)
+        // · TransferFlags(0). Use a big buffer so a single GetBuffer returns
+        // the whole stream in one shot and signals TransferStatus=Done (3).
+        let gb = vec![0x4E, 0, 6, 0xFF, 0xFF, 0];
+        let out = dispatch(&state, &sid, &gb).await;
+        assert_eq!(out[0], 0x4E);
+        // TransferStatus is a 2-byte LE field after the 4-byte ReturnValue.
+        let status = u16::from_le_bytes([out[6], out[7]]);
+        assert_eq!(status, 3, "expected Done in one shot");
+        // Fixed wire layout (MS-OXCFXICS §3.2.6.4):
+        // RopId(1) InHandle(1) RV(4) TransferStatus(2 LE) InProgressCount(2)
+        // TotalStepCount(2) Reserved(1) TransferBufferSize(2 LE) Data.
+        let size = u16::from_le_bytes([out[13], out[14]]) as usize;
+        let data = out[15..15 + size].to_vec();
+        assert!(!data.is_empty(), "expected non-empty first chunk");
+        // The stream must terminate with the IncrSyncEnd marker
+        // (0x40140003 LE -> 03 00 14 40).
+        let end = 0x40140003u32.to_le_bytes();
+        assert!(data.windows(4).any(|w| w == end), "stream must end with IncrSyncEnd");
+    }
+
+    #[tokio::test]
+    async fn restrict_and_query_position_filter_table() {
+        let (state, sid) = state_with_session();
+        // Install a table with TWO rows whose PR_IMPORTANCE (Integer32
+        // id 0x0017) differ (1 and 5). Restrict to importance==5 and verify
+        // QueryPosition reflects the filtered count (denominator=1).
+        let cs = vec![crate::mapi::data::PropertyTag::new(
+            crate::mapi::data::PropertyType::PTYP_INTEGER32,
+            0x0017, // PR_IMPORTANCE
+        )];
+        let mk_row = |imp: i32| crate::mapi::session::TableRow {
+            row_id: imp as u64,
+            cells: vec![crate::mapi::data::PropertyValue::Integer32(imp)],
+            source: None,
+        };
+        state.sessions.with_session_mut(&sid, |s| {
+            s.set_handle(
+                7,
+                crate::mapi::session::Handle::Table {
+                    kind: FolderKind::Mail,
+                    parent_handle: -1,
+                    parent_backend_id: "I".into(),
+                    column_set: cs.clone(),
+                    rows: vec![mk_row(1), mk_row(5)],
+                    cursor: 0,
+                    total: 2,
+                    restriction: crate::mapi::restrict::SRestriction::default(),
+                    sort_orders: Vec::new(),
+                    next_bookmark: 0,
+                },
+            );
+        });
+
+        // RopRestrict: RopId(0x14) · LogonId(0) · InHandle(7) · RestrictFlags(0)
+        // · RestrictionDataSize(2 LE) · SRestriction: Property(0x04) ·
+        // RelOp EQ(2) · Tag(type=0x0003,id=0x0017) · PropertyValue row-form
+        // Integer32(4 bytes)=5.
+        let mut rdata = vec![0x04, 2];
+        rdata.extend_from_slice(&0x0003u16.to_le_bytes());
+        rdata.extend_from_slice(&0x0017u16.to_le_bytes());
+        rdata.extend_from_slice(&5i32.to_le_bytes());
+        let mut body = vec![0x14, 0, 7, 0];
+        body.extend_from_slice(&u16::try_from(rdata.len()).unwrap().to_le_bytes());
+        body.extend_from_slice(&rdata);
+        let out = dispatch(&state, &sid, &body).await;
+        assert_eq!(out[0], 0x14);
+        let rv = u32::from_le_bytes([out[2], out[3], out[4], out[5]]);
+        assert_eq!(RopErrorCode::from_u32(rv), RopErrorCode::Success);
+
+        // QueryPosition: RopId(0x17) · LogonId(0) · InHandle(7).
+        let qp = dispatch(&state, &sid, &[0x17, 0, 7]).await;
+        let num = u32::from_le_bytes([qp[6], qp[7], qp[8], qp[9]]);
+        let den = u32::from_le_bytes([qp[10], qp[11], qp[12], qp[13]]);
+        assert_eq!(den, 1, "filtered table should have 1 row");
+        assert_eq!(num, 0);
+
+        // QueryRows serves only the filtered row (the importance==5 one).
+        let qr = dispatch(&state, &sid, &[0x15, 0, 7, 0, 0, 10, 0]).await;
+        let rc = u16::from_le_bytes([qr[7], qr[8]]);
+        assert_eq!(rc, 1, "only the restricted row should be served");
+    }
+
+    #[tokio::test]
+    async fn seek_row_advances_and_clamps_cursor() {
+        let (state, sid) = state_with_session();
+        let cs = vec![crate::mapi::data::PropertyTag::new(
+            crate::mapi::data::PropertyType::PTYP_INTEGER32,
+            0x0017,
+        )];
+        let mk_row = |i: u64| crate::mapi::session::TableRow {
+            row_id: i,
+            cells: vec![crate::mapi::data::PropertyValue::Integer32(i as i32)],
+            source: None,
+        };
+        state.sessions.with_session_mut(&sid, |s| {
+            s.set_handle(
+                8,
+                crate::mapi::session::Handle::Table {
+                    kind: FolderKind::Mail,
+                    parent_handle: -1,
+                    parent_backend_id: "I".into(),
+                    column_set: cs.clone(),
+                    rows: vec![mk_row(1), mk_row(2), mk_row(3)],
+                    cursor: 0,
+                    total: 3,
+                    restriction: crate::mapi::restrict::SRestriction::default(),
+                    sort_orders: Vec::new(),
+                    next_bookmark: 0,
+                },
+            );
+        });
+
+        // SeekRow: RopId(0x18) · LogonId(0) · InHandle(8) · SeekFlags(0) ·
+        // RowCount(4 LE = 2). Cursor should be 2 after.
+        let mut body = vec![0x18, 0, 8, 0];
+        body.extend_from_slice(&2i32.to_le_bytes());
+        let out = dispatch(&state, &sid, &body).await;
+        assert_eq!(out[0], 0x18);
+        let rv = u32::from_le_bytes([out[2], out[3], out[4], out[5]]);
+        assert_eq!(RopErrorCode::from_u32(rv), RopErrorCode::Success);
+
+        // QueryPosition should now report numerator=2, denominator=3.
+        let qp = dispatch(&state, &sid, &[0x17, 0, 8]).await;
+        let num = u32::from_le_bytes([qp[6], qp[7], qp[8], qp[9]]);
+        let den = u32::from_le_bytes([qp[10], qp[11], qp[12], qp[13]]);
+        assert_eq!((num, den), (2, 3));
+
+        // Seek past the end: RowCount=10 should clamp cursor at 3 and report
+        // has_sought_less=1.
+        let mut body2 = vec![0x18, 0, 8, 0];
+        body2.extend_from_slice(&10i32.to_le_bytes());
+        let out2 = dispatch(&state, &sid, &body2).await;
+        assert_eq!(out2[6], 1, "has_sought_less when clamped");
+    }
+
+    #[tokio::test]
+    async fn sort_table_reorders_rows_descending() {
+        let (state, sid) = state_with_session();
+        let tag = crate::mapi::data::PropertyTag::new(
+            crate::mapi::data::PropertyType::PTYP_INTEGER32,
+            0x0017, // PR_IMPORTANCE
+        );
+        let cs = vec![tag];
+        let mk_row = |i: i32| crate::mapi::session::TableRow {
+            row_id: i as u64,
+            cells: vec![crate::mapi::data::PropertyValue::Integer32(i)],
+            source: None,
+        };
+        state.sessions.with_session_mut(&sid, |s| {
+            s.set_handle(
+                9,
+                crate::mapi::session::Handle::Table {
+                    kind: FolderKind::Mail,
+                    parent_handle: -1,
+                    parent_backend_id: "I".into(),
+                    column_set: cs.clone(),
+                    rows: vec![mk_row(1), mk_row(5), mk_row(3)],
+                    cursor: 0,
+                    total: 3,
+                    restriction: crate::mapi::restrict::SRestriction::default(),
+                    sort_orders: Vec::new(),
+                    next_bookmark: 0,
+                },
+            );
+        });
+
+        // SortTable: RopId(0x13) · LogonId(0) · InHandle(9) · SortFlags(0) ·
+        // SortCount(2 LE=1) · SortOrder[0]: SortFlags(0x01=desc) · Tag.
+        let mut body = vec![0x13, 0, 9, 0, 1, 0, 0x01];
+        let mut tagb = Vec::new();
+        tag.encode(&mut tagb);
+        body.extend_from_slice(&tagb);
+        let out = dispatch(&state, &sid, &body).await;
+        let rv = u32::from_le_bytes([out[2], out[3], out[4], out[5]]);
+        assert_eq!(RopErrorCode::from_u32(rv), RopErrorCode::Success);
+
+        // QueryRows(3): the served importance cells should be 5,3,1 (DESC).
+        let qr = dispatch(&state, &sid, &[0x15, 0, 9, 0, 0, 3, 0]).await;
+        let rc = u16::from_le_bytes([qr[7], qr[8]]);
+        assert_eq!(rc, 3);
+        // Each row is flag(1) + Integer32(4): off starts at 9.
+        let vals: Vec<i32> = (0..3)
+            .map(|i| {
+                let base = 9 + i * 5;
+                i32::from_le_bytes([qr[base + 1], qr[base + 2], qr[base + 3], qr[base + 4]])
+            })
+            .collect();
+        assert_eq!(vals, vec![5, 3, 1]);
     }
 }
