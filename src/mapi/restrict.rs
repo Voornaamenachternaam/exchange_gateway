@@ -210,7 +210,7 @@ pub enum SRestriction {
     },
     /// `resBitMask` (§2.12.3.6.1): bitwise compare. Wire:
     /// `RestrictionType(1)=0x06`, `BitMaskRelOp(1)`, `PropertyTag(4)`,
-    /// `Mask(8 LE)`.
+    /// `Mask(4 LE)`.
     BitMask {
         rel_op: BitMaskRelOp,
         tag: PropertyTag,
@@ -257,6 +257,45 @@ impl Default for SRestriction {
     fn default() -> Self {
         Self::And(Vec::new())
     }
+}
+
+/// Collect the property tags a restriction references, so a matcher applied
+/// before `RopSetColumns` can still materialise the cells it needs. Recurses
+/// into AND/OR/NOT/Sub/Comment. De-duplicated, preserving first-seen order.
+/// The `default()` (empty `And`) references no tags, which the caller treats
+/// as "match all rows".
+pub fn restriction_referenced_tags(r: &SRestriction) -> Vec<PropertyTag> {
+    fn go(r: &SRestriction, out: &mut Vec<PropertyTag>) {
+        let push = |out: &mut Vec<PropertyTag>, tag: PropertyTag| {
+            if !out.iter().any(|t| t.property_id == tag.property_id) {
+                out.push(tag);
+            }
+        };
+        match r {
+            SRestriction::And(cs) | SRestriction::Or(cs) | SRestriction::Comment { children: cs } => {
+                for c in cs {
+                    go(c, out);
+                }
+            }
+            SRestriction::Not(c) => go(c, out),
+            SRestriction::Content { content_tag, .. } => push(out, *content_tag),
+            SRestriction::Property { tag, .. } => push(out, *tag),
+            SRestriction::CompareProperties { tag_a, tag_b, .. } => {
+                push(out, *tag_a);
+                push(out, *tag_b);
+            }
+            SRestriction::BitMask { tag, .. } | SRestriction::Size { tag, .. } => push(out, *tag),
+            SRestriction::Exist { tag } => push(out, *tag),
+            SRestriction::SubRestriction { tag, child, .. } => {
+                push(out, *tag);
+                go(child, out);
+            }
+            SRestriction::Count { .. } => {}
+        }
+    }
+    let mut out = Vec::new();
+    go(r, &mut out);
+    out
 }
 
 impl SRestriction {
@@ -512,21 +551,40 @@ impl SRestriction {
                 .iter()
                 .find(|c| c.tag.equivalent(tag))
                 .is_some_and(|c| size_match(relop, &c.value, *size)),
-            // CompareProperties / SubRestriction / Comment / Count are
-            // best-effort: the gateway has no cross-row property comparison
-            // in the ROP-by-ROP path, so they match all rows (no false
-            // exclusions) rather than silently emptying the table.
-            Self::CompareProperties { .. }
-            | Self::SubRestriction { .. }
-            | Self::Comment { .. }
-            | Self::Count { .. } => true,
+            // CompareProperties compares two of the ROW's own cells (not a
+            // row vs a constant), so it is fully evaluable here.
+            Self::CompareProperties { relop, tag_a, tag_b } => {
+                let a = row.iter().find(|c| c.tag.equivalent(tag_a));
+                let b = row.iter().find(|c| c.tag.equivalent(tag_b));
+                match (a, b) {
+                    (Some(x), Some(y)) => compare_relop(*relop, &x.value, &y.value),
+                    // an absent operand is not comparable, so no match (fail closed).
+                    _ => false,
+                }
+            }
+            // A Comment restriction wraps zero or more child restrictions
+            // that MUST be applied (MS-OXCDATA 2.12.3.10): evaluate them with
+            // AND semantics. The earlier "match all rows" branch silently
+            // discarded the wrapped restrictions, so an Outlook search
+            // folder carrying its predicate inside a Comment returned every row.
+            Self::Comment { children } => children.iter().all(|c| c.matches(row)),
+            // SubRestriction scopes a child to a message/recipient sub-object
+            // the gateway does not separately materialise; we evaluate the
+            // child against the flat row as a defensive best-effort (better
+            // than match-all, which would over-include on a NOT child).
+            Self::SubRestriction { child, .. } => child.matches(row),
+            // Count is a top-N cardinality restriction the ROP-by-ROP path
+            // cannot honour without a sort key; match-all keeps it non-empty
+            // (a reject would empty the table for any restriction nesting a
+            // Count, which Outlook does for search folders).
+            Self::Count { .. } => true,
         }
     }
 }
 
 impl PropertyTag {
     /// Two tags match if they name the same `property_id` (the high 0x8000
-    /// named-bit is dropped — a named prop and its resolved id are treated
+    /// named-bit is dropped -- a named prop and its resolved id are treated
     /// as equivalent for the gateway's row-matching). Property type mismatch
     /// does NOT fail the match because Outlook issues Exist restrictions
     /// with PtypUnspecified sometimes.
@@ -566,7 +624,12 @@ fn compare_relop(relop: RelOp, lhs: &PropertyValue, rhs: &PropertyValue) -> bool
         0 => ord.is_some_and(|o| o.is_ge()),
         1 => ord.is_some_and(|o| o.is_gt()),
         2 => ord.is_some_and(|o| o.is_eq()),
-        3 => ord.is_none_or(|o| !o.is_eq()),
+        // NE must be fail-closed: a non-comparable pair (mismatched scalar
+        // families or unordered NaN) does NOT match, even though the values
+        // differ. The earlier `is_none_or` form returned true for every
+        // incomparable pair, which over-inclusive-filtered (a PtypBoolean NE
+        // a PtypInteger32 would match every row).
+        3 => ord.is_some_and(|o| !o.is_eq()),
         4 => ord.is_some_and(|o| o.is_le()),
         5 => ord.is_some_and(|o| o.is_lt()),
         _ => false,
@@ -577,7 +640,7 @@ fn compare_relop(relop: RelOp, lhs: &PropertyValue, rhs: &PropertyValue) -> bool
 /// not comparable (different scalar families). Time (`PropertyValue::Time`)
 /// is compared by its `u64` ticks so a Time vs Time restriction orders.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ScalarOrd {
+pub enum ScalarOrd {
     Lt,
     Eq,
     Gt,
@@ -601,7 +664,23 @@ impl ScalarOrd {
     }
 }
 
-fn scalar_ord(lhs: &PropertyValue, rhs: &PropertyValue) -> Option<ScalarOrd> {
+pub fn scalar_ord(lhs: &PropertyValue, rhs: &PropertyValue) -> Option<ScalarOrd> {
+    scalar_ord_impl(lhs, rhs)
+}
+
+/// Same comparison as [`scalar_ord`] but returning a standard
+/// [`std::cmp::Ordering`], for sort callers that need to map incomparable
+/// pairs to [`std::cmp::Ordering::Equal`]. Exposed so the table-sort path
+/// (handler) does not duplicate the type-pair matrix that lives here.
+pub fn scalar_ordering(lhs: &PropertyValue, rhs: &PropertyValue) -> Option<std::cmp::Ordering> {
+    scalar_ord_impl(lhs, rhs).map(|o| match o {
+        ScalarOrd::Lt => std::cmp::Ordering::Less,
+        ScalarOrd::Eq => std::cmp::Ordering::Equal,
+        ScalarOrd::Gt => std::cmp::Ordering::Greater,
+    })
+}
+
+fn scalar_ord_impl(lhs: &PropertyValue, rhs: &PropertyValue) -> Option<ScalarOrd> {
     use PropertyValue as V;
     let ord = match (lhs, rhs) {
         (V::Integer16(a), V::Integer16(b)) => i64::from(*a).cmp(&i64::from(*b)),
@@ -655,7 +734,10 @@ fn content_match(fl: &FuzzyLevel, lhs: &PropertyValue, rhs: &PropertyValue) -> b
 
 fn str_eq(a: &str, b: &str, ignore: bool) -> bool {
     if ignore {
-        a.eq_ignore_ascii_case(b)
+        // Unicode-aware case folding (str::to_lowercase) so a FL_IGNORECASE
+        // match folds non-ASCII letters ("cafe" == "CAFÉ"). MAPI/JMAP strings
+        // are UTF-8/SMP, so ASCII-only folding would miss accents.
+        a.to_lowercase() == b.to_lowercase()
     } else {
         a == b
     }
@@ -666,7 +748,7 @@ fn str_contains(haystack: &str, needle: &str, ignore: bool) -> bool {
         return true;
     }
     if ignore {
-        haystack.to_ascii_lowercase().contains(&needle.to_ascii_lowercase())
+        haystack.to_lowercase().contains(&needle.to_lowercase())
     } else {
         haystack.contains(needle)
     }
@@ -674,9 +756,7 @@ fn str_contains(haystack: &str, needle: &str, ignore: bool) -> bool {
 
 fn str_starts_with(haystack: &str, needle: &str, ignore: bool) -> bool {
     if ignore {
-        haystack
-            .to_ascii_lowercase()
-            .starts_with(&needle.to_ascii_lowercase())
+        haystack.to_lowercase().starts_with(&needle.to_lowercase())
     } else {
         haystack.starts_with(needle)
     }
@@ -697,18 +777,35 @@ fn bitmask_match(rel_op: BitMaskRelOp, lhs: &PropertyValue, mask: u32) -> bool {
     }
 }
 
+fn property_wire_size(v: &PropertyValue) -> Option<u64> {
+    use PropertyValue as V;
+    Some(match v {
+        V::Null => 0,
+        V::Boolean(_) => 1,
+        V::Integer16(_) => 2,
+        V::Integer32(_) | V::Floating32(_) | V::ErrorCode(_) => 4,
+        V::Integer64(_) | V::Time(_) | V::Currency(_) | V::Floating64(_) => 8,
+        V::Guid(_) => 16,
+        V::Binary(b) => b.len() as u64,
+        // PtypString wires as a NUL(0x0000)-terminated UTF-16 stream: the
+        // on-wire size is the UTF-16 byte count plus the 2-byte terminator.
+        V::String(s) => (s.encode_utf16().count() as u64) * 2 + 2,
+        // PtypString8 wires as a NUL-byte-terminated byte stream.
+        V::String8(s) => s.len() as u64 + 1,
+        // Opaque payloads and multivalue rows are not size-comparable here.
+        _ => return None,
+    })
+}
+
 fn size_match(relop: &SizeRelOp, lhs: &PropertyValue, size: u32) -> bool {
-    let v = match lhs {
-        PropertyValue::Binary(b) => b.len() as u64,
-        PropertyValue::String(s) => (s.encode_utf16().count() * 2) as u64,
-        PropertyValue::String8(s) => s.len() as u64,
-        PropertyValue::Integer32(v) => *v as u64,
-        PropertyValue::Integer64(v) => *v as u64,
-        _ => return false,
+    let Some(v) = property_wire_size(lhs) else {
+        return false;
     };
-    // The byte-relop discriminant reuses the RelOp encoding (0..5 == GE/LT/...).
-    // MS-OXCDATA §2.12.3.7.1 relops for SizeRestriction are EQZ/NEZ/RELOP but we
-    // honour the relational interpretation Outlook actually issues (>= size).
+    // The byte-relop discriminant reuses the RelOp encoding (0..5 == GE/GT/...).
+    // resSize compares the property's serialized WIRE size, not its scalar
+    // value, so `Size EQ 4` matches every PtypInteger32 regardless of the
+    // integer it holds (MS-OXDATA 2.12.3.7). We honour the relational
+    // interpretation Outlook actually issues (>= size).
     match relop.to_u8() {
         0 => v >= u64::from(size), // GE
         1 => v > u64::from(size),  // GT

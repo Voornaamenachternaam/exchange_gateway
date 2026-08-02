@@ -362,6 +362,8 @@ pub enum DecodeError {
     InvalidValue,
     #[error("invalid UTF-8 in string field")]
     InvalidUtf8,
+    #[error("trailing bytes after a length-delimited field")]
+    Trailing,
 }
 
 // ---- common header / response envelope --------------------------------------
@@ -2314,7 +2316,22 @@ pub struct RopRestrictRequest {
 impl RopRestrictRequest {
     pub fn decode(cur: &mut Buf<'_>) -> Result<Self, DecodeError> {
         let restrict_flags = cur.take_u8()?;
-        let restriction = crate::mapi::restrict::SRestriction::decode(cur)?;
+        // MS-OXCTABL §2.2.2.4.1 / MS-OXCROPS §2.2.5.3.1: the body is
+        // `RestrictFlags(1) · RestrictionDataSize(2 LE) · RestrictionData`.
+        // We MUST read the 2-byte size prefix and decode the restriction from
+        // exactly that many bytes, so a trailing ROP in an Execute chain stays
+        // aligned (the SRestriction decoder is self-delimiting but the size
+        // prefix is the authoritative bound the client emits).
+        let size = usize::from(cur.take_u16_le()?);
+        let data = cur.take_bytes(size)?;
+        let mut inner = Buf::new(data);
+        let restriction = crate::mapi::restrict::SRestriction::decode(&mut inner)?;
+        // Reject trailing bytes inside the declared restriction envelope — a
+        // bogus RestrictionDataSize that overshoots the actual self-delimiting
+        // restriction would otherwise desync the chain.
+        if inner.remaining() != 0 {
+            return Err(DecodeError::Trailing);
+        }
         Ok(Self {
             input_handle_index: 0,
             restrict_flags,
@@ -2567,13 +2584,16 @@ impl RopCreateBookmarkRequest {
 }
 
 /// `RopCreateBookmark` success response (§2.2.7.5.2):
-///   `RopId · OutputHandleIndex · ReturnValue(4) · Bookmark(8 LE)`.
-///   The 8-byte bookmark carries the absolute row index the bookmark pins.
+///   `RopId · OutputHandleIndex · ReturnValue(4) · Bookmark(4 LE)`. A MAPI
+///   Bookmark is a `ULONG` (4 bytes) per MS-OXCTABL; the gateway pins it to
+///   the row's stable `row_id` (NOT the absolute cursor index) so a bookmark
+///   survives a `RopSortTable` reorder — `RopSeekRowBookmark` resolves it by
+///   scanning the table for the matching `row_id`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RopCreateBookmarkResponse {
     pub output_handle_index: u8,
     pub return_value: RopErrorCode,
-    pub bookmark: u64,
+    pub bookmark: u32,
 }
 
 impl RopCreateBookmarkResponse {
@@ -2586,19 +2606,16 @@ impl RopCreateBookmarkResponse {
 }
 
 /// `RopFreeBookmark` request (0x89, §2.2.7.6.1). Body after LogonId +
-/// InputHandleIndex: `Bookmark(8 LE)`.
+/// InputHandleIndex: `Bookmark(4 LE)`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RopFreeBookmarkRequest {
     pub input_handle_index: u8,
-    pub bookmark: u64,
+    pub bookmark: u32,
 }
 
 impl RopFreeBookmarkRequest {
     pub fn decode(cur: &mut Buf<'_>) -> Result<Self, DecodeError> {
-        let raw = cur.take_bytes(8)?;
-        let bookmark = u64::from_le_bytes([
-            raw[0], raw[1], raw[2], raw[3], raw[4], raw[5], raw[6], raw[7],
-        ]);
+        let bookmark = cur.take_u32_le()?;
         Ok(Self {
             input_handle_index: 0,
             bookmark,
@@ -2833,10 +2850,16 @@ impl RopFastTransferSourceGetBufferRequest {
 pub struct RopFastTransferSourceGetBufferSuccess {
     pub input_handle_index: u8,
     pub return_value: RopErrorCode,
-    pub transfer_status: u8,
-    pub terminator_low: u8,
-    pub terminator_high: u8,
-    pub data_size: u16,
+    /// 2-byte `TransferStatus` (MS-OXCFXICS §2.2.3.1.1.5.2):
+    /// 0=Error, 1=Partial/InProgress, 2=NoRoom, 3=Done. Encoded little-endian.
+    pub transfer_status: u16,
+    /// `InProgressCount` (2): steps completed so far (progress display only).
+    pub in_progress_count: u16,
+    /// `TotalStepCount` (2): approximate total step count (progress display).
+    pub total_step_count: u16,
+    /// `TransferBufferSize` (2): number of bytes in `TransferBuffer`. MUST
+    /// equal `data.len()` and be clamped to `u16::MAX`.
+    pub transfer_buffer_size: u16,
     pub data: Vec<u8>,
 }
 
@@ -2845,11 +2868,18 @@ impl RopFastTransferSourceGetBufferSuccess {
         out.push(RopId::ROP_FAST_TRANSFER_SOURCE_GET_BUFFER.to_u8());
         out.push(self.input_handle_index);
         out.extend_from_slice(&self.return_value.to_u32().to_le_bytes());
-        out.push(self.transfer_status);
-        out.push(self.terminator_low);
-        out.push(self.terminator_high);
-        out.push(0u8); // padding
-        out.extend_from_slice(&self.data_size.to_le_bytes());
+        // MS-OXCFXICS: a non-Success `ReturnValue` carries NO body fields —
+        // clients parse the rest only when ReturnValue == success (0). Emit
+        // the header and stop so the FastTransfer stream cannot be
+        // mis-parsed after an error ROP.
+        if self.return_value != RopErrorCode::Success {
+            return;
+        }
+        out.extend_from_slice(&self.transfer_status.to_le_bytes());
+        out.extend_from_slice(&self.in_progress_count.to_le_bytes());
+        out.extend_from_slice(&self.total_step_count.to_le_bytes());
+        out.push(0u8); // Reserved (MUST be 0x00 on send)
+        out.extend_from_slice(&self.transfer_buffer_size.to_le_bytes());
         out.extend_from_slice(&self.data);
     }
 }
@@ -2909,6 +2939,14 @@ impl RopFastTransferDestinationPutBufferResponse {
         out.push(RopId::ROP_FAST_TRANSFER_DESTINATION_PUT_BUFFER.to_u8());
         out.push(self.input_handle_index);
         out.extend_from_slice(&self.return_value.to_u32().to_le_bytes());
+        // On a non-Success `ReturnValue` the body (TransferStatus +
+        // DataRemaining) is omitted so the client stops parsing the stream
+        // rather than consuming a stale transfer-status byte. These fields
+        // are present IFF ReturnValue == success per the FastTransfer
+        // success-shape contract (matches the stream-success encoders).
+        if self.return_value != RopErrorCode::Success {
+            return;
+        }
         out.push(self.transfer_status);
         out.extend_from_slice(&self.data_remaining.to_le_bytes());
     }
@@ -3982,23 +4020,21 @@ mod tests {
         RopCreateBookmarkResponse {
             output_handle_index: 9,
             return_value: RopErrorCode::Success,
-            bookmark: 0x0000000200000003,
+            bookmark: 0x1234_5678,
         }
         .encode(&mut out);
         assert_eq!(out[0], 0x1B);
         assert_eq!(out[1], 9);
         assert_eq!(
-            u64::from_le_bytes([
-                out[6], out[7], out[8], out[9], out[10], out[11], out[12], out[13]
-            ]),
-            0x0000000200000003
+            u32::from_le_bytes([out[6], out[7], out[8], out[9]]),
+            0x1234_5678
         );
-        assert_eq!(out.len(), 2 + 4 + 8);
+        assert_eq!(out.len(), 2 + 4 + 4);
     }
 
     #[test]
     fn rop_free_bookmark_roundtrip() {
-        let bm: u64 = 0x0000000200000003;
+        let bm: u32 = 0x1234_5678;
         let mut body = Vec::new();
         body.extend_from_slice(&bm.to_le_bytes());
         let mut cur = Buf::new(&body);
@@ -4063,14 +4099,20 @@ mod tests {
         let tag = PropertyTag::new(crate::mapi::data::PropertyType::PTYP_INTEGER32, 0x0017);
         let mut tag_bytes = Vec::new();
         tag.encode(&mut tag_bytes);
-        let mut body = Vec::new();
-        body.push(0x00); // restrict flags
-        body.push(crate::mapi::restrict::RestrictionType::Property.to_u8());
-        body.push(2); // RelOp EQ
-        body.extend_from_slice(&tag_bytes);
+        let mut rdata = Vec::new();
+        rdata.push(crate::mapi::restrict::RestrictionType::Property.to_u8());
+        rdata.push(2); // RelOp EQ
+        rdata.extend_from_slice(&tag_bytes);
         // PropertyValue in row form: decode_row reads the value per the TAG's
         // property type (Integer32 => 4 LE bytes, NO type-word prefix).
-        body.extend_from_slice(&42i32.to_le_bytes());
+        rdata.extend_from_slice(&42i32.to_le_bytes());
+        let mut body = Vec::new();
+        body.push(0x00); // restrict flags
+        // RestrictionDataSize(2 LE): length of the restriction envelope that
+        // follows, so the decoder bounds SRestriction::decode rather than
+        // consuming into the next ROP of the chain.
+        body.extend_from_slice(&u16::try_from(rdata.len()).unwrap().to_le_bytes());
+        body.extend_from_slice(&rdata);
         let mut cur = Buf::new(&body);
         let req = RopRestrictRequest::decode(&mut cur).expect("decode");
         assert_eq!(req.restrict_flags, 0);
@@ -4094,24 +4136,29 @@ mod tests {
         assert_eq!(req.transfer_flags, 0);
         assert_eq!(cur.remaining(), 0);
 
-        // Response: RopId(0x4E) · InHandle · RV(4) · Status(1) · TermLo(1)
-        // · TermHi(1) · Pad(1) · DataSize(2 LE) · Data.
+        // Response: RopId(0x4E) · InHandle(1) · RV(4 LE) · TransferStatus(2 LE)
+        // · InProgressCount(2) · TotalStepCount(2) · Reserved(1) ·
+        // TransferBufferSize(2 LE) · Data.
         let mut out = Vec::new();
         RopFastTransferSourceGetBufferSuccess {
             input_handle_index: 1,
             return_value: RopErrorCode::Success,
             transfer_status: 0,
-            terminator_low: 0,
-            terminator_high: 0,
-            data_size: 2,
+            in_progress_count: 0,
+            total_step_count: 0,
+            transfer_buffer_size: 2,
             data: vec![0xAB, 0xCD],
         }
         .encode(&mut out);
         assert_eq!(out[0], 0x4E);
         assert_eq!(out[1], 1);
-        assert_eq!(u16::from_le_bytes([out[10], out[11]]), 2);
-        assert_eq!(&out[12..14], &[0xAB, 0xCD]);
-        assert_eq!(out.len(), 2 + 4 + 1 + 1 + 1 + 1 + 2 + 2);
+        // TransferBufferSize is the 2-byte field immediately preceding Data.
+        let buf_size_off = out.len() - 2 - 2; // 2 data + 2 size
+        assert_eq!(u16::from_le_bytes([out[buf_size_off], out[buf_size_off + 1]]), 2);
+        assert_eq!(&out[out.len() - 2..], &[0xAB, 0xCD]);
+        // RopId(1) + InHandle(1) + RV(4) + Status(2) + InProg(2) + Total(2)
+        // + Reserved(1) + Size(2) + Data(2) == 17.
+        assert_eq!(out.len(), 17);
     }
 
     #[test]

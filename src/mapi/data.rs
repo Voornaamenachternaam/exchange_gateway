@@ -494,6 +494,12 @@ impl PropertyValue {
                 let n = usize::from(cur.take_u16_le()?);
                 Self::Binary(cur.take_bytes(n)?.to_vec())
             }
+            // Plain multivalue types (PtypMultiple*, 0x1000): consume their
+            // MV-count-prefixed payload so the cursor stays aligned. Without
+            // this arm a PtypMultiple* tag hits `decode_opaque` which returns
+            // an empty value but consumes zero bytes, leaving the MV payload
+            // in the buffer and desyncing the next field/ROP.
+            mv if Self::is_multivalue(mv) => Self::skip_multivalue(cur, mv)?,
             other => return Self::decode_opaque(cur, other),
         })
     }

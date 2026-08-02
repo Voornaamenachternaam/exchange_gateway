@@ -236,10 +236,12 @@ pub enum Handle {
         /// `SortOrder` items). Empty => table order is the materialisation
         /// order (JMAP sort, i.e. receivedAt DESC for mail contents tables).
         sort_orders: Vec<crate::mapi::rops::SortOrder>,
-        /// Monotonic bookmark id allocator; `RopCreateBookmark` returns the
-        /// next id and pins the current cursor as that bookmark's row index.
-        /// New Outlook rarely frees bookmarks, so we bound the table only by
-        /// the lifetime of the session.
+        /// Legacy monotonic bookmark id allocator. The 4-byte MAPI `Bookmark`
+        /// now pins the row's stable `row_id` (which survives a `RopSortTable`
+        /// reorder) rather than an absolute cursor index, so this counter is
+        /// no longer needed for uniqueness. It is retained on the handle only
+        /// because `RopResetTable` zeroes it alongside the cursor; it is
+        /// otherwise vestigial and never read by the bookmark ROPs.
         next_bookmark: u64,
     },
     /// A FastTransfer *source* handle created by
@@ -247,6 +249,11 @@ pub enum Handle {
     /// holds the fully-serialised ICS byte stream (built from JMAP at creation
     /// time) and a read cursor; `RopFastTransferSourceGetBuffer` hands out
     /// successive <=buffer_size chunks and signals `Done` once exhausted.
+    ///
+    /// The buffer is server-built (not client-controlled) and bounded by the
+    /// folder size, so — unlike `Handle::Stream` — it is NOT subject to a
+    /// per-handle denial ceiling. It is freed when the client `RopRelease`s the
+    /// handle or the session ends.
     FastTransferSource {
         /// The complete ICS stream bytes (one IncrSyncEnd-terminated message).
         buffer: Vec<u8>,
@@ -261,6 +268,14 @@ pub enum Handle {
     /// calls; on completion (a zero-length PutBuffer per MS-OXCFXICS sec 3.1.2) the
     /// dispatcher tokenises the buffer via `fxics::Tokenizer` and applies the
     /// resulting message / hierarchy / read-state deltas to JMAP.
+    ///
+    /// INVARIANT: `buffer.len()` MUST NOT exceed the configured
+    /// `max_attachment_bytes` ceiling (mirroring `Handle::Stream`). The
+    /// `RopFastTransferDestinationPutBuffer` arm rejects a chunk that would
+    /// cross the cap with `RopErrorCode::NotEnoughMemory` BEFORE extending, so a
+    /// client cannot drive an unbounded across-request accumulation to OOM.
+    /// Tokenisation runs AFTER the session write lock is released (see the
+    /// PutBuffer handler) so a long tokenizer pass never blocks other sessions.
     FastTransferDestination {
         /// Accumulated upload bytes pending tokenisation.
         buffer: Vec<u8>,
@@ -437,6 +452,13 @@ impl Session {
     /// advancing a table cursor or replacing the column set).
     pub fn handle_mut(&mut self, idx: u8) -> Option<&mut Handle> {
         self.handles.get_mut(&idx)
+    }
+
+    /// Borrow the handle at `idx` immutably (e.g. to snapshot a table's row set
+    /// for a FastTransfer source copy before re-borrowing the session mutably
+    /// to install the output handle, avoiding an aliased borrow).
+    pub fn handle(&self, idx: u8) -> Option<&Handle> {
+        self.handles.get(&idx)
     }
 }
 
