@@ -167,7 +167,149 @@ pub const PR_UNREAD: u16 = 0x0E67;
 /// PidTagHasNamedProperties — 0x6546 Boolean. We always return false (JMAP).
 pub const PR_HAS_NAMED_PROPERTIES: u16 = 0x6546;
 
+// ---------------------------------------------------------------------------
+// IPM.Appointment properties (MS-OXOCAL §2.2 / MS-OXPROPS). Outlook calendar
+// contents-table rows + message GetProperties read these. The recurrence
+// pattern is serialised per MS-OXOCAL §2.2.4 (`PR_RECURRENCE_PATTERN`, Binary).
+// ---------------------------------------------------------------------------
+
+/// PidTagStartDate / AppointmentStart — `0x0060` (Time). Appointment start.
+pub const PR_START: u16 = 0x0060;
+/// PidTagEndDate (AppointmentEnd) — `0x0061` (Time). Appointment end.
+pub const PR_END: u16 = 0x0061;
+/// PidTagAppointmentRecurring — `0x8510` (Boolean). 1 == recurring series.
+pub const PR_RECURRING: u16 = 0x8510;
+/// PidTagAppointmentRecurrencePattern — `0x8216` (Binary). MS-OXOCAL §2.2.4.
+pub const PR_RECURRENCE_PATTERN: u16 = 0x8216;
+/// PidTagLocation — `0x8208` (String). Appointment location.
+pub const PR_LOCATION: u16 = 0x8208;
+/// PidTagBusyStatus — `0x8205` (Integer32). 0=Free 1=Tentative 2=Busy 3=OOF.
+pub const PR_BUSY_STATUS: u16 = 0x8205;
+/// PidTagResponseStatus (AppointmentStateFlags in newer docs) — `0x8218`
+/// (Integer32). Bitmask: 1=meeting, 2=received, 4=canceled.
+pub const PR_RESPONSE_STATUS: u16 = 0x8218;
+/// PidTagAppointmentStateFlags — `0x8217` (Integer32). Same semantics as the
+/// legacy ResponseStatus bitmask Outlook also reads on the calendar row.
+pub const PR_APPOINTMENT_STATE_FLAGS: u16 = 0x8217;
+/// PidTagResponseStatusInternal — `0x80F1` (Integer32). 0=None 1=Organizer
+/// 2=Tentative 3=Accepted 4=Declined 5=NotResponded (MS-ASCAL / MS-OXOCAL).
+/// Outlook derives the "response" icon from this on the calendar row.
+pub const PR_RESPONSE_TYPE: u16 = 0x8219;
+/// PidTagAppointmentReplyTime — `0x8220` (Time). Last reply time.
+pub const PR_APPOINTMENT_REPLY_TIME: u16 = 0x8220;
+/// PidTagAppointmentSequence — `0x8201` (Integer32). iTIP sequence number.
+pub const PR_APPOINTMENT_SEQUENCE: u16 = 0x8201;
+/// PidTagAllDayEvent — `0x821E` (Boolean).
+pub const PR_ALL_DAY: u16 = 0x821E;
+/// PidTagReminderDelta — `0x8501` (Integer32). Minutes before start.
+pub const PR_REMINDER_DELTA: u16 = 0x8501;
+/// PidTagReminderTime — `0x8502` (Time). Absolute reminder fire time.
+pub const PR_REMINDER_TIME: u16 = 0x8502;
+/// PidTagReminderSet — `0x8503` (Boolean). 1 == a reminder is set.
+pub const PR_REMINDER_SET: u16 = 0x8503;
+/// PidTagGlobalObjectId — `0x8109` (Binary). The CAL-UID; MS-OXOCAL §2.2.5.
+pub const PR_GLOBAL_OBJECT_ID: u16 = 0x8109;
+/// PidTagCleanGlobalObjectId — `0x80C8` (Binary). Same as GOID sans the
+/// outlier Fix-Repeat bits — Outlook matches invites by this id.
+pub const PR_CLEAN_GLOBAL_OBJECT_ID: u16 = 0x80C8;
+/// PidTagAppointmentSubType — `0x8211` (Boolean). 1 == all-day event hint.
+pub const PPR_APPOINTMENT_SUB_TYPE: u16 = 0x8211;
+/// PidTagRequiredAttendees / display-name aggregate — `0x821A` String.
+/// Outlook reads this as the comma-joined required-attendee names list.
+pub const PR_REQUIRED_ATTENDEES: u16 = 0x821A;
+/// PidTagOptionalAttendees — `0x821B` String (comma-joined optional names).
+pub const PR_OPTIONAL_ATTENDEES: u16 = 0x821B;
+/// PidTagOrganizer — `0x821C` String ("Name <email>" display form).
+pub const PR_ORGANIZER: u16 = 0x821C;
+
+// ---------------------------------------------------------------------------
+// IPM.Contact properties (MS-OXOCNTC / MS-OXVCARD / MS-OXPROPS). Outlook
+// contacts contents-table rows + message GetProperties read these.
+// ---------------------------------------------------------------------------
+
+/// PidTagFileAs — `0x8005` (String). The contact's "file as" sort name.
+pub const PR_FILE_AS: u16 = 0x8005;
+/// PidTagFileUnderId — `0x8006` (Integer32). File-as template selector.
+pub const PR_FILE_UNDER_ID: u16 = 0x8006;
+/// PidTagDisplayNamePrefix — `0x8012` (String). "Mr."/"Ms."/title prefix.
+pub const PR_DISPLAY_NAME_PREFIX: u16 = 0x8012;
+/// PidTagGivenName — `0x8013` (String). Given (first) name.
+pub const PR_GIVEN_NAME: u16 = 0x8013;
+/// PidTagSurname — `0x8014` (String). Surname / family name.
+pub const PR_SURNAME: u16 = 0x8014;
+/// PidTagInitials — `0x800A` (String).
+pub const PR_INITIALS: u16 = 0x800A;
+/// PidTagEmail1EmailAddress — `0x8017` (String).
+pub const PR_EMAIL1_ADDRESS: u16 = 0x8017;
+/// PidTagEmail1DisplayName — `0x8018` (String).
+pub const PR_EMAIL1_DISPLAY: u16 = 0x8018;
+/// PidTagEmailAddress — `0x3003` (String). The primary email (the vCard EMAIL).
+pub const PR_EMAIL_ADDRESS: u16 = 0x3003;
+/// PidTagAddresstype — `0x3002` (String). "SMTP" for the contact addresses.
+pub const PR_ADDRESS_TYPE: u16 = 0x3002;
+/// PidTagPrimaryTelephoneNumber — `0x8010` (String). Business/primary phone.
+pub const PR_PRIMARY_TEL: u16 = 0x8010;
+/// PidTagBusinessTelephoneNumber — `0x8011` (String).
+pub const PR_BUSINESS_TEL: u16 = 0x8011;
+/// PidTagMobileTelephoneNumber — `0x8016` (String).
+pub const PR_MOBILE: u16 = 0x8016;
+/// PidTagHomeTelephoneNumber — `0x800B` (String).
+pub const PR_HOME_TEL: u16 = 0x800B;
+/// PidTagName — `0x3001` (already `PR_DISPLAY_NAME`) — full display name.
+/// PidTagTitle — `0x8015` (String). Job title.
+pub const PR_TITLE: u16 = 0x8015;
+/// PidTagCompanyName — `0x801D` (String).
+pub const PR_COMPANY_NAME: u16 = 0x801D;
+/// PidTagDepartmentName — `0x801E` (String).
+pub const PR_DEPARTMENT_NAME: u16 = 0x801E;
+/// PidTagHomeAddressStreet — `0x801A` (String).
+pub const PR_HOME_ADDRESS_STREET: u16 = 0x801A;
+/// PidTagHomeAddressCity — `0x801B` (String).
+pub const PR_HOME_ADDRESS_CITY: u16 = 0x801B;
+/// PidTagHomeAddressStateOrProvince — `0x801C` (String).
+pub const PR_HOME_ADDRESS_STATE: u16 = 0x801C;
+/// PidTagHomeAddressPostalCode — `0x8019` (String).
+pub const PR_HOME_ADDRESS_POSTAL: u16 = 0x8019;
+/// PidTagHomeAddressCountry — `0x8026` (String).
+pub const PR_HOME_ADDRESS_COUNTRY: u16 = 0x8026;
+/// PidTagBusinessAddressStreet — `0x8045` (String).
+pub const PR_BUSINESS_ADDRESS_STREET: u16 = 0x8045;
+/// PidTagBusinessAddressCity — `0x8046` (String).
+pub const PR_BUSINESS_ADDRESS_CITY: u16 = 0x8046;
+/// PidTagBusinessAddressStateOrProvince — `0x8047` (String).
+pub const PR_BUSINESS_ADDRESS_STATE: u16 = 0x8047;
+/// PidTagBusinessAddressPostalCode — `0x8048` (String).
+pub const PR_BUSINESS_ADDRESS_POSTAL: u16 = 0x8048;
+/// PidTagBusinessAddressCountry — `0x8049` (String).
+pub const PR_BUSINESS_ADDRESS_COUNTRY: u16 = 0x8049;
+/// PidTagSenderFlags — `0x8001`… (unused). PidTagURL — `0x802B` (String).
+pub const PR_HOME_URL: u16 = 0x802B;
+/// PidTagWorkAddress — `0x002B`? — PidTagBusinessHomePage — `0x802B` overlaps
+/// with home page; use `0x803A` (PidTagBusinessHomePage / companyName URL).
+pub const PR_BUSINESS_HOME_PAGE: u16 = 0x803A;
+/// PidTagNotes — `0x800A`... overlap; the body/notes go to the message body.
+/// PidTagCompanyMainTelephoneNumber — `0x8044` (String).
+pub const PR_COMPANY_MAIN_TEL: u16 = 0x8044;
+/// PidTagFaxNumberOfPages → use PidTagBusinessFaxNumber — `0x8038` (String).
+pub const PR_BUSINESS_FAX: u16 = 0x8038;
+/// PidTagHomeFaxNumber — `0x8039` (String).
+pub const PR_HOME_FAX: u16 = 0x8039;
+/// PidTagOtherTelephoneNumber — `0x8041` (String).
+pub const PR_OTHER_TEL: u16 = 0x8041;
+/// PidTagContactItemData — `0x8000` (Binary/unused). Kept for completeness.
+pub const PR_CONTACT_ITEM_DATA: u16 = 0x8000;
+
+// Special folder backend ids for the gateway-synthesised Calendar/Contacts
+// folders (JMAP has no mailbox for them; CalDAV/CardDAV own them). These
+// appear as the `backend_id` on the Calendar/Contacts Folder handles and
+// hierarchy-table rows, so `folder_kind_for_backend` routes a contents-table
+// open to the CalDAV/CardDAV fetchers. They are intentionally stable strings
+// so a folder-id round-trip survives a session reconnect.
+pub const CALENDAR_BACKEND_ID: &str = "__calendar__";
+pub const CONTACTS_BACKEND_ID: &str = "__contacts__";
+
 // ----------------------------------------------------------------------------
+
 // Folder-id mapping
 // ----------------------------------------------------------------------------
 
@@ -212,9 +354,32 @@ pub fn folder_kind_for_role(role: Option<&str>) -> crate::mapi::session::FolderK
         Some("trash") => FolderKind::Mail,
         Some("junk") => FolderKind::Mail,
         Some("archive") => FolderKind::Mail,
-        // CalDAV/JMAP calendar collections live outside the JMAP Mailbox set;
-        // we tag them Calendar/Contacts at the contents-table-open step.
+        // Synthetic roles for the gateway-owned virtual folders (CalDAV /
+        // CardDAV collections). The hierarchy table synthesises
+        // `JmapMailbox` rows tagged with these roles so `mailbox_to_cells`
+        // renders the right `PR_CONTAINER_CLASS` (IPF.Appointment /
+        // IPF.Contact) and the contents-table open step resolves the kind.
+        Some("__calendar__") => FolderKind::Calendar,
+        Some("__contacts__") => FolderKind::Contacts,
         _ => FolderKind::Mail,
+    }
+}
+
+/// Resolve a folder `backend_id` to a `FolderKind` for the gateway-side
+/// synthetic folders. The synthetic Calendar/Contacts ids
+/// (`CALENDAR_BACKEND_ID` / `CONTACTS_BACKEND_ID`) are created by the
+/// hierarchy-table synthesiser and by `RopOpenFolder` of the logon special
+/// folder ids; everything else stays `Mail` (the JMAP mailbox set owns mail,
+/// and the `RopOpenFolder` arm carries the live `FolderKind` already for
+/// mailboxes resolved from a hierarchy-table row).
+pub fn folder_kind_for_backend_id(
+    backend_id: &str,
+) -> Option<crate::mapi::session::FolderKind> {
+    use crate::mapi::session::FolderKind;
+    match backend_id {
+        CALENDAR_BACKEND_ID => Some(FolderKind::Calendar),
+        CONTACTS_BACKEND_ID => Some(FolderKind::Contacts),
+        _ => None,
     }
 }
 
@@ -1325,6 +1490,40 @@ fn ttype_matches(want: PropertyType, actual: PropertyType) -> bool {
         |t: PropertyType| matches!(t, PropertyType::PTYP_STRING | PropertyType::PTYP_STRING8);
     stringy(want) && stringy(actual)
 }
+
+/// Public re-export of the private type-compat helper for the
+/// calendar/contact converters in `mapi/converters.rs`, which need the same
+/// "requested wire type matches the scalar we'd emit" gate so an
+/// incompatible-type request degrades to a typed `Null` exactly as the
+/// email/mailbox converters do.
+pub fn ttype_matches_pub(want: PropertyType, actual: PropertyType) -> bool {
+    ttype_matches(want, actual)
+}
+
+/// Synthesise a long-term message/folder entry id for a backend object that
+/// is NOT a `JmapEmail` (a CalDAV calendar event identified by its iCalendar
+/// UID, or a CardDAV contact identified by its vCard UID). Used by the
+/// calendar/contact converters so a `RopGetPropertiesSpecific` / `QueryRows`
+/// row carries a re-openable entry id the same shape as the mail one
+/// (MS-OXCDATA §2.6.3.5): flags(4) + provider uid(16) + folder id(8 LE) +
+/// message id(8 LE) + instance id(8 LE). The folder id comes from the parent
+/// folder backend id (the calendar/contact synthetic backend id); the message
+/// id is the FNV-1a of the item UID.
+pub fn message_entry_id_for(item_id: &str, mailbox_id: &str) -> Vec<u8> {
+    let mut out = Vec::with_capacity(44);
+    out.extend_from_slice(&0x01000000u32.to_le_bytes()); // flags: MAPI message
+    out.extend_from_slice(&MDB_PROVIDER_UID);
+    out.extend_from_slice(&folder_id_from_backend(mailbox_id).to_le_bytes());
+    let mid = message_id_from_jmap(item_id);
+    out.extend_from_slice(&mid.to_le_bytes());
+    out.extend_from_slice(&mid.to_le_bytes()); // instance == message id
+    out
+}
+
+/// PidTagObjectId — `0x00000003` is the only canonical id Outlook never reads
+/// on the calendar/contact row (kept named so the contact-id path mirrors the
+/// calendar's `PR_OBJECT_ID` intent without a fabricated property).
+pub const PR_OBJECT_ID: u16 = PR_SEARCH_KEY;
 
 // ----------------------------------------------------------------------------
 // Tests

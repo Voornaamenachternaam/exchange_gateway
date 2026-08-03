@@ -31,6 +31,7 @@
 // `usize::try_from` (no `as` casts on untrusted data). Sessions are held in a
 // `parking_lot`-guarded map with an idle TTL and are zeroized on drop.
 
+pub mod converters;
 pub mod data;
 pub mod fxics;
 pub mod handler;

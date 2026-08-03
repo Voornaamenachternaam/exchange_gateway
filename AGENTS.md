@@ -460,13 +460,52 @@ STILL GAPS to 100% perfect Outlook-for-Windows + Outlook-Android fidelity:
    `EmailSubmission/set` + `Email/destroy` respectively. Drafts save to the
    JMAP `\Drafts` mailbox; Send does `EmailSubmission/set` then moves to
    `\Sent`. **(NEXT — P2-4)**
-5. Calendar contents-table rows must enumerate via
+5. ~~Calendar contents-table rows must enumerate via
    `JmapClient::query_calendar_events` (JMAP Calendar) or fall back to
    `CaldavClient::query_events`; each row converts an iCalendar VEVENT to
-   MAPI `IPM.Appointment` cells (PR_START, PR_END, PR_LOCATION, etc.).
-6. Contacts contents-table rows must enumerate via
+   MAPI `IPM.Appointment` cells (PR_START, PR_END, PR_LOCATION, etc.).~~ — **DONE
+   Phase-2 (audit gap §2c)**. `src/mapi/converters.rs::calendar_to_cells`
+   renders an `IPM.Appointment` row from a `CalendarItem`
+   (PR_SUBJECT/PR_LOCATION/PR_START/PR_END FILETIME/PR_BUSY_STATUS/
+   PR_RESPONSE_STATUS/PR_RECURRING + PR_RECURRENCE_PATTERN binary per
+   MS-OXOCAL §2.2.4 with Daily/Weekly/Monthly/Yearly RecurrenceType and
+   INTERVAL/OCCURRENCES/OCCURRENCE_COUNT/UNTIL termination, GlobalObjectId +
+   CleanGlobalObjectId per §2.2.5, PR_CHANGE_KEY/PR_PREDECESSOR_CHANGE_LIST
+   per MS-OXCDATA §2.12.2). `handler.rs::fetch_calendar_rows` queries the
+   CalDAV collection (wide ±2yr window via `CaldavClient::query_events`) and
+   parses the `<C:calendar-data>` multistatus (`parse_calendar_multistatus`)
+   into `TableRow`s whose `source` caches the `Arc<CalendarItem>`; the
+   `RopQueryRows` lazy materialiser downcasts that cache into
+   `IPM.Appointment` cells for the live column set. A synthetic
+   `__calendar__` JmapMailbox folder row is injected into the hierarchy table
+   (`synth_folder_row`, container class `IPF.Appointment`) so Outlook sees the
+   Calendar folder; `folder_kind_for_backend_id(CALENDAR_BACKEND_ID)`
+   (`"__calendar__"`) routes `RopGetContentsTable` on that folder handle to
+   `fetch_calendar_rows`. GetPropertiesSpecific on a Calendar Message handle
+   re-queries the CalDAV window and matches by FNV-1a row id (the stable
+   mapping of the iCalendar UID) as a fallback when the row cache is absent.
+6. ~~Contacts contents-table rows must enumerate via
    `CarddavClient::list_contacts` and convert each vCard to MAPI
-   `IPM.Contact` cells (PR_FILE_AS, PR_EMAIL_*, PR_GIVEN_NAME, etc.).
+   `IPM.Contact` cells (PR_FILE_AS, PR_EMAIL_*, PR_GIVEN_NAME, etc.).~~ — **DONE
+   Phase-2 (audit gap §2c)**. `src/mapi/converters.rs::contact_to_cells`
+   parses a raw vCard (vCard 3.0 + Outlook-style `X-MS-` extensions) and
+   renders an `IPM.Contact` row (PR_DISPLAY_NAME/PR_FILE_AS with FILE-AS
+   precedence explicit FILE-AS/X-FILEAS → "Family, Given" → FN → email,
+   PR_GIVEN_NAME/PR_SURNAME/PR_MIDDLE_NAME/PR_GENERATION from `N:`,
+   PR_EMAIL_ADDRESS + PR_EMAIL1/2/3_ADDRESS, PR_BUSINESS_TEL/PR_HOME_TEL/
+   PR_MOBILE_TEL/PR_OTHER_TEL/PR_HOME_FAX with TYPE label routing,
+   PR_TITLE/PR_COMPANY_NAME/PR_DEPARTMENT_NAME from `ORG`/`TITLE`,
+   PR_HOME_ADDRESS_* / PR_OTHER_ADDRESS_* from `ADR`,
+   PR_ENTRYID synthesized from the vCard UID, PR_CHANGE_KEY). `handler.rs::fetch_contact_rows`
+   enumerates via `CarddavClient::list_contacts` and caches the raw vCard
+   `String` on each `TableRow`; the `RopQueryRows` lazy materialiser
+   downcasts that cache into `IPM.Contact` cells. A synthetic `__contacts__`
+   JmapMailbox folder row (container class `IPF.Contact`) is injected into
+   the hierarchy table so Outlook sees the Contacts folder;
+   `folder_kind_for_backend_id(CONTACTS_BACKEND_ID)` (`"__contacts__"`)
+   routes `RopGetContentsTable` on that folder handle to `fetch_contact_rows`.
+   GetPropertiesSpecific on a Contacts Message handle re-enumerates CardDAV
+   and matches by FNV-1a row id when the row cache is absent.
 7. ~~MAPI property restrictions (`RopRestrict` / SRestriction in
    MS-OXCDATA §2.12.3)~~ — **DONE Phase-2**: `src/mapi/restrict.rs` owns the
    typed `SRestriction` codec (And/Or/Not/Exist/{Property,Content,BitMask,Size,
