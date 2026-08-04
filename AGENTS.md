@@ -338,6 +338,74 @@ gets wiped between shell sessions. To avoid re-installing Rust every command:
     draft was **removed** as dead code (no caller; `Blob/upload` write-back
     is not wired) — re-add when the MAPI→JMAP attachment write-back bridge
     lands and wire+test the caller at the same time.
+  - **Calendar/Contacts MAPI cell materialisation (audit §2c, PR #1842)** —
+    `src/mapi/converters.rs` owns the CalDAV `CalendarItem` → `IPM.Appointment`
+    cell converter (`calendar_to_cells`) and the CardDAV vCard → `IPM.Contact`
+    cell converter (`contact_to_cells`). The contents-table builder in
+    `src/mapi/handler.rs` (`fetch_calendar_rows`/`fetch_contact_rows`) materialises
+    `TableRow`s carrying a cached `Arc<CalendarItem>` / `Arc<String>` (raw vCard)
+    source so `RopQueryRows`/`RopGetPropertiesSpecific` lazily run these pure
+    converters with NO extra backend round-trip per row (mirrors the email
+    `Arc<JmapEmail>` source pattern). The synthetic Calendar/Contacts folder
+    rows (`synth_folder_row`) now carry the role/store-backend id constants
+    (`store::CALENDAR_BACKEND_ID`/`store::CONTACTS_BACKEND_ID`) — NOT string
+    literals — and `store::folder_kind_for_role` / `folder_kind_for_backend_id`
+    resolve those to `FolderKind::Calendar`/`Contacts` so `mailbox_to_cells`
+    renders `PR_CONTAINER_CLASS=IPF.Appointment`/`IPF.Contact` and the
+    contents-table-open step picks the right kind. **Review hardening (PR
+    #1842 follow-up)** on the converters:
+    (a) `PR_APPOINTMENT_SUB_TYPE` (was mis-typed `PPR_APPOINTMENT_SUB_TYPE`)
+    and `PR_INITIALS` (id was `0x800A`, corrected to `0x3A0A`); added
+    `PR_MIDDLE_NAME` (`0x3A44`), `PR_GENERATION` (`0x3A05`),
+    `PR_OTHER_ADDRESS_{STREET,CITY,STATE,POSTAL,COUNTRY}` (`0x3A5C`/`0x3A5F`/
+    `0x3A5E`/`0x3A5D`/`0x3A60`),
+    `PR_PREDECESSOR_CHANGE_LIST` (`0x65E8`) wired into both calendar and
+    contact converters (empty XID list — no predecessor change keys).
+    (b) The MS-OXOCAL `AppointmentRecurrencePattern` blob
+    (`recurrence_pattern_bytes`) now serialises the *full* documented
+    structure: RecurrenceType/PatternType/CalendarType/FirstDateTime/
+    Interval/WeekIndex/FirstDOW/OuterDuration/**AdditionalFlags**/
+    PatternSpecific/**EndTime**/**OccurrenceCount**/ModifiedInstanceCount/
+    DeletedInstanceCount/[DeletedInstanceDates...]. `parse_until` now
+    resolves iCalendar **compact-basic** UNTIL (`20251231T235959Z`) AND
+    date-only forms (the old `chrono::DateTime::parse_from_rfc3339` rejected
+    the compact form, silently dropping the bound); the END_DATE flag
+    (AdditionalFlags bit `0x01`) is set exactly when EndTime != 0; COUNT maps
+    to OccurrenceCount (EndTime 0, no END_DATE flag); EXDATE deletions plus
+    `deleted` exceptions now serialise into the `DeletedInstanceDates[]`
+    array (one 8-byte FILETIME each, matching `DeletedInstanceCount`) so the
+    blob is structurally consistent (Outlook's decoder always reads exactly
+    `DeletedInstanceCount` FILETIMEs after the count — a count != 0 with no
+    trailing dates previously made Outlook drop the recurrence). The dead
+    `until_ft != 0 && false` placeholder block is removed.
+    (c) `global_object_id` now serialises the full MS-OXOCAL §2.2.5.1
+    ByteArrayStructure: fixed 16-byte meeting-namespace ByteArrayID
+    (`04 00 00 00 82 00 E0 00 74 C5 B7 10 1A 82 E0 08`) + Year(2 LE)/Month(1)/
+    Day(1) (derived from `item.start`) + CreationTime(8 FILETIME) +
+    Reserved(8) + Size(4 LE) + Data (the iCalendar UID) + terminating NUL —
+    replacing the previous minimal prefix blob. `change_key` mixes
+    `item.dtstamp` (which CalDAV bumps on every mutation) on top of the
+    stable UID so an edited appointment yields a different key.
+    (d) Contact `PR_CHANGE_KEY` (`contact_change_key`) now mixes a stable
+    digest of the **raw vCard body** (.lines() with BEGIN/END stripped,
+    trimmed; `DefaultHasher` is a fixed-key SipHash13 so it is build-stable)
+    on top of the immutable vCard UID — a UID-only key would hide edits from
+    Outlook's stale-row + conflict-detection. `PR_RECORD_KEY`/`PR_SEARCH_KEY`
+    remain the stable UID. (e) The calendar contact GetPropertiesSpecific
+    fallback arms in `handler.rs` pass `store::CALENDAR_BACKEND_ID`/
+    `store::CONTACTS_BACKEND_ID` as `mailbox_id` to
+    `calendar_to_cells`/`contact_to_cells` (was `""`), so PR_ENTRYID is
+    synthesised with the correct store id. (f)
+    `parse_calendar_multistatus` now `buf.clear()`s the quick-xml scratch
+    buffer each iteration (matches the established `src/caldav.rs` pattern)
+    so the buffer never retains memory proportional to the largest event.
+    (g) `fetch_calendar_rows` widened to ±730 days (~4-year span) so Outlook's
+    contents-table view shows upcoming + recent appointments. Disputed
+    QR1 (`expose_secret()` → `&str` password for CaldavClient/CarddavClient)
+    is the established codebase pattern (JmapClient/ews.rs/calendar.rs pass
+    `&str` from `expose_secret()`; `SecretString` minimises dwell + clears on
+    drop; HTTP Basic fundamentally requires plaintext at the wire boundary) —
+    NOT refactored, answered in the PR comment instead.
 
 ## MAPI/HTTP (MS-OXCMAPIHTTP) architecture notes
 
@@ -460,13 +528,52 @@ STILL GAPS to 100% perfect Outlook-for-Windows + Outlook-Android fidelity:
    `EmailSubmission/set` + `Email/destroy` respectively. Drafts save to the
    JMAP `\Drafts` mailbox; Send does `EmailSubmission/set` then moves to
    `\Sent`. **(NEXT — P2-4)**
-5. Calendar contents-table rows must enumerate via
+5. ~~Calendar contents-table rows must enumerate via
    `JmapClient::query_calendar_events` (JMAP Calendar) or fall back to
    `CaldavClient::query_events`; each row converts an iCalendar VEVENT to
-   MAPI `IPM.Appointment` cells (PR_START, PR_END, PR_LOCATION, etc.).
-6. Contacts contents-table rows must enumerate via
+   MAPI `IPM.Appointment` cells (PR_START, PR_END, PR_LOCATION, etc.).~~ — **DONE
+   Phase-2 (audit gap §2c)**. `src/mapi/converters.rs::calendar_to_cells`
+   renders an `IPM.Appointment` row from a `CalendarItem`
+   (PR_SUBJECT/PR_LOCATION/PR_START/PR_END FILETIME/PR_BUSY_STATUS/
+   PR_RESPONSE_STATUS/PR_RECURRING + PR_RECURRENCE_PATTERN binary per
+   MS-OXOCAL §2.2.4 with Daily/Weekly/Monthly/Yearly RecurrenceType and
+   INTERVAL/OCCURRENCES/OCCURRENCE_COUNT/UNTIL termination, GlobalObjectId +
+   CleanGlobalObjectId per §2.2.5, PR_CHANGE_KEY/PR_PREDECESSOR_CHANGE_LIST
+   per MS-OXCDATA §2.12.2). `handler.rs::fetch_calendar_rows` queries the
+   CalDAV collection (wide ±2yr window via `CaldavClient::query_events`) and
+   parses the `<C:calendar-data>` multistatus (`parse_calendar_multistatus`)
+   into `TableRow`s whose `source` caches the `Arc<CalendarItem>`; the
+   `RopQueryRows` lazy materialiser downcasts that cache into
+   `IPM.Appointment` cells for the live column set. A synthetic
+   `__calendar__` JmapMailbox folder row is injected into the hierarchy table
+   (`synth_folder_row`, container class `IPF.Appointment`) so Outlook sees the
+   Calendar folder; `folder_kind_for_backend_id(CALENDAR_BACKEND_ID)`
+   (`"__calendar__"`) routes `RopGetContentsTable` on that folder handle to
+   `fetch_calendar_rows`. GetPropertiesSpecific on a Calendar Message handle
+   re-queries the CalDAV window and matches by FNV-1a row id (the stable
+   mapping of the iCalendar UID) as a fallback when the row cache is absent.
+6. ~~Contacts contents-table rows must enumerate via
    `CarddavClient::list_contacts` and convert each vCard to MAPI
-   `IPM.Contact` cells (PR_FILE_AS, PR_EMAIL_*, PR_GIVEN_NAME, etc.).
+   `IPM.Contact` cells (PR_FILE_AS, PR_EMAIL_*, PR_GIVEN_NAME, etc.).~~ — **DONE
+   Phase-2 (audit gap §2c)**. `src/mapi/converters.rs::contact_to_cells`
+   parses a raw vCard (vCard 3.0 + Outlook-style `X-MS-` extensions) and
+   renders an `IPM.Contact` row (PR_DISPLAY_NAME/PR_FILE_AS with FILE-AS
+   precedence explicit FILE-AS/X-FILEAS → "Family, Given" → FN → email,
+   PR_GIVEN_NAME/PR_SURNAME/PR_MIDDLE_NAME/PR_GENERATION from `N:`,
+   PR_EMAIL_ADDRESS + PR_EMAIL1/2/3_ADDRESS, PR_BUSINESS_TEL/PR_HOME_TEL/
+   PR_MOBILE_TEL/PR_OTHER_TEL/PR_HOME_FAX with TYPE label routing,
+   PR_TITLE/PR_COMPANY_NAME/PR_DEPARTMENT_NAME from `ORG`/`TITLE`,
+   PR_HOME_ADDRESS_* / PR_OTHER_ADDRESS_* from `ADR`,
+   PR_ENTRYID synthesized from the vCard UID, PR_CHANGE_KEY). `handler.rs::fetch_contact_rows`
+   enumerates via `CarddavClient::list_contacts` and caches the raw vCard
+   `String` on each `TableRow`; the `RopQueryRows` lazy materialiser
+   downcasts that cache into `IPM.Contact` cells. A synthetic `__contacts__`
+   JmapMailbox folder row (container class `IPF.Contact`) is injected into
+   the hierarchy table so Outlook sees the Contacts folder;
+   `folder_kind_for_backend_id(CONTACTS_BACKEND_ID)` (`"__contacts__"`)
+   routes `RopGetContentsTable` on that folder handle to `fetch_contact_rows`.
+   GetPropertiesSpecific on a Contacts Message handle re-enumerates CardDAV
+   and matches by FNV-1a row id when the row cache is absent.
 7. ~~MAPI property restrictions (`RopRestrict` / SRestriction in
    MS-OXCDATA §2.12.3)~~ — **DONE Phase-2**: `src/mapi/restrict.rs` owns the
    typed `SRestriction` codec (And/Or/Not/Exist/{Property,Content,BitMask,Size,
