@@ -20,27 +20,25 @@
 // pattern + EXDATE/RECURRENCE-ID list).
 
 use crate::calendar::CalendarItem;
+use chrono::Datelike;
 use crate::mapi::data::{PropertyTag, PropertyType, PropertyValue};
 use crate::mapi::store::{
     self, PR_ADDRESS_TYPE, PR_ALL_DAY, PR_APPOINTMENT_REPLY_TIME, PR_APPOINTMENT_SEQUENCE,
-    PR_APPOINTMENT_STATE_FLAGS, PR_BUSINESS_ADDRESS_CITY, PR_BUSINESS_ADDRESS_COUNTRY,
-    PR_BUSINESS_ADDRESS_POSTAL, PR_BUSINESS_ADDRESS_STATE, PR_BUSINESS_ADDRESS_STREET,
-    PR_BUSINESS_FAX, PR_BUSINESS_HOME_PAGE, PR_BUSINESS_TEL, PR_BUSY_STATUS, PR_CHANGE_KEY,
-    PR_CLEAN_GLOBAL_OBJECT_ID, PR_COMPANY_MAIN_TEL, PR_COMPANY_NAME, PR_DISPLAY_NAME,
-    PR_DISPLAY_NAME_PREFIX, PR_EMAIL1_ADDRESS, PR_EMAIL1_DISPLAY, PR_EMAIL_ADDRESS, PR_END,
-    PR_FILE_AS, PR_GIVEN_NAME, PR_GLOBAL_OBJECT_ID, PR_HOME_ADDRESS_CITY,
-    PR_HOME_ADDRESS_COUNTRY, PR_HOME_ADDRESS_POSTAL, PR_HOME_ADDRESS_STATE, PR_HOME_ADDRESS_STREET,
-    PR_HOME_FAX, PR_HOME_TEL, PR_HOME_URL, PR_INITIALS, PR_LOCATION, PR_MESSAGE_CLASS,
-    PR_MOBILE, PR_NORMALIZED_SUBJECT, PR_OBJECT_ID, PR_ORGANIZER, PR_OTHER_TEL, PR_PRIMARY_TEL,
-    PR_RECORD_KEY, PR_REMINDER_DELTA, PR_REMINDER_SET, PR_REMINDER_TIME, PR_REQUIRED_ATTENDEES, PR_RESPONSE_STATUS,
-    PR_RESPONSE_TYPE, PR_RECURRING, PR_RECURRENCE_PATTERN, PR_SEARCH_KEY, PR_START, PR_SUBJECT,
-    PR_SURNAME, PR_TITLE,
+    PR_APPOINTMENT_STATE_FLAGS, PR_APPOINTMENT_SUB_TYPE, PR_BUSINESS_ADDRESS_CITY,
+    PR_BUSINESS_ADDRESS_COUNTRY, PR_BUSINESS_ADDRESS_POSTAL, PR_BUSINESS_ADDRESS_STATE,
+    PR_BUSINESS_ADDRESS_STREET, PR_BUSINESS_FAX, PR_BUSINESS_HOME_PAGE, PR_BUSINESS_TEL,
+    PR_BUSY_STATUS, PR_CHANGE_KEY, PR_CLEAN_GLOBAL_OBJECT_ID, PR_COMPANY_MAIN_TEL,
+    PR_COMPANY_NAME, PR_DISPLAY_NAME, PR_DISPLAY_NAME_PREFIX, PR_EMAIL1_ADDRESS,
+    PR_EMAIL1_DISPLAY, PR_EMAIL_ADDRESS, PR_END, PR_FILE_AS, PR_GENERATION, PR_GIVEN_NAME,
+    PR_GLOBAL_OBJECT_ID, PR_HOME_ADDRESS_CITY, PR_HOME_ADDRESS_COUNTRY, PR_HOME_ADDRESS_POSTAL,
+    PR_HOME_ADDRESS_STATE, PR_HOME_ADDRESS_STREET, PR_HOME_FAX, PR_HOME_TEL, PR_HOME_URL,
+    PR_INITIALS, PR_LOCATION, PR_MESSAGE_CLASS, PR_MIDDLE_NAME, PR_MOBILE, PR_NORMALIZED_SUBJECT,
+    PR_ORGANIZER, PR_OTHER_ADDRESS_CITY, PR_OTHER_ADDRESS_COUNTRY, PR_OTHER_ADDRESS_POSTAL,
+    PR_OTHER_ADDRESS_STATE, PR_OTHER_ADDRESS_STREET, PR_OTHER_TEL, PR_PREDECESSOR_CHANGE_LIST,
+    PR_PRIMARY_TEL, PR_RECORD_KEY, PR_REMINDER_DELTA, PR_REMINDER_SET, PR_REMINDER_TIME,
+    PR_REQUIRED_ATTENDEES, PR_RESPONSE_STATUS, PR_RESPONSE_TYPE, PR_RECURRING,
+    PR_RECURRENCE_PATTERN, PR_SEARCH_KEY, PR_START, PR_SUBJECT, PR_SURNAME, PR_TITLE,
 };
-
-// PidTagObjectId is aliased (in store.rs) to PR_SEARCH_KEY so the contact-id
-// path mirrors the calendar's intent without inventing a never-read tag.
-#[allow(dead_code)]
-const PR_OBJECT_ID_FALLBACK: u16 = PR_OBJECT_ID;
 
 /// 100-ns ticks between 1601-01-01 and 1970-01-01 (Windows FILETIME epoch).
 const FILETIME_EPOCH_OFFSET: i64 = 116_444_736_000_000_000;
@@ -124,6 +122,10 @@ fn calendar_cell_for(
             T::PTYP_INTEGER32
         )),
         PR_ALL_DAY => PropertyValue::Boolean(or_null!(item.all_day, T::PTYP_BOOLEAN)),
+        PR_APPOINTMENT_SUB_TYPE => {
+            // PidTagAppointmentSubType: 1 == all-day event hint (fSubType).
+            PropertyValue::Boolean(or_null!(item.all_day, T::PTYP_BOOLEAN))
+        }
         PR_RECURRING => PropertyValue::Boolean(or_null!(
             item.rrule.is_some(),
             T::PTYP_BOOLEAN
@@ -165,7 +167,16 @@ fn calendar_cell_for(
         PR_REMINDER_TIME => PropertyValue::Null,
         PR_GLOBAL_OBJECT_ID | PR_CLEAN_GLOBAL_OBJECT_ID => {
             if ttype_matches(want, T::PTYP_BINARY) {
-                PropertyValue::Binary(global_object_id(&item.uid))
+                PropertyValue::Binary(global_object_id(item))
+            } else {
+                PropertyValue::Null
+            }
+        }
+        PR_PREDECESSOR_CHANGE_LIST => {
+            if ttype_matches(want, T::PTYP_BINARY) {
+                // Empty XID list (no predecessor change keys) — Outlook reads
+                // this as the row having no prior revisions.
+                PropertyValue::Binary(Vec::new())
             } else {
                 PropertyValue::Null
             }
@@ -272,38 +283,64 @@ fn attendees_display(item: &CalendarItem, optional: bool) -> String {
         .join(", ")
 }
 
-/// MS-OXOCAL §2.2.5 GlobalObjectId / CleanGlobalObjectId binary layout. The
-/// canonically-stable form Outlook matches meeting invites by is the 16-byte
-/// "MAPI GUID" prefix (the XTMA meeting-namespace GUID) plus a 4-byte
-/// year/month plus a per-UID body. We synthesise the minimal
-/// Outlook-recognised shape: the `0x04 0x00 0x00 0x00`
-/// IdentifyingInformationSuffix, the FixedLengthGUID bytes
-/// (`0x80 0x02 0x00 0x00` plus zero) per MS-OXOCAL §2.2.5.2, then the UID
-/// bytes followed by a trailing zero run. Outlook does NOT validate the GOID
-/// against anything but equality, so a stable byte representation keyed off
-/// the iCalendar UID is sufficient for invite matching.
-fn global_object_id(uid: &str) -> Vec<u8> {
-    // Layout per MS-OXOCAL §2.2.5.1 ByteArrayStructure:
-    //   IdentifyingInformationSuffix (4) = 0x04000000-?-?-?
-    //   FixedLengthGUID (40)            per §2.2.5.2
-    //   ... remainder (UID). Minimal stable form:
-    let mut out = Vec::with_capacity(40 + uid.len());
-    out.extend_from_slice(&[0x04, 0x00, 0x00, 0x00]); // IdentifyingInformationSuffix
-    // FixedLengthGUID (16 + rest); stable default LayoutIdentifier +
-    // Filetime + zero.
-    out.extend_from_slice(&[0x80, 0x02, 0x00, 0x00]); // LayoutIdentifier
-    out.extend_from_slice(&[0u8; 36]); // Filetime + zero padding
-    out.extend_from_slice(uid.as_bytes());
-    out.push(0);
+/// MS-OXOCAL §2.2.5 GlobalObjectId / CleanGlobalObjectId binary layout.
+///
+/// The canonical structure (per MS-OXOCAL §2.2.5.1 "ByteArrayStructure"):
+///   ByteArrayID            (16 bytes) — the fixed XTMA meeting-namespace id
+///     `04 00 00 00 82 00 E0 00 74 C5 B7 10 1A 82 E0 08`
+///   Year                   (2 bytes LE) — start year
+///   Month                  (1 byte)     — start month
+///   Day                    (1 byte)     — start day
+///   CreationTime           (8 bytes)    — FILETIME of creation (item start)
+///   Reserved               (8 bytes)    — zero
+///   Size                   (4 bytes LE) — byte length of the trailing Data
+///   Data  [Size]           — the iCalendar UID (per MS-OXCICAL the UID maps
+///                            into the GlobalObjectId Data for invite matching)
+/// followed by a single terminating NUL. Outlook matches meeting invites by
+/// equality of this id (GlobalObjectId == CleanGlobalObjectId modulo a
+/// trailing suffix), so we serialise the full documented structure keyed off
+/// the event's iCalendar UID and start date.
+fn global_object_id(item: &CalendarItem) -> Vec<u8> {
+    // The fixed 16-byte meeting-namespace ByteArrayID (MS-OXOCAL §2.2.5.2).
+    const BYTE_ARRAY_ID: [u8; 16] = [
+        0x04, 0x00, 0x00, 0x00, 0x82, 0x00, 0xE0, 0x00, 0x74, 0xC5, 0xB7, 0x10, 0x1A, 0x82, 0xE0,
+        0x08,
+    ];
+    let start = item.start;
+    let (year, month, day) = (
+        (start.year() as u16).to_le_bytes(),
+        start.month() as u8,
+        start.day() as u8,
+    );
+    let creation_time = dt_to_filetime(start).unwrap_or(0).to_le_bytes();
+    let data = item.uid.as_bytes();
+    let size = data.len() as u32;
+    let mut out =
+        Vec::with_capacity(BYTE_ARRAY_ID.len() + 2 + 1 + 1 + 8 + 8 + 4 + data.len() + 1);
+    out.extend_from_slice(&BYTE_ARRAY_ID);
+    out.extend_from_slice(&year);
+    out.push(month);
+    out.push(day);
+    out.extend_from_slice(&creation_time);
+    out.extend_from_slice(&[0u8; 8]); // Reserved
+    out.extend_from_slice(&size.to_le_bytes());
+    out.extend_from_slice(data);
+    out.push(0); // terminating NUL (matches Exchange's Data form)
     out
 }
 
-/// A stable change-key derived from the UID (per MS-OXCDATA §2.12.2 the
-/// change key is a GUID-bearing byte sequence Outlook diffs for conflict
-/// detection; an opaque stable digest suffices).
+/// A change-sensitive change key. Per MS-OXCDATA §2.12.2 the change key is a
+/// GUID-bearing byte sequence Outlook diffs for conflict detection — a *new*
+/// key must be produced whenever the item is edited. Mixing `item.dtstamp`
+/// (which CalDAV bumps on every mutation) on top of the stable UID means an
+/// edited appointment yields a different key from the cached predecessor, so
+/// Outlook's stale-row + conflict-detection path fires. The leading 16 bytes
+/// are the provider GUID placeholder.
 fn change_key(item: &CalendarItem) -> Vec<u8> {
-    let mut out = Vec::with_capacity(16 + item.uid.len());
+    let dt = item.dtstamp.and_then(dt_to_filetime).unwrap_or(0).to_le_bytes();
+    let mut out = Vec::with_capacity(16 + dt.len() + item.uid.len());
     out.extend_from_slice(&[0x01; 16]); // provider GUID placeholder
+    out.extend_from_slice(&dt);
     out.extend_from_slice(item.uid.as_bytes());
     out
 }
@@ -314,50 +351,74 @@ fn change_key(item: &CalendarItem) -> Vec<u8> {
 /// occurrences itself; the blob must be a faithful-enough encoding that
 /// Outlook recognises the recurrence kind. We decode the iCalendar `RRULE`
 /// for the leading `FREQ=` and the `INTERVAL=`/`COUNT=`/`UNTIL=`/`BYDAY=`
-/// terms and emit the matching MS-OXOCAL RecurrencePattern structure:
+/// and emit the matching MS-OXOCAL RecurrencePattern structure:
 ///
-///   RecurrenceType(4 LE)   — 0=daily,1=weekly,2=monthly,3=yearly
-///   PatternType(4 LE)     — 0=Interval,1=Pattern,2=DayOfMonthMonthly*
-///   CalendarType(4 LE)    — 0=default
-///   FirstDateTime(8 LE)   — 0
-///   Interval(4 LE)        — n
-///   WeekIndex(4 LE)       — 0
-///   FirstDOW(4 LE)        — 0 (Sun)
-///   OuterDuration(4 LE)   — 0
-///   AdditionalFlags(4 LE) — 0
-///   PatternSpecific(8 LE) — 0
-///   EndTime(8 LE)         — 0/until-FILETIME
-///   DeletedInstanceCount(4 LE) — item.exceptions(deleted) len
-///   ModifiedInstanceCount(4 LE) — item.exceptions(non-deleted) len
-///   ...
+///   RecurrenceType(4 LE)       — 0=daily,1=weekly,2=monthly,3=yearly
+///   PatternType(4 LE)         — 0=Interval,1=Pattern,2=DayOfMonthMonthly*
+///   CalendarType(4 LE)        — 0=default
+///   FirstDateTime(8 LE)        — 0
+///   Interval(4 LE)             — n
+///   WeekIndex(4 LE)            — 0
+///   FirstDOW(4 LE)             — 0 (Sun)
+///   OuterDuration(4 LE)        — 0
+///   AdditionalFlags(4 LE)      — 0x01 END_DATE bit set when UNTIL present
+///   PatternSpecific(8 LE)      — 0
+///   EndTime(8 LE)              — UNTIL FILETIME (0 when unbounded)
+///   OccurrenceCount(4 LE)      — RRULE COUNT (0 when UNTIL-bounded/unbounded)
+///   ModifiedInstanceCount(4 LE) — 0 (modified exception blocks not modelled)
+///   DeletedInstanceCount(4 LE)  — count of deleted occurrences
+///   DeletedInstanceDates[Count](8 LE each) — FILETIME of each EXDATE
 ///
-/// We emit the minimal fixed-prefix blob Outlook's parser accepts for a
-/// RECURRING appointment; the recurrence-type + interval are sufficient for
-/// Outlook to expand DAILY/WEEKLY/MONTHLY/YEARLY series, and the exact-count
-/// validating decoder in Outlook tolerates the standard trailing-instance
-/// fields being zero-filled (the SDK sample ROP replies do the same).
+/// We emit the blob Outlook accepts for a RECURRING appointment. The
+/// recurrence-type + interval let Outlook expand DAILY/WEEKLY/MONTHLY/
+/// YEARLY series; the END_DATE flag + EndTime bound a UNTIL= series, the
+/// OccurrenceCount bounds a COUNT= series, and the deleted-instance DATE
+/// array conveys EXDATE deletions so the blob stays structurally consist
+/// (Outlook decoder always reads exactly DeletedInstanceCount FILETIMEs
+/// after the count).
 fn recurrence_pattern_bytes(item: &CalendarItem, rrule: &str) -> Vec<u8> {
     let freq = parse_freq(rrule);
     let interval = parse_interval(rrule).unwrap_or(1).max(1);
+    let count = parse_count(rrule).unwrap_or(0);
+    let until_ft = parse_until(rrule).and_then(dt_to_filetime).unwrap_or(0);
     let pattern_type = match freq {
-        Freq::Daily => 0u32, // Interval-type daily
+        Freq::Daily => 0u32,
         Freq::Weekly => 0u32,
         Freq::Monthly => 2u32, // DayOfMonth monthly
         Freq::Yearly => 2u32,
     };
-    let until_ft = parse_until(rrule).and_then(dt_to_filetime).unwrap_or(0);
-    let deleted = item
-        .exceptions
-        .iter()
-        .filter(|e| e.deleted)
-        .count() as u32;
-    let modified = item
-        .exceptions
-        .iter()
-        .filter(|e| !e.deleted)
-        .count() as u32;
 
-    let mut out = Vec::with_capacity(64);
+    // Deleted occurrences: EXDATE values (item.exdates) plus any exception
+    // flagged `deleted`. Each is serialised as its original-start FILETIME in
+    // the DeletedInstanceDates[DeletedInstanceCount] array (MS-OXOCAL §2.2.4)
+    // so the blob is structurally consistent — Outlook's decoder reads exactly
+    // `DeletedInstanceCount` 8-byte FILETIMEs after the counts.
+    let deleted_dates: Vec<u64> = item
+        .exdates
+        .iter()
+        .filter_map(|d| dt_to_filetime(*d))
+        .chain(
+            item.exceptions
+                .iter()
+                .filter(|e| e.deleted)
+                .filter_map(|e| dt_to_filetime(e.exception_start)),
+        )
+        .collect();
+    // Modified exceptions (RECURRENCE-ID without deleted) require a full
+    // per-exception property block which is not yet modelled on the read path
+    // — keep ModifiedInstanceCount = 0 so the blob carries no modified blocks,
+    // which is structurally valid (Outlook expands the master pattern only).
+    let modified = 0u32;
+
+    // END_DATE flag (bit 0x01) in AdditionalFlags: tell Outlook the series is
+    // bounded by EndTime (the UNTIL FILETIME). Also set bit 0x02
+    // (regenerating) only when COUNT terminates the series; we map COUNT via
+    // the OccurrenceCount field below instead of an additional flag, so it
+    // stays clear of the END_DATE bit. With the now-fixed UNTIL parser the
+    // bit is set exactly when a real bound is present.
+    let end_date_flag: u32 = (until_ft != 0) as u32;
+
+    let mut out = Vec::with_capacity(64 + deleted_dates.len() * 8);
     out.extend_from_slice(&freq.as_recurrence_type().to_le_bytes()); // RecurrenceType
     out.extend_from_slice(&pattern_type.to_le_bytes()); // PatternType
     out.extend_from_slice(&0u32.to_le_bytes()); // CalendarType
@@ -366,16 +427,17 @@ fn recurrence_pattern_bytes(item: &CalendarItem, rrule: &str) -> Vec<u8> {
     out.extend_from_slice(&0u32.to_le_bytes()); // WeekIndex/Instance
     out.extend_from_slice(&0u32.to_le_bytes()); // FirstDOW
     out.extend_from_slice(&0u32.to_le_bytes()); // OuterDuration
-    out.extend_from_slice(&0u32.to_le_bytes()); // AdditionalFlags
+    out.extend_from_slice(&end_date_flag.to_le_bytes()); // AdditionalFlags
     out.extend_from_slice(&0u64.to_le_bytes()); // PatternSpecific
-    out.extend_from_slice(&until_ft.to_le_bytes()); // EndTime (until as FT)
-    out.extend_from_slice(&deleted.to_le_bytes()); // DeletedInstanceCount
+    out.extend_from_slice(&until_ft.to_le_bytes()); // EndTime (until as FT; 0 if none)
+    out.extend_from_slice(&count.to_le_bytes()); // OccurrenceCount (RRULE COUNT)
     out.extend_from_slice(&modified.to_le_bytes()); // ModifiedInstanceCount
-    // Trailing instance lists omitted (zero counts above mean Outlook skips
-    // them). The END_DATE flag bit lives in AdditionalFlags when Until is
-    // present; set it so Outlook honours the until bound.
-    if until_ft != 0 && false {
-        // (kept structural; the real flag-set path is AdditionalFlags bit 0x01.)
+    out.extend_from_slice(&(deleted_dates.len() as u32).to_le_bytes()); // DeletedInstanceCount
+    // DeletedInstanceDates — one 8-byte FILETIME per deleted occurrence,
+    // required whenever DeletedInstanceCount > 0 (otherwise the blob is
+    // structurally inconsistent and Outlook ignores the recurrence).
+    for ft in &deleted_dates {
+        out.extend_from_slice(&ft.to_le_bytes());
     }
     out
 }
@@ -423,15 +485,38 @@ fn parse_interval(rrule: &str) -> Option<u32> {
     None
 }
 
+/// Parse the iCalendar `COUNT=` bound (the number of occurrences including
+/// the first). Used to terminate the series via the recurrence blob's
+/// OccurrenceCount field rather than an UNTIL date.
+fn parse_count(rrule: &str) -> Option<u32> {
+    for part in rrule.split(';') {
+        if let Some(v) = part.strip_prefix("COUNT=") {
+            return v.parse().ok().filter(|n: &u32| *n > 0);
+        }
+    }
+    None
+}
+
 fn parse_until(rrule: &str) -> Option<chrono::DateTime<chrono::Utc>> {
     for part in rrule.split(';') {
         if let Some(v) = part.strip_prefix("UNTIL=") {
-            // iCalendar datetime: "20251231T235959Z" or a date-only form.
-            let try_forms = [v.to_string(), format!("{v}T235959Z")];
-            for f in try_forms {
-                if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(&f) {
-                    return Some(dt.with_timezone(&chrono::Utc));
-                }
+            // iCalendar UNTIL is a basic-form UTC datetime ("20251231T235959Z")
+            // or a date-only ("20251231"), NOT RFC3339 (the parser rejected the
+            // compact form, dropping the end bound). Try the compact UTC form,
+            // then date-only (resolved to end-of-day UTC), then RFC3339 as a
+            // permissive fallback.
+            let v = v.trim();
+            if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(v, "%Y%m%dT%H%M%SZ") {
+                return Some(dt.and_utc());
+            }
+            if let Ok(d) = chrono::NaiveDate::parse_from_str(v, "%Y%m%d") {
+                // A date-only UNTIL bound means "no occurrence starting after
+                // this date"; resolve it to the start of the next UTC day so
+                // the bound includes the whole UNTIL day.
+                return Some(d.succ_opt()?.and_hms_opt(0, 0, 0)?.and_utc());
+            }
+            if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(v) {
+                return Some(dt.with_timezone(&chrono::Utc));
             }
         }
     }
@@ -454,10 +539,38 @@ pub fn contact_to_cells(
     mailbox_id: &str,
 ) -> Vec<PropertyValue> {
     let parsed = parse_vcard(vcard);
+    let change_key = contact_change_key(&parsed.uid(), vcard);
     let mut out = Vec::with_capacity(column_set.len());
     for tag in column_set {
-        out.push(contact_cell_for(&parsed, tag, mailbox_id));
+        out.push(contact_cell_for(&parsed, tag, mailbox_id, &change_key));
     }
+    out
+}
+
+/// A change-sensitive change key for a contact: mixes a stable digest of the
+/// *raw vCard text* on top of the (immutable) vCard UID, so an edit to any
+/// field produces a different `PR_CHANGE_KEY`. Outlook diffs change keys to
+/// detect stale rows + conflicts, so a UID-only key would hide edits. The
+/// leading 16 bytes are the provider GUID placeholder, per MS-OXCDATA §2.12.2.
+fn contact_change_key(uid: &str, vcard: &str) -> Vec<u8> {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    // Folded-line whitespace is normalised so a repackaged-but-equal vCard
+    // (different folding) hashes the same; the leading BEGIN/END lines are
+    // excluded so an identical body under different protocol noise stays equal.
+    let body = vcard
+        .lines()
+        .filter(|l| !l.starts_with("BEGIN:") && !l.starts_with("END:"))
+        .map(|l| l.trim())
+        .collect::<Vec<_>>()
+        .join("\n");
+    let mut h = DefaultHasher::new();
+    body.hash(&mut h);
+    let digest = h.finish().to_le_bytes();
+    let mut out = Vec::with_capacity(16 + digest.len() + uid.len());
+    out.extend_from_slice(&[0x01; 16]); // provider GUID placeholder
+    out.extend_from_slice(&digest);
+    out.extend_from_slice(uid.as_bytes());
     out
 }
 
@@ -465,6 +578,7 @@ fn contact_cell_for(
     c: &ParsedVcard,
     tag: &PropertyTag,
     mailbox_id: &str,
+    change_key: &[u8],
 ) -> PropertyValue {
     use PropertyType as T;
     let id = tag.property_id;
@@ -499,6 +613,12 @@ fn contact_cell_for(
         }
         PR_INITIALS => {
             PropertyValue::String(or_null!(c.initials().unwrap_or_default(), T::PTYP_STRING))
+        }
+        PR_MIDDLE_NAME => {
+            PropertyValue::String(or_null!(c.middle_name().unwrap_or_default(), T::PTYP_STRING))
+        }
+        PR_GENERATION => {
+            PropertyValue::String(or_null!(c.generation().unwrap_or_default(), T::PTYP_STRING))
         }
         PR_TITLE => PropertyValue::String(or_null!(c.title().unwrap_or_default(), T::PTYP_STRING)),
         PR_COMPANY_NAME => {
@@ -572,6 +692,26 @@ fn contact_cell_for(
             c.adr("WORK").country.clone(),
             T::PTYP_STRING
         )),
+        PR_OTHER_ADDRESS_STREET => PropertyValue::String(or_null!(
+            c.adr("OTHER").street.clone(),
+            T::PTYP_STRING
+        )),
+        PR_OTHER_ADDRESS_CITY => PropertyValue::String(or_null!(
+            c.adr("OTHER").locality.clone(),
+            T::PTYP_STRING
+        )),
+        PR_OTHER_ADDRESS_STATE => PropertyValue::String(or_null!(
+            c.adr("OTHER").region.clone(),
+            T::PTYP_STRING
+        )),
+        PR_OTHER_ADDRESS_POSTAL => PropertyValue::String(or_null!(
+            c.adr("OTHER").postal.clone(),
+            T::PTYP_STRING
+        )),
+        PR_OTHER_ADDRESS_COUNTRY => PropertyValue::String(or_null!(
+            c.adr("OTHER").country.clone(),
+            T::PTYP_STRING
+        )),
         PR_BUSINESS_HOME_PAGE => PropertyValue::String(or_null!(c.url().unwrap_or_default(), T::PTYP_STRING)),
         PR_HOME_URL => PropertyValue::String(or_null!(c.url().unwrap_or_default(), T::PTYP_STRING)),
         store::PR_ENTRYID => {
@@ -596,9 +736,17 @@ fn contact_cell_for(
             }
         }
         store::PR_CHANGE_KEY => PropertyValue::Binary(or_null!(
-            c.uid().into_bytes(),
+            change_key.to_vec(),
             T::PTYP_BINARY
         )),
+        PR_PREDECESSOR_CHANGE_LIST => {
+            if ttype_matches(want, T::PTYP_BINARY) {
+                // Empty XID list — no predecessor change keys.
+                PropertyValue::Binary(Vec::new())
+            } else {
+                PropertyValue::Null
+            }
+        }
         store::PR_HAS_ATTACHMENTS => PropertyValue::Boolean(or_null!(false, T::PTYP_BOOLEAN)),
         store::PR_MESSAGE_SIZE => PropertyValue::Integer32(or_null!(0, T::PTYP_INTEGER32)),
         store::PR_MESSAGE_FLAGS => PropertyValue::Integer32(or_null!(0, T::PTYP_INTEGER32)),
@@ -673,6 +821,19 @@ impl ParsedVcard {
         self.n_
             .as_ref()
             .and_then(|n| n.get(3).filter(|s| !s.is_empty()).cloned())
+    }
+    /// N: Additional (middle) name component — index 2.
+    fn middle_name(&self) -> Option<String> {
+        self.n_
+            .as_ref()
+            .and_then(|n| n.get(2).filter(|s| !s.is_empty()).cloned())
+    }
+    /// N: honorific suffix (generation qualifier: Jr./Sr./III) — index 4,
+    /// mapped to PidTagGeneration.
+    fn generation(&self) -> Option<String> {
+        self.n_
+            .as_ref()
+            .and_then(|n| n.get(4).filter(|s| !s.is_empty()).cloned())
     }
     fn initials(&self) -> Option<String> {
         self.initials.clone()
@@ -1024,5 +1185,135 @@ mod tests {
         let cs = vec![ttag(0xFFFE, PropertyType::PTYP_STRING)];
         let cells = contact_to_cells(vcard, &cs, store::CONTACTS_BACKEND_ID);
         assert!(matches!(cells[0], PropertyValue::Null));
+    }
+
+    /// CR6: PR_CHANGE_KEY must differ when the vCard body changes, so Outlook
+    /// detects edits (a UID-only key would hide them).
+    #[test]
+    fn contact_change_key_differs_on_body_edit() {
+        let v1 = "BEGIN:VCARD\nVERSION:3.0\nFN:Jane Doe\nEMAIL:jane@example.com\nUID:urn:uuid:xyz\nEND:VCARD";
+        let v2 = "BEGIN:VCARD\nVERSION:3.0\nFN:Jane Doe\nEMAIL:jane@other.com\nUID:urn:uuid:xyz\nEND:VCARD";
+        let cs = vec![
+            ttag(store::PR_CHANGE_KEY, PropertyType::PTYP_BINARY),
+            ttag(store::PR_RECORD_KEY, PropertyType::PTYP_BINARY),
+        ];
+        let c1 = contact_to_cells(v1, &cs, store::CONTACTS_BACKEND_ID);
+        let c2 = contact_to_cells(v2, &cs, store::CONTACTS_BACKEND_ID);
+        let (PropertyValue::Binary(k1), PropertyValue::Binary(k2)) = (&c1[1], &c2[1])
+        else {
+            panic!("expected binary record key");
+        };
+        // Change key must change with the body ...
+        assert_ne!(c1[0], c2[0], "change key should differ when body edits");
+        // ... but the record key (stable UID) stays the same.
+        assert_eq!(k1, k2, "record key should be stable across edits");
+    }
+
+    /// Q3/CR1: a compact-basic UNTIL bound rounds through the recurrence
+    /// blob as a real EndTime + the END_DATE flag (AdditionalFlags bit 0x01),
+    /// and parse_until now resolves compact "20251231T235959Z".
+    #[test]
+    fn recurrence_until_set_end_date_flag_and_endtime() {
+        let mut ev = sample_event();
+        ev.rrule = Some("FREQ=DAILY;INTERVAL=1;UNTIL=20251231T235959Z".into());
+        let cs = vec![ttag(PR_RECURRENCE_PATTERN, PropertyType::PTYP_BINARY)];
+        let cells = calendar_to_cells(&ev, &cs, store::CALENDAR_BACKEND_ID);
+        let PropertyValue::Binary(b) = &cells[0] else {
+            panic!("expected binary recurrence pattern");
+        };
+        // Layout: RecType4 Pat4 Cal4 First8 Interval4 Week4 FirstDOW4 Outer4
+        // Flags4 PatternSpecific8 EndTime8 OccCount4 ModCount4 DelCount4
+        // => AdditionalFlags at 36, EndTime at 48, OccCount 56, ModCount 60,
+        // DelCount 64.
+        let flags = u32::from_le_bytes(b[36..40].try_into().unwrap());
+        assert_eq!(flags & 0x01, 0x01, "END_DATE flag must be set for UNTIL");
+        let end_time = u64::from_le_bytes(b[48..56].try_into().unwrap());
+        assert_ne!(end_time, 0, "EndTime must be non-zero for UNTIL");
+        let until_ft = parse_until(ev.rrule.as_deref().unwrap())
+            .and_then(dt_to_filetime)
+            .unwrap();
+        assert_eq!(end_time, until_ft);
+        let count = u32::from_le_bytes(b[56..60].try_into().unwrap());
+        assert_eq!(count, 0);
+        let mod_count = u32::from_le_bytes(b[60..64].try_into().unwrap());
+        assert_eq!(mod_count, 0);
+        let del_count = u32::from_le_bytes(b[64..68].try_into().unwrap());
+        assert_eq!(del_count, 0);
+        assert_eq!(b.len(), 68);
+    }
+
+    /// CR1: a COUNT=... series leaves EndTime 0 and stamps OccurrenceCount.
+    #[test]
+    fn recurrence_count_stamps_occurrence_count() {
+        let mut ev = sample_event();
+        ev.rrule = Some("FREQ=DAILY;INTERVAL=1;COUNT=5".into());
+        let cs = vec![ttag(PR_RECURRENCE_PATTERN, PropertyType::PTYP_BINARY)];
+        let cells = calendar_to_cells(&ev, &cs, store::CALENDAR_BACKEND_ID);
+        let PropertyValue::Binary(b) = &cells[0] else {
+            panic!("expected binary recurrence pattern");
+        };
+        let flags = u32::from_le_bytes(b[36..40].try_into().unwrap());
+        assert_eq!(flags & 0x01, 0, "no END_DATE flag for COUNT series");
+        let end_time = u64::from_le_bytes(b[48..56].try_into().unwrap());
+        assert_eq!(end_time, 0, "EndTime must be 0 for COUNT series");
+        let count = u32::from_le_bytes(b[56..60].try_into().unwrap());
+        assert_eq!(count, 5);
+    }
+
+    /// Q2: EXDATE deletions are serialised into the DeletedInstanceDates
+    /// array, keeping the blob structurally consistent (the decoder reads
+    /// exactly DeletedInstanceCount FILETIMEs after the count).
+    #[test]
+    fn recurrence_exdates_serialised_as_deleted_instances() {
+        use chrono::TimeZone;
+        let mut ev = sample_event();
+        ev.rrule = Some("FREQ=DAILY;INTERVAL=1".into());
+        ev.exdates = vec![
+            chrono::Utc
+                .with_ymd_and_hms(2025, 1, 2, 9, 0, 0)
+                .unwrap(),
+            chrono::Utc
+                .with_ymd_and_hms(2025, 1, 3, 9, 0, 0)
+                .unwrap(),
+        ];
+        let cs = vec![ttag(PR_RECURRENCE_PATTERN, PropertyType::PTYP_BINARY)];
+        let cells = calendar_to_cells(&ev, &cs, store::CALENDAR_BACKEND_ID);
+        let PropertyValue::Binary(b) = &cells[0] else {
+            panic!("expected binary recurrence pattern");
+        };
+        let del_count = u32::from_le_bytes(b[64..68].try_into().unwrap());
+        assert_eq!(del_count, 2);
+        // DeletedInstanceDates follow at offset 68, one 8-byte FT each.
+        assert_eq!(b.len(), 68 + (2 * 8));
+        let ft0 = u64::from_le_bytes(b[68..76].try_into().unwrap());
+        let ft1 = u64::from_le_bytes(b[76..84].try_into().unwrap());
+        assert_ne!(ft0, 0);
+        assert_ne!(ft1, 0);
+        assert_ne!(ft0, ft1);
+    }
+
+    /// CR5: the GlobalObjectId now carries the full MS-OXOCAL ByteArrayID
+    /// structure, starting with the fixed meeting-namespace id.
+    #[test]
+    fn global_object_id_has_full_byte_array_id() {
+        let ev = sample_event();
+        let cs = vec![ttag(PR_GLOBAL_OBJECT_ID, PropertyType::PTYP_BINARY)];
+        let cells = calendar_to_cells(&ev, &cs, store::CALENDAR_BACKEND_ID);
+        let PropertyValue::Binary(b) = &cells[0] else {
+            panic!("expected binary global object id");
+        };
+        // Fixed 16-byte ByteArrayID per MS-OXOCAL §2.2.5.2.
+        const EXPECTED: [u8; 16] = [
+            0x04, 0x00, 0x00, 0x00, 0x82, 0x00, 0xE0, 0x00, 0x74, 0xC5, 0xB7, 0x10, 0x1A, 0x82,
+            0xE0, 0x08,
+        ];
+        assert_eq!(&b[..16], &EXPECTED);
+        // Year(2) Month(1) Day(1) CreationTime(8) Reserved(8) Size(4) Data[n]
+        // NUL — Size is at 16+2+1+1+8+8 = 36, Data follows.
+        assert!(b.len() >= 41);
+        let size = u32::from_le_bytes(b[36..40].try_into().unwrap()) as usize;
+        assert_eq!(size, sample_event().uid.len());
+        assert_eq!(&b[40..40 + size], sample_event().uid.as_bytes());
+        assert_eq!(b[b.len() - 1], 0);
     }
 }

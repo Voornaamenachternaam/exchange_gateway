@@ -466,12 +466,12 @@ async fn execute_one_rop(
                 rows.push(synth_folder_row(
                     store::CALENDAR_BACKEND_ID,
                     "Calendar",
-                    "__calendar__",
+                    store::CALENDAR_BACKEND_ID,
                 ));
                 rows.push(synth_folder_row(
                     store::CONTACTS_BACKEND_ID,
                     "Contacts",
-                    "__contacts__",
+                    store::CONTACTS_BACKEND_ID,
                 ));
                 let total = rows.len() as u64;
                 (rows, total, FolderKind::Mail)
@@ -831,7 +831,7 @@ async fn execute_one_rop(
                 {
                     let target = u64::from_str_radix(&backend_id, 16)
                         .unwrap_or_else(|_| store::folder_id_from_backend(&backend_id));
-                    fetch_calendar_rows(cfg, username, pw, "")
+                    fetch_calendar_rows(cfg, username, pw, store::CALENDAR_BACKEND_ID)
                         .await
                         .into_iter()
                         .find_map(|r| {
@@ -843,7 +843,7 @@ async fn execute_one_rop(
                                 Some(crate::mapi::converters::calendar_to_cells(
                                     c,
                                     &req.property_tags,
-                                    "",
+                                    store::CALENDAR_BACKEND_ID,
                                 ))
                             } else {
                                 None
@@ -860,7 +860,7 @@ async fn execute_one_rop(
                         id: Some(backend_id.clone()),
                         name: Some("Calendar".to_string()),
                         parent_id: Some("ROOT".to_string()),
-                        role: Some("__calendar__".to_string()),
+                        role: Some(store::CALENDAR_BACKEND_ID.to_string()),
                         sort_order: None,
                         total_emails: None,
                         unread_emails: None,
@@ -878,7 +878,7 @@ async fn execute_one_rop(
                 {
                     let target = u64::from_str_radix(&backend_id, 16)
                         .unwrap_or_else(|_| store::folder_id_from_backend(&backend_id));
-                    fetch_contact_rows(cfg, username, pw, "")
+                    fetch_contact_rows(cfg, username, pw, store::CONTACTS_BACKEND_ID)
                         .await
                         .into_iter()
                         .find_map(|r| {
@@ -889,7 +889,7 @@ async fn execute_one_rop(
                                 Some(crate::mapi::converters::contact_to_cells(
                                     v,
                                     &req.property_tags,
-                                    "",
+                                    store::CONTACTS_BACKEND_ID,
                                 ))
                             } else {
                                 None
@@ -906,7 +906,7 @@ async fn execute_one_rop(
                         id: Some(backend_id.clone()),
                         name: Some("Contacts".to_string()),
                         parent_id: Some("ROOT".to_string()),
-                        role: Some("__contacts__".to_string()),
+                        role: Some(store::CONTACTS_BACKEND_ID.to_string()),
                         sort_order: None,
                         total_emails: None,
                         unread_emails: None,
@@ -3996,10 +3996,11 @@ async fn fetch_email_rows(
 
 /// Enumerate CalDAV VEVENTs in the user's default calendar collection as
 /// `TableRow`s carrying a cached `CalendarItem` for lazy
-/// `IPM.Appointment` cell materialisation. The window is the recent two
-/// years centred on "now" so Outlook's contents-table view shows upcoming
-/// and recent appointments without pulling the entire history (Outlook
-/// refines the visible window client-side via `RopRestrict` time-range).
+/// `IPM.Appointment` cell materialisation. The window is ±2 years centred on
+/// "now" (±730 days, a ~4-year span) so Outlook's contents-table view shows
+/// upcoming and recent appointments without pulling the entire history
+/// (Outlook refines the visible window client-side via `RopRestrict`
+/// time-range).
 async fn fetch_calendar_rows(
     cfg: &Config,
     username: &str,
@@ -4021,8 +4022,8 @@ async fn fetch_calendar_rows(
     };
     let href = caldav.calendar_collection_href(username);
     let now = chrono::Utc::now();
-    let start = now - chrono::Duration::days(365);
-    let end = now + chrono::Duration::days(365);
+    let start = now - chrono::Duration::days(730);
+    let end = now + chrono::Duration::days(730);
     let raw = match caldav
         .query_events(
             &href,
@@ -4164,6 +4165,11 @@ fn parse_calendar_multistatus(xml: &str) -> Vec<crate::mapi::session::TableRow> 
             }
             _ => {}
         }
+        // Reuse the scratch buffer across iterations but shrink it back so
+        // it never retains memory proportional to the largest event in the
+        // multistatus response (matches the established quick-xml pattern in
+        // `src/caldav.rs`).
+        buf.clear();
     }
     rows
 }
@@ -6256,12 +6262,12 @@ mod tests {
     /// Outlook's hierarchy-table walk).
     #[test]
     fn synth_calendar_folder_row_has_ipf_appointment_class() {
-        let row = synth_folder_row(store::CALENDAR_BACKEND_ID, "Calendar", "__calendar__");
+        let row = synth_folder_row(store::CALENDAR_BACKEND_ID, "Calendar", store::CALENDAR_BACKEND_ID);
         let src = row.source.expect("synth row carries a JmapMailbox source");
         let mbx = src
             .downcast_ref::<crate::jmap::JmapMailbox>()
             .expect("source is a JmapMailbox");
-        assert_eq!(mbx.role.as_deref(), Some("__calendar__"));
+        assert_eq!(mbx.role.as_deref(), Some(store::CALENDAR_BACKEND_ID));
         assert_eq!(mbx.name.as_deref(), Some("Calendar"));
         let cs = [crate::mapi::data::PropertyTag::new(
             crate::mapi::data::PropertyType::PTYP_STRING,
@@ -6286,7 +6292,7 @@ mod tests {
     /// The synthetic Contacts folder row renders `PR_CONTAINER_CLASS=IPF.Contact`.
     #[test]
     fn synth_contacts_folder_row_has_ipf_contact_class() {
-        let row = synth_folder_row(store::CONTACTS_BACKEND_ID, "Contacts", "__contacts__");
+        let row = synth_folder_row(store::CONTACTS_BACKEND_ID, "Contacts", store::CONTACTS_BACKEND_ID);
         let mbx = row
             .source
             .as_ref()

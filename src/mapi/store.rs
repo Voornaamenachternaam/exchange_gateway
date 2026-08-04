@@ -156,6 +156,9 @@ pub const PR_MID: u16 = 0x6748;
 /// PidTagChangeKey — 65E2 (Binary). The per-revision key; we derive from
 /// JMAP blob/etag. Outlook uses it for sync de-dupe.
 pub const PR_CHANGE_KEY: u16 = 0x65E2;
+/// PidTagPredecessorChangeList — `0x65E8` (Binary, XID array). The chain of
+/// prior change keys; we emit an empty list for gateway-synthesised rows.
+pub const PR_PREDECESSOR_CHANGE_LIST: u16 = 0x65E8;
 /// PidTagLastModificationTime — 3008 (Time).
 pub const PR_LAST_MODIFICATION_TIME: u16 = 0x3008;
 /// PidTagLastModifierName — 3FFB String (often empty for JMAP).
@@ -213,7 +216,7 @@ pub const PR_GLOBAL_OBJECT_ID: u16 = 0x8109;
 /// outlier Fix-Repeat bits — Outlook matches invites by this id.
 pub const PR_CLEAN_GLOBAL_OBJECT_ID: u16 = 0x80C8;
 /// PidTagAppointmentSubType — `0x8211` (Boolean). 1 == all-day event hint.
-pub const PPR_APPOINTMENT_SUB_TYPE: u16 = 0x8211;
+pub const PR_APPOINTMENT_SUB_TYPE: u16 = 0x8211;
 /// PidTagRequiredAttendees / display-name aggregate — `0x821A` String.
 /// Outlook reads this as the comma-joined required-attendee names list.
 pub const PR_REQUIRED_ATTENDEES: u16 = 0x821A;
@@ -237,12 +240,18 @@ pub const PR_DISPLAY_NAME_PREFIX: u16 = 0x8012;
 pub const PR_GIVEN_NAME: u16 = 0x8013;
 /// PidTagSurname — `0x8014` (String). Surname / family name.
 pub const PR_SURNAME: u16 = 0x8014;
-/// PidTagInitials — `0x800A` (String).
-pub const PR_INITIALS: u16 = 0x800A;
+/// PidTagInitials — `0x3A0A` (String). NOT `0x800A` (the named-property
+/// range ≥ 0x8000); the canonical MS-OXPROPS id is `0x3A0A`.
+pub const PR_INITIALS: u16 = 0x3A0A;
 /// PidTagEmail1EmailAddress — `0x8017` (String).
 pub const PR_EMAIL1_ADDRESS: u16 = 0x8017;
 /// PidTagEmail1DisplayName — `0x8018` (String).
 pub const PR_EMAIL1_DISPLAY: u16 = 0x8018;
+/// PidTagMiddleName — `0x3A44` (String). Canonical MS-OXPROPS id.
+pub const PR_MIDDLE_NAME: u16 = 0x3A44;
+/// PidTagGeneration — `0x3A05` (String). Generational qualifier (honorific
+/// suffix: Jr./Sr./III) — the vCard `N:` 5th field.
+pub const PR_GENERATION: u16 = 0x3A05;
 /// PidTagEmailAddress — `0x3003` (String). The primary email (the vCard EMAIL).
 pub const PR_EMAIL_ADDRESS: u16 = 0x3003;
 /// PidTagAddresstype — `0x3002` (String). "SMTP" for the contact addresses.
@@ -282,6 +291,16 @@ pub const PR_BUSINESS_ADDRESS_STATE: u16 = 0x8047;
 pub const PR_BUSINESS_ADDRESS_POSTAL: u16 = 0x8048;
 /// PidTagBusinessAddressCountry — `0x8049` (String).
 pub const PR_BUSINESS_ADDRESS_COUNTRY: u16 = 0x8049;
+/// PidTagOtherAddressStreet — `0x8043`? — canonical MS-OXPROPS id `0x3A5C`.
+pub const PR_OTHER_ADDRESS_STREET: u16 = 0x3A5C;
+/// PidTagOtherAddressCity — canonical MS-OXPROPS id `0x3A5F`.
+pub const PR_OTHER_ADDRESS_CITY: u16 = 0x3A5F;
+/// PidTagOtherAddressStateOrProvince — canonical MS-OXPROPS id `0x3A5E`.
+pub const PR_OTHER_ADDRESS_STATE: u16 = 0x3A5E;
+/// PidTagOtherAddressPostalCode — canonical MS-OXPROPS id `0x3A5D`.
+pub const PR_OTHER_ADDRESS_POSTAL: u16 = 0x3A5D;
+/// PidTagOtherAddressCountry — canonical MS-OXPROPS id `0x3A60`.
+pub const PR_OTHER_ADDRESS_COUNTRY: u16 = 0x3A60;
 /// PidTagSenderFlags — `0x8001`… (unused). PidTagURL — `0x802B` (String).
 pub const PR_HOME_URL: u16 = 0x802B;
 /// PidTagWorkAddress — `0x002B`? — PidTagBusinessHomePage — `0x802B` overlaps
@@ -359,8 +378,8 @@ pub fn folder_kind_for_role(role: Option<&str>) -> crate::mapi::session::FolderK
         // `JmapMailbox` rows tagged with these roles so `mailbox_to_cells`
         // renders the right `PR_CONTAINER_CLASS` (IPF.Appointment /
         // IPF.Contact) and the contents-table open step resolves the kind.
-        Some("__calendar__") => FolderKind::Calendar,
-        Some("__contacts__") => FolderKind::Contacts,
+        Some(role) if role == CALENDAR_BACKEND_ID => FolderKind::Calendar,
+        Some(role) if role == CONTACTS_BACKEND_ID => FolderKind::Contacts,
         _ => FolderKind::Mail,
     }
 }
@@ -1519,11 +1538,6 @@ pub fn message_entry_id_for(item_id: &str, mailbox_id: &str) -> Vec<u8> {
     out.extend_from_slice(&mid.to_le_bytes()); // instance == message id
     out
 }
-
-/// PidTagObjectId — `0x00000003` is the only canonical id Outlook never reads
-/// on the calendar/contact row (kept named so the contact-id path mirrors the
-/// calendar's `PR_OBJECT_ID` intent without a fabricated property).
-pub const PR_OBJECT_ID: u16 = PR_SEARCH_KEY;
 
 // ----------------------------------------------------------------------------
 // Tests
