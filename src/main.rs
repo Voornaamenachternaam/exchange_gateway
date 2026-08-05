@@ -455,7 +455,16 @@ async fn mapi_http_path(
     };
 
     let enabled = state.cfg.mapi_enabled;
-    let basic_password = extract_basic_password(&headers);
+    // Decode both the Basic-auth username and password once so the address-book
+    // (NSPI) dispatcher can authenticate `/mapi/nspi` requests against the
+    // same `AuthVerifier` the mailbox path uses, and so it can synthesise the
+    // caller's own mailbox entry in a directory-less minimal-GAL stub. The
+    // mailbox path only consumes the password; the username is read off the
+    // same shared decoder (`decode_basic_auth`) so the credential shape stays
+    // identical across every endpoint.
+    let (basic_username, basic_password) = decode_basic_auth(&headers)
+        .map(|(u, p)| (Some(u), Some(p)))
+        .unwrap_or((None, None));
     let mut req =
         match exchange_gateway::mapi::transport::parse_request(&headers, body.to_vec(), enabled) {
             Ok(r) => r,
@@ -479,6 +488,7 @@ async fn mapi_http_path(
             }
         };
     req.password = basic_password;
+    req.username = basic_username;
 
     // Reject RPC-family/endpoint mismatches (MS-OXCMAPIHTTP §2.2.5):
     // mailbox RPCs (Connect/Execute/Disconnect/NotificationPoll +
@@ -533,12 +543,13 @@ fn render_mapi(
 /// the username (verbatim, up to the first `:`) and the password. This is the
 /// single source of truth for the Basic-credential decode shape (scheme
 /// stripping, base64 STANDARD, UTF-8, `user:pass` split — RFC 7617) so the
-/// MAPI path (`extract_basic_password`) and the Autodiscover auth-gating path
-/// cannot drift apart in malformed-header handling. Returns `None` for absent,
-/// malformed, non-Basic, invalid base64/UTF-8, or a missing password
-/// separator. The password is returned as a **plain** `String`; callers that
-/// need defense-in-depth MUST wrap it in `secrecy::SecretString` (zeroized on
-/// drop) — the established pattern in `auth.rs` / `mapi/handler.rs`.
+/// MAPI mailbox path, the MAPI address-book (NSPI) path, and the Autodiscover
+/// auth-gating path cannot drift apart in malformed-header handling. Returns
+/// `None` for absent, malformed, non-Basic, invalid base64/UTF-8, or a missing
+/// password separator. The password is returned as a **plain** `String`;
+/// callers that need defense-in-depth MUST wrap it in
+/// `secrecy::SecretString` (zeroized on drop) — the established pattern in
+/// `auth.rs` / `mapi/handler.rs`.
 fn decode_basic_auth(headers: &axum::http::HeaderMap) -> Option<(String, String)> {
     use base64::Engine;
     let raw = headers.get(header::AUTHORIZATION)?.to_str().ok()?;
@@ -553,18 +564,6 @@ fn decode_basic_auth(headers: &axum::http::HeaderMap) -> Option<(String, String)
     } else {
         Some((user.to_string(), pass.to_string()))
     }
-}
-
-/// Extract the password from an `Authorization: Basic <b64>` header, returning
-/// only the password component (the username lives in the ROP's Essdn). Returns
-/// `None` for absent, malformed, non-Basic, or invalid base64/UTF-8 — the
-/// MAPI logon handler treats `None` as anonymous and rejects with
-/// `AnonymousNotAllowed`.
-///
-/// Delegates to the shared `decode_basic_auth` decoder so the Basic-credential
-/// shape stays identical across every endpoint.
-fn extract_basic_password(headers: &axum::http::HeaderMap) -> Option<String> {
-    decode_basic_auth(headers).map(|(_, pass)| pass)
 }
 
 /// Strip a case-insensitive `Basic ` auth-scheme prefix from the
@@ -603,7 +602,7 @@ fn check_endpoint_rpc_family(
                 ))
             }
         }
-        RpcKind::AddressBook => {
+        RpcKind::AddressBook(_) => {
             if is_emsmdb {
                 Err(MapiResponse::error(
                     ResponseCode::InvalidRequestType,

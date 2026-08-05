@@ -145,10 +145,135 @@ impl MapiRequestType {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RpcKind {
     Mailbox(MapiRequestType),
-    /// Anything targeting an address-book endpoint RPC (Bind, QueryRows,
-    /// ResolveNames, …). Rejected at the transport layer in Phase 0.
-    AddressBook,
+    /// An address-book endpoint RPC (`Bind`, `QueryRows`, `ResolveNames`, …)
+    /// targeting `/mapi/nspi` per MS-OXCMAPIHTTP §2.2.5. The discriminant
+    /// carries the recognised RPC so the NSPI dispatcher (`mapi::nspi`) can
+    /// route to the matching server-side handler (MS-OXNSPI §3.1.4.1.*).
+    AddressBook(AddressBookRpc),
 }
+
+/// The address-book RPC set served by the `/mapi/nspi` endpoint
+/// (MS-OXNSPI §3.1.4.1.* — each method has a distinct `[MS-OXNSPI]` opnum,
+/// but over MAPI/HTTP the dispatcher routes by the textual `X-RequestType`
+/// value, NOT by opnum, so the numeric opnums are intentionally omitted to
+/// avoid encoding a stale dispatch mapping). Recognised by
+/// `AddressBookRpc::parse` against the exact `X-RequestType` header value; a
+/// verb that is neither a mailbox nor a recognised address-book RPC yields the
+/// `InvalidHeader` transport code (§2.2.3.3.1), while a recognised address-book
+/// verb arriving on the wrong endpoint is rejected downstream.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AddressBookRpc {
+    /// Establish a Session Context (MS-OXNSPI §3.1.4.1.1).
+    Bind,
+    /// Conclude a Session Context (MS-OXNSPI §3.1.4.1.2).
+    Unbind,
+    /// Update the logical position in a table (MS-OXNSPI §3.1.4.1.3).
+    UpdateStat,
+    /// Return a set of rows from a table (MS-OXNSPI §3.1.4.1.8).
+    QueryRows,
+    /// Restrict a table and return an Explicit Table (MS-OXNSPI §3.1.4.1.4).
+    GetMatches,
+    /// Seek forward in a table (MS-OXNSPI §3.1.4.1.13).
+    SeekEntries,
+    /// Return the columns a table exposes (MS-OXNSPI §3.1.4.1.12).
+    QueryColumns,
+    /// Return the special tables (hierarchy / GAL) (MS-OXNSPI §3.1.4.1.10).
+    GetSpecialTable,
+    /// Return the list of property tags for a template (MS-OXNSPI §3.1.4.1.6).
+    GetTemplateInfo,
+    /// Modify link attributes (admin-only; unused by Outlook).
+    ModLinkAtt,
+    /// Modify properties on an Address Book object (admin-only).
+    ModProps,
+    /// Convert DNs to Minimal Entry IDs (MS-OXNSPI §3.1.4.1.7).
+    DnToMinId,
+    /// Return the property tags an object exposes (MS-OXNSPI §3.1.4.1.9).
+    GetPropList,
+    /// Return the properties for a set of Minimal Entry IDs
+    /// (MS-OXNSPI §3.1.4.1.5).
+    GetProps,
+    /// Compare two Minimal Entry IDs (MS-OXNSPI §3.1.4.1.14).
+    CompareMIds,
+    /// Ambiguous-name resolution of a set of names (MS-OXNSPI §3.1.4.1.15).
+    ResolveNames,
+    /// Resolve the physical mailbox URL for an Address Book object — carried
+    /// over RPC-over-HTTP only; over MAPI/HTTP the client uses Autodiscover.
+    /// Recognised for graceful transport acceptance.
+    GetMailboxUrl,
+    /// Resolve the physical address-book URL — same caveat as GetMailboxUrl.
+    GetAddressBookUrl,
+    /// Re-sort the Explicit Table (MS-OXNSPI §3.1.4.1.16). Recognised for
+    /// transport acceptance; the gateway serves a single in-memory table so
+    /// this is a deterministic no-op success.
+    ResortRestriction,
+}
+
+impl AddressBookRpc {
+    /// Parse a raw `X-RequestType` value into the matching address-book RPC.
+    /// The match is case-sensitive and exact, mirroring the spec table; an
+    /// unknown verb returns `None` (the transport then maps it to
+    /// `InvalidHeader`). Legacy spellings (`DNToMId`, `CompareMIDs`) collapse
+    /// to the canonical RPC so pre-2013 client transports still dispatch.
+    pub fn parse(raw: &str) -> Option<Self> {
+        Some(match raw.trim() {
+            "Bind" => Self::Bind,
+            "Unbind" => Self::Unbind,
+            "CompareMIds" | "CompareMIDs" => Self::CompareMIds,
+            // Per MS-OXCMAPIHTTP §2.2.3.3.1 the request type is spelled
+            // "DNToMId" (capital N). Older "DnToMId" is recognised for
+            // compatibility with pre-2013 clients.
+            "DNToMId" | "DnToMId" => Self::DnToMinId,
+            "GetMatches" => Self::GetMatches,
+            "GetPropList" => Self::GetPropList,
+            "GetProps" => Self::GetProps,
+            "GetSpecialTable" => Self::GetSpecialTable,
+            "GetTemplateInfo" => Self::GetTemplateInfo,
+            "ModLinkAtt" => Self::ModLinkAtt,
+            "ModProps" => Self::ModProps,
+            "QueryColumns" => Self::QueryColumns,
+            "QueryRows" => Self::QueryRows,
+            "ResolveNames" => Self::ResolveNames,
+            "ResortRestriction" => Self::ResortRestriction,
+            "SeekEntries" => Self::SeekEntries,
+            "UpdateStat" => Self::UpdateStat,
+            "GetMailboxUrl" => Self::GetMailboxUrl,
+            "GetAddressBookUrl" => Self::GetAddressBookUrl,
+            _ => return None,
+        })
+    }
+
+    /// The canonical (spec) request-type spelling this RPC maps to — the string
+    /// the server echoes back in the success response's request-type field. This
+    /// is the CANONICAL spelling, NOT necessarily the literal the client sent:
+    /// legacy spellings (`DnToMId`, `CompareMIDs`) are normalised to the
+    /// canonical verb (`DNToMId`, `CompareMIds`) here. Callers that must echo
+    /// the client's verbatim spelling should carry the original `X-RequestType`
+    /// string alongside the parsed enum.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Bind => "Bind",
+            Self::Unbind => "Unbind",
+            Self::CompareMIds => "CompareMIds",
+            Self::DnToMinId => "DNToMId",
+            Self::GetMatches => "GetMatches",
+            Self::GetPropList => "GetPropList",
+            Self::GetProps => "GetProps",
+            Self::GetSpecialTable => "GetSpecialTable",
+            Self::GetTemplateInfo => "GetTemplateInfo",
+            Self::ModLinkAtt => "ModLinkAtt",
+            Self::ModProps => "ModProps",
+            Self::QueryColumns => "QueryColumns",
+            Self::QueryRows => "QueryRows",
+            Self::ResolveNames => "ResolveNames",
+            Self::ResortRestriction => "ResortRestriction",
+            Self::SeekEntries => "SeekEntries",
+            Self::UpdateStat => "UpdateStat",
+            Self::GetMailboxUrl => "GetMailboxUrl",
+            Self::GetAddressBookUrl => "GetAddressBookUrl",
+        }
+    }
+}
+
 
 /// The fully-parsed MAPI/HTTP request after header validation.
 #[derive(Debug, Clone)]
@@ -169,6 +294,11 @@ pub struct MapiRequest {
     /// Basic-auth password, if the request carried an `Authorization: Basic`
     /// header; plumbed to `logon.rs`. Set by the router before dispatch.
     pub password: Option<String>,
+    /// Basic-auth username, if the request carried an `Authorization: Basic`
+    /// header; plumbed to the NSPI address-book handler so it can authenticate
+    /// the GAL/ResolveNames access and synthesise the caller's own mailbox
+    /// entry in a directory-less stub. Set by the router before dispatch.
+    pub username: Option<String>,
     /// Raw request body bytes (already length-bounded by the router).
     pub body: Vec<u8>,
 }
@@ -180,12 +310,6 @@ pub enum HeaderError {
     Missing(&'static str),
     #[error("malformed header: {0}")]
     Malformed(&'static str),
-    /// A recognised-but-unsupported request type (e.g. an address-book
-    /// RPC to /mapi/emsmdb, or any NSPI RPC at Phase 0). The spec
-    /// distinguishes `InvalidRequestType` (code 5) from `InvalidHeader`
-    /// (code 4); route known-but-unsupported types through this variant.
-    #[error("unsupported request type")]
-    UnsupportedRequestType,
     #[error("endpoint disabled")]
     Disabled,
     #[error("request too large")]
@@ -197,7 +321,6 @@ impl HeaderError {
         match self {
             Self::Missing(_) => ResponseCode::MissingHeader,
             Self::Malformed(_) => ResponseCode::InvalidHeader,
-            Self::UnsupportedRequestType => ResponseCode::InvalidRequestType,
             Self::Disabled => ResponseCode::EndpointDisabled,
             Self::TooLarge => ResponseCode::TooLarge,
         }
@@ -246,14 +369,16 @@ pub fn parse_request(
     let kind = match MapiRequestType::parse(rt_raw) {
         Some(t) => RpcKind::Mailbox(t),
         None => {
-            // Address-book endpoint RPCs (§2.2.5.*) are a closed set.
-            // Recognise them so we return InvalidRequestType (code 5) rather
-            // than InvalidHeader (code 4) — the spec distinguishes the two.
-            // Unknown / unrecognised verbs still fall back to InvalidHeader.
-            if is_address_book_rpc(rt_raw) {
-                return Err(HeaderError::UnsupportedRequestType);
+            // Address-book endpoint RPCs (§2.2.5.*) are a closed set: try to
+            // parse the verb as one, producing `RpcKind::AddressBook` so the
+            // NSPI dispatcher (`mapi::nspi`) serves the GAL over the
+            // operator-configured directory. A verb that is neither a
+            // mailbox nor a recognised address-book RPC falls back to the
+            // `InvalidHeader` transport code (code 4) per §2.2.3.3.1.
+            match AddressBookRpc::parse(rt_raw) {
+                Some(rpc) => RpcKind::AddressBook(rpc),
+                None => return Err(HeaderError::Malformed("X-RequestType")),
             }
-            return Err(HeaderError::Malformed("X-RequestType"));
         }
     };
 
@@ -280,6 +405,7 @@ pub fn parse_request(
         client_info,
         cookies,
         password: None,
+        username: None,
         body,
     })
 }
@@ -315,36 +441,6 @@ pub fn cookie_value<'a>(cookies: &'a [(String, String)], name: &str) -> Option<&
         .iter()
         .find(|(k, _)| k == name)
         .map(|(_, v)| v.as_str())
-}
-
-/// Whether a raw X-RequestType value names one of the address-book ROPs.
-/// Recognised (but rejected in Phase 0) so the transport layer returns the
-/// correct "Invalid Request Type" code rather than "Invalid Header".
-fn is_address_book_rpc(raw: &str) -> bool {
-    matches!(
-        raw.trim(),
-        "Bind"
-            | "Unbind"
-            | "CompareMIds"
-            // Per MS-OXCMAPIHTTP §2.2.3.3.1 the request type is spelled
-            // "DNToMId" (capital N) — older code used "DnToMId".
-            | "DNToMId"
-            | "GetMatches"
-            | "GetPropList"
-            | "GetProps"
-            | "GetSpecialTable"
-            | "GetTemplateInfo"
-            | "ModLinkAtt"
-            | "ModProps"
-            | "QueryColumns"
-            | "QueryRows"
-            | "ResolveNames"
-            | "ResortRestriction"
-            | "SeekEntries"
-            | "UpdateStat"
-            | "GetMailboxUrl"
-            | "GetAddressBookUrl"
-    )
 }
 
 /// Validate the `{GUID}:counter` shape of X-RequestId. We do not require the
@@ -550,12 +646,59 @@ mod tests {
     }
 
     #[test]
-    fn address_book_rpcs_recognised_for_correct_error_code() {
-        assert!(is_address_book_rpc("Bind"));
-        assert!(is_address_book_rpc(" ResolveNames "));
-        assert!(is_address_book_rpc("QueryRows"));
-        assert!(!is_address_book_rpc("Connect"));
-        assert!(!is_address_book_rpc("Bogus"));
+    fn address_book_rpcs_recognised_for_dispatch() {
+        // The transport recognises every NSPI request type the gateway serves
+        // so it dispatches to `mapi::nspi` rather than rejecting with a missing
+        // handler. Mailbox verbs and garbage are NOT accepted here.
+        assert_eq!(AddressBookRpc::parse("Bind"), Some(AddressBookRpc::Bind));
+        assert_eq!(
+            AddressBookRpc::parse(" ResolveNames "),
+            Some(AddressBookRpc::ResolveNames)
+        );
+        assert_eq!(AddressBookRpc::parse("QueryRows"), Some(AddressBookRpc::QueryRows));
+        assert_eq!(AddressBookRpc::parse("connect"), None);
+        assert_eq!(AddressBookRpc::parse("Bogus"), None);
+        // Legacy spellings collapse to the canonical RPC.
+        assert_eq!(AddressBookRpc::parse("DnToMId"), Some(AddressBookRpc::DnToMinId));
+        assert_eq!(AddressBookRpc::parse("DNToMId"), Some(AddressBookRpc::DnToMinId));
+    }
+
+    #[test]
+    fn address_book_rpc_as_str_round_trips_through_parse() {
+        // The wire-identical string `as_str` returns MUST be re-accepted by
+        // `parse` (so a diagnostic/echo round-trip never produces a renamed
+        // verb the client cannot match). Catches the `CompareMIds`/
+        // `CompareMIDs` echo-mismatch class of bug.
+        const ALL: &[AddressBookRpc] = &[
+            AddressBookRpc::Bind,
+            AddressBookRpc::Unbind,
+            AddressBookRpc::CompareMIds,
+            AddressBookRpc::DnToMinId,
+            AddressBookRpc::GetMatches,
+            AddressBookRpc::GetPropList,
+            AddressBookRpc::GetProps,
+            AddressBookRpc::GetSpecialTable,
+            AddressBookRpc::GetTemplateInfo,
+            AddressBookRpc::ModLinkAtt,
+            AddressBookRpc::ModProps,
+            AddressBookRpc::QueryColumns,
+            AddressBookRpc::QueryRows,
+            AddressBookRpc::ResolveNames,
+            AddressBookRpc::ResortRestriction,
+            AddressBookRpc::SeekEntries,
+            AddressBookRpc::UpdateStat,
+            AddressBookRpc::GetMailboxUrl,
+            AddressBookRpc::GetAddressBookUrl,
+        ];
+        for rpc in ALL {
+            let s = rpc.as_str();
+            assert_eq!(
+                AddressBookRpc::parse(s),
+                Some(*rpc),
+                "as_str()=\"{}\" did not round-trip through parse()",
+                s
+            );
+        }
     }
 
     fn headers_with(ct: &str, rt: &str, rid: &str) -> HeaderMap {
@@ -607,14 +750,38 @@ mod tests {
     }
 
     #[test]
-    fn parse_request_address_book_rpc_rejected_as_invalid_request_type() {
+    fn parse_request_address_book_rpc_accepted_and_dispatched() {
+        // Address-book RPCs (Bind/QueryRows/ResolveNames/…) are now served by
+        // the NSPI dispatcher (`mapi::nspi`) over the operator-configured
+        // directory (audit gap §2d). At the transport layer they parse to a
+        // `RpcKind::AddressBook(<rpc>)` so the router can dispatch them to the
+        // `/mapi/nspi` surface rather than rejecting them as an unknown verb.
         let h = headers_with("application/mapi-http", "Bind", "{GUID}:1");
-        let err = parse_request(&h, Vec::new(), true).unwrap_err();
-        // `is_address_book_rpc` triggers the Malformed("X-RequestType") branch
-        // which maps to InvalidHeader — for the address-book-only case the
-        // transport still returns a deterministic non-success code.
-        assert_ne!(err.to_response_code(), ResponseCode::Success);
+        let req = parse_request(&h, Vec::new(), true).expect("Bind accepts at transport");
+        match req.kind {
+            RpcKind::AddressBook(AddressBookRpc::Bind) => {}
+            other => panic!("expected AddressBook(Bind), got {other:?}"),
+        }
+
+        let h = headers_with("application/mapi-http", "ResolveNames", "{GUID}:2");
+        let req = parse_request(&h, Vec::new(), true).expect("ResolveNames accepts");
+        assert_eq!(req.kind, RpcKind::AddressBook(AddressBookRpc::ResolveNames));
+
+        // Legacy spellings round-trip to the canonical RPC.
+        let h = headers_with("application/mapi-http", "DnToMId", "{GUID}:3");
+        let req = parse_request(&h, Vec::new(), true).expect("DnToMId becomes DnToMinId");
+        assert_eq!(req.kind, RpcKind::AddressBook(AddressBookRpc::DnToMinId));
     }
+
+    #[test]
+    fn parse_request_unknown_verb_still_rejected() {
+        // A verb that is neither a mailbox RPC nor a recognised address-book
+        // RPC is rejected at the transport layer with InvalidHeader (code 4).
+        let h = headers_with("application/mapi-http", "Bogus", "{GUID}:1");
+        let err = parse_request(&h, Vec::new(), true).unwrap_err();
+        assert_eq!(err.to_response_code(), ResponseCode::InvalidHeader);
+    }
+
 
     #[test]
     fn parse_request_endpoint_disabled() {

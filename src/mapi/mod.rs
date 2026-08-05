@@ -36,6 +36,7 @@ pub mod data;
 pub mod fxics;
 pub mod handler;
 pub mod logon;
+pub mod nspi;
 pub mod restrict;
 pub mod rops;
 pub mod session;
@@ -43,4 +44,4 @@ pub mod store;
 pub mod transport;
 
 pub use handler::handle as handle_request;
-pub use transport::{MapiRequest, MapiRequestType, MapiResponse, RpcKind};
+pub use transport::{AddressBookRpc, MapiRequest, MapiRequestType, MapiResponse, RpcKind};
