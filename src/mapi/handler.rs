@@ -95,6 +95,16 @@ pub struct MapiState {
     /// round-trip a MAPI-composed attachment against Stalwart. `None` in
     /// unit-test fixtures keeps the write path free of an SQLite handle.
     pub attachment_manager: Option<std::sync::Arc<crate::attachment::AttachmentManager>>,
+    /// Optional directory service backing the NSPI address-book surface
+    /// (`/mapi/nspi`) — the same `Arc<dyn DirectoryLookup>` the EWS
+    /// `ResolveNames` / `FindPeople` paths and the OAB download already use,
+    /// backed by the Stalwart admin API when `admin_base` is configured (audit
+    /// gap §2d). When `None` the NSPI dispatcher serves a *minimal GAL stub*
+    /// containing only the authenticated caller's own mailbox entry so
+    /// recipient resolution / "Check Names" for self still resolves; non-self
+    /// resolutions return an empty result set, which is the documented
+    /// behaviour of a directory-less Exchange-look-alike.
+    pub directory: Option<std::sync::Arc<dyn crate::directory::DirectoryLookup>>,
 }
 
 impl MapiState {
@@ -105,6 +115,7 @@ impl MapiState {
             sessions: SessionManager::new(),
             subscription_manager: None,
             attachment_manager: None,
+            directory: None,
         }
     }
 
@@ -122,6 +133,7 @@ impl MapiState {
             sessions: SessionManager::new(),
             subscription_manager: Some(subscription_manager),
             attachment_manager: None,
+            directory: None,
         }
     }
 
@@ -131,6 +143,18 @@ impl MapiState {
     /// the same SQLite-backed manager EWS/EAS share.
     pub fn with_attachment_manager(mut self, mgr: std::sync::Arc<crate::attachment::AttachmentManager>) -> Self {
         self.attachment_manager = Some(mgr);
+        self
+    }
+
+    /// Wire the operator-configured directory (Stalwart admin API) onto the
+    /// MAPI state so the NSPI address-book dispatcher (`mapi::nspi`) can serve
+    /// a real GAL for `Bind` / `QueryRows` / `DnToMinId` / `ResolveNames` /
+    /// `GetMatches` rather than the caller-only minimal stub (audit gap §2d).
+    pub fn with_directory(
+        mut self,
+        directory: std::sync::Arc<dyn crate::directory::DirectoryLookup>,
+    ) -> Self {
+        self.directory = Some(directory);
         self
     }
 }
@@ -151,9 +175,14 @@ pub async fn handle(req: MapiRequest, state: &MapiState) -> MapiResponse {
         RpcKind::Mailbox(MapiRequestType::Ping) => {
             MapiResponse::success(req.request_id, "PING", None, Vec::new())
         }
-        RpcKind::AddressBook => {
-            // Address-book endpoint ROPs are not dispatched in Phase 0.
-            MapiResponse::error(ResponseCode::InvalidRequestType, req.request_id)
+        RpcKind::AddressBook(rpc) => {
+            // NSPI address-book dispatcher (MS-OXNSPI / MS-OXOABK served over
+            // the MS-OXCMAPIHTTP §2.2.5 framing): Bind / Unbind / UpdateStat /
+            // QueryRows / DnToMinId / ResolveNames / GetMatches / GetProps /
+            // etc., backed by the operator-configured directory and
+            // authenticated against the same `AuthVerifier` the mailbox path
+            // uses (audit gap §2d).
+            crate::mapi::nspi::handle_address_book(rpc, req, state).await
         }
     }
 }
@@ -4578,6 +4607,7 @@ mod tests {
             request_id: "{G}:1".into(),
             client_application: None,
             client_info: None,
+            username: None,
             password: None,
             cookies: Vec::new(),
             body: Vec::new(),
@@ -4601,6 +4631,7 @@ mod tests {
             request_id: "{G}:1".into(),
             client_application: None,
             client_info: None,
+            username: None,
             password: None,
             cookies: Vec::new(),
             body: Vec::new(),
@@ -4622,6 +4653,7 @@ mod tests {
             request_id: "{G}:1".into(),
             client_application: None,
             client_info: None,
+            username: None,
             password: None,
             cookies: Vec::new(),
             body: Vec::new(),
@@ -4646,6 +4678,7 @@ mod tests {
             request_id: "{G}:1".into(),
             client_application: None,
             client_info: None,
+            username: None,
             password: None,
             cookies: Vec::new(),
             body: vec![0xFF, 7],
@@ -4673,6 +4706,7 @@ mod tests {
             request_id: "{G}:1".into(),
             client_application: None,
             client_info: Some(format!("{{{}}}:0", stray.as_hyphenated())),
+            username: None,
             password: None,
             cookies: Vec::new(),
             body,
@@ -4720,6 +4754,7 @@ mod tests {
             request_id: "{G}:1".into(),
             client_application: None,
             client_info: Some(format!("{{{}}}:0", sid.as_hyphenated())),
+            username: None,
             password: None,
             cookies: Vec::new(),
             body,
@@ -5033,6 +5068,7 @@ mod tests {
             request_id: "{G}:1".into(),
             client_application: None,
             client_info: Some(format!("{{{}}}:0", sid.as_hyphenated())),
+            username: None,
             password: None,
             cookies: Vec::new(),
             body,
@@ -5107,6 +5143,7 @@ mod tests {
             request_id: "{G}:1".into(),
             client_application: None,
             client_info: Some(format!("{{{}}}:0", sid.as_hyphenated())),
+            username: None,
             password: Some("pw".into()),
             cookies: Vec::new(),
             body,
@@ -5181,6 +5218,7 @@ mod tests {
             request_id: "{G}:1".into(),
             client_application: None,
             client_info: Some(format!("{{{}}}:0", sid.as_hyphenated())),
+            username: None,
             password: Some("pw".into()),
             cookies: Vec::new(),
             body,
@@ -5226,6 +5264,7 @@ mod tests {
             request_id: "{G}:1".into(),
             client_application: None,
             client_info: Some(format!("{{{}}}:0", sid.as_hyphenated())),
+            username: None,
             password: Some("pw".into()),
             cookies: Vec::new(),
             body,
@@ -5280,6 +5319,7 @@ mod tests {
             request_id: "{G}:1".into(),
             client_application: None,
             client_info: Some(format!("{{{}}}:0", sid.as_hyphenated())),
+            username: None,
             password: Some("pw".into()),
             cookies: Vec::new(),
             body,
@@ -5336,6 +5376,7 @@ mod tests {
             request_id: "{G}:1".into(),
             client_application: None,
             client_info: Some(format!("{{{}}}:0", sid.as_hyphenated())),
+            username: None,
             password: Some("pw".into()),
             cookies: Vec::new(),
             body,
@@ -5392,6 +5433,7 @@ mod tests {
             request_id: "{G}:1".into(),
             client_application: None,
             client_info: Some(format!("{{{}}}:0", sid.as_hyphenated())),
+            username: None,
             password: Some("pw".into()),
             cookies: Vec::new(),
             body,
@@ -5495,6 +5537,7 @@ mod tests {
             request_id: "{G}:1".into(),
             client_application: None,
             client_info: Some(format!("{{{}}}:0", sid.as_hyphenated())),
+            username: None,
             password: Some("pw".into()),
             cookies: Vec::new(),
             body,

@@ -167,14 +167,21 @@ impl AppState {
         // so MAPI property-write ROPs publish `ItemModified` events to the
         // shared feed, closing the EWS-only notification gap (audit §2e).
         let mapi = if cfg.mapi_enabled {
-            Some(Arc::new(
-                MapiState::with_subscription_manager(
-                    cfg.clone(),
-                    auth_verifier.clone(),
-                    subscription_manager.clone(),
-                )
-                .with_attachment_manager(attachment_manager.clone()),
-            ))
+            let mut mapi_state = MapiState::with_subscription_manager(
+                cfg.clone(),
+                auth_verifier.clone(),
+                subscription_manager.clone(),
+            )
+            .with_attachment_manager(attachment_manager.clone());
+            // Wire the operator-configured directory so the NSPI address-book
+            // surface (`/mapi/nspi`) serves a real GAL rather than the
+            // caller-only minimal stub (audit gap §2d). When no `admin_base`
+            // is configured `directory` is `None` and the NSPI dispatcher
+            // itself falls back to the authenticated-self stub.
+            if let Some(dir) = &directory {
+                mapi_state = mapi_state.with_directory(dir.clone());
+            }
+            Some(Arc::new(mapi_state))
         } else {
             None
         };

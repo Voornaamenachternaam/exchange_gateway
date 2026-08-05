@@ -322,7 +322,7 @@ pub async fn handle(
         EwsAction::AddDelegate => handle_add_delegate(&state, &auth, &body).await,
         EwsAction::RemoveDelegate => handle_remove_delegate(&state, &auth, &body).await,
         EwsAction::UpdateDelegate => handle_update_delegate(&state, &auth, &body).await,
-        EwsAction::GetUserPhoto => handle_get_user_photo(&auth, &body).await,
+        EwsAction::GetUserPhoto => handle_get_user_photo(&state, &auth, &body).await,
         EwsAction::MarkAsJunk => handle_mark_as_junk(&auth, &body).await,
         EwsAction::GetAppManifests => handle_get_app_manifests().await,
         EwsAction::GetAppMarketplaceUrl => handle_get_app_marketplace_url().await,
@@ -7572,16 +7572,63 @@ async fn handle_update_delegate(state: &Arc<AppState>, auth: &AuthContext, body:
     soap_ok(inner)
 }
 
-async fn handle_get_user_photo(_auth: &AuthContext, _body: &str) -> Response {
+async fn handle_get_user_photo(state: &Arc<AppState>, _auth: &AuthContext, body: &str) -> Response {
+    // MS-OXWSAVATAR §3.1.4.1 — the client supplies the requested recipient
+    // email and a `SizeRequested` (HR48x48/HR64x64/HR96x96/HR120x120/
+    // HR240x240/HR360x360/HR432x432/HR504x504/HR648x648). The gateway has no
+    // Stalwart-side photo backend, so it resolves the recipient against the
+    // directory to confirm the contact exists (so an unknown recipient yields
+    // ErrorResponseNoSuchEmailAddress rather than a silent empty picture), and
+    // returns the spec's "no photo published" shape: a `PictureData` with no
+    // base64 body and `HasChanged="false"`. Outlook renders the recipient's
+    // default avatar in that case — it does NOT error.
+    let email = extract_first_tag_text(body, b"Email")
+        .or_else(|| extract_first_tag_text(body, b"EmailAddress"))
+        .unwrap_or_default();
+    let _size = extract_first_tag_text(body, b"SizeRequested").unwrap_or_default();
+    let known = if email.is_empty() {
+        false
+    } else {
+        match state.directory.as_ref() {
+            Some(dir) => {
+                let email_clone = email.clone();
+                let dir = dir.clone();
+                tokio::task::spawn_blocking(move || dir.resolve_email_blocking(&email_clone))
+                    .await
+                    .ok()
+                    .and_then(|r| r.ok())
+                    .flatten()
+                    .is_some()
+            }
+            None => false,
+        }
+    };
+    let (class, code) = if email.is_empty() {
+        ("Error", "ErrorInvalidSmtpAddress")
+    } else if !known {
+        ("Error", "ErrorNoSuchEmailAddress")
+    } else {
+        // Contact exists but no photo published.
+        ("Success", "NoError")
+    };
     let inner = format!(
         r#"<m:GetUserPhotoResponse xmlns:m="{}" xmlns:t="{}">
 <m:ResponseMessages>
-<m:GetUserPhotoResponseMessage ResponseClass="Success">
-<m:ResponseCode>NoError</m:ResponseCode>
+<m:GetUserPhotoResponseMessage ResponseClass="{}">
+<m:ResponseCode>{}</m:ResponseCode>
+{}
 </m:GetUserPhotoResponseMessage>
 </m:ResponseMessages>
 </m:GetUserPhotoResponse>"#,
-        EWS_MSG_NS, EWS_TYPE_NS
+        EWS_MSG_NS,
+        EWS_TYPE_NS,
+        class,
+        code,
+        if class == "Success" {
+            "<m:HasChanged>false</m:HasChanged><m:PictureData/>"
+        } else {
+            ""
+        }
     );
     soap_ok(inner)
 }
