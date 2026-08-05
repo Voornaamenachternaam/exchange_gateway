@@ -153,45 +153,48 @@ pub enum RpcKind {
 }
 
 /// The address-book RPC set served by the `/mapi/nspi` endpoint
-/// (MS-OXCMAPIHTTP §2.2.5.* — each request type maps 1:1 to an NSPI opnum per
-/// MS-OXNSPI §3.1.1). Recognised by `AddressBookRpc::parse` against the exact
-/// `X-RequestType` header value; every member here is also listed in
-/// `is_address_book_rpc` so a request type arriving on the wrong endpoint is
-/// still rejected with the `InvalidRequestType` transport code (§2.2.5).
+/// (MS-OXNSPI §3.1.4.1.* — each method has a distinct `[MS-OXNSPI]` opnum,
+/// but over MAPI/HTTP the dispatcher routes by the textual `X-RequestType`
+/// value, NOT by opnum, so the numeric opnums are intentionally omitted to
+/// avoid encoding a stale dispatch mapping). Recognised by
+/// `AddressBookRpc::parse` against the exact `X-RequestType` header value; a
+/// verb that is neither a mailbox nor a recognised address-book RPC yields the
+/// `InvalidHeader` transport code (§2.2.3.3.1), while a recognised address-book
+/// verb arriving on the wrong endpoint is rejected downstream.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AddressBookRpc {
-    /// opnum 0 — establish a Session Context (§2.2.5.1).
+    /// Establish a Session Context (MS-OXNSPI §3.1.4.1.1).
     Bind,
-    /// opnum 1 — conclude a Session Context (§2.2.5.18).
+    /// Conclude a Session Context (MS-OXNSPI §3.1.4.1.2).
     Unbind,
-    /// opnum 3 — update the logical position in a table (§2.2.5.17).
+    /// Update the logical position in a table (MS-OXNSPI §3.1.4.1.3).
     UpdateStat,
-    /// opnum 4 — return a set of rows from a table (§2.2.5.12).
+    /// Return a set of rows from a table (MS-OXNSPI §3.1.4.1.8).
     QueryRows,
-    /// opnum 5 — restrict a table and return an Explicit Table (§2.2.5.5).
+    /// Restrict a table and return an Explicit Table (MS-OXNSPI §3.1.4.1.4).
     GetMatches,
-    /// opnum 6 — seek forward in a table (§2.2.5.16).
+    /// Seek forward in a table (MS-OXNSPI §3.1.4.1.13).
     SeekEntries,
-    /// opnum 7 — return the columns a table exposes (§2.2.5.15).
+    /// Return the columns a table exposes (MS-OXNSPI §3.1.4.1.12).
     QueryColumns,
-    /// opnum 8 — return the special tables (hierarchy / GAL) (§2.2.5.13).
+    /// Return the special tables (hierarchy / GAL) (MS-OXNSPI §3.1.4.1.10).
     GetSpecialTable,
-    /// opnum 9 — return the list of property tags for a template (§2.2.5.9).
+    /// Return the list of property tags for a template (MS-OXNSPI §3.1.4.1.6).
     GetTemplateInfo,
-    /// opnum 10 — modify link attributes (admin-only; unused by Outlook).
+    /// Modify link attributes (admin-only; unused by Outlook).
     ModLinkAtt,
-    /// opnum 11 — modify properties on an Address Book object (admin-only).
+    /// Modify properties on an Address Book object (admin-only).
     ModProps,
-    /// opnum 12 — convert DNs to Minimal Entry IDs (§2.2.5.4).
+    /// Convert DNs to Minimal Entry IDs (MS-OXNSPI §3.1.4.1.7).
     DnToMinId,
-    /// opnum 13 — return the property tags an object exposes (§2.2.5.10).
+    /// Return the property tags an object exposes (MS-OXNSPI §3.1.4.1.9).
     GetPropList,
-    /// opnum 14 — return the properties for a set of Minimal Entry IDs
-    /// (§2.2.5.11).
+    /// Return the properties for a set of Minimal Entry IDs
+    /// (MS-OXNSPI §3.1.4.1.5).
     GetProps,
-    /// opnum 15 — compare two Minimal Entry IDs (§2.2.5.3).
+    /// Compare two Minimal Entry IDs (MS-OXNSPI §3.1.4.1.14).
     CompareMIds,
-    /// opnum 16 — ambiguous-name resolution of a set of names (§2.2.5.14).
+    /// Ambiguous-name resolution of a set of names (MS-OXNSPI §3.1.4.1.15).
     ResolveNames,
     /// Resolve the physical mailbox URL for an Address Book object — carried
     /// over RPC-over-HTTP only; over MAPI/HTTP the client uses Autodiscover.
@@ -199,9 +202,9 @@ pub enum AddressBookRpc {
     GetMailboxUrl,
     /// Resolve the physical address-book URL — same caveat as GetMailboxUrl.
     GetAddressBookUrl,
-    /// Re-sort the Explicit Table (§2.2.5.2). Recognised for transport
-    /// acceptance; the gateway serves a single in-memory table so this is a
-    /// deterministic no-op success.
+    /// Re-sort the Explicit Table (MS-OXNSPI §3.1.4.1.16). Recognised for
+    /// transport acceptance; the gateway serves a single in-memory table so
+    /// this is a deterministic no-op success.
     ResortRestriction,
 }
 
@@ -209,12 +212,13 @@ impl AddressBookRpc {
     /// Parse a raw `X-RequestType` value into the matching address-book RPC.
     /// The match is case-sensitive and exact, mirroring the spec table; an
     /// unknown verb returns `None` (the transport then maps it to
-    /// `InvalidHeader`, unless it matches the address-book verb allowlist).
+    /// `InvalidHeader`). Legacy spellings (`DNToMId`, `CompareMIDs`) collapse
+    /// to the canonical RPC so pre-2013 client transports still dispatch.
     pub fn parse(raw: &str) -> Option<Self> {
         Some(match raw.trim() {
             "Bind" => Self::Bind,
             "Unbind" => Self::Unbind,
-            "CompareMIds" => Self::CompareMIds,
+            "CompareMIds" | "CompareMIDs" => Self::CompareMIds,
             // Per MS-OXCMAPIHTTP §2.2.3.3.1 the request type is spelled
             // "DNToMId" (capital N). Older "DnToMId" is recognised for
             // compatibility with pre-2013 clients.
@@ -238,14 +242,18 @@ impl AddressBookRpc {
         })
     }
 
-    /// The wire-identical request-type string the client sent (and which the
-    /// server echoes back in diagnostic frames). Kept verbatim so a client
-    /// that spelled `DnToMId` (legacy) never sees a renamed echo.
+    /// The canonical (spec) request-type spelling this RPC maps to — the string
+    /// the server echoes back in the success response's request-type field. This
+    /// is the CANONICAL spelling, NOT necessarily the literal the client sent:
+    /// legacy spellings (`DnToMId`, `CompareMIDs`) are normalised to the
+    /// canonical verb (`DNToMId`, `CompareMIds`) here. Callers that must echo
+    /// the client's verbatim spelling should carry the original `X-RequestType`
+    /// string alongside the parsed enum.
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Bind => "Bind",
             Self::Unbind => "Unbind",
-            Self::CompareMIds => "CompareMIDs",
+            Self::CompareMIds => "CompareMIds",
             Self::DnToMinId => "DNToMId",
             Self::GetMatches => "GetMatches",
             Self::GetPropList => "GetPropList",
@@ -653,6 +661,44 @@ mod tests {
         // Legacy spellings collapse to the canonical RPC.
         assert_eq!(AddressBookRpc::parse("DnToMId"), Some(AddressBookRpc::DnToMinId));
         assert_eq!(AddressBookRpc::parse("DNToMId"), Some(AddressBookRpc::DnToMinId));
+    }
+
+    #[test]
+    fn address_book_rpc_as_str_round_trips_through_parse() {
+        // The wire-identical string `as_str` returns MUST be re-accepted by
+        // `parse` (so a diagnostic/echo round-trip never produces a renamed
+        // verb the client cannot match). Catches the `CompareMIds`/
+        // `CompareMIDs` echo-mismatch class of bug.
+        const ALL: &[AddressBookRpc] = &[
+            AddressBookRpc::Bind,
+            AddressBookRpc::Unbind,
+            AddressBookRpc::CompareMIds,
+            AddressBookRpc::DnToMinId,
+            AddressBookRpc::GetMatches,
+            AddressBookRpc::GetPropList,
+            AddressBookRpc::GetProps,
+            AddressBookRpc::GetSpecialTable,
+            AddressBookRpc::GetTemplateInfo,
+            AddressBookRpc::ModLinkAtt,
+            AddressBookRpc::ModProps,
+            AddressBookRpc::QueryColumns,
+            AddressBookRpc::QueryRows,
+            AddressBookRpc::ResolveNames,
+            AddressBookRpc::ResortRestriction,
+            AddressBookRpc::SeekEntries,
+            AddressBookRpc::UpdateStat,
+            AddressBookRpc::GetMailboxUrl,
+            AddressBookRpc::GetAddressBookUrl,
+        ];
+        for rpc in ALL {
+            let s = rpc.as_str();
+            assert_eq!(
+                AddressBookRpc::parse(s),
+                Some(*rpc),
+                "as_str()=\"{}\" did not round-trip through parse()",
+                s
+            );
+        }
     }
 
     fn headers_with(ct: &str, rt: &str, rid: &str) -> HeaderMap {

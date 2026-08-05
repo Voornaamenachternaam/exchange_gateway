@@ -7575,41 +7575,36 @@ async fn handle_update_delegate(state: &Arc<AppState>, auth: &AuthContext, body:
 async fn handle_get_user_photo(state: &Arc<AppState>, _auth: &AuthContext, body: &str) -> Response {
     // MS-OXWSAVATAR §3.1.4.1 — the client supplies the requested recipient
     // email and a `SizeRequested` (HR48x48/HR64x64/HR96x96/HR120x120/
-    // HR240x240/HR360x360/HR432x432/HR504x504/HR648x648). The gateway has no
-    // Stalwart-side photo backend, so it resolves the recipient against the
-    // directory to confirm the contact exists (so an unknown recipient yields
-    // ErrorResponseNoSuchEmailAddress rather than a silent empty picture), and
-    // returns the spec's "no photo published" shape: a `PictureData` with no
-    // base64 body and `HasChanged="false"`. Outlook renders the recipient's
-    // default avatar in that case — it does NOT error.
+    // HR240x240/HR360x360/HR432x432/HR504x504/HR648x648).
+    //
+    // The gateway has NO Stalwart-side photo backend (audit §2d: getUserPhoto
+    // for MAPI returns empty; no Stalwart-native photo storage exists), so it
+    // MUST NOT probe the directory to differentiate "exists" from "does not
+    // exist": doing so would let any authenticated mailbox user enumerate the
+    // Stalwart account set via the Success/ErrorNoSuchEmailAddress split, the
+    // same directory-disclosure vector `autodiscover::resolve_user_display_name`
+    // (PR #1821) deliberately guards against. It would ALSO misclassify every
+    // recipient as "no such address" when no directory is configured, and would
+    // silently drop `spawn_blocking` `JoinError`s (PR #1845 cubic) into that
+    // same error code.
+    //
+    // Instead: validate the email SYNTAX (a disclosure-free, constant-time
+    // property of the client-supplied string), reject malformed/empty values
+    // with `ErrorInvalidSmtpAddress`, and return the spec's "no photo
+    // published" shape (`HasChanged="false"`, empty `PictureData`) for every
+    // syntactically-valid recipient. Outlook renders the recipient's default
+    // avatar — it does NOT error — so recipient previews and "Check Names" are
+    // unaffected while zero directory surface is exposed.
+    let _ = state; // No directory consult — see rationale above.
     let email = extract_first_tag_text(body, b"Email")
         .or_else(|| extract_first_tag_text(body, b"EmailAddress"))
         .unwrap_or_default();
-    let _size = extract_first_tag_text(body, b"SizeRequested").unwrap_or_default();
-    let known = if email.is_empty() {
-        false
-    } else {
-        match state.directory.as_ref() {
-            Some(dir) => {
-                let email_clone = email.clone();
-                let dir = dir.clone();
-                tokio::task::spawn_blocking(move || dir.resolve_email_blocking(&email_clone))
-                    .await
-                    .ok()
-                    .and_then(|r| r.ok())
-                    .flatten()
-                    .is_some()
-            }
-            None => false,
-        }
-    };
-    let (class, code) = if email.is_empty() {
-        ("Error", "ErrorInvalidSmtpAddress")
-    } else if !known {
-        ("Error", "ErrorNoSuchEmailAddress")
-    } else {
-        // Contact exists but no photo published.
+    let _size_requested = extract_first_tag_text(body, b"SizeRequested").unwrap_or_default();
+    let valid = is_valid_smtp_address(&email);
+    let (class, code) = if valid {
         ("Success", "NoError")
+    } else {
+        ("Error", "ErrorInvalidSmtpAddress")
     };
     let inner = format!(
         r#"<m:GetUserPhotoResponse xmlns:m="{}" xmlns:t="{}">
@@ -7624,13 +7619,37 @@ async fn handle_get_user_photo(state: &Arc<AppState>, _auth: &AuthContext, body:
         EWS_TYPE_NS,
         class,
         code,
-        if class == "Success" {
+        if valid {
             "<m:HasChanged>false</m:HasChanged><m:PictureData/>"
         } else {
             ""
         }
     );
     soap_ok(inner)
+}
+
+/// Disclosure-free SMTP address-syntax check: a single `@` separating two
+/// non-empty local and domain parts, no whitespace, and a dot in the domain.
+/// This validates the *form* of a client-supplied recipient (so a malformed
+/// request yields `ErrorInvalidSmtpAddress` rather than a silent empty photo)
+/// WITHOUT consulting any directory and WITHOUT disclosing whether the
+/// address corresponds to a real Stalwart account.
+fn is_valid_smtp_address(email: &str) -> bool {
+    if email.is_empty() || email.len() > 320 {
+        return false;
+    }
+    let Some((local, domain)) = email.split_once('@') else {
+        return false;
+    };
+    if local.is_empty() || domain.is_empty() {
+        return false;
+    }
+    if email.chars().any(|c| c.is_whitespace()) {
+        return false;
+    }
+    // A real SMTP domain carries a dot; reject the bare `user@localhost`-style
+    // forms Outlook never legitimately sends for GAL resolution.
+    domain.contains('.') && !local.contains('@')
 }
 
 async fn handle_mark_as_junk(_auth: &AuthContext, _body: &str) -> Response {

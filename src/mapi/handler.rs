@@ -105,6 +105,11 @@ pub struct MapiState {
     /// resolutions return an empty result set, which is the documented
     /// behaviour of a directory-less Exchange-look-alike.
     pub directory: Option<std::sync::Arc<dyn crate::directory::DirectoryLookup>>,
+    /// TTL cache of the directory-side GAL snapshot, shared across NSPI RPCs so
+    /// a multi-RPC Outlook address-book handshake reuses one
+    /// `search_blocking` resolution (the per-RPC amplification noted in PR #1845
+    /// review). Allocated whenever a `directory` is wired; `None` in fixtures.
+    pub gal_cache: Option<std::sync::Arc<crate::mapi::nspi::GalCache>>,
 }
 
 impl MapiState {
@@ -116,6 +121,7 @@ impl MapiState {
             subscription_manager: None,
             attachment_manager: None,
             directory: None,
+            gal_cache: None,
         }
     }
 
@@ -134,6 +140,7 @@ impl MapiState {
             subscription_manager: Some(subscription_manager),
             attachment_manager: None,
             directory: None,
+            gal_cache: None,
         }
     }
 
@@ -154,6 +161,7 @@ impl MapiState {
         mut self,
         directory: std::sync::Arc<dyn crate::directory::DirectoryLookup>,
     ) -> Self {
+        self.gal_cache = Some(std::sync::Arc::new(crate::mapi::nspi::GalCache::new()));
         self.directory = Some(directory);
         self
     }

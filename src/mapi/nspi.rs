@@ -5,31 +5,37 @@
 //
 // Closes audit gap §2d ("GAL / Address Book / user photo — BLOCKING for
 // recipient resolution"). Previously the entire NSPI surface was rejected at
-// the transport layer (`is_address_book_rpc` ⇒ `InvalidRequestType`), so New
-// Outlook for Windows could not resolve sender/recipient display names against
-// anything other than the user's own contacts, "Check Names" failed, and the
-// OAB download URL had no backing server. This module serves the address-book
-// RPCs Outlook actually issues over MAPI/HTTP — `Bind`, `Unbind`,
-// `UpdateStat`, `QueryRows`, `DnToMinId`, `ResolveNames`, `GetMatches`,
-// `GetProps`, `GetPropList`, `GetSpecialTable`, `SeekEntries`, `QueryColumns`,
-// `ResortRestriction`, `CompareMIds` plus the URL helpers — backed by the
-// operator-configured directory (`Arc<dyn DirectoryLookup>`, the same store
-// EWS `ResolveNames` / `FindPeople` and the OAB download already use, backed by
-// the Stalwart admin API). With no directory configured it serves a *minimal
-// GAL stub* containing only the authenticated caller's own mailbox entry so
-// "Check Names" for self still resolves; non-self resolutions return an empty
+// the transport layer (any address-book `X-RequestType` ⇒
+// `InvalidRequestType`), so New Outlook for Windows could not resolve
+// sender/recipient display names against anything other than the user's own
+// contacts, "Check Names" failed, and the OAB download URL had no backing
+// server. This module serves the address-book RPCs Outlook actually issues over
+// MAPI/HTTP — `Bind`, `Unbind`, `UpdateStat`, `QueryRows`, `DnToMinId`,
+// `ResolveNames`, `GetMatches`, `GetProps`, `GetPropList`, `GetSpecialTable`,
+// `SeekEntries`, `QueryColumns`, `ResortRestriction`, `CompareMIds` plus the
+// URL helpers — backed by the operator-configured directory
+// (`Arc<dyn DirectoryLookup>`, the same store EWS `ResolveNames` /
+// `FindPeople` and the OAB download already use, backed by the Stalwart admin
+// API). With no directory configured it serves a *minimal GAL stub* containing
+// only the authenticated caller's own mailbox entry so "Check Names" for self
+// still resolves; non-self resolutions return an empty
 // result set, the documented behaviour of a directory-less Exchange look-alike.
 //
-// Wire format: every address-book request/success response body carries the
-// common `Reserved/Flags(4) + HasState(1) + optional State(36-byte STAT) +
-// RPC-specific fields + AuxiliaryBufferSize(4) + AuxiliaryBuffer(variable)`
-// envelope (MS-OXCMAPIHTTP §2.2.5). The STAT structure is nine little-endian
-// DWORDs (`SortType, ContainerID, CurrentRec, Delta, NumPos, TotalRecs,
-// CodePage, TemplateLocale, SortLocale`) per MS-OXNSPI §2.2.8. Property rows
-// are `AddressBookPropertyRow`s (§2.2.1.7) whose per-cell value is an
-// `AddressBookPropertyValue` (§2.2.1.1) — a 1-byte `HasValue` flag for the
-// variable-length types (String/String8/Binary) followed by the
-// length-prefixed value, and a direct inline value for the fixed-size scalars.
+// Wire format: over MAPI/HTTP the `/mapi/nspi` Execute body carries the NSPI
+// method call directly — `Reserved/Flags(4) + [State(36-byte STAT)] + RPC-
+// specific fields + AuxiliaryBufferSize(4) + AuxiliaryBuffer(variable)`
+// (MS-OXNSPI §3.1.4.1.*; the `[State]` presence is method-specific, e.g.
+// QueryRows/UpdateStat/ResolveNames carry a STAT input while Bind does not and
+// Unbind carries only Flags). There is NO separate `HasState(1)` selector byte
+// here: that byte belongs to the EMSMDB ROP / RPC-over-HTTP (ncacn_http)
+// transport, NOT the `/mapi/nspi` MAPI/HTTP Execute body. The STAT structure
+// is nine little-endian DWORDs (`SortType, ContainerID, CurrentRec, Delta,
+// NumPos, TotalRecs, CodePage, TemplateLocale, SortLocale`) per MS-OXNSPI
+// §2.2.8. Property rows are `AddressBookPropertyRow`s (§2.2.1.7) whose
+// per-cell value is an `AddressBookPropertyValue` (§2.2.1.1) — a 1-byte
+// `HasValue` flag for the variable-length types (String/String8/Binary)
+// followed by the length-prefixed value, and a direct inline value for the
+// fixed-size scalars.
 //
 // Security:
 //   * Every `/mapi/nspi` RPC is authenticated against the same
@@ -67,8 +73,10 @@ use super::handler::MapiState;
 
 /// PidTagObjectType — `0x0FFE` (Integer32). MAPI_MAILUSER = 0x00000006.
 const PR_OBJECT_TYPE: u16 = 0x0FFE;
-/// PidTagDisplayType — `0x3FFF` (Integer32). DT_MAILUSER = 0x00000000.
-const PR_DISPLAY_TYPE: u16 = 0x3FFF;
+/// PidTagDisplayType — `0x3900` (Integer32). DT_MAILUSER = 0x00000000.
+/// (Not `0x3FFF`: per MS-OXPROPS §2.738 the canonical `PidTagDisplayType`
+/// tag id is `0x3900`; `0x3FFF` is unused.)
+const PR_DISPLAY_TYPE: u16 = 0x3900;
 /// PidTagDisplayName — `0x3001` (already in store.rs as PR_DISPLAY_NAME).
 const PR_DISPLAY_NAME_ABOOK: u16 = 0x3001;
 /// PidTagEmailAddress — `0x3003` (String). The X500 DN for legacy lookups, or
@@ -79,9 +87,8 @@ const PR_ADDRESS_TYPE: u16 = 0x3002;
 /// PidTagSmtpAddress — `0x39FE` (String). The canonical SMTP address Outlook
 /// shows in the recipient preview and uses for `ResolveNames` ANR matching.
 const PR_SMTP_ADDRESS: u16 = 0x39FE;
-/// PidTagTemplateId — `0x3FFF`? No — `0x3FFD` is `PidTagDisplayTypeEx`;
-/// `PidTagTemplateId` is `0x3FFD` in some references. The canonical
-/// `PidTagTemplateId` per MS-OXOABK §2.2.3.1 is `0x3FFA`.
+/// PidTagTemplateId — `0x3FFA` (Integer32). Per MS-OXOABK the explicit-table
+/// template id; the gateway serves a non-template-bound table and renders 0.
 const PR_TEMPLATE_ID: u16 = 0x3FFA;
 /// PidTagInstanceKey — `0x0FF6` (Binary, 4-byte). The 4-byte per-row key the
 /// NSPI Explicit-Table algorithm keys off; the gateway uses the MId bytes.
@@ -115,16 +122,15 @@ const PR_MOBILE_TEL_ABOOK: u16 = 0x3A1C;
 const PR_HOME_TEL_ABOOK: u16 = 0x3A09;
 /// PidTagAccount — `0x3A00` (String). The logon account name; == SMTP local.
 const PR_ACCOUNT: u16 = 0x3A00;
-/// PidTagRdn (the RDN value) carries `cn=<localpart>`; the gateway synthesises
-/// the full DN elsewhere and exposes the bare RDN via PidTagDisplayName.
-/// PidTagEmailAddress is the canonical resolver field; the RDN is internal.
 /// PidTagEntryId — `0x0FFF` (Binary). Long-term entry id (server-relative).
 const PR_ENTRYID_ABOOK: u16 = 0x0FFF;
 /// PidTagSendRichInfo — `0x3A40` (Boolean). Whether the recipient accepts
 /// RTF; we advertise TRUE so Outlook composes RTF for GAL recipients.
 const PR_SEND_RICH_INFO: u16 = 0x3A40;
-/// PidTagDisplayTypeEx — `0x3FFD` (Integer32). Mirrors DisplayType.
-const PR_DISPLAY_TYPE_EX: u16 = 0x3FFD;
+/// PidTagDisplayTypeEx — `0x3905` (Integer32) per MS-OXPROPS §2.668 / MS-OXOABK
+/// §2.2.4.1 (the canonical GAL column-set id; `0x3FFD` is NOT a published
+/// PidTag). Mirrors DisplayType for an address-book mail-user (`DT_MAILUSER`).
+const PR_DISPLAY_TYPE_EX: u16 = 0x3905;
 /// PidTagMappingSignature — `0x0FF8` (Binary). The address-book provider
 /// signature; the gateway uses the constant EMSMDB provider uid prefix so a
 /// one-off store compare from Outlook succeeds.
@@ -175,6 +181,18 @@ pub struct Stat {
 impl Stat {
     /// Fixed wire size of the STAT structure over MAPI/HTTP.
     pub const WIRE_SIZE: usize = 36;
+    /// Alias used by tolerant handlers that peek the remaining body length.
+    pub const ENCODED_LEN: usize = Self::WIRE_SIZE;
+
+    /// A fresh "cursor at the top of a `container_len`-row table" STAT: the
+    /// defaults plus `total_recs` set to the container size (clamped to u32).
+    /// Used by handlers that do not receive an input STAT (e.g. Bind).
+    fn default_for(container_len: usize) -> Self {
+        Self {
+            total_recs: u32::try_from(container_len).unwrap_or(u32::MAX),
+            ..Self::default()
+        }
+    }
 
     /// Decode a STAT off a cursor, failing closed on a short buffer.
     fn decode(cur: &mut Buf<'_>) -> Result<Self, NspiDecodeError> {
@@ -217,29 +235,39 @@ impl Stat {
         out.extend_from_slice(&self.sort_locale.to_le_bytes());
     }
 
-    /// The "begins after the current record and walks `delta` rows" position
-    /// the NSPI `QueryRows` advances from. MIds are 1-based; row index 0
-    /// means "before the first row". Returns the (start_row, requested_count)
-    /// where start_row is a 0-based table index.
-    fn query_window(&self, count: i32) -> (usize, usize) {
-        // `CurrentRec` of 0 means "start at the beginning"; otherwise
-        // advance past it. `Delta` is a signed offset from CurrentRec.
-        let base_mid = self.current_rec as i64;
-        let delta = self.delta as i64;
-        // Numeric cursor: MId is 1-based; convert to a 0-based row index.
-        let cursor = if base_mid == 0 {
-            if delta > 0 { -1 + delta } else { 0 }
+    /// The row window a `QueryRows` serves. `CurrentRec` carries the 1-based
+    /// MId of the row the cursor points at; the convention is that the NEXT
+    /// `QueryRows` reads **past** `CurrentRec` (forward) or **before** it
+    /// (backward), so a forward page does NOT re-serve the last row it
+    /// returned. `Delta` is a signed offset applied to the cursor.
+    ///
+    /// Returns `(start, n, backward)`:
+    ///   * forward (count > 0):  rows `[start .. start+n)`
+    ///   * backward (count < 0): rows `[start-n .. start)` (clamped at 0)
+    ///   * count == 0:           `n == 0` (no rows)
+    fn query_window(&self, count: i32) -> (usize, usize, bool) {
+        // 0-based row index the cursor sits on. CurrentRec MId M ⇒ row index
+        // M-1. The next forward read starts AT this index only when MId==0
+        // (begin); otherwise it starts PAST CurrentRec (index = M, i.e. the
+        // row after the one MId M names), which is what stops the duplicate.
+        let cursor_row = if self.current_rec == 0 {
+            0
         } else {
-            (base_mid - 1) + delta
+            (self.current_rec as i64) + self.delta as i64
         };
-        let start = cursor.max(0) as usize;
-        let n = if count < 0 {
-            // Negative count ⇒ walk backwards from `start`; clamp to [0, start].
-            (-(count) as usize).min(start)
+        let cursor = cursor_row.max(0) as usize;
+        if count < 0 {
+            // `unsigned_abs()` avoids the i32::MIN overflow `-count` would
+            // trigger; clamp the window so a backward read never underflows 0.
+            let n = (count.unsigned_abs() as usize).min(cursor);
+            (cursor, n, true)
         } else {
-            count as usize
-        };
-        (start, n)
+            // Cap the forward count at `MAX_QUERY_ROWS` per call (matches
+            // `GetMatches`) so a runaway `Count` cannot materialise an
+            // unbounded rowset; the caller pages via successive calls.
+            let n = (count as usize).min(MAX_QUERY_ROWS as usize);
+            (cursor, n, false)
+        }
     }
 }
 
@@ -407,8 +435,9 @@ fn encode_rowset(out: &mut Vec<u8>, rows: &[Vec<PropertyValue>], tags: &[u32]) {
 }
 
 /// Encode a rowset in the `…WithType` shape (used by `GetProps`, which carries
-/// no caller-supplied tag set): each cell prepends its 4-byte PropertyType so
-/// the row is self-describing.
+/// no caller-supplied tag set): each cell prepends its 2-byte `PropertyType`
+/// (the low 2 bytes of the packed `u32` tag, MS-OXCDATA §2.9 — the type is a
+/// `WORD`, not a `DWORD`) so the row is self-describing.
 fn encode_rowset_with_type(
     out: &mut Vec<u8>,
     rows: &[(Vec<u32>, Vec<PropertyValue>)],
@@ -418,7 +447,9 @@ fn encode_rowset_with_type(
     for (tags, row) in rows {
         out.push(CELL_FLAG_VALUE); // row Flags.
         for (idx, tag) in tags.iter().enumerate() {
-            out.extend_from_slice(&(*tag & 0xFFFF).to_le_bytes()); // PropertyType (low 2 bytes).
+            // PropertyType is a 2-byte WORD (the low half of the packed tag).
+            let pt: u16 = (*tag & 0xFFFF) as u16;
+            out.extend_from_slice(&pt.to_le_bytes());
             encode_cell(out, *tag, row.get(idx));
         }
     }
@@ -501,15 +532,6 @@ fn trailer(out: &mut Vec<u8>) {
     out.extend_from_slice(&0u32.to_le_bytes());
 }
 
-/// Build a success response body prefix: `StatusCode(0)` + echoing the flags
-/// the spec asks the server NOT to modify in STAT. Returns the prefix bytes.
-fn success_prefix() -> Vec<u8> {
-    // StatusCode = 0 (success).
-    let mut out = Vec::with_capacity(4);
-    out.extend_from_slice(&0u32.to_le_bytes());
-    out
-}
-
 // ---------------------------------------------------------------------------
 // DN synthesis — the canonical legacyExchangeDN the gateway advertises.
 //
@@ -579,6 +601,58 @@ struct GalEntry {
     phone: Option<String>,
 }
 
+/// TTL-cached directory snapshot shared across NSPI RPCs. A single Outlook
+/// address-book interaction is a multi-RPC sequence (Bind → GetSpecialTable →
+/// QueryColumns → QueryRows × N pages → ResolveNames → GetProps); resolving the
+/// full directory (`search_blocking("*", Some(5000))`) on EVERY RPC is
+/// O(rpcs × directory) work per user action and an admin-API amplification.
+/// The cache stores only the *directory* side (without the caller's own entry,
+/// which is assembled per call); a short TTL bounds staleness so a newly
+/// provisioned mailbox surfaces within the window. Failures refresh nothing
+/// (the stale snapshot, if any, is still served), matching the established
+/// "degrade gracefully" codebase pattern.
+pub struct GalCache(tokio::sync::RwLock<Option<Snapshot>>);
+
+struct Snapshot {
+    fetched_at: std::time::Instant,
+    entries: Vec<GalEntry>,
+}
+
+/// GalCache TTL — how long a directory snapshot is reused before a refresh.
+const GAL_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(60);
+
+impl GalCache {
+    /// Build an empty cache.
+    pub fn new() -> Self {
+        Self(tokio::sync::RwLock::new(None))
+    }
+
+    /// Return the cached directory snapshot if it is fresh enough, else `None`.
+    /// Never blocks a reader on a refresh: callers refresh out-of-band.
+    async fn get_if_fresh(&self) -> Option<Vec<GalEntry>> {
+        let guard = self.0.read().await;
+        match guard.as_ref() {
+            Some(s) if s.fetched_at.elapsed() < GAL_CACHE_TTL => Some(s.entries.clone()),
+            _ => None,
+        }
+    }
+
+    /// Store a freshly-resolved directory snapshot (replacing any prior one).
+    async fn store(&self, entries: Vec<GalEntry>) {
+        let mut guard = self.0.write().await;
+        *guard = Some(Snapshot {
+            fetched_at: std::time::Instant::now(),
+            entries,
+        });
+    }
+}
+
+impl Default for GalCache {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Map a directory `Contact` to an in-process GAL entry (MId unknown until the
 /// container is assembled). The DN is derived the same way the OAB download
 /// derives it so a recipient resolved through NSPI carries the same DN the
@@ -606,13 +680,19 @@ fn contact_to_entry(contact: Contact) -> GalEntry {
 /// be the canonicalised principal email; the DN mirrors `synth_dn` so a
 /// `RopLogon` for the same account resolves the same row.
 fn self_entry(email: &str) -> GalEntry {
-    let local = email_local_part(email)
-        .map(|l| l.chars().next().map(|c| c.to_uppercase().collect::<String>()).unwrap_or_default())
-        .unwrap_or_default();
-    let display = if local.is_empty() {
-        email.to_string()
-    } else {
-        local
+    // Derive a readable display name from the email local-part: capitalise the
+    // first character and keep the rest (e.g. `alice@example.com` -> `Alice`).
+    // When there is no local-part (e.g. `@example.com`) fall back to the email
+    // itself; an empty local-part never advertises a fabricated identity.
+    let display = match email_local_part(email) {
+        Some(local) => {
+            let mut chars = local.chars();
+            match chars.next() {
+                Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+                None => email.to_string(),
+            }
+        }
+        None => email.to_string(),
     };
     GalEntry {
         mid: 0,
@@ -637,34 +717,79 @@ async fn assemble_gal(
 ) -> Vec<GalEntry> {
     use std::collections::BTreeMap;
 
-    // Snapshot the directory (operator-configured, Stalwart admin API) on a
-    // blocking thread; the directory methods are blocking.
+    // Resolve the directory side ONCE per `GAL_CACHE_TTL` window (shared across
+    // every NSPI RPC in every concurrent session), so a multi-RPC Outlook
+    // address-book handshake reuses one directory snapshot instead of issuing a
+    // full `search_blocking` per RPC. The caller's own entry is added per call.
     let directory_entries: Vec<GalEntry> = match state.directory.clone() {
         Some(dir) => {
-            let dir_clone = dir.clone();
-            match tokio::task::spawn_blocking(move || dir_clone.search_blocking("*", Some(5000)))
+            if let Some(cache) = &state.gal_cache {
+                if let Some(cached) = cache.get_if_fresh().await {
+                    cached
+                } else {
+                    let dir_clone = dir.clone();
+                    match tokio::task::spawn_blocking(move || {
+                        dir_clone.search_blocking("*", Some(5000))
+                    })
+                    .await
+                    {
+                        Ok(Ok(SearchResult { mut contacts, .. })) => {
+                            contacts.sort_by(|a, b| a.email.cmp(&b.email));
+                            let entries: Vec<GalEntry> =
+                                contacts.into_iter().map(contact_to_entry).collect();
+                            cache.store(entries.clone()).await;
+                            entries
+                        }
+                        Ok(Err(e)) => {
+                            tracing::warn!(
+                                target: "nspi",
+                                error = %e,
+                                principal = redact_email(principal_email),
+                                "Directory GAL query failed; serving caller-only stub"
+                            );
+                            Vec::new()
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                target: "nspi",
+                                error = %e,
+                                principal = redact_email(principal_email),
+                                "Directory GAL task join failed; serving caller-only stub"
+                            );
+                            Vec::new()
+                        }
+                    }
+                }
+            } else {
+                // No cache wired (unit-test fixtures): resolve directly each call.
+                let dir_clone = dir.clone();
+                match tokio::task::spawn_blocking(move || {
+                    dir_clone.search_blocking("*", Some(5000))
+                })
                 .await
-            {
-                Ok(Ok(SearchResult { mut contacts, .. })) => {
-                    contacts.sort_by(|a, b| a.email.cmp(&b.email));
-                    contacts.into_iter().map(contact_to_entry).collect()
-                }
-                Ok(Err(e)) => {
-                    tracing::warn!(
-                        target: "nspi",
-                        error = %e,
-                        "Directory GAL query failed; serving caller-only stub"
-                    );
-                    Vec::new()
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        target: "nspi",
-                        error = %e,
-                        principal = redact_email(principal_email),
-                        "Directory GAL task join failed; serving caller-only stub"
-                    );
-                    Vec::new()
+                {
+                    Ok(Ok(SearchResult { mut contacts, .. })) => {
+                        contacts.sort_by(|a, b| a.email.cmp(&b.email));
+                        contacts.into_iter().map(contact_to_entry).collect()
+                    }
+                    Ok(Err(e)) => {
+                        tracing::warn!(
+                            target: "nspi",
+                            error = %e,
+                            principal = redact_email(principal_email),
+                            "Directory GAL query failed; serving caller-only stub"
+                        );
+                        Vec::new()
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            target: "nspi",
+                            error = %e,
+                            principal = redact_email(principal_email),
+                            "Directory GAL task join failed; serving caller-only stub"
+                        );
+                        Vec::new()
+                    }
                 }
             }
         }
@@ -835,21 +960,40 @@ fn default_column_tags() -> Vec<u32> {
     ]
 }
 
-/// Materialise one GAL row for the requested tag set.
+/// Materialise one GAL row for the requested tag set. An unsupported/
+/// unknown tag resolves to `PropertyValue::ErrorCode(MAPI_E_NOT_FOUND)` — a
+/// *present* cell (Flag 0x0) carrying the `MAPI_E_NOT_FOUND` HRESULT, the
+/// spec-correct shape for "property not found on this object" (MS-OXNSPI
+/// §2.2.1.5). It MUST NOT be `PropertyValue::Null`: a value-flagged cell with
+/// zero payload bytes is malformed and desynchronises client parsing.
 fn materialise_row(entry: &GalEntry, tags: &[u32]) -> Vec<PropertyValue> {
+    const MAPI_E_NOT_FOUND: u32 = 0x8004_0119;
     tags.iter()
         .map(|tag| entry_property(entry, *tag))
-        .map(|opt| opt.unwrap_or(PropertyValue::Null))
+        .map(|opt| opt.unwrap_or(PropertyValue::ErrorCode(MAPI_E_NOT_FOUND)))
         .collect()
 }
 
 /// Materialise the requested rows from the in-memory GAL container.
-fn materialise_rows(container: &[GalEntry], tags: &[u32], start: usize, count: usize) -> Vec<Vec<PropertyValue>> {
-    let end = (start + count).min(container.len());
-    if start >= end {
+///   * forward: rows `[start .. start+n)` (clamped at container end)
+///   * backward: rows `[start-n .. start)` (clamped at 0), in table order so
+///     the rowset mirrors the forward reading order Outlook re-paginates from
+fn materialise_rows(container: &[GalEntry], tags: &[u32], start: usize, n: usize, backward: bool) -> Vec<Vec<PropertyValue>> {
+    let (lo, hi) = if n == 0 {
+        return Vec::new();
+    } else if backward {
+        let lo = start.saturating_sub(n);
+        let hi = start;
+        (lo, hi)
+    } else {
+        let lo = start;
+        let hi = (start + n).min(container.len());
+        (lo, hi)
+    };
+    if lo >= hi || hi > container.len() {
         return Vec::new();
     }
-    container[start..end]
+    container[lo..hi]
         .iter()
         .map(|entry| materialise_row(entry, tags))
         .collect()
@@ -908,31 +1052,51 @@ const NSPI_TABLE_TOO_BIG: u32 = 0x8004_0106; // MAPI_E_TABLE_TOO_BIG
 // CurrentRec / Delta / NumPos / TotalRecs as the cursor advances.
 // ---------------------------------------------------------------------------
 
-/// §2.2.5.1 Bind — establish a Session Context. The gateway is stateless
-/// across the nspi endpoint (it re-resolves the directory on every call); the
-/// "session context" it returns is a single STAT carrying the container's
-/// current cursor (the row the GAL resolves to). The minimal in-memory table
-/// fits the short-lived Stat, so no per-session Context needs to be held.
+/// §2.2.5.1.Bind (MS-OXNSPI §3.1.4.1.1) — establish a Session Context. The
+/// gateway is stateless across the `/mapi/nspi` endpoint (it resolves the
+/// directory via the shared TTL cache), so the "session context" it returns is
+/// a single freshly-initialised STAT carrying the container's row count.
+///
+/// Bind's documented inputs are `Flags` + `CodePage` + `LocaleId` (NOT a
+/// STAT — that is a Bind *output*). To be robust to a client transport that
+/// nonetheless prepends a STAT, the handler tolerates BOTH shapes:
+///
+/// - if ≥36 bytes remain after Flags ⇒ a STAT was sent (consume + honour its
+///   CodePage/SortLocale context), then any trailing CodePage/LocaleId;
+/// - otherwise ⇒ the Bind input is Flags+CodePage+LocaleId (or just Flags);
+///   a default STAT is built from the container.
+///
+/// The echoed `CodePage`/`TemplateLocale`/`SortLocale` are preserved from the
+/// input STAT (when present) so a locale-sensitive client's preferences survive.
 fn handle_bind(req: &MapiRequest, container: &[GalEntry]) -> MapiResponse {
     let mut cur = Buf::new(&req.body);
-    // Bind body: Flags(4) + [State(36)] + CodePage(4) + LocaleId(4).
-    // The HasState flag is implied: over MAPI/HTTP the body always carries it.
     let _flags = match take_u32(&mut cur) {
         Ok(v) => v,
         Err(e) => return decode_err_response(e, req),
     };
-    let stat = match Stat::decode(&mut cur) {
-        Ok(s) => s,
-        Err(e) => return decode_err_response(e, req),
+    // Tolerant: a STAT input is optional for Bind. If enough bytes remain it
+    // is consumed; otherwise the remaining advisory CodePage/LocaleId are the
+    // Bind inputs and we build a default STAT for the response.
+    let stat = if cur.remaining() >= Stat::ENCODED_LEN {
+        match Stat::decode(&mut cur) {
+            Ok(s) => Some(s),
+            Err(e) => return decode_err_response(e, req),
+        }
+    } else {
+        None
     };
-    // Remaining fields (CodePage, LocaleId) are advisory; tolerate their
-    // absence (an empty body after State is also valid) rather than failing.
+    // Tolerate trailing CodePage(4) + LocaleId(4) either way.
     let _ = take_u32(&mut cur);
     let _ = take_u32(&mut cur);
 
     let body = render_with_container(container, |out, container| {
         out.extend_from_slice(&NSPI_SUCCESS.to_le_bytes());
-        let mut echoed = stat;
+        // Preserve the client's locale/context preferences when a STAT was sent;
+        // otherwise build a default cursor-at-top STAT for the container.
+        let mut echoed = match stat {
+            Some(s) => s,
+            None => Stat::default_for(container.len()),
+        };
         echoed.current_rec = 0; // initial cursor: before the first row.
         echoed.delta = 0;
         echoed.num_pos = 0;
@@ -944,8 +1108,12 @@ fn handle_bind(req: &MapiRequest, container: &[GalEntry]) -> MapiResponse {
 }
 
 /// §2.2.5.18 Unbind — conclude the Session Context. Stateless: succeed.
+/// Body shape mirrors every other NSPI success response: `StatusCode(0)` +
+/// trailing `AuxiliaryBufferSize(0)`. Note `NSPI_SUCCESS == 0`, so the single
+/// `NSPI_SUCCESS.to_le_bytes()` write IS the StatusCode (do not prepend a
+/// second `success_prefix()` — that would emit a duplicated 0x00000000).
 fn handle_unbind(req: &MapiRequest, _container: &[GalEntry]) -> MapiResponse {
-    let mut out = success_prefix();
+    let mut out = Vec::with_capacity(8);
     out.extend_from_slice(&NSPI_SUCCESS.to_le_bytes());
     trailer(&mut out);
     MapiResponse::success(req.request_id.clone(), "Unbind", None, out)
@@ -1005,22 +1173,35 @@ fn handle_query_rows(req: &MapiRequest, container: &[GalEntry]) -> MapiResponse 
 
     let body = render_with_container(container, |out, container| {
         let total = container.len();
-        let (start, n) = stat.query_window(count);
-        let rows = materialise_rows(container, &tags, start, n);
+        let (start, n, backward) = stat.query_window(count);
+        let rows = materialise_rows(container, &tags, start, n, backward);
         out.extend_from_slice(&NSPI_SUCCESS.to_le_bytes());
-        // Echo STAT with the cursor advanced to the last served row.
+        // Echo STAT advancing the cursor to the row just past the served window
+        // (forward) or to the first served row (backward). `current_rec` is a
+        // 1-based MId; `num_pos` mirrors it. `delta` is cleared to 0 after the
+        // read so the next QueryRows' `Delta` offset is interpreted from the new
+        // cursor rather than re-applying the prior offset.
         let mut echoed = stat;
         let served = rows.len();
         if served == 0 {
-            echoed.current_rec = stat.current_rec;
+            // No rows served: the cursor does not move.
             echoed.delta = 0;
-            echoed.num_pos = stat.num_pos;
+        } else if backward {
+            // Served `[start-n .. start)` ⇒ the new cursor is the first served
+            // row's MId so a subsequent forward read resumes there.
+            let first_mid = u32::try_from(start.saturating_sub(n) + 1).unwrap_or(u32::MAX);
+            echoed.current_rec = first_mid;
+            echoed.delta = 0;
+            echoed.num_pos = first_mid;
         } else {
-            // 1-based MId of the last served row (start is 0-based).
-            let last_mid = u32::try_from(start + served).unwrap_or(u32::MAX);
-            echoed.current_rec = last_mid;
+            // Served `[start .. start+served)` ⇒ the new cursor's MId is the
+            // row just past the window (start+served+1 as a 1-based MId), so the
+            // NEXT forward QueryRows reads the row after the last served one —
+            // no duplicate. Clamp at total+1 (EOF sentinel stays readable).
+            let next_mid = u32::try_from(start + served + 1).unwrap_or(u32::MAX);
+            echoed.current_rec = next_mid;
             echoed.delta = 0;
-            echoed.num_pos = last_mid;
+            echoed.num_pos = u32::try_from(start + served).unwrap_or(u32::MAX);
         }
         echoed.total_recs = u32::try_from(total).unwrap_or(u32::MAX);
         echoed.encode(out);
@@ -1045,7 +1226,7 @@ fn handle_dn_to_min_id(req: &MapiRequest, container: &[GalEntry]) -> MapiRespons
         Err(e) => return decode_err_response(e, req),
     };
     if dn_count > MAX_DN_TO_MID {
-        return min_id_too_big(req);
+        return min_id_too_big(req, "DNToMId");
     }
     let mut dns: Vec<String> = Vec::with_capacity(dn_count as usize);
     for _ in 0..dn_count {
@@ -1069,7 +1250,6 @@ fn handle_dn_to_min_id(req: &MapiRequest, container: &[GalEntry]) -> MapiRespons
         }
     }
 
-    let dns_clone = dns.clone();
     let body = render_with_container(container, |out, container| {
         out.extend_from_slice(&NSPI_SUCCESS.to_le_bytes());
         // MIdCount(4) + MinIds().
@@ -1098,7 +1278,6 @@ fn handle_dn_to_min_id(req: &MapiRequest, container: &[GalEntry]) -> MapiRespons
         }
         trailer(out);
     });
-    let _ = dns_clone;
     MapiResponse::success(req.request_id.clone(), "DNToMId", None, body)
 }
 
@@ -1171,27 +1350,38 @@ fn handle_resolve_names(req: &MapiRequest, container: &[GalEntry]) -> MapiRespon
         let mut any_not_found = false;
         for name in &names {
             let needle = name.to_ascii_lowercase();
-            let found = container.iter().find(|e| {
-                let em = e.email.to_ascii_lowercase();
-                let dn = e.display_name.to_ascii_lowercase();
-                // ANR: match if the needle equals or prefixes either field, or
-                // if it matches the bare local-part.
-                em == needle
-                    || em.starts_with(&needle)
-                    || dn == needle
-                    || dn.starts_with(&needle)
-                    || email_local_part(&e.email)
-                        .map(|lp| lp.to_ascii_lowercase() == needle)
-                        .unwrap_or(false)
-            });
+            // An empty needle would `starts_with`-match EVERY row (every
+            // string starts with ""), flooding the result with the whole GAL.
+            // Treat it as no-match so an empty ResolveNames probe yields the
+            // NOT_FOUND row Outlook expects, not the entire directory.
+            let found = if needle.is_empty() {
+                None
+            } else {
+                container.iter().find(|e| {
+                    let em = e.email.to_ascii_lowercase();
+                    let dn = e.display_name.to_ascii_lowercase();
+                    // ANR: match if the needle equals or prefixes either field,
+                    // or matches the bare local-part. `starts_with` already
+                    // covers exact equality, so the explicit `==` checks are
+                    // redundant and removed.
+                    em.starts_with(&needle)
+                        || dn.starts_with(&needle)
+                        || email_local_part(&e.email)
+                            .map(|lp| lp.to_ascii_lowercase().starts_with(&needle))
+                            .unwrap_or(false)
+                })
+            };
             match found {
                 Some(entry) => rows.push(materialise_row(entry, &tags)),
                 None => {
                     any_not_found = true;
-                    // An unmatched name ⇒ a row whose only cell is an errored MId.
+                    // An unmatched name ⇒ a row whose every cell is a
+                    // NOT_FOUND error cell (present cell carrying the HRESULT;
+                    // never a zero-payload Null cell).
+                    const MAPI_E_NOT_FOUND: u32 = 0x8004_0119;
                     rows.push(tags
                         .iter()
-                        .map(|_| PropertyValue::Null)
+                        .map(|_| PropertyValue::ErrorCode(MAPI_E_NOT_FOUND))
                         .collect());
                 }
             }
@@ -1250,7 +1440,7 @@ fn handle_get_matches(req: &MapiRequest, container: &[GalEntry]) -> MapiResponse
     let _ = stat;
     let body = render_with_container(container, |out, container| {
         let n = (count as usize).min(container.len());
-        let rows = materialise_rows(container, &tags, 0, n);
+        let rows = materialise_rows(container, &tags, 0, n, false);
         out.extend_from_slice(&NSPI_SUCCESS.to_le_bytes());
         out.push(0xFF); // HasRowsAlready.
         encode_rowset(out, &rows, &tags);
@@ -1290,7 +1480,7 @@ fn handle_get_props(req: &MapiRequest, container: &[GalEntry]) -> MapiResponse {
     };
     const MAX_MIDS: u32 = 4096;
     if mid_count > MAX_MIDS {
-        return min_id_too_big(req);
+        return min_id_too_big(req, "GetProps");
     }
     let mut mids: Vec<u32> = Vec::with_capacity(mid_count as usize);
     for _ in 0..mid_count {
@@ -1301,6 +1491,7 @@ fn handle_get_props(req: &MapiRequest, container: &[GalEntry]) -> MapiResponse {
     }
 
     let body = render_with_container(container, |out, container| {
+        const MAPI_E_NOT_FOUND: u32 = 0x8004_0119;
         let mut rows: Vec<(Vec<u32>, Vec<PropertyValue>)> = Vec::new();
         let mut any_not_found = false;
         for mid in &mids {
@@ -1309,16 +1500,22 @@ fn handle_get_props(req: &MapiRequest, container: &[GalEntry]) -> MapiResponse {
                     let row = tags
                         .iter()
                         .map(|tag| {
-                            entry_property(entry, *tag).unwrap_or(PropertyValue::Null)
+                            entry_property(entry, *tag)
+                                .unwrap_or(PropertyValue::ErrorCode(MAPI_E_NOT_FOUND))
                         })
                         .collect();
                     rows.push((tags.clone(), row));
                 }
                 None => {
                     any_not_found = true;
+                    // Unknown MId ⇒ every requested cell is a NOT_FOUND error
+                    // cell (a present cell carrying the HRESULT; never a
+                    // zero-payload Null cell).
                     rows.push((
                         tags.clone(),
-                        tags.iter().map(|_| PropertyValue::Null).collect(),
+                        tags.iter()
+                            .map(|_| PropertyValue::ErrorCode(MAPI_E_NOT_FOUND))
+                            .collect(),
                     ));
                 }
             }
@@ -1521,7 +1718,7 @@ fn handle_compare_mids(req: &MapiRequest, container: &[GalEntry]) -> MapiRespons
         out.push(if mid1 == mid2 { 1 } else { 0 });
         trailer(out);
     });
-    MapiResponse::success(req.request_id.clone(), "CompareMIDs", None, body)
+    MapiResponse::success(req.request_id.clone(), "CompareMIds", None, body)
 }
 
 // ---------------------------------------------------------------------------
@@ -1579,12 +1776,13 @@ fn decode_err_response(e: NspiDecodeError, req: &MapiRequest) -> MapiResponse {
 }
 
 /// Table-too-big → transport response (used when a requested count exceeds the
-/// documented `NSPI_TABLE_TOO_BIG` cap).
-fn min_id_too_big(req: &MapiRequest) -> MapiResponse {
+/// documented `NSPI_TABLE_TOO_BIG` cap). `rt` is the request-type string the
+/// response echoes verbatim (so the echo matches the verb the client sent).
+fn min_id_too_big(req: &MapiRequest, rt: &'static str) -> MapiResponse {
     let mut out = Vec::with_capacity(8);
     out.extend_from_slice(&NSPI_TABLE_TOO_BIG.to_le_bytes());
     out.extend_from_slice(&0u32.to_le_bytes());
-    MapiResponse::success(req.request_id.clone(), "DNToMId", None, out)
+    MapiResponse::success(req.request_id.clone(), rt, None, out)
 }
 
 // ---------------------------------------------------------------------------
@@ -1774,13 +1972,61 @@ mod tests {
         let rows = vec![materialise_row(&entry, &tags)];
         let mut out = Vec::new();
         encode_rowset(&mut out, &rows, &tags);
-        // RowCount(4) + Flags(1) + per-cell (Flag + value).
+        // RowCount(4) == 1, row Flags (offset 4) == present.
         assert_eq!(u32::from_le_bytes([out[0], out[1], out[2], out[3]]), 1);
-        // The row Flags byte is 0x0 (every cell present).
-        // The first cell's Flag byte (offset 4) is 0x0; the second cell Flag
-        // (somewhere later) is also 0x0 — the rowset never emits absent cells
-        // for supplied tags it understands.
         assert_eq!(out[4], CELL_FLAG_VALUE);
+        // Both cell payloads (the UTF-16LE + NUL of "Bob" and "bob@example.com")
+        // MUST be present in the byte stream. A malformed Null cell (flag 0x0
+        // present with zero payload) would have dropped the body entirely, so
+        // verifying the text round-trips pins the error-cell-vs-value-cell fix.
+        let bob_utf16: Vec<u8> = "Bob"
+            .encode_utf16()
+            .flat_map(|u| u.to_le_bytes().to_vec())
+            .collect();
+        let email_utf16: Vec<u8> = "bob@example.com"
+            .encode_utf16()
+            .flat_map(|u| u.to_le_bytes().to_vec())
+            .collect();
+        assert!(
+            out.windows(bob_utf16.len()).any(|w| w == bob_utf16.as_slice()),
+            "display-name UTF-16LE payload missing from rowset bytes"
+        );
+        assert!(
+            out.windows(email_utf16.len()).any(|w| w == email_utf16.as_slice()),
+            "smtp-address UTF-16LE payload missing from rowset bytes"
+        );
+        // The first cell's Flag byte (offset 5) is present, never an empty-payload Null.
+        assert_eq!(out[5], CELL_FLAG_VALUE);
+    }
+
+    #[test]
+    fn unsupported_tag_encodes_as_notfound_error_cell_never_null() {
+        // An unknown/unsupported tag MUST serialise as a present cell carrying the
+        // MAPI_E_NOT_FOUND HRESULT (Flag 0x0 + 4-byte value), NOT a zero-payload
+        // present cell (the malformed `PropertyValue::Null` path flagged in PR #1845).
+        const UNSUPPORTED_ID: u16 = 0x6F00;
+        let tags = vec![pack_tag(PropertyType::PTYP_INTEGER32, UNSUPPORTED_ID)];
+        let entry = GalEntry {
+            mid: 1,
+            display_name: "Bob".to_string(),
+            email: "bob@example.com".to_string(),
+            dn: synth_dn("bob@example.com"),
+            title: None,
+            company: None,
+            department: None,
+            phone: None,
+        };
+        let row = materialise_row(&entry, &tags);
+        assert!(
+            matches!(row[0], PropertyValue::ErrorCode(_)),
+            "unsupported tag resolved to {:?}, expected ErrorCode",
+            row[0]
+        );
+        let mut out = Vec::new();
+        encode_rowset(&mut out, std::slice::from_ref(&row), &tags);
+        // RowCount(4) + row Flags(1) + cell Flag(1) + 4-byte HRESULT = 10.
+        assert_eq!(out.len(), 4 + 1 + 1 + 4);
+        assert_eq!(out[5], CELL_FLAG_VALUE); // cell present (NOT absent 0x1)
     }
 
     #[tokio::test]

@@ -605,7 +605,7 @@ STILL GAPS to 100% perfect Outlook-for-Windows + Outlook-Android fidelity:
    write-back bridge is the larger Phase-2 #4 mail-write path and is
    intentionally not asserted against real Stalwart traffic). Audit gap §2b
    FXICS download closed.
-10. **NSPI / GAL / address-book surface (audit gap §2d, PR #185x)** —
+10. **NSPI / GAL / address-book surface (audit gap §2d, PR #1845)** —
     `/mapi/nspi` is now served (was rejected as `InvalidRequestType`).
     `src/mapi/nspi.rs` owns the MS-OXNSPI/MS-OXOABK wire codecs + RPC dispatch.
     `transport.rs` carries `RpcKind::AddressBook(AddressBookRpc)` (the enum
@@ -617,45 +617,77 @@ STILL GAPS to 100% perfect Outlook-for-Windows + Outlook-Android fidelity:
     `MapiRequest.username`/`password` from the shared `decode_basic_auth` so the
     NSPI auth gate has the creds. `nspi::handle_address_book(rpc, req, state)`
     is the entry point dispatched from `handler::handle`. The GAL container is
-    built per-RPC by `assemble_gal(state, principal)`: it snapshots the
-    operator-configured directory (`state.directory: Option<Arc<dyn DirectoryLookup>>`,
-    wired in `models.rs` via `MapiState::with_directory`) on a `spawn_blocking`
-    task calling `search_blocking("*", Some(5000))`, de-dups by lowercased SMTP,
-    **always includes the authenticated caller's own entry** (`self_entry`), and
-    assigns 1-based Minimal Entry IDs (MId) in alphabetical order (stable across
-    container restarts only as long as the membership is stable; NOT a persisted
-    MId — Outlook re-resolves via `DnToMinId`/`ResolveNames`). Each GAL entry is
-    an `IPM.Contact`/`DT_MAILUSER` (`PR_OBJECT_TYPE=MAPI_MAILUSER(6)`,
-    `PR_DISPLAY_TYPE=DT_MAIL_USER(0)`, `PR_DISPLAY_TYPE_EX=0x40|0x0`,
-    `PR_INSTANCE_KEY`/`PR_RECORD_KEY` = packed MId, `PR_ENTRYID` synthesised
-    as an `AddressBookEntryID` (MS-OXCDATA §2.6.3.1) carrying the EntryID
-    flags + AB provider UID + Version + Type + the
+    built per-RPC by `assemble_gal(state, principal)`: it consults a shared
+    TTL-cached directory snapshot (`MapiState.gal_cache: Option<Arc<GalCache>>`,
+    60s TTL — allocated in `MapiState::with_directory`) so a multi-RPC Outlook
+    address-book handshake reuses ONE `search_blocking("*", Some(5000))`
+    resolution instead of re-querying the admin API per RPC; on cache miss it
+    snapshots the operator-configured directory
+    (`state.directory: Option<Arc<dyn DirectoryLookup>>`, wired in `models.rs`
+    via `MapiState::with_directory`) on a `spawn_blocking` task, de-dups by
+    lowercased SMTP, **always includes the authenticated caller's own entry**
+    (`self_entry`), and assigns 1-based Minimal Entry IDs (MId) in alphabetical
+    order (stable across container restarts only as long as membership is
+    stable; NOT a persisted MId — Outlook re-resolves via
+    `DnToMinId`/`ResolveNames`). Each GAL entry is a `MAPI_MAILUSER` row:
+    `PR_OBJECT_TYPE=MAPI_MAILUSER(6)`, `PR_DISPLAY_TYPE=DT_MAILUSER(0)` and
+    `PR_DISPLAY_TYPE_EX=DT_MAILUSER(0)` — both render the same `DT_MAILUSER`
+    value `entry_property` returns (no `DTE_FLAG_ACL_CAPABLE` 0x40 bit), the
+    two display-type tags are `0x3900` / `0x3905` respectively per MS-OXPROPS.
+    `PR_INSTANCE_KEY`/ `PR_RECORD_KEY` = packed MId, `PR_ENTRYID` synthesised as an
+    `AddressBookEntryId` (the "Permanent Entry ID" for a mail user,
+    MS-OXCDATA §2.6.4 — `abook_entry_id`) carrying the EntryID flags +
+    AB provider UID + Version + Type + the
     `/o=Stalwart/ou=Exchange Administrative Group (FYDIBOHF23SPDLT)/cn=Recipients/cn=<localpart>`
     legacyExchangeDN that mirrors `oab::synth_dn`). STAT is the 9-DWORD
-    (36-byte) MS-OXNSPI §2.2.2.1 struct (SortType/ContainerID/CurrentRec/
-    Delta/NumPos/TotalRecs/CodePage/TemplateLocale/SortLocale); `Stat::query_window(count)`
-    derives the QueryRows slice respecting current_rec + signed delta. The
-    rowset codec uses the `AddressBookFlaggedPropertyValue` (caller-supplied
-    tags, Flag byte 0x0=value/0x1=absent/0xA+HRESULT) shape for `QueryRows`/
-    `ResolveNames`/`GetMatches`, and `…WithType` (prepends a 4-byte
-    PropertyType) for `GetProps`. The PropertyTag wire layout is the same as
-    everywhere else: `PropertyTag::decode` reads type-first then id, so the
-    NSPI-packed u32 is `(id << 16) | type` (`pack_tag`). Auth gate: EVERY NSPI
-    RPC re-uses `AuthVerifier::verify` (canonicalised username via
-    `util::canonicalize_username` + the password held in `secrecy::SecretString`
-    for the check only); anonymous or failed auth returns transport
-    `ResponseCode::NoPrivilege` (11) **before** any directory I/O, so recipient
-    PII never leaks to an unauthenticated caller (the empty-creds short-circuit
-    means the gate needs no Stalwart network round-trip — tested by
-    `address_book_rejects_anonymous_request`). `GetUserPhoto` (EWS) now
-    resolves the recipient against `state.directory` and returns the spec
-    "no photo published" shape (`HasChanged=false`, empty `PictureData`) for a
-    known contact / `ErrorNoSuchEmailAddress` for an unknown one / `ErrorInvalidSmtpAddress`
-    for a missing email — Outlook renders the default avatar rather than erroring.
-    No Stalwart-native photo backend exists, so photo bytes are never fabricated.
-    Remaining: admin-only verbs (ModLinkAtt/ModProps/GetTemplateInfo/MailboxUrl/
-    AddressBookUrl) are deterministic successes (the gateway's GAL is a single
-    in-memory container, so re-sort/seek are no-ops); an operator-supplied photo
-    backend would slot into the `GetUserPhoto` directory lookup. The full §2d gap
-    (NSPI surface + GetUserPhoto) is closed.
+    (36-byte) MS-OXNSPI §2.2.8 struct (SortType/ContainerID/CurrentRec/
+    Delta/NumPos/TotalRecs/CodePage/TemplateLocale/SortLocale); over MAPI/HTTP
+    the `/mapi/nspi` Execute body carries the NSPI method call directly
+    (`Flags(4) + [State(36)] + RPC fields + Aux(4+var)`) — there is NO
+    `HasState(1)` selector byte (that is the EMSMDB ROP-layer framing, not the
+    MAPI/HTTP NSPI body), so handlers decode Flags then [optional]_STAT then
+    method fields. `Stat::query_window(count)` derives the QueryRows slice
+    respecting current_rec + signed delta, capping forward counts at
+    `MAX_QUERY_ROWS` and using `unsigned_abs()` for backward counts (no
+    i32::MIN overflow). The rowset codec uses the
+    `AddressBookFlaggedPropertyValue` (caller-supplied tags, Flag byte
+    0x0=value/0x1=absent/0xA+HRESULT) shape for `QueryRows`/`ResolveNames`/
+    `GetMatches`, and `…WithType` (prepends a 2-byte `PropertyType` WORD — the
+    low half of the packed tag, per MS-OXCDATA §2.9) for `GetProps`. An
+    unknown/unsupported tag serialises as a present cell carrying the
+    `MAPI_E_NOT_FOUND` HRESULT (Flag 0x0 + 4-byte value), NEVER a zero-payload
+    present cell (`PropertyValue::Null` is malformed). `CompareMIds` echoes
+    `"CompareMIds"`; `ResolveNames` treats an empty needle as no-match (an
+    empty `starts_with` would otherwise match the whole GAL). The PropertyTag
+    wire layout is the same as everywhere else: `PropertyTag::decode` reads
+    type-first then id, so the NSPI-packed u32 is `(id << 16) | type` (`pack_tag`).
+    Auth gate: EVERY NSPI RPC re-uses `AuthVerifier::verify` (canonicalised
+    username via `util::canonicalize_username` + the password held in
+    `secrecy::SecretString` for the check only); anonymous or failed auth
+    returns transport `ResponseCode::NoPrivilege` (11) **before** any directory
+    I/O, so recipient PII never leaks to an unauthenticated caller (the
+    empty-creds short-circuit means the gate needs no Stalwart network
+    round-trip — tested by `address_book_rejects_anonymous_request`).
+    `GetUserPhoto` (EWS) is **disclosure-free**: it validates the recipient
+    email SYNTAX only (`is_valid_smtp_address`) and returns the spec "no photo
+    published" shape (`HasChanged=false`, empty `PictureData`) for every
+    syntactically-valid recipient / `ErrorInvalidSmtpAddress` for malformed.
+    It deliberately does NOT consult `state.directory`: no Stalwart-native
+    photo backend exists, and probing the directory would (a) let any mailbox
+    user enumerate the Stalwart account set via the Success/
+    ErrorNoSuchEmailAddress split (the same disclosure vector the Autodiscover
+    auth gate guards), (b) misclassify every recipient as "no such address"
+    when no directory is configured, and (c) silently drop `spawn_blocking`
+    `JoinError`s into that error code. Outlook renders the default avatar
+    rather than erroring. Remaining §2d gaps (admin-only verbs
+    ModLinkAtt/ModProps are WRITE operations routed to a no-op success shape,
+    and GetTemplateInfo returns a STAT rather than the full template row —
+    none is exercised by Outlook's address-book/GAL flow, but they are not
+    truly "closed"); an operator-supplied photo backend would slot into the
+    `GetUserPhoto` syntax-only path. The NSPI read surface (Bind/QueryRows/
+    DnToMinId/ResolveNames/GetMatches/GetProps/GetSpecialTable/SeekEntries/
+    QueryColumns/UpdateStat/CompareMIds/ResortRestriction/GetMailboxUrl/
+    GetAddressBookUrl) + a disclosure-free GetUserPhoto are wired; the
+    admin-only write verbs (ModLinkAtt/ModProps/GetTemplateInfo) remain
+    best-effort successes, listed here as TODOs.
 
