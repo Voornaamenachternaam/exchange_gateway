@@ -472,8 +472,8 @@ pub struct SessionManager {
     /// handle table because `tokio::sync::broadcast::Receiver` is neither
     /// `Clone` nor a cheap snapshot; the `NotificationWait` and post-wait
     /// `Execute` paths reach the sinks through `with_sink_mut` /
-    /// `drain_session_notifications`. Torn down alongside the session on
-    /// `Disconnect` / idle expiry.
+    /// `drain_for_execute`. Torn down alongside the session on `Disconnect` /
+    /// idle expiry.
     notifications: Arc<NotificationRegistry>,
 }
 
@@ -682,17 +682,19 @@ pub const NT_SEARCH_COMPLETED: u16 = 0x0080;
 pub const NT_TABLE_MODIFIED: u16 = 0x0100;
 
 /// The folder scope a notification sink is interested in. `WholeStore` matches
-/// every folder the owner principal sees; `Folder` restricts the feed to a
-/// single folder backend id (the JMAP mailbox id / CalDAV href resolved from
-/// the `RopRegisterNotification` `FolderId`/`ParentHandleId` at registration
-/// time by walking the live handle table). Carried as a backend string so the
-/// filter compares directly against the `folder_id` field the broadcast feed
-/// publishes, rather than against a raw MAPI row id that no longer maps to
-/// anything useful once the folder handle is released.
-#[derive(Debug, Clone)]
+/// every folder the owner principal sees; `Folder(row_id)` restricts the feed
+/// to events whose backend folder id maps -- via `store::folder_id_from_backend`
+/// -- to the client-requested MAPI row id (decoded from the
+/// `RopRegisterNotification` `FolderId`). Carried as a row id, NOT a
+/// pre-resolved backend id, so the subscription honours the client's filter
+/// without depending on an open `Handle::Folder` at registration time (the
+/// client may release the folder handle before registering, or register against
+/// a folder reached through a table row) and never widens an unresolvable scope
+/// to the whole store.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NotificationScope {
     WholeStore,
-    Folder(String),
+    Folder(u64),
 }
 
 /// A per-session, per-handle notification subscription installed by
@@ -725,15 +727,15 @@ pub struct MapiNotificationSink {
     /// §2.2.14.2.1.
     pub logon_id: u8,
     /// Persistent broadcast receiver on the shared `SubscriptionManager` feed.
-    /// Private — the sink's `pump` / `wait_for_event` are the only callers, so
-    /// the queue/recv ordering invariants cannot be broken by a stray
-    /// `receiver.try_recv()` outside the sink.
+    /// Private — the sink's `pump` is the only caller, so the queue/recv
+    /// ordering invariants cannot be broken by a stray `receiver.try_recv()`
+    /// outside the sink.
     receiver: broadcast::Receiver<NotificationEvent>,
     /// Buffered, accepted (owner+types+scope-matched) events pulled off the
-    /// broadcast by `pump` / `wait_for_event`. Survives across HTTP requests so
-    /// a `NotificationWait` that observes an event-as-pending still has it for
-    /// the post-wait `Execute` `RopNotify` delivery. Bounded by
-    /// [`SINK_PENDING_CAP`]; overflow drops the oldest.
+    /// broadcast by `pump`. Survives across HTTP requests so a `NotificationWait`
+    /// that observes an event-as-pending still has it for the post-wait `Execute`
+    /// `RopNotify` delivery. Bounded by [`SINK_PENDING_CAP`]; overflow drops the
+    /// oldest.
     pending: std::collections::VecDeque<NotificationEvent>,
 }
 
@@ -773,15 +775,20 @@ impl MapiNotificationSink {
     /// `NotificationTypes` bitmask the client requested rather than the
     /// EWS event-type-name set, so the MAPI client gets exactly the event
     /// classes it subscribed to (e.g. NewMail only).
+    ///
+    /// The owner comparison is canonicalised (case-folded + trimmed) so a
+    /// divergence between the session principal's email recorded at
+    /// registration and the owner string `publish_event` recorded at the
+    /// item-CRUD call site never drops a notification.
     pub fn accepts(&self, event: &NotificationEvent) -> bool {
-        if event.owner() != self.owner {
+        if canonicalize_owner(event.owner()) != canonicalize_owner(&self.owner) {
             return false;
         }
         if !self.type_matches(event) {
             return false;
         }
-        if let NotificationScope::Folder(want_folder) = &self.scope {
-            return event.matches_mapi_folder(want_folder);
+        if let NotificationScope::Folder(want_row) = self.scope {
+            return event.matches_mapi_folder_row(want_row);
         }
         true
     }
@@ -833,43 +840,6 @@ impl MapiNotificationSink {
             }
         }
         admitted
-    }
-
-    /// Block (async) up to `timeout` for the first event this sink admits.
-    /// Pumps first (delivers already-buffered broadcast events), then if
-    /// `has_pending()` is false awaits `recv()` for the remaining budget; on a
-    /// matching event pushes it to `pending` and returns. A non-matching event
-    /// keeps the wait alive for the rest of the budget (avoids terminating the
-    /// turn early on a filtered event). Returns the number of pending events.
-    pub async fn wait_for_event(&mut self, timeout: std::time::Duration) -> usize {
-        self.pump();
-        if !self.pending.is_empty() {
-            return self.pending.len();
-        }
-        let deadline = tokio::time::Instant::now() + timeout;
-        loop {
-            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-            if remaining.is_zero() {
-                return self.pending.len();
-            }
-            match tokio::time::timeout(remaining, self.receiver.recv()).await {
-                Ok(Ok(ev)) => {
-                    if self.accepts(&ev) {
-                        if self.pending.len() >= SINK_PENDING_CAP {
-                            self.pending.pop_front();
-                        }
-                        self.pending.push_back(ev);
-                        return self.pending.len();
-                    }
-                    continue;
-                }
-                Ok(Err(tokio::sync::broadcast::error::RecvError::Closed)) => {
-                    return self.pending.len();
-                }
-                Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) => continue,
-                Err(_) => return self.pending.len(), // remaining elapsed
-            }
-        }
     }
 
     /// Whether `pending` (after a `pump`) holds at least one event ready to
@@ -971,7 +941,17 @@ impl NotificationRegistry {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.len() == 0
+        self.inner.read().is_empty()
+    }
+
+    /// Whether `session_id` has at least one registered sink. Distinct from
+    /// [`is_empty`](Self::is_empty), which spans EVERY session -- a chatty
+    /// neighbour session's sinks must not push an idle session into a long-poll.
+    pub fn session_has_sinks(&self, session_id: &Uuid) -> bool {
+        self.inner
+            .read()
+            .get(session_id)
+            .is_some_and(|per| !per.is_empty())
     }
 
     /// Pump every sink for `(session_id)` once and report whether any sink now
@@ -1022,15 +1002,16 @@ impl NotificationRegistry {
             return out;
         };
         // Round-robin: pass over all sinks, taking one event each, repeat until
-        // `max` or no sink has any.
+        // `max` or no sink has any. The sink set (the map's keys) cannot change
+        // inside the loop — only `pump`/`drain_one` run here, and neither inserts
+        // nor removes a map entry — so collect+sort the keys once before the
+        // loop for a stable, deterministic iteration order (aids testing).
+        let mut keys: Vec<u8> = per.keys().copied().collect();
+        keys.sort_unstable();
         let mut made_progress = true;
         while out.len() < max && made_progress {
             made_progress = false;
-            // Stable iteration order over the handle indices so the reply is
-            // deterministic across requests (aids testing).
-            let mut keys: Vec<u8> = per.keys().copied().collect();
-            keys.sort_unstable();
-            for h in keys {
+            for &h in &keys {
                 if out.len() >= max {
                     break;
                 }
@@ -1058,20 +1039,23 @@ impl NotificationRegistry {
 }
 
 impl NotificationEvent {
-    /// Whether this event pertains to the backend folder id `want_folder`
-    /// (a JMAP mailbox id / CalDAV / CardDAV href). `ObjectMoved`/`ObjectCopied`
-    /// match when either the destination or the source folder equals the
-    /// requested one, mirroring the EWS folder-filter semantics so a sink on
-    /// Inbox still fires for an Inbox->Trash move.
-    pub fn matches_mapi_folder(&self, want_folder: &str) -> bool {
-        if want_folder.is_empty() {
-            return true; // Empty scope == whole store (defensive).
-        }
+    /// Whether this event pertains to the folder whose MAPI row id is
+    /// `want_row`. The broadcast feed publishes backend id STRINGS (JMAP mailbox
+    /// ids / CalDAV / CardDAV hrefs), so the comparison maps the event's folder
+    /// id back to its row id via `store::folder_id_from_backend` -- the inverse
+    /// of the decoder that assigned the row id at `RopGetHierarchyTable` time.
+    /// `ObjectMoved`/`ObjectCopied` match when EITHER the destination or the
+    /// source folder equals the requested row, mirroring the EWS folder-filter
+    /// semantics so a sink on Inbox still fires for an Inbox->Trash move.
+    pub fn matches_mapi_folder_row(&self, want_row: u64) -> bool {
+        use crate::mapi::store;
         match self {
             NotificationEvent::ItemCreated { folder_id, .. }
             | NotificationEvent::ItemModified { folder_id, .. }
             | NotificationEvent::ItemDeleted { folder_id, .. }
-            | NotificationEvent::NewMail { folder_id, .. } => folder_id == want_folder,
+            | NotificationEvent::NewMail { folder_id, .. } => {
+                store::folder_id_from_backend(folder_id) == want_row
+            }
             NotificationEvent::ItemMoved {
                 new_folder_id,
                 old_folder_id,
@@ -1081,9 +1065,20 @@ impl NotificationEvent {
                 new_folder_id,
                 old_folder_id,
                 ..
-            } => new_folder_id == want_folder || old_folder_id == want_folder,
+            } => {
+                store::folder_id_from_backend(new_folder_id) == want_row
+                    || store::folder_id_from_backend(old_folder_id) == want_row
+            }
         }
     }
+}
+
+/// Canonicalise a mailbox owner identity for notification filtering:
+/// case-folded + trimmed. Shared by the sink's `accepts` and the
+/// `NotificationWait` probe so the two owner strings (session principal vs
+/// `publish_event` caller) compare equal regardless of case/whitespace.
+pub(crate) fn canonicalize_owner(owner: &str) -> String {
+    owner.trim().to_ascii_lowercase()
 }
 
 #[cfg(test)]
@@ -1345,10 +1340,13 @@ mod tests {
     #[tokio::test]
     async fn notification_sink_folder_scope_filters_match() {
         let (mgr, _rx) = feed();
+        // Option 2 scope: the client-requested row id (not a backend id), so the
+        // sink matches even if no folder handle is open at registration time.
+        let inbox_row = crate::mapi::store::folder_id_from_backend("inbox");
         let sink = MapiNotificationSink::new(
             "u@example.com".into(),
             NT_OBJECT_CREATED,
-            NotificationScope::Folder("inbox".into()),
+            NotificationScope::Folder(inbox_row),
             0,
             mgr.subscribe_raw(),
         );
@@ -1366,6 +1364,82 @@ mod tests {
         };
         assert!(sink.accepts(&inbox_ev));
         assert!(!sink.accepts(&other_ev));
+    }
+
+    #[tokio::test]
+    async fn notification_sink_folder_scope_matches_move_source_or_dest() {
+        // Option 2: a Moved/Copied event matches the requested folder when it is
+        // EITHER the destination or the source, mirroring EWS folder-filter
+        // semantics, AND the comparison is by row id (no open handle needed).
+        let (mgr, _rx) = feed();
+        let inbox_row = crate::mapi::store::folder_id_from_backend("inbox");
+        let sink = MapiNotificationSink::new(
+            "u@example.com".into(),
+            NT_OBJECT_MOVED,
+            NotificationScope::Folder(inbox_row),
+            0,
+            mgr.subscribe_raw(),
+        );
+        // inbox is the destination of an inbox<-trash move: matches.
+        let moved_to_inbox = NotificationEvent::ItemMoved {
+            owner: "u@example.com".into(),
+            new_folder_id: "inbox".into(),
+            new_item_id: "M-1".into(),
+            old_folder_id: "trash".into(),
+            old_item_id: "M-1".into(),
+            change_key: String::new(),
+        };
+        // inbox is the source of an inbox->trash move: also matches.
+        let moved_from_inbox = NotificationEvent::ItemMoved {
+            owner: "u@example.com".into(),
+            new_folder_id: "trash".into(),
+            new_item_id: "M-2".into(),
+            old_folder_id: "inbox".into(),
+            old_item_id: "M-2".into(),
+            change_key: String::new(),
+        };
+        let moved_elsewhere = NotificationEvent::ItemMoved {
+            owner: "u@example.com".into(),
+            new_folder_id: "sent".into(),
+            new_item_id: "M-3".into(),
+            old_folder_id: "trash".into(),
+            old_item_id: "M-3".into(),
+            change_key: String::new(),
+        };
+        assert!(sink.accepts(&moved_to_inbox), "move into the requested folder matches");
+        assert!(
+            sink.accepts(&moved_from_inbox),
+            "move out of the requested folder matches"
+        );
+        assert!(
+            !sink.accepts(&moved_elsewhere),
+            "move not involving the requested folder does not match"
+        );
+    }
+
+    #[tokio::test]
+    async fn notification_sink_owner_match_is_case_insensitive() {
+        // The sink owner (session principal email) and the event owner
+        // (publish_event caller) must compare equal regardless of case/whitespace
+        // so a divergence never drops a notification.
+        let (mgr, _rx) = feed();
+        let sink = MapiNotificationSink::new(
+            "  U@Example.COM ".into(),
+            NT_NEW_MAIL,
+            NotificationScope::WholeStore,
+            0,
+            mgr.subscribe_raw(),
+        );
+        let ev = NotificationEvent::NewMail {
+            owner: "u@example.com".into(),
+            folder_id: "inbox".into(),
+            item_id: "M-1".into(),
+            change_key: String::new(),
+        };
+        assert!(
+            sink.accepts(&ev),
+            "case/whitespace-divergent owners still match after canonicalisation"
+        );
     }
 
     #[tokio::test]
@@ -1400,27 +1474,36 @@ mod tests {
 
     #[tokio::test]
     async fn notification_sink_lagged_resync_does_not_panic() {
-        // Construct a tiny broadcast so `Lagged` is reachable in principle; the
-        // sink must keep pumping without panicking.
-        let mgr = std::sync::Arc::new(crate::notifications::SubscriptionManager::new());
+        // Reach the `Lagged` branch directly: a capacity-2 broadcast channel,
+        // over-published before any receive, overwrites the oldest slots so the
+        // next `try_recv` returns `TryRecvError::Lagged`. The sink must resync
+        // (keep the un-overwritten tail) and never panic. (SubscriptionManager's
+        // own channel capacity is 8192, so it can never trigger Lagged from a
+        // test that publishes only a handful of events.)
+        let (tx, rx) = broadcast::channel::<NotificationEvent>(2);
         let mut sink = MapiNotificationSink::new(
             "u@example.com".into(),
             NT_NEW_MAIL,
             NotificationScope::WholeStore,
             0,
-            mgr.subscribe_raw(),
+            rx,
         );
-        // Publish several events; pump admits them all (well within SINK_PENDING_CAP).
-        for i in 0..10 {
-            mgr.publish(NotificationEvent::NewMail {
+        for i in 0..5 {
+            let _ = tx.send(NotificationEvent::NewMail {
                 owner: "u@example.com".into(),
                 folder_id: "inbox".into(),
                 item_id: format!("M-{i}"),
                 change_key: String::new(),
             });
         }
-        assert_eq!(sink.pump(), 10);
-        assert_eq!(sink.pending_len(), 10);
+        // The receiver lagged: only the last 2 sent values are still buffered;
+        // `pump` resyncs off the `Lagged` arm and admits exactly that tail.
+        assert_eq!(
+            sink.pump(),
+            2,
+            "only the un-overwritten tail survives the lag"
+        );
+        assert_eq!(sink.pending_len(), 2);
     }
 
     #[tokio::test]

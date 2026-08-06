@@ -604,8 +604,17 @@ STILL GAPS to 100% perfect Outlook-for-Windows + Outlook-Android fidelity:
    `handle_notification_wait` (`NotificationWait` RPC, `handler.rs`) is a real
    long-poll: it pumps every sink for the session, returns
    `EventPending=1` immediately if any event is queued, otherwise blocks up to
-   `NOTIFICATION_WAIT_MAX` (5 min, spec ceiling) with a 1s heartbeat re-pump,
-   then returns `EventPending=0` (heartbeat). The transport body is
+   `NOTIFICATION_WAIT_MAX` (5 min, spec ceiling) on a probe `broadcast::Receiver`
+   obtained from `subscribe_raw()`; each owner-matching probe event re-pumps the
+   session sinks and returns as soon as one admits it, otherwise the deadline
+   expires and it returns `EventPending=0`. The probe is subscribed BEFORE the
+   initial pump so an event published in that window is not missed; a
+   `RecvError::Lagged` probe immediately re-pumps (resync) rather than sleeping
+   the budget, and only `RecvError::Closed` honours the remaining budget. The
+   per-session `session_has_sinks(session_id)` guard short-circuits an idle
+   session (a chatty neighbour must not push it into a 5-minute probe), and the
+   folder scope is honoured by MAPI row id (no open `Handle::Folder` dependency,
+   no whole-store widening). The transport body is
    `notification_wait_success_body`/`notification_wait_failure_body` (§2.2.4.4):
    `StatusCode(4)·ErrorCode(4)·EventPending(4)·AuxBufSize(4)`. The
    `handle_execute` ROP-chain loop prepends queued events BEFORE the client
@@ -614,18 +623,23 @@ STILL GAPS to 100% perfect Outlook-for-Windows + Outlook-Android fidelity:
    registration's handle index) · `ReturnValue`=Success(4 LE) · `LogonId` ·
    `NotificationData` built by `build_notification_data` — flags =
    `NotificationType | 0x8000` message bit, FolderId/MessageId from
-   `store::folder_id_from_backend`/`message_id_from_jmap`); if MORE events
-   remain queued after draining `max_notifications`, a trailing
+   `store::folder_id_from_backend`/`message_id_from_jmap`, and the MANDATORY
+   OldFolderId/OldMessageId for ObjectMoved/ObjectCopied sentinelled `0` when
+   the source id is unknown, so a move/copy `RopNotify` is never truncated); if
+   MORE events remain queued after draining `MAX_NOTIFY_PER_EXECUTE`, a trailing
    `RopPendingResponse` (RopId 0x6E · SessionIndex 0) is appended so the
    client re-issues Execute to pump the rest. `RopNotifyResponse` was corrected
    from the phase-1 1-byte handle to a **4-byte** `NotificationHandle` per
    MS-OXCROPS §2.2.14.2.1. `RopRelease` unregisters the sink for the freed
    handle index; `SessionManager::remove` (used by `handle_disconnect`) +
    `sweep_idle` clear all sinks for the session so a dropped client never
-   leaks a broadcast receiver. The EWS `publish_event` path is unchanged —
-   it now transparently feeds MAPI sessions too, so New Outlook's
-   `NotificationWait` toast fires in real time on item CRUD instead of the
-   old empty-immediate success that forced aggressive polling.
+   leaks a broadcast receiver. The owner match (`accepts`/probe) is canonicalised
+   (case-folded + trimmed) so a divergence between the session principal email
+   and the `publish_event` owner never drops a notification. The EWS
+   `publish_event` path is unchanged — it now transparently feeds MAPI sessions
+   too, so New Outlook's `NotificationWait` toast fires in real time on item
+   CRUD instead of the old empty-immediate success that forced aggressive
+   polling.
 9. ~~FXICS (`fxics.rs`) bulk message/folder sync (MS-OXCFXICS)~~ — **Phase-2
    download path DONE**: the Execute dispatcher now drives the FastTransfer
    *source* ROPs (`RopFastTransferSourceCopy{Messages,Folder,To,Properties}`

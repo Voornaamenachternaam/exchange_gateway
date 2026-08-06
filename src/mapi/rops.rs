@@ -1702,33 +1702,32 @@ impl NotificationData {
         if self.notification_flags & 0x8000 != 0 {
             out.extend_from_slice(&self.message_id.to_le_bytes());
         }
-        // ParentFolderId: ObjectCreated(0x0004)/ObjectDeleted(0x0008)/Moved(0x0020)/
-        // Copied(0x0040), and only for a folder event (bit 0x8000 clear) or a
-        // search-folder message (bit 0x4000 set). The gateway's event feed only
-        // raises message events (bit 0x8000 set), so ParentFolderId is emitted
-        // only for the latter search-folder case; for mailbox messages it is
-        // omitted (the bit-0x8000-set + non-search case excludes it).
+        // ParentFolderId: present for ObjectCreated(0x0004)/ObjectDeleted(0x0008)/
+        // ObjectMoved(0x0020)/ObjectCopied(0x0040) when the event is a folder event
+        // (bit 0x8000 clear) OR a search-folder message event (bit 0x4000 set).
+        // The conditional-availability rules (§2.2.1.4.1.2) require the field be
+        // emitted in both those cases so the client's parser stays aligned; a
+        // `None` value is encoded as the sentinel `0`.
         let ty = self.notification_flags & 0x0FFF;
-        if matches!(ty, 0x0004 | 0x0008 | 0x0020 | 0x0040)
-            && self.notification_flags & 0x4000 != 0
-            && let Some(pf) = self.parent_folder_id
-        {
-            out.extend_from_slice(&pf.to_le_bytes());
+        let wants_parent = matches!(ty, 0x0004 | 0x0008 | 0x0020 | 0x0040)
+            && (self.notification_flags & 0x4000 != 0 || self.notification_flags & 0x8000 == 0);
+        if wants_parent {
+            out.extend_from_slice(&self.parent_folder_id.unwrap_or(0).to_le_bytes());
         }
-        // Old* fields: ObjectMoved(0x0020)/ObjectCopied(0x0040).
+        // Old* fields: ObjectMoved(0x0020)/ObjectCopied(0x0040). These are
+        // MANDATORY on the wire for both event types (the client decodes them by
+        // position, not by an Option presence flag), so the field is ALWAYS
+        // emitted and a `None` caller value is encoded as the sentinel `0`.
+        // OldMessageId requires the message-event bit (0x8000); OldParentFolderId
+        // requires a folder event (0x8000 clear). The two are mutually exclusive
+        // (a single NotificationData is either a message or folder event), so
+        // exactly one Old*MessageId-or-OldParentFolderId byte follows OldFolderId.
         if matches!(ty, 0x0020 | 0x0040) {
-            if let Some(oid) = self.old_folder_id {
-                out.extend_from_slice(&oid.to_le_bytes());
-            }
-            if self.notification_flags & 0x8000 != 0
-                && let Some(om) = self.old_message_id
-            {
-                out.extend_from_slice(&om.to_le_bytes());
-            }
-            if self.notification_flags & 0x8000 == 0
-                && let Some(opf) = self.old_parent_folder_id
-            {
-                out.extend_from_slice(&opf.to_le_bytes());
+            out.extend_from_slice(&self.old_folder_id.unwrap_or(0).to_le_bytes());
+            if self.notification_flags & 0x8000 != 0 {
+                out.extend_from_slice(&self.old_message_id.unwrap_or(0).to_le_bytes());
+            } else {
+                out.extend_from_slice(&self.old_parent_folder_id.unwrap_or(0).to_le_bytes());
             }
         }
     }
@@ -4514,5 +4513,69 @@ mod tests {
         assert_eq!(out.len(), 2 + 8 + 8 + 8 + 8);
         assert_eq!(&out[18..26], &33u64.to_le_bytes());
         assert_eq!(&out[26..34], &44u64.to_le_bytes());
+    }
+
+    #[test]
+    fn notification_data_moved_none_old_still_emits_sentinel() {
+        // Regression guard (PR #1847 review): a Moved/Copied message event MUST
+        // always emit OldFolderId + OldMessageId on the wire even when the
+        // caller passes `None` — the client decodes Old* by position, so
+        // omitting the bytes would truncate the notification and desync every
+        // subsequent ROP in the Execute body. `None` ⇒ sentinel `0`.
+        let mut out = Vec::new();
+        NotificationData {
+            notification_flags: 0x8020,
+            folder_id: 1,
+            message_id: 2,
+            parent_folder_id: None,
+            old_folder_id: None,
+            old_message_id: None,
+            old_parent_folder_id: None,
+        }
+        .encode(&mut out);
+        assert_eq!(out.len(), 2 + 8 + 8 + 8 + 8, "Old* bytes always present for Moved");
+        assert_eq!(&out[18..26], &0u64.to_le_bytes(), "OldFolderId sentinel 0");
+        assert_eq!(&out[26..34], &0u64.to_le_bytes(), "OldMessageId sentinel 0");
+
+        // Copied (0x0040) message event: same mandatory Old* layout.
+        let mut out = Vec::new();
+        NotificationData {
+            notification_flags: 0x8040,
+            folder_id: 1,
+            message_id: 2,
+            parent_folder_id: None,
+            old_folder_id: None,
+            old_message_id: None,
+            old_parent_folder_id: None,
+        }
+        .encode(&mut out);
+        assert_eq!(out.len(), 2 + 8 + 8 + 8 + 8, "Old* bytes always present for Copied");
+    }
+
+    #[test]
+    fn notification_data_folder_event_emits_parent_and_old_parent() {
+        // A FOLDER event (bit 0x8000 clear) for ObjectCopied (0x0040) MUST emit
+        // ParentFolderId (folder-event rule) + OldFolderId + OldParentFolderId
+        // (the folder-event counterpart of OldMessageId). These are unused by the
+        // gateway's item-event feed today but the codec must be spec-correct for
+        // a future folder-event bridge.
+        let mut out = Vec::new();
+        NotificationData {
+            notification_flags: 0x0040,
+            folder_id: 1,
+            message_id: 0, // not emitted (0x8000 clear)
+            parent_folder_id: Some(7),
+            old_folder_id: Some(8),
+            old_message_id: Some(99),    // ignored for folder event
+            old_parent_folder_id: Some(9),
+        }
+        .encode(&mut out);
+        // Flags(2) + Folder(8) [no MessageId: 0x8000 clear] + Parent(8) +
+        // OldFolder(8) + OldParent(8) = 34
+        assert_eq!(out.len(), 2 + 8 + 8 + 8 + 8);
+        assert_eq!(&out[2..10], &1u64.to_le_bytes(), "FolderId");
+        assert_eq!(&out[10..18], &7u64.to_le_bytes(), "ParentFolderId");
+        assert_eq!(&out[18..26], &8u64.to_le_bytes(), "OldFolderId");
+        assert_eq!(&out[26..34], &9u64.to_le_bytes(), "OldParentFolderId");
     }
 }
