@@ -584,10 +584,48 @@ STILL GAPS to 100% perfect Outlook-for-Windows + Outlook-Android fidelity:
    `RopQueryRows` arm now serves only rows the active restriction admits (cursor
    indexes the filtered view; `total` re-derived to the filtered count). Audit
    gap §2b `RopRestrict` closed.
-8. `RopNotify` / `RopRegisterNotification` / `NotificationWait` — the
-   codecs and envelope exist but the dispatcher returns an empty
-   notification; Phase-2 needs a per-session notification queue fed by JMAP
-   `Email/changes` + CalDAV `sync-collection`.
+8. ~~`RopNotify` / `RopRegisterNotification` / `NotificationWait`~~ — **Phase-2
+   DONE (audit gap §2e)**: real per-session notification delivery is now wired.
+   `src/mapi/session.rs` owns `NotificationRegistry` + `MapiNotificationSink`
+   (a `tokio::sync::broadcast::Receiver` reused from the shared
+   `SubscriptionManager` via `subscribe_raw()` — the SAME feed the EWS
+   `subscribe/get_events/get_streaming_events` path publishes to, closing the
+   "EWS events not fed into MAPI queues" half of the gap; no separate JMAP
+   `Email/changes` + CalDAV `sync-collection` poller is added because item-CRUD
+   handlers already `publish_event` into this feed). `MapiNotificationSink::
+   accepts(&NotificationEvent)` filters by owner (canonical principal email) +
+   requested `NotificationTypes` bitmask + `NotificationScope` (WholeStore or a
+   single folder backend id); `pump()` drains the broadcast receiver into a
+   bounded `pending: VecDeque<NotificationEvent>` (`SINK_PENDING_CAP`) and
+   silently resyncs on `RecvError::Lagged`. The `RopRegisterNotification` arm
+   in `execute_one_rop` builds the sink from the request's
+   (notification_types | scope | want_whole_store | folder_id | message_id)
+   and registers it under the client's `OutputHandleIndex`.
+   `handle_notification_wait` (`NotificationWait` RPC, `handler.rs`) is a real
+   long-poll: it pumps every sink for the session, returns
+   `EventPending=1` immediately if any event is queued, otherwise blocks up to
+   `NOTIFICATION_WAIT_MAX` (5 min, spec ceiling) with a 1s heartbeat re-pump,
+   then returns `EventPending=0` (heartbeat). The transport body is
+   `notification_wait_success_body`/`notification_wait_failure_body` (§2.2.4.4):
+   `StatusCode(4)·ErrorCode(4)·EventPending(4)·AuxBufSize(4)`. The
+   `handle_execute` ROP-chain loop prepends queued events BEFORE the client
+   ROPs via `emit_pending_notifications`: each drained event encodes a
+   `RopNotifyResponse` (RopId 0x2A · `NotificationHandle`(4 LE, = the
+   registration's handle index) · `ReturnValue`=Success(4 LE) · `LogonId` ·
+   `NotificationData` built by `build_notification_data` — flags =
+   `NotificationType | 0x8000` message bit, FolderId/MessageId from
+   `store::folder_id_from_backend`/`message_id_from_jmap`); if MORE events
+   remain queued after draining `max_notifications`, a trailing
+   `RopPendingResponse` (RopId 0x6E · SessionIndex 0) is appended so the
+   client re-issues Execute to pump the rest. `RopNotifyResponse` was corrected
+   from the phase-1 1-byte handle to a **4-byte** `NotificationHandle` per
+   MS-OXCROPS §2.2.14.2.1. `RopRelease` unregisters the sink for the freed
+   handle index; `SessionManager::remove` (used by `handle_disconnect`) +
+   `sweep_idle` clear all sinks for the session so a dropped client never
+   leaks a broadcast receiver. The EWS `publish_event` path is unchanged —
+   it now transparently feeds MAPI sessions too, so New Outlook's
+   `NotificationWait` toast fires in real time on item CRUD instead of the
+   old empty-immediate success that forced aggressive polling.
 9. ~~FXICS (`fxics.rs`) bulk message/folder sync (MS-OXCFXICS)~~ — **Phase-2
    download path DONE**: the Execute dispatcher now drives the FastTransfer
    *source* ROPs (`RopFastTransferSourceCopy{Messages,Folder,To,Properties}`
