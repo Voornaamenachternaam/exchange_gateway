@@ -492,6 +492,17 @@ impl SubscriptionManager {
     pub fn publish(&self, event: NotificationEvent) {
         let _ = self.sender.send(event);
     }
+
+    /// Obtain a raw `broadcast::Receiver` on the shared notification feed
+    /// WITHOUT creating an EWS `Subscription` (no uuid, no deadline, no reaper
+    /// entry, no watermark). Used by the MAPI/HTTP `RopRegisterNotification`
+    /// path (`mapi::session::MapiNotificationSink`), which owns its own
+    /// per-session sink lifecycle keyed by the notification handle index and
+    /// filters by owner/types/folder itself (audit §2e). A dropped receiver is
+    /// harmless — `broadcast::Sender::send` tolerates zero-receiver sends.
+    pub fn subscribe_raw(&self) -> broadcast::Receiver<NotificationEvent> {
+        self.sender.subscribe()
+    }
 }
 
 impl Default for SubscriptionManager {

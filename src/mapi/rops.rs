@@ -1586,22 +1586,150 @@ impl RopRegisterNotificationResponse {
     }
 }
 
-/// `RopNotify` response, MS-OXCROPS §2.2.14.2.1. The gateway emits an empty
-/// notification slot here (no events pending in phase 1) so the transport
-/// round-trips correctly; phase 2 fills `NotificationData`.
+/// `RopNotify` response, MS-OXCROPS §2.2.14.2.1:
+///   RopId(1) · NotificationHandle(4 LE) · ReturnValue(4 LE) · LogonId(1) ·
+///   NotificationData (variable)
+///
+/// `NotificationHandle` is a 4-byte Server object handle (per §2.2.14.2.1) that
+/// identifies which `RopRegisterNotification` subscription the event pertains
+/// to — the gateway emits the subscription's `OutputHandleIndex` zero-extended
+/// to 32 bits, matching the index the client installed and associates with the
+/// notification Server object.
+///
+/// `NotificationData` is encoded by [`NotificationData::encode`] per
+/// MS-OXCNOTIF §2.2.1.4.1.2 (NotificationFlags + the conditional Folder/Message
+/// id fields for the matching event class). The gateway forwards the event
+/// classes the shared notification feed raises (NewMail, ObjectCreated,
+/// ObjectModified, ObjectDeleted, ObjectMoved, ObjectCopied); the TableModified
+/// and SearchCompleted classes carry no payload here.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RopNotifyResponse {
-    pub notification_handle: u8,
+    /// 4-byte server notification handle (the subscription's output handle
+    /// index, zero-extended).
+    pub notification_handle: u32,
+    /// The `LogonId` the client associated with this notification registration.
     pub logon_id: u8,
+    /// Pre-encoded `NotificationData` bytes (built via `NotificationData`).
     pub notification_data: Vec<u8>,
 }
 impl RopNotifyResponse {
     pub fn encode(&self, out: &mut Vec<u8>) {
         out.push(RopId::ROP_NOTIFY.to_u8());
-        out.push(self.notification_handle);
+        out.extend_from_slice(&self.notification_handle.to_le_bytes());
         out.extend_from_slice(&RopErrorCode::Success.to_u32().to_le_bytes());
         out.push(self.logon_id);
         out.extend_from_slice(&self.notification_data);
+    }
+}
+
+/// `RopPending` response, MS-OXCROPS §2.2.14.3.1: `RopId(1) · SessionIndex(2 LE)`.
+/// The server emits this after a batch of `RopNotify` responses when further
+/// notification events remain queued on the session, signalling the client to
+/// issue another `Execute` to drain them (MS-OXCROPS §3.1.5.1.3). The gateway
+/// carries the SubscriptionManager's `SessionIndex` — OutlookAndroid/Windows
+/// clients ignore the value when there is a single active session, but the
+/// field MUST be present and the canonical value 0 is used when a session
+/// cannot be uniquely identified.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RopPendingResponse {
+    pub session_index: u16,
+}
+impl RopPendingResponse {
+    pub fn encode(&self, out: &mut Vec<u8>) {
+        out.push(RopId::ROP_PENDING.to_u8());
+        out.extend_from_slice(&self.session_index.to_le_bytes());
+    }
+}
+
+/// A `NotificationData` structure, MS-OXCNOTIF §2.2.1.4.1.2. The gateway
+/// raises only the six object-level event classes the shared notification feed
+/// broadcasts (NewMail / ObjectCreated / ObjectModified / ObjectDeleted /
+/// ObjectMoved / ObjectCopied); table-modified and search-completed events are
+/// not produced on the in-container notify path, so their (more elaborate)
+/// layouts are intentionally omitted — every notification a `RopNotify` carries
+/// here is one of these six object events and the codec covers them in full.
+///
+/// Wire layout (object event; bit 0x8000 `M` set for a message, cleared for a
+/// folder event):
+///   NotificationFlags(2 LE) [· TableEventType(2) — N/A]
+///   · FolderId(8 LE)
+///   · MessageId(8 LE)         — when 0x8000 M set (message event)
+///   · ParentFolderId(8 LE)    — when type ∈ {Created, Deleted, Moved, Copied}
+///                                AND (search-folder message OR folder event)
+///   · OldFolderId(8 LE)        — when type ∈ {Moved, Copied}
+///   · OldMessageId(8 LE)       — when type ∈ {Moved, Copied} AND 0x8000 M set
+///   · OldParentFolderId(8 LE)  — when type ∈ {Moved, Copied} AND 0x8000 M clear
+///
+/// The folder/message ids carried here are the MAPI 64-bit row ids derived from
+/// the broadcast event's `folder_id`/`item_id` strings via `store::folder_id_from_backend`
+/// / `store::message_id_from_jmap`. When the broadcast event carries only a
+/// string id (no row id known), the field is encoded as 0 (a sentinel Outlook
+/// tolerates — the event still fires, the client then re-resolves the item by
+/// re-querying the folder via the table ROPs).
+#[derive(Debug, Clone)]
+pub struct NotificationData {
+    /// The MAPI `NotificationFlags` low-12-bit event-type bit (one of the
+    /// `NT_*` constants) which MUST also carry bit `0x8000` set when the event
+    /// is on a message (which it always is for mail/calendar/contact item
+    /// events raised from the gateway's own event feed).
+    pub notification_flags: u16,
+    /// The Folder ID of the folder the event applies to (or the destination
+    /// folder for Moved/Copied). Stored as the broadcast `folder_id` resolved
+    /// to a 64-bit MAPI row id.
+    pub folder_id: u64,
+    /// The Message ID of the item the event applies to (or the destination
+    /// item for Moved/Copied). 0 for a folder-only event.
+    pub message_id: u64,
+    /// The parent folder id, sent for ObjectCreated/ObjectDeleted when the
+    /// event is on a folder (bit 0x8000 clear). `None` to omit.
+    pub parent_folder_id: Option<u64>,
+    /// The old Folder ID, sent for ObjectMoved/ObjectCopied. `None` to omit.
+    pub old_folder_id: Option<u64>,
+    /// The old Message ID, sent for ObjectMoved/ObjectCopied when bit 0x8000 is
+    /// set. `None` to omit.
+    pub old_message_id: Option<u64>,
+    /// The old parent Folder ID, sent for ObjectMoved/ObjectCopied when bit
+    /// 0x8000 is clear. `None` to omit.
+    pub old_parent_folder_id: Option<u64>,
+}
+
+impl NotificationData {
+    /// Serialise the `NotificationData` into `out` per MS-OXCNOTIF §2.2.1.4.1.2.
+    pub fn encode(&self, out: &mut Vec<u8>) {
+        out.extend_from_slice(&self.notification_flags.to_le_bytes());
+        out.extend_from_slice(&self.folder_id.to_le_bytes());
+        // MessageId is sent only when bit 0x8000 (M = message event) is set.
+        if self.notification_flags & 0x8000 != 0 {
+            out.extend_from_slice(&self.message_id.to_le_bytes());
+        }
+        // ParentFolderId: present for ObjectCreated(0x0004)/ObjectDeleted(0x0008)/
+        // ObjectMoved(0x0020)/ObjectCopied(0x0040) when the event is a folder event
+        // (bit 0x8000 clear) OR a search-folder message event (bit 0x4000 set).
+        // The conditional-availability rules (§2.2.1.4.1.2) require the field be
+        // emitted in both those cases so the client's parser stays aligned; a
+        // `None` value is encoded as the sentinel `0`.
+        let ty = self.notification_flags & 0x0FFF;
+        let wants_parent = matches!(ty, 0x0004 | 0x0008 | 0x0020 | 0x0040)
+            && (self.notification_flags & 0x4000 != 0 || self.notification_flags & 0x8000 == 0);
+        if wants_parent {
+            out.extend_from_slice(&self.parent_folder_id.unwrap_or(0).to_le_bytes());
+        }
+        // Old* fields: ObjectMoved(0x0020)/ObjectCopied(0x0040). These are
+        // MANDATORY on the wire for both event types (the client decodes them by
+        // position, not by an Option presence flag), so the field is ALWAYS
+        // emitted and a `None` caller value is encoded as the sentinel `0`.
+        // OldMessageId requires the message-event bit (0x8000); OldParentFolderId
+        // requires a folder event (0x8000 clear). The two are mutually exclusive
+        // (a single NotificationData is either a message or folder event), so
+        // exactly one Old*MessageId-or-OldParentFolderId byte follows OldFolderId.
+        if matches!(ty, 0x0020 | 0x0040) {
+            out.extend_from_slice(&self.old_folder_id.unwrap_or(0).to_le_bytes());
+            if self.notification_flags & 0x8000 != 0 {
+                out.extend_from_slice(&self.old_message_id.unwrap_or(0).to_le_bytes());
+            } else {
+                out.extend_from_slice(&self.old_parent_folder_id.unwrap_or(0).to_le_bytes());
+            }
+        }
     }
 }
 
@@ -4273,5 +4401,181 @@ mod tests {
         assert_eq!(out2[0], 0x72);
         assert_eq!(out2[1], 4);
         assert_eq!(out2.len(), 2 + 4);
+    }
+
+    #[test]
+    fn rop_notify_response_has_four_byte_handle() {
+        // MS-OXCROPS §2.2.14.2.1: RopId(1) · NotificationHandle(4 LE) ·
+        // ReturnValue(4 LE) · LogonId(1) · NotificationData. Verify the 4-byte
+        // handle (the previous phase-1 codec used 1 byte — this is the
+        // regression guard for the notification wait deliverable).
+        let mut out = Vec::new();
+        RopNotifyResponse {
+            notification_handle: 0x04030201,
+            logon_id: 5,
+            notification_data: Vec::new(),
+        }
+        .encode(&mut out);
+        assert_eq!(out[0], 0x2A, "RopId ROP_NOTIFY");
+        // NotificationHandle 4 LE bytes
+        assert_eq!(&out[1..5], &[0x01, 0x02, 0x03, 0x04]);
+        // ReturnValue = Success(0) 4 LE bytes
+        assert_eq!(&out[5..9], &[0, 0, 0, 0]);
+        assert_eq!(out[9], 5, "LogonId");
+        assert_eq!(out.len(), 10);
+    }
+
+    #[test]
+    fn rop_pending_response_shape() {
+        let mut out = Vec::new();
+        RopPendingResponse { session_index: 0 }.encode(&mut out);
+        assert_eq!(out[0], 0x6E, "RopId ROP_PENDING");
+        assert_eq!(&out[1..3], &[0, 0], "SessionIndex 0 LE");
+        assert_eq!(out.len(), 3);
+    }
+
+    #[test]
+    fn notification_data_newmail_shape() {
+        // NewMail (0x0002) + 0x8000 message bit: Flags(2 LE) · FolderId(8 LE)
+        // · MessageId(8 LE). No ParentFolderId (bit 0x4000 clear) and no Old*
+        // (not Moved/Copied).
+        let mut out = Vec::new();
+        NotificationData {
+            notification_flags: 0x8002,
+            folder_id: 0x0102030405060708,
+            message_id: 0x0A0B0C0D0E0F1011,
+            parent_folder_id: None,
+            old_folder_id: None,
+            old_message_id: None,
+            old_parent_folder_id: None,
+        }
+        .encode(&mut out);
+        assert_eq!(out.len(), 2 + 8 + 8);
+        assert_eq!(&out[0..2], &0x8002u16.to_le_bytes());
+        assert_eq!(&out[2..10], &0x0102030405060708u64.to_le_bytes());
+        assert_eq!(&out[10..18], &0x0A0B0C0D0E0F1011u64.to_le_bytes());
+    }
+
+    #[test]
+    fn notification_data_modified_minimal() {
+        // ObjectModified (0x0010)+0x8000: same shape as NewMail (Flags+Folder+
+        // Message), no Parent/Old.
+        let mut out = Vec::new();
+        NotificationData {
+            notification_flags: 0x8010,
+            folder_id: 42,
+            message_id: 7,
+            parent_folder_id: None,
+            old_folder_id: None,
+            old_message_id: None,
+            old_parent_folder_id: None,
+        }
+        .encode(&mut out);
+        assert_eq!(out.len(), 18);
+        assert_eq!(&out[0..2], &0x8010u16.to_le_bytes());
+    }
+
+    #[test]
+    fn notification_data_deleted_emits_message_no_parent() {
+        // ObjectDeleted (0x0008)+0x8000 (message): Flags+Folder+Message. The
+        // ParentFolderId rule requires the search-folder bit (0x4000) for a
+        // message event, which is not set here, so ParentFolderId is omitted.
+        let mut out = Vec::new();
+        NotificationData {
+            notification_flags: 0x8008,
+            folder_id: 1,
+            message_id: 2,
+            parent_folder_id: Some(99), // should be IGNORED (bit 0x4000 clear)
+            old_folder_id: None,
+            old_message_id: None,
+            old_parent_folder_id: None,
+        }
+        .encode(&mut out);
+        assert_eq!(out.len(), 18);
+    }
+
+    #[test]
+    fn notification_data_moved_message_emits_old_message_id() {
+        // ObjectMoved (0x0020)+0x8000 message: Flags+Folder+Message+
+        // OldFolderId+OldMessageId.
+        let mut out = Vec::new();
+        NotificationData {
+            notification_flags: 0x8020,
+            folder_id: 11,
+            message_id: 22,
+            parent_folder_id: None,
+            old_folder_id: Some(33),
+            old_message_id: Some(44),
+            old_parent_folder_id: Some(55), // ignored for message event
+        }
+        .encode(&mut out);
+        // Flags(2) + Folder(8) + Message(8) + OldFolder(8) + OldMessage(8)
+        assert_eq!(out.len(), 2 + 8 + 8 + 8 + 8);
+        assert_eq!(&out[18..26], &33u64.to_le_bytes());
+        assert_eq!(&out[26..34], &44u64.to_le_bytes());
+    }
+
+    #[test]
+    fn notification_data_moved_none_old_still_emits_sentinel() {
+        // Regression guard (PR #1847 review): a Moved/Copied message event MUST
+        // always emit OldFolderId + OldMessageId on the wire even when the
+        // caller passes `None` — the client decodes Old* by position, so
+        // omitting the bytes would truncate the notification and desync every
+        // subsequent ROP in the Execute body. `None` ⇒ sentinel `0`.
+        let mut out = Vec::new();
+        NotificationData {
+            notification_flags: 0x8020,
+            folder_id: 1,
+            message_id: 2,
+            parent_folder_id: None,
+            old_folder_id: None,
+            old_message_id: None,
+            old_parent_folder_id: None,
+        }
+        .encode(&mut out);
+        assert_eq!(out.len(), 2 + 8 + 8 + 8 + 8, "Old* bytes always present for Moved");
+        assert_eq!(&out[18..26], &0u64.to_le_bytes(), "OldFolderId sentinel 0");
+        assert_eq!(&out[26..34], &0u64.to_le_bytes(), "OldMessageId sentinel 0");
+
+        // Copied (0x0040) message event: same mandatory Old* layout.
+        let mut out = Vec::new();
+        NotificationData {
+            notification_flags: 0x8040,
+            folder_id: 1,
+            message_id: 2,
+            parent_folder_id: None,
+            old_folder_id: None,
+            old_message_id: None,
+            old_parent_folder_id: None,
+        }
+        .encode(&mut out);
+        assert_eq!(out.len(), 2 + 8 + 8 + 8 + 8, "Old* bytes always present for Copied");
+    }
+
+    #[test]
+    fn notification_data_folder_event_emits_parent_and_old_parent() {
+        // A FOLDER event (bit 0x8000 clear) for ObjectCopied (0x0040) MUST emit
+        // ParentFolderId (folder-event rule) + OldFolderId + OldParentFolderId
+        // (the folder-event counterpart of OldMessageId). These are unused by the
+        // gateway's item-event feed today but the codec must be spec-correct for
+        // a future folder-event bridge.
+        let mut out = Vec::new();
+        NotificationData {
+            notification_flags: 0x0040,
+            folder_id: 1,
+            message_id: 0, // not emitted (0x8000 clear)
+            parent_folder_id: Some(7),
+            old_folder_id: Some(8),
+            old_message_id: Some(99),    // ignored for folder event
+            old_parent_folder_id: Some(9),
+        }
+        .encode(&mut out);
+        // Flags(2) + Folder(8) [no MessageId: 0x8000 clear] + Parent(8) +
+        // OldFolder(8) + OldParent(8) = 34
+        assert_eq!(out.len(), 2 + 8 + 8 + 8 + 8);
+        assert_eq!(&out[2..10], &1u64.to_le_bytes(), "FolderId");
+        assert_eq!(&out[10..18], &7u64.to_le_bytes(), "ParentFolderId");
+        assert_eq!(&out[18..26], &8u64.to_le_bytes(), "OldFolderId");
+        assert_eq!(&out[26..34], &9u64.to_le_bytes(), "OldParentFolderId");
     }
 }

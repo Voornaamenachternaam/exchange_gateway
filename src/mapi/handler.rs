@@ -44,29 +44,33 @@ use crate::mapi::rops::{
     RopMoveCopyMessagesRequest, RopMoveCopyMessagesResponse, RopOpenAttachmentRequest,
     RopOpenAttachmentSuccess, RopOpenStreamRequest, RopOpenStreamSuccess, RopOpenTableRequest,
     RopPropertyWriteSuccess, RopQueryRowsRequest, RopReadStreamRequest, RopReadStreamSuccess,
-    RopReleaseRequest, RopSaveChangesAttachmentRequest, RopSaveChangesAttachmentResponse,
+    RopRegisterNotificationResponse, RopReleaseRequest, RopSaveChangesAttachmentRequest,
+    RopSaveChangesAttachmentResponse,
     RopSaveChangesMessageRequest, RopSaveChangesMessageSuccess, RopSeekStreamRequest,
     RopSeekStreamSuccess, RopSetColumnsRequest, RopSetMessageReadFlagRequest,
     RopSetPropertiesRequest, RopSetStreamSizeRequest, RopSetStreamSizeResponse,
     RopSubmitMessageRequest, RopSubmitMessageResponse, RopTransportSendFailure,
     RopTransportSendRequest, RopTransportSendSuccess, RopWriteStreamRequest, RopWriteStreamSuccess,
 };
-use crate::mapi::session::{FolderKind, Handle, SessionManager};
+use crate::mapi::session::{
+    FolderKind, Handle, MapiNotificationSink, NotificationScope, SessionManager,
+};
 use crate::mapi::store;
 use crate::mapi::transport::{MapiRequest, MapiRequestType, MapiResponse, ResponseCode, RpcKind};
 
 use crate::mapi::rops::{
     RopCreateBookmarkRequest, RopCreateBookmarkResponse, RopFreeBookmarkRequest,
-    RopFreeBookmarkResponse, RopQueryPositionRequest, RopQueryPositionResponse, RopResetTableRequest,
-    RopResetTableResponse, RopRestrictRequest, RopRestrictResponse, RopSeekRowBookmarkRequest,
-    RopSeekRowBookmarkResponse, RopSeekRowFractionalRequest, RopSeekRowFractionalResponse,
-    RopSeekRowRequest, RopSeekRowResponse, RopSortTableRequest, RopSortTableResponse, SortOrder,
-    RopFastTransferDestinationConfigureRequest, RopFastTransferDestinationPutBufferRequest,
-    RopFastTransferDestinationPutBufferResponse, RopFastTransferSourceCopyFolderRequest,
-    RopFastTransferSourceCopyMessagesRequest, RopFastTransferSourceCopyPropertiesRequest,
-    RopFastTransferSourceCopyToRequest, RopFastTransferSourceGetBufferRequest,
-    RopFastTransferSourceGetBufferSuccess, RopFastTransferSourceOpenResponse,
-    RopSynchronizationAckResponse, RopSynchronizationConfigureRequest,
+    RopFreeBookmarkResponse, RopNotifyResponse, RopPendingResponse, RopQueryPositionRequest,
+    RopQueryPositionResponse, RopResetTableRequest, RopResetTableResponse, RopRestrictRequest,
+    RopRestrictResponse, RopSeekRowBookmarkRequest, RopSeekRowBookmarkResponse,
+    RopSeekRowFractionalRequest, RopSeekRowFractionalResponse, RopSeekRowRequest, RopSeekRowResponse,
+    RopSortTableRequest, RopSortTableResponse, SortOrder, RopFastTransferDestinationConfigureRequest,
+    RopFastTransferDestinationPutBufferRequest, RopFastTransferDestinationPutBufferResponse,
+    RopFastTransferSourceCopyFolderRequest, RopFastTransferSourceCopyMessagesRequest,
+    RopFastTransferSourceCopyPropertiesRequest, RopFastTransferSourceCopyToRequest,
+    RopFastTransferSourceGetBufferRequest, RopFastTransferSourceGetBufferSuccess,
+    RopFastTransferSourceOpenResponse, RopSynchronizationAckResponse,
+    RopSynchronizationConfigureRequest,
 };
 use crate::mapi::restrict::{CellForMatcher, SRestriction, restriction_referenced_tags};
 use crate::mapi::fxics::{IcsStreamBuilder, Marker, Tokenizer};
@@ -177,8 +181,7 @@ pub async fn handle(req: MapiRequest, state: &MapiState) -> MapiResponse {
         RpcKind::Mailbox(MapiRequestType::Execute) => handle_execute(req, state).await,
         RpcKind::Mailbox(MapiRequestType::Disconnect) => handle_disconnect(req, state).await,
         RpcKind::Mailbox(MapiRequestType::NotificationWait) => {
-            // Long-poll: Phase 0 returns empty success so the client backoffs.
-            MapiResponse::success(req.request_id, "NotificationWait", None, Vec::new())
+            handle_notification_wait(req, state).await
         }
         RpcKind::Mailbox(MapiRequestType::Ping) => {
             MapiResponse::success(req.request_id, "PING", None, Vec::new())
@@ -259,6 +262,356 @@ fn encode_logon_success(env: &RopLogonSuccess, out: &mut Vec<u8>) {
     env.encode(out);
 }
 
+/// The maximum server-side duration of a `NotificationWait` long-poll, per
+/// MS-OXCMAPIHTTP §3.2.5.5 ("not sent until either the current server event
+/// completes or the 5-minute maximum time limit expires"). Keeping this at
+/// the spec ceiling maximises the window in which New Outlook receives a
+/// real push instead of re-issuing the poll, without ever overrunning the
+/// documented bound.
+const NOTIFICATION_WAIT_MAX: std::time::Duration = std::time::Duration::from_secs(5 * 60);
+
+/// Maximum number of `RopNotify` responses emitted in a single `Execute`
+/// after a `NotificationWait` with `EventPending=1`, to bound the response
+/// payload on a mailbox that has accumulated many changes. When more events
+/// remain queued after this cap the gateway emits a `RopPending` so the
+/// client issues another `Execute` to drain the rest (MS-OXCROPS §3.1.5.1.3).
+const MAX_NOTIFY_PER_EXECUTE: usize = 32;
+
+/// Build the MAPI `NotificationData` bytes (MS-OXCNOTIF §2.2.1.4.1.2) for a
+/// single broadcast `NotificationEvent`, mapping the gateway feed's string
+/// `folder_id`/`item_id` to the 64-bit MAPI row ids the wire format carries.
+/// The `0x8000` message-event bit is always set here because every event the
+/// gateway raises pertains to an item (mail/calendar/contact), never a folder
+/// in the MAPI hierarchy sense — a future folder-create-event bridge would
+/// clear it.
+fn build_notification_data(event: &crate::mapi::session::NotificationEvent) -> Vec<u8> {
+    use crate::mapi::session::NotificationEvent;
+    use crate::mapi::store;
+    use crate::mapi::session::{
+        NT_NEW_MAIL, NT_OBJECT_COPIED, NT_OBJECT_CREATED, NT_OBJECT_DELETED, NT_OBJECT_MODIFIED,
+        NT_OBJECT_MOVED,
+    };
+    // MAPI NotificationType bit (LS12) + the (folder, item) backend id strings
+    // for the *destination* of the event, plus the optional *source* id strings
+    // (only `ItemMoved`/`ItemCopied` carry Old* ids). The encoder treats the
+    // Old* fields as MANDATORY for Moved/Copied per §2.2.1.4.1.2 — `None` ⇒ a
+    // sentinel `0` is emitted, so a `RopNotify` for a move/copy is never
+    // truncated even when the source ids are unknown.
+    let (ty, folder_id_str, item_id_str, old_folder_id_str, old_item_id_str): (
+        u16,
+        &str,
+        &str,
+        Option<&str>,
+        Option<&str>,
+    ) = match event {
+        NotificationEvent::NewMail { folder_id, item_id, .. } => {
+            (NT_NEW_MAIL, folder_id.as_str(), item_id.as_str(), None, None)
+        }
+        NotificationEvent::ItemCreated { folder_id, item_id, .. } => {
+            (NT_OBJECT_CREATED, folder_id, item_id, None, None)
+        }
+        NotificationEvent::ItemModified { folder_id, item_id, .. } => {
+            (NT_OBJECT_MODIFIED, folder_id, item_id, None, None)
+        }
+        NotificationEvent::ItemDeleted { folder_id, item_id, .. } => {
+            (NT_OBJECT_DELETED, folder_id, item_id, None, None)
+        }
+        NotificationEvent::ItemMoved {
+            new_folder_id,
+            new_item_id,
+            old_folder_id,
+            old_item_id,
+            ..
+        } => (
+            NT_OBJECT_MOVED,
+            new_folder_id,
+            new_item_id,
+            Some(old_folder_id.as_str()),
+            Some(old_item_id.as_str()),
+        ),
+        NotificationEvent::ItemCopied {
+            new_folder_id,
+            new_item_id,
+            old_folder_id,
+            old_item_id,
+            ..
+        } => (
+            NT_OBJECT_COPIED,
+            new_folder_id,
+            new_item_id,
+            Some(old_folder_id.as_str()),
+            Some(old_item_id.as_str()),
+        ),
+    };
+    let flags = ty | 0x8000;
+    let old_folder_id = old_folder_id_str.map(store::folder_id_from_backend);
+    let old_message_id = old_item_id_str.map(store::message_id_from_jmap);
+    // ParentFolderId / OldParentFolderId are search-folder (bit 0x4000) or
+    // folder-event (bit 0x8000 clear) fields; the item-event feed sets 0x8000
+    // and never 0x4000, so both stay `None` (omitted) here.
+    let nd = crate::mapi::rops::NotificationData {
+        notification_flags: flags,
+        folder_id: store::folder_id_from_backend(folder_id_str),
+        message_id: store::message_id_from_jmap(item_id_str),
+        parent_folder_id: None,
+        old_folder_id,
+        old_message_id,
+        old_parent_folder_id: None,
+    };
+    let mut out = Vec::with_capacity(34);
+    nd.encode(&mut out);
+    out
+}
+
+/// Resolve the session id carried by a `NotificationWait`/`Execute` request
+/// (the `MapiContext` cookie, falling back to the X-ClientInfo extension UUID
+/// emitted at RopLogon). Shared by `handle_notification_wait` and
+/// `handle_execute` so both RPCs bind the same session.
+fn resolve_session_id(req: &MapiRequest) -> Option<uuid::Uuid> {
+    crate::mapi::transport::cookie_value(&req.cookies, "MapiContext")
+        .and_then(|v| uuid::Uuid::parse_str(v).ok())
+        .or_else(|| req.client_info.as_deref().and_then(parse_client_info_uuid))
+}
+
+/// `NotificationWait` RPC (MS-OXCMAPIHTTP §2.2.4.4): a long-poll the client
+/// issues after `RopRegisterNotification`. The server blocks until either an
+/// event arrives on one of the session's registered notification sinks OR the
+/// 5-minute maximum time limit expires, then returns the success response body
+/// `StatusCode(4)=0 · ErrorCode(4)=0 · EventPending(4)=0|1 · AuxBufSize(4)=0`.
+///
+/// When `EventPending=1` the client issues an `Execute` (possibly with an empty
+/// body) and the gateway's `handle_execute` drains the queued events into
+/// `RopNotify` responses. This implementation reads from the per-session
+/// notification registry (audit §2e): the broadcast feed the shared
+/// `SubscriptionManager` publishes into — fed by the MAPI property-write arms
+/// AND the EWS handlers — reaches the long-poll, so New Outlook's new-mail /
+/// change push fires in real time and the client no longer spins re-polling.
+///
+/// When no `SubscriptionManager` is wired (unit-test fixtures), or the session
+/// has no registered sinks, the long-poll still respects the 5-minute timeout
+/// and returns `EventPending=0`, exactly closing the previous "immediate empty
+/// success" that forced the client into an aggressive poll loop.
+async fn handle_notification_wait(req: MapiRequest, state: &MapiState) -> MapiResponse {
+    let session_id = resolve_session_id(&req);
+    // Parse the request body per §2.2.4.4.1: Flags(4 LE) + AuxBufSize(4 LE) +
+    // AuxBuf. We ignore the Flags (reserved; MUST be 0) and the auxiliary
+    // buffer, but MUST consume the request body so a malformed-size field never
+    // panics — bounded reads only.
+    {
+        let mut cur = Buf::new(&req.body);
+        if cur.take_u32_le().is_ok()
+            && let Ok(aux_size) = cur.take_u32_le()
+        {
+            // Cap the declared aux size at the remaining bytes (the transport
+            // already bounded the whole body to MAX_MAPI_BODY_BYTES) and discard
+            // up to that many bytes.
+            let remaining = cur.remaining();
+            let take = (aux_size as usize).min(remaining);
+            for _ in 0..take {
+                let _ = cur.take_u8();
+            }
+        }
+    }
+
+    let Some(session_id) = session_id else {
+        // No session binding: transport-layer failure body (§2.2.4.4.3):
+        // StatusCode != 0 + AuxBufSize = 0.
+        let body = notification_wait_failure_body();
+        return MapiResponse::success(req.request_id, "NotificationWait", None, body);
+    };
+
+    // If the session has expired (no snapshot found), the spec requires a
+    // failure so the client re-Connects.
+    if state.sessions.get(&session_id).is_none() {
+        let body = notification_wait_failure_body();
+        return MapiResponse::success(req.request_id, "NotificationWait", None, body);
+    }
+
+    let event_pending = notification_wait_poll(state, &session_id).await;
+    let body = notification_wait_success_body(event_pending);
+    MapiResponse::success(req.request_id, "NotificationWait", None, body)
+}
+
+/// The actual long-poll (MS-OXCMAPIHTTP §3.2.5.5): block up to
+/// `NOTIFICATION_WAIT_MAX` for any of the session's registered notification
+/// sinks to admit an event; return true iff at least one is queued for the
+/// post-wait `Execute` to drain into `RopNotify` responses.
+///
+/// The implementation is non-destructive w.r.t. the `Execute` drain: a
+/// `NotificationWait` only ever PUMPS each sink's broadcast receiver into the
+/// sink's internal `pending` queue (and, for the blocking wait, blocks on the
+/// receiver until one accepted event arrives). The queued events stay in the
+/// sink's `pending` queue and are popped ONLY by `handle_execute`'s
+/// `drain_for_execute` call — never here — so the post-wait `Execute` observes
+/// exactly the events `NotificationWait` reported as pending (no double/drop).
+async fn notification_wait_poll(state: &MapiState, session_id: &uuid::Uuid) -> bool {
+    let registry = state.sessions.notifications();
+
+    // Resolve the session's owner ONCE so the probe can filter events to this
+    // mailbox without re-locking the session map per recv; an empty owner
+    // (session vanished mid-turn) means there is nothing this turn can match.
+    let owner = state
+        .sessions
+        .get(session_id)
+        .map(|s| s.principal.email)
+        .unwrap_or_default();
+    let owner_norm = crate::mapi::session::canonicalize_owner(&owner);
+
+    // No shared feed: the gateway in production ALWAYS wires a
+    // SubscriptionManager (the same one the EWS path uses); the Only branch
+    // that reaches here without one is a unit-test fixture that registers no
+    // sinks. There is genuinely nothing to wait for — return EventPending=0
+    // immediately rather than parking a Tokio worker for NOTIFICATION_WAIT_MAX
+    // (which a fixture cannot afford and a real no-manager config would never
+    // hit). The client re-polls at its own cadence.
+    let Some(mgr) = state.subscription_manager.as_ref() else {
+        return false;
+    };
+
+    // This session has no registered sinks (checked PER-SESSION, not across
+    // every session — a chatty neighbour must not push an idle session into a
+    // 5-minute probe). Nothing to wait for.
+    if owner_norm.is_empty() || !registry.session_has_sinks(session_id) {
+        return false;
+    }
+
+    // Subscribe the probe receiver BEFORE the initial pump so an event
+    // published in the window between the pump and the subscription is still
+    // observed by the probe (the broadcast fans out to every live receiver at
+    // send time; a probe created after an event misses it). The per-sink
+    // receivers are long-lived, so this race only concerns the probe.
+    let mut probe = mgr.subscribe_raw();
+
+    // 1) Pump every sink once and exit early if any already has a pending event.
+    if registry.pump_and_has_pending(session_id) {
+        return true;
+    }
+
+    // 2) Long-poll: wait on the probe for the next owner-matching event, then
+    //    re-pump the per-sink receivers and re-check. A matching event on the
+    //    shared feed is delivered to BOTH the probe and every per-sink receiver
+    //    (broadcast fans out), so by the time the probe sees it the sinks' own
+    //    receivers also hold it — the pump-and-check then reports
+    //    `EventPending=1` without dropping the event (it stays in each sink's
+    //    `pending` queue for the post-wait `Execute`). Non-matching (wrong
+    //    owner / filtered type / filtered scope) keeps the turn alive for the
+    //    remaining budget.
+    let deadline = tokio::time::Instant::now() + NOTIFICATION_WAIT_MAX;
+    loop {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            return registry.pump_and_has_pending(session_id);
+        }
+        match tokio::time::timeout(remaining, probe.recv()).await {
+            Ok(Ok(ev)) if crate::mapi::session::canonicalize_owner(ev.owner()) == owner_norm => {
+                if registry.pump_and_has_pending(session_id) {
+                    return true;
+                }
+                // Probe saw an owner-matching event, but the session's sinks
+                // filtered it out (type/folder scope). Keep waiting for the
+                // remaining budget (this loop consumes one probe event per pass).
+                continue;
+            }
+            Ok(Ok(_)) => continue, // wrong owner; keep waiting
+            Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped))) => {
+                // The probe fell behind the shared feed (a burst the slow probe
+                // could not drain). Lagged is RECOVERABLE — the receiver
+                // resynchronises on the next recv and the per-sink receivers
+                // resync independently (each has its own lag window). Re-pump
+                // in case an already-queued event was raised in the burst and
+                // keep the turn alive; do NOT sleep the remaining budget.
+                tracing::warn!(
+                    skipped,
+                    "MAPI NotificationWait probe lagged broadcast; resync"
+                );
+                if registry.pump_and_has_pending(session_id) {
+                    return true;
+                }
+                continue;
+            }
+            Ok(Err(tokio::sync::broadcast::error::RecvError::Closed)) => {
+                // Broadcast closed (the SubscriptionManager dropped). No more
+                // events will ever arrive; honour the remaining budget so the
+                // client's poll cadence is preserved, then return the final
+                // pump (a queued event is still delivered even after closure).
+                let rest = deadline.saturating_duration_since(tokio::time::Instant::now());
+                if !rest.is_zero() {
+                    tokio::time::sleep(rest).await;
+                }
+                return registry.pump_and_has_pending(session_id);
+            }
+            Err(_) => {
+                // `remaining` elapsed before any event — return the final pump
+                // (EventPending=0 heartbeat; the client re-issues the wait).
+                return registry.pump_and_has_pending(session_id);
+            }
+        }
+    }
+}
+
+/// Encode the `NotificationWait` success response body per
+/// MS-OXCMAPIHTTP §2.2.4.4.2:
+///   StatusCode(4 LE)=0 · ErrorCode(4 LE)=0 · EventPending(4 LE)=0|1 ·
+///   AuxiliaryBufferSize(4 LE)=0
+fn notification_wait_success_body(event_pending: bool) -> Vec<u8> {
+    let mut body = Vec::with_capacity(16);
+    body.extend_from_slice(&0u32.to_le_bytes()); // StatusCode = 0
+    body.extend_from_slice(&0u32.to_le_bytes()); // ErrorCode = 0
+    body.extend_from_slice(&(event_pending as u32).to_le_bytes()); // EventPending
+    body.extend_from_slice(&0u32.to_le_bytes()); // AuxiliaryBufferSize = 0
+    body
+}
+
+/// Encode the `NotificationWait` failure response body per
+/// MS-OXCMAPIHTTP §2.2.4.4.3: `StatusCode(4 LE) != 0 · AuxiliaryBufferSize(4
+/// LE)=0`. Used when the session cannot be resolved (the client re-Connects).
+fn notification_wait_failure_body() -> Vec<u8> {
+    let mut body = Vec::with_capacity(8);
+    body.extend_from_slice(&1u32.to_le_bytes()); // StatusCode != 0
+    body.extend_from_slice(&0u32.to_le_bytes()); // AuxiliaryBufferSize = 0
+    body
+}
+
+/// Drain the session's registered notification sinks into `out_body` as zero or
+/// more `RopNotify` responses, followed by a `RopPending` when events remain
+/// queued past the [`MAX_NOTIFY_PER_EXECUTE`] cap. Called at the top of every
+/// `Execute` so the post-`NotificationWait` turn (where the client issued an
+/// `EventPending=1`-triggered Execute, often empty) collects the events.
+///
+/// Each `RopNotify` carries the subscription's `OutputHandleIndex`
+/// (zero-extended to the 4-byte `NotificationHandle`) so Outlook dispatches the
+/// event to the right notification Server object, and the `LogonId` the client
+/// associated with the registration. The `NotificationData` body is built by
+/// [`build_notification_data`] per MS-OXCNOTIF §2.2.1.4.1.2.
+fn emit_pending_notifications(
+    out_body: &mut Vec<u8>,
+    session_id: &uuid::Uuid,
+    state: &MapiState,
+) {
+    let drained = state
+        .sessions
+        .notifications()
+        .drain_for_execute(session_id, MAX_NOTIFY_PER_EXECUTE);
+    if drained.is_empty() {
+        return;
+    }
+    for (handle_index, logon_id, event) in drained {
+        let notification_data = build_notification_data(&event);
+        RopNotifyResponse {
+            notification_handle: u32::from(handle_index),
+            logon_id,
+            notification_data,
+        }
+        .encode(out_body);
+    }
+    // If sinks still hold queued events, emit `RopPending` so the client issues
+    // another `Execute` to drain them (MS-OXCROPS §3.1.5.1.3). The single
+    // session here is session-index 0.
+    if state.sessions.notifications().any_pending(session_id) {
+        RopPendingResponse { session_index: 0 }.encode(out_body);
+    }
+}
+
 /// `Execute` RPC: a buffer of one or more ROPs (MS-OXCROPS ┬¦3.2.5), each with
 /// its own RopId + (LogonId) + handle indices. We decode them in order,
 /// dispatch to a per-ROP handler that may bridge to the Stalwart backend,
@@ -270,12 +623,13 @@ fn encode_logon_success(env: &RopLogonSuccess, out: &mut Vec<u8>) {
 /// extension UUID emitted at RopLogon time, so the in-process unit tests
 /// that drive this handler directly still resolve the session.
 async fn handle_execute(req: MapiRequest, state: &MapiState) -> MapiResponse {
-    let session_id = crate::mapi::transport::cookie_value(&req.cookies, "MapiContext")
-        .and_then(|v| uuid::Uuid::parse_str(v).ok())
-        .or_else(|| req.client_info.as_deref().and_then(parse_client_info_uuid));
-    let Some(session_id) = session_id else {
+    // Session identity resolution is shared with `NotificationWait` via
+    // [`resolve_session_id`] so both RPCs bind the same session (the
+    // `MapiContext` cookie first, falling back to the X-ClientInfo extension
+    // UUID emitted at RopLogon).
+    let Some(session_id) = resolve_session_id(&req) else {
         // No session binding: return a transport-layer InvalidRequestBody
-        // (code 12) ŌĆö the client must RopLogon (Connect) first.
+        // (code 12) — the client must RopLogon (Connect) first.
         return MapiResponse::error(ResponseCode::InvalidRequestBody, req.request_id);
     };
 
@@ -313,6 +667,16 @@ async fn handle_execute(req: MapiRequest, state: &MapiState) -> MapiResponse {
     let mut cur = Buf::new(&req.body);
     let mut out_body = Vec::with_capacity(req.body.len() + 64);
     let password_secret = password.map(secrecy::SecretString::from);
+
+    // If `NotificationWait` previously reported `EventPending=1`, the client
+    // is now issuing an `Execute` (often with an empty body) to collect the
+    // events. Drain the session's registered notification sinks up to
+    // `MAX_NOTIFY_PER_EXECUTE` and emit one `RopNotify` per event BEFORE the
+    // client's ROP-chain responses — exactly the order Outlook expects (audit
+    // §2e closing the "MAPI NotificationWait never received anything" gap).
+    // When more events remain queued after the cap, emit a `RopPending` so the
+    // client issues another `Execute` to drain the rest (MS-OXCROPS §3.1.5.1.3).
+    emit_pending_notifications(&mut out_body, &session_id, state);
 
     // ROP-chain loop: each iteration decodes one RopId plus the surrounding
     // header bytes per its spec, dispatches, and writes the response.
@@ -407,6 +771,13 @@ async fn execute_one_rop(
             let input_handle_index = cur.take_u8()?;
             let _ = RopReleaseRequest::decode(cur)?;
             sessions.with_session_mut(session_id, |s| s.free_handle(input_handle_index));
+            // If the freed index was a registered notification sink, drop it
+            // too so its broadcast receiver is released (mirrors the spec's
+            // RopRelease tearing down the notification Server object installed
+            // by RopRegisterNotification; no-op for ordinary handle indices).
+            sessions
+                .notifications()
+                .unregister(session_id, input_handle_index);
             crate::mapi::rops::RopReleaseResponse {
                 input_handle_index,
                 return_value: RopErrorCode::Success,
@@ -3834,6 +4205,70 @@ async fn execute_one_rop(
             }
             .encode(out, rop_id);
         }
+        RopId::ROP_REGISTER_NOTIFICATION => {
+            // MS-OXCROPS §2.2.14.1: 4-byte RopHeader4 then NotificationTypes(2
+            // LE) · [Reserved(1) if Extended flag 0x0400 set] · WantWholeStore(1)
+            // · [FolderId(8) · MessageId(8) if WantWholeStore==0]. The
+            // dispatcher consumed the leading RopId, so read the trailing
+            // 3-byte header via `decode_after_ropid` (the body-only convention;
+            // `RopRegisterNotificationRequest::decode` re-takes the handle
+            // indices and is unsuitable for the in-loop dispatcher).
+            let h4 = RopHeader4::decode_after_ropid(cur, rop_id)?;
+            let notification_types = cur.take_u16_le()?;
+            // Extended (0x0400) flag ⇒ a trailing Reserved byte follows.
+            if notification_types & 0x0400 != 0 {
+                let _reserved = cur.take_u8()?;
+            }
+            let want_whole_store = cur.take_u8()?;
+            let (folder_id_raw, _message_id_raw) = if want_whole_store == 0 {
+                (Some(cur.take_u64_le()?), Some(cur.take_u64_le()?))
+            } else {
+                (None, None)
+            };
+            // Resolve the folder scope: a whole-store registration needs no
+            // folder id; a folder-scoped registration carries the raw MAPI row id
+            // verbatim. The sink compares events against that row id by mapping
+            // each event's backend folder id back to its row id via
+            // `store::folder_id_from_backend`, so the subscription honours the
+            // client's filter WITHOUT depending on an open `Handle::Folder` (the
+            // client may release the folder before registering, or register
+            // against a folder reached through a table row) and NEVER widens an
+            // unresolvable scope to the whole store (which would push events for
+            // folders the client never subscribed to).
+            let scope = if want_whole_store != 0 || folder_id_raw.is_none() {
+                NotificationScope::WholeStore
+            } else {
+                NotificationScope::Folder(folder_id_raw.unwrap_or(0))
+            };
+            // Subscribe a per-session sink keyed by the client's
+            // OutputHandleIndex. When no shared SubscriptionManager is wired
+            // (unit-test fixtures), emulate an empty-feed registration: install
+            // the sink's metadata so `RopRelease` can find it, but with a
+            // best-effort receiver. The arm echoes `Success` either way so the
+            // client believes the registration took (it will simply never fire
+            // in a fixture, exactly as the Phase-0 behaviour did).
+            if let Some(mgr) = subscription_manager {
+                let receiver = mgr.subscribe_raw();
+                sessions.notifications().register(
+                    *session_id,
+                    h4.output_handle_index,
+                    MapiNotificationSink::new(
+                        username.to_string(),
+                        notification_types,
+                        scope,
+                        h4.logon_id,
+                        receiver,
+                    ),
+                );
+            }
+            // Echo the spec response (RopId · OutputHandleIndex ·
+            // ReturnValue=Success).
+            RopRegisterNotificationResponse {
+                output_handle_index: h4.output_handle_index,
+                return_value: RopErrorCode::Success,
+            }
+            .encode(out);
+        }
         _ => {
             let _ = cur.take_remaining();
             RopErrorResponse {
@@ -4778,6 +5213,344 @@ mod tests {
         // The handle was freed by the dispatcher.
         let snap = state.sessions.get(&sid).expect("session");
         assert!(!snap.handles.contains_key(&3));
+    }
+
+    /// End-to-end MAPI notification flow (audit §2e):
+    /// 1. `NotificationWait` with a pending event returns `EventPending=1`.
+    /// 2. A subsequent (empty-body) `Execute` drains the queued event into a
+    ///    `RopNotify` (RopId 0x2A) carrying the 4-byte NotificationHandle.
+    #[tokio::test]
+    async fn notification_wait_reports_pending_and_execute_drains_rop_notify() {
+        let mut cfg = Config::test_with_mail_domain("example.com");
+        cfg.mapi_enabled = true;
+        let mgr = std::sync::Arc::new(crate::notifications::SubscriptionManager::new());
+        let state = MapiState::with_subscription_manager(
+            cfg,
+            std::sync::Arc::new(AuthVerifier::new(&Config::default())),
+            mgr.clone(),
+        );
+        let sid = state
+            .sessions
+            .create(crate::mapi::session::SessionPrincipal {
+                email: "u@example.com".into(),
+                basic_auth: true,
+            });
+
+        // Install a notification sink directly via the registry (mirrors what
+        // `RopRegisterNotification` does): whole-store, NewMail only, handle
+        // index 4, logon id 2.
+        state.sessions.notifications().register(
+            sid,
+            4,
+            crate::mapi::session::MapiNotificationSink::new(
+                "u@example.com".into(),
+                crate::mapi::session::NT_NEW_MAIL,
+                crate::mapi::session::NotificationScope::WholeStore,
+                2,
+                mgr.subscribe_raw(),
+            ),
+        );
+
+        // Publish a matching NewMail event BEFORE the wait so the
+        // `notification_wait_poll`'s initial pump returns EventPending=1
+        // immediately (no long-poll wait in the test).
+        mgr.publish(crate::notifications::NotificationEvent::NewMail {
+            owner: "u@example.com".into(),
+            folder_id: "inbox".into(),
+            item_id: "M-42".into(),
+            change_key: String::new(),
+        });
+
+        // NotificationWait request: Flags(4)=0 · AuxBufSize(4)=0, cookie-bound.
+        let wait_req = MapiRequest {
+            kind: RpcKind::Mailbox(MapiRequestType::NotificationWait),
+            request_id: "{G}:1".into(),
+            client_application: None,
+            client_info: None,
+            username: None,
+            password: None,
+            cookies: vec![("MapiContext".into(), sid.to_string())],
+            body: {
+                let mut b = Vec::new();
+                b.extend_from_slice(&0u32.to_le_bytes()); // Flags
+                b.extend_from_slice(&0u32.to_le_bytes()); // AuxBufSize
+                b
+            },
+        };
+        let wait_resp = handle(wait_req, &state).await;
+        assert_eq!(wait_resp.code, ResponseCode::Success);
+        // Body layout: StatusCode(4)=0 · ErrorCode(4)=0 · EventPending(4)=1 ·
+        // AuxBufSize(4)=0.
+        let (_s, _h, _ct, wait_body) = wait_resp.render();
+        let payload = &wait_body[4..];
+        assert_eq!(payload.len(), 16);
+        let event_pending = u32::from_le_bytes([
+            payload[8],
+            payload[9],
+            payload[10],
+            payload[11],
+        ]);
+        assert_eq!(event_pending, 1, "EventPending must be 1 for a queued event");
+
+        // Post-wait Execute (empty body) drains the queued event into a
+        // RopNotify. The payload begins with RopId 0x2A, 4-byte
+        // NotificationHandle = the subscription's handle index (4),
+        // ReturnValue=Success(4), LogonId=2, then NotificationData.
+        let exec_req = MapiRequest {
+            kind: RpcKind::Mailbox(MapiRequestType::Execute),
+            request_id: "{G}:2".into(),
+            client_application: None,
+            client_info: None,
+            username: None,
+            password: None,
+            cookies: vec![("MapiContext".into(), sid.to_string())],
+            body: Vec::new(),
+        };
+        let exec_resp = handle(exec_req, &state).await;
+        assert_eq!(exec_resp.code, ResponseCode::Success);
+        let (_s, _h, _ct, exec_body) = exec_resp.render();
+        let epayload = &exec_body[4..];
+        assert_eq!(
+            epayload[0], 0x2A,
+            "first response byte is RopNotify (ROP_NOTIFY)"
+        );
+        let notif_handle = u32::from_le_bytes([epayload[1], epayload[2], epayload[3], epayload[4]]);
+        assert_eq!(notif_handle, 4, "NotificationHandle echoes the subscription index");
+        let rv = u32::from_le_bytes([epayload[5], epayload[6], epayload[7], epayload[8]]);
+        assert_eq!(RopErrorCode::from_u32(rv), RopErrorCode::Success);
+        assert_eq!(epayload[9], 2, "LogonId echoed");
+        // NotificationData: Flags(2 LE)=0x8002 (NewMail + message bit).
+        let flags = u16::from_le_bytes([epayload[10], epayload[11]]);
+        assert_eq!(flags, 0x8002);
+
+        // A SECOND Execute drains nothing (no RopPending, no RopNotify).
+        let exec_req2 = MapiRequest {
+            kind: RpcKind::Mailbox(MapiRequestType::Execute),
+            request_id: "{G}:3".into(),
+            client_application: None,
+            client_info: None,
+            username: None,
+            password: None,
+            cookies: vec![("MapiContext".into(), sid.to_string())],
+            body: Vec::new(),
+        };
+        let exec_resp2 = handle(exec_req2, &state).await;
+        assert_eq!(exec_resp2.code, ResponseCode::Success);
+        let (_s, _h, _ct, exec_body2) = exec_resp2.render();
+        let epayload2 = &exec_body2[4..];
+        assert!(
+            epayload2.is_empty(),
+            "no notifications queued after drain -> empty Execute body"
+        );
+    }
+
+    /// End-to-end regression (PR #1847 review): an ObjectMoved `RopNotify` MUST
+    /// carry the MANDATORY OldFolderId + OldMessageId bytes on the wire. The
+    /// previous `build_notification_data` left both `None`, and the encoder
+    /// omitted them, truncating the notification and desyncing downstream ROP
+    /// parsing. This test drives the full NotificationWait->Execute path with an
+    /// `ItemMoved` event and asserts the Old* fields are present.
+    #[tokio::test]
+    async fn execute_drains_moved_rop_notify_with_mandatory_old_fields() {
+        let mut cfg = Config::test_with_mail_domain("example.com");
+        cfg.mapi_enabled = true;
+        let mgr = std::sync::Arc::new(crate::notifications::SubscriptionManager::new());
+        let state = MapiState::with_subscription_manager(
+            cfg,
+            std::sync::Arc::new(AuthVerifier::new(&Config::default())),
+            mgr.clone(),
+        );
+        let sid = state
+            .sessions
+            .create(crate::mapi::session::SessionPrincipal {
+                email: "u@example.com".into(),
+                basic_auth: true,
+            });
+        // Whole-store, ObjectMoved subscription at handle index 7, logon id 1.
+        state.sessions.notifications().register(
+            sid,
+            7,
+            crate::mapi::session::MapiNotificationSink::new(
+                "u@example.com".into(),
+                crate::mapi::session::NT_OBJECT_MOVED,
+                crate::mapi::session::NotificationScope::WholeStore,
+                1,
+                mgr.subscribe_raw(),
+            ),
+        );
+        mgr.publish(crate::notifications::NotificationEvent::ItemMoved {
+            owner: "u@example.com".into(),
+            new_folder_id: "inbox".into(),
+            new_item_id: "M-9".into(),
+            old_folder_id: "trash".into(),
+            old_item_id: "M-9".into(),
+            change_key: String::new(),
+        });
+
+        // NotificationWait so the event is pumped into the sink's pending queue.
+        let wait_req = MapiRequest {
+            kind: RpcKind::Mailbox(MapiRequestType::NotificationWait),
+            request_id: "{G}:1".into(),
+            client_application: None,
+            client_info: None,
+            username: None,
+            password: None,
+            cookies: vec![("MapiContext".into(), sid.to_string())],
+            body: {
+                let mut b = Vec::new();
+                b.extend_from_slice(&0u32.to_le_bytes());
+                b.extend_from_slice(&0u32.to_le_bytes());
+                b
+            },
+        };
+        let wait_resp = handle(wait_req, &state).await;
+        let (_s, _h, _ct, wait_body) = wait_resp.render();
+        let event_pending = u32::from_le_bytes([
+            wait_body[4 + 8],
+            wait_body[4 + 9],
+            wait_body[4 + 10],
+            wait_body[4 + 11],
+        ]);
+        assert_eq!(event_pending, 1, "moved event must pump to pending");
+
+        // Execute drains the ObjectMoved RopNotify.
+        let exec_req = MapiRequest {
+            kind: RpcKind::Mailbox(MapiRequestType::Execute),
+            request_id: "{G}:2".into(),
+            client_application: None,
+            client_info: None,
+            username: None,
+            password: None,
+            cookies: vec![("MapiContext".into(), sid.to_string())],
+            body: Vec::new(),
+        };
+        let exec_resp = handle(exec_req, &state).await;
+        let (_s, _h, _ct, exec_body) = exec_resp.render();
+        let p = &exec_body[4..];
+        assert_eq!(p[0], 0x2A, "RopNotify");
+        assert_eq!(p[9], 1, "LogonId echoed");
+        // NotificationData: Flags(2 LE)=0x8020 (ObjectMoved + 0x8000 message).
+        let flags = u16::from_le_bytes([p[10], p[11]]);
+        assert_eq!(flags, 0x8020, "ObjectMoved message-event flags");
+        // Layout of `p`: RopNotify header (RopId(1)+NotificationHandle(4)+
+        // ReturnValue(4)+LogonId(1)=10) + NotificationData (Flags(2)+
+        // FolderId(8)+MessageId(8)+OldFolderId(8)+OldMessageId(8)=34) = 44.
+        // (No ParentFolderId: 0x4000 clear and 0x8000 set excludes it.)
+        assert_eq!(p.len(), 10 + 2 + 8 + 8 + 8 + 8, "header + Flags + Ids + Old* fully present");
+        let folder_id = u64::from_le_bytes(p[12..20].try_into().unwrap());
+        let message_id = u64::from_le_bytes(p[20..28].try_into().unwrap());
+        let old_folder_id = u64::from_le_bytes(p[28..36].try_into().unwrap());
+        let old_message_id = u64::from_le_bytes(p[36..44].try_into().unwrap());
+        assert_eq!(
+            folder_id,
+            crate::mapi::store::folder_id_from_backend("inbox"),
+            "FolderId = destination"
+        );
+        assert_eq!(
+            message_id,
+            crate::mapi::store::message_id_from_jmap("M-9"),
+            "MessageId = destination item"
+        );
+        assert_eq!(
+            old_folder_id,
+            crate::mapi::store::folder_id_from_backend("trash"),
+            "OldFolderId = source (mandatory, not omitted)"
+        );
+        assert_eq!(
+            old_message_id,
+            crate::mapi::store::message_id_from_jmap("M-9"),
+            "OldMessageId = source item (mandatory, not omitted)"
+        );
+    }
+
+    /// A `NotificationWait` for an UNKNOWN session returns the failure body
+    /// (`StatusCode != 0`) so the client re-Connects. This is the no-session
+    /// path (distinct from a live session with no sinks, covered below).
+    #[tokio::test]
+    async fn notification_wait_unknown_session_returns_failure_body() {
+        let mut cfg = Config::test_with_mail_domain("example.com");
+        cfg.mapi_enabled = true;
+        let state = MapiState::new(
+            cfg,
+            std::sync::Arc::new(AuthVerifier::new(&Config::default())),
+        );
+        let wait_req = MapiRequest {
+            kind: RpcKind::Mailbox(MapiRequestType::NotificationWait),
+            request_id: "{G}:1".into(),
+            client_application: None,
+            client_info: None,
+            username: None,
+            password: None,
+            cookies: Vec::new(), // no session cookie
+            body: Vec::new(),
+        };
+        let resp = handle(wait_req, &state).await;
+        assert_eq!(resp.code, ResponseCode::Success);
+        let (_s, _h, _ct, body) = resp.render();
+        let payload = &body[4..];
+        // Failure body: StatusCode(4) != 0 · AuxBufSize(4)=0.
+        assert_eq!(payload.len(), 8);
+        let status = u32::from_le_bytes([payload[0], payload[1], payload[2], payload[3]]);
+        assert_ne!(status, 0, "unknown session -> StatusCode != 0");
+    }
+
+    /// A live session with NO registered sinks long-polls for the bounded
+    /// `NOTIFICATION_WAIT_MAX` budget and then returns `EventPending=0`. With
+    /// no `subscription_manager` the poll returns `false` immediately (nothing
+    /// can ever fire); the test is run under `start_paused = true` so the
+    /// bounded wait completes without wall-clock delay. A session WITH a
+    /// manager but no sinks short-circuits to `false` immediately via the
+    /// per-session `session_has_sinks` guard (also covered here when a manager
+    /// is wired).
+    #[tokio::test(start_paused = true)]
+    async fn notification_wait_live_session_no_sinks_returns_event_pending_zero() {
+        let mut cfg = Config::test_with_mail_domain("example.com");
+        cfg.mapi_enabled = true;
+        // Wire a real SubscriptionManager so the code path reaches the
+        // per-session no-sinks short-circuit (the manager-present branch). A
+        // session with NO registered sinks must return EventPending=0 right away
+        // rather than blocking for NOTIFICATION_WAIT_MAX.
+        let mgr = std::sync::Arc::new(crate::notifications::SubscriptionManager::new());
+        let state = MapiState::with_subscription_manager(
+            cfg,
+            std::sync::Arc::new(AuthVerifier::new(&Config::default())),
+            mgr,
+        );
+        let sid = state
+            .sessions
+            .create(crate::mapi::session::SessionPrincipal {
+                email: "u@example.com".into(),
+                basic_auth: true,
+            });
+        let wait_req = MapiRequest {
+            kind: RpcKind::Mailbox(MapiRequestType::NotificationWait),
+            request_id: "{G}:1".into(),
+            client_application: None,
+            client_info: None,
+            username: None,
+            password: None,
+            cookies: vec![("MapiContext".into(), sid.to_string())],
+            body: Vec::new(),
+        };
+        let started = std::time::Instant::now();
+        let resp = handle(wait_req, &state).await;
+        // With no sinks the per-session guard short-circuits to false
+        // immediately — the call must NOT run the full NOTIFICATION_WAIT_MAX.
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(1),
+            "no-sinks NotificationWait must short-circuit, not block"
+        );
+        assert_eq!(resp.code, ResponseCode::Success);
+        let (_s, _h, _ct, body) = resp.render();
+        let payload = &body[4..];
+        // Success body: StatusCode(4)=0 · ErrorCode(4)=0 · EventPending(4)=0 ·
+        // AuxBufSize(4)=0.
+        assert_eq!(payload.len(), 16);
+        let status = u32::from_le_bytes([payload[0], payload[1], payload[2], payload[3]]);
+        assert_eq!(status, 0, "known session -> StatusCode == 0");
+        let event_pending =
+            u32::from_le_bytes([payload[8], payload[9], payload[10], payload[11]]);
+        assert_eq!(event_pending, 0, "no sinks -> EventPending == 0");
     }
 
     /// A `RopQueryRows` against a contents-table whose rows carry a cached
