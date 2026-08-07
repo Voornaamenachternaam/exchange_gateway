@@ -898,7 +898,7 @@ async fn execute_one_rop(
                         }
                         _ => {
                             if let Some(jc) = jmap {
-                                fetch_email_rows(jc, username, pw, &parent_backend).await
+                                fetch_email_rows(cfg, jc, username, pw, &parent_backend).await
                             } else {
                                 Vec::new()
                             }
@@ -4429,7 +4429,19 @@ fn email_recipients(e: &crate::jmap::JmapEmail) -> Vec<String> {
 
 /// Enumerate the messages in a JMAP mailbox as `TableRow`s carrying a cached
 /// `JmapEmail` for lazy cell materialisation by `RopQueryRows`.
+///
+/// Audit §2f.1: the contents-table builder was previously capped at a fixed
+/// 200 rows regardless of folder size, so a large mailbox was silently
+/// truncated and Outlook never saw the rest of the folder. A real Exchange
+/// mailbox exposes the full contents set and lets `RopQueryRows` page it
+/// client-side, so this now drains the folder in `Config::mapi_contents_page_size`
+/// pages (using JMAP `Email/query` `calculateTotal=true`) up to the
+/// `Config::mapi_max_contents_rows` hard ceiling that protects the gateway
+/// against a pathological mailbox. The cursor in `Handle::Table` then
+/// hands `RopQueryRows` whatever slice the client asked for, across the full
+/// materialised set.
 async fn fetch_email_rows(
+    cfg: &Config,
     jc: &crate::jmap::JmapClient,
     username: &str,
     password: &secrecy::SecretString,
@@ -4439,31 +4451,76 @@ async fn fetch_email_rows(
         Ok(a) => a,
         Err(_) => return Vec::new(),
     };
-    let params = crate::jmap::QueryEmailsParams {
-        account_id: &account_id,
-        filter: Some(serde_json::json!({"inMailbox": mailbox_id})),
-        sort: None,
-        position: 0,
-        limit: 200,
-        username,
-        password,
-    };
-    let list = match jc.query_emails(params).await {
-        Ok(l) => l,
-        Err(_) => return Vec::new(),
-    };
-    list.emails
-        .into_iter()
-        .map(|e| {
+    // `mapi_contents_page_size` and `mapi_max_contents_rows` are both
+    // validated > 0 / ≥ page size at startup, so the floor here is 1.
+    let page_size = cfg.mapi_contents_page_size.max(1) as u64;
+    let max_rows = cfg.mapi_max_contents_rows.max(1);
+
+    let mut rows: Vec<crate::mapi::session::TableRow> = Vec::new();
+    let mut position: u64 = 0;
+    // Defensive bound on the number of JMAP round-trips so a server that
+    // mis-reports `total` cannot pin the loop indefinitely; the ceiling is
+    // reached first for any real folder.
+    let max_pages = max_rows.div_ceil(page_size as usize).max(1);
+    for _ in 0..max_pages {
+        if rows.len() >= max_rows {
+            break;
+        }
+        let remaining = max_rows - rows.len();
+        let limit = page_size.min(remaining as u64);
+        let params = crate::jmap::QueryEmailsParams {
+            account_id: &account_id,
+            filter: Some(serde_json::json!({"inMailbox": mailbox_id})),
+            sort: None,
+            position,
+            limit,
+            username,
+            password,
+        };
+        let list = match jc.query_emails(params).await {
+            Ok(l) => l,
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    mailbox_id = %mailbox_id,
+                    position,
+                    "JMAP Email/query (contents-table drain) failed; \
+                     returning {} rows collected so far",
+                    rows.len()
+                );
+                break;
+            }
+        };
+        if list.emails.is_empty() {
+            break;
+        }
+        let received = list.emails.len() as u64;
+        for e in list.emails {
+            if rows.len() >= max_rows {
+                break;
+            }
             let jid = e.id.clone().unwrap_or_default();
             let source: std::sync::Arc<dyn std::any::Any + Send + Sync> = std::sync::Arc::new(e);
-            crate::mapi::session::TableRow {
+            rows.push(crate::mapi::session::TableRow {
                 row_id: store::message_id_from_jmap(&jid),
                 cells: Vec::new(),
                 source: Some(source),
-            }
-        })
-        .collect()
+            });
+        }
+        // If the server returned fewer ids than `limit` we have drained the
+        // folder; otherwise advance the JMAP cursor and continue paging.
+        if received < limit {
+            break;
+        }
+        position += limit;
+        // JMAP `total` is an authoritative folder count when the server
+        // honours `calculateTotal`; use it to short-circuit once the
+        // remainder is exhausted so we never overrun past the last id.
+        if list.total > 0 && position >= list.total {
+            break;
+        }
+    }
+    rows
 }
 
 /// Enumerate CalDAV VEVENTs in the user's default calendar collection as
