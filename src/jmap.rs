@@ -1356,7 +1356,11 @@ impl JmapClient {
                 if let Some(created) = data.get("created")
                     && let Some(d0) = created.get("d0")
                 {
-                    let id = d0.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    let id = d0
+                        .get("id")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
                     if !id.is_empty() {
                         return Ok(id);
                     }
@@ -1608,27 +1612,25 @@ impl JmapClient {
         let api_url = &session.api_url;
         // Send + tidy: emailSubmission/sendMail uses emailId, then `onSuccess_destroyEmail`
         // would delete the draft copy — we keep the Sent copy and remove $draft.
-        let calls = vec![
-            (
-                "EmailSubmission/set",
-                json!({
-                    "accountId": account_id,
-                    "create": {
-                        "s0": {
-                            "emailId": email_id,
-                            "envelope": {
-                                "mailFrom": { "email": envelope_from },
-                                "rcptTo": envelope_to.iter().map(|a| json!({ "email": a })).collect::<Vec<_>>(),
-                            },
+        let calls = vec![(
+            "EmailSubmission/set",
+            json!({
+                "accountId": account_id,
+                "create": {
+                    "s0": {
+                        "emailId": email_id,
+                        "envelope": {
+                            "mailFrom": { "email": envelope_from },
+                            "rcptTo": envelope_to.iter().map(|a| json!({ "email": a })).collect::<Vec<_>>(),
                         },
                     },
-                    "onSuccess_updateEmail": {
-                        (email_id): { "keywords/$draft": null },
-                    },
-                }),
-                "ess0",
-            ),
-        ];
+                },
+                "onSuccess_updateEmail": {
+                    (email_id): { "keywords/$draft": null },
+                },
+            }),
+            "ess0",
+        )];
         let resp = self
             .api_call(
                 api_url,
@@ -1645,12 +1647,10 @@ impl JmapClient {
         for (method, data, _) in resp.method_responses {
             if method == "EmailSubmission/set"
                 && let Some(not_created) = data.get("notCreated")
-                    && !not_created.is_null()
-                    && not_created.as_object().is_none_or(|o| !o.is_empty())
+                && !not_created.is_null()
+                && not_created.as_object().is_none_or(|o| !o.is_empty())
             {
-                return Err(anyhow!(
-                    "EmailSubmission/set submit failed: {not_created}"
-                ));
+                return Err(anyhow!("EmailSubmission/set submit failed: {not_created}"));
             }
         }
         Ok(())
@@ -2741,10 +2741,7 @@ fn build_move_update_patch(
         for old in mids {
             patch.insert(format!("mailboxIds/{old}"), json!(null));
         }
-        patch.insert(
-            format!("mailboxIds/{target_mailbox_id}"),
-            json!(true),
-        );
+        patch.insert(format!("mailboxIds/{target_mailbox_id}"), json!(true));
         update.insert(eid.clone(), Value::Object(patch));
     }
     update
@@ -3153,11 +3150,7 @@ mod tests {
     fn parse_email_set_outcome_ignores_other_methods() {
         // A non-Email/set response must not pollute the outcome.
         let resp = vec![
-            (
-                "error".to_string(),
-                json!(""),
-                "es0".to_string(),
-            ),
+            ("error".to_string(), json!(""), "es0".to_string()),
             (
                 "Email/set".to_string(),
                 json!({ "accountId": "a", "updated": ["M-9"] }),

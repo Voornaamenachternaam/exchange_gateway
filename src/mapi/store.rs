@@ -391,9 +391,7 @@ pub fn folder_kind_for_role(role: Option<&str>) -> crate::mapi::session::FolderK
 /// folder ids; everything else stays `Mail` (the JMAP mailbox set owns mail,
 /// and the `RopOpenFolder` arm carries the live `FolderKind` already for
 /// mailboxes resolved from a hierarchy-table row).
-pub fn folder_kind_for_backend_id(
-    backend_id: &str,
-) -> Option<crate::mapi::session::FolderKind> {
+pub fn folder_kind_for_backend_id(backend_id: &str) -> Option<crate::mapi::session::FolderKind> {
     use crate::mapi::session::FolderKind;
     match backend_id {
         CALENDAR_BACKEND_ID => Some(FolderKind::Calendar),
@@ -575,10 +573,8 @@ pub fn email_body_stream_bytes(
 ) -> Option<Vec<u8>> {
     use crate::mapi::data::PropertyType as T;
     match property_tag.property_id {
-        PR_BODY => {
-            ttype_matches(property_tag.property_type, T::PTYP_STRING8)
-                .then(|| email_body_text(email).unwrap_or_default().into_bytes())
-        }
+        PR_BODY => ttype_matches(property_tag.property_type, T::PTYP_STRING8)
+            .then(|| email_body_text(email).unwrap_or_default().into_bytes()),
         PR_BODY_HTML => {
             if !ttype_matches(property_tag.property_type, T::PTYP_STRING) {
                 return None;
@@ -713,9 +709,7 @@ fn cell_for_attachment(
         }};
     }
     match id {
-        PR_ATTACH_NUM => {
-            PropertyValue::Integer32(or_null!(attach_num as i32, T::PTYP_INTEGER32))
-        }
+        PR_ATTACH_NUM => PropertyValue::Integer32(or_null!(attach_num as i32, T::PTYP_INTEGER32)),
         PR_ATTACH_LONG_FILENAME => PropertyValue::String(or_null!(
             att.name.clone().unwrap_or_default(),
             T::PTYP_STRING
@@ -725,7 +719,9 @@ fn cell_for_attachment(
             T::PTYP_STRING8
         )),
         PR_ATTACH_MIME_TAG => PropertyValue::String(or_null!(
-            att.content_type.clone().unwrap_or_else(|| "application/octet-stream".to_string()),
+            att.content_type
+                .clone()
+                .unwrap_or_else(|| "application/octet-stream".to_string()),
             T::PTYP_STRING
         )),
         PR_ATTACH_EXTENSION => {
@@ -911,10 +907,9 @@ fn cell_for_email(
         PR_IMPORTANCE => {
             PropertyValue::Integer32(or_null!(importance_for(email), T::PTYP_INTEGER32))
         }
-        PR_FLAG_STATUS => PropertyValue::Integer32(or_null!(
-            flag_status_for(email),
-            T::PTYP_INTEGER32
-        )),
+        PR_FLAG_STATUS => {
+            PropertyValue::Integer32(or_null!(flag_status_for(email), T::PTYP_INTEGER32))
+        }
         PR_SENSITIVITY => PropertyValue::Integer32(or_null!(0, T::PTYP_INTEGER32)),
         PR_INTERNET_MESSAGE_ID => PropertyValue::String(or_null!(
             email.message_id.clone().unwrap_or_default(),
@@ -1116,11 +1111,16 @@ pub fn set_values_to_patch(values: &[TaggedPropertyValue]) -> PropertyPatch {
             // stream path rather than corrupt a partial patch.
             PR_BODY | PR_BODY_HTML => out.problem(index, tag, ERR_NO_SUPPORT),
             // Read-only / intrinsic props.
-            PR_MESSAGE_FLAGS | PR_ENTRYID | PR_PARENT_ENTRYID | PR_RECORD_KEY
-            | PR_SEARCH_KEY | PR_MID | PR_CHANGE_KEY | PR_CONVERSATION_ID
-            | PR_MESSAGE_DELIVERY_TIME | PR_CLIENT_SUBMIT_TIME => {
-                out.problem(index, tag, ERR_NO_SUPPORT)
-            }
+            PR_MESSAGE_FLAGS
+            | PR_ENTRYID
+            | PR_PARENT_ENTRYID
+            | PR_RECORD_KEY
+            | PR_SEARCH_KEY
+            | PR_MID
+            | PR_CHANGE_KEY
+            | PR_CONVERSATION_ID
+            | PR_MESSAGE_DELIVERY_TIME
+            | PR_CLIENT_SUBMIT_TIME => out.problem(index, tag, ERR_NO_SUPPORT),
             _ => {
                 // Unknown or named property (0x8000 bit, e.g. PidLidCategories
                 // as an MV string): report MAPI_E_NO_SUPPORT rather than a
@@ -1176,11 +1176,16 @@ pub fn delete_tags_to_patch(tags: &[crate::mapi::data::PropertyTag]) -> Property
             PR_IMPORTANCE => out.set_keyword(false, "$important"),
             PR_FLAG_STATUS => out.set_keyword(false, "$flagged"),
             PR_BODY | PR_BODY_HTML => out.problem(index, *tag, ERR_NO_SUPPORT),
-            PR_MESSAGE_FLAGS | PR_ENTRYID | PR_PARENT_ENTRYID | PR_RECORD_KEY
-            | PR_SEARCH_KEY | PR_MID | PR_CHANGE_KEY | PR_CONVERSATION_ID
-            | PR_MESSAGE_DELIVERY_TIME | PR_CLIENT_SUBMIT_TIME => {
-                out.problem(index, *tag, ERR_NO_SUPPORT)
-            }
+            PR_MESSAGE_FLAGS
+            | PR_ENTRYID
+            | PR_PARENT_ENTRYID
+            | PR_RECORD_KEY
+            | PR_SEARCH_KEY
+            | PR_MID
+            | PR_CHANGE_KEY
+            | PR_CONVERSATION_ID
+            | PR_MESSAGE_DELIVERY_TIME
+            | PR_CLIENT_SUBMIT_TIME => out.problem(index, *tag, ERR_NO_SUPPORT),
             _ => {}
         }
     }
@@ -1261,8 +1266,7 @@ fn conversation_id_for(email: &JmapEmail) -> Vec<u8> {
 /// synthesised change key as a member of one replica set (no all-zero GUID,
 /// which would collide with the "no value" sentinel on some clients).
 const STORE_CHANGE_KEY_NAMESPACE_GUID: [u8; 16] = [
-    0x7b, 0x4e, 0x91, 0xcd, 0xa2, 0x44, 0x47, 0x6f, 0xbc, 0x6b, 0x42, 0x2e, 0x1c, 0x58, 0x6a,
-    0x9d,
+    0x7b, 0x4e, 0x91, 0xcd, 0xa2, 0x44, 0x47, 0x6f, 0xbc, 0x6b, 0x42, 0x2e, 0x1c, 0x58, 0x6a, 0x9d,
 ];
 
 /// Per MS-OXCFXICS §2.2.2.2 an `XID` is `NamespaceGuid(16) + LocalId(1..8)`.
@@ -1277,7 +1281,10 @@ const STORE_CHANGE_KEY_NAMESPACE_GUID: [u8; 16] = [
 /// Outlook's conflict resolver), while the JMAP id keeps the change key stable
 /// across reads of the same revision.
 fn change_key_for(email: &JmapEmail) -> Vec<u8> {
-    let local_id = message_change_local_id(email.id.as_deref().unwrap_or(""), message_revision_digest(email));
+    let local_id = message_change_local_id(
+        email.id.as_deref().unwrap_or(""),
+        message_revision_digest(email),
+    );
     let mut out = Vec::with_capacity(16 + local_id.len());
     out.extend_from_slice(&STORE_CHANGE_KEY_NAMESPACE_GUID);
     out.extend_from_slice(&local_id);
@@ -1803,7 +1810,10 @@ mod tests {
         assert_eq!(ck.len(), 16 + 8, "XID = 16-byte GUID + 8-byte LocalId");
         assert_ne!(&ck[..16], &[0u8; 16], "namespace GUID must not be all-zero");
         assert_eq!(&ck[..16], &STORE_CHANGE_KEY_NAMESPACE_GUID);
-        assert!(!ck[16..].iter().all(|&b| b == 0), "LocalId must not be all-zero");
+        assert!(
+            !ck[16..].iter().all(|&b| b == 0),
+            "LocalId must not be all-zero"
+        );
     }
 
     #[test]
@@ -1948,7 +1958,10 @@ mod tests {
             value: PropertyValue::String("Hello".to_string()),
         }];
         let patch = set_values_to_patch(&values);
-        assert_eq!(patch.patch.get("subject"), Some(&serde_json::json!("Hello")));
+        assert_eq!(
+            patch.patch.get("subject"),
+            Some(&serde_json::json!("Hello"))
+        );
         assert!(patch.problems.is_empty());
     }
 
@@ -1956,7 +1969,10 @@ mod tests {
     fn set_values_importance_high_sets_dollar_important() {
         use crate::mapi::data::{PropertyValue, TaggedPropertyValue};
         let values = vec![TaggedPropertyValue {
-            tag: ttag(PR_IMPORTANCE, crate::mapi::data::PropertyType::PTYP_INTEGER32),
+            tag: ttag(
+                PR_IMPORTANCE,
+                crate::mapi::data::PropertyType::PTYP_INTEGER32,
+            ),
             value: PropertyValue::Integer32(2),
         }];
         let patch = set_values_to_patch(&values);
@@ -1970,7 +1986,10 @@ mod tests {
     fn set_values_importance_normal_clears_dollar_important() {
         use crate::mapi::data::{PropertyValue, TaggedPropertyValue};
         let values = vec![TaggedPropertyValue {
-            tag: ttag(PR_IMPORTANCE, crate::mapi::data::PropertyType::PTYP_INTEGER32),
+            tag: ttag(
+                PR_IMPORTANCE,
+                crate::mapi::data::PropertyType::PTYP_INTEGER32,
+            ),
             value: PropertyValue::Integer32(1),
         }];
         let patch = set_values_to_patch(&values);
@@ -1987,7 +2006,10 @@ mod tests {
         // (High). The prior impl returned 1, so a set-then-read round trip
         // appeared to drop the importance (cubic review #28).
         let mut e = email("s", true);
-        e.keywords.as_mut().unwrap().insert("$important".to_string(), true);
+        e.keywords
+            .as_mut()
+            .unwrap()
+            .insert("$important".to_string(), true);
         assert_eq!(importance_for(&e), 2);
     }
 
@@ -2004,7 +2026,10 @@ mod tests {
         // 0x02. The prior email_to_cells returned a typed Null, so the flag
         // round-tripped as missing (cubic review #29).
         let mut e = email("s", true);
-        e.keywords.as_mut().unwrap().insert("$flagged".to_string(), true);
+        e.keywords
+            .as_mut()
+            .unwrap()
+            .insert("$flagged".to_string(), true);
         assert_eq!(flag_status_for(&e), 0x02);
     }
 
@@ -2019,7 +2044,10 @@ mod tests {
         // MS-OXOFLAG 2.2.1.1: 0x02 followupFlagged sets the flag.
         use crate::mapi::data::{PropertyValue, TaggedPropertyValue};
         let values = vec![TaggedPropertyValue {
-            tag: ttag(PR_FLAG_STATUS, crate::mapi::data::PropertyType::PTYP_INTEGER32),
+            tag: ttag(
+                PR_FLAG_STATUS,
+                crate::mapi::data::PropertyType::PTYP_INTEGER32,
+            ),
             value: PropertyValue::Integer32(0x02),
         }];
         let patch = set_values_to_patch(&values);
@@ -2087,8 +2115,14 @@ mod tests {
     fn delete_tags_subject_clears_importance_and_flag() {
         let tags = [
             ttag(PR_SUBJECT, crate::mapi::data::PropertyType::PTYP_STRING),
-            ttag(PR_IMPORTANCE, crate::mapi::data::PropertyType::PTYP_INTEGER32),
-            ttag(PR_FLAG_STATUS, crate::mapi::data::PropertyType::PTYP_INTEGER32),
+            ttag(
+                PR_IMPORTANCE,
+                crate::mapi::data::PropertyType::PTYP_INTEGER32,
+            ),
+            ttag(
+                PR_FLAG_STATUS,
+                crate::mapi::data::PropertyType::PTYP_INTEGER32,
+            ),
         ];
         let patch = delete_tags_to_patch(&tags);
         assert_eq!(patch.patch.get("subject"), Some(&serde_json::json!("")));
@@ -2158,11 +2192,26 @@ mod tests {
     fn attachment_to_cells_materialises_metadata() {
         let a = att(Some("report.pdf"), Some("application/pdf"), Some(4096));
         let cols = [
-            ttag(PR_ATTACH_NUM, crate::mapi::data::PropertyType::PTYP_INTEGER32),
-            ttag(PR_ATTACH_LONG_FILENAME, crate::mapi::data::PropertyType::PTYP_STRING),
-            ttag(PR_ATTACH_MIME_TAG, crate::mapi::data::PropertyType::PTYP_STRING),
-            ttag(PR_ATTACH_SIZE, crate::mapi::data::PropertyType::PTYP_INTEGER32),
-            ttag(PR_ATTACH_METHOD, crate::mapi::data::PropertyType::PTYP_INTEGER32),
+            ttag(
+                PR_ATTACH_NUM,
+                crate::mapi::data::PropertyType::PTYP_INTEGER32,
+            ),
+            ttag(
+                PR_ATTACH_LONG_FILENAME,
+                crate::mapi::data::PropertyType::PTYP_STRING,
+            ),
+            ttag(
+                PR_ATTACH_MIME_TAG,
+                crate::mapi::data::PropertyType::PTYP_STRING,
+            ),
+            ttag(
+                PR_ATTACH_SIZE,
+                crate::mapi::data::PropertyType::PTYP_INTEGER32,
+            ),
+            ttag(
+                PR_ATTACH_METHOD,
+                crate::mapi::data::PropertyType::PTYP_INTEGER32,
+            ),
         ];
         let cells = attachment_to_cells(&a, 2, &cols);
         assert_eq!(cells.len(), 5);
@@ -2193,7 +2242,10 @@ mod tests {
         // MS-OXPROPS PidTagAttachExtension: the extension INCLUDING the
         // leading period; empty when the name has no extension.
         let a = att(Some("archive.tar.gz"), None, None);
-        let tag = ttag(PR_ATTACH_EXTENSION, crate::mapi::data::PropertyType::PTYP_STRING8);
+        let tag = ttag(
+            PR_ATTACH_EXTENSION,
+            crate::mapi::data::PropertyType::PTYP_STRING8,
+        );
         let cells = attachment_to_cells(&a, 0, &[tag]);
         let crate::mapi::data::PropertyValue::String8(ext) = &cells[0] else {
             panic!("extension");
@@ -2212,7 +2264,10 @@ mod tests {
         // An attachment ≥ 2 GiB must NOT wrap to a negative PR_ATTACH_SIZE;
         // it saturates at i32::MAX so the client sees a large-but-valid size.
         let a = att(Some("big.bin"), None, Some(u64::from(i32::MAX as u32) + 1));
-        let tag = ttag(PR_ATTACH_SIZE, crate::mapi::data::PropertyType::PTYP_INTEGER32);
+        let tag = ttag(
+            PR_ATTACH_SIZE,
+            crate::mapi::data::PropertyType::PTYP_INTEGER32,
+        );
         let cells = attachment_to_cells(&a, 0, &[tag]);
         let crate::mapi::data::PropertyValue::Integer32(sz) = &cells[0] else {
             panic!("size");
@@ -2225,7 +2280,10 @@ mod tests {
         // PR_ATTACH_DATA_BIN must NOT materialise via cells (it can be
         // arbitrarily large and is delivered through OpenStream+ReadStream).
         let a = att(Some("x.bin"), None, Some(8));
-        let tag = ttag(PR_ATTACH_DATA_BIN, crate::mapi::data::PropertyType::PTYP_BINARY);
+        let tag = ttag(
+            PR_ATTACH_DATA_BIN,
+            crate::mapi::data::PropertyType::PTYP_BINARY,
+        );
         let cells = attachment_to_cells(&a, 0, &[tag]);
         assert!(matches!(cells[0], crate::mapi::data::PropertyValue::Null));
     }

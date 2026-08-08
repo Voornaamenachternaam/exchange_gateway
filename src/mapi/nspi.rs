@@ -438,10 +438,7 @@ fn encode_rowset(out: &mut Vec<u8>, rows: &[Vec<PropertyValue>], tags: &[u32]) {
 /// no caller-supplied tag set): each cell prepends its 2-byte `PropertyType`
 /// (the low 2 bytes of the packed `u32` tag, MS-OXCDATA §2.9 — the type is a
 /// `WORD`, not a `DWORD`) so the row is self-describing.
-fn encode_rowset_with_type(
-    out: &mut Vec<u8>,
-    rows: &[(Vec<u32>, Vec<PropertyValue>)],
-) {
+fn encode_rowset_with_type(out: &mut Vec<u8>, rows: &[(Vec<u32>, Vec<PropertyValue>)]) {
     let n = u32::try_from(rows.len()).unwrap_or(u32::MAX);
     out.extend_from_slice(&n.to_le_bytes());
     for (tags, row) in rows {
@@ -495,7 +492,9 @@ fn take_u32(cur: &mut Buf<'_>) -> Result<u32, NspiDecodeError> {
         return Err(NspiDecodeError::Insufficient);
     }
     // Reuse the underlying cursor by taking 4 bytes and re-interpreting.
-    let raw = cur.take_bytes(4).map_err(|_| NspiDecodeError::Insufficient)?;
+    let raw = cur
+        .take_bytes(4)
+        .map_err(|_| NspiDecodeError::Insufficient)?;
     Ok(u32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]]))
 }
 
@@ -711,10 +710,7 @@ fn self_entry(email: &str) -> GalEntry {
 /// and assigning 1-based Minimal Entry IDs. Runs the (blocking) directory query
 /// on a `spawn_blocking` task; `JoinError`s are logged (redacted email) and the
 /// GAL degrades to the caller-only stub.
-async fn assemble_gal(
-    state: &MapiState,
-    principal_email: &str,
-) -> Vec<GalEntry> {
+async fn assemble_gal(state: &MapiState, principal_email: &str) -> Vec<GalEntry> {
     use std::collections::BTreeMap;
 
     // Resolve the directory side ONCE per `GAL_CACHE_TTL` window (shared across
@@ -851,9 +847,7 @@ fn entry_property(entry: &GalEntry, tag: u32) -> Option<PropertyValue> {
         }
         PR_ADDRESS_TYPE => string_value(ty, "SMTP"),
         PR_OBJECT_TYPE => Some(PropertyValue::Integer32(MAPI_MAILUSER as i32)),
-        PR_DISPLAY_TYPE | PR_DISPLAY_TYPE_EX => {
-            Some(PropertyValue::Integer32(DT_MAILUSER as i32))
-        }
+        PR_DISPLAY_TYPE | PR_DISPLAY_TYPE_EX => Some(PropertyValue::Integer32(DT_MAILUSER as i32)),
         PR_TEMPLATE_ID => Some(PropertyValue::Integer32(0)), // not a template-bound row.
         PR_INSTANCE_KEY | PR_RECORD_KEY_ABOOK | PR_MAPPING_SIGNATURE => {
             Some(PropertyValue::Binary(entry.mid.to_le_bytes().to_vec()))
@@ -866,23 +860,11 @@ fn entry_property(entry: &GalEntry, tag: u32) -> Option<PropertyValue> {
         }
         PR_ENTRYID_ABOOK => Some(PropertyValue::Binary(abook_entry_id(entry))),
         PR_SEND_RICH_INFO => Some(PropertyValue::Boolean(true)),
-        PR_TITLE_ABOOK => entry
-            .title
-            .clone()
-            .and_then(|s| string_value(ty, &s)),
-        PR_COMPANY_NAME_ABOOK => entry
-            .company
-            .clone()
-            .and_then(|s| string_value(ty, &s)),
-        PR_DEPARTMENT_NAME => entry
-            .department
-            .clone()
-            .and_then(|s| string_value(ty, &s)),
+        PR_TITLE_ABOOK => entry.title.clone().and_then(|s| string_value(ty, &s)),
+        PR_COMPANY_NAME_ABOOK => entry.company.clone().and_then(|s| string_value(ty, &s)),
+        PR_DEPARTMENT_NAME => entry.department.clone().and_then(|s| string_value(ty, &s)),
         PR_BUSINESS_TEL_ABOOK | PR_PRIMARY_TEL_ABOOK | PR_MOBILE_TEL_ABOOK | PR_HOME_TEL_ABOOK => {
-            entry
-                .phone
-                .clone()
-                .and_then(|s| string_value(ty, &s))
+            entry.phone.clone().and_then(|s| string_value(ty, &s))
         }
         _ => None,
     }
@@ -978,7 +960,13 @@ fn materialise_row(entry: &GalEntry, tags: &[u32]) -> Vec<PropertyValue> {
 ///   * forward: rows `[start .. start+n)` (clamped at container end)
 ///   * backward: rows `[start-n .. start)` (clamped at 0), in table order so
 ///     the rowset mirrors the forward reading order Outlook re-paginates from
-fn materialise_rows(container: &[GalEntry], tags: &[u32], start: usize, n: usize, backward: bool) -> Vec<Vec<PropertyValue>> {
+fn materialise_rows(
+    container: &[GalEntry],
+    tags: &[u32],
+    start: usize,
+    n: usize,
+    backward: bool,
+) -> Vec<Vec<PropertyValue>> {
     let (lo, hi) = if n == 0 {
         return Vec::new();
     } else if backward {
@@ -1379,14 +1367,19 @@ fn handle_resolve_names(req: &MapiRequest, container: &[GalEntry]) -> MapiRespon
                     // NOT_FOUND error cell (present cell carrying the HRESULT;
                     // never a zero-payload Null cell).
                     const MAPI_E_NOT_FOUND: u32 = 0x8004_0119;
-                    rows.push(tags
-                        .iter()
-                        .map(|_| PropertyValue::ErrorCode(MAPI_E_NOT_FOUND))
-                        .collect());
+                    rows.push(
+                        tags.iter()
+                            .map(|_| PropertyValue::ErrorCode(MAPI_E_NOT_FOUND))
+                            .collect(),
+                    );
                 }
             }
         }
-        let status = if any_not_found { NSPI_NAME_NOT_FOUND } else { NSPI_SUCCESS };
+        let status = if any_not_found {
+            NSPI_NAME_NOT_FOUND
+        } else {
+            NSPI_SUCCESS
+        };
         out.extend_from_slice(&status.to_le_bytes());
         out.push(0xFF); // HasRowsAlready.
         encode_rowset(out, &rows, &tags);
@@ -1520,7 +1513,11 @@ fn handle_get_props(req: &MapiRequest, container: &[GalEntry]) -> MapiResponse {
                 }
             }
         }
-        let status = if any_not_found { NSPI_NAME_NOT_FOUND } else { NSPI_SUCCESS };
+        let status = if any_not_found {
+            NSPI_NAME_NOT_FOUND
+        } else {
+            NSPI_SUCCESS
+        };
         out.extend_from_slice(&status.to_le_bytes());
         out.push(0xFF); // HasRowsAlready.
         encode_rowset_with_type(out, &rows);
@@ -1549,7 +1546,11 @@ fn handle_get_prop_list(req: &MapiRequest, container: &[GalEntry]) -> MapiRespon
             Some(_) => default_column_tags(),
             None => Vec::new(),
         };
-        let status = if exposed.is_empty() { NSPI_NAME_NOT_FOUND } else { NSPI_SUCCESS };
+        let status = if exposed.is_empty() {
+            NSPI_NAME_NOT_FOUND
+        } else {
+            NSPI_SUCCESS
+        };
         out.extend_from_slice(&status.to_le_bytes());
         encode_tag_array(out, &exposed);
         trailer(out);
@@ -1624,7 +1625,8 @@ fn special_table_rows(gal_total: u32) -> Vec<SpecialRow> {
             has_children: false,
             depth: 1,
             display_name: "All Address Lists".to_string(),
-            dn: "/o=Stalwart/ou=Exchange Administrative Group (FYDIBOHF23SPDLT)/cn=addrlists".to_string(),
+            dn: "/o=Stalwart/ou=Exchange Administrative Group (FYDIBOHF23SPDLT)/cn=addrlists"
+                .to_string(),
         },
     ]
 }
@@ -1681,7 +1683,11 @@ fn handle_query_columns(req: &MapiRequest, container: &[GalEntry]) -> MapiRespon
 /// input STAT. (CompareMIds compares the underlying MIds numerically;
 /// GetTemplateInfo echoes an empty tag set; ModLinkAtt/ModProps are
 /// admin-only and unused by Outlook.)
-fn handle_admin_or_stateless_success(req: &MapiRequest, container: &[GalEntry], rt: &'static str) -> MapiResponse {
+fn handle_admin_or_stateless_success(
+    req: &MapiRequest,
+    container: &[GalEntry],
+    rt: &'static str,
+) -> MapiResponse {
     let body = render_with_container(container, |out, container| {
         out.extend_from_slice(&NSPI_SUCCESS.to_le_bytes());
         let stat = Stat {
@@ -1789,7 +1795,11 @@ fn min_id_too_big(req: &MapiRequest, rt: &'static str) -> MapiResponse {
 // Entry point dispatched from `handler::handle` for `RpcKind::AddressBook(_)`.
 // ---------------------------------------------------------------------------
 
-pub async fn handle_address_book(rpc: AddressBookRpc, req: MapiRequest, state: &MapiState) -> MapiResponse {
+pub async fn handle_address_book(
+    rpc: AddressBookRpc,
+    req: MapiRequest,
+    state: &MapiState,
+) -> MapiResponse {
     // Authenticate every NSPI RPC against the shared Stalwart `AuthVerifier`.
     // A request without valid Basic credentials is rejected with the transport
     // `NoPrivilege` (11) — never reaching the directory, so recipient PII does
@@ -1842,7 +1852,7 @@ mod tests {
     use crate::config::Config;
     use crate::mapi::data::{PropertyTag, PropertyType};
     use crate::mapi::handler::MapiState;
-    use crate::mapi::transport::{AddressBookRpc, MapiRequest, RpcKind, ResponseCode};
+    use crate::mapi::transport::{AddressBookRpc, MapiRequest, ResponseCode, RpcKind};
 
     #[test]
     fn stat_round_trips() {
@@ -1988,11 +1998,13 @@ mod tests {
             .flat_map(|u| u.to_le_bytes().to_vec())
             .collect();
         assert!(
-            out.windows(bob_utf16.len()).any(|w| w == bob_utf16.as_slice()),
+            out.windows(bob_utf16.len())
+                .any(|w| w == bob_utf16.as_slice()),
             "display-name UTF-16LE payload missing from rowset bytes"
         );
         assert!(
-            out.windows(email_utf16.len()).any(|w| w == email_utf16.as_slice()),
+            out.windows(email_utf16.len())
+                .any(|w| w == email_utf16.as_slice()),
             "smtp-address UTF-16LE payload missing from rowset bytes"
         );
         // The first cell's Flag byte (offset 5) is present, never an empty-payload Null.
@@ -2053,5 +2065,3 @@ mod tests {
         assert_eq!(resp.code, ResponseCode::NoPrivilege);
     }
 }
-
-

@@ -41,8 +41,8 @@ pub mod restrict;
 pub mod rops;
 pub mod session;
 pub mod store;
-pub mod transport;
 pub mod tnef;
+pub mod transport;
 
 pub use handler::handle as handle_request;
 pub use transport::{AddressBookRpc, MapiRequest, MapiRequestType, MapiResponse, RpcKind};
