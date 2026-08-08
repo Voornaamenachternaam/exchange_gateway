@@ -43,6 +43,15 @@ const ENV_MAPI_HMA_ENABLED: &str = "GATEWAY_MAPI_HMA_ENABLED";
 const ENV_MAPI_OIDC_ISSUER: &str = "GATEWAY_MAPI_OIDC_ISSUER";
 const ENV_MAPI_OIDC_AUDIENCE: &str = "GATEWAY_MAPI_OIDC_AUDIENCE";
 const ENV_MAPI_ORG: &str = "GATEWAY_MAPI_ORG";
+/// Per audit §2f.1 — bounds the contents-table row materialisation so large
+/// mailboxes are not silently truncated. See `mapi_max_contents_rows`.
+const ENV_MAPI_MAX_CONTENTS_ROWS: &str = "GATEWAY_MAPI_MAX_CONTENTS_ROWS";
+/// Per audit §2f.1 — JMAP `Email/query` page size used while draining a folder
+/// contents table. See `mapi_contents_page_size`.
+const ENV_MAPI_CONTENTS_PAGE_SIZE: &str = "GATEWAY_MAPI_CONTENTS_PAGE_SIZE";
+
+const DEFAULT_MAPI_MAX_CONTENTS_ROWS: usize = 10_000;
+const DEFAULT_MAPI_CONTENTS_PAGE_SIZE: usize = 256;
 
 /// Exchange server version string ("Major.Minor.Build.Revision") advertised in
 /// Autodiscover outlook `<ServerVersion>` and parsed into the numeric
@@ -152,6 +161,30 @@ pub struct Config {
     /// rejecting every legitimate logon.
     #[serde(default)]
     pub mapi_org: String,
+    /// Upper bound on the number of message rows the MAPI contents-table
+    /// builder (`fetch_email_rows`) materialises for a single folder before
+    /// paging the JMAP `Email/query`/`Email/get` results. Audit §2f.1:
+    /// the contents-table was capped at a fixed 200 rows regardless of
+    /// folder size, so large mailboxes were silently truncated and Outlook
+    /// never saw the rest. A real Exchange mailbox exposes the full
+    /// contents set and lets `RopQueryRows` page it client-side, so the
+    /// gateway now pages JMAP in `mapi_contents_page_size` chunks until
+    /// the folder is drained (JMAP `Email/query` `calculateTotal=true`)
+    /// up to this hard ceiling, which protects the gateway against a
+    /// pathological mailbox. Defaults to 10,000 (a sane large mail
+    /// folder); configurable via `GATEWAY_MAPI_MAX_CONTENTS_ROWS`.
+    /// `mapi_contents_page_size` MUST be > 0 and the ceiling MUST be ≥ the
+    /// page size; both are validated in `Config::validate`.
+    #[serde(default = "default_mapi_max_contents_rows")]
+    pub mapi_max_contents_rows: usize,
+    /// JMAP `Email/query` page size used while draining a folder's contents
+    /// table (audit §2f.1). Each round-trip fetches at most this many
+    /// `JmapEmail`s; the loop advances `position` until the folder is
+    /// drained or `mapi_max_contents_rows` is reached. Defaults to 256 (a
+    /// balance between request count and per-request payload); configurable
+    /// via `GATEWAY_MAPI_CONTENTS_PAGE_SIZE`.
+    #[serde(default = "default_mapi_contents_page_size")]
+    pub mapi_contents_page_size: usize,
     /// Exchange server version string ("Major.Minor.Build.Revision", e.g.
     /// "15.2.2562.45") advertised across all protocol surfaces. Defaults to
     /// the latest stable on-premises build the gateway emulates —
@@ -176,6 +209,14 @@ fn default_server_version() -> String {
 
 fn default_server_exchange_version() -> String {
     crate::version::DEFAULT_EXCHANGE_VERSION.to_string()
+}
+
+fn default_mapi_max_contents_rows() -> usize {
+    DEFAULT_MAPI_MAX_CONTENTS_ROWS
+}
+
+fn default_mapi_contents_page_size() -> usize {
+    DEFAULT_MAPI_CONTENTS_PAGE_SIZE
 }
 
 fn default_max_attachment_bytes() -> usize {
@@ -444,6 +485,26 @@ impl Config {
         // GATEWAY_SERVER_VERSION / GATEWAY_SERVER_EXCHANGE_VERSION fails closed
         // at startup instead of emitting a broken version stamp on the wire.
         self.server_version_info()?;
+        // Audit §2f.1 — contents-table row bounds. A zero / sub-page-size
+        // ceiling would silently truncate every folder to nothing, and a page
+        // size of zero would divide the gateway into an infinite paging
+        // loop. Fail closed at startup rather than corrupting sync.
+        if self.mapi_contents_page_size == 0 {
+            return Err(anyhow::anyhow!(
+                "Config: 'mapi_contents_page_size' must be > 0 (set via {} or config)",
+                ENV_MAPI_CONTENTS_PAGE_SIZE
+            ));
+        }
+        if self.mapi_max_contents_rows < self.mapi_contents_page_size {
+            return Err(anyhow::anyhow!(
+                "Config: 'mapi_max_contents_rows' ({}) must be >= 'mapi_contents_page_size' ({}) \
+                 (set via {} / {})",
+                self.mapi_max_contents_rows,
+                self.mapi_contents_page_size,
+                ENV_MAPI_MAX_CONTENTS_ROWS,
+                ENV_MAPI_CONTENTS_PAGE_SIZE
+            ));
+        }
         Ok(())
     }
 }
@@ -463,6 +524,23 @@ fn apply_env_string(
     if let Some(val) = value {
         tracing::debug!("Applying configuration from environment");
         setter(cfg, val);
+    }
+}
+
+/// Parse a `usize` environment variable, warn (keeping the config default) on
+/// a malformed value, and forward the parsed value to `setter`. Used for the
+/// audit §2f.1 contents-table row bounds.
+fn apply_env_usize(cfg: &mut Config, env_name: &str, setter: impl FnOnce(&mut Config, usize)) {
+    if let Some(val) = env::var(env_name).ok().filter(|v| !v.is_empty()) {
+        match val.parse::<usize>() {
+            Ok(parsed) => {
+                tracing::debug!("Applying {} from environment", env_name);
+                setter(cfg, parsed);
+            }
+            Err(_) => {
+                tracing::warn!("Invalid value for {}: '{}', using default", env_name, val);
+            }
+        }
     }
 }
 
@@ -759,6 +837,13 @@ fn apply_environment_overrides(cfg: &mut Config) {
     apply_env_string(cfg, get_env_with_fallback(ENV_MAPI_ORG, None), |c, v| {
         c.mapi_org = v;
     });
+    // Audit §2f.1 — contents-table row bounds (formerly a hard 200-row cap).
+    apply_env_usize(cfg, ENV_MAPI_MAX_CONTENTS_ROWS, |c, v| {
+        c.mapi_max_contents_rows = v;
+    });
+    apply_env_usize(cfg, ENV_MAPI_CONTENTS_PAGE_SIZE, |c, v| {
+        c.mapi_contents_page_size = v;
+    });
     // Co-validation: enabling HMA requires an issuer and an audience.
     if cfg.mapi_hma_enabled
         && (cfg.mapi_oidc_issuer.is_empty() || cfg.mapi_oidc_audience.is_empty())
@@ -885,6 +970,8 @@ impl Default for Config {
             mapi_oidc_issuer: String::new(),
             mapi_oidc_audience: String::new(),
             mapi_org: String::new(),
+            mapi_max_contents_rows: DEFAULT_MAPI_MAX_CONTENTS_ROWS,
+            mapi_contents_page_size: DEFAULT_MAPI_CONTENTS_PAGE_SIZE,
             server_version: default_server_version(),
             server_exchange_version: default_server_exchange_version(),
         }

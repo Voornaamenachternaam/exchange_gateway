@@ -278,20 +278,41 @@ impl SmtpClient {
             .header(lettre::message::header::ContentDisposition::inline())
             .body(ics.to_string());
 
+        // MS-OXTNEF / §2f.3: Outlook encodes meeting/voting surfaces as a
+        // `winmail.dat` TNEF attachment carrying the encapsulated named
+        // properties (PR_TNEF_CORRELATION_KEY keyed to the iCalendar UID, plus
+        // the reply subject/body). Attach it alongside the text/calendar part
+        // so a recipient Exchange/Outlook client correlates the TNEF blob with
+        // the iCalendar REPLY and surfaces the response — the plain iMIP path
+        // (kept for RFC 6047 interop) only carries text/calendar.
+        let tnef_blob = build_imip_tnef(subject, text_body.unwrap_or(""), ics, from);
+        let tnef_part = SinglePart::builder()
+            .header(
+                lettre::message::header::ContentType::parse(
+                    "application/ms-tnef; name=\"winmail.dat\"",
+                )
+                .map_err(|e| anyhow::anyhow!("Invalid TNEF content-type: {}", e))?,
+            )
+            .header(lettre::message::header::ContentDisposition::attachment(
+                "winmail.dat",
+            ))
+            .body(tnef_blob);
+
         let message = if let Some(text) = text_body {
-            // multipart/alternative with text/plain fallback — clients that do
-            // not understand text/calendar render the human-readable reply.
-            builder.multipart(
-                MultiPart::alternative()
-                    .singlepart(
-                        SinglePart::builder()
-                            .header(ContentType::TEXT_PLAIN)
-                            .body(text.to_string()),
-                    )
-                    .singlepart(calendar_part),
-            )?
+            // multipart/mixed alternating a multipart/alternative
+            // (text/plain + text/calendar) with the TNEF attachment — clients
+            // that do not understand text/calendar render the human-readable
+            // reply, and Outlook additionally consumes the winmail.dat blob.
+            let alternative = MultiPart::alternative()
+                .singlepart(
+                    SinglePart::builder()
+                        .header(ContentType::TEXT_PLAIN)
+                        .body(text.to_string()),
+                )
+                .singlepart(calendar_part);
+            builder.multipart(MultiPart::mixed().multipart(alternative).singlepart(tnef_part))?
         } else {
-            builder.singlepart(calendar_part)?
+            builder.multipart(MultiPart::mixed().singlepart(calendar_part).singlepart(tnef_part))?
         };
 
         let transport = self.build_transport(username, password)?;
@@ -351,6 +372,62 @@ impl SmtpClient {
         }
     }
 }
+/// Build the `winmail.dat` TNEF blob the iMIP reply attaches (audit §2f.3).
+/// The blob carries the reply subject/body plus a `PidTagTnefCorrelationKey`
+/// named property set to the iCalendar UID, so a recipient Exchange/Outlook
+/// client correlates the TNEF attachment with the iCalendar REPLY. Blobs are
+/// always well-formed (a parse failure of `ics` yields a key-less blob rather
+/// than a broken message); the text/calendar part remains authoritative for
+/// RFC 6047 interop.
+fn build_imip_tnef(subject: &str, text_body: &str, ics: &str, from: &str) -> Vec<u8> {
+    let uid = extract_ical_uid(ics);
+    let (disp, addr) = parse_addr(from);
+    let correlation = uid.clone().into_bytes();
+    let mut props = Vec::new();
+    if !correlation.is_empty() {
+        props.push(crate::mapi::tnef::tnef_correlation_property(&correlation));
+    }
+    let msg = crate::mapi::tnef::TnefMessage {
+        message_class: "IPM.Schedule.Meeting.Resp".to_string(),
+        subject: subject.to_string(),
+        body: if text_body.is_empty() {
+            None
+        } else {
+            Some(text_body.to_string())
+        },
+        sender: Some(crate::mapi::tnef::TnefAddress {
+            display_name: disp,
+            address_type: "SMTP".to_string(),
+            email: addr,
+        }),
+        props,
+        ..Default::default()
+    };
+    crate::mapi::tnef::build(&msg)
+}
+
+/// Best-effort extraction of the `UID:` value from an iCalendar blob for the
+/// TNEF correlation key.
+fn extract_ical_uid(ics: &str) -> String {
+    for line in ics.lines() {
+        let line = line.trim();
+        if let Some(rest) = line.strip_prefix("UID:") {
+            return rest.trim().to_string();
+        }
+    }
+    String::new()
+}
+
+/// Split `Name <addr>` / `addr` into display name + bare email.
+fn parse_addr(raw: &str) -> (String, String) {
+    let raw = raw.trim();
+    if let Some(i) = raw.rfind('<') {
+        let disp = raw[..i].trim().trim_matches('"').to_string();
+        let email = raw[i + 1..].trim_end_matches('>').trim().to_string();
+        return (disp, email);
+    }
+    (String::new(), raw.to_string())
+}
 
 #[cfg(test)]
 mod tests {
@@ -376,5 +453,38 @@ mod tests {
         assert_eq!(client.port, 465);
         assert!(client.implicit_tls);
     }
+
+    #[test]
+    fn build_imip_tnef_is_parseable_and_carries_correlation_key() {
+        let ics = "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:mtg-uid-123\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+        let blob = build_imip_tnef("Accepted", "I'll be there", ics, "Alice <alice@example.com>");
+        // Round-trips through the TNEF reader.
+        let msg = crate::mapi::tnef::parse(&blob).expect("imip tnef round-trips");
+        assert_eq!(msg.message_class, "IPM.Schedule.Meeting.Resp");
+        assert_eq!(msg.subject, "Accepted");
+        assert_eq!(msg.body.as_deref(), Some("I'll be there"));
+        let sender = msg.sender.expect("sender encoded");
+        assert_eq!(sender.display_name, "Alice");
+        assert_eq!(sender.email, "alice@example.com");
+        // The correlation-key named property echoes the iCalendar UID.
+        let ck = msg
+            .props
+            .iter()
+            .find(|p| p.tag.property_id == 0x007F)
+            .expect("PR_TNEF_CORRELATION_KEY present");
+        if let crate::mapi::tnef::TnefPropertyValue::Binary(b) = &ck.value {
+            assert_eq!(b, b"mtg-uid-123");
+        } else {
+            panic!("correlation key is not binary: {:?}", ck.value);
+        }
+    }
+
+    #[test]
+    fn parse_addr_splits_name_and_email() {
+        assert_eq!(
+            parse_addr("Alice <alice@example.com>"),
+            ("Alice".to_string(), "alice@example.com".to_string())
+        );
+        assert_eq!(parse_addr("bob@example.com").1, "bob@example.com");
+    }
 }
-//

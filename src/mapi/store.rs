@@ -964,6 +964,16 @@ fn cell_for_email(
             T::PTYP_INTEGER64
         )),
         PR_CHANGE_KEY => PropertyValue::Binary(or_null!(change_key_for(email), T::PTYP_BINARY)),
+        // Audit §2f.2 — PR_PREDECESSOR_CHANGE_LIST (MS-OXCFXICS §2.2.2.3):
+        // a `PredecessorChangeList` of binary-sorted `SizedXid` structures
+        // listing the prior revisions of the message. Outlook uses this
+        // (with PR_CHANGE_KEY) for multi-device conflict resolution; the
+        // prior code fell through to `Null`, which Outlook read as "no
+        // predecessor graph", causing spurious "item changed" sync errors
+        // on the second device to touch a message.
+        PR_PREDECESSOR_CHANGE_LIST => {
+            PropertyValue::Binary(or_null!(predecessor_change_list_for(email), T::PTYP_BINARY))
+        }
         PR_LAST_MODIFICATION_TIME => match iso8601_to_filetime(email.received_at.as_deref()) {
             Some(ft) => PropertyValue::Time(or_null!(ft, T::PTYP_TIME)),
             None => PropertyValue::Null,
@@ -1242,14 +1252,127 @@ fn conversation_id_for(email: &JmapEmail) -> Vec<u8> {
     out.to_vec()
 }
 
+/// `NamespaceGuid` (MS-OXCFXICS §2.2.2.2) for the message-store change
+/// numbers the gateway synthesises. All XIDs that share a `NamespaceGuid`
+/// MUST share the same `LocalId` length, so this is the one fixed identity
+/// the gateway commits to; the 8-byte `LocalId` is derived per message below.
+/// Real Exchange uses the store GUID here; the gateway emulates a stable,
+/// non-zero replica identity so Outlook's conflict-detection treats every
+/// synthesised change key as a member of one replica set (no all-zero GUID,
+/// which would collide with the "no value" sentinel on some clients).
+const STORE_CHANGE_KEY_NAMESPACE_GUID: [u8; 16] = [
+    0x7b, 0x4e, 0x91, 0xcd, 0xa2, 0x44, 0x47, 0x6f, 0xbc, 0x6b, 0x42, 0x2e, 0x1c, 0x58, 0x6a,
+    0x9d,
+];
+
+/// Per MS-OXCFXICS §2.2.2.2 an `XID` is `NamespaceGuid(16) + LocalId(1..8)`.
+/// This helper folds the message's stable JMAP id and a **revision digest**
+/// (a deterministic hash of the fields the gateway edits via `Email/set`:
+/// `keywords`, `mailboxIds`, `subject`, `preview`, and `blobId`) into an
+/// 8-byte `LocalId`. RFC 8621 `receivedAt` is a *delivery* timestamp that
+/// never changes when a message is edited, so it cannot serve as a revision
+/// signal; a digest of the mutable fields actually does, so successive edits
+/// (read/flag flip, move, draft rewrite) yield different change keys (the
+/// audit §2f.2 concern: a UID-only / immutable-time key hides edits from
+/// Outlook's conflict resolver), while the JMAP id keeps the change key stable
+/// across reads of the same revision.
 fn change_key_for(email: &JmapEmail) -> Vec<u8> {
-    // 4-byte GUID(0) + 4-byte junk + the JMAP id bytes, capped to 32 bytes.
-    let id = email.id.as_deref().unwrap_or("").as_bytes();
-    let mut out = Vec::with_capacity(8 + id.len().min(32));
-    out.extend_from_slice(&[0u8; 4]);
-    out.extend_from_slice(&[0u8; 4]);
-    out.extend_from_slice(&id[..id.len().min(32)]);
+    let local_id = message_change_local_id(email.id.as_deref().unwrap_or(""), message_revision_digest(email));
+    let mut out = Vec::with_capacity(16 + local_id.len());
+    out.extend_from_slice(&STORE_CHANGE_KEY_NAMESPACE_GUID);
+    out.extend_from_slice(&local_id);
     out
+}
+
+/// Serialise the audit §2f.2 `PredecessorChangeList`
+/// (MS-OXCFXICS §2.2.2.3): a concatenation of binary-sorted `SizedXid`
+/// structures (`XidSize(1) + XID`) listing the change numbers of prior
+/// revisions of the message. For a freshly-materialised row there is no
+/// prior revision, so this emits a single-element list seeded with the row's
+/// own change key (the current revision) — Outlook treats it as the seed
+/// entry of the predecessor graph, which is exactly how a first-edition
+/// message looks on a real store. The list MUST be binary-sorted by the
+/// `SizedXid` bytes; with a single entry no sort is needed.
+fn predecessor_change_list_for(email: &JmapEmail) -> Vec<u8> {
+    let ck = change_key_for(email);
+    // XidSize is a single byte; the namespace GUID (16) + LocalId (≤8) keep
+    // the XID within the 1..=255 byte range comfortably.
+    let xsz = u8::try_from(ck.len()).unwrap_or(255);
+    let mut out = Vec::with_capacity(1 + ck.len());
+    out.push(xsz);
+    out.extend_from_slice(&ck);
+    out
+}
+
+/// Fold a JMAP message id + a per-revision digest into the 8-byte `LocalId`
+/// of a store change-key XID (audit §2f.2). The id half keeps the key stable
+/// per revision; the `revision_digest` half mixes in so an edited message
+/// (a new revision → a new digest) yields a different XID even though the
+/// JMAP id is unchanged.
+fn message_change_local_id(jmap_id: &str, revision_digest: u64) -> [u8; 8] {
+    const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+    let mut h = FNV_OFFSET;
+    for b in jmap_id.as_bytes() {
+        h ^= u64::from(*b);
+        h = h.wrapping_mul(FNV_PRIME);
+    }
+    // Stir the revision digest into the high 32 bits so an edited message
+    // (new digest) yields a different XID even though the JMAP id is
+    // unchanged. The digest is derived from the mutable fields the gateway
+    // actually edits via `Email/set` (keywords, mailboxIds, subject, preview,
+    // blobId); RFC 8621 `receivedAt` is immutable and must NOT be used as a
+    // revision signal.
+    h ^= revision_digest.wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    h = h.wrapping_mul(FNV_PRIME);
+    h.to_le_bytes()
+}
+
+/// Compute a deterministic 64-bit digest of the fields a JMAP `Email/set` edit
+/// mutates (audit §2f.2): `keywords` (read/unread, flag, draft, custom
+/// labels), `mailboxIds` (move/archive), and the body-bearing `subject`,
+/// `preview`, `blobId` (a draft rewrite changes `blobId`). Folding this into
+/// the change-key LocalId makes a real edit flip the XID, so a second device
+/// editing the same message yields a distinct change key Outlook treats as a
+/// new revision rather than re-reading the stale one. The mapping is kept as
+/// a single FNV-1a pass over sorted key lists for determinism across reads
+/// of the same revision.
+fn message_revision_digest(email: &JmapEmail) -> u64 {
+    const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+    let mut h = FNV_OFFSET;
+    let mut acc = |part: &str| {
+        for b in part.as_bytes() {
+            h ^= u64::from(*b);
+            h = h.wrapping_mul(FNV_PRIME);
+        }
+    };
+    if let Some(kws) = email.keywords.as_ref() {
+        let mut ks: Vec<&String> = kws.keys().collect();
+        ks.sort();
+        for k in ks {
+            acc(k);
+            acc(if kws[k] { "1" } else { "0" });
+        }
+    }
+    if let Some(mb) = email.mailbox_ids.as_ref() {
+        let mut ms: Vec<&String> = mb.keys().collect();
+        ms.sort();
+        for m in ms {
+            acc(m);
+            acc(if mb[m] { "1" } else { "0" });
+        }
+    }
+    if let Some(s) = email.subject.as_deref() {
+        acc(s);
+    }
+    if let Some(s) = email.preview.as_deref() {
+        acc(s);
+    }
+    if let Some(s) = email.blob_id.as_deref() {
+        acc(s);
+    }
+    h
 }
 
 /// Aggregate JMAP message-id + mailbox-id into a stable 64-bit MAPI mid.
@@ -1666,6 +1789,97 @@ mod tests {
         let e = email("s", false);
         let id = conversation_id_for(&e);
         assert_eq!(id.len(), 16);
+    }
+
+    #[test]
+    fn email_change_key_is_valid_xid() {
+        // MS-OXCFXICS §2.2.2.2: an XID is NamespaceGuid(16) + LocalId(1..8).
+        // The audit §2f.2 change key MUST be a real XID (the old helper emitted
+        // a non-conformant 4+4+n blob) so Outlook accepts it for conflict
+        // resolution, and MUST carry a non-zero namespace GUID so it is not
+        // mistaken for the "no value" sentinel.
+        let e = email("s", false);
+        let ck = change_key_for(&e);
+        assert_eq!(ck.len(), 16 + 8, "XID = 16-byte GUID + 8-byte LocalId");
+        assert_ne!(&ck[..16], &[0u8; 16], "namespace GUID must not be all-zero");
+        assert_eq!(&ck[..16], &STORE_CHANGE_KEY_NAMESPACE_GUID);
+        assert!(!ck[16..].iter().all(|&b| b == 0), "LocalId must not be all-zero");
+    }
+
+    #[test]
+    fn email_change_key_differs_on_edit() {
+        // Audit §2f.2: an edited message must yield a different change key
+        // from the prior revision so a second device to touch it gets a fresh
+        // XID rather than re-reading the stale one. RFC 8621 `receivedAt` is a
+        // delivery timestamp that does NOT change on edit, so the revision
+        // signal is a digest of the mutable fields (keywords, mailboxIds,
+        // subject, preview, blobId) the gateway edits via `Email/set`.
+        let mut e = email("s", false);
+        let ck_a = change_key_for(&e);
+        // Flipping the read/flag keyword is exactly what `Email/set` does;
+        // the change key MUST flip with it.
+        e.keywords
+            .as_mut()
+            .unwrap()
+            .insert("$seen".to_string(), true);
+        let ck_b = change_key_for(&e);
+        assert_ne!(ck_a, ck_b, "edits to the message must change the key");
+        // Mutating the immutable `received_at` (a delivery time the gateway
+        // never edits) MUST NOT flip the change key — it is not a revision
+        // signal, so re-reading the same revision returns the same XID even
+        // if the observer's clock view changed.
+        let ck_c = {
+            let mut e2 = email("s", false);
+            e2.received_at = Some("2029-02-02T00:00:00Z".to_string());
+            change_key_for(&e2)
+        };
+        assert_eq!(
+            ck_a, ck_c,
+            "immutable received_at is not a revision signal; key must be stable"
+        );
+        // Same identity across the same revision (deterministic).
+        assert_eq!(ck_a, change_key_for(&email("s", false)));
+    }
+
+    #[test]
+    fn email_predecessor_change_list_is_sized_xid_list() {
+        // PR_PREDECESSOR_CHANGE_LIST (MS-OXCFXICS §2.2.2.3): a concatenation
+        // of binary-sorted SizedXid structs (= XidSize(1) + XID). For a fresh
+        // row we seed the predecessor graph with the row's own change key.
+        let e = email("s", false);
+        let pcl = predecessor_change_list_for(&e);
+        let ck = change_key_for(&e);
+        assert!(!pcl.is_empty());
+        assert_eq!(usize::from(pcl[0]), ck.len(), "XidSize prefixes the XID");
+        assert_eq!(&pcl[1..], &ck[..], "the seeded entry is the change key");
+    }
+
+    #[test]
+    fn email_cells_emit_change_key_and_predecessor_list() {
+        // The cells must surface both PR_CHANGE_KEY (audit §2f.2 main fix)
+        // and PR_PREDECESSOR_CHANGE_LIST (audit §2f.2: previously fell through
+        // to Null) so Outlook has both halves of the conflict-detection graph.
+        let e = email("s", false);
+        let cols = [
+            PropertyTag::new(PropertyType::PTYP_BINARY, PR_CHANGE_KEY),
+            PropertyTag::new(PropertyType::PTYP_BINARY, PR_PREDECESSOR_CHANGE_LIST),
+        ];
+        let cells = email_to_cells(&e, &cols, FolderKind::Mail, "I");
+        assert!(
+            matches!(&cells[0], PropertyValue::Binary(b) if b == &change_key_for(&e)),
+            "PR_CHANGE_KEY cell mismatch: {:?}",
+            cells[0]
+        );
+        assert!(
+            matches!(&cells[1], PropertyValue::Binary(b) if !b.is_empty()),
+            "PR_PREDECESSOR_CHANGE_LIST must be a non-empty binary cell, got {:?}",
+            cells[1]
+        );
+        // An incompatible wire-type request degrades to a typed Null rather
+        // than emitting binary bytes the client cannot consume.
+        let bad = PropertyTag::new(PropertyType::PTYP_INTEGER32, PR_CHANGE_KEY);
+        let cells = email_to_cells(&e, &[bad], FolderKind::Mail, "I");
+        assert!(matches!(cells[0], PropertyValue::Null));
     }
 
     #[test]

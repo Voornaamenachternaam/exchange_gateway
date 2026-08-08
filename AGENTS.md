@@ -743,3 +743,107 @@ STILL GAPS to 100% perfect Outlook-for-Windows + Outlook-Android fidelity:
     admin-only write verbs (ModLinkAtt/ModProps/GetTemplateInfo) remain
     best-effort successes, listed here as TODOs.
 
+11. **Misc MAPI correctness risks (audit gap §2f)** — three sub-issues closed.
+    - §2f.1 **200-row contents-table truncation** — `fetch_email_rows`
+      (`src/mapi/handler.rs`) previously hard-capped at `EMAIL_SYNC_PAGE_SIZE`
+      (200) per folder, silently truncating large mailboxes. It now accepts
+      `&Config` and pages through the JMAP `Email/query` result via a
+      `position` + `limit` loop, bounded by `cfg.mapi_max_contents_rows` (env
+      `GATEWAY_MAPI_MAX_CONTENTS_ROWS`, default 10_000) and driven in pages of
+      `cfg.mapi_contents_page_size` (env `GATEWAY_MAPI_CONTENTS_PAGE_SIZE`,
+      default 256). The two knobs are wired in `src/config.rs` via the shared
+      `apply_env_usize` helper (separate `if` blocks, not array closures, so
+      clippy's ` Blocks in Conditions` lint is not re-tripped). All call sites
+      pass `cfg`.
+    - §2f.2 **PR_CHANGE_KEY / PR_PREDECESSOR_CHANGE_LIST synthesis** —
+      `store.rs::change_key_for(&JmapEmail)` now emits a proper 24-byte XID
+      (`STORE_CHANGE_KEY_NAMESPACE_GUID` + an 8-byte `LocalId` derived from the
+      JMAP email id folded with a digest of the mutable fields the gateway
+      edits via `Email/set`: `keywords`, `mailboxIds`, `subject`, `preview`,
+      `blobId` — RFC 8621 `receivedAt` is a delivery timestamp and does NOT
+      change on edit, so it is deliberately NOT the revision signal) per
+      MS-OXCDATA §2.12.2 / MS-OXCFXICS §2.2.2.2 rather than a short placeholder
+      hash, and `predecessor_change_list_for(&JmapEmail)` builds a real
+      `PredecessorChangeList` (a single seeded `SizedXid` = XidSize(1) + the
+      24-byte change-key XID) per MS-OXCFXICS §2.2.2.3.
+      `cell_for_email` now serves `PR_PREDECESSOR_CHANGE_LIST` (was missing);
+      `PR_CHANGE_KEY` was already wired. Unit tests in `store.rs` cover the XID
+      shape (`email_change_key_is_valid_xid` asserts a 24-byte XID = 16-byte
+      GUID + 8-byte LocalId with a non-zero namespace GUID), that a real edit
+      flips the change key (`email_change_key_differs_on_edit` flips a
+      `$seen` keyword — exactly what `Email/set` does — and asserts the key
+      changes, while an immutable `receivedAt` mutation does NOT), the
+      predecessor list shape (`email_predecessor_change_list_is_sized_xid_list`),
+      and the cells surface both (`email_cells_emit_change_key_and_predecessor_list`).
+      Outlook uses these for conflict resolution on multi-device edits; missing
+      change keys caused "item changed" sync errors.
+    - §2f.3 **TNEF decode/encode (MS-OXTNEF)** — new module `src/mapi/tnef.rs`
+      owns the full TNEF stream codec: `parse` reader (TNEFSignature
+      `0x223E9F78` = wire bytes `78 9F 3E 22`, LegacyKey, TNEFVersion +
+      OEMCodePage leading attrs — the reader fail-closed-rejects any
+      `attTnefVersion` data other than the spec-mandated `00 00 01 00`
+      (`TnefError::BadVersion`), the flat `(level, id, data, checksum)`
+      attribute loop with `attFrom` TRP-structure + `dtr` date parsing +
+      `attMsgProps`/`attAttachment` property-list decoding into
+      `TnefMessage`/`TnefAttachment`, attachment boundary handling via
+      `attAttachRendData`/`attAttachment` — `attAttachRendData` is decoded
+      into the attachment's `render_position` (AttachPosition at body offset 2)
+      so a parse->build round-trip preserves attachment placement), and
+      `build` writer that round-trips a `TnefMessage` (subject/body/
+      message-class/sender/dates + named/standard property lists + nested
+      attachments), with mod-65536 checksums and bounded attribute/prop
+      counts (`MAX_ATTR_DATA`/`MAX_PROP_COUNT`) and a typed `TnefError`
+      (`thiserror`, no panics). Scalar property encoding follows the spec:
+      `PtypBoolean` and `PtypInteger16` are 2-byte values padded to a 4-byte
+      boundary (the reader consumes the pad so the next property tag stays
+      aligned), `PtypNull`/`PtypUnspecified` carry 2 bytes + 2-byte pad.
+      Multi-value properties strip the `0x1000` MV flag (`ptype & 0x0FFF`)
+      to derive the element type and round-trip variable elements with exactly
+      one per-element `UINT32` size prefix each (no double-prefix on re-encode;
+      `read_one_mv_element` returns payload-only bytes). Unknown property types
+      fail closed (`BadPropType`) rather than swallowing the rest of the
+      property list — a real peer blob does not emit documented copies of
+      unsupported types into a property list, and silently absorbing trailing
+      data would desync the rest of the message. Attribute strings are
+      transcoded to/from Windows-1252 (`encode_cp1252`/`decode_cp1252_byte`)
+      to match the `attOemCodepage` 1252 header (so non-ASCII subjects/senders
+      do not render as mojibake). Reader tolerates every documented
+      message/attachment attribute the gateway does not yet model
+      (`attOwner`/`attSentFor`/`attDelegate`/`attRecipTable`/service dates/
+      request-res/aid-owner/render-meta-file) — never rejecting a valid stream
+      over a documented attribute — so the spec-declared attribute-ID
+      constants stay referenced (no `#[allow(dead_code)]`).
+      `tnef_correlation_property(bytes)` builds the
+      `PidTagTnefCorrelationKey` standard property (tag `0x007F`,
+      `PtypBinary`) carrying the iCalendar UID (it is NOT a named property —
+      `named` is `None`); `meeting_property_guid()` returns the canonical
+      `PSETID_Meeting` GUID `{6ED8DA90-450B-101B-98DA-00AA003F1305}` used by
+      named voting/meeting properties. The codec is wired into
+      `src/smtp.rs::SmtpClient::send_imip`: iMIP replies now attach a
+      `winmail.dat` (`application/ms-tnef`) TNEF part alongside the
+      authoritative `text/calendar` part — carrying the encapsulated reply
+      subject/body/sender + the UID-keyed correlation property + message class
+      `IPM.Schedule.Meeting.Resp` — so a recipient Outlook/Exchange client
+      surfaces the voting/response surface that the plain RFC-6047 iCalendar
+      REPLY alone does not carry. `build_imip_tnef` is fail-soft: it always
+      yields a well-formed blob (a missing/empty UID yields a key-less blob
+      rather than a broken message). 17 TNEF unit tests
+      (signature/checksum/dtr/round-trip/integer+binary props/named string
+      prop/correlation key/truncated-reject/bad-signature-reject +
+      signature+version wire bytes / non-canonical version rejection /
+      boolean-scalar alignment / MV_BINARY round-trip / attachment
+      render-position round-trip / CP1252 attribute round-trip /
+      PSETID_Meeting GUID) + 3 smtp tests
+      (`build_imip_tnef_is_parseable_and_carries_correlation_key`
+      round-tripping the iMIP blob through the reader +
+      `parse_addr_splits_name_and_email`) added; all green under
+      `RUSTFLAGS=-D warnings`.
+      Builds + tests: `RUSTFLAGS="-D warnings" cargo build --bin
+      exchange_gateway`, `cargo clippy --all-targets`, `cargo test --lib`,
+      `cargo test --test snapshot_tests` all clean (585 lib + 11 snapshot = 596
+      tests green, 0 failures, 0 warnings). A MAPI-side `winmail.dat`
+      *decoder-to-named-properties* wire (surfacing inbound TNEF attachment
+      props through `RopGetAttachmentTable`/`RopOpenAttachment`) is intentionally
+      NOT added: Outlook deserialises `winmail.dat` itself, so the gateway only
+      needs the encode side for outbound iMIP/voting fidelity; the decode side
+      is available as a library leaf for a future inbound-voting-props bridge.
