@@ -886,12 +886,7 @@ impl NotificationRegistry {
     /// Install a sink for `(session_id, handle_index)`, replacing any prior
     /// sink at that index (the client re-registering the same handle index
     /// drops the stale receiver, releasing its broadcast slot).
-    pub fn register(
-        &self,
-        session_id: Uuid,
-        handle_index: u8,
-        sink: MapiNotificationSink,
-    ) {
+    pub fn register(&self, session_id: Uuid, handle_index: u8, sink: MapiNotificationSink) {
         self.inner
             .write()
             .entry(session_id)
@@ -1406,7 +1401,10 @@ mod tests {
             old_item_id: "M-3".into(),
             change_key: String::new(),
         };
-        assert!(sink.accepts(&moved_to_inbox), "move into the requested folder matches");
+        assert!(
+            sink.accepts(&moved_to_inbox),
+            "move into the requested folder matches"
+        );
         assert!(
             sink.accepts(&moved_from_inbox),
             "move out of the requested folder matches"

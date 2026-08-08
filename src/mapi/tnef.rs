@@ -205,7 +205,10 @@ pub enum TnefPropertyValue {
     },
     /// Any wire type the typed decoders do not handle; carried verbatim so a
     /// re-encode round-trips the bytes without loss.
-    Opaque { property_type: u16, bytes: Vec<u8> },
+    Opaque {
+        property_type: u16,
+        bytes: Vec<u8>,
+    },
 }
 
 /// A parsed TNEF message ŌĆö the abstract model the writer serialises and the
@@ -571,10 +574,7 @@ fn parse_prop_list(data: &[u8]) -> Result<Vec<TnefProperty>> {
 fn parse_prop_value(cur: &mut Cur<'_>) -> Result<TnefProperty> {
     let ptype = cur.u16()?;
     let pid = cur.u16()?;
-    let tag = crate::mapi::data::PropertyTag::new(
-        crate::mapi::data::PropertyType(ptype),
-        pid,
-    );
+    let tag = crate::mapi::data::PropertyTag::new(crate::mapi::data::PropertyType(ptype), pid);
     let named = if pid >= 0x8000 {
         Some(parse_named_spec(cur)?)
     } else {
@@ -818,7 +818,9 @@ fn read_one_mv_element(cur: &mut Cur<'_>, elem_type: u16) -> Result<Vec<u8>> {
             consume_scalar_pad(cur, 2);
             Ok(Vec::new())
         }
-        fixed if fixed.fixed_size().is_some() => Ok(cur.take(fixed.fixed_size().unwrap())?.to_vec()),
+        fixed if fixed.fixed_size().is_some() => {
+            Ok(cur.take(fixed.fixed_size().unwrap())?.to_vec())
+        }
         other => Err(TnefError::BadPropType(other.to_u16())),
     }
 }
@@ -907,7 +909,12 @@ pub fn build(msg: &TnefMessage) -> Vec<u8> {
     out.extend_from_slice(&LEGACY_KEY.to_le_bytes());
 
     // TNEFVersion & OEMCodePage (mandatory leading attributes).
-    emit_attr(&mut out, LEVEL_MESSAGE, id::TNEF_VERSION, &TNEF_VERSION_DATA);
+    emit_attr(
+        &mut out,
+        LEVEL_MESSAGE,
+        id::TNEF_VERSION,
+        &TNEF_VERSION_DATA,
+    );
     emit_attr(
         &mut out,
         LEVEL_MESSAGE,
@@ -1067,7 +1074,15 @@ fn build_rend_data(render_position: i32) -> Vec<u8> {
 
 fn dtr_bytes(dt: Dtr) -> Vec<u8> {
     let mut out = Vec::with_capacity(14);
-    for v in [dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second, dt.day_of_week] {
+    for v in [
+        dt.year,
+        dt.month,
+        dt.day,
+        dt.hour,
+        dt.minute,
+        dt.second,
+        dt.day_of_week,
+    ] {
         out.extend_from_slice(&v.to_le_bytes());
     }
     out
@@ -1171,10 +1186,7 @@ fn emit_prop_value(out: &mut Vec<u8>, value: &TnefPropertyValue) {
             for e in elements {
                 // Variable-string/binary elements carry their own per-element
                 // size prefix + pad; fixed scalars are written verbatim.
-                if matches!(
-                    element_type,
-                    0x001E | 0x001F | 0x0102
-                ) {
+                if matches!(element_type, 0x001E | 0x001F | 0x0102) {
                     out.extend_from_slice(&(e.len() as u32).to_le_bytes());
                     out.extend_from_slice(e);
                     let pad = (4 - (e.len() % 4)) % 4;
@@ -1277,8 +1289,7 @@ fn encode_cp1252(c: char) -> u8 {
 /// use the value returned by `meeting_property_guid()` so Outlook resolves
 /// those properties under the correct namespace.
 const CORRELATION_GUID: [u8; 16] = [
-    0x90, 0xda, 0xd8, 0x6e, 0x0b, 0x45, 0x1b, 0x10, 0x98, 0xda, 0x00, 0xaa, 0x00, 0x3f, 0x13,
-    0x05,
+    0x90, 0xda, 0xd8, 0x6e, 0x0b, 0x45, 0x1b, 0x10, 0x98, 0xda, 0x00, 0xaa, 0x00, 0x3f, 0x13, 0x05,
 ];
 
 /// Build a `PidTagTnefCorrelationKey` (standard property tag `0x007F`,
@@ -1603,7 +1614,11 @@ mod tests {
         // Subject is an ANSI string attribute (Windows-1252 bytes). The string
         // 'é' is 0xE9 in 1252, '€' is 0x80, em-dash is 0x97 — NOT their UTF-8
         // multibyte forms.
-        assert!(bytes.windows(subject.len().min(8)).any(|w| w.contains(&0xE9)));
+        assert!(
+            bytes
+                .windows(subject.len().min(8))
+                .any(|w| w.contains(&0xE9))
+        );
         assert!(bytes.contains(&0x80), "euro sign encoded as 0x80");
         assert!(bytes.contains(&0x97), "em-dash encoded as 0x97");
         let parsed = parse(&bytes).expect("cp1252 subject round-trip");
@@ -1618,8 +1633,8 @@ mod tests {
         assert_eq!(
             g,
             [
-                0x90, 0xda, 0xd8, 0x6e, 0x0b, 0x45, 0x1b, 0x10, 0x98, 0xda, 0x00, 0xaa, 0x00,
-                0x3f, 0x13, 0x05
+                0x90, 0xda, 0xd8, 0x6e, 0x0b, 0x45, 0x1b, 0x10, 0x98, 0xda, 0x00, 0xaa, 0x00, 0x3f,
+                0x13, 0x05
             ]
         );
     }

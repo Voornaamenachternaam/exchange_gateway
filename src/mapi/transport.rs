@@ -274,7 +274,6 @@ impl AddressBookRpc {
     }
 }
 
-
 /// The fully-parsed MAPI/HTTP request after header validation.
 #[derive(Debug, Clone)]
 pub struct MapiRequest {
@@ -655,12 +654,21 @@ mod tests {
             AddressBookRpc::parse(" ResolveNames "),
             Some(AddressBookRpc::ResolveNames)
         );
-        assert_eq!(AddressBookRpc::parse("QueryRows"), Some(AddressBookRpc::QueryRows));
+        assert_eq!(
+            AddressBookRpc::parse("QueryRows"),
+            Some(AddressBookRpc::QueryRows)
+        );
         assert_eq!(AddressBookRpc::parse("connect"), None);
         assert_eq!(AddressBookRpc::parse("Bogus"), None);
         // Legacy spellings collapse to the canonical RPC.
-        assert_eq!(AddressBookRpc::parse("DnToMId"), Some(AddressBookRpc::DnToMinId));
-        assert_eq!(AddressBookRpc::parse("DNToMId"), Some(AddressBookRpc::DnToMinId));
+        assert_eq!(
+            AddressBookRpc::parse("DnToMId"),
+            Some(AddressBookRpc::DnToMinId)
+        );
+        assert_eq!(
+            AddressBookRpc::parse("DNToMId"),
+            Some(AddressBookRpc::DnToMinId)
+        );
     }
 
     #[test]
@@ -781,7 +789,6 @@ mod tests {
         let err = parse_request(&h, Vec::new(), true).unwrap_err();
         assert_eq!(err.to_response_code(), ResponseCode::InvalidHeader);
     }
-
 
     #[test]
     fn parse_request_endpoint_disabled() {

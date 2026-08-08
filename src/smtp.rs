@@ -310,9 +310,17 @@ impl SmtpClient {
                         .body(text.to_string()),
                 )
                 .singlepart(calendar_part);
-            builder.multipart(MultiPart::mixed().multipart(alternative).singlepart(tnef_part))?
+            builder.multipart(
+                MultiPart::mixed()
+                    .multipart(alternative)
+                    .singlepart(tnef_part),
+            )?
         } else {
-            builder.multipart(MultiPart::mixed().singlepart(calendar_part).singlepart(tnef_part))?
+            builder.multipart(
+                MultiPart::mixed()
+                    .singlepart(calendar_part)
+                    .singlepart(tnef_part),
+            )?
         };
 
         let transport = self.build_transport(username, password)?;
@@ -456,8 +464,14 @@ mod tests {
 
     #[test]
     fn build_imip_tnef_is_parseable_and_carries_correlation_key() {
-        let ics = "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:mtg-uid-123\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
-        let blob = build_imip_tnef("Accepted", "I'll be there", ics, "Alice <alice@example.com>");
+        let ics =
+            "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:mtg-uid-123\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+        let blob = build_imip_tnef(
+            "Accepted",
+            "I'll be there",
+            ics,
+            "Alice <alice@example.com>",
+        );
         // Round-trips through the TNEF reader.
         let msg = crate::mapi::tnef::parse(&blob).expect("imip tnef round-trips");
         assert_eq!(msg.message_class, "IPM.Schedule.Meeting.Resp");

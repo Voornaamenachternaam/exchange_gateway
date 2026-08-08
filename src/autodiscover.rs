@@ -112,8 +112,7 @@ impl AuthAdvert {
             AuthAdvert::Modern { oauth_url } => {
                 // The compact domain is the OAuth2 issuer host authority; it is
                 // advertised so Outlook maps the mailbox to the right tenant.
-                let compact_domain =
-                    host_authority(oauth_url).unwrap_or_else(|| oauth_url.clone());
+                let compact_domain = host_authority(oauth_url).unwrap_or_else(|| oauth_url.clone());
                 format!(
                     "<OauthUrl>{}</OauthUrl><CompactDomain>{}</CompactDomain>",
                     xml_escape(oauth_url),
@@ -627,7 +626,10 @@ fn handle_mobilesync_xml(
     let display_name_element = if display_name.trim().is_empty() {
         String::new()
     } else {
-        format!("<DisplayName>{}</DisplayName>", xml_escape(display_name.trim()))
+        format!(
+            "<DisplayName>{}</DisplayName>",
+            xml_escape(display_name.trim())
+        )
     };
 
     let xml = format!(
@@ -1016,7 +1018,10 @@ mod tests {
     fn test_resolve_user_display_name_falls_back_when_no_directory() {
         // No directory configured → derives from the request email.
         let none: Option<&std::sync::Arc<dyn crate::directory::DirectoryLookup>> = None;
-        assert_eq!(resolve_user_display_name(none, "john.doe@example.com"), "John Doe");
+        assert_eq!(
+            resolve_user_display_name(none, "john.doe@example.com"),
+            "John Doe"
+        );
         assert_eq!(resolve_user_display_name(none, "mary@example.com"), "Mary");
     }
 
@@ -1092,7 +1097,10 @@ mod tests {
         let url = oab_url("mail.example.com");
         assert!(url.starts_with("https://mail.example.com/OAB/"));
         assert!(url.ends_with('/'));
-        assert_eq!(url, format!("https://mail.example.com/OAB/{}/", OAB_SERVER_GUID));
+        assert_eq!(
+            url,
+            format!("https://mail.example.com/OAB/{}/", OAB_SERVER_GUID)
+        );
     }
 
     #[test]
@@ -1156,7 +1164,9 @@ mod tests {
             "EcpUrl must be advertised in both EXCH and EXPR Protocol blocks"
         );
         // The EWS SOAP endpoint MUST NOT be advertised as the EcpUrl.
-        let ews_as_ecp = body.matches("<EcpUrl>https://mail.example.com/EWS/Exchange.asmx</EcpUrl>").count();
+        let ews_as_ecp = body
+            .matches("<EcpUrl>https://mail.example.com/EWS/Exchange.asmx</EcpUrl>")
+            .count();
         assert_eq!(
             ews_as_ecp, 0,
             "EcpUrl must not point at the EWS SOAP endpoint"
@@ -1184,16 +1194,25 @@ mod tests {
         assert_eq!(status, StatusCode::OK);
         // Both EXCH and EXPR blocks advertise the Modern Auth package.
         assert_eq!(
-            body.matches("<AuthPackage>OAuth2/CertificateBased</AuthPackage>").count(),
+            body.matches("<AuthPackage>OAuth2/CertificateBased</AuthPackage>")
+                .count(),
             2,
             "EXCH and EXPR blocks must advertise OAuth2/CertificateBased"
         );
         // No Basic advertisement leaks once HMA is configured.
         assert!(!body.contains("<AuthPackage>Basic</AuthPackage>"));
         // OauthUrl is advertised in both blocks with the configured issuer URL.
-        assert_eq!(body.matches("<OauthUrl>https://login.example.com/</OauthUrl>").count(), 2);
+        assert_eq!(
+            body.matches("<OauthUrl>https://login.example.com/</OauthUrl>")
+                .count(),
+            2
+        );
         // CompactDomain is the issuer host authority, advertised in both blocks.
-        assert_eq!(body.matches("<CompactDomain>login.example.com</CompactDomain>").count(), 2);
+        assert_eq!(
+            body.matches("<CompactDomain>login.example.com</CompactDomain>")
+                .count(),
+            2
+        );
     }
 
     #[test]
@@ -1219,8 +1238,14 @@ mod tests {
             host_authority("https://login.microsoftonline.com/tenant/v2.0").as_deref(),
             Some("login.microsoftonline.com")
         );
-        assert_eq!(host_authority("https://login.example.com:443/").as_deref(), Some("login.example.com"));
-        assert_eq!(host_authority("login.example.com").as_deref(), Some("login.example.com"));
+        assert_eq!(
+            host_authority("https://login.example.com:443/").as_deref(),
+            Some("login.example.com")
+        );
+        assert_eq!(
+            host_authority("login.example.com").as_deref(),
+            Some("login.example.com")
+        );
         assert_eq!(host_authority(""), None);
     }
 

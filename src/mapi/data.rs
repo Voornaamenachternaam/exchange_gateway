@@ -194,9 +194,7 @@ impl PropertyValue {
             }
             T::PTYP_INTEGER32 => {
                 let raw = cur.take_bytes(4)?;
-                Self::Integer32(i32::from_le_bytes([
-                    raw[0], raw[1], raw[2], raw[3],
-                ]))
+                Self::Integer32(i32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]]))
             }
             T::PTYP_ERROR_CODE => Self::ErrorCode(cur.take_u32_le()?),
             T::PTYP_INTEGER64 => {
@@ -327,7 +325,10 @@ impl PropertyValue {
             }
         }
         let end = cur.position();
-        let bytes = cur.slice(start, end).map(|s| s.to_vec()).unwrap_or_default();
+        let bytes = cur
+            .slice(start, end)
+            .map(|s| s.to_vec())
+            .unwrap_or_default();
         Ok(Self::Opaque {
             property_type: t,
             bytes,
@@ -377,7 +378,7 @@ impl PropertyValue {
 
     /// The multi-value-instance marker bit per MS-OXCDATA §2.11.1.
     pub const MV_INSTANCE_MARKER: u16 = 0x2000;
-    
+
     /// Encode the value for a `GetPropertiesSpecific`/`All` response row,
     /// emitting the typed payload bytes (no PropertyTag prefix — the row
     /// struct in MS-OXCDATA prefixes each value with its reflected tag, done
@@ -831,16 +832,16 @@ mod tests {
         // aligned (cubic #15). Build an MV String8 (PTYP_MV_STRING8 = 0x101E):
         // a 4-byte LE element count (1) followed by one NUL-terminated String8
         // element ("XY" + 0x00). Total 7 bytes; the decoder captures all 7.
-        let tag = PropertyTag::new(
-            PropertyType::from_u16(0x101E),
-            0x3004,
-        );
+        let tag = PropertyTag::new(PropertyType::from_u16(0x101E), 0x3004);
         let bytes: Vec<u8> = vec![0x01, 0x00, 0x00, 0x00, b'X', b'Y', 0x00];
         assert_eq!(bytes.len(), 7);
         let mut cur = Buf::new(&bytes);
         let pv = PropertyValue::decode(&mut cur, &tag).expect("decode");
         match pv {
-            PropertyValue::Opaque { property_type, bytes: got } => {
+            PropertyValue::Opaque {
+                property_type,
+                bytes: got,
+            } => {
                 assert_eq!(property_type, PropertyType::from_u16(0x101E));
                 assert_eq!(got, bytes, "Opaque must capture the full consumed span");
             }

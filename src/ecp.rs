@@ -247,7 +247,10 @@ pub async fn handle_ecp(
     // sent its configured login name, which is typically the SMTP address).
     let email = user.clone();
     let host = state.cfg.gateway_host.as_str();
-    let deep_link = path.as_deref().map(|p| p.trim_start_matches('/')).filter(|p| !p.is_empty());
+    let deep_link = path
+        .as_deref()
+        .map(|p| p.trim_start_matches('/'))
+        .filter(|p| !p.is_empty());
 
     debug!(
         target: "http",
@@ -307,7 +310,6 @@ mod tests {
         assert!(html_escape(evil).contains("&lt;img"));
     }
 
-
     #[test]
     fn test_render_ecp_page_basic_shape() {
         let html = render_ecp_page("mail.example.com", "user@example.com", None);
@@ -334,8 +336,11 @@ mod tests {
 
     #[test]
     fn test_render_ecp_page_with_deep_link_context() {
-        let html =
-            render_ecp_page("mail.example.com", "user@example.com", Some("Options/?rfr=ool&exsc=1"));
+        let html = render_ecp_page(
+            "mail.example.com",
+            "user@example.com",
+            Some("Options/?rfr=ool&exsc=1"),
+        );
         assert!(html.contains("Requested settings area"));
         // The raw ampersand in the deep link must be escaped to &amp;.
         assert!(html.contains("Options/?rfr=ool&amp;exsc=1"));
@@ -405,5 +410,4 @@ mod tests {
         assert_eq!(redact_email("u"), "***");
         assert_eq!(redact_email("ku"), "k***");
     }
-
 }
