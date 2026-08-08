@@ -1266,16 +1266,18 @@ const STORE_CHANGE_KEY_NAMESPACE_GUID: [u8; 16] = [
 ];
 
 /// Per MS-OXCFXICS §2.2.2.2 an `XID` is `NamespaceGuid(16) + LocalId(1..8)`.
-/// This helper folds the message's stable JMAP id and its last-modification
-/// FILETIME into a deterministic 8-byte `LocalId`; mixing the mod-time makes
-/// successive edits yield different change keys (the audit §2f.2 concern:
-/// a UID-only key hides edits from Outlook's conflict resolver), while the
-/// JMAP id keeps the change key stable across reads of the same revision.
+/// This helper folds the message's stable JMAP id and a **revision digest**
+/// (a deterministic hash of the fields the gateway edits via `Email/set`:
+/// `keywords`, `mailboxIds`, `subject`, `preview`, and `blobId`) into an
+/// 8-byte `LocalId`. RFC 8621 `receivedAt` is a *delivery* timestamp that
+/// never changes when a message is edited, so it cannot serve as a revision
+/// signal; a digest of the mutable fields actually does, so successive edits
+/// (read/flag flip, move, draft rewrite) yield different change keys (the
+/// audit §2f.2 concern: a UID-only / immutable-time key hides edits from
+/// Outlook's conflict resolver), while the JMAP id keeps the change key stable
+/// across reads of the same revision.
 fn change_key_for(email: &JmapEmail) -> Vec<u8> {
-    let local_id = message_change_local_id(
-        email.id.as_deref().unwrap_or(""),
-        iso8601_to_filetime(email.received_at.as_deref()),
-    );
+    let local_id = message_change_local_id(email.id.as_deref().unwrap_or(""), message_revision_digest(email));
     let mut out = Vec::with_capacity(16 + local_id.len());
     out.extend_from_slice(&STORE_CHANGE_KEY_NAMESPACE_GUID);
     out.extend_from_slice(&local_id);
@@ -1302,11 +1304,12 @@ fn predecessor_change_list_for(email: &JmapEmail) -> Vec<u8> {
     out
 }
 
-/// Fold a JMAP message id + last-modification FILETIME into the 8-byte `LocalId`
+/// Fold a JMAP message id + a per-revision digest into the 8-byte `LocalId`
 /// of a store change-key XID (audit §2f.2). The id half keeps the key stable
-/// per revision; the FILETIME low half mixes in so an edited message's change
-/// key differs from the prior revision's.
-fn message_change_local_id(jmap_id: &str, mod_filetime: Option<u64>) -> [u8; 8] {
+/// per revision; the `revision_digest` half mixes in so an edited message
+/// (a new revision → a new digest) yields a different XID even though the
+/// JMAP id is unchanged.
+fn message_change_local_id(jmap_id: &str, revision_digest: u64) -> [u8; 8] {
     const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
     const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
     let mut h = FNV_OFFSET;
@@ -1314,14 +1317,62 @@ fn message_change_local_id(jmap_id: &str, mod_filetime: Option<u64>) -> [u8; 8] 
         h ^= u64::from(*b);
         h = h.wrapping_mul(FNV_PRIME);
     }
-    // Stir the modification time into the high 32 bits so a re-saved
-    // message (new mod-time) yields a different XID even though the JMAP id
-    // is unchanged. A missing mod-time degrades to zero, which keeps the
-    // key stable for that revision rather than varying per call.
-    let mt = mod_filetime.unwrap_or(0);
-    h ^= mt.wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    // Stir the revision digest into the high 32 bits so an edited message
+    // (new digest) yields a different XID even though the JMAP id is
+    // unchanged. The digest is derived from the mutable fields the gateway
+    // actually edits via `Email/set` (keywords, mailboxIds, subject, preview,
+    // blobId); RFC 8621 `receivedAt` is immutable and must NOT be used as a
+    // revision signal.
+    h ^= revision_digest.wrapping_mul(0x9E37_79B9_7F4A_7C15);
     h = h.wrapping_mul(FNV_PRIME);
     h.to_le_bytes()
+}
+
+/// Compute a deterministic 64-bit digest of the fields a JMAP `Email/set` edit
+/// mutates (audit §2f.2): `keywords` (read/unread, flag, draft, custom
+/// labels), `mailboxIds` (move/archive), and the body-bearing `subject`,
+/// `preview`, `blobId` (a draft rewrite changes `blobId`). Folding this into
+/// the change-key LocalId makes a real edit flip the XID, so a second device
+/// editing the same message yields a distinct change key Outlook treats as a
+/// new revision rather than re-reading the stale one. The mapping is kept as
+/// a single FNV-1a pass over sorted key lists for determinism across reads
+/// of the same revision.
+fn message_revision_digest(email: &JmapEmail) -> u64 {
+    const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+    let mut h = FNV_OFFSET;
+    let mut acc = |part: &str| {
+        for b in part.as_bytes() {
+            h ^= u64::from(*b);
+            h = h.wrapping_mul(FNV_PRIME);
+        }
+    };
+    if let Some(kws) = email.keywords.as_ref() {
+        let mut ks: Vec<&String> = kws.keys().collect();
+        ks.sort();
+        for k in ks {
+            acc(k);
+            acc(if kws[k] { "1" } else { "0" });
+        }
+    }
+    if let Some(mb) = email.mailbox_ids.as_ref() {
+        let mut ms: Vec<&String> = mb.keys().collect();
+        ms.sort();
+        for m in ms {
+            acc(m);
+            acc(if mb[m] { "1" } else { "0" });
+        }
+    }
+    if let Some(s) = email.subject.as_deref() {
+        acc(s);
+    }
+    if let Some(s) = email.preview.as_deref() {
+        acc(s);
+    }
+    if let Some(s) = email.blob_id.as_deref() {
+        acc(s);
+    }
+    h
 }
 
 /// Aggregate JMAP message-id + mailbox-id into a stable 64-bit MAPI mid.
@@ -1756,15 +1807,36 @@ mod tests {
     }
 
     #[test]
-    fn email_change_key_differs_on_modtime_edit() {
-        // Audit §2f.2: a re-saved message (new mod-time) must yield a
-        // different change key from the prior revision so the second device
-        // to touch it gets a fresh XID rather than re-reading the stale one.
+    fn email_change_key_differs_on_edit() {
+        // Audit §2f.2: an edited message must yield a different change key
+        // from the prior revision so a second device to touch it gets a fresh
+        // XID rather than re-reading the stale one. RFC 8621 `receivedAt` is a
+        // delivery timestamp that does NOT change on edit, so the revision
+        // signal is a digest of the mutable fields (keywords, mailboxIds,
+        // subject, preview, blobId) the gateway edits via `Email/set`.
         let mut e = email("s", false);
         let ck_a = change_key_for(&e);
-        e.received_at = Some("2025-02-02T00:00:00Z".to_string());
+        // Flipping the read/flag keyword is exactly what `Email/set` does;
+        // the change key MUST flip with it.
+        e.keywords
+            .as_mut()
+            .unwrap()
+            .insert("$seen".to_string(), true);
         let ck_b = change_key_for(&e);
         assert_ne!(ck_a, ck_b, "edits to the message must change the key");
+        // Mutating the immutable `received_at` (a delivery time the gateway
+        // never edits) MUST NOT flip the change key — it is not a revision
+        // signal, so re-reading the same revision returns the same XID even
+        // if the observer's clock view changed.
+        let ck_c = {
+            let mut e2 = email("s", false);
+            e2.received_at = Some("2029-02-02T00:00:00Z".to_string());
+            change_key_for(&e2)
+        };
+        assert_eq!(
+            ck_a, ck_c,
+            "immutable received_at is not a revision signal; key must be stable"
+        );
         // Same identity across the same revision (deterministic).
         assert_eq!(ck_a, change_key_for(&email("s", false)));
     }

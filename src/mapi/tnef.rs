@@ -22,14 +22,15 @@ use thiserror::Error;
 // Constants ([MS-OXTNEF] ┬¦2.1.3.2)
 // ---------------------------------------------------------------------------
 
-/// `TNEFSignature = %x78.9F.3E.22` ŌĆö the 4-byte LE magic opening every TNEF
-/// stream (`0x223E9F91` little-endian). A reader rejects any stream that does
-/// not begin with these exact bytes.
-pub const TNEF_SIGNATURE: u32 = 0x223E_9F91;
+/// `TNEFSignature = %x78.9F.3E.22` -- the 4-byte LE magic opening every TNEF
+/// stream (bytes 0x78 0x9F 0x3E 0x22 on the wire = 0x223E9F78 little-endian).
+/// A reader rejects any stream that does not begin with these exact bytes
+/// ([MS-OXTNEF] section 2.1.3.2).
+pub const TNEF_SIGNATURE: u32 = 0x223E_9F78;
 
-/// Default `LegacyKey` the writer emits. Per MS-OXTNEF ┬¦2.1.3.2 ("Any number
-/// will suffice here. This is now legacy."), the value is informational only;
-/// real clients ignore it. We pick a stable non-zero value.
+/// Default `LegacyKey` the writer emits. Per MS-OXTNEF section 2.1.3.2 ("Any
+/// number will suffice here. This is now legacy."), the value is informational
+/// only; real clients ignore it. We pick a stable non-zero value.
 const LEGACY_KEY: u16 = 0x0002;
 
 /// `attrLevelMessage = %x01`.
@@ -37,10 +38,11 @@ const LEVEL_MESSAGE: u8 = 0x01;
 /// `attrLevelAttachment = %x02`.
 const LEVEL_ATTACHMENT: u8 = 0x02;
 
-/// TNEF version the writer advertises (`attTnefVersion`). The 4-byte value is
-/// `{ Minor(2 LE), Major(2 LE) }`; `0x00010006` is the widely-interoperable
-/// "6.1" version string real Outlook emits.
-const TNEF_VERSION_DATA: [u8; 4] = [0x00, 0x00, 0x06, 0x01];
+/// TNEF version the writer advertises (`attTnefVersion`). Per [MS-OXTNEF]
+/// section 2.1.3.3.1: "TNEF Writers MUST use %x00.00.01.00; TNEF Readers MUST
+/// reject other values." The 4-byte data is the only wire-permitted value, so
+/// we both emit and enforce it.
+const TNEF_VERSION_DATA: [u8; 4] = [0x00, 0x00, 0x01, 0x00];
 
 /// OEM primary code page the writer advertises (`attOemCodepage`). `1252`
 /// (Windows-1252) is the conventional ANSI code page for attribute strings; the
@@ -115,6 +117,8 @@ pub enum TnefError {
     BadChecksum { stored: u16, calculated: u16 },
     #[error("invalid attribute id 0x{0:08X}")]
     BadAttrId(u32),
+    #[error("invalid attTnefVersion data; expected 00 00 01 00")]
+    BadVersion,
     #[error("invalid property type 0x{0:04X}")]
     BadPropType(u16),
     #[error("invalid UTF-8 in a TNEF string field")]
@@ -312,11 +316,16 @@ pub fn parse(bytes: &[u8]) -> Result<TnefMessage> {
     let _legacy_key = cur.u16()?;
 
     // Mandatory leading attributes: TNEFVersion then OEMCodePage.
-    let (lvl, attr_id, _data) = read_attr(&mut cur)?;
+    let (lvl, attr_id, version_data) = read_attr(&mut cur)?;
     if lvl != LEVEL_MESSAGE || attr_id != id::TNEF_VERSION {
         return Err(TnefError::BadAttrId(attr_id));
     }
-    // TNEFVersionData = 4 bytes; the value is not semantically significant.
+    // [MS-OXTNEF] section 2.1.3.3.1: "TNEF Readers MUST reject other values."
+    // A fail-closed reader rejects any stream that does not carry the singular
+    // wire-permitted `%x00.00.01.00` version data.
+    if version_data != TNEF_VERSION_DATA {
+        return Err(TnefError::BadVersion);
+    }
     let (lvl, attr_id, data) = read_attr(&mut cur)?;
     if lvl != LEVEL_MESSAGE || attr_id != id::OEM_CODEPAGE {
         return Err(TnefError::BadAttrId(attr_id));
@@ -367,7 +376,18 @@ pub fn parse(bytes: &[u8]) -> Result<TnefMessage> {
                     if let Some(att) = current_attach.take() {
                         msg.attachments.push(att);
                     }
-                    current_attach = Some(TnefAttachment::default());
+                    let mut att = TnefAttachment::default();
+                    // attAttachRendData = AttachType(2) + AttachPosition(4) +
+                    // RenderWidth(2) + RenderHeight(2) + DataFlags(4)
+                    // ([MS-OXTNEF] section 2.1.3.3.15). Decode AttachPosition so
+                    // a parsed blob's rendering placement survives a
+                    // parse->build round-trip (writing 0 here would shift
+                    // attachment placement).
+                    if body.len() >= 6 {
+                        let pos = i32::from_le_bytes([body[2], body[3], body[4], body[5]]);
+                        att.render_position = pos;
+                    }
+                    current_attach = Some(att);
                 } else if let Some(att) = current_attach.as_mut() {
                     apply_attach_attr(att, attr_id, &body)?;
                 } else {
@@ -613,15 +633,34 @@ fn parse_named_spec(cur: &mut Cur<'_>) -> Result<NamedPropSpec> {
 }
 
 /// Decode a single property's typed value off the cursor (the property-tag
-/// type has already been read). Variable-length property values may carry a
-/// trailing pad to a 4-byte boundary which is consumed here.
+/// type has already been read). Per [MS-OXTNEF] section 2.1.3.4 /
+/// `PropertyScalarContent = MsgPropertyContent [PropertyPad]`, every scalar's
+/// content is padded with 0..3 zero bytes to a 4-byte boundary and those pad
+/// bytes are counted in the attribute checksum, so the reader MUST consume
+/// them to stay aligned for the following property tag. TNEF encodes
+/// `PtypBoolean` and `PtypInteger16` as 2-byte values, each then padded to
+/// 4 bytes.
 fn parse_prop_data(cur: &mut Cur<'_>, ptype: u16) -> Result<TnefPropertyValue> {
     use crate::mapi::data::PropertyType as T;
     let t = T(ptype);
     Ok(match t {
-        T::PTYP_NULL | T::PTYP_UNSPECIFIED => TnefPropertyValue::Null,
-        T::PTYP_BOOLEAN => TnefPropertyValue::Boolean(cur.u8()? != 0),
-        T::PTYP_INTEGER16 => TnefPropertyValue::Integer16(cur.i16()?),
+        T::PTYP_NULL | T::PTYP_UNSPECIFIED => {
+            // 2-byte content + 2-byte pad to a 4-byte boundary.
+            let _ = cur.take(2)?;
+            consume_scalar_pad(cur, 2);
+            TnefPropertyValue::Null
+        }
+        T::PTYP_BOOLEAN => {
+            // 2-byte content (WORD) per MS-OXCDATA section 2.11.1, padded to 4.
+            let v = cur.u16()?;
+            consume_scalar_pad(cur, 2);
+            TnefPropertyValue::Boolean(v != 0)
+        }
+        T::PTYP_INTEGER16 => {
+            let v = cur.i16()?;
+            consume_scalar_pad(cur, 2);
+            TnefPropertyValue::Integer16(v)
+        }
         T::PTYP_INTEGER32 => TnefPropertyValue::Integer32(cur.i32()?),
         T::PTYP_ERROR_CODE => TnefPropertyValue::Integer32(cur.i32()?),
         T::PTYP_INTEGER64 => TnefPropertyValue::Integer64(cur.i64()?),
@@ -683,9 +722,11 @@ fn parse_prop_data(cur: &mut Cur<'_>, ptype: u16) -> Result<TnefPropertyValue> {
             }
             TnefPropertyValue::Binary(raw)
         }
-        // Multi-value scalars: UINT32 count + per-element fixed-size values.
+        // Multi-value: UINT32 count + per-element values. The element type is
+        // the MV flag (0x1000) stripped off (`ptype & 0x0FFF`), so e.g. an
+        // `MV_BINARY` (0x1102) decodes its elements as `PTYP_BINARY` (0x0102).
         mv if (mv.to_u16() & 0x1000) != 0 => {
-            let elem_type = u16::from_le_bytes([ptype.to_le_bytes()[0], 0]);
+            let elem_type = ptype & 0x0FFF;
             let count = cur.u32()?;
             if count > MAX_PROP_COUNT {
                 return Err(TnefError::ExcessLength {
@@ -699,67 +740,87 @@ fn parse_prop_data(cur: &mut Cur<'_>, ptype: u16) -> Result<TnefPropertyValue> {
             })?;
             let mut elements: Vec<Vec<u8>> = Vec::with_capacity(n);
             for _ in 0..n {
-                let start = cur.pos;
-                skip_one_mv_element(cur, elem_type)?;
-                let end = cur.pos;
-                elements.push(cur.buf[start..end].to_vec());
+                // `read_one_mv_element` returns the element's PAYLOAD bytes
+                // (no size prefix, no trailing pad) so the writer can re-frame
+                // the variable shape unambiguously and fixed scalars are
+                // written verbatim -- parse->build round-trips real Outlook MV
+                // values byte-for-byte.
+                let payload = read_one_mv_element(cur, elem_type)?;
+                elements.push(payload);
             }
             TnefPropertyValue::Multi {
                 element_type: elem_type,
                 elements,
             }
         }
-        other => {
-            // Unknown type: we cannot determine its wire length, so capture
-            // the remainder as opaque. This is the spec-permitted "preserve
-            // verbatim" path; callers that need a typed value re-parse later.
-            let bytes = cur.buf[cur.pos..].to_vec();
-            cur.pos = cur.buf.len();
-            TnefPropertyValue::Opaque {
-                property_type: other.to_u16(),
-                bytes,
-            }
-        }
+        // Unknown type: the reader cannot determine the value's wire length
+        // (property types carry no self-describing length without the spec
+        // rule for that type), so preserving "verbatim" is impossible -- the
+        // cursor would have to swallow the rest of the property list, dropping
+        // every subsequent property. Fail closed instead: a real Outlook/peer
+        // blob does not emit documented copies of unsupported types into a
+        // property list, and silently absorbing trailing data would desync
+        // the rest of the message.
+        other => return Err(TnefError::BadPropType(other.to_u16())),
     })
 }
 
-/// Skip a single multi-value element of the given (non-MV) element type so the
-/// cursor advances past it. Only fixed-size and the common variable encodings
-/// are supported; an unsupported element type fails the parse.
-fn skip_one_mv_element(cur: &mut Cur<'_>, elem_type: u16) -> Result<()> {
+/// Consume the 0..3 byte `PropertyPad` that brings a scalar whose content is
+/// `content_len` bytes onto a 4-byte boundary (section 2.1.3.4 `PropertyPad`).
+fn consume_scalar_pad(cur: &mut Cur<'_>, content_len: usize) {
+    let pad = (4 - (content_len % 4)) % 4;
+    if pad != 0 {
+        // Ignore the value of pad bytes (spec: writer MUST use zero, reader
+        // MUST permit non-zero); only advance the cursor.
+        let _ = cur.take(pad);
+    }
+}
+
+/// Read a single multi-value element of the given (non-MV) element type off
+/// the cursor and return its PAYLOAD bytes (the value itself, with no
+/// per-element `UINT32` size prefix and no trailing `PropertyPad`), advancing
+/// the cursor past size+payload+pad. Keeping the payload size-free lets the
+/// writer re-emit the variable-element framing exactly once on re-encode;
+/// fixed-size scalars are returned verbatim. TNEF encodes `PtypBoolean` as a
+/// 2-byte value (per MS-OXCDATA section 2.11.1) and pads each element to 4
+/// bytes.
+fn read_one_mv_element(cur: &mut Cur<'_>, elem_type: u16) -> Result<Vec<u8>> {
     use crate::mapi::data::PropertyType as T;
     let t = T(elem_type);
     match t {
-        T::PTYP_STRING | T::PTYP_STRING8 => {
+        T::PTYP_STRING | T::PTYP_STRING8 | T::PTYP_BINARY => {
             let size = cur.u32()?;
             let n = usize::try_from(size).map_err(|_| TnefError::ExcessLength {
                 got: size,
                 max: MAX_PROP_VALUE,
             })?;
-            let _ = cur.take(n)?;
+            let payload = cur.take(n)?.to_vec();
             let pad = (4 - (n % 4)) % 4;
             if pad != 0 {
                 let _ = cur.take(pad)?;
             }
+            Ok(payload)
         }
-        T::PTYP_BINARY => {
-            let size = cur.u32()?;
-            let n = usize::try_from(size).map_err(|_| TnefError::ExcessLength {
-                got: size,
-                max: MAX_PROP_VALUE,
-            })?;
-            let _ = cur.take(n)?;
-            let pad = (4 - (n % 4)) % 4;
-            if pad != 0 {
-                let _ = cur.take(pad)?;
-            }
+        T::PTYP_BOOLEAN => {
+            // 2-byte content; padded to a 4-byte boundary. The writer emits
+            // the 2-byte value + 2-byte pad.
+            let v = cur.u16()?;
+            consume_scalar_pad(cur, 2);
+            Ok(v.to_le_bytes().to_vec())
         }
-        fixed if fixed.fixed_size().is_some() => {
-            let _ = cur.take(fixed.fixed_size().unwrap())?;
+        T::PTYP_INTEGER16 => {
+            let v = cur.i16()?;
+            consume_scalar_pad(cur, 2);
+            Ok(v.to_le_bytes().to_vec())
         }
-        other => return Err(TnefError::BadPropType(other.to_u16())),
+        T::PTYP_NULL | T::PTYP_UNSPECIFIED => {
+            let _ = cur.take(2)?;
+            consume_scalar_pad(cur, 2);
+            Ok(Vec::new())
+        }
+        fixed if fixed.fixed_size().is_some() => Ok(cur.take(fixed.fixed_size().unwrap())?.to_vec()),
+        other => Err(TnefError::BadPropType(other.to_u16())),
     }
-    Ok(())
 }
 
 fn decode_string(t: crate::mapi::data::PropertyType, raw: &[u8]) -> TnefPropertyValue {
@@ -784,10 +845,53 @@ fn decode_string(t: crate::mapi::data::PropertyType, raw: &[u8]) -> TnefProperty
 }
 
 /// Decode an ANSI NUL-terminated attribute string (used by the message-level
-/// attributes such as `attSubject`).
+/// attributes such as `attSubject`). The TNEF header advertises code page
+/// 1252, so attribute strings are Windows-1252 bytes (NOT UTF-8); decoding
+/// them as UTF-8 would render 0x80-0xFF as the replacement char. Map each byte
+/// through the Windows-1252 repertoire (the 0x80-0x9F range carries the
+/// well-known extensions; 0xA0-0xFF are ISO-8859-1 identity).
 fn decode_cstr_ansi(data: &[u8]) -> String {
     let i = data.iter().position(|&b| b == 0).unwrap_or(data.len());
-    String::from_utf8_lossy(&data[..i]).into_owned()
+    data[..i].iter().map(|&b| decode_cp1252_byte(b)).collect()
+}
+
+/// Map a single Windows-1252 byte to its `char`. Bytes 0x00-0x7F and
+/// 0xA0-0xFF map by identity; the 0x80-0x9F extensions map to the Unicode
+/// characters Windows-1252 defines there (inverse of `encode_cp1252`).
+fn decode_cp1252_byte(b: u8) -> char {
+    match b {
+        0x80 => '\u{20AC}', // EURO SIGN
+        0x82 => '\u{201A}', // SINGLE LOW-9 QUOTATION MARK
+        0x83 => '\u{0192}', // LATIN SMALL LETTER F WITH HOOK
+        0x84 => '\u{201E}', // DOUBLE LOW-9 QUOTATION MARK
+        0x85 => '\u{2026}', // HORIZONTAL ELLIPSIS
+        0x86 => '\u{2020}', // DAGGER
+        0x87 => '\u{2021}', // DOUBLE DAGGER
+        0x88 => '\u{02C6}', // MODIFIER LETTER CIRCUMFLEX ACCENT
+        0x89 => '\u{2030}', // PER MILLE SIGN
+        0x8A => '\u{0160}', // LATIN CAPITAL LETTER S WITH CARON
+        0x8B => '\u{2039}', // SINGLE LEFT-POINTING ANGLE QUOTATION MARK
+        0x8C => '\u{0152}', // LATIN CAPITAL LIGATURE OE
+        0x8E => '\u{017D}', // LATIN CAPITAL LETTER Z WITH CARON
+        0x91 => '\u{2018}', // LEFT SINGLE QUOTATION MARK
+        0x92 => '\u{2019}', // RIGHT SINGLE QUOTATION MARK
+        0x93 => '\u{201C}', // LEFT DOUBLE QUOTATION MARK
+        0x94 => '\u{201D}', // RIGHT DOUBLE QUOTATION MARK
+        0x95 => '\u{2022}', // BULLET
+        0x96 => '\u{2013}', // EN DASH
+        0x97 => '\u{2014}', // EM DASH
+        0x98 => '\u{02DC}', // SMALL TILDE
+        0x99 => '\u{2122}', // TRADE MARK SIGN
+        0x9A => '\u{0161}', // LATIN SMALL LETTER S WITH CARON
+        0x9B => '\u{203A}', // SINGLE RIGHT-POINTING ANGLE QUOTATION MARK
+        0x9C => '\u{0153}', // LATIN SMALL LIGATURE OE
+        0x9E => '\u{017E}', // LATIN SMALL LETTER Z WITH CARON
+        0x9F => '\u{0178}', // LATIN CAPITAL LETTER Y WITH DIAERESIS
+        // 0x81, 0x8D, 0x8F, 0x90, 0x9D are undefined in Windows-1252; map to
+        // U+FFFD replacement so lossy decode never panics.
+        0x81 | 0x8D | 0x8F | 0x90 | 0x9D => '\u{FFFD}',
+        _ => char::from(b),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1011,10 +1115,15 @@ fn emit_named_spec(out: &mut Vec<u8>, named: &NamedPropSpec) {
 
 fn emit_prop_value(out: &mut Vec<u8>, value: &TnefPropertyValue) {
     match value {
-        TnefPropertyValue::Null => {}
+        TnefPropertyValue::Null => {
+            // 2-byte content + 2-byte pad; reader consumes 4 bytes for NULL.
+            out.extend_from_slice(&[0u8; 2]);
+            pad2(out);
+        }
         TnefPropertyValue::Boolean(b) => {
-            out.push(if *b { 1 } else { 0 });
-            pad3(out);
+            // 2-byte WORD value per MS-OXCDATA section 2.11.1, padded to 4.
+            out.extend_from_slice(&(if *b { 1u16 } else { 0u16 }).to_le_bytes());
+            pad2(out);
         }
         TnefPropertyValue::Integer16(v) => {
             out.extend_from_slice(&v.to_le_bytes());
@@ -1100,34 +1209,84 @@ fn emit_variable(out: &mut Vec<u8>, data: &[u8]) {
 fn pad2(out: &mut Vec<u8>) {
     out.extend_from_slice(&[0u8; 2]);
 }
-fn pad3(out: &mut Vec<u8>) {
-    out.extend_from_slice(&[0u8; 3]);
-}
 
-/// Encode a Rust string as an ANSI NUL-terminated string (attribute strings
-/// use the OEM code page). Lossy on non-ASCII; meetings use ASCII names.
+/// Encode a Rust string as a Windows-1252 (CP1252) NUL-terminated string.
+/// The TNEF header advertises the OEM attribute-string code page as 1252
+/// (`OEM_CODEPAGE_PRIMARY`), so attribute strings (`attSubject`,
+/// `attMessageClass`, `attBody`, `attMessageID`, attachment filenames,
+/// `attFrom` display name, ...) MUST be bytes in that code page -- emitting
+/// raw UTF-8 would label a multibyte sequence as Windows-1252 and renders as
+/// mojibake in Outlook. Characters outside the Windows-1252 repertoire are
+/// lossy-replaced with `b'?'` (the spec offers no escape for unmappable
+/// attribute strings; meeting-correlation fields are conventionally ASCII,
+/// so this is a safe fallback).
 fn ansi_cstr(s: &str) -> Vec<u8> {
     let mut v = Vec::with_capacity(s.len() + 1);
-    v.extend(s.bytes());
+    v.extend(s.chars().map(encode_cp1252));
     v.push(0);
     v
+}
+
+/// Map a single `char` to its Windows-1252 byte. The 0x80-0x9F range in
+/// Windows-1252 carries the well-known punctuation/letter extensions
+/// (€‚ƒ„…†‡ˆ‰Š‹ŒŽ‘’“”•–—˜™š›œžŸ) rather than C1 control codes.
+fn encode_cp1252(c: char) -> u8 {
+    let u = c as u32;
+    match u {
+        0..=0x7F => u as u8,
+        0xA0..=0xFF => u as u8,
+        // Windows-1252 extensions in the 0x80-0x9F range.
+        0x20AC => 0x80, // EURO SIGN
+        0x201A => 0x82, // SINGLE LOW-9 QUOTATION MARK
+        0x0192 => 0x83, // LATIN SMALL LETTER F WITH HOOK
+        0x201E => 0x84, // DOUBLE LOW-9 QUOTATION MARK
+        0x2026 => 0x85, // HORIZONTAL ELLIPSIS
+        0x2020 => 0x86, // DAGGER
+        0x2021 => 0x87, // DOUBLE DAGGER
+        0x02C6 => 0x88, // MODIFIER LETTER CIRCUMFLEX ACCENT
+        0x2030 => 0x89, // PER MILLE SIGN
+        0x0160 => 0x8A, // LATIN CAPITAL LETTER S WITH CARON
+        0x2039 => 0x8B, // SINGLE LEFT-POINTING ANGLE QUOTATION MARK
+        0x0152 => 0x8C, // LATIN CAPITAL LIGATURE OE
+        0x017D => 0x8E, // LATIN CAPITAL LETTER Z WITH CARON
+        0x2018 => 0x91, // LEFT SINGLE QUOTATION MARK
+        0x2019 => 0x92, // RIGHT SINGLE QUOTATION MARK
+        0x201C => 0x93, // LEFT DOUBLE QUOTATION MARK
+        0x201D => 0x94, // RIGHT DOUBLE QUOTATION MARK
+        0x2022 => 0x95, // BULLET
+        0x2013 => 0x96, // EN DASH
+        0x2014 => 0x97, // EM DASH
+        0x02DC => 0x98, // SMALL TILDE
+        0x2122 => 0x99, // TRADE MARK SIGN
+        0x0161 => 0x9A, // LATIN SMALL LETTER S WITH CARON
+        0x203A => 0x9B, // SINGLE RIGHT-POINTING ANGLE QUOTATION MARK
+        0x0153 => 0x9C, // LATIN SMALL LIGATURE OE
+        0x017E => 0x9E, // LATIN SMALL LETTER Z WITH CARON
+        0x0178 => 0x9F, // LATIN CAPITAL LETTER Y WITH DIAERESIS
+        _ => b'?',
+    }
 }
 
 // ---------------------------------------------------------------------------
 // PidTagTnefCorrelationKey named property
 // ---------------------------------------------------------------------------
 
-/// The named-property GUID under which Outlook correlates a TNEF attachment
-/// with its message. The PSETID_Meeting `/7` GUID (used by meeting invites).
+/// The named-property GUID identifying Outlook's `PSETID_Meeting` property
+/// set `{6ED8DA90-450B-101B-98DA-00AA003F1305}` (MS-OXPROPS "Commonly Used
+/// Property Sets"). Callers that build named-property voting/meeting props
+/// use the value returned by `meeting_property_guid()` so Outlook resolves
+/// those properties under the correct namespace.
 const CORRELATION_GUID: [u8; 16] = [
-    0x7c, 0xfd, 0x71, 0x00, 0xa1, 0x8e, 0xd0, 0x11, 0x9b, 0x4d, 0x00, 0xc0, 0x4f, 0xa3, 0x5b,
-    0x0c,
+    0x90, 0xda, 0xd8, 0x6e, 0x0b, 0x45, 0x1b, 0x10, 0x98, 0xda, 0x00, 0xaa, 0x00, 0x3f, 0x13,
+    0x05,
 ];
 
-/// Build a `PidTagTnefCorrelationKey` named property whose value is the
-/// delivered message's search key, so the recipient client correlates the
-/// `winmail.dat` blob with the right message ([MS-OXTNEF] ┬¦2.1.3.3.6 maps this
-/// to `PidTagSearchKey`). The `correlation_value` is the search-key bytes.
+/// Build a `PidTagTnefCorrelationKey` (standard property tag `0x007F`,
+/// `PtypBinary` -- NOT a named property, so `named` is `None`) whose value is
+/// the delivered message's search key, so the recipient client correlates the
+/// `winmail.dat` blob with the right message ([MS-OXTNEF] section 2.1.3.3.6
+/// maps this to `PidTagSearchKey`). The `correlation_value` is the
+/// search-key bytes.
 pub fn tnef_correlation_property(correlation_value: &[u8]) -> TnefProperty {
     TnefProperty {
         tag: crate::mapi::data::PropertyTag::new(
@@ -1307,5 +1466,161 @@ mod tests {
         };
         let parsed = parse(&build(&msg)).expect("dtr round-trip");
         assert_eq!(parsed.date_sent, Some(dt));
+    }
+
+    #[test]
+    fn signature_and_version_match_spec_wire_bytes() {
+        // [MS-OXTNEF] section 2.1.3.2/2.1.3.3.1: signature is the 4-byte LE
+        // value 0x223E9F78 (bytes 78 9F 3E 22) and attTnefVersion data is
+        // 00 00 01 00. Round-trip tests do NOT catch a wrong constant (build
+        // and parse both reference it), so assert the on-the-wire bytes.
+        let bytes = build(&TnefMessage::default());
+        assert_eq!(&bytes[..4], &[0x78, 0x9F, 0x3E, 0x22], "TNEF signature");
+        assert_eq!(TNEF_SIGNATURE, 0x223E_9F78);
+        assert_eq!(TNEF_VERSION_DATA, [0x00, 0x00, 0x01, 0x00]);
+    }
+
+    #[test]
+    fn reader_rejects_non_canonical_version_data() {
+        // The reader MUST reject attTnefVersion data other than 00 00 01 00.
+        let mut bytes = build(&TnefMessage::default());
+        // Layout: signature(4) + legacy_key(2) + [lvl(1)+id(4)+len(4)+data(4)+
+        // checksum(2)] for attTnefVersion. The 4 data bytes + trailing 16-bit
+        // checksum are patched together so the patched packet's checksum still
+        // validates and the parser reaches the version-data comparison
+        // (otherwise it would fail earlier with BadChecksum).
+        let off = 4 + 2 + 1 + 4 + 4;
+        assert_eq!(&bytes[off..off + 4], &[0x00, 0x00, 0x01, 0x00]);
+        bytes[off + 3] = 0x02;
+        let calc = checksum(&bytes[off..off + 4]);
+        bytes[off + 4] = (calc & 0xFF) as u8;
+        bytes[off + 5] = ((calc >> 8) & 0xFF) as u8;
+        let err = parse(&bytes).expect_err("non-canonical version rejected");
+        assert!(matches!(err, TnefError::BadVersion), "{err:?}");
+    }
+
+    #[test]
+    fn boolean_scalar_round_trips_and_keeps_alignment() {
+        // [MS-OXTNEF] encodes a Boolean scalar as a 2-byte WORD padded to 4
+        // bytes. A following second property in the SAME message-props list
+        // asserts the reader consumed all 4 bytes — proving alignment is not
+        // off-by-2 (the old 1-byte reader misaligned every Boolean).
+        let props = vec![
+            TnefProperty {
+                tag: crate::mapi::data::PropertyTag::new(
+                    crate::mapi::data::PropertyType::PTYP_BOOLEAN,
+                    0x0FFF, // arbitrary 0x000B-typed prop id for the alignment test
+                ),
+                named: None,
+                value: TnefPropertyValue::Boolean(true),
+            },
+            TnefProperty {
+                tag: crate::mapi::data::PropertyTag::new(
+                    crate::mapi::data::PropertyType::PTYP_INTEGER32,
+                    0x0017, // PR_IMPORTANCE
+                ),
+                named: None,
+                value: TnefPropertyValue::Integer32(5),
+            },
+        ];
+        let msg = TnefMessage {
+            props,
+            ..Default::default()
+        };
+        let parsed = parse(&build(&msg)).expect("boolean+int round-trip");
+        assert_eq!(parsed.props.len(), 2);
+        assert_eq!(parsed.props[0].value, TnefPropertyValue::Boolean(true));
+        assert_eq!(parsed.props[1].value, TnefPropertyValue::Integer32(5));
+    }
+
+    #[test]
+    fn mv_binary_property_round_trips() {
+        // MV_BINARY (0x1102): the element type MUST be 0x0102 after stripping
+        // the 0x1000 MV flag (`ptype & 0x0FFF`), and the variable elements
+        // must round-trip with EXACTLY ONE per-element size prefix each (no
+        // double-prefix on re-encode). Two unequal payloads exercise framing.
+        use crate::mapi::data::{PropertyTag, PropertyType};
+        let props = vec![TnefProperty {
+            tag: PropertyTag::new(PropertyType(0x1102), 0x1004),
+            named: None,
+            value: TnefPropertyValue::Multi {
+                element_type: 0x0102,
+                elements: vec![vec![0xAA, 0xBB], vec![0x01, 0x02, 0x03, 0x04]],
+            },
+        }];
+        let msg = TnefMessage {
+            props,
+            ..Default::default()
+        };
+        let built = build(&msg);
+        let parsed = parse(&built).expect("MV_BINARY round-trip");
+        assert_eq!(parsed.props.len(), 1);
+        match &parsed.props[0].value {
+            TnefPropertyValue::Multi {
+                element_type,
+                elements,
+            } => {
+                assert_eq!(*element_type, 0x0102, "MV flag stripped to base type");
+                assert_eq!(elements.len(), 2);
+                assert_eq!(elements[0], vec![0xAA, 0xBB]);
+                assert_eq!(elements[1], vec![0x01, 0x02, 0x03, 0x04]);
+            }
+            other => panic!("expected Multi, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn attachment_render_position_round_trips() {
+        // ATTACH_REND_DATA decoding preserves a nonzero AttachPosition so a
+        // parse->build round-trip does not reset placement to 0.
+        let att = TnefAttachment {
+            filename: "img.png".to_string(),
+            transport_filename: "img.png".to_string(),
+            render_position: 12345,
+            data: vec![0x01, 0x02, 0x03],
+            props: Vec::new(),
+        };
+        let msg = TnefMessage {
+            attachments: vec![att],
+            ..Default::default()
+        };
+        let parsed = parse(&build(&msg)).expect("rend-data round-trip");
+        assert_eq!(parsed.attachments.len(), 1);
+        assert_eq!(parsed.attachments[0].render_position, 12345);
+    }
+
+    #[test]
+    fn cp1252_string_attribute_round_trips_without_mojibake() {
+        // Non-ASCII attribute strings are emitted as Windows-1252 (the header
+        // advertises code page 1252); a round-trip preserves the glyphs that
+        // 1252 can represent so Outlook does not display mojibake.
+        let subject = "Café — student € rate"; // contains é, em-dash, euro
+        let msg = TnefMessage {
+            subject: subject.to_string(),
+            ..Default::default()
+        };
+        let bytes = build(&msg);
+        // Subject is an ANSI string attribute (Windows-1252 bytes). The string
+        // 'é' is 0xE9 in 1252, '€' is 0x80, em-dash is 0x97 — NOT their UTF-8
+        // multibyte forms.
+        assert!(bytes.windows(subject.len().min(8)).any(|w| w.contains(&0xE9)));
+        assert!(bytes.contains(&0x80), "euro sign encoded as 0x80");
+        assert!(bytes.contains(&0x97), "em-dash encoded as 0x97");
+        let parsed = parse(&bytes).expect("cp1252 subject round-trip");
+        assert_eq!(parsed.subject, subject);
+    }
+
+    #[test]
+    fn meeting_property_guid_is_psetid_meeting() {
+        // The named-property namespace for meeting/voting props must be the
+        // canonical PSETID_Meeting GUID {6ED8DA90-450B-101B-98DA-00AA003F1305}.
+        let g = meeting_property_guid();
+        assert_eq!(
+            g,
+            [
+                0x90, 0xda, 0xd8, 0x6e, 0x0b, 0x45, 0x1b, 0x10, 0x98, 0xda, 0x00, 0xaa, 0x00,
+                0x3f, 0x13, 0x05
+            ]
+        );
     }
 }
