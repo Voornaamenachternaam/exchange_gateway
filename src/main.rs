@@ -130,8 +130,7 @@ async fn autodiscover_xml(
         let dir_eligible = match decode_basic_auth(&headers) {
             Some((user, pass)) => {
                 let auth_user = util::canonicalize_username(&user, &state.cfg.mail_domain);
-                let request_canonical =
-                    util::canonicalize_username(&email, &state.cfg.mail_domain);
+                let request_canonical = util::canonicalize_username(&email, &state.cfg.mail_domain);
                 let secret_pass = secrecy::SecretString::from(pass);
                 !auth_user.is_empty()
                     && auth_user == request_canonical
@@ -385,10 +384,7 @@ async fn oab_download(
 /// ECP (Exchange Control Panel) landing page (no trailing path). Delegates to
 /// `ecp::handle_ecp` with `path = None` so the bare `/ecp` and `/ecp/` routes
 /// render the same authenticated landing page as a deep-linked path.
-async fn ecp_root(
-    State(state): State<Arc<AppState>>,
-    headers: axum::http::HeaderMap,
-) -> Response {
+async fn ecp_root(State(state): State<Arc<AppState>>, headers: axum::http::HeaderMap) -> Response {
     ecp::handle_ecp(State(state), None, headers).await
 }
 

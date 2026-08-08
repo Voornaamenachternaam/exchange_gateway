@@ -1100,7 +1100,11 @@ pub struct RopGetAttachmentTableRequest {
     pub table_flags: u8,
 }
 impl RopGetAttachmentTableRequest {
-    pub fn decode_body(after_header: &mut Buf<'_>, input: u8, output: u8) -> Result<Self, DecodeError> {
+    pub fn decode_body(
+        after_header: &mut Buf<'_>,
+        input: u8,
+        output: u8,
+    ) -> Result<Self, DecodeError> {
         let table_flags = after_header.take_u8()?;
         Ok(Self {
             input_handle_index: input,
@@ -1145,7 +1149,11 @@ pub struct RopOpenAttachmentRequest {
     pub attachment_id: u32,
 }
 impl RopOpenAttachmentRequest {
-    pub fn decode_body(after_header: &mut Buf<'_>, input: u8, output: u8) -> Result<Self, DecodeError> {
+    pub fn decode_body(
+        after_header: &mut Buf<'_>,
+        input: u8,
+        output: u8,
+    ) -> Result<Self, DecodeError> {
         let open_attachment_flags = after_header.take_u8()?;
         let attachment_id = after_header.take_u32_le()?;
         Ok(Self {
@@ -1334,7 +1342,6 @@ impl RopGetValidAttachmentsSuccess {
         }
     }
 }
-
 
 // ---- RopMoveCopyMessages (0x33) ----------------------------------------------
 
@@ -2416,7 +2423,6 @@ impl RopCommitStreamResponse {
     }
 }
 
-
 // ---- Table navigation ROPs (§2.2.5.x and §2.2.7.x) --------------------------
 //
 // These ROPs drive the Table handle's cursor / restriction / sort order /
@@ -3028,7 +3034,12 @@ impl RopFastTransferDestinationConfigureRequest {
     pub fn decode_after_ropid(cur: &mut Buf<'_>) -> Result<Self, DecodeError> {
         let source_fmt = cur.take_u8()?;
         let sync_flags = cur.take_u8()?;
-        Ok(Self { input_handle_index: 0, output_handle_index: 0, source_fmt, sync_flags })
+        Ok(Self {
+            input_handle_index: 0,
+            output_handle_index: 0,
+            source_fmt,
+            sync_flags,
+        })
     }
 }
 
@@ -3047,7 +3058,10 @@ impl RopFastTransferDestinationPutBufferRequest {
     pub fn decode_after_ropid(cur: &mut Buf<'_>) -> Result<Self, DecodeError> {
         let size = usize::from(cur.take_u16_le()?);
         let data = cur.take_bytes(size)?.to_vec();
-        Ok(Self { input_handle_index: 0, data })
+        Ok(Self {
+            input_handle_index: 0,
+            data,
+        })
     }
 }
 
@@ -3118,7 +3132,13 @@ impl RopSynchronizationConfigureRequest {
         let sync_type = cur.take_u8()?;
         let len = usize::from(cur.take_u16_le()?);
         let sync_state = cur.take_bytes(len)?.to_vec();
-        Ok(Self { input_handle_index: 0, output_handle_index: 0, sync_flags, sync_type, sync_state })
+        Ok(Self {
+            input_handle_index: 0,
+            output_handle_index: 0,
+            sync_flags,
+            sync_type,
+            sync_state,
+        })
     }
 }
 
@@ -3494,7 +3514,10 @@ mod tests {
             return_value: RopErrorCode::DiskError,
             problems: vec![crate::mapi::data::PropertyProblem {
                 index: 0,
-                tag: crate::mapi::data::PropertyTag::new(crate::mapi::data::PropertyType::PTYP_STRING, 0x0037),
+                tag: crate::mapi::data::PropertyTag::new(
+                    crate::mapi::data::PropertyType::PTYP_STRING,
+                    0x0037,
+                ),
                 error_code: 0x8004_0102,
             }],
         };
@@ -3535,12 +3558,18 @@ mod tests {
         let problems = vec![
             crate::mapi::data::PropertyProblem {
                 index: 0,
-                tag: crate::mapi::data::PropertyTag::new(crate::mapi::data::PropertyType::PTYP_STRING, 0x0037), // PR_SUBJECT
+                tag: crate::mapi::data::PropertyTag::new(
+                    crate::mapi::data::PropertyType::PTYP_STRING,
+                    0x0037,
+                ), // PR_SUBJECT
                 error_code: 0x8004_0102,
             },
             crate::mapi::data::PropertyProblem {
                 index: 1,
-                tag: crate::mapi::data::PropertyTag::new(crate::mapi::data::PropertyType::PTYP_INTEGER32, 0x0017), // PR_IMPORTANCE
+                tag: crate::mapi::data::PropertyTag::new(
+                    crate::mapi::data::PropertyType::PTYP_INTEGER32,
+                    0x0017,
+                ), // PR_IMPORTANCE
                 error_code: 0x8004_0102,
             },
         ];
@@ -3635,8 +3664,7 @@ mod tests {
         tag.encode(&mut body);
         body.push(0x00);
         let mut cur = Buf::new(&body);
-        let req =
-            RopOpenStreamRequest::decode_body(&mut cur, 3, 7).expect("decode");
+        let req = RopOpenStreamRequest::decode_body(&mut cur, 3, 7).expect("decode");
         assert_eq!(req.input_handle_index, 3);
         assert_eq!(req.output_handle_index, 7);
         assert_eq!(req.property_tag, tag);
@@ -4037,18 +4065,9 @@ mod tests {
         let count = u16::from_le_bytes([out[6], out[7]]);
         assert_eq!(count, 3);
         // attachment_id[0] = 0, [1] = 1, [2] = 2 (the vec we supplied).
-        assert_eq!(
-            u32::from_le_bytes([out[8], out[9], out[10], out[11]]),
-            0
-        );
-        assert_eq!(
-            u32::from_le_bytes([out[12], out[13], out[14], out[15]]),
-            1
-        );
-        assert_eq!(
-            u32::from_le_bytes([out[16], out[17], out[18], out[19]]),
-            2
-        );
+        assert_eq!(u32::from_le_bytes([out[8], out[9], out[10], out[11]]), 0);
+        assert_eq!(u32::from_le_bytes([out[12], out[13], out[14], out[15]]), 1);
+        assert_eq!(u32::from_le_bytes([out[16], out[17], out[18], out[19]]), 2);
         assert_eq!(out.len(), 6 + 2 + 3 * 4);
     }
 
@@ -4244,7 +4263,10 @@ mod tests {
         let mut cur = Buf::new(&body);
         let req = RopRestrictRequest::decode(&mut cur).expect("decode");
         assert_eq!(req.restrict_flags, 0);
-        let crate::mapi::restrict::SRestriction::Property { relop, tag: rtag, .. } = &req.restriction else {
+        let crate::mapi::restrict::SRestriction::Property {
+            relop, tag: rtag, ..
+        } = &req.restriction
+        else {
             panic!("expected Property restriction, got {:?}", req.restriction);
         };
         assert_eq!(*relop, crate::mapi::restrict::RelOp::EQ);
@@ -4282,7 +4304,10 @@ mod tests {
         assert_eq!(out[1], 1);
         // TransferBufferSize is the 2-byte field immediately preceding Data.
         let buf_size_off = out.len() - 2 - 2; // 2 data + 2 size
-        assert_eq!(u16::from_le_bytes([out[buf_size_off], out[buf_size_off + 1]]), 2);
+        assert_eq!(
+            u16::from_le_bytes([out[buf_size_off], out[buf_size_off + 1]]),
+            2
+        );
         assert_eq!(&out[out.len() - 2..], &[0xAB, 0xCD]);
         // RopId(1) + InHandle(1) + RV(4) + Status(2) + InProg(2) + Total(2)
         // + Reserved(1) + Size(2) + Data(2) == 17.
@@ -4294,14 +4319,16 @@ mod tests {
         // Request: DataSize(2 LE) + Data.
         let body: Vec<u8> = vec![2, 0, 0xAA, 0xBB];
         let mut cur = Buf::new(&body);
-        let req = RopFastTransferDestinationPutBufferRequest::decode_after_ropid(&mut cur).expect("decode");
+        let req = RopFastTransferDestinationPutBufferRequest::decode_after_ropid(&mut cur)
+            .expect("decode");
         assert_eq!(req.data, vec![0xAA, 0xBB]);
         assert_eq!(cur.remaining(), 0);
 
         // Empty-data (end-of-stream) marker.
         let body2: Vec<u8> = vec![0, 0];
         let mut cur2 = Buf::new(&body2);
-        let req2 = RopFastTransferDestinationPutBufferRequest::decode_after_ropid(&mut cur2).expect("decode empty");
+        let req2 = RopFastTransferDestinationPutBufferRequest::decode_after_ropid(&mut cur2)
+            .expect("decode empty");
         assert!(req2.data.is_empty());
 
         let mut out = Vec::new();
@@ -4322,7 +4349,8 @@ mod tests {
         // SourceFmt(1) + SyncFlags(1).
         let body: Vec<u8> = vec![0x00, 0x01];
         let mut cur = Buf::new(&body);
-        let req = RopFastTransferDestinationConfigureRequest::decode_after_ropid(&mut cur).expect("decode");
+        let req = RopFastTransferDestinationConfigureRequest::decode_after_ropid(&mut cur)
+            .expect("decode");
         assert_eq!(req.source_fmt, 0);
         assert_eq!(req.sync_flags, 1);
         assert_eq!(cur.remaining(), 0);
@@ -4533,7 +4561,11 @@ mod tests {
             old_parent_folder_id: None,
         }
         .encode(&mut out);
-        assert_eq!(out.len(), 2 + 8 + 8 + 8 + 8, "Old* bytes always present for Moved");
+        assert_eq!(
+            out.len(),
+            2 + 8 + 8 + 8 + 8,
+            "Old* bytes always present for Moved"
+        );
         assert_eq!(&out[18..26], &0u64.to_le_bytes(), "OldFolderId sentinel 0");
         assert_eq!(&out[26..34], &0u64.to_le_bytes(), "OldMessageId sentinel 0");
 
@@ -4549,7 +4581,11 @@ mod tests {
             old_parent_folder_id: None,
         }
         .encode(&mut out);
-        assert_eq!(out.len(), 2 + 8 + 8 + 8 + 8, "Old* bytes always present for Copied");
+        assert_eq!(
+            out.len(),
+            2 + 8 + 8 + 8 + 8,
+            "Old* bytes always present for Copied"
+        );
     }
 
     #[test]
@@ -4566,7 +4602,7 @@ mod tests {
             message_id: 0, // not emitted (0x8000 clear)
             parent_folder_id: Some(7),
             old_folder_id: Some(8),
-            old_message_id: Some(99),    // ignored for folder event
+            old_message_id: Some(99), // ignored for folder event
             old_parent_folder_id: Some(9),
         }
         .encode(&mut out);

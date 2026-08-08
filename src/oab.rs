@@ -97,7 +97,10 @@ fn unauth_response() -> Response {
 /// "Sun, 06 Nov 1994 08:49:37 GMT"). Returns a fixed sentinel for times
 /// before the UNIX epoch (which never occur here).
 fn http_date(time: SystemTime) -> String {
-    let secs = time.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
+    let secs = time
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
     let dt = chrono::DateTime::<chrono::Utc>::from_timestamp(secs as i64, 0)
         .unwrap_or_else(|| chrono::DateTime::<chrono::Utc>::from_timestamp(0, 0).unwrap());
     dt.format("%a, %d %b %Y %H:%M:%S GMT").to_string()
@@ -205,7 +208,9 @@ async fn serve_manifest(state: &AppState, headers: &HeaderMap) -> Response {
     let (size, etag) = oab_size_and_etag(state).await;
     let last_modified = http_date(SystemTime::now() - Duration::from_secs(60));
 
-    if let Some(req_etag) = headers.get(header::IF_NONE_MATCH).and_then(|v| v.to_str().ok())
+    if let Some(req_etag) = headers
+        .get(header::IF_NONE_MATCH)
+        .and_then(|v| v.to_str().ok())
         && etag_matches(req_etag, &etag)
     {
         return (
@@ -290,7 +295,9 @@ async fn serve_data_file(state: &AppState, headers: &HeaderMap) -> Response {
     let etag = payload_etag(&payload);
     let last_modified = http_date(SystemTime::now() - Duration::from_secs(60));
 
-    if let Some(req_etag) = headers.get(header::IF_NONE_MATCH).and_then(|v| v.to_str().ok())
+    if let Some(req_etag) = headers
+        .get(header::IF_NONE_MATCH)
+        .and_then(|v| v.to_str().ok())
         && etag_matches(req_etag, &etag)
     {
         return (
@@ -426,31 +433,30 @@ async fn build_oab_payload(state: &AppState) -> Vec<u8> {
     // the conventional GAL "match all" wildcard `"*"`. If the backing
     // directory rejects the wildcard the catch-all below falls back to an
     // empty (header-only) OAB — the OAB endpoint still answers, never 404s.
-    let list = match tokio::task::spawn_blocking(move || {
-        dir.search_blocking("*", Some(MAX_OAB_CONTACTS))
-    })
-    .await
-    {
-        Ok(Ok(res)) => {
-            if res.is_truncated {
-                warn!(
-                    target: "oab",
-                    total_estimate = res.total_estimate,
-                    max = MAX_OAB_CONTACTS,
-                    "Directory listing truncated; OAB will be capped"
-                );
+    let list =
+        match tokio::task::spawn_blocking(move || dir.search_blocking("*", Some(MAX_OAB_CONTACTS)))
+            .await
+        {
+            Ok(Ok(res)) => {
+                if res.is_truncated {
+                    warn!(
+                        target: "oab",
+                        total_estimate = res.total_estimate,
+                        max = MAX_OAB_CONTACTS,
+                        "Directory listing truncated; OAB will be capped"
+                    );
+                }
+                res.contacts
             }
-            res.contacts
-        }
-        Ok(Err(e)) => {
-            warn!(target: "oab", error = %e, "Directory search failed; serving empty OAB");
-            Vec::new()
-        }
-        Err(e) => {
-            warn!(target: "oab", error = %e, "Directory task join failed; serving empty OAB");
-            Vec::new()
-        }
-    };
+            Ok(Err(e)) => {
+                warn!(target: "oab", error = %e, "Directory search failed; serving empty OAB");
+                Vec::new()
+            }
+            Err(e) => {
+                warn!(target: "oab", error = %e, "Directory task join failed; serving empty OAB");
+                Vec::new()
+            }
+        };
 
     let recs = normalise_records(&list);
     build_oab_from_records(&recs)
@@ -603,8 +609,14 @@ mod tests {
 
     #[test]
     fn test_email_local_part() {
-        assert_eq!(email_local_part("alice@example.com").as_deref(), Some("alice"));
-        assert_eq!(email_local_part("bob.name@example.org").as_deref(), Some("bob.name"));
+        assert_eq!(
+            email_local_part("alice@example.com").as_deref(),
+            Some("alice")
+        );
+        assert_eq!(
+            email_local_part("bob.name@example.org").as_deref(),
+            Some("bob.name")
+        );
         assert_eq!(email_local_part("@nope.com"), None);
         assert_eq!(email_local_part("norealat"), None);
     }
@@ -671,7 +683,7 @@ mod tests {
             rdn: "/cn=x".to_string(),          // 5 bytes + NUL ⇒ ends at offset 6
             smtp: "a@b.com".to_string(),       // 7 bytes + NUL ⇒ ends 14
             display_name: "Alice".to_string(), // 5 + NUL ⇒ 6
-            alias: "alice".to_string(),         // 5 + NUL ⇒ 6
+            alias: "alice".to_string(),        // 5 + NUL ⇒ 6
         };
         let out = build_oab_from_records(&[rec]);
         // Header.
@@ -699,10 +711,16 @@ mod tests {
         assert_eq!(&blob[0..6], b"/cn=x\0".as_ref());
         // SMTP "a@b.com\0" is 8 bytes ⇒ disp offset = 6 + 8 = 14.
         assert_eq!(o_disp, 6 + 8);
-        assert_eq!(&blob[o_smtp as usize..o_disp as usize], b"a@b.com\0".as_ref());
+        assert_eq!(
+            &blob[o_smtp as usize..o_disp as usize],
+            b"a@b.com\0".as_ref()
+        );
         // DispName "Alice\0" is 6 bytes ⇒ alias offset = disp + 6.
         assert_eq!(o_alias, o_disp + 6);
-        assert_eq!(&blob[o_disp as usize..o_alias as usize], b"Alice\0".as_ref());
+        assert_eq!(
+            &blob[o_disp as usize..o_alias as usize],
+            b"Alice\0".as_ref()
+        );
         assert_eq!(&blob[o_alias as usize..], b"alice\0".as_ref());
     }
 }

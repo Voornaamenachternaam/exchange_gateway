@@ -31,23 +31,21 @@ use crate::mapi::logon::{LogonOutcome, logon_basic};
 // `secrecy::SecretString` parameters carry the password across the ROP
 // dispatch boundary; `ExposeSecret` is required to call `expose_secret()`
 // for the CalDAV/CardDAV `basic_auth` password (which take a plain `&str`).
-use secrecy::ExposeSecret;
 use crate::mapi::rops::{
     Buf, DecodeError, RopCommitStreamRequest, RopCommitStreamResponse, RopCopyToRequest,
-    RopCopyToSuccess, RopCreateAttachmentRequest, RopCreateMessageRequest,
-    RopCreateMessageSuccess, RopDeleteAttachmentRequest, RopDeleteAttachmentResponse,
-    RopDeleteMessagesRequest, RopDeleteMessagesResponse, RopDeletePropertiesRequest,
-    RopErrorCode, RopErrorResponse, RopGetAttachmentTableRequest, RopGetAttachmentTableSuccess,
-    RopGetPropertiesAllRequest, RopGetPropertiesSpecificRequest, RopGetStatusRequest,
-    RopGetStreamSizeRequest, RopGetStreamSizeSuccess, RopGetValidAttachmentsRequest,
-    RopGetValidAttachmentsSuccess, RopHeader4, RopId, RopLogonRequest, RopLogonSuccess,
-    RopMoveCopyMessagesRequest, RopMoveCopyMessagesResponse, RopOpenAttachmentRequest,
-    RopOpenAttachmentSuccess, RopOpenStreamRequest, RopOpenStreamSuccess, RopOpenTableRequest,
-    RopPropertyWriteSuccess, RopQueryRowsRequest, RopReadStreamRequest, RopReadStreamSuccess,
+    RopCopyToSuccess, RopCreateAttachmentRequest, RopCreateMessageRequest, RopCreateMessageSuccess,
+    RopDeleteAttachmentRequest, RopDeleteAttachmentResponse, RopDeleteMessagesRequest,
+    RopDeleteMessagesResponse, RopDeletePropertiesRequest, RopErrorCode, RopErrorResponse,
+    RopGetAttachmentTableRequest, RopGetAttachmentTableSuccess, RopGetPropertiesAllRequest,
+    RopGetPropertiesSpecificRequest, RopGetStatusRequest, RopGetStreamSizeRequest,
+    RopGetStreamSizeSuccess, RopGetValidAttachmentsRequest, RopGetValidAttachmentsSuccess,
+    RopHeader4, RopId, RopLogonRequest, RopLogonSuccess, RopMoveCopyMessagesRequest,
+    RopMoveCopyMessagesResponse, RopOpenAttachmentRequest, RopOpenAttachmentSuccess,
+    RopOpenStreamRequest, RopOpenStreamSuccess, RopOpenTableRequest, RopPropertyWriteSuccess,
+    RopQueryRowsRequest, RopReadStreamRequest, RopReadStreamSuccess,
     RopRegisterNotificationResponse, RopReleaseRequest, RopSaveChangesAttachmentRequest,
-    RopSaveChangesAttachmentResponse,
-    RopSaveChangesMessageRequest, RopSaveChangesMessageSuccess, RopSeekStreamRequest,
-    RopSeekStreamSuccess, RopSetColumnsRequest, RopSetMessageReadFlagRequest,
+    RopSaveChangesAttachmentResponse, RopSaveChangesMessageRequest, RopSaveChangesMessageSuccess,
+    RopSeekStreamRequest, RopSeekStreamSuccess, RopSetColumnsRequest, RopSetMessageReadFlagRequest,
     RopSetPropertiesRequest, RopSetStreamSizeRequest, RopSetStreamSizeResponse,
     RopSubmitMessageRequest, RopSubmitMessageResponse, RopTransportSendFailure,
     RopTransportSendRequest, RopTransportSendSuccess, RopWriteStreamRequest, RopWriteStreamSuccess,
@@ -57,23 +55,24 @@ use crate::mapi::session::{
 };
 use crate::mapi::store;
 use crate::mapi::transport::{MapiRequest, MapiRequestType, MapiResponse, ResponseCode, RpcKind};
+use secrecy::ExposeSecret;
 
-use crate::mapi::rops::{
-    RopCreateBookmarkRequest, RopCreateBookmarkResponse, RopFreeBookmarkRequest,
-    RopFreeBookmarkResponse, RopNotifyResponse, RopPendingResponse, RopQueryPositionRequest,
-    RopQueryPositionResponse, RopResetTableRequest, RopResetTableResponse, RopRestrictRequest,
-    RopRestrictResponse, RopSeekRowBookmarkRequest, RopSeekRowBookmarkResponse,
-    RopSeekRowFractionalRequest, RopSeekRowFractionalResponse, RopSeekRowRequest, RopSeekRowResponse,
-    RopSortTableRequest, RopSortTableResponse, SortOrder, RopFastTransferDestinationConfigureRequest,
-    RopFastTransferDestinationPutBufferRequest, RopFastTransferDestinationPutBufferResponse,
-    RopFastTransferSourceCopyFolderRequest, RopFastTransferSourceCopyMessagesRequest,
-    RopFastTransferSourceCopyPropertiesRequest, RopFastTransferSourceCopyToRequest,
-    RopFastTransferSourceGetBufferRequest, RopFastTransferSourceGetBufferSuccess,
-    RopFastTransferSourceOpenResponse, RopSynchronizationAckResponse,
-    RopSynchronizationConfigureRequest,
-};
-use crate::mapi::restrict::{CellForMatcher, SRestriction, restriction_referenced_tags};
 use crate::mapi::fxics::{IcsStreamBuilder, Marker, Tokenizer};
+use crate::mapi::restrict::{CellForMatcher, SRestriction, restriction_referenced_tags};
+use crate::mapi::rops::{
+    RopCreateBookmarkRequest, RopCreateBookmarkResponse,
+    RopFastTransferDestinationConfigureRequest, RopFastTransferDestinationPutBufferRequest,
+    RopFastTransferDestinationPutBufferResponse, RopFastTransferSourceCopyFolderRequest,
+    RopFastTransferSourceCopyMessagesRequest, RopFastTransferSourceCopyPropertiesRequest,
+    RopFastTransferSourceCopyToRequest, RopFastTransferSourceGetBufferRequest,
+    RopFastTransferSourceGetBufferSuccess, RopFastTransferSourceOpenResponse,
+    RopFreeBookmarkRequest, RopFreeBookmarkResponse, RopNotifyResponse, RopPendingResponse,
+    RopQueryPositionRequest, RopQueryPositionResponse, RopResetTableRequest, RopResetTableResponse,
+    RopRestrictRequest, RopRestrictResponse, RopSeekRowBookmarkRequest, RopSeekRowBookmarkResponse,
+    RopSeekRowFractionalRequest, RopSeekRowFractionalResponse, RopSeekRowRequest,
+    RopSeekRowResponse, RopSortTableRequest, RopSortTableResponse, RopSynchronizationAckResponse,
+    RopSynchronizationConfigureRequest, SortOrder,
+};
 
 /// Bundle of state the handler needs. Constructed once in `main.rs` (or a
 /// test fixture) and shared across requests via `Arc`.
@@ -89,8 +88,7 @@ pub struct MapiState {
     /// notification gap where a MAPI-triggered property write raised no event
     /// and the client aggressively re-polled (qodo #9, cubic #30, audit ┬¦2e).
     /// `None` in unit-test fixtures keeps them free of a live manager.
-    pub subscription_manager:
-        Option<std::sync::Arc<crate::notifications::SubscriptionManager>>,
+    pub subscription_manager: Option<std::sync::Arc<crate::notifications::SubscriptionManager>>,
     /// Optional gateway attachment store (the same `AttachmentManager` EWS /
     /// EAS already use). When present, the MAPI attachment write path
     /// (`RopSaveChangesAttachment` after `Blob/upload`, `RopDeleteAttachment`)
@@ -152,7 +150,10 @@ impl MapiState {
     /// production `AppState` builder so `RopSaveChangesAttachment` /
     /// `RopDeleteAttachment` can persist MAPI-composed attachments against
     /// the same SQLite-backed manager EWS/EAS share.
-    pub fn with_attachment_manager(mut self, mgr: std::sync::Arc<crate::attachment::AttachmentManager>) -> Self {
+    pub fn with_attachment_manager(
+        mut self,
+        mgr: std::sync::Arc<crate::attachment::AttachmentManager>,
+    ) -> Self {
         self.attachment_manager = Some(mgr);
         self
     }
@@ -286,11 +287,11 @@ const MAX_NOTIFY_PER_EXECUTE: usize = 32;
 /// clear it.
 fn build_notification_data(event: &crate::mapi::session::NotificationEvent) -> Vec<u8> {
     use crate::mapi::session::NotificationEvent;
-    use crate::mapi::store;
     use crate::mapi::session::{
         NT_NEW_MAIL, NT_OBJECT_COPIED, NT_OBJECT_CREATED, NT_OBJECT_DELETED, NT_OBJECT_MODIFIED,
         NT_OBJECT_MOVED,
     };
+    use crate::mapi::store;
     // MAPI NotificationType bit (LS12) + the (folder, item) backend id strings
     // for the *destination* of the event, plus the optional *source* id strings
     // (only `ItemMoved`/`ItemCopied` carry Old* ids). The encoder treats the
@@ -304,18 +305,24 @@ fn build_notification_data(event: &crate::mapi::session::NotificationEvent) -> V
         Option<&str>,
         Option<&str>,
     ) = match event {
-        NotificationEvent::NewMail { folder_id, item_id, .. } => {
-            (NT_NEW_MAIL, folder_id.as_str(), item_id.as_str(), None, None)
-        }
-        NotificationEvent::ItemCreated { folder_id, item_id, .. } => {
-            (NT_OBJECT_CREATED, folder_id, item_id, None, None)
-        }
-        NotificationEvent::ItemModified { folder_id, item_id, .. } => {
-            (NT_OBJECT_MODIFIED, folder_id, item_id, None, None)
-        }
-        NotificationEvent::ItemDeleted { folder_id, item_id, .. } => {
-            (NT_OBJECT_DELETED, folder_id, item_id, None, None)
-        }
+        NotificationEvent::NewMail {
+            folder_id, item_id, ..
+        } => (
+            NT_NEW_MAIL,
+            folder_id.as_str(),
+            item_id.as_str(),
+            None,
+            None,
+        ),
+        NotificationEvent::ItemCreated {
+            folder_id, item_id, ..
+        } => (NT_OBJECT_CREATED, folder_id, item_id, None, None),
+        NotificationEvent::ItemModified {
+            folder_id, item_id, ..
+        } => (NT_OBJECT_MODIFIED, folder_id, item_id, None, None),
+        NotificationEvent::ItemDeleted {
+            folder_id, item_id, ..
+        } => (NT_OBJECT_DELETED, folder_id, item_id, None, None),
         NotificationEvent::ItemMoved {
             new_folder_id,
             new_item_id,
@@ -583,11 +590,7 @@ fn notification_wait_failure_body() -> Vec<u8> {
 /// event to the right notification Server object, and the `LogonId` the client
 /// associated with the registration. The `NotificationData` body is built by
 /// [`build_notification_data`] per MS-OXCNOTIF §2.2.1.4.1.2.
-fn emit_pending_notifications(
-    out_body: &mut Vec<u8>,
-    session_id: &uuid::Uuid,
-    state: &MapiState,
-) {
+fn emit_pending_notifications(out_body: &mut Vec<u8>, session_id: &uuid::Uuid, state: &MapiState) {
     let drained = state
         .sessions
         .notifications()
@@ -1024,11 +1027,15 @@ async fn execute_one_rop(
                                 src.downcast_ref::<crate::calendar::CalendarItem>()
                             {
                                 r.cells = crate::mapi::converters::calendar_to_cells(
-                                    c, &cs, mailbox_id.as_str(),
+                                    c,
+                                    &cs,
+                                    mailbox_id.as_str(),
                                 );
                             } else if let Some(v) = src.downcast_ref::<String>() {
                                 r.cells = crate::mapi::converters::contact_to_cells(
-                                    v, &cs, mailbox_id.as_str(),
+                                    v,
+                                    &cs,
+                                    mailbox_id.as_str(),
                                 );
                             }
                         }
@@ -1210,10 +1217,13 @@ async fn execute_one_rop(
                             store::typed_null_cells(&req.property_tags)
                         } else {
                             match jc.get_email(&account_id, &backend_id, username, pw).await {
-                                Ok(Some(e)) => match store::email_attachment_by_num(&e, attach_num) {
-                                    Some(att) => {
-                                        store::attachment_to_cells(att, attach_num, &req.property_tags)
-                                    }
+                                Ok(Some(e)) => match store::email_attachment_by_num(&e, attach_num)
+                                {
+                                    Some(att) => store::attachment_to_cells(
+                                        att,
+                                        attach_num,
+                                        &req.property_tags,
+                                    ),
                                     None => store::typed_null_cells(&req.property_tags),
                                 },
                                 Ok(None) => store::typed_null_cells(&req.property_tags),
@@ -1245,8 +1255,7 @@ async fn execute_one_rop(
                         .find_map(|r| {
                             if r.row_id == target
                                 && let Some(src) = r.source
-                                && let Some(c) =
-                                    src.downcast_ref::<crate::calendar::CalendarItem>()
+                                && let Some(c) = src.downcast_ref::<crate::calendar::CalendarItem>()
                             {
                                 Some(crate::mapi::converters::calendar_to_cells(
                                     c,
@@ -1377,9 +1386,7 @@ async fn execute_one_rop(
             let (email_id, kind) = sessions
                 .with_handle(session_id, req.input_handle_index, |h| match h {
                     Handle::Message {
-                        backend_id,
-                        kind,
-                        ..
+                        backend_id, kind, ..
                     } => (backend_id.clone(), *kind),
                     _ => (String::new(), FolderKind::Root),
                 })
@@ -1420,8 +1427,7 @@ async fn execute_one_rop(
                             store::email_attach_nums(&e)
                                 .into_iter()
                                 .map(|num| {
-                                    let att =
-                                        store::email_attachment_by_num(&e, num).cloned();
+                                    let att = store::email_attachment_by_num(&e, num).cloned();
                                     let row_id = u64::from(num);
                                     // Stash the JmapAttachment as the row source so
                                     // QueryRows lazily materialises
@@ -1546,25 +1552,26 @@ async fn execute_one_rop(
                         )
                     } else {
                         match jc.get_email(&account_id, &email_id, username, pw).await {
-                            Ok(Some(e)) => match store::email_attachment_by_num(&e, req.attachment_id) {
-                                Some(att) => (
-                                    RopErrorCode::Success,
-                                    att.blob_id.clone().unwrap_or_default(),
-                                    att.name.clone().unwrap_or_default(),
-                                    att
-                                        .content_type
-                                        .clone()
-                                        .unwrap_or_else(|| "application/octet-stream".to_string()),
-                                    att.size,
-                                ),
-                                None => (
-                                    RopErrorCode::NotFound,
-                                    String::new(),
-                                    String::new(),
-                                    String::new(),
-                                    None,
-                                ),
-                            },
+                            Ok(Some(e)) => {
+                                match store::email_attachment_by_num(&e, req.attachment_id) {
+                                    Some(att) => (
+                                        RopErrorCode::Success,
+                                        att.blob_id.clone().unwrap_or_default(),
+                                        att.name.clone().unwrap_or_default(),
+                                        att.content_type.clone().unwrap_or_else(|| {
+                                            "application/octet-stream".to_string()
+                                        }),
+                                        att.size,
+                                    ),
+                                    None => (
+                                        RopErrorCode::NotFound,
+                                        String::new(),
+                                        String::new(),
+                                        String::new(),
+                                        None,
+                                    ),
+                                }
+                            }
                             Ok(None) => (
                                 RopErrorCode::NotFound,
                                 String::new(),
@@ -1632,7 +1639,9 @@ async fn execute_one_rop(
             // `PR_ATTACH_NUM` ids from the live JMAP email.
             let (email_id, kind) = sessions
                 .with_handle(session_id, req.input_handle_index, |h| match h {
-                    Handle::Message { backend_id, kind, .. } => (backend_id.clone(), *kind),
+                    Handle::Message {
+                        backend_id, kind, ..
+                    } => (backend_id.clone(), *kind),
                     _ => (String::new(), FolderKind::Root),
                 })
                 .unwrap_or((String::new(), FolderKind::Root));
@@ -1902,10 +1911,7 @@ async fn execute_one_rop(
                             "mailboxIds": { (mbox.clone()): true },
                             "keywords": { "$draft": true },
                         });
-                        match jc
-                            .create_email(&account_id, email_obj, username, pw)
-                            .await
-                        {
+                        match jc.create_email(&account_id, email_obj, username, pw).await {
                             Ok(new_id) => {
                                 saved_mid = store::message_id_from_jmap(&new_id);
                                 // Promote the handle to a saved, non-new message.
@@ -1969,7 +1975,11 @@ async fn execute_one_rop(
                 .unwrap_or((String::new(), FolderKind::Root));
             let outcome: RopErrorCode;
             let partial: u8;
-            match (jmap, password, parent_kind == FolderKind::Mail && !parent_backend.is_empty()) {
+            match (
+                jmap,
+                password,
+                parent_kind == FolderKind::Mail && !parent_backend.is_empty(),
+            ) {
                 (_, _, false) => {
                     // Non-mail folder: Email/destroy is conceptually invalid
                     // (MAPI_E_NO_SUPPORT), independent of backend availability,
@@ -2136,7 +2146,13 @@ async fn execute_one_rop(
                                     partial = if req.message_ids.is_empty() { 0 } else { 1 };
                                 } else if req.want_copy != 0 {
                                     match jc
-                                        .copy_emails(&account_id, &jids, &dest_backend, username, pw)
+                                        .copy_emails(
+                                            &account_id,
+                                            &jids,
+                                            &dest_backend,
+                                            username,
+                                            pw,
+                                        )
                                         .await
                                     {
                                         Ok(n) => {
@@ -2156,7 +2172,13 @@ async fn execute_one_rop(
                                     }
                                 } else {
                                     match jc
-                                        .move_emails(&account_id, &jids, &dest_backend, username, pw)
+                                        .move_emails(
+                                            &account_id,
+                                            &jids,
+                                            &dest_backend,
+                                            username,
+                                            pw,
+                                        )
                                         .await
                                     {
                                         Ok(n) => {
@@ -2196,14 +2218,16 @@ async fn execute_one_rop(
             // real backend id) so we can drive EmailSubmission/set.
             let (backend_id, is_new) = sessions
                 .with_handle(session_id, req.input_handle_index, |h| match h {
-                    Handle::Message { backend_id, is_new, .. } => (backend_id.clone(), *is_new),
+                    Handle::Message {
+                        backend_id, is_new, ..
+                    } => (backend_id.clone(), *is_new),
                     _ => (String::new(), false),
                 })
                 .unwrap_or((String::new(), false));
             let outcome: RopErrorCode = match (jmap, password, is_new, !backend_id.is_empty()) {
                 (_, _, true, _) => RopErrorCode::InvalidParameter, // unsaved draft
                 (_, _, _, false) => RopErrorCode::NotFound,        // no backend id
-                (None, _, false, true) => RopErrorCode::NotFound, // backend id but no JMAP client
+                (None, _, false, true) => RopErrorCode::NotFound,  // backend id but no JMAP client
                 (_, None, false, true) => RopErrorCode::AccessDenied,
                 (Some(jc), Some(pw), false, true) => {
                     let account_id = jc
@@ -2267,7 +2291,9 @@ async fn execute_one_rop(
             let req = RopTransportSendRequest::decode_after_ropid(cur)?;
             let (backend_id, is_new) = sessions
                 .with_handle(session_id, req.input_handle_index, |h| match h {
-                    Handle::Message { backend_id, is_new, .. } => (backend_id.clone(), *is_new),
+                    Handle::Message {
+                        backend_id, is_new, ..
+                    } => (backend_id.clone(), *is_new),
                     _ => (String::new(), false),
                 })
                 .unwrap_or((String::new(), false));
@@ -2358,13 +2384,20 @@ async fn execute_one_rop(
             // empty backend id masquerading as `NotFound`, so the client gets
             // a meaningful result and `handle_index` is correct.
             enum SetPropsTarget {
-                Message { backend_id: String, mailbox_id: String },
+                Message {
+                    backend_id: String,
+                    mailbox_id: String,
+                },
                 Attachment,
                 None,
             }
             let target = sessions
                 .with_handle(session_id, input_handle_index, |h| match h {
-                    Handle::Message { backend_id, mailbox_id, .. } => SetPropsTarget::Message {
+                    Handle::Message {
+                        backend_id,
+                        mailbox_id,
+                        ..
+                    } => SetPropsTarget::Message {
                         backend_id: backend_id.clone(),
                         mailbox_id: mailbox_id.clone(),
                     },
@@ -2385,7 +2418,10 @@ async fn execute_one_rop(
                 return Ok(());
             }
             let (backend_id, mailbox_id) = match target {
-                SetPropsTarget::Message { backend_id, mailbox_id } => (backend_id, mailbox_id),
+                SetPropsTarget::Message {
+                    backend_id,
+                    mailbox_id,
+                } => (backend_id, mailbox_id),
                 _ => (String::new(), String::new()),
             };
             let store::PropertyPatch { patch, problems } =
@@ -2415,7 +2451,10 @@ async fn execute_one_rop(
                         // a MAPI DiskError so Outlook surfaces it (qodo #3/#5,
                         // cubic #23). The transport error is logged verbatim.
                         let update = serde_json::json!({ id: serde_json::Value::Object(patch) });
-                        match jc.update_email_checked(&account_id, &update, username, pw).await {
+                        match jc
+                            .update_email_checked(&account_id, &update, username, pw)
+                            .await
+                        {
                             Ok(outcome) => outcome_to_code(outcome, "Email/set update"),
                             Err(e) => {
                                 tracing::warn!(error = %e, "JMAP Email/set update failed");
@@ -2430,12 +2469,7 @@ async fn execute_one_rop(
             // change instead of forcing the client to re-poll (qodo #9, cubic
             // #30, audit ┬¦2e).
             if return_value == RopErrorCode::Success {
-                publish_item_modified(
-                    subscription_manager,
-                    username,
-                    &mailbox_id,
-                    &backend_id,
-                );
+                publish_item_modified(subscription_manager, username, &mailbox_id, &backend_id);
             }
             RopPropertyWriteSuccess {
                 rop_id,
@@ -2457,9 +2491,11 @@ async fn execute_one_rop(
             let req = RopDeletePropertiesRequest::decode(cur)?;
             let (backend_id, mailbox_id) = sessions
                 .with_handle(session_id, input_handle_index, |h| match h {
-                    Handle::Message { backend_id, mailbox_id, .. } => {
-                        (backend_id.clone(), mailbox_id.clone())
-                    }
+                    Handle::Message {
+                        backend_id,
+                        mailbox_id,
+                        ..
+                    } => (backend_id.clone(), mailbox_id.clone()),
                     _ => (String::new(), String::new()),
                 })
                 .unwrap_or((String::new(), String::new()));
@@ -2481,7 +2517,10 @@ async fn execute_one_rop(
                         RopErrorCode::Success
                     } else {
                         let update = serde_json::json!({ id: serde_json::Value::Object(patch) });
-                        match jc.update_email_checked(&account_id, &update, username, pw).await {
+                        match jc
+                            .update_email_checked(&account_id, &update, username, pw)
+                            .await
+                        {
                             Ok(outcome) => outcome_to_code(outcome, "Email/set update"),
                             Err(e) => {
                                 tracing::warn!(error = %e, "JMAP Email/set update (delete) failed");
@@ -2492,12 +2531,7 @@ async fn execute_one_rop(
                 }
             };
             if return_value == RopErrorCode::Success {
-                publish_item_modified(
-                    subscription_manager,
-                    username,
-                    &mailbox_id,
-                    &backend_id,
-                );
+                publish_item_modified(subscription_manager, username, &mailbox_id, &backend_id);
             }
             RopPropertyWriteSuccess {
                 rop_id,
@@ -2530,9 +2564,11 @@ async fn execute_one_rop(
                 .unwrap_or_default();
             let (dst_id, dst_mailbox_id) = sessions
                 .with_handle(session_id, req.dest_handle_index, |h| match h {
-                    Handle::Message { backend_id, mailbox_id, .. } => {
-                        (backend_id.clone(), mailbox_id.clone())
-                    }
+                    Handle::Message {
+                        backend_id,
+                        mailbox_id,
+                        ..
+                    } => (backend_id.clone(), mailbox_id.clone()),
                     _ => (String::new(), String::new()),
                 })
                 .unwrap_or((String::new(), String::new()));
@@ -2578,7 +2614,12 @@ async fn execute_one_rop(
                 });
             }
 
-            let return_value: RopErrorCode = match (jmap, password, src_id.as_str(), dst_id.as_str()) {
+            let return_value: RopErrorCode = match (
+                jmap,
+                password,
+                src_id.as_str(),
+                dst_id.as_str(),
+            ) {
                 (_, _, "", _) | (_, _, _, "") => RopErrorCode::NotFound, // source/dest not bound
                 (None, _, _, _) => RopErrorCode::NotFound, // no JMAP backend configured
                 (_, None, _, _) => RopErrorCode::AccessDenied, // no credentials
@@ -2594,8 +2635,7 @@ async fn execute_one_rop(
                         match jc.get_email(&account_id, src, username, pw).await {
                             Ok(Some(src_email)) => {
                                 let mut patch = serde_json::Map::new();
-                                if !excluded_subject
-                                    && let Some(subj) = src_email.subject.as_ref()
+                                if !excluded_subject && let Some(subj) = src_email.subject.as_ref()
                                 {
                                     patch.insert(
                                         "subject".to_string(),
@@ -2629,8 +2669,7 @@ async fn execute_one_rop(
                                 if patch.is_empty() {
                                     RopErrorCode::Success
                                 } else {
-                                    let update =
-                                        serde_json::json!({ dst: serde_json::Value::Object(patch) });
+                                    let update = serde_json::json!({ dst: serde_json::Value::Object(patch) });
                                     match jc
                                         .update_email_checked(&account_id, &update, username, pw)
                                         .await
@@ -2657,12 +2696,7 @@ async fn execute_one_rop(
             };
             // 2.2.8.12.2 echoes the SourceHandleIndex in the response.
             if return_value == RopErrorCode::Success {
-                publish_item_modified(
-                    subscription_manager,
-                    username,
-                    &dst_mailbox_id,
-                    &dst_id,
-                );
+                publish_item_modified(subscription_manager, username, &dst_mailbox_id, &dst_id);
             }
             RopCopyToSuccess {
                 rop_id,
@@ -2732,7 +2766,9 @@ async fn execute_one_rop(
             // PR_ATTACH_NUM the client wants to remove.
             let (kind, email_id) = sessions
                 .with_handle(session_id, req.input_handle_index, |h| match h {
-                    Handle::Message { backend_id, kind, .. } => (*kind, backend_id.clone()),
+                    Handle::Message {
+                        backend_id, kind, ..
+                    } => (*kind, backend_id.clone()),
                     _ => (FolderKind::Root, String::new()),
                 })
                 .unwrap_or((FolderKind::Root, String::new()));
@@ -2775,7 +2811,9 @@ async fn execute_one_rop(
             // Email/set) which is not wired, so it surfaces `NoSupport`.
             let (is_jmap_native, email_id) = sessions
                 .with_handle(session_id, req.input_handle_index, |h| match h {
-                    Handle::Attachment { is_new, email_id, .. } => (!is_new, email_id.clone()),
+                    Handle::Attachment {
+                        is_new, email_id, ..
+                    } => (!is_new, email_id.clone()),
                     _ => (false, String::new()),
                 })
                 .unwrap_or((false, String::new()));
@@ -2807,7 +2845,11 @@ async fn execute_one_rop(
             // body fields (PropertyTag + OpenModeFlags) so the codec never
             // re-takes dispatcher-owned header bytes (AGENTS.md convention).
             let h4 = RopHeader4::decode_after_ropid(cur, rop_id)?;
-            let req = RopOpenStreamRequest::decode_body(cur, h4.input_handle_index, h4.output_handle_index)?;
+            let req = RopOpenStreamRequest::decode_body(
+                cur,
+                h4.input_handle_index,
+                h4.output_handle_index,
+            )?;
             // Resolve the owning object from the input handle. A Mail Message
             // handle streams its body properties; an Attachment handle (opened
             // by `RopOpenAttachment`/`RopCreateAttachment`) streams that one
@@ -2868,8 +2910,7 @@ async fn execute_one_rop(
                 && !email_id.is_empty()
                 && !blob_id.is_empty()
                 && req.property_tag.property_id == store::PR_ATTACH_DATA_BIN
-                && req.property_tag.property_type
-                    == crate::mapi::data::PropertyType::PTYP_BINARY
+                && req.property_tag.property_type == crate::mapi::data::PropertyType::PTYP_BINARY
             {
                 // Enforce the configured/spec attachment byte ceiling before
                 // the download: a declared size over the cap is rejected with
@@ -2976,8 +3017,7 @@ async fn execute_one_rop(
                                         // Otherwise resolve an attachment blob id; capture its
                                         // declared size alongside so OpenStream/GetStreamSize can
                                         // report it without a premature blob download (coderabbit).
-                                        match store::email_attachment_blob(&e, &req.property_tag)
-                                        {
+                                        match store::email_attachment_blob(&e, &req.property_tag) {
                                             Some(att) => (
                                                 RopErrorCode::Success,
                                                 att.blob_id.clone().unwrap_or_default(),
@@ -3003,9 +3043,7 @@ async fn execute_one_rop(
                                     }
                                 }
                             }
-                            Ok(None) => {
-                                (RopErrorCode::NotFound, String::new(), None, false, None)
-                            }
+                            Ok(None) => (RopErrorCode::NotFound, String::new(), None, false, None),
                             Err(e) => {
                                 tracing::warn!(error = %e, "JMAP get_email (OpenStream) failed");
                                 (RopErrorCode::DiskError, String::new(), None, false, None)
@@ -3129,8 +3167,7 @@ async fn execute_one_rop(
             // is populated, subsequent paginated reads skip the network round
             // trip entirely (qodo #3 / coderabbit performance).
             let downloaded = if stream_meta.3 && stream_meta.0.contains('\x1F') && !stream_meta.4 {
-                materialise_attachment_blob(jmap, password, username, &stream_meta.0, cfg)
-                    .await
+                materialise_attachment_blob(jmap, password, username, &stream_meta.0, cfg).await
             } else {
                 None
             };
@@ -3277,7 +3314,8 @@ async fn execute_one_rop(
             // could otherwise zero-fill up to 2 GiB per handle (256 handles per
             // session, unbounded sessions) with no accounting against the
             // config, an authenticated memory-exhaustion vector (coderabbit).
-            let max = 0x8000_0000u64.min(u64::try_from(cfg.max_attachment_bytes()).unwrap_or(0x8000_0000));
+            let max = 0x8000_0000u64
+                .min(u64::try_from(cfg.max_attachment_bytes()).unwrap_or(0x8000_0000));
             if req.stream_size > max {
                 RopSetStreamSizeResponse {
                     input_handle_index: req.input_handle_index,
@@ -3335,7 +3373,9 @@ async fn execute_one_rop(
             // does not treat the stream as empty before the first ReadStream.
             let (len, known, found) = sessions
                 .with_handle(session_id, req.input_handle_index, |h| match h {
-                    Handle::Stream { data, known_len, .. } => {
+                    Handle::Stream {
+                        data, known_len, ..
+                    } => {
                         let l = data.as_ref().map(|d| d.len() as u64).unwrap_or(0);
                         (l, known_len.unwrap_or(0), true)
                     }
@@ -3351,7 +3391,11 @@ async fn execute_one_rop(
                 .encode(out);
                 return Ok(());
             }
-            let size = if len == 0 { u32::try_from(known).unwrap_or(0) } else { u32::try_from(len).unwrap_or(u32::MAX) };
+            let size = if len == 0 {
+                u32::try_from(known).unwrap_or(0)
+            } else {
+                u32::try_from(len).unwrap_or(u32::MAX)
+            };
             RopGetStreamSizeSuccess {
                 input_handle_index: req.input_handle_index,
                 return_value: RopErrorCode::Success,
@@ -3437,10 +3481,7 @@ async fn execute_one_rop(
                         // PRIOR_RESTRICTION (0x01) AND-combines with the
                         // active restriction; otherwise replace it.
                         *restriction = if req.restrict_flags & 0x01 != 0 {
-                            SRestriction::And(vec![
-                                restriction.clone(),
-                                req.restriction.clone(),
-                            ])
+                            SRestriction::And(vec![restriction.clone(), req.restriction.clone()])
                         } else {
                             req.restriction.clone()
                         };
@@ -3594,8 +3635,12 @@ async fn execute_one_rop(
             let req = RopSeekRowBookmarkRequest::decode(cur)?;
             let (rv, rows_sought, has_sought_less) = sessions
                 .with_session_mut(session_id, |s| {
-                    if let Some(Handle::Table { cursor, total, rows, .. }) =
-                        s.handle_mut(input_handle_index)
+                    if let Some(Handle::Table {
+                        cursor,
+                        total,
+                        rows,
+                        ..
+                    }) = s.handle_mut(input_handle_index)
                     {
                         let len = *total as usize;
                         // Resolve the bookmark to a row index by matching the
@@ -3686,8 +3731,12 @@ async fn execute_one_rop(
             let _ = RopCreateBookmarkRequest::decode(cur)?;
             let (output_handle_index, bookmark, rv) = sessions
                 .with_session_mut(session_id, |s| {
-                    if let Some(Handle::Table { cursor, rows, total, .. }) =
-                        s.handle_mut(input_handle_index)
+                    if let Some(Handle::Table {
+                        cursor,
+                        rows,
+                        total,
+                        ..
+                    }) = s.handle_mut(input_handle_index)
                     {
                         let pos = *cursor;
                         // Pin the bookmark to the current row's stable
@@ -3758,24 +3807,30 @@ async fn execute_one_rop(
             let message_ids = req.message_ids.clone();
             let return_value = sessions
                 .with_session_mut(session_id, |s| {
-                    fasttransfer_source_from_input(s, input_handle_index, |s, rows, cs, kind, mb| {
-                        let stream = if message_ids.is_empty() {
-                            build_ics_stream(rows, &cs, kind, mb)
-                        } else {
-                            let selection: Vec<&crate::mapi::session::TableRow> =
-                                rows.iter().filter(|r| message_ids.contains(&r.row_id)).collect();
-                            build_ics_stream_sel(&selection, &cs, kind, mb)
-                        };
-                        s.set_handle(
-                            output_handle_index,
-                            Handle::FastTransferSource {
-                                buffer: stream,
-                                cursor: 0,
-                                done: false,
-                            },
-                        );
-                        RopErrorCode::Success
-                    })
+                    fasttransfer_source_from_input(
+                        s,
+                        input_handle_index,
+                        |s, rows, cs, kind, mb| {
+                            let stream = if message_ids.is_empty() {
+                                build_ics_stream(rows, &cs, kind, mb)
+                            } else {
+                                let selection: Vec<&crate::mapi::session::TableRow> = rows
+                                    .iter()
+                                    .filter(|r| message_ids.contains(&r.row_id))
+                                    .collect();
+                                build_ics_stream_sel(&selection, &cs, kind, mb)
+                            };
+                            s.set_handle(
+                                output_handle_index,
+                                Handle::FastTransferSource {
+                                    buffer: stream,
+                                    cursor: 0,
+                                    done: false,
+                                },
+                            );
+                            RopErrorCode::Success
+                        },
+                    )
                 })
                 .unwrap_or(RopErrorCode::NotFound);
             let _ = req;
@@ -3798,18 +3853,22 @@ async fn execute_one_rop(
             let req = RopFastTransferSourceCopyFolderRequest::decode(cur)?;
             let return_value = sessions
                 .with_session_mut(session_id, |s| {
-                    fasttransfer_source_from_input(s, input_handle_index, |s, rows, cs, kind, mb| {
-                        let stream = build_ics_stream(rows, &cs, kind, mb);
-                        s.set_handle(
-                            output_handle_index,
-                            Handle::FastTransferSource {
-                                buffer: stream,
-                                cursor: 0,
-                                done: false,
-                            },
-                        );
-                        RopErrorCode::Success
-                    })
+                    fasttransfer_source_from_input(
+                        s,
+                        input_handle_index,
+                        |s, rows, cs, kind, mb| {
+                            let stream = build_ics_stream(rows, &cs, kind, mb);
+                            s.set_handle(
+                                output_handle_index,
+                                Handle::FastTransferSource {
+                                    buffer: stream,
+                                    cursor: 0,
+                                    done: false,
+                                },
+                            );
+                            RopErrorCode::Success
+                        },
+                    )
                 })
                 .unwrap_or(RopErrorCode::NotFound);
             let _ = req;
@@ -3830,23 +3889,27 @@ async fn execute_one_rop(
             let want: Vec<u16> = req.property_tags.iter().map(|t| t.property_id).collect();
             let return_value = sessions
                 .with_session_mut(session_id, |s| {
-                    fasttransfer_source_from_input(s, input_handle_index, |s, rows, cs, kind, mb| {
-                        let filtered: Vec<crate::mapi::data::PropertyTag> = cs
-                            .iter()
-                            .filter(|t| want.contains(&t.property_id))
-                            .copied()
-                            .collect();
-                        let stream = build_ics_stream(rows, &filtered, kind, mb);
-                        s.set_handle(
-                            output_handle_index,
-                            Handle::FastTransferSource {
-                                buffer: stream,
-                                cursor: 0,
-                                done: false,
-                            },
-                        );
-                        RopErrorCode::Success
-                    })
+                    fasttransfer_source_from_input(
+                        s,
+                        input_handle_index,
+                        |s, rows, cs, kind, mb| {
+                            let filtered: Vec<crate::mapi::data::PropertyTag> = cs
+                                .iter()
+                                .filter(|t| want.contains(&t.property_id))
+                                .copied()
+                                .collect();
+                            let stream = build_ics_stream(rows, &filtered, kind, mb);
+                            s.set_handle(
+                                output_handle_index,
+                                Handle::FastTransferSource {
+                                    buffer: stream,
+                                    cursor: 0,
+                                    done: false,
+                                },
+                            );
+                            RopErrorCode::Success
+                        },
+                    )
                 })
                 .unwrap_or(RopErrorCode::NotFound);
             RopFastTransferSourceOpenResponse {
@@ -3866,23 +3929,27 @@ async fn execute_one_rop(
             let want: Vec<u16> = req.property_tags.iter().map(|t| t.property_id).collect();
             let return_value = sessions
                 .with_session_mut(session_id, |s| {
-                    fasttransfer_source_from_input(s, input_handle_index, |s, rows, cs, kind, mb| {
-                        let filtered: Vec<crate::mapi::data::PropertyTag> = cs
-                            .iter()
-                            .filter(|t| want.contains(&t.property_id))
-                            .copied()
-                            .collect();
-                        let stream = build_ics_stream(rows, &filtered, kind, mb);
-                        s.set_handle(
-                            output_handle_index,
-                            Handle::FastTransferSource {
-                                buffer: stream,
-                                cursor: 0,
-                                done: false,
-                            },
-                        );
-                        RopErrorCode::Success
-                    })
+                    fasttransfer_source_from_input(
+                        s,
+                        input_handle_index,
+                        |s, rows, cs, kind, mb| {
+                            let filtered: Vec<crate::mapi::data::PropertyTag> = cs
+                                .iter()
+                                .filter(|t| want.contains(&t.property_id))
+                                .copied()
+                                .collect();
+                            let stream = build_ics_stream(rows, &filtered, kind, mb);
+                            s.set_handle(
+                                output_handle_index,
+                                Handle::FastTransferSource {
+                                    buffer: stream,
+                                    cursor: 0,
+                                    done: false,
+                                },
+                            );
+                            RopErrorCode::Success
+                        },
+                    )
                 })
                 .unwrap_or(RopErrorCode::NotFound);
             RopFastTransferSourceOpenResponse {
@@ -3903,8 +3970,11 @@ async fn execute_one_rop(
             let max = usize::from(req.buffer_size).max(1);
             let resp = sessions
                 .with_session_mut(session_id, |s| {
-                    if let Some(Handle::FastTransferSource { buffer, cursor, done }) =
-                        s.handle_mut(input_handle_index)
+                    if let Some(Handle::FastTransferSource {
+                        buffer,
+                        cursor,
+                        done,
+                    }) = s.handle_mut(input_handle_index)
                     {
                         if *done {
                             return RopFastTransferSourceGetBufferSuccess {
@@ -3978,7 +4048,9 @@ async fn execute_one_rop(
                 .with_session_mut(session_id, |s| {
                     let parent = s.handle_mut(input_handle_index).and_then(|h| match h {
                         Handle::Folder { backend_id, .. } => Some(backend_id.clone()),
-                        Handle::Table { parent_backend_id, .. } => Some(parent_backend_id.clone()),
+                        Handle::Table {
+                            parent_backend_id, ..
+                        } => Some(parent_backend_id.clone()),
                         _ => None,
                     });
                     match parent {
@@ -4042,11 +4114,7 @@ async fn execute_one_rop(
                                 parent_backend_id.clone(),
                             )))
                         } else {
-                            if buffer
-                                .len()
-                                .saturating_add(req.data.len())
-                                > cap
-                            {
+                            if buffer.len().saturating_add(req.data.len()) > cap {
                                 return Err(RopErrorCode::NotEnoughMemory);
                             }
                             buffer.extend_from_slice(&req.data);
@@ -4070,10 +4138,11 @@ async fn execute_one_rop(
                 Ok(Some((buffer, source_fmt, parent_backend_id))) => {
                     // Apply OUTSIDE the lock. A malformed upload surfaces as
                     // `DiskError` (fail closed) per the apply contract.
-                    let apply_rv = match apply_fasttransfer_upload(&buffer, source_fmt, &parent_backend_id) {
-                        Ok(()) => RopErrorCode::Success,
-                        Err(_) => RopErrorCode::DiskError,
-                    };
+                    let apply_rv =
+                        match apply_fasttransfer_upload(&buffer, source_fmt, &parent_backend_id) {
+                            Ok(()) => RopErrorCode::Success,
+                            Err(_) => RopErrorCode::DiskError,
+                        };
                     RopFastTransferDestinationPutBufferResponse {
                         input_handle_index,
                         return_value: apply_rv,
@@ -4112,7 +4181,9 @@ async fn execute_one_rop(
                 .with_session_mut(session_id, |s| {
                     let parent = s.handle_mut(input_handle_index).and_then(|h| match h {
                         Handle::Folder { backend_id, .. } => Some(backend_id.clone()),
-                        Handle::Table { parent_backend_id, .. } => Some(parent_backend_id.clone()),
+                        Handle::Table {
+                            parent_backend_id, ..
+                        } => Some(parent_backend_id.clone()),
                         _ => None,
                     });
                     match parent {
@@ -4537,7 +4608,7 @@ async fn fetch_calendar_rows(
     mailbox_id: &str,
 ) -> Vec<crate::mapi::session::TableRow> {
     let _ = mailbox_id; // calendar uses the per-user collection href, not the
-                       // JMAP mailbox id (this is the synthetic Calendar folder).
+    // JMAP mailbox id (this is the synthetic Calendar folder).
     if cfg.caldav_base.is_empty() {
         tracing::debug!("mapi calendar contents: no caldav_base configured");
         return Vec::new();
@@ -4581,7 +4652,7 @@ async fn fetch_contact_rows(
     mailbox_id: &str,
 ) -> Vec<crate::mapi::session::TableRow> {
     let _ = mailbox_id; // contacts uses the per-user addressbook home, not the
-                       // synthetic Contacts folder id.
+    // synthetic Contacts folder id.
     if cfg.carddav_base.is_empty() && cfg.caldav_base.is_empty() {
         tracing::debug!("mapi contacts contents: no carddav_base configured");
         return Vec::new();
@@ -4597,10 +4668,16 @@ async fn fetch_contact_rows(
     } else {
         crate::carddav::CarddavClient::from_caldav_base(&cfg.caldav_base)
     };
-    let (contacts, _token) = match carddav.list_contacts(username, password.expose_secret(), None).await {
+    let (contacts, _token) = match carddav
+        .list_contacts(username, password.expose_secret(), None)
+        .await
+    {
         Ok(t) => t,
         Err(e) => {
-            tracing::warn!("mapi contacts contents: carddav list_contacts failed: {}", e);
+            tracing::warn!(
+                "mapi contacts contents: carddav list_contacts failed: {}",
+                e
+            );
             return Vec::new();
         }
     };
@@ -4649,8 +4726,8 @@ fn synth_folder_row(backend_id: &str, name: &str, role: &str) -> crate::mapi::se
 /// blob (via `calendar::parse_ics_event`). The row id is the FNV-1a of the
 /// iCalendar UID (stable across Outlook sessions).
 fn parse_calendar_multistatus(xml: &str) -> Vec<crate::mapi::session::TableRow> {
-    use quick_xml::events::Event;
     use quick_xml::Reader;
+    use quick_xml::events::Event;
     let mut reader = Reader::from_str(xml);
     reader.config_mut().trim_text(false);
     let mut buf = Vec::new();
@@ -4818,10 +4895,7 @@ fn matcher_cells(
     column_set
         .iter()
         .zip(cells)
-        .map(|(tag, value)| CellForMatcher {
-            tag: *tag,
-            value,
-        })
+        .map(|(tag, value)| CellForMatcher { tag: *tag, value })
         .collect()
 }
 
@@ -4862,7 +4936,6 @@ fn filtered_indices(
         .collect()
 }
 
-
 /// Apply a comparator over rows for the active `SortOrder` set. Stable sort
 /// preserves the JMAP materialisation order for rows that compare equal.
 /// Missing cells sort to the end (ascending) / the front (descending) to keep
@@ -4887,8 +4960,12 @@ fn sort_rows(
     let mut idx: Vec<usize> = (0..rows.len()).collect();
     idx.sort_by(|&a, &b| {
         for so in sort_orders {
-            let ca = per_row[a].iter().find(|c| c.tag.property_id == so.tag.property_id);
-            let cb = per_row[b].iter().find(|c| c.tag.property_id == so.tag.property_id);
+            let ca = per_row[a]
+                .iter()
+                .find(|c| c.tag.property_id == so.tag.property_id);
+            let cb = per_row[b]
+                .iter()
+                .find(|c| c.tag.property_id == so.tag.property_id);
             let ord = match (ca, cb) {
                 (Some(x), Some(y)) => scalar_ord_for_sort(&x.value, &y.value),
                 (Some(_), None) => std::cmp::Ordering::Less,
@@ -4959,7 +5036,12 @@ fn build_ics_stream_sel(
     build_ics_stream_iter(rows.iter().copied(), column_set, kind, mailbox_id)
 }
 
-fn build_ics_stream_iter<'a, I>(rows: I, column_set: &[crate::mapi::data::PropertyTag], kind: FolderKind, mailbox_id: &str) -> Vec<u8>
+fn build_ics_stream_iter<'a, I>(
+    rows: I,
+    column_set: &[crate::mapi::data::PropertyTag],
+    kind: FolderKind,
+    mailbox_id: &str,
+) -> Vec<u8>
 where
     I: IntoIterator<Item = &'a crate::mapi::session::TableRow>,
 {
@@ -4971,7 +5053,8 @@ where
         for c in &cells {
             let mut value_bytes = Vec::new();
             c.value.encode(&mut value_bytes);
-            let tag_u32 = (c.tag.property_type.to_u16() as u32) | ((c.tag.property_id as u32) << 16);
+            let tag_u32 =
+                (c.tag.property_type.to_u16() as u32) | ((c.tag.property_id as u32) << 16);
             b.push_property(tag_u32, &value_bytes);
         }
         b.push_marker(Marker::EndMessage);
@@ -5000,10 +5083,21 @@ fn fasttransfer_source_from_input<F>(
     f: F,
 ) -> RopErrorCode
 where
-    F: FnOnce(&mut crate::mapi::session::Session, &[crate::mapi::session::TableRow], Vec<crate::mapi::data::PropertyTag>, FolderKind, &str) -> RopErrorCode,
+    F: FnOnce(
+        &mut crate::mapi::session::Session,
+        &[crate::mapi::session::TableRow],
+        Vec<crate::mapi::data::PropertyTag>,
+        FolderKind,
+        &str,
+    ) -> RopErrorCode,
 {
     enum Snap {
-        Rows(Vec<crate::mapi::session::TableRow>, Vec<crate::mapi::data::PropertyTag>, FolderKind, String),
+        Rows(
+            Vec<crate::mapi::session::TableRow>,
+            Vec<crate::mapi::data::PropertyTag>,
+            FolderKind,
+            String,
+        ),
         Folder,
         None,
     }
@@ -5014,7 +5108,12 @@ where
             kind,
             parent_backend_id,
             ..
-        }) => Snap::Rows(rows.clone(), column_set.clone(), *kind, parent_backend_id.clone()),
+        }) => Snap::Rows(
+            rows.clone(),
+            column_set.clone(),
+            *kind,
+            parent_backend_id.clone(),
+        ),
         Some(crate::mapi::session::Handle::Folder { .. }) => Snap::Folder,
         _ => Snap::None,
     };
@@ -5341,13 +5440,11 @@ mod tests {
         let (_s, _h, _ct, wait_body) = wait_resp.render();
         let payload = &wait_body[4..];
         assert_eq!(payload.len(), 16);
-        let event_pending = u32::from_le_bytes([
-            payload[8],
-            payload[9],
-            payload[10],
-            payload[11],
-        ]);
-        assert_eq!(event_pending, 1, "EventPending must be 1 for a queued event");
+        let event_pending = u32::from_le_bytes([payload[8], payload[9], payload[10], payload[11]]);
+        assert_eq!(
+            event_pending, 1,
+            "EventPending must be 1 for a queued event"
+        );
 
         // Post-wait Execute (empty body) drains the queued event into a
         // RopNotify. The payload begins with RopId 0x2A, 4-byte
@@ -5372,7 +5469,10 @@ mod tests {
             "first response byte is RopNotify (ROP_NOTIFY)"
         );
         let notif_handle = u32::from_le_bytes([epayload[1], epayload[2], epayload[3], epayload[4]]);
-        assert_eq!(notif_handle, 4, "NotificationHandle echoes the subscription index");
+        assert_eq!(
+            notif_handle, 4,
+            "NotificationHandle echoes the subscription index"
+        );
         let rv = u32::from_le_bytes([epayload[5], epayload[6], epayload[7], epayload[8]]);
         assert_eq!(RopErrorCode::from_u32(rv), RopErrorCode::Success);
         assert_eq!(epayload[9], 2, "LogonId echoed");
@@ -5493,7 +5593,11 @@ mod tests {
         // ReturnValue(4)+LogonId(1)=10) + NotificationData (Flags(2)+
         // FolderId(8)+MessageId(8)+OldFolderId(8)+OldMessageId(8)=34) = 44.
         // (No ParentFolderId: 0x4000 clear and 0x8000 set excludes it.)
-        assert_eq!(p.len(), 10 + 2 + 8 + 8 + 8 + 8, "header + Flags + Ids + Old* fully present");
+        assert_eq!(
+            p.len(),
+            10 + 2 + 8 + 8 + 8 + 8,
+            "header + Flags + Ids + Old* fully present"
+        );
         let folder_id = u64::from_le_bytes(p[12..20].try_into().unwrap());
         let message_id = u64::from_le_bytes(p[20..28].try_into().unwrap());
         let old_folder_id = u64::from_le_bytes(p[28..36].try_into().unwrap());
@@ -5605,8 +5709,7 @@ mod tests {
         assert_eq!(payload.len(), 16);
         let status = u32::from_le_bytes([payload[0], payload[1], payload[2], payload[3]]);
         assert_eq!(status, 0, "known session -> StatusCode == 0");
-        let event_pending =
-            u32::from_le_bytes([payload[8], payload[9], payload[10], payload[11]]);
+        let event_pending = u32::from_le_bytes([payload[8], payload[9], payload[10], payload[11]]);
         assert_eq!(event_pending, 0, "no sinks -> EventPending == 0");
     }
 
@@ -6451,10 +6554,12 @@ mod tests {
             cfg,
             std::sync::Arc::new(AuthVerifier::new(&Config::default())),
         );
-        let sid = state.sessions.create(crate::mapi::session::SessionPrincipal {
-            email: "u@example.com".into(),
-            basic_auth: true,
-        });
+        let sid = state
+            .sessions
+            .create(crate::mapi::session::SessionPrincipal {
+                email: "u@example.com".into(),
+                basic_auth: true,
+            });
         (state, sid)
     }
 
@@ -6591,7 +6696,10 @@ mod tests {
         dispatch(&state, &sid, &seek_body).await;
         // GetStreamSize == 5, then read the full 5 bytes.
         let outgss = dispatch(&state, &sid, &[0x5E, 0, 3]).await;
-        assert_eq!(u32::from_le_bytes([outgss[6], outgss[7], outgss[8], outgss[9]]), 5);
+        assert_eq!(
+            u32::from_le_bytes([outgss[6], outgss[7], outgss[8], outgss[9]]),
+            5
+        );
         let outrs = dispatch(&state, &sid, &[0x2C, 0, 3, 0xFF, 0xFF]).await;
         let ds = u16::from_le_bytes([outrs[6], outrs[7]]);
         assert_eq!(String::from_utf8_lossy(&outrs[8..8 + ds as usize]), "XYZlo");
@@ -6731,7 +6839,13 @@ mod tests {
 
     /// Install a JMAP-native `Handle::Attachment` at `idx` carrying `blob_id`
     /// and a declared `size` (as captured by `RopOpenAttachment`).
-    fn install_attachment(state: &MapiState, sid: &uuid::Uuid, idx: u8, blob_id: &str, size: Option<u64>) {
+    fn install_attachment(
+        state: &MapiState,
+        sid: &uuid::Uuid,
+        idx: u8,
+        blob_id: &str,
+        size: Option<u64>,
+    ) {
         state.sessions.with_session_mut(sid, |s| {
             s.set_handle(
                 idx,
@@ -6753,11 +6867,8 @@ mod tests {
     /// Build the `RopOpenStream` body for a given property tag.
     fn open_stream_body(input: u8, output: u8, prop_id: u16, prop_type: u16) -> Vec<u8> {
         let mut body: Vec<u8> = vec![0x2B, 0, input, output];
-        crate::mapi::data::PropertyTag::new(
-            crate::mapi::data::PropertyType(prop_type),
-            prop_id,
-        )
-        .encode(&mut body);
+        crate::mapi::data::PropertyTag::new(crate::mapi::data::PropertyType(prop_type), prop_id)
+            .encode(&mut body);
         body.push(0x00); // OpenModeFlags
         body
     }
@@ -6963,7 +7074,10 @@ mod tests {
         // The stream must terminate with the IncrSyncEnd marker
         // (0x40140003 LE -> 03 00 14 40).
         let end = 0x40140003u32.to_le_bytes();
-        assert!(data.windows(4).any(|w| w == end), "stream must end with IncrSyncEnd");
+        assert!(
+            data.windows(4).any(|w| w == end),
+            "stream must end with IncrSyncEnd"
+        );
     }
 
     #[tokio::test]
@@ -7143,7 +7257,11 @@ mod tests {
     /// Outlook's hierarchy-table walk).
     #[test]
     fn synth_calendar_folder_row_has_ipf_appointment_class() {
-        let row = synth_folder_row(store::CALENDAR_BACKEND_ID, "Calendar", store::CALENDAR_BACKEND_ID);
+        let row = synth_folder_row(
+            store::CALENDAR_BACKEND_ID,
+            "Calendar",
+            store::CALENDAR_BACKEND_ID,
+        );
         let src = row.source.expect("synth row carries a JmapMailbox source");
         let mbx = src
             .downcast_ref::<crate::jmap::JmapMailbox>()
@@ -7173,7 +7291,11 @@ mod tests {
     /// The synthetic Contacts folder row renders `PR_CONTAINER_CLASS=IPF.Contact`.
     #[test]
     fn synth_contacts_folder_row_has_ipf_contact_class() {
-        let row = synth_folder_row(store::CONTACTS_BACKEND_ID, "Contacts", store::CONTACTS_BACKEND_ID);
+        let row = synth_folder_row(
+            store::CONTACTS_BACKEND_ID,
+            "Contacts",
+            store::CONTACTS_BACKEND_ID,
+        );
         let mbx = row
             .source
             .as_ref()
@@ -7221,7 +7343,10 @@ mod tests {
         assert_eq!(item.uid, "mtg-123@example");
         assert_eq!(item.subject, "Standup");
         // row_id is the FNV-1a of the UID - stable across sessions.
-        assert_eq!(rows[0].row_id, store::message_id_from_jmap("mtg-123@example"));
+        assert_eq!(
+            rows[0].row_id,
+            store::message_id_from_jmap("mtg-123@example")
+        );
     }
 
     /// An empty / malformed multistatus yields zero rows (fail-closed, no panic).

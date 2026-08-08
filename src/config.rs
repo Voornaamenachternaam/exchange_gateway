@@ -400,8 +400,11 @@ impl Config {
     /// values. Returns an error (so `Config::load` fails closed) when the
     /// operator-supplied values are malformed.
     pub fn server_version_info(&self) -> anyhow::Result<crate::version::ServerVersion> {
-        crate::version::ServerVersion::from_strings(&self.server_version, &self.server_exchange_version)
-            .map_err(|e| anyhow::anyhow!("Config: server version invalid: {}", e))
+        crate::version::ServerVersion::from_strings(
+            &self.server_version,
+            &self.server_exchange_version,
+        )
+        .map_err(|e| anyhow::anyhow!("Config: server version invalid: {}", e))
     }
 
     fn validate(&self) -> anyhow::Result<()> {
@@ -864,9 +867,13 @@ fn apply_environment_overrides(cfg: &mut Config) {
     // Advertised Exchange server version stamps (Exchange Server SE
     // `15.2.2562.45` / `Exchange2016` by default). Validated later in
     // `Config::validate`, so a malformed env override fails closed at startup.
-    apply_env_string(cfg, get_env_with_fallback(ENV_SERVER_VERSION, None), |c, v| {
-        c.server_version = v;
-    });
+    apply_env_string(
+        cfg,
+        get_env_with_fallback(ENV_SERVER_VERSION, None),
+        |c, v| {
+            c.server_version = v;
+        },
+    );
     apply_env_string(
         cfg,
         get_env_with_fallback(ENV_SERVER_EXCHANGE_VERSION, None),
@@ -1003,8 +1010,14 @@ mod tests {
         assert_eq!(config.database_path, "/var/lib/exchange-gateway/gateway.db");
         assert!(config.room_booking_enabled);
         // The default advertised server version is Exchange Server SE 15.2.2562.45.
-        assert_eq!(config.server_version, crate::version::DEFAULT_VERSION_STRING);
-        assert_eq!(config.server_exchange_version, crate::version::DEFAULT_EXCHANGE_VERSION);
+        assert_eq!(
+            config.server_version,
+            crate::version::DEFAULT_VERSION_STRING
+        );
+        assert_eq!(
+            config.server_exchange_version,
+            crate::version::DEFAULT_EXCHANGE_VERSION
+        );
     }
 
     #[test]

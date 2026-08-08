@@ -20,25 +20,25 @@
 // pattern + EXDATE/RECURRENCE-ID list).
 
 use crate::calendar::CalendarItem;
-use chrono::Datelike;
 use crate::mapi::data::{PropertyTag, PropertyType, PropertyValue};
 use crate::mapi::store::{
     self, PR_ADDRESS_TYPE, PR_ALL_DAY, PR_APPOINTMENT_REPLY_TIME, PR_APPOINTMENT_SEQUENCE,
     PR_APPOINTMENT_STATE_FLAGS, PR_APPOINTMENT_SUB_TYPE, PR_BUSINESS_ADDRESS_CITY,
     PR_BUSINESS_ADDRESS_COUNTRY, PR_BUSINESS_ADDRESS_POSTAL, PR_BUSINESS_ADDRESS_STATE,
     PR_BUSINESS_ADDRESS_STREET, PR_BUSINESS_FAX, PR_BUSINESS_HOME_PAGE, PR_BUSINESS_TEL,
-    PR_BUSY_STATUS, PR_CHANGE_KEY, PR_CLEAN_GLOBAL_OBJECT_ID, PR_COMPANY_MAIN_TEL,
-    PR_COMPANY_NAME, PR_DISPLAY_NAME, PR_DISPLAY_NAME_PREFIX, PR_EMAIL1_ADDRESS,
-    PR_EMAIL1_DISPLAY, PR_EMAIL_ADDRESS, PR_END, PR_FILE_AS, PR_GENERATION, PR_GIVEN_NAME,
-    PR_GLOBAL_OBJECT_ID, PR_HOME_ADDRESS_CITY, PR_HOME_ADDRESS_COUNTRY, PR_HOME_ADDRESS_POSTAL,
-    PR_HOME_ADDRESS_STATE, PR_HOME_ADDRESS_STREET, PR_HOME_FAX, PR_HOME_TEL, PR_HOME_URL,
-    PR_INITIALS, PR_LOCATION, PR_MESSAGE_CLASS, PR_MIDDLE_NAME, PR_MOBILE, PR_NORMALIZED_SUBJECT,
-    PR_ORGANIZER, PR_OTHER_ADDRESS_CITY, PR_OTHER_ADDRESS_COUNTRY, PR_OTHER_ADDRESS_POSTAL,
+    PR_BUSY_STATUS, PR_CHANGE_KEY, PR_CLEAN_GLOBAL_OBJECT_ID, PR_COMPANY_MAIN_TEL, PR_COMPANY_NAME,
+    PR_DISPLAY_NAME, PR_DISPLAY_NAME_PREFIX, PR_EMAIL_ADDRESS, PR_EMAIL1_ADDRESS,
+    PR_EMAIL1_DISPLAY, PR_END, PR_FILE_AS, PR_GENERATION, PR_GIVEN_NAME, PR_GLOBAL_OBJECT_ID,
+    PR_HOME_ADDRESS_CITY, PR_HOME_ADDRESS_COUNTRY, PR_HOME_ADDRESS_POSTAL, PR_HOME_ADDRESS_STATE,
+    PR_HOME_ADDRESS_STREET, PR_HOME_FAX, PR_HOME_TEL, PR_HOME_URL, PR_INITIALS, PR_LOCATION,
+    PR_MESSAGE_CLASS, PR_MIDDLE_NAME, PR_MOBILE, PR_NORMALIZED_SUBJECT, PR_ORGANIZER,
+    PR_OTHER_ADDRESS_CITY, PR_OTHER_ADDRESS_COUNTRY, PR_OTHER_ADDRESS_POSTAL,
     PR_OTHER_ADDRESS_STATE, PR_OTHER_ADDRESS_STREET, PR_OTHER_TEL, PR_PREDECESSOR_CHANGE_LIST,
-    PR_PRIMARY_TEL, PR_RECORD_KEY, PR_REMINDER_DELTA, PR_REMINDER_SET, PR_REMINDER_TIME,
-    PR_REQUIRED_ATTENDEES, PR_RESPONSE_STATUS, PR_RESPONSE_TYPE, PR_RECURRING,
-    PR_RECURRENCE_PATTERN, PR_SEARCH_KEY, PR_START, PR_SUBJECT, PR_SURNAME, PR_TITLE,
+    PR_PRIMARY_TEL, PR_RECORD_KEY, PR_RECURRENCE_PATTERN, PR_RECURRING, PR_REMINDER_DELTA,
+    PR_REMINDER_SET, PR_REMINDER_TIME, PR_REQUIRED_ATTENDEES, PR_RESPONSE_STATUS, PR_RESPONSE_TYPE,
+    PR_SEARCH_KEY, PR_START, PR_SUBJECT, PR_SURNAME, PR_TITLE,
 };
+use chrono::Datelike;
 
 /// 100-ns ticks between 1601-01-01 and 1970-01-01 (Windows FILETIME epoch).
 const FILETIME_EPOCH_OFFSET: i64 = 116_444_736_000_000_000;
@@ -82,11 +82,7 @@ pub fn calendar_to_cells(
     out
 }
 
-fn calendar_cell_for(
-    item: &CalendarItem,
-    tag: &PropertyTag,
-    mailbox_id: &str,
-) -> PropertyValue {
+fn calendar_cell_for(item: &CalendarItem, tag: &PropertyTag, mailbox_id: &str) -> PropertyValue {
     use PropertyType as T;
     let id = tag.property_id;
     let want = tag.property_type;
@@ -126,10 +122,7 @@ fn calendar_cell_for(
             // PidTagAppointmentSubType: 1 == all-day event hint (fSubType).
             PropertyValue::Boolean(or_null!(item.all_day, T::PTYP_BOOLEAN))
         }
-        PR_RECURRING => PropertyValue::Boolean(or_null!(
-            item.rrule.is_some(),
-            T::PTYP_BOOLEAN
-        )),
+        PR_RECURRING => PropertyValue::Boolean(or_null!(item.rrule.is_some(), T::PTYP_BOOLEAN)),
         PR_RECURRENCE_PATTERN => {
             if let Some(rrule) = item.rrule.as_deref() {
                 if ttype_matches(want, T::PTYP_BINARY) {
@@ -148,22 +141,17 @@ fn calendar_cell_for(
             item.response_type.unwrap_or(0) as i32,
             T::PTYP_INTEGER32
         )),
-        PR_APPOINTMENT_REPLY_TIME => match item
-            .appointment_reply_time
-            .and_then(dt_to_filetime)
-        {
+        PR_APPOINTMENT_REPLY_TIME => match item.appointment_reply_time.and_then(dt_to_filetime) {
             Some(ft) => PropertyValue::Time(or_null!(ft, T::PTYP_TIME)),
             None => PropertyValue::Null,
         },
         PR_APPOINTMENT_SEQUENCE => PropertyValue::Integer32(or_null!(0, T::PTYP_INTEGER32)),
-        PR_REMINDER_SET => PropertyValue::Boolean(or_null!(
-            item.reminder.is_some(),
-            T::PTYP_BOOLEAN
-        )),
-        PR_REMINDER_DELTA => PropertyValue::Integer32(or_null!(
-            item.reminder.unwrap_or(0),
-            T::PTYP_INTEGER32
-        )),
+        PR_REMINDER_SET => {
+            PropertyValue::Boolean(or_null!(item.reminder.is_some(), T::PTYP_BOOLEAN))
+        }
+        PR_REMINDER_DELTA => {
+            PropertyValue::Integer32(or_null!(item.reminder.unwrap_or(0), T::PTYP_INTEGER32))
+        }
         PR_REMINDER_TIME => PropertyValue::Null,
         PR_GLOBAL_OBJECT_ID | PR_CLEAN_GLOBAL_OBJECT_ID => {
             if ttype_matches(want, T::PTYP_BINARY) {
@@ -182,10 +170,9 @@ fn calendar_cell_for(
             }
         }
         PR_ORGANIZER => PropertyValue::String(or_null!(organizer_display(item), T::PTYP_STRING)),
-        PR_REQUIRED_ATTENDEES => PropertyValue::String(or_null!(
-            attendees_display(item, false),
-            T::PTYP_STRING
-        )),
+        PR_REQUIRED_ATTENDEES => {
+            PropertyValue::String(or_null!(attendees_display(item, false), T::PTYP_STRING))
+        }
         PR_RECORD_KEY | PR_SEARCH_KEY => {
             if ttype_matches(want, T::PTYP_BINARY) {
                 PropertyValue::Binary(item.uid.as_bytes().to_vec())
@@ -193,10 +180,7 @@ fn calendar_cell_for(
                 PropertyValue::Null
             }
         }
-        PR_CHANGE_KEY => PropertyValue::Binary(or_null!(
-            change_key(item),
-            T::PTYP_BINARY
-        )),
+        PR_CHANGE_KEY => PropertyValue::Binary(or_null!(change_key(item), T::PTYP_BINARY)),
         // Entry id of the appointment row (re-uses the calendar folder backend
         // id as the parent folder id) — lets Outlook re-open the item.
         store::PR_ENTRYID => {
@@ -213,9 +197,7 @@ fn calendar_cell_for(
                 PropertyValue::Null
             }
         }
-        store::PR_HAS_ATTACHMENTS => {
-            PropertyValue::Boolean(or_null!(false, T::PTYP_BOOLEAN))
-        }
+        store::PR_HAS_ATTACHMENTS => PropertyValue::Boolean(or_null!(false, T::PTYP_BOOLEAN)),
         store::PR_MESSAGE_SIZE => PropertyValue::Integer32(or_null!(0, T::PTYP_INTEGER32)),
         store::PR_MESSAGE_FLAGS => PropertyValue::Integer32(or_null!(0, T::PTYP_INTEGER32)),
         store::PR_DISPLAY_NAME => {
@@ -315,8 +297,7 @@ fn global_object_id(item: &CalendarItem) -> Vec<u8> {
     let creation_time = dt_to_filetime(start).unwrap_or(0).to_le_bytes();
     let data = item.uid.as_bytes();
     let size = data.len() as u32;
-    let mut out =
-        Vec::with_capacity(BYTE_ARRAY_ID.len() + 2 + 1 + 1 + 8 + 8 + 4 + data.len() + 1);
+    let mut out = Vec::with_capacity(BYTE_ARRAY_ID.len() + 2 + 1 + 1 + 8 + 8 + 4 + data.len() + 1);
     out.extend_from_slice(&BYTE_ARRAY_ID);
     out.extend_from_slice(&year);
     out.push(month);
@@ -337,7 +318,11 @@ fn global_object_id(item: &CalendarItem) -> Vec<u8> {
 /// Outlook's stale-row + conflict-detection path fires. The leading 16 bytes
 /// are the provider GUID placeholder.
 fn change_key(item: &CalendarItem) -> Vec<u8> {
-    let dt = item.dtstamp.and_then(dt_to_filetime).unwrap_or(0).to_le_bytes();
+    let dt = item
+        .dtstamp
+        .and_then(dt_to_filetime)
+        .unwrap_or(0)
+        .to_le_bytes();
     let mut out = Vec::with_capacity(16 + dt.len() + item.uid.len());
     out.extend_from_slice(&[0x01; 16]); // provider GUID placeholder
     out.extend_from_slice(&dt);
@@ -599,9 +584,7 @@ fn contact_cell_for(
             let v = c.file_as_or_fallback();
             PropertyValue::String(or_null!(v, T::PTYP_STRING))
         }
-        PR_DISPLAY_NAME => {
-            PropertyValue::String(or_null!(display_name(), T::PTYP_STRING))
-        }
+        PR_DISPLAY_NAME => PropertyValue::String(or_null!(display_name(), T::PTYP_STRING)),
         PR_MESSAGE_CLASS => PropertyValue::String(or_null!(
             store::message_class_for(crate::mapi::session::FolderKind::Contacts).to_string(),
             T::PTYP_STRING
@@ -614,9 +597,10 @@ fn contact_cell_for(
         PR_INITIALS => {
             PropertyValue::String(or_null!(c.initials().unwrap_or_default(), T::PTYP_STRING))
         }
-        PR_MIDDLE_NAME => {
-            PropertyValue::String(or_null!(c.middle_name().unwrap_or_default(), T::PTYP_STRING))
-        }
+        PR_MIDDLE_NAME => PropertyValue::String(or_null!(
+            c.middle_name().unwrap_or_default(),
+            T::PTYP_STRING
+        )),
         PR_GENERATION => {
             PropertyValue::String(or_null!(c.generation().unwrap_or_default(), T::PTYP_STRING))
         }
@@ -624,12 +608,11 @@ fn contact_cell_for(
         PR_COMPANY_NAME => {
             PropertyValue::String(or_null!(c.company().unwrap_or_default(), T::PTYP_STRING))
         }
-        PR_EMAIL_ADDRESS | PR_EMAIL1_ADDRESS => {
-            PropertyValue::String(or_null!(c.primary_email().unwrap_or_default(), T::PTYP_STRING))
-        }
-        PR_EMAIL1_DISPLAY => {
-            PropertyValue::String(or_null!(display_name(), T::PTYP_STRING))
-        }
+        PR_EMAIL_ADDRESS | PR_EMAIL1_ADDRESS => PropertyValue::String(or_null!(
+            c.primary_email().unwrap_or_default(),
+            T::PTYP_STRING
+        )),
+        PR_EMAIL1_DISPLAY => PropertyValue::String(or_null!(display_name(), T::PTYP_STRING)),
         PR_ADDRESS_TYPE => PropertyValue::String(or_null!("SMTP".to_string(), T::PTYP_STRING)),
         PR_PRIMARY_TEL | PR_BUSINESS_TEL => {
             PropertyValue::String(or_null!(c.tel("WORK").unwrap_or_default(), T::PTYP_STRING))
@@ -643,76 +626,65 @@ fn contact_cell_for(
         PR_OTHER_TEL => {
             PropertyValue::String(or_null!(c.tel("OTHER").unwrap_or_default(), T::PTYP_STRING))
         }
-        PR_BUSINESS_FAX => {
-            PropertyValue::String(or_null!(c.tel("FAX,WORK").unwrap_or_default(), T::PTYP_STRING))
-        }
-        PR_HOME_FAX => {
-            PropertyValue::String(or_null!(c.tel("FAX,HOME").unwrap_or_default(), T::PTYP_STRING))
-        }
+        PR_BUSINESS_FAX => PropertyValue::String(or_null!(
+            c.tel("FAX,WORK").unwrap_or_default(),
+            T::PTYP_STRING
+        )),
+        PR_HOME_FAX => PropertyValue::String(or_null!(
+            c.tel("FAX,HOME").unwrap_or_default(),
+            T::PTYP_STRING
+        )),
         PR_COMPANY_MAIN_TEL => {
             PropertyValue::String(or_null!(c.tel("WORK").unwrap_or_default(), T::PTYP_STRING))
         }
-        PR_HOME_ADDRESS_STREET => PropertyValue::String(or_null!(
-            c.adr("HOME").street.clone(),
-            T::PTYP_STRING
-        )),
-        PR_HOME_ADDRESS_CITY => PropertyValue::String(or_null!(
-            c.adr("HOME").locality.clone(),
-            T::PTYP_STRING
-        )),
-        PR_HOME_ADDRESS_STATE => PropertyValue::String(or_null!(
-            c.adr("HOME").region.clone(),
-            T::PTYP_STRING
-        )),
-        PR_HOME_ADDRESS_POSTAL => PropertyValue::String(or_null!(
-            c.adr("HOME").postal.clone(),
-            T::PTYP_STRING
-        )),
-        PR_HOME_ADDRESS_COUNTRY => PropertyValue::String(or_null!(
-            c.adr("HOME").country.clone(),
-            T::PTYP_STRING
-        )),
-        PR_BUSINESS_ADDRESS_STREET => PropertyValue::String(or_null!(
-            c.adr("WORK").street.clone(),
-            T::PTYP_STRING
-        )),
-        PR_BUSINESS_ADDRESS_CITY => PropertyValue::String(or_null!(
-            c.adr("WORK").locality.clone(),
-            T::PTYP_STRING
-        )),
-        PR_BUSINESS_ADDRESS_STATE => PropertyValue::String(or_null!(
-            c.adr("WORK").region.clone(),
-            T::PTYP_STRING
-        )),
-        PR_BUSINESS_ADDRESS_POSTAL => PropertyValue::String(or_null!(
-            c.adr("WORK").postal.clone(),
-            T::PTYP_STRING
-        )),
-        PR_BUSINESS_ADDRESS_COUNTRY => PropertyValue::String(or_null!(
-            c.adr("WORK").country.clone(),
-            T::PTYP_STRING
-        )),
-        PR_OTHER_ADDRESS_STREET => PropertyValue::String(or_null!(
-            c.adr("OTHER").street.clone(),
-            T::PTYP_STRING
-        )),
-        PR_OTHER_ADDRESS_CITY => PropertyValue::String(or_null!(
-            c.adr("OTHER").locality.clone(),
-            T::PTYP_STRING
-        )),
-        PR_OTHER_ADDRESS_STATE => PropertyValue::String(or_null!(
-            c.adr("OTHER").region.clone(),
-            T::PTYP_STRING
-        )),
-        PR_OTHER_ADDRESS_POSTAL => PropertyValue::String(or_null!(
-            c.adr("OTHER").postal.clone(),
-            T::PTYP_STRING
-        )),
-        PR_OTHER_ADDRESS_COUNTRY => PropertyValue::String(or_null!(
-            c.adr("OTHER").country.clone(),
-            T::PTYP_STRING
-        )),
-        PR_BUSINESS_HOME_PAGE => PropertyValue::String(or_null!(c.url().unwrap_or_default(), T::PTYP_STRING)),
+        PR_HOME_ADDRESS_STREET => {
+            PropertyValue::String(or_null!(c.adr("HOME").street.clone(), T::PTYP_STRING))
+        }
+        PR_HOME_ADDRESS_CITY => {
+            PropertyValue::String(or_null!(c.adr("HOME").locality.clone(), T::PTYP_STRING))
+        }
+        PR_HOME_ADDRESS_STATE => {
+            PropertyValue::String(or_null!(c.adr("HOME").region.clone(), T::PTYP_STRING))
+        }
+        PR_HOME_ADDRESS_POSTAL => {
+            PropertyValue::String(or_null!(c.adr("HOME").postal.clone(), T::PTYP_STRING))
+        }
+        PR_HOME_ADDRESS_COUNTRY => {
+            PropertyValue::String(or_null!(c.adr("HOME").country.clone(), T::PTYP_STRING))
+        }
+        PR_BUSINESS_ADDRESS_STREET => {
+            PropertyValue::String(or_null!(c.adr("WORK").street.clone(), T::PTYP_STRING))
+        }
+        PR_BUSINESS_ADDRESS_CITY => {
+            PropertyValue::String(or_null!(c.adr("WORK").locality.clone(), T::PTYP_STRING))
+        }
+        PR_BUSINESS_ADDRESS_STATE => {
+            PropertyValue::String(or_null!(c.adr("WORK").region.clone(), T::PTYP_STRING))
+        }
+        PR_BUSINESS_ADDRESS_POSTAL => {
+            PropertyValue::String(or_null!(c.adr("WORK").postal.clone(), T::PTYP_STRING))
+        }
+        PR_BUSINESS_ADDRESS_COUNTRY => {
+            PropertyValue::String(or_null!(c.adr("WORK").country.clone(), T::PTYP_STRING))
+        }
+        PR_OTHER_ADDRESS_STREET => {
+            PropertyValue::String(or_null!(c.adr("OTHER").street.clone(), T::PTYP_STRING))
+        }
+        PR_OTHER_ADDRESS_CITY => {
+            PropertyValue::String(or_null!(c.adr("OTHER").locality.clone(), T::PTYP_STRING))
+        }
+        PR_OTHER_ADDRESS_STATE => {
+            PropertyValue::String(or_null!(c.adr("OTHER").region.clone(), T::PTYP_STRING))
+        }
+        PR_OTHER_ADDRESS_POSTAL => {
+            PropertyValue::String(or_null!(c.adr("OTHER").postal.clone(), T::PTYP_STRING))
+        }
+        PR_OTHER_ADDRESS_COUNTRY => {
+            PropertyValue::String(or_null!(c.adr("OTHER").country.clone(), T::PTYP_STRING))
+        }
+        PR_BUSINESS_HOME_PAGE => {
+            PropertyValue::String(or_null!(c.url().unwrap_or_default(), T::PTYP_STRING))
+        }
         PR_HOME_URL => PropertyValue::String(or_null!(c.url().unwrap_or_default(), T::PTYP_STRING)),
         store::PR_ENTRYID => {
             if ttype_matches(want, T::PTYP_BINARY) {
@@ -735,10 +707,9 @@ fn contact_cell_for(
                 PropertyValue::Null
             }
         }
-        store::PR_CHANGE_KEY => PropertyValue::Binary(or_null!(
-            change_key.to_vec(),
-            T::PTYP_BINARY
-        )),
+        store::PR_CHANGE_KEY => {
+            PropertyValue::Binary(or_null!(change_key.to_vec(), T::PTYP_BINARY))
+        }
         PR_PREDECESSOR_CHANGE_LIST => {
             if ttype_matches(want, T::PTYP_BINARY) {
                 // Empty XID list — no predecessor change keys.
@@ -767,8 +738,8 @@ struct ParsedVcard {
     n_: Option<Vec<String>>, // Family;Given;Additional;Prefix;Suffix
     file_as: Option<String>,
     title: Option<String>,
-    org: Option<String>,     // First component (company). Additional ignored.
-    unit: Option<String>,    // Second ORG component (department/unit).
+    org: Option<String>,  // First component (company). Additional ignored.
+    unit: Option<String>, // Second ORG component (department/unit).
     url: Option<String>,
     uid: Option<String>,
     initials: Option<String>,
@@ -849,7 +820,9 @@ impl ParsedVcard {
     }
     fn uid(&self) -> String {
         self.uid.clone().unwrap_or_else(|| {
-            self.primary_email().or_else(|| self.fn_.clone()).unwrap_or_default()
+            self.primary_email()
+                .or_else(|| self.fn_.clone())
+                .unwrap_or_default()
         })
     }
     /// FILE-AS precedence: explicit FILE-AS / `X-FILEAS`; else "Family, Given";
@@ -870,7 +843,10 @@ impl ParsedVcard {
                 _ => {}
             }
         }
-        self.fn_.clone().or(self.primary_email()).unwrap_or_default()
+        self.fn_
+            .clone()
+            .or(self.primary_email())
+            .unwrap_or_default()
     }
     fn primary_email(&self) -> Option<String> {
         // Prefer the typed PREF / non-empty; otherwise the first email.
@@ -1199,8 +1175,7 @@ mod tests {
         ];
         let c1 = contact_to_cells(v1, &cs, store::CONTACTS_BACKEND_ID);
         let c2 = contact_to_cells(v2, &cs, store::CONTACTS_BACKEND_ID);
-        let (PropertyValue::Binary(k1), PropertyValue::Binary(k2)) = (&c1[1], &c2[1])
-        else {
+        let (PropertyValue::Binary(k1), PropertyValue::Binary(k2)) = (&c1[1], &c2[1]) else {
             panic!("expected binary record key");
         };
         // Change key must change with the body ...
@@ -1269,12 +1244,8 @@ mod tests {
         let mut ev = sample_event();
         ev.rrule = Some("FREQ=DAILY;INTERVAL=1".into());
         ev.exdates = vec![
-            chrono::Utc
-                .with_ymd_and_hms(2025, 1, 2, 9, 0, 0)
-                .unwrap(),
-            chrono::Utc
-                .with_ymd_and_hms(2025, 1, 3, 9, 0, 0)
-                .unwrap(),
+            chrono::Utc.with_ymd_and_hms(2025, 1, 2, 9, 0, 0).unwrap(),
+            chrono::Utc.with_ymd_and_hms(2025, 1, 3, 9, 0, 0).unwrap(),
         ];
         let cs = vec![ttag(PR_RECURRENCE_PATTERN, PropertyType::PTYP_BINARY)];
         let cells = calendar_to_cells(&ev, &cs, store::CALENDAR_BACKEND_ID);

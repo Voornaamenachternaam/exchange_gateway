@@ -272,7 +272,9 @@ pub fn restriction_referenced_tags(r: &SRestriction) -> Vec<PropertyTag> {
             }
         };
         match r {
-            SRestriction::And(cs) | SRestriction::Or(cs) | SRestriction::Comment { children: cs } => {
+            SRestriction::And(cs)
+            | SRestriction::Or(cs)
+            | SRestriction::Comment { children: cs } => {
                 for c in cs {
                     go(c, out);
                 }
@@ -350,7 +352,11 @@ impl SRestriction {
                 let relop = RelOp::from_u8(cur.take_u8()?);
                 let tag_a = PropertyTag::decode(cur)?;
                 let tag_b = PropertyTag::decode(cur)?;
-                Self::CompareProperties { relop, tag_a, tag_b }
+                Self::CompareProperties {
+                    relop,
+                    tag_a,
+                    tag_b,
+                }
             }
             RestrictionType::BitMask => {
                 let rel_op = BitMaskRelOp::from_u8(cur.take_u8()?)?;
@@ -529,11 +535,10 @@ impl SRestriction {
             Self::Or(children) => children.iter().any(|c| c.matches(row)),
             Self::Not(child) => !child.matches(row),
             Self::Exist { tag } => row.iter().any(|c| c.tag.equivalent(tag)),
-            Self::Property { relop, tag, value } => {
-                row.iter()
-                    .find(|c| c.tag.equivalent(tag))
-                    .is_some_and(|c| compare_relop(*relop, &c.value, value))
-            }
+            Self::Property { relop, tag, value } => row
+                .iter()
+                .find(|c| c.tag.equivalent(tag))
+                .is_some_and(|c| compare_relop(*relop, &c.value, value)),
             Self::Content {
                 fuzzy_level,
                 content_tag,
@@ -553,7 +558,11 @@ impl SRestriction {
                 .is_some_and(|c| size_match(relop, &c.value, *size)),
             // CompareProperties compares two of the ROW's own cells (not a
             // row vs a constant), so it is fully evaluable here.
-            Self::CompareProperties { relop, tag_a, tag_b } => {
+            Self::CompareProperties {
+                relop,
+                tag_a,
+                tag_b,
+            } => {
                 let a = row.iter().find(|c| c.tag.equivalent(tag_a));
                 let b = row.iter().find(|c| c.tag.equivalent(tag_b));
                 match (a, b) {
@@ -827,7 +836,9 @@ mod tests {
 
     #[test]
     fn roundtrip_exist() {
-        let r = SRestriction::Exist { tag: tag(0x0E07, 0x0003) };
+        let r = SRestriction::Exist {
+            tag: tag(0x0E07, 0x0003),
+        };
         let mut buf = Vec::new();
         r.encode(&mut buf);
         let mut cur = Buf::new(&buf);
@@ -855,8 +866,12 @@ mod tests {
     fn roundtrip_and_or_not() {
         let r = SRestriction::And(vec![
             SRestriction::Or(vec![
-                SRestriction::Exist { tag: tag(0x0E07, 0x0003) },
-                SRestriction::Not(Box::new(SRestriction::Exist { tag: tag(0x0017, 0x0003) })),
+                SRestriction::Exist {
+                    tag: tag(0x0E07, 0x0003),
+                },
+                SRestriction::Not(Box::new(SRestriction::Exist {
+                    tag: tag(0x0017, 0x0003),
+                })),
             ]),
             SRestriction::Property {
                 relop: RelOp::GE,
@@ -907,10 +922,14 @@ mod tests {
             SRestriction::SubRestriction {
                 sub_object: 0,
                 tag: tag(0x0E21, 0x0003),
-                child: Box::new(SRestriction::Exist { tag: tag(0x3702, 0x0102) }),
+                child: Box::new(SRestriction::Exist {
+                    tag: tag(0x3702, 0x0102),
+                }),
             },
             SRestriction::Comment {
-                children: vec![SRestriction::Exist { tag: tag(0x3001, 0x001F) }],
+                children: vec![SRestriction::Exist {
+                    tag: tag(0x3001, 0x001F),
+                }],
             },
         ]);
         let mut buf = Vec::new();
@@ -925,7 +944,10 @@ mod tests {
     fn rejects_unknown_restriction_type() {
         let buf = [0xFFu8];
         let mut cur = Buf::new(&buf);
-        assert_eq!(SRestriction::decode(&mut cur).unwrap_err(), DecodeError::InvalidValue);
+        assert_eq!(
+            SRestriction::decode(&mut cur).unwrap_err(),
+            DecodeError::InvalidValue
+        );
     }
 
     #[test]
@@ -960,7 +982,10 @@ mod tests {
         // And arm declaring 2 children but supplying zero bytes.
         let buf = [RestrictionType::And.to_u8(), 0x02, 0x00];
         let mut cur = Buf::new(&buf);
-        assert_eq!(SRestriction::decode(&mut cur).unwrap_err(), DecodeError::Insufficient);
+        assert_eq!(
+            SRestriction::decode(&mut cur).unwrap_err(),
+            DecodeError::Insufficient
+        );
     }
 
     // ---- restriction matcher -----------------------------------------------
@@ -975,8 +1000,11 @@ mod tests {
     #[test]
     fn matcher_exist_matches_when_cell_present_non_null() {
         // PR_SUBJECT present as a string -> Exist is true.
-        let row: Vec<CellForMatcher> = vec![cell(0x0037, 0x001F, PropertyValue::String("x".into()))];
-        let r = SRestriction::Exist { tag: tag(0x0037, 0x001F) };
+        let row: Vec<CellForMatcher> =
+            vec![cell(0x0037, 0x001F, PropertyValue::String("x".into()))];
+        let r = SRestriction::Exist {
+            tag: tag(0x0037, 0x001F),
+        };
         assert!(r.matches(&row));
         // PR_SUBJECT absent (cell for another tag only) -> false.
         let row2: Vec<CellForMatcher> = vec![cell(0x0E07, 0x0003, PropertyValue::Integer32(0))];
@@ -1004,7 +1032,11 @@ mod tests {
     #[test]
     fn matcher_content_case_insensitive_substring() {
         // Substring content on PR_SUBJECT ignoring case.
-        let row: Vec<CellForMatcher> = vec![cell(0x0037, 0x001F, PropertyValue::String("Hello World".into()))];
+        let row: Vec<CellForMatcher> = vec![cell(
+            0x0037,
+            0x001F,
+            PropertyValue::String("Hello World".into()),
+        )];
         let sub = SRestriction::Content {
             fuzzy_level: FuzzyLevel::from_u16(FuzzyLevel::FL_SUBSTRING | 0x2000),
             content_tag: tag(0x0037, 0x001F),
@@ -1024,7 +1056,8 @@ mod tests {
     #[test]
     fn matcher_bitmask_and_and_or_not() {
         // PR_MESSAGE_FLAGS & 0x00000010 (MSGFLAG_UNREAD bit).
-        let unread_row: Vec<CellForMatcher> = vec![cell(0x0E07, 0x0003, PropertyValue::Integer32(0x10))];
+        let unread_row: Vec<CellForMatcher> =
+            vec![cell(0x0E07, 0x0003, PropertyValue::Integer32(0x10))];
         let read_row: Vec<CellForMatcher> = vec![cell(0x0E07, 0x0003, PropertyValue::Integer32(0))];
         let unread_bmr = SRestriction::BitMask {
             rel_op: BitMaskRelOp::NonZero,
@@ -1034,15 +1067,18 @@ mod tests {
         assert!(unread_bmr.matches(&unread_row));
         assert!(!unread_bmr.matches(&read_row));
         // AND(OR(unread, big), NOT(read)) with a row that is unread+small.
-        let small_unread: Vec<CellForMatcher> = vec![cell(0x0E07, 0x0003, PropertyValue::Integer32(0x10))];
+        let small_unread: Vec<CellForMatcher> =
+            vec![cell(0x0E07, 0x0003, PropertyValue::Integer32(0x10))];
         let big = SRestriction::Property {
             relop: RelOp::GE,
             tag: tag(0x0E08, 0x0003),
             value: PropertyValue::Integer32(10_000),
         };
-        let and = SRestriction::And(vec![SRestriction::Or(vec![unread_bmr.clone(), big]), SRestriction::Not(Box::new(unread_bmr.clone()))]);
+        let and = SRestriction::And(vec![
+            SRestriction::Or(vec![unread_bmr.clone(), big]),
+            SRestriction::Not(Box::new(unread_bmr.clone())),
+        ]);
         // unread OR big = true; NOT unread = false -> AND false.
         assert!(!and.matches(&small_unread));
     }
-
 }

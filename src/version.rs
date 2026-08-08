@@ -108,8 +108,7 @@ impl ServerVersion {
         if build == 0 {
             return Err("server version build number must be non-zero".to_string());
         }
-        let version =
-            exchange_version.trim();
+        let version = exchange_version.trim();
         if version.is_empty() {
             return Err("server exchange version must not be empty".to_string());
         }
@@ -160,8 +159,7 @@ impl ServerVersion {
             return Err(format!(
                 "server version '{}' must have exactly four dot-separated components \
                  (Major.Minor.Build.Revision, e.g. \"{}\")",
-                s,
-                DEFAULT_VERSION_STRING
+                s, DEFAULT_VERSION_STRING
             ));
         }
         let major = parts[0]
@@ -206,7 +204,10 @@ impl ServerVersion {
     /// Dot-delimited version string ("Major.Minor.Build.Revision"), e.g.
     /// "15.2.2562.45" — used by the Autodiscover Outlook `<ServerVersion>`.
     pub fn version_string(&self) -> String {
-        format!("{}.{}.{}.{}", self.major, self.minor, self.build, self.minor_build)
+        format!(
+            "{}.{}.{}.{}",
+            self.major, self.minor, self.build, self.minor_build
+        )
     }
 
     /// The comma-separated `EwsSupportedSchemas` user-setting value advertised
@@ -282,9 +283,7 @@ impl Default for ServerVersion {
 /// stamps already advertised).
 pub fn init(version: ServerVersion) {
     if CURRENT.set(version).is_err() {
-        tracing::warn!(
-            "Server version already initialised; ignoring re-init (first value wins)"
-        );
+        tracing::warn!("Server version already initialised; ignoring re-init (first value wins)");
     }
 }
 
@@ -314,7 +313,10 @@ mod tests {
 
     #[test]
     fn default_version_string_constant_matches_default() {
-        assert_eq!(ServerVersion::default().version_string(), DEFAULT_VERSION_STRING);
+        assert_eq!(
+            ServerVersion::default().version_string(),
+            DEFAULT_VERSION_STRING
+        );
     }
 
     #[test]
@@ -384,7 +386,11 @@ mod tests {
         assert!(header.contains(r#"MajorBuildNumber="2562""#), "{}", header);
         assert!(header.contains(r#"MinorBuildNumber="45""#), "{}", header);
         assert!(header.contains(r#"Version="Exchange2016""#), "{}", header);
-        assert!(header.contains(&format!(r#"xmlns:t="{}""#, ns)), "{}", header);
+        assert!(
+            header.contains(&format!(r#"xmlns:t="{}""#, ns)),
+            "{}",
+            header
+        );
         // No line-continuation artifact leaks into emitted XML.
         assert!(!header.contains('\\'), "{}", header);
         assert!(header.ends_with("/>"), "{}", header);
@@ -402,7 +408,10 @@ mod tests {
 
     #[test]
     fn render_server_version_element_is_dot_string() {
-        assert_eq!(ServerVersion::default().render_server_version_element(), "15.2.2562.45");
+        assert_eq!(
+            ServerVersion::default().render_server_version_element(),
+            "15.2.2562.45"
+        );
     }
 
     #[test]
