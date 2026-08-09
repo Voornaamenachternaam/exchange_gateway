@@ -694,8 +694,8 @@ fn class_placeholder_app_data(content_class: &str, owner: &str) -> String {
 
 fn map_rrule_to_recurrence_xml(
     rrule: &str,
-    timezone: Option<&str>,
-    all_day: bool,
+    _timezone: Option<&str>,
+    _all_day: bool,
 ) -> Option<String> {
     let parts: Vec<&str> = rrule.split(';').collect();
     let mut freq: Option<u8> = None;
@@ -768,8 +768,6 @@ fn map_rrule_to_recurrence_xml(
             }
         }
     }
-    let timezone_for_recurrence = timezone.unwrap_or("").to_string();
-    let all_day_flag = all_day;
     let mut freq_val = freq?;
     if week_of_month != 0 {
         freq_val = match freq_val {
@@ -834,16 +832,14 @@ fn map_rrule_to_recurrence_xml(
             v
         ));
     }
-    if !all_day_flag && !timezone_for_recurrence.is_empty() {
-        xml.push_str(&format!(
-            "<Calendar:StartTimeZone>{}</Calendar:StartTimeZone>",
-            xml_escape(&timezone_for_recurrence)
-        ));
-        xml.push_str(&format!(
-            "<Calendar:EndTimeZone>{}</Calendar:EndTimeZone>",
-            xml_escape(&timezone_for_recurrence)
-        ));
-    }
+    // NOTE: <Calendar:StartTimeZone>/<EndTimeZone> are item-level calendar
+    // properties (rendered standalone from the item's zone in
+    // `render_calendar_app_data`), NOT legal children of <Calendar:Recurrence>
+    // per MS-ASCAL §2.2.3.8. The recurrence time-zone is conveyed by the
+    // parent <Calendar:Timezone> blob; emitting StartTimeZone/EndTimeZone here
+    // (as the legacy code did, with a raw IANA string) was both malformed and
+    // drifted from the authoritative iCalendar RRULE boundaries, so it is no
+    // longer produced inside the Recurrence body.
     xml.push_str("</Calendar:Recurrence>");
     Some(xml)
 }
@@ -1134,14 +1130,26 @@ pub(crate) fn render_calendar_app_data(item: &CalendarItem) -> String {
     if !item.all_day
         && let Some(tz) = &item.timezone
     {
-        xml.push_str(&format!(
-            "<Calendar:StartTimeZone>{}</Calendar:StartTimeZone>",
-            xml_escape(tz)
-        ));
-        xml.push_str(&format!(
-            "<Calendar:EndTimeZone>{}</Calendar:EndTimeZone>",
-            xml_escape(tz)
-        ));
+        // MS-ASCAL §2.2.3.12/§2.2.3.13: <Calendar:StartTimeZone>/<EndTimeZone>
+        // carry a base64-encoded Windows TZI blob (the SAME shape as the
+        // <Calendar:Timezone> element §2.2.3.9), NOT a bare IANA id. Emitting
+        // the IANA string here made Outlook Android mis-derive recurrence/
+        // exception wall-clock times for non-UTC events (and silently dropped
+        // the zone on timezone-stamp-sensitive display). Synthesise the blob
+        // from the stored IANA id via the shared chrono_tz-derived mapping and
+        // fall back to omitting the element if the zone is unmappable (Android
+        // then treats the times as UTC, matching the legacy behaviour) rather
+        // than emitting a malformed raw-string value.
+        if let Some(blob) = crate::timezone::iana_to_eas_timezone_blob(tz) {
+            xml.push_str(&format!(
+                "<Calendar:StartTimeZone>{}</Calendar:StartTimeZone>",
+                blob
+            ));
+            xml.push_str(&format!(
+                "<Calendar:EndTimeZone>{}</Calendar:EndTimeZone>",
+                blob
+            ));
+        }
     }
     xml.push_str(&format!(
         "<Calendar:UID>{}</Calendar:UID>",
@@ -1777,4 +1785,90 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
         more = more_available_tag,
         commands = commands,
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::TimeZone;
+
+    fn eastern_item() -> CalendarItem {
+        CalendarItem {
+            uid: "eas-tz-001".to_string(),
+            subject: "Eastern Meeting".to_string(),
+            // 09:00 EST = 14:00 UTC on 2025-03-02 (before DST).
+            start: chrono::Utc
+                .with_ymd_and_hms(2025, 3, 2, 14, 0, 0)
+                .unwrap(),
+            end: chrono::Utc.with_ymd_and_hms(2025, 3, 2, 15, 0, 0).unwrap(),
+            all_day: false,
+            dtstamp: Some(chrono::Utc.with_ymd_and_hms(2025, 3, 2, 14, 0, 0).unwrap()),
+            timezone: Some("America/New_York".to_string()),
+            ..Default::default()
+        }
+    }
+
+    /// MS-ASCAL §2.2.3.12/§2.2.3.13: <Calendar:StartTimeZone>/<EndTimeZone>
+    /// MUST be base64-encoded Windows TZI blobs, NOT the bare IANA id. The
+    /// legacy renderer emitted the raw IANA string here, which made Outlook
+    /// Android mis-derive recurrence wall-clock times for non-UTC events
+    /// (audit gap #1). Verify the blob is real base64 (decodes to TZ_BLOB_LEN
+    /// bytes) and carries the correct Eastern bias.
+    #[test]
+    fn eas_calendar_emits_base64_startendtimezone_blob_not_iana() {
+        let item = eastern_item();
+        let xml = render_calendar_app_data(&item);
+        // The bare IANA id MUST NOT appear as the element text.
+        assert!(
+            !xml.contains("<Calendar:StartTimeZone>America/New_York</Calendar:StartTimeZone>"),
+            "EAS StartTimeZone leaked the raw IANA id:\n{xml}"
+        );
+        assert!(xml.contains("<Calendar:StartTimeZone>"));
+        assert!(xml.contains("<Calendar:EndTimeZone>"));
+        // Extract the blob text and decode it.
+        let blob = extract_element_text(&xml, "Calendar:StartTimeZone").unwrap();
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(blob.trim())
+            .expect("StartTimeZone is not valid base64");
+        assert_eq!(
+            bytes.len(),
+            crate::timezone::TZ_BLOB_LEN,
+            "EAS timezone blob is not the documented TZ_BLOB_LEN"
+        );
+        let bias = i32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+        assert_eq!(bias, 300, "Eastern standard bias = +300");
+    }
+
+    /// A UTC event (no stored zone) MUST NOT emit StartTimeZone/EndTimeZone at
+    /// all — the legacy code gated this on `item.timezone`, and the base64
+    /// switch must preserve that gate (Android treats absent zones as UTC).
+    #[test]
+    fn eas_calendar_omits_startendtimezone_for_utc_event() {
+        let item = CalendarItem {
+            uid: "utc-001".to_string(),
+            subject: "UTC Meeting".to_string(),
+            start: chrono::Utc.with_ymd_and_hms(2025, 1, 1, 9, 0, 0).unwrap(),
+            end: chrono::Utc.with_ymd_and_hms(2025, 1, 1, 10, 0, 0).unwrap(),
+            all_day: false,
+            timezone: None,
+            ..Default::default()
+        };
+        let xml = render_calendar_app_data(&item);
+        assert!(
+            !xml.contains("<Calendar:StartTimeZone>"),
+            "UTC event should not carry a StartTimeZone:\n{xml}"
+        );
+        assert!(
+            !xml.contains("<Calendar:EndTimeZone>"),
+            "UTC event should not carry an EndTimeZone:\n{xml}"
+        );
+    }
+
+    fn extract_element_text(xml: &str, tag: &str) -> Option<String> {
+        let open = format!("<{tag}>");
+        let close = format!("</{tag}>");
+        let start = xml.find(&open)? + open.len();
+        let end = xml[start..].find(&close)? + start;
+        Some(xml[start..end].to_string())
+    }
 }

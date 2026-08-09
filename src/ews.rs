@@ -1111,18 +1111,25 @@ fn render_ews_calendar_item_xml_with_shape(
         // convert back; fall back to the raw value if unmappable.
         let win = crate::timezone::iana_to_windows_timezone_name(v).unwrap_or_else(|| v.clone());
         xml.push_str(&format!(
-            "<t:StartTimeZone>{}</t:StartTimeZone>",
+            "<t:StartTimeZone><t:Id>{}</t:Id><t:Name>{}</t:Name></t:StartTimeZone>",
+            xml_escape(&win),
             xml_escape(&win)
         ));
         xml.push_str(&format!(
-            "<t:EndTimeZone>{}</t:EndTimeZone>",
+            "<t:EndTimeZone><t:Id>{}</t:Id><t:Name>{}</t:Name></t:EndTimeZone>",
+            xml_escape(&win),
             xml_escape(&win)
         ));
-    }
-    if let Some(v) = &item.timezone_blob {
+        // <t:MeetingTimeZone> (MS-OXWSCORE §2.2.6, deprecated in favour of
+        // StartTimeZone/EndTimeZone but still parsed by Outlook for back-compat)
+        // carries a Windows time-zone id, NOT the raw `timezone_blob` — for a
+        // CalDAV-origin item `timezone_blob` is the authoritative iCalendar
+        // VTIMEZONE *block* (multi-line) and would corrupt the EWS envelope if
+        // emitted as element text. Emit the same Windows id the standalone
+        // <t:StartTimeZone> uses so the two agree.
         xml.push_str(&format!(
             "<t:MeetingTimeZone>{}</t:MeetingTimeZone>",
-            xml_escape(v)
+            xml_escape(&win)
         ));
     }
     if let Some(v) = &item.online_meeting_conf_link {

@@ -1,5 +1,67 @@
 # exchange_gateway - agent notes
 
+## Calendar/timezone fidelity (audit gap #1 — VTIMEZONE/SRCAL round-trip)
+The EAS/EWS timezone rendering no longer derives Windows `TZI` transition rules
+from a hardcoded EU/US approximation (`dst_rules_for`/`EU_STD`/`EU_DST`/`US_DST`
+consts are GONE). `src/timezone.rs` now derives ALL transition data by sampling
+the zone's actual local offsets across a reference year with `chrono_tz`
+(`zone_transitions` → `scan_full_year` → `encode_boundary` → `transition_hour`).
+This is the ONE authoritative source feeding BOTH:
+
+- `iana_to_windows_params` → the base64 EAS `Timezone` blob
+  (`iana_to_eas_timezone_blob`) AND the Windows TZI `StandardDate`/`DaylightDate`
+  SYSTEMTIME records, and
+- `render_vtimezone_block(iana)` → the synthesised iCalendar `VTIMEZONE` block
+  `render_ics` emits when an EWS/gateway-origin item has no authoritative CalDAV
+  VTIMEZONE blob.
+
+`transition_hour` is robust to both gaps (spring-forward, where the transition
+hour is `None`) and folds (fall-back, where it repeats): it reports the **naive
+boundary hour at which the offset first leaves the outgoing phase**, which is
+the documented Windows `TZI` `wHour` convention (e.g. 02:00 Eastern both
+directions, 01:00 GMT spring / 02:00 BST fall). The week computation no longer
+clamps the legitimate `5` ("last weekday") value down to `4` (the `.min(4)` bug
+that mis-encoded the EU last-Sunday rules). Legacy IANA alias resolution
+(`windows_timezone_name_for_iana`) collapses `Asia/Kolkata` ↔ `Asia/Calcutta`
+(`chrono_tz` exposes them as distinct enum variants) by comparing resolved
+offsets at four representative instants, not enum identity.
+
+EAS rendering (`src/sync.rs::render_calendar_app_data`): the standalone
+`<Calendar:StartTimeZone>`/`<Calendar:EndTimeZone>` now carry the base64 Windows
+TZI blob (`iana_to_eas_timezone_blob`) per MS-ASCAL §2.2.3.12/§2.2.3.13 — NOT the
+bare IANA id (the legacy string made Outlook Android mis-derive recurrence/
+exception wall-clock times for non-UTC events). The malformed
+`<StartTimeZone>`/`<EndTimeZone>` children INSIDE `<Calendar:Recurrence>` were
+REMOVED (they are item-level properties, not legal Recurrence children per
+MS-ASCAL §2.2.3.8). UTC events omit both elements entirely (gate preserved).
+
+EWS rendering (`src/ews.rs::render_ews_calendar_item_xml_with_shape`):
+`<t:StartTimeZone>`/`<t:EndTimeZone>` now emit the canonical
+`<t:Id>/<t:Name>` child shape (Windows id derived from the IANA id), and
+`<t:MeetingTimeZone>` emits the SAME Windows id — NOT the raw `timezone_blob`
+(which for a CalDAV-origin item is the multi-line authoritative iCalendar
+VTIMEZONE block and would corrupt the EWS envelope as element text).
+
+CalDAV round-trip (`src/calendar.rs::render_ics`): when `item.timezone_blob`
+parses as a real VTIMEZONE, it is re-emitted byte-for-byte (the authoritative
+TZID/RRULE UNTIL boundaries CalDAV stored are preserved). When it does NOT
+parse (e.g. an EWS-origin item where `timezone_blob` was a bare Windows name
+captured from `MeetingTimeZone`), OR when `timezone_blob` is `None` entirely,
+`render_ics` synthesises a canonical VTIMEZONE from `item.timezone` (IANA) via
+`render_vtimezone_block` so the edited event round-trips with a real,
+RFC 5545-valid zone definition whose transition RRULE agrees with the Windows
+TZI blob the EAS/EWS path advertises (no drift between transports).
+
+Tests added: 6 in `timezone.rs` (US Eastern 2nd-Sun-Mar / Santiago southern
+hemisphere / Sydney / London last-Sun / Kolkata no-DST / EAS blob round-trip),
+2 in `sync.rs` (EAS base64 StartTimeZone + UTC omission gate), 2 in
+`calendar.rs` (DST-crossover weekly-recurrence round-trip through
+render_ics→parse_ics_event with synthesized VTIMEZONE; authoritative CalDAV
+VTIMEZONE preserved byte-for-byte). 595 lib + 11 snapshot = 606 green,
+`RUSTFLAGS="-D warnings" cargo build --bin exchange_gateway` + `cargo clippy
+--all-targets` clean. `TZ_BLOB_LEN` is `pub(crate)` so the EAS test can assert
+the documented 172-byte blob length.
+
 ## GitHub push auth (IMPORTANT - ghu_ app-installation tokens)
 The `GITHUB_TOKEN` env var in this workspace is a GitHub App installation token
 (prefix `ghu_`, 40 chars). It does NOT authenticate the usual ways:
