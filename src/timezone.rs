@@ -2,7 +2,9 @@
 use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
 use chrono::{Datelike, Offset, TimeZone};
 use chrono_tz::Tz;
+use std::collections::HashMap;
 use std::str::FromStr;
+use std::sync::{LazyLock, Mutex};
 use strum::IntoEnumIterator;
 use windows_timezones::WindowsTimezone;
 
@@ -213,7 +215,9 @@ fn local_offset_minutes(tz: Tz, ndt: chrono::NaiveDateTime) -> Option<i32> {
 /// spring-forward gap that hour is the (non-existent) gap start (e.g. 02:00
 /// Eastern, 01:00 GMT); for a fall-back fold it is the first naive hour that
 /// is exclusively in the new phase. The result is the literal naive boundary
-/// hour, clipped to 1..=23 so the SYSTEMTIME never carries a 00:00 moment.
+/// hour in `0..=23` (a `SYSTEMTIME` `wHour` legitimately carries `0`, so zones
+/// that change at midnight, e.g. America/Santiago's autumn resume, are encoded
+/// correctly rather than shifted an hour late).
 fn transition_hour(tz: Tz, date: chrono::NaiveDate, from: i32, _to: i32) -> Option<u16> {
     let mut prev: Option<i32> = Some(from);
     let mut hour: u16 = 0;
@@ -224,7 +228,7 @@ fn transition_hour(tz: Tz, date: chrono::NaiveDate, from: i32, _to: i32) -> Opti
         // the new offset, or by dropping into a gap (None) right after an
         // `from` hour (spring-forward).
         if prev == Some(from) && cur != Some(from) {
-            return Some(hour.clamp(1, 23));
+            return Some(hour);
         }
         prev = cur;
         hour += 1;
@@ -252,26 +256,26 @@ fn encode_boundary(
     } else {
         date.day().div_ceil(7).min(4) as u16
     };
-    let hour = transition_hour(tz, date, from, to)?.max(1);
+    let hour = transition_hour(tz, date, from, to)?;
     Some(systemtime_rule(month as u16, weekday, week, hour))
 }
 
 /// Derive the Windows `TZI` standard & daylight transition SYSTEMTIME records
-/// plus the daylight bias by sampling the zone's actual offsets across a
-/// reference year with `chrono_tz`. This honours the authoritative IANA
-/// transition rules byte-for-byte (e.g. southern-hemisphere DST, zones whose
-/// transition dates differ from the legacy EU/US approximation, and zones with
-/// no DST), replacing the old hardcoded per-region guesswork.
-fn derive_tzi_transitions(tz: Tz, standard: i32, dst: i32) -> ([u8; 16], [u8; 16], i32) {
+/// by sampling the zone's actual offsets across a reference year with
+/// `chrono_tz`. This honours the authoritative IANA transition rules
+/// byte-for-byte (e.g. southern-hemisphere DST, zones whose transition dates
+/// differ from the legacy EU/US approximation, and zones with no DST),
+/// replacing the old hardcoded per-region guesswork.
+fn derive_tzi_transitions(tz: Tz, standard: i32, dst: i32) -> ([u8; 16], [u8; 16]) {
     const REF_YEAR: i32 = 2025;
-    let (std_rule, dst_rule, bias) = scan_full_year(tz, REF_YEAR, standard, dst);
+    let (std_rule, dst_rule) = scan_full_year(tz, REF_YEAR, standard, dst);
     if std_rule == NO_DST || dst_rule == NO_DST {
         // A zone flagged as DST-observing that we failed to resolve (e.g. the
         // reference year fell entirely on one side of a DST change) degrades to
         // a zeroed TZI rather than emitting a half-populated, malformed blob.
-        return (NO_DST, NO_DST, 0);
+        return (NO_DST, NO_DST);
     }
-    (std_rule, dst_rule, bias)
+    (std_rule, dst_rule)
 }
 
 /// Walk every day of `year` at 12:00 local, record the standard->dst boundary
@@ -279,14 +283,15 @@ fn derive_tzi_transitions(tz: Tz, standard: i32, dst: i32) -> ([u8; 16], [u8; 16
 /// encode both as Windows `TZI` SYSTEMTIME rules. Deriving the transition dates
 /// directly from `chrono_tz`'s compiled zoneinfo means the synthesised blob is
 /// byte-for-byte correct for the zone's actual (possibly non-EU/US, possibly
-/// southern-hemisphere) DST rules.
-fn scan_full_year(tz: Tz, year: i32, standard: i32, dst: i32) -> ([u8; 16], [u8; 16], i32) {
+/// southern-hemisphere) DST rules. The walk stops at the year boundary so a
+/// January-1 boundary of the following year is never mis-encoded with this
+/// year's month/week.
+fn scan_full_year(tz: Tz, year: i32, standard: i32, dst: i32) -> ([u8; 16], [u8; 16]) {
     let mut std_rule = NO_DST;
     let mut dst_rule = NO_DST;
     let mut prev_offset: Option<i32> = None;
     let mut date = chrono::NaiveDate::from_ymd_opt(year, 1, 1).unwrap();
-    for _ in 0..366 {
-        let Some(ndt) = date.and_hms_opt(12, 0, 0) else { break };
+    while let Some(ndt) = date.and_hms_opt(12, 0, 0) {
         let off = local_offset_minutes(tz, ndt);
         if let (Some(prev), Some(cur)) = (prev_offset, off) {
             if prev == standard && cur == dst && dst_rule == NO_DST
@@ -304,9 +309,14 @@ fn scan_full_year(tz: Tz, year: i32, standard: i32, dst: i32) -> ([u8; 16], [u8;
         }
         prev_offset = off;
         let Some(next) = date.succ_opt() else { break };
+        // Stop before crossing into the next year so a New-Year boundary is
+        // not sampled (and mis-encoded) under this year's month/week.
+        if next.year() != year {
+            break;
+        }
         date = next;
     }
-    (std_rule, dst_rule, -60)
+    (std_rule, dst_rule)
 }
 
 fn month_days(year: i32, month: u32) -> u32 {
@@ -316,45 +326,16 @@ fn month_days(year: i32, month: u32) -> u32 {
         .unwrap_or(28)
 }
 
-/// Zones that currently observe no DST. Kept as a fast path so the synthesized
-/// blob carries a clean zeroed SYSTEMTIME (matching a no-DST Windows TZI);
-/// `derive_tzi_transitions` would also produce zeroed rules for these, but the
-/// explicit list avoids a needless year-long scan for the common fixed-offset
-/// case.
+/// Zones that by definition never observe DST, kept as a fast path so the
+/// synthesised blob carries a clean zeroed SYSTEMTIME (matching a no-DST
+/// Windows TZI) without a needless year-long scan. Restricted to the
+/// genuinely-fixed IANA categories — `UTC`, `Etc/*`, and `GMT` — so any zone
+/// that *might* observe DST (Africa/Cairo resumed DST in 2023; many "currently
+/// fixed" regional zones have a DST history under different rules) is computed
+/// from its actual sampled offsets by `zone_transitions` instead of being
+/// suppressed by a stale hard-coded list.
 fn fixed_offset_zone(iana: &str) -> bool {
-    matches!(
-        iana,
-        "Europe/Moscow"
-            | "Europe/Istanbul"
-            | "Asia/Dubai"
-            | "Asia/Kolkata"
-            | "Asia/Calcutta"
-            | "Asia/Shanghai"
-            | "Asia/Hong_Kong"
-            | "Asia/Singapore"
-            | "Asia/Tokyo"
-            | "Asia/Seoul"
-            | "Asia/Taipei"
-            | "Asia/Bangkok"
-            | "Asia/Jakarta"
-            | "Asia/Karachi"
-            | "Asia/Dhaka"
-            | "Asia/Baghdad"
-            | "Africa/Johannesburg"
-            | "Africa/Cairo"
-            | "Australia/Brisbane"
-            | "Australia/Perth"
-            | "America/Buenos_Aires"
-            | "America/Argentina/Buenos_Aires"
-            | "America/Mexico_City"
-            | "America/Bogota"
-            | "America/Lima"
-            | "Pacific/Honolulu"
-            | "UTC"
-            | "Etc/UTC"
-            | "Etc/GMT"
-            | "GMT"
-    )
+    iana == "UTC" || iana == "GMT" || iana.starts_with("Etc/")
 }
 
 /// Resolve the Windows timezone display name for an IANA id, robust to legacy
@@ -437,7 +418,7 @@ fn zone_transitions(iana: &str, tz: Tz) -> ZoneTransitions {
         };
     }
     let dst_offset = standard_offset + 60;
-    let (std_rule, dst_rule, _) = derive_tzi_transitions(tz, standard_offset, dst_offset);
+    let (std_rule, dst_rule) = derive_tzi_transitions(tz, standard_offset, dst_offset);
     if std_rule == NO_DST || dst_rule == NO_DST {
         return ZoneTransitions {
             standard_offset,
@@ -479,7 +460,7 @@ pub fn render_vtimezone_block(iana: &str) -> Option<String> {
         out.push_str(&format!("TZOFFSETTO:{dst_str}\r\n"));
         out.push_str(&format!(
             "DTSTART:{}\r\n",
-            vtimezone_dtstart(zt.dst_rule, zt.standard_offset)
+            vtimezone_dtstart(zt.dst_rule)
         ));
         out.push_str(&vtimezone_rrule(zt.dst_rule));
         out.push_str("END:DAYLIGHT\r\n");
@@ -489,7 +470,7 @@ pub fn render_vtimezone_block(iana: &str) -> Option<String> {
         out.push_str(&format!("TZOFFSETTO:{std_off}\r\n"));
         out.push_str(&format!(
             "DTSTART:{}\r\n",
-            vtimezone_dtstart(zt.std_rule, dst_off)
+            vtimezone_dtstart(zt.std_rule)
         ));
         out.push_str(&vtimezone_rrule(zt.std_rule));
         out.push_str("END:STANDARD\r\n");
@@ -502,7 +483,18 @@ pub fn render_vtimezone_block(iana: &str) -> Option<String> {
         out.push_str("END:STANDARD\r\n");
     }
     out.push_str("END:VTIMEZONE");
-    Some(out)
+    // Defensive self-validation: reject any definition that is structurally
+    // malformed (missing the mandatory VTIMEZONE framing or TZID) so the sole
+    // caller (calendar.rs `render_ics`) can't receive an unusable block. The
+    // caller additionally round-trips the block through the `icalendar` parser
+    // and, when even that fails, falls back to a UTC `DTSTART` so no orphan
+    // TZID is ever emitted (RFC 5545 invariant).
+    if out.contains("BEGIN:VTIMEZONE\r\n") && out.contains("TZID:") && out.contains("END:VTIMEZONE")
+    {
+        Some(out)
+    } else {
+        None
+    }
 }
 
 /// Canonicalise an IANA id for use as a `VTIMEZONE` `TZID`. `chrono_tz`
@@ -542,44 +534,41 @@ fn weekday_name(wday: u16) -> &'static str {
 }
 
 /// Resolve the `DTSTART` for a `VTIMEZONE` subcomponent from a Windows `TZI`
-/// SYSTEMTIME rule, expressed in the *outgoing* offset's wall clock (the same
-/// convention `transition_hour` uses). `out_offset` is the offset the zone is
-/// leaving at the transition, so the naive local hour lands on the correct
-/// side of the gap/fold.
-fn vtimezone_dtstart(rule: [u8; 16], out_offset: i32) -> String {
+/// SYSTEMTIME rule. Per RFC 5545 §3.6.5 the `STANDARD`/`DAYLIGHT` `DTSTART` is
+/// the transition's **local** wall-clock time (the instant the offset becomes
+/// effective, expressed in that offset's own clock), anchored at the customary
+/// epoch year `1970` and emitted as a naive date-time with **no** trailing `Z`
+/// (UTC-suffixed values are explicitly forbidden here). The `RRULE` recurs it
+/// annually, so the year is only a stable anchor for the first occurrence.
+fn vtimezone_dtstart(rule: [u8; 16]) -> String {
     let month = u16::from_le_bytes([rule[2], rule[3]]) as u32;
-    let year = 2025;
+    const EPOCH_YEAR: i32 = 1970;
     // nth weekday of the month (1..=4), or last (5).
     let day_of_week = u16::from_le_bytes([rule[4], rule[5]]);
     let week = u16::from_le_bytes([rule[6], rule[7]]);
     let hour = u16::from_le_bytes([rule[8], rule[9]]);
-    let weekday = match_rule_weekday_of_month(year, month, day_of_week, week);
-    let Some(date) = chrono::NaiveDate::from_ymd_opt(year, month, weekday) else {
+    let weekday = match_rule_weekday_of_month(EPOCH_YEAR, month, day_of_week, week);
+    let Some(date) = chrono::NaiveDate::from_ymd_opt(EPOCH_YEAR, month, weekday) else {
         return "19700101T000000".to_string();
     };
     let Some(naive) = date.and_hms_opt(hour.into(), 0, 0) else {
         return "19700101T000000".to_string();
     };
-    // The VTIMEZONE DTSTART is conventionally expressed in UTC for the first
-    // occurrence after the epoch. Compute the UTC instant by interpreting the
-    // naive time in the outgoing offset.
-    let utc = naive - chrono::Duration::minutes(out_offset.into());
-    utc.format("%Y%m%dT%H%M%SZ").to_string()
+    naive.format("%Y%m%dT%H%M%S").to_string()
 }
 
 fn match_rule_weekday_of_month(year: i32, month: u32, day_of_week: u16, week: u16) -> u32 {
-    use chrono::Datelike;
     let first = chrono::NaiveDate::from_ymd_opt(year, month, 1).unwrap_or_else(|| {
         chrono::NaiveDate::from_ymd_opt(year, month.clamp(1, 12), 28).unwrap()
     });
     let first_wd = first.weekday().num_days_from_sunday() as u16;
     let target = day_of_week % 7;
     let mut offset = (target + 7 - first_wd) % 7;
+    let dim = month_days(year, month) as i32;
     if week == 5 {
         // last weekday of the month: advance by 4 weeks then clamp to the
         // month length.
         offset += 28;
-        let dim = month_days(year, month) as i32;
         let mut day = 1 + offset as i32;
         while day > dim {
             day -= 7;
@@ -587,7 +576,10 @@ fn match_rule_weekday_of_month(year: i32, month: u32, day_of_week: u16, week: u1
         return day.max(1) as u32;
     }
     offset += (week.saturating_sub(1)) * 7;
-    1 + offset as u32
+    // Clamp to the month length so a malformed nth-week rule (e.g. the 4th
+    // occurrence of a weekday that only occurs three times in February) never
+    // yields an out-of-range day.
+    (1 + offset as i32).min(dim).max(1) as u32
 }
 
 /// Emit the iCalendar `RRULE` for a Windows `TZI` SYSTEMTIME rule (BYDAY with
@@ -607,7 +599,38 @@ fn vtimezone_rrule(rule: [u8; 16]) -> String {
     )
 }
 
+/// Process-lifetime memo of `iana_to_windows_params`: an IANA id maps to a
+/// deterministic `TzParams` (the `chrono_tz` zone rules are baked into the
+/// binary, and the reference year is a constant), so the (potentially
+/// expensive) full-year offset scan + the `WindowsTimezone::iter()` offset
+/// comparison need only run once per id per process. This is the per-item
+/// render path's hot loop — a calendar folder of N events triggered N year
+/// scans before the cache — so the memo converts N scans into one. The map is
+/// keyed by the raw input string (canonicalisation happens after the lookup)
+/// so distinct spellings (e.g. `UTC` vs `Etc/UTC`) each get their own entry
+/// rather than aliasing surprises; the values are small and bounded by the
+/// finite set of IANA ids a tenant's calendar events reference.
+static TZ_PARAMS_CACHE: LazyLock<Mutex<HashMap<String, Option<TzParams>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
 pub fn iana_to_windows_params(iana: &str) -> Option<TzParams> {
+    if let Some(cached) = TZ_PARAMS_CACHE
+        .lock()
+        .expect("TZ_PARAMS_CACHE mutex poisoned")
+        .get(iana)
+        .cloned()
+    {
+        return cached;
+    }
+    let computed = compute_iana_to_windows_params(iana);
+    TZ_PARAMS_CACHE
+        .lock()
+        .expect("TZ_PARAMS_CACHE mutex poisoned")
+        .insert(iana.to_string(), computed.clone());
+    computed
+}
+
+fn compute_iana_to_windows_params(iana: &str) -> Option<TzParams> {
     let tz: Tz = iana.parse().ok()?;
 
     let win_name = match iana {
@@ -675,6 +698,9 @@ mod tests {
         // i.e. the *reversed* hemisphere. The chrono_tz derivation must place
         // the DST-start month in September/October and the std-resume month in
         // April, with a -04 standard bias / -03 daylight (standard + 60).
+        // Chile's autumn resume falls at midnight local (00:00) — a SYSTEMTIME
+        // wHour of 0 — which the old `.clamp(1, 23)` erroneously shifted to 01:00;
+        // this regression-asserts the boundary survives at 0 (gap #1 / C7 fix).
         let (bias, _, _, std_date, dst_date, _, dst_bias) =
             iana_to_windows_params("America/Santiago").expect("Santiago tz params");
 
@@ -689,9 +715,73 @@ mod tests {
             dst.0
         );
         assert_eq!(std.0, 4, "Santiago standard resumes in April");
+        // The autumn (std-resume) hour is 00:00 — verify the midnight boundary
+        // survives the encoder rather than being clamped to 1.
+        assert_eq!(
+            std.3, 0,
+            "Santiago standard resumes at 00:00 (midnight), got {}",
+            std.3
+        );
         // Sanity: a rule was actually produced (not the zeroed NO_DST).
         assert_ne!(dst_date, NO_DST);
         assert_ne!(std_date, NO_DST);
+    }
+
+    #[test]
+    fn render_vtimezone_block_us_eastern_is_local_naive_no_z() {
+        // The synthesised VTIMEZONE must use *local* wall-clock DTSTART values
+        // (RFC 5545 §3.6.5: a UTC-suffixed DTSTART is forbidden inside a
+        // VTIMEZONE subcomponent) anchored at the epoch year, with the STANDARD
+        // and DAYLIGHT transitions emitted in the right order. This is a direct
+        // regression guard for the C13 fix (no trailing `Z`, no offset math).
+        let block = render_vtimezone_block("America/New_York").expect("Eastern VTIMEZONE");
+        assert!(block.starts_with("BEGIN:VTIMEZONE\r\n"), "block = {block}");
+        assert!(block.contains("TZID:America/New_York\r\n"));
+        assert!(
+            block.contains("BEGIN:DAYLIGHT\r\n") && block.contains("END:DAYLIGHT\r\n"),
+            "DAYLIGHT subcomponent missing: {block}"
+        );
+        assert!(
+            block.contains("BEGIN:STANDARD\r\n") && block.contains("END:STANDARD\r\n"),
+            "STANDARD subcomponent missing: {block}"
+        );
+        // No DTSTART inside the VTIMEZONE may carry a UTC `Z` suffix.
+        for line in block.lines() {
+            if line.starts_with("DTSTART:") {
+                assert!(
+                    !line.ends_with('Z'),
+                    "VTIMEZONE DTSTART must be local (no Z): {line}"
+                );
+            }
+        }
+        // The epoch-year anchor (1970) is the conventional first occurrence for
+        // the RRULE; assert the DAYLIGHT DTSTART's month/day reflects the 2nd
+        // Sunday of March 1970 (March 8, 1970 was a Sunday).
+        assert!(
+            block.contains("DTSTART:19700308T020000"),
+            "expected 2nd-Sunday-of-March local DTSTART, block = {block}"
+        );
+    }
+
+    #[test]
+    fn render_vtimezone_block_kolkata_fixed_offset_no_dst() {
+        // A fixed-offset (no-DST) zone synthesises a single STANDARD
+        // subcomponent with no DAYLIGHT block, no RRULE, and a 1970-epoch
+        // DTSTART. Guards the fixed-offset branch of render_vtimezone_block.
+        let block = render_vtimezone_block("Asia/Kolkata").expect("Kolkata VTIMEZONE");
+        assert!(block.contains("BEGIN:STANDARD\r\n"));
+        assert!(
+            !block.contains("BEGIN:DAYLIGHT\r\n"),
+            "Kolkata must not carry a DAYLIGHT subcomponent: {block}"
+        );
+        assert!(
+            !block.contains("RRULE:"),
+            "Kolkata fixed-offset block must not carry an RRULE: {block}"
+        );
+        assert!(block.contains("DTSTART:19700101T000000"));
+        assert!(block.contains("TZOFFSETFROM:+0530"));
+        assert!(block.contains("TZOFFSETTO:+0530"));
+        assert!(!block.contains("\r\nZ\r\n"), "no stray UTC Z: {block}");
     }
 
     #[test]

@@ -692,11 +692,7 @@ fn class_placeholder_app_data(content_class: &str, owner: &str) -> String {
     }
 }
 
-fn map_rrule_to_recurrence_xml(
-    rrule: &str,
-    _timezone: Option<&str>,
-    _all_day: bool,
-) -> Option<String> {
+fn map_rrule_to_recurrence_xml(rrule: &str) -> Option<String> {
     let parts: Vec<&str> = rrule.split(';').collect();
     let mut freq: Option<u8> = None;
     let mut interval = 1u32;
@@ -1036,6 +1032,20 @@ fn render_exception_xml(exception: &CalendarException, item: &CalendarItem) -> S
     xml
 }
 
+/// True when `tz` is a UTC (zero-offset, no-DST) id, i.e. an event whose
+/// wall-clock equals its UTC instant and needs no EAS `Timezone` /
+/// `StartTimeZone` / `EndTimeZone` blob. EAS clients treat a UTC event's times
+/// as absolute instants; emitting a TZI blob for UTC is redundant and several
+/// clients render it as an unspecified-failure when the blob's transitions are
+/// all zeroed, so the canonical UTC ids are omitted (MS-ASCAL §2.2.3.9: the
+/// `Timezone` element is "OPTIONAL" and only present for non-UTC events).
+fn is_utc_zone(tz: &str) -> bool {
+    matches!(
+        tz,
+        "UTC" | "Etc/UTC" | "GMT" | "Etc/GMT" | "Etc/GMT0" | "Etc/GMT+0" | "Etc/GMT-0"
+    )
+}
+
 pub(crate) fn render_calendar_app_data(item: &CalendarItem) -> String {
     let mut xml = String::with_capacity(2048);
     xml.push_str(&format!(
@@ -1063,10 +1073,14 @@ pub(crate) fn render_calendar_app_data(item: &CalendarItem) -> String {
     });
     if !item.all_day
         && let Some(v) = &item.timezone
+        && !is_utc_zone(v)
     {
-        // EAS Timezone is a base64 Windows timezone blob (MS-ASSETTINGS).
-        // Convert from the stored IANA id; if unmappable omit the element (Android
-        // then interprets times as UTC, matching the prior behaviour).
+        // EAS `Calendar:Timezone` is a base64 Windows TZI blob (MS-ASSETTINGS
+        // / MS-ASCAL §2.2.3.9). Convert from the stored IANA id; if unmappable
+        // omit the element (Android then interprets times as UTC, matching the
+        // prior behaviour). UTC events carry no offset/DST so the blob is
+        // omitted for them too (`is_utc_zone`), keeping the element OPTIONAL
+        // per spec and avoiding a zeroed-TZI that some clients reject.
         if let Some(blob) = crate::timezone::iana_to_eas_timezone_blob(v) {
             xml.push_str(&format!(
                 "<Calendar:Timezone>{}</Calendar:Timezone>",
@@ -1129,6 +1143,7 @@ pub(crate) fn render_calendar_app_data(item: &CalendarItem) -> String {
     xml.push_str("<AirSyncBase:NativeBodyType>1</AirSyncBase:NativeBodyType>");
     if !item.all_day
         && let Some(tz) = &item.timezone
+        && !is_utc_zone(tz)
     {
         // MS-ASCAL §2.2.3.12/§2.2.3.13: <Calendar:StartTimeZone>/<EndTimeZone>
         // carry a base64-encoded Windows TZI blob (the SAME shape as the
@@ -1139,15 +1154,18 @@ pub(crate) fn render_calendar_app_data(item: &CalendarItem) -> String {
         // from the stored IANA id via the shared chrono_tz-derived mapping and
         // fall back to omitting the element if the zone is unmappable (Android
         // then treats the times as UTC, matching the legacy behaviour) rather
-        // than emitting a malformed raw-string value.
+        // than emitting a malformed raw-string value. UTC events omit the
+        // elements (`is_utc_zone`) since their TZI would be all-zero. The blob
+        // is `xml_escape`-d the same way as `<Calendar:Timezone>` so the
+        // configuration stays consistent even though the base64 alphabet
+        // (`A-Za-z0-9+/=`) carries no XML metacharacters.
         if let Some(blob) = crate::timezone::iana_to_eas_timezone_blob(tz) {
+            let esc = xml_escape(&blob);
             xml.push_str(&format!(
-                "<Calendar:StartTimeZone>{}</Calendar:StartTimeZone>",
-                blob
+                "<Calendar:StartTimeZone>{esc}</Calendar:StartTimeZone>"
             ));
             xml.push_str(&format!(
-                "<Calendar:EndTimeZone>{}</Calendar:EndTimeZone>",
-                blob
+                "<Calendar:EndTimeZone>{esc}</Calendar:EndTimeZone>"
             ));
         }
     }
@@ -1156,8 +1174,7 @@ pub(crate) fn render_calendar_app_data(item: &CalendarItem) -> String {
         xml_escape(&item.uid)
     ));
     if let Some(rrule) = &item.rrule
-        && let Some(rec_xml) =
-            map_rrule_to_recurrence_xml(rrule, item.timezone.as_deref(), item.all_day)
+        && let Some(rec_xml) = map_rrule_to_recurrence_xml(rrule)
     {
         xml.push_str(&rec_xml);
     }
@@ -1870,5 +1887,38 @@ mod tests {
         let start = xml.find(&open)? + open.len();
         let end = xml[start..].find(&close)? + start;
         Some(xml[start..end].to_string())
+    }
+
+    #[test]
+    fn eas_calendar_omits_bonus_timezone_elements_for_explicit_utc_zone() {
+        // An event whose stored timezone is an explicit UTC id (not just an
+        // absent `timezone`) must still omit `Timezone`/`StartTimeZone`/
+        // `EndTimeZone`. The canonical UTC ids carry no offset/DST, so emitting
+        // a zeroed TZI blob would be redundant (and several EAS clients reject
+        // it). Guards the `is_utc_zone` gate added for C6.
+        for utc_id in ["UTC", "Etc/UTC", "GMT"] {
+            let item = CalendarItem {
+                uid: format!("utc-002-{utc_id}"),
+                subject: "UTC Meeting".to_string(),
+                start: chrono::Utc.with_ymd_and_hms(2025, 1, 1, 9, 0, 0).unwrap(),
+                end: chrono::Utc.with_ymd_and_hms(2025, 1, 1, 10, 0, 0).unwrap(),
+                all_day: false,
+                timezone: Some(utc_id.to_string()),
+                ..Default::default()
+            };
+            let xml = render_calendar_app_data(&item);
+            assert!(
+                !xml.contains("<Calendar:Timezone>"),
+                "explicit UTC ({utc_id}) event must omit <Calendar:Timezone>:\n{xml}"
+            );
+            assert!(
+                !xml.contains("<Calendar:StartTimeZone>"),
+                "explicit UTC ({utc_id}) event must omit <Calendar:StartTimeZone>:\n{xml}"
+            );
+            assert!(
+                !xml.contains("<Calendar:EndTimeZone>"),
+                "explicit UTC ({utc_id}) event must omit <Calendar:EndTimeZone>:\n{xml}"
+            );
+        }
     }
 }

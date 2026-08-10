@@ -1,6 +1,7 @@
 # exchange_gateway - agent notes
 
 ## Calendar/timezone fidelity (audit gap #1 — VTIMEZONE/SRCAL round-trip)
+
 The EAS/EWS timezone rendering no longer derives Windows `TZI` transition rules
 from a hardcoded EU/US approximation (`dst_rules_for`/`EU_STD`/`EU_DST`/`US_DST`
 consts are GONE). `src/timezone.rs` now derives ALL transition data by sampling
@@ -19,47 +20,101 @@ This is the ONE authoritative source feeding BOTH:
 hour is `None`) and folds (fall-back, where it repeats): it reports the **naive
 boundary hour at which the offset first leaves the outgoing phase**, which is
 the documented Windows `TZI` `wHour` convention (e.g. 02:00 Eastern both
-directions, 01:00 GMT spring / 02:00 BST fall). The week computation no longer
-clamps the legitimate `5` ("last weekday") value down to `4` (the `.min(4)` bug
-that mis-encoded the EU last-Sunday rules). Legacy IANA alias resolution
-(`windows_timezone_name_for_iana`) collapses `Asia/Kolkata` ↔ `Asia/Calcutta`
-(`chrono_tz` exposes them as distinct enum variants) by comparing resolved
-offsets at four representative instants, not enum identity.
+directions, 01:00 GMT spring / 02:00 BST fall). The `wHour` is returned in the
+literal `0..=23` range — a `SYSTEMTIME` `wHour` legitimately carries `0`, so a
+zone whose transition falls at midnight (e.g. America/Santiago's autumn std
+resume) is encoded correctly; the previous `.clamp(1, 23)` (and the matching
+`.max(1)` in `encode_boundary`) shifted a midnight boundary an hour late (the
+C7 correctness fix verified via a `chrono_tz` probe: `TR 2026-04-05 h00
+-180→-240`). The week derivation in `encode_boundary` is intentionally
+`date.day().div_ceil(7).min(4)` for the nth-weekday (1..=4) branch and `5` for
+the "last weekday" branch (`date.day() + 7 > dim`); the `.min(4)` is NOT a bug —
+it caps the nth-weekday index so a 5th-of-month day that is not the last weekday
+of the month does not emit an out-of-spec week-5 value (week 5 means "last",
+which the `+7 > dim` branch already covers). A non-week-5 nth weekday is also
+clamped to the month length in `match_rule_weekday_of_month` so a malformed
+4th-occurrence-in-February rule never yields an out-of-range day. Legacy IANA
+alias resolution (`windows_timezone_name_for_iana`) collapses `Asia/Kolkata` ↔
+`Asia/Calcutta` (`chrono_tz` exposes them as distinct enum variants) by
+comparing resolved offsets at four representative instants, not enum identity.
+
+`scan_full_year` walks `Jan 1 → Dec 31` of a fixed reference year sampling the
+local offset at 12:00 each day and stops at the year boundary (a `while let`
+loop with an explicit `next.year() != year` guard), so a January-1 boundary of
+the following year is never mis-encoded under this year's month/week. The full
+year-scan is memoised per IANA id (`TZ_PARAMS_CACHE`, a process-lifetime
+`LazyLock<Mutex<HashMap>>`), so a calendar folder of N events of the same zone
+triggers ONE scan, not N (the per-item render hot loop). `fixed_offset_zone`
+short-circuits only the genuinely-fixed IANA categories (`UTC`, `Etc/*`, `GMT`)
+to a clean zeroed SYSTEMTIME; any zone that *might* observe DST (e.g.
+`Africa/Cairo`, which resumed DST in 2023) is computed from its sampled offsets
+by `zone_transitions` rather than suppressed by a stale hard-coded list.
+
+`render_vtimezone_block` emits each `STANDARD`/`DAYLIGHT` `DTSTART` as the
+transition's **local** wall-clock time anchored at the epoch year 1970 (a naive
+value with no trailing `Z` — RFC 5545 §3.6.5 forbids a UTC-suffixed `DTSTART`
+inside a `VTIMEZONE` subcomponent; the previous UTC-suffixed emission was the
+C13 correctness fix) and self-validates the result structurally
+(`BEGIN:VTIMEZONE`/`TZID:`/`END:VTIMEZONE`) so the caller never receives an
+unusable block.
 
 EAS rendering (`src/sync.rs::render_calendar_app_data`): the standalone
 `<Calendar:StartTimeZone>`/`<Calendar:EndTimeZone>` now carry the base64 Windows
 TZI blob (`iana_to_eas_timezone_blob`) per MS-ASCAL §2.2.3.12/§2.2.3.13 — NOT the
 bare IANA id (the legacy string made Outlook Android mis-derive recurrence/
-exception wall-clock times for non-UTC events). The malformed
-`<StartTimeZone>`/`<EndTimeZone>` children INSIDE `<Calendar:Recurrence>` were
-REMOVED (they are item-level properties, not legal Recurrence children per
-MS-ASCAL §2.2.3.8). UTC events omit both elements entirely (gate preserved).
+exception wall-clock times for non-UTC events). The blob is `xml_escape`-d
+consistently across `Timezone`/`StartTimeZone`/`EndTimeZone` (the base64
+alphabet carries no XML metacharacters, but the configuration stays uniform).
+UTC events omit all three elements (`is_utc_zone` gates the canonical UTC ids —
+`UTC`/`Etc/UTC`/`GMT`/`Etc/GMT`/`Etc/GMT0`/`Etc/GMT±0` — since their TZI would
+be all-zero and several clients reject a zeroed blob; MS-ASCAL §2.2.3.9 marks
+`Timezone` OPTIONAL). The malformed `<StartTimeZone>`/`<EndTimeZone>` children
+INSIDE `<Calendar:Recurrence>` were REMOVED (they are item-level properties, not
+legal Recurrence children per MS-ASCAL §2.2.3.8). `map_rrule_to_recurrence_xml`
+drops its unused `_timezone`/`_all_day` params (single call site, simplified).
 
 EWS rendering (`src/ews.rs::render_ews_calendar_item_xml_with_shape`):
-`<t:StartTimeZone>`/`<t:EndTimeZone>` now emit the canonical
-`<t:Id>/<t:Name>` child shape (Windows id derived from the IANA id), and
-`<t:MeetingTimeZone>` emits the SAME Windows id — NOT the raw `timezone_blob`
-(which for a CalDAV-origin item is the multi-line authoritative iCalendar
-VTIMEZONE block and would corrupt the EWS envelope as element text).
+`<t:StartTimeZone>`/`<t:EndTimeZone>` now emit the canonical attribute form
+`<t:StartTimeZone Id="..." Name="..."/>` / `<t:EndTimeZone Id="..." Name="..."/>`
+(`Id`/`Name` are *attributes* of `TimeZoneDefinitionType` per the EWS schema and
+the EWS Managed API, NOT the `<t:Id>`/`<t:Name>` child-element shape), and
+`<t:MeetingTimeZone>` emits the Windows id in its `TimeZoneName` **attribute**
+(`<t:MeetingTimeZone TimeZoneName="..."/>`, per the legacy `SerializableTimeZone`)
+— NOT the raw `timezone_blob` (which for a CalDAV-origin item is the multi-line
+authoritative iCalendar VTIMEZONE block and would corrupt the EWS envelope as
+element text). The inbound parse path (`extract_ews_timezone_field_doc`) reads
+the id from element text first (back-compat with the legacy emit and
+`<t:Value>` children) then falls back to the `Id`/`TimeZoneName` attribute, so a
+real Outlook `GetItem`/`UpdateItem` echo of the attribute form round-trips.
 
 CalDAV round-trip (`src/calendar.rs::render_ics`): when `item.timezone_blob`
 parses as a real VTIMEZONE, it is re-emitted byte-for-byte (the authoritative
 TZID/RRULE UNTIL boundaries CalDAV stored are preserved). When it does NOT
 parse (e.g. an EWS-origin item where `timezone_blob` was a bare Windows name
-captured from `MeetingTimeZone`), OR when `timezone_blob` is `None` entirely,
-`render_ics` synthesises a canonical VTIMEZONE from `item.timezone` (IANA) via
-`render_vtimezone_block` so the edited event round-trips with a real,
-RFC 5545-valid zone definition whose transition RRULE agrees with the Windows
-TZI blob the EAS/EWS path advertises (no drift between transports).
+captured from `MeetingTimeZone` — including the `Calendar::from_str` `Err`
+branch), OR when `timezone_blob` is `None` entirely, `render_ics` synthesises a
+canonical VTIMEZONE from `item.timezone` (IANA) via `render_vtimezone_block`
+(via a consolidated `push_vtimezones` helper that wraps a raw block in a
+throwaway VCALENDAR and returns whether any VTIMEZONE was pushed) so the edited
+event round-trips with a real, RFC 5545-valid zone definition whose transition
+RRULE agrees with the Windows TZI blob the EAS/EWS path advertises (no drift
+between transports). A guard ensures no orphan `DTSTART;TZID=...` is emitted: if
+neither the authoritative blob nor the synthesised fallback produces a
+VTIMEZONE, the master DTSTART falls back to the absolute UTC instant (with `Z`)
+rather than referencing a missing VTIMEZONE.
 
-Tests added: 6 in `timezone.rs` (US Eastern 2nd-Sun-Mar / Santiago southern
-hemisphere / Sydney / London last-Sun / Kolkata no-DST / EAS blob round-trip),
-2 in `sync.rs` (EAS base64 StartTimeZone + UTC omission gate), 2 in
+Tests added: 8 in `timezone.rs` (US Eastern 2nd-Sun-Mar / Santiago southern
+hemisphere + midnight std-resume / Sydney / London last-Sun / Kolkata no-DST /
+EAS blob round-trip / direct `render_vtimezone_block` US-Eastern local-naive
+no-`Z` / Kolkata fixed-offset block), 3 in `sync.rs` (EAS base64 StartTimeZone +
+UTC omission gate for `timezone: None` + explicit UTC-id omission gate), 4 in
 `calendar.rs` (DST-crossover weekly-recurrence round-trip through
 render_ics→parse_ics_event with synthesized VTIMEZONE; authoritative CalDAV
-VTIMEZONE preserved byte-for-byte). 595 lib + 11 snapshot = 606 green,
-`RUSTFLAGS="-D warnings" cargo build --bin exchange_gateway` + `cargo clippy
---all-targets` clean. `TZ_BLOB_LEN` is `pub(crate)` so the EAS test can assert
+VTIMEZONE preserved byte-for-byte; VTIMEZONE DTSTART local-naive no-`Z`
+regression; malformed-blob → synthesized-VTIMEZONE no-orphan round-trip). 600
+lib + 11 snapshot = 611 green, `RUSTFLAGS="-D warnings" cargo build --bin
+exchange_gateway` + `cargo clippy --all-targets` clean. `TZ_BLOB_LEN` is
+`pub(crate)` so the EAS test can assert
 the documented 172-byte blob length.
 
 ## GitHub push auth (IMPORTANT - ghu_ app-installation tokens)
