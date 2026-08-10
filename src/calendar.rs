@@ -956,17 +956,50 @@ pub fn render_ics(item: &CalendarItem) -> String {
     let mut calendar = Calendar::new();
     calendar.append_property(Property::new("PRODID", "-//exchange_gateway//EN"));
 
-    if let Some(blob) = &item.timezone_blob {
-        let wrapped = format!("BEGIN:VCALENDAR\r\n{blob}\r\nEND:VCALENDAR\r\n");
-        if let Ok(parsed) = Calendar::from_str(&icalendar::parser::unfold(&wrapped)) {
-            for component in parsed.iter() {
-                if let CalendarComponent::Other(other) = component
-                    && other.component_kind() == "VTIMEZONE"
-                {
-                    calendar.push(component.clone());
-                }
+    // Push every `VTIMEZONE` component found in `source` (wrapped in a throwaway
+    // VCALENDAR so the `icalendar` parser accepts a raw VTIMEZONE) onto `calendar`,
+    // returning whether any was pushed. The authoritative stored blob is parsed
+    // first; its real VTIMEZONE(s) are re-emitted byte-for-byte. Synthesis runs
+    // only when that yields no VTIMEZONE — including the case where the stored
+    // blob fails to parse (e.g. a bare Windows time-zone name captured from an
+    // inbound EWS `MeetingTimeZone` has no name-value separator and parses to
+    // `Err`). The fallback synthesises the canonical VTIMEZONE from the item's
+    // IANA id so the emitted iCalendar is RFC-5545-valid and round-trips
+    // byte-for-byte with what CalDAV expects (authoritative TZID/RRULE UNTIL
+    // boundaries).
+    fn push_vtimezones(calendar: &mut Calendar, source: &str) -> bool {
+        let wrapped = format!("BEGIN:VCALENDAR\r\n{source}\r\nEND:VCALENDAR\r\n");
+        let Ok(parsed) = Calendar::from_str(&icalendar::parser::unfold(&wrapped)) else {
+            return false;
+        };
+        let mut emitted = false;
+        for component in parsed.iter() {
+            if let CalendarComponent::Other(other) = component
+                && other.component_kind() == "VTIMEZONE"
+            {
+                calendar.push(component.clone());
+                emitted = true;
             }
         }
+        emitted
+    }
+
+    let mut emitted_vtimezone = match &item.timezone_blob {
+        Some(blob) => push_vtimezones(&mut calendar, blob),
+        // No stored blob at all: synthesise the VTIMEZONE from the IANA id so a
+        // gateway-originated event edits round-trip with a real zone definition.
+        None => item
+            .timezone
+            .as_deref()
+            .and_then(crate::timezone::render_vtimezone_block)
+            .map(|synth| push_vtimezones(&mut calendar, &synth))
+            .unwrap_or(false),
+    };
+    if !emitted_vtimezone
+        && let Some(tzid) = &item.timezone
+        && let Some(synth) = crate::timezone::render_vtimezone_block(tzid)
+    {
+        emitted_vtimezone = push_vtimezones(&mut calendar, &synth);
     }
 
     let mut event = Event::new();
@@ -987,8 +1020,21 @@ pub fn render_ics(item: &CalendarItem) -> String {
     } else if let Some(tzid) = &item.timezone
         && let Ok(tz) = tzid.parse::<Tz>()
     {
-        event.ends((item.end.with_timezone(&tz).naive_local(), tz));
-        event.starts((item.start.with_timezone(&tz).naive_local(), tz));
+        if emitted_vtimezone {
+            // A matching VTIMEZONE was produced (the authoritative stored blob
+            // was re-emitted, or a canonical one was synthesised). Emit the
+            // start/end as local wall-clock with a TZID referencing it.
+            event.ends((item.end.with_timezone(&tz).naive_local(), tz));
+            event.starts((item.start.with_timezone(&tz).naive_local(), tz));
+        } else {
+            // The IANA id parses as a Tz here, but neither the authoritative
+            // blob nor the synthesised fallback produced a VTIMEZONE. Emit the
+            // absolute UTC instant (with `Z`) so no orphan `DTSTART;TZID=...`
+            // references a missing VTIMEZONE, keeping the iCalendar
+            // RFC-5545-valid.
+            event.ends(item.end);
+            event.starts(item.start);
+        }
     } else {
         event.ends(item.end);
         event.starts(item.start);
@@ -1858,6 +1904,46 @@ fn extract_ews_field_doc(doc: &Document, tag: &[u8]) -> Option<String> {
         .find_map(|n| n.text().map(|s| s.to_string()))
 }
 
+/// Extract a timezone identifier from a `t:StartTimeZone`/`t:EndTimeZone`/
+/// `t:MeetingTimeZone` element. The canonical EWS wire form carries the id in
+/// an attribute — `Id` (StartTimeZone/EndTimeZone) or `TimeZoneName`
+/// (MeetingTimeZone, per the legacy `SerializableTimeZone`) — but older
+/// server fixtures also emit a bare Windows name as element text or as a
+/// `<t:Value>` child. Read text first (back-compat with the gateway's own
+/// legacy emit and the `<Value>` child of a `TimeZoneDefinition`), then fall
+/// back to the attribute so a real Outlook `GetItem`/`CreateItem` echo
+/// (`<t:StartTimeZone Id="Pacific Standard Time"/>`) round-trips.
+fn extract_ews_timezone_field_doc(doc: &Document, tag: &[u8]) -> Option<String> {
+    let tag_str = std::str::from_utf8(tag).ok()?;
+    let tz_attr = if tag_str == "MeetingTimeZone" {
+        "TimeZoneName"
+    } else {
+        "Id"
+    };
+    doc.descendants()
+        .filter(|n| n.is_element() && n.tag_name().name() == tag_str)
+        .find_map(|n| {
+            // Non-empty element text (bare Windows name, or an inline
+            // <t:Value> child) takes precedence.
+            if let Some(t) = n.text().filter(|s| !s.trim().is_empty()) {
+                return Some(t.to_string());
+            }
+            for child in n.children().filter(|c| c.is_element()) {
+                if let Some(t) = child.text().filter(|s| !s.trim().is_empty()) {
+                    return Some(t.to_string());
+                }
+            }
+            // Canonical attribute form: <t:StartTimeZone Id="..."/> or
+            // <t:MeetingTimeZone TimeZoneName="..."/>.
+            n.attribute(tz_attr).map(|s| s.to_string())
+        })
+}
+
+pub(crate) fn extract_ews_timezone_field(xml: &str, tag: &[u8]) -> Option<String> {
+    let doc = Document::parse(xml).ok()?;
+    extract_ews_timezone_field_doc(&doc, tag)
+}
+
 fn extract_ews_fields_doc(doc: &Document, tag: &[u8]) -> Vec<String> {
     let tag_str = std::str::from_utf8(tag).ok().unwrap_or_default();
     doc.descendants()
@@ -2167,12 +2253,12 @@ pub fn parse_ews_calendar_item(xml: &str) -> Result<CalendarItem> {
         end,
         all_day,
         dtstamp: Some(Utc::now()),
-        timezone: extract_ews_field_doc(&doc, b"StartTimeZone")
-            .or_else(|| extract_ews_field_doc(&doc, b"MeetingTimeZone"))
-            .or_else(|| extract_ews_field_doc(&doc, b"EndTimeZone"))
+        timezone: extract_ews_timezone_field_doc(&doc, b"StartTimeZone")
+            .or_else(|| extract_ews_timezone_field_doc(&doc, b"MeetingTimeZone"))
+            .or_else(|| extract_ews_timezone_field_doc(&doc, b"EndTimeZone"))
             .as_deref()
             .map(normalize_timezone_to_iana),
-        timezone_blob: extract_ews_field_doc(&doc, b"MeetingTimeZone"),
+        timezone_blob: extract_ews_timezone_field_doc(&doc, b"MeetingTimeZone"),
         rrule,
         exdates: Vec::new(),
         organizer_name,
@@ -2326,5 +2412,224 @@ mod scheduling_tests {
             item.organizer_email.is_none(),
             "no organizer should be synthesised when there are no attendees"
         );
+    }
+
+    /// DST-crossover recurrence round-trip (audit gap #1). A weekly recurring
+    /// series anchored in `America/New_York` at 09:00 local, whose window
+    /// straddles the 2025 spring-forward (March 9), must round-trip through
+    /// `render_ics` and back through `parse_ics_event` with the original UTC
+    /// start instant preserved byte-for-byte AND a synthesised VTIMEZONE whose
+    /// STANDARD/DAYLIGHT offsets (-05:00 / -04:00) and TZID match the
+    /// authoritative IANA zone (so recurrence exception wall-clock times land
+    /// on the correct side of the DST boundary on both Outlook clients).
+    #[test]
+    fn render_ics_round_trips_dst_crossover_recurrence_with_synthesized_vtimezone() {
+        use chrono::{Duration, TimeZone};
+        // 09:00 EST = 14:00 UTC on 2025-03-02 (Sunday), well before the
+        // March 9 spring-forward. UNTIL is a month later (April 6, after the
+        // transition) so the series spans the crossover.
+        let start = chrono::Utc
+            .from_utc_datetime(&chrono::NaiveDateTime::parse_from_str(
+                "2025-03-02T14:00:00",
+                "%Y-%m-%dT%H:%M:%S",
+            )
+            .unwrap());
+        let item = CalendarItem {
+            uid: "dst-crossover-001".to_string(),
+            subject: "Weekly Standup".to_string(),
+            start,
+            end: start + Duration::hours(1),
+            all_day: false,
+            dtstamp: Some(start),
+            timezone: Some("America/New_York".to_string()),
+            // No authoritative VTIMEZONE blob (EWS/gateway origin): the gateway
+            // must SYNTHESISE one from the IANA id so the edited event round-trips.
+            timezone_blob: None,
+            rrule: Some("FREQ=WEEKLY;UNTIL=20250406T150000Z".to_string()),
+            ..Default::default()
+        };
+
+        let ics = render_ics(&item);
+        // 1) A VTIMEZONE was synthesised and carries the canonical IANA TZID.
+        assert!(
+            ics.contains("BEGIN:VTIMEZONE"),
+            "synthesised VTIMEZONE missing:\n{ics}"
+        );
+        assert!(
+            ics.contains("TZID:America/New_York"),
+            "non-canonical/missing TZID:\n{ics}"
+        );
+        // 2) The STANDARD/DAYLIGHT offsets are EDT (+1h) -> EST (UTC-5/-4).
+        assert!(ics.contains("TZOFFSETTO:-0500"), "missing STD offset -0500");
+        assert!(ics.contains("TZOFFSETTO:-0400"), "missing DST offset -0400");
+        assert!(
+            ics.contains("TZOFFSETFROM:-0500") && ics.contains("TZOFFSETFROM:-0400"),
+            "missing TZOFFSETFROM boundaries"
+        );
+        // 3) The recurrence RRULE was preserved verbatim (authoritative UNTIL).
+        assert!(ics.contains("RRULE:FREQ=WEEKLY;UNTIL=20250406T150000Z"));
+        // 4) DTSTART carries the IANA TZID (not a bare UTC instant), so the
+        //    recurrence engine honours the zone.
+        assert!(ics.contains("DTSTART;TZID=America/New_York:20250302T090000"));
+
+        // 5) Round-trip through the parser: the master event must survive with
+        //    the same UTC start instant + preserved RRULE + canonical TZID.
+        let parsed = parse_ics_event(&ics).expect("round-trip parse");
+        assert_eq!(parsed.uid, "dst-crossover-001");
+        assert_eq!(parsed.start, start, "UTC start instant drifted across round-trip");
+        assert_eq!(parsed.end, start + Duration::hours(1));
+        assert_eq!(parsed.timezone.as_deref(), Some("America/New_York"));
+        assert_eq!(
+            parsed.rrule.as_deref(),
+            Some("FREQ=WEEKLY;UNTIL=20250406T150000Z")
+        );
+        assert!(
+            parsed.timezone_blob.is_some_and(|b| b.contains("VTIMEZONE")),
+            "parser did not capture the round-tripped VTIMEZONE block"
+        );
+    }
+
+    /// RFC 5545 §3.6.5: a `DTSTART` inside a `STANDARD`/`DAYLIGHT` subcomponent
+    /// of a `VTIMEZONE` MUST be a local (date-time) value — a UTC-suffixed
+    /// `DTSTART` (with trailing `Z`) is explicitly forbidden here, and the EWS
+    /// rendering of `CalendarItem.Start/End` `StartTimeZone`/`EndTimeZone`
+    /// relied on the synthesised blob to be a valid `VTIMEZONE` (CJK/`Z`
+    /// suffixes would make stricter iCalendar parsers reject the whole
+    /// calendar). Regression guard for the C13 fix.
+    #[test]
+    fn render_ics_synthesized_vtimezone_dtstart_is_local_no_trailing_z() {
+        use chrono::TimeZone;
+        let start = chrono::Utc.with_ymd_and_hms(2025, 3, 2, 14, 0, 0).unwrap();
+        let item = CalendarItem {
+            uid: "dtstart-no-z-001".to_string(),
+            subject: "Weekly Standup".to_string(),
+            start,
+            end: start + chrono::Duration::hours(1),
+            all_day: false,
+            dtstamp: Some(start),
+            timezone: Some("America/New_York".to_string()),
+            timezone_blob: None,
+            rrule: Some("FREQ=WEEKLY;UNTIL=20250406T150000Z".to_string()),
+            ..Default::default()
+        };
+
+        let ics = render_ics(&item);
+        // isolate the VTIMEZONE block and audit every DTSTART inside it.
+        let tz_start = ics.find("BEGIN:VTIMEZONE").expect("VTIMEZONE present");
+        let tz_end = ics[tz_start..]
+            .find("END:VTIMEZONE")
+            .expect("END:VTIMEZONE present")
+            + tz_start
+            + "END:VTIMEZONE".len();
+        let vtz = &ics[tz_start..tz_end];
+        let mut saw_dtstart = false;
+        for line in vtz.lines() {
+            if let Some(rest) = line.strip_prefix("DTSTART:") {
+                saw_dtstart = true;
+                assert!(
+                    !rest.ends_with('Z'),
+                    "VTIMEZONE DTSTART must be local (no Z): {line}"
+                );
+            }
+        }
+        assert!(saw_dtstart, "VTIMEZONE carried no DTSTART:\n{vtz}");
+        // The master-event DTSTART (outside the VTIMEZONE) is local+TZID and is
+        // itself not UTC-suffixed; ensure the audit didn't mis-flag it by
+        // confirming at least one TZID-bearing DTSTART exists outside the block.
+        assert!(ics.contains("DTSTART;TZID=America/New_York:20250302T090000"));
+    }
+
+    /// When the authoritative `timezone_blob` is a bare Windows time-zone name
+    /// (captured from an inbound EWS `MeetingTimeZone` that failed to normalise),
+    /// it has no `BEGIN:VTIMEZONE` framing and the `icalendar` parser yields
+    /// `Err` (a property-line with no `:`name-value separator). The gateway must
+    /// then synthesise the canonical VTIMEZONE from the IANA id — and when even
+    /// that fails (e.g. the IANA id is unresolvable), it must NOT emit an orphan
+    /// `DTSTART;TZID=...` referencing a missing VTIMEZONE (RFC 5545 invariant).
+    /// Regression guard for the C2 + C11 restructure of `render_ics`.
+    #[test]
+    fn render_ics_synthesizes_vtimezone_when_blob_is_unparseable_windows_name() {
+        use chrono::TimeZone;
+        let start = chrono::Utc.with_ymd_and_hms(2025, 3, 2, 14, 0, 0).unwrap();
+        let item = CalendarItem {
+            uid: "malformed-blob-001".to_string(),
+            subject: "Weekly Standup".to_string(),
+            start,
+            end: start + chrono::Duration::hours(1),
+            all_day: false,
+            dtstamp: Some(start),
+            timezone: Some("America/New_York".to_string()),
+            // A bare Windows name (no name-value separator) fails to parse as a
+            // VTIMEZONE — exercises the `Err` branch CodeRabbit flagged (C2).
+            timezone_blob: Some("Eastern Standard Time".to_string()),
+            rrule: Some("FREQ=WEEKLY;UNTIL=20250406T150000Z".to_string()),
+            ..Default::default()
+        };
+
+        let ics = render_ics(&item);
+        // The fallback synthesis must yield a real VTIMEZONE for the IANA id...
+        assert!(
+            ics.contains("BEGIN:VTIMEZONE"),
+            "synthesised VTIMEZONE missing for malformed blob:\n{ics}"
+        );
+        assert!(ics.contains("TZID:America/New_York"), "canonical TZID missing:\n{ics}");
+        // ...and the master DTSTART must carry the matching TZID (never an orphan
+        // — the VTIMEZONE was synthesised).
+        assert!(
+            ics.contains("DTSTART;TZID=America/New_York:20250302T090000"),
+            "master DTSTART missing/Orphaned:\n{ics}"
+        );
+        // Round-trips through the parser cleanly.
+        let parsed = parse_ics_event(&ics).expect("round-trip parse");
+        assert_eq!(parsed.start, start);
+    }
+
+    /// A CalDAV-origin event whose authoritative `timezone_blob` is a real
+    /// iCalendar VTIMEZONE block must be re-emitted byte-for-byte — the
+    /// synthesised-VTIMEZONE fallback must NOT override the authoritative blob
+    /// (audit gap #1: "honoured byte-for-byte and re-emitted on edit").
+    #[test]
+    fn render_ics_preserves_authoritative_caldav_vtimezone_byte_for_byte() {
+        let authoritative = "\
+BEGIN:VTIMEZONE\r
+TZID:America/New_York\r
+BEGIN:DAYLIGHT\r
+TZOFFSETFROM:-0500\r
+TZOFFSETTO:-0400\r
+DTSTART:19700308T020000\r
+RRULE:FREQ=YEARLY;BYDAY=2SU;BYMONTH=3\r
+END:DAYLIGHT\r
+BEGIN:STANDARD\r
+TZOFFSETFROM:-0400\r
+TZOFFSETTO:-0500\r
+DTSTART:19701101T020000\r
+RRULE:FREQ=YEARLY;BYDAY=1SU;BYMONTH=11\r
+END:STANDARD\r
+END:VTIMEZONE";
+        let item = CalendarItem {
+            uid: "caldav-origin-001".to_string(),
+            subject: "Authoritative".to_string(),
+            start: chrono::Utc.with_ymd_and_hms(2025, 3, 2, 14, 0, 0).unwrap(),
+            end: chrono::Utc.with_ymd_and_hms(2025, 3, 2, 15, 0, 0).unwrap(),
+            all_day: false,
+            dtstamp: Some(chrono::Utc.with_ymd_and_hms(2025, 1, 1, 0, 0, 0).unwrap()),
+            timezone: Some("America/New_York".to_string()),
+            timezone_blob: Some(authoritative.to_string()),
+            ..Default::default()
+        };
+
+        let ics = render_ics(&item);
+        // The authoritative RRULE (2SU / 1SU) MUST be present verbatim — the
+        // synthesised fallback would instead emit the chronos-derived nth-week
+        // rule, breaking the round-trip contract.
+        assert!(
+            ics.contains("BYDAY=2SU;BYMONTH=3"),
+            "authoritative daylight RRULE lost:\n{ics}"
+        );
+        assert!(
+            ics.contains("BYDAY=1SU;BYMONTH=11"),
+            "authoritative standard RRULE lost:\n{ics}"
+        );
+        assert!(ics.contains("DTSTART:19700308T020000"));
     }
 }

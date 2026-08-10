@@ -1110,20 +1110,31 @@ fn render_ews_calendar_item_xml_with_shape(
         // [MS-OXWSCDATA] t:TimeZoneDefinitionType). Our stored value is IANA, so
         // convert back; fall back to the raw value if unmappable.
         let win = crate::timezone::iana_to_windows_timezone_name(v).unwrap_or_else(|| v.clone());
+        let win_esc = xml_escape(&win);
+        // Canonical EWS serialisation: `Id`/`Name` are *attributes* of
+        // `TimeZoneDefinitionType` (per the Exchange Web Services schema and the
+        // EWS Managed API `WriteAttributesToXml`), emitted as
+        // `<t:StartTimeZone Id="..." Name="..."/>` — not the `<t:Id>`/`<t:Name>`
+        // child-element shape (Ids are attributes, not elements). Outlook
+        // CreateItem/GetItem echo this attribute form, which the inbound
+        // `extract_ews_timezone_field_doc` reads back via the `Id` attribute.
         xml.push_str(&format!(
-            "<t:StartTimeZone>{}</t:StartTimeZone>",
-            xml_escape(&win)
+            "<t:StartTimeZone Id=\"{}\" Name=\"{}\"/>",
+            win_esc, win_esc
         ));
         xml.push_str(&format!(
-            "<t:EndTimeZone>{}</t:EndTimeZone>",
-            xml_escape(&win)
+            "<t:EndTimeZone Id=\"{}\" Name=\"{}\"/>",
+            win_esc, win_esc
         ));
-    }
-    if let Some(v) = &item.timezone_blob {
-        xml.push_str(&format!(
-            "<t:MeetingTimeZone>{}</t:MeetingTimeZone>",
-            xml_escape(v)
-        ));
+        // <t:MeetingTimeZone> (MS-OXWSCORE §2.2.6, deprecated in favour of
+        // StartTimeZone/EndTimeZone but still parsed by Outlook for back-compat)
+        // is a `SerializableTimeZone` whose Windows id is the `TimeZoneName`
+        // **attribute** — NOT element text. A CalDAV-origin `timezone_blob` is
+        // the authoritative multi-line iCalendar VTIMEZONE *block* and would
+        // corrupt the EWS envelope if emitted as element text; emit the same
+        // Windows id (in its attribute) so it agrees with the standalone
+        // <t:StartTimeZone> above.
+        xml.push_str(&format!("<t:MeetingTimeZone TimeZoneName=\"{}\"/>", win_esc));
     }
     if let Some(v) = &item.online_meeting_conf_link {
         xml.push_str(&format!(
@@ -5645,11 +5656,11 @@ async fn handle_update_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
         if body.contains("Recurrence") {
             new_item.rrule = parse_ews_recurrence(body);
         }
-        if let Some(v) = extract_ews_field(body, b"StartTimeZone") {
+        if let Some(v) = crate::calendar::extract_ews_timezone_field(body, b"StartTimeZone") {
             // Outlook sends a Windows timezone name; normalise to IANA for render_ics.
             new_item.timezone = Some(crate::calendar::normalize_timezone_to_iana(&v));
         }
-        if let Some(v) = extract_ews_field(body, b"MeetingTimeZone") {
+        if let Some(v) = crate::calendar::extract_ews_timezone_field(body, b"MeetingTimeZone") {
             new_item.timezone_blob = Some(v);
         }
         if let Some(v) = extract_ews_field(body, b"OnlineMeetingConfLink") {
