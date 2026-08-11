@@ -8,24 +8,24 @@ rust-version = "1.97.0"
 [dependencies]
 jsonwebtoken = "^10.4.0"
 reqwest = { version = "^0.13.4", default-features = false, features = ["json", "rustls", "cookies", "blocking"] }
-async-trait = "^0.1.89"
-tokio = { version = "^1.52.3", features = ["rt-multi-thread", "net", "time", "sync", "signal", "tracing", "macros", "io-util", "fs"] }
+async-trait = "^0.1.91"
+tokio = { version = "^1.53.1", features = ["rt-multi-thread", "net", "time", "sync", "signal", "tracing", "macros", "io-util", "fs"] }
 axum = { version = "^0.8.9", features = ["macros", "tracing", "json", "query", "matched-path", "original-uri"] }
 axum-extra = { version = "^0.12.6", features = ["typed-header"] }
 quick-xml = { version = "^0.39.4", features = ["serialize", "async-tokio", "encoding"] }
 nom = "^8.0.0"
-serde = { version = "^1.0.228", features = ["derive", "rc", "std"] }
-serde_json = "^1.0.150"
-toml = "^1.1.2"
-anyhow = "^1.0.103"
-thiserror = "^2.0.18"
-uuid = { version = "^1.23.4", features = ["v4", "v7", "serde"] }
+serde = { version = "^1.0.229", features = ["derive", "rc", "std"] }
+serde_json = "^1.0.151"
+toml = "^1.1.3"
+anyhow = "^1.0.104"
+thiserror = "^2.0.19"
+uuid = { version = "^1.24.0", features = ["v4", "v7", "serde"] }
 chrono = { version = "^0.4.45", features = ["serde", "clock", "std"] }
 chrono-tz = "^0.10.4"
 rrule = "^0.14.0"
 hmac = "^0.13.0"
 sha2 = "^0.11.0"
-bytes = "^1.12.0"
+bytes = "^1.12.1"
 tracing = "^0.1.44"
 tracing-subscriber = { version = "^0.3.23", features = ["fmt", "env-filter", "registry", "json"] }
 urlencoding = "^2.1.3"
@@ -36,20 +36,20 @@ url = "^2.5.8"
 tower = { version = "^0.5.3", features = ["util", "limit", "timeout", "buffer"] }
 tower-http = { version = "^0.6.11", features = ["trace", "cors", "limit", "timeout", "request-id", "sensitive-headers", "decompression-full", "compression-full", "set-header", "metrics"] }
 parking_lot = { version = "^0.12.5", features = ["send_guard"] }
-futures-util = "^0.3.32"
-futures-core = "^0.3.32"
+futures-util = "^0.3.33"
+futures-core = "^0.3.33"
 compact_str = { version = "^0.9.1", features = ["serde", "bytes"] }
 headers = "^0.4.1"
 flate2 = "^1.1.9"
-tokio-util = { version = "^0.7.18", features = ["codec", "io", "compat", "rt"] }
+tokio-util = { version = "^0.7.19", features = ["codec", "io", "compat", "rt"] }
 tokio-stream = { version = "^0.1.18", features = ["sync", "net"] }
 secrecy = { version = "^0.10.3", features = ["serde"] }
 zeroize = { version = "^1.9.0", features = ["derive", "serde"] }
 subtle = "^2.6.1"
 pin-project-lite = "^0.2.17"
-http-body-util = "^0.1.3"
+http-body-util = "^0.1.4"
 mime = "^0.3.17"
-lru = "^0.18.0"
+lru = "^0.18.1"
 moka = { version = "^0.12.15", features = ["sync"] }
 arc-swap = "^1.9.2"
 memchr = "^2.8.3"
@@ -62,7 +62,7 @@ smallvec = { version = "^1.15.2", features = ["serde", "write"] }
 http = "^1.4.2"
 smartstring = "^1.0.1"
 const-hex = "^1.19.1"
-bitflags = "^2.13.0"
+bitflags = "^2.13.1"
 unicode-normalization = "^0.1.25"
 phf = { version = "^0.14.0", features = ["macros"] }
 icalendar = { version = "^0.17.12", features = ["parser", "chrono-tz"] }
@@ -72,7 +72,7 @@ roxmltree = "^0.21.1"
 itertools = "^0.15.0"
 hex = "^0.4.3"
 derive_more = { version = "^2.1", features = ["full"] }
-bstr = "^1.12.3"
+bstr = "^1.13.0"
 sqlx = { version = "^0.8.6", features = ["runtime-tokio-rustls", "sqlite", "chrono", "uuid"] }
 lettre = { version = "^0.11.22", default-features = false, features = ["tokio1-rustls-tls", "smtp-transport", "builder", "hostname"] }
 rustls-pki-types = "^1.15.0"
