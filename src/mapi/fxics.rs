@@ -115,10 +115,20 @@ impl Marker {
     }
 
     /// The matching end marker, if any.
+    ///
+    /// MS-OXCFXICS §2.2.3.2.4: inside an `IncrSyncChg` incremental-change
+    /// stream each message's content begins with the `IncrSyncMessage` marker
+    /// and is terminated by `EndMessage` — the same end marker `StartMessage`
+    /// uses (§2.2.4.1.4 lists `EndMessage` as the close for both). Pairing
+    /// `IncrSyncMessage` with `EndMessage` here keeps the balance validator
+    /// consistent with the gateway's own download producer
+    /// (`build_ics_stream_iter` emits `IncrSyncMessage` -> `EndMessage`), so a
+    /// client echoing that shape back on upload tokenises instead of failing
+    /// closed with `InvalidValue` at the `EndMessage` it cannot match.
     pub const fn end_marker(self) -> Option<Self> {
         Some(match self {
             Self::StartTopFld | Self::StartSubFld => Self::EndFolder,
-            Self::StartMessage | Self::StartFaiMsg => Self::EndMessage,
+            Self::StartMessage | Self::StartFaiMsg | Self::IncrSyncMessage => Self::EndMessage,
             Self::StartEmbed => Self::EndEmbed,
             Self::StartRecip => Self::EndToRecip,
             Self::NewAttach => Self::EndAttach,
