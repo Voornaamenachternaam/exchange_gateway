@@ -411,21 +411,51 @@ gets wiped between shell sessions. To avoid re-installing Rust every command:
     `message_id_from_jmap` (the one-way FNV-1a hash can't be reversed) — the
     same pattern `RopDeleteMessages` uses, so the upload amortises to ONE folder
     query plus one `Email/set` per batched span. A mid that does not resolve is
-    skipped, not failed. Each event is best-effort: an untranslatable item is
-    `warn!`-logged and skipped so a single bad item never aborts the rest of
-    the upload; a malformed FXICS byte stream fails closed (`Err(DecodeError)`
-    -> dispatcher `DiskError`). When JMAP/creds/`account_id` are absent
-    (unit-test / no-backend) the apply tokenises + logs but issues no writes
-    (the established "no-backend -> tokenize-only" contract). `Marker::end_marker()`
-    now pairs `IncrSyncMessage` -> `EndMessage` per MS-OXCFXICS §2.2.3.2.4 (the
+    skipped, not failed. **Cross-folder move destination resolution uses a
+    SEPARATE reverse map** — `folder_mid_to_mailbox`, keyed by
+    `folder_id_from_backend(jmap_mailbox_id)` and built once from
+    `query_mailboxes` — because the destination `PR_FOLDER_ID` is a FOLDER mid
+    (`folder_id_from_backend` of the target mailbox id) and the message-id map
+    keys on `message_id_from_jmap` of an EMAIL id: different hash families, so
+    resolving a folder mid against the message-id map can NEVER match. The move
+    patch reuses the PatchObject key form of the canonical
+    `build_move_update_patch` in `jmap.rs` — `mailboxIds/<target>: true` +
+    `mailboxIds/<current>: null` with NO leading slash (RFC 8620 §5.3 PatchObject
+    keys have an IMPLICIT leading slash; the wire key is `mailboxIds/<id>`).
+    Each JMAP write site (`IncrSyncRead` batched update, `IncrSyncMessage`
+    property patch, `mailboxIds` move) uses the INSPECTED
+    `update_email_checked` (`EmailSetOutcome { updated, not_updated,
+    method_error }`) so a per-id `notUpdated` rejection or a method-level
+    `error` is reflected in the apply stats and `warn!`-logged, NOT masked as
+    success the way the unchecked `update_email` `(Ok(()))` short-circuit
+    would (the `RopSetProperties`/`RopDeleteProperties` arms migrated away from
+    that path for the same reason). A read-state cell that does not decode to
+    a bool (an unrelated interleaved property such as `PR_CHANGE_KEY` between
+    `PR_MID` and the read flag in an `IncrSyncRead` span) leaves the pending
+    mid in place rather than `take()`-consuming it — the mid is consumed only
+    once a real `read` value decodes, so an interleaved cell can no longer
+    silently drop a read-state update. Each event is best-effort: an
+    untranslatable item is `warn!`-logged and skipped so a single bad item
+    never aborts the rest of the upload; a malformed FXICS byte stream fails
+    closed (`Err(DecodeError)` -> dispatcher `DiskError`). When
+    JMAP/creds/`account_id` are absent (unit-test / no-backend) the apply
+    tokenises + logs but issues no writes (the established "no-backend ->
+    tokenize-only" contract). `Marker::end_marker()` now pairs
+    `IncrSyncMessage` -> `EndMessage` per MS-OXCFXICS §2.2.3.2.4 (the
     gateway's download `build_ics_stream_iter` already emits
     `IncrSyncMessage` ... `EndMessage`), so a client echoing that shape on
     upload tokenises instead of failing closed at the unmatched `EndMessage`.
     The full-message *create* over the bulk upload (brand-new unresolved mid)
     needs the MIME/body Blob-upload write-back bridge (audit gap #3) and is
     intentionally best-effort here; pure-create-over-FXICS with summary cells
-    cannot synthesise a full JMAP Email object. Tests: 12 added in
-    `mapi::handler::tests`. 612 lib + 11 snapshot = 623 green,
+    cannot synthesise a full JMAP Email object. Tests: 16 added in
+    `mapi::handler::tests` (4 follow-up regression tests assert the pure
+    `fx_build_read_update` / `fx_build_move_update` payload shape + the
+    `folder_mid_to_mailbox` cross-folder resolution invariant + the
+    pending-mid preservation across an interleaved read-span cell, exercising
+    the exact RFC 8620 no-leading-slash key form and the batching counts
+    without a live JMAP server — consistent with the repo's no-mock testing
+    philosophy). 616 lib + 11 snapshot = 627 green,
     `RUSTFLAGS=-D warnings cargo build --bin exchange_gateway` + `cargo clippy
     --all-targets` clean. The decoders follow the body-only convention; the
     dispatcher consumes the 3- or 4-byte ROP header (LogonId + InputHandleIndex
