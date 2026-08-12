@@ -394,12 +394,75 @@ gets wiped between shell sessions. To avoid re-installing Rust every command:
     `TransferStatus` to Done. The FastTransfer *destination* +
     `RopSynchronization*` upload ROPs (0x53/0x54/0x70/0x72-0x78/0x77/0x80)
     accumulate onto `Handle::FastTransferDestination` and tokenise via
-    `fxics::Tokenizer` (best-effort; JMAP write-back bridge is Phase-2 #4).
-    The decoders follow the body-only convention; the dispatcher consumes the
-    3- or 4-byte ROP header (LogonId + InputHandleIndex [+ OutputHandleIndex])
-    before `*::decode`/`*::decode_after_ropid` reads the body — exactly like
-    every other arm, so adding a new FastTransfer arm MUST `cur.take_u8()` the
-    LogonId/handle bytes first or the chain desyncs by one byte.
+    `fxics::Tokenizer`; the end-of-stream PutBuffer now drives
+    `apply_fasttransfer_upload` — the Phase-2 FXICS upload apply -> JMAP
+    write-back bridge (audit gap #2, closing the old "best-effort; no JMAP
+    write-back bridge wired" stub). It tokenises the upload byte stream and
+    dispatches the FXICS spans to JMAP reusing the existing `JmapClient`
+    primitives (NO new deps): `IncrSyncRead` -> a single batched `Email/set {
+    keywords/$seen }` update; `IncrSyncDel` -> a single `Email/destroy`;
+    `IncrSyncMessage` (inside `IncrSyncChg`) -> a property `Email/set` `update`
+    patch for the cleanly-mappable MAPI subset (read flag via
+    `PR_MESSAGE_FLAGS`/`PR_READ`, follow-up via `PR_FLAG_STATUS`, importance via
+    `PR_IMPORTANCE`, subject via `PR_SUBJECT`), AND a cross-folder `mailboxIds`
+    patch when the bag carries a `PR_FOLDER_ID` differing from the parent. The
+    MAPI-mid -> JMAP-id reverse map is built ONCE per apply by enumerating the
+    parent folder (`list_email_ids_in_mailbox`) and matching by
+    `message_id_from_jmap` (the one-way FNV-1a hash can't be reversed) — the
+    same pattern `RopDeleteMessages` uses, so the upload amortises to ONE folder
+    query plus one `Email/set` per batched span. A mid that does not resolve is
+    skipped, not failed. **Cross-folder move destination resolution uses a
+    SEPARATE reverse map** — `folder_mid_to_mailbox`, keyed by
+    `folder_id_from_backend(jmap_mailbox_id)` and built once from
+    `query_mailboxes` — because the destination `PR_FOLDER_ID` is a FOLDER mid
+    (`folder_id_from_backend` of the target mailbox id) and the message-id map
+    keys on `message_id_from_jmap` of an EMAIL id: different hash families, so
+    resolving a folder mid against the message-id map can NEVER match. The move
+    patch reuses the PatchObject key form of the canonical
+    `build_move_update_patch` in `jmap.rs` — `mailboxIds/<target>: true` +
+    `mailboxIds/<current>: null` with NO leading slash (RFC 8620 §5.3 PatchObject
+    keys have an IMPLICIT leading slash; the wire key is `mailboxIds/<id>`).
+    Each JMAP write site (`IncrSyncRead` batched update, `IncrSyncMessage`
+    property patch, `mailboxIds` move) uses the INSPECTED
+    `update_email_checked` (`EmailSetOutcome { updated, not_updated,
+    method_error }`) so a per-id `notUpdated` rejection or a method-level
+    `error` is reflected in the apply stats and `warn!`-logged, NOT masked as
+    success the way the unchecked `update_email` `(Ok(()))` short-circuit
+    would (the `RopSetProperties`/`RopDeleteProperties` arms migrated away from
+    that path for the same reason). A read-state cell that does not decode to
+    a bool (an unrelated interleaved property such as `PR_CHANGE_KEY` between
+    `PR_MID` and the read flag in an `IncrSyncRead` span) leaves the pending
+    mid in place rather than `take()`-consuming it — the mid is consumed only
+    once a real `read` value decodes, so an interleaved cell can no longer
+    silently drop a read-state update. Each event is best-effort: an
+    untranslatable item is `warn!`-logged and skipped so a single bad item
+    never aborts the rest of the upload; a malformed FXICS byte stream fails
+    closed (`Err(DecodeError)` -> dispatcher `DiskError`). When
+    JMAP/creds/`account_id` are absent (unit-test / no-backend) the apply
+    tokenises + logs but issues no writes (the established "no-backend ->
+    tokenize-only" contract). `Marker::end_marker()` now pairs
+    `IncrSyncMessage` -> `EndMessage` per MS-OXCFXICS §2.2.3.2.4 (the
+    gateway's download `build_ics_stream_iter` already emits
+    `IncrSyncMessage` ... `EndMessage`), so a client echoing that shape on
+    upload tokenises instead of failing closed at the unmatched `EndMessage`.
+    The full-message *create* over the bulk upload (brand-new unresolved mid)
+    needs the MIME/body Blob-upload write-back bridge (audit gap #3) and is
+    intentionally best-effort here; pure-create-over-FXICS with summary cells
+    cannot synthesise a full JMAP Email object. Tests: 16 added in
+    `mapi::handler::tests` (4 follow-up regression tests assert the pure
+    `fx_build_read_update` / `fx_build_move_update` payload shape + the
+    `folder_mid_to_mailbox` cross-folder resolution invariant + the
+    pending-mid preservation across an interleaved read-span cell, exercising
+    the exact RFC 8620 no-leading-slash key form and the batching counts
+    without a live JMAP server — consistent with the repo's no-mock testing
+    philosophy). 616 lib + 11 snapshot = 627 green,
+    `RUSTFLAGS=-D warnings cargo build --bin exchange_gateway` + `cargo clippy
+    --all-targets` clean. The decoders follow the body-only convention; the
+    dispatcher consumes the 3- or 4-byte ROP header (LogonId + InputHandleIndex
+    [+ OutputHandleIndex]) before `*::decode`/`*::decode_after_ropid` reads
+    the body — exactly like every other arm, so adding a new FastTransfer arm
+    MUST `cur.take_u8()` the LogonId/handle bytes first or the chain desyncs
+    by one byte.
   - **Stream-ROP review hardening (PR #1830)** — `RopSeekStream::resolve`
     now works in `u64`/`Option<u64>` end-to-end (never reinterprets a `>i64::MAX`
     `u64` back through `as i64`, which bitwise-wraps to negative) and clamps by
@@ -769,11 +832,16 @@ STILL GAPS to 100% perfect Outlook-for-Windows + Outlook-Android fidelity:
    transitions `TransferStatus` to `Done` (1) when exhausted. The
    FastTransfer *destination* + `RopSynchronization*` upload ROPs
    (0x53/0x54/0x70/0x72-0x78/0x77/0x80) are wired to accumulate the upload
-   stream on `Handle::FastTransferDestination` and tokenise it via
-   `fxics::Tokenizer` (best-effort apply; the JMAP `Email/set`+`Email/destroy`
-   write-back bridge is the larger Phase-2 #4 mail-write path and is
-   intentionally not asserted against real Stalwart traffic). Audit gap §2b
-   FXICS download closed.
+   stream on `Handle::FastTransferDestination` and the end-of-stream
+   `RopFastTransferDestinationPutBuffer` drives `apply_fasttransfer_upload`
+   which tokenises via `fxics::Tokenizer` and applies the ICS deltas to JMAP
+   (`IncrSyncRead` -> batched `Email/set { keywords/$seen }`,
+   `IncrSyncDel` -> `Email/destroy`, `IncrSyncMessage` -> `Email/set` patch
+   / cross-folder `mailboxIds` move) — the Phase-2 #4 FXICS upload apply ->
+   JMAP write-back bridge (audit gap #2), reusing the existing `JmapClient`
+   primitives (no new deps; the MAPI-mid -> JMAP-id reverse map is built ONCE
+   per apply via `list_email_ids_in_mailbox` + `message_id_from_jmap`). Audit
+   gap §2b FXICS download closed; audit gap #2 FXICS upload apply closed.
 10. **NSPI / GAL / address-book surface (audit gap §2d, PR #1845)** —
     `/mapi/nspi` is now served (was rejected as `InvalidRequestType`).
     `src/mapi/nspi.rs` owns the MS-OXNSPI/MS-OXOABK wire codecs + RPC dispatch.

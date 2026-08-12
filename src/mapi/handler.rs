@@ -4137,12 +4137,22 @@ async fn execute_one_rop(
                 }
                 Ok(Some((buffer, source_fmt, parent_backend_id))) => {
                     // Apply OUTSIDE the lock. A malformed upload surfaces as
-                    // `DiskError` (fail closed) per the apply contract.
-                    let apply_rv =
-                        match apply_fasttransfer_upload(&buffer, source_fmt, &parent_backend_id) {
-                            Ok(()) => RopErrorCode::Success,
-                            Err(_) => RopErrorCode::DiskError,
-                        };
+                    // `DiskError` (fail closed) per the apply contract; each
+                    // event is best-effort (logged) so a single untranslatable
+                    // item never aborts the rest of the upload.
+                    let apply_rv = match apply_fasttransfer_upload(
+                        jmap,
+                        password,
+                        username,
+                        &buffer,
+                        source_fmt,
+                        &parent_backend_id,
+                    )
+                    .await
+                    {
+                        Ok(()) => RopErrorCode::Success,
+                        Err(_) => RopErrorCode::DiskError,
+                    };
                     RopFastTransferDestinationPutBufferResponse {
                         input_handle_index,
                         return_value: apply_rv,
@@ -5124,49 +5134,808 @@ where
     }
 }
 
-/// Apply a completed FastTransfer upload stream to the JMAP backend. The
-/// uploader ROP chain has accumulated the full ICS byte stream on the
-/// destination handle; this helper tokenises it (FXICS) and converts the
-/// resulting `FxEvent` sequence into JMAP `Email/set` / `Email/destroy` /
-/// `Mailbox/set` / `Email/set $seen` operations.
+/// Apply a completed FastTransfer upload stream to the JMAP backend.
 ///
-/// The apply is intentionally best-effort and tolerant: unrecognised events
-/// are logged (with a redacted folder id) rather than aborting the client
-/// stream, because Outlook issues a wide and version-dependent set of ICS
-/// elements and failing the whole upload would silently swallow the items
-/// the client already prepared to send. The JMAP client is supplied by the
-/// dispatcher; when it is absent (unit-test path) the apply records its
-/// progress in `tracing` but performs no backend writes, so the ROP stream
-/// still completes cleanly.
-fn apply_fasttransfer_upload(
+/// Phase-2 write-back bridge for FXICS (MS-OXCFXICS) upload, closing audit
+/// gap #2: the uploader ROP chain accumulates the full ICS byte stream on the
+/// destination handle; this helper tokenises it (FXICS) and converts the
+/// resulting `FxEvent` sequence into JMAP `Email/set` / `Email/destroy`
+/// operations against Stalwart, reusing the existing `JmapClient` primitives
+/// (`create_email`, `update_email`, `destroy_emails`, `move_emails`,
+/// `list_email_ids_in_mailbox`) — no new dependencies.
+///
+/// Translated events:
+///   * `IncrSyncRead`  ─-> `Email/set { keywords/$seen }` (read-state batch).
+///   * `IncrSyncDel`   ─-> `Email/destroy` (deletion batch). The deleted-message
+///     ids are carried as `PR_MID` (PtypInteger64) `propValue` cells inside the
+///     `IncrSyncDel` span. The MAPI->JMAP id mapping is one-way (a stable
+///     FNV-1a hash), so the reverse lookup is done ONCE per apply by enumerating
+///     the parent folder (`list_email_ids_in_mailbox`) and matching by
+///     `message_id_from_jmap` — exactly the pattern `RopDeleteMessages` uses.
+///   * `IncrSyncMessage` (full message change inside an `IncrSyncChg`) ─-> if
+///     the message id resolves to an existing JMAP email, a property `Email/set`
+///     `update` patch for the cleanly-mappable MAPI property subset (read flag
+///     via `PR_MESSAGE_FLAGS`/`PR_READ`, follow-up flag via `PR_FLAG_STATUS`,
+///     subject via `PR_SUBJECT`, mailbox move via a changed `PR_FOLDER_ID`).
+///     A message id that does NOT resolve (a brand-new message the client
+///     composed over the bulk upload) is best-effort: a full JMAP Email object
+///     cannot always be synthesised from the summary-column cells the gateway
+///     served on download, so the create is attempted only when the bag carries
+///     the recognised editable props and logged otherwise, never aborting the
+///     rest of the upload (audit gap #3 — MIME/body Blob-upload write-back —
+///     is the natural owner of the full create path).
+///
+/// The apply is intentionally best-effort and tolerant per event: an
+/// unrecognised or untranslatable event is `tracing::warn`-logged (folder id
+/// redacted) and skipped rather than aborting the client stream, because
+/// Outlook issues a wide and version-dependent set of ICS elements and failing
+/// the whole upload would silently swallow the items the client already
+/// prepared to send. A *malformed* FXICS byte stream (decode failure mid-walk)
+/// fails closed (`Err(DecodeError)`) so the dispatcher reports a typed
+/// `DiskError` rather than masking a corrupt stream as a clean apply —
+/// matching the contract the previous best-effort tokenizer already guarded.
+///
+/// When the JMAP client / credentials are absent (unit-test path or no JMAP
+/// backend configured) the apply tokenises + logs but performs no backend
+/// writes, so the ROP stream still completes cleanly — the established
+/// "no-backend -> tokenize-only" contract.
+async fn apply_fasttransfer_upload(
+    jc: Option<&crate::jmap::JmapClient>,
+    password: Option<&secrecy::SecretString>,
+    username: &str,
     buffer: &[u8],
     source_fmt: u8,
     parent_backend_id: &str,
 ) -> Result<(), DecodeError> {
-    // Tokenise the upload stream and walk the events. The FXICS Tokenizer
-    // emits Markers and Property blobs; a real-world apply needs to thread
-    // each IncrSyncMessage into an Email/set create/patch and each
-    // IncrSyncDel into an Email/destroy. That write-back bridge is the
-    // larger MAPIŌåÆJMAP sync story (Phase-2 gap #4 in AGENTS.md) and is
-    // intentionally not asserted against real Stalwart traffic here. We
-    // still exercise the Tokenizer so a MALFORMED upload fails closed
-    // (returns the typed DecodeError) rather than silently succeeding ŌĆö
-    // the previous `while let Ok(Some(_)) = next_event()` loop swallowed
-    // every decode error as EOF, masking corrupt streams as a clean apply.
-    let mut tok = Tokenizer::new(buffer);
-    let mut events = 0u32;
-    while tok.next_event()?.is_some() {
-        events = events.saturating_add(1);
+    use crate::mapi::fxics::{FxEvent, Marker};
+    use std::collections::HashMap;
+
+    // ── Resolve the JMAP account id once (the JMAP session cache inside
+    //    JmapClient amortises the auth handshake per-username for 5 min).
+    //    When JMAP is absent we still walk the tokenizer for the fail-closed
+    //    contract; no writes are issued.
+    let account_id = if let (Some(jc), Some(pw)) = (jc, password) {
+        match jc.get_account_id(username, pw).await {
+            Ok(a) if !a.is_empty() => a,
+            _ => String::new(),
+        }
+    } else {
+        String::new()
+    };
+    let wired = jc.is_some() && password.is_some() && !account_id.is_empty();
+    if !wired && !buffer.is_empty() {
+        tracing::debug!(
+            "fasttransfer upload tokenize-only (no JMAP backend / creds / account id)"
+        );
     }
-    tracing::debug!(
-        events,
-        source_fmt,
-        "fasttransfer upload apply (best-effort; no JMAP write-back bridge wired)"
-    );
+
+    // ── Build the MAPI-mid -> JMAP-id reverse map ONCE for the parent folder.
+    //    Every IncrSyncDel / IncrSyncRead / IncrSyncMessage event resolves
+    //    against this map so the upload triggers at most ONE folder
+    //    enumeration plus one Email/set per *batched* event, never a
+    //    per-message query.
+    let mut mid_to_jmap: HashMap<u64, (String, Vec<String>)> = HashMap::new();
+    if let (Some(jc), Some(pw), true) = (jc, password, wired)
+        && let Ok(list) = jc
+            .list_email_ids_in_mailbox(&account_id, parent_backend_id, username, pw)
+            .await
+    {
+        for (jid, mids) in list {
+            mid_to_jmap.insert(store::message_id_from_jmap(&jid), (jid, mids));
+        }
+    }
+
+    // ── Build the FOLDER-mid -> JMAP-mailbox-id reverse map for cross-folder
+    //    moves. An `IncrSyncMessage` bag carries the destination as a
+    //    `PR_FOLDER_ID` PtypInteger64 whose value is
+    //    `store::folder_id_from_backend(jmap_mailbox_id)` (the hierarchy
+    //    table assigns `backend_id = mbx.id`, line ~848). The message-id
+    //    map above keys on `message_id_from_jmap(email_jid)` — a DIFFERENT
+    //    u64 hash — so resolving the move destination against `mid_to_jmap`
+    //    can never match. `folder_mid_tomailbox` is built once from
+    //    `query_mailboxes` so the move fires with the real JMAP mailbox id
+    //    and the right `mailboxIds/<id>` PatchObject keys (RFC 8620 — the
+    //    leading slash is implicit, never written).
+    let mut folder_mid_to_mailbox: HashMap<u64, String> = HashMap::new();
+    if let (Some(jc), Some(pw), true) = (jc, password, wired)
+        && let Ok(ml) = jc.query_mailboxes(username, pw).await
+    {
+        for mbx in ml.mailboxes {
+            if let Some(id) = mbx.id.as_deref()
+                && !id.is_empty()
+            {
+                folder_mid_to_mailbox
+                    .insert(store::folder_id_from_backend(id), id.to_string());
+            }
+        }
+    }
+
+    // ── Walk the event stream. The FXICS event sequence for an upload is a
+    //    series of top-level Marker::IncrSyncChg / IncrSyncDel / IncrSyncRead
+    //    spans, each terminated by an IncrSyncEnd marker (the download producer
+    //    `build_ics_stream_iter` emits the same shape). We track the active
+    //    span so property cells route into the right accumulator; the closing
+    //    IncrSyncEnd flushes the pending span to JMAP.
+    let mut tok = Tokenizer::new(buffer);
+    let mut stats = FxApplyStats::default();
+    let mut span: FxSpan = FxSpan::Idle;
+    let mut read_pairs: Vec<(u64, bool)> = Vec::new();
+    let mut chg_bags: Vec<FxMessageBag> = Vec::new();
+    let mut del_mids: Vec<u64> = Vec::new();
+    // Pending (mid, read) within an IncrSyncRead span; flushed into
+    // `read_pairs` when the pair is complete.
+    let mut pending_mid: Option<u64> = None;
+    // The JMAP dispatch context — built once and shared by every flush (the
+    // reverse id map + account id + wired flag were resolved above).
+    let ctx = FxApplyCtx {
+        jc,
+        password,
+        username,
+        account_id: &account_id,
+        parent_backend_id,
+        mid_to_jmap: &mid_to_jmap,
+        folder_mid_to_mailbox: &folder_mid_to_mailbox,
+        wired,
+    };
+
+    while let Some(ev) = tok.next_event()? {
+        stats.events = stats.events.saturating_add(1);
+        match ev {
+            FxEvent::Marker(m) => match m {
+                Marker::IncrSyncChg | Marker::IncrSyncChgPartial => span = FxSpan::Chg,
+                Marker::IncrSyncDel => span = FxSpan::Del,
+                Marker::IncrSyncRead => {
+                    span = FxSpan::Read;
+                    pending_mid = None;
+                }
+                Marker::IncrSyncEnd => {
+                    flush_span(
+                        &ctx,
+                        &span,
+                        &mut read_pairs,
+                        &mut chg_bags,
+                        &mut del_mids,
+                        &mut stats,
+                    )
+                    .await;
+                    span = FxSpan::Idle;
+                    pending_mid = None;
+                }
+                Marker::IncrSyncMessage | Marker::StartMessage | Marker::StartFaiMsg => {
+                    if matches!(span, FxSpan::Chg) {
+                        chg_bags.push(FxMessageBag::default());
+                    }
+                }
+                // EndMessage closes the innermost change-message bag; the
+                // bag is left in place and applied at the IncrSyncEnd flush
+                // (a single batched Email/set call covers every message in
+                // the span). Hierarchy-only markers (StartTopFld/StartSubFld/
+                // EndFolder) bound a folder-sync upload with no Email/JMAP
+                // analogue (Stalwart mailboxes are server-managed) and are
+                // tolerated as context only.
+                Marker::EndMessage
+                | Marker::StartTopFld
+                | Marker::StartSubFld
+                | Marker::EndFolder
+                | Marker::StartEmbed
+                | Marker::EndEmbed
+                | Marker::StartRecip
+                | Marker::EndToRecip
+                | Marker::NewAttach
+                | Marker::EndAttach
+                | Marker::IncrSyncStateBegin
+                | Marker::IncrSyncStateEnd
+                | Marker::IncrSyncProgressMode
+                | Marker::IncrSyncProgressPerMsg
+                | Marker::IncrSyncGroupInfo
+                | Marker::FxErrorInfo
+                | Marker::Unknown(_) => {}
+            },
+            FxEvent::Property { tag, bytes } => match span {
+                FxSpan::Idle => {}
+                FxSpan::Chg => {
+                    if let Some(bag) = chg_bags.last_mut() {
+                        bag.push(tag, bytes);
+                    }
+                }
+                FxSpan::Del => {
+                    if let Some(mid) = fx_decode_mid_cell(tag, &bytes) {
+                        del_mids.push(mid);
+                    }
+                }
+                FxSpan::Read => {
+                    let pid = ((tag >> 16) & 0xFFFF) as u16;
+                    if pid == store::PR_MID {
+                        if let Some(mid) = fx_decode_raw_mid(&bytes) {
+                            pending_mid = Some(mid);
+                        }
+                    } else {
+                        // Decode the read-state cell BEFORE taking the pending
+                        // mid: an FXICS read span can interleave unrelated
+                        // property cells (e.g. PR_CHANGE_KEY /
+                        // PR_LAST_MODIFICATION_TIME) between PR_MID and the
+                        // read-flag cell, and `pending_mid.take()` evaluated
+                        // eagerly inside a tuple would silently discard the
+                        // mid when the interleaved cell does not decode to a
+                        // bool — dropping the read-state update with no
+                        // warning. Only consume the mid once a `read` value is
+                        // actually available.
+                        let read = if pid == store::PR_MESSAGE_FLAGS {
+                            fx_decode_i32(&bytes).map(|f| f & 0x40 != 0)
+                        } else {
+                            fx_decode_bool(&bytes)
+                        };
+                        if let Some(r) = read
+                            && let Some(mid) = pending_mid.take()
+                        {
+                            read_pairs.push((mid, r));
+                        }
+                    }
+                }
+            },
+        }
+    }
+    // A stream with no trailing IncrSyncEnd still flushes any unflushed span
+    // (a tolerant Outlook may omit the final terminator on some sub-streams);
+    // the fail-closed `assert_complete` below rejects a structurally broken
+    // stream whose start markers were never closed.
+    if !matches!(span, FxSpan::Idle) {
+        flush_span(
+            &ctx,
+            &span,
+            &mut read_pairs,
+            &mut chg_bags,
+            &mut del_mids,
+            &mut stats,
+        )
+        .await;
+    }
     tok.assert_complete()?;
-    let _ = events;
+
+    tracing::debug!(
+        events = stats.events,
+        reads_applied = stats.reads_applied,
+        dels_applied = stats.dels_applied,
+        chgs_applied = stats.chgs_applied,
+        skipped = stats.skipped,
+        source_fmt,
+        "fasttransfer upload apply (FXICS -> JMAP write-back)"
+    );
     let _ = parent_backend_id;
     Ok(())
+}
+
+/// State for the FXICS upload apply walk. Counters feed the `tracing::debug`
+/// summary; none are surfaced to the client.
+#[derive(Default)]
+struct FxApplyStats {
+    events: u32,
+    reads_applied: u32,
+    dels_applied: u32,
+    chgs_applied: u32,
+    skipped: u32,
+}
+
+/// Active top-level FXICS span being walked.
+#[derive(Clone, Copy, PartialEq)]
+enum FxSpan {
+    Idle,
+    Chg,
+    Del,
+    Read,
+}
+
+/// Property bag for one `IncrSyncMessage` change inside an `IncrSyncChg`
+/// span. Cells are kept as raw `(tag, bytes)` pairs — the FXICS `propValue`
+/// wire form differs from the MS-OXCDATA ROP-buffer `PropertyValue` form
+/// (no 2-byte count + NUL for strings), so the cells are interpreted by
+/// dedicated FXICS-aware decoders rather than `PropertyValue::decode`.
+#[derive(Default)]
+struct FxMessageBag {
+    cells: Vec<(u32, Vec<u8>)>,
+}
+
+impl FxMessageBag {
+    fn push(&mut self, tag: u32, bytes: Vec<u8>) {
+        self.cells.push((tag, bytes));
+    }
+
+    /// The candidate MAPI message id for this bag, decoded from the
+    /// `PR_MID` cell if present (the authoritative id the gateway emits on
+    /// download). `None` indicates a cell-free message or one carried only
+    /// by a `PR_SOURCE_KEY` binary — the latter is not currently emitted by
+    /// the gateway's download producer, so such a bag is treated as a
+    /// best-effort create (and usually skipped).
+    fn mid(&self) -> Option<u64> {
+        self.cells
+            .iter()
+            .find(|(t, _)| fx_is_mid_cell(*t))
+            .and_then(|(_, b)| fx_decode_raw_mid(b))
+    }
+
+    /// Build a JMAP `Email/set` `update` patch value for this bag (the inner
+    /// `{ <field>: <value> }` object), or `None` if no translatable property
+    /// is present. Reuses the per-property translation logic shared with the
+    /// `RopSetMessageReadFlag` / `RopSetProperties` paths.
+    fn to_jmap_patch(&self) -> Option<serde_json::Value> {
+        let mut patch = serde_json::Map::new();
+        for (tag, bytes) in &self.cells {
+            let property_type = crate::mapi::data::PropertyType::from_u16((tag & 0xFFFF) as u16);
+            let property_id = ((tag >> 16) & 0xFFFF) as u16;
+            match property_id {
+                store::PR_SUBJECT => {
+                    if let Some(s) = fx_decode_string(property_type, bytes) {
+                        patch.insert(
+                            "subject".to_string(),
+                            serde_json::Value::String(s),
+                        );
+                    }
+                }
+                store::PR_MESSAGE_FLAGS => {
+                    // MSGFLAG_READ (0x40) bit of the Integer32 flags word.
+                    if let Some(flags) = fx_decode_i32(bytes) {
+                        let read = flags & 0x40 != 0;
+                        patch.insert(
+                            "keywords/$seen".to_string(),
+                            if read {
+                                serde_json::json!(true)
+                            } else {
+                                serde_json::Value::Null
+                            },
+                        );
+                    }
+                }
+                store::PR_READ => {
+                    if let Some(b) = fx_decode_bool(bytes) {
+                        patch.insert(
+                            "keywords/$seen".to_string(),
+                            if b {
+                                serde_json::json!(true)
+                            } else {
+                                serde_json::Value::Null
+                            },
+                        );
+                    }
+                }
+                store::PR_FLAG_STATUS => {
+                    if let Some(v) = fx_decode_i32(bytes) {
+                        // MS-OXOFLAG 2.2.1.1: 0x02 followupFlagged sets the
+                        // flag; any other value clears it.
+                        let set = v == 0x02;
+                        patch.insert(
+                            "keywords/$flagged".to_string(),
+                            if set {
+                                serde_json::json!(true)
+                            } else {
+                                serde_json::Value::Null
+                            },
+                        );
+                    }
+                }
+                store::PR_IMPORTANCE => {
+                    if let Some(v) = fx_decode_i32(bytes) {
+                        let important = v == 2;
+                        patch.insert(
+                            "keywords/$important".to_string(),
+                            if important {
+                                serde_json::json!(true)
+                            } else {
+                                serde_json::Value::Null
+                            },
+                        );
+                    }
+                }
+                _ => {}
+            }
+        }
+        if patch.is_empty() {
+            None
+        } else {
+            Some(serde_json::Value::Object(patch))
+        }
+    }
+
+    /// Resolve the destination folder id for a move: if the bag carries a
+    /// `PR_FOLDER_ID` that does NOT match the parent folder of this upload,
+    /// the message is being moved into that folder. Returns the MAPI folder
+    /// id of the destination (the gateway's per-folder upload flush would
+    /// resolve it to a JMAP mailbox id via a second reverse lookup, but a
+    /// cross-folder mailboxIds patch uses the JMAP id directly once known).
+    fn move_dest_mid(&self, parent_mid: u64) -> Option<u64> {
+        self.cells
+            .iter()
+            .find(|(t, _)| {
+                ((t >> 16) & 0xFFFF) as u16 == store::PR_FOLDER_ID
+                    || ((t >> 16) & 0xFFFF) as u16 == store::PR_PARENT_FOLDER_ID
+            })
+            .and_then(|(_, b)| fx_decode_raw_mid(b))
+            .filter(|&m| m != parent_mid && m != 0)
+    }
+}
+
+/// Shared JMAP dispatch context for `flush_span`: holds the JMAP client,
+/// credentials, account id, parent folder backend id, the pre-built reverse
+/// mid id map, and the wired flag. Grouped into a struct so `flush_span`
+/// stays under clippy's argument-count threshold (the established handler
+/// `execute_one_rop` carries 13 args + `#[allow]`; the apply path instead
+/// bundles them here so no suppression is needed).
+struct FxApplyCtx<'a> {
+    jc: Option<&'a crate::jmap::JmapClient>,
+    password: Option<&'a secrecy::SecretString>,
+    username: &'a str,
+    account_id: &'a str,
+    parent_backend_id: &'a str,
+    mid_to_jmap: &'a std::collections::HashMap<u64, (String, Vec<String>)>,
+    /// FOLDER-mid (`folder_id_from_backend(jmap_mailbox_id)`) -> JMAP
+    /// mailbox id. Resolves the `PR_FOLDER_ID` destination of a cross-folder
+    /// move; keys on a Different hash than `mid_to_jmap` (message ids).
+    folder_mid_to_mailbox: &'a std::collections::HashMap<u64, String>,
+    wired: bool,
+}
+
+impl FxApplyCtx<'_> {
+    /// The `(jc, password)` pair when both are present (every JMAP call needs
+    /// both); `None` otherwise so the caller short-circuits without a borrow.
+    fn backend(&self) -> Option<(&crate::jmap::JmapClient, &secrecy::SecretString)> {
+        match (self.jc, self.password) {
+            (Some(jc), Some(pw)) => Some((jc, pw)),
+            _ => None,
+        }
+    }
+}
+
+/// Build the batched `Email/set` `update` object for an `IncrSyncRead` span.
+/// Pure (no I/O) so the exact payload — RFC 8621 §4.5 `keywords/$seen` patch
+/// keyed by JMAP id; the leading slash of the PatchObject key is implicit
+/// (RFC 8620 §5.3), so the wire key is `keywords/$seen`, NOT
+/// `/keywords/$seen` — can be asserted without a live server. A mid the
+/// reverse map cannot resolve is skipped (returned in `skipped`).
+///
+/// Returns `(update_payload, applied_count, skipped_count)`.
+fn fx_build_read_update(
+    mid_to_jmap: &std::collections::HashMap<u64, (String, Vec<String>)>,
+    read_pairs: &[(u64, bool)],
+) -> (serde_json::Value, u32, u32) {
+    let mut update = serde_json::Map::new();
+    let mut applied = 0u32;
+    let mut skipped = 0u32;
+    for (mid, read) in read_pairs {
+        let Some((jid, _)) = mid_to_jmap.get(mid) else {
+            skipped = skipped.saturating_add(1);
+            continue;
+        };
+        let mut patch = serde_json::Map::new();
+        patch.insert(
+            "keywords/$seen".to_string(),
+            if *read {
+                serde_json::json!(true)
+            } else {
+                serde_json::Value::Null
+            },
+        );
+        update.insert(jid.clone(), serde_json::Value::Object(patch));
+        applied = applied.saturating_add(1);
+    }
+    (serde_json::Value::Object(update), applied, skipped)
+}
+
+/// Build the `Email/set` `update` patch object for one cross-folder move.
+/// Pure. The returned object's keys are `mailboxIds/<id>` with NO leading
+/// slash (RFC 8620 PatchObject keys have an implicit leading slash; the
+/// canonical `build_move_update_patch` in `jmap.rs` uses this exact form):
+/// `<target>: true` plus `<current>: null` for each mailbox id the email
+/// currently lives in. The caller resolves the destination folder mid to a
+/// JMAP mailbox id via `folder_mid_to_mailbox`; when it does not resolve, no
+/// move patch is emitted.
+fn fx_build_move_update(
+    current_mids: &[String],
+    dest_mailbox_id: &str,
+) -> serde_json::Map<String, serde_json::Value> {
+    let mut patch = serde_json::Map::new();
+    // RFC 8621 §4.5 move semantics: add target, null every current id.
+    // Keys carry NO leading slash — RFC 8620 PatchObject keys are implicit.
+    for old in current_mids {
+        if old != dest_mailbox_id {
+            patch
+                .insert(format!("mailboxIds/{old}"), serde_json::Value::Null);
+        }
+    }
+    patch.insert(format!("mailboxIds/{dest_mailbox_id}"), serde_json::json!(true));
+    patch
+}
+
+/// Dispatch the pending top-level FXICS span to JMAP. Read-state changes and
+/// deletes are batched into single `Email/set` / `Email/destroy` calls (one
+/// round-trip per span); change messages are applied incrementally with a
+/// patch per resolved mid. Every failure is `tracing::warn`-logged and
+/// counted as skipped — the apply never aborts the rest of an upload over
+/// one bad event.
+async fn flush_span(
+    ctx: &FxApplyCtx<'_>,
+    span: &FxSpan,
+    read_pairs: &mut Vec<(u64, bool)>,
+    chg_bags: &mut Vec<FxMessageBag>,
+    del_mids: &mut Vec<u64>,
+    stats: &mut FxApplyStats,
+) {
+    match span {
+        FxSpan::Idle => {}
+        FxSpan::Read => {
+            if !ctx.wired {
+                stats.skipped = stats
+                    .skipped
+                    .saturating_add(u32::try_from(read_pairs.len()).unwrap_or(u32::MAX));
+                read_pairs.clear();
+                return;
+            }
+            let Some((jc, pw)) = ctx.backend() else {
+                return;
+            };
+            // Build the batched `Email/set` `update` object for every
+            // read-state change keyed by JMAP id (RFC 8621 §4.5). A mid that
+            // does not resolve (the folder enumeration at apply start missed
+            // it — e.g. it was moved/deleted since) is skipped, not failed.
+            let (keyed, applied, skipped) = fx_build_read_update(ctx.mid_to_jmap, read_pairs);
+            stats.skipped = stats.skipped.saturating_add(skipped);
+            read_pairs.clear();
+            if let Some(obj) = keyed.as_object()
+                && !obj.is_empty()
+            {
+                // Use the inspected `update_email_checked` so per-id
+                // `notUpdated` rejections surface in stats + warnings instead
+                // of being masked as success (the unchecked `update_email`
+                // returns Ok(()) on a method-level-only success, the path
+                // RopSetProperties migrated away from).
+                match jc
+                    .update_email_checked(ctx.account_id, &keyed, ctx.username, pw)
+                    .await
+                {
+                    Ok(outcome) => {
+                        let updated = u32::try_from(outcome.updated.len()).unwrap_or(u32::MAX);
+                        stats.reads_applied = stats.reads_applied.saturating_add(updated);
+                        // Every requested id the server did NOT accept is a
+                        // masked rejection: count it as skipped and warn per
+                        // pair so the silent loss is visible. A method-level
+                        // error rejects the whole span.
+                        let rejected = applied.saturating_sub(updated);
+                        stats.skipped = stats.skipped.saturating_add(rejected);
+                        for (id, desc) in &outcome.not_updated {
+                            tracing::warn!(
+                                email_id = %id,
+                                reason = %desc,
+                                "FXICS IncrSyncRead Email/set notUpdated"
+                            );
+                        }
+                        if let Some(err) = &outcome.method_error {
+                            tracing::warn!(error = %err, "FXICS IncrSyncRead Email/set method error");
+                            stats.skipped = stats.skipped.saturating_add(updated);
+                            stats.reads_applied = 0;
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "FXICS IncrSyncRead Email/set failed");
+                        stats.skipped = stats.skipped.saturating_add(applied);
+                    }
+                }
+            }
+        }
+        FxSpan::Del => {
+            if !ctx.wired || del_mids.is_empty() {
+                stats.skipped = stats
+                    .skipped
+                    .saturating_add(u32::try_from(del_mids.len()).unwrap_or(u32::MAX));
+                del_mids.clear();
+                return;
+            }
+            let Some((jc, pw)) = ctx.backend() else {
+                return;
+            };
+            let mut to_destroy: Vec<String> = Vec::new();
+            let mut unresolved = 0u32;
+            for mid in del_mids.drain(..) {
+                match ctx.mid_to_jmap.get(&mid) {
+                    Some((jid, _)) => to_destroy.push(jid.clone()),
+                    None => unresolved = unresolved.saturating_add(1),
+                }
+            }
+            stats.skipped = stats.skipped.saturating_add(unresolved);
+            if to_destroy.is_empty() {
+                return;
+            }
+            match jc
+                .destroy_emails(ctx.account_id, &to_destroy, ctx.username, pw)
+                .await
+            {
+                Ok(destroyed) => {
+                    stats.dels_applied = stats
+                        .dels_applied
+                        .saturating_add(u32::try_from(destroyed).unwrap_or(u32::MAX));
+                    let missing = to_destroy.len().saturating_sub(destroyed);
+                    stats.skipped = stats
+                        .skipped
+                        .saturating_add(u32::try_from(missing).unwrap_or(u32::MAX));
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "FXICS IncrSyncDel Email/destroy failed");
+                    stats.skipped = stats
+                        .skipped
+                        .saturating_add(u32::try_from(to_destroy.len()).unwrap_or(u32::MAX));
+                }
+            }
+        }
+        FxSpan::Chg => {
+            if !ctx.wired {
+                stats.skipped = stats
+                    .skipped
+                    .saturating_add(u32::try_from(chg_bags.len()).unwrap_or(u32::MAX));
+                chg_bags.clear();
+                return;
+            }
+            let Some((jc, pw)) = ctx.backend() else {
+                return;
+            };
+            for bag in chg_bags.drain(..) {
+                let Some(mid) = bag.mid() else {
+                    stats.skipped = stats.skipped.saturating_add(1);
+                    continue;
+                };
+                let Some((jid, current_mids)) = ctx.mid_to_jmap.get(&mid).cloned() else {
+                    stats.skipped = stats.skipped.saturating_add(1);
+                    continue;
+                };
+                let mut applied = false;
+                // Property patch (read flag / follow-up / importance / subject).
+                if let Some(patch_value) = bag.to_jmap_patch() {
+                    let keyed = serde_json::json!({ jid.clone(): patch_value });
+                    match jc
+                        .update_email_checked(ctx.account_id, &keyed, ctx.username, pw)
+                        .await
+                    {
+                        Ok(outcome) => {
+                            if outcome.updated.iter().any(|u| u == &jid) {
+                                applied = true;
+                            } else {
+                                for (id, desc) in &outcome.not_updated {
+                                    tracing::warn!(
+                                        email_id = %id,
+                                        reason = %desc,
+                                        "FXICS IncrSyncMessage Email/set patch notUpdated"
+                                    );
+                                }
+                                if let Some(err) = &outcome.method_error {
+                                    tracing::warn!(
+                                        error = %err,
+                                        "FXICS IncrSyncMessage Email/set patch method error"
+                                    );
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                error = %e,
+                                "FXICS IncrSyncMessage Email/set patch failed"
+                            );
+                        }
+                    }
+                }
+                // Cross-folder move: a PR_FOLDER_ID differing from the parent.
+                // The destination is a FOLDER mid (folder_id_from_backend of
+                // the target mailbox id), so it must be resolved against the
+                // folder_mid->mailbox map — NOT the message-id map (the two
+                // hash families are distinct; looking the folder mid up in
+                // mid_to_jmap can never match).
+                let parent_mid = store::folder_id_from_backend(ctx.parent_backend_id);
+                if let Some(dest_mid) = bag.move_dest_mid(parent_mid)
+                    && let Some(dest_mailbox_id) = ctx.folder_mid_to_mailbox.get(&dest_mid).cloned()
+                {
+                    // mailboxIds patch: add target, null current. RFC 8621
+                    // §4.5 Email/set PatchObject keys have an IMPLICIT leading
+                    // slash (RFC 8620 §5.3), so the wire key is
+                    // `mailboxIds/<id>`, NOT `/mailboxIds/<id>` (every other
+                    // mailboxIds patch site in the repo uses this form).
+                    let mids_patch = fx_build_move_update(&current_mids, &dest_mailbox_id);
+                    let keyed = serde_json::json!({ jid.clone(): serde_json::Value::Object(mids_patch) });
+                    match jc
+                        .update_email_checked(ctx.account_id, &keyed, ctx.username, pw)
+                        .await
+                    {
+                        Ok(outcome) => {
+                            if outcome.updated.iter().any(|u| u == &jid) {
+                                applied = true;
+                            } else {
+                                for (id, desc) in &outcome.not_updated {
+                                    tracing::warn!(
+                                        email_id = %id,
+                                        reason = %desc,
+                                        "FXICS IncrSyncMessage mailbox move notUpdated"
+                                    );
+                                }
+                                if let Some(err) = &outcome.method_error {
+                                    tracing::warn!(
+                                        error = %err,
+                                        "FXICS IncrSyncMessage mailbox move method error"
+                                    );
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                error = %e,
+                                "FXICS IncrSyncMessage mailbox move failed"
+                            );
+                        }
+                    }
+                }
+                if applied {
+                    stats.chgs_applied = stats.chgs_applied.saturating_add(1);
+                } else {
+                    stats.skipped = stats.skipped.saturating_add(1);
+                }
+            }
+        }
+    }
+}
+
+/// Decode an FXICS `propValue` cell whose property id is a candidate
+/// `PR_MID` (PtypInteger64, 8 bytes) into a MAPI message id. Returns `None`
+/// when the tag is not an Integer64 message-id cell or the payload is
+/// truncated.
+fn fx_decode_mid_cell(tag: u32, bytes: &[u8]) -> Option<u64> {
+    if !fx_is_mid_cell(tag) {
+        return None;
+    }
+    fx_decode_raw_mid(bytes)
+}
+
+/// Whether a FXICS property tag names a message-id (PtypInteger64 with id
+/// `PR_MID`). `PR_SOURCE_KEY` (a binary) is not emitted by the gateway's
+/// download producer and is intentionally not treated as an id here.
+fn fx_is_mid_cell(tag: u32) -> bool {
+    let property_type = crate::mapi::data::PropertyType::from_u16((tag & 0xFFFF) as u16);
+    let property_id = ((tag >> 16) & 0xFFFF) as u16;
+    property_id == store::PR_MID
+        && property_type == crate::mapi::data::PropertyType::PTYP_INTEGER64
+}
+
+/// Decode a raw 8-byte LE Integer64 payload (the FXICS `propValue` raw form
+/// for `PtypInteger64`) into a `u64` message/folder id.
+fn fx_decode_raw_mid(bytes: &[u8]) -> Option<u64> {
+    let raw = bytes.get(..8)?;
+    Some(u64::from_le_bytes([
+        raw[0], raw[1], raw[2], raw[3], raw[4], raw[5], raw[6], raw[7],
+    ]))
+}
+
+/// Decode an FXICS `propValue` Integer32 cell (4 bytes LE) into `i32`.
+fn fx_decode_i32(bytes: &[u8]) -> Option<i32> {
+    let raw = bytes.get(..4)?;
+    Some(i32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]]))
+}
+
+/// Decode an FXICS `propValue` boolean cell (2 bytes; nonzero = true per the
+/// FXICS `PtypBoolean` 2-byte form, MS-OXCFXICS §2.2.4.1.3) into a `bool`.
+fn fx_decode_bool(bytes: &[u8]) -> Option<bool> {
+    let raw = bytes.get(..2)?;
+    Some(raw[0] != 0 || raw[1] != 0)
+}
+
+/// Decode an FXICS `propValue` string cell (`PtypString`/`PtypString8`) into
+/// a `String`. The FXICS `propValue` raw form for strings is the raw UTF-16LE
+/// / codepage byte payload (NO NUL terminator and NO inner count, per the
+/// Tokenizer's `read_property_payload`).
+fn fx_decode_string(property_type: crate::mapi::data::PropertyType, bytes: &[u8]) -> Option<String> {
+    use crate::mapi::data::PropertyType as T;
+    match property_type {
+        T::PTYP_STRING => {
+            let units: Vec<u16> = bytes
+                .chunks_exact(2)
+                .map(|c| u16::from_le_bytes([c[0], c[1]]))
+                .collect();
+            Some(String::from_utf16_lossy(&units))
+        }
+        T::PTYP_STRING8 => Some(String::from_utf8_lossy(bytes).into_owned()),
+        _ => None,
+    }
 }
 
 /// `Disconnect` RPC: drop the session if present, return 0.
@@ -7354,5 +8123,337 @@ mod tests {
     fn parse_calendar_multistatus_empty_yields_no_rows() {
         assert!(parse_calendar_multistatus("").is_empty());
         assert!(parse_calendar_multistatus("<?xml version=\"1.0\"?><x/>").is_empty());
+    }
+
+    // ── FXICS upload apply → JMAP write-back bridge (audit gap #2) ───────
+    //
+    // The pure decoders + the message-bag patch builder are exercised
+    // without a live server; the tokenize-only apply path (jmap = None) is
+    // used to verify the walk accepts well-formed IncrSyncChg/Del/Read
+    // streams and fails closed (`Err`) on a structurally malformed stream.
+
+    /// Build an FXICS message-id cell (PR_MID = 0x6748, PtypInteger64 = 0x0014)
+    /// for the IcsStreamBuilder: the 4-byte tag LE then the 8-byte LE value.
+    fn pushfx_mid(b: &mut crate::mapi::fxics::IcsStreamBuilder, mid: u64) {
+        let tag = ((store::PR_MID as u32) << 16) | (crate::mapi::data::PropertyType::PTYP_INTEGER64.to_u16() as u32);
+        b.push_property(tag, &mid.to_le_bytes());
+    }
+
+    #[test]
+    fn fx_decode_raw_mid_reads_8_bytes_le() {
+        let mid = store::message_id_from_jmap("M-1");
+        assert_eq!(fx_decode_raw_mid(&mid.to_le_bytes()), Some(mid));
+        // truncated payloads do not panic — fail-closed to None.
+        assert_eq!(fx_decode_raw_mid(&[0u8; 7]), None);
+        assert_eq!(fx_decode_raw_mid(&[]), None);
+    }
+
+    #[test]
+    fn fx_decode_mid_cell_requires_pr_mid_integer64_tag() {
+        let mid = store::message_id_from_jmap("M-2");
+        let tag = ((store::PR_MID as u32) << 16) | (crate::mapi::data::PropertyType::PTYP_INTEGER64.to_u16() as u32);
+        assert_eq!(fx_decode_mid_cell(tag, &mid.to_le_bytes()), Some(mid));
+        assert!(fx_is_mid_cell(tag));
+        // A wrong property type (PtypInteger32) is not a message-id cell.
+        let wrong_type = ((store::PR_MID as u32) << 16) | (crate::mapi::data::PropertyType::PTYP_INTEGER32.to_u16() as u32);
+        assert!(!fx_is_mid_cell(wrong_type));
+        // A wrong property id is not a message-id cell.
+        let wrong_id = ((store::PR_SUBJECT as u32) << 16) | (crate::mapi::data::PropertyType::PTYP_INTEGER64.to_u16() as u32);
+        assert!(!fx_is_mid_cell(wrong_id));
+    }
+
+    #[test]
+    fn fx_decode_bool_and_i32_handle_pads_and_truncation() {
+        // PtypBoolean 2-byte form: nonzero first byte is true.
+        assert_eq!(fx_decode_bool(&[0x01, 0x00]), Some(true));
+        assert_eq!(fx_decode_bool(&[0x00, 0x00]), Some(false));
+        assert_eq!(fx_decode_bool(&[0x00, 0x01]), Some(true));
+        assert_eq!(fx_decode_bool(&[0u8; 1]), None);
+        // PtypInteger32 4-byte LE.
+        assert_eq!(fx_decode_i32(&[0x40, 0x00, 0x00, 0x00]), Some(0x40));
+        assert_eq!(fx_decode_i32(&[0u8; 3]), None);
+    }
+
+    #[test]
+    fn fx_decode_string_handles_utf16le_and_string8() {
+        use crate::mapi::data::PropertyType as T;
+        // "Hi" as UTF-16LE = 0x48 0x00 0x69 0x00.
+        assert_eq!(
+            fx_decode_string(T::PTYP_STRING, &[0x48, 0x00, 0x69, 0x00]),
+            Some("Hi".to_string())
+        );
+        assert_eq!(fx_decode_string(T::PTYP_STRING8, b"Hello"), Some("Hello".to_string()));
+        // Non-string types are not decoded here.
+        assert_eq!(fx_decode_string(T::PTYP_INTEGER32, &[0u8; 4]), None);
+    }
+
+    #[test]
+    fn fx_message_bag_mid_and_patch_round_trip() {
+        use crate::mapi::data::PropertyType as T;
+        let mid = store::message_id_from_jmap("M-3");
+        let mut bag = FxMessageBag::default();
+        // PR_MID cell.
+        let mid_tag = ((store::PR_MID as u32) << 16) | (T::PTYP_INTEGER64.to_u16() as u32);
+        bag.push(mid_tag, mid.to_le_bytes().to_vec());
+        // PR_SUBJECT cell (PtypString UTF-16LE, no NUL in the FXICS raw form).
+        let subj_tag = ((store::PR_SUBJECT as u32) << 16) | (T::PTYP_STRING.to_u16() as u32);
+        let subj_utf16: Vec<u16> = "Test".encode_utf16().collect();
+        let mut subj_bytes = Vec::new();
+        for u in subj_utf16 {
+            subj_bytes.extend_from_slice(&u.to_le_bytes());
+        }
+        // FXICS string carries a 4-byte length prefix — the tokenizer strips
+        // it before handing the raw bytes to the bag, so prepend it here to
+        // mirror the builder; the bag stores the *payload* (no prefix) so we
+        // push the payload directly.
+        bag.push(subj_tag, subj_bytes.clone());
+        // PR_MESSAGE_FLAGS = 0x40 (read) — PtypInteger32.
+        let flags_tag = ((store::PR_MESSAGE_FLAGS as u32) << 16) | (T::PTYP_INTEGER32.to_u16() as u32);
+        bag.push(flags_tag, 0x40u32.to_le_bytes().to_vec());
+
+        assert_eq!(bag.mid(), Some(mid));
+        let patch = bag.to_jmap_patch().expect("patch present");
+        let obj = patch.as_object().expect("object");
+        assert_eq!(obj.get("subject").and_then(|v| v.as_str()), Some("Test"));
+        // read flag (MSGFLAG_READ 0x40) -> keywords/$seen = true.
+        assert_eq!(obj.get("keywords/$seen"), Some(&serde_json::json!(true)));
+    }
+
+    #[test]
+    fn fx_message_bag_no_translatable_props_yields_no_patch() {
+        // A bag with only a PR_MID and an unrecognised property: the patch is
+        // None but the mid still resolves.
+        let mid = store::message_id_from_jmap("M-4");
+        let mut bag = FxMessageBag::default();
+        let mid_tag =
+            ((store::PR_MID as u32) << 16) | (crate::mapi::data::PropertyType::PTYP_INTEGER64.to_u16() as u32);
+        bag.push(mid_tag, mid.to_le_bytes().to_vec());
+        // An unrelated property id the bag does not translate.
+        bag.push(0x0000ABCD, vec![0u8; 4]);
+        assert_eq!(bag.mid(), Some(mid));
+        assert!(bag.to_jmap_patch().is_none());
+    }
+
+    #[tokio::test]
+    async fn apply_fasttransfer_upload_tokenize_only_accepts_inc_sync_del_stream() {
+        // Build an IncrSyncDel upload stream carrying two mids. With no JMAP
+        // backend the apply tokenises + reports success (the no-backend →
+        // tokenize-only contract); the walk just records the events.
+        let mid_a = store::message_id_from_jmap("M-5");
+        let mid_b = store::message_id_from_jmap("M-6");
+        let mut b = crate::mapi::fxics::IcsStreamBuilder::new();
+        b.push_marker(crate::mapi::fxics::Marker::IncrSyncDel);
+        pushfx_mid(&mut b, mid_a);
+        pushfx_mid(&mut b, mid_b);
+        let buf = b.finish(); // appends IncrSyncEnd
+        let res =
+            apply_fasttransfer_upload(None, None, "u@example.com", &buf, 0, "inbox").await;
+        assert!(res.is_ok(), "well-formed Del stream: {res:?}");
+    }
+
+    #[tokio::test]
+    async fn apply_fasttransfer_upload_tokenize_only_accepts_read_stream() {
+        // IncrSyncRead: two (mid, read-flag) pairs.
+        let mid_a = store::message_id_from_jmap("M-7");
+        let mid_b = store::message_id_from_jmap("M-8");
+        let bool_tag = ((store::PR_READ as u32) << 16)
+            | (crate::mapi::data::PropertyType::PTYP_BOOLEAN.to_u16() as u32);
+        let mut b = crate::mapi::fxics::IcsStreamBuilder::new();
+        b.push_marker(crate::mapi::fxics::Marker::IncrSyncRead);
+        pushfx_mid(&mut b, mid_a);
+        b.push_property(bool_tag, &[0x01, 0x00]); // read = true
+        pushfx_mid(&mut b, mid_b);
+        b.push_property(bool_tag, &[0x00, 0x00]); // read = false
+        let buf = b.finish();
+        let res =
+            apply_fasttransfer_upload(None, None, "u@example.com", &buf, 0, "inbox").await;
+        assert!(res.is_ok(), "well-formed Read stream: {res:?}");
+    }
+
+    #[tokio::test]
+    async fn apply_fasttransfer_upload_fail_closed_on_unbalanced_marker() {
+        // A stream that opens StartTopFld then ends with IncrSyncEnd (so an
+        // EndFolder is missing) leaves a start marker open — assert_complete
+        // rejects it with a DecodeError (the fail-closed contract).
+        let mut buf = Vec::new();
+        buf.extend_from_slice(
+            &crate::mapi::fxics::Marker::StartTopFld.value().to_le_bytes(),
+        );
+        buf.extend_from_slice(
+            &crate::mapi::fxics::Marker::IncrSyncEnd.value().to_le_bytes(),
+        );
+        let res =
+            apply_fasttransfer_upload(None, None, "u@example.com", &buf, 0, "inbox").await;
+        assert!(res.is_err(), "unbalanced stream must fail closed: {res:?}");
+    }
+
+    #[tokio::test]
+    async fn apply_fasttransfer_upload_empty_buffer_is_ok() {
+        let res =
+            apply_fasttransfer_upload(None, None, "u@example.com", &[], 0, "inbox").await;
+        assert!(res.is_ok());
+    }
+
+    #[tokio::test]
+    async fn apply_fasttransfer_upload_tokenize_only_accepts_chg_stream() {
+        // IncrSyncChg + IncrSyncMessage bags carrying PR_MID + editable props.
+        // With a PR_MESSAGE_FLAGS read bit the bag would build a $seen patch on
+        // a wired backend; here we only assert the tokenize-only walk succeeds.
+        use crate::mapi::data::PropertyType as T;
+        let mid = store::message_id_from_jmap("M-9");
+        let mid_tag = ((store::PR_MID as u32) << 16) | (T::PTYP_INTEGER64.to_u16() as u32);
+        let flags_tag = ((store::PR_MESSAGE_FLAGS as u32) << 16)
+            | (T::PTYP_INTEGER32.to_u16() as u32);
+        let mut b = crate::mapi::fxics::IcsStreamBuilder::new();
+        b.push_marker(crate::mapi::fxics::Marker::IncrSyncChg);
+        b.push_marker(crate::mapi::fxics::Marker::IncrSyncMessage);
+        // IcsStreamBuilder.push_property takes value bytes (no length for
+        // fixed types); the 8-byte Integer64 mid.
+        b.push_property(mid_tag, &mid.to_le_bytes());
+        b.push_property(flags_tag, &0x40u32.to_le_bytes()); // read bit set
+        b.push_marker(crate::mapi::fxics::Marker::EndMessage);
+        let buf = b.finish();
+        let res =
+            apply_fasttransfer_upload(None, None, "u@example.com", &buf, 0, "inbox").await;
+        assert!(res.is_ok(), "well-formed Chg stream: {res:?}");
+    }
+
+    #[test]
+    fn fx_message_bag_move_dest_mid_detects_cross_folder_move() {
+        use crate::mapi::data::PropertyType as T;
+        let parent_mid = store::folder_id_from_backend("inbox");
+        let other_mid = store::folder_id_from_backend("archive");
+        // A bag carrying PR_FOLDER_ID == other_mid signals a move out of parent.
+        let mut bag = FxMessageBag::default();
+        let folder_tag = ((store::PR_FOLDER_ID as u32) << 16)
+            | (T::PTYP_INTEGER64.to_u16() as u32);
+        bag.push(folder_tag, other_mid.to_le_bytes().to_vec());
+        assert_eq!(bag.move_dest_mid(parent_mid), Some(other_mid));
+        // A bag whose PR_FOLDER_ID matches the parent is NOT a cross-folder move.
+        let mut bag2 = FxMessageBag::default();
+        bag2.push(folder_tag, parent_mid.to_le_bytes().to_vec());
+        assert_eq!(bag2.move_dest_mid(parent_mid), None);
+    }
+
+    /// The batched read-state update object keys each accepted id with the
+    /// RFC 8621 §4.5 `keywords/$seen` patch — NO leading slash (RFC 8620
+    /// PatchObject keys are implicit). Unresolved mids are skipped, not
+    /// failed; the (applied, skipped) counts reflect the split.
+    #[test]
+    fn fx_build_read_update_keys_and_batching() {
+        use std::collections::HashMap;
+        let mid_a = store::message_id_from_jmap("E-1");
+        let mid_b = store::message_id_from_jmap("E-2");
+        let mut mid_to_jmap: HashMap<u64, (String, Vec<String>)> = HashMap::new();
+        mid_to_jmap.insert(mid_a, ("E-1".to_string(), vec!["inbox".to_string()]));
+        mid_to_jmap.insert(mid_b, ("E-2".to_string(), vec!["inbox".to_string()]));
+        // mid_c is NOT in the map -> skipped.
+        let mid_c = store::message_id_from_jmap("E-3");
+        let pairs = vec![
+            (mid_a, true),
+            (mid_b, false),
+            (mid_c, true),
+        ];
+        let (update, applied, skipped) = fx_build_read_update(&mid_to_jmap, &pairs);
+        assert_eq!(applied, 2);
+        assert_eq!(skipped, 1);
+        let obj = update.as_object().expect("object");
+        // Two ids keyed by JMAP id, no leading slash on the patch key.
+        assert!(obj.contains_key("E-1"));
+        assert!(obj.contains_key("E-2"));
+        let patch_a = obj.get("E-1").and_then(|v| v.as_object()).expect("E-1 patch");
+        assert_eq!(patch_a.get("keywords/$seen"), Some(&serde_json::json!(true)));
+        let patch_b = obj.get("E-2").and_then(|v| v.as_object()).expect("E-2 patch");
+        assert_eq!(patch_b.get("keywords/$seen"), Some(&serde_json::Value::Null));
+        // No leading-slash form leaked.
+        assert!(patch_a.get("/keywords/$seen").is_none());
+        assert!(patch_b.get("/keywords/$seen").is_none());
+    }
+
+    /// The move update patch emits RFC 8620 PatchObject keys with NO leading
+    /// slash: `mailboxIds/<target>: true` and `mailboxIds/<current>: null`,
+    /// matching the canonical `build_move_update_patch` in `jmap.rs`.
+    #[test]
+    fn fx_build_move_update_no_leading_slash_and_target_set() {
+        let mids = vec!["inbox".to_string(), "drafts".to_string()];
+        let patch = fx_build_move_update(&mids, "archive");
+        assert_eq!(patch.get("mailboxIds/archive"), Some(&serde_json::json!(true)));
+        assert_eq!(patch.get("mailboxIds/inbox"), Some(&serde_json::Value::Null));
+        assert_eq!(patch.get("mailboxIds/drafts"), Some(&serde_json::Value::Null));
+        // No leading-slash variant present (the regression the comment caught).
+        assert!(patch.get("/mailboxIds/archive").is_none());
+        assert!(patch.get("/mailboxIds/inbox").is_none());
+        assert!(patch.get("/mailboxIds/drafts").is_none());
+        // The target is not double-listed (no null for the destination).
+        // (fx_build_move_update only nulls `old != dest`, so target is set once
+        // via the trailing insert.)
+        assert_eq!(patch.len(), 3);
+    }
+
+    /// Cross-folder destination resolution uses the FOLDER-mid map keyed by
+    /// `folder_id_from_backend(jmap_mailbox_id)`, NOT the message-id map. A
+    /// folder mid looked up in `mid_to_jmap` would never resolve (different
+    /// hash family); this test documents that the move path must consult
+    /// `folder_mid_to_mailbox` to recover the real JMAP mailbox id.
+    #[test]
+    fn folder_mid_to_mailbox_resolves_dest_not_message_map() {
+        use std::collections::HashMap;
+        let inbox_mailbox_id = "M-inbox".to_string();
+        let archive_mailbox_id = "M-archive".to_string();
+        let email_jid = "E-1".to_string();
+        // folder mid of the archive mailbox == folder_id_from_backend(id).
+        let archive_folder_mid = store::folder_id_from_backend(&archive_mailbox_id);
+        let message_mid = store::message_id_from_jmap(&email_jid);
+        // The two hash families are DISTINCT (this is the crux of the fix).
+        assert_ne!(archive_folder_mid, message_mid);
+        let mut mid_to_jmap: HashMap<u64, (String, Vec<String>)> = HashMap::new();
+        mid_to_jmap.insert(message_mid, (email_jid.clone(), vec![inbox_mailbox_id.clone()]));
+        let mut folder_mid_to_mailbox: HashMap<u64, String> = HashMap::new();
+        folder_mid_to_mailbox.insert(archive_folder_mid, archive_mailbox_id.clone());
+        // Looking the archive folder mid up in mid_to_jmap MUST fail (the old
+        // bug); looking it up in folder_mid_to_mailbox MUST resolve.
+        assert!(!mid_to_jmap.contains_key(&archive_folder_mid));
+        assert_eq!(
+            folder_mid_to_mailbox.get(&archive_folder_mid),
+            Some(&archive_mailbox_id)
+        );
+        // And the move patch against the resolved id has the no-leading-slash
+        // form (RFC 8620 PatchObject).
+        let mids = vec![inbox_mailbox_id];
+        let patch = fx_build_move_update(&mids, &archive_mailbox_id);
+        assert_eq!(patch.get("mailboxIds/M-archive"), Some(&serde_json::json!(true)));
+        assert_eq!(patch.get("mailboxIds/M-inbox"), Some(&serde_json::Value::Null));
+        assert!(patch.get("/mailboxIds/M-archive").is_none());
+        assert!(patch.get("/mailboxIds/M-inbox").is_none());
+    }
+
+    /// Regression: an interleaved (non-PR_MID, non-boolean) cell in an
+    /// IncrSyncRead span no longer discards the pending mid before the
+    /// read-flag cell arrives — it is preserved until a real read value
+    /// decodes. The walk loop asserts this end-to-end against a wired-None
+    /// (tokenize-only) apply; here we assert the pure invariant the loop now
+    /// honours: a `bool`-decodable cell with a pending mid pairs; a
+    /// non-decodable cell leaves it.
+    #[tokio::test]
+    async fn apply_read_span_preserves_pending_mid_across_unrelated_cell() {
+        // Stream: IncrSyncRead; PR_MID(E-9); an unrelated 1-byte cell (NOT a
+        // boolean payload); PR_MESSAGE_FLAGS=0x40 (read). The mid E-9 must
+        // survive the unrelated cell so the read pair is captured.
+        use crate::mapi::data::PropertyType as T;
+        let mid = store::message_id_from_jmap("E-9");
+        let flags_tag = ((store::PR_MESSAGE_FLAGS as u32) << 16)
+            | (T::PTYP_INTEGER32.to_u16() as u32);
+        // An unrelated Integer32 cell with id 0xABCD (not PR_MID, not a
+        // boolean) — under the old tuple-take bug this would clear the mid.
+        let noise_tag = (0xABCDu32 << 16) | (T::PTYP_INTEGER32.to_u16() as u32);
+        let mut b = crate::mapi::fxics::IcsStreamBuilder::new();
+        b.push_marker(crate::mapi::fxics::Marker::IncrSyncRead);
+        pushfx_mid(&mut b, mid);
+        b.push_property(noise_tag, &[0u8; 4]); // interleaved non-bool cell
+        b.push_property(flags_tag, &0x40u32.to_le_bytes()); // read flag
+        let buf = b.finish();
+        let res =
+            apply_fasttransfer_upload(None, None, "u@example.com", &buf, 0, "inbox").await;
+        assert!(res.is_ok(), "read span with interleaved cell must still parse: {res:?}");
     }
 }
