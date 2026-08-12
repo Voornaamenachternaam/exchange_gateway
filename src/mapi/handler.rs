@@ -5204,9 +5204,7 @@ async fn apply_fasttransfer_upload(
     };
     let wired = jc.is_some() && password.is_some() && !account_id.is_empty();
     if !wired && !buffer.is_empty() {
-        tracing::debug!(
-            "fasttransfer upload tokenize-only (no JMAP backend / creds / account id)"
-        );
+        tracing::debug!("fasttransfer upload tokenize-only (no JMAP backend / creds / account id)");
     }
 
     // ── Build the MAPI-mid -> JMAP-id reverse map ONCE for the parent folder.
@@ -5244,8 +5242,7 @@ async fn apply_fasttransfer_upload(
             if let Some(id) = mbx.id.as_deref()
                 && !id.is_empty()
             {
-                folder_mid_to_mailbox
-                    .insert(store::folder_id_from_backend(id), id.to_string());
+                folder_mid_to_mailbox.insert(store::folder_id_from_backend(id), id.to_string());
             }
         }
     }
@@ -5465,10 +5462,7 @@ impl FxMessageBag {
             match property_id {
                 store::PR_SUBJECT => {
                     if let Some(s) = fx_decode_string(property_type, bytes) {
-                        patch.insert(
-                            "subject".to_string(),
-                            serde_json::Value::String(s),
-                        );
+                        patch.insert("subject".to_string(), serde_json::Value::String(s));
                     }
                 }
                 store::PR_MESSAGE_FLAGS => {
@@ -5636,11 +5630,13 @@ fn fx_build_move_update(
     // Keys carry NO leading slash — RFC 8620 PatchObject keys are implicit.
     for old in current_mids {
         if old != dest_mailbox_id {
-            patch
-                .insert(format!("mailboxIds/{old}"), serde_json::Value::Null);
+            patch.insert(format!("mailboxIds/{old}"), serde_json::Value::Null);
         }
     }
-    patch.insert(format!("mailboxIds/{dest_mailbox_id}"), serde_json::json!(true));
+    patch.insert(
+        format!("mailboxIds/{dest_mailbox_id}"),
+        serde_json::json!(true),
+    );
     patch
 }
 
@@ -5834,7 +5830,8 @@ async fn flush_span(
                     // `mailboxIds/<id>`, NOT `/mailboxIds/<id>` (every other
                     // mailboxIds patch site in the repo uses this form).
                     let mids_patch = fx_build_move_update(&current_mids, &dest_mailbox_id);
-                    let keyed = serde_json::json!({ jid.clone(): serde_json::Value::Object(mids_patch) });
+                    let keyed =
+                        serde_json::json!({ jid.clone(): serde_json::Value::Object(mids_patch) });
                     match jc
                         .update_email_checked(ctx.account_id, &keyed, ctx.username, pw)
                         .await
@@ -5893,8 +5890,7 @@ fn fx_decode_mid_cell(tag: u32, bytes: &[u8]) -> Option<u64> {
 fn fx_is_mid_cell(tag: u32) -> bool {
     let property_type = crate::mapi::data::PropertyType::from_u16((tag & 0xFFFF) as u16);
     let property_id = ((tag >> 16) & 0xFFFF) as u16;
-    property_id == store::PR_MID
-        && property_type == crate::mapi::data::PropertyType::PTYP_INTEGER64
+    property_id == store::PR_MID && property_type == crate::mapi::data::PropertyType::PTYP_INTEGER64
 }
 
 /// Decode a raw 8-byte LE Integer64 payload (the FXICS `propValue` raw form
@@ -5923,7 +5919,10 @@ fn fx_decode_bool(bytes: &[u8]) -> Option<bool> {
 /// a `String`. The FXICS `propValue` raw form for strings is the raw UTF-16LE
 /// / codepage byte payload (NO NUL terminator and NO inner count, per the
 /// Tokenizer's `read_property_payload`).
-fn fx_decode_string(property_type: crate::mapi::data::PropertyType, bytes: &[u8]) -> Option<String> {
+fn fx_decode_string(
+    property_type: crate::mapi::data::PropertyType,
+    bytes: &[u8],
+) -> Option<String> {
     use crate::mapi::data::PropertyType as T;
     match property_type {
         T::PTYP_STRING => {
@@ -8135,7 +8134,8 @@ mod tests {
     /// Build an FXICS message-id cell (PR_MID = 0x6748, PtypInteger64 = 0x0014)
     /// for the IcsStreamBuilder: the 4-byte tag LE then the 8-byte LE value.
     fn pushfx_mid(b: &mut crate::mapi::fxics::IcsStreamBuilder, mid: u64) {
-        let tag = ((store::PR_MID as u32) << 16) | (crate::mapi::data::PropertyType::PTYP_INTEGER64.to_u16() as u32);
+        let tag = ((store::PR_MID as u32) << 16)
+            | (crate::mapi::data::PropertyType::PTYP_INTEGER64.to_u16() as u32);
         b.push_property(tag, &mid.to_le_bytes());
     }
 
@@ -8151,14 +8151,17 @@ mod tests {
     #[test]
     fn fx_decode_mid_cell_requires_pr_mid_integer64_tag() {
         let mid = store::message_id_from_jmap("M-2");
-        let tag = ((store::PR_MID as u32) << 16) | (crate::mapi::data::PropertyType::PTYP_INTEGER64.to_u16() as u32);
+        let tag = ((store::PR_MID as u32) << 16)
+            | (crate::mapi::data::PropertyType::PTYP_INTEGER64.to_u16() as u32);
         assert_eq!(fx_decode_mid_cell(tag, &mid.to_le_bytes()), Some(mid));
         assert!(fx_is_mid_cell(tag));
         // A wrong property type (PtypInteger32) is not a message-id cell.
-        let wrong_type = ((store::PR_MID as u32) << 16) | (crate::mapi::data::PropertyType::PTYP_INTEGER32.to_u16() as u32);
+        let wrong_type = ((store::PR_MID as u32) << 16)
+            | (crate::mapi::data::PropertyType::PTYP_INTEGER32.to_u16() as u32);
         assert!(!fx_is_mid_cell(wrong_type));
         // A wrong property id is not a message-id cell.
-        let wrong_id = ((store::PR_SUBJECT as u32) << 16) | (crate::mapi::data::PropertyType::PTYP_INTEGER64.to_u16() as u32);
+        let wrong_id = ((store::PR_SUBJECT as u32) << 16)
+            | (crate::mapi::data::PropertyType::PTYP_INTEGER64.to_u16() as u32);
         assert!(!fx_is_mid_cell(wrong_id));
     }
 
@@ -8182,7 +8185,10 @@ mod tests {
             fx_decode_string(T::PTYP_STRING, &[0x48, 0x00, 0x69, 0x00]),
             Some("Hi".to_string())
         );
-        assert_eq!(fx_decode_string(T::PTYP_STRING8, b"Hello"), Some("Hello".to_string()));
+        assert_eq!(
+            fx_decode_string(T::PTYP_STRING8, b"Hello"),
+            Some("Hello".to_string())
+        );
         // Non-string types are not decoded here.
         assert_eq!(fx_decode_string(T::PTYP_INTEGER32, &[0u8; 4]), None);
     }
@@ -8208,7 +8214,8 @@ mod tests {
         // push the payload directly.
         bag.push(subj_tag, subj_bytes.clone());
         // PR_MESSAGE_FLAGS = 0x40 (read) — PtypInteger32.
-        let flags_tag = ((store::PR_MESSAGE_FLAGS as u32) << 16) | (T::PTYP_INTEGER32.to_u16() as u32);
+        let flags_tag =
+            ((store::PR_MESSAGE_FLAGS as u32) << 16) | (T::PTYP_INTEGER32.to_u16() as u32);
         bag.push(flags_tag, 0x40u32.to_le_bytes().to_vec());
 
         assert_eq!(bag.mid(), Some(mid));
@@ -8225,8 +8232,8 @@ mod tests {
         // None but the mid still resolves.
         let mid = store::message_id_from_jmap("M-4");
         let mut bag = FxMessageBag::default();
-        let mid_tag =
-            ((store::PR_MID as u32) << 16) | (crate::mapi::data::PropertyType::PTYP_INTEGER64.to_u16() as u32);
+        let mid_tag = ((store::PR_MID as u32) << 16)
+            | (crate::mapi::data::PropertyType::PTYP_INTEGER64.to_u16() as u32);
         bag.push(mid_tag, mid.to_le_bytes().to_vec());
         // An unrelated property id the bag does not translate.
         bag.push(0x0000ABCD, vec![0u8; 4]);
@@ -8246,8 +8253,7 @@ mod tests {
         pushfx_mid(&mut b, mid_a);
         pushfx_mid(&mut b, mid_b);
         let buf = b.finish(); // appends IncrSyncEnd
-        let res =
-            apply_fasttransfer_upload(None, None, "u@example.com", &buf, 0, "inbox").await;
+        let res = apply_fasttransfer_upload(None, None, "u@example.com", &buf, 0, "inbox").await;
         assert!(res.is_ok(), "well-formed Del stream: {res:?}");
     }
 
@@ -8265,8 +8271,7 @@ mod tests {
         pushfx_mid(&mut b, mid_b);
         b.push_property(bool_tag, &[0x00, 0x00]); // read = false
         let buf = b.finish();
-        let res =
-            apply_fasttransfer_upload(None, None, "u@example.com", &buf, 0, "inbox").await;
+        let res = apply_fasttransfer_upload(None, None, "u@example.com", &buf, 0, "inbox").await;
         assert!(res.is_ok(), "well-formed Read stream: {res:?}");
     }
 
@@ -8277,20 +8282,22 @@ mod tests {
         // rejects it with a DecodeError (the fail-closed contract).
         let mut buf = Vec::new();
         buf.extend_from_slice(
-            &crate::mapi::fxics::Marker::StartTopFld.value().to_le_bytes(),
+            &crate::mapi::fxics::Marker::StartTopFld
+                .value()
+                .to_le_bytes(),
         );
         buf.extend_from_slice(
-            &crate::mapi::fxics::Marker::IncrSyncEnd.value().to_le_bytes(),
+            &crate::mapi::fxics::Marker::IncrSyncEnd
+                .value()
+                .to_le_bytes(),
         );
-        let res =
-            apply_fasttransfer_upload(None, None, "u@example.com", &buf, 0, "inbox").await;
+        let res = apply_fasttransfer_upload(None, None, "u@example.com", &buf, 0, "inbox").await;
         assert!(res.is_err(), "unbalanced stream must fail closed: {res:?}");
     }
 
     #[tokio::test]
     async fn apply_fasttransfer_upload_empty_buffer_is_ok() {
-        let res =
-            apply_fasttransfer_upload(None, None, "u@example.com", &[], 0, "inbox").await;
+        let res = apply_fasttransfer_upload(None, None, "u@example.com", &[], 0, "inbox").await;
         assert!(res.is_ok());
     }
 
@@ -8302,8 +8309,8 @@ mod tests {
         use crate::mapi::data::PropertyType as T;
         let mid = store::message_id_from_jmap("M-9");
         let mid_tag = ((store::PR_MID as u32) << 16) | (T::PTYP_INTEGER64.to_u16() as u32);
-        let flags_tag = ((store::PR_MESSAGE_FLAGS as u32) << 16)
-            | (T::PTYP_INTEGER32.to_u16() as u32);
+        let flags_tag =
+            ((store::PR_MESSAGE_FLAGS as u32) << 16) | (T::PTYP_INTEGER32.to_u16() as u32);
         let mut b = crate::mapi::fxics::IcsStreamBuilder::new();
         b.push_marker(crate::mapi::fxics::Marker::IncrSyncChg);
         b.push_marker(crate::mapi::fxics::Marker::IncrSyncMessage);
@@ -8313,8 +8320,7 @@ mod tests {
         b.push_property(flags_tag, &0x40u32.to_le_bytes()); // read bit set
         b.push_marker(crate::mapi::fxics::Marker::EndMessage);
         let buf = b.finish();
-        let res =
-            apply_fasttransfer_upload(None, None, "u@example.com", &buf, 0, "inbox").await;
+        let res = apply_fasttransfer_upload(None, None, "u@example.com", &buf, 0, "inbox").await;
         assert!(res.is_ok(), "well-formed Chg stream: {res:?}");
     }
 
@@ -8325,8 +8331,7 @@ mod tests {
         let other_mid = store::folder_id_from_backend("archive");
         // A bag carrying PR_FOLDER_ID == other_mid signals a move out of parent.
         let mut bag = FxMessageBag::default();
-        let folder_tag = ((store::PR_FOLDER_ID as u32) << 16)
-            | (T::PTYP_INTEGER64.to_u16() as u32);
+        let folder_tag = ((store::PR_FOLDER_ID as u32) << 16) | (T::PTYP_INTEGER64.to_u16() as u32);
         bag.push(folder_tag, other_mid.to_le_bytes().to_vec());
         assert_eq!(bag.move_dest_mid(parent_mid), Some(other_mid));
         // A bag whose PR_FOLDER_ID matches the parent is NOT a cross-folder move.
@@ -8349,11 +8354,7 @@ mod tests {
         mid_to_jmap.insert(mid_b, ("E-2".to_string(), vec!["inbox".to_string()]));
         // mid_c is NOT in the map -> skipped.
         let mid_c = store::message_id_from_jmap("E-3");
-        let pairs = vec![
-            (mid_a, true),
-            (mid_b, false),
-            (mid_c, true),
-        ];
+        let pairs = vec![(mid_a, true), (mid_b, false), (mid_c, true)];
         let (update, applied, skipped) = fx_build_read_update(&mid_to_jmap, &pairs);
         assert_eq!(applied, 2);
         assert_eq!(skipped, 1);
@@ -8361,10 +8362,22 @@ mod tests {
         // Two ids keyed by JMAP id, no leading slash on the patch key.
         assert!(obj.contains_key("E-1"));
         assert!(obj.contains_key("E-2"));
-        let patch_a = obj.get("E-1").and_then(|v| v.as_object()).expect("E-1 patch");
-        assert_eq!(patch_a.get("keywords/$seen"), Some(&serde_json::json!(true)));
-        let patch_b = obj.get("E-2").and_then(|v| v.as_object()).expect("E-2 patch");
-        assert_eq!(patch_b.get("keywords/$seen"), Some(&serde_json::Value::Null));
+        let patch_a = obj
+            .get("E-1")
+            .and_then(|v| v.as_object())
+            .expect("E-1 patch");
+        assert_eq!(
+            patch_a.get("keywords/$seen"),
+            Some(&serde_json::json!(true))
+        );
+        let patch_b = obj
+            .get("E-2")
+            .and_then(|v| v.as_object())
+            .expect("E-2 patch");
+        assert_eq!(
+            patch_b.get("keywords/$seen"),
+            Some(&serde_json::Value::Null)
+        );
         // No leading-slash form leaked.
         assert!(patch_a.get("/keywords/$seen").is_none());
         assert!(patch_b.get("/keywords/$seen").is_none());
@@ -8377,9 +8390,18 @@ mod tests {
     fn fx_build_move_update_no_leading_slash_and_target_set() {
         let mids = vec!["inbox".to_string(), "drafts".to_string()];
         let patch = fx_build_move_update(&mids, "archive");
-        assert_eq!(patch.get("mailboxIds/archive"), Some(&serde_json::json!(true)));
-        assert_eq!(patch.get("mailboxIds/inbox"), Some(&serde_json::Value::Null));
-        assert_eq!(patch.get("mailboxIds/drafts"), Some(&serde_json::Value::Null));
+        assert_eq!(
+            patch.get("mailboxIds/archive"),
+            Some(&serde_json::json!(true))
+        );
+        assert_eq!(
+            patch.get("mailboxIds/inbox"),
+            Some(&serde_json::Value::Null)
+        );
+        assert_eq!(
+            patch.get("mailboxIds/drafts"),
+            Some(&serde_json::Value::Null)
+        );
         // No leading-slash variant present (the regression the comment caught).
         assert!(patch.get("/mailboxIds/archive").is_none());
         assert!(patch.get("/mailboxIds/inbox").is_none());
@@ -8407,7 +8429,10 @@ mod tests {
         // The two hash families are DISTINCT (this is the crux of the fix).
         assert_ne!(archive_folder_mid, message_mid);
         let mut mid_to_jmap: HashMap<u64, (String, Vec<String>)> = HashMap::new();
-        mid_to_jmap.insert(message_mid, (email_jid.clone(), vec![inbox_mailbox_id.clone()]));
+        mid_to_jmap.insert(
+            message_mid,
+            (email_jid.clone(), vec![inbox_mailbox_id.clone()]),
+        );
         let mut folder_mid_to_mailbox: HashMap<u64, String> = HashMap::new();
         folder_mid_to_mailbox.insert(archive_folder_mid, archive_mailbox_id.clone());
         // Looking the archive folder mid up in mid_to_jmap MUST fail (the old
@@ -8421,8 +8446,14 @@ mod tests {
         // form (RFC 8620 PatchObject).
         let mids = vec![inbox_mailbox_id];
         let patch = fx_build_move_update(&mids, &archive_mailbox_id);
-        assert_eq!(patch.get("mailboxIds/M-archive"), Some(&serde_json::json!(true)));
-        assert_eq!(patch.get("mailboxIds/M-inbox"), Some(&serde_json::Value::Null));
+        assert_eq!(
+            patch.get("mailboxIds/M-archive"),
+            Some(&serde_json::json!(true))
+        );
+        assert_eq!(
+            patch.get("mailboxIds/M-inbox"),
+            Some(&serde_json::Value::Null)
+        );
         assert!(patch.get("/mailboxIds/M-archive").is_none());
         assert!(patch.get("/mailboxIds/M-inbox").is_none());
     }
@@ -8441,8 +8472,8 @@ mod tests {
         // survive the unrelated cell so the read pair is captured.
         use crate::mapi::data::PropertyType as T;
         let mid = store::message_id_from_jmap("E-9");
-        let flags_tag = ((store::PR_MESSAGE_FLAGS as u32) << 16)
-            | (T::PTYP_INTEGER32.to_u16() as u32);
+        let flags_tag =
+            ((store::PR_MESSAGE_FLAGS as u32) << 16) | (T::PTYP_INTEGER32.to_u16() as u32);
         // An unrelated Integer32 cell with id 0xABCD (not PR_MID, not a
         // boolean) — under the old tuple-take bug this would clear the mid.
         let noise_tag = (0xABCDu32 << 16) | (T::PTYP_INTEGER32.to_u16() as u32);
@@ -8452,8 +8483,10 @@ mod tests {
         b.push_property(noise_tag, &[0u8; 4]); // interleaved non-bool cell
         b.push_property(flags_tag, &0x40u32.to_le_bytes()); // read flag
         let buf = b.finish();
-        let res =
-            apply_fasttransfer_upload(None, None, "u@example.com", &buf, 0, "inbox").await;
-        assert!(res.is_ok(), "read span with interleaved cell must still parse: {res:?}");
+        let res = apply_fasttransfer_upload(None, None, "u@example.com", &buf, 0, "inbox").await;
+        assert!(
+            res.is_ok(),
+            "read span with interleaved cell must still parse: {res:?}"
+        );
     }
 }

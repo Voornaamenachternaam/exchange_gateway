@@ -2428,12 +2428,10 @@ mod scheduling_tests {
         // 09:00 EST = 14:00 UTC on 2025-03-02 (Sunday), well before the
         // March 9 spring-forward. UNTIL is a month later (April 6, after the
         // transition) so the series spans the crossover.
-        let start = chrono::Utc
-            .from_utc_datetime(&chrono::NaiveDateTime::parse_from_str(
-                "2025-03-02T14:00:00",
-                "%Y-%m-%dT%H:%M:%S",
-            )
-            .unwrap());
+        let start = chrono::Utc.from_utc_datetime(
+            &chrono::NaiveDateTime::parse_from_str("2025-03-02T14:00:00", "%Y-%m-%dT%H:%M:%S")
+                .unwrap(),
+        );
         let item = CalendarItem {
             uid: "dst-crossover-001".to_string(),
             subject: "Weekly Standup".to_string(),
@@ -2476,7 +2474,10 @@ mod scheduling_tests {
         //    the same UTC start instant + preserved RRULE + canonical TZID.
         let parsed = parse_ics_event(&ics).expect("round-trip parse");
         assert_eq!(parsed.uid, "dst-crossover-001");
-        assert_eq!(parsed.start, start, "UTC start instant drifted across round-trip");
+        assert_eq!(
+            parsed.start, start,
+            "UTC start instant drifted across round-trip"
+        );
         assert_eq!(parsed.end, start + Duration::hours(1));
         assert_eq!(parsed.timezone.as_deref(), Some("America/New_York"));
         assert_eq!(
@@ -2484,7 +2485,9 @@ mod scheduling_tests {
             Some("FREQ=WEEKLY;UNTIL=20250406T150000Z")
         );
         assert!(
-            parsed.timezone_blob.is_some_and(|b| b.contains("VTIMEZONE")),
+            parsed
+                .timezone_blob
+                .is_some_and(|b| b.contains("VTIMEZONE")),
             "parser did not capture the round-tripped VTIMEZONE block"
         );
     }
@@ -2572,7 +2575,10 @@ mod scheduling_tests {
             ics.contains("BEGIN:VTIMEZONE"),
             "synthesised VTIMEZONE missing for malformed blob:\n{ics}"
         );
-        assert!(ics.contains("TZID:America/New_York"), "canonical TZID missing:\n{ics}");
+        assert!(
+            ics.contains("TZID:America/New_York"),
+            "canonical TZID missing:\n{ics}"
+        );
         // ...and the master DTSTART must carry the matching TZID (never an orphan
         // — the VTIMEZONE was synthesised).
         assert!(
