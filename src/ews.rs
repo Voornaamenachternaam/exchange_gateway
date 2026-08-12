@@ -1134,7 +1134,10 @@ fn render_ews_calendar_item_xml_with_shape(
         // corrupt the EWS envelope if emitted as element text; emit the same
         // Windows id (in its attribute) so it agrees with the standalone
         // <t:StartTimeZone> above.
-        xml.push_str(&format!("<t:MeetingTimeZone TimeZoneName=\"{}\"/>", win_esc));
+        xml.push_str(&format!(
+            "<t:MeetingTimeZone TimeZoneName=\"{}\"/>",
+            win_esc
+        ));
     }
     if let Some(v) = &item.online_meeting_conf_link {
         xml.push_str(&format!(

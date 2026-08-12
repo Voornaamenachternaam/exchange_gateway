@@ -294,11 +294,14 @@ fn scan_full_year(tz: Tz, year: i32, standard: i32, dst: i32) -> ([u8; 16], [u8;
     while let Some(ndt) = date.and_hms_opt(12, 0, 0) {
         let off = local_offset_minutes(tz, ndt);
         if let (Some(prev), Some(cur)) = (prev_offset, off) {
-            if prev == standard && cur == dst && dst_rule == NO_DST
+            if prev == standard
+                && cur == dst
+                && dst_rule == NO_DST
                 && let Some(rule) = encode_boundary(tz, date, date.month(), year, standard, dst)
             {
                 dst_rule = rule;
-            } else if prev == dst && cur == standard
+            } else if prev == dst
+                && cur == standard
                 && let Some(rule) = encode_boundary(tz, date, date.month(), year, dst, standard)
             {
                 // Keep the LAST dst->standard boundary of the year so the rule
@@ -353,8 +356,8 @@ fn windows_timezone_name_for_iana(iana: &str, tz: Tz) -> Option<String> {
         return Some(w.name().to_string());
     }
     let sample_offset = |candidate: Tz, m: u32| -> Option<i32> {
-        let ndt = chrono::NaiveDate::from_ymd_opt(2025, m, 15)
-            .and_then(|d| d.and_hms_opt(12, 0, 0))?;
+        let ndt =
+            chrono::NaiveDate::from_ymd_opt(2025, m, 15).and_then(|d| d.and_hms_opt(12, 0, 0))?;
         let dt = tz.from_local_datetime(&ndt).earliest()?;
         let cd = candidate.from_local_datetime(&ndt).earliest()?;
         // Equal iff both resolve and share the local-minus-UTC for this instant.
@@ -363,7 +366,9 @@ fn windows_timezone_name_for_iana(iana: &str, tz: Tz) -> Option<String> {
     let samples = [1u32, 4, 7, 10];
     for variant in WindowsTimezone::iter() {
         if let Ok(candidate) = variant.tzdb_id().parse::<Tz>()
-            && samples.iter().all(|&m| sample_offset(candidate, m) == Some(1))
+            && samples
+                .iter()
+                .all(|&m| sample_offset(candidate, m) == Some(1))
         {
             return Some(variant.name().to_string());
         }
@@ -458,20 +463,14 @@ pub fn render_vtimezone_block(iana: &str) -> Option<String> {
         out.push_str("BEGIN:DAYLIGHT\r\n");
         out.push_str(&format!("TZOFFSETFROM:{std_off}\r\n"));
         out.push_str(&format!("TZOFFSETTO:{dst_str}\r\n"));
-        out.push_str(&format!(
-            "DTSTART:{}\r\n",
-            vtimezone_dtstart(zt.dst_rule)
-        ));
+        out.push_str(&format!("DTSTART:{}\r\n", vtimezone_dtstart(zt.dst_rule)));
         out.push_str(&vtimezone_rrule(zt.dst_rule));
         out.push_str("END:DAYLIGHT\r\n");
 
         out.push_str("BEGIN:STANDARD\r\n");
         out.push_str(&format!("TZOFFSETFROM:{dst_str}\r\n"));
         out.push_str(&format!("TZOFFSETTO:{std_off}\r\n"));
-        out.push_str(&format!(
-            "DTSTART:{}\r\n",
-            vtimezone_dtstart(zt.std_rule)
-        ));
+        out.push_str(&format!("DTSTART:{}\r\n", vtimezone_dtstart(zt.std_rule)));
         out.push_str(&vtimezone_rrule(zt.std_rule));
         out.push_str("END:STANDARD\r\n");
     } else {
@@ -558,9 +557,8 @@ fn vtimezone_dtstart(rule: [u8; 16]) -> String {
 }
 
 fn match_rule_weekday_of_month(year: i32, month: u32, day_of_week: u16, week: u16) -> u32 {
-    let first = chrono::NaiveDate::from_ymd_opt(year, month, 1).unwrap_or_else(|| {
-        chrono::NaiveDate::from_ymd_opt(year, month.clamp(1, 12), 28).unwrap()
-    });
+    let first = chrono::NaiveDate::from_ymd_opt(year, month, 1)
+        .unwrap_or_else(|| chrono::NaiveDate::from_ymd_opt(year, month.clamp(1, 12), 28).unwrap());
     let first_wd = first.weekday().num_days_from_sunday() as u16;
     let target = day_of_week % 7;
     let mut offset = (target + 7 - first_wd) % 7;
@@ -642,7 +640,10 @@ fn compute_iana_to_windows_params(iana: &str) -> Option<TzParams> {
     let bias = -zt.standard_offset;
     let std_date = zt.std_rule;
     let dst_date = zt.dst_rule;
-    let dst_bias = zt.dst_offset.map(|d| -(d - zt.standard_offset)).unwrap_or(0);
+    let dst_bias = zt
+        .dst_offset
+        .map(|d| -(d - zt.standard_offset))
+        .unwrap_or(0);
 
     let dst_name = if zt.dst_offset.is_some() {
         win_name.replace("Standard", "Daylight")
@@ -802,8 +803,7 @@ mod tests {
         // The synthesised base64 EAS Timezone blob must decode back to a bias
         // the EAS->IANA path accepts (i.e. the blob is structurally valid and
         // carries the correct bias for the zone).
-        let blob = iana_to_eas_timezone_blob("America/New_York")
-            .expect("blob for Eastern");
+        let blob = iana_to_eas_timezone_blob("America/New_York").expect("blob for Eastern");
         let bytes = BASE64.decode(blob.trim()).unwrap();
         assert_eq!(bytes.len(), TZ_BLOB_LEN);
         let bias = i32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
@@ -826,7 +826,10 @@ mod tests {
         assert_eq!(dst.0, 10, "Sydney DST begins in October");
         assert_eq!(dst.3, 2, "Sydney DST begins at 02:00 (AEST gap start)");
         assert_eq!(std.0, 4, "Sydney standard resumes in April");
-        assert_eq!(std.3, 3, "Sydney standard resumes at 03:00 (AEDT fold boundary)");
+        assert_eq!(
+            std.3, 3,
+            "Sydney standard resumes at 03:00 (AEDT fold boundary)"
+        );
         assert_ne!(dst_date, NO_DST);
         assert_ne!(std_date, NO_DST);
     }
@@ -848,6 +851,9 @@ mod tests {
         assert_eq!(dst.3, 1, "London DST begins at 01:00 (GMT gap start)");
         assert_eq!(std.0, 10, "London standard resumes in October");
         assert_eq!(std.2, 5, "last Sunday of October");
-        assert_eq!(std.3, 2, "London standard resumes at 02:00 (BST fold boundary)");
+        assert_eq!(
+            std.3, 2,
+            "London standard resumes at 02:00 (BST fold boundary)"
+        );
     }
 }

@@ -1814,9 +1814,7 @@ mod tests {
             uid: "eas-tz-001".to_string(),
             subject: "Eastern Meeting".to_string(),
             // 09:00 EST = 14:00 UTC on 2025-03-02 (before DST).
-            start: chrono::Utc
-                .with_ymd_and_hms(2025, 3, 2, 14, 0, 0)
-                .unwrap(),
+            start: chrono::Utc.with_ymd_and_hms(2025, 3, 2, 14, 0, 0).unwrap(),
             end: chrono::Utc.with_ymd_and_hms(2025, 3, 2, 15, 0, 0).unwrap(),
             all_day: false,
             dtstamp: Some(chrono::Utc.with_ymd_and_hms(2025, 3, 2, 14, 0, 0).unwrap()),
