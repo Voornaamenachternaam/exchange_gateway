@@ -1853,8 +1853,8 @@ async fn execute_one_rop(
             // persisted via JMAP Email/set bodyValues before the message is
             // considered saved. If no dirty body stream, body_bytes will be
             // None and the downstream create-email path proceeds without a body
-            # patch (the client may have supplied body in the UI or via other
-            # means).
+            //  patch (the client may have supplied body in the UI or via other
+            //  means).
             let body_bytes = sessions
                 .with_session_mut(session_id, |s| {
                     s.handles.values().find_map(|h| {
@@ -1885,9 +1885,9 @@ async fn execute_one_rop(
             let saved_mid: u64;
             if let Some(bytes) = &body_bytes {
                 // We have a dirty body stream — persist the bytes via JMAP Blob/upload,
-                # then include the blobId in the Email/set create call so the bytes
-                # are not dropped. This replaces the previous approach of embedding
-                # body text directly, which could lose formatting or truncate.
+                //  then include the blobId in the Email/set create call so the bytes
+                //  are not dropped. This replaces the previous approach of embedding
+                //  body text directly, which could lose formatting or truncate.
                 let body_value = String::from_utf8_lossy(bytes).to_string();
                 let blob_id = match jc.upload_blob(&account_id, bytes.as_slice(), Some("message-body"), username, pw).await {
                     Ok(id) => id,
@@ -1950,7 +1950,7 @@ async fn execute_one_rop(
                 }
             } else {
                 // No dirty body stream — proceed with a plain draft create,
-                # as the body will be handled by the client UI or other path.
+                //  as the body will be handled by the client UI or other path.
                 match (jmap, password, is_new) {
                 (Some(jc), Some(pw), true) => {
                     let account_id = jc
@@ -2469,9 +2469,9 @@ async fn execute_one_rop(
                 .unwrap_or(SetPropsTarget::None);
             if matches!(target, SetPropsTarget::Attachment) {
                 // Attachment property write via MAPI is not directly supported;
-                # instead, we upload the attachment blob via JMAP Blob/upload and
-                # then reference it in the Email/set update. This enables
-                # MAPI-compose-with-attachment scenarios (gap #3/#4).
+                //  instead, we upload the attachment blob via JMAP Blob/upload and
+                //  then reference it in the Email/set update. This enables
+                //  MAPI-compose-with-attachment scenarios (gap #3/#4).
                 let store::PropertyPatch { properties, .. } =
                     store::set_values_to_patch(&req.property_values);
                 // Look for an attachment blob property (PR_ATTACH_DATA_BIN)
@@ -2545,7 +2545,7 @@ async fn execute_one_rop(
                     }
                 }
                 // If we get here, either no attachment prop found or upload failed;
-                # surface NoSupport so the client gets a meaningful error.
+                //  surface NoSupport so the client gets a meaningful error.
                 RopPropertyWriteSuccess {
                     rop_id,
                     handle_index: input_handle_index,
