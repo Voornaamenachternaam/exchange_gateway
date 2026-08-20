@@ -1889,18 +1889,19 @@ async fn execute_one_rop(
                 # are not dropped. This replaces the previous approach of embedding
                 # body text directly, which could lose formatting or truncate.
                 let body_value = String::from_utf8_lossy(bytes).to_string();
-                let blob_id = jc
-                    .upload_blob(&account_id, bytes.as_slice(), Some("message-body"), username, pw)
-                    .await
-                    .unwrap_or_else(|e| {
+                let blob_id = match jc.upload_blob(&account_id, bytes.as_slice(), Some("message-body"), username, pw).await {
+                    Ok(id) => id,
+                    Err(e) => {
                         tracing::warn!(
                             error = %e,
                             "Blob/upload failed for message body, falling back to text embedding"
                         );
                         // Fall back to embedding the body text directly
                         // (may lose some formatting but at least doesn't drop the body)
-                        return; // Will fall through to the else branch below
-                    });
+                        // Use empty string - the email will be created without blobId reference
+                        "".to_string()
+                    }
+                };
                 // Build the Email/set create object with bodyValues referencing the blob.
                 let email_obj = serde_json::json!({
                     "mailboxIds": { (mailbox_id.clone()): true },
@@ -2478,14 +2479,19 @@ async fn execute_one_rop(
                     .iter()
                     .find(|p| p.tag == store::PR_ATTACH_DATA_BIN)
                 {
+                    // The value should be raw bytes (PTYP_BINARY); extract it.
+                    // The name is obtained from a separate metadata field or use a default.
                     let data = &attach_prop.value;
-                    let name = attach_prop
-                        .value
-                        .as_object()
-                        .and_then(|o| o.get("name"))
-                        .and_then(|n| n.as_str())
-                        .unwrap_or("attachment.bin");
-                    // Upload the blob via JMAP
+                    // Get the attachment name - attempt to read from a dedicated
+                    // name property if available, otherwise use a default.
+                    let name = if let Some(obj) = attach_prop.value.as_object() {
+                        // If somehow the value is structured, try to get name
+                        obj.get("name").and_then(|n| n.as_str()).unwrap_or("attachment.bin")
+                    } else {
+                        // Assume raw bytes - use default name
+                        "attachment.bin"
+                    };
+                    // Upload the blob via JMAP using raw bytes
                     let account_id = jc
                         .get_account_id(username, pw)
                         .await
@@ -2498,11 +2504,18 @@ async fn execute_one_rop(
                         match blob_id {
                             Ok(blob_id) => {
                                 // Successfully uploaded - now update the email to reference the blob
+                                // Per RFC 8621, Email/set update must be keyed by email ID.
+                                // We use the email's backend_id as the key and update the
+                                // blobId property so the email references the uploaded blob.
                                 let update = serde_json::json!({
-                                    "accountId": account_id,
-                                    "blobId": blob_id,
+                                    backend_id.clone(): serde_json::json!({
+                                        "blobId": blob_id,
+                                    })
                                 });
-                                match jc.update_email_checked(&account_id, &update, username, pw).await {
+                                match jc
+                                    .update_email_checked(&account_id, &update, username, pw)
+                                    .await
+                                {
                                     Ok(_) => {
                                         // Attachment persisted; surface success
                                         RopPropertyWriteSuccess {
@@ -3000,11 +3013,18 @@ async fn execute_one_rop(
                     match jc.upload_blob(&account_id, bytes, Some(&attachment_name), username, pw).await {
                         Ok(blob_id) => {
                             // Successfully uploaded - now update the email to reference the blob
+                            // Per RFC 8621, Email/set update must be keyed by email ID.
+                            // We use the email's backend_id as the key and update the
+                            // blobId property so the email references the uploaded blob.
                             let update = serde_json::json!({
-                                "accountId": account_id,
-                                "blobId": blob_id,
+                                email_id.clone(): serde_json::json!({
+                                    "blobId": blob_id,
+                                })
                             });
-                            match jc.update_email_checked(&account_id, &update, username, pw).await {
+                            match jc
+                                .update_email_checked(&account_id, &update, username, pw)
+                                .await
+                            {
                                 Ok(_) => {
                                     // Attachment persisted; surface success
                                     RopSaveChangesAttachmentResponse {
