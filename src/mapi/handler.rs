@@ -1847,49 +1847,112 @@ async fn execute_one_rop(
                     _ => (String::new(), String::new(), false),
                 })
                 .unwrap_or((String::new(), String::new(), false));
-            // The body write-back bridge (Blob/upload-backed Email/set
-            // body-values) is not yet wired, so a dirty body stream cannot be
-            // persisted here. Detect any dirty stream owned by this message
+            // Extract body content from any dirty stream owned by this message
             // whose tag is a message body (PR_BODY / PR_BODY_HTML /
-            // PR_RTF_COMPRESSED) and surface `NoSupport` so the client is not
-            // told Success while the staged bytes are dropped (coderabbit,
-            // matches the `is_dirty` doc on Handle::Stream). Non-body dirty
-            // streams (e.g. future attachment writes) likewise fall back to a
-            // bare draft create with no body patch.
-            let has_dirty_body_stream = sessions
+            // PR_RTF_COMPRESSED). The stream holds staged bytes that must be
+            // persisted via JMAP Email/set bodyValues before the message is
+            // considered saved. If no dirty body stream, body_bytes will be
+            // None and the downstream create-email path proceeds without a body
+            # patch (the client may have supplied body in the UI or via other
+            # means).
+            let body_bytes = sessions
                 .with_session_mut(session_id, |s| {
-                    s.handles.values().any(|h| {
-                        matches!(
-                            h,
+                    s.handles.values().find_map(|h| {
+                        match h {
                             Handle::Stream {
                                 source_handle_index,
                                 property_tag,
                                 is_dirty,
                                 read_only,
+                                data,
                                 ..
                             } if *is_dirty
                                 && !*read_only
                                 && *source_handle_index == req.input_handle_index
-                                && store::is_body_stream_tag(property_tag)
-                        )
+                                && store::is_body_stream_tag(property_tag) =>
+                            {
+                                // Return the raw stream bytes; the caller will
+                                // decode based on property type.
+                                data.clone()
+                            }
+                            _ => None,
+                        }
                     })
                 })
-                .unwrap_or(false);
+                .transpose()
+                .unwrap_or(None);
             let outcome: RopErrorCode;
             let saved_mid: u64;
-            if has_dirty_body_stream {
-                outcome = RopErrorCode::NoSupport;
-                saved_mid = store::message_id_from_jmap(&backend_id);
-                RopSaveChangesMessageSuccess {
-                    response_handle_index: req.response_handle_index,
-                    return_value: outcome,
-                    input_handle_index: req.input_handle_index,
-                    message_id: saved_mid,
+            if let Some(bytes) = &body_bytes {
+                // We have a dirty body stream — extract the body text and include
+                // it in the Email/set create call so the bytes are not dropped.
+                let body_value = String::from_utf8_lossy(bytes).to_string();
+                // Build the Email/set create object with bodyValues.
+                let email_obj = serde_json::json!({
+                    "mailboxIds": { (mailbox_id.clone()): true },
+                    "keywords": { "$draft": true },
+                    "bodyValues": {
+                        "text": body_value.clone(),
+                        "html": Some(body_value),
+                    },
+                });
+                // Create the email via JMAP Email/set with the body patch.
+                let account_id = jc
+                    .get_account_id(username, pw)
+                    .await
+                    .ok()
+                    .unwrap_or_default();
+                if account_id.is_empty() {
+                    outcome = RopErrorCode::NotFound;
+                    saved_mid = store::message_id_from_jmap(&backend_id);
+                } else {
+                    // Resolve the drafts mailbox id if the create-message
+                    # handle didn't carry one (root folder).
+                    let mbox = if mailbox_id.is_empty() {
+                        "drafts".to_string()
+                    } else {
+                        mailbox_id.clone()
+                    };
+                    match jc.create_email(&account_id, &email_obj, username, pw).await {
+                        Ok(new_id) => {
+                            saved_mid = store::message_id_from_jmap(&new_id);
+                            // Promote the handle to a saved, non-new message.
+                            sessions.with_session_mut(session_id, |s| {
+                                if let Some(Handle::Message {
+                                    backend_id: bid,
+                                    mailbox_id: mid,
+                                    is_new: new_flag,
+                                    ..
+                                }) = s.handles.get_mut(&req.input_handle_index)
+                                {
+                                    *bid = new_id.clone();
+                                    *mid = mbox.clone();
+                                    *new_flag = false;
+                                }
+                            });
+                            RopSaveChangesMessageSuccess {
+                                response_handle_index: req.response_handle_index,
+                                return_value: RopErrorCode::Success,
+                                input_handle_index: req.input_handle_index,
+                                message_id: saved_mid,
+                            }
+                            .encode(out);
+                            return Ok(());
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                error = %e,
+                                "JMAP Email/set create failed for save-changes-message"
+                            );
+                            outcome = RopErrorCode::DiskError;
+                            saved_mid = store::message_id_from_jmap(&backend_id);
+                        }
+                    }
                 }
-                .encode(out);
-                return Ok(());
-            }
-            match (jmap, password, is_new) {
+            } else {
+                // No dirty body stream — proceed with a plain draft create,
+                # as the body will be handled by the client UI or other path.
+                match (jmap, password, is_new) {
                 (Some(jc), Some(pw), true) => {
                     let account_id = jc
                         .get_account_id(username, pw)
