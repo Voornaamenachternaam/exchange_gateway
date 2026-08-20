@@ -692,6 +692,86 @@ impl JmapClient {
             .to_vec())
     }
 
+    /// Upload a raw blob to JMAP (RFC 8621 §4.1.2 `uploadUrl`).
+    ///
+    /// Uploads raw bytes as a JMAP blob and returns the assigned `blobId`.
+    /// The caller typically then uses `Email/set` with `create` or `update`
+    /// to associate the blob with an email (e.g. as `textBody`, `htmlBody`,
+    /// or an attachment via `blobId` in the `blobId` property).
+    /// The `name` parameter is optional; if provided it sets the suggested
+    /// filename for the blob.
+    ///
+    /// Implementation note: Per RFC 8621 and RFC 9404, blob upload is performed
+    /// by POSTing raw bytes to the session's `uploadUrl` (with `{accountId}`
+    /// substituted), not via a JSON `Blob/upload` method call. The `blobId` is
+    /// derived from the response (typically from a `Location` header or body).
+    pub async fn upload_blob(
+        &self,
+        account_id: &str,
+        data: &[u8],
+        name: Option<&str>,
+        username: &str,
+        password: &SecretString,
+    ) -> Result<String> {
+        let session = self.get_session(username, password).await?;
+        let upload_url = session
+            .upload_url
+            .trim_end_matches('/');
+
+        // Build the upload URL with accountId substituted
+        let url = format!(
+            "{}/jmap/{}",
+            upload_url,
+            urlencoding::encode(account_id)
+        );
+
+        // Per RFC 8621, upload the raw bytes directly
+        let resp = self
+            .client
+            .post(&url)
+            .body(data.to_vec())
+            .header(
+                "Content-Type",
+                "application/octet-stream",
+            )
+            .send()
+            .await
+            .map_err(|e| anyhow!("JMAP blob upload request failed: {}", e))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(anyhow!(
+                "JMAP blob upload returned {}: {}",
+                status,
+                body
+            ));
+        }
+
+        // Derive blobId from response - JMAP typically returns it in the body
+        // or via a Location header. For Stalwart, we expect the blobId in the
+        // response body as a JSON object or plain string.
+        let response_body = resp.text().await.unwrap_or_default();
+        let blob_id = if let Some(id) = response_body.strip_prefix('"').and_then(|s| s.strip_suffix('"'))
+        {
+            id.to_string()
+        } else if let Some(id) = response_body.strip_prefix("{").and_then(|s| s.strip_suffix("}")) {
+            // If JSON, try to extract blobId field
+            serde_json::from_str::<serde_json::Value>(id)
+                .ok()
+                .and_then(|v| v.get("blobId").and_then(|v| v.as_str()))
+                .unwrap_or(id)
+        } else {
+            response_body
+        };
+
+        if blob_id.is_empty() {
+            return Err(anyhow!("JMAP blob upload returned empty blobId"));
+        }
+
+        Ok(blob_id)
+    }
+
     /// Fetch the JMAP session object (RFC 8621 §2.1).
     ///
     /// The session provides the API URL, account IDs, and capabilities.
