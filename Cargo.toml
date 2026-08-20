@@ -6,7 +6,7 @@ edition = "2024"
 rust-version = "1.97.0"
 
 [dependencies]
-jsonwebtoken = "^10.4.0"
+jsonwebtoken = "^11.0.0"
 reqwest = { version = "^0.13.4", default-features = false, features = ["json", "rustls", "cookies", "blocking"] }
 async-trait = "^0.1.92"
 tokio = { version = "^1.53.1", features = ["rt-multi-thread", "net", "time", "sync", "signal", "tracing", "macros", "io-util", "fs"] }
