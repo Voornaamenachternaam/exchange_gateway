@@ -5612,6 +5612,19 @@ async fn apply_fasttransfer_upload(
     }
     tok.assert_complete()?;
 
+    // Flush the collected spans to JMAP writes.
+    // This performs the actual Email/set / Email/destroy operations
+    // that persist the upload to the Stalwart back end.
+    flush_span(
+        &ctx,
+        &span,
+        &mut read_pairs,
+        &mut chg_bags,
+        &mut del_mids,
+        &mut stats,
+    )
+    .await;
+
     tracing::debug!(
         events = stats.events,
         reads_applied = stats.reads_applied,
