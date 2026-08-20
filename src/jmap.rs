@@ -692,6 +692,80 @@ impl JmapClient {
             .to_vec())
     }
 
+    /// Upload a raw blob to JMAP (RFC 8621 §4.1.2 `uploadUrl`).
+    ///
+    /// Uploads raw bytes as a JMAP blob and returns the assigned `blobId`.
+    /// The caller typically then uses `Email/set` with `create` or `update`
+    /// to associate the blob with an email (e.g. as `textBody`, `htmlBody`,
+    /// or an attachment via `blobId` in the `blobId` property).
+    /// The `name` parameter is optional; if provided it sets the suggested
+    /// filename for the blob.
+    pub async fn upload_blob(
+        &self,
+        account_id: &str,
+        data: &[u8],
+        name: Option<&str>,
+        username: &str,
+        password: &SecretString,
+    ) -> Result<String> {
+        let session = self.get_session(username, password).await?;
+        let api_url = &session.api_url;
+
+        // Build the upload request - JMAP expects a POST to the API URL
+        // with the blob data in the body
+        let url = format!("{}/jmap", api_url.trim_end_matches('/'));
+
+        // Prepare the multipart/form-data or JSON body for blob upload
+        // Per RFC 8621, blob upload uses a specific format
+        let mut form = serde_json::json!({
+            "accountId": account_id,
+        });
+
+        if let Some(n) = name {
+            form.as_object_mut().unwrap().insert("name".to_string(), serde_json::Value::String(n.to_string()));
+        }
+
+        // Add the blob data - JMAP expects base64-encoded data in some implementations
+        // but Stalwart may accept raw bytes; we'll use the standard approach
+        let method_calls = vec![
+            (
+                "Blob/upload",
+                json!({
+                    "accountId": account_id,
+                    "blob": {
+                        "data": base64::engine::general_purpose::STANDARD.encode(data),
+                        "name": name.unwrap_or("uploaded"),
+                        "type": "application/octet-stream",
+                    },
+                }),
+                "b0",
+            ),
+            // Also update email to reference the blob - this is simplified;
+            // in practice the caller would use Email/set separately
+        ];
+
+        let resp = self
+            .api_call(
+                api_url,
+                &["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:blob"],
+                method_calls,
+                username,
+                password,
+            )
+            .await?;
+
+        for (method, data, _) in resp.method_responses {
+            if method == "Blob/upload" {
+                if let Some(blob_id) = data.get("blobId").and_then(|v| v.as_str()) {
+                    return Ok(blob_id.to_string());
+                }
+                return Err(anyhow!("Blob/upload response missing blobId"));
+            }
+        }
+
+        Err(anyhow!("Blob/upload method not found in response"))
+    }
+
     /// Fetch the JMAP session object (RFC 8621 §2.1).
     ///
     /// The session provides the API URL, account IDs, and capabilities.
