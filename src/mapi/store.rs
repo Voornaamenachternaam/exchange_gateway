@@ -64,13 +64,16 @@ pub const PR_BODY_HTML: u16 = 0x1013;
 /// PidTagNativeBody — 0x1016 — content type hint we leave NULL for Phase 1.
 pub const PR_NATIVE_BODY: u16 = 0x1016;
 /// PidTagRtfCompressed — 1009 (Binary). The RTF body, held compressed per
-/// MS-OXBBODY §2. The gateway does not synthesize RTF from the plain/HTML body
-/// (no Rust RTF-compression codec available); Outlook therefore honours
-/// `PR_BODY`/`PR_BODY_HTML` and uses the RTF stream only as a fallback when
-/// the HTML body is provided (the gateway now returns the HTML body as the RTF
-/// fallback via `email_body_stream_bytes`). The constant is exported so the
-/// stream codec can return an HTML-body stream for an OpenStream on it rather
-/// than `NotFound` (which would make Outlook fall back to RTF-only rendering).
+/// MS-OXBBODY §2. **IMPORTANT: The gateway does not synthesize actual LZFu-compressed
+/// RTF from the plain/HTML body (no Rust RTF-compression codec available). Instead,
+/// the gateway returns the HTML body as a UTF-16LE fallback per MS-OXBBODY §2 best-value
+/// rule. Outlook will use this HTML content as the RTF fallback when the client
+/// requests PR_RTF_COMPRESSED. This provides readable content for RTF-aware clients;
+/// RTF-only formatting (complex styling, embedded images, etc.) may be degraded
+/// since the HTML is not converted to true compressed RTF format.**
+/// The constant is exported so the stream codec can return an HTML-body stream for
+/// an OpenStream on it rather than `NotFound` (which would make Outlook fall back
+/// to RTF-only rendering, potentially losing the HTML content entirely).
 pub const PR_RTF_COMPRESSED: u16 = 0x1009;
 
 /// PidTagAttachDataBinary — 3702 (Binary). The raw attachment payload fetched
@@ -558,11 +561,20 @@ pub fn email_body_html(email: &JmapEmail) -> Option<String> {
 /// Resolve the streaming bytes for a body property on a mail message, per the
 /// MS-OXBBODY precedence. `PR_BODY` returns the plain text (UTF-8 bytes);
 /// `PR_BODY_HTML` returns the HTML bytes; `PR_RTF_COMPRESSED` returns the
-/// HTML body as a fallback (the gateway does not synthesize RTF from the
-/// plain/HTML body; Outlook honours `PR_BODY`/`PR_BODY_HTML` and uses the
-/// RTF stream only as a fallback). `None` means the tag is not a body property
-/// (or its type is incompatible) so the caller resolves it as an attachment
-/// stream instead; an empty `Some` signals a body that is intentionally empty.
+/// HTML body as a UTF-16LE fallback (the gateway does not synthesize RTF from
+/// the plain/HTML body; Outlook honours `PR_BODY`/`PR_BODY_HTML` and uses the
+/// RTF stream only as a fallback). The return type changed from always-`Some(Vec::new())`
+/// to `None` when the property type is incompatible (not `PTYP_BINARY`), which
+/// signals the caller should resolve it as an attachment stream instead;
+/// `Some(html_bytes)` signals the gateway is providing the HTML body as the RTF
+/// fallback per MS-OXBBODY §2 best-value rule; an empty `Some` signals a body
+/// that is intentionally empty.
+///
+/// **Note on semantic change**: Previously, `PR_RTF_COMPRESSED` always returned
+/// `Some(empty_vec)` so Outlook's best-value resolution would fall back to HTML.
+/// Now it returns the actual HTML body content (or `None` if incompatible type),
+/// giving Outlook the HTML bytes directly. This is a behavior change from "empty
+/// fallback" to "HTML content fallback".
 ///
 /// The byte encoding tracks the requested `PropertyType`, matching how the
 /// non-stream property path encodes the same value (qodo #5 / coderabbit):
