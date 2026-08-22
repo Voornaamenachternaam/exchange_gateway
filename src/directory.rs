@@ -10,6 +10,7 @@ use std::sync::Arc;
 use thiserror::Error;
 
 /// A contact entry returned by directory lookups.
+use serde_json::json;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Contact {
     /// Display name (e.g., "John Doe")
@@ -173,12 +174,154 @@ impl Default for StalwartAdminConfig {
     }
 }
 
-/// HTTP-based directory service using Stalwart's admin API.
-/// Queries the /accounts endpoint for contact information.
-pub struct StalwartAdminDirectory {
-    config: StalwartAdminConfig,
-    client: Client,
+/// JMAP‑based directory service using Stalwart's Identity API.
+/// Retrieves contacts via JMAP `Identity/get`.
+use crate::jmap::JmapClient;
+use secrecy::SecretString;
+use tokio::runtime::Runtime;
+
+pub struct JmapDirectory {
+    jmap_client: JmapClient,
+    username: String,
+    password: SecretString,
+    runtime: Runtime,
 }
+
+impl DirectoryLookup for JmapDirectory {
+    fn search_blocking(
+        &self,
+        query: &str,
+        limit: Option<usize>,
+    ) -> Result<SearchResult, DirectoryError> {
+        // Use the pre‑created Tokio runtime stored in the struct.
+        let rt = &self.runtime;
+        let username = self.username.clone();
+        let password = self.password.clone();
+        let client = self.jmap_client.clone();
+        let limit_val = limit.unwrap_or(100).min(200);
+        rt.block_on(async move {
+            // Account/get returns all accounts; we filter client‑side for the search query.
+            let args = json!({});
+            let resp = client
+                .api_call(
+                    &client.base_url(),
+                    &["urn:ietf:params:jmap:core"],
+                    vec![("Account/get", args, "a0")],
+                    &username,
+                    &password,
+                )
+                .await?;
+            let mut contacts = Vec::new();
+            if let Some((_, value, _)) = resp.method_responses.iter().find(|(name, _, _)| name == "Account/get") {
+                if let Some(list) = value.get("list").and_then(|v| v.as_array()) {
+                    for acc in list {
+                        let email = acc.get("email")
+                            .or_else(|| acc.get("primaryEmail"))
+                            .and_then(|v| v.as_str())
+                            .unwrap_or_default()
+                            .to_string();
+                        let display_name = acc.get("name")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or(&email)
+                            .to_string();
+                        if query.is_empty()
+                            || display_name.to_lowercase().contains(&query.to_lowercase())
+                            || email.to_lowercase().contains(&query.to_lowercase())
+                        {
+                            contacts.push(Contact {
+                                display_name,
+                                email,
+                                title: None,
+                                office: None,
+                                phone: None,
+                                department: None,
+                                company: None,
+                                last_modified: None,
+                            });
+                        }
+                    }
+                }
+            }
+            Ok(SearchResult {
+                contacts,
+                distribution_lists: vec![],
+                is_truncated: false,
+                total_estimate: contacts.len(),
+            })
+        })
+    }
+
+    fn resolve_email_blocking(&self, email: &str) -> Result<Option<Contact>, DirectoryError> {
+        if !email.contains('@') { return Ok(None); }
+        let rt = Runtime::new()
+            .map_err(|e| DirectoryError::Internal(format!("Runtime create error: {}", e)))?;
+        let username = self.username.clone();
+        let password = self.password.clone();
+        let client = self.jmap_client.clone();
+        let email_str = email.to_string();
+        rt.block_on(async move {
+            // Query for the specific email.
+            let query_args = json!({
+                "filter": { "email": email_str },
+                "limit": 1,
+            });
+            let query_resp = client
+                .api_call(
+                    &client.base_url(),
+                    &["urn:ietf:params:jmap:core"],
+                    vec![("Identity/query", query_args, "q0")],
+                    &username,
+                    &password,
+                )
+                .await?;
+            let ids: Vec<String> = if let Some((_, value, _)) = query_resp.method_responses.iter().find(|(name, _, _)| name == "Identity/query") {
+                value.get("ids").and_then(|v| v.as_array()).map_or(vec![], |arr| {
+                    arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect()
+                })
+            } else { vec![] };
+            if ids.is_empty() { return Ok(None); }
+            let get_args = json!({ "ids": ids });
+            let get_resp = client
+                .api_call(
+                    &client.base_url(),
+                    &["urn:ietf:params:jmap:core"],
+                    vec![("Identity/get", get_args, "g0")],
+                    &username,
+                    &password,
+                )
+                .await?;
+            if let Some((_, value, _)) = get_resp.method_responses.iter().find(|(name, _, _)| name == "Identity/get") {
+                if let Some(list) = value.get("list").and_then(|v| v.as_array()) {
+                    if let Some(item) = list.first() {
+                        let email = item.get("email").and_then(|v| v.as_str()).unwrap_or_default().to_string();
+                        let display_name = item.get("name").and_then(|v| v.as_str()).unwrap_or(&email).to_string();
+                        return Ok(Some(Contact {
+                            display_name,
+                            email,
+                            title: None,
+                            office: None,
+                            phone: None,
+                            department: None,
+                            company: None,
+                            last_modified: None,
+                        }));
+                    }
+                }
+            }
+            Ok(None)
+        })
+    }
+
+    fn expand_dl_blocking(&self, _email: &str) -> Result<Vec<Contact>, DirectoryError> {
+        // Stalwart JMAP does not expose distribution lists.
+        Ok(Vec::new())
+    }
+
+    fn is_available(&self) -> bool {
+        !self.username.is_empty()
+    }
+}
+
 
 #[allow(clippy::new_ret_no_self)]
 impl StalwartAdminDirectory {
@@ -437,33 +580,45 @@ pub fn create_directory(
     admin_username: Option<&str>,
     admin_password: Option<&str>,
 ) -> Arc<dyn DirectoryLookup> {
-    match (admin_base, admin_username, admin_password) {
-        (Some(base), Some(user), Some(password)) => {
-            let config = StalwartAdminConfig {
-                base_url: base.to_string(),
-                username: Some(user.to_string()),
-                password: Some(password.to_string()),
-                timeout_secs: 10,
-            };
-            match StalwartAdminDirectory::new(config) {
-                Ok(dir) => dir,
-                Err(_) => Arc::new(NullDirectory) as Arc<dyn DirectoryLookup>,
-            }
-        }
-        (Some(base), None, None) => {
-            let config = StalwartAdminConfig {
-                base_url: base.to_string(),
-                username: None,
-                password: None,
-                timeout_secs: 10,
-            };
-            match StalwartAdminDirectory::new(config) {
-                Ok(dir) => dir,
-                Err(_) => Arc::new(NullDirectory) as Arc<dyn DirectoryLookup>,
-            }
-        }
-        _ => Arc::new(NullDirectory) as Arc<dyn DirectoryLookup>,
+    // Prefer the legacy admin API if a base URL is provided.
+    if let Some(base) = admin_base.filter(|s| !s.is_empty()) {
+        let config = StalwartAdminConfig {
+            base_url: base.to_string(),
+            username: admin_username.map(|u| u.to_string()),
+            password: admin_password.map(|p| p.to_string()),
+            timeout_secs: 10,
+        };
+        return match StalwartAdminDirectory::new(config) {
+            Ok(dir) => dir,
+            Err(_) => Arc::new(NullDirectory) as Arc<dyn DirectoryLookup>,
+        };
     }
+    // Fallback to JMAP Identity lookup using the configured JMAP base URL.
+    // Read JMAP base from environment (same variable used by Config).
+    if let Ok(jmap_base) = std::env::var("GATEWAY_JMAP_BASE") {
+        if !jmap_base.is_empty() {
+            // Build JMAP client.
+            match JmapClient::new(&jmap_base) {
+                Ok(jc) => {
+                    let username = admin_username.unwrap_or("").to_string();
+                    let password = admin_password.unwrap_or("");
+                    let dir = JmapDirectory {
+                        jmap_client: jc,
+                        username,
+                        password: SecretString::from(password.to_string()),
+                        runtime: Runtime::new().expect("Failed to create Tokio runtime for JmapDirectory"),
+                    };
+                    return Arc::new(dir) as Arc<dyn DirectoryLookup>;
+                }
+                Err(e) => {
+                    tracing::warn!(target: "directory", error = %e, "Failed to create JMAP client for directory service");
+                    return Arc::new(NullDirectory) as Arc<dyn DirectoryLookup>;
+                }
+            }
+        }
+    }
+    // No directory service configured.
+    Arc::new(NullDirectory) as Arc<dyn DirectoryLookup>
 }
 
 #[cfg(test)]
