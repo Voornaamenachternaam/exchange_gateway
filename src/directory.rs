@@ -184,6 +184,7 @@ pub struct JmapDirectory {
     jmap_client: JmapClient,
     username: String,
     password: SecretString,
+    runtime: Runtime,
 }
 
 impl DirectoryLookup for JmapDirectory {
@@ -192,64 +193,52 @@ impl DirectoryLookup for JmapDirectory {
         query: &str,
         limit: Option<usize>,
     ) -> Result<SearchResult, DirectoryError> {
-        // Use a dedicated Tokio runtime for async JMAP calls inside this blocking method.
-        let rt = Runtime::new()
-            .map_err(|e| DirectoryError::Internal(format!("Runtime create error: {}", e)))?;
+        // Use the pre‑created Tokio runtime stored in the struct.
+        let rt = &self.runtime;
         let username = self.username.clone();
         let password = self.password.clone();
         let client = self.jmap_client.clone();
         let limit_val = limit.unwrap_or(100).min(200);
         rt.block_on(async move {
-            // Identity/query to find matching identity ids.
-            let query_args = json!({
-                "filter": { "text": query },
-                "limit": limit_val,
-            });
-            let query_resp = client
+            // Account/get returns all accounts; we filter client‑side for the search query.
+            let args = json!({});
+            let resp = client
                 .api_call(
                     &client.base_url(),
                     &["urn:ietf:params:jmap:core"],
-                    vec![("Identity/query", query_args, "q0")],
-                    &username,
-                    &password,
-                )
-                .await?;
-            // Extract ids.
-            let ids: Vec<String> = if let Some((_, value, _)) = query_resp.method_responses.iter().find(|(name, _, _)| name == "Identity/query") {
-                value.get("ids").and_then(|v| v.as_array()).map_or(vec![], |arr| {
-                    arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect()
-                })
-            } else { vec![] };
-            if ids.is_empty() {
-                return Ok(SearchResult { contacts: vec![], distribution_lists: vec![], is_truncated: false, total_estimate: 0 });
-            }
-            // Identity/get to fetch full identity objects.
-            let get_args = json!({ "ids": ids });
-            let get_resp = client
-                .api_call(
-                    &client.base_url(),
-                    &["urn:ietf:params:jmap:core"],
-                    vec![("Identity/get", get_args, "g0")],
+                    vec![("Account/get", args, "a0")],
                     &username,
                     &password,
                 )
                 .await?;
             let mut contacts = Vec::new();
-            if let Some((_, value, _)) = get_resp.method_responses.iter().find(|(name, _, _)| name == "Identity/get") {
+            if let Some((_, value, _)) = resp.method_responses.iter().find(|(name, _, _)| name == "Account/get") {
                 if let Some(list) = value.get("list").and_then(|v| v.as_array()) {
-                    for item in list {
-                        let email = item.get("email").and_then(|v| v.as_str()).unwrap_or_default().to_string();
-                        let display_name = item.get("name").and_then(|v| v.as_str()).unwrap_or(&email).to_string();
-                        contacts.push(Contact {
-                            display_name,
-                            email,
-                            title: None,
-                            office: None,
-                            phone: None,
-                            department: None,
-                            company: None,
-                            last_modified: None,
-                        });
+                    for acc in list {
+                        let email = acc.get("email")
+                            .or_else(|| acc.get("primaryEmail"))
+                            .and_then(|v| v.as_str())
+                            .unwrap_or_default()
+                            .to_string();
+                        let display_name = acc.get("name")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or(&email)
+                            .to_string();
+                        if query.is_empty()
+                            || display_name.to_lowercase().contains(&query.to_lowercase())
+                            || email.to_lowercase().contains(&query.to_lowercase())
+                        {
+                            contacts.push(Contact {
+                                display_name,
+                                email,
+                                title: None,
+                                office: None,
+                                phone: None,
+                                department: None,
+                                company: None,
+                                last_modified: None,
+                            });
+                        }
                     }
                 }
             }
@@ -617,6 +606,7 @@ pub fn create_directory(
                         jmap_client: jc,
                         username,
                         password: SecretString::from(password.to_string()),
+                        runtime: Runtime::new().expect("Failed to create Tokio runtime for JmapDirectory"),
                     };
                     return Arc::new(dir) as Arc<dyn DirectoryLookup>;
                 }
