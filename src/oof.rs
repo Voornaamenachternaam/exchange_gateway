@@ -3,6 +3,12 @@
 // Maps EWS OOF settings to Sieve vacation scripts.
 
 use chrono::Utc;
+use secrecy::SecretString;
+use tokio::runtime::Runtime;
+
+use crate::jmap::JmapClient;
+use serde_json::json;
+
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use thiserror::Error;
@@ -386,6 +392,141 @@ impl OofManager for StalwartOofManager {
         self.set_script(username, &script)?;
         Ok(settings)
     }
+    /// JMAP‑based OOF manager using Stalwart's JMAP Sieve extension.
+    /// Stores vacation scripts via the `SieveScript` JMAP methods.
+    pub struct JmapOofManager {
+        jmap_client: JmapClient,
+        username: String,
+        password: SecretString,
+        mail_domain: String,
+        runtime: Runtime,
+    }
+
+// Implementation of JmapOofManager
+impl JmapOofManager {
+    /// Create a new JMAP OOF manager.
+    pub fn new(jmap_base: &str, username: &str, password: &str, mail_domain: &str) -> Result<Arc<dyn OofManager>, OofError> {
+        let client = JmapClient::new(jmap_base)
+            .map_err(|e| OofError::NetworkError(e.to_string()))?;
+        Ok(Arc::new(Self {
+            jmap_client: client,
+            username: username.to_string(),
+            password: SecretString::from(password.to_string()),
+            mail_domain: mail_domain.to_string(),
+            runtime: Runtime::new().expect("Failed to create Tokio runtime for JmapOofManager"),
+        }) as Arc<dyn OofManager>)
+    }
+
+    fn get_script_blocking(&self, username: &str) -> Result<Option<String>, OofError> {
+        let rt = &self.runtime;
+        let client = self.jmap_client.clone();
+        let usr = self.username.clone();
+        let pwd = self.password.clone();
+        let uname = username.to_string();
+        rt.block_on(async move {
+            let account_id = client
+                .get_account_id(&usr, &pwd)
+                .await
+                .map_err(|e| OofError::NetworkError(e.to_string()))?;
+            let args = json!({"accountId": account_id, "ids": [uname]});
+            let resp = client
+                .api_call(
+                    client.base_url(),
+                    &["urn:ietf:params:jmap:sieve"],
+                    vec![("SieveScript/get", args, "a0")],
+                    &usr,
+                    &pwd,
+                )
+                .await
+                .map_err(|e| OofError::NetworkError(e.to_string()))?;
+            if let Some((_name, value, _id)) = resp.method_responses.first() {
+                if let Some(list) = value.get("list").and_then(|v| v.as_array()) {
+                    if let Some(entry) = list.first() {
+                        if let Some(script) = entry.get("script").and_then(|s| s.as_str()) {
+                            return Ok(Some(script.to_string()));
+                        }
+                    }
+                }
+            }
+            Ok(None)
+        })
+    }
+
+    fn set_script_blocking(&self, username: &str, script: &str) -> Result<(), OofError> {
+        let rt = &self.runtime;
+        let client = self.jmap_client.clone();
+        let usr = self.username.clone();
+        let pwd = self.password.clone();
+        let uname = username.to_string();
+        rt.block_on(async move {
+            let account_id = client
+                .get_account_id(&usr, &pwd)
+                .await
+                .map_err(|e| OofError::NetworkError(e.to_string()))?;
+            let args = json!({
+                "accountId": account_id,
+                "create": {
+                    uname: {"script": script}
+                }
+            });
+            client
+                .api_call(
+                    client.base_url(),
+                    &["urn:ietf:params:jmap:sieve"],
+                    vec![("SieveScript/set", args, "a0")],
+                    &usr,
+                    &pwd,
+                )
+                .await
+                .map_err(|e| OofError::NetworkError(e.to_string()))?;
+            Ok(())
+        })
+    }
+}
+
+impl OofManager for JmapOofManager {
+    fn get_oof_settings(&self, username: &str) -> Result<OofSettings, OofError> {
+        let script_opt = self.get_script_blocking(username)?;
+        let enabled = script_opt.as_ref().map_or(false, |s| s.contains("vacation"));
+        Ok(OofSettings {
+            enabled,
+            external_audience: ExternalAudience::All,
+            internal_reply: None,
+            external_reply: None,
+            start_time: None,
+            end_time: None,
+        })
+    }
+
+    fn set_oof_settings(&self, username: &str, settings: OofSettings) -> Result<OofSettings, OofError> {
+        if !settings.enabled {
+            self.set_script_blocking(username, "")?;
+            return Ok(settings);
+        }
+        let script = Self::build_sieve_script(
+            &self.mail_domain,
+            settings.internal_reply.as_deref(),
+            settings.external_reply.as_deref(),
+            settings.external_audience,
+            settings.start_time,
+            settings.end_time,
+        )?;
+        self.set_script_blocking(username, &script)?;
+        Ok(settings)
+    }
+
+    fn is_oof_active(&self, username: &str) -> Result<bool, OofError> {
+        let settings = self.get_oof_settings(username)?;
+        if !settings.enabled {
+            return Ok(false);
+        }
+        let now = Utc::now();
+        let active = settings.start_time.map_or(true, |s| now >= s)
+            && settings.end_time.map_or(true, |e| now <= e);
+        Ok(active)
+    }
+}
+
 
     fn is_oof_active(&self, username: &str) -> Result<bool, OofError> {
         let settings = self.get_oof_settings(username)?;
@@ -438,6 +579,18 @@ pub fn create_oof_manager(
     admin_password: Option<&str>,
     mail_domain: &str,
 ) -> Arc<dyn OofManager> {
+    // Prefer JMAP‑based OOF manager if JMAP base URL is configured.
+    if let Ok(jmap_base) = std::env::var("GATEWAY_JMAP_BASE") {
+        if !jmap_base.is_empty() {
+            let user = admin_username.unwrap_or("");
+            let pass = admin_password.unwrap_or("");
+            if let Ok(manager) = JmapOofManager::new(&jmap_base, user, pass, mail_domain) {
+                return manager;
+            }
+        }
+    }
+
+    // Fallback to legacy Stalwart admin API OOF manager.
     match (admin_base, admin_username, admin_password) {
         (Some(base), Some(user), Some(pass)) => {
             match StalwartOofManager::new(base, Some(user), Some(pass), mail_domain) {
