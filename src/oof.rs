@@ -6,6 +6,7 @@ use chrono::Utc;
 use secrecy::SecretString;
 use tokio::runtime::Runtime;
 
+use serde_json::Map;
 use crate::jmap::JmapClient;
 use serde_json::json;
 
@@ -394,12 +395,13 @@ impl OofManager for StalwartOofManager {
     }
     /// JMAP‑based OOF manager using Stalwart's JMAP Sieve extension.
     /// Stores vacation scripts via the `SieveScript` JMAP methods.
+}
     pub struct JmapOofManager {
         jmap_client: JmapClient,
         username: String,
         password: SecretString,
         mail_domain: String,
-        runtime: Runtime,
+        runtime: std::sync::Arc<Runtime>,
     }
 
 // Implementation of JmapOofManager
@@ -410,15 +412,17 @@ impl JmapOofManager {
             .map_err(|e| OofError::NetworkError(e.to_string()))?;
         Ok(Arc::new(Self {
             jmap_client: client,
+
+
             username: username.to_string(),
             password: SecretString::from(password.to_string()),
             mail_domain: mail_domain.to_string(),
-            runtime: Runtime::new().expect("Failed to create Tokio runtime for JmapOofManager"),
+            runtime: std::sync::Arc::new(Runtime::new().map_err(|e| OofError::Internal(e.to_string()))?),
         }) as Arc<dyn OofManager>)
     }
 
     fn get_script_blocking(&self, username: &str) -> Result<Option<String>, OofError> {
-        let rt = &self.runtime;
+        let rt = self.runtime.clone();
         let client = self.jmap_client.clone();
         let usr = self.username.clone();
         let pwd = self.password.clone();
@@ -453,7 +457,7 @@ impl JmapOofManager {
     }
 
     fn set_script_blocking(&self, username: &str, script: &str) -> Result<(), OofError> {
-        let rt = &self.runtime;
+        let rt = self.runtime.clone();
         let client = self.jmap_client.clone();
         let usr = self.username.clone();
         let pwd = self.password.clone();
@@ -463,12 +467,12 @@ impl JmapOofManager {
                 .get_account_id(&usr, &pwd)
                 .await
                 .map_err(|e| OofError::NetworkError(e.to_string()))?;
-            let args = json!({
-                "accountId": account_id,
-                "create": {
-                    uname: {"script": script}
-                }
-            });
+            let mut create_map = serde_json::Map::new();
+                create_map.insert(uname.clone(), json!({"script": script}));
+                let args = json!({
+                    "accountId": account_id,
+                    "update": create_map
+                });
             client
                 .api_call(
                     client.base_url(),
@@ -528,19 +532,7 @@ impl OofManager for JmapOofManager {
 }
 
 
-    fn is_oof_active(&self, username: &str) -> Result<bool, OofError> {
-        let settings = self.get_oof_settings(username)?;
-        if !settings.enabled {
-            return Ok(false);
-        }
-        let now = Utc::now();
-        let active = settings
-            .start_time
-            .map(|start| now >= start)
-            .unwrap_or(true)
-            && settings.end_time.map(|end| now <= end).unwrap_or(true);
-        Ok(active)
-    }
+
 }
 
 /// Null OOF manager that always reports disabled.
@@ -557,6 +549,7 @@ impl OofManager for NullOofManager {
             start_time: None,
             end_time: None,
         })
+
     }
 
     fn set_oof_settings(
