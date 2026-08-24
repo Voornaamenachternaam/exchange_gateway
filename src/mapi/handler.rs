@@ -768,6 +768,26 @@ async fn execute_one_rop(
     // header shape, so the dispatch is per-variant rather than a uniform
     // header parse.
     match rop_id {
+RopId::ROP_OPEN_MESSAGE => {
+            // Decode request and return NotImplemented stub
+            let _ = RopOpenMessageRequest::decode(cur)?;
+            RopErrorResponse {
+                rop_id,
+                output_handle_index: 0,
+                return_value: RopErrorCode::NotImplemented,
+            }
+            .encode(out);
+        }
+RopId::ROP_READ_STREAM => {
+            // Decode request and return NotImplemented stub
+            let _ = RopReadStreamRequest::decode(cur)?;
+            RopReadStreamSuccess {
+                input_handle_index: 0,
+                return_value: RopErrorCode::NotImplemented,
+                data: Vec::new(),
+            }
+            .encode(out);
+        }
         RopId::ROP_RELEASE => {
             // ┬¦2.2.15.3.1: LogonId + InputHandleIndex
             let _logon = cur.take_u8()?;
