@@ -25,8 +25,6 @@
 
 use crate::mapi::data::{PropertyProblem, PropertyTag, TaggedPropertyValue};
 
-use crate::mapi::data::{PropertyProblem, PropertyTag, TaggedPropertyValue};
-
 // ---------- OpenMessage ----------
 #[derive(Debug, Clone)]
 pub struct RopOpenMessageRequest {
@@ -62,26 +60,6 @@ impl RopOpenMessageSuccess {
     }
 }
 
-// ---------- SetMessageReadFlag ----------
-#[derive(Debug, Clone)]
-pub struct RopSetMessageReadFlagRequest {
-    pub logon_id: u8,
-    pub input_handle_index: u8,
-    pub flags: u8,
-}
-impl RopSetMessageReadFlagRequest {
-    pub fn decode(buf: &mut Buf<'_>) -> Result<Self, DecodeError> {
-        let logon_id = buf.take_u8()?;
-        let input_handle_index = buf.take_u8()?;
-        let flags = buf.take_u8()?;
-        Ok(Self { logon_id, input_handle_index, flags })
-    }
-    pub fn encode(&self, out: &mut Vec<u8>) {
-        out.push(self.logon_id);
-        out.push(self.input_handle_index);
-        out.push(self.flags);
-    }
-}
 #[derive(Debug, Clone)]
 pub struct RopSetMessageReadFlagSuccess {
     pub input_handle_index: u8,
@@ -94,136 +72,9 @@ impl RopSetMessageReadFlagSuccess {
     }
 }
 
-// ---------- SubmitMessage ----------
-#[derive(Debug, Clone)]
-pub struct RopSubmitMessageRequest {
-    pub logon_id: u8,
-    pub input_handle_index: u8,
-    pub flags: u8,
-    pub message_size: u32,
-}
-impl RopSubmitMessageRequest {
-    pub fn decode(buf: &mut Buf<'_>) -> Result<Self, DecodeError> {
-        let logon_id = buf.take_u8()?;
-        let input_handle_index = buf.take_u8()?;
-        let flags = buf.take_u8()?;
-        let message_size = buf.take_u32()?;
-        let _ = buf.take_slice(message_size as usize)?; // skip payload
-        Ok(Self { logon_id, input_handle_index, flags, message_size })
-    }
-    pub fn encode(&self, out: &mut Vec<u8>) {
-        out.push(self.logon_id);
-        out.push(self.input_handle_index);
-        out.push(self.flags);
-        out.extend(&self.message_size.to_le_bytes());
-    }
-}
-#[derive(Debug, Clone)]
-pub struct RopSubmitMessageResponse {
-    pub input_handle_index: u8,
-    pub return_value: RopErrorCode,
-}
-impl RopSubmitMessageResponse {
-    pub fn encode(&self, out: &mut Vec<u8>) {
-        out.push(self.input_handle_index);
-        out.extend(&(self.return_value as u32).to_le_bytes());
-    }
-}
 
-// ---------- ReadStream ----------
-#[derive(Debug, Clone)]
-pub struct RopReadStreamRequest {
-    pub logon_id: u8,
-    pub input_handle_index: u8,
-    pub byte_count: u32,
-    pub offset: u64,
-}
-impl RopReadStreamRequest {
-    pub fn decode(buf: &mut Buf<'_>) -> Result<Self, DecodeError> {
-        let logon_id = buf.take_u8()?;
-        let input_handle_index = buf.take_u8()?;
-        let byte_count = buf.take_u32()?;
-        let offset = buf.take_u64()?;
-        Ok(Self { logon_id, input_handle_index, byte_count, offset })
-    }
-    pub fn encode(&self, out: &mut Vec<u8>) {
-        out.push(self.logon_id);
-        out.push(self.input_handle_index);
-        out.extend(&self.byte_count.to_le_bytes());
-        out.extend(&self.offset.to_le_bytes());
-    }
-}
-#[derive(Debug, Clone)]
-pub struct RopReadStreamSuccess {
-    pub input_handle_index: u8,
-    pub return_value: RopErrorCode,
-    pub data: Vec<u8>,
-}
-impl RopReadStreamSuccess {
-    pub fn encode(&self, out: &mut Vec<u8>) {
-        out.push(self.input_handle_index);
-        out.extend(&(self.return_value as u32).to_le_bytes());
-        out.extend(&(self.data.len() as u32).to_le_bytes());
-        out.extend(&self.data);
-    }
-}
 
-// ---------- WriteStream ----------
-#[derive(Debug, Clone)]
-pub struct RopWriteStreamRequest {
-    pub logon_id: u8,
-    pub input_handle_index: u8,
-    pub byte_count: u32,
-    pub offset: u64,
-}
-impl RopWriteStreamRequest {
-    pub fn decode(buf: &mut Buf<'_>) -> Result<Self, DecodeError> {
-        let logon_id = buf.take_u8()?;
-        let input_handle_index = buf.take_u8()?;
-        let byte_count = buf.take_u32()?;
-        let offset = buf.take_u64()?;
-        let _ = buf.take_slice(byte_count as usize)?; // skip payload
-        Ok(Self { logon_id, input_handle_index, byte_count, offset })
-    }
-    pub fn encode(&self, out: &mut Vec<u8>) {
-        out.push(self.logon_id);
-        out.push(self.input_handle_index);
-        out.extend(&self.byte_count.to_le_bytes());
-        out.extend(&self.offset.to_le_bytes());
-    }
-}
-#[derive(Debug, Clone)]
-pub struct RopWriteStreamSuccess {
-    pub input_handle_index: u8,
-    pub return_value: RopErrorCode,
-}
-impl RopWriteStreamSuccess {
-    pub fn encode(&self, out: &mut Vec<u8>) {
-        out.push(self.input_handle_index);
-        out.extend(&(self.return_value as u32).to_le_bytes());
-    }
-}
 
-// ---------- FastTransfer SourceCopyMessages ----------
-#[derive(Debug, Clone)]
-pub struct RopFastTransferSourceCopyMessagesRequest {
-    pub logon_id: u8,
-    pub input_handle_index: u8,
-    pub flags: u8,
-}
-impl RopFastTransferSourceCopyMessagesRequest {
-    pub fn decode(buf: &mut Buf<'_>) -> Result<Self, DecodeError> {
-        let logon_id = buf.take_u8()?;
-        let input_handle_index = buf.take_u8()?;
-        let flags = buf.take_u8()?;
-        Ok(Self { logon_id, input_handle_index, flags })
-    }
-    pub fn encode(&self, out: &mut Vec<u8>) {
-        out.push(self.logon_id);
-        out.push(self.input_handle_index);
-        out.push(self.flags);
-    }
-}
 #[derive(Debug, Clone)]
 pub struct RopFastTransferSourceCopyMessagesResponse {
     pub output_handle_index: u8,
@@ -246,6 +97,7 @@ pub struct RopId(pub u8);
 impl RopId {
     pub const ROP_RELEASE: Self = Self(0x01);
     pub const ROP_OPEN_FOLDER: Self = Self(0x02);
+    pub const ROP_OPEN_MESSAGE: Self = Self(0x03);
     pub const ROP_GET_HIERARCHY_TABLE: Self = Self(0x04);
     pub const ROP_GET_CONTENTS_TABLE: Self = Self(0x05);
     pub const ROP_CREATE_MESSAGE: Self = Self(0x06);
