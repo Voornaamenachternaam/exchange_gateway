@@ -198,7 +198,11 @@ pub fn parse_get_rooms_request(xml: &str) -> Option<String> {
                         if let Ok(text) = reader.read_text(e.to_end().name()) {
                             return Some(text.into_owned());
                         }
+                    b"EmailAddress" if in_room_list => {
+                        if let Ok(text) = reader.read_text(e.to_end().name()) {
+                            return Some(text.into_owned());
                         }
+                    }
                     }
                     _ => {}
                 }
