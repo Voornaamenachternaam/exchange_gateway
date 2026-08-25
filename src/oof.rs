@@ -393,9 +393,9 @@ impl OofManager for StalwartOofManager {
         self.set_script(username, &script)?;
         Ok(settings)
     }
+}    
     /// JMAP‑based OOF manager using Stalwart's JMAP Sieve extension.
     /// Stores vacation scripts via the `SieveScript` JMAP methods.
-}
     pub struct JmapOofManager {
         jmap_client: JmapClient,
         username: String,
@@ -529,10 +529,6 @@ impl OofManager for JmapOofManager {
             && settings.end_time.map_or(true, |e| now <= e);
         Ok(active)
     }
-}
-
-
-
 }
 
 /// Null OOF manager that always reports disabled.
