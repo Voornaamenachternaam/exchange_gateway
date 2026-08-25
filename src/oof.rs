@@ -6,8 +6,8 @@ use chrono::Utc;
 use secrecy::SecretString;
 use tokio::runtime::Runtime;
 
-use serde_json::Map;
 use crate::jmap::JmapClient;
+use serde_json::Map;
 use serde_json::json;
 
 use serde::{Deserialize, Serialize};
@@ -430,15 +430,22 @@ pub struct JmapOofManager {
 // Implementation of JmapOofManager
 impl JmapOofManager {
     /// Create a new JMAP OOF manager.
-    pub fn new(jmap_base: &str, username: &str, password: &str, mail_domain: &str) -> Result<Arc<dyn OofManager>, OofError> {
-        let client = JmapClient::new(jmap_base)
-            .map_err(|e| OofError::NetworkError(e.to_string()))?;
+    pub fn new(
+        jmap_base: &str,
+        username: &str,
+        password: &str,
+        mail_domain: &str,
+    ) -> Result<Arc<dyn OofManager>, OofError> {
+        let client =
+            JmapClient::new(jmap_base).map_err(|e| OofError::NetworkError(e.to_string()))?;
         Ok(Arc::new(Self {
             jmap_client: client,
             username: username.to_string(),
             password: SecretString::from(password.to_string()),
             mail_domain: mail_domain.to_string(),
-            runtime: std::sync::Arc::new(Runtime::new().map_err(|e| OofError::Internal(e.to_string()))?),
+            runtime: std::sync::Arc::new(
+                Runtime::new().map_err(|e| OofError::Internal(e.to_string()))?,
+            ),
         }) as Arc<dyn OofManager>)
     }
 
@@ -512,7 +519,9 @@ impl JmapOofManager {
 impl OofManager for JmapOofManager {
     fn get_oof_settings(&self, username: &str) -> Result<OofSettings, OofError> {
         let script_opt = self.get_script_blocking(username)?;
-        let enabled = script_opt.as_ref().map_or(false, |s| s.contains("vacation"));
+        let enabled = script_opt
+            .as_ref()
+            .map_or(false, |s| s.contains("vacation"));
         Ok(OofSettings {
             enabled,
             external_audience: ExternalAudience::All,
@@ -523,7 +532,11 @@ impl OofManager for JmapOofManager {
         })
     }
 
-    fn set_oof_settings(&self, username: &str, settings: OofSettings) -> Result<OofSettings, OofError> {
+    fn set_oof_settings(
+        &self,
+        username: &str,
+        settings: OofSettings,
+    ) -> Result<OofSettings, OofError> {
         if !settings.enabled {
             self.set_script_blocking(username, "")?;
             return Ok(settings);
