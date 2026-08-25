@@ -212,15 +212,21 @@ impl DirectoryLookup for JmapDirectory {
                 )
                 .await?;
             let mut contacts = Vec::new();
-            if let Some((_, value, _)) = resp.method_responses.iter().find(|(name, _, _)| name == "Account/get") {
+            if let Some((_, value, _)) = resp
+                .method_responses
+                .iter()
+                .find(|(name, _, _)| name == "Account/get")
+            {
                 if let Some(list) = value.get("list").and_then(|v| v.as_array()) {
                     for acc in list {
-                        let email = acc.get("email")
+                        let email = acc
+                            .get("email")
                             .or_else(|| acc.get("primaryEmail"))
                             .and_then(|v| v.as_str())
                             .unwrap_or_default()
                             .to_string();
-                        let display_name = acc.get("name")
+                        let display_name = acc
+                            .get("name")
                             .and_then(|v| v.as_str())
                             .unwrap_or(&email)
                             .to_string();
@@ -252,7 +258,9 @@ impl DirectoryLookup for JmapDirectory {
     }
 
     fn resolve_email_blocking(&self, email: &str) -> Result<Option<Contact>, DirectoryError> {
-        if !email.contains('@') { return Ok(None); }
+        if !email.contains('@') {
+            return Ok(None);
+        }
         let rt = Runtime::new()
             .map_err(|e| DirectoryError::Internal(format!("Runtime create error: {}", e)))?;
         let username = self.username.clone();
@@ -274,12 +282,25 @@ impl DirectoryLookup for JmapDirectory {
                     &password,
                 )
                 .await?;
-            let ids: Vec<String> = if let Some((_, value, _)) = query_resp.method_responses.iter().find(|(name, _, _)| name == "Identity/query") {
-                value.get("ids").and_then(|v| v.as_array()).map_or(vec![], |arr| {
-                    arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect()
-                })
-            } else { vec![] };
-            if ids.is_empty() { return Ok(None); }
+            let ids: Vec<String> = if let Some((_, value, _)) = query_resp
+                .method_responses
+                .iter()
+                .find(|(name, _, _)| name == "Identity/query")
+            {
+                value
+                    .get("ids")
+                    .and_then(|v| v.as_array())
+                    .map_or(vec![], |arr| {
+                        arr.iter()
+                            .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                            .collect()
+                    })
+            } else {
+                vec![]
+            };
+            if ids.is_empty() {
+                return Ok(None);
+            }
             let get_args = json!({ "ids": ids });
             let get_resp = client
                 .api_call(
@@ -290,11 +311,23 @@ impl DirectoryLookup for JmapDirectory {
                     &password,
                 )
                 .await?;
-            if let Some((_, value, _)) = get_resp.method_responses.iter().find(|(name, _, _)| name == "Identity/get") {
+            if let Some((_, value, _)) = get_resp
+                .method_responses
+                .iter()
+                .find(|(name, _, _)| name == "Identity/get")
+            {
                 if let Some(list) = value.get("list").and_then(|v| v.as_array()) {
                     if let Some(item) = list.first() {
-                        let email = item.get("email").and_then(|v| v.as_str()).unwrap_or_default().to_string();
-                        let display_name = item.get("name").and_then(|v| v.as_str()).unwrap_or(&email).to_string();
+                        let email = item
+                            .get("email")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or_default()
+                            .to_string();
+                        let display_name = item
+                            .get("name")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or(&email)
+                            .to_string();
                         return Ok(Some(Contact {
                             display_name,
                             email,
@@ -321,7 +354,6 @@ impl DirectoryLookup for JmapDirectory {
         !self.username.is_empty()
     }
 }
-
 
 #[allow(clippy::new_ret_no_self)]
 impl StalwartAdminDirectory {
@@ -606,7 +638,8 @@ pub fn create_directory(
                         jmap_client: jc,
                         username,
                         password: SecretString::from(password.to_string()),
-                        runtime: Runtime::new().expect("Failed to create Tokio runtime for JmapDirectory"),
+                        runtime: Runtime::new()
+                            .expect("Failed to create Tokio runtime for JmapDirectory"),
                     };
                     return Arc::new(dir) as Arc<dyn DirectoryLookup>;
                 }

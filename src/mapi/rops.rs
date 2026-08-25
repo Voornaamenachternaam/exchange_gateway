@@ -39,7 +39,12 @@ impl RopOpenMessageRequest {
         let input_handle_index = buf.take_u8()?;
         let output_handle_index = buf.take_u8()?;
         let flags = buf.take_u8()?;
-        Ok(Self { logon_id, input_handle_index, output_handle_index, flags })
+        Ok(Self {
+            logon_id,
+            input_handle_index,
+            output_handle_index,
+            flags,
+        })
     }
     pub fn encode(&self, out: &mut Vec<u8>) {
         out.push(self.logon_id);
@@ -71,9 +76,6 @@ impl RopSetMessageReadFlagSuccess {
         out.extend(&(self.return_value as u32).to_le_bytes());
     }
 }
-
-
-
 
 #[derive(Debug, Clone)]
 pub struct RopFastTransferSourceCopyMessagesResponse {

@@ -714,26 +714,17 @@ impl JmapClient {
         password: &SecretString,
     ) -> Result<String> {
         let session = self.get_session(username, password).await?;
-        let upload_url = session
-            .upload_url
-            .trim_end_matches('/');
+        let upload_url = session.upload_url.trim_end_matches('/');
 
         // Build the upload URL with accountId substituted
-        let url = format!(
-            "{}/jmap/{}",
-            upload_url,
-            urlencoding::encode(account_id)
-        );
+        let url = format!("{}/jmap/{}", upload_url, urlencoding::encode(account_id));
 
         // Per RFC 8621, upload the raw bytes directly
         let resp = self
             .client
             .post(&url)
             .body(data.to_vec())
-            .header(
-                "Content-Type",
-                "application/octet-stream",
-            )
+            .header("Content-Type", "application/octet-stream")
             .send()
             .await
             .map_err(|e| anyhow!("JMAP blob upload request failed: {}", e))?;
@@ -741,21 +732,22 @@ impl JmapClient {
         if !resp.status().is_success() {
             let status = resp.status();
             let body = resp.text().await.unwrap_or_default();
-            return Err(anyhow!(
-                "JMAP blob upload returned {}: {}",
-                status,
-                body
-            ));
+            return Err(anyhow!("JMAP blob upload returned {}: {}", status, body));
         }
 
         // Derive blobId from response - JMAP typically returns it in the body
         // or via a Location header. For Stalwart, we expect the blobId in the
         // response body as a JSON object or plain string.
         let response_body = resp.text().await.unwrap_or_default();
-        let blob_id = if let Some(id) = response_body.strip_prefix('"').and_then(|s| s.strip_suffix('"'))
+        let blob_id = if let Some(id) = response_body
+            .strip_prefix('"')
+            .and_then(|s| s.strip_suffix('"'))
         {
             id.to_string()
-        } else if let Some(id) = response_body.strip_prefix("{").and_then(|s| s.strip_suffix("}")) {
+        } else if let Some(id) = response_body
+            .strip_prefix("{")
+            .and_then(|s| s.strip_suffix("}"))
+        {
             // If JSON, try to extract blobId field
             serde_json::from_str::<serde_json::Value>(id)
                 .ok()
