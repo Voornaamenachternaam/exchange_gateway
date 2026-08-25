@@ -42,11 +42,11 @@ use crate::mapi::rops::{
     RopHeader4, RopId, RopLogonRequest, RopLogonSuccess, RopMoveCopyMessagesRequest,
     RopMoveCopyMessagesResponse, RopOpenAttachmentRequest, RopOpenAttachmentSuccess,
     RopOpenMessageRequest, RopOpenMessageSuccess, RopOpenStreamRequest, RopOpenStreamSuccess,
-    RopOpenTableRequest, RopPropertyWriteSuccess,
-    RopQueryRowsRequest, RopReadStreamRequest, RopReadStreamSuccess,
-    RopRegisterNotificationResponse, RopReleaseRequest, RopSaveChangesAttachmentRequest,
-    RopSaveChangesAttachmentResponse, RopSaveChangesMessageRequest, RopSaveChangesMessageSuccess,
-    RopSeekStreamRequest, RopSeekStreamSuccess, RopSetColumnsRequest, RopSetMessageReadFlagRequest,
+    RopOpenTableRequest, RopPropertyWriteSuccess, RopQueryRowsRequest, RopReadStreamRequest,
+    RopReadStreamSuccess, RopRegisterNotificationResponse, RopReleaseRequest,
+    RopSaveChangesAttachmentRequest, RopSaveChangesAttachmentResponse,
+    RopSaveChangesMessageRequest, RopSaveChangesMessageSuccess, RopSeekStreamRequest,
+    RopSeekStreamSuccess, RopSetColumnsRequest, RopSetMessageReadFlagRequest,
     RopSetPropertiesRequest, RopSetStreamSizeRequest, RopSetStreamSizeResponse,
     RopSubmitMessageRequest, RopSubmitMessageResponse, RopTransportSendFailure,
     RopTransportSendRequest, RopTransportSendSuccess, RopWriteStreamRequest, RopWriteStreamSuccess,
@@ -769,7 +769,7 @@ async fn execute_one_rop(
     // header shape, so the dispatch is per-variant rather than a uniform
     // header parse.
     match rop_id {
-RopId::ROP_OPEN_MESSAGE => {
+        RopId::ROP_OPEN_MESSAGE => {
             // Decode request and return NotImplemented stub
             let _ = RopOpenMessageRequest::decode(cur)?;
             RopErrorResponse {
@@ -779,7 +779,7 @@ RopId::ROP_OPEN_MESSAGE => {
             }
             .encode(out);
         }
-RopId::ROP_READ_STREAM => {
+        RopId::ROP_READ_STREAM => {
             // Decode request and return NotImplemented stub
             let _ = RopReadStreamRequest::decode(cur)?;
             RopReadStreamSuccess {
@@ -1958,7 +1958,10 @@ RopId::ROP_READ_STREAM => {
                             });
                             // Create the email via JMAP Email/set with the body patch.
                             let account_id_val = account_id.clone();
-                            match jc.create_email(&account_id_val, &email_obj, username, pw).await {
+                            match jc
+                                .create_email(&account_id_val, &email_obj, username, pw)
+                                .await
+                            {
                                 Ok(new_id) => {
                                     saved_mid = store::message_id_from_jmap(&new_id);
                                     // Promote the handle to a saved, non-new message.
@@ -2004,67 +2007,67 @@ RopId::ROP_READ_STREAM => {
                 // No dirty body stream — proceed with a plain draft create,
                 //  as the body will be handled by the client UI or other path.
                 match (jmap, password, is_new) {
-                (Some(jc), Some(pw), true) => {
-                    let account_id = jc
-                        .get_account_id(username, pw)
-                        .await
-                        .ok()
-                        .unwrap_or_default();
-                    if account_id.is_empty() {
-                        outcome = RopErrorCode::NotFound;
-                        saved_mid = store::message_id_from_jmap(&backend_id);
-                    } else {
-                        // Resolve the drafts mailbox id if the create-message
-                        // handle didn't carry one (root folder).
-                        let mbox = if mailbox_id.is_empty() {
-                            resolve_drafts_mailbox(jc, &account_id, username, pw).await
+                    (Some(jc), Some(pw), true) => {
+                        let account_id = jc
+                            .get_account_id(username, pw)
+                            .await
+                            .ok()
+                            .unwrap_or_default();
+                        if account_id.is_empty() {
+                            outcome = RopErrorCode::NotFound;
+                            saved_mid = store::message_id_from_jmap(&backend_id);
                         } else {
-                            mailbox_id.clone()
-                        };
-                        let email_obj = serde_json::json!({
-                            "mailboxIds": { (mbox.clone()): true },
-                            "keywords": { "$draft": true },
-                        });
-                        match jc.create_email(&account_id, email_obj, username, pw).await {
-                            Ok(new_id) => {
-                                saved_mid = store::message_id_from_jmap(&new_id);
-                                // Promote the handle to a saved, non-new message.
-                                sessions.with_session_mut(session_id, |s| {
-                                    if let Some(Handle::Message {
-                                        backend_id: bid,
-                                        mailbox_id: mid,
-                                        is_new,
-                                        ..
-                                    }) = s.handle_mut(req.input_handle_index)
-                                    {
-                                        *bid = new_id.clone();
-                                        *mid = mbox;
-                                        *is_new = false;
-                                    }
-                                });
-                                outcome = RopErrorCode::Success;
-                            }
-                            Err(e) => {
-                                tracing::warn!(error = %e, "JMAP Email/set create (draft) failed");
-                                outcome = RopErrorCode::DiskError;
-                                saved_mid = 0;
+                            // Resolve the drafts mailbox id if the create-message
+                            // handle didn't carry one (root folder).
+                            let mbox = if mailbox_id.is_empty() {
+                                resolve_drafts_mailbox(jc, &account_id, username, pw).await
+                            } else {
+                                mailbox_id.clone()
+                            };
+                            let email_obj = serde_json::json!({
+                                "mailboxIds": { (mbox.clone()): true },
+                                "keywords": { "$draft": true },
+                            });
+                            match jc.create_email(&account_id, email_obj, username, pw).await {
+                                Ok(new_id) => {
+                                    saved_mid = store::message_id_from_jmap(&new_id);
+                                    // Promote the handle to a saved, non-new message.
+                                    sessions.with_session_mut(session_id, |s| {
+                                        if let Some(Handle::Message {
+                                            backend_id: bid,
+                                            mailbox_id: mid,
+                                            is_new,
+                                            ..
+                                        }) = s.handle_mut(req.input_handle_index)
+                                        {
+                                            *bid = new_id.clone();
+                                            *mid = mbox;
+                                            *is_new = false;
+                                        }
+                                    });
+                                    outcome = RopErrorCode::Success;
+                                }
+                                Err(e) => {
+                                    tracing::warn!(error = %e, "JMAP Email/set create (draft) failed");
+                                    outcome = RopErrorCode::DiskError;
+                                    saved_mid = 0;
+                                }
                             }
                         }
                     }
-                }
-                (None, _, _) => {
-                    outcome = RopErrorCode::NotFound;
-                    saved_mid = 0;
-                }
-                (_, None, _) => {
-                    outcome = RopErrorCode::AccessDenied;
-                    saved_mid = 0;
-                }
-                (_, _, false) => {
-                    // Already saved: idempotent success echoing the existing id.
-                    outcome = RopErrorCode::Success;
-                    saved_mid = store::message_id_from_jmap(&backend_id);
-                }
+                    (None, _, _) => {
+                        outcome = RopErrorCode::NotFound;
+                        saved_mid = 0;
+                    }
+                    (_, None, _) => {
+                        outcome = RopErrorCode::AccessDenied;
+                        saved_mid = 0;
+                    }
+                    (_, _, false) => {
+                        // Already saved: idempotent success echoing the existing id.
+                        outcome = RopErrorCode::Success;
+                        saved_mid = store::message_id_from_jmap(&backend_id);
+                    }
                 }
             }
             RopSaveChangesMessageSuccess {
@@ -2552,7 +2555,13 @@ RopId::ROP_READ_STREAM => {
                                 .unwrap_or_default();
                             if !account_id.is_empty() {
                                 let blob_id = jc
-                                    .upload_blob(&account_id, data, Some("attachment.bin"), username, pw)
+                                    .upload_blob(
+                                        &account_id,
+                                        data,
+                                        Some("attachment.bin"),
+                                        username,
+                                        pw,
+                                    )
                                     .await;
                                 match blob_id {
                                     Ok(blob_id) => {
@@ -2565,7 +2574,12 @@ RopId::ROP_READ_STREAM => {
                                             })
                                         });
                                         match jc
-                                            .update_email_checked(&account_id, &update, username, pw)
+                                            .update_email_checked(
+                                                &account_id,
+                                                &update,
+                                                username,
+                                                pw,
+                                            )
                                             .await
                                         {
                                             Ok(_) => {
@@ -2611,7 +2625,7 @@ RopId::ROP_READ_STREAM => {
                 return Ok(());
             }
 
-let (backend_id, mailbox_id) = match target {
+            let (backend_id, mailbox_id) = match target {
                 SetPropsTarget::Message {
                     backend_id,
                     mailbox_id,
@@ -3027,24 +3041,22 @@ let (backend_id, mailbox_id) = match target {
             // Extract any dirty body stream data and persist via JMAP Blob/upload
             let body_data = sessions
                 .with_session_mut(session_id, |s| {
-                    s.handles.values().find_map(|h| {
-                        match h {
-                            Handle::Stream {
-                                source_handle_index,
-                                property_tag,
-                                is_dirty,
-                                read_only,
-                                data,
-                                ..
-                            } if *is_dirty
-                                && !*read_only
-                                && *source_handle_index == req.input_handle_index
-                                && store::is_body_stream_tag(property_tag) =>
-                            {
-                                data.clone()
-                            }
-                            _ => None,
+                    s.handles.values().find_map(|h| match h {
+                        Handle::Stream {
+                            source_handle_index,
+                            property_tag,
+                            is_dirty,
+                            read_only,
+                            data,
+                            ..
+                        } if *is_dirty
+                            && !*read_only
+                            && *source_handle_index == req.input_handle_index
+                            && store::is_body_stream_tag(property_tag) =>
+                        {
+                            data.clone()
                         }
+                        _ => None,
                     })
                 })
                 .transpose()
@@ -3063,13 +3075,9 @@ let (backend_id, mailbox_id) = match target {
                         if !account_id.is_empty() {
                             // Get the attachment name from the handle or use a default
                             let attachment_name = sessions
-                                .with_handle(session_id, req.input_handle_index, |h| {
-                                    match h {
-                                        Handle::Attachment { .. } => {
-                                            Some("attachment.bin".to_string())
-                                        }
-                                        _ => None,
-                                    }
+                                .with_handle(session_id, req.input_handle_index, |h| match h {
+                                    Handle::Attachment { .. } => Some("attachment.bin".to_string()),
+                                    _ => None,
                                 })
                                 .unwrap_or_else(|| "attachment.bin".to_string());
                             match jc
@@ -3093,12 +3101,7 @@ let (backend_id, mailbox_id) = match target {
                                         })
                                     });
                                     match jc
-                                        .update_email_checked(
-                                            &account_id,
-                                            &update,
-                                            username,
-                                            pw,
-                                        )
+                                        .update_email_checked(&account_id, &update, username, pw)
                                         .await
                                     {
                                         Ok(_) => {
@@ -3130,7 +3133,7 @@ let (backend_id, mailbox_id) = match target {
                     _ => {}
                 }
             }
-// If we get here without persisting, surface NoSupport so the client
+            // If we get here without persisting, surface NoSupport so the client
             // gets a meaningful error rather than silent success.
             RopSaveChangesAttachmentResponse {
                 response_handle_index: req.response_handle_index,
