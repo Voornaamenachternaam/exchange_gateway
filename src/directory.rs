@@ -84,6 +84,12 @@ pub enum DirectoryError {
     HttpError(String),
 }
 
+impl From<anyhow::Error> for DirectoryError {
+    fn from(e: anyhow::Error) -> Self {
+        DirectoryError::NetworkError(format!("Directory service request failed: {}", e))
+    }
+}
+
 /// Trait for directory lookup services.
 /// All methods are synchronous (blocking) and must be called from
 /// tokio::task::spawn_blocking or similar to avoid blocking the async runtime.
@@ -191,14 +197,13 @@ impl DirectoryLookup for JmapDirectory {
     fn search_blocking(
         &self,
         query: &str,
-        limit: Option<usize>,
+        _limit: Option<usize>,
     ) -> Result<SearchResult, DirectoryError> {
         // Use the pre‑created Tokio runtime stored in the struct.
         let rt = &self.runtime;
         let username = self.username.clone();
         let password = self.password.clone();
         let client = self.jmap_client.clone();
-        let limit_val = limit.unwrap_or(100).min(200);
         rt.block_on(async move {
             // Account/get returns all accounts; we filter client‑side for the search query.
             let args = json!({});
@@ -248,11 +253,12 @@ impl DirectoryLookup for JmapDirectory {
                     }
                 }
             }
+            let total_estimate = contacts.len();
             Ok(SearchResult {
                 contacts,
                 distribution_lists: vec![],
                 is_truncated: false,
-                total_estimate: contacts.len(),
+                total_estimate,
             })
         })
     }
@@ -353,6 +359,12 @@ impl DirectoryLookup for JmapDirectory {
     fn is_available(&self) -> bool {
         !self.username.is_empty()
     }
+}
+
+/// Directory service backed by Stalwart's admin REST API.
+pub struct StalwartAdminDirectory {
+    config: StalwartAdminConfig,
+    client: Client,
 }
 
 #[allow(clippy::new_ret_no_self)]
