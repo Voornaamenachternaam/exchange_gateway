@@ -7,7 +7,6 @@ use secrecy::SecretString;
 use tokio::runtime::Runtime;
 
 use crate::jmap::JmapClient;
-use serde_json::Map;
 use serde_json::json;
 
 use serde::{Deserialize, Serialize};
