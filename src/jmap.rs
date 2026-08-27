@@ -709,7 +709,7 @@ impl JmapClient {
         &self,
         account_id: &str,
         data: &[u8],
-        name: Option<&str>,
+        _name: Option<&str>,
         username: &str,
         password: &SecretString,
     ) -> Result<String> {
@@ -751,8 +751,12 @@ impl JmapClient {
             // If JSON, try to extract blobId field
             serde_json::from_str::<serde_json::Value>(id)
                 .ok()
-                .and_then(|v| v.get("blobId").and_then(|v| v.as_str()))
-                .unwrap_or(id)
+                .and_then(|v| {
+                    v.get("blobId")
+                        .and_then(|blob| blob.as_str())
+                        .map(str::to_string)
+                })
+                .unwrap_or_else(|| id.to_string())
         } else {
             response_body
         };
