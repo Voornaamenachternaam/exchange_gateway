@@ -31,7 +31,6 @@ const ENV_MAIL_HOST: &str = "GATEWAY_MAIL_HOST";
 const ENV_FORCE_CALDAV_CALENDAR: &str = "GATEWAY_FORCE_CALDAV_CALENDAR";
 const ENV_PREFER_CALDAV_FREEBUSY: &str = "GATEWAY_PREFER_CALDAV_FREEBUSY";
 const ENV_PREFER_JMAP_CALENDAR: &str = "GATEWAY_PREFER_JMAP_CALENDAR";
-const ENV_ADMIN_BASE: &str = "GATEWAY_ADMIN_BASE";
 const ENV_ADMIN_USERNAME: &str = "GATEWAY_ADMIN_USERNAME";
 const ENV_ADMIN_PASSWORD: &str = "GATEWAY_ADMIN_PASSWORD";
 
@@ -124,9 +123,13 @@ pub struct Config {
     // Recommended for Stalwart v0.16.10 to avoid JMAP Calendar bugs.
     #[serde(default = "default_prefer_caldav_freebusy")]
     pub prefer_caldav_freebusy: bool,
-    // Admin API configuration for GAL/ResolveNames (Stalwart admin endpoints)
-    #[serde(default)]
-    pub admin_base: String,
+    // Admin (directory) configuration for GAL/ResolveNames. The gateway talks
+    // to Stalwart exclusively over JMAP (`urn:stalwart:jmap` `x:Account/*` /
+    // `x:MailingList/*` and `urn:ietf:params:jmap:sieve` for OOF) using the
+    // credentials of the Stalwart administrator account that holds the
+    // `sysAccount*` / `sysMailingList*` permissions. There is no separate
+    // REST admin API base URL: the deprecated `/api/{v1,v2,...}` surface was
+    // removed in favour of the native JMAP directory API.
     #[serde(default)]
     pub admin_username: String,
     #[serde(default)]
@@ -731,10 +734,9 @@ fn apply_environment_overrides(cfg: &mut Config) {
         c.mail_host = v;
     });
 
-    // Admin API configuration for directory/ResolveNames
-    apply_env_string(cfg, get_env_with_fallback(ENV_ADMIN_BASE, None), |c, v| {
-        c.admin_base = v;
-    });
+    // Admin (directory) configuration for GAL/ResolveNames. The admin
+    // credentials are used over JMAP (`urn:stalwart:jmap`); there is no REST
+    // admin API base URL.
     apply_env_string(
         cfg,
         get_env_with_fallback(ENV_ADMIN_USERNAME, None),
@@ -966,7 +968,6 @@ impl Default for Config {
             force_caldav_calendar: true,
             prefer_jmap_calendar: default_prefer_jmap_calendar(),
             prefer_caldav_freebusy: true,
-            admin_base: String::new(),
             admin_username: String::new(),
             admin_password: String::new(),
             rate_limit_enabled: true,

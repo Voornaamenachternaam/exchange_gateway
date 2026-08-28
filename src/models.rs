@@ -57,30 +57,49 @@ impl AppState {
         let room_manager = Arc::new(RoomManager::new(storage.clone()));
         let auth_verifier = Arc::new(AuthVerifier::new(&cfg));
 
-        let directory = if !cfg.admin_base.is_empty() {
+        // The directory service (GAL / ResolveNames / OAB / NSPI) reads the
+        // Stalwart directory over JMAP (`urn:stalwart:jmap` `x:Account/*` /
+        // `x:MailingList/*`) using the administrator account credentials. It is
+        // configured when a JMAP endpoint and admin credentials are both present;
+        // the deprecated REST admin API is no longer used.
+        // The administrator credentials authenticate the server-wide directory
+        // and Sieve (OOF) JMAP calls via HTTP Basic. Warn (but do not hard-fail)
+        // when that endpoint is cleartext `http://`: the gateway commonly sits on
+        // an internal Docker network adjacent to Stalwart where TLS terminates at
+        // the edge, but over a non-trusted network this would transmit the admin
+        // password unencrypted (CWE-319). Requiring HTTPS unconditionally would
+        // break that internal-container topology.
+        if !cfg.jmap_base.is_empty()
+            && !cfg.admin_username.is_empty()
+            && !cfg.admin_password.is_empty()
+            && cfg.jmap_base.trim_start().starts_with("http://")
+        {
+            tracing::warn!(
+                target: "directory",
+                "JMAP admin credentials may be sent over a cleartext (http://) endpoint; \
+                 `jmap_base` should use HTTPS unless Stalwart is on a trusted internal network"
+            );
+        }
+
+        let directory = if !cfg.jmap_base.is_empty()
+            && !cfg.admin_username.is_empty()
+            && !cfg.admin_password.is_empty()
+        {
             Some(directory::create_directory(
-                Some(&cfg.admin_base),
-                if cfg.admin_username.is_empty() {
-                    None
-                } else {
-                    Some(&cfg.admin_username)
-                },
-                if cfg.admin_password.is_empty() {
-                    None
-                } else {
-                    Some(&cfg.admin_password)
-                },
+                Some(&cfg.jmap_base),
+                Some(&cfg.admin_username),
+                Some(&cfg.admin_password),
             ))
         } else {
             None
         };
 
-        let oof_manager = if !cfg.admin_base.is_empty()
+        let oof_manager = if !cfg.jmap_base.is_empty()
             && !cfg.admin_username.is_empty()
             && !cfg.admin_password.is_empty()
         {
             Some(oof::create_oof_manager(
-                Some(&cfg.admin_base),
+                Some(&cfg.jmap_base),
                 Some(&cfg.admin_username),
                 Some(&cfg.admin_password),
                 &cfg.mail_domain,
@@ -175,9 +194,9 @@ impl AppState {
             .with_attachment_manager(attachment_manager.clone());
             // Wire the operator-configured directory so the NSPI address-book
             // surface (`/mapi/nspi`) serves a real GAL rather than the
-            // caller-only minimal stub (audit gap §2d). When no `admin_base`
-            // is configured `directory` is `None` and the NSPI dispatcher
-            // itself falls back to the authenticated-self stub.
+            // caller-only minimal stub (audit gap §2d). When no JMAP-backed
+            // directory is configured `directory` is `None` and the NSPI
+            // dispatcher itself falls back to the authenticated-self stub.
             if let Some(dir) = &directory {
                 mapi_state = mapi_state.with_directory(dir.clone());
             }

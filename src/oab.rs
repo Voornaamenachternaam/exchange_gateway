@@ -26,7 +26,8 @@
 //     the same `AuthVerifier` used by EWS/EAS (Stalwart JMAP/CalDAV creds).
 //     No credentials ⇒ 401 with `WWW-Authenticate: Basic`.
 //   * The OAB data is derived solely from the operator-configured directory
-//     (`AppState.directory`, backed by the Stalwart admin API). When no
+//     (`AppState.directory`, backed by Stalwart's JMAP directory extension
+//     `urn:stalwart:jmap` `x:Account/*`). When no
 //     directory is configured, an empty (header-only) OAB is served so the
 //     endpoint never leaks a 404, but also never fabricates identities.
 //   * Conditional GET (`If-None-Match` / `ETag`) and `Last-Modified` are

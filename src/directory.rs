@@ -1,16 +1,37 @@
 // src/directory.rs
 // Directory service for GAL/ResolveNames functionality.
-// Provides a trait-based abstraction for contact/recipient lookups.
-// Implements HTTP-based directory lookup using Stalwart's admin API.
+//
+// Provides a trait-based abstraction for contact/recipient lookups against the
+// Stalwart back-end. The directory is read exclusively over JMAP using
+// Stalwart's native admin extension (`urn:stalwart:jmap`):
+//
+//   * `x:Account/query` + `x:Account/get`  — enumerate/resolve user (and group)
+//     accounts, i.e. the GAL / recipient directory.
+//   * `x:MailingList/query` + `x:MailingList/get` — distribution lists.
+//
+// The deprecated Stalwart REST admin API (`/api/{v1,v2,...}/accounts`,
+// `/api/.../sieve`, etc.) is NOT used anywhere in this module: the JMAP admin
+// extension is the supported, forward-compatible surface for server-wide
+// directory reads and requires the Stalwart administrator account that holds
+// the `sysAccount*` / `sysMailingList*` permissions.
 
 use chrono::{DateTime, Utc};
-use reqwest::blocking::Client;
+use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
 use std::sync::Arc;
 use thiserror::Error;
+use tokio::runtime::Runtime;
+
+use crate::jmap::{JMAP_STALWART_CAPABILITY, JmapClient, JmapResponse};
+
+/// Upper bound on the number of accounts fetched in a single directory read.
+/// The OAB download and the NSPI GAL snapshot already cap at 5000; this is a
+/// safety ceiling so a misconfigured directory can never trigger an unbounded
+/// full-directory transfer.
+const MAX_ACCOUNTS: usize = 10_000;
 
 /// A contact entry returned by directory lookups.
-use serde_json::json;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Contact {
     /// Display name (e.g., "John Doe")
@@ -156,36 +177,12 @@ impl<T: DirectoryLookup + Clone + Send + Sync + 'static> DirectoryLookupAsync fo
     }
 }
 
-/// Configuration for Stalwart admin API directory.
-#[derive(Debug, Clone)]
-pub struct StalwartAdminConfig {
-    /// Base URL for Stalwart admin API (e.g., "http://stalwart:8080/api/v1")
-    pub base_url: String,
-    /// Username for admin authentication (if required)
-    pub username: Option<String>,
-    /// Password for admin authentication (if required)
-    pub password: Option<String>,
-    /// Connection timeout in seconds
-    pub timeout_secs: u64,
-}
-
-impl Default for StalwartAdminConfig {
-    fn default() -> Self {
-        Self {
-            base_url: String::new(),
-            username: None,
-            password: None,
-            timeout_secs: 10,
-        }
-    }
-}
-
-/// JMAP‑based directory service using Stalwart's Identity API.
-/// Retrieves contacts via JMAP `Identity/get`.
-use crate::jmap::JmapClient;
-use secrecy::SecretString;
-use tokio::runtime::Runtime;
-
+/// JMAP-backed directory service using Stalwart's admin JMAP extension.
+///
+/// The administrator account (which holds `sysAccountGet`/`sysAccountQuery` and
+/// `sysMailingListGet`/`sysMailingListQuery` permissions) is used to enumerate
+/// the server-wide directory via `x:Account/*` and `x:MailingList/*` under the
+/// `urn:stalwart:jmap` capability.
 pub struct JmapDirectory {
     jmap_client: JmapClient,
     username: String,
@@ -193,393 +190,466 @@ pub struct JmapDirectory {
     runtime: Runtime,
 }
 
-impl DirectoryLookup for JmapDirectory {
-    fn search_blocking(
+/// The account ID passed as the `accountId` argument to the `x:Account/*` and
+/// `x:MailingList/*` `Foo/query` / `Foo/get` methods (RFC 8620 method shape).
+/// Stalwart's admin (`sys*`) methods are scoped server-wide and do not operate
+/// on a single mailbox; the admin extension accepts the reserved `admin`
+/// account id for these calls.
+const ADMIN_ACCOUNT_SCOPE: &str = "admin";
+
+impl JmapDirectory {
+    /// Construct a JMAP-backed directory service.
+    pub fn create(
+        jmap_base: &str,
+        admin_username: Option<&str>,
+        admin_password: Option<&str>,
+    ) -> Result<Arc<dyn DirectoryLookup>, DirectoryError> {
+        if jmap_base.trim().is_empty() {
+            return Err(DirectoryError::ConfigError(
+                "JMAP base URL is required for the directory service".to_string(),
+            ));
+        }
+        let client = JmapClient::new(jmap_base).map_err(|e| {
+            DirectoryError::ConfigError(format!("Failed to build JMAP client: {e}"))
+        })?;
+        let username = admin_username.unwrap_or("").to_string();
+        let password = admin_password.unwrap_or("");
+        let runtime = Runtime::new()
+            .map_err(|e| DirectoryError::Internal(format!("Tokio runtime create failed: {e}")))?;
+        Ok(Arc::new(Self {
+            jmap_client: client,
+            username,
+            password: SecretString::from(password.to_string()),
+            runtime,
+        }) as Arc<dyn DirectoryLookup>)
+    }
+
+    /// Whether the directory is usable: a JMAP base and admin credentials are
+    /// both required (the admin account is what holds the `sys*` permissions).
+    fn configured(&self) -> bool {
+        !self.username.is_empty() && !self.password.expose_secret().is_empty()
+    }
+
+    /// Perform a JMAP `x:Account/query` and return the account `ids`.
+    fn query_account_ids(
         &self,
-        query: &str,
-        _limit: Option<usize>,
-    ) -> Result<SearchResult, DirectoryError> {
-        // Use the pre‑created Tokio runtime stored in the struct.
+        filter: Value,
+        limit: Option<usize>,
+    ) -> Result<(Vec<String>, Option<usize>), DirectoryError> {
+        let mut args = serde_json::Map::new();
+        args.insert("accountId".to_string(), json!(ADMIN_ACCOUNT_SCOPE));
+        args.insert("filter".to_string(), filter);
+        if let Some(limit) = limit {
+            args.insert("limit".to_string(), json!(limit));
+            args.insert("position".to_string(), json!(0));
+        }
         let rt = &self.runtime;
+        let client = self.jmap_client.clone();
         let username = self.username.clone();
         let password = self.password.clone();
-        let client = self.jmap_client.clone();
         rt.block_on(async move {
-            // Account/get returns all accounts; we filter client‑side for the search query.
-            let args = json!({});
             let resp = client
                 .api_call(
                     client.base_url(),
-                    &["urn:ietf:params:jmap:core"],
-                    vec![("Account/get", args, "a0")],
+                    &["urn:ietf:params:jmap:core", JMAP_STALWART_CAPABILITY],
+                    vec![("x:Account/query", Value::Object(args), "q0")],
                     &username,
                     &password,
                 )
                 .await?;
-            let mut contacts = Vec::new();
-            if let Some((_, value, _)) = resp
-                .method_responses
-                .iter()
-                .find(|(name, _, _)| name == "Account/get")
-                && let Some(list) = value.get("list").and_then(|v| v.as_array())
-            {
-                for acc in list {
-                    let email = acc
-                        .get("email")
-                        .or_else(|| acc.get("primaryEmail"))
-                        .and_then(|v| v.as_str())
-                        .unwrap_or_default()
-                        .to_string();
-                    let display_name = acc
-                        .get("name")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or(&email)
-                        .to_string();
-                    if query.is_empty()
-                        || display_name.to_lowercase().contains(&query.to_lowercase())
-                        || email.to_lowercase().contains(&query.to_lowercase())
-                    {
-                        contacts.push(Contact {
-                            display_name,
-                            email,
-                            title: None,
-                            office: None,
-                            phone: None,
-                            department: None,
-                            company: None,
-                            last_modified: None,
-                        });
-                    }
-                }
+            if let Some(err) = jmap_method_error(&resp) {
+                return Err(err);
             }
-            let total_estimate = contacts.len();
-            Ok(SearchResult {
-                contacts,
-                distribution_lists: vec![],
-                is_truncated: false,
-                total_estimate,
-            })
-        })
-    }
-
-    fn resolve_email_blocking(&self, email: &str) -> Result<Option<Contact>, DirectoryError> {
-        if !email.contains('@') {
-            return Ok(None);
-        }
-        let rt = Runtime::new()
-            .map_err(|e| DirectoryError::Internal(format!("Runtime create error: {}", e)))?;
-        let username = self.username.clone();
-        let password = self.password.clone();
-        let client = self.jmap_client.clone();
-        let email_str = email.to_string();
-        rt.block_on(async move {
-            // Query for the specific email.
-            let query_args = json!({
-                "filter": { "email": email_str },
-                "limit": 1,
-            });
-            let query_resp = client
-                .api_call(
-                    client.base_url(),
-                    &["urn:ietf:params:jmap:core"],
-                    vec![("Identity/query", query_args, "q0")],
-                    &username,
-                    &password,
-                )
-                .await?;
-            let ids: Vec<String> = if let Some((_, value, _)) = query_resp
+            let (ids, total) = if let Some((_, value, _)) = resp
                 .method_responses
                 .iter()
-                .find(|(name, _, _)| name == "Identity/query")
+                .find(|(name, _, _)| name == "x:Account/query")
             {
-                value
+                let ids = value
                     .get("ids")
                     .and_then(|v| v.as_array())
-                    .map_or(vec![], |arr| {
+                    .map(|arr| {
                         arr.iter()
-                            .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                            .collect()
+                            .filter_map(|v| v.as_str().map(str::to_string))
+                            .collect::<Vec<_>>()
                     })
+                    .unwrap_or_default();
+                let total = value
+                    .get("total")
+                    .and_then(|v| v.as_u64())
+                    .map(|n| n as usize);
+                (ids, total)
             } else {
-                vec![]
+                (Vec::new(), None)
             };
-            if ids.is_empty() {
-                return Ok(None);
-            }
-            let get_args = json!({ "ids": ids });
-            let get_resp = client
+            Ok((ids, total))
+        })
+    }
+
+    /// Perform a JMAP `x:Account/get` for the given ids and return the raw
+    /// account `list` objects.
+    fn get_accounts(&self, ids: &[String]) -> Result<Vec<Value>, DirectoryError> {
+        let args = json!({
+            "accountId": ADMIN_ACCOUNT_SCOPE,
+            "ids": ids,
+            "properties": ["name", "emailAddress", "description", "type"],
+        });
+        let rt = &self.runtime;
+        let client = self.jmap_client.clone();
+        let username = self.username.clone();
+        let password = self.password.clone();
+        rt.block_on(async move {
+            let resp = client
                 .api_call(
                     client.base_url(),
-                    &["urn:ietf:params:jmap:core"],
-                    vec![("Identity/get", get_args, "g0")],
+                    &["urn:ietf:params:jmap:core", JMAP_STALWART_CAPABILITY],
+                    vec![("x:Account/get", args, "g0")],
                     &username,
                     &password,
                 )
                 .await?;
-            if let Some((_, value, _)) = get_resp
+            if let Some(err) = jmap_method_error(&resp) {
+                return Err(err);
+            }
+            let list = if let Some((_, value, _)) = resp
                 .method_responses
                 .iter()
-                .find(|(name, _, _)| name == "Identity/get")
-                && let Some(list) = value.get("list").and_then(|v| v.as_array())
-                && let Some(item) = list.first()
+                .find(|(name, _, _)| name == "x:Account/get")
             {
-                let email = item
-                    .get("email")
-                    .and_then(|v| v.as_str())
+                value
+                    .get("list")
+                    .and_then(|v| v.as_array())
+                    .cloned()
                     .unwrap_or_default()
-                    .to_string();
-                let display_name = item
-                    .get("name")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or(&email)
-                    .to_string();
-                return Ok(Some(Contact {
-                    display_name,
-                    email,
-                    title: None,
-                    office: None,
-                    phone: None,
-                    department: None,
-                    company: None,
-                    last_modified: None,
-                }));
-            }
-            Ok(None)
-        })
-    }
-
-    fn expand_dl_blocking(&self, _email: &str) -> Result<Vec<Contact>, DirectoryError> {
-        // Stalwart JMAP does not expose distribution lists.
-        Ok(Vec::new())
-    }
-
-    fn is_available(&self) -> bool {
-        !self.username.is_empty()
-    }
-}
-
-/// Directory service backed by Stalwart's admin REST API.
-pub struct StalwartAdminDirectory {
-    config: StalwartAdminConfig,
-    client: Client,
-}
-
-impl StalwartAdminDirectory {
-    pub fn create(config: StalwartAdminConfig) -> Result<Arc<dyn DirectoryLookup>, DirectoryError> {
-        let client = Client::builder()
-            .timeout(std::time::Duration::from_secs(config.timeout_secs))
-            .build()
-            .map_err(|e| {
-                DirectoryError::NetworkError(format!("Failed to build HTTP client: {}", e))
-            })?;
-
-        Ok(Arc::new(Self { config, client }) as Arc<dyn DirectoryLookup>)
-    }
-
-    /// Build a query URL for searching accounts.
-    fn build_search_url(&self, query: &str, limit: usize) -> String {
-        let query_encoded = urlencoding::encode(query);
-        format!(
-            "{}/accounts?query={}&limit={}",
-            self.config.base_url, query_encoded, limit
-        )
-    }
-
-    /// Build a URL for getting a specific account by email.
-    fn build_email_url(&self, email: &str) -> String {
-        format!(
-            "{}/accounts/{}",
-            self.config.base_url,
-            urlencoding::encode(email)
-        )
-    }
-
-    /// Parse admin API response into SearchResult.
-    fn parse_search_response(&self, json: &serde_json::Value) -> SearchResult {
-        let mut contacts = Vec::new();
-
-        if let Some(accounts) = json.get("accounts").and_then(|v| v.as_array()) {
-            for item in accounts {
-                let email = item
-                    .get("username")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                let display_name = item
-                    .get("name")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
-
-                let title = item.get("title").and_then(|v| v.as_str()).map(String::from);
-                let department = item
-                    .get("department")
-                    .and_then(|v| v.as_str())
-                    .map(String::from);
-                let company = item
-                    .get("company")
-                    .and_then(|v| v.as_str())
-                    .map(String::from);
-                let phone = item.get("phone").and_then(|v| v.as_str()).map(String::from);
-
-                let last_modified = item
-                    .get("modified")
-                    .and_then(|v| v.as_str())
-                    .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
-                    .map(|dt| dt.with_timezone(&Utc));
-
-                contacts.push(Contact {
-                    display_name,
-                    email,
-                    title,
-                    office: None,
-                    phone,
-                    department,
-                    company,
-                    last_modified,
-                });
-            }
-        }
-
-        let total_estimate = json
-            .get("total")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(contacts.len() as u64) as usize;
-        let is_truncated = total_estimate > contacts.len();
-
-        SearchResult {
-            contacts,
-            distribution_lists: Vec::new(),
-            is_truncated,
-            total_estimate,
-        }
-    }
-
-    /// Parse a single account response into Contact.
-    fn parse_email_response(&self, json: &serde_json::Value) -> Option<Contact> {
-        let email = json.get("username")?.as_str()?.to_string();
-        let display_name = json.get("name")?.as_str()?.to_string();
-
-        let title = json.get("title").and_then(|v| v.as_str()).map(String::from);
-        let department = json
-            .get("department")
-            .and_then(|v| v.as_str())
-            .map(String::from);
-        let company = json
-            .get("company")
-            .and_then(|v| v.as_str())
-            .map(String::from);
-        let phone = json.get("phone").and_then(|v| v.as_str()).map(String::from);
-
-        let last_modified = json
-            .get("modified")
-            .and_then(|v| v.as_str())
-            .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
-            .map(|dt| dt.with_timezone(&Utc));
-
-        Some(Contact {
-            display_name,
-            email,
-            title,
-            office: None,
-            phone,
-            department,
-            company,
-            last_modified,
+            } else {
+                Vec::new()
+            };
+            Ok(list)
         })
     }
 }
 
-impl DirectoryLookup for StalwartAdminDirectory {
+impl DirectoryLookup for JmapDirectory {
     fn search_blocking(
         &self,
         query: &str,
         limit: Option<usize>,
     ) -> Result<SearchResult, DirectoryError> {
-        if query.is_empty() {
-            return Err(DirectoryError::InvalidQuery);
+        if !self.configured() {
+            return Err(DirectoryError::ConfigError(
+                "Directory service is not configured (admin credentials missing)".to_string(),
+            ));
         }
-        let limit_val = limit.unwrap_or(100).min(200);
 
-        let url = self.build_search_url(query, limit_val);
-        let req = self.client.get(&url);
-        let req = match (&self.config.username, &self.config.password) {
-            (Some(user), Some(pass)) => req.basic_auth(user, Some(pass)),
-            _ => req,
-        };
+        // `"*"` and the empty string both mean "match all" (the OAB download and
+        // NSPI GAL snapshot use `"*"` to enumerate the whole directory). Any other
+        // query is an ambiguous-name-resolve (ANR) substring match over the
+        // display name or email address.
+        let wildcard = query.is_empty() || query == "*";
+        // `None` means "return all matching results" (DirectoryLookup contract),
+        // so it maps to the safety ceiling rather than a small implicit default;
+        // an explicit `limit` still caps the result and reports truncation.
+        let limit_val = limit.unwrap_or(MAX_ACCOUNTS).min(MAX_ACCOUNTS);
 
-        let resp = req.send().map_err(|e| {
-            if e.is_status() {
-                DirectoryError::HttpError(format!("HTTP error: {}", e.status().unwrap()))
-            } else if e.is_timeout() {
-                DirectoryError::Timeout
-            } else {
-                DirectoryError::NetworkError(format!("Request failed: {}", e))
+        // Fetch the whole (bounded) account list and filter client-side. This
+        // keeps substring semantics deterministic (independent of Stalwart's
+        // `text` full-text tokenisation) and matches the prior behaviour of both
+        // the JMAP and deprecated REST directory back-ends.
+        let (ids, total) = self.query_account_ids(json!({}), Some(MAX_ACCOUNTS))?;
+        let accounts = self.get_accounts(&ids)?;
+
+        let mut contacts = Vec::new();
+        for acc in &accounts {
+            let Some(contact) = parse_account_contact(acc) else {
+                continue;
+            };
+            if wildcard
+                || contact
+                    .display_name
+                    .to_lowercase()
+                    .contains(&query.to_lowercase())
+                || contact.email.to_lowercase().contains(&query.to_lowercase())
+            {
+                contacts.push(contact);
             }
-        })?;
-
-        if !resp.status().is_success() {
-            return Err(DirectoryError::HttpError(format!(
-                "Stalwart admin API returned {}",
-                resp.status()
-            )));
         }
 
-        let json: serde_json::Value = resp.json().map_err(|e| {
-            DirectoryError::HttpError(format!("Failed to parse JSON response: {}", e))
-        })?;
+        // The server-side total reflects the full matching set before our
+        // `MAX_ACCOUNTS` ceiling; when it exceeds the ceiling the directory is
+        // reporting a truncated view even before any client-side `limit` trim.
+        let server_truncated = total.is_some_and(|t| t > MAX_ACCOUNTS);
+        let client_truncated = contacts.len() > limit_val;
+        let total_estimate = contacts.len();
+        let is_truncated = server_truncated || client_truncated;
+        if client_truncated {
+            contacts.truncate(limit_val);
+        }
 
-        Ok(self.parse_search_response(&json))
+        Ok(SearchResult {
+            contacts,
+            distribution_lists: Vec::new(),
+            is_truncated,
+            total_estimate,
+        })
     }
 
     fn resolve_email_blocking(&self, email: &str) -> Result<Option<Contact>, DirectoryError> {
+        if !self.configured() {
+            return Err(DirectoryError::ConfigError(
+                "Directory service is not configured (admin credentials missing)".to_string(),
+            ));
+        }
         if !email.contains('@') {
             return Ok(None);
         }
 
-        let url = self.build_email_url(email);
-        let req = self.client.get(&url);
-        let req = match (&self.config.username, &self.config.password) {
-            (Some(user), Some(pass)) => req.basic_auth(user, Some(pass)),
-            _ => req,
-        };
-
-        let resp = req.send().map_err(|e| {
-            if e.is_status() {
-                DirectoryError::HttpError(format!("HTTP error: {}", e.status().unwrap()))
-            } else if e.is_timeout() {
-                DirectoryError::Timeout
-            } else {
-                DirectoryError::NetworkError(format!("Request failed: {}", e))
+        // Exact-match on the email address. `x:Account/query` has no dedicated
+        // `email` filter condition, so we filter by `text` and then confirm the
+        // exact address client-side.
+        let lower = email.to_lowercase();
+        let (ids, _total) = self.query_account_ids(json!({ "text": email }), Some(MAX_ACCOUNTS))?;
+        let accounts = self.get_accounts(&ids)?;
+        for acc in &accounts {
+            if let Some(contact) = parse_account_contact(acc)
+                && contact.email.to_lowercase() == lower
+            {
+                return Ok(Some(contact));
             }
-        })?;
-
-        if resp.status() == 404 {
-            return Ok(None);
         }
-        if !resp.status().is_success() {
-            return Err(DirectoryError::HttpError(format!(
-                "Stalwart admin API returned {}",
-                resp.status()
-            )));
-        }
-
-        let json: serde_json::Value = resp.json().map_err(|e| {
-            DirectoryError::HttpError(format!("Failed to parse JSON response: {}", e))
-        })?;
-
-        Ok(self.parse_email_response(&json))
+        Ok(None)
     }
 
-    fn expand_dl_blocking(&self, _email: &str) -> Result<Vec<Contact>, DirectoryError> {
-        // Distribution list expansion requires additional Stalwart API endpoints.
-        // Not implemented in this initial version.
-        Ok(Vec::new())
+    fn expand_dl_blocking(&self, email: &str) -> Result<Vec<Contact>, DirectoryError> {
+        if !self.configured() {
+            return Err(DirectoryError::ConfigError(
+                "Directory service is not configured (admin credentials missing)".to_string(),
+            ));
+        }
+        if !email.contains('@') {
+            return Ok(Vec::new());
+        }
+
+        let lower = email.to_lowercase();
+        let rt = &self.runtime;
+        let client = self.jmap_client.clone();
+        let username = self.username.clone();
+        let password = self.password.clone();
+        let email_owned = email.to_string();
+
+        // Resolve the mailing list by its address, then expand its members.
+        rt.block_on(async move {
+            let list_args = json!({
+                "accountId": ADMIN_ACCOUNT_SCOPE,
+                "filter": { "text": email_owned },
+            });
+            let list_resp = client
+                .api_call(
+                    client.base_url(),
+                    &["urn:ietf:params:jmap:core", JMAP_STALWART_CAPABILITY],
+                    vec![("x:MailingList/query", list_args, "q0")],
+                    &username,
+                    &password,
+                )
+                .await?;
+            if let Some(err) = jmap_method_error(&list_resp) {
+                return Err(err);
+            }
+            let list_ids: Vec<String> = if let Some((_, value, _)) = list_resp
+                .method_responses
+                .iter()
+                .find(|(name, _, _)| name == "x:MailingList/query")
+            {
+                value
+                    .get("ids")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|v| v.as_str().map(str::to_string))
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default()
+            } else {
+                Vec::new()
+            };
+            if list_ids.is_empty() {
+                return Ok(Vec::new());
+            }
+
+            let get_args = json!({
+                "accountId": ADMIN_ACCOUNT_SCOPE,
+                "ids": list_ids,
+                "properties": ["name", "emailAddress", "description", "recipients"],
+            });
+            let get_resp = client
+                .api_call(
+                    client.base_url(),
+                    &["urn:ietf:params:jmap:core", JMAP_STALWART_CAPABILITY],
+                    vec![("x:MailingList/get", get_args, "g0")],
+                    &username,
+                    &password,
+                )
+                .await?;
+            if let Some(err) = jmap_method_error(&get_resp) {
+                return Err(err);
+            }
+
+            let mut members = Vec::new();
+            if let Some((_, value, _)) = get_resp
+                .method_responses
+                .iter()
+                .find(|(name, _, _)| name == "x:MailingList/get")
+                && let Some(list) = value.get("list").and_then(|v| v.as_array())
+            {
+                for entry in list {
+                    // Only the mailing list whose address exactly matches the
+                    // requested address is expanded. A missing/empty
+                    // `emailAddress` never matches (so an unrelated list cannot
+                    // be expanded for any requested address).
+                    if !matches_list_address(entry, &lower) {
+                        continue;
+                    }
+                    members = expand_recipients(entry);
+                    break;
+                }
+            }
+            Ok(members)
+        })
     }
 
     fn is_available(&self) -> bool {
-        !self.config.base_url.is_empty()
+        self.configured()
     }
+}
+
+/// Inspect a parsed JMAP response for a method-level `error` response (RFC 8620
+/// §3.6.2) and map it onto a `DirectoryError`.
+///
+/// JMAP reports per-method failures inside a successful HTTP 200 body as an
+/// `error` entry (named `"error"` with a `{ type, description }` object), rather
+/// than as an HTTP error. Without this check, a permission failure
+/// (`forbidden`), a missing capability/unsupported method (`unknownMethod`), an
+/// unknown object (`accountNotFound`), or `requestTooLarge` would otherwise be
+/// indistinguishable from an empty (but valid) result set — silently returning
+/// an empty GAL / no members instead of surfacing the failure.
+///
+/// Returns `None` when the response contains no `error` entry.
+fn jmap_method_error(resp: &JmapResponse) -> Option<DirectoryError> {
+    for (name, value, _) in &resp.method_responses {
+        if name == "error" {
+            let type_str = value
+                .get("type")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown");
+            let description = value
+                .get("description")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            return match type_str {
+                "forbidden"
+                | "accountNotFound"
+                | "fromAccountNotFound"
+                | "accountNotSupportedByMethod"
+                | "invalidCredentials" => Some(DirectoryError::AuthError),
+                "unknownMethod" | "serverUnavailable" | "serverFail" | "requestTooLarge" => {
+                    Some(DirectoryError::HttpError(format!(
+                        "JMAP method error: {type_str}: {description}"
+                    )))
+                }
+                other => Some(DirectoryError::HttpError(format!(
+                    "JMAP method error: {other}: {description}"
+                ))),
+            };
+        }
+    }
+    None
+}
+
+/// Map a Stalwart `x:Account/get` account object (`@type: "User"` or `"Group"`)
+/// to a directory `Contact`. Returns `None` for account variants that have no
+/// resolvable email address (e.g. role/tenant objects).
+fn parse_account_contact(acc: &Value) -> Option<Contact> {
+    let name = acc.get("name").and_then(|v| v.as_str()).unwrap_or("");
+    let email = acc
+        .get("emailAddress")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            // Fallback for servers that only populate `name` as the full address.
+            if name.contains('@') {
+                Some(name.to_string())
+            } else {
+                None
+            }
+        })?;
+
+    let display_name = acc
+        .get("description")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| {
+            if name.is_empty() {
+                email.clone()
+            } else {
+                name.to_string()
+            }
+        });
+
+    Some(Contact {
+        display_name,
+        email,
+        title: None,
+        office: None,
+        phone: None,
+        department: None,
+        company: None,
+        last_modified: None,
+    })
+}
+
+/// Whether a mailing-list object's `emailAddress` equals the requested (already
+/// lower-cased) address. A missing or empty `emailAddress` never matches, which
+/// prevents an unrelated list from being expanded for an arbitrary request.
+fn matches_list_address(entry: &Value, requested_lower: &str) -> bool {
+    entry
+        .get("emailAddress")
+        .and_then(|v| v.as_str())
+        .is_some_and(|addr| addr.to_lowercase() == requested_lower)
+}
+
+/// Expand a mailing-list entry's `recipients` map into directory `Contact`s.
+/// Stalwart models list members as a map of `recipientAddress -> {name?, ...}`;
+/// each member becomes a contact whose address is the recipient key and whose
+/// display name is the optional member name (falling back to the address).
+fn expand_recipients(entry: &Value) -> Vec<Contact> {
+    let Some(recipients) = entry.get("recipients").and_then(|v| v.as_object()) else {
+        return Vec::new();
+    };
+    recipients
+        .iter()
+        .filter_map(|(address, member)| {
+            if !address.contains('@') {
+                return None;
+            }
+            let display_name = member
+                .get("name")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+                .unwrap_or_else(|| address.clone());
+            Some(Contact {
+                display_name,
+                email: address.clone(),
+                title: None,
+                office: None,
+                phone: None,
+                department: None,
+                company: None,
+                last_modified: None,
+            })
+        })
+        .collect()
 }
 
 /// Null directory that returns empty results.
@@ -614,52 +684,49 @@ impl DirectoryLookup for NullDirectory {
 }
 
 /// Create a directory client based on configuration.
-/// Returns Arc<dyn DirectoryLookup>.
+///
+/// The directory is backed exclusively by JMAP: `jmap_base` is the Stalwart JMAP
+/// endpoint and `admin_username`/`admin_password` are the credentials of the
+/// Stalwart administrator account holding the `sysAccount*`/`sysMailingList*`
+/// permissions. The deprecated REST admin API is no longer used.
+///
+/// Returns `Arc<dyn DirectoryLookup>` (a `JmapDirectory` when configured,
+/// otherwise a `NullDirectory`).
 pub fn create_directory(
-    admin_base: Option<&str>,
+    jmap_base: Option<&str>,
     admin_username: Option<&str>,
     admin_password: Option<&str>,
 ) -> Arc<dyn DirectoryLookup> {
-    // Prefer the legacy admin API if a base URL is provided.
-    if let Some(base) = admin_base.filter(|s| !s.is_empty()) {
-        let config = StalwartAdminConfig {
-            base_url: base.to_string(),
-            username: admin_username.map(|u| u.to_string()),
-            password: admin_password.map(|p| p.to_string()),
-            timeout_secs: 10,
-        };
-        return match StalwartAdminDirectory::create(config) {
-            Ok(dir) => dir,
-            Err(_) => Arc::new(NullDirectory) as Arc<dyn DirectoryLookup>,
-        };
+    let Some(base) = jmap_base.filter(|s| !s.trim().is_empty()) else {
+        return Arc::new(NullDirectory) as Arc<dyn DirectoryLookup>;
+    };
+    let Some(user) = admin_username.filter(|s| !s.is_empty()) else {
+        tracing::warn!(
+            target: "directory",
+            "Directory JMAP base configured but no admin username; directory unavailable"
+        );
+        return Arc::new(NullDirectory) as Arc<dyn DirectoryLookup>;
+    };
+    let pass = admin_password.unwrap_or("");
+    if pass.is_empty() {
+        tracing::warn!(
+            target: "directory",
+            "Directory JMAP base configured but no admin password; directory unavailable"
+        );
+        return Arc::new(NullDirectory) as Arc<dyn DirectoryLookup>;
     }
-    // Fallback to JMAP Identity lookup using the configured JMAP base URL.
-    // Read JMAP base from environment (same variable used by Config).
-    if let Ok(jmap_base) = std::env::var("GATEWAY_JMAP_BASE")
-        && !jmap_base.is_empty()
-    {
-        // Build JMAP client.
-        match JmapClient::new(&jmap_base) {
-            Ok(jc) => {
-                let username = admin_username.unwrap_or("").to_string();
-                let password = admin_password.unwrap_or("");
-                let dir = JmapDirectory {
-                    jmap_client: jc,
-                    username,
-                    password: SecretString::from(password.to_string()),
-                    runtime: Runtime::new()
-                        .expect("Failed to create Tokio runtime for JmapDirectory"),
-                };
-                return Arc::new(dir) as Arc<dyn DirectoryLookup>;
-            }
-            Err(e) => {
-                tracing::warn!(target: "directory", error = %e, "Failed to create JMAP client for directory service");
-                return Arc::new(NullDirectory) as Arc<dyn DirectoryLookup>;
-            }
+
+    match JmapDirectory::create(base, Some(user), Some(pass)) {
+        Ok(dir) => dir,
+        Err(e) => {
+            tracing::warn!(
+                target: "directory",
+                error = %e,
+                "Failed to create JMAP directory service"
+            );
+            Arc::new(NullDirectory) as Arc<dyn DirectoryLookup>
         }
     }
-    // No directory service configured.
-    Arc::new(NullDirectory) as Arc<dyn DirectoryLookup>
 }
 
 #[cfg(test)]
@@ -672,5 +739,107 @@ mod tests {
         assert!(!dir.is_available());
         let res = dir.search_blocking("test", None).unwrap();
         assert!(res.contacts.is_empty());
+    }
+
+    #[test]
+    fn test_null_directory_resolve() {
+        let dir = NullDirectory;
+        assert!(
+            dir.resolve_email_blocking("a@example.com")
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            dir.expand_dl_blocking("list@example.com")
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn test_parse_account_contact_uses_email_address_and_description() {
+        let acc = json!({
+            "id": "u1",
+            "type": "User",
+            "name": "alice",
+            "emailAddress": "alice@example.com",
+            "description": "Alice Example",
+        });
+        let contact = parse_account_contact(&acc).unwrap();
+        assert_eq!(contact.email, "alice@example.com");
+        assert_eq!(contact.display_name, "Alice Example");
+    }
+
+    #[test]
+    fn test_parse_account_contact_falls_back_to_name() {
+        let acc = json!({
+            "id": "u2",
+            "type": "User",
+            "name": "bob",
+            "emailAddress": "bob@example.com",
+        });
+        let contact = parse_account_contact(&acc).unwrap();
+        assert_eq!(contact.email, "bob@example.com");
+        assert_eq!(contact.display_name, "bob");
+    }
+
+    #[test]
+    fn test_parse_account_contact_none_without_email() {
+        let acc = json!({
+            "id": "r1",
+            "type": "Role",
+            "description": "Role without an address",
+        });
+        assert!(parse_account_contact(&acc).is_none());
+    }
+
+    #[test]
+    fn test_expand_recipients_maps_addresses_to_contacts() {
+        let entry = json!({
+            "name": "team",
+            "emailAddress": "team@example.com",
+            "recipients": {
+                "alice@example.com": { "name": "Alice" },
+                "bob@example.com": {}
+            }
+        });
+        let members = expand_recipients(&entry);
+        assert_eq!(members.len(), 2);
+        assert_eq!(members[0].email, "alice@example.com");
+        assert_eq!(members[0].display_name, "Alice");
+        assert_eq!(members[1].email, "bob@example.com");
+        assert_eq!(members[1].display_name, "bob@example.com");
+    }
+
+    #[test]
+    fn test_matches_list_address_exact_case_insensitive() {
+        let entry = json!({ "emailAddress": "Team@Example.com" });
+        assert!(matches_list_address(&entry, "team@example.com"));
+    }
+
+    #[test]
+    fn test_matches_list_address_rejects_different_address() {
+        let entry = json!({ "emailAddress": "other@example.com" });
+        assert!(!matches_list_address(&entry, "team@example.com"));
+    }
+
+    #[test]
+    fn test_matches_list_address_rejects_missing_email() {
+        let entry = json!({ "name": "team" });
+        assert!(!matches_list_address(&entry, "team@example.com"));
+    }
+
+    #[test]
+    fn test_matches_list_address_rejects_empty_email() {
+        let entry = json!({ "emailAddress": "" });
+        assert!(!matches_list_address(&entry, "team@example.com"));
+    }
+
+    #[test]
+    fn test_create_directory_unconfigured_returns_null() {
+        let dir = create_directory(None, None, None);
+        assert!(!dir.is_available());
+        let dir = create_directory(Some("http://stalwart:8080/jmap"), None, None);
+        assert!(!dir.is_available());
     }
 }
