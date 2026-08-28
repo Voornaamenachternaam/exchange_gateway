@@ -15,8 +15,9 @@
 // `SeekEntries`, `QueryColumns`, `ResortRestriction`, `CompareMIds` plus the
 // URL helpers — backed by the operator-configured directory
 // (`Arc<dyn DirectoryLookup>`, the same store EWS `ResolveNames` /
-// `FindPeople` and the OAB download already use, backed by the Stalwart admin
-// API). With no directory configured it serves a *minimal GAL stub* containing
+// `FindPeople` and the OAB download already use, backed by Stalwart's JMAP
+// directory extension `urn:stalwart:jmap` `x:Account/*`). With no directory
+// configured it serves a *minimal GAL stub* containing
 // only the authenticated caller's own mailbox entry so "Check Names" for self
 // still resolves; non-self resolutions return an empty
 // result set, the documented behaviour of a directory-less Exchange look-alike.
@@ -606,7 +607,7 @@ struct GalEntry {
 /// address-book interaction is a multi-RPC sequence (Bind → GetSpecialTable →
 /// QueryColumns → QueryRows × N pages → ResolveNames → GetProps); resolving the
 /// full directory (`search_blocking("*", Some(5000))`) on EVERY RPC is
-/// O(rpcs × directory) work per user action and an admin-API amplification.
+/// O(rpcs × directory) work per user action and a directory-query amplification.
 /// The cache stores only the *directory* side (without the caller's own entry,
 /// which is assembled per call); a short TTL bounds staleness so a newly
 /// provisioned mailbox surfaces within the window. Failures refresh nothing

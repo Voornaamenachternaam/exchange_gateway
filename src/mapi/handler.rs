@@ -100,8 +100,10 @@ pub struct MapiState {
     /// Optional directory service backing the NSPI address-book surface
     /// (`/mapi/nspi`) — the same `Arc<dyn DirectoryLookup>` the EWS
     /// `ResolveNames` / `FindPeople` paths and the OAB download already use,
-    /// backed by the Stalwart admin API when `admin_base` is configured (audit
-    /// gap §2d). When `None` the NSPI dispatcher serves a *minimal GAL stub*
+    /// backed by Stalwart's JMAP directory extension (`urn:stalwart:jmap`
+    /// `x:Account/*`) when a JMAP endpoint and admin credentials are configured
+    /// (audit gap §2d). When `None` the NSPI dispatcher serves a *minimal GAL
+    /// stub*
     /// containing only the authenticated caller's own mailbox entry so
     /// recipient resolution / "Check Names" for self still resolves; non-self
     /// resolutions return an empty result set, which is the documented
@@ -158,8 +160,9 @@ impl MapiState {
         self
     }
 
-    /// Wire the operator-configured directory (Stalwart admin API) onto the
-    /// MAPI state so the NSPI address-book dispatcher (`mapi::nspi`) can serve
+    /// Wire the operator-configured directory (backed by Stalwart's JMAP
+    /// directory extension) onto the MAPI state so the NSPI address-book
+    /// dispatcher (`mapi::nspi`) can serve
     /// a real GAL for `Bind` / `QueryRows` / `DnToMinId` / `ResolveNames` /
     /// `GetMatches` rather than the caller-only minimal stub (audit gap §2d).
     pub fn with_directory(

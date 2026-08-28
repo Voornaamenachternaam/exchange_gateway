@@ -366,6 +366,20 @@ pub const JMAP_CAL_CAPABILITY: &str = "urn:ietf:params:jmap:calendars";
 /// JMAP capability URN for availability/free-busy (draft-ietf-jmap-calendars §1.5.2).
 pub const JMAP_CAL_AVAILABILITY_CAPABILITY: &str = "urn:ietf:params:jmap:principals:availability";
 
+/// JMAP capability URN for Stalwart's admin/directory extension. Stalwart
+/// exposes the server-wide directory (accounts, groups, mailing lists, domains)
+/// through a set of `x:Account/*`, `x:MailingList/*`, `x:Domain/*` and
+/// `x:Directory/*` JMAP methods advertised under this capability. This is the
+/// supported replacement for the deprecated Stalwart REST admin API
+/// (`/api/{v1|v2|...}`); the gateway's directory service (GAL / ResolveNames /
+/// OAB / NSPI) and OOF Sieve management talk to Stalwart exclusively through
+/// JMAP and never through the legacy REST endpoints.
+pub const JMAP_STALWART_CAPABILITY: &str = "urn:stalwart:jmap";
+
+/// JMAP capability URN for Stalwart's Sieve extension (RFC 9666). Used by the
+/// OOF manager to store vacation scripts via `SieveScript/get`/`set`.
+pub const JMAP_SIEVE_CAPABILITY: &str = "urn:ietf:params:jmap:sieve";
+
 /// JMAP Calendar object (draft-ietf-jmap-calendars §4).
 /// Represents a named collection of CalendarEvents.
 #[derive(Clone, Debug, Serialize, Deserialize)]
