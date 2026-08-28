@@ -23,7 +23,7 @@ use std::sync::Arc;
 use thiserror::Error;
 use tokio::runtime::Runtime;
 
-use crate::jmap::{JMAP_STALWART_CAPABILITY, JmapClient};
+use crate::jmap::{JMAP_STALWART_CAPABILITY, JmapClient, JmapResponse};
 
 /// Upper bound on the number of accounts fetched in a single directory read.
 /// The OAB download and the NSPI GAL snapshot already cap at 5000; this is a
@@ -257,6 +257,9 @@ impl JmapDirectory {
                     &password,
                 )
                 .await?;
+            if let Some(err) = jmap_method_error(&resp) {
+                return Err(err);
+            }
             let (ids, total) = if let Some((_, value, _)) = resp
                 .method_responses
                 .iter()
@@ -305,6 +308,9 @@ impl JmapDirectory {
                     &password,
                 )
                 .await?;
+            if let Some(err) = jmap_method_error(&resp) {
+                return Err(err);
+            }
             let list = if let Some((_, value, _)) = resp
                 .method_responses
                 .iter()
@@ -340,13 +346,16 @@ impl DirectoryLookup for JmapDirectory {
         // query is an ambiguous-name-resolve (ANR) substring match over the
         // display name or email address.
         let wildcard = query.is_empty() || query == "*";
-        let limit_val = limit.unwrap_or(100).min(MAX_ACCOUNTS);
+        // `None` means "return all matching results" (DirectoryLookup contract),
+        // so it maps to the safety ceiling rather than a small implicit default;
+        // an explicit `limit` still caps the result and reports truncation.
+        let limit_val = limit.unwrap_or(MAX_ACCOUNTS).min(MAX_ACCOUNTS);
 
         // Fetch the whole (bounded) account list and filter client-side. This
         // keeps substring semantics deterministic (independent of Stalwart's
         // `text` full-text tokenisation) and matches the prior behaviour of both
         // the JMAP and deprecated REST directory back-ends.
-        let (ids, _total) = self.query_account_ids(json!({}), Some(MAX_ACCOUNTS))?;
+        let (ids, total) = self.query_account_ids(json!({}), Some(MAX_ACCOUNTS))?;
         let accounts = self.get_accounts(&ids)?;
 
         let mut contacts = Vec::new();
@@ -365,9 +374,14 @@ impl DirectoryLookup for JmapDirectory {
             }
         }
 
+        // The server-side total reflects the full matching set before our
+        // `MAX_ACCOUNTS` ceiling; when it exceeds the ceiling the directory is
+        // reporting a truncated view even before any client-side `limit` trim.
+        let server_truncated = total.is_some_and(|t| t > MAX_ACCOUNTS);
+        let client_truncated = contacts.len() > limit_val;
         let total_estimate = contacts.len();
-        let is_truncated = contacts.len() > limit_val;
-        if is_truncated {
+        let is_truncated = server_truncated || client_truncated;
+        if client_truncated {
             contacts.truncate(limit_val);
         }
 
@@ -437,6 +451,9 @@ impl DirectoryLookup for JmapDirectory {
                     &password,
                 )
                 .await?;
+            if let Some(err) = jmap_method_error(&list_resp) {
+                return Err(err);
+            }
             let list_ids: Vec<String> = if let Some((_, value, _)) = list_resp
                 .method_responses
                 .iter()
@@ -472,6 +489,9 @@ impl DirectoryLookup for JmapDirectory {
                     &password,
                 )
                 .await?;
+            if let Some(err) = jmap_method_error(&get_resp) {
+                return Err(err);
+            }
 
             let mut members = Vec::new();
             if let Some((_, value, _)) = get_resp
@@ -481,13 +501,11 @@ impl DirectoryLookup for JmapDirectory {
                 && let Some(list) = value.get("list").and_then(|v| v.as_array())
             {
                 for entry in list {
-                    let entry_email = entry
-                        .get("emailAddress")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or_default()
-                        .to_string();
-                    // Only the matching mailing list is expanded.
-                    if !entry_email.is_empty() && entry_email.to_lowercase() != lower {
+                    // Only the mailing list whose address exactly matches the
+                    // requested address is expanded. A missing/empty
+                    // `emailAddress` never matches (so an unrelated list cannot
+                    // be expanded for any requested address).
+                    if !matches_list_address(entry, &lower) {
                         continue;
                     }
                     members = expand_recipients(entry);
@@ -501,6 +519,49 @@ impl DirectoryLookup for JmapDirectory {
     fn is_available(&self) -> bool {
         self.configured()
     }
+}
+
+/// Inspect a parsed JMAP response for a method-level `error` response (RFC 8620
+/// §3.6.2) and map it onto a `DirectoryError`.
+///
+/// JMAP reports per-method failures inside a successful HTTP 200 body as an
+/// `error` entry (named `"error"` with a `{ type, description }` object), rather
+/// than as an HTTP error. Without this check, a permission failure
+/// (`forbidden`), a missing capability/unsupported method (`unknownMethod`), an
+/// unknown object (`accountNotFound`), or `requestTooLarge` would otherwise be
+/// indistinguishable from an empty (but valid) result set — silently returning
+/// an empty GAL / no members instead of surfacing the failure.
+///
+/// Returns `None` when the response contains no `error` entry.
+fn jmap_method_error(resp: &JmapResponse) -> Option<DirectoryError> {
+    for (name, value, _) in &resp.method_responses {
+        if name == "error" {
+            let type_str = value
+                .get("type")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown");
+            let description = value
+                .get("description")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            return match type_str {
+                "forbidden"
+                | "accountNotFound"
+                | "fromAccountNotFound"
+                | "accountNotSupportedByMethod"
+                | "invalidCredentials" => Some(DirectoryError::AuthError),
+                "unknownMethod" | "serverUnavailable" | "serverFail" | "requestTooLarge" => {
+                    Some(DirectoryError::HttpError(format!(
+                        "JMAP method error: {type_str}: {description}"
+                    )))
+                }
+                other => Some(DirectoryError::HttpError(format!(
+                    "JMAP method error: {other}: {description}"
+                ))),
+            };
+        }
+    }
+    None
 }
 
 /// Map a Stalwart `x:Account/get` account object (`@type: "User"` or `"Group"`)
@@ -545,6 +606,16 @@ fn parse_account_contact(acc: &Value) -> Option<Contact> {
         company: None,
         last_modified: None,
     })
+}
+
+/// Whether a mailing-list object's `emailAddress` equals the requested (already
+/// lower-cased) address. A missing or empty `emailAddress` never matches, which
+/// prevents an unrelated list from being expanded for an arbitrary request.
+fn matches_list_address(entry: &Value, requested_lower: &str) -> bool {
+    entry
+        .get("emailAddress")
+        .and_then(|v| v.as_str())
+        .is_some_and(|addr| addr.to_lowercase() == requested_lower)
 }
 
 /// Expand a mailing-list entry's `recipients` map into directory `Contact`s.
@@ -738,6 +809,30 @@ mod tests {
         assert_eq!(members[0].display_name, "Alice");
         assert_eq!(members[1].email, "bob@example.com");
         assert_eq!(members[1].display_name, "bob@example.com");
+    }
+
+    #[test]
+    fn test_matches_list_address_exact_case_insensitive() {
+        let entry = json!({ "emailAddress": "Team@Example.com" });
+        assert!(matches_list_address(&entry, "team@example.com"));
+    }
+
+    #[test]
+    fn test_matches_list_address_rejects_different_address() {
+        let entry = json!({ "emailAddress": "other@example.com" });
+        assert!(!matches_list_address(&entry, "team@example.com"));
+    }
+
+    #[test]
+    fn test_matches_list_address_rejects_missing_email() {
+        let entry = json!({ "name": "team" });
+        assert!(!matches_list_address(&entry, "team@example.com"));
+    }
+
+    #[test]
+    fn test_matches_list_address_rejects_empty_email() {
+        let entry = json!({ "emailAddress": "" });
+        assert!(!matches_list_address(&entry, "team@example.com"));
     }
 
     #[test]

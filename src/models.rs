@@ -62,6 +62,25 @@ impl AppState {
         // `x:MailingList/*`) using the administrator account credentials. It is
         // configured when a JMAP endpoint and admin credentials are both present;
         // the deprecated REST admin API is no longer used.
+        // The administrator credentials authenticate the server-wide directory
+        // and Sieve (OOF) JMAP calls via HTTP Basic. Warn (but do not hard-fail)
+        // when that endpoint is cleartext `http://`: the gateway commonly sits on
+        // an internal Docker network adjacent to Stalwart where TLS terminates at
+        // the edge, but over a non-trusted network this would transmit the admin
+        // password unencrypted (CWE-319). Requiring HTTPS unconditionally would
+        // break that internal-container topology.
+        if !cfg.jmap_base.is_empty()
+            && !cfg.admin_username.is_empty()
+            && !cfg.admin_password.is_empty()
+            && cfg.jmap_base.trim_start().starts_with("http://")
+        {
+            tracing::warn!(
+                target: "directory",
+                "JMAP admin credentials may be sent over a cleartext (http://) endpoint; \
+                 `jmap_base` should use HTTPS unless Stalwart is on a trusted internal network"
+            );
+        }
+
         let directory = if !cfg.jmap_base.is_empty()
             && !cfg.admin_username.is_empty()
             && !cfg.admin_password.is_empty()

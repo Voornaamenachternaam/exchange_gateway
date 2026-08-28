@@ -131,7 +131,11 @@ pub fn build_sieve_script(
     let mut requires = vec!["vacation", "envelope"];
     let date_required = start_time.is_some() && end_time.is_some();
     if date_required {
+        // `currentdate :value` (RFC 5260) needs both the `date` extension (for
+        // the `currentdate` test) and the `relational` extension (for the
+        // `:value` match type).
         requires.push("date");
+        requires.push("relational");
     }
     let require_str = requires
         .iter()
@@ -197,14 +201,24 @@ pub fn build_sieve_script(
         }
     }
 
-    // If date range is provided, wrap the rule blocks in an outer date condition.
+    // If no vacation action was produced (e.g. the audience never matched a
+    // configured reply), return an empty script to disable OOF rather than
+    // storing a `require`-only script that would report OOF as enabled without
+    // ever sending a reply.
+    if rule_blocks.trim().is_empty() {
+        return Ok(String::new());
+    }
+
+    // If date range is provided, wrap the rule blocks in an outer `currentdate`
+    // condition (RFC 5260): the test applies to the current date/time and needs
+    // the `date` + `relational` capabilities and the `iso8601` date-part. The
+    // timestamps are formatted as ISO 8601 (`YYYY-MM-DDTHH:MM:SS±ZZZZ`).
     if date_required {
         if let (Some(start), Some(end)) = (start_time, end_time) {
-            // Convert to Sieve date format: "YYYY-MM-DD HH:MM:SS +ZZZZ"
-            let start_str = start.format("%Y-%m-%d %H:%M:%S %z").to_string();
-            let end_str = end.format("%Y-%m-%d %H:%M:%S %z").to_string();
+            let start_str = start.format("%Y-%m-%dT%H:%M:%S%z").to_string();
+            let end_str = end.format("%Y-%m-%dT%H:%M:%S%z").to_string();
             let wrapped = format!(
-                "if allof (date :value \"ge\" \"{}\", date :value \"le\" \"{}\") {{\n{}\n}}\n",
+                "if allof (currentdate :value \"ge\" \"iso8601\" \"{}\", currentdate :value \"le\" \"iso8601\" \"{}\") {{\n{}\n}}\n",
                 start_str, end_str, rule_blocks
             );
             script.push_str(&wrapped);
@@ -215,12 +229,7 @@ pub fn build_sieve_script(
         script.push_str(&rule_blocks);
     }
 
-    // If the script contains no vacation actions, return empty to disable.
-    if !script.contains("vacation") {
-        Ok(String::new())
-    } else {
-        Ok(script)
-    }
+    Ok(script)
 }
 
 /// JMAP‑based OOF manager using Stalwart's JMAP Sieve extension.
@@ -404,8 +413,11 @@ impl OofManager for NullOofManager {
 /// Stalwart account credentials whose Sieve scripts are managed. The deprecated
 /// REST admin API (`/api/.../sieve`) is no longer used.
 ///
-/// Returns a `JmapOofManager` when `jmap_base` is present, otherwise a
-/// `NullOofManager` (OOF always reported disabled).
+/// Returns a `JmapOofManager` when a non-blank `jmap_base` *and* both admin
+/// credentials are present; otherwise a `NullOofManager` (OOF always reported
+/// disabled). Blank credentials are treated the same as a missing endpoint so
+/// that a partially-configured manager never issues requests that would only
+/// fail at runtime.
 pub fn create_oof_manager(
     jmap_base: Option<&str>,
     admin_username: Option<&str>,
@@ -415,8 +427,16 @@ pub fn create_oof_manager(
     let Some(jmap_base) = jmap_base.filter(|s| !s.trim().is_empty()) else {
         return Arc::new(NullOofManager) as Arc<dyn OofManager>;
     };
-    let user = admin_username.unwrap_or("");
-    let pass = admin_password.unwrap_or("");
+    let (Some(user), Some(pass)) = (
+        admin_username.filter(|s| !s.trim().is_empty()),
+        admin_password.filter(|s| !s.is_empty()),
+    ) else {
+        tracing::warn!(
+            target: "oof",
+            "JMAP admin credentials are not configured; OOF will be reported disabled"
+        );
+        return Arc::new(NullOofManager) as Arc<dyn OofManager>;
+    };
     match JmapOofManager::create(jmap_base, user, pass, mail_domain) {
         Ok(manager) => manager,
         Err(e) => {
@@ -479,5 +499,55 @@ mod tests {
         .unwrap();
         assert!(!script.contains("vacation"));
         assert!(script.is_empty());
+    }
+
+    #[test]
+    fn test_build_sieve_script_audience_mismatch_returns_empty() {
+        // `External` audience with only an internal reply produces no vacation
+        // action; the script must be empty (disable OOF), not a `require`-only
+        // script that would falsely report OOF as enabled.
+        let script = build_sieve_script(
+            "example.com",
+            Some("Internal only"),
+            None,
+            ExternalAudience::External,
+            None,
+            None,
+        )
+        .unwrap();
+        assert!(script.is_empty());
+    }
+
+    #[test]
+    fn test_build_sieve_script_date_range_uses_currentdate_and_relational() {
+        let start = Utc::now();
+        let end = start + Duration::days(1);
+        let script = build_sieve_script(
+            "example.com",
+            Some("Internal"),
+            Some("External"),
+            ExternalAudience::All,
+            Some(start),
+            Some(end),
+        )
+        .unwrap();
+        assert!(
+            script.contains("\"relational\""),
+            "relational capability required by :value"
+        );
+        assert!(
+            script.contains("\"date\""),
+            "date capability required by currentdate"
+        );
+        assert!(
+            script.contains("currentdate :value \"ge\" \"iso8601\""),
+            "lower bound uses currentdate"
+        );
+        assert!(
+            script.contains("currentdate :value \"le\" \"iso8601\""),
+            "upper bound uses currentdate"
+        );
+        // Timestamps must be ISO 8601 (`T` separator), not a space-separated form.
+        assert!(script.contains('T'));
     }
 }

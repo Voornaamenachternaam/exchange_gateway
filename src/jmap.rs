@@ -376,8 +376,8 @@ pub const JMAP_CAL_AVAILABILITY_CAPABILITY: &str = "urn:ietf:params:jmap:princip
 /// JMAP and never through the legacy REST endpoints.
 pub const JMAP_STALWART_CAPABILITY: &str = "urn:stalwart:jmap";
 
-/// JMAP capability URN for Stalwart's Sieve extension (RFC 9666). Used by the
-/// OOF manager to store vacation scripts via `SieveScript/get`/`set`.
+/// JMAP capability URN for Sieve Scripts (RFC 9661). Used by the OOF manager to
+/// store vacation scripts via `SieveScript/get`/`set`.
 pub const JMAP_SIEVE_CAPABILITY: &str = "urn:ietf:params:jmap:sieve";
 
 /// JMAP Calendar object (draft-ietf-jmap-calendars §4).
