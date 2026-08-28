@@ -343,8 +343,10 @@ fn decode_pstring(bytes: Vec<u8>) -> Option<PropertyValue> {
         trimmed.pop();
     }
     let units: Vec<u16> = trimmed
-        .chunks_exact(2)
-        .map(|c| u16::from_le_bytes([c[0], c[1]]))
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|&c| u16::from_le_bytes(c))
         .collect();
     Some(PropertyValue::String(String::from_utf16_lossy(&units)))
 }
@@ -394,8 +396,8 @@ fn encode_scalar(out: &mut Vec<u8>, value: &PropertyValue) {
 }
 
 const CELL_FLAG_VALUE: u8 = 0x0;
-#[allow(dead_code)] // documented wire value (§2.2.1.5 Flag 0x1); the gateway never emits an absent cell.
-const CELL_FLAG_ABSENT: u8 = 0x1;
+// §2.2.1.5 also defines Flag 0x1 (an absent cell); the gateway never emits one,
+// so it is intentionally not represented here.
 const CELL_FLAG_ERROR: u8 = 0xA;
 
 /// Encode a single flagged cell (Flag + optional value) for the given tag.
@@ -1742,8 +1744,10 @@ fn decode_name_blob(bytes: &[u8]) -> String {
         trimmed = &trimmed[..trimmed.len() - 1];
     }
     let units: Vec<u16> = trimmed
-        .chunks_exact(2)
-        .map(|c| u16::from_le_bytes([c[0], c[1]]))
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|&c| u16::from_le_bytes(c))
         .collect();
     String::from_utf16_lossy(&units)
 }

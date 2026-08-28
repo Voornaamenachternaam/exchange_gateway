@@ -112,17 +112,17 @@ pub fn build_reply_ics(
     responder_email: &str,
     responder_name: Option<&str>,
 ) -> String {
-    let msg = MeetingMessage::new_response(
-        &inv.uid,
-        &inv.organizer_email,
-        &inv.subject,
-        inv.start,
-        inv.end,
-        decision.as_attendee_status(),
-        inv.sequence,
+    let msg = MeetingMessage::new_response(&crate::meeting::message::ResponseParams {
+        uid: &inv.uid,
+        organizer_email: &inv.organizer_email,
+        subject: &inv.subject,
+        start: inv.start,
+        end: inv.end,
+        status: decision.as_attendee_status(),
+        sequence: inv.sequence,
         responder_email,
         responder_name,
-    );
+    });
     let generator = MeetingMessageGenerator::new();
     generator.generate_ical(&msg)
 }
@@ -182,15 +182,15 @@ pub async fn submit_meeting_response(
     // required text/calendar MIME part.
     if let Some(smtp) = state.smtp_client.as_ref() {
         let result = smtp
-            .send_imip(
-                &responder_email,
-                vec![inv.organizer_email.clone()],
-                &subject,
-                &ics,
-                Some(&text),
-                owner_username,
+            .send_imip(&crate::smtp::SendImipParams {
+                from: &responder_email,
+                to: vec![inv.organizer_email.clone()],
+                subject: &subject,
+                ics: &ics,
+                text_body: Some(&text),
+                username: owner_username,
                 password,
-            )
+            })
             .await?;
         tracing::info!(
             target: "meeting",

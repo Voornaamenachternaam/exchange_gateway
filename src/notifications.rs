@@ -199,6 +199,11 @@ pub struct SubscriptionManager {
     subscriptions: Arc<Mutex<HashMap<String, Arc<Subscription>>>>,
 }
 
+/// Error produced when a streaming subscription cannot be served because it is
+/// either unknown or owned by a different identity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SubscriptionServeError;
+
 impl SubscriptionManager {
     pub fn new() -> Self {
         let (sender, _) = broadcast::channel(8192);
@@ -387,8 +392,9 @@ impl SubscriptionManager {
     /// waiting up to `timeout` for one to arrive.
     ///
     /// Returns `Ok(Some((event, watermark)))` when a matching event is
-    /// available, `Ok(None)` on idle timeout / channel close, or `Err(())` when
-    /// the subscription is missing or belongs to another owner.
+    /// available, `Ok(None)` on idle timeout / channel close, or
+    /// `Err(SubscriptionServeError)` when the subscription is missing or
+    /// belongs to another owner.
     ///
     /// A filtered (non-matching) event does **not** end the turn: the broadcast
     /// receiver is drained of it and the wait continues for the *remaining*
@@ -402,8 +408,11 @@ impl SubscriptionManager {
         sub_id: &str,
         owner: &str,
         timeout: Duration,
-    ) -> Result<Option<(NotificationEvent, u64)>, ()> {
-        let sub = self.for_owner(sub_id, owner).await.ok_or(())?;
+    ) -> Result<Option<(NotificationEvent, u64)>, SubscriptionServeError> {
+        let sub = self
+            .for_owner(sub_id, owner)
+            .await
+            .ok_or(SubscriptionServeError)?;
         Self::bump_deadline(&sub, sub.kind);
         let folders = sub.folders.clone();
         let event_types = sub.event_types.clone();

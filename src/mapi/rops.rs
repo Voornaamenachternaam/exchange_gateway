@@ -25,6 +25,70 @@
 
 use crate::mapi::data::{PropertyProblem, PropertyTag, TaggedPropertyValue};
 
+// ---------- OpenMessage ----------
+#[derive(Debug, Clone)]
+pub struct RopOpenMessageRequest {
+    pub logon_id: u8,
+    pub input_handle_index: u8,
+    pub output_handle_index: u8,
+    pub flags: u8,
+}
+impl RopOpenMessageRequest {
+    pub fn decode(buf: &mut Buf<'_>) -> Result<Self, DecodeError> {
+        let logon_id = buf.take_u8()?;
+        let input_handle_index = buf.take_u8()?;
+        let output_handle_index = buf.take_u8()?;
+        let flags = buf.take_u8()?;
+        Ok(Self {
+            logon_id,
+            input_handle_index,
+            output_handle_index,
+            flags,
+        })
+    }
+    pub fn encode(&self, out: &mut Vec<u8>) {
+        out.push(self.logon_id);
+        out.push(self.input_handle_index);
+        out.push(self.output_handle_index);
+        out.push(self.flags);
+    }
+}
+#[derive(Debug, Clone)]
+pub struct RopOpenMessageSuccess {
+    pub output_handle_index: u8,
+    pub return_value: RopErrorCode,
+}
+impl RopOpenMessageSuccess {
+    pub fn encode(&self, out: &mut Vec<u8>) {
+        out.push(self.output_handle_index);
+        out.extend(&self.return_value.to_u32().to_le_bytes());
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct RopSetMessageReadFlagSuccess {
+    pub input_handle_index: u8,
+    pub return_value: RopErrorCode,
+}
+impl RopSetMessageReadFlagSuccess {
+    pub fn encode(&self, out: &mut Vec<u8>) {
+        out.push(self.input_handle_index);
+        out.extend(&self.return_value.to_u32().to_le_bytes());
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct RopFastTransferSourceCopyMessagesResponse {
+    pub output_handle_index: u8,
+    pub return_value: RopErrorCode,
+}
+impl RopFastTransferSourceCopyMessagesResponse {
+    pub fn encode(&self, out: &mut Vec<u8>) {
+        out.push(self.output_handle_index);
+        out.extend(&self.return_value.to_u32().to_le_bytes());
+    }
+}
+
 /// The complete RopId table per MS-OXCROPS §2.2.2. Reserved ids remain in
 /// the un-named id space; any byte is carried through verbatim so the
 /// transport can still emit a typed error envelope.
@@ -35,6 +99,7 @@ pub struct RopId(pub u8);
 impl RopId {
     pub const ROP_RELEASE: Self = Self(0x01);
     pub const ROP_OPEN_FOLDER: Self = Self(0x02);
+    pub const ROP_OPEN_MESSAGE: Self = Self(0x03);
     pub const ROP_GET_HIERARCHY_TABLE: Self = Self(0x04);
     pub const ROP_GET_CONTENTS_TABLE: Self = Self(0x05);
     pub const ROP_CREATE_MESSAGE: Self = Self(0x06);
@@ -189,6 +254,10 @@ pub enum RopErrorCode {
     NotInitialized,
     /// MAPI_E_NO_SUPPORT (0x80040102).
     NoSupport,
+    /// E_NOTIMPL (0x80004001) — the ROP is recognised but not yet implemented
+    /// by the bridge; used by stub dispatch arms so a client receives a typed
+    /// error instead of a spurious `Success`.
+    NotImplemented,
     /// MAPI_E_DISK_ERROR (0x80040116) — backend I/O / store failure.
     DiskError,
     /// MAPI_E_COLLISION (0x80040604) — duplicate id on CreateMessage/Save.
@@ -213,6 +282,7 @@ impl RopErrorCode {
             0x8004010Fu32 => Self::NotFound,
             0x80040680u32 => Self::NotInitialized,
             0x80040102u32 => Self::NoSupport,
+            0x80004001u32 => Self::NotImplemented,
             0x80040116u32 => Self::DiskError,
             0x80040604u32 => Self::Collision,
             0x80040609u32 => Self::SubmitNotSupported,
@@ -231,6 +301,7 @@ impl RopErrorCode {
             Self::NotFound => 0x8004010F,
             Self::NotInitialized => 0x80040680,
             Self::NoSupport => 0x80040102,
+            Self::NotImplemented => 0x80004001,
             Self::DiskError => 0x80040116,
             Self::Collision => 0x80040604,
             Self::SubmitNotSupported => 0x80040609,

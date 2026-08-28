@@ -3,7 +3,7 @@
 name = "exchange_gateway"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.97.0"
+rust-version = "1.98.0"
 
 [dependencies]
 jsonwebtoken = "^11.0.0"

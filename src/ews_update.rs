@@ -4,6 +4,7 @@ use crate::calendar::{
 };
 use crate::util::{nfc, xml_escape, xml_escape_text};
 use quick_xml::Reader;
+use quick_xml::XmlVersion;
 use quick_xml::events::{BytesEnd, BytesStart, Event};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -41,7 +42,7 @@ fn push_start_tag(out: &mut String, e: &BytesStart<'_>, decoder: quick_xml::Deco
         out.push(' ');
         out.push_str(&String::from_utf8_lossy(attr.key.as_ref()));
         out.push_str("=\"");
-        match attr.decode_and_unescape_value(decoder) {
+        match attr.decoded_and_normalized_value(XmlVersion::Implicit1_0, decoder) {
             Ok(value) => out.push_str(&xml_escape(&value)),
             Err(_) => out.push_str(&xml_escape(&String::from_utf8_lossy(attr.value.as_ref()))),
         }
@@ -57,7 +58,7 @@ fn push_empty_tag(out: &mut String, e: &BytesStart<'_>, decoder: quick_xml::Deco
         out.push(' ');
         out.push_str(&String::from_utf8_lossy(attr.key.as_ref()));
         out.push_str("=\"");
-        match attr.decode_and_unescape_value(decoder) {
+        match attr.decoded_and_normalized_value(XmlVersion::Implicit1_0, decoder) {
             Ok(value) => out.push_str(&xml_escape(&value)),
             Err(_) => out.push_str(&xml_escape(&String::from_utf8_lossy(attr.value.as_ref()))),
         }
@@ -114,7 +115,7 @@ pub fn parse_item_changes(body: &str) -> Vec<EwsFieldChange> {
                 // <t:FieldURI FieldURI="calendar:Start" />
                 e.attributes().flatten().find_map(|attr| {
                     if attr.key.local_name().as_ref() == b"FieldURI" {
-                        attr.decode_and_unescape_value(decoder)
+                        attr.decoded_and_normalized_value(XmlVersion::Implicit1_0, decoder)
                             .ok()
                             .map(|v| v.to_string())
                     } else {
@@ -129,11 +130,14 @@ pub fn parse_item_changes(body: &str) -> Vec<EwsFieldChange> {
                 for attr in e.attributes().flatten() {
                     let key = attr.key.local_name();
                     if key.as_ref() == b"FieldURI" {
-                        if let Ok(v) = attr.decode_and_unescape_value(decoder) {
+                        if let Ok(v) =
+                            attr.decoded_and_normalized_value(XmlVersion::Implicit1_0, decoder)
+                        {
                             field_uri = Some(v.to_string());
                         }
                     } else if key.as_ref() == b"FieldIndex"
-                        && let Ok(v) = attr.decode_and_unescape_value(decoder)
+                        && let Ok(v) =
+                            attr.decoded_and_normalized_value(XmlVersion::Implicit1_0, decoder)
                     {
                         field_index = Some(v.to_string());
                     }
@@ -153,15 +157,20 @@ pub fn parse_item_changes(body: &str) -> Vec<EwsFieldChange> {
                 for attr in e.attributes().flatten() {
                     let key = attr.key.local_name();
                     if key.as_ref() == b"PropertyTag" {
-                        if let Ok(v) = attr.decode_and_unescape_value(decoder) {
+                        if let Ok(v) =
+                            attr.decoded_and_normalized_value(XmlVersion::Implicit1_0, decoder)
+                        {
                             tag = Some(v.to_string());
                         }
                     } else if key.as_ref() == b"PropertyId" {
-                        if let Ok(v) = attr.decode_and_unescape_value(decoder) {
+                        if let Ok(v) =
+                            attr.decoded_and_normalized_value(XmlVersion::Implicit1_0, decoder)
+                        {
                             prop_id = Some(v.to_string());
                         }
                     } else if key.as_ref() == b"DistinguishedPropertySetId"
-                        && let Ok(v) = attr.decode_and_unescape_value(decoder)
+                        && let Ok(v) =
+                            attr.decoded_and_normalized_value(XmlVersion::Implicit1_0, decoder)
                     {
                         dist_prop_set = Some(v.to_string());
                     }

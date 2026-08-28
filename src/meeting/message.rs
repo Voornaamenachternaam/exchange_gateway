@@ -92,6 +92,19 @@ pub struct CounterParams {
     pub sequence: u32,
 }
 
+/// Parameters for constructing a `METHOD:REPLY` meeting response message.
+pub struct ResponseParams<'a> {
+    pub uid: &'a str,
+    pub organizer_email: &'a str,
+    pub subject: &'a str,
+    pub start: DateTime<Utc>,
+    pub end: DateTime<Utc>,
+    pub status: AttendeeStatus,
+    pub sequence: u32,
+    pub responder_email: &'a str,
+    pub responder_name: Option<&'a str>,
+}
+
 impl MeetingMessage {
     pub fn new_request(item: &CalendarItem) -> Self {
         Self {
@@ -123,37 +136,26 @@ impl MeetingMessage {
         msg
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub fn new_response(
-        uid: &str,
-        organizer_email: &str,
-        subject: &str,
-        start: DateTime<Utc>,
-        end: DateTime<Utc>,
-        status: AttendeeStatus,
-        sequence: u32,
-        responder_email: &str,
-        responder_name: Option<&str>,
-    ) -> Self {
+    pub fn new_response(params: &ResponseParams) -> Self {
         Self {
             message_type: MeetingMessageType::Response,
-            uid: uid.to_string(),
-            sequence,
-            organizer_email: organizer_email.to_string(),
+            uid: params.uid.to_string(),
+            sequence: params.sequence,
+            organizer_email: params.organizer_email.to_string(),
             organizer_name: None,
-            subject: subject.to_string(),
+            subject: params.subject.to_string(),
             description: None,
             location: None,
-            start,
-            end,
+            start: params.start,
+            end: params.end,
             timezone: None,
             attendees: Vec::new(),
             dtstamp: Utc::now(),
-            response_status: Some(status),
+            response_status: Some(params.status),
             proposed_start: None,
             proposed_end: None,
-            responder_email: Some(responder_email.to_string()),
-            responder_name: responder_name.map(|n| n.to_string()),
+            responder_email: Some(params.responder_email.to_string()),
+            responder_name: params.responder_name.map(|n| n.to_string()),
         }
     }
 
@@ -573,17 +575,17 @@ mod tests {
     #[test]
     fn test_generate_ical_response() {
         let generator = MeetingMessageGenerator::new();
-        let msg = MeetingMessage::new_response(
-            "test-uid",
-            "organizer@example.com",
-            "Test Meeting",
-            Utc::now(),
-            Utc::now() + Duration::hours(1),
-            AttendeeStatus::Accepted,
-            1,
-            "attendee@example.com",
-            Some("Attendee Name"),
-        );
+        let msg = MeetingMessage::new_response(&ResponseParams {
+            uid: "test-uid",
+            organizer_email: "organizer@example.com",
+            subject: "Test Meeting",
+            start: Utc::now(),
+            end: Utc::now() + Duration::hours(1),
+            status: AttendeeStatus::Accepted,
+            sequence: 1,
+            responder_email: "attendee@example.com",
+            responder_name: Some("Attendee Name"),
+        });
 
         let ics = generator.generate_ical(&msg);
 
