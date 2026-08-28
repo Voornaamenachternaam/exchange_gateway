@@ -474,26 +474,15 @@ fn iso8601_to_filetime(iso: Option<&str>) -> Option<u64> {
 // Conversion: JmapEmail -> PropertyValue cells for a requested column set
 // ----------------------------------------------------------------------------
 
-/// The numeric flags Outlook reads on `PidTagMessageFlags` (MS-OXPROPS).
-/// All defined bits are listed for protocol fidelity even though only the
-/// subset Outlook branches on is referenced by Phase-1 conversion code.
-#[allow(dead_code)]
+/// The numeric flags Outlook reads on `PidTagMessageFlags` (MS-OXPROPS /
+/// MS-OXCMSG §2.2.1.6). Only the bits the Phase-1 conversion code actually
+/// branches on are defined here; the remaining ``mf*`` values are documented in
+/// the protocol specification and not emitted by the gateway.
 mod msgflag {
-    // Per MS-OXCMSG §2.2.1.6 (v20250520) PidTagMessageFlags:
-    //   mfRead       0x00000001
-    //   mfUnmodified 0x00000002
-    //   mfSubmitted  0x00000004
-    //   mfUnsent     0x00000008
-    //   mfHasAttach  0x00000010
-    //   mfFromMe     0x00000020
-    //   mfResend     0x00000080
-    pub const READ: u32 = 0x0000_0001;
-    pub const UNMODIFIED: u32 = 0x0000_0002;
-    pub const SUBMITTED: u32 = 0x0000_0004;
-    pub const UNSENT: u32 = 0x0000_0008;
-    pub const HAS_ATTACH: u32 = 0x0000_0010;
-    pub const READ_RECEIPT_REQUESTED: u32 = 0x0000_0080;
-    pub const ORIGIN_INTERNET: u32 = 0x2000_0000;
+    pub const READ: u32 = 0x0000_0001; // mfRead
+    pub const UNSENT: u32 = 0x0000_0008; // mfUnsent
+    pub const HAS_ATTACH: u32 = 0x0000_0010; // mfHasAttach
+    pub const ORIGIN_INTERNET: u32 = 0x2000_0000; // mfOriginInternet (MS-OXPROPS)
 }
 
 fn core_message_flags(email: &JmapEmail, kind: crate::mapi::session::FolderKind) -> u32 {

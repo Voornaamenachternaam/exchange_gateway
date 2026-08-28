@@ -60,8 +60,10 @@ pub fn read_utf16_string(buf: &[u8], offset: &mut usize) -> Result<String, Decod
     let slice = &buf[*offset..pos];
     // Decode UTF‑16LE to Vec<u16> first.
     let u16_vec: Vec<u16> = slice
-        .chunks_exact(2)
-        .map(|c| u16::from_le_bytes([c[0], c[1]]))
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|&c| u16::from_le_bytes(c))
         .collect();
     let string = String::from_utf16(&u16_vec).map_err(|_| DecodeError::InvalidUtf16Len(u16_vec.len()))?;
     // Advance past the null terminator.

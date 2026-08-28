@@ -61,7 +61,7 @@ pub struct RopOpenMessageSuccess {
 impl RopOpenMessageSuccess {
     pub fn encode(&self, out: &mut Vec<u8>) {
         out.push(self.output_handle_index);
-        out.extend(&(self.return_value as u32).to_le_bytes());
+        out.extend(&self.return_value.to_u32().to_le_bytes());
     }
 }
 
@@ -73,7 +73,7 @@ pub struct RopSetMessageReadFlagSuccess {
 impl RopSetMessageReadFlagSuccess {
     pub fn encode(&self, out: &mut Vec<u8>) {
         out.push(self.input_handle_index);
-        out.extend(&(self.return_value as u32).to_le_bytes());
+        out.extend(&self.return_value.to_u32().to_le_bytes());
     }
 }
 
@@ -85,7 +85,7 @@ pub struct RopFastTransferSourceCopyMessagesResponse {
 impl RopFastTransferSourceCopyMessagesResponse {
     pub fn encode(&self, out: &mut Vec<u8>) {
         out.push(self.output_handle_index);
-        out.extend(&(self.return_value as u32).to_le_bytes());
+        out.extend(&self.return_value.to_u32().to_le_bytes());
     }
 }
 
@@ -254,6 +254,10 @@ pub enum RopErrorCode {
     NotInitialized,
     /// MAPI_E_NO_SUPPORT (0x80040102).
     NoSupport,
+    /// E_NOTIMPL (0x80004001) — the ROP is recognised but not yet implemented
+    /// by the bridge; used by stub dispatch arms so a client receives a typed
+    /// error instead of a spurious `Success`.
+    NotImplemented,
     /// MAPI_E_DISK_ERROR (0x80040116) — backend I/O / store failure.
     DiskError,
     /// MAPI_E_COLLISION (0x80040604) — duplicate id on CreateMessage/Save.
@@ -278,6 +282,7 @@ impl RopErrorCode {
             0x8004010Fu32 => Self::NotFound,
             0x80040680u32 => Self::NotInitialized,
             0x80040102u32 => Self::NoSupport,
+            0x80004001u32 => Self::NotImplemented,
             0x80040116u32 => Self::DiskError,
             0x80040604u32 => Self::Collision,
             0x80040609u32 => Self::SubmitNotSupported,
@@ -296,6 +301,7 @@ impl RopErrorCode {
             Self::NotFound => 0x8004010F,
             Self::NotInitialized => 0x80040680,
             Self::NoSupport => 0x80040102,
+            Self::NotImplemented => 0x80004001,
             Self::DiskError => 0x80040116,
             Self::Collision => 0x80040604,
             Self::SubmitNotSupported => 0x80040609,

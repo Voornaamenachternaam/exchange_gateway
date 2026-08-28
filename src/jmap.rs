@@ -124,9 +124,6 @@ impl Serialize for JmapMethodCall {
 #[serde(rename_all = "camelCase")]
 pub struct JmapResponse {
     pub method_responses: Vec<(String, Value, String)>,
-    #[serde(default)]
-    #[allow(dead_code)]
-    pub session_state: Option<String>,
 }
 
 /// JMAP Email object (RFC 8621 §4.1)

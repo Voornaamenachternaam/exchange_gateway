@@ -8,6 +8,7 @@ use base64::engine::general_purpose::STANDARD;
 use chrono::Utc;
 use mime::Mime;
 use quick_xml::Reader;
+use quick_xml::XmlVersion;
 use quick_xml::events::Event;
 use serde::{Deserialize, Serialize};
 use std::fmt::Write;
@@ -625,7 +626,10 @@ pub fn parse_create_attachment_request(xml: &str) -> Option<ParsedCreateAttachme
                     b"ParentItemId" => {
                         for attr in e.attributes().flatten() {
                             if attr.key.local_name().as_ref() == b"Id"
-                                && let Ok(v) = attr.decode_and_unescape_value(reader.decoder())
+                                && let Ok(v) = attr.decoded_and_normalized_value(
+                                    XmlVersion::Implicit1_0,
+                                    reader.decoder(),
+                                )
                             {
                                 parent_item_id = Some(v.into_owned());
                             }
@@ -634,7 +638,10 @@ pub fn parse_create_attachment_request(xml: &str) -> Option<ParsedCreateAttachme
                     b"ItemId" if parent_item_id.is_none() => {
                         for attr in e.attributes().flatten() {
                             if attr.key.local_name().as_ref() == b"Id"
-                                && let Ok(v) = attr.decode_and_unescape_value(reader.decoder())
+                                && let Ok(v) = attr.decoded_and_normalized_value(
+                                    XmlVersion::Implicit1_0,
+                                    reader.decoder(),
+                                )
                             {
                                 parent_item_id = Some(v.into_owned());
                             }
@@ -677,7 +684,10 @@ pub fn parse_create_attachment_request(xml: &str) -> Option<ParsedCreateAttachme
                 {
                     for attr in e.attributes().flatten() {
                         if attr.key.local_name().as_ref() == b"Id"
-                            && let Ok(v) = attr.decode_and_unescape_value(reader.decoder())
+                            && let Ok(v) = attr.decoded_and_normalized_value(
+                                XmlVersion::Implicit1_0,
+                                reader.decoder(),
+                            )
                         {
                             parent_item_id = Some(v.into_owned());
                         }
@@ -781,7 +791,10 @@ pub fn parse_get_attachment_request(xml: &str) -> Vec<String> {
                 if local.as_ref() == b"AttachmentId" || local.as_ref() == b"RequestAttachmentId" {
                     for attr in e.attributes().flatten() {
                         if attr.key.local_name().as_ref() == b"Id"
-                            && let Ok(v) = attr.decode_and_unescape_value(reader.decoder())
+                            && let Ok(v) = attr.decoded_and_normalized_value(
+                                XmlVersion::Implicit1_0,
+                                reader.decoder(),
+                            )
                         {
                             ids.push(v.into_owned());
                         }
@@ -810,7 +823,10 @@ pub fn parse_delete_attachment_request(xml: &str) -> Option<ParsedDeleteAttachme
                 if local.as_ref() == b"AttachmentId" {
                     for attr in e.attributes().flatten() {
                         if attr.key.local_name().as_ref() == b"Id"
-                            && let Ok(v) = attr.decode_and_unescape_value(reader.decoder())
+                            && let Ok(v) = attr.decoded_and_normalized_value(
+                                XmlVersion::Implicit1_0,
+                                reader.decoder(),
+                            )
                         {
                             attachment_ids.push(v.into_owned());
                         }

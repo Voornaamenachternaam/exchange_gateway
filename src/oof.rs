@@ -31,7 +31,7 @@ pub struct OofSettings {
 }
 
 /// Who receives external OOF replies.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "PascalCase")]
 pub enum ExternalAudience {
     /// Only external senders
@@ -39,14 +39,8 @@ pub enum ExternalAudience {
     /// Known external senders (contacts)
     KnownExternal,
     /// All external senders
+    #[default]
     All,
-}
-
-#[allow(clippy::derivable_impls)]
-impl Default for ExternalAudience {
-    fn default() -> Self {
-        Self::All
-    }
 }
 
 /// Errors that can occur during OOF operations.
@@ -89,8 +83,8 @@ pub trait OofManager: Send + Sync {
             return Ok(false);
         }
         let now = Utc::now();
-        let active = settings.start_time.map_or(true, |s| now >= s)
-            && settings.end_time.map_or(true, |e| now <= e);
+        let active = settings.start_time.is_none_or(|s| now >= s)
+            && settings.end_time.is_none_or(|e| now <= e);
         Ok(active)
     }
 }
@@ -105,8 +99,7 @@ pub struct StalwartOofManager {
 }
 
 impl StalwartOofManager {
-    #[allow(clippy::new_ret_no_self)]
-    pub fn new(
+    pub fn create(
         admin_base: &str,
         admin_username: Option<&str>,
         admin_password: Option<&str>,
@@ -359,17 +352,17 @@ impl OofManager for StalwartOofManager {
                 }
             }
             Err(e) => {
-                if let OofError::HttpError(ref msg) = e {
-                    if msg.contains("404") {
-                        return Ok(OofSettings {
-                            enabled: false,
-                            external_audience: ExternalAudience::All,
-                            internal_reply: None,
-                            external_reply: None,
-                            start_time: None,
-                            end_time: None,
-                        });
-                    }
+                if let OofError::HttpError(ref msg) = e
+                    && msg.contains("404")
+                {
+                    return Ok(OofSettings {
+                        enabled: false,
+                        external_audience: ExternalAudience::All,
+                        internal_reply: None,
+                        external_reply: None,
+                        start_time: None,
+                        end_time: None,
+                    });
                 }
                 Err(e)
             }
@@ -410,8 +403,8 @@ impl OofManager for StalwartOofManager {
             return Ok(false);
         }
         let now = Utc::now();
-        let active = settings.start_time.map_or(true, |s| now >= s)
-            && settings.end_time.map_or(true, |e| now <= e);
+        let active = settings.start_time.is_none_or(|s| now >= s)
+            && settings.end_time.is_none_or(|e| now <= e);
         Ok(active)
     }
 }
@@ -429,7 +422,7 @@ pub struct JmapOofManager {
 // Implementation of JmapOofManager
 impl JmapOofManager {
     /// Create a new JMAP OOF manager.
-    pub fn new(
+    pub fn create(
         jmap_base: &str,
         username: &str,
         password: &str,
@@ -470,14 +463,12 @@ impl JmapOofManager {
                 )
                 .await
                 .map_err(|e| OofError::NetworkError(e.to_string()))?;
-            if let Some((_name, value, _id)) = resp.method_responses.first() {
-                if let Some(list) = value.get("list").and_then(|v| v.as_array()) {
-                    if let Some(entry) = list.first() {
-                        if let Some(script) = entry.get("script").and_then(|s| s.as_str()) {
-                            return Ok(Some(script.to_string()));
-                        }
-                    }
-                }
+            if let Some((_name, value, _id)) = resp.method_responses.first()
+                && let Some(list) = value.get("list").and_then(|v| v.as_array())
+                && let Some(entry) = list.first()
+                && let Some(script) = entry.get("script").and_then(|s| s.as_str())
+            {
+                return Ok(Some(script.to_string()));
             }
             Ok(None)
         })
@@ -518,9 +509,7 @@ impl JmapOofManager {
 impl OofManager for JmapOofManager {
     fn get_oof_settings(&self, username: &str) -> Result<OofSettings, OofError> {
         let script_opt = self.get_script_blocking(username)?;
-        let enabled = script_opt
-            .as_ref()
-            .map_or(false, |s| s.contains("vacation"));
+        let enabled = script_opt.as_ref().is_some_and(|s| s.contains("vacation"));
         Ok(OofSettings {
             enabled,
             external_audience: ExternalAudience::All,
@@ -558,8 +547,8 @@ impl OofManager for JmapOofManager {
             return Ok(false);
         }
         let now = Utc::now();
-        let active = settings.start_time.map_or(true, |s| now >= s)
-            && settings.end_time.map_or(true, |e| now <= e);
+        let active = settings.start_time.is_none_or(|s| now >= s)
+            && settings.end_time.is_none_or(|e| now <= e);
         Ok(active)
     }
 }
@@ -601,25 +590,26 @@ pub fn create_oof_manager(
     mail_domain: &str,
 ) -> Arc<dyn OofManager> {
     // Prefer JMAP‑based OOF manager if JMAP base URL is configured.
-    if let Ok(jmap_base) = std::env::var("GATEWAY_JMAP_BASE") {
-        if !jmap_base.is_empty() {
-            let user = admin_username.unwrap_or("");
-            let pass = admin_password.unwrap_or("");
-            if let Ok(manager) = JmapOofManager::new(&jmap_base, user, pass, mail_domain) {
-                return manager;
-            }
+    if let Ok(jmap_base) = std::env::var("GATEWAY_JMAP_BASE")
+        && !jmap_base.is_empty()
+    {
+        let user = admin_username.unwrap_or("");
+        let pass = admin_password.unwrap_or("");
+        if let Ok(manager) = JmapOofManager::create(&jmap_base, user, pass, mail_domain) {
+            return manager;
         }
     }
 
     // Fallback to legacy Stalwart admin API OOF manager.
     match (admin_base, admin_username, admin_password) {
         (Some(base), Some(user), Some(pass)) => {
-            match StalwartOofManager::new(base, Some(user), Some(pass), mail_domain) {
+            match StalwartOofManager::create(base, Some(user), Some(pass), mail_domain) {
                 Ok(m) => m,
                 Err(_) => Arc::new(NullOofManager) as Arc<dyn OofManager>,
             }
         }
-        (Some(base), None, None) => match StalwartOofManager::new(base, None, None, mail_domain) {
+        (Some(base), None, None) => match StalwartOofManager::create(base, None, None, mail_domain)
+        {
             Ok(m) => m,
             Err(_) => Arc::new(NullOofManager) as Arc<dyn OofManager>,
         },

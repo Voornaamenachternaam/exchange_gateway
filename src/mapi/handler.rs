@@ -41,12 +41,11 @@ use crate::mapi::rops::{
     RopGetStreamSizeSuccess, RopGetValidAttachmentsRequest, RopGetValidAttachmentsSuccess,
     RopHeader4, RopId, RopLogonRequest, RopLogonSuccess, RopMoveCopyMessagesRequest,
     RopMoveCopyMessagesResponse, RopOpenAttachmentRequest, RopOpenAttachmentSuccess,
-    RopOpenMessageRequest, RopOpenMessageSuccess, RopOpenStreamRequest, RopOpenStreamSuccess,
-    RopOpenTableRequest, RopPropertyWriteSuccess, RopQueryRowsRequest, RopReadStreamRequest,
-    RopReadStreamSuccess, RopRegisterNotificationResponse, RopReleaseRequest,
-    RopSaveChangesAttachmentRequest, RopSaveChangesAttachmentResponse,
-    RopSaveChangesMessageRequest, RopSaveChangesMessageSuccess, RopSeekStreamRequest,
-    RopSeekStreamSuccess, RopSetColumnsRequest, RopSetMessageReadFlagRequest,
+    RopOpenMessageRequest, RopOpenStreamRequest, RopOpenStreamSuccess, RopOpenTableRequest,
+    RopPropertyWriteSuccess, RopQueryRowsRequest, RopReadStreamRequest, RopReadStreamSuccess,
+    RopRegisterNotificationResponse, RopReleaseRequest, RopSaveChangesAttachmentRequest,
+    RopSaveChangesAttachmentResponse, RopSaveChangesMessageRequest, RopSaveChangesMessageSuccess,
+    RopSeekStreamRequest, RopSeekStreamSuccess, RopSetColumnsRequest, RopSetMessageReadFlagRequest,
     RopSetPropertiesRequest, RopSetStreamSizeRequest, RopSetStreamSizeResponse,
     RopSubmitMessageRequest, RopSubmitMessageResponse, RopTransportSendFailure,
     RopTransportSendRequest, RopTransportSendSuccess, RopWriteStreamRequest, RopWriteStreamSuccess,
@@ -682,6 +681,19 @@ async fn handle_execute(req: MapiRequest, state: &MapiState) -> MapiResponse {
     // client issues another `Execute` to drain the rest (MS-OXCROPS §3.1.5.1.3).
     emit_pending_notifications(&mut out_body, &session_id, state);
 
+    let ctx = RopContext {
+        session_id: &session_id,
+        sessions: &state.sessions,
+        snap: &snap,
+        jmap: jmap.as_ref(),
+        cfg: &state.cfg,
+        username: &username,
+        password: password_secret.as_ref(),
+        logon_id,
+        subscription_manager: state.subscription_manager.as_ref(),
+        attachment_manager: state.attachment_manager.as_ref(),
+    };
+
     // ROP-chain loop: each iteration decodes one RopId plus the surrounding
     // header bytes per its spec, dispatches, and writes the response.
     while cur.remaining() > 0 {
@@ -690,22 +702,7 @@ async fn handle_execute(req: MapiRequest, state: &MapiState) -> MapiResponse {
             Ok(b) => RopId::from_u8(b),
             Err(_) => break,
         };
-        let dispatch = execute_one_rop(
-            rop_id,
-            &mut cur,
-            &mut out_body,
-            &session_id,
-            &state.sessions,
-            &snap,
-            jmap.as_ref(),
-            &state.cfg,
-            &username,
-            password_secret.as_ref(),
-            logon_id,
-            state.subscription_manager.as_ref(),
-            state.attachment_manager.as_ref(),
-        )
-        .await;
+        let dispatch = execute_one_rop(rop_id, &mut cur, &mut out_body, &ctx).await;
         if let Err(e) = dispatch {
             // An unrecoverable decode error: rewind is impossible (cursor
             // advanced past the bad ROP). Emit a single ROP-level error and
@@ -747,24 +744,43 @@ enum HandleShape {
     Neither,
 }
 
+/// Request-scoped context shared by every ROP in a single `Execute`
+/// invocation. Bundled into a struct so `execute_one_rop` stays under
+/// clippy's argument-count threshold without any suppression.
+#[derive(Clone, Copy)]
+struct RopContext<'a> {
+    session_id: &'a uuid::Uuid,
+    sessions: &'a SessionManager,
+    snap: &'a crate::mapi::session::SessionSnapshot,
+    jmap: Option<&'a crate::jmap::JmapClient>,
+    cfg: &'a Config,
+    username: &'a str,
+    password: Option<&'a secrecy::SecretString>,
+    logon_id: u8,
+    subscription_manager: Option<&'a std::sync::Arc<crate::notifications::SubscriptionManager>>,
+    attachment_manager: Option<&'a std::sync::Arc<crate::attachment::AttachmentManager>>,
+}
+
 /// Dispatch one ROP, writing its response bytes into `out`. The cursor
 /// `cur` is positioned just past the RopId byte on entry.
-#[allow(clippy::too_many_arguments)]
 async fn execute_one_rop(
     rop_id: RopId,
     cur: &mut Buf<'_>,
     out: &mut Vec<u8>,
-    session_id: &uuid::Uuid,
-    sessions: &SessionManager,
-    snap: &crate::mapi::session::SessionSnapshot,
-    jmap: Option<&crate::jmap::JmapClient>,
-    cfg: &Config,
-    username: &str,
-    password: Option<&secrecy::SecretString>,
-    logon_id: u8,
-    subscription_manager: Option<&std::sync::Arc<crate::notifications::SubscriptionManager>>,
-    attachment_manager: Option<&std::sync::Arc<crate::attachment::AttachmentManager>>,
+    ctx: &RopContext<'_>,
 ) -> RopOutcome {
+    let RopContext {
+        session_id,
+        sessions,
+        snap,
+        jmap,
+        cfg,
+        username,
+        password,
+        logon_id,
+        subscription_manager,
+        attachment_manager,
+    } = *ctx;
     // Each ROP variant reads its own logon-id + handle indices per its spec
     // header shape, so the dispatch is per-variant rather than a uniform
     // header parse.
@@ -776,16 +792,6 @@ async fn execute_one_rop(
                 rop_id,
                 output_handle_index: 0,
                 return_value: RopErrorCode::NotImplemented,
-            }
-            .encode(out);
-        }
-        RopId::ROP_READ_STREAM => {
-            // Decode request and return NotImplemented stub
-            let _ = RopReadStreamRequest::decode(cur)?;
-            RopReadStreamSuccess {
-                input_handle_index: 0,
-                return_value: RopErrorCode::NotImplemented,
-                data: Vec::new(),
             }
             .encode(out);
         }
@@ -1900,8 +1906,7 @@ async fn execute_one_rop(
                         }
                     })
                 })
-                .transpose()
-                .unwrap_or(None);
+                .flatten();
             let outcome: RopErrorCode;
             let saved_mid: u64;
             if let Some(bytes) = &body_bytes {
@@ -1925,13 +1930,7 @@ async fn execute_one_rop(
                         } else {
                             let body_value = String::from_utf8_lossy(bytes).to_string();
                             let blob_id = match jc
-                                .upload_blob(
-                                    &account_id,
-                                    bytes.as_slice(),
-                                    Some("message-body"),
-                                    username,
-                                    pw,
-                                )
+                                .upload_blob(&account_id, bytes, Some("message-body"), username, pw)
                                 .await
                             {
                                 Ok(id) => id,
@@ -1959,7 +1958,7 @@ async fn execute_one_rop(
                             // Create the email via JMAP Email/set with the body patch.
                             let account_id_val = account_id.clone();
                             match jc
-                                .create_email(&account_id_val, &email_obj, username, pw)
+                                .create_email(&account_id_val, email_obj, username, pw)
                                 .await
                             {
                                 Ok(new_id) => {
@@ -1999,7 +1998,12 @@ async fn execute_one_rop(
                         }
                     }
                     (None, _) | (_, None) => {
-                        outcome = RopErrorCode::NotFound;
+                        // A dirty body stream is staged but the write-back
+                        // bridge (or credentials) is unavailable, so the staged
+                        // bytes cannot be persisted: surface `NoSupport` rather
+                        // than a spurious `NotFound`, matching the documented
+                        // "dirty body -> NoSupport" contract.
+                        outcome = RopErrorCode::NoSupport;
                         saved_mid = 0;
                     }
                 }
@@ -2545,72 +2549,58 @@ async fn execute_one_rop(
                     .property_values
                     .iter()
                     .find(|tv| tv.tag.property_id == store::PR_ATTACH_DATA_BIN);
-                match (attach, jmap, password) {
-                    (Some(attach_prop), Some(jc), Some(pw)) => {
-                        if let crate::mapi::data::PropertyValue::Binary(data) = &attach_prop.value {
-                            let account_id = jc
-                                .get_account_id(username, pw)
-                                .await
-                                .ok()
-                                .unwrap_or_default();
-                            if !account_id.is_empty() {
-                                let blob_id = jc
-                                    .upload_blob(
-                                        &account_id,
-                                        data,
-                                        Some("attachment.bin"),
-                                        username,
-                                        pw,
-                                    )
-                                    .await;
-                                match blob_id {
-                                    Ok(blob_id) => {
-                                        // Per RFC 8621, Email/set update must be keyed by
-                                        // email ID; reference the uploaded blob by id so the
-                                        // composed attachment is persisted.
-                                        let update = serde_json::json!({
-                                            backend_id.clone(): serde_json::json!({
-                                                "blobId": blob_id,
-                                            })
-                                        });
-                                        match jc
-                                            .update_email_checked(
-                                                &account_id,
-                                                &update,
-                                                username,
-                                                pw,
-                                            )
-                                            .await
-                                        {
-                                            Ok(_) => {
-                                                RopPropertyWriteSuccess {
-                                                    rop_id,
-                                                    handle_index: input_handle_index,
-                                                    return_value: RopErrorCode::Success,
-                                                    problems: vec![],
-                                                }
-                                                .encode(out);
-                                                return Ok(());
-                                            }
-                                            Err(e) => {
-                                                tracing::warn!(
-                                                    error = %e,
-                                                    "JMAP Email/set update after Blob/upload failed"
-                                                );
-                                            }
+                if let (Some(attach_prop), Some(jc), Some(pw)) = (attach, jmap, password)
+                    && let crate::mapi::data::PropertyValue::Binary(data) = &attach_prop.value
+                {
+                    let account_id = jc
+                        .get_account_id(username, pw)
+                        .await
+                        .ok()
+                        .unwrap_or_default();
+                    if !account_id.is_empty() {
+                        let blob_id = jc
+                            .upload_blob(&account_id, data, Some("attachment.bin"), username, pw)
+                            .await;
+                        match blob_id {
+                            Ok(blob_id) => {
+                                // Per RFC 8621, Email/set update must be keyed by
+                                // email ID; reference the uploaded blob by id so the
+                                // composed attachment is persisted.
+                                let update = serde_json::json!({
+                                    backend_id.clone(): serde_json::json!({
+                                        "blobId": blob_id,
+                                    })
+                                });
+                                match jc
+                                    .update_email_checked(&account_id, &update, username, pw)
+                                    .await
+                                {
+                                    Ok(_) => {
+                                        RopPropertyWriteSuccess {
+                                            rop_id,
+                                            handle_index: input_handle_index,
+                                            return_value: RopErrorCode::Success,
+                                            problems: vec![],
                                         }
+                                        .encode(out);
+                                        return Ok(());
                                     }
                                     Err(e) => {
                                         tracing::warn!(
                                             error = %e,
-                                            "Blob/upload failed for attachment in RopSetProperties"
+                                            "JMAP Email/set update after Blob/upload failed"
                                         );
                                     }
                                 }
                             }
+                            Err(e) => {
+                                tracing::warn!(
+                                    error = %e,
+                                    "Blob/upload failed for attachment in RopSetProperties"
+                                );
+                            }
                         }
                     }
-                    _ => {}
                 }
                 let _ = patch;
                 // If we get here, either no attach prop found or upload failed;
@@ -3059,78 +3049,74 @@ async fn execute_one_rop(
                         _ => None,
                     })
                 })
-                .transpose()
-                .unwrap_or(None);
+                .flatten();
             if let Some(bytes) = &body_data {
                 // Persist the attachment bytes via JMAP Blob/upload. The backend
                 // client and password are bound here from the function parameters
                 // (they are not in scope outside this hand-off branch).
-                match (jmap, password) {
-                    (Some(jc), Some(pw)) => {
-                        let account_id = jc
-                            .get_account_id(username, pw)
+                if let (Some(jc), Some(pw)) = (jmap, password) {
+                    let account_id = jc
+                        .get_account_id(username, pw)
+                        .await
+                        .ok()
+                        .unwrap_or_default();
+                    if !account_id.is_empty() {
+                        // Get the attachment name from the handle or use a default
+                        let attachment_name = sessions
+                            .with_handle(session_id, req.input_handle_index, |h| match h {
+                                Handle::Attachment { .. } => Some("attachment.bin".to_string()),
+                                _ => None,
+                            })
+                            .unwrap_or_else(|| Some("attachment.bin".to_string()));
+                        match jc
+                            .upload_blob(
+                                &account_id,
+                                bytes,
+                                attachment_name.as_deref(),
+                                username,
+                                pw,
+                            )
                             .await
-                            .ok()
-                            .unwrap_or_default();
-                        if !account_id.is_empty() {
-                            // Get the attachment name from the handle or use a default
-                            let attachment_name = sessions
-                                .with_handle(session_id, req.input_handle_index, |h| match h {
-                                    Handle::Attachment { .. } => Some("attachment.bin".to_string()),
-                                    _ => None,
-                                })
-                                .unwrap_or_else(|| "attachment.bin".to_string());
-                            match jc
-                                .upload_blob(
-                                    &account_id,
-                                    bytes,
-                                    Some(&attachment_name),
-                                    username,
-                                    pw,
-                                )
-                                .await
-                            {
-                                Ok(blob_id) => {
-                                    // Successfully uploaded - now update the email to reference the blob
-                                    // Per RFC 8621, Email/set update must be keyed by email ID.
-                                    // We use the email's backend_id as the key and update the
-                                    // blobId property so the email references the uploaded blob.
-                                    let update = serde_json::json!({
-                                        email_id.clone(): serde_json::json!({
-                                            "blobId": blob_id,
-                                        })
-                                    });
-                                    match jc
-                                        .update_email_checked(&account_id, &update, username, pw)
-                                        .await
-                                    {
-                                        Ok(_) => {
-                                            // Attachment persisted; surface success
-                                            RopSaveChangesAttachmentResponse {
-                                                response_handle_index: req.response_handle_index,
-                                                return_value: RopErrorCode::Success,
-                                            }
-                                            .encode(out);
-                                            return Ok(());
+                        {
+                            Ok(blob_id) => {
+                                // Successfully uploaded - now update the email to reference the blob
+                                // Per RFC 8621, Email/set update must be keyed by email ID.
+                                // We use the email's backend_id as the key and update the
+                                // blobId property so the email references the uploaded blob.
+                                let update = serde_json::json!({
+                                    email_id.clone(): serde_json::json!({
+                                        "blobId": blob_id,
+                                    })
+                                });
+                                match jc
+                                    .update_email_checked(&account_id, &update, username, pw)
+                                    .await
+                                {
+                                    Ok(_) => {
+                                        // Attachment persisted; surface success
+                                        RopSaveChangesAttachmentResponse {
+                                            response_handle_index: req.response_handle_index,
+                                            return_value: RopErrorCode::Success,
                                         }
-                                        Err(e) => {
-                                            tracing::warn!(
-                                                error = %e,
-                                                "JMAP Email/set update after Blob/upload failed for attachment"
-                                            );
-                                        }
+                                        .encode(out);
+                                        return Ok(());
+                                    }
+                                    Err(e) => {
+                                        tracing::warn!(
+                                            error = %e,
+                                            "JMAP Email/set update after Blob/upload failed for attachment"
+                                        );
                                     }
                                 }
-                                Err(e) => {
-                                    tracing::warn!(
-                                        error = %e,
-                                        "Blob/upload failed for attachment in RopSaveChangesAttachment"
-                                    );
-                                }
+                            }
+                            Err(e) => {
+                                tracing::warn!(
+                                    error = %e,
+                                    "Blob/upload failed for attachment in RopSaveChangesAttachment"
+                                );
                             }
                         }
                     }
-                    _ => {}
                 }
             }
             // If we get here without persisting, surface NoSupport so the client
@@ -5868,9 +5854,8 @@ impl FxMessageBag {
 /// Shared JMAP dispatch context for `flush_span`: holds the JMAP client,
 /// credentials, account id, parent folder backend id, the pre-built reverse
 /// mid id map, and the wired flag. Grouped into a struct so `flush_span`
-/// stays under clippy's argument-count threshold (the established handler
-/// `execute_one_rop` carries 13 args + `#[allow]`; the apply path instead
-/// bundles them here so no suppression is needed).
+/// stays under clippy's argument-count threshold (mirroring the `RopContext`
+/// bundle used by `execute_one_rop`).
 struct FxApplyCtx<'a> {
     jc: Option<&'a crate::jmap::JmapClient>,
     password: Option<&'a secrecy::SecretString>,
@@ -6245,8 +6230,10 @@ fn fx_decode_string(
     match property_type {
         T::PTYP_STRING => {
             let units: Vec<u16> = bytes
-                .chunks_exact(2)
-                .map(|c| u16::from_le_bytes([c[0], c[1]]))
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|&c| u16::from_le_bytes(c))
                 .collect();
             Some(String::from_utf16_lossy(&units))
         }
@@ -6877,20 +6864,23 @@ mod tests {
         cur.take_u8().ok(); // consume RopId
         let mut out_sc = Vec::new();
         let snap = state.sessions.get(&sid).expect("session");
+        let ctx = RopContext {
+            session_id: &sid,
+            sessions: &state.sessions,
+            snap: &snap,
+            jmap: None,
+            cfg: &Config::default(),
+            username: "u@example.com",
+            password: None,
+            logon_id: 0,
+            subscription_manager: None,
+            attachment_manager: None,
+        };
         execute_one_rop(
             crate::mapi::rops::RopId::ROP_SET_COLUMNS,
             &mut cur,
             &mut out_sc,
-            &sid,
-            &state.sessions,
-            &snap,
-            None,
-            &Config::default(),
-            "u@example.com",
-            None,
-            0,
-            None,
-            None,
+            &ctx,
         )
         .await
         .expect("set_columns dispatch");
@@ -6906,16 +6896,18 @@ mod tests {
             crate::mapi::rops::RopId::ROP_QUERY_ROWS,
             &mut cur2,
             &mut out_qr,
-            &sid,
-            &state.sessions,
-            &snap2,
-            None,
-            &Config::default(),
-            "u@example.com",
-            None,
-            0,
-            None,
-            None,
+            &RopContext {
+                session_id: &sid,
+                sessions: &state.sessions,
+                snap: &snap2,
+                jmap: None,
+                cfg: &Config::default(),
+                username: "u@example.com",
+                password: None,
+                logon_id: 0,
+                subscription_manager: None,
+                attachment_manager: None,
+            },
         )
         .await
         .expect("query_rows dispatch");
@@ -7012,16 +7004,18 @@ mod tests {
             crate::mapi::rops::RopId::ROP_OPEN_FOLDER,
             &mut cur,
             &mut out,
-            &sid,
-            &state.sessions,
-            &snap,
-            None,
-            &Config::default(),
-            "u@example.com",
-            None,
-            0,
-            None,
-            None,
+            &RopContext {
+                session_id: &sid,
+                sessions: &state.sessions,
+                snap: &snap,
+                jmap: None,
+                cfg: &Config::default(),
+                username: "u@example.com",
+                password: None,
+                logon_id: 0,
+                subscription_manager: None,
+                attachment_manager: None,
+            },
         )
         .await
         .expect("open folder dispatch");
@@ -7692,16 +7686,18 @@ mod tests {
             RopId::from_u8(body[0]),
             &mut cur,
             &mut out,
-            sid,
-            &state.sessions,
-            &snap,
-            None,
-            &Config::default(),
-            "u@example.com",
-            None,
-            0,
-            None,
-            None,
+            &RopContext {
+                session_id: sid,
+                sessions: &state.sessions,
+                snap: &snap,
+                jmap: None,
+                cfg: &Config::default(),
+                username: "u@example.com",
+                password: None,
+                logon_id: 0,
+                subscription_manager: None,
+                attachment_manager: None,
+            },
         )
         .await
         .expect("dispatch ok");

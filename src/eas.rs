@@ -2737,23 +2737,35 @@ async fn handle_send_mail(
     )
 }
 
+/// Request-scoped context for one EAS Sync command. Bundled into a struct so
+/// `handle_sync_collections` stays under clippy's argument-count threshold.
+#[derive(Clone, Copy)]
+struct SyncCtx<'a> {
+    state: &'a Arc<AppState>,
+    username: &'a str,
+    password: &'a SecretString,
+    wbxml: &'a Wbxml,
+    as_wbxml: bool,
+    request_id: &'a str,
+    device_id: &'a str,
+}
+
 /// Handle a multi-collection EAS Sync command.
 ///
 /// Per MS-ASCMD §2.2.3.31.2, a Sync request can contain 1..N Collection elements.
 /// Android clients (including Gmail's Exchange account) typically send all folders
 /// in a single Sync request. This function processes each collection independently
 /// and combines the responses into a single multi-collection Sync response.
-#[allow(clippy::too_many_arguments)]
-async fn handle_sync_collections(
-    state: &Arc<AppState>,
-    username: &str,
-    password: &SecretString,
-    wbxml: &Wbxml,
-    as_wbxml: bool,
-    request_id: &str,
-    device_id: &str,
-    collections: &[SyncCollection],
-) -> Response {
+async fn handle_sync_collections(ctx: &SyncCtx<'_>, collections: &[SyncCollection]) -> Response {
+    let SyncCtx {
+        state,
+        username,
+        password,
+        wbxml,
+        as_wbxml,
+        request_id,
+        device_id,
+    } = *ctx;
     let mut collection_responses: Vec<String> = Vec::new();
 
     for coll in collections {
@@ -2799,9 +2811,6 @@ async fn handle_sync_collections(
                     collection_id,
                     &state_collection_id,
                     incoming_key,
-                    wbxml,
-                    as_wbxml,
-                    request_id,
                 )
                 .await
                 {
@@ -3173,7 +3182,6 @@ fn extract_inner_collection(resp_xml: &str) -> String {
 ///
 /// Per MS-ASEMAIL, the Email sync class synchronizes email messages.
 /// The gateway translates JMAP Email/get and Email/changes to EAS Sync responses.
-#[allow(clippy::too_many_arguments)]
 async fn handle_email_sync(
     state: &Arc<AppState>,
     username: &str,
@@ -3181,9 +3189,6 @@ async fn handle_email_sync(
     collection_id: &str,
     state_collection_id: &str,
     incoming_sync_key: &str,
-    _wbxml: &Wbxml,
-    _as_wbxml: bool,
-    _request_id: &str,
 ) -> anyhow::Result<String> {
     // Map CollectionId to JMAP mailbox role.
     // Previously hardcoded "inbox" and "2", meaning syncing any other folder
@@ -3545,6 +3550,15 @@ pub async fn handle(
             // Gmail's Exchange account) send multi-collection Sync
             // requests to synchronize calendar and email in one round-trip.
             let sync_collections = parse_sync_collections(&xml);
+            let sync_ctx = SyncCtx {
+                state: &state,
+                username: &username,
+                password: &password,
+                wbxml: &wbxml,
+                as_wbxml: wants_wbxml,
+                request_id: &request_id,
+                device_id: &device_id,
+            };
             if sync_collections.is_empty() {
                 // Fallback: use the single-collection fields from EasRequest
                 // (backward compat for clients that don't nest Collection elements)
@@ -3564,29 +3578,9 @@ pub async fn handle(
                     // correctly (no cross-collection leakage possible).
                     xml: xml.clone(),
                 };
-                handle_sync_collections(
-                    &state,
-                    &username,
-                    &password,
-                    &wbxml,
-                    wants_wbxml,
-                    &request_id,
-                    &device_id,
-                    &[sc],
-                )
-                .await
+                handle_sync_collections(&sync_ctx, &[sc]).await
             } else {
-                handle_sync_collections(
-                    &state,
-                    &username,
-                    &password,
-                    &wbxml,
-                    wants_wbxml,
-                    &request_id,
-                    &device_id,
-                    &sync_collections,
-                )
-                .await
+                handle_sync_collections(&sync_ctx, &sync_collections).await
             }
         }
         "Ping" => {

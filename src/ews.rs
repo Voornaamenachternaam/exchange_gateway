@@ -47,6 +47,7 @@ use const_hex;
 use hex;
 use itertools::Itertools;
 use quick_xml::Reader;
+use quick_xml::XmlVersion;
 use quick_xml::events::Event;
 use roxmltree;
 use secrecy::{ExposeSecret, SecretString};
@@ -479,7 +480,8 @@ fn extract_first_attr(xml: &str, tag: &[u8], attr: &[u8]) -> Option<String> {
             Ok(Event::Start(e)) | Ok(Event::Empty(e)) if e.name().local_name().as_ref() == tag => {
                 for a in e.attributes().flatten() {
                     if a.key.local_name().as_ref() == attr
-                        && let Ok(v) = a.decode_and_unescape_value(reader.decoder())
+                        && let Ok(v) = a
+                            .decoded_and_normalized_value(XmlVersion::Implicit1_0, reader.decoder())
                     {
                         return Some(v.into_owned());
                     }
@@ -1921,7 +1923,8 @@ fn extract_find_folder_parent_id(body: &str) -> Option<RequestedFolderRef> {
             {
                 for a in e.attributes().flatten() {
                     if a.key.local_name().as_ref() == b"Id"
-                        && let Ok(v) = a.decode_and_unescape_value(reader.decoder())
+                        && let Ok(v) = a
+                            .decoded_and_normalized_value(XmlVersion::Implicit1_0, reader.decoder())
                     {
                         let id = v.into_owned();
                         return Some(
@@ -2219,11 +2222,10 @@ async fn handle_find_contacts_item(
         };
 
         // Register/update this contact mapping in the database to support subsequent GetItem/UpdateItem/DeleteItem
-        #[allow(clippy::needless_borrow)]
         if let Err(e) = state
             .storage
             .upsert_contact(
-                &owner,
+                owner,
                 &contact.href,
                 &server_id,
                 contact.etag.as_deref(),
@@ -4484,7 +4486,8 @@ fn extract_folder_ids_from_block(body: &str) -> HashSet<String> {
             {
                 for a in e.attributes().flatten() {
                     if a.key.local_name().as_ref() == b"Id"
-                        && let Ok(v) = a.decode_and_unescape_value(reader.decoder())
+                        && let Ok(v) = a
+                            .decoded_and_normalized_value(XmlVersion::Implicit1_0, reader.decoder())
                     {
                         ids.insert(v.into_owned());
                     }
@@ -5325,7 +5328,7 @@ async fn handle_create_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
         Ok(row) => row,
         Err(_) => match create_calendar_via_caldav(state, owner, &password_secret, &item).await {
             Ok(row) => row,
-            Err(resp) => return resp,
+            Err(resp) => return *resp,
         },
     };
 
@@ -5744,7 +5747,7 @@ async fn handle_update_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
                 .await
                 {
                     Ok(row) => row,
-                    Err(resp) => return resp,
+                    Err(resp) => return *resp,
                 }
             }
         }
@@ -5760,7 +5763,7 @@ async fn handle_update_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
         .await
         {
             Ok(row) => row,
-            Err(resp) => return resp,
+            Err(resp) => return *resp,
         }
     };
     let response_row = EwsItemRow {
@@ -5997,7 +6000,7 @@ async fn handle_delete_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
     if delete_result.is_err() {
         match delete_calendar_via_caldav(state, owner, &password_secret, &existing).await {
             Ok(()) => {}
-            Err(resp) => return resp,
+            Err(resp) => return *resp,
         }
     }
 
@@ -8039,15 +8042,15 @@ async fn create_calendar_via_caldav(
     owner: &str,
     password: &SecretString,
     item: &crate::calendar::CalendarItem,
-) -> Result<EwsItemRow, Response> {
+) -> Result<EwsItemRow, Box<Response>> {
     let caldav = CaldavClient::new(&state.cfg).map_err(|e| {
         tracing::error!(error = %e, "Failed to create CalDAV client");
-        operation_error_response(
+        Box::new(operation_error_response(
             &EwsAction::CreateItem,
             "ErrorInternalServerError",
             "An internal error occurred",
             StatusCode::INTERNAL_SERVER_ERROR,
-        )
+        ))
     })?;
 
     let calendars = caldav
@@ -8055,23 +8058,23 @@ async fn create_calendar_via_caldav(
         .await
         .map_err(|e| {
             tracing::error!(error = %e, owner = %owner, "CalDAV calendar discovery failed");
-            operation_error_response(
+            Box::new(operation_error_response(
                 &EwsAction::CreateItem,
                 "ErrorInternalServerError",
                 "An internal error occurred while discovering calendars",
                 StatusCode::INTERNAL_SERVER_ERROR,
-            )
+            ))
         })?;
 
     let collection_href = calendars
         .first()
         .ok_or_else(|| {
-            operation_error_response(
+            Box::new(operation_error_response(
                 &EwsAction::CreateItem,
                 "ErrorFolderNotFound",
                 "No writable calendar collection discovered",
                 StatusCode::OK,
-            )
+            ))
         })?
         .clone();
 
@@ -8088,12 +8091,12 @@ async fn create_calendar_via_caldav(
         .await
         .map_err(|e| {
             tracing::error!(error = %e, "Failed to save calendar item via CalDAV");
-            operation_error_response(
+            Box::new(operation_error_response(
                 &EwsAction::CreateItem,
                 "ErrorInternalServerError",
                 "An internal error occurred while saving the item",
                 StatusCode::INTERNAL_SERVER_ERROR,
-            )
+            ))
         })?;
 
     let server_id = generate_server_id(state.cfg.hmac_secret(), &href);
@@ -8103,12 +8106,12 @@ async fn create_calendar_via_caldav(
         .await
     {
         tracing::error!(error = %e, owner = %owner, "Failed to persist created item mapping");
-        return Err(operation_error_response(
+        return Err(Box::new(operation_error_response(
             &EwsAction::CreateItem,
             "ErrorInternalServerError",
             "An internal error occurred while saving the item",
             StatusCode::INTERNAL_SERVER_ERROR,
-        ));
+        )));
     }
 
     Ok(EwsItemRow {
@@ -8204,15 +8207,15 @@ async fn update_calendar_via_caldav(
     stored_item: &EwsItemRow,
     new_item: &crate::calendar::CalendarItem,
     conflict_resolution: &str,
-) -> Result<EwsItemRow, Response> {
+) -> Result<EwsItemRow, Box<Response>> {
     let caldav = CaldavClient::new(&state.cfg).map_err(|e| {
         tracing::error!(error = %e, "Failed to create CalDAV client");
-        operation_error_response(
+        Box::new(operation_error_response(
             &EwsAction::UpdateItem,
             "ErrorInternalServerError",
             "An internal error occurred",
             StatusCode::INTERNAL_SERVER_ERROR,
-        )
+        ))
     })?;
 
     // Fetch existing event data to merge changes if AutoResolve/AlwaysOverwrite (optimistic concurrency handling)
@@ -8223,12 +8226,12 @@ async fn update_calendar_via_caldav(
         Ok(v) => v,
         Err(e) => {
             tracing::error!(error = %e, "Failed to fetch existing event for update");
-            return Err(operation_error_response(
+            return Err(Box::new(operation_error_response(
                 &EwsAction::UpdateItem,
                 "ErrorInternalServerError",
                 "An internal error occurred while fetching the event",
                 StatusCode::INTERNAL_SERVER_ERROR,
-            ));
+            )));
         }
     };
 
@@ -8279,12 +8282,12 @@ async fn update_calendar_via_caldav(
         .await
         .map_err(|e| {
             tracing::error!(error = %e, "Failed to update calendar item via CalDAV");
-            operation_error_response(
+            Box::new(operation_error_response(
                 &EwsAction::UpdateItem,
                 "ErrorInternalServerError",
                 "An internal error occurred while updating the item",
                 StatusCode::INTERNAL_SERVER_ERROR,
-            )
+            ))
         })?;
 
     // Persist new etag and updated_at before constructing EwsItemRow to avoid borrow-checker issues
@@ -8461,15 +8464,15 @@ async fn delete_calendar_via_caldav(
     owner: &str,
     password: &SecretString,
     stored_item: &EwsItemRow,
-) -> Result<(), Response> {
+) -> Result<(), Box<Response>> {
     let caldav = CaldavClient::new(&state.cfg).map_err(|e| {
         tracing::error!(error = %e, "Failed to create CalDAV client");
-        operation_error_response(
+        Box::new(operation_error_response(
             &EwsAction::DeleteItem,
             "ErrorInternalServerError",
             "An internal error occurred",
             StatusCode::INTERNAL_SERVER_ERROR,
-        )
+        ))
     })?;
 
     // Determine the href to DELETE
@@ -8483,12 +8486,12 @@ async fn delete_calendar_via_caldav(
         // Simplify: use caldav.delete_event(href, owner, password)
         caldav_href
     } else {
-        return Err(operation_error_response(
+        return Err(Box::new(operation_error_response(
             &EwsAction::DeleteItem,
             "ErrorItemNotFound",
             "Cannot determine deletion target",
             StatusCode::OK,
-        ));
+        )));
     };
 
     // If the resource_href is absolute, use that directly; if relative, combine with base
@@ -8506,12 +8509,12 @@ async fn delete_calendar_via_caldav(
         .await
         .map_err(|e| {
             tracing::error!(error = %e, "CalDAV delete failed");
-            operation_error_response(
+            Box::new(operation_error_response(
                 &EwsAction::DeleteItem,
                 "ErrorInternalServerError",
                 "An internal error occurred while deleting the item",
                 StatusCode::INTERNAL_SERVER_ERROR,
-            )
+            ))
         })?;
 
     Ok(())

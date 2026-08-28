@@ -24,7 +24,6 @@ pub struct SmtpClient {
     host: String,
     port: u16,
     /// Whether to use implicit TLS (SMTPS on port 465) vs STARTTLS (port 587)
-    #[allow(dead_code)]
     implicit_tls: bool,
 }
 
@@ -44,6 +43,17 @@ pub struct SendEmailParams<'a> {
     pub subject: &'a str,
     pub text_body: &'a str,
     pub html_body: Option<&'a str>,
+    pub username: &'a str,
+    pub password: &'a SecretString,
+}
+
+/// Parameters for an iMIP (RFC 6047) meeting response send.
+pub struct SendImipParams<'a> {
+    pub from: &'a str,
+    pub to: Vec<String>,
+    pub subject: &'a str,
+    pub ics: &'a str,
+    pub text_body: Option<&'a str>,
     pub username: &'a str,
     pub password: &'a SecretString,
 }
@@ -226,17 +236,14 @@ impl SmtpClient {
     /// `METHOD:REPLY` produced by [`crate::meeting::MeetingMessageGenerator`].
     /// Optional `text_body` is sent as an alternative `text/plain` part so
     /// mail clients without calendar support still render a readable reply.
-    #[allow(clippy::too_many_arguments)]
-    pub async fn send_imip(
-        &self,
-        from: &str,
-        to: Vec<String>,
-        subject: &str,
-        ics: &str,
-        text_body: Option<&str>,
-        username: &str,
-        password: &SecretString,
-    ) -> anyhow::Result<SendResult> {
+    pub async fn send_imip(&self, params: &SendImipParams<'_>) -> anyhow::Result<SendResult> {
+        let from = params.from;
+        let to = &params.to;
+        let subject = params.subject;
+        let ics = params.ics;
+        let text_body = params.text_body;
+        let username = params.username;
+        let password = params.password;
         if to.is_empty() {
             return Err(anyhow::anyhow!("iMIP reply has no recipients (organizer)"));
         }
@@ -261,7 +268,7 @@ impl SmtpClient {
                 .map_err(|e| anyhow::anyhow!("Invalid iMIP content-type: {}", e))?,
             );
 
-        for recipient in &to {
+        for recipient in to {
             let mailbox: Mailbox = recipient
                 .parse()
                 .map_err(|e| anyhow::anyhow!("Invalid recipient '{}': {}", recipient, e))?;

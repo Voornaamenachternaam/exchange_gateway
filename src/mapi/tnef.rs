@@ -830,8 +830,8 @@ fn decode_string(t: crate::mapi::data::PropertyType, raw: &[u8]) -> TnefProperty
     match t {
         T::PTYP_STRING => {
             let mut units: Vec<u16> = Vec::with_capacity(raw.len() / 2);
-            for chunk in raw.chunks_exact(2) {
-                units.push(u16::from_le_bytes([chunk[0], chunk[1]]));
+            for &chunk in raw.as_chunks::<2>().0 {
+                units.push(u16::from_le_bytes(chunk));
             }
             if units.last() == Some(&0) {
                 units.pop();

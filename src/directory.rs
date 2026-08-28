@@ -209,7 +209,7 @@ impl DirectoryLookup for JmapDirectory {
             let args = json!({});
             let resp = client
                 .api_call(
-                    &client.base_url(),
+                    client.base_url(),
                     &["urn:ietf:params:jmap:core"],
                     vec![("Account/get", args, "a0")],
                     &username,
@@ -221,35 +221,34 @@ impl DirectoryLookup for JmapDirectory {
                 .method_responses
                 .iter()
                 .find(|(name, _, _)| name == "Account/get")
+                && let Some(list) = value.get("list").and_then(|v| v.as_array())
             {
-                if let Some(list) = value.get("list").and_then(|v| v.as_array()) {
-                    for acc in list {
-                        let email = acc
-                            .get("email")
-                            .or_else(|| acc.get("primaryEmail"))
-                            .and_then(|v| v.as_str())
-                            .unwrap_or_default()
-                            .to_string();
-                        let display_name = acc
-                            .get("name")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or(&email)
-                            .to_string();
-                        if query.is_empty()
-                            || display_name.to_lowercase().contains(&query.to_lowercase())
-                            || email.to_lowercase().contains(&query.to_lowercase())
-                        {
-                            contacts.push(Contact {
-                                display_name,
-                                email,
-                                title: None,
-                                office: None,
-                                phone: None,
-                                department: None,
-                                company: None,
-                                last_modified: None,
-                            });
-                        }
+                for acc in list {
+                    let email = acc
+                        .get("email")
+                        .or_else(|| acc.get("primaryEmail"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or_default()
+                        .to_string();
+                    let display_name = acc
+                        .get("name")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or(&email)
+                        .to_string();
+                    if query.is_empty()
+                        || display_name.to_lowercase().contains(&query.to_lowercase())
+                        || email.to_lowercase().contains(&query.to_lowercase())
+                    {
+                        contacts.push(Contact {
+                            display_name,
+                            email,
+                            title: None,
+                            office: None,
+                            phone: None,
+                            department: None,
+                            company: None,
+                            last_modified: None,
+                        });
                     }
                 }
             }
@@ -281,7 +280,7 @@ impl DirectoryLookup for JmapDirectory {
             });
             let query_resp = client
                 .api_call(
-                    &client.base_url(),
+                    client.base_url(),
                     &["urn:ietf:params:jmap:core"],
                     vec![("Identity/query", query_args, "q0")],
                     &username,
@@ -310,7 +309,7 @@ impl DirectoryLookup for JmapDirectory {
             let get_args = json!({ "ids": ids });
             let get_resp = client
                 .api_call(
-                    &client.base_url(),
+                    client.base_url(),
                     &["urn:ietf:params:jmap:core"],
                     vec![("Identity/get", get_args, "g0")],
                     &username,
@@ -321,31 +320,29 @@ impl DirectoryLookup for JmapDirectory {
                 .method_responses
                 .iter()
                 .find(|(name, _, _)| name == "Identity/get")
+                && let Some(list) = value.get("list").and_then(|v| v.as_array())
+                && let Some(item) = list.first()
             {
-                if let Some(list) = value.get("list").and_then(|v| v.as_array()) {
-                    if let Some(item) = list.first() {
-                        let email = item
-                            .get("email")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or_default()
-                            .to_string();
-                        let display_name = item
-                            .get("name")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or(&email)
-                            .to_string();
-                        return Ok(Some(Contact {
-                            display_name,
-                            email,
-                            title: None,
-                            office: None,
-                            phone: None,
-                            department: None,
-                            company: None,
-                            last_modified: None,
-                        }));
-                    }
-                }
+                let email = item
+                    .get("email")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string();
+                let display_name = item
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(&email)
+                    .to_string();
+                return Ok(Some(Contact {
+                    display_name,
+                    email,
+                    title: None,
+                    office: None,
+                    phone: None,
+                    department: None,
+                    company: None,
+                    last_modified: None,
+                }));
             }
             Ok(None)
         })
@@ -367,9 +364,8 @@ pub struct StalwartAdminDirectory {
     client: Client,
 }
 
-#[allow(clippy::new_ret_no_self)]
 impl StalwartAdminDirectory {
-    pub fn new(config: StalwartAdminConfig) -> Result<Arc<dyn DirectoryLookup>, DirectoryError> {
+    pub fn create(config: StalwartAdminConfig) -> Result<Arc<dyn DirectoryLookup>, DirectoryError> {
         let client = Client::builder()
             .timeout(std::time::Duration::from_secs(config.timeout_secs))
             .build()
@@ -632,33 +628,33 @@ pub fn create_directory(
             password: admin_password.map(|p| p.to_string()),
             timeout_secs: 10,
         };
-        return match StalwartAdminDirectory::new(config) {
+        return match StalwartAdminDirectory::create(config) {
             Ok(dir) => dir,
             Err(_) => Arc::new(NullDirectory) as Arc<dyn DirectoryLookup>,
         };
     }
     // Fallback to JMAP Identity lookup using the configured JMAP base URL.
     // Read JMAP base from environment (same variable used by Config).
-    if let Ok(jmap_base) = std::env::var("GATEWAY_JMAP_BASE") {
-        if !jmap_base.is_empty() {
-            // Build JMAP client.
-            match JmapClient::new(&jmap_base) {
-                Ok(jc) => {
-                    let username = admin_username.unwrap_or("").to_string();
-                    let password = admin_password.unwrap_or("");
-                    let dir = JmapDirectory {
-                        jmap_client: jc,
-                        username,
-                        password: SecretString::from(password.to_string()),
-                        runtime: Runtime::new()
-                            .expect("Failed to create Tokio runtime for JmapDirectory"),
-                    };
-                    return Arc::new(dir) as Arc<dyn DirectoryLookup>;
-                }
-                Err(e) => {
-                    tracing::warn!(target: "directory", error = %e, "Failed to create JMAP client for directory service");
-                    return Arc::new(NullDirectory) as Arc<dyn DirectoryLookup>;
-                }
+    if let Ok(jmap_base) = std::env::var("GATEWAY_JMAP_BASE")
+        && !jmap_base.is_empty()
+    {
+        // Build JMAP client.
+        match JmapClient::new(&jmap_base) {
+            Ok(jc) => {
+                let username = admin_username.unwrap_or("").to_string();
+                let password = admin_password.unwrap_or("");
+                let dir = JmapDirectory {
+                    jmap_client: jc,
+                    username,
+                    password: SecretString::from(password.to_string()),
+                    runtime: Runtime::new()
+                        .expect("Failed to create Tokio runtime for JmapDirectory"),
+                };
+                return Arc::new(dir) as Arc<dyn DirectoryLookup>;
+            }
+            Err(e) => {
+                tracing::warn!(target: "directory", error = %e, "Failed to create JMAP client for directory service");
+                return Arc::new(NullDirectory) as Arc<dyn DirectoryLookup>;
             }
         }
     }
