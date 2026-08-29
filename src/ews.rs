@@ -12,6 +12,7 @@ use crate::calendar::{
 use crate::vcard::{self, Vcard, parse_vcard_from_data};
 
 use crate::delegate_ews::DelegateEwsHandler;
+use crate::directory::Contact;
 use crate::ews_folders::{
     DistinguishedFolder, folder_id_for, render_folder_hierarchy_creates, render_folder_xml,
     render_root_and_children, resolve_folder_id, validate_folder_request,
@@ -314,7 +315,7 @@ pub async fn handle(
         EwsAction::GetServerTimeZones => handle_get_server_time_zones().await,
         EwsAction::GetFolderInfo => handle_get_folder_info().await,
         EwsAction::GetMailTips => handle_get_mail_tips(&auth, &body).await,
-        EwsAction::FindPeople => handle_find_people(&auth, &body).await,
+        EwsAction::FindPeople => handle_find_people(&state, &auth, &body).await,
         EwsAction::GetConversationItems => handle_get_conversation_items().await,
         EwsAction::ConvertId => handle_convert_id(&auth, &body).await,
         EwsAction::GetRoomLists => handle_get_room_lists(&state, &auth).await,
@@ -332,7 +333,7 @@ pub async fn handle(
         EwsAction::GetClientAccessToken => handle_get_client_access_token().await,
         EwsAction::GetReminders => handle_get_reminders(&auth, &body).await,
         EwsAction::PerformReminderAction => handle_perform_reminder_action(&auth, &body).await,
-        EwsAction::GetPersona => handle_get_persona(&auth, &body).await,
+        EwsAction::GetPersona => handle_get_persona(&state, &auth, &body).await,
         EwsAction::CreateAttachment => handle_create_attachment(&state, &auth, &body).await,
         EwsAction::GetAttachment => handle_get_attachment(&state, &auth, &body).await,
         EwsAction::DeleteAttachment => handle_delete_attachment(&state, &auth, &body).await,
@@ -7460,28 +7461,92 @@ async fn handle_get_mail_tips(auth: &AuthContext, _body: &str) -> Response {
     soap_ok(inner)
 }
 
-async fn handle_find_people(auth: &AuthContext, _body: &str) -> Response {
+/// Render a single `t:Persona` element (MS-OXWSPERS §2.2.4.19) for a directory
+/// `Contact`. The `PersonaId` is deterministic — the contact's SMTP address —
+/// so a follow-up `GetPersona` (which supplies a `PersonaId` from an earlier
+/// `FindPeople`/`ResolveNames`) can round-trip back to the same entry via the
+/// JMAP directory. `ChangeKey` is a stable placeholder (the directory has no
+/// per-entry version).
+fn persona_xml_from_contact(contact: &Contact) -> String {
+    format!(
+        r#"<t:Persona><t:PersonaId Id="{}" ChangeKey="01"/><t:PersonaType>Person</t:PersonaType><t:DisplayName>{}</t:DisplayName><t:EmailAddress><t:EmailAddress>{}</t:EmailAddress><t:RoutingType>SMTP</t:RoutingType><t:MailboxType>Mailbox</t:MailboxType></t:EmailAddress></t:Persona>"#,
+        xml_escape(&contact.email),
+        xml_escape(&contact.display_name),
+        xml_escape(&contact.email),
+    )
+}
+
+async fn handle_find_people(state: &Arc<AppState>, auth: &AuthContext, body: &str) -> Response {
+    // `QueryString` drives find-people search (MS-OXWSPERS §3.1.4.1.3.1);
+    // Outlook for Windows and Outlook Android both send it for GAL browse and
+    // recipient/People lookup. Empty/absent means "return all" (directory
+    // browse). With no directory configured, degrade to a single-person
+    // self persona (the directory-less Exchange look-alike behaviour).
+    let query = extract_first_tag_text(body, b"QueryString").unwrap_or_default();
+
+    let Some(dir) = &state.directory else {
+        // Directory not configured: serve only the authenticated caller's own
+        // persona so People search still resolves "self" without inventing
+        // identities that do not exist in the back-end.
+        let inner = format!(
+            r#"<m:FindPeopleResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:FindPeopleResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:People><t:Persona><t:PersonaId Id="{}" ChangeKey="01"/><t:PersonaType>Person</t:PersonaType><t:DisplayName>{}</t:DisplayName><t:EmailAddress><t:EmailAddress>{}</t:EmailAddress><t:RoutingType>SMTP</t:RoutingType><t:MailboxType>Mailbox</t:MailboxType></t:EmailAddress></t:Persona></m:People><m:TotalNumberOfPeopleInView>1</m:TotalNumberOfPeopleInView><m:FirstMatchingRowIndex>1</m:FirstMatchingRowIndex><m:FirstLoadedRowIndex>1</m:FirstLoadedRowIndex></m:FindPeopleResponseMessage></m:ResponseMessages></m:FindPeopleResponse>"#,
+            EWS_MSG_NS,
+            EWS_TYPE_NS,
+            xml_escape(&auth.username),
+            xml_escape(&auth.username),
+            xml_escape(&auth.username),
+        );
+        return soap_ok(inner);
+    };
+
+    // An empty query and `*` both mean "match all" (mirrors the directory
+    // `search_blocking` wildcard contract used by the OAB/NSPI download paths).
+    let effective_query = if query.is_empty() {
+        "*".to_string()
+    } else {
+        query
+    };
+    let limit = 100;
+    let query_clone = effective_query.clone();
+    let dir_clone = dir.clone();
+    let search_result = match tokio::task::spawn_blocking(move || {
+        dir_clone.search_blocking(&query_clone, Some(limit))
+    })
+    .await
+    {
+        Ok(Ok(res)) => res,
+        Ok(Err(e)) => {
+            tracing::warn!(target: "ews", "Directory search error: {}", e);
+            return soap_fault(
+                "ErrorDirectorySearch",
+                "Failed to search directory",
+                StatusCode::INTERNAL_SERVER_ERROR,
+            );
+        }
+        Err(e) => {
+            tracing::error!(target: "ews", "Directory task join error: {}", e);
+            return soap_fault(
+                "ErrorDirectorySearch",
+                "Directory search task failed",
+                StatusCode::INTERNAL_SERVER_ERROR,
+            );
+        }
+    };
+
+    let mut people_xml = String::new();
+    let mut total = 0usize;
+    for contact in &search_result.contacts {
+        people_xml.push_str(&persona_xml_from_contact(contact));
+        total += 1;
+    }
+
+    // `FirstMatchingRowIndex`/`FirstLoadedRowIndex` are 1-based (0 when empty);
+    // they are informational only (MS-OXWSPERS §3.1.4.1.3.3). The gateway does
+    // not paginate the directory snapshot, so both equal the first returned row.
+    let first_row = if total > 0 { 1 } else { 0 };
     let inner = format!(
-        r#"<m:FindPeopleResponse xmlns:m="{}" xmlns:t="{}">
-  <m:ResponseMessages>
-    <m:FindPeopleResponseMessage ResponseClass="Success">
-      <m:ResponseCode>NoError</m:ResponseCode>
-      <m:People>
-        <t:Persona>
-          <t:PersonaId Id="{}" ChangeKey="01"/>
-          <t:DisplayName>{}</t:DisplayName>
-          <t:EmailAddress><t:EmailAddress>{}</t:EmailAddress></t:EmailAddress>
-        </t:Persona>
-      </m:People>
-      <m:TotalPeopleInView>1</m:TotalPeopleInView>
-    </m:FindPeopleResponseMessage>
-  </m:ResponseMessages>
-</m:FindPeopleResponse>"#,
-        EWS_MSG_NS,
-        EWS_TYPE_NS,
-        uuid::Uuid::new_v4(),
-        xml_escape(&auth.username),
-        xml_escape(&auth.username),
+        r#"<m:FindPeopleResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:FindPeopleResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:People>{}</m:People><m:TotalNumberOfPeopleInView>{}</m:TotalNumberOfPeopleInView><m:FirstMatchingRowIndex>{}</m:FirstMatchingRowIndex><m:FirstLoadedRowIndex>{}</m:FirstLoadedRowIndex></m:FindPeopleResponseMessage></m:ResponseMessages></m:FindPeopleResponse>"#,
+        EWS_MSG_NS, EWS_TYPE_NS, people_xml, total, first_row, first_row,
     );
     soap_ok(inner)
 }
@@ -7786,25 +7851,73 @@ async fn handle_perform_reminder_action(_auth: &AuthContext, _body: &str) -> Res
     soap_ok(inner)
 }
 
-async fn handle_get_persona(auth: &AuthContext, _body: &str) -> Response {
+async fn handle_get_persona(state: &Arc<AppState>, auth: &AuthContext, body: &str) -> Response {
+    // `GetPersona` resolves a single persona by `PersonaId` (which the gateway
+    // renders as the SMTP address in `FindPeople`/`ResolveNames`) or by an
+    // inline `EmailAddress` (MS-OXWSPERS §3.1.4.2.3.1). `PersonaId` is an
+    // ItemIdType whose `Id` attribute carries the address. Prefer the explicit
+    // attribute, then the email element, then the authenticated caller; when
+    // the directory is unavailable, fall back to the caller's own persona.
+    let person_id = extract_first_attr(body, b"PersonaId", b"Id")
+        .or_else(|| extract_first_tag_text(body, b"EmailAddress"));
+    let target = person_id
+        .filter(|s| s.contains('@'))
+        .unwrap_or_else(|| auth.username.clone());
+
+    // Resolve via directory when one is configured and reachable.
+    if let Some(dir) = &state.directory {
+        let target_clone = target.clone();
+        let dir_clone = dir.clone();
+        let resolved =
+            tokio::task::spawn_blocking(move || dir_clone.resolve_email_blocking(&target_clone))
+                .await;
+        match resolved {
+            Ok(Ok(Some(contact))) => {
+                let inner = format!(
+                    r#"<m:GetPersonaResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:GetPersonaResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:Persona>{}</m:Persona></m:GetPersonaResponseMessage></m:ResponseMessages></m:GetPersonaResponse>"#,
+                    EWS_MSG_NS,
+                    EWS_TYPE_NS,
+                    persona_xml_from_contact(&contact),
+                );
+                return soap_ok(inner);
+            }
+            Ok(Ok(None)) => {
+                // Not in the directory: return an empty persona (no fabricated
+                // identity) with a success envelope so the client can handle it
+                // gracefully.
+                let inner = format!(
+                    r#"<m:GetPersonaResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:GetPersonaResponseMessage ResponseClass="Success"><m:ResponseCode>ErrorItemNotFound</m:ResponseCode></m:GetPersonaResponseMessage></m:ResponseMessages></m:GetPersonaResponse>"#,
+                    EWS_MSG_NS, EWS_TYPE_NS,
+                );
+                return soap_ok(inner);
+            }
+            Ok(Err(e)) => {
+                tracing::warn!(target: "ews", "Directory resolve error: {}", e);
+                return soap_fault(
+                    "ErrorDirectorySearch",
+                    "Failed to resolve persona",
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                );
+            }
+            Err(e) => {
+                tracing::error!(target: "ews", "Directory task join error: {}", e);
+                return soap_fault(
+                    "ErrorDirectorySearch",
+                    "Directory resolve task failed",
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                );
+            }
+        }
+    }
+
+    // No directory: self persona only.
     let inner = format!(
-        r#"<m:GetPersonaResponse xmlns:m="{}" xmlns:t="{}">
-  <m:ResponseMessages>
-    <m:GetPersonaResponseMessage ResponseClass="Success">
-      <m:ResponseCode>NoError</m:ResponseCode>
-      <m:Persona>
-        <t:PersonaId Id="{}" ChangeKey="01"/>
-        <t:DisplayName>{}</t:DisplayName>
-        <t:EmailAddress><t:EmailAddress>{}</t:EmailAddress></t:EmailAddress>
-      </m:Persona>
-    </m:GetPersonaResponseMessage>
-  </m:ResponseMessages>
-</m:GetPersonaResponse>"#,
+        r#"<m:GetPersonaResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:GetPersonaResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:Persona><t:PersonaId Id="{}" ChangeKey="01"/><t:PersonaType>Person</t:PersonaType><t:DisplayName>{}</t:DisplayName><t:EmailAddress><t:EmailAddress>{}</t:EmailAddress><t:RoutingType>SMTP</t:RoutingType><t:MailboxType>Mailbox</t:MailboxType></t:EmailAddress></t:Persona></m:GetPersonaResponseMessage></m:ResponseMessages></m:GetPersonaResponse>"#,
         EWS_MSG_NS,
         EWS_TYPE_NS,
-        uuid::Uuid::new_v4(),
         xml_escape(&auth.username),
-        xml_escape(&auth.username)
+        xml_escape(&auth.username),
+        xml_escape(&auth.username),
     );
     soap_ok(inner)
 }
@@ -9088,5 +9201,50 @@ mod tests {
             full.matches("</s:Body>").count(),
             "body open/close balanced"
         );
+    }
+
+    #[test]
+    fn test_persona_xml_uses_email_as_deterministic_persona_id() {
+        // PersonaId must be the SMTP address (not a random UUID) so GetPersona
+        // can round-trip a PersonaId from FindPeople back to the directory entry.
+        let contact = Contact {
+            display_name: "Alice Example".to_string(),
+            email: "alice@example.com".to_string(),
+            title: Some("Engineer".to_string()),
+            office: None,
+            phone: None,
+            department: None,
+            company: None,
+            last_modified: None,
+        };
+        let xml = persona_xml_from_contact(&contact);
+        assert!(
+            xml.contains(r#"<t:PersonaId Id="alice@example.com" ChangeKey="01"/>"#),
+            "PersonaId should carry the SMTP address: {xml}"
+        );
+        assert!(xml.contains("<t:DisplayName>Alice Example</t:DisplayName>"));
+        assert!(xml.contains("<t:EmailAddress>alice@example.com</t:EmailAddress>"));
+        assert!(xml.contains("<t:RoutingType>SMTP</t:RoutingType>"));
+        assert!(xml.contains("<t:MailboxType>Mailbox</t:MailboxType>"));
+        assert!(xml.contains("<t:PersonaType>Person</t:PersonaType>"));
+    }
+
+    #[test]
+    fn test_persona_xml_escapes_display_name() {
+        let contact = Contact {
+            display_name: "A & B <C> \"x\" 'y'".to_string(),
+            email: "a@example.com".to_string(),
+            title: None,
+            office: None,
+            phone: None,
+            department: None,
+            company: None,
+            last_modified: None,
+        };
+        let xml = persona_xml_from_contact(&contact);
+        assert!(!xml.contains("<t:DisplayName>A & B <C>"));
+        assert!(xml.contains(
+            "<t:DisplayName>A &amp; B &lt;C&gt; &quot;x&quot; &apos;y&apos;</t:DisplayName>"
+        ));
     }
 }
