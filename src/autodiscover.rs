@@ -736,8 +736,7 @@ fn handle_outlook_xml(
 <EwsPartnerUrl>https://{host}/EWS/Exchange.asmx</EwsPartnerUrl>
 <OABUrl>{oab_url}</OABUrl>
 </Protocol>
-<Protocol>
-<Type>mapiHttp</Type>
+<Protocol Type="mapiHttp" Version="1">
 <Server>{host}</Server>
 <ServerExclusiveConnect>on</ServerExclusiveConnect>
 <SSL>on</SSL>
@@ -1081,7 +1080,14 @@ mod tests {
             &AuthAdvert::Basic,
         );
         assert_eq!(status, StatusCode::OK);
-        assert!(body.contains("<Type>mapiHttp</Type>"));
+        // The mapiHttp Protocol element carries the `Type` and `Version` XML
+        // *attributes* (not a `<Type>` child element) per MS-OXDSCLI
+        // §2.2.4.1.1.2.6 — New Outlook for Windows matches on this exact form
+        // and treats a `<Type>mapiHttp</Type>` child element as an unavailable
+        // MAPI/HTTP endpoint. The canonical MS-OXDSCLI §4.4 example is
+        // `<Protocol Type="mapiHttp" Version="1">`.
+        assert!(body.contains("<Protocol Type=\"mapiHttp\" Version=\"1\">"));
+        assert!(!body.contains("<Type>mapiHttp</Type>"));
         // MailStore ExternalUrl points to the MAPI/HTTP mailbox endpoint and
         // carries the MailboxId query parameter per MS-OXDSCLI §2.2.4.1.1.2.6.29.
         assert!(body.contains("https://mail.example.com/mapi/emsmdb?MailboxId=user@example.com"));
