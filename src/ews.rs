@@ -22,7 +22,9 @@ use crate::ews_update::{apply_field_changes, parse_item_changes};
 use crate::jmap::{JmapClient, QueryCalendarEventsParams, SetCalendarEventParams};
 use crate::models::AppState;
 
-use crate::notifications::{NotificationEvent, SubscriptionKind};
+use crate::notifications::{
+    NotificationEvent, PushConfig, PushDelivery, PushNotifier, SubscriptionKind,
+};
 use crate::permission::{PermissionContext, PermissionEnforcement};
 use crate::protocol_fixtures::{EWS_MSG_NS, EWS_TYPE_NS};
 use crate::room::{
@@ -1251,6 +1253,7 @@ async fn fetch_freebusy_jmap(
     password: &str,
     start: chrono::DateTime<chrono::Utc>,
     end: chrono::DateTime<chrono::Utc>,
+    interval_minutes: i64,
 ) -> anyhow::Result<(String, String)> {
     let secret_password = SecretString::from(password.to_string());
 
@@ -1262,7 +1265,10 @@ async fn fetch_freebusy_jmap(
     let account_id = jmap
         .get_calendar_account_id(mailbox, &secret_password)
         .await?;
-    let safe_interval = 30i64; // Default interval for free-busy
+    // Honor the requested MergedFreeBusyIntervalInMinutes so the returned
+    // MergedFreeBusy string has the same slot granularity the caller (and thus
+    // the client) expects, matching the CalDAV fallback path exactly.
+    let safe_interval = interval_minutes.clamp(5, 1440);
     let slot_count = (((end - start).num_seconds().max(0) + (safe_interval * 60 - 1))
         / (safe_interval * 60)) as usize;
     let mut merged = vec!['0'; slot_count];
@@ -1336,7 +1342,9 @@ async fn merged_freebusy_for_mailbox(
     // JMAP eliminates ETag complexity and uses a single HTTP endpoint.
     // Falls back to CalDAV if JMAP Calendar is unavailable or fails.
     if let Some(jmap) = &state.jmap_client {
-        if let Ok(jmap_result) = fetch_freebusy_jmap(jmap, mailbox, password, start, end).await {
+        if let Ok(jmap_result) =
+            fetch_freebusy_jmap(jmap, mailbox, password, start, end, interval_minutes).await
+        {
             return jmap_result;
         }
         tracing::debug!(target: "ews", "JMAP Calendar free-busy failed, falling back to CalDAV");
@@ -4350,7 +4358,7 @@ async fn handle_sync_folder_hierarchy(
 enum DetectedSubscriptionRequest {
     Pull,
     Streaming,
-    /// Push subscription: declared but unsupported by this gateway.
+    /// Push subscription: server-initiated delivery to a client callback URL.
     Push,
 }
 
@@ -4461,6 +4469,25 @@ fn parse_subscription_request(body: &str) -> ParsedSubscriptionRequest {
     ParsedSubscriptionRequest {
         folders,
         event_types,
+    }
+}
+
+/// Parse the `PushSubscriptionRequest` configuration (MS-OXWSNTIF 3.1.4.3.4.4):
+/// the mandatory callback `URL`, the optional `StatusFrequency` keep-alive
+/// interval (minutes, default 6), and the optional opaque `CallerData` echoed
+/// back on delivery. Folder/event-type filters are read by
+/// [`parse_subscription_request`], shared across all three request kinds.
+fn parse_push_subscription_request(body: &str) -> PushConfig {
+    let url = extract_first_tag_text(body, b"URL").unwrap_or_default();
+    let status_frequency_minutes = extract_first_tag_text(body, b"StatusFrequency")
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(6)
+        .clamp(1, 1440);
+    let caller_data = extract_first_tag_text(body, b"CallerData");
+    PushConfig {
+        url,
+        status_frequency_minutes,
+        caller_data,
     }
 }
 
@@ -4672,16 +4699,152 @@ fn publish_event(state: &AppState, event: NotificationEvent) {
     state.subscription_manager.publish(event);
 }
 
+/// HTTP transport that turns push-notification batches into outbound SOAP
+/// `SendNotification` requests POSTed to a client's callback URL. Owns an HTTP
+/// client (connection pool + sane timeouts) and performs the SOAP serialization
+/// for the EWS push notification wire format (MS-OXWSNTIF §3.1.4.4).
+pub struct EwsPushNotifier {
+    client: reqwest::Client,
+}
+
+impl EwsPushNotifier {
+    /// Build a notifier from an already-configured [`reqwest::Client`], so the
+    /// application controls timeouts/TLS uniformly.
+    pub fn new(client: reqwest::Client) -> Self {
+        Self { client }
+    }
+}
+
+#[async_trait::async_trait]
+impl PushNotifier for EwsPushNotifier {
+    async fn deliver(&self, delivery: PushDelivery) {
+        let body = render_send_notification(&delivery);
+        let url = delivery.url.clone();
+        // POST the SendNotification SOAP request. The client (acting as the
+        // notification server) is expected to answer 200 with a
+        // SendNotificationResponse; a non-2xx or transport error is logged and
+        // dropped (the StatusEvent keep-alive lets the client re-establish).
+        match self
+            .client
+            .post(&url)
+            .header("Content-Type", "text/xml; charset=utf-8")
+            .body(body)
+            .send()
+            .await
+        {
+            Ok(resp) if resp.status().is_success() => {
+                // Best-effort: read and discard the response body. The client
+                // may send `SubscriptionStatus=Unsubscribe`; handling that
+                // actively is a future refinement, but a 2xx keeps us aligned
+                // with the protocol's success semantics.
+                let _ = resp.bytes().await;
+            }
+            Ok(resp) => {
+                tracing::warn!(
+                    target: "ews",
+                    status = %resp.status(),
+                    push_url = %redact_url(&url),
+                    "Push notification client returned a non-success status"
+                );
+            }
+            Err(e) => {
+                tracing::warn!(
+                    target: "ews",
+                    push_url = %redact_url(&url),
+                    error = %e,
+                    "Push notification delivery failed"
+                );
+            }
+        }
+    }
+}
+
+/// Reduce a callback URL to a safe, non-sensitive form for logging (strip any
+/// userinfo credentials and query string, which may carry tokens).
+fn redact_url(url: &str) -> String {
+    match url::Url::parse(url) {
+        Ok(mut u) => {
+            let _ = u.set_username("");
+            let _ = u.set_password(None);
+            u.set_query(None);
+            u.set_fragment(None);
+            u.to_string()
+        }
+        Err(_) => "<invalid-url>".to_string(),
+    }
+}
+
+/// Render the SOAP `SendNotification` request body for a push delivery. An
+/// empty `events` list produces a single `StatusEvent` keep-alive (the client
+/// must answer or be considered dead, MS-OXWSNTIF §3.1.4.4.1.1); otherwise each
+/// event becomes a typed event element inside a single `Notification`.
+fn render_send_notification(delivery: &PushDelivery) -> String {
+    let timestamp = format_ews_datetime(&Utc::now());
+    let watermark_str = encode_watermark(delivery.watermark);
+
+    let events_xml = if delivery.events.is_empty() {
+        // StatusEvent keep-alive: no item data, only the current watermark
+        // signalled as a `StatusEvent` (the client must answer or be considered
+        // dead, MS-OXWSNTIF 3.1.4.4.1.1).
+        format!("<t:StatusEvent><t:Watermark>{}</t:Watermark></t:StatusEvent>", watermark_str)
+    } else {
+        let mut buf = String::new();
+        for (event, watermark) in &delivery.events {
+            let wm = encode_watermark(*watermark);
+            buf.push_str(&render_notification_event(event, &wm, &timestamp));
+        }
+        buf
+    };
+
+    // Push notifications carry per-event watermarks and omit the optional
+    // `PreviousWatermark` element (that is a GetEvents/streaming concern); the
+    // `StatusEvent` keep-alive above already encodes the current watermark.
+    let notification = render_notification(
+        &delivery.subscription_id,
+        None,
+        false,
+        &events_xml,
+    );
+
+    format!(
+        r#"<?xml version="1.0" encoding="utf-8"?>
+<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
+  <s:Header>
+    {}
+  </s:Header>
+  <s:Body>
+    <m:SendNotification xmlns:m="{msg}" xmlns:t="{typ}">
+      <m:ResponseMessages>
+        <m:SendNotificationResponseMessage ResponseClass="Success">
+          <m:ResponseCode>NoError</m:ResponseCode>
+          {notification}
+        </m:SendNotificationResponseMessage>
+      </m:ResponseMessages>
+    </m:SendNotification>
+  </s:Body>
+</s:Envelope>"#,
+        version::current().render_ews_header(EWS_TYPE_NS),
+        msg = EWS_MSG_NS,
+        typ = EWS_TYPE_NS,
+    )
+}
+
 async fn handle_subscribe(state: &Arc<AppState>, auth: &AuthContext, body: &str) -> Response {
     let parsed = parse_subscription_request(body);
 
     // Determine subscription kind from the XML *structure* (the actual child
     // element of `<Subscribe>`), not from raw `body.contains(…)` substring
-    // matching, which is namespace- and formatting-sensitive. Pull vs Streaming
-    // selects the subscription kind (MS-OXWSNTIF 3.1.4.3.3.2); Push
-    // subscriptions are not supported by this gateway, so a Push registration
-    // returns ErrorInvalidSubscriptionRequest.
-    let (kind, timeout_minutes) = match detect_subscription_request_kind(body) {
+    // matching, which is namespace- and formatting-sensitive (MS-OXWSNTIF
+    // 3.1.4.3.3.2). Each kind maps to its own creation path below.
+    let requested = detect_subscription_request_kind(body);
+
+    // Push subscriptions follow a distinct creation path (server pushes to a
+    // client callback URL); Pull/Streaming share the in-memory subscription path.
+    if requested == Some(DetectedSubscriptionRequest::Push) {
+        return handle_push_subscribe(state, auth, body, parsed).await;
+    }
+
+    let (kind, timeout_minutes) = match requested {
         Some(DetectedSubscriptionRequest::Pull) => {
             let minutes = extract_first_tag_text(body, b"Timeout")
                 .and_then(|v| v.parse::<u32>().ok())
@@ -4690,12 +4853,7 @@ async fn handle_subscribe(state: &Arc<AppState>, auth: &AuthContext, body: &str)
         }
         Some(DetectedSubscriptionRequest::Streaming) => (SubscriptionKind::Streaming, None),
         Some(DetectedSubscriptionRequest::Push) => {
-            return operation_error_response(
-                &EwsAction::Subscribe,
-                "ErrorInvalidSubscriptionRequest",
-                "Push subscriptions are not supported by this gateway",
-                StatusCode::NOT_IMPLEMENTED,
-            );
+            unreachable!("push handled by handle_push_subscribe above")
         }
         None => {
             return operation_error_response(
@@ -4722,6 +4880,60 @@ async fn handle_subscribe(state: &Arc<AppState>, auth: &AuthContext, body: &str)
     // GetEvents calls echo the last watermark they received.
     let watermark = encode_watermark(0);
 
+    let response = format!(
+        r#"<m:SubscribeResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:SubscribeResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:SubscriptionId>{}</m:SubscriptionId><m:Watermark>{}</m:Watermark></m:SubscribeResponseMessage></m:ResponseMessages></m:SubscribeResponse>"#,
+        EWS_MSG_NS,
+        EWS_TYPE_NS,
+        xml_escape(&sub_id),
+        xml_escape(&watermark)
+    );
+    soap_ok(response)
+}
+
+/// Handle a `PushSubscriptionRequest`: parse the callback URL (required) and
+/// optional `StatusFrequency`/`CallerData`, create the push subscription via the
+/// notification manager, and return the `SubscriptionId` + initial `Watermark`.
+/// A missing/empty URL is a client error (MS-OXWSNTIF requires `URL`).
+async fn handle_push_subscribe(
+    state: &Arc<AppState>,
+    auth: &AuthContext,
+    body: &str,
+    parsed: ParsedSubscriptionRequest,
+) -> Response {
+    let config = parse_push_subscription_request(body);
+    if config.url.trim().is_empty() {
+        return operation_error_response(
+            &EwsAction::Subscribe,
+            "ErrorInvalidSubscriptionRequest",
+            "Push subscription requires a callback URL",
+            StatusCode::BAD_REQUEST,
+        );
+    }
+
+    let sub_id = match state
+        .subscription_manager
+        .subscribe_push(
+            &auth.username,
+            parsed.folders,
+            parsed.event_types,
+            config,
+        )
+        .await
+    {
+        Some(id) => id,
+        None => {
+            // No push transport installed (server misconfiguration): report as
+            // a server-side failure rather than a client-parse error.
+            return operation_error_response(
+                &EwsAction::Subscribe,
+                "ErrorInvalidSubscriptionRequest",
+                "Push notifications are not available on this server",
+                StatusCode::SERVICE_UNAVAILABLE,
+            );
+        }
+    };
+
+    let watermark = encode_watermark(0);
     let response = format!(
         r#"<m:SubscribeResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:SubscribeResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:SubscriptionId>{}</m:SubscriptionId><m:Watermark>{}</m:Watermark></m:SubscribeResponseMessage></m:ResponseMessages></m:SubscribeResponse>"#,
         EWS_MSG_NS,
@@ -4787,11 +4999,11 @@ async fn handle_get_events(state: &Arc<AppState>, auth: &AuthContext, body: &str
         .await
     {
         Some(SubscriptionKind::Pull) => {}
-        Some(SubscriptionKind::Streaming) => {
+        Some(SubscriptionKind::Streaming) | Some(SubscriptionKind::Push) => {
             return operation_error_response(
                 &EwsAction::GetEvents,
                 "ErrorInvalidSubscription",
-                "GetEvents is not valid for a streaming subscription",
+                "GetEvents is not valid for a streaming or push subscription",
                 StatusCode::BAD_REQUEST,
             );
         }
@@ -9311,5 +9523,61 @@ mod tests {
         assert!(xml.contains(
             "<t:DisplayName>A &amp; B &lt;C&gt; &quot;x&quot; &apos;y&apos;</t:DisplayName>"
         ));
+    }
+
+    #[test]
+    fn test_parse_push_subscription_request_extracts_fields() {
+        let body = r#"<PushSubscriptionRequest>
+            <FolderIds><DistinguishedFolderId Id="inbox"/></FolderIds>
+            <EventTypes><EventType>CreatedEvent</EventType></EventTypes>
+            <URL>https://client.example.com/callback</URL>
+            <StatusFrequency>15</StatusFrequency>
+            <CallerData>opaque-token</CallerData>
+        </PushSubscriptionRequest>"#;
+        let cfg = parse_push_subscription_request(body);
+        assert_eq!(cfg.url, "https://client.example.com/callback");
+        assert_eq!(cfg.status_frequency_minutes, 15);
+        assert_eq!(cfg.caller_data.as_deref(), Some("opaque-token"));
+    }
+
+    #[test]
+    fn test_render_send_notification_status_event_keepalive() {
+        let delivery = PushDelivery {
+            subscription_id: "sub-id-1".to_string(),
+            url: "https://client.example.com/callback".to_string(),
+            caller_data: None,
+            watermark: 7,
+            events: Vec::new(),
+        };
+        let xml = render_send_notification(&delivery);
+        assert!(xml.contains("<m:SendNotification"));
+        assert!(xml.contains("<m:SendNotificationResponseMessage"));
+        assert!(xml.contains("<t:SubscriptionId>sub-id-1</t:SubscriptionId>"));
+        assert!(xml.contains("<t:StatusEvent>"));
+        assert!(!xml.contains("<t:CreatedEvent>"));
+    }
+
+    #[test]
+    fn test_render_send_notification_created_event() {
+        let delivery = PushDelivery {
+            subscription_id: "sub-id-2".to_string(),
+            url: "https://client.example.com/callback".to_string(),
+            caller_data: None,
+            watermark: 0,
+            events: vec![(
+                crate::notifications::NotificationEvent::ItemCreated {
+                    owner: "alice".to_string(),
+                    folder_id: "inbox".to_string(),
+                    item_id: "item-123".to_string(),
+                    change_key: "ck-1".to_string(),
+                },
+                1,
+            )],
+        };
+        let xml = render_send_notification(&delivery);
+        assert!(xml.contains("<t:CreatedEvent>"));
+        assert!(xml.contains("<t:SubscriptionId>sub-id-2</t:SubscriptionId>"));
+        assert!(xml.contains("Id=\"item-123\""));
+        assert!(!xml.contains("<t:StatusEvent>"));
     }
 }
