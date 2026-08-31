@@ -1311,7 +1311,10 @@ mod tests {
         assert_eq!(d[0].subscription_id, sub_id);
         assert_eq!(d[0].url, "http://127.0.0.1:9/callback");
         assert_eq!(d[0].events.len(), 1);
-        assert!(matches!(d[0].events[0].0, NotificationEvent::ItemCreated { .. }));
+        assert!(matches!(
+            d[0].events[0].0,
+            NotificationEvent::ItemCreated { .. }
+        ));
         drop(d);
 
         assert!(mgr.unsubscribe(&sub_id, "alice").await);
@@ -1326,7 +1329,12 @@ mod tests {
         let mgr = SubscriptionManager::new().with_push_notifier(notifier);
 
         let sub_id = mgr
-            .subscribe_push("alice", None, None, push_config("http://127.0.0.1:9/callback"))
+            .subscribe_push(
+                "alice",
+                None,
+                None,
+                push_config("http://127.0.0.1:9/callback"),
+            )
             .await
             .expect("push with notifier must succeed");
         assert_eq!(mgr.active_count().await, 1);
@@ -1374,9 +1382,14 @@ mod tests {
         let unsub_notifier: Arc<dyn PushNotifier> = Arc::new(RecordingUnsubscribingNotifier);
         let mgr = SubscriptionManager::new().with_push_notifier(unsub_notifier);
 
-        mgr.subscribe_push("alice", None, None, push_config("http://127.0.0.1:9/callback"))
-            .await
-            .expect("push with notifier must succeed");
+        mgr.subscribe_push(
+            "alice",
+            None,
+            None,
+            push_config("http://127.0.0.1:9/callback"),
+        )
+        .await
+        .expect("push with notifier must succeed");
         assert_eq!(mgr.active_count().await, 1);
 
         // A single event triggers delivery of the Unsubscribe response; the delivery

@@ -4861,11 +4861,10 @@ async fn validate_push_callback_url(url_str: &str) -> Result<(), String> {
     // Resolve the host (hostname or IP literal) to concrete addresses and
     // reject the subscription if any resolved address is internal.
     let port = parsed.port_or_known_default().unwrap_or(80);
-    let addrs: Vec<std::net::SocketAddr> =
-        tokio::net::lookup_host((host, port))
-            .await
-            .map_err(|e| format!("callback URL host could not be resolved: {e}"))?
-            .collect();
+    let addrs: Vec<std::net::SocketAddr> = tokio::net::lookup_host((host, port))
+        .await
+        .map_err(|e| format!("callback URL host could not be resolved: {e}"))?
+        .collect();
 
     if addrs.is_empty() {
         return Err("callback URL host resolved to no addresses".to_string());
@@ -4895,7 +4894,10 @@ fn render_send_notification(delivery: &PushDelivery) -> String {
         // StatusEvent keep-alive: no item data, only the current watermark
         // signalled as a `StatusEvent` (the client must answer or be considered
         // dead, MS-OXWSNTIF 3.1.4.4.1.1).
-        format!("<t:StatusEvent><t:Watermark>{}</t:Watermark></t:StatusEvent>", watermark_str)
+        format!(
+            "<t:StatusEvent><t:Watermark>{}</t:Watermark></t:StatusEvent>",
+            watermark_str
+        )
     } else {
         let mut buf = String::new();
         for (event, watermark) in &delivery.events {
@@ -4908,12 +4910,7 @@ fn render_send_notification(delivery: &PushDelivery) -> String {
     // Push notifications carry per-event watermarks and omit the optional
     // `PreviousWatermark` element (that is a GetEvents/streaming concern); the
     // `StatusEvent` keep-alive above already encodes the current watermark.
-    let notification = render_notification(
-        &delivery.subscription_id,
-        None,
-        false,
-        &events_xml,
-    );
+    let notification = render_notification(&delivery.subscription_id, None, false, &events_xml);
 
     format!(
         r#"<?xml version="1.0" encoding="utf-8"?>
@@ -5040,12 +5037,7 @@ async fn handle_push_subscribe(
 
     let sub_id = match state
         .subscription_manager
-        .subscribe_push(
-            &auth.username,
-            parsed.folders,
-            parsed.event_types,
-            config,
-        )
+        .subscribe_push(&auth.username, parsed.folders, parsed.event_types, config)
         .await
     {
         Some(id) => id,
@@ -9746,7 +9738,9 @@ mod tests {
         assert!(is_internal_ip(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1))));
         assert!(is_internal_ip(IpAddr::V4(Ipv4Addr::new(172, 16, 0, 1))));
         assert!(is_internal_ip(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1))));
-        assert!(is_internal_ip(IpAddr::V4(Ipv4Addr::new(169, 254, 169, 254)))); // link-local metadata
+        assert!(is_internal_ip(IpAddr::V4(Ipv4Addr::new(
+            169, 254, 169, 254
+        )))); // link-local metadata
         assert!(is_internal_ip(IpAddr::V4(Ipv4Addr::new(100, 64, 0, 1)))); // CGNAT
         assert!(is_internal_ip(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0))));
         assert!(is_internal_ip(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)))); // documentation
@@ -9781,8 +9775,16 @@ mod tests {
     #[tokio::test]
     async fn test_validate_push_callback_url_ssrf() {
         // Loopback must be rejected.
-        assert!(validate_push_callback_url("http://127.0.0.1:8080/cb").await.is_err());
-        assert!(validate_push_callback_url("http://localhost/cb").await.is_err());
+        assert!(
+            validate_push_callback_url("http://127.0.0.1:8080/cb")
+                .await
+                .is_err()
+        );
+        assert!(
+            validate_push_callback_url("http://localhost/cb")
+                .await
+                .is_err()
+        );
         // Link-local metadata endpoint must be rejected.
         assert!(
             validate_push_callback_url("http://169.254.169.254/latest/meta-data/")
@@ -9790,9 +9792,17 @@ mod tests {
                 .is_err()
         );
         // Embedded credentials must be rejected.
-        assert!(validate_push_callback_url("http://user:pass@example.com/cb").await.is_err());
+        assert!(
+            validate_push_callback_url("http://user:pass@example.com/cb")
+                .await
+                .is_err()
+        );
         // Unsupported scheme must be rejected.
-        assert!(validate_push_callback_url("ftp://example.com/cb").await.is_err());
+        assert!(
+            validate_push_callback_url("ftp://example.com/cb")
+                .await
+                .is_err()
+        );
         // A hostless URL must be rejected.
         assert!(validate_push_callback_url("http://").await.is_err());
 
