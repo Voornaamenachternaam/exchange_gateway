@@ -136,6 +136,25 @@ impl NotificationEvent {
 pub enum SubscriptionKind {
     Pull,
     Streaming,
+    Push,
+}
+
+/// Configuration captured from a `PushSubscriptionRequest` (MS-OXWSNTIF
+/// 3.1.4.3.4.4). A push subscription drives an outbound HTTP POST of
+/// `SendNotification` SOAP payloads to the client-supplied URL (a client
+/// web-service endpoint the gateway pushes events to), retaining the optional
+/// client-supplied `CallerData` and emitting a `StatusEvent` keep-alive at
+/// `StatusFrequency` minutes.
+#[derive(Debug, Clone)]
+pub struct PushConfig {
+    /// The client web-service callback URL events are POSTed to.
+    pub url: String,
+    /// StatusEvent keep-alive cadence in minutes (default 6, clamped 1..=1440).
+    pub status_frequency_minutes: u64,
+    /// Opaque client-supplied value. Marked "internal use only" by MS-EXCH
+    /// (the `CallerData` EWS element has no defined parent/return element), so
+    /// it is parsed and retained but not echoed in the wire notification.
+    pub caller_data: Option<String>,
 }
 
 /// In-memory state for a single subscription.
@@ -154,6 +173,12 @@ struct Subscription {
     event_types: Option<HashSet<String>>,
     /// Persistent broadcast receiver and per-subscription watermark.
     runtime: Mutex<SubscriptionRuntime>,
+    /// Push-specific configuration and cancellation. `Some` iff `kind` is
+    /// `Push`. The delivery task shares this subscription's `runtime` (single
+    /// broadcast receiver + monotonic watermark); the `cancel` watch channel is
+    /// an explicit, out-of-band signal `unsubscribe` uses to stop the task, so
+    /// cancellation does not depend on `Arc` drop (the task holds the same `Arc`).
+    push: Option<PushState>,
     /// Absolute deadline after which the subscription is reaped.
     ///
     /// Synchronous (parking_lot) mutex: the guard is never held across an
@@ -162,6 +187,16 @@ struct Subscription {
     /// long-lived receiver holds it, silently making the lifetime "bump" on
     /// every GetEvents/recv no-op and reaping a live subscription prematurely.
     deadline: SyncMutex<tokio::time::Instant>,
+}
+
+/// Runtime state exclusive to push subscriptions.
+struct PushState {
+    /// Captured push configuration (URL, status frequency, caller data).
+    config: PushConfig,
+    /// Cancellation signal for the delivery task. `unsubscribe` sends `true` to
+    /// stop the task; `is_closed()` (all receivers dropped) lets the reaper
+    /// identify a task that has already exited abnormally.
+    cancel: tokio::sync::watch::Sender<bool>,
 }
 
 struct SubscriptionRuntime {
@@ -187,16 +222,101 @@ impl Subscription {
                 receiver,
                 watermark: 0,
             }),
+            push: None,
+            deadline: SyncMutex::new(tokio::time::Instant::now() + lifetime),
+        })
+    }
+
+    fn new_push(
+        owner: String,
+        folders: Option<HashSet<String>>,
+        event_types: Option<HashSet<String>>,
+        push_config: PushConfig,
+        receiver: broadcast::Receiver<NotificationEvent>,
+        cancel_tx: tokio::sync::watch::Sender<bool>,
+    ) -> Arc<Self> {
+        // A push subscription has no idle deadline: it lives until the client
+        // explicitly unsubscribes or the server restarts (MS-OXWSNTIF has no
+        // timeout for push). Record the maximum lifetime so the reaper keeps it
+        // consistent with the other kinds; the delivery task owns the actual
+        // lifecycle and the `cancel` watch channel stops it on unsubscribe.
+        let lifetime = Duration::from_secs(PULL_SUBSCRIBER_MAX_MINUTES * 60);
+        Arc::new(Self {
+            owner,
+            kind: SubscriptionKind::Push,
+            folders,
+            event_types,
+            runtime: Mutex::new(SubscriptionRuntime {
+                receiver,
+                watermark: 0,
+            }),
+            push: Some(PushState {
+                config: push_config,
+                cancel: cancel_tx,
+            }),
             deadline: SyncMutex::new(tokio::time::Instant::now() + lifetime),
         })
     }
 }
 
-/// Subscription manager for EWS pull and streaming subscriptions.
+/// Opaque payload handed to [`PushNotifier`] for one push delivery. The notifier
+/// owns the SOAP/HTTP serialization; this module only produces the semantic
+/// event data so it stays decoupled from the EWS wire format.
+pub struct PushDelivery {
+    /// The subscription id assigned at `Subscribe` time, echoed back to the
+    /// client in each `Notification` so it can correlate the push to a
+    /// subscription (MS-OXWSNTIF `SubscriptionId` element).
+    pub subscription_id: String,
+    /// Destination callback URL parsed from the `PushSubscriptionRequest`.
+    pub url: String,
+    /// Client-supplied opaque value (internal-use only per MS-EXCH; carried
+    /// through the data model without being echoed in the wire notification).
+    pub caller_data: Option<String>,
+    /// The subscription's current monotonic watermark *before* this delivery's
+    /// events were assigned. Used for the `StatusEvent`/`PreviousWatermark`
+    /// elements; a keep-alive delivers an empty `events` list together with this
+    /// watermark so the client observes a gap-free sequence.
+    pub watermark: u64,
+    /// Ordered events to deliver, each paired with its monotonic watermark.
+    pub events: Vec<(NotificationEvent, u64)>,
+}
+
+/// Outcome of a single push delivery, surfaced back to the delivery loop so it
+/// can react to the client's explicit termination or to repeated failures.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PushDeliveryStatus {
+    /// The SOAP `SendNotification` was accepted by the client callback.
+    Delivered,
+    /// The client callback answered with `SubscriptionStatus=Unsubscribe`,
+    /// telling the server to stop pushing to this subscription.
+    Unsubscribed,
+}
+
+/// Transport abstraction for delivering push notifications to a client
+/// callback endpoint. Implemented by the EWS layer (which owns SOAP
+/// serialization and the HTTP client); this module only manages subscription
+/// lifecycle and event fan-out. Kept as a trait so push delivery is unit-testable
+/// without a real HTTP server and so the notification manager stays free of any
+/// EWS/XML knowledge.
+#[async_trait::async_trait]
+pub trait PushNotifier: Send + Sync {
+    /// Deliver `delivery` to the client's callback URL.
+    ///
+    /// Returns [`PushDeliveryStatus::Unsubscribed`] when the client asked the
+    /// server to stop this subscription, or `Err(())` when the delivery could
+    /// not be completed (transport error / non-success status). Implementations
+    /// must not panic.
+    async fn deliver(&self, delivery: PushDelivery) -> Result<PushDeliveryStatus, ()>;
+}
+
+/// Subscription manager for EWS pull, streaming and push subscriptions.
 #[derive(Clone)]
 pub struct SubscriptionManager {
     sender: broadcast::Sender<NotificationEvent>,
     subscriptions: Arc<Mutex<HashMap<String, Arc<Subscription>>>>,
+    /// Transport for push deliveries. When `None`, push subscription creation
+    /// is refused (the EWS layer installs it once an HTTP transport is ready).
+    push_notifier: Option<Arc<dyn PushNotifier>>,
 }
 
 /// Error produced when a streaming subscription cannot be served because it is
@@ -210,9 +330,19 @@ impl SubscriptionManager {
         let manager = Self {
             sender,
             subscriptions: Arc::new(Mutex::new(HashMap::new())),
+            push_notifier: None,
         };
         manager.start_reaper();
         manager
+    }
+
+    /// Install the push notification transport. Without this, push subscription
+    /// creation is refused (matches the historical "push unsupported" client
+    /// signal but now is driven by transport availability rather than a hard
+    /// stub). Fluent-style so callers can chain onto `new()`.
+    pub fn with_push_notifier(mut self, notifier: Arc<dyn PushNotifier>) -> Self {
+        self.push_notifier = Some(notifier);
+        self
     }
 
     /// Background task that periodically removes expired subscriptions so the
@@ -227,6 +357,20 @@ impl SubscriptionManager {
                 let now = tokio::time::Instant::now();
                 let mut map = subs.lock().await;
                 map.retain(|_, s| {
+                    // Push subscriptions have no idle timeout (MS-OXWSNTIF):
+                    // they are torn down by an explicit Unsubscribe or a server
+                    // restart. Reap one only when its delivery task has already
+                    // exited (the task dropped the oneshot receiver, so
+                    // `cancel.is_closed()` is true), which also reads the
+                    // otherwise idle cancellation field and prevents a leak of
+                    // subscriptions whose task died abnormally.
+                    if s.kind == SubscriptionKind::Push {
+                        return s
+                            .push
+                            .as_ref()
+                            .map(|p| !p.cancel.is_closed())
+                            .unwrap_or(false);
+                    }
                     if let Some(deadline) = s.deadline.try_lock() {
                         *deadline > now
                     } else {
@@ -263,6 +407,15 @@ impl SubscriptionManager {
                 // ConnectionTimeout per call; keep a generous idle lifetime.
                 Duration::from_secs(PULL_SUBSCRIBER_MAX_MINUTES * 60)
             }
+            SubscriptionKind::Push => {
+                // Push subscriptions must be created through `subscribe_push`,
+                // which attaches the `PushState` (config + cancel channel) the
+                // reaper and delivery task require. Creating one here would
+                // leave `push: None` and break the documented invariant, so
+                // refuse rather than silently build a broken subscription.
+                debug_assert!(false, "SubscriptionKind::Push must use subscribe_push");
+                return String::new();
+            }
         };
         let receiver = self.sender.subscribe();
         let subscription = Subscription::new(
@@ -277,6 +430,198 @@ impl SubscriptionManager {
         let mut map = self.subscriptions.lock().await;
         map.insert(sub_id.clone(), subscription);
         sub_id
+    }
+
+    /// Create a push subscription and spawn its background delivery task.
+    ///
+    /// Returns `None` when no push transport ([`PushNotifier`]) is installed, so
+    /// the EWS layer can surface `ErrorInvalidSubscriptionRequest` exactly as it
+    /// did before, without guessing about transport capability here.
+    ///
+    /// The delivery task shares this subscription's broadcast receiver and
+    /// watermark; it drains matching events, batches them, and `deliver`s them
+    /// to the client's callback URL via the installed notifier. A `StatusEvent`
+    /// keep-alive is emitted at `status_frequency_minutes`. The task terminates
+    /// when `unsubscribe` signals the `cancel` watch channel (or the task itself
+    /// observes a `SubscriptionStatus=Unsubscribe` from the client).
+    pub async fn subscribe_push(
+        &self,
+        owner: &str,
+        folders: Option<HashSet<String>>,
+        event_types: Option<HashSet<String>>,
+        config: PushConfig,
+    ) -> Option<String> {
+        let notifier = self.push_notifier.clone()?;
+
+        let receiver = self.sender.subscribe();
+        let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
+
+        let sub_id = uuid::Uuid::new_v7(uuid::Timestamp::now(uuid::NoContext)).to_string();
+        let subscription = Subscription::new_push(
+            owner.to_string(),
+            folders,
+            event_types,
+            config,
+            receiver,
+            cancel_tx,
+        );
+        {
+            let mut map = self.subscriptions.lock().await;
+            map.insert(sub_id.clone(), subscription.clone());
+        }
+
+        let owner_for_task = owner.to_string();
+        tokio::spawn(Self::run_push_delivery(
+            notifier,
+            sub_id.clone(),
+            owner_for_task,
+            subscription,
+            cancel_rx,
+            Arc::clone(&self.subscriptions),
+        ));
+
+        Some(sub_id)
+    }
+
+    /// Background delivery loop for a single push subscription.
+    ///
+    /// Drain matching events from the subscription's broadcast receiver, assign
+    /// monotonic watermarks, batch them, and `deliver` the batch to the client's
+    /// callback URL. Independently, at each `status_frequency_minutes` tick,
+    /// emit a `StatusEvent` keep-alive so the client can detect a dead
+    /// connection. The loop exits when `cancel_rx` observes a `true` value
+    /// (signalled by `unsubscribe`) or when its `Arc` receiver is dropped.
+    async fn run_push_delivery(
+        notifier: Arc<dyn PushNotifier>,
+        subscription_id: String,
+        owner: String,
+        sub: Arc<Subscription>,
+        mut cancel_rx: tokio::sync::watch::Receiver<bool>,
+        subscriptions: Arc<Mutex<HashMap<String, Arc<Subscription>>>>,
+    ) {
+        let folders = sub.folders.clone();
+        let event_types = sub.event_types.clone();
+        // Clone the cheap immutable configuration; the watch sender stays owned
+        // by `PushState` (signalled by `unsubscribe`), independent of this task.
+        let push_config = sub
+            .push
+            .as_ref()
+            .expect("push subscription carries PushState")
+            .config
+            .clone();
+        let url = push_config.url.clone();
+        let caller_data = push_config.caller_data.clone();
+        let status_frequency = Duration::from_secs(push_config.status_frequency_minutes * 60);
+
+        // StatusEvent keep-alive ticker. The first immediate tick is consumed so
+        // we don't fire a keep-alive the instant the subscription is created.
+        let mut status_ticker = tokio::time::interval(status_frequency);
+        status_ticker.tick().await;
+
+        let mut consecutive_failures: u32 = 0;
+
+        loop {
+            // Wait for either a real event, the status keep-alive tick, or a
+            // cancellation. A bounded poll keeps the loop responsive to all.
+            tokio::select! {
+                changed = cancel_rx.changed() => {
+                    if changed.is_err() || *cancel_rx.borrow() {
+                        break; // unsubscribed / task superseded
+                    }
+                }
+                _ = status_ticker.tick() => {
+                    // A StatusEvent keep-alive carries no item event: deliver
+                    // a single empty batch with the subscription's current
+                    // watermark so the notifier can synthesise the StatusEvent
+                    // (MS-OXWSNTIF 3.1.4.4.1.1).
+                    let watermark = sub.runtime.lock().await.watermark;
+                    match notifier.deliver(PushDelivery {
+                        subscription_id: subscription_id.clone(),
+                        url: url.clone(),
+                        caller_data: caller_data.clone(),
+                        watermark,
+                        events: Vec::new(),
+                    }).await {
+                        Ok(PushDeliveryStatus::Delivered) => consecutive_failures = 0,
+                        Ok(PushDeliveryStatus::Unsubscribed) => {
+                            subscriptions.lock().await.remove(&subscription_id);
+                            break;
+                        }
+                        Err(()) => {
+                            consecutive_failures = consecutive_failures.saturating_add(1);
+                            if consecutive_failures >= PUSH_MAX_CONSECUTIVE_FAILURES {
+                                subscriptions.lock().await.remove(&subscription_id);
+                                break;
+                            }
+                        }
+                    }
+                }
+                event = async { sub.runtime.lock().await.receiver.recv().await } => {
+                    match event {
+                        Err(broadcast::error::RecvError::Closed) => break,
+                        Err(broadcast::error::RecvError::Lagged(n)) => {
+                            // The broadcast buffer overflowed before this
+                            // receiver drained it: `n` events were dropped. Push
+                            // carries no gap-repair mechanism, so surface the
+                            // loss clearly rather than silently continuing.
+                            tracing::warn!(
+                                target: "notifications",
+                                subscription_id = %subscription_id,
+                                owner = %owner,
+                                skipped = n,
+                                "Push subscription lagged; notifications were dropped"
+                            );
+                        }
+                        Ok(event) => {
+                            if !matches_subscription(&event, &owner, &folders, &event_types) {
+                                continue;
+                            }
+                            // Assign a watermark and collect a batch of any
+                            // immediately-available events to reduce the number
+                            // of HTTP round trips.
+                            let mut batch = Vec::new();
+                            let prev_watermark;
+                            {
+                                let mut runtime = sub.runtime.lock().await;
+                                prev_watermark = runtime.watermark;
+                                runtime.watermark += 1;
+                                batch.push((event, runtime.watermark));
+                                // Opportunistically drain already-buffered events.
+                                while let Ok(next) = runtime.receiver.try_recv() {
+                                    if matches_subscription(&next, &owner, &folders, &event_types) {
+                                        runtime.watermark += 1;
+                                        batch.push((next, runtime.watermark));
+                                    }
+                                    if batch.len() >= PUSH_MAX_EVENTS_PER_DELIVERY {
+                                        break;
+                                    }
+                                }
+                            }
+                            match notifier.deliver(PushDelivery {
+                                subscription_id: subscription_id.clone(),
+                                url: url.clone(),
+                                caller_data: caller_data.clone(),
+                                watermark: prev_watermark,
+                                events: batch,
+                            }).await {
+                                Ok(PushDeliveryStatus::Delivered) => consecutive_failures = 0,
+                                Ok(PushDeliveryStatus::Unsubscribed) => {
+                                    subscriptions.lock().await.remove(&subscription_id);
+                                    break;
+                                }
+                                Err(()) => {
+                                    consecutive_failures = consecutive_failures.saturating_add(1);
+                                    if consecutive_failures >= PUSH_MAX_CONSECUTIVE_FAILURES {
+                                        subscriptions.lock().await.remove(&subscription_id);
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     /// Acquire the `Arc<Subscription>` for `sub_id` iff it exists and is owned
@@ -483,6 +828,13 @@ impl SubscriptionManager {
         let mut map = self.subscriptions.lock().await;
         match map.get(sub_id) {
             Some(sub) if sub.owner == owner => {
+                // For push subscriptions, signal the delivery task to stop before
+                // removing the entry. (`sub` is removed only after the signal, and
+                // the task holds its own `Arc`, so the signal — not `Arc` drop —
+                // is what terminates the background loop.)
+                if let Some(push) = &sub.push {
+                    let _ = push.cancel.send(true);
+                }
                 map.remove(sub_id);
                 true
             }
@@ -524,6 +876,15 @@ impl Default for SubscriptionManager {
 /// busy mailbox cannot produce arbitrarily large responses.
 const MAX_EVENTS_PER_PULL: usize = 512;
 
+/// Maximum number of item events batched into a single push delivery so a burst
+/// of store changes cannot overflow the client callback body.
+const PUSH_MAX_EVENTS_PER_DELIVERY: usize = 512;
+
+/// Consecutive failed deliveries tolerated before a push subscription is
+/// considered dead and its delivery task is torn down (MS-OXWSNTIF does not fix
+/// a limit; this bounds unbounded retries to a permanently-unreachable callback).
+const PUSH_MAX_CONSECUTIVE_FAILURES: u32 = 5;
+
 /// Upper bound accepted for a client-supplied watermark during reconciliation.
 /// Watermarks are tiny monotonic counters in practice; this leaves an enormous
 /// headroom (well over `i64::MAX`) so the per-event `+ 1` increments in
@@ -535,6 +896,7 @@ fn lifetime_for_kind(kind: SubscriptionKind) -> Duration {
     match kind {
         SubscriptionKind::Pull => Duration::from_secs(PULL_SUBSCRIBER_DEFAULT_MINUTES * 60),
         SubscriptionKind::Streaming => Duration::from_secs(PULL_SUBSCRIBER_MAX_MINUTES * 60),
+        SubscriptionKind::Push => Duration::from_secs(PULL_SUBSCRIBER_MAX_MINUTES * 60),
     }
 }
 
@@ -849,5 +1211,185 @@ mod tests {
         let _ = sub_id2;
 
         assert!(mgr.unsubscribe(&sub_id, "alice").await);
+    }
+
+    /// In-memory push notifier that appends every delivered `PushDelivery` to a
+    /// shared buffer, so tests can assert delivery contents without a real HTTP
+    /// callback endpoint.
+    struct RecordingNotifier {
+        deliveries: Arc<tokio::sync::Mutex<Vec<PushDelivery>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl PushNotifier for RecordingNotifier {
+        async fn deliver(&self, delivery: PushDelivery) -> Result<PushDeliveryStatus, ()> {
+            self.deliveries.lock().await.push(delivery);
+            Ok(PushDeliveryStatus::Delivered)
+        }
+    }
+
+    /// Push notifier that always reports `Unsubscribed` (the client asked to stop).
+    struct RecordingUnsubscribingNotifier;
+
+    #[async_trait::async_trait]
+    impl PushNotifier for RecordingUnsubscribingNotifier {
+        async fn deliver(&self, _delivery: PushDelivery) -> Result<PushDeliveryStatus, ()> {
+            Ok(PushDeliveryStatus::Unsubscribed)
+        }
+    }
+
+    fn push_config(url: &str) -> PushConfig {
+        PushConfig {
+            url: url.to_string(),
+            status_frequency_minutes: 60,
+            caller_data: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn test_push_without_notifier_returns_none() {
+        let mgr = SubscriptionManager::new();
+        let sub_id = mgr
+            .subscribe_push(
+                "alice",
+                None,
+                None,
+                push_config("http://127.0.0.1:9/callback"),
+            )
+            .await;
+        assert!(sub_id.is_none(), "push requires an installed notifier");
+        assert_eq!(mgr.active_count().await, 0);
+    }
+
+    #[tokio::test]
+    async fn test_push_delivers_matching_events_to_notifier() {
+        let deliveries = Arc::new(tokio::sync::Mutex::new(Vec::new()));
+        let notifier: Arc<dyn PushNotifier> = Arc::new(RecordingNotifier {
+            deliveries: deliveries.clone(),
+        });
+        let mgr = SubscriptionManager::new().with_push_notifier(notifier);
+
+        let sub_id = mgr
+            .subscribe_push(
+                "alice",
+                Some(HashSet::from(["inbox".to_string()])),
+                Some(HashSet::from(["CreatedEvent".to_string()])),
+                push_config("http://127.0.0.1:9/callback"),
+            )
+            .await
+            .expect("push with notifier must succeed");
+
+        // Publish: one matching, one wrong-folder, one wrong-owner, one wrong-type.
+        mgr.publish(mk("alice", "inbox", "i1"));
+        mgr.publish(mk("alice", "calendar", "i2"));
+        mgr.publish(mk("bob", "inbox", "i3"));
+        mgr.publish(NotificationEvent::ItemModified {
+            owner: "alice".to_string(),
+            folder_id: "inbox".to_string(),
+            item_id: "i4".to_string(),
+            change_key: "1".to_string(),
+        });
+
+        // The delivery task runs concurrently; poll until the expected single
+        // delivery arrives.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        loop {
+            let d = deliveries.lock().await;
+            if !d.is_empty() {
+                break;
+            }
+            drop(d);
+            if tokio::time::Instant::now() > deadline {
+                panic!("push delivery not observed within timeout");
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+
+        let d = deliveries.lock().await;
+        // Exactly one item event batch is expected (filters drop the other three).
+        assert_eq!(d.len(), 1);
+        assert_eq!(d[0].subscription_id, sub_id);
+        assert_eq!(d[0].url, "http://127.0.0.1:9/callback");
+        assert_eq!(d[0].events.len(), 1);
+        assert!(matches!(d[0].events[0].0, NotificationEvent::ItemCreated { .. }));
+        drop(d);
+
+        assert!(mgr.unsubscribe(&sub_id, "alice").await);
+    }
+
+    #[tokio::test]
+    async fn test_push_unsubscribe_stops_delivery_task() {
+        let deliveries = Arc::new(tokio::sync::Mutex::new(Vec::new()));
+        let notifier: Arc<dyn PushNotifier> = Arc::new(RecordingNotifier {
+            deliveries: deliveries.clone(),
+        });
+        let mgr = SubscriptionManager::new().with_push_notifier(notifier);
+
+        let sub_id = mgr
+            .subscribe_push("alice", None, None, push_config("http://127.0.0.1:9/callback"))
+            .await
+            .expect("push with notifier must succeed");
+        assert_eq!(mgr.active_count().await, 1);
+
+        // A single matching event should be delivered.
+        mgr.publish(mk("alice", "inbox", "i1"));
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        loop {
+            if !deliveries.lock().await.is_empty() {
+                break;
+            }
+            if tokio::time::Instant::now() > deadline {
+                panic!("push delivery not observed within timeout");
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+
+        // Unsubscribe must signal the delivery task to stop; verify the
+        // subscription is gone after the cancel signal propagates.
+        assert!(mgr.unsubscribe(&sub_id, "alice").await);
+        assert_eq!(mgr.active_count().await, 0);
+
+        // Let the cancel signal propagate so the delivery task observes it and
+        // exits before we publish a further event. (Publishing concurrently
+        // with unsubscribe races the task's `select!`, so we settle first.)
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        // The cancel signal must actually stop the delivery task: a further
+        // matching event produces no new delivery.
+        let before = deliveries.lock().await.len();
+        mgr.publish(mk("alice", "inbox", "i2"));
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert_eq!(
+            deliveries.lock().await.len(),
+            before,
+            "no delivery may follow unsubscribe"
+        );
+    }
+
+    /// A client callback that answers `SubscriptionStatus=Unsubscribe` must
+    /// terminate the delivery task, mirroring how a real EWS client stops a push
+    /// subscription it no longer wants.
+    #[tokio::test]
+    async fn test_push_client_unsubscribe_response_stops_task() {
+        let unsub_notifier: Arc<dyn PushNotifier> = Arc::new(RecordingUnsubscribingNotifier);
+        let mgr = SubscriptionManager::new().with_push_notifier(unsub_notifier);
+
+        mgr.subscribe_push("alice", None, None, push_config("http://127.0.0.1:9/callback"))
+            .await
+            .expect("push with notifier must succeed");
+        assert_eq!(mgr.active_count().await, 1);
+
+        // A single event triggers delivery of the Unsubscribe response; the delivery
+        // task then removes the subscription itself, so `active_count` drops to
+        // zero without waiting for the reaper's 60s sweep.
+        mgr.publish(mk("alice", "inbox", "i1"));
+
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        while mgr.active_count().await != 0 {
+            if tokio::time::Instant::now() > deadline {
+                panic!("push subscription was not removed after client unsubscribe");
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
     }
 }

@@ -4,10 +4,11 @@ use crate::auth::AuthVerifier;
 use crate::carddav::CarddavClient;
 use crate::config::Config;
 use crate::directory::{self, DirectoryLookup};
+use crate::ews::EwsPushNotifier;
 use crate::jmap::JmapClient;
 use crate::mapi::handler::MapiState;
 use crate::metrics::AppMetrics;
-use crate::notifications::SubscriptionManager;
+use crate::notifications::{PushNotifier, SubscriptionManager};
 use crate::oof::{self, OofManager};
 use crate::room::RoomManager;
 use crate::smtp::SmtpClient;
@@ -108,7 +109,32 @@ impl AppState {
             None
         };
 
-        let subscription_manager = Arc::new(SubscriptionManager::new());
+        // Push notifications deliver EWS `SendNotification` SOAP to a client
+        // callback URL over HTTP. Build a dedicated client (30s timeout, system
+        // TLS, redirects disabled) and install it as the subscription manager's
+        // push transport. Disabling redirects is part of the SSRF defence: a
+        // redirect target is never followed, so destination validation done at
+        // Subscribe time cannot be bypassed. If the client cannot be built, push
+        // is left disabled (no notifier) so Subscribe returns a clean
+        // "unavailable" response rather than a subtly-broken timeout-less client.
+        let subscription_manager = Arc::new(match reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(30))
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+        {
+            Ok(client) => {
+                let notifier: Arc<dyn PushNotifier> = Arc::new(EwsPushNotifier::new(client));
+                SubscriptionManager::new().with_push_notifier(notifier)
+            }
+            Err(e) => {
+                tracing::warn!(
+                    target: "models",
+                    error = %e,
+                    "Failed to create push-notification HTTP client; push subscriptions will be disabled"
+                );
+                SubscriptionManager::new()
+            }
+        });
 
         let smtp_client = if cfg.email_enabled && !cfg.smtp_host.is_empty() {
             Some(Arc::new(SmtpClient::new(&cfg.smtp_host, cfg.smtp_port)))
