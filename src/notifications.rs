@@ -281,6 +281,17 @@ pub struct PushDelivery {
     pub events: Vec<(NotificationEvent, u64)>,
 }
 
+/// Outcome of a single push delivery, surfaced back to the delivery loop so it
+/// can react to the client's explicit termination or to repeated failures.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PushDeliveryStatus {
+    /// The SOAP `SendNotification` was accepted by the client callback.
+    Delivered,
+    /// The client callback answered with `SubscriptionStatus=Unsubscribe`,
+    /// telling the server to stop pushing to this subscription.
+    Unsubscribed,
+}
+
 /// Transport abstraction for delivering push notifications to a client
 /// callback endpoint. Implemented by the EWS layer (which owns SOAP
 /// serialization and the HTTP client); this module only manages subscription
@@ -289,10 +300,13 @@ pub struct PushDelivery {
 /// EWS/XML knowledge.
 #[async_trait::async_trait]
 pub trait PushNotifier: Send + Sync {
-    /// Deliver `delivery` to the client's callback URL. Implementations should
-    /// be resilient (log-and-continue on transient transport errors) but must
-    /// not panic.
-    async fn deliver(&self, delivery: PushDelivery);
+    /// Deliver `delivery` to the client's callback URL.
+    ///
+    /// Returns [`PushDeliveryStatus::Unsubscribed`] when the client asked the
+    /// server to stop this subscription, or `Err(())` when the delivery could
+    /// not be completed (transport error / non-success status). Implementations
+    /// must not panic.
+    async fn deliver(&self, delivery: PushDelivery) -> Result<PushDeliveryStatus, ()>;
 }
 
 /// Subscription manager for EWS pull, streaming and push subscriptions.
@@ -394,11 +408,13 @@ impl SubscriptionManager {
                 Duration::from_secs(PULL_SUBSCRIBER_MAX_MINUTES * 60)
             }
             SubscriptionKind::Push => {
-                // Push subscriptions have no client-supplied timeout
-                // (MS-OXWSNTIF); they live until Unsubscribe or restart. Use
-                // the maximum lifetime so the reaper never prematurely prunes
-                // a live push subscription.
-                Duration::from_secs(PULL_SUBSCRIBER_MAX_MINUTES * 60)
+                // Push subscriptions must be created through `subscribe_push`,
+                // which attaches the `PushState` (config + cancel channel) the
+                // reaper and delivery task require. Creating one here would
+                // leave `push: None` and break the documented invariant, so
+                // refuse rather than silently build a broken subscription.
+                debug_assert!(false, "SubscriptionKind::Push must use subscribe_push");
+                return String::new();
             }
         };
         let receiver = self.sender.subscribe();
@@ -461,6 +477,7 @@ impl SubscriptionManager {
             owner_for_task,
             subscription,
             cancel_rx,
+            Arc::clone(&self.subscriptions),
         ));
 
         Some(sub_id)
@@ -480,6 +497,7 @@ impl SubscriptionManager {
         owner: String,
         sub: Arc<Subscription>,
         mut cancel_rx: tokio::sync::watch::Receiver<bool>,
+        subscriptions: Arc<Mutex<HashMap<String, Arc<Subscription>>>>,
     ) {
         let folders = sub.folders.clone();
         let event_types = sub.event_types.clone();
@@ -500,6 +518,8 @@ impl SubscriptionManager {
         let mut status_ticker = tokio::time::interval(status_frequency);
         status_ticker.tick().await;
 
+        let mut consecutive_failures: u32 = 0;
+
         loop {
             // Wait for either a real event, the status keep-alive tick, or a
             // cancellation. A bounded poll keeps the loop responsive to all.
@@ -515,26 +535,45 @@ impl SubscriptionManager {
                     // watermark so the notifier can synthesise the StatusEvent
                     // (MS-OXWSNTIF 3.1.4.4.1.1).
                     let watermark = sub.runtime.lock().await.watermark;
-                    notifier.deliver(PushDelivery {
+                    match notifier.deliver(PushDelivery {
                         subscription_id: subscription_id.clone(),
                         url: url.clone(),
                         caller_data: caller_data.clone(),
                         watermark,
                         events: Vec::new(),
-                    }).await;
+                    }).await {
+                        Ok(PushDeliveryStatus::Delivered) => consecutive_failures = 0,
+                        Ok(PushDeliveryStatus::Unsubscribed) => {
+                            subscriptions.lock().await.remove(&subscription_id);
+                            break;
+                        }
+                        Err(()) => {
+                            consecutive_failures = consecutive_failures.saturating_add(1);
+                            if consecutive_failures >= PUSH_MAX_CONSECUTIVE_FAILURES {
+                                subscriptions.lock().await.remove(&subscription_id);
+                                break;
+                            }
+                        }
+                    }
                 }
                 event = async { sub.runtime.lock().await.receiver.recv().await } => {
                     match event {
                         Err(broadcast::error::RecvError::Closed) => break,
-                        Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                        Err(broadcast::error::RecvError::Lagged(n)) => {
+                            // The broadcast buffer overflowed before this
+                            // receiver drained it: `n` events were dropped. Push
+                            // carries no gap-repair mechanism, so surface the
+                            // loss clearly rather than silently continuing.
+                            tracing::warn!(
+                                target: "notifications",
+                                subscription_id = %subscription_id,
+                                owner = %owner,
+                                skipped = n,
+                                "Push subscription lagged; notifications were dropped"
+                            );
+                        }
                         Ok(event) => {
-                            if event.owner() != owner {
-                                continue;
-                            }
-                            if !event.matches_folders(&folders) {
-                                continue;
-                            }
-                            if !event.matches_types(&event_types) {
+                            if !matches_subscription(&event, &owner, &folders, &event_types) {
                                 continue;
                             }
                             // Assign a watermark and collect a batch of any
@@ -549,10 +588,7 @@ impl SubscriptionManager {
                                 batch.push((event, runtime.watermark));
                                 // Opportunistically drain already-buffered events.
                                 while let Ok(next) = runtime.receiver.try_recv() {
-                                    if next.owner() == owner
-                                        && next.matches_folders(&folders)
-                                        && next.matches_types(&event_types)
-                                    {
+                                    if matches_subscription(&next, &owner, &folders, &event_types) {
                                         runtime.watermark += 1;
                                         batch.push((next, runtime.watermark));
                                     }
@@ -561,13 +597,26 @@ impl SubscriptionManager {
                                     }
                                 }
                             }
-                            notifier.deliver(PushDelivery {
+                            match notifier.deliver(PushDelivery {
                                 subscription_id: subscription_id.clone(),
                                 url: url.clone(),
                                 caller_data: caller_data.clone(),
                                 watermark: prev_watermark,
                                 events: batch,
-                            }).await;
+                            }).await {
+                                Ok(PushDeliveryStatus::Delivered) => consecutive_failures = 0,
+                                Ok(PushDeliveryStatus::Unsubscribed) => {
+                                    subscriptions.lock().await.remove(&subscription_id);
+                                    break;
+                                }
+                                Err(()) => {
+                                    consecutive_failures = consecutive_failures.saturating_add(1);
+                                    if consecutive_failures >= PUSH_MAX_CONSECUTIVE_FAILURES {
+                                        subscriptions.lock().await.remove(&subscription_id);
+                                        break;
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -830,6 +879,11 @@ const MAX_EVENTS_PER_PULL: usize = 512;
 /// Maximum number of item events batched into a single push delivery so a burst
 /// of store changes cannot overflow the client callback body.
 const PUSH_MAX_EVENTS_PER_DELIVERY: usize = 512;
+
+/// Consecutive failed deliveries tolerated before a push subscription is
+/// considered dead and its delivery task is torn down (MS-OXWSNTIF does not fix
+/// a limit; this bounds unbounded retries to a permanently-unreachable callback).
+const PUSH_MAX_CONSECUTIVE_FAILURES: u32 = 5;
 
 /// Upper bound accepted for a client-supplied watermark during reconciliation.
 /// Watermarks are tiny monotonic counters in practice; this leaves an enormous
@@ -1168,8 +1222,19 @@ mod tests {
 
     #[async_trait::async_trait]
     impl PushNotifier for RecordingNotifier {
-        async fn deliver(&self, delivery: PushDelivery) {
+        async fn deliver(&self, delivery: PushDelivery) -> Result<PushDeliveryStatus, ()> {
             self.deliveries.lock().await.push(delivery);
+            Ok(PushDeliveryStatus::Delivered)
+        }
+    }
+
+    /// Push notifier that always reports `Unsubscribed` (the client asked to stop).
+    struct RecordingUnsubscribingNotifier;
+
+    #[async_trait::async_trait]
+    impl PushNotifier for RecordingUnsubscribingNotifier {
+        async fn deliver(&self, _delivery: PushDelivery) -> Result<PushDeliveryStatus, ()> {
+            Ok(PushDeliveryStatus::Unsubscribed)
         }
     }
 
@@ -1283,5 +1348,48 @@ mod tests {
         // subscription is gone after the cancel signal propagates.
         assert!(mgr.unsubscribe(&sub_id, "alice").await);
         assert_eq!(mgr.active_count().await, 0);
+
+        // Let the cancel signal propagate so the delivery task observes it and
+        // exits before we publish a further event. (Publishing concurrently
+        // with unsubscribe races the task's `select!`, so we settle first.)
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        // The cancel signal must actually stop the delivery task: a further
+        // matching event produces no new delivery.
+        let before = deliveries.lock().await.len();
+        mgr.publish(mk("alice", "inbox", "i2"));
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert_eq!(
+            deliveries.lock().await.len(),
+            before,
+            "no delivery may follow unsubscribe"
+        );
+    }
+
+    /// A client callback that answers `SubscriptionStatus=Unsubscribe` must
+    /// terminate the delivery task, mirroring how a real EWS client stops a push
+    /// subscription it no longer wants.
+    #[tokio::test]
+    async fn test_push_client_unsubscribe_response_stops_task() {
+        let unsub_notifier: Arc<dyn PushNotifier> = Arc::new(RecordingUnsubscribingNotifier);
+        let mgr = SubscriptionManager::new().with_push_notifier(unsub_notifier);
+
+        mgr.subscribe_push("alice", None, None, push_config("http://127.0.0.1:9/callback"))
+            .await
+            .expect("push with notifier must succeed");
+        assert_eq!(mgr.active_count().await, 1);
+
+        // A single event triggers delivery of the Unsubscribe response; the delivery
+        // task then removes the subscription itself, so `active_count` drops to
+        // zero without waiting for the reaper's 60s sweep.
+        mgr.publish(mk("alice", "inbox", "i1"));
+
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        while mgr.active_count().await != 0 {
+            if tokio::time::Instant::now() > deadline {
+                panic!("push subscription was not removed after client unsubscribe");
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
     }
 }

@@ -23,7 +23,7 @@ use crate::jmap::{JmapClient, QueryCalendarEventsParams, SetCalendarEventParams}
 use crate::models::AppState;
 
 use crate::notifications::{
-    NotificationEvent, PushConfig, PushDelivery, PushNotifier, SubscriptionKind,
+    NotificationEvent, PushConfig, PushDelivery, PushDeliveryStatus, PushNotifier, SubscriptionKind,
 };
 use crate::permission::{PermissionContext, PermissionEnforcement};
 use crate::protocol_fixtures::{EWS_MSG_NS, EWS_TYPE_NS};
@@ -56,6 +56,7 @@ use roxmltree;
 use secrecy::{ExposeSecret, SecretString};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
+use std::net::IpAddr;
 use std::str::FromStr;
 use std::sync::{Arc, LazyLock};
 use std::time::Duration;
@@ -4717,27 +4718,43 @@ impl EwsPushNotifier {
 
 #[async_trait::async_trait]
 impl PushNotifier for EwsPushNotifier {
-    async fn deliver(&self, delivery: PushDelivery) {
+    async fn deliver(&self, delivery: PushDelivery) -> Result<PushDeliveryStatus, ()> {
         let body = render_send_notification(&delivery);
         let url = delivery.url.clone();
         // POST the SendNotification SOAP request. The client (acting as the
-        // notification server) is expected to answer 200 with a
-        // SendNotificationResponse; a non-2xx or transport error is logged and
-        // dropped (the StatusEvent keep-alive lets the client re-establish).
-        match self
+        // notification server) answers 200 with a SendNotificationResponse whose
+        // `SubscriptionStatus` may be `Unsubscribe` (stop pushing). SOAP 1.1
+        // requires the `SOAPAction` HTTP header for the operation dispatch.
+        let resp = self
             .client
             .post(&url)
             .header("Content-Type", "text/xml; charset=utf-8")
+            .header(
+                "SOAPAction",
+                "http://schemas.microsoft.com/exchange/services/2006/messages/SendNotification",
+            )
             .body(body)
             .send()
-            .await
-        {
+            .await;
+
+        match resp {
             Ok(resp) if resp.status().is_success() => {
-                // Best-effort: read and discard the response body. The client
-                // may send `SubscriptionStatus=Unsubscribe`; handling that
-                // actively is a future refinement, but a 2xx keeps us aligned
-                // with the protocol's success semantics.
-                let _ = resp.bytes().await;
+                let bytes = resp.bytes().await.map_err(|e| {
+                    tracing::warn!(
+                        target: "ews",
+                        push_url = %redact_url(&url),
+                        error = %e,
+                        "Failed to read push notification response body"
+                    );
+                })?;
+                // Honour an explicit client `SubscriptionStatus=Unsubscribe`.
+                let text = String::from_utf8_lossy(&bytes);
+                if extract_first_tag_text(&text, b"SubscriptionStatus").as_deref()
+                    == Some("Unsubscribe")
+                {
+                    return Ok(PushDeliveryStatus::Unsubscribed);
+                }
+                Ok(PushDeliveryStatus::Delivered)
             }
             Ok(resp) => {
                 tracing::warn!(
@@ -4746,6 +4763,7 @@ impl PushNotifier for EwsPushNotifier {
                     push_url = %redact_url(&url),
                     "Push notification client returned a non-success status"
                 );
+                Err(())
             }
             Err(e) => {
                 tracing::warn!(
@@ -4754,6 +4772,7 @@ impl PushNotifier for EwsPushNotifier {
                     error = %e,
                     "Push notification delivery failed"
                 );
+                Err(())
             }
         }
     }
@@ -4772,6 +4791,96 @@ fn redact_url(url: &str) -> String {
         }
         Err(_) => "<invalid-url>".to_string(),
     }
+}
+
+/// Classify an IP address as not appropriate for an outbound push callback
+/// (SSRF protection). Rejects loopback, unspecified, multicast, broadcast,
+/// link-local, private/unique-local, CGNAT (100.64.0.0/10), documentation, and
+/// IPv4-mapped forms of the same. Returns `true` when the address must be blocked.
+fn is_internal_ipv4(v4: std::net::Ipv4Addr) -> bool {
+    let o = v4.octets();
+    v4.is_loopback()
+        || v4.is_unspecified()
+        || v4.is_private()
+        || v4.is_link_local()
+        || v4.is_broadcast()
+        || v4.is_multicast()
+        || v4.is_documentation()
+        // CGNAT (RFC 6598) 100.64.0.0/10
+        || (o[0] == 100 && (o[1] & 0xC0) == 0x40)
+        // "this network" 0.0.0.0/8
+        || o[0] == 0
+}
+
+/// Classify an IP address as not appropriate for an outbound push callback
+/// (SSRF protection). Rejects loopback, unspecified, multicast, broadcast,
+/// link-local, private/unique-local, CGNAT (100.64.0.0/10), documentation, and
+/// IPv4-mapped forms of the same. Returns `true` when the address must be blocked.
+fn is_internal_ip(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => is_internal_ipv4(v4),
+        IpAddr::V6(v6) => {
+            let s = v6.segments();
+            // IPv4-mapped (::ffff:a.b.c.d): delegate to the embedded IPv4.
+            if let Some(v4) = v6.to_ipv4() {
+                return is_internal_ipv4(v4);
+            }
+            v6.is_loopback()
+                || v6.is_unspecified()
+                || v6.is_multicast()
+                || (s[0] & 0xfe00) == 0xfc00 // unique-local fc00::/7
+                || (s[0] & 0xffc0) == 0xfe80 // link-local fe80::/10
+                || (s[0] == 0x2001 && s[1] == 0x0db8) // 2001:db8::/32 documentation
+        }
+    }
+}
+
+/// Validate a push-notification callback URL before a subscription is stored.
+///
+/// Rejects unsupported schemes, embedded credentials, and any host that
+/// resolves to a loopback/private/link-local/metadata address (SSRF protection,
+/// CWE-918). Hostnames are resolved defensively; a host that cannot be resolved
+/// is rejected so a rebinding name cannot slip through as "safe". Returns a
+/// human-readable rejection reason on failure.
+async fn validate_push_callback_url(url_str: &str) -> Result<(), String> {
+    let parsed = url::Url::parse(url_str).map_err(|e| format!("invalid callback URL: {e}"))?;
+
+    match parsed.scheme() {
+        "http" | "https" => {}
+        other => return Err(format!("unsupported callback URL scheme: {other}")),
+    }
+
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        return Err("callback URL must not contain embedded credentials".to_string());
+    }
+
+    let host = parsed
+        .host_str()
+        .ok_or_else(|| "callback URL has no host".to_string())?;
+
+    // Resolve the host (hostname or IP literal) to concrete addresses and
+    // reject the subscription if any resolved address is internal.
+    let port = parsed.port_or_known_default().unwrap_or(80);
+    let addrs: Vec<std::net::SocketAddr> =
+        tokio::net::lookup_host((host, port))
+            .await
+            .map_err(|e| format!("callback URL host could not be resolved: {e}"))?
+            .collect();
+
+    if addrs.is_empty() {
+        return Err("callback URL host resolved to no addresses".to_string());
+    }
+
+    for addr in addrs {
+        if is_internal_ip(addr.ip()) {
+            return Err(format!(
+                "callback URL resolves to a non-public address: {}",
+                addr.ip()
+            ));
+        }
+    }
+
+    Ok(())
 }
 
 /// Render the SOAP `SendNotification` request body for a push delivery. An
@@ -4910,6 +5019,25 @@ async fn handle_push_subscribe(
         );
     }
 
+    // Validate the callback destination before storing the subscription so an
+    // authenticated client cannot direct the server at internal/link-local
+    // endpoints (SSRF, CWE-918). Redirection is additionally disabled on the
+    // outbound HTTP client.
+    if let Err(reason) = validate_push_callback_url(&config.url).await {
+        tracing::warn!(
+            target: "ews",
+            user = %auth.username,
+            reason = %reason,
+            "Rejected push subscription callback URL"
+        );
+        return operation_error_response(
+            &EwsAction::Subscribe,
+            "ErrorInvalidSubscriptionRequest",
+            "Push subscription callback URL is not allowed",
+            StatusCode::BAD_REQUEST,
+        );
+    }
+
     let sub_id = match state
         .subscription_manager
         .subscribe_push(
@@ -4923,10 +5051,11 @@ async fn handle_push_subscribe(
         Some(id) => id,
         None => {
             // No push transport installed (server misconfiguration): report as
-            // a server-side failure rather than a client-parse error.
+            // a transient server-side failure so the client may retry rather
+            // than treating the request as a permanent client error.
             return operation_error_response(
                 &EwsAction::Subscribe,
-                "ErrorInvalidSubscriptionRequest",
+                "ErrorInternalServerError",
                 "Push notifications are not available on this server",
                 StatusCode::SERVICE_UNAVAILABLE,
             );
@@ -9541,6 +9670,33 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_push_subscription_request_status_frequency_boundaries() {
+        // Missing StatusFrequency falls back to the default of 6 minutes.
+        let no_freq = parse_push_subscription_request(
+            r#"<PushSubscriptionRequest><URL>https://c.example/cb</URL></PushSubscriptionRequest>"#,
+        );
+        assert_eq!(no_freq.status_frequency_minutes, 6);
+
+        // Below the lower bound clamps up to 1.
+        let below = parse_push_subscription_request(
+            r#"<PushSubscriptionRequest><URL>https://c.example/cb</URL><StatusFrequency>0</StatusFrequency></PushSubscriptionRequest>"#,
+        );
+        assert_eq!(below.status_frequency_minutes, 1);
+
+        // Above the upper bound clamps down to 1440.
+        let above = parse_push_subscription_request(
+            r#"<PushSubscriptionRequest><URL>https://c.example/cb</URL><StatusFrequency>99999</StatusFrequency></PushSubscriptionRequest>"#,
+        );
+        assert_eq!(above.status_frequency_minutes, 1440);
+
+        // Non-numeric StatusFrequency falls back to the default.
+        let non_numeric = parse_push_subscription_request(
+            r#"<PushSubscriptionRequest><URL>https://c.example/cb</URL><StatusFrequency>abc</StatusFrequency></PushSubscriptionRequest>"#,
+        );
+        assert_eq!(non_numeric.status_frequency_minutes, 6);
+    }
+
+    #[test]
     fn test_render_send_notification_status_event_keepalive() {
         let delivery = PushDelivery {
             subscription_id: "sub-id-1".to_string(),
@@ -9579,5 +9735,74 @@ mod tests {
         assert!(xml.contains("<t:SubscriptionId>sub-id-2</t:SubscriptionId>"));
         assert!(xml.contains("Id=\"item-123\""));
         assert!(!xml.contains("<t:StatusEvent>"));
+    }
+
+    #[test]
+    fn test_is_internal_ip_classifies_ranges() {
+        use std::net::{Ipv4Addr, Ipv6Addr};
+
+        // Internal IPv4 addresses must be blocked.
+        assert!(is_internal_ip(IpAddr::V4(Ipv4Addr::LOCALHOST))); // 127.0.0.1
+        assert!(is_internal_ip(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1))));
+        assert!(is_internal_ip(IpAddr::V4(Ipv4Addr::new(172, 16, 0, 1))));
+        assert!(is_internal_ip(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1))));
+        assert!(is_internal_ip(IpAddr::V4(Ipv4Addr::new(169, 254, 169, 254)))); // link-local metadata
+        assert!(is_internal_ip(IpAddr::V4(Ipv4Addr::new(100, 64, 0, 1)))); // CGNAT
+        assert!(is_internal_ip(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0))));
+        assert!(is_internal_ip(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)))); // documentation
+
+        // Public IPv4 addresses must be allowed.
+        assert!(!is_internal_ip(IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8))));
+        assert!(!is_internal_ip(IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1))));
+
+        // Internal IPv6 ranges must be blocked.
+        assert!(is_internal_ip(IpAddr::V6(Ipv6Addr::LOCALHOST))); // ::1
+        assert!(is_internal_ip(IpAddr::V6(Ipv6Addr::UNSPECIFIED))); // ::
+        assert!(is_internal_ip(IpAddr::V6(Ipv6Addr::new(
+            0xfc00, 0, 0, 0, 0, 0, 0, 1
+        )))); // unique-local
+        assert!(is_internal_ip(IpAddr::V6(Ipv6Addr::new(
+            0xfe80, 0, 0, 0, 0, 0, 0, 1
+        )))); // link-local
+        assert!(is_internal_ip(IpAddr::V6(Ipv6Addr::new(
+            0x2001, 0x0db8, 0, 0, 0, 0, 0, 1
+        )))); // documentation
+
+        // IPv4-mapped loopback (::ffff:127.0.0.1) must be blocked.
+        let mapped = Ipv6Addr::new(0, 0, 0, 0, 0, 0xffff, 0x7f00, 0x0001);
+        assert!(is_internal_ip(IpAddr::V6(mapped)));
+
+        // A public IPv6 address must be allowed.
+        assert!(!is_internal_ip(IpAddr::V6(Ipv6Addr::new(
+            0x2606, 0x4700, 0x4700, 0, 0, 0, 0, 0x1111
+        ))));
+    }
+
+    #[tokio::test]
+    async fn test_validate_push_callback_url_ssrf() {
+        // Loopback must be rejected.
+        assert!(validate_push_callback_url("http://127.0.0.1:8080/cb").await.is_err());
+        assert!(validate_push_callback_url("http://localhost/cb").await.is_err());
+        // Link-local metadata endpoint must be rejected.
+        assert!(
+            validate_push_callback_url("http://169.254.169.254/latest/meta-data/")
+                .await
+                .is_err()
+        );
+        // Embedded credentials must be rejected.
+        assert!(validate_push_callback_url("http://user:pass@example.com/cb").await.is_err());
+        // Unsupported scheme must be rejected.
+        assert!(validate_push_callback_url("ftp://example.com/cb").await.is_err());
+        // A hostless URL must be rejected.
+        assert!(validate_push_callback_url("http://").await.is_err());
+
+        // A public IP literal with http(s) must be accepted (unless the test
+        // environment cannot reach/resolve it, which IP literals avoid).
+        assert!(
+            validate_push_callback_url("https://8.8.8.8/cb")
+                .await
+                .is_ok(),
+            "a public address should be accepted"
+        );
     }
 }
