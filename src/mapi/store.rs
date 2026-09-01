@@ -1617,6 +1617,58 @@ pub fn cells_to_row(
 /// / `Boolean(false)` / `String("")` / etc. as appropriate for the type.
 /// Used by the GetProperties* arms as a fallback when no backend object was
 /// resolved for the input handle.
+/// The canonical "all properties" tag set returned by `RopGetPropertiesAll`
+/// (MS-OXCROPS §2.2.8.3). A well-known, stable list of the PidTag identifiers
+/// the gateway can materialise for a message object, each paired with its
+/// canonical Ptyp type so `cell_for_email` / the calendar/contact converters
+/// can fill the value (or a typed NULL for properties the backend does not
+/// model). The ordering echoes the `cell_for_email` mapping so the full
+/// envelope matches what `RopGetPropertiesSpecific` would return for the same
+/// tags.
+pub fn all_message_tags() -> Vec<PropertyTag> {
+    use crate::mapi::data::PropertyType as T;
+    let t = |ty: T, id: u16| PropertyTag::new(ty, id);
+    vec![
+        t(T::PTYP_STRING, PR_SUBJECT),
+        t(T::PTYP_STRING, PR_MESSAGE_CLASS),
+        t(T::PTYP_STRING, PR_NORMALIZED_SUBJECT),
+        t(T::PTYP_STRING8, PR_BODY),
+        t(T::PTYP_STRING, PR_BODY_HTML),
+        t(T::PTYP_STRING, PR_SENDER_NAME),
+        t(T::PTYP_STRING, PR_SENDER_EMAIL),
+        t(T::PTYP_BINARY, PR_SENDER_ENTRYID),
+        t(T::PTYP_STRING, PR_SENT_REPRESENTING_NAME),
+        t(T::PTYP_STRING, PR_SENT_REPRESENTING_EMAIL),
+        t(T::PTYP_TIME, PR_MESSAGE_DELIVERY_TIME),
+        t(T::PTYP_TIME, PR_CLIENT_SUBMIT_TIME),
+        t(T::PTYP_INTEGER32, PR_MESSAGE_SIZE),
+        t(T::PTYP_BOOLEAN, PR_HAS_ATTACHMENTS),
+        t(T::PTYP_INTEGER32, PR_MESSAGE_FLAGS),
+        t(T::PTYP_INTEGER32, PR_IMPORTANCE),
+        t(T::PTYP_INTEGER32, PR_FLAG_STATUS),
+        t(T::PTYP_INTEGER32, PR_SENSITIVITY),
+        t(T::PTYP_STRING, PR_INTERNET_MESSAGE_ID),
+        t(T::PTYP_STRING, PR_IN_REPLY_TO_ID),
+        t(T::PTYP_STRING, PR_INTERNET_REFERENCES),
+        t(T::PTYP_BINARY, PR_CONVERSATION_ID),
+        t(T::PTYP_BINARY, PR_ENTRYID),
+        t(T::PTYP_BINARY, PR_RECORD_KEY),
+        t(T::PTYP_BINARY, PR_SEARCH_KEY),
+        t(T::PTYP_BINARY, PR_PARENT_ENTRYID),
+        t(T::PTYP_INTEGER64, PR_MID),
+        t(T::PTYP_BINARY, PR_CHANGE_KEY),
+        t(T::PTYP_BINARY, PR_PREDECESSOR_CHANGE_LIST),
+        t(T::PTYP_TIME, PR_LAST_MODIFICATION_TIME),
+        t(T::PTYP_STRING8, PR_LAST_MODIFIER_NAME),
+        t(T::PTYP_BOOLEAN, PR_READ),
+        t(T::PTYP_BOOLEAN, PR_UNREAD),
+        t(T::PTYP_BOOLEAN, PR_HAS_NAMED_PROPERTIES),
+        t(T::PTYP_INTEGER32, PR_NATIVE_BODY),
+        t(T::PTYP_INTEGER64, PR_FOLDER_ID),
+        t(T::PTYP_INTEGER64, PR_PARENT_FOLDER_ID),
+    ]
+}
+
 pub fn typed_null_cells(column_set: &[PropertyTag]) -> Vec<PropertyValue> {
     column_set.iter().map(typed_null_for_tag).collect()
 }

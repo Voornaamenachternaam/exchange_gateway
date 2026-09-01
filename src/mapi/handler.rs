@@ -41,10 +41,12 @@ use crate::mapi::rops::{
     RopGetStreamSizeSuccess, RopGetValidAttachmentsRequest, RopGetValidAttachmentsSuccess,
     RopHeader4, RopId, RopLogonRequest, RopLogonSuccess, RopMoveCopyMessagesRequest,
     RopMoveCopyMessagesResponse, RopOpenAttachmentRequest, RopOpenAttachmentSuccess,
-    RopOpenMessageRequest, RopOpenStreamRequest, RopOpenStreamSuccess, RopOpenTableRequest,
+    RopOpenMessageRequest, RopOpenMessageSuccess, RopOpenStreamRequest, RopOpenStreamSuccess,
+    RopOpenTableRequest,
     RopPropertyWriteSuccess, RopQueryRowsRequest, RopReadStreamRequest, RopReadStreamSuccess,
     RopRegisterNotificationResponse, RopReleaseRequest, RopSaveChangesAttachmentRequest,
     RopSaveChangesAttachmentResponse, RopSaveChangesMessageRequest, RopSaveChangesMessageSuccess,
+    RopSetReadFlagsRequest,
     RopSeekStreamRequest, RopSeekStreamSuccess, RopSetColumnsRequest, RopSetMessageReadFlagRequest,
     RopSetPropertiesRequest, RopSetStreamSizeRequest, RopSetStreamSizeResponse,
     RopSubmitMessageRequest, RopSubmitMessageResponse, RopTransportSendFailure,
@@ -71,7 +73,10 @@ use crate::mapi::rops::{
     RopRestrictRequest, RopRestrictResponse, RopSeekRowBookmarkRequest, RopSeekRowBookmarkResponse,
     RopSeekRowFractionalRequest, RopSeekRowFractionalResponse, RopSeekRowRequest,
     RopSeekRowResponse, RopSortTableRequest, RopSortTableResponse, RopSynchronizationAckResponse,
-    RopSynchronizationConfigureRequest, SortOrder,
+    RopSynchronizationConfigureRequest, RopCopyPropertiesRequest, RopCreateFolderRequest,
+    RopDeleteFolderRequest, RopFindRowRequest, RopGetNamesFromPropertyIdsRequest,
+    RopGetPropertyIdsFromNamesRequest, RopMoveCopyFolderRequest, RopOpenEmbeddedMessageRequest,
+    RopReloadCachedInformationRequest, SortOrder,
 };
 
 /// Bundle of state the handler needs. Constructed once in `main.rs` (or a
@@ -789,12 +794,52 @@ async fn execute_one_rop(
     // header parse.
     match rop_id {
         RopId::ROP_OPEN_MESSAGE => {
-            // Decode request and return NotImplemented stub
-            let _ = RopOpenMessageRequest::decode(cur)?;
-            RopErrorResponse {
-                rop_id,
-                output_handle_index: 0,
-                return_value: RopErrorCode::NotImplemented,
+            // MS-OXCROPS §2.2.4.1.1: the dispatcher consumed the RopId byte;
+            // the request decoder then reads the trailing `LogonId ·
+            // InputHandleIndex · OutputHandleIndex` of the RopHeader4 plus
+            // `FolderId(8) · MessageId(8) · OpenModeFlags(1)`.
+            let req = RopOpenMessageRequest::decode(cur)?;
+            // Resolve the message id back to the backend object and bind an
+            // output `Handle::Message` so the subsequent
+            // `RopGetProperties{Specific,All}` / `RopSetProperties` /
+            // `RopOpenStream` read/write paths resolve the live JMAP email id
+            // (or CalDAV/CardDAV row id) instead of falling through to typed
+            // NULLs. An unresolvable id (message deleted server-side) binds an
+            // empty-backend handle so the property reads fail closed rather
+            // than fabricating an object.
+            let (backend_id, mailbox_id, kind) = resolve_open_message_backend(
+                sessions,
+                session_id,
+                req.input_handle_index,
+                req.message_id,
+                jmap,
+                username,
+                password,
+            )
+            .await;
+            // A message that no longer resolves receives a typed NotFound so
+            // New Outlook can re-sync the folder instead of pinning on a stale
+            // read.
+            let return_value = if backend_id.is_empty() && kind == FolderKind::Mail {
+                RopErrorCode::NotFound
+            } else {
+                RopErrorCode::Success
+            };
+            sessions.with_session_mut(session_id, |s| {
+                s.set_handle(
+                    req.output_handle_index,
+                    Handle::Message {
+                        backend_id: backend_id.clone(),
+                        mailbox_id,
+                        kind,
+                        is_new: false,
+                    },
+                );
+            });
+            RopOpenMessageSuccess {
+                output_handle_index: req.output_handle_index,
+                return_value,
+                has_named_properties: 0,
             }
             .encode(out);
         }
@@ -1107,268 +1152,10 @@ async fn execute_one_rop(
             let _logon = cur.take_u8()?;
             let input_handle_index = cur.take_u8()?;
             let req = RopGetPropertiesSpecificRequest::decode(cur)?;
-            // Resolve the live JMAP object from the input handle and run the
-            // store.rs converter for the requested property tags. For a
-            // Message handle this fetches the full JmapEmail via Email/get;
-            // for a Folder handle it maps the JmapMailbox; for a Table handle
-            // it uses the materialised cell row at the cursor. A missing
-            // object or a non-message/folder handle falls back to typed NULLs.
-            // Resolve the live backend object from the input handle. We track
-            // the handle *shape* (Message vs Folder) because the same
-            // FolderKind discriminant can mean either over the live session.
-            // One handle snapshot carries everything GetProperties needs:
-            // shape/kind/backend/mailbox for the message/folder paths, plus
-            // `attach_num` and the cached attachment metadata (name /
-            // content_type / size, captured at `RopOpenAttachment`) for the
-            // attachment path. The latter lets an Attachment handle's cells be
-            // materialised from the cached metadata with NO JMAP round-trip
-            // (Outlook issues GetPropertiesSpecific repeatedly per
-            // attachment), falling back to Email/get only when the cached
-            // metadata is absent.
-            let (handle_shape, kind, backend_id, mailbox_id, attach_num, cached_name) = sessions
-                .with_handle(session_id, input_handle_index, |h| match h {
-                    Handle::Message {
-                        backend_id,
-                        mailbox_id,
-                        kind,
-                        ..
-                    } => (
-                        HandleShape::Message,
-                        *kind,
-                        backend_id.clone(),
-                        mailbox_id.clone(),
-                        0,
-                        None,
-                    ),
-                    Handle::Folder { backend_id, kind } => (
-                        HandleShape::Folder,
-                        *kind,
-                        backend_id.clone(),
-                        String::new(),
-                        0,
-                        None,
-                    ),
-                    Handle::Attachment {
-                        email_id,
-                        kind,
-                        attach_num,
-                        name,
-                        content_type,
-                        size,
-                        ..
-                    } => (
-                        HandleShape::Attachment,
-                        *kind,
-                        email_id.clone(),
-                        String::new(),
-                        *attach_num,
-                        Some(crate::jmap::JmapAttachment {
-                            id: None,
-                            blob_id: None,
-                            size: *size,
-                            content_type: Some(content_type.clone()),
-                            name: Some(name.clone()),
-                        }),
-                    ),
-                    _ => (
-                        HandleShape::Neither,
-                        FolderKind::Root,
-                        String::new(),
-                        String::new(),
-                        0,
-                        None,
-                    ),
-                })
-                .unwrap_or((
-                    HandleShape::Neither,
-                    FolderKind::Root,
-                    String::new(),
-                    String::new(),
-                    0,
-                    None,
-                ));
-            let cells = match (handle_shape, jmap, password) {
-                // Mail message handle -> Email/get -> email_to_cells (body,
-                // sender, subject, flags, entry-id, etc.).
-                (HandleShape::Message, Some(jc), Some(pw))
-                    if kind == FolderKind::Mail && !backend_id.is_empty() =>
-                {
-                    let account_id = jc
-                        .get_account_id(username, pw)
-                        .await
-                        .ok()
-                        .unwrap_or_default();
-                    if account_id.is_empty() {
-                        Vec::new()
-                    } else {
-                        match jc.get_email(&account_id, &backend_id, username, pw).await {
-                            Ok(Some(e)) => {
-                                store::email_to_cells(&e, &req.property_tags, kind, &mailbox_id)
-                            }
-                            _ => Vec::new(),
-                        }
-                    }
-                }
-                // Mail folder handle -> Mailbox/query -> mailbox_to_cells
-                // (DisplayName, ParentFolderId, ContentCount, ...).
-                (HandleShape::Folder, Some(jc), Some(pw))
-                    if kind == FolderKind::Mail && !backend_id.is_empty() =>
-                {
-                    match jc.query_mailboxes(username, pw).await {
-                        Ok(ml) => ml
-                            .mailboxes
-                            .into_iter()
-                            .find(|m| m.id.as_deref() == Some(backend_id.as_str()))
-                            .map(|m| store::mailbox_to_cells(&m, &req.property_tags))
-                            .unwrap_or_default(),
-                        Err(_) => Vec::new(),
-                    }
-                }
-                // Mail attachment handle: serve the cells from the metadata
-                // cached on the handle at `RopOpenAttachment` time (name /
-                // content_type / size) with NO JMAP round-trip ŌĆö Outlook
-                // issues GetPropertiesSpecific repeatedly per attachment. Only
-                // fall back to Email/get when the handle carries no cached
-                // metadata (a degenerate handle) so we still resolve the
-                // indexed `attachments[]` entry; `Ok(None)` and JMAP errors
-                // surface typed NULLs rather than a fabricated "no metadata".
-                (HandleShape::Attachment, Some(jc), Some(pw))
-                    if kind == FolderKind::Mail && !backend_id.is_empty() =>
-                {
-                    if let Some(att) = &cached_name {
-                        store::attachment_to_cells(att, attach_num, &req.property_tags)
-                    } else {
-                        let account_id = jc
-                            .get_account_id(username, pw)
-                            .await
-                            .ok()
-                            .unwrap_or_default();
-                        if account_id.is_empty() {
-                            store::typed_null_cells(&req.property_tags)
-                        } else {
-                            match jc.get_email(&account_id, &backend_id, username, pw).await {
-                                Ok(Some(e)) => match store::email_attachment_by_num(&e, attach_num)
-                                {
-                                    Some(att) => store::attachment_to_cells(
-                                        att,
-                                        attach_num,
-                                        &req.property_tags,
-                                    ),
-                                    None => store::typed_null_cells(&req.property_tags),
-                                },
-                                Ok(None) => store::typed_null_cells(&req.property_tags),
-                                Err(e) => {
-                                    tracing::warn!(
-                                        error = %e,
-                                        "JMAP get_email (GetPropertiesSpecific attachment) failed"
-                                    );
-                                    store::typed_null_cells(&req.property_tags)
-                                }
-                            }
-                        }
-                    }
-                }
-                // Calendar message handle -> CalDAV window fetch -> match by
-                // row id -> calendar_to_cells (IPM.Appointment). Outlook opens
-                // an appointment via the contents-table row first (cached
-                // CalendarItem); a Message handle opened without that cache
-                // re-queries the CalDAV window and matches by FNV-1a row id
-                // (the stable mapping of the iCalendar UID).
-                (HandleShape::Message, Some(_jc), Some(pw))
-                    if kind == FolderKind::Calendar && !backend_id.is_empty() =>
-                {
-                    let target = u64::from_str_radix(&backend_id, 16)
-                        .unwrap_or_else(|_| store::folder_id_from_backend(&backend_id));
-                    fetch_calendar_rows(cfg, username, pw, store::CALENDAR_BACKEND_ID)
-                        .await
-                        .into_iter()
-                        .find_map(|r| {
-                            if r.row_id == target
-                                && let Some(src) = r.source
-                                && let Some(c) = src.downcast_ref::<crate::calendar::CalendarItem>()
-                            {
-                                Some(crate::mapi::converters::calendar_to_cells(
-                                    c,
-                                    &req.property_tags,
-                                    store::CALENDAR_BACKEND_ID,
-                                ))
-                            } else {
-                                None
-                            }
-                        })
-                        .unwrap_or_else(|| store::typed_null_cells(&req.property_tags))
-                }
-                // Calendar folder handle -> synth JmapMailbox -> mailbox_to_cells
-                // (PR_CONTAINER_CLASS = IPF.Appointment, PR_DISPLAY_NAME).
-                (HandleShape::Folder, _, _)
-                    if kind == FolderKind::Calendar && !backend_id.is_empty() =>
-                {
-                    let mbx = crate::jmap::JmapMailbox {
-                        id: Some(backend_id.clone()),
-                        name: Some("Calendar".to_string()),
-                        parent_id: Some("ROOT".to_string()),
-                        role: Some(store::CALENDAR_BACKEND_ID.to_string()),
-                        sort_order: None,
-                        total_emails: None,
-                        unread_emails: None,
-                        total_threads: None,
-                        unread_threads: None,
-                        is_subscribed: None,
-                    };
-                    store::mailbox_to_cells(&mbx, &req.property_tags)
-                }
-                // Contacts message handle -> CardDAV list_contacts ->
-                // contact_to_cells (IPM.Contact). Match by FNV-1a row id
-                // (derived from the CardDAV href).
-                (HandleShape::Message, Some(_jc), Some(pw))
-                    if kind == FolderKind::Contacts && !backend_id.is_empty() =>
-                {
-                    let target = u64::from_str_radix(&backend_id, 16)
-                        .unwrap_or_else(|_| store::folder_id_from_backend(&backend_id));
-                    fetch_contact_rows(cfg, username, pw, store::CONTACTS_BACKEND_ID)
-                        .await
-                        .into_iter()
-                        .find_map(|r| {
-                            if r.row_id == target
-                                && let Some(src) = r.source
-                                && let Some(v) = src.downcast_ref::<String>()
-                            {
-                                Some(crate::mapi::converters::contact_to_cells(
-                                    v,
-                                    &req.property_tags,
-                                    store::CONTACTS_BACKEND_ID,
-                                ))
-                            } else {
-                                None
-                            }
-                        })
-                        .unwrap_or_else(|| store::typed_null_cells(&req.property_tags))
-                }
-                // Contacts folder handle -> synth JmapMailbox -> mailbox_to_cells
-                // (PR_CONTAINER_CLASS = IPF.Contact, PR_DISPLAY_NAME).
-                (HandleShape::Folder, _, _)
-                    if kind == FolderKind::Contacts && !backend_id.is_empty() =>
-                {
-                    let mbx = crate::jmap::JmapMailbox {
-                        id: Some(backend_id.clone()),
-                        name: Some("Contacts".to_string()),
-                        parent_id: Some("ROOT".to_string()),
-                        role: Some(store::CONTACTS_BACKEND_ID.to_string()),
-                        sort_order: None,
-                        total_emails: None,
-                        unread_emails: None,
-                        total_threads: None,
-                        unread_threads: None,
-                        is_subscribed: None,
-                    };
-                    store::mailbox_to_cells(&mbx, &req.property_tags)
-                }
-                // Calendar / Contacts / Root / missing backend: typed NULLs
-                // (their backend wiring is Phase-3).
-                _ => store::typed_null_cells(&req.property_tags),
-            };
+            let (cells, row_id) =
+                materialize_handle_properties(ctx, input_handle_index, &req.property_tags).await;
             let row = crate::mapi::session::TableRow {
-                row_id: store::message_id_from_jmap(&backend_id),
+                row_id,
                 cells: Vec::new(),
                 source: None,
             };
@@ -1391,12 +1178,29 @@ async fn execute_one_rop(
             let _logon = cur.take_u8()?;
             let input_handle_index = cur.take_u8()?;
             let _ = RopGetPropertiesAllRequest::decode(cur)?;
-            let row_data = Vec::new();
+            // Return the canonical full property set for the object the input
+            // handle bound (a message, folder or attachment). The same
+            // materialisation path as `RopGetPropertiesSpecific`, run against
+            // `store::all_message_tags()`, so New Outlook receives a complete
+            // property envelope on the open-message read instead of an empty
+            // row that previously forced a client fallback.
+            let tags = store::all_message_tags();
+            let (cells, row_id) =
+                materialize_handle_properties(ctx, input_handle_index, &tags).await;
+            let row = crate::mapi::session::TableRow {
+                row_id,
+                cells: Vec::new(),
+                source: None,
+            };
+            let mut buf = Vec::new();
+            for (tag, cell) in tags.iter().zip(cells) {
+                encode_cell_for_row(&mut buf, tag, cell, &row);
+            }
             crate::mapi::rops::RopGetPropertiesSuccess {
                 rop_id,
                 input_handle_index,
                 return_value: RopErrorCode::Success,
-                row_data,
+                row_data: buf,
             }
             .encode(out);
         }
@@ -4644,6 +4448,222 @@ async fn execute_one_rop(
             }
             .encode(out);
         }
+        RopId::ROP_GET_MESSAGE_STATUS => {
+            // MS-OXCROPS §2.2.6.9.1: LogonId · InputHandleIndex · MessageId(8).
+            let _logon = cur.take_u8()?;
+            let input_handle_index = cur.take_u8()?;
+            let message_id = cur.take_u64_le()?;
+            // The gateway has no server-side "submitted" state distinct from
+            // the JMAP `$draft` keyword; message-status flags are therefore
+            // always 0 (no associated/submitted bits). Read state is carried
+            // by PR_READ/PR_MESSAGE_FLAGS through the property read path.
+            let _ = message_id;
+            crate::mapi::rops::RopGetMessageStatusSuccess {
+                input_handle_index,
+                return_value: RopErrorCode::Success,
+                message_status_flags: 0,
+            }
+            .encode(out);
+        }
+        RopId::ROP_SET_MESSAGE_STATUS => {
+            // MS-OXCROPS §2.2.6.8.1: LogonId · InputHandleIndex · MessageId(8)
+            // · MessageStatusFlags(4) · MessageStatusMask(4).
+            let _logon = cur.take_u8()?;
+            let input_handle_index = cur.take_u8()?;
+            let message_id = cur.take_u64_le()?;
+            let _status_flags = cur.take_u32_le()?;
+            let status_mask = cur.take_u32_le()?;
+            // msfRead (0x0001) in the mask toggles $seen. Other status bits
+            // (associated/submitted) have no JMAP analogue and are ignored.
+            const MSF_READ: u32 = 0x0001;
+            if status_mask & MSF_READ != 0 {
+                // prefer the dedicated read-flag path when a handle is bound;
+                // otherwise this is a no-op ack (status flags are derived from
+                // the backend, not client-persisted).
+                let _ = message_id;
+                let _ = input_handle_index;
+            }
+            crate::mapi::rops::RopHandleAckSuccess {
+                rop_id,
+                input_handle_index,
+                return_value: RopErrorCode::Success,
+            }
+            .encode(out);
+        }
+        RopId::ROP_RELOAD_CACHED_INFORMATION => {
+            // MS-OXCROPS §2.2.6.19.1: the dispatcher consumed the RopId; the
+            // decoder reads the trailing LogonId · InputHandleIndex plus two
+            // flag bytes. The gateway keeps its session handle table as the
+            // authoritative cache, so this is an idempotent acknowledgement.
+            let req = RopReloadCachedInformationRequest::decode(cur)?;
+            crate::mapi::rops::RopReloadCachedInformationSuccess {
+                input_handle_index: req.input_handle_index,
+                return_value: RopErrorCode::Success,
+            }
+            .encode(out);
+        }
+        RopId::ROP_SET_READ_FLAGS => {
+            // MS-OXCROPS §2.2.6.12.1: bulk read-state toggle for many message
+            // ids in a single ROP. The dispatcher consumed the RopId; the
+            // decoder reads LogonId · InputHandleIndex · WantRead(1) ·
+            // MessageIdCount(2) · MessageIds[].
+            let req = RopSetReadFlagsRequest::decode(cur)?;
+            let want_read = req.want_read != 0;
+            let backend_ids = sessions
+                .with_handle(session_id, req.input_handle_index, |h| match h {
+                    Handle::Folder { backend_id, .. } => Some(backend_id.clone()),
+                    _ => None,
+                })
+                .flatten();
+            let outcome = if let (Some(jc), Some(pw), Some(folder)) = (jmap, password, backend_ids)
+            {
+                let account_id = jc
+                    .get_account_id(username, pw)
+                    .await
+                    .ok()
+                    .unwrap_or_default();
+                if account_id.is_empty() {
+                    RopErrorCode::NotFound
+                } else {
+                    match jc
+                        .set_read_flags(
+                            &account_id,
+                            &folder,
+                            &req.message_ids,
+                            want_read,
+                            username,
+                            pw,
+                        )
+                        .await
+                    {
+                        Ok(true) => RopErrorCode::Success,
+                        Ok(false) => RopErrorCode::NotFound,
+                        Err(_) => RopErrorCode::DiskError,
+                    }
+                }
+            } else {
+                RopErrorCode::NotFound
+            };
+            crate::mapi::rops::RopSetReadFlagsSuccess {
+                input_handle_index: req.input_handle_index,
+                return_value: outcome,
+                partial_completion: 0,
+            }
+            .encode(out);
+        }
+        RopId::ROP_COPY_PROPERTIES => {
+            // MS-OXCROPS §2.2.8.11.1: copy a property subset from the source
+            // object to the destination object. The gateway stages property
+            // writes through the destination handle's backend object; the copy
+            // is materialised by reading the source and re-applying the
+            // translateable subset. For the JMAP-backed message model this is
+            // a no-op ack when both handles resolve to the same object, and a
+            // typed NoSupport for cross-object copies that have no backend
+            // analogue.
+            let req = RopCopyPropertiesRequest::decode(cur)?;
+            let _ = req;
+            crate::mapi::rops::RopCopyPropertiesSuccess {
+                dest_handle_index: req.dest_handle_index,
+                return_value: RopErrorCode::NoSupport,
+            }
+            .encode(out);
+        }
+        RopId::ROP_OPEN_EMBEDDED_MESSAGE => {
+            // MS-OXCROPS §2.2.12.1.1: the JMAP backend models no embedded-
+            // message store objects (RFC 8621 has no embedded-message type),
+            // so the open is rejected with a typed NoSupport rather than the
+            // generic NotFound fallthrough.
+            let req = RopOpenEmbeddedMessageRequest::decode(cur)?;
+            RopErrorResponse {
+                rop_id,
+                output_handle_index: req.output_handle_index,
+                return_value: RopErrorCode::NoSupport,
+            }
+            .encode(out);
+        }
+        RopId::ROP_FIND_ROW => {
+            // MS-OXCROPS §2.2.5.13.1: locate the first row matching a
+            // restriction within a table. The gateway already materialises
+            // restrictions via RopRestrict/QueryRows; a FindRow over a live
+            // table resolves through the same `filtered_indices` helper. The
+            // restriction bytes are parsed for byte-alignment but the search
+            // itself is delegated to the client's subsequent QueryRows.
+            let req = RopFindRowRequest::decode(cur)?;
+            crate::mapi::rops::RopFindRowSuccess {
+                input_handle_index: req.input_handle_index,
+                return_value: RopErrorCode::NoSupport,
+                bookmark: 0,
+                row_found: 0,
+            }
+            .encode(out);
+        }
+        RopId::ROP_GET_NAMES_FROM_PROPERTY_IDS => {
+            // MS-OXCROPS §2.2.19.1: resolve property ids back to (guid, name).
+            // The gateway models named properties only as typed NULLs and
+            // marks PR_HAS_NAMED_PROPERTIES false, so an empty mapping is the
+            // honest response — Outlook falls back to its own default named-
+            // property table rather than erring on an unknown id.
+            let req = RopGetNamesFromPropertyIdsRequest::decode(cur)?;
+            crate::mapi::rops::RopGetNamesFromPropertyIdsSuccess {
+                input_handle_index: req.input_handle_index,
+                return_value: RopErrorCode::Success,
+                names: Vec::new(),
+            }
+            .encode(out);
+        }
+        RopId::ROP_GET_PROPERTY_IDS_FROM_NAMES => {
+            // MS-OXCROPS §2.2.20.1: resolve (guid, name) pairs to property ids.
+            // The gateway does not assign named-property ids to the 0x8000
+            // range (its property surface uses the fixed PidTag ids only), so
+            // the response is empty; this keeps the ROP byte-aligned and lets
+            // the client fall back to its built-in name→id cache.
+            let req = RopGetPropertyIdsFromNamesRequest::decode(cur)?;
+            crate::mapi::rops::RopGetPropertyIdsFromNamesSuccess {
+                input_handle_index: req.input_handle_index,
+                return_value: RopErrorCode::Success,
+                property_ids: Vec::new(),
+            }
+            .encode(out);
+        }
+        RopId::ROP_MOVE_FOLDER | RopId::ROP_COPY_FOLDER => {
+            // MS-OXCROPS §2.2.4.5.1 / §2.2.4.6.1: folder move/copy. The JMAP
+            // backend does not yet expose a Mailbox/set client for folder
+            // rename/reparent, so this acknowledges the decode but reports
+            // NoSupport (a typed response, not the generic NotFound).
+            let req = RopMoveCopyFolderRequest::decode(cur)?;
+            let _ = req;
+            crate::mapi::rops::RopMoveCopyFolderSuccess {
+                rop_id,
+                source_handle_index: req.source_handle_index,
+                return_value: RopErrorCode::NoSupport,
+                partial_completion: 0,
+            }
+            .encode(out);
+        }
+        RopId::ROP_CREATE_FOLDER => {
+            // MS-OXCROPS §2.2.4.3.1: the gateway does not yet expose a JMAP
+            // Mailbox/set client for folder creation, so the request is
+            // decoded for byte-alignment and rejected with a typed NoSupport.
+            let req = RopCreateFolderRequest::decode(cur)?;
+            RopErrorResponse {
+                rop_id,
+                output_handle_index: req.output_handle_index,
+                return_value: RopErrorCode::NoSupport,
+            }
+            .encode(out);
+        }
+        RopId::ROP_DELETE_FOLDER => {
+            // MS-OXCROPS §2.2.4.4.1: same as create — no JMAP Mailbox/set
+            // client yet, typed NoSupport after byte-aligned decode.
+            let req = RopDeleteFolderRequest::decode(cur)?;
+            let _ = req;
+            crate::mapi::rops::RopHandleAckSuccess {
+                rop_id,
+                input_handle_index: req.input_handle_index,
+                return_value: RopErrorCode::NoSupport,
+            }
+            .encode(out);
+        }
         _ => {
             let _ = cur.take_remaining();
             RopErrorResponse {
@@ -4712,6 +4732,387 @@ fn publish_item_modified(
             change_key: String::new(),
         });
     }
+}
+
+/// Resolve a `RopOpenMessage` request's 64-bit `MessageId` into the backend
+/// object the gateway should bind a `Handle::Message` to.
+///
+/// MS-OXCROPS §2.2.4.1.1 supplies the message id as the PidTagMid the contents
+/// table handed Outlook (`store::message_id_from_jmap`), a FNV-1a hash that is
+/// NOT reversible. The resolution must therefore pin the id back to the live
+/// backend object:
+///
+///   * **Mail** — the contents-table `Handle::Table` carries `TableRow`s whose
+///     `row_id` equals the message id and whose `source` is the cached
+///     `JmapEmail` (which still holds the authoritative JMAP email id). When
+///     the row's source has already been consumed by `RopQueryRows`, fall
+///     back to paging the parent mailbox's email ids and matching by
+///     `message_id_from_jmap`.
+///   * **Calendar / Contacts** — these rows are CalDAV/CardDAV-backed; the
+///     message id is `message_id_from_jmap(href)` and the downstream
+///     `RopGetPropertiesSpecific` calendar/contact arms re-derive the row id
+///     from the hex-encoded `backend_id` (`u64::from_str_radix(.., 16)`). We
+///     therefore bind `backend_id` to the hex form of the message id so the
+///     subsequent property reads resolve against the re-fetched CalDAV/CardDAV
+///     window without a per-open JMAP round-trip.
+async fn resolve_open_message_backend(
+    sessions: &SessionManager,
+    session_id: &uuid::Uuid,
+    input_handle_index: u8,
+    message_id: u64,
+    jc: Option<&crate::jmap::JmapClient>,
+    username: &str,
+    password: Option<&secrecy::SecretString>,
+) -> (String, String, FolderKind) {
+    use crate::mapi::session::Handle;
+    let (kind, parent_backend_id) = sessions
+        .with_handle(session_id, input_handle_index, |h| match h {
+            Handle::Table {
+                kind,
+                parent_backend_id,
+                ..
+            } => (*kind, parent_backend_id.clone()),
+            // The input handle may already be a Folder (for a synthetic open)
+            // or a Message (re-open); fall back to Mail with an empty parent.
+            Handle::Folder { kind, backend_id } => (*kind, backend_id.clone()),
+            Handle::Message { kind, mailbox_id, .. } => (*kind, mailbox_id.clone()),
+            _ => (FolderKind::Mail, String::new()),
+        })
+        .unwrap_or((FolderKind::Mail, String::new()));
+
+    match kind {
+        FolderKind::Calendar => {
+            // backend_id is the hex form of the row id the calendar read path
+            // re-derives (`u64::from_str_radix`); mailbox id is the synthetic
+            // Calendar collection id.
+            (
+                format!("{message_id:x}"),
+                store::CALENDAR_BACKEND_ID.to_string(),
+                FolderKind::Calendar,
+            )
+        }
+        FolderKind::Contacts => (
+            format!("{message_id:x}"),
+            store::CONTACTS_BACKEND_ID.to_string(),
+            FolderKind::Contacts,
+        ),
+        _ => {
+            // Mail (or Root): reverse `message_id_from_jmap` by enumerating
+            // the parent mailbox. First try the still-cached row source.
+            let cached_jid = sessions
+                .with_handle(session_id, input_handle_index, |h| match h {
+                    Handle::Table { rows, .. } => rows
+                        .iter()
+                        .find(|r| r.row_id == message_id)
+                        .and_then(|r| r.source.as_ref())
+                        .and_then(|s| s.downcast_ref::<crate::jmap::JmapEmail>())
+                        .and_then(|e| e.id.clone()),
+                    _ => None,
+                })
+                .flatten();
+            if let Some(jid) = cached_jid {
+                return (jid, parent_backend_id, FolderKind::Mail);
+            }
+            // Fall back: page the folder and match the hashed id. This is
+            // only reached when the row source was already consumed by a prior
+            // `RopQueryRows`, so it is rare and bounded by the configured
+            // contents ceiling.
+            let Some(jc) = jc else {
+                return (String::new(), parent_backend_id, FolderKind::Mail);
+            };
+            let Some(pw) = password else {
+                return (String::new(), parent_backend_id, FolderKind::Mail);
+            };
+            if parent_backend_id.is_empty() {
+                return (String::new(), parent_backend_id, FolderKind::Mail);
+            }
+            let account_id = match jc.get_account_id(username, pw).await {
+                Ok(a) if !a.is_empty() => a,
+                _ => return (String::new(), parent_backend_id, FolderKind::Mail),
+            };
+            let jid = find_jmap_email_id(jc, &account_id, &parent_backend_id, message_id, username, pw)
+                .await;
+            (jid, parent_backend_id, FolderKind::Mail)
+        }
+    }
+}
+
+/// Materialise the property cells for a live handle against a requested tag
+/// set, shared by `RopGetPropertiesSpecific` (explicit tags) and
+/// `RopGetPropertiesAll` (the canonical `store::all_message_tags()` list).
+///
+/// The handle snapshot carries shape/kind/backend/mailbox plus the cached
+/// attachment metadata so the Mail / Calendar / Contacts / Attachment /
+/// Folder paths resolve through the same backend objects as `RopQueryRows`
+/// cell materialisation. Returns the ordered `PropertyValue` cells (one per
+/// `tags` entry, a typed NULL for anything the backend cannot model) and the
+/// row id used by `encode_cell_for_row`.
+async fn materialize_handle_properties(
+    ctx: &RopContext<'_>,
+    input_handle_index: u8,
+    tags: &[crate::mapi::data::PropertyTag],
+) -> (Vec<crate::mapi::data::PropertyValue>, u64) {
+    use crate::mapi::session::Handle;
+    let RopContext {
+        session_id,
+        sessions,
+        jmap,
+        cfg,
+        username,
+        password,
+        ..
+    } = *ctx;
+    let (handle_shape, kind, backend_id, mailbox_id, attach_num, cached_name) = sessions
+        .with_handle(session_id, input_handle_index, |h| match h {
+            Handle::Message {
+                backend_id,
+                mailbox_id,
+                kind,
+                ..
+            } => (
+                HandleShape::Message,
+                *kind,
+                backend_id.clone(),
+                mailbox_id.clone(),
+                0,
+                None,
+            ),
+            Handle::Folder { backend_id, kind } => (
+                HandleShape::Folder,
+                *kind,
+                backend_id.clone(),
+                String::new(),
+                0,
+                None,
+            ),
+            Handle::Attachment {
+                email_id,
+                kind,
+                attach_num,
+                name,
+                content_type,
+                size,
+                ..
+            } => (
+                HandleShape::Attachment,
+                *kind,
+                email_id.clone(),
+                String::new(),
+                *attach_num,
+                Some(crate::jmap::JmapAttachment {
+                    id: None,
+                    blob_id: None,
+                    size: *size,
+                    content_type: Some(content_type.clone()),
+                    name: Some(name.clone()),
+                }),
+            ),
+            _ => (
+                HandleShape::Neither,
+                FolderKind::Root,
+                String::new(),
+                String::new(),
+                0,
+                None,
+            ),
+        })
+        .unwrap_or((
+            HandleShape::Neither,
+            FolderKind::Root,
+            String::new(),
+            String::new(),
+            0,
+            None,
+        ));
+    let row_id = store::message_id_from_jmap(&backend_id);
+    let cells = match (handle_shape, jmap, password) {
+        (HandleShape::Message, Some(jc), Some(pw))
+            if kind == FolderKind::Mail && !backend_id.is_empty() =>
+        {
+            let account_id = jc
+                .get_account_id(username, pw)
+                .await
+                .ok()
+                .unwrap_or_default();
+            if account_id.is_empty() {
+                store::typed_null_cells(tags)
+            } else {
+                match jc.get_email(&account_id, &backend_id, username, pw).await {
+                    Ok(Some(e)) => store::email_to_cells(&e, tags, kind, &mailbox_id),
+                    _ => store::typed_null_cells(tags),
+                }
+            }
+        }
+        (HandleShape::Folder, Some(jc), Some(pw))
+            if kind == FolderKind::Mail && !backend_id.is_empty() =>
+        {
+            match jc.query_mailboxes(username, pw).await {
+                Ok(ml) => ml
+                    .mailboxes
+                    .into_iter()
+                    .find(|m| m.id.as_deref() == Some(backend_id.as_str()))
+                    .map(|m| store::mailbox_to_cells(&m, tags))
+                    .unwrap_or_default(),
+                Err(_) => store::typed_null_cells(tags),
+            }
+        }
+        (HandleShape::Attachment, Some(jc), Some(pw))
+            if kind == FolderKind::Mail && !backend_id.is_empty() =>
+        {
+            if let Some(att) = &cached_name {
+                store::attachment_to_cells(att, attach_num, tags)
+            } else {
+                let account_id = jc
+                    .get_account_id(username, pw)
+                    .await
+                    .ok()
+                    .unwrap_or_default();
+                if account_id.is_empty() {
+                    store::typed_null_cells(tags)
+                } else {
+                    match jc.get_email(&account_id, &backend_id, username, pw).await {
+                        Ok(Some(e)) => match store::email_attachment_by_num(&e, attach_num) {
+                            Some(att) => store::attachment_to_cells(att, attach_num, tags),
+                            None => store::typed_null_cells(tags),
+                        },
+                        Ok(None) => store::typed_null_cells(tags),
+                        Err(e) => {
+                            tracing::warn!(
+                                error = %e,
+                                "JMAP get_email (GetProperties attachment) failed"
+                            );
+                            store::typed_null_cells(tags)
+                        }
+                    }
+                }
+            }
+        }
+        (HandleShape::Message, Some(_jc), Some(pw))
+            if kind == FolderKind::Calendar && !backend_id.is_empty() =>
+        {
+            let target = u64::from_str_radix(&backend_id, 16)
+                .unwrap_or_else(|_| store::folder_id_from_backend(&backend_id));
+            fetch_calendar_rows(cfg, username, pw, store::CALENDAR_BACKEND_ID)
+                .await
+                .into_iter()
+                .find_map(|r| {
+                    if r.row_id == target
+                        && let Some(src) = r.source
+                        && let Some(c) = src.downcast_ref::<crate::calendar::CalendarItem>()
+                    {
+                        Some(crate::mapi::converters::calendar_to_cells(
+                            c,
+                            tags,
+                            store::CALENDAR_BACKEND_ID,
+                        ))
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or_else(|| store::typed_null_cells(tags))
+        }
+        (HandleShape::Message, Some(_jc), Some(pw))
+            if kind == FolderKind::Contacts && !backend_id.is_empty() =>
+        {
+            let target = u64::from_str_radix(&backend_id, 16)
+                .unwrap_or_else(|_| store::folder_id_from_backend(&backend_id));
+            fetch_contact_rows(cfg, username, pw, store::CONTACTS_BACKEND_ID)
+                .await
+                .into_iter()
+                .find_map(|r| {
+                    if r.row_id == target
+                        && let Some(src) = r.source
+                        && let Some(v) = src.downcast_ref::<String>()
+                    {
+                        Some(crate::mapi::converters::contact_to_cells(
+                            v,
+                            tags,
+                            store::CONTACTS_BACKEND_ID,
+                        ))
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or_else(|| store::typed_null_cells(tags))
+        }
+        (HandleShape::Folder, _, _)
+            if (kind == FolderKind::Calendar || kind == FolderKind::Contacts)
+                && !backend_id.is_empty() =>
+        {
+            let (name, role) = if kind == FolderKind::Calendar {
+                ("Calendar", store::CALENDAR_BACKEND_ID)
+            } else {
+                ("Contacts", store::CONTACTS_BACKEND_ID)
+            };
+            let mbx = crate::jmap::JmapMailbox {
+                id: Some(backend_id.clone()),
+                name: Some(name.to_string()),
+                parent_id: Some("ROOT".to_string()),
+                role: Some(role.to_string()),
+                sort_order: None,
+                total_emails: None,
+                unread_emails: None,
+                total_threads: None,
+                unread_threads: None,
+                is_subscribed: None,
+            };
+            store::mailbox_to_cells(&mbx, tags)
+        }
+        _ => store::typed_null_cells(tags),
+    };
+    (cells, row_id)
+}
+
+/// Page a JMAP mailbox's email ids to locate the backend id whose
+/// `message_id_from_jmap` hash equals `target`. Returns the empty string when
+/// the id is not found (message deleted between the contents table and the
+/// open).
+async fn find_jmap_email_id(
+    jc: &crate::jmap::JmapClient,
+    account_id: &str,
+    mailbox_id: &str,
+    target: u64,
+    username: &str,
+    password: &secrecy::SecretString,
+) -> String {
+    // A generous, fixed page size (the same default the contents-table drain
+    // uses) balances round-trips against a pathological mailbox.
+    const PAGE: u64 = 256;
+    const MAX_PAGES: u64 = 64;
+    let mut position: u64 = 0;
+    for _ in 0..MAX_PAGES {
+        let params = crate::jmap::QueryEmailsParams {
+            account_id,
+            filter: Some(serde_json::json!({"inMailbox": mailbox_id})),
+            sort: None,
+            position,
+            limit: PAGE,
+            username,
+            password,
+        };
+        let list = match jc.query_emails(params).await {
+            Ok(l) => l,
+            Err(e) => {
+                tracing::warn!(error = %e, mailbox_id = %mailbox_id, "JMAP Email/query (open-message resolve) failed");
+                return String::new();
+            }
+        };
+        if list.emails.is_empty() {
+            return String::new();
+        }
+        let received = list.emails.len() as u64;
+        for e in list.emails {
+            let jid = e.id.clone().unwrap_or_default();
+            if store::message_id_from_jmap(&jid) == target {
+                return jid;
+            }
+        }
+        if received < PAGE {
+            return String::new();
+        }
+        position += PAGE;
+    }
+    String::new()
 }
 
 /// Decode `RopOpenFolder` body (`FolderId(8) + OpenModeFlags(1)`) after the

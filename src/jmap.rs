@@ -1343,6 +1343,73 @@ impl JmapClient {
         Ok(parse_email_set_outcome(resp.method_responses))
     }
 
+    /// Bulk toggle `$seen` for a set of MAPI message ids within one mailbox
+    /// (`RopSetReadFlags`, MS-OXCROPS §2.2.6.12). The MAPI ids are FNV-1a
+    /// hashes of the JMAP email id (see `mapi::store::message_id_from_jmap`),
+    /// so the method pages the mailbox once to reverse-map them, then issues a
+    /// single `Email/set` `update` patch. Returns `Ok(true)` when at least one
+    /// id resolved and was patched, `Ok(false)` when none resolved (every id
+    /// stale), and an `Err` when the Email/set call itself failed.
+    pub async fn set_read_flags(
+        &self,
+        account_id: &str,
+        mailbox_id: &str,
+        message_ids: &[u64],
+        want_read: bool,
+        username: &str,
+        password: &SecretString,
+    ) -> Result<bool> {
+        if message_ids.is_empty() {
+            return Ok(false);
+        }
+        // Reverse-map the MAPI mids to JMAP email ids by paging the mailbox.
+        let want: std::collections::HashSet<u64> = message_ids.iter().copied().collect();
+        let mut patch = serde_json::Map::new();
+        const PAGE: u64 = 256;
+        const MAX_PAGES: u64 = 64;
+        let mut position: u64 = 0;
+        for _ in 0..MAX_PAGES {
+            let params = QueryEmailsParams {
+                account_id,
+                filter: Some(json!({"inMailbox": mailbox_id})),
+                sort: None,
+                position,
+                limit: PAGE,
+                username,
+                password,
+            };
+            let list = self.query_emails(params).await?;
+            if list.emails.is_empty() {
+                break;
+            }
+            let received = list.emails.len() as u64;
+            for e in list.emails {
+                let jid = e.id.clone().unwrap_or_default();
+                if jid.is_empty() {
+                    continue;
+                }
+                if want.contains(&crate::mapi::store::message_id_from_jmap(&jid)) {
+                    patch.insert(
+                        jid,
+                        json!({
+                            "keywords/$seen": if want_read { json!(true) } else { json!(null) },
+                        }),
+                    );
+                }
+            }
+            if received < PAGE {
+                break;
+            }
+            position += PAGE;
+        }
+        if patch.is_empty() {
+            return Ok(false);
+        }
+        self.update_email(account_id, &serde_json::Value::Object(patch), username, password)
+            .await?;
+        Ok(true)
+    }
+
     /// Destroy emails via JMAP `Email/set` `destroy` (RFC 8621 §4.5). Returns
     /// the count of ids the server reports as `destroyed` (i.e. successfully
     /// removed). Per-item failures land in `notDestroyed`; they are NOT a hard

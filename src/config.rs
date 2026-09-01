@@ -141,13 +141,14 @@ pub struct Config {
     pub rate_limit_requests_per_minute: u32,
     #[serde(default = "default_rate_limit_max_concurrent")]
     pub rate_limit_max_concurrent: usize,
-    // MAPI over HTTP (MS-OXCMAPIHTTP) server surface. Default off — the
-    // surface is opt-in and never weakens the existing EWS/EAS posture.
-    // Enabled by setting GATEWAY_MAPI_ENABLED=1. The HMA bearer validator
-    // (oidc.rs) is enabled separately by GATEWAY_MAPI_HMA_ENABLED and
-    // requires an OAuth issuer URL + audience; without it the MAPI/HTTP
-    // route validates sessions via Basic auth only.
-    #[serde(default)]
+    // MAPI over HTTP (MS-OXCMAPIHTTP) server surface. Enabled by default
+    // because New Outlook for Windows (20251205004.10) and Outlook Android
+    // connect over MAPI/HTTP rather than EWS; operators may still opt out
+    // with GATEWAY_MAPI_ENABLED=0. The HMA bearer validator (oidc.rs) is
+    // enabled separately by GATEWAY_MAPI_HMA_ENABLED and requires an OAuth
+    // issuer URL + audience; without it the MAPI/HTTP route validates
+    // sessions via Basic auth only.
+    #[serde(default = "default_mapi_enabled")]
     pub mapi_enabled: bool,
     #[serde(default)]
     pub mapi_hma_enabled: bool,
@@ -279,6 +280,15 @@ fn default_prefer_jmap_calendar() -> bool {
 
 fn default_prefer_caldav_freebusy() -> bool {
     // For Stalwart v0.16.10, prefer CalDAV free/busy to avoid JMAP Calendar bugs
+    true
+}
+
+/// MAPI/HTTP (MS-OXCMAPIHTTP) is enabled by default: New Outlook for Windows
+/// and Outlook Android connect over MAPI/HTTP, not EWS, so the gateway must
+/// serve the surface out of the box. Operators can still opt out with
+/// `GATEWAY_MAPI_ENABLED=0` (or `mapi_enabled = false` in the TOML) when the
+/// legacy EWS/EAS-only posture is required.
+fn default_mapi_enabled() -> bool {
     true
 }
 
@@ -814,7 +824,8 @@ fn apply_environment_overrides(cfg: &mut Config) {
         cfg.prefer_jmap_calendar = false;
     }
 
-    // MAPI over HTTP (MS-OXCMAPIHTTP) surface — opt-in, default off.
+    // MAPI over HTTP (MS-OXCMAPIHTTP) surface — enabled by default; the
+    // GATEWAY_MAPI_ENABLED variable allows an explicit opt-out.
     if let Some(val) = get_env_with_fallback(ENV_MAPI_ENABLED, None) {
         let lower = val.to_lowercase();
         tracing::debug!("Applying {} from environment", ENV_MAPI_ENABLED);
@@ -973,7 +984,7 @@ impl Default for Config {
             rate_limit_enabled: true,
             rate_limit_requests_per_minute: 120,
             rate_limit_max_concurrent: 1000,
-            mapi_enabled: false,
+            mapi_enabled: default_mapi_enabled(),
             mapi_hma_enabled: false,
             mapi_oidc_issuer: String::new(),
             mapi_oidc_audience: String::new(),
