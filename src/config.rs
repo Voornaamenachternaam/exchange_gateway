@@ -999,12 +999,15 @@ impl Default for Config {
 
 impl Config {
     /// Test helper: a Config seeded with `mail_domain` and the MAPI surface
-    /// disabled (the production default). Avoids the `Public` Default fields
-    /// dance in unit tests that only care about domain resolution.
+    /// explicitly disabled. This keeps the helper independent of the
+    /// production `mapi_enabled` default (which is now `true`) so tests that
+    /// only care about domain resolution do not incidentally exercise the
+    /// MAPI code path.
     #[cfg(test)]
     pub fn test_with_mail_domain(mail_domain: &str) -> Self {
         Config {
             mail_domain: mail_domain.to_string(),
+            mapi_enabled: false,
             ..Config::default()
         }
     }

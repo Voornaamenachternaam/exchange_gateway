@@ -1015,6 +1015,66 @@ impl JmapClient {
         })
     }
 
+    /// Query only the message ids in a mailbox (no `Email/get`).
+    ///
+    /// Maps to `Email/query` (RFC 8621 §4.3) and returns the bare id list.
+    /// This is the cheap sibling of [`JmapClient::query_emails`] for callers
+    /// that only need to reverse-map a MAPI mid to a JMAP id: it avoids
+    /// downloading `mail_properties()`, `bodyStructure`, and `bodyValues` for
+    /// every page, which `query_emails` batches in.
+    pub async fn query_email_ids(
+        &self,
+        params: QueryEmailsParams<'_>,
+    ) -> Result<Vec<String>> {
+        let session = self.get_session(params.username, params.password).await?;
+        let api_url = &session.api_url;
+
+        let filter_val = params.filter.unwrap_or_else(|| json!({}));
+        let sort_val = params.sort.unwrap_or_else(|| {
+            vec![json!({"property": "receivedAt", "isAscending": false})]
+        });
+
+        let method_calls = vec![(
+            "Email/query",
+            json!({
+                "accountId": params.account_id,
+                "filter": filter_val,
+                "sort": sort_val,
+                "position": params.position,
+                "limit": params.limit,
+                "calculateTotal": false,
+            }),
+            "q0",
+        )];
+
+        let response = self
+            .api_call(
+                api_url,
+                &["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:mail"],
+                method_calls,
+                params.username,
+                params.password,
+            )
+            .await?;
+
+        for (method, data, _) in response.method_responses {
+            if method == "Email/query" {
+                let ids = data
+                    .get("ids")
+                    .and_then(|v| v.as_array())
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|x| x.as_str().map(String::from))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                return Ok(ids);
+            }
+        }
+
+        Ok(Vec::new())
+    }
+
     /// Get specific emails by ID.
     ///
     /// Maps to `Email/get` (RFC 8621 §4.1).
@@ -1378,16 +1438,12 @@ impl JmapClient {
                 username,
                 password,
             };
-            let list = self.query_emails(params).await?;
-            if list.emails.is_empty() {
+            let ids = self.query_email_ids(params).await?;
+            if ids.is_empty() {
                 break;
             }
-            let received = list.emails.len() as u64;
-            for e in list.emails {
-                let jid = e.id.clone().unwrap_or_default();
-                if jid.is_empty() {
-                    continue;
-                }
+            let received = ids.len() as u64;
+            for jid in ids {
                 if want.contains(&crate::mapi::store::message_id_from_jmap(&jid)) {
                     patch.insert(
                         jid,
@@ -1397,6 +1453,11 @@ impl JmapClient {
                     );
                 }
             }
+            // All targeted mids resolved; stop paging early instead of walking
+            // the remaining mailbox pages for nothing.
+            if patch.len() == want.len() {
+                break;
+            }
             if received < PAGE {
                 break;
             }
@@ -1405,9 +1466,35 @@ impl JmapClient {
         if patch.is_empty() {
             return Ok(false);
         }
-        self.update_email(account_id, &serde_json::Value::Object(patch), username, password)
+        let outcome = self
+            .update_email_checked(
+                account_id,
+                &serde_json::Value::Object(patch),
+                username,
+                password,
+            )
             .await?;
-        Ok(true)
+        if let Some(err) = &outcome.method_error {
+            tracing::warn!(
+                target: "jmap",
+                error = %err,
+                "Email/set set_read_flags rejected at method level"
+            );
+            return Err(anyhow::anyhow!(
+                "Email/set set_read_flags rejected: {err}"
+            ));
+        }
+        for (id, desc) in &outcome.not_updated {
+            tracing::warn!(
+                target: "jmap",
+                email_id = %id,
+                reason = %desc,
+                "set_read_flags notUpdated"
+            );
+        }
+        // `true` only when the server actually accepted at least one patch;
+        // an empty `updated` set means every id was stale or rejected.
+        Ok(!outcome.updated.is_empty())
     }
 
     /// Destroy emails via JMAP `Email/set` `destroy` (RFC 8621 §4.5). Returns

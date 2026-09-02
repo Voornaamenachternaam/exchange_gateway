@@ -149,6 +149,9 @@ impl RopReadRecipientsRequest {
 pub struct RopReadRecipientsSuccess {
     pub input_handle_index: u8,
     pub return_value: RopErrorCode,
+    /// Number of `RecipientRow` structures serialised into `rows`. This is a
+    /// structure count, not `rows.len()` (which measures serialised bytes).
+    pub row_count: u16,
     pub rows: Vec<u8>,
 }
 impl RopReadRecipientsSuccess {
@@ -156,8 +159,7 @@ impl RopReadRecipientsSuccess {
         out.push(RopId::ROP_READ_RECIPIENTS.to_u8());
         out.push(self.input_handle_index);
         out.extend(&self.return_value.to_u32().to_le_bytes());
-        let count = u16::try_from(self.rows.len()).unwrap_or(u16::MAX);
-        out.extend_from_slice(&count.to_le_bytes());
+        out.extend_from_slice(&self.row_count.to_le_bytes());
         out.extend_from_slice(&self.rows);
     }
 }
@@ -210,8 +212,10 @@ impl RopReloadCachedInformationSuccess {
 /// consumed the `RopId`, the frame is the trailing
 /// `LogonId · InputHandleIndex · OutputHandleIndex` of the `RopHeader4`
 /// followed by:
-///   `FolderType(1) · UseUnicodeStrings(1) · Reserved(1) · DisplayName
-///    [· Comment]`.
+///   `FolderType(1) · UseUnicodeStrings(1) · Reserved(1) · DisplayName ·
+///    Comment`.
+/// `DisplayName`/`Comment` are NUL-terminated: UTF-16LE (2-byte NUL) when
+/// `UseUnicodeStrings != 0`, multibyte (1-byte NUL) otherwise.
 #[derive(Debug, Clone)]
 pub struct RopCreateFolderRequest {
     pub logon_id: u8,
@@ -219,6 +223,7 @@ pub struct RopCreateFolderRequest {
     pub output_handle_index: u8,
     pub folder_type: u8,
     pub display_name: String,
+    pub comment: String,
 }
 impl RopCreateFolderRequest {
     pub fn decode(buf: &mut Buf<'_>) -> Result<Self, DecodeError> {
@@ -228,19 +233,56 @@ impl RopCreateFolderRequest {
         let folder_type = buf.take_u8()?;
         let use_unicode = buf.take_u8()?;
         let _reserved = buf.take_u8()?;
-        // DisplayName: UTF-16LE (UseUnicodeStrings==1) or MBCS, length is
-        // not self-describing; read the remaining bytes as a lossy string.
-        let _ = use_unicode;
-        let rest = buf.take_remaining();
-        let display_name = String::from_utf8_lossy(&rest).into_owned();
+        // Read exactly the two NUL-terminated strings and stop there so the
+        // shared cursor stays aligned for any ROP chained after this one
+        // (previously `take_remaining()` swallowed the whole Execute buffer).
+        let display_name = if use_unicode != 0 {
+            take_terminated_utf16(buf)?
+        } else {
+            take_terminated_mbcs(buf)?
+        };
+        let comment = if use_unicode != 0 {
+            take_terminated_utf16(buf)?
+        } else {
+            take_terminated_mbcs(buf)?
+        };
         Ok(Self {
             logon_id,
             input_handle_index,
             output_handle_index,
             folder_type,
             display_name,
+            comment,
         })
     }
+}
+
+/// Read a NUL-terminated UTF-16LE string (PtypString form) from `buf`,
+/// returning the decoded `String` without the terminating `0x0000`.
+fn take_terminated_utf16(cur: &mut Buf<'_>) -> Result<String, DecodeError> {
+    let mut units = Vec::new();
+    loop {
+        let u = cur.take_u16_le()?;
+        if u == 0 {
+            break;
+        }
+        units.push(u);
+    }
+    Ok(String::from_utf16_lossy(&units))
+}
+
+/// Read a NUL-terminated multibyte string (PtypString8 form) from `buf`,
+/// returning the decoded `String` without the terminating `0x00`.
+fn take_terminated_mbcs(cur: &mut Buf<'_>) -> Result<String, DecodeError> {
+    let mut bytes = Vec::new();
+    loop {
+        let b = cur.take_u8()?;
+        if b == 0 {
+            break;
+        }
+        bytes.push(b);
+    }
+    String::from_utf8(bytes).map_err(|_| DecodeError::InvalidUtf8)
 }
 
 /// `RopCreateFolder` success response (MS-OXCROPS §2.2.4.3.2):
@@ -678,9 +720,13 @@ fn encode_property_name(n: &NamedPropertyId, out: &mut Vec<u8>) {
     match &n.name {
         NamedPropertyName::Lid(lid) => out.extend_from_slice(&lid.to_le_bytes()),
         NamedPropertyName::String(s) => {
-            let len = u8::try_from(s.len()).unwrap_or(u8::MAX);
+            let bytes = s.as_bytes();
+            let len = u8::try_from(bytes.len()).unwrap_or(u8::MAX);
             out.push(len);
-            out.extend_from_slice(s.as_bytes());
+            // The length prefix is a single byte (max 255); truncate the
+            // payload to match so the reader stays byte-aligned with the
+            // following fields rather than over-reading past the prefix.
+            out.extend_from_slice(&bytes[..usize::from(len)]);
         }
     }
 }
@@ -2231,9 +2277,8 @@ impl RopGetMessageStatusRequest {
     }
 }
 
-/// `RopGetMessageStatus` success response (echoed RopId 0x20,
-/// MS-OXCROPS §2.2.6.9.2 → §2.2.6.8.2): `RopId(0x20) · InputHandleIndex
-/// · ReturnValue(4) · MessageStatusFlags(4)`.
+/// `RopGetMessageStatus` success response (MS-OXCROPS §2.2.6.9.2):
+/// `RopId(0x1F) · InputHandleIndex · ReturnValue(4) · MessageStatusFlags(4)`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RopGetMessageStatusSuccess {
     pub input_handle_index: u8,
@@ -2241,6 +2286,25 @@ pub struct RopGetMessageStatusSuccess {
     pub message_status_flags: u32,
 }
 impl RopGetMessageStatusSuccess {
+    pub fn encode(&self, out: &mut Vec<u8>) {
+        out.push(RopId::ROP_GET_MESSAGE_STATUS.to_u8());
+        out.push(self.input_handle_index);
+        out.extend_from_slice(&self.return_value.to_u32().to_le_bytes());
+        out.extend_from_slice(&self.message_status_flags.to_le_bytes());
+    }
+}
+
+/// `RopSetMessageStatus` success response (MS-OXCROPS §2.2.6.8.2):
+/// `RopId(0x20) · InputHandleIndex · ReturnValue(4) · MessageStatusFlags(4)`.
+/// This carries `MessageStatusFlags` (the `RopHandleAckSuccess` envelope stops
+/// after `ReturnValue` and would leave the ROP-chain cursor 4 bytes short).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RopSetMessageStatusSuccess {
+    pub input_handle_index: u8,
+    pub return_value: RopErrorCode,
+    pub message_status_flags: u32,
+}
+impl RopSetMessageStatusSuccess {
     pub fn encode(&self, out: &mut Vec<u8>) {
         out.push(RopId::ROP_SET_MESSAGE_STATUS.to_u8());
         out.push(self.input_handle_index);
@@ -2516,6 +2580,35 @@ impl RopGetPropertiesSuccess {
         out.extend_from_slice(&self.return_value.to_u32().to_le_bytes());
         out.push(0u8); // StandardPropertyRow Flag = 0 (all values present)
         out.extend_from_slice(&self.row_data);
+    }
+}
+
+/// `RopGetPropertiesAll` success response, MS-OXCROPS §2.2.8.4.2:
+///   `RopId(0x08) · InputHandleIndex · ReturnValue(4) · PropertyValueCount(2)
+///    · PropertyValues(variable)`.
+/// Unlike `RopGetPropertiesSpecific` (§2.2.8.3.2) which returns a
+/// `StandardPropertyRow` (untagged, order implied by the request), this ROP
+/// returns a `PropertyValueArray` of tagged entries because the client did not
+/// enumerate the requested tags. Each `PropertyValues` element is a
+/// `TaggedPropertyValue` (MS-OXCDATA §2.11.4), serialised in ROP-buffer form
+/// (count-prefixed strings), matching the `RopSetProperties` request encoding.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RopGetPropertiesAllSuccess {
+    pub input_handle_index: u8,
+    pub return_value: RopErrorCode,
+    /// Number of `TaggedPropertyValue` structures in `property_values`.
+    pub property_value_count: u16,
+    /// Pre-serialised concatenation of `TaggedPropertyValue` structures
+    /// (`PropertyTag(4)` + count-prefixed `PropertyValue`).
+    pub property_values: Vec<u8>,
+}
+impl RopGetPropertiesAllSuccess {
+    pub fn encode(&self, out: &mut Vec<u8>) {
+        out.push(RopId::ROP_GET_PROPERTIES_ALL.to_u8());
+        out.push(self.input_handle_index);
+        out.extend_from_slice(&self.return_value.to_u32().to_le_bytes());
+        out.extend_from_slice(&self.property_value_count.to_le_bytes());
+        out.extend_from_slice(&self.property_values);
     }
 }
 

@@ -817,31 +817,38 @@ async fn execute_one_rop(
                 password,
             )
             .await;
-            // A message that no longer resolves receives a typed NotFound so
-            // New Outlook can re-sync the folder instead of pinning on a stale
-            // read.
-            let return_value = if backend_id.is_empty() && kind == FolderKind::Mail {
-                RopErrorCode::NotFound
+            // A message that no longer resolves receives the 6-byte failure
+            // envelope (`RopId · OutputHandleIndex · ReturnValue`) rather than
+            // the success buffer carrying `HasNamedProperties`, and the output
+            // handle is left untouched (no dead `Handle::Message` is bound).
+            // This keeps the client's ROP-chain cursor aligned and lets New
+            // Outlook re-sync the folder instead of pinning on a stale read.
+            if backend_id.is_empty() && kind == FolderKind::Mail {
+                RopErrorResponse {
+                    rop_id,
+                    output_handle_index: req.output_handle_index,
+                    return_value: RopErrorCode::NotFound,
+                }
+                .encode(out);
             } else {
-                RopErrorCode::Success
-            };
-            sessions.with_session_mut(session_id, |s| {
-                s.set_handle(
-                    req.output_handle_index,
-                    Handle::Message {
-                        backend_id: backend_id.clone(),
-                        mailbox_id,
-                        kind,
-                        is_new: false,
-                    },
-                );
-            });
-            RopOpenMessageSuccess {
-                output_handle_index: req.output_handle_index,
-                return_value,
-                has_named_properties: 0,
+                sessions.with_session_mut(session_id, |s| {
+                    s.set_handle(
+                        req.output_handle_index,
+                        Handle::Message {
+                            backend_id: backend_id.clone(),
+                            mailbox_id,
+                            kind,
+                            is_new: false,
+                        },
+                    );
+                });
+                RopOpenMessageSuccess {
+                    output_handle_index: req.output_handle_index,
+                    return_value: RopErrorCode::Success,
+                    has_named_properties: 0,
+                }
+                .encode(out);
             }
-            .encode(out);
         }
         RopId::ROP_RELEASE => {
             // ┬¦2.2.15.3.1: LogonId + InputHandleIndex
@@ -1179,11 +1186,11 @@ async fn execute_one_rop(
             let input_handle_index = cur.take_u8()?;
             let _ = RopGetPropertiesAllRequest::decode(cur)?;
             // Return the canonical full property set for the object the input
-            // handle bound (a message, folder or attachment). The same
-            // materialisation path as `RopGetPropertiesSpecific`, run against
-            // `store::all_message_tags()`, so New Outlook receives a complete
-            // property envelope on the open-message read instead of an empty
-            // row that previously forced a client fallback.
+            // handle bound (a message, folder or attachment). Unlike
+            // `RopGetPropertiesSpecific` (which returns an untagged
+            // StandardPropertyRow), this ROP returns `PropertyValueCount` +
+            // `TaggedPropertyValue` entries because the client did not supply
+            // the tag list.
             let tags = store::all_message_tags();
             let (cells, row_id) =
                 materialize_handle_properties(ctx, input_handle_index, &tags).await;
@@ -1193,14 +1200,15 @@ async fn execute_one_rop(
                 source: None,
             };
             let mut buf = Vec::new();
+            let count = u16::try_from(tags.len()).unwrap_or(u16::MAX);
             for (tag, cell) in tags.iter().zip(cells) {
-                encode_cell_for_row(&mut buf, tag, cell, &row);
+                encode_tagged_property_value_rop_buffer(&mut buf, tag, cell, &row);
             }
-            crate::mapi::rops::RopGetPropertiesSuccess {
-                rop_id,
+            crate::mapi::rops::RopGetPropertiesAllSuccess {
                 input_handle_index,
                 return_value: RopErrorCode::Success,
-                row_data: buf,
+                property_value_count: count,
+                property_values: buf,
             }
             .encode(out);
         }
@@ -4483,10 +4491,10 @@ async fn execute_one_rop(
                 let _ = message_id;
                 let _ = input_handle_index;
             }
-            crate::mapi::rops::RopHandleAckSuccess {
-                rop_id,
+            crate::mapi::rops::RopSetMessageStatusSuccess {
                 input_handle_index,
                 return_value: RopErrorCode::Success,
+                message_status_flags: 0,
             }
             .encode(out);
         }
@@ -4952,7 +4960,7 @@ async fn materialize_handle_properties(
                     .into_iter()
                     .find(|m| m.id.as_deref() == Some(backend_id.as_str()))
                     .map(|m| store::mailbox_to_cells(&m, tags))
-                    .unwrap_or_default(),
+                    .unwrap_or_else(|| store::typed_null_cells(tags)),
                 Err(_) => store::typed_null_cells(tags),
             }
         }
@@ -5090,19 +5098,18 @@ async fn find_jmap_email_id(
             username,
             password,
         };
-        let list = match jc.query_emails(params).await {
-            Ok(l) => l,
+        let ids = match jc.query_email_ids(params).await {
+            Ok(ids) => ids,
             Err(e) => {
                 tracing::warn!(error = %e, mailbox_id = %mailbox_id, "JMAP Email/query (open-message resolve) failed");
                 return String::new();
             }
         };
-        if list.emails.is_empty() {
+        if ids.is_empty() {
             return String::new();
         }
-        let received = list.emails.len() as u64;
-        for e in list.emails {
-            let jid = e.id.clone().unwrap_or_default();
+        let received = ids.len() as u64;
+        for jid in ids {
             if store::message_id_from_jmap(&jid) == target {
                 return jid;
             }
@@ -5558,6 +5565,40 @@ fn encode_typed_null(
         v = crate::mapi::data::PropertyValue::Integer64(row.row_id as i64);
     }
     v.encode(out);
+}
+
+/// Emit a single tagged `PropertyValue` for the `RopGetPropertiesAll`
+/// response body. Mirrors `encode_typed_null`/`encode_cell_for_row` (the same
+/// `Null` → typed-null materialisation and `PR_FOLDER_ID`/`PR_MID`/
+/// `PR_PARENT_FOLDER_ID` row-id override) but writes the `PropertyTag` prefix
+/// and the ROP-buffer value form (count-prefixed strings), matching the
+/// `TaggedPropertyValue` layout of MS-OXCDATA §2.11.4 used inside a
+/// `PropertyValueArray`.
+fn encode_tagged_property_value_rop_buffer(
+    out: &mut Vec<u8>,
+    tag: &crate::mapi::data::PropertyTag,
+    cell: crate::mapi::data::PropertyValue,
+    row: &crate::mapi::session::TableRow,
+) {
+    use crate::mapi::data::PropertyValue;
+    let v = if !matches!(cell, PropertyValue::Null) {
+        cell
+    } else {
+        let mut v = store::typed_null_for_tag(tag);
+        if tag.property_type == crate::mapi::data::PropertyType::PTYP_INTEGER64
+            && matches!(
+                tag.property_id,
+                crate::mapi::store::PR_FOLDER_ID
+                    | crate::mapi::store::PR_MID
+                    | crate::mapi::store::PR_PARENT_FOLDER_ID
+            )
+        {
+            v = crate::mapi::data::PropertyValue::Integer64(row.row_id as i64);
+        }
+        v
+    };
+    tag.encode(out);
+    v.encode_rop_buffer(out);
 }
 
 /// Build the `CellForMatcher` view over a single table row for restriction
