@@ -26,42 +26,64 @@
 use crate::mapi::data::{PropertyProblem, PropertyTag, TaggedPropertyValue};
 
 // ---------- OpenMessage ----------
-#[derive(Debug, Clone)]
+/// `RopOpenMessage` request, MS-OXCROPS §2.2.4.1.1. The leading `RopId` byte
+/// is consumed by the dispatcher; the remaining frame is the trailing
+/// `LogonId · InputHandleIndex · OutputHandleIndex` of the `RopHeader4`
+/// followed by the 8-byte `FolderId` (PtypInteger64), the 8-byte `MessageId`
+/// (PtypInteger64) and the `OpenModeFlags` byte.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RopOpenMessageRequest {
     pub logon_id: u8,
     pub input_handle_index: u8,
     pub output_handle_index: u8,
-    pub flags: u8,
+    pub folder_id: u64,
+    pub message_id: u64,
+    pub open_mode_flags: u8,
 }
 impl RopOpenMessageRequest {
     pub fn decode(buf: &mut Buf<'_>) -> Result<Self, DecodeError> {
         let logon_id = buf.take_u8()?;
         let input_handle_index = buf.take_u8()?;
         let output_handle_index = buf.take_u8()?;
-        let flags = buf.take_u8()?;
+        let folder_id = buf.take_u64_le()?;
+        let message_id = buf.take_u64_le()?;
+        let open_mode_flags = buf.take_u8()?;
         Ok(Self {
             logon_id,
             input_handle_index,
             output_handle_index,
-            flags,
+            folder_id,
+            message_id,
+            open_mode_flags,
         })
     }
     pub fn encode(&self, out: &mut Vec<u8>) {
         out.push(self.logon_id);
         out.push(self.input_handle_index);
         out.push(self.output_handle_index);
-        out.push(self.flags);
+        out.extend_from_slice(&self.folder_id.to_le_bytes());
+        out.extend_from_slice(&self.message_id.to_le_bytes());
+        out.push(self.open_mode_flags);
     }
 }
-#[derive(Debug, Clone)]
+
+/// `RopOpenMessage` success response, MS-OXCROPS §2.2.4.1.2:
+///   `RopId · OutputHandleIndex · ReturnValue(4 LE) · HasNamedProperties(1)`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RopOpenMessageSuccess {
     pub output_handle_index: u8,
     pub return_value: RopErrorCode,
+    /// Indicates whether the message object contains named properties
+    /// (MS-OXCROPS §2.2.4.1.2 `HasNamedProperties`). The gateway derives it
+    /// from the JMAP-backed message; messages on Stalwart do not expose
+    /// Outlook-style named properties, so this is always `0`.
+    pub has_named_properties: u8,
 }
 impl RopOpenMessageSuccess {
     pub fn encode(&self, out: &mut Vec<u8>) {
         out.push(self.output_handle_index);
         out.extend(&self.return_value.to_u32().to_le_bytes());
+        out.push(self.has_named_properties);
     }
 }
 
@@ -86,6 +108,676 @@ impl RopFastTransferSourceCopyMessagesResponse {
     pub fn encode(&self, out: &mut Vec<u8>) {
         out.push(self.output_handle_index);
         out.extend(&self.return_value.to_u32().to_le_bytes());
+    }
+}
+
+// ---------- ReadRecipients (0x0F) -------------------------------------------
+
+/// `RopReadRecipients` request, MS-OXCROPS §2.2.9.9.1 (referenced via
+/// MS-OXCMSG §2.2.4.1.2). After the dispatcher-consumed `RopId` the body is
+/// the trailing `LogonId · InputHandleIndex` of the `RopHeader` (the message
+/// handle) followed by `RowId(4 LE)` and `RecipientRowCount(2 LE)`. The
+/// gateway only returns the success envelope: recipient rows are materialised
+/// through the attachment/recipient table path, so this body is parsed and
+/// discarded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RopReadRecipientsRequest {
+    pub logon_id: u8,
+    pub input_handle_index: u8,
+    pub row_id: u32,
+    pub recipient_row_count: u16,
+}
+impl RopReadRecipientsRequest {
+    pub fn decode(buf: &mut Buf<'_>) -> Result<Self, DecodeError> {
+        let logon_id = buf.take_u8()?;
+        let input_handle_index = buf.take_u8()?;
+        let row_id = buf.take_u32_le()?;
+        let recipient_row_count = buf.take_u16_le()?;
+        Ok(Self {
+            logon_id,
+            input_handle_index,
+            row_id,
+            recipient_row_count,
+        })
+    }
+}
+
+/// `RopReadRecipients` success response (MS-OXCROPS §2.2.9.9.2):
+///   `RopId(0x0F) · InputHandleIndex · ReturnValue(4 LE) · RowCount(2 LE)
+///    · [RecipientRows]`.
+#[derive(Debug, Clone)]
+pub struct RopReadRecipientsSuccess {
+    pub input_handle_index: u8,
+    pub return_value: RopErrorCode,
+    /// Number of `RecipientRow` structures serialised into `rows`. This is a
+    /// structure count, not `rows.len()` (which measures serialised bytes).
+    pub row_count: u16,
+    pub rows: Vec<u8>,
+}
+impl RopReadRecipientsSuccess {
+    pub fn encode(&self, out: &mut Vec<u8>) {
+        out.push(RopId::ROP_READ_RECIPIENTS.to_u8());
+        out.push(self.input_handle_index);
+        out.extend(&self.return_value.to_u32().to_le_bytes());
+        out.extend_from_slice(&self.row_count.to_le_bytes());
+        out.extend_from_slice(&self.rows);
+    }
+}
+
+// ---------- ReloadCachedInformation (0x10) ----------------------------------
+
+/// `RopReloadCachedInformation` request, MS-OXCROPS §2.2.6.19.1. After the
+/// dispatcher-consumed `RopId`, the body is the trailing
+/// `LogonId · InputHandleIndex` of the `RopHeader` followed by two "extra
+/// flags" bytes. The gateway has no in-memory cache to reload beyond the
+/// session handle table (which is authoritative), so this is parsed and
+/// acknowledged with an empty success envelope.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RopReloadCachedInformationRequest {
+    pub logon_id: u8,
+    pub input_handle_index: u8,
+}
+impl RopReloadCachedInformationRequest {
+    pub fn decode(buf: &mut Buf<'_>) -> Result<Self, DecodeError> {
+        let logon_id = buf.take_u8()?;
+        let input_handle_index = buf.take_u8()?;
+        // Reload flags: two bytes (ShowUnicodeText / various), discarded.
+        let _extra1 = buf.take_u8()?;
+        let _extra2 = buf.take_u8()?;
+        Ok(Self {
+            logon_id,
+            input_handle_index,
+        })
+    }
+}
+
+/// `RopReloadCachedInformation` success response (MS-OXCROPS §2.2.6.19.2):
+///   `RopId(0x10) · InputHandleIndex · ReturnValue(4 LE)`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RopReloadCachedInformationSuccess {
+    pub input_handle_index: u8,
+    pub return_value: RopErrorCode,
+}
+impl RopReloadCachedInformationSuccess {
+    pub fn encode(&self, out: &mut Vec<u8>) {
+        out.push(RopId::ROP_RELOAD_CACHED_INFORMATION.to_u8());
+        out.push(self.input_handle_index);
+        out.extend(&self.return_value.to_u32().to_le_bytes());
+    }
+}
+
+// ---------- CreateFolder (0x1C) / DeleteFolder (0x1D) ------------------------
+
+/// `RopCreateFolder` request, MS-OXCROPS §2.2.4.3.1. After the dispatcher
+/// consumed the `RopId`, the frame is the trailing
+/// `LogonId · InputHandleIndex · OutputHandleIndex` of the `RopHeader4`
+/// followed by:
+///   `FolderType(1) · UseUnicodeStrings(1) · Reserved(1) · DisplayName ·
+///    Comment`.
+/// `DisplayName`/`Comment` are NUL-terminated: UTF-16LE (2-byte NUL) when
+/// `UseUnicodeStrings != 0`, multibyte (1-byte NUL) otherwise.
+#[derive(Debug, Clone)]
+pub struct RopCreateFolderRequest {
+    pub logon_id: u8,
+    pub input_handle_index: u8,
+    pub output_handle_index: u8,
+    pub folder_type: u8,
+    pub display_name: String,
+    pub comment: String,
+}
+impl RopCreateFolderRequest {
+    pub fn decode(buf: &mut Buf<'_>) -> Result<Self, DecodeError> {
+        let logon_id = buf.take_u8()?;
+        let input_handle_index = buf.take_u8()?;
+        let output_handle_index = buf.take_u8()?;
+        let folder_type = buf.take_u8()?;
+        let use_unicode = buf.take_u8()?;
+        let _reserved = buf.take_u8()?;
+        // Read exactly the two NUL-terminated strings and stop there so the
+        // shared cursor stays aligned for any ROP chained after this one
+        // (previously `take_remaining()` swallowed the whole Execute buffer).
+        let display_name = if use_unicode != 0 {
+            take_terminated_utf16(buf)?
+        } else {
+            take_terminated_mbcs(buf)?
+        };
+        let comment = if use_unicode != 0 {
+            take_terminated_utf16(buf)?
+        } else {
+            take_terminated_mbcs(buf)?
+        };
+        Ok(Self {
+            logon_id,
+            input_handle_index,
+            output_handle_index,
+            folder_type,
+            display_name,
+            comment,
+        })
+    }
+}
+
+/// Read a NUL-terminated UTF-16LE string (PtypString form) from `buf`,
+/// returning the decoded `String` without the terminating `0x0000`.
+fn take_terminated_utf16(cur: &mut Buf<'_>) -> Result<String, DecodeError> {
+    let mut units = Vec::new();
+    loop {
+        let u = cur.take_u16_le()?;
+        if u == 0 {
+            break;
+        }
+        units.push(u);
+    }
+    Ok(String::from_utf16_lossy(&units))
+}
+
+/// Read a NUL-terminated multibyte string (PtypString8 form) from `buf`,
+/// returning the decoded `String` without the terminating `0x00`.
+fn take_terminated_mbcs(cur: &mut Buf<'_>) -> Result<String, DecodeError> {
+    let mut bytes = Vec::new();
+    loop {
+        let b = cur.take_u8()?;
+        if b == 0 {
+            break;
+        }
+        bytes.push(b);
+    }
+    String::from_utf8(bytes).map_err(|_| DecodeError::InvalidUtf8)
+}
+
+/// `RopCreateFolder` success response (MS-OXCROPS §2.2.4.3.2):
+///   `RopId(0x1C) · OutputHandleIndex · ReturnValue(4 LE) · FolderId(8 LE)
+///    · IsExisting(1) · HasRules(1) · IsGhosted(1) · ServerCount(2 LE)
+///    · ServerCountUnread(2 LE)[·]`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RopCreateFolderSuccess {
+    pub output_handle_index: u8,
+    pub return_value: RopErrorCode,
+    pub folder_id: u64,
+    pub is_existing: u8,
+    pub has_rules: u8,
+    pub is_ghosted: u8,
+    pub server_count: u16,
+    pub server_count_unread: u16,
+}
+impl RopCreateFolderSuccess {
+    pub fn encode(&self, out: &mut Vec<u8>) {
+        out.push(RopId::ROP_CREATE_FOLDER.to_u8());
+        out.push(self.output_handle_index);
+        out.extend(&self.return_value.to_u32().to_le_bytes());
+        out.extend_from_slice(&self.folder_id.to_le_bytes());
+        out.push(self.is_existing);
+        out.push(self.has_rules);
+        out.push(self.is_ghosted);
+        out.extend_from_slice(&self.server_count.to_le_bytes());
+        out.extend_from_slice(&self.server_count_unread.to_le_bytes());
+    }
+}
+
+/// `RopDeleteFolder` request, MS-OXCROPS §2.2.4.4.1. After the dispatcher
+/// consumed the `RopId`, the body is `LogonId · InputHandleIndex ·
+/// FolderId(8 LE) · DeleteFlags(1)`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RopDeleteFolderRequest {
+    pub logon_id: u8,
+    pub input_handle_index: u8,
+    pub folder_id: u64,
+    pub delete_flags: u8,
+}
+impl RopDeleteFolderRequest {
+    pub fn decode(buf: &mut Buf<'_>) -> Result<Self, DecodeError> {
+        let logon_id = buf.take_u8()?;
+        let input_handle_index = buf.take_u8()?;
+        let folder_id = buf.take_u64_le()?;
+        let delete_flags = buf.take_u8()?;
+        Ok(Self {
+            logon_id,
+            input_handle_index,
+            folder_id,
+            delete_flags,
+        })
+    }
+}
+
+/// A generic `LogonId · InputHandleIndex · ReturnValue` success envelope used
+/// by several folder/message status ROPs whose response carries no payload
+/// beyond the echoed input handle and return value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RopHandleAckSuccess {
+    pub rop_id: RopId,
+    pub input_handle_index: u8,
+    pub return_value: RopErrorCode,
+}
+impl RopHandleAckSuccess {
+    pub fn encode(&self, out: &mut Vec<u8>) {
+        out.push(self.rop_id.to_u8());
+        out.push(self.input_handle_index);
+        out.extend(&self.return_value.to_u32().to_le_bytes());
+    }
+}
+
+// ---------- SetReadFlags (0x66) ----------------------------------------------
+
+/// `RopSetReadFlags` request, MS-OXCROPS §2.2.6.12.1. After the dispatcher
+/// consumed the `RopId`, the body is:
+///   `LogonId · InputHandleIndex · WantRead(1) · MessageIdCount(2 LE)
+///    · MessageIds[count] (each 8 LE)`.
+#[derive(Debug, Clone)]
+pub struct RopSetReadFlagsRequest {
+    pub logon_id: u8,
+    pub input_handle_index: u8,
+    pub want_read: u8,
+    pub message_ids: Vec<u64>,
+}
+impl RopSetReadFlagsRequest {
+    pub fn decode(buf: &mut Buf<'_>) -> Result<Self, DecodeError> {
+        let logon_id = buf.take_u8()?;
+        let input_handle_index = buf.take_u8()?;
+        let want_read = buf.take_u8()?;
+        let count = buf.take_u16_le()?;
+        let count_us = usize::from(count);
+        if count_us > 4096 {
+            return Err(DecodeError::ExcessLength);
+        }
+        let mut message_ids = Vec::with_capacity(count_us);
+        for _ in 0..count_us {
+            message_ids.push(buf.take_u64_le()?);
+        }
+        Ok(Self {
+            logon_id,
+            input_handle_index,
+            want_read,
+            message_ids,
+        })
+    }
+}
+
+/// `RopSetReadFlags` success response (MS-OXCROPS §2.2.6.12.2):
+///   `RopId(0x66) · InputHandleIndex · ReturnValue(4 LE) · PartialCompletion(1)`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RopSetReadFlagsSuccess {
+    pub input_handle_index: u8,
+    pub return_value: RopErrorCode,
+    pub partial_completion: u8,
+}
+impl RopSetReadFlagsSuccess {
+    pub fn encode(&self, out: &mut Vec<u8>) {
+        out.push(RopId::ROP_SET_READ_FLAGS.to_u8());
+        out.push(self.input_handle_index);
+        out.extend(&self.return_value.to_u32().to_le_bytes());
+        out.push(self.partial_completion);
+    }
+}
+
+// ---------- CopyProperties (0x67) --------------------------------------------
+
+/// `RopCopyProperties` request, MS-OXCROPS §2.2.8.11.1. After the dispatcher
+/// consumed the `RopId`, the body is:
+///   `LogonId · SourceHandleIndex · DestHandleIndex · WantAsynchronously(1)
+///    · CopyFlags(1) · PropertyTagCount(2 LE) · PropertyTags[count]`.
+#[derive(Debug, Clone)]
+pub struct RopCopyPropertiesRequest {
+    pub logon_id: u8,
+    pub source_handle_index: u8,
+    pub dest_handle_index: u8,
+    pub want_asynchronously: u8,
+    pub flags: u8,
+    pub property_tags: Vec<PropertyTag>,
+}
+impl RopCopyPropertiesRequest {
+    pub fn decode(buf: &mut Buf<'_>) -> Result<Self, DecodeError> {
+        let logon_id = buf.take_u8()?;
+        let source_handle_index = buf.take_u8()?;
+        let dest_handle_index = buf.take_u8()?;
+        let want_asynchronously = buf.take_u8()?;
+        let flags = buf.take_u8()?;
+        let count = buf.take_u16_le()?;
+        let count_us = usize::from(count);
+        if count_us > 4096 {
+            return Err(DecodeError::ExcessLength);
+        }
+        let mut property_tags = Vec::with_capacity(count_us);
+        for _ in 0..count_us {
+            property_tags.push(PropertyTag::decode(buf)?);
+        }
+        Ok(Self {
+            logon_id,
+            source_handle_index,
+            dest_handle_index,
+            want_asynchronously,
+            flags,
+            property_tags,
+        })
+    }
+}
+
+/// `RopCopyProperties` success response (MS-OXCROPS §2.2.8.11.2):
+///   `RopId(0x67) · DestHandleIndex · ReturnValue(4 LE)`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RopCopyPropertiesSuccess {
+    pub dest_handle_index: u8,
+    pub return_value: RopErrorCode,
+}
+impl RopCopyPropertiesSuccess {
+    pub fn encode(&self, out: &mut Vec<u8>) {
+        out.push(RopId::ROP_COPY_PROPERTIES.to_u8());
+        out.push(self.dest_handle_index);
+        out.extend(&self.return_value.to_u32().to_le_bytes());
+    }
+}
+
+// ---------- OpenEmbeddedMessage (0x46) ---------------------------------------
+
+/// `RopOpenEmbeddedMessage` request, MS-OXCROPS §2.2.12.1.1. After the
+/// dispatcher consumed the `RopId`, the body is:
+///   `LogonId · InputHandleIndex · OutputHandleIndex · OpenEmbeddedFlags(1)
+///    · EmbeddedCodePage(4 LE)`. The gateway's JMAP backend does not model
+///   embedded messages as distinct store objects, so the open is rejected
+///   with a typed `NoSupport`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RopOpenEmbeddedMessageRequest {
+    pub logon_id: u8,
+    pub input_handle_index: u8,
+    pub output_handle_index: u8,
+    pub open_embedded_flags: u8,
+}
+impl RopOpenEmbeddedMessageRequest {
+    pub fn decode(buf: &mut Buf<'_>) -> Result<Self, DecodeError> {
+        let logon_id = buf.take_u8()?;
+        let input_handle_index = buf.take_u8()?;
+        let output_handle_index = buf.take_u8()?;
+        let open_embedded_flags = buf.take_u8()?;
+        let _code_page = buf.take_u32_le()?;
+        Ok(Self {
+            logon_id,
+            input_handle_index,
+            output_handle_index,
+            open_embedded_flags,
+        })
+    }
+}
+
+// ---------- FindRow (0x4F) ---------------------------------------------------
+
+/// `RopFindRow` request, MS-OXCROPS §2.2.5.13.1. After the dispatcher
+/// consumed the `RopId`, the body is:
+///   `LogonId · InputHandleIndex · FindRowFlags(1) · RestrictionSize(2 LE)
+///    · Restriction[...] · Bookmark(4 LE)`.
+#[derive(Debug, Clone)]
+pub struct RopFindRowRequest {
+    pub logon_id: u8,
+    pub input_handle_index: u8,
+    pub find_row_flags: u8,
+    pub restriction: Vec<u8>,
+    pub bookmark: u32,
+}
+impl RopFindRowRequest {
+    pub fn decode(buf: &mut Buf<'_>) -> Result<Self, DecodeError> {
+        let logon_id = buf.take_u8()?;
+        let input_handle_index = buf.take_u8()?;
+        let find_row_flags = buf.take_u8()?;
+        let restriction_size = buf.take_u16_le()? as usize;
+        if restriction_size > buf.remaining() {
+            return Err(DecodeError::ExcessLength);
+        }
+        let restriction = buf.take_bytes(restriction_size)?;
+        let bookmark = buf.take_u32_le()?;
+        Ok(Self {
+            logon_id,
+            input_handle_index,
+            find_row_flags,
+            restriction: restriction.to_vec(),
+            bookmark,
+        })
+    }
+}
+
+/// `RopFindRow` success response (MS-OXCROPS §2.2.5.13.2):
+///   `RopId(0x4F) · InputHandleIndex · ReturnValue(4 LE) · Bookmark(4 LE)
+///    · RowFound(1)`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RopFindRowSuccess {
+    pub input_handle_index: u8,
+    pub return_value: RopErrorCode,
+    pub bookmark: u32,
+    pub row_found: u8,
+}
+impl RopFindRowSuccess {
+    pub fn encode(&self, out: &mut Vec<u8>) {
+        out.push(RopId::ROP_FIND_ROW.to_u8());
+        out.push(self.input_handle_index);
+        out.extend(&self.return_value.to_u32().to_le_bytes());
+        out.extend_from_slice(&self.bookmark.to_le_bytes());
+        out.push(self.row_found);
+    }
+}
+
+// ---------- WithNamedProperties (0x55 / 0x56) --------------------------------
+
+/// A named-property identifier pair as carried over the wire by
+/// `RopGetNamesFromPropertyIds` / `RopGetPropertyIdsFromNames`
+/// (MS-OXCROPS §2.2.19.1 / §2.2.20.1). `property_id` is the 16-bit id from
+/// the 0x8000 named range; `guid` is the 16-byte property-set GUID; `kind`
+/// is 0 for a numeric (LID) id or 1 for a string name; `name` is the LID
+/// (4 bytes) or the string name for the id.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NamedPropertyId {
+    pub property_id: u16,
+    pub guid: [u8; 16],
+    pub kind: u8,
+    pub name: NamedPropertyName,
+}
+
+/// The name of a named property: either a numeric LID (`kind == 0`) or a
+/// string name (`kind == 1`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NamedPropertyName {
+    Lid(u32),
+    String(String),
+}
+
+/// `RopGetNamesFromPropertyIds` request, MS-OXCROPS §2.2.19.1. After the
+/// dispatcher consumed the `RopId`, the body is:
+///   `LogonId · InputHandleIndex(0) · PropertyIdCount(2 LE) · PropertyIds[]`
+///   plus a trailing `Flag` byte (`Reserved(0) · SkipErrors(1) · Guids(1)`).
+#[derive(Debug, Clone)]
+pub struct RopGetNamesFromPropertyIdsRequest {
+    pub logon_id: u8,
+    pub input_handle_index: u8,
+    pub property_ids: Vec<u16>,
+    pub flags: u8,
+}
+impl RopGetNamesFromPropertyIdsRequest {
+    pub fn decode(buf: &mut Buf<'_>) -> Result<Self, DecodeError> {
+        let logon_id = buf.take_u8()?;
+        let input_handle_index = buf.take_u8()?;
+        let count = buf.take_u16_le()?;
+        let count_us = usize::from(count);
+        if count_us > 4096 {
+            return Err(DecodeError::ExcessLength);
+        }
+        let mut property_ids = Vec::with_capacity(count_us);
+        for _ in 0..count_us {
+            property_ids.push(buf.take_u16_le()?);
+        }
+        let flags = buf.take_u8()?;
+        Ok(Self {
+            logon_id,
+            input_handle_index,
+            property_ids,
+            flags,
+        })
+    }
+}
+
+/// `RopGetNamesFromPropertyIds` success response, MS-OXCROPS §2.2.19.2:
+///   `RopId(0x55) · InputHandleIndex · ReturnValue(4 LE) · PropertyIdCount(2
+///    LE) · [PropertyId(2) · Guid(16) · NameKind(1) · Name(...)]`.
+#[derive(Debug, Clone)]
+pub struct RopGetNamesFromPropertyIdsSuccess {
+    pub input_handle_index: u8,
+    pub return_value: RopErrorCode,
+    pub names: Vec<NamedPropertyId>,
+}
+impl RopGetNamesFromPropertyIdsSuccess {
+    pub fn encode(&self, out: &mut Vec<u8>) {
+        out.push(RopId::ROP_GET_NAMES_FROM_PROPERTY_IDS.to_u8());
+        out.push(self.input_handle_index);
+        out.extend(&self.return_value.to_u32().to_le_bytes());
+        let count = u16::try_from(self.names.len()).unwrap_or(u16::MAX);
+        out.extend_from_slice(&count.to_le_bytes());
+        for n in &self.names {
+            out.extend_from_slice(&n.property_id.to_le_bytes());
+            out.extend_from_slice(&n.guid);
+            out.push(n.kind);
+            encode_property_name(n, out);
+        }
+    }
+}
+
+/// `RopGetPropertyIdsFromNames` request, MS-OXCROPS §2.2.20.1. After the
+/// dispatcher consumed the `RopId`, the body is:
+///   `LogonId · InputHandleIndex(0) · PropertyNameCount(2 LE) ·
+///    [Guid(16) · NameKind(1) · Name(...)] · Flag(1)`.
+#[derive(Debug, Clone)]
+pub struct RopGetPropertyIdsFromNamesRequest {
+    pub logon_id: u8,
+    pub input_handle_index: u8,
+    pub names: Vec<NamedPropertyNameSpec>,
+    pub flags: u8,
+}
+/// A (guid, kind, name) triple as sent in a `RopGetPropertyIdsFromNames`
+/// request (i.e. without an already-assigned property id).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NamedPropertyNameSpec {
+    pub guid: [u8; 16],
+    pub kind: u8,
+    pub name: NamedPropertyName,
+}
+impl RopGetPropertyIdsFromNamesRequest {
+    pub fn decode(buf: &mut Buf<'_>) -> Result<Self, DecodeError> {
+        let logon_id = buf.take_u8()?;
+        let input_handle_index = buf.take_u8()?;
+        let count = buf.take_u16_le()?;
+        let count_us = usize::from(count);
+        if count_us > 4096 {
+            return Err(DecodeError::ExcessLength);
+        }
+        let mut names = Vec::with_capacity(count_us);
+        for _ in 0..count_us {
+            let mut guid = [0u8; 16];
+            for g in guid.iter_mut() {
+                *g = buf.take_u8()?;
+            }
+            let kind = buf.take_u8()?;
+            let name = if kind == 0 {
+                let lid = buf.take_u32_le()?;
+                NamedPropertyName::Lid(lid)
+            } else if kind == 1 {
+                let len = buf.take_u8()? as usize;
+                let bytes = buf.take_bytes(len)?;
+                NamedPropertyName::String(String::from_utf8_lossy(bytes).into_owned())
+            } else {
+                return Err(DecodeError::InvalidValue);
+            };
+            names.push(NamedPropertyNameSpec { guid, kind, name });
+        }
+        let flags = buf.take_u8()?;
+        Ok(Self {
+            logon_id,
+            input_handle_index,
+            names,
+            flags,
+        })
+    }
+}
+
+/// `RopGetPropertyIdsFromNames` success response, MS-OXCROPS §2.2.20.2:
+///   `RopId(0x56) · InputHandleIndex · ReturnValue(4 LE) · PropertyIdCount(2
+///    LE) · PropertyIds[count]` (each a 2-byte property id).
+#[derive(Debug, Clone)]
+pub struct RopGetPropertyIdsFromNamesSuccess {
+    pub input_handle_index: u8,
+    pub return_value: RopErrorCode,
+    pub property_ids: Vec<u16>,
+}
+impl RopGetPropertyIdsFromNamesSuccess {
+    pub fn encode(&self, out: &mut Vec<u8>) {
+        out.push(RopId::ROP_GET_PROPERTY_IDS_FROM_NAMES.to_u8());
+        out.push(self.input_handle_index);
+        out.extend(&self.return_value.to_u32().to_le_bytes());
+        let count = u16::try_from(self.property_ids.len()).unwrap_or(u16::MAX);
+        out.extend_from_slice(&count.to_le_bytes());
+        for id in &self.property_ids {
+            out.extend_from_slice(&id.to_le_bytes());
+        }
+    }
+}
+
+/// Encode a `NamedPropertyId`'s kind+name tail (shared by the two
+/// named-property ROP codecs).
+fn encode_property_name(n: &NamedPropertyId, out: &mut Vec<u8>) {
+    match &n.name {
+        NamedPropertyName::Lid(lid) => out.extend_from_slice(&lid.to_le_bytes()),
+        NamedPropertyName::String(s) => {
+            let bytes = s.as_bytes();
+            let len = u8::try_from(bytes.len()).unwrap_or(u8::MAX);
+            out.push(len);
+            // The length prefix is a single byte (max 255); truncate the
+            // payload to match so the reader stays byte-aligned with the
+            // following fields rather than over-reading past the prefix.
+            out.extend_from_slice(&bytes[..usize::from(len)]);
+        }
+    }
+}
+
+// ---------- Move/CopyFolder (0x35 / 0x36) ------------------------------------
+
+/// `RopMoveFolder` / `RopCopyFolder` request, MS-OXCROPS §2.2.4.5.1 /
+/// §2.2.4.6.1. After the dispatcher consumed the `RopId`, the body is:
+///   `LogonId · SourceHandleIndex · DestHandleIndex · WantCopy(1) ·
+///    FolderId(8 LE) · [DestFolderId(8 LE) if recursive]`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RopMoveCopyFolderRequest {
+    pub logon_id: u8,
+    pub source_handle_index: u8,
+    pub dest_handle_index: u8,
+    pub want_copy: u8,
+    pub folder_id: u64,
+}
+impl RopMoveCopyFolderRequest {
+    pub fn decode(buf: &mut Buf<'_>) -> Result<Self, DecodeError> {
+        let logon_id = buf.take_u8()?;
+        let source_handle_index = buf.take_u8()?;
+        let dest_handle_index = buf.take_u8()?;
+        let want_copy = buf.take_u8()?;
+        let folder_id = buf.take_u64_le()?;
+        Ok(Self {
+            logon_id,
+            source_handle_index,
+            dest_handle_index,
+            want_copy,
+            folder_id,
+        })
+    }
+}
+
+/// `RopMoveFolder` / `RopCopyFolder` success response
+/// (MS-OXCROPS §2.2.4.5.2 is a sectionless envelope):
+///   `RopId · SourceHandleIndex · ReturnValue(4 LE) · PartialCompletion(1)`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RopMoveCopyFolderSuccess {
+    pub rop_id: RopId,
+    pub source_handle_index: u8,
+    pub return_value: RopErrorCode,
+    pub partial_completion: u8,
+}
+impl RopMoveCopyFolderSuccess {
+    pub fn encode(&self, out: &mut Vec<u8>) {
+        out.push(self.rop_id.to_u8());
+        out.push(self.source_handle_index);
+        out.extend(&self.return_value.to_u32().to_le_bytes());
+        out.push(self.partial_completion);
     }
 }
 
@@ -1585,9 +2277,8 @@ impl RopGetMessageStatusRequest {
     }
 }
 
-/// `RopGetMessageStatus` success response (echoed RopId 0x20,
-/// MS-OXCROPS §2.2.6.9.2 → §2.2.6.8.2): `RopId(0x20) · InputHandleIndex
-/// · ReturnValue(4) · MessageStatusFlags(4)`.
+/// `RopGetMessageStatus` success response (MS-OXCROPS §2.2.6.9.2):
+/// `RopId(0x1F) · InputHandleIndex · ReturnValue(4) · MessageStatusFlags(4)`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RopGetMessageStatusSuccess {
     pub input_handle_index: u8,
@@ -1595,6 +2286,25 @@ pub struct RopGetMessageStatusSuccess {
     pub message_status_flags: u32,
 }
 impl RopGetMessageStatusSuccess {
+    pub fn encode(&self, out: &mut Vec<u8>) {
+        out.push(RopId::ROP_GET_MESSAGE_STATUS.to_u8());
+        out.push(self.input_handle_index);
+        out.extend_from_slice(&self.return_value.to_u32().to_le_bytes());
+        out.extend_from_slice(&self.message_status_flags.to_le_bytes());
+    }
+}
+
+/// `RopSetMessageStatus` success response (MS-OXCROPS §2.2.6.8.2):
+/// `RopId(0x20) · InputHandleIndex · ReturnValue(4) · MessageStatusFlags(4)`.
+/// This carries `MessageStatusFlags` (the `RopHandleAckSuccess` envelope stops
+/// after `ReturnValue` and would leave the ROP-chain cursor 4 bytes short).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RopSetMessageStatusSuccess {
+    pub input_handle_index: u8,
+    pub return_value: RopErrorCode,
+    pub message_status_flags: u32,
+}
+impl RopSetMessageStatusSuccess {
     pub fn encode(&self, out: &mut Vec<u8>) {
         out.push(RopId::ROP_SET_MESSAGE_STATUS.to_u8());
         out.push(self.input_handle_index);
@@ -1870,6 +2580,35 @@ impl RopGetPropertiesSuccess {
         out.extend_from_slice(&self.return_value.to_u32().to_le_bytes());
         out.push(0u8); // StandardPropertyRow Flag = 0 (all values present)
         out.extend_from_slice(&self.row_data);
+    }
+}
+
+/// `RopGetPropertiesAll` success response, MS-OXCROPS §2.2.8.4.2:
+///   `RopId(0x08) · InputHandleIndex · ReturnValue(4) · PropertyValueCount(2)
+///    · PropertyValues(variable)`.
+/// Unlike `RopGetPropertiesSpecific` (§2.2.8.3.2) which returns a
+/// `StandardPropertyRow` (untagged, order implied by the request), this ROP
+/// returns a `PropertyValueArray` of tagged entries because the client did not
+/// enumerate the requested tags. Each `PropertyValues` element is a
+/// `TaggedPropertyValue` (MS-OXCDATA §2.11.4), serialised in ROP-buffer form
+/// (count-prefixed strings), matching the `RopSetProperties` request encoding.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RopGetPropertiesAllSuccess {
+    pub input_handle_index: u8,
+    pub return_value: RopErrorCode,
+    /// Number of `TaggedPropertyValue` structures in `property_values`.
+    pub property_value_count: u16,
+    /// Pre-serialised concatenation of `TaggedPropertyValue` structures
+    /// (`PropertyTag(4)` + count-prefixed `PropertyValue`).
+    pub property_values: Vec<u8>,
+}
+impl RopGetPropertiesAllSuccess {
+    pub fn encode(&self, out: &mut Vec<u8>) {
+        out.push(RopId::ROP_GET_PROPERTIES_ALL.to_u8());
+        out.push(self.input_handle_index);
+        out.extend_from_slice(&self.return_value.to_u32().to_le_bytes());
+        out.extend_from_slice(&self.property_value_count.to_le_bytes());
+        out.extend_from_slice(&self.property_values);
     }
 }
 
