@@ -528,6 +528,37 @@ pub struct SetCalendarEventParams<'a> {
 /// while eliminating redundant HTTP GETs per method call.
 const SESSION_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(300);
 
+/// Build the `onSuccessUpdateEmail` patch (RFC 8621 §7.5) that moves a newly
+/// submitted message out of every Drafts mailbox, into every Sent mailbox, and
+/// clears its `$draft` keyword.
+///
+/// Returns an error if either mailbox-role list is empty: an empty result would
+/// otherwise produce an `Email/set` patch that removes the message from Drafts
+/// without adding it anywhere, leaving the Email with zero `mailboxIds`, which
+/// RFC 8621 §4.1 forbids. Callers must therefore reject submission when either
+/// role cannot be resolved.
+fn build_submission_success_patch(
+    drafts_ids: &[String],
+    sent_ids: &[String],
+) -> Result<serde_json::Value> {
+    if drafts_ids.is_empty() {
+        return Err(anyhow!("Cannot submit: no Drafts mailbox resolved"));
+    }
+    if sent_ids.is_empty() {
+        return Err(anyhow!("Cannot submit: no Sent mailbox resolved"));
+    }
+
+    let mut patch = serde_json::Map::new();
+    for mb in drafts_ids {
+        patch.insert(format!("mailboxIds/{mb}"), json!(null));
+    }
+    for mb in sent_ids {
+        patch.insert(format!("mailboxIds/{mb}"), json!(true));
+    }
+    patch.insert("keywords/$draft".to_string(), json!(null));
+    Ok(serde_json::Value::Object(patch))
+}
+
 /// JMAP client for email and calendar operations via Stalwart Mailserver.
 #[derive(Clone)]
 pub struct JmapClient {
@@ -1858,25 +1889,13 @@ impl JmapClient {
         // onSuccessUpdateEmail patch is keyed by the EmailSubmission creation
         // id, and only runs after the submission has been accepted by the
         // server — a failed send therefore never leaves a "ghost" copy in Sent.
-        let drafts_ids = self
-            .get_mailbox_ids_for_role(account_id, "drafts", username, password)
-            .await
-            .unwrap_or_default();
-        let sent_ids = self
-            .get_mailbox_ids_for_role(account_id, "sent", username, password)
-            .await
-            .unwrap_or_default();
-
-        // Build the post-success patch: remove every Drafts mailbox, add every
-        // Sent mailbox, and clear the `$draft` keyword.
-        let mut patch = serde_json::Map::new();
-        for mb in &drafts_ids {
-            patch.insert(format!("mailboxIds/{mb}"), json!(null));
-        }
-        for mb in &sent_ids {
-            patch.insert(format!("mailboxIds/{mb}"), json!(true));
-        }
-        patch.insert("keywords/$draft".to_string(), json!(null));
+        // Lookup failures propagate (rather than degrade to an empty set) and
+        // absent mailbox roles are rejected, ensuring the patch can never leave
+        // the Email with zero mailboxIds (forbidden by RFC 8621 §4.1).
+        let (drafts_ids, sent_ids) = self
+            .resolve_submission_mailboxes(account_id, username, password)
+            .await?;
+        let patch = build_submission_success_patch(&drafts_ids, &sent_ids)?;
 
         let calls = vec![(
             "EmailSubmission/set",
@@ -1892,7 +1911,7 @@ impl JmapClient {
                     },
                 },
                 "onSuccessUpdateEmail": {
-                    "#s0": serde_json::Value::Object(patch),
+                    "#s0": patch,
                 },
             }),
             "ess0",
@@ -1994,36 +2013,19 @@ impl JmapClient {
 
         // Resolve the Drafts and Sent mailboxes. The message is initially placed
         // in Drafts and moved to Sent by the server only on successful submission.
-        let drafts_ids = self
-            .get_mailbox_ids_for_role(params.account_id, "drafts", params.username, params.password)
-            .await
-            .unwrap_or_default();
-        let sent_ids = self
-            .get_mailbox_ids_for_role(params.account_id, "sent", params.username, params.password)
-            .await
-            .unwrap_or_default();
+        // Lookup failures propagate and absent roles are rejected, so the email
+        // can never be created in (or patched into) an invalid mailbox state.
+        let (drafts_ids, sent_ids) = self
+            .resolve_submission_mailboxes(params.account_id, params.username, params.password)
+            .await?;
+        let success_patch = build_submission_success_patch(&drafts_ids, &sent_ids)?;
 
-        // Build the post-success patch: remove every Drafts mailbox, add every
-        // Sent mailbox, and clear the `$draft` keyword.
-        let mut success_patch = serde_json::Map::new();
-        for mb_id in &drafts_ids {
-            success_patch.insert(format!("mailboxIds/{mb_id}"), json!(null));
-        }
-        for mb_id in &sent_ids {
-            success_patch.insert(format!("mailboxIds/{mb_id}"), json!(true));
-        }
-        success_patch.insert("keywords/$draft".to_string(), json!(null));
-
-        // Build the email object per RFC 8621 §4.1. If no Drafts mailbox was
-        // resolved (defensive), fall back to the literal "drafts" id so the
-        // message still lands somewhere sane; the onSuccess patch still moves
-        // it to Sent on success.
-        let fallback_drafts_id = drafts_ids
-            .first()
-            .cloned()
-            .unwrap_or_else(|| "drafts".to_string());
-        let mut mailbox_ids = serde_json::Map::new();
-        mailbox_ids.insert(fallback_drafts_id, json!(true));
+        // Build the email object per RFC 8621 §4.1. The message is created in
+        // every resolved Drafts mailbox (normally exactly one) as a draft.
+        let mailbox_ids = drafts_ids
+            .iter()
+            .map(|mb_id| (mb_id.clone(), json!(true)))
+            .collect::<serde_json::Map<String, serde_json::Value>>();
 
         let mut email_obj = json!({
             "mailboxIds": serde_json::Value::Object(mailbox_ids),
@@ -2135,7 +2137,7 @@ impl JmapClient {
                         },
                     },
                     "onSuccessUpdateEmail": {
-                        "#s0": serde_json::Value::Object(success_patch),
+                        "#s0": success_patch,
                     },
                 }),
                 "ess0",
@@ -2251,6 +2253,35 @@ impl JmapClient {
 
         Ok(ids)
     }
+
+    /// Resolve the Drafts and Sent mailboxes required to submit an email.
+    ///
+    /// Returns an error (rather than an empty set) if either role cannot be
+    /// resolved or maps to zero mailboxes. This guarantees a subsequent
+    /// `onSuccessUpdateEmail` patch can always move the message out of Drafts
+    /// and into Sent without ever leaving it with zero `mailboxIds`, which
+    /// RFC 8621 §4.1 forbids.
+    async fn resolve_submission_mailboxes(
+        &self,
+        account_id: &str,
+        username: &str,
+        password: &SecretString,
+    ) -> Result<(Vec<String>, Vec<String>)> {
+        let drafts_ids = self
+            .get_mailbox_ids_for_role(account_id, "drafts", username, password)
+            .await?;
+        let sent_ids = self
+            .get_mailbox_ids_for_role(account_id, "sent", username, password)
+            .await?;
+        if drafts_ids.is_empty() {
+            return Err(anyhow!("No Drafts mailbox found for account {account_id}"));
+        }
+        if sent_ids.is_empty() {
+            return Err(anyhow!("No Sent mailbox found for account {account_id}"));
+        }
+        Ok((drafts_ids, sent_ids))
+    }
+
     /// Query mailboxes for an account.
     ///
     /// Maps to `Mailbox/query` (RFC 8621 §5.3).
@@ -3446,5 +3477,54 @@ mod tests {
         ];
         let o = super::parse_email_set_outcome(resp);
         assert_eq!(o.updated, vec!["M-9"]);
+    }
+
+    #[test]
+    fn build_submission_success_patch_moves_drafts_to_sent() {
+        let patches = ["draft-1".to_string()];
+        let sent = ["sent-1".to_string()];
+        let value = super::build_submission_success_patch(&patches, &sent).unwrap();
+
+        let obj = value.as_object().expect("patch must be an object");
+        assert_eq!(obj["mailboxIds/draft-1"], json!(null));
+        assert_eq!(obj["mailboxIds/sent-1"], json!(true));
+        assert_eq!(obj["keywords/$draft"], json!(null));
+    }
+
+    #[test]
+    fn build_submission_success_patch_handles_multiple_mailboxes() {
+        let patches = ["draft-1".to_string(), "draft-2".to_string()];
+        let sent = ["sent-1".to_string(), "sent-2".to_string()];
+        let value = super::build_submission_success_patch(&patches, &sent).unwrap();
+
+        let obj = value.as_object().expect("patch must be an object");
+        assert_eq!(obj["mailboxIds/draft-1"], json!(null));
+        assert_eq!(obj["mailboxIds/draft-2"], json!(null));
+        assert_eq!(obj["mailboxIds/sent-1"], json!(true));
+        assert_eq!(obj["mailboxIds/sent-2"], json!(true));
+    }
+
+    #[test]
+    fn build_submission_success_patch_rejects_empty_drafts() {
+        let patches: Vec<String> = Vec::new();
+        let sent = vec!["sent-1".to_string()];
+        let result = super::build_submission_success_patch(&patches, &sent);
+        assert!(result.is_err(), "must reject when Drafts is empty");
+    }
+
+    #[test]
+    fn build_submission_success_patch_rejects_empty_sent() {
+        let patches = vec!["draft-1".to_string()];
+        let sent: Vec<String> = Vec::new();
+        let result = super::build_submission_success_patch(&patches, &sent);
+        assert!(result.is_err(), "must reject when Sent is empty");
+    }
+
+    #[test]
+    fn build_submission_success_patch_rejects_both_empty() {
+        let patches: Vec<String> = Vec::new();
+        let sent: Vec<String> = Vec::new();
+        let result = super::build_submission_success_patch(&patches, &sent);
+        assert!(result.is_err(), "must reject when both roles are empty");
     }
 }
