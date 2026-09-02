@@ -1851,8 +1851,33 @@ impl JmapClient {
     ) -> Result<()> {
         let session = self.get_session(username, password).await?;
         let api_url = &session.api_url;
-        // Send + tidy: emailSubmission/sendMail uses emailId, then `onSuccess_destroyEmail`
-        // would delete the draft copy — we keep the Sent copy and remove $draft.
+
+        // Resolve the Drafts and Sent mailboxes so that, on *successful*
+        // submission only, the draft is moved out of Drafts and into Sent (and
+        // its `$draft` keyword cleared). This mirrors RFC 8621 §7.5.1: the
+        // onSuccessUpdateEmail patch is keyed by the EmailSubmission creation
+        // id, and only runs after the submission has been accepted by the
+        // server — a failed send therefore never leaves a "ghost" copy in Sent.
+        let drafts_ids = self
+            .get_mailbox_ids_for_role(account_id, "drafts", username, password)
+            .await
+            .unwrap_or_default();
+        let sent_ids = self
+            .get_mailbox_ids_for_role(account_id, "sent", username, password)
+            .await
+            .unwrap_or_default();
+
+        // Build the post-success patch: remove every Drafts mailbox, add every
+        // Sent mailbox, and clear the `$draft` keyword.
+        let mut patch = serde_json::Map::new();
+        for mb in &drafts_ids {
+            patch.insert(format!("mailboxIds/{mb}"), json!(null));
+        }
+        for mb in &sent_ids {
+            patch.insert(format!("mailboxIds/{mb}"), json!(true));
+        }
+        patch.insert("keywords/$draft".to_string(), json!(null));
+
         let calls = vec![(
             "EmailSubmission/set",
             json!({
@@ -1866,8 +1891,8 @@ impl JmapClient {
                         },
                     },
                 },
-                "onSuccess_updateEmail": {
-                    (email_id): { "keywords/$draft": null },
+                "onSuccessUpdateEmail": {
+                    "#s0": serde_json::Value::Object(patch),
                 },
             }),
             "ess0",
@@ -1953,25 +1978,56 @@ impl JmapClient {
     }
     /// Submit an email via JMAP EmailSubmission/set (RFC 8621 §2.7).
     ///
-    /// This replaces SMTP submission. The flow per RFC 8621 is:
-    /// 1. Create the Email via Email/set with mailboxIds including the sent folder
-    /// 2. Create an EmailSubmission via EmailSubmission/set referencing the email
-    /// 3. The server processes the submission and delivers the email
+    /// This replaces SMTP submission. The flow per RFC 8621 §7.5.1 is:
+    /// 1. Create the draft Email via Email/set in the Drafts mailbox with the
+    ///    `$draft` keyword set.
+    /// 2. Create an EmailSubmission via EmailSubmission/set referencing the
+    ///    created email, with an `onSuccessUpdateEmail` patch that moves the
+    ///    message out of Drafts into Sent and clears `$draft` — this patch runs
+    ///    only after the server has accepted the submission, so a failed send
+    ///    never leaves a "ghost" copy in Sent.
     ///
     /// Returns the created email ID on success.
     pub async fn submit_email(&self, params: SubmitEmailParams<'_>) -> Result<String> {
         let session = self.get_session(params.username, params.password).await?;
         let api_url = &session.api_url;
 
-        // Build the mailboxIds — put in "sent" mailbox for SendAndSaveCopy semantics.
-        let mailbox_ids = self
-            .get_sent_mailbox_id(params.account_id, params.username, params.password)
+        // Resolve the Drafts and Sent mailboxes. The message is initially placed
+        // in Drafts and moved to Sent by the server only on successful submission.
+        let drafts_ids = self
+            .get_mailbox_ids_for_role(params.account_id, "drafts", params.username, params.password)
             .await
-            .unwrap_or_else(|_| "sent".to_string());
+            .unwrap_or_default();
+        let sent_ids = self
+            .get_mailbox_ids_for_role(params.account_id, "sent", params.username, params.password)
+            .await
+            .unwrap_or_default();
 
-        // Build the email object per RFC 8621 §4.1
+        // Build the post-success patch: remove every Drafts mailbox, add every
+        // Sent mailbox, and clear the `$draft` keyword.
+        let mut success_patch = serde_json::Map::new();
+        for mb_id in &drafts_ids {
+            success_patch.insert(format!("mailboxIds/{mb_id}"), json!(null));
+        }
+        for mb_id in &sent_ids {
+            success_patch.insert(format!("mailboxIds/{mb_id}"), json!(true));
+        }
+        success_patch.insert("keywords/$draft".to_string(), json!(null));
+
+        // Build the email object per RFC 8621 §4.1. If no Drafts mailbox was
+        // resolved (defensive), fall back to the literal "drafts" id so the
+        // message still lands somewhere sane; the onSuccess patch still moves
+        // it to Sent on success.
+        let fallback_drafts_id = drafts_ids
+            .first()
+            .cloned()
+            .unwrap_or_else(|| "drafts".to_string());
+        let mut mailbox_ids = serde_json::Map::new();
+        mailbox_ids.insert(fallback_drafts_id, json!(true));
+
         let mut email_obj = json!({
-            "mailboxIds": { (mailbox_ids): true },
+            "mailboxIds": serde_json::Value::Object(mailbox_ids),
+            "keywords": { "$draft": true },
             "from": [{ "email": params.from }],
             "to": params.to.iter().map(|addr| json!({ "email": addr })).collect::<Vec<_>>(),
             "subject": params.subject,
@@ -2045,8 +2101,10 @@ impl JmapClient {
             }
         }
 
-        // Step 1: Create the Email via Email/set
-        // Step 2: Create EmailSubmission referencing the created email
+        // Step 1: Create the Email via Email/set (as a draft).
+        // Step 2: Create EmailSubmission referencing the created email, with an
+        //         onSuccessUpdateEmail patch that moves drafts -> sent and clears
+        //         `$draft` only after the submission is accepted.
         // Both calls are batched in a single JMAP request for atomicity.
         let method_calls = vec![
             (
@@ -2075,6 +2133,9 @@ impl JmapClient {
                                     .collect::<Vec<_>>(),
                             },
                         },
+                    },
+                    "onSuccessUpdateEmail": {
+                        "#s0": serde_json::Value::Object(success_patch),
                     },
                 }),
                 "ess0",
@@ -2129,21 +2190,6 @@ impl JmapClient {
         }
 
         Ok(email_id)
-    }
-
-    /// Get the mailbox ID for the "sent" role.
-    async fn get_sent_mailbox_id(
-        &self,
-        account_id: &str,
-        username: &str,
-        password: &SecretString,
-    ) -> Result<String> {
-        let ids = self
-            .get_mailbox_ids_for_role(account_id, "sent", username, password)
-            .await?;
-        ids.first()
-            .cloned()
-            .ok_or_else(|| anyhow!("No 'sent' mailbox found"))
     }
 
     /// Get all mailbox IDs for a given JMAP role (e.g., "inbox", "sent").
