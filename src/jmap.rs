@@ -201,17 +201,15 @@ impl JmapEmail {
             .is_some_and(|k| k.contains_key("$draft"))
     }
 
-    /// Reaction keywords (`$draft`, `$seen`, `$important`, `$recent`) and any
-    /// labels are not a 1:1 map to EWS Categories; this helper exposes the raw
-    /// key list for callers that choose to surface custom labels as Categories.
+    /// Expose the user-defined keyword labels (those without the reserved `$`
+    /// prefix used for JMAP system flags) for callers that surface them as EWS
+    /// Categories. System keywords are not user categories and are excluded.
     pub fn category_labels(&self) -> Vec<String> {
         self.keywords
             .as_ref()
             .map(|k| {
                 k.keys()
-                    .filter(|k| {
-                        !matches!(k.as_str(), "$draft" | "$seen" | "$important" | "$recent")
-                    })
+                    .filter(|k| !k.starts_with('$'))
                     .cloned()
                     .collect()
             })
@@ -3238,6 +3236,48 @@ mod tests {
         let roundtrip: JmapEmailAddress = serde_json::from_value(json).unwrap();
         assert_eq!(roundtrip.name, Some("John Doe".to_string()));
         assert_eq!(roundtrip.email, Some("john@example.com".to_string()));
+    }
+
+    #[test]
+    fn test_category_labels_excludes_all_system_keywords() {
+        // Every reserved `$`-prefixed JMAP keyword is a system flag, not a user
+        // category, and must never surface as an EWS Category — not just the
+        // well-known four (`$draft`/`$seen`/`$important`/`$recent`).
+        let mut keywords = HashMap::new();
+        for k in [
+            "$draft",
+            "$seen",
+            "$important",
+            "$recent",
+            "$flagged",
+            "$answered",
+            "$junk",
+            "$notjunk",
+            "$forwarded",
+            "$phishing",
+        ] {
+            keywords.insert(k.to_string(), true);
+        }
+        // User labels pass through untouched.
+        keywords.insert("Project X".to_string(), true);
+        keywords.insert("urgent".to_string(), true);
+
+        let email = JmapEmail {
+            keywords: Some(keywords),
+            ..Default::default()
+        };
+        let mut labels = email.category_labels();
+        labels.sort();
+        assert_eq!(labels, vec!["Project X".to_string(), "urgent".to_string()]);
+    }
+
+    #[test]
+    fn test_category_labels_none_returns_empty() {
+        let email = JmapEmail {
+            keywords: None,
+            ..Default::default()
+        };
+        assert!(email.category_labels().is_empty());
     }
 
     #[test]

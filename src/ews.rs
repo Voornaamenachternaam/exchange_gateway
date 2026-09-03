@@ -8547,11 +8547,16 @@ async fn handle_get_reminders(state: &Arc<AppState>, auth: &AuthContext, body: &
 
     let owner = owner_from_username(&auth.username);
     let password = auth.password.expose_secret();
+    // Load at least the requested window (so a client that reconnects after a
+    // long offline period still gets reminders it asked for), clamped to a
+    // bounded horizon to keep the calendar query cheap and predictable.
+    let load_start = window_start.min(now).max(now - chrono::Duration::days(365));
+    let load_end = window_end.max(now).min(now + chrono::Duration::days(365));
     let items = match load_current_calendar_items(
         state,
         owner,
         password,
-        Some((now - chrono::Duration::days(30), now + chrono::Duration::days(90))),
+        Some((load_start, load_end)),
     )
     .await
     {
@@ -8582,10 +8587,12 @@ async fn handle_get_reminders(state: &Arc<AppState>, auth: &AuthContext, body: &
         };
         // `reminder` stores "minutes before start" but may be signed depending
         // on provenance (negative `-PT15M` from iCalendar, positive `15` from an
-        // EWS CreateItem); `.abs()` normalises both to the lead time. Clamp to a
-        // year to guard against corrupt values producing an absurd due time.
-        let lead_minutes = minutes.abs().min(525_600) as i64;
+        // EWS CreateItem); `unsigned_abs()` normalises both to the lead time
+        // without risk of overflowing on `i32::MIN`. Clamp to a year to guard
+        // against corrupt values producing an absurd due time.
+        let lead_minutes = i64::from(minutes.unsigned_abs().min(525_600));
         let occurrence_start = next_occurrence_start(item, now);
+        let occurrence_end = occurrence_start + (item.end - item.start);
         let reminder_due = occurrence_start - chrono::Duration::minutes(lead_minutes);
         // Only surface reminders within the requested window; a reminder whose
         // occurrence already fully passed is out of scope.
@@ -8603,7 +8610,7 @@ async fn handle_get_reminders(state: &Arc<AppState>, auth: &AuthContext, body: &
             xml_escape(&item.subject),
             crate::util::format_ews_datetime(&reminder_due),
             crate::util::format_ews_datetime(&occurrence_start),
-            crate::util::format_ews_datetime(&item.end),
+            crate::util::format_ews_datetime(&occurrence_end),
             xml_escape(&current.row.server_id),
             xml_escape(&ck),
             xml_escape(&item.uid),
@@ -8640,9 +8647,10 @@ fn parse_reminder_window(
     now: chrono::DateTime<Utc>,
 ) -> (chrono::DateTime<Utc>, chrono::DateTime<Utc>) {
     let parse = |tag: &[u8]| -> Option<chrono::DateTime<Utc>> {
-        extract_first_tag_text(body, tag)
-            .and_then(|s| chrono::DateTime::parse_from_rfc3339(&s).ok())
-            .map(|d| d.with_timezone(&Utc))
+        // Use the shared EWS date-time parser so offsetless xs:dateTime values
+        // (e.g. `2026-01-01T09:00:00`) parse consistently with the rest of the
+        // EWS surface instead of silently falling back to the default window.
+        extract_first_tag_text(body, tag).and_then(|s| crate::calendar::parse_datetime(&s))
     };
     let start = parse(b"BeginTime")
         .unwrap_or_else(|| now - chrono::Duration::days(30));
@@ -9052,7 +9060,10 @@ async fn build_user_configuration_dictionary(
 ) -> String {
     match config_name.to_ascii_lowercase().as_str() {
         "workhours" | "work hours" => {
-            let working_hours_xml = r#"<t:WorkingHours xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types"><t:TimeZone><t:Bias>0</t:Bias><t:StandardTime><t:Bias>0</t:Bias><t:Time>02:00:00</t:Time><t:DayOrder>5</t:DayOrder><t:Month>10</t:Month><t:DayOfWeek>Sunday</t:DayOfWeek></t:StandardTime><t:DaylightTime><t:Bias>-60</t:Bias><t:Time>03:00:00</t:Time><t:DayOrder>5</t:DayOrder><t:Month>3</t:Month><t:DayOfWeek>Sunday</t:DayOfWeek></t:DaylightTime></t:TimeZone><t:WorkingPeriodArray><t:WorkingPeriod><t:DayOfWeek>Monday Tuesday Wednesday Thursday Friday</t:DayOfWeek><t:StartTimeInMinutes>480</t:StartTimeInMinutes><t:EndTimeInMinutes>1020</t:EndTimeInMinutes></t:WorkingPeriod></t:WorkingPeriodArray></t:WorkingHours>"#;
+            // A fixed zero-bias (UTC) time zone matching the documented 08:00–17:00 UTC
+            // work period. No daylight rule is declared so the reported hours do not
+            // drift by ±60m for part of the year.
+            let working_hours_xml = r#"<t:WorkingHours xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types"><t:TimeZone><t:Bias>0</t:Bias><t:StandardTime><t:Bias>0</t:Bias><t:Time>00:00:00</t:Time><t:DayOrder>1</t:DayOrder><t:Month>1</t:Month><t:DayOfWeek>Sunday</t:DayOfWeek></t:StandardTime><t:DaylightTime><t:Bias>0</t:Bias><t:Time>00:00:00</t:Time><t:DayOrder>1</t:DayOrder><t:Month>1</t:Month><t:DayOfWeek>Sunday</t:DayOfWeek></t:DaylightTime></t:TimeZone><t:WorkingPeriodArray><t:WorkingPeriod><t:DayOfWeek>Monday Tuesday Wednesday Thursday Friday</t:DayOfWeek><t:StartTimeInMinutes>480</t:StartTimeInMinutes><t:EndTimeInMinutes>1020</t:EndTimeInMinutes></t:WorkingPeriod></t:WorkingPeriodArray></t:WorkingHours>"#;
             let encoded = STANDARD.encode(working_hours_xml.as_bytes());
             format!(
                 r#"<t:DictionaryEntry><t:DictionaryKey><t:Type>String</t:Type><t:Value>WorkHours</t:Value></t:DictionaryKey><t:DictionaryValue><t:Type>ByteArray</t:Type><t:Value>{}</t:Value></t:DictionaryValue></t:DictionaryEntry>"#,
@@ -9724,9 +9735,11 @@ mod tests {
     fn test_next_occurrence_start_non_recurring_returns_start() {
         let now = chrono::Utc::now();
         let start = now + chrono::Duration::hours(1);
-        let mut item = crate::calendar::CalendarItem::default();
-        item.start = start;
-        item.uid = "uid-1".to_string();
+        let item = crate::calendar::CalendarItem {
+            start,
+            uid: "uid-1".to_string(),
+            ..Default::default()
+        };
         // No rrule → the base start is the next (only) occurrence.
         assert_eq!(next_occurrence_start(&item, now), start);
     }
@@ -9736,10 +9749,12 @@ mod tests {
         // A daily recurrence starting long ago must advance to today/forward.
         let now = chrono::Utc::now();
         let start = now - chrono::Duration::days(30);
-        let mut item = crate::calendar::CalendarItem::default();
-        item.start = start;
-        item.uid = "uid-daily".to_string();
-        item.rrule = Some("FREQ=DAILY".to_string());
+        let item = crate::calendar::CalendarItem {
+            start,
+            uid: "uid-daily".to_string(),
+            rrule: Some("FREQ=DAILY".to_string()),
+            ..Default::default()
+        };
         let next = next_occurrence_start(&item, now);
         assert!(next >= now, "next occurrence must be at/after now: {next:?}");
         // It must be the base start advanced by whole days (ignoring sub-day drift).
@@ -9769,6 +9784,26 @@ mod tests {
             r#"<m:GetReminders><m:BeginTime>{}</m:BeginTime><m:EndTime>{}</m:EndTime></m:GetReminders>"#,
             crate::util::format_ews_datetime(&begin),
             crate::util::format_ews_datetime(&end),
+        );
+        let (parsed_start, parsed_end) = parse_reminder_window(&body, now);
+        assert_eq!(parsed_start, begin);
+        assert_eq!(parsed_end, end);
+    }
+
+    #[test]
+    fn test_parse_reminder_window_accepts_offsetless_datetime() {
+        // EWS xs:dateTime permits an offsetless value; the shared parser must
+        // accept it (not silently fall back to the default window).
+        let now = chrono::Utc::now();
+        let begin = chrono::DateTime::<Utc>::from_timestamp((now - chrono::Duration::hours(2)).timestamp(), 0)
+            .unwrap();
+        let end = chrono::DateTime::<Utc>::from_timestamp((now + chrono::Duration::hours(2)).timestamp(), 0)
+            .unwrap();
+        let fmt = |d: &chrono::DateTime<Utc>| d.format("%Y-%m-%dT%H:%M:%S").to_string();
+        let body = format!(
+            r#"<m:GetReminders><m:BeginTime>{}</m:BeginTime><m:EndTime>{}</m:EndTime></m:GetReminders>"#,
+            fmt(&begin),
+            fmt(&end),
         );
         let (parsed_start, parsed_end) = parse_reminder_window(&body, now);
         assert_eq!(parsed_start, begin);
