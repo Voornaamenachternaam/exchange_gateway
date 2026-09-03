@@ -34,6 +34,7 @@ pub mod room;
 pub mod smtp;
 pub mod storage;
 pub mod sync;
+pub mod tasks;
 pub mod timezone;
 pub mod traits;
 pub mod util;

@@ -58,6 +58,45 @@ struct PingFolder {
     class_name: String,
 }
 
+/// The content class of a folder a client subscribes to via EAS Ping.
+///
+/// Used to scope change-journal polling correctly: Tasks/Notes are gateway-local
+/// (`resource_href` tags "task"/"note"), while Calendar/Email/Contacts flow through
+/// `item_map`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PingFolderKind {
+    Calendar,
+    Email,
+    Contacts,
+    Tasks,
+    Notes,
+}
+
+/// Classify a Ping folder by its collection id (falling back to class name).
+///
+/// Returns `None` for unknown folders, which `handle_ping` rejects with Status 7.
+fn ping_folder_kind(folder: &PingFolder) -> Option<PingFolderKind> {
+    let id = folder.id.as_str();
+    match id {
+        "1" => Some(PingFolderKind::Calendar),
+        "2" | "3" | "4" | "5" | "6" | "12" => Some(PingFolderKind::Email),
+        "8" => Some(PingFolderKind::Contacts),
+        crate::tasks::TASKS_COLLECTION_ID => Some(PingFolderKind::Tasks),
+        crate::tasks::NOTES_COLLECTION_ID => Some(PingFolderKind::Notes),
+        _ => {
+            // Fall back to the class name when the id is non-standard.
+            match folder.class_name.to_ascii_lowercase().as_str() {
+                "calendar" => Some(PingFolderKind::Calendar),
+                "email" => Some(PingFolderKind::Email),
+                "contacts" => Some(PingFolderKind::Contacts),
+                "tasks" => Some(PingFolderKind::Tasks),
+                "notes" => Some(PingFolderKind::Notes),
+                _ => None,
+            }
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 struct PingCacheEntry {
     heartbeat: u64,
@@ -1290,23 +1329,36 @@ async fn handle_folder_sync(
         )
         .await;
     let changes = if incoming == "0" {
-        // Per MS-ASCMD §2.2.3.41, Type values:
-        // 2=Email (default mail folder), 3=Drafts, 4=Deleted Items,
-        // 5=Sent Items, 6=Outbox, 8=Calendar, 12=Junk Email
-        // Only include email folders when email is actually available,
-        // otherwise clients will attempt to sync them and hit errors.
-        // Uses eas_email_folders_xml() which emits correct Type values per
-        // MS-ASCMD §2.2.3.186.3 (e.g. SentItems=5, DeletedItems=4, JunkEmail=12).
+        // Per MS-ASCMD §2.2.3.186.3 (FolderSync Type), the default-folder Type
+        // values are: 2=Inbox, 3=Drafts, 4=Deleted Items, 5=Sent Items,
+        // 6=Outbox, 7=Tasks, 8=Calendar, 9=Contacts, 10=Notes, 12=User mail.
+        //
+        // Only include email folders when email is actually available, otherwise
+        // clients will attempt to sync them and hit errors. Contacts are gated on
+        // CardDAV availability for the same reason. Calendar, Tasks and Notes are
+        // always present (Calendar via JMAP/CalDAV, Tasks/Notes gateway-local).
         let can_read_email = state.can_read_email();
+        let can_read_contacts = state.can_read_contacts();
+
         let email_folders = if can_read_email {
             crate::email::eas_email_folders_xml()
         } else {
             String::new()
         };
-        let count = if can_read_email { 7 } else { 1 };
+        let contacts_folder = if can_read_contacts {
+            r#"<Add><ServerId>8</ServerId><ParentId>0</ParentId><DisplayName>Contacts</DisplayName><Type>9</Type></Add>"#
+        } else {
+            ""
+        };
+
+        // Calendar(1) + Tasks(1) + Notes(1) [+ Contacts(1)] [+ 6 email folders].
+        let count = 3 + usize::from(can_read_contacts) + if can_read_email { 6 } else { 0 };
         format!(
             r#"<Changes><Count>{count}</Count>
-<Add><ServerId>1</ServerId><ParentId>0</ParentId><DisplayName>Calendar</DisplayName><Type>1</Type></Add>
+<Add><ServerId>1</ServerId><ParentId>0</ParentId><DisplayName>Calendar</DisplayName><Type>8</Type></Add>
+<Add><ServerId>7</ServerId><ParentId>0</ParentId><DisplayName>Tasks</DisplayName><Type>7</Type></Add>
+<Add><ServerId>10</ServerId><ParentId>0</ParentId><DisplayName>Notes</DisplayName><Type>10</Type></Add>
+{contacts_folder}
 {email_folders}
 </Changes>"#
         )
@@ -1377,10 +1429,8 @@ async fn handle_ping(
         );
         return xml_or_wbxml_response(wbxml, as_wbxml, &xml, request_id);
     }
-    if folders
-        .iter()
-        .any(|f| !f.id.eq("1") || !f.class_name.eq_ignore_ascii_case("Calendar"))
-    {
+    if folders.iter().any(|f| ping_folder_kind(f).is_none()) {
+        // Status 7: one or more folders are not valid for Ping (unknown type).
         let xml = r#"<?xml version="1.0" encoding="utf-8"?><Ping xmlns="Ping:"><Status>7</Status></Ping>"#;
         return xml_or_wbxml_response(wbxml, as_wbxml, xml, request_id);
     }
@@ -1400,9 +1450,6 @@ async fn handle_ping(
     while Instant::now() < deadline {
         let mut changed_folders = Vec::new();
         for folder in &folders {
-            if folder.id != "1" {
-                continue;
-            }
             let collection_id = scoped_collection_id(&folder.id, device_id);
             let since = state
                 .storage
@@ -1414,17 +1461,46 @@ async fn handle_ping(
                 .and_then(|t| t.strip_prefix("seq:").map(|v| v.to_string()))
                 .and_then(|v| v.parse::<i64>().ok())
                 .unwrap_or(0);
-            let changed = state
-                .storage
-                .list_changes_since_seq(owner, since, 1000)
-                .await
-                .unwrap_or_default();
-            let deleted = state
-                .storage
-                .list_deleted_since_seq(owner, since)
-                .await
-                .unwrap_or_default();
-            if !changed.is_empty() || !deleted.is_empty() {
+
+            let changed = match ping_folder_kind(folder) {
+                // Tasks and Notes are gateway-local stores journaled with a
+                // distinct resource_href tag ("task" / "note"), so we can scope
+                // change detection precisely to those folders.
+                Some(PingFolderKind::Tasks) => state
+                    .storage
+                    .list_journal_since_seq(owner, since)
+                    .await
+                    .unwrap_or_default()
+                    .iter()
+                    .any(|r| matches!(r.resource_href.as_deref(), Some("task"))),
+                Some(PingFolderKind::Notes) => state
+                    .storage
+                    .list_journal_since_seq(owner, since)
+                    .await
+                    .unwrap_or_default()
+                    .iter()
+                    .any(|r| matches!(r.resource_href.as_deref(), Some("note"))),
+                // Email, Calendar and Contacts changes flow through item_map and
+                // the shared change journal (op='upsert') plus delete tombstones.
+                Some(PingFolderKind::Calendar)
+                | Some(PingFolderKind::Email)
+                | Some(PingFolderKind::Contacts) => {
+                    let changed = state
+                        .storage
+                        .list_changes_since_seq(owner, since, 1000)
+                        .await
+                        .unwrap_or_default();
+                    let deleted = state
+                        .storage
+                        .list_deleted_since_seq(owner, since)
+                        .await
+                        .unwrap_or_default();
+                    !changed.is_empty() || !deleted.is_empty()
+                }
+                None => false,
+            };
+
+            if changed {
                 changed_folders.push(folder.id.as_str());
             }
         }
@@ -2783,23 +2859,43 @@ async fn handle_sync_collections(ctx: &SyncCtx<'_>, collections: &[SyncCollectio
             None => crate::email::is_eas_email_collection_id(collection_id),
         };
 
-        // Determine if this is Calendar sync. For non-email, we only support Calendar.
-        // Reject Contacts, Tasks, Notes, etc. with an EAS protocol error.
+        // Determine if this is Calendar sync. Collection ID "1" is Calendar.
         let is_calendar = coll
             .class
             .as_deref()
             .map(|c| c.eq_ignore_ascii_case("Calendar"))
-            .unwrap_or_else(|| collection_id == "1"); // Default collection ID "1" is Calendar
+            .unwrap_or_else(|| collection_id == "1");
 
         // Determine if this is Contacts sync. Per MS-ASCMD, Contacts class is "Contacts".
-        // Collection ID for contacts is often "8" (the Contacts folder) or can be a distinguished ID.
+        // Collection ID for contacts is often "8" (the Contacts folder).
         let is_contacts = coll
             .class
             .as_deref()
             .map(|c| c.eq_ignore_ascii_case("Contacts"))
             .unwrap_or_else(|| {
-                // Some Android clients use collection ID "8" for contacts
                 collection_id == "8" || collection_id.eq_ignore_ascii_case("contacts")
+            });
+
+        // Determine if this is Tasks sync. Per MS-ASCMD, Tasks class is "Tasks".
+        // Collection ID "7" is the default Tasks folder.
+        let is_tasks = coll
+            .class
+            .as_deref()
+            .map(|c| c.eq_ignore_ascii_case("Tasks"))
+            .unwrap_or_else(|| {
+                collection_id == crate::tasks::TASKS_COLLECTION_ID
+                    || collection_id.eq_ignore_ascii_case("tasks")
+            });
+
+        // Determine if this is Notes sync. Per MS-ASCMD, Notes class is "Notes".
+        // Collection ID "10" is the default Notes folder.
+        let is_notes = coll
+            .class
+            .as_deref()
+            .map(|c| c.eq_ignore_ascii_case("Notes"))
+            .unwrap_or_else(|| {
+                collection_id == crate::tasks::NOTES_COLLECTION_ID
+                    || collection_id.eq_ignore_ascii_case("notes")
             });
 
         let coll_xml = if is_email {
@@ -3133,8 +3229,126 @@ async fn handle_sync_collections(ctx: &SyncCtx<'_>, collections: &[SyncCollectio
                     return xml_or_wbxml_response(wbxml, as_wbxml, &xml, request_id);
                 }
             }
+        } else if is_tasks {
+            // Gateway-local Tasks sync (MS-ASTASK) via the SQLite-backed store.
+            let mutation_xml = coll.xml.clone();
+            let mutations = crate::tasks::parse_task_mutations(&mutation_xml);
+
+            let mut mutation_responses = String::new();
+            if !mutations.is_empty() {
+                match crate::tasks::apply_task_mutations(state, username, &mutations).await {
+                    Ok(results) => {
+                        mutation_responses =
+                            crate::tasks::render_mutation_responses(&results);
+                    }
+                    Err(e) => {
+                        tracing::error!(
+                            request_id = %request_id,
+                            collection_id = %collection_id,
+                            error = %e,
+                            "Failed to apply tasks mutations"
+                        );
+                        return xml_or_wbxml_response(
+                            wbxml,
+                            as_wbxml,
+                            &format!(
+                                "<Collection><Class>Tasks</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>6</Status></Collection>",
+                                xml_escape(incoming_key),
+                                xml_escape(collection_id)
+                            ),
+                            request_id,
+                        );
+                    }
+                }
+            }
+
+            let new_sync_key = Uuid::new_v4().simple().to_string();
+            if let Err(e) = state
+                .storage
+                .set_sync_key(username, &state_collection_id, &new_sync_key, None)
+                .await
+            {
+                tracing::warn!(error = %e, "Failed to set tasks sync key");
+            }
+
+            match crate::tasks::sync_tasks(state, username).await {
+                Ok(changes_xml) => format!(
+                    "<Collection><Class>Tasks</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>1</Status>{}{}</Collection>",
+                    xml_escape(&new_sync_key),
+                    xml_escape(collection_id),
+                    mutation_responses,
+                    changes_xml
+                ),
+                Err(e) => {
+                    tracing::error!(error = %e, "Tasks sync failed");
+                    format!(
+                        "<Collection><Class>Tasks</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>6</Status></Collection>",
+                        xml_escape(incoming_key),
+                        xml_escape(collection_id)
+                    )
+                }
+            }
+        } else if is_notes {
+            // Gateway-local Notes sync (MS-ASNOTE) via the SQLite-backed store.
+            let mutation_xml = coll.xml.clone();
+            let mutations = crate::tasks::parse_note_mutations(&mutation_xml);
+
+            let mut mutation_responses = String::new();
+            if !mutations.is_empty() {
+                match crate::tasks::apply_note_mutations(state, username, &mutations).await {
+                    Ok(results) => {
+                        mutation_responses =
+                            crate::tasks::render_mutation_responses(&results);
+                    }
+                    Err(e) => {
+                        tracing::error!(
+                            request_id = %request_id,
+                            collection_id = %collection_id,
+                            error = %e,
+                            "Failed to apply notes mutations"
+                        );
+                        return xml_or_wbxml_response(
+                            wbxml,
+                            as_wbxml,
+                            &format!(
+                                "<Collection><Class>Notes</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>6</Status></Collection>",
+                                xml_escape(incoming_key),
+                                xml_escape(collection_id)
+                            ),
+                            request_id,
+                        );
+                    }
+                }
+            }
+
+            let new_sync_key = Uuid::new_v4().simple().to_string();
+            if let Err(e) = state
+                .storage
+                .set_sync_key(username, &state_collection_id, &new_sync_key, None)
+                .await
+            {
+                tracing::warn!(error = %e, "Failed to set notes sync key");
+            }
+
+            match crate::tasks::sync_notes(state, username).await {
+                Ok(changes_xml) => format!(
+                    "<Collection><Class>Notes</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>1</Status>{}{}</Collection>",
+                    xml_escape(&new_sync_key),
+                    xml_escape(collection_id),
+                    mutation_responses,
+                    changes_xml
+                ),
+                Err(e) => {
+                    tracing::error!(error = %e, "Notes sync failed");
+                    format!(
+                        "<Collection><Class>Notes</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>6</Status></Collection>",
+                        xml_escape(incoming_key),
+                        xml_escape(collection_id)
+                    )
+                }
+            }
         } else {
-            // Unsupported collection type: Tasks, Notes, etc.
+            // Truly unsupported collection type.
             tracing::warn!(
                 request_id = %request_id,
                 collection_id = %collection_id,
@@ -3155,7 +3369,7 @@ async fn handle_sync_collections(ctx: &SyncCtx<'_>, collections: &[SyncCollectio
     // Build multi-collection response
     let collections_xml = collection_responses.join("");
     let resp_xml = format!(
-        r#"<?xml version="1.0" encoding="utf-8"?><Sync xmlns="AirSync:" xmlns:Email="Email:" xmlns:Calendar="Calendar:" xmlns:AirSyncBase="AirSyncBase:"><Collections>{collections_xml}</Collections></Sync>"#
+        r#"<?xml version="1.0" encoding="utf-8"?><Sync xmlns="AirSync:" xmlns:Email="Email:" xmlns:Calendar="Calendar:" xmlns:Contacts="Contacts:" xmlns:Tasks="Tasks:" xmlns:Notes="Notes:" xmlns:AirSyncBase="AirSyncBase:"><Collections>{collections_xml}</Collections></Sync>"#
     );
     xml_or_wbxml_response(wbxml, as_wbxml, &resp_xml, request_id)
 }
@@ -4125,6 +4339,37 @@ mod tests {
                 "Class={:?}, CollectionId={}",
                 class, collection_id
             );
+        }
+    }
+
+    #[test]
+    fn test_ping_folder_kind_classification() {
+        use super::ping_folder_kind;
+
+        let cases = [
+            ("1", "Calendar", Some(PingFolderKind::Calendar)),
+            ("2", "Email", Some(PingFolderKind::Email)),
+            ("3", "Email", Some(PingFolderKind::Email)),
+            ("5", "Email", Some(PingFolderKind::Email)),
+            ("6", "Email", Some(PingFolderKind::Email)),
+            ("12", "Email", Some(PingFolderKind::Email)),
+            ("8", "Contacts", Some(PingFolderKind::Contacts)),
+            ("7", "Tasks", Some(PingFolderKind::Tasks)),
+            ("10", "Notes", Some(PingFolderKind::Notes)),
+            // Unknown id falls back to the class name.
+            ("99", "Tasks", Some(PingFolderKind::Tasks)),
+            ("99", "notes", Some(PingFolderKind::Notes)),
+            // Fully unknown id + class yields None (Status 7).
+            ("99", "CalendarX", None),
+            ("99", "Bogus", None),
+        ];
+
+        for (id, class, expected) in cases {
+            let folder = PingFolder {
+                id: id.to_string(),
+                class_name: class.to_string(),
+            };
+            assert_eq!(ping_folder_kind(&folder), expected, "id={} class={}", id, class);
         }
     }
 }

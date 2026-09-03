@@ -273,6 +273,13 @@ impl AppState {
     pub fn can_read_email(&self) -> bool {
         self.jmap_client.is_some()
     }
+
+    /// Returns true if contacts can be synced via CardDAV. Contacts are the only
+    /// content class that depends on an upstream backend (CardDAV); Tasks and Notes
+    /// are gateway-local and therefore always available.
+    pub fn can_read_contacts(&self) -> bool {
+        self.carddav_client.is_some()
+    }
 }
 
 #[derive(Clone, Debug, Default)]

@@ -361,3 +361,49 @@ CREATE TABLE IF NOT EXISTS contact_map (
 
 CREATE INDEX IF NOT EXISTS idx_contact_map_owner ON contact_map(owner);
 CREATE INDEX IF NOT EXISTS idx_contact_map_href ON contact_map(owner, carddav_href);
+
+
+-- Tasks: gateway-local store for EAS Tasks (no upstream Stalwart backing store).
+-- Column set maps to the MS-ASTASK schema (Subject, Importance, StartDate,
+-- DueDate, UtcStartDate, UtcDueDate, Complete, ReminderSet, Categories, Body).
+CREATE TABLE IF NOT EXISTS task_map (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner TEXT NOT NULL,
+    server_id TEXT NOT NULL,
+    subject TEXT,
+    importance INTEGER,
+    sensitivity INTEGER,
+    start_date TEXT,
+    due_date TEXT,
+    utc_start_date TEXT,
+    utc_due_date TEXT,
+    complete INTEGER NOT NULL DEFAULT 0,
+    date_completed TEXT,
+    reminder_set INTEGER NOT NULL DEFAULT 0,
+    reminder_time INTEGER,
+    categories TEXT,
+    body TEXT,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(owner, server_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_task_map_owner ON task_map(owner);
+
+
+-- Notes: gateway-local store for EAS Notes (no upstream Stalwart backing store).
+-- Column set maps to the MS-ASNOTE schema (Subject, MessageClass, Body,
+-- LastModifiedDate, Categories).
+CREATE TABLE IF NOT EXISTS note_map (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner TEXT NOT NULL,
+    server_id TEXT NOT NULL,
+    subject TEXT,
+    message_class TEXT,
+    body TEXT,
+    categories TEXT,
+    last_modified_date TEXT,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(owner, server_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_note_map_owner ON note_map(owner);

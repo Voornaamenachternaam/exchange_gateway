@@ -95,6 +95,69 @@ impl SafeDebug for ContactRow {
     }
 }
 
+// Row struct for task_map queries - safe for logging (body may contain note text)
+#[derive(FromRow)]
+pub struct TaskRow {
+    pub id: i64,
+    pub owner: String,
+    pub server_id: String,
+    pub subject: Option<String>,
+    pub importance: Option<i64>,
+    pub sensitivity: Option<i64>,
+    pub start_date: Option<String>,
+    pub due_date: Option<String>,
+    pub utc_start_date: Option<String>,
+    pub utc_due_date: Option<String>,
+    pub complete: i64,
+    pub date_completed: Option<String>,
+    pub reminder_set: i64,
+    pub reminder_time: Option<i64>,
+    pub categories: Option<String>,
+    pub body: Option<String>,
+    pub updated_at: Option<String>,
+}
+
+impl SafeDebug for TaskRow {
+    fn safe_debug(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("TaskRow")
+            .field("id", &self.id)
+            .field("owner", &self.owner)
+            .field("server_id", &self.server_id)
+            .field("subject", &self.subject.as_ref().map(|_| "<redacted>"))
+            .field("complete", &self.complete)
+            .field("reminder_set", &self.reminder_set)
+            .field("updated_at", &self.updated_at)
+            .finish()
+    }
+}
+
+// Row struct for note_map queries - safe for logging (body may contain note text)
+#[derive(FromRow)]
+pub struct NoteRow {
+    pub id: i64,
+    pub owner: String,
+    pub server_id: String,
+    pub subject: Option<String>,
+    pub message_class: Option<String>,
+    pub body: Option<String>,
+    pub categories: Option<String>,
+    pub last_modified_date: Option<String>,
+    pub updated_at: Option<String>,
+}
+
+impl SafeDebug for NoteRow {
+    fn safe_debug(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("NoteRow")
+            .field("id", &self.id)
+            .field("owner", &self.owner)
+            .field("server_id", &self.server_id)
+            .field("subject", &self.subject.as_ref().map(|_| "<redacted>"))
+            .field("message_class", &self.message_class)
+            .field("updated_at", &self.updated_at)
+            .finish()
+    }
+}
+
 pub struct DeviceInfoParams<'a> {
     pub owner: &'a str,
     pub device_id: &'a str,
@@ -1423,4 +1486,225 @@ impl Storage {
         .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))?;
         Ok(rows)
     }
+
+    /// Upsert a gateway-local task and record a change-journal event so EAS
+    /// Ping/direct-push and change tracking observe the mutation.
+    pub async fn upsert_task(&self, owner: &str, server_id: &str, fields: &TaskFields<'_>) -> Result<()> {
+        let mut tx = sqlx::Acquire::begin(self.pool.as_ref())
+            .await
+            .map_err(|e| GatewayError::Storage(format!("Transaction error: {}", e)))?;
+
+        sqlx::query(
+            "INSERT INTO task_map (owner, server_id, subject, importance, sensitivity, start_date, due_date, utc_start_date, utc_due_date, complete, date_completed, reminder_set, reminder_time, categories, body) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15) \
+             ON CONFLICT(owner, server_id) DO UPDATE SET \
+             subject = excluded.subject, importance = excluded.importance, sensitivity = excluded.sensitivity, \
+             start_date = excluded.start_date, due_date = excluded.due_date, utc_start_date = excluded.utc_start_date, \
+             utc_due_date = excluded.utc_due_date, complete = excluded.complete, date_completed = excluded.date_completed, \
+             reminder_set = excluded.reminder_set, reminder_time = excluded.reminder_time, categories = excluded.categories, \
+             body = excluded.body, updated_at = CURRENT_TIMESTAMP"
+        )
+        .bind(owner)
+        .bind(server_id)
+        .bind(fields.subject)
+        .bind(fields.importance)
+        .bind(fields.sensitivity)
+        .bind(fields.start_date)
+        .bind(fields.due_date)
+        .bind(fields.utc_start_date)
+        .bind(fields.utc_due_date)
+        .bind(fields.complete)
+        .bind(fields.date_completed)
+        .bind(fields.reminder_set)
+        .bind(fields.reminder_time)
+        .bind(fields.categories)
+        .bind(fields.body)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+
+        sqlx::query(
+            "INSERT INTO change_journal (owner, server_id, op, resource_href) VALUES (?1, ?2, 'upsert', 'task')"
+        )
+        .bind(owner)
+        .bind(server_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+
+        tx.commit()
+            .await
+            .map_err(|e| GatewayError::Storage(format!("Commit error: {}", e)))?;
+        Ok(())
+    }
+
+    /// Delete a gateway-local task and record a change-journal tombstone.
+    pub async fn delete_task(&self, owner: &str, server_id: &str) -> Result<()> {
+        let mut tx = sqlx::Acquire::begin(self.pool.as_ref())
+            .await
+            .map_err(|e| GatewayError::Storage(format!("Transaction error: {}", e)))?;
+
+        sqlx::query("DELETE FROM task_map WHERE owner = ?1 AND server_id = ?2")
+            .bind(owner)
+            .bind(server_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+
+        sqlx::query("INSERT INTO change_journal (owner, server_id, op) VALUES (?1, ?2, 'delete')")
+            .bind(owner)
+            .bind(server_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+
+        tx.commit()
+            .await
+            .map_err(|e| GatewayError::Storage(format!("Commit error: {}", e)))?;
+        Ok(())
+    }
+
+    /// Fetch a single task by server_id.
+    pub async fn get_task(&self, owner: &str, server_id: &str) -> Result<Option<TaskRow>> {
+        let row = sqlx::query_as::<_, TaskRow>(
+            "SELECT id, owner, server_id, subject, importance, sensitivity, start_date, due_date, utc_start_date, utc_due_date, complete, date_completed, reminder_set, reminder_time, categories, body, updated_at FROM task_map WHERE owner = ?1 AND server_id = ?2"
+        )
+        .bind(owner)
+        .bind(server_id)
+        .fetch_optional(self.pool.as_ref())
+        .await
+        .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))?;
+        Ok(row)
+    }
+
+    /// Get all tasks for an owner.
+    pub async fn get_all_tasks_for_owner(&self, owner: &str) -> Result<Vec<TaskRow>> {
+        let rows = sqlx::query_as::<_, TaskRow>(
+            "SELECT id, owner, server_id, subject, importance, sensitivity, start_date, due_date, utc_start_date, utc_due_date, complete, date_completed, reminder_set, reminder_time, categories, body, updated_at FROM task_map WHERE owner = ?1 ORDER BY server_id ASC"
+        )
+        .bind(owner)
+        .fetch_all(self.pool.as_ref())
+        .await
+        .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))?;
+        Ok(rows)
+    }
+
+    /// Upsert a gateway-local note and record a change-journal event.
+    pub async fn upsert_note(&self, owner: &str, server_id: &str, fields: &NoteFields<'_>) -> Result<()> {
+        let mut tx = sqlx::Acquire::begin(self.pool.as_ref())
+            .await
+            .map_err(|e| GatewayError::Storage(format!("Transaction error: {}", e)))?;
+
+        sqlx::query(
+            "INSERT INTO note_map (owner, server_id, subject, message_class, body, categories, last_modified_date) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) \
+             ON CONFLICT(owner, server_id) DO UPDATE SET \
+             subject = excluded.subject, message_class = excluded.message_class, body = excluded.body, \
+             categories = excluded.categories, last_modified_date = excluded.last_modified_date, \
+             updated_at = CURRENT_TIMESTAMP"
+        )
+        .bind(owner)
+        .bind(server_id)
+        .bind(fields.subject)
+        .bind(fields.message_class)
+        .bind(fields.body)
+        .bind(fields.categories)
+        .bind(fields.last_modified_date)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+
+        sqlx::query(
+            "INSERT INTO change_journal (owner, server_id, op, resource_href) VALUES (?1, ?2, 'upsert', 'note')"
+        )
+        .bind(owner)
+        .bind(server_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+
+        tx.commit()
+            .await
+            .map_err(|e| GatewayError::Storage(format!("Commit error: {}", e)))?;
+        Ok(())
+    }
+
+    /// Delete a gateway-local note and record a change-journal tombstone.
+    pub async fn delete_note(&self, owner: &str, server_id: &str) -> Result<()> {
+        let mut tx = sqlx::Acquire::begin(self.pool.as_ref())
+            .await
+            .map_err(|e| GatewayError::Storage(format!("Transaction error: {}", e)))?;
+
+        sqlx::query("DELETE FROM note_map WHERE owner = ?1 AND server_id = ?2")
+            .bind(owner)
+            .bind(server_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+
+        sqlx::query("INSERT INTO change_journal (owner, server_id, op) VALUES (?1, ?2, 'delete')")
+            .bind(owner)
+            .bind(server_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+
+        tx.commit()
+            .await
+            .map_err(|e| GatewayError::Storage(format!("Commit error: {}", e)))?;
+        Ok(())
+    }
+
+    /// Fetch a single note by server_id.
+    pub async fn get_note(&self, owner: &str, server_id: &str) -> Result<Option<NoteRow>> {
+        let row = sqlx::query_as::<_, NoteRow>(
+            "SELECT id, owner, server_id, subject, message_class, body, categories, last_modified_date, updated_at FROM note_map WHERE owner = ?1 AND server_id = ?2"
+        )
+        .bind(owner)
+        .bind(server_id)
+        .fetch_optional(self.pool.as_ref())
+        .await
+        .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))?;
+        Ok(row)
+    }
+
+    /// Get all notes for an owner.
+    pub async fn get_all_notes_for_owner(&self, owner: &str) -> Result<Vec<NoteRow>> {
+        let rows = sqlx::query_as::<_, NoteRow>(
+            "SELECT id, owner, server_id, subject, message_class, body, categories, last_modified_date, updated_at FROM note_map WHERE owner = ?1 ORDER BY server_id ASC"
+        )
+        .bind(owner)
+        .fetch_all(self.pool.as_ref())
+        .await
+        .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))?;
+        Ok(rows)
+    }
+}
+
+/// Column values for a gateway-local task upsert.
+#[derive(Default)]
+pub struct TaskFields<'a> {
+    pub subject: Option<&'a str>,
+    pub importance: Option<i64>,
+    pub sensitivity: Option<i64>,
+    pub start_date: Option<&'a str>,
+    pub due_date: Option<&'a str>,
+    pub utc_start_date: Option<&'a str>,
+    pub utc_due_date: Option<&'a str>,
+    pub complete: i64,
+    pub date_completed: Option<&'a str>,
+    pub reminder_set: i64,
+    pub reminder_time: Option<i64>,
+    pub categories: Option<&'a str>,
+    pub body: Option<&'a str>,
+}
+
+/// Column values for a gateway-local note upsert.
+#[derive(Default)]
+pub struct NoteFields<'a> {
+    pub subject: Option<&'a str>,
+    pub message_class: Option<&'a str>,
+    pub body: Option<&'a str>,
+    pub categories: Option<&'a str>,
+    pub last_modified_date: Option<&'a str>,
 }
