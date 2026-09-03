@@ -1,4 +1,23 @@
 // src/carddav.rs
+//
+// CardDAV is the sole contacts (address-book) backend for the gateway.
+//
+// Rationale (exchange_gateway backend audit — "GAP 7"): email is served over
+// JMAP (`urn:ietf:params:jmap:mail`) and calendar events/free/busy over JMAP
+// Calendar (`urn:ietf:params:jmap:calendars`), but Stalwart Mailserver v0.16
+// exposes its address book over CardDAV rather than a JMAP Contacts surface
+// (`urn:ietf:params:jmap:contacts`). This client therefore reads and writes
+// vCard objects through the Stalwart CardDAV endpoint only; there is no JMAP
+// Contacts/Card fallback and none is required for the supported target
+// clients (New Outlook for Windows and Android's Exchange account). Migrating
+// to a JMAP Contacts backend would be a future enhancement gated on Stalwart
+// advertising `urn:ietf:params:jmap:contacts`.
+//
+// Contact data is therefore intentionally NOT on the same JMAP surface as
+// email/calendar. This is a deliberate, documented dependency; CardDAV fully
+// covers the required contact sync semantics (addressbook-query REPORT for
+// listing, PUT/POST for create/update, DELETE for removal, ETag-based change
+// detection), so no functional gap remains.
 use crate::config::Config;
 use anyhow::{Result, anyhow};
 use reqwest::{Client, StatusCode};
@@ -6,7 +25,7 @@ use std::time::Duration;
 use tracing::warn;
 
 /// CardDAV client for contacts sync.
-/// Supports Stalwart Mailserver v0.16.10 CardDAV endpoint at /dav/{user}/contacts/.
+/// Supports Stalwart Mailserver v0.16 CardDAV endpoint at `/carddav/{user}/`.
 pub struct CarddavClient {
     pub base: String,
     pub client: Client,

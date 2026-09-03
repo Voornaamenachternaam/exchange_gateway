@@ -1,4 +1,14 @@
 // src/contacts.rs
+//
+// Contacts (address book) presentation layer for EAS Sync (MS-ASCNTC) and the
+// Exchange contacts surface.
+//
+// Backend: CardDAV exclusively (see `src/carddav.rs`). Contacts are read from
+// and written to the Stalwart CardDAV endpoint via `CarddavClient`; there is no
+// JMAP Contacts/Card backend because Stalwart v0.16 does not advertise
+// `urn:ietf:params:jmap:contacts`. This is a deliberate, documented dependency
+// and is functionally complete for the supported clients (New Outlook for
+// Windows, Android Exchange accounts).
 use crate::carddav::Contact as CarddavContact;
 use crate::vcard::{Vcard, parse_vcard_from_data};
 use anyhow::anyhow;

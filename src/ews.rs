@@ -1372,21 +1372,38 @@ async fn merged_freebusy_for_mailbox(
     let mut merged = vec!['0'; slot_count];
     let mut events_xml_out = String::new();
 
-    // Try JMAP Calendar first (urn:ietf:params:jmap:calendars).
-    // JMAP eliminates ETag complexity and uses a single HTTP endpoint.
-    // Falls back to CalDAV if JMAP Calendar is unavailable or fails.
-    if let Some(jmap) = &state.jmap_client {
-        if let Ok(jmap_result) =
+    // Free/busy backend selection mirrors the calendar-event backend so that a
+    // single authoritative data source produces both the events and their
+    // availability, avoiding divergence between JMAP Calendar and CalDAV.
+    //
+    // When `prefer_caldav_freebusy` is set (legacy Stalwart CalDAV path), CalDAV
+    // is consulted first and JMAP Calendar is only used as a fallback. Otherwise
+    // JMAP Calendar (urn:ietf:params:jmap:calendars) is the preferred source and
+    // CalDAV is the fallback. This matches the EAS free/busy path exactly.
+    let jmap_first = !state.cfg.prefer_caldav_freebusy;
+    if jmap_first
+        && let Some(jmap) = &state.jmap_client
+        && let Ok(jmap_result) =
             fetch_freebusy_jmap(jmap, mailbox, password, start, end, interval_minutes).await
-        {
-            return jmap_result;
-        }
+    {
+        return jmap_result;
+    }
+    if jmap_first {
         tracing::debug!(target: "ews", "JMAP Calendar free-busy failed, falling back to CalDAV");
     }
 
     let caldav = match CaldavClient::new(&state.cfg) {
         Ok(c) => c,
         Err(_) => {
+            // Fall back to JMAP Calendar when CalDAV was preferred but its client
+            // cannot be constructed (e.g. `caldav_base` unset).
+            if !jmap_first
+                && let Some(jmap) = &state.jmap_client
+                && let Ok(jmap_result) =
+                    fetch_freebusy_jmap(jmap, mailbox, password, start, end, interval_minutes).await
+            {
+                return jmap_result;
+            }
             merged.fill('4');
             return (merged.into_iter().collect(), events_xml_out);
         }
@@ -1460,6 +1477,18 @@ async fn merged_freebusy_for_mailbox(
             buf.clear();
         }
     } else {
+        // CalDAV produced no events. When CalDAV was preferred over JMAP
+        // (`prefer_caldav_freebusy`), fall back to JMAP Calendar so availability
+        // is still populated rather than reported as fully free ('0') or blocked
+        // ('4'). When JMAP was already attempted and failed, both backends are
+        // exhausted; report blocked rather than falsely free.
+        if !jmap_first
+            && let Some(jmap) = &state.jmap_client
+            && let Ok(jmap_result) =
+                fetch_freebusy_jmap(jmap, mailbox, password, start, end, interval_minutes).await
+        {
+            return jmap_result;
+        }
         merged.fill('4');
     }
     (merged.into_iter().collect(), events_xml_out)

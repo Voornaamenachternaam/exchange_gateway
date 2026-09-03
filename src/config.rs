@@ -120,7 +120,14 @@ pub struct Config {
     #[serde(default = "default_prefer_jmap_calendar")]
     pub prefer_jmap_calendar: bool,
     // Prefer CalDAV over JMAP for free/busy queries.
-    // Recommended for Stalwart v0.16.10 to avoid JMAP Calendar bugs.
+    //
+    // Defaults to `false` so free/busy is served from the same authoritative
+    // JMAP Calendar backend as the calendar events themselves (`prefer_jmap_calendar`
+    // defaults to `true`). This removes the historical dual-path ambiguity where
+    // calendar events came from JMAP but free/busy from CalDAV, which risked
+    // divergence. Set to `true` only for legacy deployments where CalDAV must
+    // remain the availability source of truth (e.g. Stalwart < 0.16 with partial
+    // JMAP Calendar support).
     #[serde(default = "default_prefer_caldav_freebusy")]
     pub prefer_caldav_freebusy: bool,
     // Admin (directory) configuration for GAL/ResolveNames. The gateway talks
@@ -279,8 +286,10 @@ fn default_prefer_jmap_calendar() -> bool {
 }
 
 fn default_prefer_caldav_freebusy() -> bool {
-    // For Stalwart v0.16.10, prefer CalDAV free/busy to avoid JMAP Calendar bugs
-    true
+    // Serve free/busy from JMAP Calendar by default so availability and calendar
+    // events share a single authoritative backend (`prefer_jmap_calendar` is also
+    // `true` by default). CalDAV free/busy remains available as a legacy opt-out.
+    false
 }
 
 /// MAPI/HTTP (MS-OXCMAPIHTTP) is enabled by default: New Outlook for Windows
@@ -976,9 +985,9 @@ impl Default for Config {
             jmap_base: String::new(),
             email_enabled: true,
             mail_host: String::new(),
-            force_caldav_calendar: true,
+            force_caldav_calendar: default_force_caldav_calendar(),
             prefer_jmap_calendar: default_prefer_jmap_calendar(),
-            prefer_caldav_freebusy: true,
+            prefer_caldav_freebusy: default_prefer_caldav_freebusy(),
             admin_username: String::new(),
             admin_password: String::new(),
             rate_limit_enabled: true,
