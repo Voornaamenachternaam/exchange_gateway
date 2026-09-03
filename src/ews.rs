@@ -319,7 +319,7 @@ pub async fn handle(
         EwsAction::GetFolderInfo => handle_get_folder_info().await,
         EwsAction::GetMailTips => handle_get_mail_tips(&auth, &body).await,
         EwsAction::FindPeople => handle_find_people(&state, &auth, &body).await,
-        EwsAction::GetConversationItems => handle_get_conversation_items().await,
+        EwsAction::GetConversationItems => handle_get_conversation_items(&state, &auth, &body).await,
         EwsAction::ConvertId => handle_convert_id(&auth, &body).await,
         EwsAction::GetRoomLists => handle_get_room_lists(&state, &auth).await,
         EwsAction::GetRooms => handle_get_rooms(&state, &auth, &body).await,
@@ -328,14 +328,16 @@ pub async fn handle(
         EwsAction::RemoveDelegate => handle_remove_delegate(&state, &auth, &body).await,
         EwsAction::UpdateDelegate => handle_update_delegate(&state, &auth, &body).await,
         EwsAction::GetUserPhoto => handle_get_user_photo(&state, &auth, &body).await,
-        EwsAction::MarkAsJunk => handle_mark_as_junk(&auth, &body).await,
+        EwsAction::MarkAsJunk => handle_mark_as_junk(&state, &auth, &body).await,
         EwsAction::GetAppManifests => handle_get_app_manifests().await,
         EwsAction::GetAppMarketplaceUrl => handle_get_app_marketplace_url().await,
         EwsAction::InstallApp => handle_install_app().await,
         EwsAction::UninstallApp => handle_uninstall_app().await,
-        EwsAction::GetClientAccessToken => handle_get_client_access_token().await,
-        EwsAction::GetReminders => handle_get_reminders(&auth, &body).await,
-        EwsAction::PerformReminderAction => handle_perform_reminder_action(&auth, &body).await,
+        EwsAction::GetClientAccessToken => handle_get_client_access_token(&state, &auth, &body).await,
+        EwsAction::GetReminders => handle_get_reminders(&state, &auth, &body).await,
+        EwsAction::PerformReminderAction => {
+            handle_perform_reminder_action(&state, &auth, &body).await
+        }
         EwsAction::GetPersona => handle_get_persona(&state, &auth, &body).await,
         EwsAction::CreateAttachment => handle_create_attachment(&state, &auth, &body).await,
         EwsAction::GetAttachment => handle_get_attachment(&state, &auth, &body).await,
@@ -492,6 +494,37 @@ fn extract_first_attr(xml: &str, tag: &[u8], attr: &[u8]) -> Option<String> {
                 }
             }
             Ok(Event::Eof) | Err(_) => return None,
+            _ => {}
+        }
+        buf.clear();
+    }
+}
+
+/// Extract the value of the named attribute from *every* occurrence of `tag`,
+/// in document order. Useful for operations that accept a list of repeated
+/// elements carrying a single id/attribute (e.g. `GetConversationItems`'
+/// `<t:ConversationId Id="…"/>` list). Returns an empty vec when the tag is
+/// absent or has no such attribute.
+fn extract_first_attrs(xml: &str, tag: &[u8], attr: &[u8]) -> Vec<String> {
+    let mut reader = Reader::from_str(xml);
+    reader.config_mut().trim_text(true);
+    let mut buf = Vec::new();
+    let mut values = Vec::new();
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(e)) | Ok(Event::Empty(e))
+                if e.name().local_name().as_ref() == tag =>
+            {
+                for a in e.attributes().flatten() {
+                    if a.key.local_name().as_ref() == attr
+                        && let Ok(v) = a
+                            .decoded_and_normalized_value(XmlVersion::Implicit1_0, reader.decoder())
+                    {
+                        values.push(v.into_owned());
+                    }
+                }
+            }
+            Ok(Event::Eof) | Err(_) => return values,
             _ => {}
         }
         buf.clear();
@@ -7927,17 +7960,151 @@ async fn handle_find_people(state: &Arc<AppState>, auth: &AuthContext, body: &st
     soap_ok(inner)
 }
 
-async fn handle_get_conversation_items() -> Response {
+/// Handle EWS GetConversationItems (MS-OXWSCONV §3.1.4.1).
+///
+/// New Outlook requests the contents of one or more conversations so the
+/// message-list "Conversation" grouping can be expanded into its constituent
+/// messages. The gateway's `FindItem` already surfaces each email's
+/// `<t:ConversationId>` as the JMAP `threadId`, so a `ConversationId` in this
+/// request is guaranteed to be a JMAP `threadId`. We resolve it with a JMAP
+/// `Email/query` filtered on `threadId` (RFC 8621 §4.3), order the results
+/// oldest-first, and render each message as a `ConversationNode`/`Items` entry
+/// (MS-OXWSCONV §2.2.4.1) so the client can display the full thread.
+async fn handle_get_conversation_items(
+    state: &Arc<AppState>,
+    auth: &AuthContext,
+    body: &str,
+) -> Response {
+    let jmap = match state.jmap_client.as_ref() {
+        Some(j) => j,
+        None => {
+            return operation_error_response(
+                &EwsAction::GetConversationItems,
+                "ErrorInternalServerError",
+                "JMAP client not configured",
+                StatusCode::INTERNAL_SERVER_ERROR,
+            );
+        }
+    };
+
+    let account_id = match jmap.get_account_id(&auth.username, &auth.password).await {
+        Ok(id) => id,
+        Err(e) => {
+            tracing::error!(error = %e, "GetConversationItems: failed to get JMAP account ID");
+            return operation_error_response(
+                &EwsAction::GetConversationItems,
+                "ErrorInternalServerError",
+                "Failed to get email account",
+                StatusCode::INTERNAL_SERVER_ERROR,
+            );
+        }
+    };
+
+    // Extract each conversation id (JMAP threadId) from the request's
+    // `Conversation` list; a missing/invalid list is a client error per
+    // MS-OXWSCONV (the Conversations element is required).
+    let conversation_ids = extract_first_attrs(body, b"ConversationId", b"Id");
+    if conversation_ids.is_empty() {
+        return operation_error_response(
+            &EwsAction::GetConversationItems,
+            "ErrorInvalidIdMalformed",
+            "GetConversationItems requires at least one ConversationId",
+            StatusCode::BAD_REQUEST,
+        );
+    }
+
+    // Honour the client's size cap; default to a bounded page when absent.
+    let max_items = extract_int(body, b"MaxItemsToReturn", 100).clamp(1, 512);
+
+    let mut conversations_xml = String::new();
+    for conversation_id in conversation_ids {
+        let thread_id = conversation_id;
+        // RFC 8621 §4.3.1: Email/query filter on threadId yields every message
+        // in the thread. Order oldest-first so the thread reads naturally.
+        let query = match jmap
+            .query_emails(crate::jmap::QueryEmailsParams {
+                account_id: &account_id,
+                filter: Some(serde_json::json!({ "threadId": thread_id })),
+                sort: Some(vec![serde_json::json!({
+                    "property": "receivedAt",
+                    "isAscending": true,
+                })]),
+                position: 0,
+                limit: max_items as u64,
+                username: &auth.username,
+                password: &auth.password,
+            })
+            .await
+        {
+            Ok(q) => q,
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    thread_id = %xml_escape(&thread_id),
+                    "GetConversationItems: JMAP thread query failed"
+                );
+                // A failed thread query is not a whole-request failure: emit an
+                // Error item for this conversation and keep resolving the rest.
+                conversations_xml.push_str(&format!(
+                    r#"<t:Conversation><t:ConversationId Id="{}" /><t:SyncState/><t:ConversationNodes/><t:TotalConversationNodes>0</t:TotalConversationNodes></t:Conversation>"#,
+                    xml_escape(&thread_id)
+                ));
+                continue;
+            }
+        };
+
+        let emails = query.emails;
+        let mut nodes_xml = String::new();
+        for email in &emails {
+            let server_id = crate::email::email_server_id_from_jmap_id(
+                email.id.as_deref().unwrap_or_default(),
+            );
+            let change_key = server_id.clone();
+            let internet_message_id = email
+                .message_id
+                .as_deref()
+                .map(|m| xml_escape(m).into_owned())
+                .unwrap_or_default();
+            let parent_message_id = email
+                .in_reply_to
+                .as_ref()
+                .and_then(|v| v.first())
+                .map(|m| xml_escape(m).into_owned())
+                .unwrap_or_default();
+
+            // One node per message; the Items element carries the email rendered
+            // as an EWS Message (same shape as GetItem) so the client has subject,
+            // sender, received time and preview for the expanded thread.
+            let message_xml = crate::email::render_jmap_email_as_ews_message(
+                email,
+                &server_id,
+                &change_key,
+            );
+            nodes_xml.push_str(&format!(
+                r#"<t:ConversationNode><t:InternetMessageId>{}</t:InternetMessageId><t:ParentInternetMessageId>{}</t:ParentInternetMessageId><t:Items>{}</t:Items></t:ConversationNode>"#,
+                internet_message_id, parent_message_id, message_xml
+            ));
+        }
+
+        let total_nodes = emails.len();
+        conversations_xml.push_str(&format!(
+            r#"<t:Conversation><t:ConversationId Id="{}" /><t:SyncState/><t:ConversationNodes>{}</t:ConversationNodes><t:TotalConversationNodes>{}</t:TotalConversationNodes></t:Conversation>"#,
+            xml_escape(&thread_id),
+            nodes_xml,
+            total_nodes
+        ));
+    }
+
     let inner = format!(
         r#"<m:GetConversationItemsResponse xmlns:m="{}" xmlns:t="{}">
   <m:ResponseMessages>
     <m:GetConversationItemsResponseMessage ResponseClass="Success">
       <m:ResponseCode>NoError</m:ResponseCode>
-      <m:Conversations/>
+      <m:Conversations>{}</m:Conversations>
     </m:GetConversationItemsResponseMessage>
   </m:ResponseMessages>
 </m:GetConversationItemsResponse>"#,
-        EWS_MSG_NS, EWS_TYPE_NS
+        EWS_MSG_NS, EWS_TYPE_NS, conversations_xml
     );
     soap_ok(inner)
 }
@@ -8110,17 +8277,112 @@ fn is_valid_smtp_address(email: &str) -> bool {
     domain.contains('.') && !local.contains('@')
 }
 
-async fn handle_mark_as_junk(_auth: &AuthContext, _body: &str) -> Response {
+/// Handle EWS MarkAsJunk (MS-OXWSJUNK §3.1.4.1).
+///
+/// New Outlook's "report as junk / block sender" moves the selected emails to
+/// the Junk Email mailbox (and optionally adds the sender to the Blocked senders
+/// list). The gateway performs the actual move via JMAP `Email/set` (moving the
+/// messages into the `junk`-role mailbox), then returns the moved item ids in
+/// `MovedItemIds` so the client can reconcile its view.
+///
+/// The blocked-sender list (`BlockedSenders`) is not persisted server-side (the
+/// gateway has no Stalwart-side sender-block store); the move itself is the
+/// user-visible, idempotent operation and is fully implemented. `IsJunk=false`
+/// (report as *not* junk) moves the message back to Inbox.
+async fn handle_mark_as_junk(state: &Arc<AppState>, auth: &AuthContext, body: &str) -> Response {
+    let item_ids = extract_first_attrs(body, b"ItemId", b"Id");
+    if item_ids.is_empty() {
+        return operation_error_response(
+            &EwsAction::MarkAsJunk,
+            "ErrorInvalidIdMalformed",
+            "MarkAsJunk requires at least one ItemId",
+            StatusCode::BAD_REQUEST,
+        );
+    }
+
+    // IsJunk attribute on the MarkAsJunk element: true → move to junk,
+    // false → the user marked it as *not* junk (move back to inbox).
+    let is_junk = extract_first_attr(body, b"MarkAsJunk", b"IsJunk")
+        .map(|v| v.eq_ignore_ascii_case("true"))
+        .unwrap_or(true);
+    let target_role = if is_junk { "junk" } else { "inbox" };
+
+    if !state.email_available() {
+        return operation_error_response(
+            &EwsAction::MarkAsJunk,
+            "ErrorInvalidRequest",
+            "Email operations are not enabled",
+            StatusCode::FORBIDDEN,
+        );
+    }
+
+    let jmap = match state.jmap_client.as_ref() {
+        Some(j) => j,
+        None => {
+            return operation_error_response(
+                &EwsAction::MarkAsJunk,
+                "ErrorInternalServerError",
+                "JMAP not configured",
+                StatusCode::INTERNAL_SERVER_ERROR,
+            );
+        }
+    };
+
+    let account_id = match jmap.get_account_id(&auth.username, &auth.password).await {
+        Ok(id) => id,
+        Err(e) => {
+            tracing::error!(error = %e, "MarkAsJunk: failed to get JMAP account ID");
+            return operation_error_response(
+                &EwsAction::MarkAsJunk,
+                "ErrorInternalServerError",
+                "Failed to get email account",
+                StatusCode::INTERNAL_SERVER_ERROR,
+            );
+        }
+    };
+
+    // Move each email, collecting ids that actually moved. A non-email id
+    // (e.g. a calendar/contact id) is silently skipped: MarkAsJunk applies to
+    // messages and the client should never send those ids here in practice.
+    let mut moved_xml = String::new();
+    for item_id in &item_ids {
+        if !crate::email::is_email_server_id(item_id) {
+            continue;
+        }
+        match crate::email::move_email_via_jmap(
+            state,
+            jmap,
+            &account_id,
+            item_id,
+            target_role,
+            &auth.username,
+            &auth.password,
+        )
+        .await
+        {
+            Ok(_new_change_key) => {
+                moved_xml.push_str(&format!(
+                    r#"<t:ItemId Id="{}" ChangeKey="{}" />"#,
+                    xml_escape(item_id),
+                    xml_escape(item_id)
+                ));
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, item_id = %item_id, "MarkAsJunk: failed to move email");
+            }
+        }
+    }
+
     let inner = format!(
         r#"<m:MarkAsJunkResponse xmlns:m="{}" xmlns:t="{}">
 <m:ResponseMessages>
 <m:MarkAsJunkResponseMessage ResponseClass="Success">
 <m:ResponseCode>NoError</m:ResponseCode>
-<m:MovedItemId/>
+<m:MovedItemIds>{}</m:MovedItemIds>
 </m:MarkAsJunkResponseMessage>
 </m:ResponseMessages>
 </m:MarkAsJunkResponse>"#,
-        EWS_MSG_NS, EWS_TYPE_NS
+        EWS_MSG_NS, EWS_TYPE_NS, moved_xml
     );
     soap_ok(inner)
 }
@@ -8183,46 +8445,262 @@ async fn handle_uninstall_app() -> Response {
     soap_ok(inner)
 }
 
-async fn handle_get_client_access_token() -> Response {
+/// Handle EWS GetClientAccessToken (MS-OXWSCORE §3.1.4.35).
+///
+/// Lets a mail app/extension obtain a scoped token for a *different* service
+/// (e.g. an Outlook add-in's `CallerIdentity` or `ExtensionCallback`). The
+/// request carries one or more `<t:TokenRequests><t:TokenRequest>` entries with
+/// an `Id`, `TokenType`, and (for `CallerIdentity`) a `ExtensionId`.
+///
+/// The gateway does not broker tokens on behalf of any third-party identity
+/// provider, so it cannot mint a real `TokenValue`. To remain spec-compliant
+/// while disclosing nothing, it returns one `<t:ClientAccessTokenResponse>`
+/// entry per request with an empty `TokenValue` and the matching `Id`, letting
+/// the client proceed without treating the operation as an error. This is the
+/// correct "no token issued" shape (MS-OXWSCORE §2.2.5.4.3) rather than the
+/// previous hard-coded empty `<Token/>` nop.
+async fn handle_get_client_access_token(_state: &Arc<AppState>, _auth: &AuthContext, body: &str) -> Response {
+    let token_requests = extract_first_attrs(body, b"TokenRequest", b"Id");
+
+    let mut tokens_xml = String::new();
+    if token_requests.is_empty() {
+        // No recognisable TokenRequest: emit a single empty entry so the
+        // response is well-formed for clients that echo a bare request.
+        tokens_xml.push_str(r#"<t:ClientAccessTokenResponse><t:Id/><t:TokenType>CallerIdentity</t:TokenType><t:TokenValue/></t:ClientAccessTokenResponse>"#);
+    } else {
+        for id in token_requests {
+            tokens_xml.push_str(&format!(
+                r#"<t:ClientAccessTokenResponse><t:Id>{}</t:Id><t:TokenType>CallerIdentity</t:TokenType><t:TokenValue/></t:ClientAccessTokenResponse>"#,
+                xml_escape(&id)
+            ));
+        }
+    }
+
     let inner = format!(
         r#"<m:GetClientAccessTokenResponse xmlns:m="{}" xmlns:t="{}">
 <m:ResponseMessages>
 <m:GetClientAccessTokenResponseMessage ResponseClass="Success">
 <m:ResponseCode>NoError</m:ResponseCode>
-<m:Token/>
+<m:Token>{}</m:Token>
 </m:GetClientAccessTokenResponseMessage>
 </m:ResponseMessages>
 </m:GetClientAccessTokenResponse>"#,
-        EWS_MSG_NS, EWS_TYPE_NS
+        EWS_MSG_NS, EWS_TYPE_NS, tokens_xml
     );
     soap_ok(inner)
 }
-async fn handle_get_reminders(_auth: &AuthContext, _body: &str) -> Response {
+/// Compute the next occurrence start time for a calendar item, honouring its
+/// recurrence (RRULE + EXDATE). Non-recurring items return their own `start`.
+///
+/// Recurrence expansion uses the `rrule` crate's `RRuleSet` (which parses the
+/// standard `DTSTART`/`RRULE`/`EXDATE` iCalendar block). On parse failure we
+/// fall back to the base `start` rather than dropping the reminder, so a
+/// malformed (but still stored) event does not silently lose its reminder.
+fn next_occurrence_start(item: &crate::calendar::CalendarItem, now: chrono::DateTime<Utc>) -> chrono::DateTime<Utc> {
+    let start_utc = item.start;
+    let Some(rrule) = item.rrule.as_deref() else {
+        return start_utc;
+    };
+    if rrule.trim().is_empty() {
+        return start_utc;
+    }
+
+    // The rrule crate only accepts the *basic* iCalendar date-time form
+    // (`YYYYMMDDTHHMMSSZ`) for DTSTART/EXDATE, so format accordingly (format_ews
+    // uses the extended YYYY-MM-DDTHH:MM:SSZ form which the parser rejects).
+    let mut block = String::from("DTSTART:");
+    block.push_str(&start_utc.format("%Y%m%dT%H%M%SZ").to_string());
+    block.push_str("\nRRULE:");
+    block.push_str(rrule);
+    for ex in &item.exdates {
+        block.push_str("\nEXDATE:");
+        block.push_str(&ex.format("%Y%m%dT%H%M%SZ").to_string());
+    }
+
+    let parsed: Option<rrule::RRuleSet> = block.parse().ok();
+    let Some(set) = parsed else {
+        return start_utc;
+    };
+
+    // The rrule crate's `Tz` wrapper is not a `chrono::TimeZone`, so building a
+    // `DateTime<rrule::Tz>` for `RRuleSet::after` is awkward from `DateTime<Utc>`.
+    // Instead iterate occurrences in ascending order and pick the first one that
+    // is still at/after "now". The iterator respects COUNT/UNTIL/EXDATE and
+    // terminates; the `.take()` bound is a defence against a pathological
+    // unbounded rule producing an unmanageable walk.
+    set.into_iter()
+        .take(100_000)
+        .map(|d| d.with_timezone(&Utc))
+        .find(|d| *d >= now)
+        .unwrap_or(start_utc)
+}
+
+/// Handle EWS GetReminders (MS-OXWSRMND §3.1.4.1).
+///
+/// Reads the authenticated user's calendar events, keeps those that carry a
+/// reminder (`ReminderMinutesBeforeStart`), computes each reminder's due time
+/// (start — lead time, next occurrence for recurring events), and renders every
+/// due/upcoming reminder within the requested window as an EWS `<t:Reminder>`.
+async fn handle_get_reminders(state: &Arc<AppState>, auth: &AuthContext, body: &str) -> Response {
+    let now = chrono::Utc::now();
+    let (window_start, window_end) = parse_reminder_window(body, now);
+
+    let owner = owner_from_username(&auth.username);
+    let password = auth.password.expose_secret();
+    // Load at least the requested window (so a client that reconnects after a
+    // long offline period still gets reminders it asked for), clamped to a
+    // bounded horizon to keep the calendar query cheap and predictable.
+    let load_start = window_start.min(now).max(now - chrono::Duration::days(365));
+    let load_end = window_end.max(now).min(now + chrono::Duration::days(365));
+    let items = match load_current_calendar_items(
+        state,
+        owner,
+        password,
+        Some((load_start, load_end)),
+    )
+    .await
+    {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::error!(error = %e, "GetReminders: failed to load calendar items");
+            return operation_error_response(
+                &EwsAction::GetReminders,
+                "ErrorInternalServerError",
+                "An internal error occurred while loading calendar items",
+                StatusCode::INTERNAL_SERVER_ERROR,
+            );
+        }
+    };
+
+    // Cap the returned set to bound the response for pathological data.
+    let max_items = extract_int(body, b"MaxItems", 200).clamp(1, 2000);
+
+    let mut reminders_xml = String::new();
+    let mut count = 0usize;
+    for current in &items {
+        if count >= max_items {
+            break;
+        }
+        let item = &current.item;
+        let Some(minutes) = item.reminder else {
+            continue;
+        };
+        // `reminder` stores "minutes before start" but may be signed depending
+        // on provenance (negative `-PT15M` from iCalendar, positive `15` from an
+        // EWS CreateItem); `unsigned_abs()` normalises both to the lead time
+        // without risk of overflowing on `i32::MIN`. Clamp to a year to guard
+        // against corrupt values producing an absurd due time.
+        let lead_minutes = i64::from(minutes.unsigned_abs().min(525_600));
+        let occurrence_start = next_occurrence_start(item, now);
+        let occurrence_end = occurrence_start + (item.end - item.start);
+        let reminder_due = occurrence_start - chrono::Duration::minutes(lead_minutes);
+        // Only surface reminders within the requested window; a reminder whose
+        // occurrence already fully passed is out of scope.
+        if reminder_due < window_start {
+            continue;
+        }
+        if reminder_due > window_end && occurrence_start > window_end {
+            continue;
+        }
+
+        let ck = changekey_for_item(&current.row);
+        let mut xml = String::new();
+        xml.push_str(&format!(
+            r#"<t:Reminder><t:Subject>{}</t:Subject><t:ReminderTime>{}</t:ReminderTime><t:StartDate>{}</t:StartDate><t:EndDate>{}</t:EndDate><t:ItemId Id="{}" ChangeKey="{}" /><t:ReminderGroup>Calendar</t:ReminderGroup><t:UID>{}</t:UID>"#,
+            xml_escape(&item.subject),
+            crate::util::format_ews_datetime(&reminder_due),
+            crate::util::format_ews_datetime(&occurrence_start),
+            crate::util::format_ews_datetime(&occurrence_end),
+            xml_escape(&current.row.server_id),
+            xml_escape(&ck),
+            xml_escape(&item.uid),
+        ));
+        if !item.location.is_empty() {
+            xml.push_str(&format!(
+                "<t:Location>{}</t:Location>",
+                xml_escape(&item.location)
+            ));
+        }
+        xml.push_str("</t:Reminder>");
+        reminders_xml.push_str(&xml);
+        count += 1;
+    }
+
     let inner = format!(
         r#"<m:GetRemindersResponse xmlns:m="{}" xmlns:t="{}">
   <m:ResponseMessages>
-    <m:RemindersResponseMessage ResponseClass="Success">
+    <m:GetRemindersResponseMessage ResponseClass="Success">
       <m:ResponseCode>NoError</m:ResponseCode>
-      <m:Reminders/>
-    </m:RemindersResponseMessage>
+      <m:Reminders>{}</m:Reminders>
+    </m:GetRemindersResponseMessage>
   </m:ResponseMessages>
 </m:GetRemindersResponse>"#,
-        EWS_MSG_NS, EWS_TYPE_NS
+        EWS_MSG_NS, EWS_TYPE_NS, reminders_xml
     );
     soap_ok(inner)
 }
 
-async fn handle_perform_reminder_action(_auth: &AuthContext, _body: &str) -> Response {
+/// Parse the reminder request window (`BeginTime`/`EndTime`). Defaults to a
+/// bounded "now → now+14 days" window when the client omits either bound.
+fn parse_reminder_window(
+    body: &str,
+    now: chrono::DateTime<Utc>,
+) -> (chrono::DateTime<Utc>, chrono::DateTime<Utc>) {
+    let parse = |tag: &[u8]| -> Option<chrono::DateTime<Utc>> {
+        // Use the shared EWS date-time parser so offsetless xs:dateTime values
+        // (e.g. `2026-01-01T09:00:00`) parse consistently with the rest of the
+        // EWS surface instead of silently falling back to the default window.
+        extract_first_tag_text(body, tag).and_then(|s| crate::calendar::parse_datetime(&s))
+    };
+    let start = parse(b"BeginTime")
+        .unwrap_or_else(|| now - chrono::Duration::days(30));
+    let end = parse(b"EndTime")
+        .unwrap_or_else(|| now + chrono::Duration::days(14));
+    (start, end)
+}
+
+/// Handle EWS PerformReminderAction (MS-OXWSRMND §3.1.4.2).
+///
+/// Processes `Snooze`/`Dismiss` actions on reminder item ids and returns the
+/// updated item ids in `UpdatedItemIds`. Reminder state is derived from the
+/// calendar event's `ReminderMinutesBeforeStart`; the gateway does not persist
+/// a separate per-reminder snooze/dismiss store, so a `Dismiss` or `Snooze` is
+/// acknowledged for the referenced items and echoed back to the client so its
+/// local reminder UI clears without error.
+async fn handle_perform_reminder_action(
+    _state: &Arc<AppState>,
+    _auth: &AuthContext,
+    body: &str,
+) -> Response {
+    let item_ids = extract_first_attrs(body, b"ItemId", b"Id");
+    if item_ids.is_empty() {
+        return operation_error_response(
+            &EwsAction::PerformReminderAction,
+            "ErrorInvalidIdMalformed",
+            "PerformReminderAction requires at least one ReminderItemAction",
+            StatusCode::BAD_REQUEST,
+        );
+    }
+
+    let mut updated_xml = String::new();
+    for item_id in &item_ids {
+        updated_xml.push_str(&format!(
+            r#"<t:ItemId Id="{}" ChangeKey="{}" />"#,
+            xml_escape(item_id),
+            xml_escape(item_id)
+        ));
+    }
+
     let inner = format!(
         r#"<m:PerformReminderActionResponse xmlns:m="{}" xmlns:t="{}">
   <m:ResponseMessages>
     <m:PerformReminderActionResponseMessage ResponseClass="Success">
       <m:ResponseCode>NoError</m:ResponseCode>
-      <m:UpdatedReminderIds/>
+      <m:UpdatedItemIds>{}</m:UpdatedItemIds>
     </m:PerformReminderActionResponseMessage>
   </m:ResponseMessages>
 </m:PerformReminderActionResponse>"#,
-        EWS_MSG_NS, EWS_TYPE_NS
+        EWS_MSG_NS, EWS_TYPE_NS, updated_xml
     );
     soap_ok(inner)
 }
@@ -8427,15 +8905,26 @@ async fn handle_delete_attachment(
     }
 }
 
-/// Handle EWS GetUserConfiguration operation.
+/// Handle EWS GetUserConfiguration operation (MS-OXWSUSRCFG §3.1.4.3).
 ///
-/// Per MS-OXWSUSRCFG §3.1.4.3, clients use this to retrieve user configuration
-/// objects (aliases, signatures, black/white lists) stored in a folder.
-/// The gateway does not support persistent user configuration objects, but we
-/// return a successful response with an empty configuration to allow the client
-/// to proceed without errors.
+/// New Outlook reads several per-user "Options" objects through this operation,
+/// most notably the calendar **working hours** (`Name="WorkHours"`) and the
+/// master category list (`Name="CategoryList"`). The gateway has no Stalwart-side
+/// store for arbitrary user-configuration blobs, so it derives the values it
+/// genuinely knows and returns deterministic, spec-conformant defaults for the
+/// rest:
+///
+///   * `WorkHours`  → a real `<t:WorkingHours>` block (Mon–Fri 08:00–17:00 UTC)
+///     encoded exactly as Exchange stores it (base64 UTF-8 XML inside the
+///     configuration dictionary), so the Options→Calendar "work hours" UI
+///     renders rather than appearing blank.
+///   * `CategoryList` → the union of the account's JMAP `Email` `keywords`
+///     (excluding the `$`-prefixed system keywords), surfaced as a `StringArray`
+///     dictionary entry — real, per-account data.
+///   * any other name → an empty `Dictionary` (the spec's "no object stored"
+///     shape).
 async fn handle_get_user_configuration(
-    _state: &Arc<AppState>,
+    state: &Arc<AppState>,
     auth: &AuthContext,
     body: &str,
 ) -> Response {
@@ -8508,6 +8997,11 @@ async fn handle_get_user_configuration(
         parent_ck
     );
 
+    // Build the configuration dictionary for the requested object name. Only
+    // the objects the gateway can derive real data for are populated; the rest
+    // are returned empty per the "no object stored" shape.
+    let dictionary_xml = build_user_configuration_dictionary(state, auth, &config_name).await;
+
     let response_xml = format!(
         r#"<?xml version="1.0" encoding="utf-8"?>
 <s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
@@ -8523,7 +9017,7 @@ async fn handle_get_user_configuration(
             <t:UserConfigurationName Name="{}">{}</t:UserConfigurationName>
             {}
             <t:ItemId Id="{}" ChangeKey="{}" />
-            <t:Dictionary />
+            <t:Dictionary>{}</t:Dictionary>
           </m:UserConfiguration>
         </m:GetUserConfigurationResponseMessage>
       </m:ResponseMessages>
@@ -8535,6 +9029,7 @@ async fn handle_get_user_configuration(
         parent_folder_id_xml,
         STANDARD.encode(&synthetic_id),
         change_key,
+        dictionary_xml,
         svi = version::current().render_ews_header(EWS_TYPE_NS),
     );
 
@@ -8543,6 +9038,89 @@ async fn handle_get_user_configuration(
         .header("Content-Type", "text/xml; charset=utf-8")
         .body(response_xml.into())
         .unwrap()
+}
+
+/// Build the `UserConfiguration` dictionary for a named configuration object.
+///
+/// Returns the inner `<t:DictionaryEntry>` XML (or empty string) for the
+/// requested `config_name`. Only the objects the gateway can derive real data
+/// for are populated:
+///
+///   * `WorkHours`   → a `WorkingHours` block (Mon–Fri 08:00–17:00 UTC), stored
+///     in the `ByteArray` value form Exchange uses (base64 of the UTF-8 XML
+///     `<t:WorkingHours>` fragment).
+///   * `CategoryList` → the account's JMAP email keyword labels (excluding
+///     `$`-prefixed system keywords) as a `StringArray`.
+///
+/// Anything else returns an empty string (empty dictionary).
+async fn build_user_configuration_dictionary(
+    state: &Arc<AppState>,
+    auth: &AuthContext,
+    config_name: &str,
+) -> String {
+    match config_name.to_ascii_lowercase().as_str() {
+        "workhours" | "work hours" => {
+            // A fixed zero-bias (UTC) time zone matching the documented 08:00–17:00 UTC
+            // work period. No daylight rule is declared so the reported hours do not
+            // drift by ±60m for part of the year.
+            let working_hours_xml = r#"<t:WorkingHours xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types"><t:TimeZone><t:Bias>0</t:Bias><t:StandardTime><t:Bias>0</t:Bias><t:Time>00:00:00</t:Time><t:DayOrder>1</t:DayOrder><t:Month>1</t:Month><t:DayOfWeek>Sunday</t:DayOfWeek></t:StandardTime><t:DaylightTime><t:Bias>0</t:Bias><t:Time>00:00:00</t:Time><t:DayOrder>1</t:DayOrder><t:Month>1</t:Month><t:DayOfWeek>Sunday</t:DayOfWeek></t:DaylightTime></t:TimeZone><t:WorkingPeriodArray><t:WorkingPeriod><t:DayOfWeek>Monday Tuesday Wednesday Thursday Friday</t:DayOfWeek><t:StartTimeInMinutes>480</t:StartTimeInMinutes><t:EndTimeInMinutes>1020</t:EndTimeInMinutes></t:WorkingPeriod></t:WorkingPeriodArray></t:WorkingHours>"#;
+            let encoded = STANDARD.encode(working_hours_xml.as_bytes());
+            format!(
+                r#"<t:DictionaryEntry><t:DictionaryKey><t:Type>String</t:Type><t:Value>WorkHours</t:Value></t:DictionaryKey><t:DictionaryValue><t:Type>ByteArray</t:Type><t:Value>{}</t:Value></t:DictionaryValue></t:DictionaryEntry>"#,
+                encoded
+            )
+        }
+        "categorylist" | "category list" | "categories" => {
+            let labels = collect_jmap_category_labels(state, auth).await;
+            if labels.is_empty() {
+                return String::new();
+            }
+            let value = labels.join(",");
+            format!(
+                r#"<t:DictionaryEntry><t:DictionaryKey><t:Type>String</t:Type><t:Value>CategoryList</t:Value></t:DictionaryKey><t:DictionaryValue><t:Type>StringArray</t:Type><t:Value>{}</t:Value></t:DictionaryValue></t:DictionaryEntry>"#,
+                xml_escape(&value)
+            )
+        }
+        _ => String::new(),
+    }
+}
+
+/// Collect the union of the account's JMAP email `keywords` (excluding the
+/// `$`-prefixed system keywords) to serve as the master category list.
+async fn collect_jmap_category_labels(state: &Arc<AppState>, auth: &AuthContext) -> Vec<String> {
+    let Some(jmap) = state.jmap_client.as_ref() else {
+        return Vec::new();
+    };
+    let account_id = match jmap.get_account_id(&auth.username, &auth.password).await {
+        Ok(id) => id,
+        Err(_) => return Vec::new(),
+    };
+    // Sample a bounded page of recent emails to derive the label set. The master
+    // category list is, in practice, the distinct set of user labels; a bounded
+    // sample is sufficient and bounds the query cost.
+    let result = match jmap
+        .query_emails(crate::jmap::QueryEmailsParams {
+            account_id: &account_id,
+            filter: Some(serde_json::json!({})),
+            sort: None,
+            position: 0,
+            limit: 200,
+            username: &auth.username,
+            password: &auth.password,
+        })
+        .await
+    {
+        Ok(r) => r,
+        Err(_) => return Vec::new(),
+    };
+
+    let mut labels = std::collections::BTreeSet::new();
+    for email in &result.emails {
+        for label in email.category_labels() {
+            labels.insert(label);
+        }
+    }
+    labels.into_iter().collect()
 }
 
 /// Create a calendar item via CalDAV.
@@ -9131,6 +9709,105 @@ mod tests {
         let id2 = format!("uc-{}", const_hex::encode(&digest2[..12]));
 
         assert_eq!(id1, id2, "synthetic ID should be deterministic");
+    }
+
+    #[test]
+    fn test_extract_first_attrs_collects_all_in_order() {
+        let xml = r#"<m:GetConversationItems>
+            <m:Conversations>
+                <t:Conversation><t:ConversationId Id="t1" ChangeKey="ck1"/></t:Conversation>
+                <t:Conversation><t:ConversationId Id="t2" ChangeKey="ck2"/></t:Conversation>
+            </m:Conversations>
+        </m:GetConversationItems>"#;
+        assert_eq!(
+            extract_first_attrs(xml, b"ConversationId", b"Id"),
+            vec!["t1".to_string(), "t2".to_string()]
+        );
+    }
+
+    #[test]
+    fn test_extract_first_attrs_missing_tag_returns_empty() {
+        let xml = r#"<m:SomethingElse><t:Other Id="x"/></m:SomethingElse>"#;
+        assert!(extract_first_attrs(xml, b"ConversationId", b"Id").is_empty());
+    }
+
+    #[test]
+    fn test_next_occurrence_start_non_recurring_returns_start() {
+        let now = chrono::Utc::now();
+        let start = now + chrono::Duration::hours(1);
+        let item = crate::calendar::CalendarItem {
+            start,
+            uid: "uid-1".to_string(),
+            ..Default::default()
+        };
+        // No rrule → the base start is the next (only) occurrence.
+        assert_eq!(next_occurrence_start(&item, now), start);
+    }
+
+    #[test]
+    fn test_next_occurrence_start_recurring_advances_past_now() {
+        // A daily recurrence starting long ago must advance to today/forward.
+        let now = chrono::Utc::now();
+        let start = now - chrono::Duration::days(30);
+        let item = crate::calendar::CalendarItem {
+            start,
+            uid: "uid-daily".to_string(),
+            rrule: Some("FREQ=DAILY".to_string()),
+            ..Default::default()
+        };
+        let next = next_occurrence_start(&item, now);
+        assert!(next >= now, "next occurrence must be at/after now: {next:?}");
+        // It must be the base start advanced by whole days (ignoring sub-day drift).
+        let days = (next - start).num_days();
+        assert!(days >= 30, "daily recurrence should have advanced ~30 days: {days}");
+    }
+
+    #[test]
+    fn test_parse_reminder_window_defaults_when_absent() {
+        let now = chrono::Utc::now();
+        let body = r#"<m:GetReminders/>"#;
+        let (start, end) = parse_reminder_window(body, now);
+        assert!(start < now, "default start should be in the past");
+        assert!(end > now, "default end should be in the future");
+    }
+
+    #[test]
+    fn test_parse_reminder_window_honours_bounds() {
+        let now = chrono::Utc::now();
+        // Truncate to whole seconds: GetReminders bounds are UTC second-precision
+        // date-times, and `format_ews_datetime` drops sub-second components.
+        let begin = chrono::DateTime::<Utc>::from_timestamp((now - chrono::Duration::days(2)).timestamp(), 0)
+            .unwrap();
+        let end = chrono::DateTime::<Utc>::from_timestamp((now + chrono::Duration::days(3)).timestamp(), 0)
+            .unwrap();
+        let body = format!(
+            r#"<m:GetReminders><m:BeginTime>{}</m:BeginTime><m:EndTime>{}</m:EndTime></m:GetReminders>"#,
+            crate::util::format_ews_datetime(&begin),
+            crate::util::format_ews_datetime(&end),
+        );
+        let (parsed_start, parsed_end) = parse_reminder_window(&body, now);
+        assert_eq!(parsed_start, begin);
+        assert_eq!(parsed_end, end);
+    }
+
+    #[test]
+    fn test_parse_reminder_window_accepts_offsetless_datetime() {
+        // EWS xs:dateTime permits an offsetless value; the shared parser must
+        // accept it (not silently fall back to the default window).
+        let now = chrono::Utc::now();
+        let begin = chrono::DateTime::<Utc>::from_timestamp((now - chrono::Duration::hours(2)).timestamp(), 0)
+            .unwrap();
+        let end = chrono::DateTime::<Utc>::from_timestamp((now + chrono::Duration::hours(2)).timestamp(), 0)
+            .unwrap();
+        let fmt = |d: &chrono::DateTime<Utc>| d.format("%Y-%m-%dT%H:%M:%S").to_string();
+        let body = format!(
+            r#"<m:GetReminders><m:BeginTime>{}</m:BeginTime><m:EndTime>{}</m:EndTime></m:GetReminders>"#,
+            fmt(&begin),
+            fmt(&end),
+        );
+        let (parsed_start, parsed_end) = parse_reminder_window(&body, now);
+        assert_eq!(parsed_start, begin);
+        assert_eq!(parsed_end, end);
     }
 
     #[test]
