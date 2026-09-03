@@ -111,7 +111,7 @@ pub struct TaskRow {
     pub complete: i64,
     pub date_completed: Option<String>,
     pub reminder_set: i64,
-    pub reminder_time: Option<i64>,
+    pub reminder_time: Option<String>,
     pub categories: Option<String>,
     pub body: Option<String>,
     pub updated_at: Option<String>,
@@ -624,7 +624,13 @@ impl Storage {
         owner: &str,
         since: i64,
     ) -> Result<Vec<(i64, String)>> {
-        let rows = sqlx::query("SELECT id, server_id FROM change_journal WHERE owner = ?1 AND id > ?2 AND op = 'delete' ORDER BY id ASC")
+        // Exclude gateway-local Tasks/Notes tombstones (resource_href 'task'/'note')
+        // so item_map-backed content classes (Calendar/Email/Contacts) never treat
+        // a task/note deletion as one of their own. Legacy deletes carry a NULL
+        // resource_href and are still included.
+        let rows = sqlx::query(
+            "SELECT id, server_id FROM change_journal WHERE owner = ?1 AND id > ?2 AND op = 'delete' AND (resource_href IS NULL OR resource_href NOT IN ('task', 'note')) ORDER BY id ASC"
+        )
             .bind(owner)
             .bind(since)
             .fetch_all(self.pool.as_ref())
@@ -1489,7 +1495,12 @@ impl Storage {
 
     /// Upsert a gateway-local task and record a change-journal event so EAS
     /// Ping/direct-push and change tracking observe the mutation.
-    pub async fn upsert_task(&self, owner: &str, server_id: &str, fields: &TaskFields<'_>) -> Result<()> {
+    pub async fn upsert_task(
+        &self,
+        owner: &str,
+        server_id: &str,
+        fields: &TaskFields<'_>,
+    ) -> Result<()> {
         let mut tx = sqlx::Acquire::begin(self.pool.as_ref())
             .await
             .map_err(|e| GatewayError::Storage(format!("Transaction error: {}", e)))?;
@@ -1539,29 +1550,38 @@ impl Storage {
     }
 
     /// Delete a gateway-local task and record a change-journal tombstone.
-    pub async fn delete_task(&self, owner: &str, server_id: &str) -> Result<()> {
+    ///
+    /// Returns the number of rows actually deleted (0 if the `server_id` was
+    /// unknown). The tombstone is only written when a row was removed, and is
+    /// tagged with `resource_href = 'task'` so EAS Ping can scope change
+    /// detection per content class without misclassifying deletes.
+    pub async fn delete_task(&self, owner: &str, server_id: &str) -> Result<u64> {
         let mut tx = sqlx::Acquire::begin(self.pool.as_ref())
             .await
             .map_err(|e| GatewayError::Storage(format!("Transaction error: {}", e)))?;
 
-        sqlx::query("DELETE FROM task_map WHERE owner = ?1 AND server_id = ?2")
+        let deleted = sqlx::query("DELETE FROM task_map WHERE owner = ?1 AND server_id = ?2")
             .bind(owner)
             .bind(server_id)
             .execute(&mut *tx)
             .await
             .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
 
-        sqlx::query("INSERT INTO change_journal (owner, server_id, op) VALUES (?1, ?2, 'delete')")
+        if deleted.rows_affected() > 0 {
+            sqlx::query(
+                "INSERT INTO change_journal (owner, server_id, op, resource_href) VALUES (?1, ?2, 'delete', 'task')"
+            )
             .bind(owner)
             .bind(server_id)
             .execute(&mut *tx)
             .await
             .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+        }
 
         tx.commit()
             .await
             .map_err(|e| GatewayError::Storage(format!("Commit error: {}", e)))?;
-        Ok(())
+        Ok(deleted.rows_affected())
     }
 
     /// Fetch a single task by server_id.
@@ -1590,7 +1610,12 @@ impl Storage {
     }
 
     /// Upsert a gateway-local note and record a change-journal event.
-    pub async fn upsert_note(&self, owner: &str, server_id: &str, fields: &NoteFields<'_>) -> Result<()> {
+    pub async fn upsert_note(
+        &self,
+        owner: &str,
+        server_id: &str,
+        fields: &NoteFields<'_>,
+    ) -> Result<()> {
         let mut tx = sqlx::Acquire::begin(self.pool.as_ref())
             .await
             .map_err(|e| GatewayError::Storage(format!("Transaction error: {}", e)))?;
@@ -1630,29 +1655,37 @@ impl Storage {
     }
 
     /// Delete a gateway-local note and record a change-journal tombstone.
-    pub async fn delete_note(&self, owner: &str, server_id: &str) -> Result<()> {
+    ///
+    /// Returns the number of rows actually deleted (0 if the `server_id` was
+    /// unknown). The tombstone is only written when a row was removed, and is
+    /// tagged with `resource_href = 'note'` for class-scoped Ping detection.
+    pub async fn delete_note(&self, owner: &str, server_id: &str) -> Result<u64> {
         let mut tx = sqlx::Acquire::begin(self.pool.as_ref())
             .await
             .map_err(|e| GatewayError::Storage(format!("Transaction error: {}", e)))?;
 
-        sqlx::query("DELETE FROM note_map WHERE owner = ?1 AND server_id = ?2")
+        let deleted = sqlx::query("DELETE FROM note_map WHERE owner = ?1 AND server_id = ?2")
             .bind(owner)
             .bind(server_id)
             .execute(&mut *tx)
             .await
             .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
 
-        sqlx::query("INSERT INTO change_journal (owner, server_id, op) VALUES (?1, ?2, 'delete')")
+        if deleted.rows_affected() > 0 {
+            sqlx::query(
+                "INSERT INTO change_journal (owner, server_id, op, resource_href) VALUES (?1, ?2, 'delete', 'note')"
+            )
             .bind(owner)
             .bind(server_id)
             .execute(&mut *tx)
             .await
             .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+        }
 
         tx.commit()
             .await
             .map_err(|e| GatewayError::Storage(format!("Commit error: {}", e)))?;
-        Ok(())
+        Ok(deleted.rows_affected())
     }
 
     /// Fetch a single note by server_id.
@@ -1694,7 +1727,7 @@ pub struct TaskFields<'a> {
     pub complete: i64,
     pub date_completed: Option<&'a str>,
     pub reminder_set: i64,
-    pub reminder_time: Option<i64>,
+    pub reminder_time: Option<&'a str>,
     pub categories: Option<&'a str>,
     pub body: Option<&'a str>,
 }

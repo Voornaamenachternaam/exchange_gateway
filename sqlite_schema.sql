@@ -380,7 +380,7 @@ CREATE TABLE IF NOT EXISTS task_map (
     complete INTEGER NOT NULL DEFAULT 0,
     date_completed TEXT,
     reminder_set INTEGER NOT NULL DEFAULT 0,
-    reminder_time INTEGER,
+    reminder_time TEXT,
     categories TEXT,
     body TEXT,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,

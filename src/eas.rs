@@ -3230,123 +3230,27 @@ async fn handle_sync_collections(ctx: &SyncCtx<'_>, collections: &[SyncCollectio
                 }
             }
         } else if is_tasks {
-            // Gateway-local Tasks sync (MS-ASTASK) via the SQLite-backed store.
-            let mutation_xml = coll.xml.clone();
-            let mutations = crate::tasks::parse_task_mutations(&mutation_xml);
-
-            let mut mutation_responses = String::new();
-            if !mutations.is_empty() {
-                match crate::tasks::apply_task_mutations(state, username, &mutations).await {
-                    Ok(results) => {
-                        mutation_responses =
-                            crate::tasks::render_mutation_responses(&results);
-                    }
-                    Err(e) => {
-                        tracing::error!(
-                            request_id = %request_id,
-                            collection_id = %collection_id,
-                            error = %e,
-                            "Failed to apply tasks mutations"
-                        );
-                        return xml_or_wbxml_response(
-                            wbxml,
-                            as_wbxml,
-                            &format!(
-                                "<Collection><Class>Tasks</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>6</Status></Collection>",
-                                xml_escape(incoming_key),
-                                xml_escape(collection_id)
-                            ),
-                            request_id,
-                        );
-                    }
-                }
-            }
-
-            let new_sync_key = Uuid::new_v4().simple().to_string();
-            if let Err(e) = state
-                .storage
-                .set_sync_key(username, &state_collection_id, &new_sync_key, None)
-                .await
-            {
-                tracing::warn!(error = %e, "Failed to set tasks sync key");
-            }
-
-            match crate::tasks::sync_tasks(state, username).await {
-                Ok(changes_xml) => format!(
-                    "<Collection><Class>Tasks</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>1</Status>{}{}</Collection>",
-                    xml_escape(&new_sync_key),
-                    xml_escape(collection_id),
-                    mutation_responses,
-                    changes_xml
-                ),
-                Err(e) => {
-                    tracing::error!(error = %e, "Tasks sync failed");
-                    format!(
-                        "<Collection><Class>Tasks</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>6</Status></Collection>",
-                        xml_escape(incoming_key),
-                        xml_escape(collection_id)
-                    )
-                }
-            }
+            handle_local_content_sync(
+                state,
+                username,
+                collection_id,
+                &state_collection_id,
+                incoming_key,
+                coll,
+                LocalContentKind::Tasks,
+            )
+            .await
         } else if is_notes {
-            // Gateway-local Notes sync (MS-ASNOTE) via the SQLite-backed store.
-            let mutation_xml = coll.xml.clone();
-            let mutations = crate::tasks::parse_note_mutations(&mutation_xml);
-
-            let mut mutation_responses = String::new();
-            if !mutations.is_empty() {
-                match crate::tasks::apply_note_mutations(state, username, &mutations).await {
-                    Ok(results) => {
-                        mutation_responses =
-                            crate::tasks::render_mutation_responses(&results);
-                    }
-                    Err(e) => {
-                        tracing::error!(
-                            request_id = %request_id,
-                            collection_id = %collection_id,
-                            error = %e,
-                            "Failed to apply notes mutations"
-                        );
-                        return xml_or_wbxml_response(
-                            wbxml,
-                            as_wbxml,
-                            &format!(
-                                "<Collection><Class>Notes</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>6</Status></Collection>",
-                                xml_escape(incoming_key),
-                                xml_escape(collection_id)
-                            ),
-                            request_id,
-                        );
-                    }
-                }
-            }
-
-            let new_sync_key = Uuid::new_v4().simple().to_string();
-            if let Err(e) = state
-                .storage
-                .set_sync_key(username, &state_collection_id, &new_sync_key, None)
-                .await
-            {
-                tracing::warn!(error = %e, "Failed to set notes sync key");
-            }
-
-            match crate::tasks::sync_notes(state, username).await {
-                Ok(changes_xml) => format!(
-                    "<Collection><Class>Notes</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>1</Status>{}{}</Collection>",
-                    xml_escape(&new_sync_key),
-                    xml_escape(collection_id),
-                    mutation_responses,
-                    changes_xml
-                ),
-                Err(e) => {
-                    tracing::error!(error = %e, "Notes sync failed");
-                    format!(
-                        "<Collection><Class>Notes</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>6</Status></Collection>",
-                        xml_escape(incoming_key),
-                        xml_escape(collection_id)
-                    )
-                }
-            }
+            handle_local_content_sync(
+                state,
+                username,
+                collection_id,
+                &state_collection_id,
+                incoming_key,
+                coll,
+                LocalContentKind::Notes,
+            )
+            .await
         } else {
             // Truly unsupported collection type.
             tracing::warn!(
@@ -3390,6 +3294,243 @@ fn extract_inner_collection(resp_xml: &str) -> String {
     }
     // Fallback: return the whole XML as-is
     resp_xml.to_string()
+}
+/// Identifies which gateway-local content class a Sync collection targets.
+#[derive(Clone, Copy)]
+enum LocalContentKind {
+    Tasks,
+    Notes,
+}
+
+impl LocalContentKind {
+    fn class_name(self) -> &'static str {
+        match self {
+            LocalContentKind::Tasks => "Tasks",
+            LocalContentKind::Notes => "Notes",
+        }
+    }
+}
+
+/// Handle a Sync collection for the gateway-local Tasks or Notes store.
+///
+/// Unlike Calendar/Email/Contacts (which diff an upstream JMAP/CardDAV state),
+/// these namespaces live entirely in the gateway's SQLite store, so each Sync
+/// renders the full owned set as `<Add>` elements. The collection still follows
+/// the MS-ASCMD Sync contract: the incoming SyncKey is validated (Status 3 on
+/// mismatch, per §2.2.3.177.17), the returned SyncKey is rotated and tied to the
+/// current change-journal sequence (so Ping/direct-push can detect further
+/// changes without a full resend), server changes are wrapped in `<Commands>`,
+/// and GetChanges/WindowSize are honoured. A malformed command body is reported
+/// as a protocol error (Status 4) rather than silently truncating mutations.
+async fn handle_local_content_sync(
+    state: &Arc<AppState>,
+    username: &str,
+    collection_id: &str,
+    state_collection_id: &str,
+    incoming_key: &str,
+    coll: &SyncCollection,
+    kind: LocalContentKind,
+) -> String {
+    let class = kind.class_name();
+
+    // Parse and apply client mutations (Add/Change/Delete). A malformed command
+    // body is a protocol error (Status 4) rather than silently truncating the set.
+    let mut mutation_responses = String::new();
+    match kind {
+        LocalContentKind::Tasks => {
+            let mutations = match crate::tasks::parse_task_mutations(&coll.xml) {
+                Ok(m) => m,
+                Err(e) => {
+                    tracing::warn!(
+                        collection_id = %collection_id,
+                        class = class,
+                        error = %e,
+                        "Malformed {} Sync body",
+                        class
+                    );
+                    return format!(
+                        "<Collection><Class>{}</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>4</Status></Collection>",
+                        class,
+                        xml_escape(incoming_key),
+                        xml_escape(collection_id)
+                    );
+                }
+            };
+            if !mutations.is_empty() {
+                match crate::tasks::apply_task_mutations(state, username, &mutations).await {
+                    Ok(results) => {
+                        mutation_responses = crate::tasks::render_mutation_responses(&results);
+                    }
+                    Err(e) => {
+                        tracing::error!(
+                            collection_id = %collection_id,
+                            class = class,
+                            error = %e,
+                            "Failed to apply {} mutations",
+                            class
+                        );
+                        return format!(
+                            "<Collection><Class>{}</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>6</Status></Collection>",
+                            class,
+                            xml_escape(incoming_key),
+                            xml_escape(collection_id)
+                        );
+                    }
+                }
+            }
+        }
+        LocalContentKind::Notes => {
+            let mutations = match crate::tasks::parse_note_mutations(&coll.xml) {
+                Ok(m) => m,
+                Err(e) => {
+                    tracing::warn!(
+                        collection_id = %collection_id,
+                        class = class,
+                        error = %e,
+                        "Malformed {} Sync body",
+                        class
+                    );
+                    return format!(
+                        "<Collection><Class>{}</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>4</Status></Collection>",
+                        class,
+                        xml_escape(incoming_key),
+                        xml_escape(collection_id)
+                    );
+                }
+            };
+            if !mutations.is_empty() {
+                match crate::tasks::apply_note_mutations(state, username, &mutations).await {
+                    Ok(results) => {
+                        mutation_responses = crate::tasks::render_mutation_responses(&results);
+                    }
+                    Err(e) => {
+                        tracing::error!(
+                            collection_id = %collection_id,
+                            class = class,
+                            error = %e,
+                            "Failed to apply {} mutations",
+                            class
+                        );
+                        return format!(
+                            "<Collection><Class>{}</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>6</Status></Collection>",
+                            class,
+                            xml_escape(incoming_key),
+                            xml_escape(collection_id)
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    // A non-zero incoming key must match the last key issued for this collection,
+    // otherwise the client must re-prime with SyncKey 0 (MS-ASCMD Status 3).
+    if incoming_key != "0" {
+        let valid = match state
+            .storage
+            .get_sync_key(username, state_collection_id)
+            .await
+        {
+            Ok(Some((stored, _))) => stored == incoming_key,
+            _ => false,
+        };
+        if !valid {
+            return format!(
+                "<Collection><Class>{}</Class><SyncKey>0</SyncKey><CollectionId>{}</CollectionId><Status>3</Status></Collection>",
+                class,
+                xml_escape(collection_id)
+            );
+        }
+    }
+
+    let latest_seq = state.storage.get_latest_change_seq().await.unwrap_or(0);
+    let new_sync_key = Uuid::new_v4().simple().to_string();
+    let watermark = format!("seq:{}", latest_seq);
+    if let Err(e) = state
+        .storage
+        .set_sync_key(
+            username,
+            state_collection_id,
+            &new_sync_key,
+            Some(&watermark),
+        )
+        .await
+    {
+        tracing::warn!(error = %e, "Failed to set {} sync key", class);
+    }
+
+    // GetChanges=0 means the client only wants its mutations acknowledged; the
+    // key is still rotated so the next Sync yields any new server changes.
+    if !coll.get_changes {
+        return format!(
+            "<Collection><Class>{}</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>1</Status>{}</Collection>",
+            class,
+            xml_escape(&new_sync_key),
+            xml_escape(collection_id),
+            mutation_responses
+        );
+    }
+
+    let changes_xml = match match kind {
+        LocalContentKind::Tasks => crate::tasks::sync_tasks(state, username).await,
+        LocalContentKind::Notes => crate::tasks::sync_notes(state, username).await,
+    } {
+        Ok(x) => x,
+        Err(e) => {
+            tracing::error!(
+                collection_id = %collection_id,
+                class = class,
+                error = %e,
+                "{} sync failed",
+                class
+            );
+            return format!(
+                "<Collection><Class>{}</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>6</Status></Collection>",
+                class,
+                xml_escape(incoming_key),
+                xml_escape(collection_id)
+            );
+        }
+    };
+
+    let window = coll.window_size.unwrap_or(100).max(1);
+    let limited = limit_add_commands(&changes_xml, window);
+    let commands = if limited.is_empty() {
+        "<Commands></Commands>".to_string()
+    } else {
+        format!("<Commands>{}</Commands>", limited)
+    };
+
+    format!(
+        "<Collection><Class>{}</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>1</Status>{}{}</Collection>",
+        class,
+        xml_escape(&new_sync_key),
+        xml_escape(collection_id),
+        mutation_responses,
+        commands
+    )
+}
+
+/// Keep at most `limit` `<Add>...</Add>` commands from a concatenated list of EAS
+/// server change elements. The gateway-local Tasks/Notes stores only emit `<Add>`
+/// elements, so this simple delimiter walk is sufficient.
+fn limit_add_commands(changes_xml: &str, limit: usize) -> String {
+    let mut out = String::with_capacity(changes_xml.len());
+    let mut rest = changes_xml;
+    let mut count = 0;
+    while count < limit {
+        let Some(start) = rest.find("<Add>") else {
+            break;
+        };
+        let Some(end_off) = rest[start..].find("</Add>") else {
+            break;
+        };
+        let end = start + end_off + "</Add>".len();
+        out.push_str(&rest[..end]);
+        rest = &rest[end..];
+        count += 1;
+    }
+    out
 }
 
 /// Handle EAS Email Sync class by routing to JMAP.
@@ -4369,7 +4510,13 @@ mod tests {
                 id: id.to_string(),
                 class_name: class.to_string(),
             };
-            assert_eq!(ping_folder_kind(&folder), expected, "id={} class={}", id, class);
+            assert_eq!(
+                ping_folder_kind(&folder),
+                expected,
+                "id={} class={}",
+                id,
+                class
+            );
         }
     }
 }

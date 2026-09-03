@@ -13,8 +13,8 @@
 use crate::models::AppState;
 use crate::storage::{NoteFields, NoteRow, TaskFields, TaskRow};
 use anyhow::Result;
-use quick_xml::events::Event;
 use quick_xml::Reader;
+use quick_xml::events::Event;
 use uuid::Uuid;
 
 /// EAS collection type discriminators (see MS-ASCMD §2.2.3.186.3 / FolderSync Type).
@@ -39,11 +39,17 @@ pub fn render_eas_task(row: &TaskRow) -> String {
     }
 
     if let Some(importance) = row.importance {
-        xml.push_str(&format!("<Tasks:Importance>{}</Tasks:Importance>", importance));
+        xml.push_str(&format!(
+            "<Tasks:Importance>{}</Tasks:Importance>",
+            importance
+        ));
     }
 
     if let Some(sensitivity) = row.sensitivity {
-        xml.push_str(&format!("<Tasks:Sensitivity>{}</Tasks:Sensitivity>", sensitivity));
+        xml.push_str(&format!(
+            "<Tasks:Sensitivity>{}</Tasks:Sensitivity>",
+            sensitivity
+        ));
     }
 
     if let Some(start_date) = row.start_date.as_deref() {
@@ -75,7 +81,10 @@ pub fn render_eas_task(row: &TaskRow) -> String {
     }
 
     // MS-ASTASK: 0 = incomplete, 1 = complete.
-    xml.push_str(&format!("<Tasks:Complete>{}</Tasks:Complete>", row.complete));
+    xml.push_str(&format!(
+        "<Tasks:Complete>{}</Tasks:Complete>",
+        row.complete
+    ));
 
     if let Some(date_completed) = row.date_completed.as_deref()
         && !date_completed.is_empty()
@@ -91,10 +100,12 @@ pub fn render_eas_task(row: &TaskRow) -> String {
         row.reminder_set
     ));
 
-    if let Some(reminder_time) = row.reminder_time {
+    if let Some(reminder_time) = row.reminder_time.as_deref()
+        && !reminder_time.is_empty()
+    {
         xml.push_str(&format!(
             "<Tasks:ReminderTime>{}</Tasks:ReminderTime>",
-            reminder_time
+            xml_escape(reminder_time)
         ));
     }
 
@@ -232,6 +243,7 @@ pub struct MutationResult {
     pub server_id: String,
     pub status: &'static str,
     pub kind: MutationKind,
+    pub client_id: Option<String>,
 }
 
 /// A parsed task mutation (Add/Change/Delete) from a Sync `<Collection>`.
@@ -262,10 +274,10 @@ pub struct TaskFieldsOwned {
     pub due_date: Option<String>,
     pub utc_start_date: Option<String>,
     pub utc_due_date: Option<String>,
-    pub complete: i64,
+    pub complete: Option<i64>,
     pub date_completed: Option<String>,
-    pub reminder_set: i64,
-    pub reminder_time: Option<i64>,
+    pub reminder_set: Option<i64>,
+    pub reminder_time: Option<String>,
     pub categories: Option<String>,
     pub body: Option<String>,
 }
@@ -293,7 +305,11 @@ struct RawMutation {
 }
 
 /// Parse raw mutations from the collection XML body.
-fn parse_raw_mutations(xml: &str) -> Vec<RawMutation> {
+///
+/// The error from the underlying XML reader is propagated so the caller can
+/// reject a malformed collection with a protocol error instead of silently
+/// applying a partial command set.
+fn parse_raw_mutations(xml: &str) -> Result<Vec<RawMutation>> {
     let mut reader = Reader::from_str(xml);
     reader.config_mut().trim_text(false);
     let mut buf = Vec::new();
@@ -372,8 +388,8 @@ fn parse_raw_mutations(xml: &str) -> Vec<RawMutation> {
                 }
                 if let Some(leaf) = pending_leaf.clone() {
                     match leaf.as_slice() {
-                        b"ServerId" => current.server_id = Some(text),
-                        b"ClientId" => current.client_id = Some(text),
+                        b"ServerId" if !in_app_data => current.server_id = Some(text),
+                        b"ClientId" if !in_app_data => current.client_id = Some(text),
                         b"Category" if in_app_data => {
                             // Accumulate categories joined by ';'.
                             merge_category(&mut current, &text);
@@ -390,22 +406,19 @@ fn parse_raw_mutations(xml: &str) -> Vec<RawMutation> {
                     }
                 }
             }
-            Ok(Event::Eof) | Err(_) => break,
+            Ok(Event::Eof) => break,
+            Err(e) => return Err(anyhow::anyhow!("Failed to parse Sync XML: {}", e)),
             _ => {}
         }
         buf.clear();
     }
 
-    mutations
+    Ok(mutations)
 }
 
 fn merge_category(current: &mut RawMutation, text: &str) {
     let key = "Categories";
-    match current
-        .fields
-        .iter_mut()
-        .find(|(k, _)| k == key)
-    {
+    match current.fields.iter_mut().find(|(k, _)| k == key) {
         Some((_, existing)) => {
             if !existing.is_empty() {
                 existing.push(';');
@@ -417,8 +430,8 @@ fn merge_category(current: &mut RawMutation, text: &str) {
 }
 
 /// Parse an EAS Sync collection into task mutations.
-pub fn parse_task_mutations(xml: &str) -> Vec<TaskMutation> {
-    parse_raw_mutations(xml)
+pub fn parse_task_mutations(xml: &str) -> Result<Vec<TaskMutation>> {
+    let parsed = parse_raw_mutations(xml)?
         .into_iter()
         .filter_map(|raw| {
             let kind = raw.kind?;
@@ -434,12 +447,13 @@ pub fn parse_task_mutations(xml: &str) -> Vec<TaskMutation> {
                 fields,
             })
         })
-        .collect()
+        .collect();
+    Ok(parsed)
 }
 
 /// Parse an EAS Sync collection into note mutations.
-pub fn parse_note_mutations(xml: &str) -> Vec<NoteMutation> {
-    parse_raw_mutations(xml)
+pub fn parse_note_mutations(xml: &str) -> Result<Vec<NoteMutation>> {
+    let parsed = parse_raw_mutations(xml)?
         .into_iter()
         .filter_map(|raw| {
             let kind = raw.kind?;
@@ -455,7 +469,8 @@ pub fn parse_note_mutations(xml: &str) -> Vec<NoteMutation> {
                 fields,
             })
         })
-        .collect()
+        .collect();
+    Ok(parsed)
 }
 
 fn apply_task_field(fields: &mut TaskFieldsOwned, key: &str, value: &str) {
@@ -467,10 +482,11 @@ fn apply_task_field(fields: &mut TaskFieldsOwned, key: &str, value: &str) {
         "DueDate" => fields.due_date = Some(value.to_string()),
         "UtcStartDate" => fields.utc_start_date = Some(value.to_string()),
         "UtcDueDate" => fields.utc_due_date = Some(value.to_string()),
-        "Complete" => fields.complete = value.parse::<i64>().unwrap_or(0),
+        "Complete" => fields.complete = value.parse::<i64>().ok(),
         "DateCompleted" => fields.date_completed = Some(value.to_string()),
-        "ReminderSet" => fields.reminder_set = value.parse::<i64>().unwrap_or(0),
-        "ReminderTime" => fields.reminder_time = value.parse::<i64>().ok(),
+        "ReminderSet" => fields.reminder_set = value.parse::<i64>().ok(),
+        // ReminderTime is an MS-ASTASK dateTime (ISO 8601), preserved as text.
+        "ReminderTime" => fields.reminder_time = Some(value.to_string()),
         "Categories" => fields.categories = Some(value.to_string()),
         // Tasks:Body (a direct text element) and AirSyncBase:Body/Data both carry
         // the task body text; capture either.
@@ -507,14 +523,25 @@ pub async fn apply_task_mutations(
                         server_id: String::new(),
                         status: "6",
                         kind: MutationKind::Delete,
+                        client_id: m.client_id.clone(),
                     });
                     continue;
                 }
                 match state.storage.delete_task(username, &m.server_id).await {
-                    Ok(()) => results.push(MutationResult {
+                    Ok(0) => {
+                        // ServerId no longer exists on the server (MS-ASCMD status 8).
+                        results.push(MutationResult {
+                            server_id: m.server_id.clone(),
+                            status: "8",
+                            kind: MutationKind::Delete,
+                            client_id: m.client_id.clone(),
+                        });
+                    }
+                    Ok(_) => results.push(MutationResult {
                         server_id: m.server_id.clone(),
                         status: "1",
                         kind: MutationKind::Delete,
+                        client_id: m.client_id.clone(),
                     }),
                     Err(e) => {
                         tracing::warn!(error = %e, "Failed to delete task");
@@ -522,6 +549,7 @@ pub async fn apply_task_mutations(
                             server_id: m.server_id.clone(),
                             status: "6",
                             kind: MutationKind::Delete,
+                            client_id: m.client_id.clone(),
                         });
                     }
                 }
@@ -542,18 +570,23 @@ pub async fn apply_task_mutations(
                     due_date: m.fields.due_date.as_deref(),
                     utc_start_date: m.fields.utc_start_date.as_deref(),
                     utc_due_date: m.fields.utc_due_date.as_deref(),
-                    complete: m.fields.complete,
+                    complete: m.fields.complete.unwrap_or(0),
                     date_completed: m.fields.date_completed.as_deref(),
-                    reminder_set: m.fields.reminder_set,
-                    reminder_time: m.fields.reminder_time,
+                    reminder_set: m.fields.reminder_set.unwrap_or(0),
+                    reminder_time: m.fields.reminder_time.as_deref(),
                     categories: m.fields.categories.as_deref(),
                     body: m.fields.body.as_deref(),
                 };
-                match state.storage.upsert_task(username, &server_id, &fields).await {
+                match state
+                    .storage
+                    .upsert_task(username, &server_id, &fields)
+                    .await
+                {
                     Ok(()) => results.push(MutationResult {
                         server_id,
                         status: "1",
                         kind: MutationKind::Add,
+                        client_id: m.client_id.clone(),
                     }),
                     Err(e) => {
                         tracing::warn!(error = %e, "Failed to upsert task");
@@ -561,6 +594,7 @@ pub async fn apply_task_mutations(
                             server_id,
                             status: "6",
                             kind: MutationKind::Add,
+                            client_id: m.client_id.clone(),
                         });
                     }
                 }
@@ -571,23 +605,77 @@ pub async fn apply_task_mutations(
                         server_id: String::new(),
                         status: "6",
                         kind: MutationKind::Change,
+                        client_id: m.client_id.clone(),
                     });
                     continue;
                 }
+                // A Change must reference an existing record and only overwrite the
+                // properties the client actually supplied (MS-ASCMD permits partial
+                // Change commands; unsupplied properties must be preserved).
+                let existing = match state.storage.get_task(username, &m.server_id).await {
+                    Ok(Some(row)) => row,
+                    Ok(None) => {
+                        results.push(MutationResult {
+                            server_id: m.server_id.clone(),
+                            status: "8",
+                            kind: MutationKind::Change,
+                            client_id: m.client_id.clone(),
+                        });
+                        continue;
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "Failed to load task for change");
+                        results.push(MutationResult {
+                            server_id: m.server_id.clone(),
+                            status: "6",
+                            kind: MutationKind::Change,
+                            client_id: m.client_id.clone(),
+                        });
+                        continue;
+                    }
+                };
                 let fields = TaskFields {
-                    subject: m.fields.subject.as_deref(),
-                    importance: m.fields.importance,
-                    sensitivity: m.fields.sensitivity,
-                    start_date: m.fields.start_date.as_deref(),
-                    due_date: m.fields.due_date.as_deref(),
-                    utc_start_date: m.fields.utc_start_date.as_deref(),
-                    utc_due_date: m.fields.utc_due_date.as_deref(),
-                    complete: m.fields.complete,
-                    date_completed: m.fields.date_completed.as_deref(),
-                    reminder_set: m.fields.reminder_set,
-                    reminder_time: m.fields.reminder_time,
-                    categories: m.fields.categories.as_deref(),
-                    body: m.fields.body.as_deref(),
+                    subject: m.fields.subject.as_deref().or(existing.subject.as_deref()),
+                    importance: m.fields.importance.or(existing.importance),
+                    sensitivity: m.fields.sensitivity.or(existing.sensitivity),
+                    start_date: m
+                        .fields
+                        .start_date
+                        .as_deref()
+                        .or(existing.start_date.as_deref()),
+                    due_date: m
+                        .fields
+                        .due_date
+                        .as_deref()
+                        .or(existing.due_date.as_deref()),
+                    utc_start_date: m
+                        .fields
+                        .utc_start_date
+                        .as_deref()
+                        .or(existing.utc_start_date.as_deref()),
+                    utc_due_date: m
+                        .fields
+                        .utc_due_date
+                        .as_deref()
+                        .or(existing.utc_due_date.as_deref()),
+                    complete: m.fields.complete.unwrap_or(existing.complete),
+                    date_completed: m
+                        .fields
+                        .date_completed
+                        .as_deref()
+                        .or(existing.date_completed.as_deref()),
+                    reminder_set: m.fields.reminder_set.unwrap_or(existing.reminder_set),
+                    reminder_time: m
+                        .fields
+                        .reminder_time
+                        .as_deref()
+                        .or(existing.reminder_time.as_deref()),
+                    categories: m
+                        .fields
+                        .categories
+                        .as_deref()
+                        .or(existing.categories.as_deref()),
+                    body: m.fields.body.as_deref().or(existing.body.as_deref()),
                 };
                 match state
                     .storage
@@ -598,6 +686,7 @@ pub async fn apply_task_mutations(
                         server_id: m.server_id.clone(),
                         status: "1",
                         kind: MutationKind::Change,
+                        client_id: m.client_id.clone(),
                     }),
                     Err(e) => {
                         tracing::warn!(error = %e, "Failed to update task");
@@ -605,6 +694,7 @@ pub async fn apply_task_mutations(
                             server_id: m.server_id.clone(),
                             status: "6",
                             kind: MutationKind::Change,
+                            client_id: m.client_id.clone(),
                         });
                     }
                 }
@@ -631,14 +721,25 @@ pub async fn apply_note_mutations(
                         server_id: String::new(),
                         status: "6",
                         kind: MutationKind::Delete,
+                        client_id: m.client_id.clone(),
                     });
                     continue;
                 }
                 match state.storage.delete_note(username, &m.server_id).await {
-                    Ok(()) => results.push(MutationResult {
+                    Ok(0) => {
+                        // ServerId no longer exists on the server (MS-ASCMD status 8).
+                        results.push(MutationResult {
+                            server_id: m.server_id.clone(),
+                            status: "8",
+                            kind: MutationKind::Delete,
+                            client_id: m.client_id.clone(),
+                        });
+                    }
+                    Ok(_) => results.push(MutationResult {
                         server_id: m.server_id.clone(),
                         status: "1",
                         kind: MutationKind::Delete,
+                        client_id: m.client_id.clone(),
                     }),
                     Err(e) => {
                         tracing::warn!(error = %e, "Failed to delete note");
@@ -646,6 +747,7 @@ pub async fn apply_note_mutations(
                             server_id: m.server_id.clone(),
                             status: "6",
                             kind: MutationKind::Delete,
+                            client_id: m.client_id.clone(),
                         });
                     }
                 }
@@ -664,11 +766,16 @@ pub async fn apply_note_mutations(
                     categories: m.fields.categories.as_deref(),
                     last_modified_date: Some(last_modified.as_str()),
                 };
-                match state.storage.upsert_note(username, &server_id, &fields).await {
+                match state
+                    .storage
+                    .upsert_note(username, &server_id, &fields)
+                    .await
+                {
                     Ok(()) => results.push(MutationResult {
                         server_id,
                         status: "1",
                         kind: MutationKind::Add,
+                        client_id: m.client_id.clone(),
                     }),
                     Err(e) => {
                         tracing::warn!(error = %e, "Failed to upsert note");
@@ -676,6 +783,7 @@ pub async fn apply_note_mutations(
                             server_id,
                             status: "6",
                             kind: MutationKind::Add,
+                            client_id: m.client_id.clone(),
                         });
                     }
                 }
@@ -686,15 +794,48 @@ pub async fn apply_note_mutations(
                         server_id: String::new(),
                         status: "6",
                         kind: MutationKind::Change,
+                        client_id: m.client_id.clone(),
                     });
                     continue;
                 }
+                // A Change must reference an existing record and only overwrite the
+                // properties the client actually supplied.
+                let existing = match state.storage.get_note(username, &m.server_id).await {
+                    Ok(Some(row)) => row,
+                    Ok(None) => {
+                        results.push(MutationResult {
+                            server_id: m.server_id.clone(),
+                            status: "8",
+                            kind: MutationKind::Change,
+                            client_id: m.client_id.clone(),
+                        });
+                        continue;
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "Failed to load note for change");
+                        results.push(MutationResult {
+                            server_id: m.server_id.clone(),
+                            status: "6",
+                            kind: MutationKind::Change,
+                            client_id: m.client_id.clone(),
+                        });
+                        continue;
+                    }
+                };
                 let last_modified = now_utc_string();
                 let fields = NoteFields {
-                    subject: m.fields.subject.as_deref(),
-                    message_class: m.fields.message_class.as_deref(),
-                    body: m.fields.body.as_deref(),
-                    categories: m.fields.categories.as_deref(),
+                    subject: m.fields.subject.as_deref().or(existing.subject.as_deref()),
+                    message_class: m
+                        .fields
+                        .message_class
+                        .as_deref()
+                        .or(existing.message_class.as_deref()),
+                    body: m.fields.body.as_deref().or(existing.body.as_deref()),
+                    categories: m
+                        .fields
+                        .categories
+                        .as_deref()
+                        .or(existing.categories.as_deref()),
                     last_modified_date: Some(last_modified.as_str()),
                 };
                 match state
@@ -706,6 +847,7 @@ pub async fn apply_note_mutations(
                         server_id: m.server_id.clone(),
                         status: "1",
                         kind: MutationKind::Change,
+                        client_id: m.client_id.clone(),
                     }),
                     Err(e) => {
                         tracing::warn!(error = %e, "Failed to update note");
@@ -713,6 +855,7 @@ pub async fn apply_note_mutations(
                             server_id: m.server_id.clone(),
                             status: "6",
                             kind: MutationKind::Change,
+                            client_id: m.client_id.clone(),
                         });
                     }
                 }
@@ -734,8 +877,12 @@ pub fn render_mutation_responses(results: &[MutationResult]) -> String {
     for res in results {
         match res.kind {
             MutationKind::Add => {
+                // Per MS-ASCMD §2.2.3.7.2, an Add response returns the client
+                // supplied ClientId alongside the assigned ServerId so the client
+                // can correlate its local item with the server item.
                 xml.push_str(&format!(
-                    r#"<Add><ServerId>{}</ServerId><Status>{}</Status></Add>"#,
+                    r#"<Add><ClientId>{}</ClientId><ServerId>{}</ServerId><Status>{}</Status></Add>"#,
+                    xml_escape(res.client_id.as_deref().unwrap_or_default()),
                     xml_escape(&res.server_id),
                     res.status
                 ));
@@ -779,19 +926,16 @@ mod tests {
               </Add>
             </Commands>
           </Collection>"#;
-        let muts = parse_task_mutations(xml);
+        let muts = parse_task_mutations(xml).unwrap();
         assert_eq!(muts.len(), 1);
         let m = &muts[0];
         assert_eq!(m.kind, MutationKind::Add);
         assert_eq!(m.client_id.as_deref(), Some("client-1"));
         assert_eq!(m.fields.subject.as_deref(), Some("Buy milk"));
         assert_eq!(m.fields.importance, Some(2));
-        assert_eq!(m.fields.complete, 0);
+        assert_eq!(m.fields.complete, Some(0));
         assert_eq!(m.fields.body.as_deref(), Some("Remember the 2%"));
-        assert_eq!(
-            m.fields.categories.as_deref(),
-            Some("Errands;Home")
-        );
+        assert_eq!(m.fields.categories.as_deref(), Some("Errands;Home"));
     }
 
     #[test]
@@ -810,12 +954,12 @@ mod tests {
               </Delete>
             </Commands>
           </Collection>"#;
-        let muts = parse_task_mutations(xml);
+        let muts = parse_task_mutations(xml).unwrap();
         assert_eq!(muts.len(), 2);
         assert_eq!(muts[0].kind, MutationKind::Change);
         assert_eq!(muts[0].server_id, "task-abc");
         assert_eq!(muts[0].fields.subject.as_deref(), Some("Updated"));
-        assert_eq!(muts[0].fields.complete, 1);
+        assert_eq!(muts[0].fields.complete, Some(1));
         assert_eq!(muts[1].kind, MutationKind::Delete);
         assert_eq!(muts[1].server_id, "task-xyz");
     }
@@ -838,7 +982,7 @@ mod tests {
               </Add>
             </Commands>
           </Collection>"#;
-        let muts = parse_note_mutations(xml);
+        let muts = parse_note_mutations(xml).unwrap();
         assert_eq!(muts.len(), 1);
         let m = &muts[0];
         assert_eq!(m.kind, MutationKind::Add);
@@ -864,7 +1008,7 @@ mod tests {
             complete: 0,
             date_completed: None,
             reminder_set: 1,
-            reminder_time: Some(15),
+            reminder_time: Some("2026-09-03T09:00:00Z".to_string()),
             categories: Some("A;B".to_string()),
             body: Some("body text".to_string()),
             updated_at: None,
@@ -874,7 +1018,7 @@ mod tests {
         assert!(rendered.contains("<Tasks:Importance>2</Tasks:Importance>"));
         assert!(rendered.contains("<Tasks:Complete>0</Tasks:Complete>"));
         assert!(rendered.contains("<Tasks:ReminderSet>1</Tasks:ReminderSet>"));
-        assert!(rendered.contains("<Tasks:ReminderTime>15</Tasks:ReminderTime>"));
+        assert!(rendered.contains("<Tasks:ReminderTime>2026-09-03T09:00:00Z</Tasks:ReminderTime>"));
         assert!(rendered.contains("<Tasks:Body>body text</Tasks:Body>"));
         assert!(rendered.contains("<Tasks:Category>A</Tasks:Category>"));
         assert!(rendered.contains("<Tasks:Category>B</Tasks:Category>"));
@@ -899,4 +1043,3 @@ mod tests {
         assert!(rendered.contains("<AirSyncBase:Data>B</AirSyncBase:Data>"));
     }
 }
-
