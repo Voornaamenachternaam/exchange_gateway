@@ -356,10 +356,10 @@ impl Config {
                 );
             }
         }
-        cfg.validate()?;
-
         // Auto-derive jmap_base from caldav_base if JMAP not explicitly set.
         // Stalwart serves JMAP at the same host as CalDAV: replace /dav with /jmap.
+        // Done before validate() so the derived value is subject to the same
+        // HTTPS-for-credentials validation as an explicitly configured base.
         if cfg.jmap_base.is_empty() && !cfg.caldav_base.is_empty() {
             let derived = crate::jmap::JmapClient::derive_from_caldav(&cfg.caldav_base);
             tracing::info!(
@@ -370,6 +370,8 @@ impl Config {
             );
             cfg.jmap_base = derived;
         }
+
+        cfg.validate()?;
 
         // Auto-derive carddav_base from caldav_base if CardDAV not explicitly set.
         // Stalwart serves CardDAV at the same host: replace /dav with /carddav.
@@ -464,7 +466,7 @@ impl Config {
             }
         }
         if !self.jmap_base.is_empty() {
-            validate_url(&self.jmap_base, "jmap_base")?;
+            validate_jmap_url(&self.jmap_base, "jmap_base")?;
         }
         if self.database_path.is_empty() {
             return Err(anyhow::anyhow!(
@@ -930,6 +932,83 @@ fn validate_url(url: &str, field_name: &str) -> anyhow::Result<()> {
     }
 }
 
+/// Whether an HTTP (non-TLS) backend host may safely receive credentials.
+///
+/// Returns `true` only for hosts that are unambiguously internal: loopback,
+/// RFC 1918 private, unique-local (fc00::/7), or link-local addresses, plus
+/// the loopback hostname and single-label Docker/service hostnames such as
+/// `stalwart`. Public hostnames over plain HTTP are rejected so mailbox
+/// credentials are never sent in cleartext to a remote host (CWE-319).
+fn http_host_is_internal(host: &str) -> bool {
+    // A hostname that parses as an IP literal is allowed only when it is a
+    // loopback/private/unique-local/link-local address.
+    if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+        return match ip {
+            std::net::IpAddr::V4(v4) => {
+                v4.is_loopback() || v4.is_private() || v4.is_link_local()
+            }
+            std::net::IpAddr::V6(v6) => {
+                v6.is_loopback()
+                    || v6.is_unique_local()
+                    || v6.is_unicast_link_local()
+                    || v6.to_ipv4().is_some_and(|v4| {
+                        v4.is_loopback() || v4.is_private() || v4.is_link_local()
+                    })
+            }
+        };
+    }
+
+    let host = host.trim_end_matches('.');
+    // loopback name, mDNS/`.local`, `.internal`, `.lan`, `.localhost`, and
+    // RFC 8375 `.home.arpa` are internal link-local/home domains.
+    if host == "localhost" || host.ends_with(".localhost") {
+        return true;
+    }
+    for suffix in [".local", ".internal", ".lan", ".home.arpa"] {
+        if host.ends_with(suffix) {
+            return true;
+        }
+    }
+    // Single-label names (no dot) are typical intra-container service names
+    // (e.g. `stalwart`) and are resolved only on the private network.
+    !host.contains('.')
+}
+
+/// Validate a JMAP endpoint URL, enforcing HTTPS for any non-internal host.
+///
+/// `JmapClient` authenticates with HTTP Basic auth to `jmap_base`, so a plain
+/// `http://` URL to a public host would transmit mailbox credentials in
+/// cleartext. Plain HTTP is only permitted when the host is unambiguously
+/// internal (loopback/private address or a local service hostname); otherwise
+/// the scheme must be `https`.
+fn validate_jmap_url(url: &str, field_name: &str) -> anyhow::Result<()> {
+    let parsed = url::Url::parse(url).map_err(|e| {
+        anyhow::anyhow!("Config: '{}' is not a valid URL: {}", field_name, e)
+    })?;
+    match parsed.scheme() {
+        "https" => Ok(()),
+        "http" => {
+            let host = parsed.host_str().ok_or_else(|| {
+                anyhow::anyhow!("Config: '{}' must include a host", field_name)
+            })?;
+            if http_host_is_internal(host) {
+                Ok(())
+            } else {
+                Err(anyhow::anyhow!(
+                    "Config: '{}' must use https (credentials) unless the host is loopback/private: '{}' is a public host over http",
+                    field_name,
+                    host
+                ))
+            }
+        }
+        other => Err(anyhow::anyhow!(
+            "Config: '{}' must use http or https scheme, got '{}'",
+            field_name,
+            other
+        )),
+    }
+}
+
 /// Sanitize a URL for logging by removing any userinfo (credentials) from the URL.
 /// E.g., "http://user:pass@host/dav" becomes "http://host/dav"
 fn sanitize_url_for_logging(url: &str) -> String {
@@ -1253,5 +1332,76 @@ mod tests {
         };
         // No smtp_host means SMTP is not configured, port validation is skipped
         assert!(cfg.validate().is_ok() || cfg.validate().is_err());
+    }
+
+    #[test]
+    fn test_jmap_url_requires_https_for_public_host() {
+        // A public hostname over plain HTTP must be rejected: JmapClient sends
+        // Basic auth credentials, which would be exposed in cleartext.
+        let cfg = Config {
+            jmap_base: "http://jmap.example.com".to_string(),
+            bind: "[::]:8134".to_string(),
+            mail_domain: "example.com".to_string(),
+            hmac_secret: SecretString::from("a".repeat(32)),
+            ..Default::default()
+        };
+        let err = cfg
+            .validate()
+            .expect_err("public http JMAP URL must be rejected");
+        assert!(
+            err.to_string().contains("https"),
+            "expected an https-related error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_jmap_url_accepts_https_public_host() {
+        let cfg = Config {
+            jmap_base: "https://jmap.example.com".to_string(),
+            bind: "[::]:8134".to_string(),
+            mail_domain: "example.com".to_string(),
+            hmac_secret: SecretString::from("a".repeat(32)),
+            ..Default::default()
+        };
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn test_jmap_url_accepts_http_for_internal_hosts() {
+        // Loopback, private-IP, `.local`, and single-label service hostnames are
+        // internal and may use plain HTTP (the documented Stalwart container
+        // deployment model).
+        for host in [
+            "http://127.0.0.1/jmap",
+            "http://10.0.0.5/jmap",
+            "http://192.168.1.10/jmap",
+            "http://172.16.0.1/jmap",
+            "http://localhost/jmap",
+            "http://stalwart:8080/jmap",
+            "http://stalwart.local/jmap",
+        ] {
+            let cfg = Config {
+                jmap_base: host.to_string(),
+                bind: "[::]:8134".to_string(),
+                mail_domain: "example.com".to_string(),
+                hmac_secret: SecretString::from("a".repeat(32)),
+                ..Default::default()
+            };
+            assert!(cfg.validate().is_ok(), "internal host {host} must be accepted");
+        }
+    }
+
+    #[test]
+    fn test_jmap_url_rejects_non_http_schemes() {
+        for bad in ["ftp://jmap.example.com", "file:///jmap", "ws://jmap.example.com"] {
+            let cfg = Config {
+                jmap_base: bad.to_string(),
+                bind: "[::]:8134".to_string(),
+                mail_domain: "example.com".to_string(),
+                hmac_secret: SecretString::from("a".repeat(32)),
+                ..Default::default()
+            };
+            assert!(cfg.validate().is_err(), "scheme {bad} must be rejected");
+        }
     }
 }
