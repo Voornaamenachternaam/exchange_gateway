@@ -112,15 +112,18 @@ pub struct Config {
     #[serde(default)]
     pub mail_host: String,
     // Force calendar operations to use CalDAV instead of JMAP Calendar.
-    // Recommended for Stalwart v0.16.10 due to partial JMAP Calendar support.
+    // Stalwart v0.16.20 treats calendars as first-class JMAP objects, so this
+    // should remain disabled (default) unless an operator explicitly opts into
+    // the legacy CalDAV posture.
     #[serde(default = "default_force_caldav_calendar")]
     pub force_caldav_calendar: bool,
     // Prefer JMAP Calendar over CalDAV when available.
     // Set to false to force CalDAV (same effect as force_caldav_calendar=true).
     #[serde(default = "default_prefer_jmap_calendar")]
     pub prefer_jmap_calendar: bool,
-    // Prefer CalDAV over JMAP for free/busy queries.
-    // Recommended for Stalwart v0.16.10 to avoid JMAP Calendar bugs.
+    // Prefer CalDAV over JMAP for free/busy queries. Disabled by default on
+    // Stalwart v0.16.20, which exposes full JMAP Calendar/availability
+    // (`Calendar/availability`) support; enable only for legacy compatibility.
     #[serde(default = "default_prefer_caldav_freebusy")]
     pub prefer_caldav_freebusy: bool,
     // Admin (directory) configuration for GAL/ResolveNames. The gateway talks
@@ -268,19 +271,22 @@ fn default_email_enabled() -> bool {
 }
 
 fn default_force_caldav_calendar() -> bool {
-    // Use JMAP Calendar by default when Stalwart supports it; fallback to CalDAV if not.
+    // Default to JMAP Calendar (the JMAP-first directive). CalDAV remains a
+    // fallback behind capability detection (supports_calendar).
     false
 }
 
 fn default_prefer_jmap_calendar() -> bool {
     // Prefer JMAP Calendar over CalDAV when available.
-    // For Stalwart v0.16.10 with full JMAP Calendar support, default to true.
+    // Stalwart v0.16.20 exposes full first-class JMAP Calendar support, so this
+    // defaults to true (honoring the JMAP-first directive).
     true
 }
 
 fn default_prefer_caldav_freebusy() -> bool {
-    // For Stalwart v0.16.10, prefer CalDAV free/busy to avoid JMAP Calendar bugs
-    true
+    // Stalwart v0.16.20 exposes JMAP Calendar/availability, so prefer JMAP for
+    // free/busy instead of the legacy CalDAV posture.
+    false
 }
 
 /// MAPI/HTTP (MS-OXCMAPIHTTP) is enabled by default: New Outlook for Windows
@@ -976,9 +982,9 @@ impl Default for Config {
             jmap_base: String::new(),
             email_enabled: true,
             mail_host: String::new(),
-            force_caldav_calendar: true,
+            force_caldav_calendar: default_force_caldav_calendar(),
             prefer_jmap_calendar: default_prefer_jmap_calendar(),
-            prefer_caldav_freebusy: true,
+            prefer_caldav_freebusy: default_prefer_caldav_freebusy(),
             admin_username: String::new(),
             admin_password: String::new(),
             rate_limit_enabled: true,

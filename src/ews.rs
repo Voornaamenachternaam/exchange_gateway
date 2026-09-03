@@ -1700,11 +1700,17 @@ async fn load_current_calendar_items(
     password: &str,
     window: Option<(chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>)>,
 ) -> Result<Vec<CurrentCalendarItem>, anyhow::Error> {
-    // Try JMAP Calendar first if preferred
+    // Preferred backend is JMAP Calendar when the `prefer_jmap_calendar` flag
+    // is set AND Stalwart advertises the `urn:ietf:params:jmap:calendars`
+    // capability. CalDAV remains the fallback behind capability detection.
     if state.cfg.prefer_jmap_calendar
         && let Some(jmap) = &state.jmap_client
     {
         let password_secret = SecretString::from(password);
+        if !jmap.supports_calendar(owner, &password_secret).await {
+            tracing::debug!(target: "ews", "JMAP Calendar capability not advertised by server, falling back to CalDAV");
+            return load_current_calendar_items_caldav(state, owner, password, window).await;
+        }
         // Get calendar account ID
         let account_id = match jmap.get_calendar_account_id(owner, &password_secret).await {
             Ok(id) => id,
