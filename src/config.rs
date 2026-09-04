@@ -31,6 +31,7 @@ const ENV_MAIL_HOST: &str = "GATEWAY_MAIL_HOST";
 const ENV_FORCE_CALDAV_CALENDAR: &str = "GATEWAY_FORCE_CALDAV_CALENDAR";
 const ENV_PREFER_CALDAV_FREEBUSY: &str = "GATEWAY_PREFER_CALDAV_FREEBUSY";
 const ENV_PREFER_JMAP_CALENDAR: &str = "GATEWAY_PREFER_JMAP_CALENDAR";
+const ENV_ALLOW_INSECURE_HTTP: &str = "GATEWAY_ALLOW_INSECURE_HTTP";
 const ENV_ADMIN_USERNAME: &str = "GATEWAY_ADMIN_USERNAME";
 const ENV_ADMIN_PASSWORD: &str = "GATEWAY_ADMIN_PASSWORD";
 
@@ -112,17 +113,29 @@ pub struct Config {
     #[serde(default)]
     pub mail_host: String,
     // Force calendar operations to use CalDAV instead of JMAP Calendar.
-    // Recommended for Stalwart v0.16.10 due to partial JMAP Calendar support.
+    // Stalwart v0.16.20 treats calendars as first-class JMAP objects, so this
+    // should remain disabled (default) unless an operator explicitly opts into
+    // the legacy CalDAV posture.
     #[serde(default = "default_force_caldav_calendar")]
     pub force_caldav_calendar: bool,
     // Prefer JMAP Calendar over CalDAV when available.
     // Set to false to force CalDAV (same effect as force_caldav_calendar=true).
     #[serde(default = "default_prefer_jmap_calendar")]
     pub prefer_jmap_calendar: bool,
-    // Prefer CalDAV over JMAP for free/busy queries.
-    // Recommended for Stalwart v0.16.10 to avoid JMAP Calendar bugs.
+    // Prefer CalDAV over JMAP for free/busy queries. Disabled by default on
+    // Stalwart v0.16.20, which exposes full JMAP Calendar/availability
+    // (`Calendar/availability`) support; enable only for legacy compatibility.
     #[serde(default = "default_prefer_caldav_freebusy")]
     pub prefer_caldav_freebusy: bool,
+    // Permit plain HTTP (non-TLS) for the JMAP backend endpoint. The gateway
+    // authenticates to `jmap_base` with HTTP Basic auth; over plain HTTP those
+    // credentials travel in cleartext and are readable by any network-adjacent
+    // peer (CWE-319). This defaults to `false` so only HTTPS (or loopback) is
+    // accepted. Operators running Stalwart on the same trusted private network
+    // (the documented `http://stalwart:8080` container model) must explicitly
+    // opt in with `GATEWAY_ALLOW_INSECURE_HTTP=1`.
+    #[serde(default = "default_allow_insecure_http")]
+    pub allow_insecure_http: bool,
     // Admin (directory) configuration for GAL/ResolveNames. The gateway talks
     // to Stalwart exclusively over JMAP (`urn:stalwart:jmap` `x:Account/*` /
     // `x:MailingList/*` and `urn:ietf:params:jmap:sieve` for OOF) using the
@@ -268,19 +281,28 @@ fn default_email_enabled() -> bool {
 }
 
 fn default_force_caldav_calendar() -> bool {
-    // Use JMAP Calendar by default when Stalwart supports it; fallback to CalDAV if not.
+    // Default to JMAP Calendar (the JMAP-first directive). CalDAV remains a
+    // fallback behind capability detection (supports_calendar).
     false
 }
 
 fn default_prefer_jmap_calendar() -> bool {
     // Prefer JMAP Calendar over CalDAV when available.
-    // For Stalwart v0.16.10 with full JMAP Calendar support, default to true.
+    // Stalwart v0.16.20 exposes full first-class JMAP Calendar support, so this
+    // defaults to true (honoring the JMAP-first directive).
     true
 }
 
 fn default_prefer_caldav_freebusy() -> bool {
-    // For Stalwart v0.16.10, prefer CalDAV free/busy to avoid JMAP Calendar bugs
-    true
+    // Stalwart v0.16.20 exposes JMAP Calendar/availability, so prefer JMAP for
+    // free/busy instead of the legacy CalDAV posture.
+    false
+}
+
+fn default_allow_insecure_http() -> bool {
+    // Secure by default: plain HTTP carries Basic auth credentials in cleartext.
+    // Operators must explicitly opt in for private-network (non-TLS) backends.
+    false
 }
 
 /// MAPI/HTTP (MS-OXCMAPIHTTP) is enabled by default: New Outlook for Windows
@@ -350,10 +372,10 @@ impl Config {
                 );
             }
         }
-        cfg.validate()?;
-
         // Auto-derive jmap_base from caldav_base if JMAP not explicitly set.
         // Stalwart serves JMAP at the same host as CalDAV: replace /dav with /jmap.
+        // Done before validate() so the derived value is subject to the same
+        // HTTPS-for-credentials validation as an explicitly configured base.
         if cfg.jmap_base.is_empty() && !cfg.caldav_base.is_empty() {
             let derived = crate::jmap::JmapClient::derive_from_caldav(&cfg.caldav_base);
             tracing::info!(
@@ -364,6 +386,8 @@ impl Config {
             );
             cfg.jmap_base = derived;
         }
+
+        cfg.validate()?;
 
         // Auto-derive carddav_base from caldav_base if CardDAV not explicitly set.
         // Stalwart serves CardDAV at the same host: replace /dav with /carddav.
@@ -458,7 +482,7 @@ impl Config {
             }
         }
         if !self.jmap_base.is_empty() {
-            validate_url(&self.jmap_base, "jmap_base")?;
+            validate_jmap_url(&self.jmap_base, "jmap_base", self.allow_insecure_http)?;
         }
         if self.database_path.is_empty() {
             return Err(anyhow::anyhow!(
@@ -733,6 +757,12 @@ fn apply_environment_overrides(cfg: &mut Config) {
         cfg.prefer_jmap_calendar =
             matches!(lower.as_str(), "1" | "true" | "yes" | "on" | "enabled");
     }
+    if let Some(val) = get_env_with_fallback(ENV_ALLOW_INSECURE_HTTP, None) {
+        let lower = val.to_lowercase();
+        tracing::debug!("Applying {} from environment", ENV_ALLOW_INSECURE_HTTP);
+        cfg.allow_insecure_http =
+            matches!(lower.as_str(), "1" | "true" | "yes" | "on" | "enabled");
+    }
     if let Some(val) = get_env_with_fallback(ENV_PREFER_CALDAV_FREEBUSY, None) {
         let lower = val.to_lowercase();
         tracing::debug!("Applying {} from environment", ENV_PREFER_CALDAV_FREEBUSY);
@@ -924,6 +954,61 @@ fn validate_url(url: &str, field_name: &str) -> anyhow::Result<()> {
     }
 }
 
+/// Whether a host is unambiguously loopback (not reachable by any network peer).
+///
+/// Returns `true` only for `localhost` and the IPv4/IPv6 loopback ranges. Plain
+/// HTTP to a loopback address cannot be intercepted by another host, so it is
+/// permitted even when insecure plaintext backends are otherwise disallowed.
+fn http_host_is_loopback(host: &url::Host<&str>) -> bool {
+    match host {
+        url::Host::Ipv4(ip) => ip.is_loopback(),
+        url::Host::Ipv6(ip) => ip.is_loopback(),
+        url::Host::Domain(domain) => {
+            let domain = domain.trim_end_matches('.');
+            domain.eq_ignore_ascii_case("localhost")
+                || domain.eq_ignore_ascii_case("localhost.localdomain")
+        }
+    }
+}
+
+/// Validate a JMAP endpoint URL, enforcing HTTPS unless the operator has
+/// explicitly opted into plaintext HTTP backends.
+///
+/// `JmapClient` authenticates with HTTP Basic auth to `jmap_base`, so a plain
+/// `http://` URL transmits mailbox credentials in cleartext (CWE-319). Unless
+/// `allow_insecure_http` is set, only `https` (or loopback `http`) is accepted.
+fn validate_jmap_url(url: &str, field_name: &str, allow_insecure_http: bool) -> anyhow::Result<()> {
+    let parsed = url::Url::parse(url).map_err(|e| {
+        anyhow::anyhow!("Config: '{}' is not a valid URL: {}", field_name, e)
+    })?;
+    match parsed.scheme() {
+        "https" => Ok(()),
+        "http" => {
+            if allow_insecure_http {
+                return Ok(());
+            }
+            let host = parsed.host().ok_or_else(|| {
+                anyhow::anyhow!("Config: '{}' must include a host", field_name)
+            })?;
+            if http_host_is_loopback(&host) {
+                Ok(())
+            } else {
+                Err(anyhow::anyhow!(
+                    "Config: '{}' must use https: plain http to '{}' would transmit credentials in cleartext. Set {} (or 'allow_insecure_http = true') to explicitly permit plaintext HTTP on a trusted private network.",
+                    field_name,
+                    host,
+                    ENV_ALLOW_INSECURE_HTTP
+                ))
+            }
+        }
+        other => Err(anyhow::anyhow!(
+            "Config: '{}' must use http or https scheme, got '{}'",
+            field_name,
+            other
+        )),
+    }
+}
+
 /// Sanitize a URL for logging by removing any userinfo (credentials) from the URL.
 /// E.g., "http://user:pass@host/dav" becomes "http://host/dav"
 fn sanitize_url_for_logging(url: &str) -> String {
@@ -976,9 +1061,10 @@ impl Default for Config {
             jmap_base: String::new(),
             email_enabled: true,
             mail_host: String::new(),
-            force_caldav_calendar: true,
+            force_caldav_calendar: default_force_caldav_calendar(),
             prefer_jmap_calendar: default_prefer_jmap_calendar(),
-            prefer_caldav_freebusy: true,
+            prefer_caldav_freebusy: default_prefer_caldav_freebusy(),
+            allow_insecure_http: default_allow_insecure_http(),
             admin_username: String::new(),
             admin_password: String::new(),
             rate_limit_enabled: true,
@@ -1247,5 +1333,96 @@ mod tests {
         };
         // No smtp_host means SMTP is not configured, port validation is skipped
         assert!(cfg.validate().is_ok() || cfg.validate().is_err());
+    }
+
+    #[test]
+    fn test_jmap_url_requires_https_for_public_host() {
+        // A public hostname over plain HTTP must be rejected: JmapClient sends
+        // Basic auth credentials, which would be exposed in cleartext.
+        let cfg = Config {
+            jmap_base: "http://jmap.example.com".to_string(),
+            bind: "[::]:8134".to_string(),
+            mail_domain: "example.com".to_string(),
+            hmac_secret: SecretString::from("a".repeat(32)),
+            ..Default::default()
+        };
+        let err = cfg
+            .validate()
+            .expect_err("public http JMAP URL must be rejected");
+        assert!(
+            err.to_string().contains("https"),
+            "expected an https-related error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_jmap_url_accepts_https_public_host() {
+        let cfg = Config {
+            jmap_base: "https://jmap.example.com".to_string(),
+            bind: "[::]:8134".to_string(),
+            mail_domain: "example.com".to_string(),
+            hmac_secret: SecretString::from("a".repeat(32)),
+            ..Default::default()
+        };
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn test_jmap_url_accepts_http_for_loopback_only_by_default() {
+        // Without the opt-in flag, plain HTTP is accepted only for loopback
+        // (not interceptable by any network peer). A trusted private-network
+        // backend (the documented `http://stalwart:8080` model) is rejected
+        // until the operator explicitly opts in.
+        for (host, should_pass) in [
+            ("http://127.0.0.1/jmap", true),
+            ("http://[::1]/jmap", true),
+            ("http://localhost/jmap", true),
+            ("http://10.0.0.5/jmap", false),
+            ("http://192.168.1.10/jmap", false),
+            ("http://172.16.0.1/jmap", false),
+            ("http://stalwart:8080/jmap", false),
+            ("http://stalwart.local/jmap", false),
+        ] {
+            let cfg = Config {
+                jmap_base: host.to_string(),
+                bind: "[::]:8134".to_string(),
+                mail_domain: "example.com".to_string(),
+                hmac_secret: SecretString::from("a".repeat(32)),
+                ..Default::default()
+            };
+            assert_eq!(
+                cfg.validate().is_ok(),
+                should_pass,
+                "host {host} should have validate().is_ok() == {should_pass}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_jmap_url_allow_insecure_http_accepts_plaintext() {
+        // With the explicit opt-in, plain HTTP to any host is accepted.
+        let cfg = Config {
+            jmap_base: "http://stalwart:8080/jmap".to_string(),
+            bind: "[::]:8134".to_string(),
+            mail_domain: "example.com".to_string(),
+            hmac_secret: SecretString::from("a".repeat(32)),
+            allow_insecure_http: true,
+            ..Default::default()
+        };
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn test_jmap_url_rejects_non_http_schemes() {
+        for bad in ["ftp://jmap.example.com", "file:///jmap", "ws://jmap.example.com"] {
+            let cfg = Config {
+                jmap_base: bad.to_string(),
+                bind: "[::]:8134".to_string(),
+                mail_domain: "example.com".to_string(),
+                hmac_secret: SecretString::from("a".repeat(32)),
+                ..Default::default()
+            };
+            assert!(cfg.validate().is_err(), "scheme {bad} must be rejected");
+        }
     }
 }

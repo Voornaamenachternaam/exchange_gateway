@@ -1700,11 +1700,17 @@ async fn load_current_calendar_items(
     password: &str,
     window: Option<(chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>)>,
 ) -> Result<Vec<CurrentCalendarItem>, anyhow::Error> {
-    // Try JMAP Calendar first if preferred
+    // Preferred backend is JMAP Calendar when the `prefer_jmap_calendar` flag
+    // is set AND Stalwart advertises the `urn:ietf:params:jmap:calendars`
+    // capability. CalDAV remains the fallback behind capability detection.
     if state.cfg.prefer_jmap_calendar
         && let Some(jmap) = &state.jmap_client
     {
         let password_secret = SecretString::from(password);
+        if !jmap.supports_calendar(owner, &password_secret).await {
+            tracing::debug!(target: "ews", "JMAP Calendar capability not advertised by server, falling back to CalDAV");
+            return load_current_calendar_items_caldav(state, owner, password, window).await;
+        }
         // Get calendar account ID
         let account_id = match jmap.get_calendar_account_id(owner, &password_secret).await {
             Ok(id) => id,
@@ -1720,7 +1726,9 @@ async fn load_current_calendar_items(
                 chrono::Utc::now() + chrono::Duration::weeks(104),
             )
         });
-        // Query events
+        // Query events. A failure here means the advertised JMAP Calendar
+        // capability is not actually usable (e.g. the endpoint returned an
+        // error); fall back to CalDAV rather than surfacing an EWS 500.
         let query_params = QueryCalendarEventsParams {
             account_id: &account_id,
             calendar_id: None,
@@ -1730,7 +1738,13 @@ async fn load_current_calendar_items(
             username: owner,
             password: &password_secret,
         };
-        let query_result = jmap.query_calendar_events(query_params).await?;
+        let query_result = match jmap.query_calendar_events(query_params).await {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::debug!(target: "ews", error = %e, "JMAP query_calendar_events failed, falling back to CalDAV");
+                return load_current_calendar_items_caldav(state, owner, password, window).await;
+            }
+        };
         // Filter out events without IDs; collect as Vec<String>
         let event_ids: Vec<String> = query_result
             .events
@@ -1740,10 +1754,18 @@ async fn load_current_calendar_items(
         if event_ids.is_empty() {
             return Ok(vec![]);
         }
-        // Batch fetch events
-        let event_map = jmap
+        // Batch fetch events. As above, fall back to CalDAV on failure so a
+        // healthy CalDAV backend is still serviced.
+        let event_map = match jmap
             .get_calendar_events(&account_id, &event_ids, owner, &password_secret)
-            .await?;
+            .await
+        {
+            Ok(m) => m,
+            Err(e) => {
+                tracing::debug!(target: "ews", error = %e, "JMAP get_calendar_events failed, falling back to CalDAV");
+                return load_current_calendar_items_caldav(state, owner, password, window).await;
+            }
+        };
         // Build output
         let mut out = Vec::new();
         for event_id in &event_ids {
@@ -1752,11 +1774,27 @@ async fn load_current_calendar_items(
             {
                 // Clone values we need before moving ci
                 let ci_uid = ci.uid.clone();
-                // Stable server_id: HMAC of owner + event_id
-                let server_id = generate_server_id(
-                    state.cfg.hmac_secret(),
-                    &format!("jmap:{}:{}", owner, event_id),
-                );
+                // Reuse an existing server_id when this event was previously
+                // mapped under CalDAV (same iCal UID), so flipping the default
+                // backend does not present the event to clients under a new
+                // Exchange ID. Otherwise derive a stable JMAP-backed ID.
+                let server_id = if ci_uid.is_empty() {
+                    None
+                } else {
+                    state
+                        .storage
+                        .get_ews_item_by_uid(owner, &ci_uid)
+                        .await
+                        .ok()
+                        .flatten()
+                        .map(|row| row.server_id)
+                }
+                .unwrap_or_else(|| {
+                    generate_server_id(
+                        state.cfg.hmac_secret(),
+                        &format!("jmap:{}:{}", owner, event_id),
+                    )
+                });
                 out.push(CurrentCalendarItem {
                     row: EwsItemRow {
                         server_id: server_id.clone(),

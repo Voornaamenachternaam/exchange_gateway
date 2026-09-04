@@ -181,6 +181,7 @@ services:
       - GATEWAY_ROOM_BOOKING_ENABLED=${GATEWAY_ROOM_BOOKING_ENABLED:-true}
       - GATEWAY_AUTH_CACHE_TTL_SECS=${GATEWAY_AUTH_CACHE_TTL_SECS:-300}
       - GATEWAY_AUTH_CACHE_MAX_ENTRIES=${GATEWAY_AUTH_CACHE_MAX_ENTRIES:-10000}
+      - GATEWAY_ALLOW_INSECURE_HTTP=${GATEWAY_ALLOW_INSECURE_HTTP:-1}
     volumes:
       - exchange-gateway-data:/var/lib/exchange-gateway
     healthcheck:
@@ -215,6 +216,11 @@ GATEWAY_MAX_ATTACHMENT_BYTES=5242880
 GATEWAY_ROOM_BOOKING_ENABLED=true
 GATEWAY_AUTH_CACHE_TTL_SECS=300
 GATEWAY_AUTH_CACHE_MAX_ENTRIES=10000
+# Plain HTTP to the Stalwart backend (the JMAP URL derived from CALDAV_BASE)
+# carries credentials in cleartext. Set to 1 to permit the non-TLS
+# http://stalwart:8080 model only when the gateway and Stalwart share a
+# trusted private network; otherwise use HTTPS (e.g. https://stalwart:8443).
+GATEWAY_ALLOW_INSECURE_HTTP=1
 ```
 
 ---
@@ -267,6 +273,7 @@ curl -v https://calendar.example.com/autodiscover/autodiscover.xml
 | `GATEWAY_ROOM_BOOKING_ENABLED` | Enable room booking | No | `true` |
 | `GATEWAY_AUTH_CACHE_TTL_SECS` | Auth cache TTL | No | `300` |
 | `GATEWAY_AUTH_CACHE_MAX_ENTRIES` | Auth cache max entries | No | `10000` |
+| `GATEWAY_ALLOW_INSECURE_HTTP` | Permit plain HTTP to the backend (JMAP) | No | `false` |
 
 ### Boolean Values
 
