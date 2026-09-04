@@ -755,6 +755,29 @@ impl Storage {
         .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))
     }
 
+    /// Look up the most recently updated `item_map` row matching a calendar
+    /// event's iCal UID.
+    ///
+    /// The same event is exposed via CalDAV (href-derived `server_id`) and JMAP
+    /// (`jmap:`-derived `server_id`). This lookup lets the JMAP read path reuse
+    /// the `server_id` already issued under CalDAV, so flipping the calendar
+    /// backend does not present existing clients with the same event under a
+    /// new Exchange ID.
+    pub async fn get_ews_item_by_uid(
+        &self,
+        owner: &str,
+        uid: &str,
+    ) -> Result<Option<EwsItemRow>> {
+        sqlx::query_as::<_, EwsItemRow>(
+            "SELECT server_id, caldav_href, resource_href, uid, etag, updated_at FROM item_map WHERE owner = ?1 AND uid = ?2 ORDER BY updated_at DESC, server_id ASC LIMIT 1"
+        )
+        .bind(owner)
+        .bind(uid)
+        .fetch_optional(self.pool.as_ref())
+        .await
+        .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))
+    }
+
     pub async fn verify_item_owner(&self, owner: &str, server_id: &str) -> Result<bool> {
         let row = sqlx::query("SELECT 1 FROM item_map WHERE owner = ?1 AND server_id = ?2 LIMIT 1")
             .bind(owner)
