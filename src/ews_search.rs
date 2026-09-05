@@ -31,6 +31,34 @@
 
 use serde_json::{Value, json};
 
+/// Outcome of translating an EWS `FindItem` search request.
+///
+/// This distinguishes a search that was *absent* (so the caller should list the
+/// mailbox unscoped by any search term) from a search that was *present but
+/// unsupported* (so the caller must return no results rather than silently
+/// regressing to an unfiltered listing, the pre-existing behaviour).
+#[derive(Debug, Clone, PartialEq)]
+pub enum TranslatedSearch {
+    /// No search constraint was supplied by the client.
+    Unfiltered,
+    /// A search was supplied and translated to this JMAP Email/query filter.
+    Filter(Value),
+    /// A search was supplied but cannot be faithfully translated; the caller
+    /// should return an empty result set rather than list everything.
+    Unsupported,
+}
+
+/// Whether an EWS request body contains a `<Restriction>` element (a structured
+/// `SearchExpression`), regardless of whether it is translatable.
+pub fn ews_has_restriction(xml: &str) -> bool {
+    roxmltree::Document::parse(xml)
+        .map(|doc| {
+            doc.descendants()
+                .any(|n| n.is_element() && n.tag_name().name() == "Restriction")
+        })
+        .unwrap_or(false)
+}
+
 /// Map an AQS `keyword:` prefix (lower-cased, trailing `:` stripped) to a
 /// JMAP `FilterCondition` property name. Returns `None` when the keyword
 /// has no direct JMAP email field equivalent and should instead be handled
@@ -74,7 +102,13 @@ fn aqs_keyword_condition(keyword: &str, value: &str) -> Option<Value> {
         })),
         "attachment" | "attachments" => Some(json!({ "hasAttachment": true })),
         "isread" | "read" | "seen" => read_state_condition(&value),
-        "isunread" | "unread" => read_state_condition(&format!("not:{value}")),
+        "isunread" | "unread" => {
+            if aqs_truthy(&value) {
+                Some(json!({ "notKeyword": "$seen" }))
+            } else {
+                Some(json!({ "hasKeyword": "$seen" }))
+            }
+        }
         "category" | "categories" => {
             if value.is_empty() {
                 None
@@ -82,7 +116,13 @@ fn aqs_keyword_condition(keyword: &str, value: &str) -> Option<Value> {
                 Some(json!({ "hasKeyword": value }))
             }
         }
-        "hasflag" | "flagged" | "isflagged" => Some(json!({ "hasKeyword": "$flagged" })),
+        "hasflag" | "flagged" | "isflagged" => {
+            if aqs_truthy(&value) {
+                Some(json!({ "hasKeyword": "$flagged" }))
+            } else {
+                Some(json!({ "notKeyword": "$flagged" }))
+            }
+        }
         _ => None,
     }
 }
@@ -112,19 +152,18 @@ fn aqs_truthy(value: &str) -> bool {
     )
 }
 
-/// Build a read/unread FilterCondition.
+/// Build a read-state FilterCondition for the `isread`/`read`/`seen`
+/// keywords.
 ///
-/// The read state maps to the JMAP `$seen` keyword (RFC 8621 §2.1). An
-/// "is read" search yields `hasKeyword: "$seen"`; "is unread" yields
-/// `notKeyword: "$seen"`. A leading `not:` prefix (used internally for the
-/// `isunread`/`unread` keywords) or a falsy value inverts the sense.
+/// The read state maps to the JMAP `$seen` keyword (RFC 8621 §2.1). A truthy
+/// value yields `hasKeyword: "$seen"`; a falsy value yields
+/// `notKeyword: "$seen"` ("read" vs "unread" are handled by separate callers,
+/// so this helper focuses on the true/false sense of a single read query).
 fn read_state_condition(value: &str) -> Option<Value> {
-    let v = value.trim();
-    let negated = v.starts_with("not:") || !aqs_truthy(v);
-    if negated {
-        Some(json!({ "notKeyword": "$seen" }))
-    } else {
+    if aqs_truthy(value) {
         Some(json!({ "hasKeyword": "$seen" }))
+    } else {
+        Some(json!({ "notKeyword": "$seen" }))
     }
 }
 
@@ -145,14 +184,23 @@ enum Token {
 
 /// Lex an AQS query string into [`Token`]s.
 ///
-/// Handles quoted phrases, `keyword:` prefixes, the boolean operators
-/// `AND`/`OR`/`NOT` (case-insensitive), `-`/`!` as `NOT`, and parentheses
-/// for grouping.
+/// Handles quoted phrases, `keyword:` prefixes (including a quoted value that
+/// immediately follows the colon), the boolean operators `AND`/`OR`/`NOT`
+/// (case-insensitive), `-`/`!` as `NOT` when they begin a term, and
+/// parentheses for grouping.
 fn aqs_lex(input: &str) -> Vec<Token> {
     let mut tokens = Vec::new();
     let b = input.as_bytes();
     let mut i = 0usize;
     let n = b.len();
+
+    /// Whether `idx` sits at the beginning of a term (start of input, or
+    /// immediately after whitespace or an opening parenthesis). Used to decide
+    /// whether `-`/`!` begin a negation rather than appearing inside a term
+    /// such as `foo-bar` or an email address.
+    fn at_term_start(b: &[u8], idx: usize) -> bool {
+        idx == 0 || b" \t\r\n(".contains(&b[idx - 1])
+    }
 
     while i < n {
         let c = b[i];
@@ -168,23 +216,15 @@ fn aqs_lex(input: &str) -> Vec<Token> {
                 tokens.push(Token::RParen);
                 i += 1;
             }
-            b'-' | b'!' => {
+            b'-' | b'!' if at_term_start(b, i) => {
                 tokens.push(Token::Not);
                 i += 1;
             }
             b'"' | b'\'' => {
-                // Quoted phrase.
-                let quote = c;
-                i += 1;
-                let start = i;
-                while i < n && b[i] != quote {
-                    i += 1;
-                }
-                let phrase = &input[start..i];
-                tokens.push(Token::Term(phrase.to_string()));
-                if i < n {
-                    i += 1; // closing quote
-                }
+                // Quoted phrase (a bare full-text term).
+                let (phrase, next) = consume_quoted(input, b, i, n);
+                tokens.push(Token::Term(phrase));
+                i = next;
             }
             _ => {
                 let start = i;
@@ -196,7 +236,18 @@ fn aqs_lex(input: &str) -> Vec<Token> {
                 if let Some(colon) = word.find(':') {
                     let kw = &word[..colon];
                     let val = &word[colon + 1..];
-                    if val.is_empty() || val.starts_with(':') || val.starts_with('>') || val.starts_with('<') {
+                    if val.is_empty() && i < n && (b[i] == b'"' || b[i] == b'\'') {
+                        // `keyword:"quoted value"` — the value is a quoted
+                        // phrase that immediately follows the colon. Consume it
+                        // as part of the field so the field binding is kept.
+                        let (phrase, next) = consume_quoted(input, b, i, n);
+                        tokens.push(Token::Field(kw.to_string(), phrase));
+                        i = next;
+                    } else if val.is_empty()
+                        || val.starts_with(':')
+                        || val.starts_with('>')
+                        || val.starts_with('<')
+                    {
                         // A leading comparison operator or empty value =>
                         // treat the whole word as a plain term.
                         tokens.push(Token::Term(word.to_string()));
@@ -218,6 +269,23 @@ fn aqs_lex(input: &str) -> Vec<Token> {
     tokens
 }
 
+/// Consume a quoted run starting at `begin` (which indexes the opening quote
+/// character, matched against `b[begin]`), returning the unquoted interior text
+/// and the index immediately following the closing quote (or `n` if unterminated).
+fn consume_quoted(input: &str, b: &[u8], begin: usize, n: usize) -> (String, usize) {
+    let quote = b[begin];
+    let mut i = begin + 1;
+    let start = i;
+    while i < n && b[i] != quote {
+        i += 1;
+    }
+    let phrase = input[start..i].to_string();
+    if i < n {
+        i += 1; // closing quote
+    }
+    (phrase, i)
+}
+
 /// Recursive-descent parser state for AQS.
 struct AqsParser {
     tokens: Vec<Token>,
@@ -237,6 +305,14 @@ impl AqsParser {
         let t = self.tokens.get(self.pos).cloned();
         self.pos += 1;
         t
+    }
+
+    /// Whether every token has been consumed. A well-formed query must consume
+    /// the entire token stream; leftover tokens indicate trailing unmatched
+    /// syntax (e.g. a stray closing parenthesis or operator) that must not be
+    /// silently discarded.
+    fn is_exhausted(&self) -> bool {
+        self.pos >= self.tokens.len()
     }
 
     /// Parse a full AQS expression. Implicit `AND` binds tighter than `OR`
@@ -296,9 +372,11 @@ impl AqsParser {
             }
             Some(Token::Field(kw, value)) => {
                 self.next();
-                // Fall back to a text search when the keyword is unknown so
-                // the input is still honoured rather than silently dropped.
-                Some(aqs_keyword_condition(&kw, &value).unwrap_or_else(|| term_condition(&value)))
+                // An unmappable property keyword (e.g. `importance:`) must be
+                // rejected rather than silently dropped or searched as
+                // free text, so the parse yields `None` and the query is
+                // reported as unsupported instead of matching the wrong set.
+                aqs_keyword_condition(&kw, &value)
             }
             _ => None,
         }
@@ -360,7 +438,13 @@ pub fn ews_aqs_to_jmap_filter(query: &str) -> Option<Value> {
         return None;
     }
     let mut parser = AqsParser::new(tokens);
-    parser.parse_or()
+    let parsed = parser.parse_or()?;
+    if !parser.is_exhausted() {
+        // Trailing tokens the grammar did not consume => the query is
+        // malformed/unsupported rather than something to partially apply.
+        return None;
+    }
+    Some(parsed)
 }
 
 // ---------------------------------------------------------------------------
@@ -457,15 +541,18 @@ fn translate_search_expression(node: roxmltree::Node) -> Option<Value> {
                 .and_then(translate_search_expression)?;
             Some(mk_not(child))
         }
-        "Contains" | "IsEqualTo" => {
+        "Contains" => {
             let field_uri = field_uri_child(node).and_then(extract_field_uri)?;
             let value = constant_value(node)?;
             let field = field_uri_to_jmap(&field_uri).unwrap_or("text");
             Some(json!({ field: value }))
         }
-        // Exists / Excludes / range comparisons have no direct JMAP email
-        // equivalent and are intentionally omitted rather than emitting a
-        // filter that silently returns everything.
+        // `IsEqualTo` (exact equality) and the remaining expressions
+        // (Exists / Excludes / range comparisons) have no direct JMAP email
+        // equivalent: JMAP string filters perform substring matching (RFC 8621
+        // section 4.4.1), so mapping `IsEqualTo` to a substring filter would produce
+        // false positives. They are intentionally left unsupported rather than
+        // emitting a filter that silently matches the wrong set.
         _ => None,
     }
 }
@@ -502,8 +589,14 @@ pub fn ews_restriction_to_jmap_filter(xml: &str) -> Option<Value> {
 /// Combine a mandatory `inMailbox` condition with an optional search filter
 /// under a single `AND` `FilterOperator`.
 ///
-/// Returns just the search filter (or `None`) when the mailbox id is empty.
+/// When `mailbox_id` is empty there is no valid mailbox to scope against, so
+/// the mailbox condition is omitted and the raw search filter is returned
+/// unchanged (matching the documented contract rather than emitting an
+/// `inMailbox: ""` condition that could never match).
 pub fn combine_with_in_mailbox(mailbox_id: &str, search: Option<Value>) -> Option<Value> {
+    if mailbox_id.is_empty() {
+        return search;
+    }
     search.map(|search| {
         and_conditions(vec![json!({ "inMailbox": mailbox_id }), search])
     })
@@ -604,10 +697,75 @@ mod tests {
     }
 
     #[test]
-    fn test_aqs_unknown_keyword_falls_back_to_text() {
-        let f = ews_aqs_to_jmap_filter("importance:high").unwrap();
-        // "importance" has no JMAP equivalent, so it degrades to a text search.
-        assert_eq!(f, json!({ "text": "high" }));
+    fn test_aqs_unknown_keyword_is_rejected() {
+        // "importance" has no JMAP equivalent; the query must be rejected
+        // (unsupported) rather than dropping the keyword or searching the
+        // value as free text.
+        assert!(ews_aqs_to_jmap_filter("importance:high").is_none());
+    }
+
+    #[test]
+    fn test_aqs_quoted_field_value() {
+        // A quoted value immediately following `keyword:` keeps the field
+        // binding instead of being split into a bare term + phrase.
+        assert_eq!(
+            ews_aqs_to_jmap_filter("subject:\"quarterly report\"").unwrap(),
+            json!({ "subject": "quarterly report" })
+        );
+        assert_eq!(
+            ews_aqs_to_jmap_filter("from:'alice smith'").unwrap(),
+            json!({ "from": "alice smith" })
+        );
+    }
+
+    #[test]
+    fn test_aqs_hyphen_inside_term_is_literal() {
+        // `-`/`!` are NOT only when they begin a term; inside a word they stay
+        // literal (e.g. hyphenated identifiers, `!` in a value is rare but must
+        // not be silently turned into negation).
+        assert_eq!(
+            ews_aqs_to_jmap_filter("foo-bar").unwrap(),
+            json!({ "text": "foo-bar" })
+        );
+        assert_eq!(
+            ews_aqs_to_jmap_filter("subject:foo-bar").unwrap(),
+            json!({ "subject": "foo-bar" })
+        );
+    }
+
+    #[test]
+    fn test_aqs_not_at_term_start() {
+        assert_eq!(
+            ews_aqs_to_jmap_filter("-subject:meeting").unwrap(),
+            json!({ "operator": "NOT", "conditions": [{ "subject": "meeting" }] })
+        );
+    }
+
+    #[test]
+    fn test_aqs_isunread_false_and_hasflag_false() {
+        assert_eq!(
+            ews_aqs_to_jmap_filter("isunread:false").unwrap(),
+            json!({ "hasKeyword": "$seen" })
+        );
+        assert_eq!(
+            ews_aqs_to_jmap_filter("isunread:true").unwrap(),
+            json!({ "notKeyword": "$seen" })
+        );
+        assert_eq!(
+            ews_aqs_to_jmap_filter("hasflag:false").unwrap(),
+            json!({ "notKeyword": "$flagged" })
+        );
+        assert_eq!(
+            ews_aqs_to_jmap_filter("hasflag:true").unwrap(),
+            json!({ "hasKeyword": "$flagged" })
+        );
+    }
+
+    #[test]
+    fn test_aqs_trailing_garbage_is_rejected() {
+        // A stray closing parenthesis is not consumed, so the whole query is
+        // rejected rather than partially applied.
+        assert!(ews_aqs_to_jmap_filter("subject:report ) from:alice").is_none());
     }
 
     const TNS: &str = "http://schemas.microsoft.com/exchange/services/2006/types";
@@ -680,6 +838,23 @@ mod tests {
     }
 
     #[test]
+    fn test_restriction_isequalto_unsupported() {
+        // `IsEqualTo` has no exact-equality JMAP string filter, so it must not
+        // be mapped to a substring filter (which would over-match).
+        let xml = r#"<t:Restriction xmlns:t="TNS"><t:IsEqualTo><t:FieldURI FieldURI="item:Subject"/><t:Constant Value="foo"/></t:IsEqualTo></t:Restriction>"#
+            .replace("TNS", TNS);
+        assert!(ews_restriction_to_jmap_filter(&xml).is_none());
+    }
+
+    #[test]
+    fn test_has_restriction_detection() {
+        let xml = r#"<t:Restriction xmlns:t="TNS"><t:Contains><t:FieldURI FieldURI="item:Subject"/><t:Constant Value="x"/></t:Contains></t:Restriction>"#
+            .replace("TNS", TNS);
+        assert!(ews_has_restriction(&xml));
+        assert!(!ews_has_restriction("<m:FindItem/>"));
+    }
+
+    #[test]
     fn test_combine_in_mailbox_and_search() {
         let search = ews_aqs_to_jmap_filter("subject:report").unwrap();
         let combined = combine_with_in_mailbox("mbx-1", Some(search)).unwrap();
@@ -695,5 +870,15 @@ mod tests {
     #[test]
     fn test_combine_in_mailbox_only_returns_none() {
         assert!(combine_with_in_mailbox("mbx-1", None).is_none());
+    }
+
+    #[test]
+    fn test_combine_in_mailbox_empty_id_returns_search_unchanged() {
+        let search = json!({ "subject": "report" });
+        assert_eq!(
+            combine_with_in_mailbox("", Some(search.clone())),
+            Some(search)
+        );
+        assert_eq!(combine_with_in_mailbox("", None), None);
     }
 }

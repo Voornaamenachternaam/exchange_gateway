@@ -546,15 +546,28 @@ fn extract_int(xml: &str, tag: &[u8], default: usize) -> usize {
 ///   * `Restriction` — a structured `SearchExpression` subtree.
 ///
 /// When both are present the `Restriction` wins (it is the more specific
-/// expression). Returns `None` when neither is present or translatable, in
-/// which case the caller performs an unfiltered mailbox listing.
-fn extract_ews_search_filter(body: &str) -> Option<serde_json::Value> {
-    // A structured restriction is more specific than a query string.
-    if let Some(filter) = crate::ews_search::ews_restriction_to_jmap_filter(body) {
-        return Some(filter);
+/// expression); a present-but-untranslatable `Restriction` does *not* fall
+/// through to the `QueryString`. Returns `TranslatedSearch::Unfiltered` when
+/// no search constraint is present, `Unsupported` when a constraint is present
+/// but cannot be translated, and `Filter(..)` otherwise.
+fn extract_ews_search_filter(body: &str) -> crate::ews_search::TranslatedSearch {
+    // A structured restriction is more specific than a query string; honour it
+    // even when it does not translate, rather than silently substituting the
+    // query string or listing the whole mailbox.
+    if crate::ews_search::ews_has_restriction(body) {
+        return match crate::ews_search::ews_restriction_to_jmap_filter(body) {
+            Some(filter) => crate::ews_search::TranslatedSearch::Filter(filter),
+            None => crate::ews_search::TranslatedSearch::Unsupported,
+        };
     }
-    let query = extract_first_tag_text(body, b"QueryString")?;
-    crate::ews_search::ews_aqs_to_jmap_filter(query.trim())
+
+    match extract_first_tag_text(body, b"QueryString") {
+        Some(query) => match crate::ews_search::ews_aqs_to_jmap_filter(query.trim()) {
+            Some(filter) => crate::ews_search::TranslatedSearch::Filter(filter),
+            None => crate::ews_search::TranslatedSearch::Unsupported,
+        },
+        None => crate::ews_search::TranslatedSearch::Unfiltered,
+    }
 }
 
 /// Extract the DB "owner" key from a username.
@@ -2207,7 +2220,21 @@ async fn handle_find_email_item(
     // The Restriction takes precedence when both are present, matching the
     // documented EWS behaviour that a structured restriction is more specific
     // than a free-form query string.
-    let search_filter = extract_ews_search_filter(body);
+    let search = extract_ews_search_filter(body);
+
+    // A search was specified but cannot be faithfully translated: return an
+    // empty result set rather than silently listing the whole mailbox.
+    if search == crate::ews_search::TranslatedSearch::Unsupported {
+        return soap_ok(format!(
+            r#"<m:FindItemResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:FindItemResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:RootFolder TotalItemsInView="0" IncludesLastItemInRange="true" IndexedPagingOffset="0"><t:Items/></m:RootFolder></m:FindItemResponseMessage></m:ResponseMessages></m:FindItemResponse>"#,
+            EWS_MSG_NS, EWS_TYPE_NS
+        ));
+    }
+
+    let search_filter = match search {
+        crate::ews_search::TranslatedSearch::Filter(filter) => Some(filter),
+        _ => None,
+    };
 
     match crate::email::fetch_emails_jmap(
         state,
