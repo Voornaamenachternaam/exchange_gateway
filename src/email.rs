@@ -1206,6 +1206,26 @@ pub async fn send_email_smtp(
     Ok(result.message_id)
 }
 
+/// Parameters for fetching a page of emails from JMAP for a mailbox role.
+///
+/// Bundles the page window, credentials, and an optional pre-translated search
+/// filter so the function signature stays small while still supporting EWS
+/// `QueryString`/`Restriction` search.
+pub struct FetchEmailsParams<'a> {
+    pub account_id: &'a str,
+    pub mailbox_role: &'a str,
+    pub position: u64,
+    pub limit: u64,
+    pub username: &'a str,
+    pub password: &'a SecretString,
+    /// Optional JMAP Email/query filter (already translated from an EWS
+    /// `QueryString`/`Restriction` by `crate::ews_search`). When `Some`, it is
+    /// combined with the mandatory `inMailbox` condition under a top-level
+    /// `AND` operator, so a mailbox-scoped search never leaks results from
+    /// other mailboxes.
+    pub search_filter: Option<serde_json::Value>,
+}
+
 /// Fetch emails from JMAP for a specific folder.
 ///
 /// Used by EWS FindItem/GetItem and EAS Sync for email folders.
@@ -1213,13 +1233,15 @@ pub async fn send_email_smtp(
 /// token for subsequent `Email/changes` calls.
 pub async fn fetch_emails_jmap(
     state: &Arc<AppState>,
-    account_id: &str,
-    mailbox_role: &str,
-    position: u64,
-    limit: u64,
-    username: &str,
-    password: &SecretString,
+    params: &FetchEmailsParams<'_>,
 ) -> anyhow::Result<crate::jmap::EmailListResult> {
+    let account_id = params.account_id;
+    let mailbox_role = params.mailbox_role;
+    let position = params.position;
+    let limit = params.limit;
+    let username = params.username;
+    let password = params.password;
+    let search_filter = params.search_filter.as_ref();
     let jmap = state
         .jmap_client
         .as_ref()
@@ -1285,9 +1307,17 @@ pub async fn fetch_emails_jmap(
                     "Multiple mailbox IDs found for role; using first"
                 );
             }
-            let filter = Some(serde_json::json!({
-                "inMailbox": mailbox_ids[0]
-            }));
+            let in_mailbox = serde_json::json!({ "inMailbox": mailbox_ids[0] });
+            let filter = match search_filter {
+                // Combine the mailbox scope with the search conditions under
+                // a single AND so a search is always confined to this mailbox.
+                Some(search) => Some(crate::ews_search::combine_with_in_mailbox(
+                    &mailbox_ids[0],
+                    Some(search.clone()),
+                )
+                .unwrap_or(in_mailbox)),
+                None => Some(in_mailbox),
+            };
             let result = jmap
                 .query_emails(crate::jmap::QueryEmailsParams {
                     account_id,

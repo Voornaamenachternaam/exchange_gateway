@@ -537,6 +537,39 @@ fn extract_int(xml: &str, tag: &[u8], default: usize) -> usize {
         .unwrap_or(default)
 }
 
+/// Extract and translate the EWS search request embedded in a `FindItem` (or
+/// related) request body into a JMAP Email/query filter value.
+///
+/// Two mutually-independent search forms are supported (MS-OXWSSRCH):
+///
+///   * `QueryString` — an AQS free-text query (e.g. `subject:report`).
+///   * `Restriction` — a structured `SearchExpression` subtree.
+///
+/// When both are present the `Restriction` wins (it is the more specific
+/// expression); a present-but-untranslatable `Restriction` does *not* fall
+/// through to the `QueryString`. Returns `TranslatedSearch::Unfiltered` when
+/// no search constraint is present, `Unsupported` when a constraint is present
+/// but cannot be translated, and `Filter(..)` otherwise.
+fn extract_ews_search_filter(body: &str) -> crate::ews_search::TranslatedSearch {
+    // A structured restriction is more specific than a query string; honour it
+    // even when it does not translate, rather than silently substituting the
+    // query string or listing the whole mailbox.
+    if crate::ews_search::ews_has_restriction(body) {
+        return match crate::ews_search::ews_restriction_to_jmap_filter(body) {
+            Some(filter) => crate::ews_search::TranslatedSearch::Filter(filter),
+            None => crate::ews_search::TranslatedSearch::Unsupported,
+        };
+    }
+
+    match extract_first_tag_text(body, b"QueryString") {
+        Some(query) => match crate::ews_search::ews_aqs_to_jmap_filter(query.trim()) {
+            Some(filter) => crate::ews_search::TranslatedSearch::Filter(filter),
+            None => crate::ews_search::TranslatedSearch::Unsupported,
+        },
+        None => crate::ews_search::TranslatedSearch::Unfiltered,
+    }
+}
+
 /// Extract the DB "owner" key from a username.
 ///
 /// The username must already be canonicalized (domain normalized to
@@ -2181,14 +2214,39 @@ async fn handle_find_email_item(
         }
     };
 
+    // Translate the EWS search request (QueryString AQS and/or a structured
+    // Restriction) into a JMAP Email/query filter so that "Search Inbox" is
+    // functional rather than silently returning the first page of messages.
+    // The Restriction takes precedence when both are present, matching the
+    // documented EWS behaviour that a structured restriction is more specific
+    // than a free-form query string.
+    let search = extract_ews_search_filter(body);
+
+    // A search was specified but cannot be faithfully translated: return an
+    // empty result set rather than silently listing the whole mailbox.
+    if search == crate::ews_search::TranslatedSearch::Unsupported {
+        return soap_ok(format!(
+            r#"<m:FindItemResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:FindItemResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:RootFolder TotalItemsInView="0" IncludesLastItemInRange="true" IndexedPagingOffset="0"><t:Items/></m:RootFolder></m:FindItemResponseMessage></m:ResponseMessages></m:FindItemResponse>"#,
+            EWS_MSG_NS, EWS_TYPE_NS
+        ));
+    }
+
+    let search_filter = match search {
+        crate::ews_search::TranslatedSearch::Filter(filter) => Some(filter),
+        _ => None,
+    };
+
     match crate::email::fetch_emails_jmap(
         state,
-        &account_id,
-        mailbox_role,
-        offset as u64,
-        max as u64,
-        &auth.username,
-        &auth.password,
+        &crate::email::FetchEmailsParams {
+            account_id: &account_id,
+            mailbox_role,
+            position: offset as u64,
+            limit: max as u64,
+            username: &auth.username,
+            password: &auth.password,
+            search_filter,
+        },
     )
     .await
     {
@@ -3929,12 +3987,15 @@ async fn handle_sync_email_folder_items(
         // obtain the current data state token for subsequent /changes calls.
         let result = match crate::email::fetch_emails_jmap(
             state,
-            &account_id,
-            mailbox_role,
-            0,
-            _max_changes as u64,
-            &auth.username,
-            &auth.password,
+            &crate::email::FetchEmailsParams {
+                account_id: &account_id,
+                mailbox_role,
+                position: 0,
+                limit: _max_changes as u64,
+                username: &auth.username,
+                password: &auth.password,
+                search_filter: None,
+            },
         )
         .await
         {
