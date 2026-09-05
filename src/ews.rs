@@ -537,6 +537,26 @@ fn extract_int(xml: &str, tag: &[u8], default: usize) -> usize {
         .unwrap_or(default)
 }
 
+/// Extract and translate the EWS search request embedded in a `FindItem` (or
+/// related) request body into a JMAP Email/query filter value.
+///
+/// Two mutually-independent search forms are supported (MS-OXWSSRCH):
+///
+///   * `QueryString` — an AQS free-text query (e.g. `subject:report`).
+///   * `Restriction` — a structured `SearchExpression` subtree.
+///
+/// When both are present the `Restriction` wins (it is the more specific
+/// expression). Returns `None` when neither is present or translatable, in
+/// which case the caller performs an unfiltered mailbox listing.
+fn extract_ews_search_filter(body: &str) -> Option<serde_json::Value> {
+    // A structured restriction is more specific than a query string.
+    if let Some(filter) = crate::ews_search::ews_restriction_to_jmap_filter(body) {
+        return Some(filter);
+    }
+    let query = extract_first_tag_text(body, b"QueryString")?;
+    crate::ews_search::ews_aqs_to_jmap_filter(query.trim())
+}
+
 /// Extract the DB "owner" key from a username.
 ///
 /// The username must already be canonicalized (domain normalized to
@@ -2181,14 +2201,25 @@ async fn handle_find_email_item(
         }
     };
 
+    // Translate the EWS search request (QueryString AQS and/or a structured
+    // Restriction) into a JMAP Email/query filter so that "Search Inbox" is
+    // functional rather than silently returning the first page of messages.
+    // The Restriction takes precedence when both are present, matching the
+    // documented EWS behaviour that a structured restriction is more specific
+    // than a free-form query string.
+    let search_filter = extract_ews_search_filter(body);
+
     match crate::email::fetch_emails_jmap(
         state,
-        &account_id,
-        mailbox_role,
-        offset as u64,
-        max as u64,
-        &auth.username,
-        &auth.password,
+        &crate::email::FetchEmailsParams {
+            account_id: &account_id,
+            mailbox_role,
+            position: offset as u64,
+            limit: max as u64,
+            username: &auth.username,
+            password: &auth.password,
+            search_filter,
+        },
     )
     .await
     {
@@ -3929,12 +3960,15 @@ async fn handle_sync_email_folder_items(
         // obtain the current data state token for subsequent /changes calls.
         let result = match crate::email::fetch_emails_jmap(
             state,
-            &account_id,
-            mailbox_role,
-            0,
-            _max_changes as u64,
-            &auth.username,
-            &auth.password,
+            &crate::email::FetchEmailsParams {
+                account_id: &account_id,
+                mailbox_role,
+                position: 0,
+                limit: _max_changes as u64,
+                username: &auth.username,
+                password: &auth.password,
+                search_filter: None,
+            },
         )
         .await
         {

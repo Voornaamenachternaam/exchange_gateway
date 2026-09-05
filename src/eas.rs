@@ -3609,12 +3609,15 @@ async fn handle_email_sync(
         // Fetch emails from JMAP for the requested mailbox
         let result = match crate::email::fetch_emails_jmap(
             state,
-            &account_id,
-            mailbox_role,
-            0,
-            EMAIL_SYNC_PAGE_SIZE,
-            username,
-            password,
+            &crate::email::FetchEmailsParams {
+                account_id: &account_id,
+                mailbox_role,
+                position: 0,
+                limit: EMAIL_SYNC_PAGE_SIZE,
+                username,
+                password,
+                search_filter: None,
+            },
         )
         .await
         {
