@@ -76,7 +76,13 @@ use crate::mapi::rops::{
     RopSynchronizationConfigureRequest, RopCopyPropertiesRequest, RopCreateFolderRequest,
     RopDeleteFolderRequest, RopFindRowRequest, RopGetNamesFromPropertyIdsRequest,
     RopGetPropertyIdsFromNamesRequest, RopMoveCopyFolderRequest, RopOpenEmbeddedMessageRequest,
-    RopReloadCachedInformationRequest, SortOrder,
+    RopReloadCachedInformationRequest, RopSetSearchCriteriaRequest, RopGetSearchCriteriaRequest,
+    RopQueryNamedPropertiesRequest, RopGetRulesPermissionsTableRequest, RopModifyRulesRequest,
+    RopModifyPermissionsRequest, RopGetReceiveFolderRequest, RopModifyRecipientsRequest,
+    RopUpdateDeferredActionMessagesRequest, RopSetCollapseStateRequest,
+    RopSetPropertiesNoReplicateRequest, RopDeletePropertiesNoReplicateRequest,
+    RopWriteAndCommitStreamRequest, RopSetLocalReplicaMidsetDeletedRequest,
+    RopGetPerUserLongTermIdsRequest, decode_header3, decode_header4, SortOrder,
 };
 
 /// Bundle of state the handler needs. Constructed once in `main.rs` (or a
@@ -4672,6 +4678,380 @@ async fn execute_one_rop(
             }
             .encode(out);
         }
+
+        // ---- Recognised-but-unimplemented ROPs → typed NoSupport ------------
+        //
+        // Each arm below decodes the documented header + body so the ROP-chain
+        // loop stays byte-aligned, then returns a typed `NoSupport`
+        // (MAPI_E_NO_SUPPORT) instead of falling through to the generic
+        // `NotFound` (MAPI_E_NOT_FOUND). New Outlook tolerates a typed
+        // "feature unsupported" far better than a spurious "object not found",
+        // which would otherwise degrade rules/delegation/permission/search
+        // surfaces. (Audit gap #9.)
+
+        // Bare 3-byte RopHeader ROPs (no body): acknowledge decode + NoSupport.
+        RopId::ROP_GET_PROPERTIES_LIST
+        | RopId::ROP_QUERY_COLUMNS_ALL
+        | RopId::ROP_ABORT
+        | RopId::ROP_SET_SPOOLER
+        | RopId::ROP_GET_ADDRESS_TYPES
+        | RopId::ROP_GET_RECEIVE_FOLDER_TABLE
+        | RopId::ROP_GET_TRANSPORT_FOLDER
+        | RopId::ROP_GET_STORE_STATE
+        | RopId::ROP_SET_SEARCH_CRITERIA => {
+            // RopSetSearchCriteria (0x30) carries a trailing variable body
+            // (RestrictionData + FolderIds + SearchFlags); the rest are bare.
+            let input_handle_index = if rop_id == RopId::ROP_SET_SEARCH_CRITERIA {
+                let _req = RopSetSearchCriteriaRequest::decode(cur)?;
+                _req.input_handle_index
+            } else {
+                let (_, idx) = decode_header3(cur)?;
+                idx
+            };
+            RopErrorResponse {
+                rop_id,
+                output_handle_index: input_handle_index,
+                return_value: RopErrorCode::NoSupport,
+            }
+            .encode(out);
+        }
+
+        RopId::ROP_GET_SEARCH_CRITERIA => {
+            let req = RopGetSearchCriteriaRequest::decode(cur)?;
+            let _ = req;
+            RopErrorResponse {
+                rop_id,
+                output_handle_index: req.input_handle_index,
+                return_value: RopErrorCode::NoSupport,
+            }
+            .encode(out);
+        }
+
+        RopId::ROP_QUERY_NAMED_PROPERTIES => {
+            let req = RopQueryNamedPropertiesRequest::decode(cur)?;
+            let _ = req;
+            RopErrorResponse {
+                rop_id,
+                output_handle_index: req.input_handle_index,
+                return_value: RopErrorCode::NoSupport,
+            }
+            .encode(out);
+        }
+
+        RopId::ROP_GET_RULES_TABLE | RopId::ROP_GET_PERMISSIONS_TABLE => {
+            let req = RopGetRulesPermissionsTableRequest::decode(cur)?;
+            RopErrorResponse {
+                rop_id,
+                output_handle_index: req.output_handle_index,
+                return_value: RopErrorCode::NoSupport,
+            }
+            .encode(out);
+        }
+
+        RopId::ROP_MODIFY_RULES => {
+            let req = RopModifyRulesRequest::decode(cur)?;
+            let _ = req;
+            RopErrorResponse {
+                rop_id,
+                output_handle_index: req.input_handle_index,
+                return_value: RopErrorCode::NoSupport,
+            }
+            .encode(out);
+        }
+
+        RopId::ROP_MODIFY_PERMISSIONS => {
+            let req = RopModifyPermissionsRequest::decode(cur)?;
+            let _ = req;
+            RopErrorResponse {
+                rop_id,
+                output_handle_index: req.input_handle_index,
+                return_value: RopErrorCode::NoSupport,
+            }
+            .encode(out);
+        }
+
+        RopId::ROP_GET_RECEIVE_FOLDER => {
+            let req = RopGetReceiveFolderRequest::decode(cur)?;
+            let _ = req;
+            RopErrorResponse {
+                rop_id,
+                output_handle_index: req.input_handle_index,
+                return_value: RopErrorCode::NoSupport,
+            }
+            .encode(out);
+        }
+
+        RopId::ROP_MODIFY_RECIPIENTS => {
+            let req = RopModifyRecipientsRequest::decode(cur)?;
+            let _ = req;
+            RopErrorResponse {
+                rop_id,
+                output_handle_index: req.input_handle_index,
+                return_value: RopErrorCode::NoSupport,
+            }
+            .encode(out);
+        }
+
+        RopId::ROP_UPDATE_DEFERRED_ACTION_MESSAGES => {
+            let req = RopUpdateDeferredActionMessagesRequest::decode(cur)?;
+            let _ = req;
+            RopErrorResponse {
+                rop_id,
+                output_handle_index: req.input_handle_index,
+                return_value: RopErrorCode::NoSupport,
+            }
+            .encode(out);
+        }
+
+        RopId::ROP_SET_COLLAPSE_STATE => {
+            let req = RopSetCollapseStateRequest::decode(cur)?;
+            let _ = req;
+            RopErrorResponse {
+                rop_id,
+                output_handle_index: req.input_handle_index,
+                return_value: RopErrorCode::NoSupport,
+            }
+            .encode(out);
+        }
+
+        RopId::ROP_SET_PROPERTIES_NO_REPLICATE => {
+            let req = RopSetPropertiesNoReplicateRequest::decode(cur)?;
+            let _ = req;
+            RopErrorResponse {
+                rop_id,
+                output_handle_index: req.input_handle_index,
+                return_value: RopErrorCode::NoSupport,
+            }
+            .encode(out);
+        }
+
+        RopId::ROP_DELETE_PROPERTIES_NO_REPLICATE => {
+            let req = RopDeletePropertiesNoReplicateRequest::decode(cur)?;
+            let _ = req;
+            RopErrorResponse {
+                rop_id,
+                output_handle_index: req.input_handle_index,
+                return_value: RopErrorCode::NoSupport,
+            }
+            .encode(out);
+        }
+
+        RopId::ROP_WRITE_AND_COMMIT_STREAM => {
+            let req = RopWriteAndCommitStreamRequest::decode(cur)?;
+            let _ = req;
+            RopErrorResponse {
+                rop_id,
+                output_handle_index: req.input_handle_index,
+                return_value: RopErrorCode::NoSupport,
+            }
+            .encode(out);
+        }
+
+        RopId::ROP_SET_LOCAL_REPLICA_MIDSET_DELETED => {
+            let req = RopSetLocalReplicaMidsetDeletedRequest::decode(cur)?;
+            let _ = req;
+            RopErrorResponse {
+                rop_id,
+                output_handle_index: req.input_handle_index,
+                return_value: RopErrorCode::NoSupport,
+            }
+            .encode(out);
+        }
+
+        RopId::ROP_GET_PER_USER_LONG_TERM_IDS => {
+            let req = RopGetPerUserLongTermIdsRequest::decode(cur)?;
+            let _ = req;
+            RopErrorResponse {
+                rop_id,
+                output_handle_index: req.input_handle_index,
+                return_value: RopErrorCode::NoSupport,
+            }
+            .encode(out);
+        }
+
+        // Fixed-body 3-byte RopHeader ROPs decoded inline: consume header +
+        // the documented fixed trailing field(s), then NoSupport.
+        RopId::ROP_REMOVE_ALL_RECIPIENTS => {
+            let (_, idx) = decode_header3(cur)?;
+            let _reserved = cur.take_u32_le()?;
+            RopErrorResponse {
+                rop_id,
+                output_handle_index: idx,
+                return_value: RopErrorCode::NoSupport,
+            }
+            .encode(out);
+        }
+        RopId::ROP_SET_RECEIVE_FOLDER
+        | RopId::ROP_ABORT_SUBMIT
+        | RopId::ROP_GET_OWNING_SERVERS
+        | RopId::ROP_PUBLIC_FOLDER_IS_GHOSTED => {
+            let (_, idx) = decode_header3(cur)?;
+            let _folder_id = cur.take_u64_le()?;
+            RopErrorResponse {
+                rop_id,
+                output_handle_index: idx,
+                return_value: RopErrorCode::NoSupport,
+            }
+            .encode(out);
+        }
+        RopId::ROP_LONG_TERM_ID_FROM_ID
+        | RopId::ROP_SPOOLER_LOCK_MESSAGE
+        | RopId::ROP_TRANSPORT_NEW_MAIL => {
+            let (_, idx) = decode_header3(cur)?;
+            let _object_id = cur.take_u64_le()?;
+            RopErrorResponse {
+                rop_id,
+                output_handle_index: idx,
+                return_value: RopErrorCode::NoSupport,
+            }
+            .encode(out);
+        }
+        RopId::ROP_ID_FROM_LONG_TERM_ID | RopId::ROP_GET_PER_USER_GUID => {
+            let (_, idx) = decode_header3(cur)?;
+            let _long_term_id = cur.take_bytes(24)?;
+            RopErrorResponse {
+                rop_id,
+                output_handle_index: idx,
+                return_value: RopErrorCode::NoSupport,
+            }
+            .encode(out);
+        }
+        RopId::ROP_READ_PER_USER_INFORMATION | RopId::ROP_WRITE_PER_USER_INFORMATION => {
+            let (_, idx) = decode_header3(cur)?;
+            let _folder_id = cur.take_u64_le()?;
+            RopErrorResponse {
+                rop_id,
+                output_handle_index: idx,
+                return_value: RopErrorCode::NoSupport,
+            }
+            .encode(out);
+        }
+        RopId::ROP_EMPTY_FOLDER | RopId::ROP_HARD_DELETE_MESSAGES_AND_SUBFOLDERS => {
+            let (_, idx) = decode_header3(cur)?;
+            let _want_async = cur.take_u8()?;
+            let _want_delete_associated = cur.take_u8()?;
+            RopErrorResponse {
+                rop_id,
+                output_handle_index: idx,
+                return_value: RopErrorCode::NoSupport,
+            }
+            .encode(out);
+        }
+        RopId::ROP_HARD_DELETE_MESSAGES => {
+            // MS-OXCROPS §2.2.4.12.1: WantAsynchronous + NotifyNonRead +
+            // MessageIdCount + MessageIds (variable).
+            let (_, idx) = decode_header3(cur)?;
+            let _want_async = cur.take_u8()?;
+            let _notify_non_read = cur.take_u8()?;
+            let _count = cur.take_u16_le()?;
+            let _ = cur.take_remaining();
+            RopErrorResponse {
+                rop_id,
+                output_handle_index: idx,
+                return_value: RopErrorCode::NoSupport,
+            }
+            .encode(out);
+        }
+        RopId::ROP_GET_COLLAPSE_STATE | RopId::ROP_COLLAPSE_ROW => {
+            let (_, idx) = decode_header3(cur)?;
+            let _category_id = cur.take_u64_le()?;
+            RopErrorResponse {
+                rop_id,
+                output_handle_index: idx,
+                return_value: RopErrorCode::NoSupport,
+            }
+            .encode(out);
+        }
+        RopId::ROP_EXPAND_ROW => {
+            let (_, idx) = decode_header3(cur)?;
+            let _max_row_count = cur.take_u16_le()?;
+            let _category_id = cur.take_u64_le()?;
+            RopErrorResponse {
+                rop_id,
+                output_handle_index: idx,
+                return_value: RopErrorCode::NoSupport,
+            }
+            .encode(out);
+        }
+        RopId::ROP_READ_RECIPIENTS => {
+            let (_, idx) = decode_header3(cur)?;
+            let _row_id = cur.take_u32_le()?;
+            let _reserved = cur.take_u16_le()?;
+            RopErrorResponse {
+                rop_id,
+                output_handle_index: idx,
+                return_value: RopErrorCode::NoSupport,
+            }
+            .encode(out);
+        }
+        RopId::ROP_LOCK_REGION_STREAM => {
+            let (_, idx) = decode_header3(cur)?;
+            let _region_offset = cur.take_u64_le()?;
+            let _region_size = cur.take_u64_le()?;
+            RopErrorResponse {
+                rop_id,
+                output_handle_index: idx,
+                return_value: RopErrorCode::NoSupport,
+            }
+            .encode(out);
+        }
+        RopId::ROP_UNLOCK_REGION_STREAM => {
+            let (_, idx) = decode_header3(cur)?;
+            let _region_offset = cur.take_u64_le()?;
+            let _region_size = cur.take_u64_le()?;
+            RopErrorResponse {
+                rop_id,
+                output_handle_index: idx,
+                return_value: RopErrorCode::NoSupport,
+            }
+            .encode(out);
+        }
+        RopId::ROP_GET_LOCAL_REPLICA_IDS => {
+            let (_, idx) = decode_header3(cur)?;
+            let _id_count = cur.take_u32_le()?;
+            RopErrorResponse {
+                rop_id,
+                output_handle_index: idx,
+                return_value: RopErrorCode::NoSupport,
+            }
+            .encode(out);
+        }
+        // CopyToStream (0x3A): RopHeader with Source + Dest handle indices.
+        RopId::ROP_COPY_TO_STREAM => {
+            let (_, src_idx) = decode_header3(cur)?;
+            let _dest_idx = cur.take_u8()?;
+            RopErrorResponse {
+                rop_id,
+                output_handle_index: src_idx,
+                return_value: RopErrorCode::NoSupport,
+            }
+            .encode(out);
+        }
+        // CloneStream (0x3B) / SynchronizationOpenCollector (0x7E) /
+        // SynchronizationGetTransferState (0x82): RopHeader4 with a (possibly
+        // absent) trailing body.
+        RopId::ROP_CLONE_STREAM => {
+            let (_, _, output_handle_index) = decode_header4(cur)?;
+            RopErrorResponse {
+                rop_id,
+                output_handle_index,
+                return_value: RopErrorCode::NoSupport,
+            }
+            .encode(out);
+        }
+        RopId::ROP_SYNCHRONIZATION_OPEN_COLLECTOR
+        | RopId::ROP_SYNCHRONIZATION_GET_TRANSFER_STATE => {
+            // MS-OXCROPS §2.2.12.4.1 / §2.2.12.5.1: a RopHeader4 (the output
+            // handle binds the collector/transfer state) with no further body.
+            let (_, _, output_handle_index) = decode_header4(cur)?;
+            RopErrorResponse {
+                rop_id,
+                output_handle_index,
+                return_value: RopErrorCode::NoSupport,
+            }
+            .encode(out);
+        }
+
         _ => {
             let _ = cur.take_remaining();
             RopErrorResponse {
@@ -8147,6 +8527,65 @@ mod tests {
         .await
         .expect("dispatch ok");
         out
+    }
+
+    /// Regression for audit gap #9: recognised-but-unimplemented ROPs must
+    /// return a typed `NoSupport` (MAPI_E_NO_SUPPORT) rather than the generic
+    /// `NotFound` (MAPI_E_NOT_FOUND) fallthrough, so New Outlook tolerates the
+    /// "feature unsupported" signal for rules/delegation/permission/search
+    /// surfaces instead of surfacing a spurious object-not-found. Each probe
+    /// also proves the decode consumes the exact header+body bytes (so a
+    /// trailing ROP in a chain would stay byte-aligned).
+    #[tokio::test]
+    async fn undispatched_rops_return_typed_no_support() {
+        let (state, sid) = state_with_session();
+
+        // Each `(rop_id, body_after_ropid)` pair drives one recognised-but-
+        // unimplemented ROP. The RopId byte is not part of `body` (dispatch
+        // consumes it first), so `body` is the LogonId + handle(s) + payload.
+        let cases: Vec<(u8, Vec<u8>)> = vec![
+            // Bare 3-byte header ROPs (no trailing body).
+            (0x09, vec![0x00, 0x01]),                   // RopGetPropertiesList
+            (0x37, vec![0x00, 0x01]),                   // RopQueryColumnsAll
+            (0x38, vec![0x00, 0x01]),                   // RopAbort
+            (0x49, vec![0x00, 0x01]),                   // RopGetAddressTypes
+            (0x7B, vec![0x00, 0x01]),                   // RopGetStoreState
+            // RopHeader + fixed trailing field (FolderId/ObjectId 8 bytes).
+            (0x42, vec![0x00, 0x01, 0, 0, 0, 0, 0, 0, 0, 1]), // RopGetOwningServers
+            (0x43, vec![0x00, 0x01, 0, 0, 0, 0, 0, 0, 0, 1]), // RopLongTermIdFromId
+            // RopHeader4 (Logon+Input+Output) + TableFlags.
+            (0x3F, vec![0x00, 0x01, 0x02, 0x00]),       // RopGetRulesTable
+            (0x3E, vec![0x00, 0x01, 0x02, 0x00]),       // RopGetPermissionsTable
+            // RopHeader + fixed trailing field (24-byte LongTermId).
+            (0x44, {
+                let mut b = vec![0x00, 0x01];
+                b.extend_from_slice(&[0u8; 24]); // RopIdFromLongTermId
+                b
+            }),
+            // RopHeader + ModifyRulesFlags(1) + RulesCount(2) + (empty) RulesData.
+            (0x41, vec![0x00, 0x01, 0x00, 0x00, 0x00]), // RopModifyRules
+            // RopHeader + ModifyFlags(1) + ModifyCount(2) + (empty) PermissionsData.
+            (0x40, vec![0x00, 0x01, 0x00, 0x00, 0x00]), // RopModifyPermissions
+            // RopHeader + QueryFlags(1) + HasGuid(0) + PropertyIdCount(0).
+            (0x5F, vec![0x00, 0x01, 0x00, 0x00, 0x00, 0x00]), // RopQueryNamedProperties
+        ];
+
+        for (rop_id, body) in cases {
+            let mut full = Vec::with_capacity(1 + body.len());
+            full.push(rop_id);
+            full.extend_from_slice(&body);
+            let out = dispatch(&state, &sid, &full).await;
+
+            // Response is the 6-byte failure envelope: RopId + handle + ReturnValue.
+            assert_eq!(out.len(), 6, "rop 0x{rop_id:02X} response length");
+            assert_eq!(out[0], rop_id, "rop 0x{rop_id:02X} echoes RopId");
+            let rv = u32::from_le_bytes([out[2], out[3], out[4], out[5]]);
+            assert_eq!(
+                RopErrorCode::from_u32(rv),
+                RopErrorCode::NoSupport,
+                "rop 0x{rop_id:02X} must return NoSupport, not NotFound"
+            );
+        }
     }
 
     #[tokio::test]
