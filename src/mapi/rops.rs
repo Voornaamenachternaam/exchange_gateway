@@ -1112,6 +1112,27 @@ impl<'a> Buf<'a> {
         }
         self.take_bytes(n)
     }
+    /// Read a NUL-terminated byte string up to and including the terminator.
+    /// Returns the bytes *excluding* the terminator. `max` bounds the number of
+    /// bytes *including* the terminator (MS-OXCSTOR message-class strings cap
+    /// the total at 255 including NUL). Fails closed when no terminator is
+    /// found within `max` bytes so an unbounded/truncated field cannot swallow
+    /// a trailing ROP in the chain.
+    pub fn take_nul_terminated(&mut self, max: usize) -> Result<Vec<u8>, DecodeError> {
+        let remaining_len = self.remaining().min(max);
+        let window = &self.buf[self.pos..self.pos + remaining_len];
+        match window.iter().position(|&b| b == 0) {
+            Some(idx) => {
+                let data = window[..idx].to_vec();
+                self.pos += idx + 1; // consume data + NUL
+                Ok(data)
+            }
+            None => {
+                // No terminator within the bounded window: treat as invalid.
+                Err(DecodeError::ExcessLength)
+            }
+        }
+    }
 }
 
 /// Decode failures that arise from an untrusted ROP buffer.
@@ -4116,56 +4137,76 @@ impl RopGetRulesPermissionsTableRequest {
     }
 }
 
-/// `RopModifyRules` (0x41) request body (MS-OXORULE §2.2.4.2). `ModifyRulesFlags`
-/// + `RulesCount` + variable `RulesData` (dropped — no rules backend).
+/// `RopModifyRules` (0x41) request body (MS-OXORULE §2.2.4.2): `ModifyRulesFlags`,
+/// `RulesCount`, then `RulesCount` `RuleData` entries. Each `RuleData` entry
+/// (MS-OXCROPS §2.2.11.1.1.1) is `RuleDataFlags` + `PropertyValueCount` + that
+/// many `TaggedPropertyValue` structures; walking them keeps the cursor byte-
+/// aligned so a trailing ROP is not swallowed by `take_remaining`.
 pub struct RopModifyRulesRequest {
     pub logon_id: u8,
     pub input_handle_index: u8,
     pub modify_rules_flags: u8,
-    pub rules_data: Vec<u8>,
 }
 
 impl RopModifyRulesRequest {
     pub fn decode(cur: &mut Buf<'_>) -> Result<Self, DecodeError> {
         let (logon_id, input_handle_index) = decode_header3(cur)?;
         let modify_rules_flags = cur.take_u8()?;
-        let _rules_count = cur.take_u16_le()?;
-        let rules_data = cur.take_remaining();
+        let rules_count = usize::from(cur.take_u16_le()?);
+        for _ in 0..rules_count {
+            // RuleDataFlags (1) is ignored; the PropertyValueCount that follows
+            // bounds the TaggedPropertyValue array we must walk for alignment.
+            let _rule_data_flags = cur.take_u8()?;
+            let property_value_count = usize::from(cur.take_u16_le()?);
+            for _ in 0..property_value_count {
+                // Fully decode each TaggedPropertyValue (property tag + typed
+                // value) so variable-length string/binary payloads are skipped
+                // exactly.
+                let _ = crate::mapi::data::TaggedPropertyValue::decode(cur)?;
+            }
+        }
         Ok(Self {
             logon_id,
             input_handle_index,
             modify_rules_flags,
-            rules_data,
         })
     }
 }
 
 /// `RopModifyPermissions` (0x40) request body (MS-OXCPERM §2.2.6.1).
-/// `ModifyFlags` + `ModifyCount` + variable `PermissionsData` (dropped).
+/// `ModifyFlags` + `ModifyCount` + `ModifyCount` `PermissionData` entries.
+/// Each `PermissionData` (MS-OXCROPS §2.2.10.1.1.1) is `PermissionDataFlags` +
+/// `PropertyValueCount` + that many `TaggedPropertyValue` structures; walking
+/// them keeps the cursor byte-aligned for any trailing ROP in the chain.
 pub struct RopModifyPermissionsRequest {
     pub logon_id: u8,
     pub input_handle_index: u8,
     pub modify_flags: u8,
-    pub permissions_data: Vec<u8>,
 }
 
 impl RopModifyPermissionsRequest {
     pub fn decode(cur: &mut Buf<'_>) -> Result<Self, DecodeError> {
         let (logon_id, input_handle_index) = decode_header3(cur)?;
         let modify_flags = cur.take_u8()?;
-        let _modify_count = cur.take_u16_le()?;
-        let permissions_data = cur.take_remaining();
+        let modify_count = usize::from(cur.take_u16_le()?);
+        for _ in 0..modify_count {
+            let _permission_data_flags = cur.take_u8()?;
+            let property_value_count = usize::from(cur.take_u16_le()?);
+            for _ in 0..property_value_count {
+                let _ = crate::mapi::data::TaggedPropertyValue::decode(cur)?;
+            }
+        }
         Ok(Self {
             logon_id,
             input_handle_index,
             modify_flags,
-            permissions_data,
         })
     }
 }
 
 /// `RopGetReceiveFolder` (0x27) request body (MS-OXCSTOR §2.2.4.1). A
-/// variable-length (lp16) `MessageClass` string terminates the request.
+/// NUL-terminated ASCII `MessageClass` string (≤255 bytes including the NUL)
+/// terminates the request.
 pub struct RopGetReceiveFolderRequest {
     pub logon_id: u8,
     pub input_handle_index: u8,
@@ -4175,7 +4216,7 @@ pub struct RopGetReceiveFolderRequest {
 impl RopGetReceiveFolderRequest {
     pub fn decode(cur: &mut Buf<'_>) -> Result<Self, DecodeError> {
         let (logon_id, input_handle_index) = decode_header3(cur)?;
-        let message_class = cur.take_lp16_bytes(255)?.to_vec();
+        let message_class = cur.take_nul_terminated(255)?;
         Ok(Self {
             logon_id,
             input_handle_index,
@@ -4185,8 +4226,10 @@ impl RopGetReceiveFolderRequest {
 }
 
 /// `RopModifyRecipients` (0x0E) request body (MS-OXCROPS §2.2.6.3.1).
-/// `ColumnCount` + variable recipient columns, then `RowCount` + variable
-/// recipient rows (both dropped — no recipient mutation backend).
+/// `ColumnCount` `PropertyTag` columns, then `RowCount` `ModifyRecipientRow`
+/// entries. Each row (MS-OXCROPS §2.2.6.5.1.1) is `RowId` + `RecipientType` +
+/// `RecipientRowSize` + that many `RecipientRow` bytes; walking them keeps the
+/// cursor byte-aligned so a trailing ROP is not swallowed by `take_remaining`.
 pub struct RopModifyRecipientsRequest {
     pub logon_id: u8,
     pub input_handle_index: u8,
@@ -4195,10 +4238,17 @@ pub struct RopModifyRecipientsRequest {
 impl RopModifyRecipientsRequest {
     pub fn decode(cur: &mut Buf<'_>) -> Result<Self, DecodeError> {
         let (logon_id, input_handle_index) = decode_header3(cur)?;
-        // ColumnCount + recipient columns are length-delimited internally but
-        // mutually recursive; consume the trailing tail whole for alignment.
-        let _ = cur.take_u16_le()?;
-        let _ = cur.take_remaining();
+        let column_count = usize::from(cur.take_u16_le()?);
+        for _ in 0..column_count {
+            let _tag = crate::mapi::data::PropertyTag::decode(cur)?;
+        }
+        let row_count = usize::from(cur.take_u16_le()?);
+        for _ in 0..row_count {
+            let _row_id = cur.take_u32_le()?;
+            let _recipient_type = cur.take_u8()?;
+            let recipient_row_size = usize::from(cur.take_u16_le()?);
+            let _row = cur.take_bytes(recipient_row_size)?;
+        }
         Ok(Self {
             logon_id,
             input_handle_index,
@@ -4307,7 +4357,8 @@ impl RopWriteAndCommitStreamRequest {
 }
 
 /// `RopSetLocalReplicaMidsetDeleted` (0x93) request body (MS-OXCROPS §2.2.10.2).
-/// `DataSize` + `LongTermIdRangeCount` + variable `LongTermIdRanges` (dropped).
+/// `DataSize` bounds the `LongTermIdRangeCount` + `LongTermIdRanges` payload
+/// that follows; consume exactly that many bytes so a trailing ROP survives.
 pub struct RopSetLocalReplicaMidsetDeletedRequest {
     pub logon_id: u8,
     pub input_handle_index: u8,
@@ -4316,8 +4367,8 @@ pub struct RopSetLocalReplicaMidsetDeletedRequest {
 impl RopSetLocalReplicaMidsetDeletedRequest {
     pub fn decode(cur: &mut Buf<'_>) -> Result<Self, DecodeError> {
         let (logon_id, input_handle_index) = decode_header3(cur)?;
-        let _data_size = usize::from(cur.take_u16_le()?);
-        let _ = cur.take_remaining();
+        let data_size = usize::from(cur.take_u16_le()?);
+        let _ = cur.take_bytes(data_size)?;
         Ok(Self {
             logon_id,
             input_handle_index,

@@ -4881,10 +4881,8 @@ async fn execute_one_rop(
             }
             .encode(out);
         }
-        RopId::ROP_SET_RECEIVE_FOLDER
-        | RopId::ROP_ABORT_SUBMIT
-        | RopId::ROP_GET_OWNING_SERVERS
-        | RopId::ROP_PUBLIC_FOLDER_IS_GHOSTED => {
+        // GetOwningServers (0x42) / PublicFolderIsGhosted (0x45): FolderId only.
+        RopId::ROP_GET_OWNING_SERVERS | RopId::ROP_PUBLIC_FOLDER_IS_GHOSTED => {
             let (_, idx) = decode_header3(cur)?;
             let _folder_id = cur.take_u64_le()?;
             RopErrorResponse {
@@ -4894,11 +4892,61 @@ async fn execute_one_rop(
             }
             .encode(out);
         }
-        RopId::ROP_LONG_TERM_ID_FROM_ID
-        | RopId::ROP_SPOOLER_LOCK_MESSAGE
-        | RopId::ROP_TRANSPORT_NEW_MAIL => {
+        // AbortSubmit (0x34): FolderId (8) + MessageId (8).
+        RopId::ROP_ABORT_SUBMIT => {
+            let (_, idx) = decode_header3(cur)?;
+            let _folder_id = cur.take_u64_le()?;
+            let _message_id = cur.take_u64_le()?;
+            RopErrorResponse {
+                rop_id,
+                output_handle_index: idx,
+                return_value: RopErrorCode::NoSupport,
+            }
+            .encode(out);
+        }
+        // SetReceiveFolder (0x26): FolderId (8) + NUL-terminated MessageClass.
+        RopId::ROP_SET_RECEIVE_FOLDER => {
+            let (_, idx) = decode_header3(cur)?;
+            let _folder_id = cur.take_u64_le()?;
+            let _message_class = cur.take_nul_terminated(255)?;
+            RopErrorResponse {
+                rop_id,
+                output_handle_index: idx,
+                return_value: RopErrorCode::NoSupport,
+            }
+            .encode(out);
+        }
+        // LongTermIdFromId (0x43): ObjectId (8) only.
+        RopId::ROP_LONG_TERM_ID_FROM_ID => {
             let (_, idx) = decode_header3(cur)?;
             let _object_id = cur.take_u64_le()?;
+            RopErrorResponse {
+                rop_id,
+                output_handle_index: idx,
+                return_value: RopErrorCode::NoSupport,
+            }
+            .encode(out);
+        }
+        // SpoolerLockMessage (0x48): MessageId (8) + LockState (1).
+        RopId::ROP_SPOOLER_LOCK_MESSAGE => {
+            let (_, idx) = decode_header3(cur)?;
+            let _message_id = cur.take_u64_le()?;
+            let _lock_state = cur.take_u8()?;
+            RopErrorResponse {
+                rop_id,
+                output_handle_index: idx,
+                return_value: RopErrorCode::NoSupport,
+            }
+            .encode(out);
+        }
+        // TransportNewMail (0x51): MessageId (8) + FolderId (8) +
+        // NUL-terminated MessageClass + MessageFlags (4).
+        RopId::ROP_TRANSPORT_NEW_MAIL => {
+            let (_, idx) = decode_header3(cur)?;
+            let _message_id = cur.take_u64_le()?;
+            let _folder_id = cur.take_u64_le()?;
+            let _message_class = cur.take_nul_terminated(255)?;
+            let _message_flags = cur.take_u32_le()?;
             RopErrorResponse {
                 rop_id,
                 output_handle_index: idx,
@@ -4939,12 +4987,14 @@ async fn execute_one_rop(
         }
         RopId::ROP_HARD_DELETE_MESSAGES => {
             // MS-OXCROPS §2.2.4.12.1: WantAsynchronous + NotifyNonRead +
-            // MessageIdCount + MessageIds (variable).
+            // MessageIdCount + MessageIds (count × 8-byte IDs).
             let (_, idx) = decode_header3(cur)?;
             let _want_async = cur.take_u8()?;
             let _notify_non_read = cur.take_u8()?;
-            let _count = cur.take_u16_le()?;
-            let _ = cur.take_remaining();
+            let count = usize::from(cur.take_u16_le()?);
+            for _ in 0..count {
+                let _message_id = cur.take_u64_le()?;
+            }
             RopErrorResponse {
                 rop_id,
                 output_handle_index: idx,
@@ -4952,9 +5002,22 @@ async fn execute_one_rop(
             }
             .encode(out);
         }
-        RopId::ROP_GET_COLLAPSE_STATE | RopId::ROP_COLLAPSE_ROW => {
+        RopId::ROP_COLLAPSE_ROW => {
+            // MS-OXCROPS §2.2.5.2.1: CategoryId (8 bytes) only.
             let (_, idx) = decode_header3(cur)?;
             let _category_id = cur.take_u64_le()?;
+            RopErrorResponse {
+                rop_id,
+                output_handle_index: idx,
+                return_value: RopErrorCode::NoSupport,
+            }
+            .encode(out);
+        }
+        RopId::ROP_GET_COLLAPSE_STATE => {
+            // MS-OXCROPS §2.2.5.3.1: RowId (8) + RowInstanceNumber (4).
+            let (_, idx) = decode_header3(cur)?;
+            let _row_id = cur.take_u64_le()?;
+            let _row_instance_number = cur.take_u32_le()?;
             RopErrorResponse {
                 rop_id,
                 output_handle_index: idx,
@@ -5016,10 +5079,12 @@ async fn execute_one_rop(
             }
             .encode(out);
         }
-        // CopyToStream (0x3A): RopHeader with Source + Dest handle indices.
+        // CopyToStream (0x3A): RopHeader (LogonId + SourceHandleIndex) then
+        // DestHandleIndex (1) + ByteCount (8).
         RopId::ROP_COPY_TO_STREAM => {
             let (_, src_idx) = decode_header3(cur)?;
             let _dest_idx = cur.take_u8()?;
+            let _byte_count = cur.take_u64_le()?;
             RopErrorResponse {
                 rop_id,
                 output_handle_index: src_idx,
@@ -5039,10 +5104,21 @@ async fn execute_one_rop(
             }
             .encode(out);
         }
-        RopId::ROP_SYNCHRONIZATION_OPEN_COLLECTOR
-        | RopId::ROP_SYNCHRONIZATION_GET_TRANSFER_STATE => {
-            // MS-OXCROPS §2.2.12.4.1 / §2.2.12.5.1: a RopHeader4 (the output
-            // handle binds the collector/transfer state) with no further body.
+        // SynchronizationOpenCollector (0x7E): RopHeader4 then a one-byte
+        // IsContentsCollector flag (MS-OXCROPS §2.2.12.4.1).
+        RopId::ROP_SYNCHRONIZATION_OPEN_COLLECTOR => {
+            let (_, _, output_handle_index) = decode_header4(cur)?;
+            let _is_contents_collector = cur.take_u8()?;
+            RopErrorResponse {
+                rop_id,
+                output_handle_index,
+                return_value: RopErrorCode::NoSupport,
+            }
+            .encode(out);
+        }
+        // SynchronizationGetTransferState (0x82): RopHeader4 with no body
+        // (MS-OXCROPS §2.2.12.5.1).
+        RopId::ROP_SYNCHRONIZATION_GET_TRANSFER_STATE => {
             let (_, _, output_handle_index) = decode_header4(cur)?;
             RopErrorResponse {
                 rop_id,
@@ -8533,16 +8609,45 @@ mod tests {
     /// return a typed `NoSupport` (MAPI_E_NO_SUPPORT) rather than the generic
     /// `NotFound` (MAPI_E_NOT_FOUND) fallthrough, so New Outlook tolerates the
     /// "feature unsupported" signal for rules/delegation/permission/search
-    /// surfaces instead of surfacing a spurious object-not-found. Each probe
-    /// also proves the decode consumes the exact header+body bytes (so a
-    /// trailing ROP in a chain would stay byte-aligned).
+    /// surfaces instead of surfacing a spurious object-not-found.
+    ///
+    /// Each probe is chained before a `RopRelease` sentinel in a single
+    /// `Execute` buffer and driven through the real `handle_execute` chain
+    /// loop. The sentinel's `Success` response appearing immediately after the
+    /// probe's `NoSupport` response proves the probe consumed exactly its own
+    /// header + body bytes (an over- or under-read would misalign the sentinel
+    /// and corrupt or drop its response).
     #[tokio::test]
-    async fn undispatched_rops_return_typed_no_support() {
-        let (state, sid) = state_with_session();
+    async fn undispatched_rops_return_typed_no_support_and_stay_aligned() {
+        let mut cfg = Config::test_with_mail_domain("example.com");
+        cfg.mapi_enabled = true;
+        let state = MapiState::new(
+            cfg,
+            std::sync::Arc::new(AuthVerifier::new(&Config::default())),
+        );
+        let sid = state
+            .sessions
+            .create(crate::mapi::session::SessionPrincipal {
+                email: "u@example.com".into(),
+                basic_auth: true,
+            });
+        // A live folder handle so the RopRelease sentinel can succeed.
+        state.sessions.with_session_mut(&sid, |s| {
+            s.set_handle(
+                3,
+                crate::mapi::session::Handle::Folder {
+                    backend_id: "I".into(),
+                    kind: crate::mapi::session::FolderKind::Mail,
+                },
+            );
+        });
+
+        // The sentinel: RopRelease (0x01) ┬Ę LogonId(0) ┬Ę InputHandleIndex(3).
+        const SENTINEL: &[u8] = &[0x01, 0x00, 0x03];
 
         // Each `(rop_id, body_after_ropid)` pair drives one recognised-but-
-        // unimplemented ROP. The RopId byte is not part of `body` (dispatch
-        // consumes it first), so `body` is the LogonId + handle(s) + payload.
+        // unimplemented ROP. `body` is the LogonId + handle(s) + payload (the
+        // RopId byte is prepended when building the full buffer below).
         let cases: Vec<(u8, Vec<u8>)> = vec![
             // Bare 3-byte header ROPs (no trailing body).
             (0x09, vec![0x00, 0x01]),                   // RopGetPropertiesList
@@ -8550,6 +8655,8 @@ mod tests {
             (0x38, vec![0x00, 0x01]),                   // RopAbort
             (0x49, vec![0x00, 0x01]),                   // RopGetAddressTypes
             (0x7B, vec![0x00, 0x01]),                   // RopGetStoreState
+            (0x68, vec![0x00, 0x01]),                   // RopGetReceiveFolderTable
+            (0x6D, vec![0x00, 0x01]),                   // RopGetTransportFolder
             // RopHeader + fixed trailing field (FolderId/ObjectId 8 bytes).
             (0x42, vec![0x00, 0x01, 0, 0, 0, 0, 0, 0, 0, 1]), // RopGetOwningServers
             (0x43, vec![0x00, 0x01, 0, 0, 0, 0, 0, 0, 0, 1]), // RopLongTermIdFromId
@@ -8568,22 +8675,116 @@ mod tests {
             (0x40, vec![0x00, 0x01, 0x00, 0x00, 0x00]), // RopModifyPermissions
             // RopHeader + QueryFlags(1) + HasGuid(0) + PropertyIdCount(0).
             (0x5F, vec![0x00, 0x01, 0x00, 0x00, 0x00, 0x00]), // RopQueryNamedProperties
+            // SetReceiveFolder: FolderId(8) + NUL-terminated MessageClass.
+            (0x26, {
+                let mut b = vec![0x00, 0x01];
+                b.extend_from_slice(&[0u8; 8]);
+                b.extend_from_slice(b"IPM.Note\0");
+                b
+            }),
+            // AbortSubmit: FolderId(8) + MessageId(8).
+            (0x34, {
+                let mut b = vec![0x00, 0x01];
+                b.extend_from_slice(&[0u8; 16]);
+                b
+            }),
+            // SpoolerLockMessage: MessageId(8) + LockState(1).
+            (0x48, {
+                let mut b = vec![0x00, 0x01];
+                b.extend_from_slice(&[0u8; 8]);
+                b.push(0x00);
+                b
+            }),
+            // TransportNewMail: MessageId(8) + FolderId(8) + MessageClass + Flags(4).
+            (0x51, {
+                let mut b = vec![0x00, 0x01];
+                b.extend_from_slice(&[0u8; 16]);
+                b.extend_from_slice(b"IPM.Note\0");
+                b.extend_from_slice(&[0u8; 4]);
+                b
+            }),
+            // GetReceiveFolder: NUL-terminated MessageClass.
+            (0x27, {
+                let mut b = vec![0x00, 0x01];
+                b.extend_from_slice(b"IPM.Note\0");
+                b
+            }),
+            // CopyToStream: DestHandleIndex(1) + ByteCount(8).
+            (0x3A, {
+                let mut b = vec![0x00, 0x01, 0x02];
+                b.extend_from_slice(&[0u8; 8]);
+                b
+            }),
+            // SynchronizationOpenCollector: RopHeader4 + IsContentsCollector(1).
+            (0x7E, vec![0x00, 0x01, 0x02, 0x00]),
+            // SynchronizationGetTransferState: RopHeader4 (no body).
+            (0x82, vec![0x00, 0x01, 0x02]),
         ];
 
         for (rop_id, body) in cases {
-            let mut full = Vec::with_capacity(1 + body.len());
+            // Re-install the folder handle the sentinel releases at the end of
+            // the previous iteration.
+            state.sessions.with_session_mut(&sid, |s| {
+                s.set_handle(
+                    3,
+                    crate::mapi::session::Handle::Folder {
+                        backend_id: "I".into(),
+                        kind: crate::mapi::session::FolderKind::Mail,
+                    },
+                );
+            });
+
+            let mut full = Vec::with_capacity(1 + body.len() + SENTINEL.len());
             full.push(rop_id);
             full.extend_from_slice(&body);
-            let out = dispatch(&state, &sid, &full).await;
+            full.extend_from_slice(SENTINEL);
 
-            // Response is the 6-byte failure envelope: RopId + handle + ReturnValue.
-            assert_eq!(out.len(), 6, "rop 0x{rop_id:02X} response length");
-            assert_eq!(out[0], rop_id, "rop 0x{rop_id:02X} echoes RopId");
-            let rv = u32::from_le_bytes([out[2], out[3], out[4], out[5]]);
+            let req = MapiRequest {
+                kind: RpcKind::Mailbox(MapiRequestType::Execute),
+                request_id: "{G}:1".into(),
+                client_application: None,
+                client_info: Some(format!("{{{}}}:0", sid.as_hyphenated())),
+                username: None,
+                password: None,
+                cookies: Vec::new(),
+                body: full,
+            };
+            let resp = handle(req, &state).await;
+            assert_eq!(resp.code, ResponseCode::Success, "rop 0x{rop_id:02X} framed");
+            let (_status, _h, _ct, body_out) = resp.render();
+            let payload = &body_out[4..];
+
+            // Probe response (6 bytes): RopId + input handle + NoSupport.
+            assert!(
+                payload.len() >= 6,
+                "rop 0x{rop_id:02X}: probe response missing (got {} bytes)",
+                payload.len()
+            );
+            assert_eq!(payload[0], rop_id, "rop 0x{rop_id:02X} echoes RopId");
+            let rv = u32::from_le_bytes([payload[2], payload[3], payload[4], payload[5]]);
             assert_eq!(
                 RopErrorCode::from_u32(rv),
                 RopErrorCode::NoSupport,
                 "rop 0x{rop_id:02X} must return NoSupport, not NotFound"
+            );
+
+            // Sentinel response (6 bytes) immediately follows: RopRelease echoes
+            // 0x01 + handle 3 + Success, proving the probe consumed exactly its
+            // own bytes.
+            assert_eq!(
+                payload.len(),
+                12,
+                "rop 0x{rop_id:02X}: sentinel misaligned (got {} total bytes)",
+                payload.len()
+            );
+            let sentinel = &payload[6..12];
+            assert_eq!(sentinel[0], 0x01, "rop 0x{rop_id:02X}: sentinel RopId");
+            assert_eq!(sentinel[1], 3, "rop 0x{rop_id:02X}: sentinel handle");
+            let srv = u32::from_le_bytes([sentinel[2], sentinel[3], sentinel[4], sentinel[5]]);
+            assert_eq!(
+                RopErrorCode::from_u32(srv),
+                RopErrorCode::Success,
+                "rop 0x{rop_id:02X}: sentinel must succeed — probe over/under-read"
             );
         }
     }
