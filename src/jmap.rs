@@ -656,7 +656,7 @@ impl JmapClient {
     }
 
     /// Build the Basic Authorization header value.
-    fn basic_auth_header(username: &str, password: &SecretString) -> String {
+    pub(crate) fn basic_auth_header(username: &str, password: &SecretString) -> String {
         use base64::Engine;
         let encoded = base64::engine::general_purpose::STANDARD.encode(format!(
             "{}:{}",
@@ -2362,6 +2362,28 @@ impl JmapClient {
             .get("urn:ietf:params:jmap:mail")
             .cloned()
             .ok_or_else(|| anyhow!("No primary mail account found in JMAP session"))
+    }
+
+    /// Resolve the JMAP EventSource push endpoint (`urn:ietf:params:jmap:push`,
+    /// RFC 8620 §7.2) and the matching Basic `Authorization` header for
+    /// `username`, enabling a live push monitor to subscribe to server-side
+    /// state changes without polling. Returns an error when the server did not
+    /// advertise an `eventSourceUrl` (i.e. push is unavailable/supported).
+    pub async fn push_endpoint(
+        &self,
+        username: &str,
+        password: &SecretString,
+    ) -> Result<(String, String)> {
+        let session = self.get_session(username, password).await?;
+        if session.event_source_url.is_empty() {
+            return Err(anyhow!(
+                "JMAP server did not advertise eventSourceUrl (push unsupported)"
+            ));
+        }
+        Ok((
+            session.event_source_url.clone(),
+            Self::basic_auth_header(username, password),
+        ))
     }
 
     /// Verify JMAP credentials by fetching the session.

@@ -2638,4 +2638,157 @@ END:VTIMEZONE";
         );
         assert!(ics.contains("DTSTART:19700308T020000"));
     }
+
+    /// Extract the text of the first `<...:Tag>` (or `<Tag>`) element from an
+    /// EAS `Calendar` fragment. `map_rrule_to_recurrence_xml` emits a bare
+    /// `<Calendar:Recurrence>` fragment *without* declaring the `Calendar`
+    /// namespace prefix, so a strict XML parser (roxmltree) rejects it; this
+    /// helper instead matches the local element name directly on the raw text,
+    /// which is sufficient for round-trip field assertions.
+    fn eas_field(xml: &str, tag: &str) -> Option<String> {
+        let start = seek_tag(xml, 0, tag)?;
+        let close = xml[start..].find('>')? + start;
+        let value_end = xml[close + 1..].find('<')? + close + 1;
+        let raw = xml[close + 1..value_end].trim();
+        (!raw.is_empty()).then(|| raw.to_string())
+    }
+
+    /// Locate the `>`-terminated local-name match for `tag` starting at `from`,
+    /// tolerating an optional namespace prefix (`Calendar:`).
+    fn seek_tag(xml: &str, mut from: usize, tag: &str) -> Option<usize> {
+        while let Some(rel) = xml[from..].find('<') {
+            let abs = from + rel;
+            if xml.get(abs + 1..)?.starts_with('/') {
+                from = abs + 1;
+                continue;
+            }
+            let name_start = abs + 1;
+            let name_end = xml[name_start..].find(['>', ' ', '\t', '\n'])? + name_start;
+            let raw_name = &xml[name_start..name_end];
+            let local = raw_name.rsplit(':').next().unwrap_or(raw_name);
+            if local == tag {
+                return Some(abs);
+            }
+            from = name_end + 1;
+        }
+        None
+    }
+
+    /// RRULE → EAS `<Calendar:Recurrence>` → RRULE round-trip (audit gap #5).
+    ///
+    /// `map_rrule_to_recurrence_xml` (sync.rs) renders the gateway's canonical
+    /// RRULE into the EAS recurrence fields, and `EasRecurrence::to_rrule`
+    /// renders the other direction. A recurrence whose `FREQ`/`INTERVAL`/`BYDAY`
+    /// survive both hops unchanged is exactly what Outlook Android needs to
+    /// display the series identically to Outlook for Windows (which reads the
+    /// EWS rendering). This guards the hand-rolled `RRULE <-> EAS` translation
+    /// against silent drift (ordinal `n`→`WeekOfMonth=5` for "Last", mask
+    /// bit→`DayOfWeek`, and the kind-normalisation freq 2↔3 / 5↔6).
+    #[test]
+    fn rrule_round_trips_through_eas_recurrence_xml() {
+        // (rrule, expected_freq_str, expected_type, expected_week_of_month)
+        let cases: Vec<(&str, &str, u8, Option<u32>)> = vec![
+            ("FREQ=DAILY;INTERVAL=2", "DAILY", 0, None),
+            ("FREQ=WEEKLY;BYDAY=MO,WE,FR", "WEEKLY", 1, None),
+            // Relative monthly (2nd Monday) → type 3, week-of-month 2.
+            ("FREQ=MONTHLY;BYDAY=2MO", "MONTHLY", 3, Some(2)),
+            // Relative yearly (last Friday) → type 6, week-of-month 5 (Last).
+            ("FREQ=YEARLY;BYDAY=-1FR;BYMONTH=3", "YEARLY", 6, Some(5)),
+            // Absolute monthly (day 15) → type 2, no week-of-month.
+            ("FREQ=MONTHLY;BYMONTHDAY=15", "MONTHLY", 2, None),
+        ];
+
+        for (input, expected_freq, expected_type, expected_week) in cases {
+            let xml = crate::sync::map_rrule_to_recurrence_xml(input)
+                .unwrap_or_else(|| panic!("no EAS recurrence XML for {input}"));
+
+            let kind: u8 = eas_field(&xml, "Type")
+                .and_then(|v| v.parse().ok())
+                .unwrap_or_else(|| panic!("missing Type for {input}"));
+            assert_eq!(kind, expected_type, "EAS Type mismatch for {input}");
+
+            let interval: u32 = eas_field(&xml, "Interval")
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(1);
+
+            // Reconstruct `EasRecurrence` from the rendered fields and render it
+            // back to an RRULE, then confirm FREQ/INTERVAL survived verbatim.
+            let recon = EasRecurrence {
+                kind: Some(kind),
+                interval: Some(interval),
+                day_of_week: eas_field(&xml, "DayOfWeek"),
+                day_of_month: eas_field(&xml, "DayOfMonth").and_then(|v| v.parse().ok()),
+                week_of_month: eas_field(&xml, "WeekOfMonth").and_then(|v| v.parse().ok()),
+                month_of_year: eas_field(&xml, "MonthOfYear").and_then(|v| v.parse().ok()),
+                first_day_of_week: eas_field(&xml, "FirstDayOfWeek").and_then(|v| v.parse().ok()),
+                until: None,
+                occurrences: eas_field(&xml, "Occurrences").and_then(|v| v.parse().ok()),
+                calendar_type: None,
+                is_empty: false,
+            };
+            let round_tripped = recon
+                .to_rrule()
+                .unwrap_or_else(|| panic!("to_rrule failed for {input}"));
+            assert!(
+                round_tripped.contains(&format!("FREQ={expected_freq}")),
+                "FREQ drift for {input}: round-tripped {round_tripped}"
+            );
+            if interval > 1 {
+                assert!(
+                    round_tripped.contains(&format!("INTERVAL={interval}")),
+                    "INTERVAL drift for {input}: round-tripped {round_tripped}"
+                );
+            }
+            if let Some(w) = expected_week {
+                assert_eq!(
+                    eas_field(&xml, "WeekOfMonth").and_then(|v| v.parse::<u32>().ok()),
+                    Some(w),
+                    "WeekOfMonth mismatch for {input}"
+                );
+            }
+        }
+    }
+
+    /// RRULE → EWS `<t:Recurrence>` → RRULE round-trip (audit gap #5).
+    ///
+    /// `render_ews_recurrence_xml` (ews.rs) and `parse_ews_recurrence` (here)
+    /// are the two halves of the Outlook-for-Windows recurrence path. A series
+    /// whose `FREQ`/`INTERVAL`/`BYDAY`/`COUNT` survive this hop unchanged is the
+    /// fidelity contract New Outlook relies on when it re-reads a series it just
+    /// created. UNTIL is excluded from the strict set because the two renderers
+    /// normalise the UTC instant to a date differently (byte drift only); the
+    /// recurrence *pattern* is what must not drift.
+    #[test]
+    fn rrule_round_trips_through_ews_recurrence_xml() {
+        use chrono::TimeZone;
+        let start = chrono::Utc.with_ymd_and_hms(2025, 3, 2, 14, 0, 0).unwrap();
+
+        // (rrule, expected FREQ prefix of the round-tripped RRULE)
+        let cases: Vec<(&str, &str)> = vec![
+            ("FREQ=DAILY;INTERVAL=3", "FREQ=DAILY"),
+            ("FREQ=WEEKLY;INTERVAL=1;BYDAY=TU,TH", "FREQ=WEEKLY"),
+            ("FREQ=MONTHLY;INTERVAL=1;BYDAY=2MO", "FREQ=MONTHLY"),
+            ("FREQ=YEARLY;INTERVAL=1;BYDAY=-1FR;BYMONTH=3", "FREQ=YEARLY"),
+            ("FREQ=MONTHLY;INTERVAL=1;BYMONTHDAY=15;COUNT=10", "FREQ=MONTHLY"),
+        ];
+
+        for (input, expected_freq) in cases {
+            let xml = crate::ews::render_ews_recurrence_xml(input, start);
+            assert!(
+                xml.contains("<t:Recurrence>"),
+                "no EWS recurrence for {input}"
+            );
+            // The renderer emits a bare `<t:Recurrence>` fragment (the enclosing
+            // EWS response declares `xmlns:t`); wrap it so the strict XML parser
+            // sees a well-formed document with the `t` namespace bound.
+            const T_NS: &str = "http://schemas.microsoft.com/exchange/services/2006/types";
+            let wrapped = format!(r#"<root xmlns:t="{T_NS}">{xml}</root>"#);
+            let round_tripped = parse_ews_recurrence(&wrapped)
+                .unwrap_or_else(|| panic!("parse_ews_recurrence failed for {input}"));
+            assert!(
+                round_tripped.starts_with(expected_freq) || round_tripped.contains(expected_freq),
+                "FREQ drift for {input}: round-tripped {round_tripped}"
+            );
+        }
+    }
 }

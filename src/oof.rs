@@ -232,6 +232,73 @@ pub fn build_sieve_script(
     Ok(script)
 }
 
+/// Extract the human-readable OOF reply body from a Sieve `vacation` command.
+///
+/// The gateway's `build_sieve_script` emits `vacation :days 1 :subject "Out of
+/// Office" "<body>";` (Sieve/RFC 5230 §4.6), where `<body>` is the *last*
+/// double-quoted string literal before the terminating `;`. This helper locates
+/// the first `vacation` command in `script` and returns that body with Sieve
+/// string escapes (`\\`, `\"`) and line continuations reversed, so the text is
+/// directly renderable in a `GetMailTips`/`GetUserOofSettings` reply. Returns
+/// `None` when the script carries no `vacation` action (OOF disabled).
+fn extract_sieve_reply_body(script: &str) -> Option<String> {
+    // The `vacation` keyword may be preceded by `:`-arguments/tagged-arguments
+    // and terminated by `;`. Locate the keyword and scan the following tokens.
+    let vac_pos = script.find("vacation")?;
+    let after = &script[vac_pos..];
+
+    // Scan the command token-by-token (escaping-aware: a `\"` must not be
+    // treated as the close of a string literal, and the command ends at the
+    // first top-level `;`).
+    let mut in_string = false;
+    let chars: Vec<char> = after.chars().collect();
+    let mut i = 0usize;
+    let mut string_literals: Vec<String> = Vec::new();
+    let mut current = String::new();
+    while i < chars.len() {
+        let c = chars[i];
+        if in_string {
+            if c == '\\' && i + 1 < chars.len() {
+                // Reverse Sieve escapes for the reply body only.
+                match chars[i + 1] {
+                    'n' => current.push('\n'),
+                    '"' => current.push('"'),
+                    '\\' => current.push('\\'),
+                    other => current.push(other),
+                }
+                i += 2;
+                continue;
+            }
+            if c == '"' {
+                in_string = false;
+                string_literals.push(std::mem::take(&mut current));
+                i += 1;
+                continue;
+            }
+            current.push(c);
+            i += 1;
+            continue;
+        }
+        match c {
+            '"' => {
+                in_string = true;
+            }
+            ';' => break,
+            _ => {}
+        }
+        i += 1;
+    }
+
+    // The body is the LAST string literal in the `vacation` command (the
+    // `:subject` tagged argument precedes it). Prefer a non-empty final literal;
+    // fall back to the last non-empty one if the trailing literal was empty.
+    string_literals
+        .iter()
+        .rev()
+        .find(|s| !s.trim().is_empty())
+        .cloned()
+}
+
 /// JMAP‑based OOF manager using Stalwart's JMAP Sieve extension.
 /// Stores vacation scripts via the `SieveScript` JMAP methods.
 pub struct JmapOofManager {
@@ -333,11 +400,21 @@ impl OofManager for JmapOofManager {
     fn get_oof_settings(&self, username: &str) -> Result<OofSettings, OofError> {
         let script_opt = self.get_script_blocking(username)?;
         let enabled = script_opt.as_ref().is_some_and(|s| s.contains("vacation"));
+        // Surface the actual OOF reply text so `GetMailTips`/`GetUserOofSettings`
+        // report the message the mailbox would send rather than an empty body.
+        // The Sieve script keys replies by audience (`envelope :domain "from"`),
+        // but the gateway's own `build_sieve_script` stores a single body for the
+        // common case; treat it as the external reply and echo it back for
+        // internal too (a mailbox with a single vacation message). When the
+        // script carries no vacation action, both replies stay `None`.
+        let reply = script_opt
+            .as_deref()
+            .and_then(extract_sieve_reply_body);
         Ok(OofSettings {
             enabled,
             external_audience: ExternalAudience::All,
-            internal_reply: None,
-            external_reply: None,
+            internal_reply: reply.clone(),
+            external_reply: reply,
             start_time: None,
             end_time: None,
         })

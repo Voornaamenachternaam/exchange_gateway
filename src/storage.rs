@@ -157,6 +157,26 @@ impl SafeDebug for NoteRow {
             .finish()
     }
 }
+/// A gateway-local user photo (MS-OXWSPHOTO). The binary blob is logged only as
+/// its length (via `SafeDebug`), never as its contents.
+#[derive(FromRow)]
+pub struct UserPhotoRow {
+    pub owner: String,
+    pub data: Vec<u8>,
+    pub content_type: String,
+    pub updated_at: Option<String>,
+}
+
+impl SafeDebug for UserPhotoRow {
+    fn safe_debug(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("UserPhotoRow")
+            .field("owner", &self.owner)
+            .field("data_len", &self.data.len())
+            .field("content_type", &self.content_type)
+            .field("updated_at", &self.updated_at)
+            .finish()
+    }
+}
 
 pub struct DeviceInfoParams<'a> {
     pub owner: &'a str,
@@ -1734,6 +1754,56 @@ impl Storage {
         .await
         .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))?;
         Ok(rows)
+    }
+
+    /// Fetch the gateway-local photo for `owner` (normalized SMTP address).
+    ///
+    /// Returns `None` when no photo has been stored. This is an *opt-in* store:
+    /// Stalwart exposes no avatar object, so only photos an operator (or a
+    /// future `SetUserPhoto` surface) explicitly persisted are ever returned.
+    /// It never consults the directory, preserving the disclosure-free
+    /// `GetUserPhoto` behaviour (no account-set enumeration).
+    pub async fn get_user_photo(&self, owner: &str) -> Result<Option<UserPhotoRow>> {
+        let row = sqlx::query_as::<_, UserPhotoRow>(
+            "SELECT owner, data, content_type, updated_at FROM user_photo WHERE owner = ?1",
+        )
+        .bind(owner)
+        .fetch_optional(self.pool.as_ref())
+        .await
+        .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))?;
+        Ok(row)
+    }
+
+    /// Upsert a gateway-local photo for `owner`, replacing any existing blob.
+    pub async fn set_user_photo(
+        &self,
+        owner: &str,
+        data: &[u8],
+        content_type: &str,
+    ) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO user_photo (owner, data, content_type, updated_at) \
+             VALUES (?1, ?2, ?3, CURRENT_TIMESTAMP) \
+             ON CONFLICT(owner) DO UPDATE SET data = excluded.data, \
+               content_type = excluded.content_type, updated_at = CURRENT_TIMESTAMP",
+        )
+        .bind(owner)
+        .bind(data)
+        .bind(content_type)
+        .execute(self.pool.as_ref())
+        .await
+        .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))?;
+        Ok(())
+    }
+
+    /// Remove the gateway-local photo for `owner`, if present.
+    pub async fn delete_user_photo(&self, owner: &str) -> Result<()> {
+        sqlx::query("DELETE FROM user_photo WHERE owner = ?1")
+            .bind(owner)
+            .execute(self.pool.as_ref())
+            .await
+            .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))?;
+        Ok(())
     }
 }
 

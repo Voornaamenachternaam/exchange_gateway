@@ -7,7 +7,7 @@ rust-version = "1.98.0"
 
 [dependencies]
 jsonwebtoken = "^11.0.0"
-reqwest = { version = "^0.13.4", default-features = false, features = ["json", "rustls", "cookies", "blocking"] }
+reqwest = { version = "^0.13.4", default-features = false, features = ["json", "rustls", "cookies", "blocking", "stream"] }
 async-trait = "^0.1.92"
 tokio = { version = "^1.53.1", features = ["rt-multi-thread", "net", "time", "sync", "signal", "tracing", "macros", "io-util", "fs"] }
 axum = { version = "^0.8.9", features = ["macros", "tracing", "json", "query", "matched-path", "original-uri"] }
