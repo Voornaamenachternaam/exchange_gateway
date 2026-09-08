@@ -129,8 +129,11 @@ pub struct MapiState {
     /// `RopRegisterNotification` requests NewMail, the MAPI path establishes a
     /// live JMAP EventSource subscription for the mailbox so new mail is
     /// injected into the shared subscription manager in real time, instead of
-    /// only surfacing on the client's next poll/sync cycle. `None` in unit-test
-    /// fixtures keeps the notification path free of a live background task.
+    /// only surfacing on the client's next poll/sync cycle. Always allocated;
+    /// unit-test fixtures stay free of a live background task because the
+    /// registration arm only spawns when a `SubscriptionManager`, a
+    /// `JmapClient`, and credentials are all wired, none of which the fixtures
+    /// provide.
     pub push_registry: std::sync::Arc<crate::jmap_push::PushMonitorRegistry>,
 }
 
@@ -878,9 +881,16 @@ async fn execute_one_rop(
             // too so its broadcast receiver is released (mirrors the spec's
             // RopRelease tearing down the notification Server object installed
             // by RopRegisterNotification; no-op for ordinary handle indices).
-            sessions
+            // When that sink requested NewMail, release the mailbox's live JMAP
+            // push monitor ref so the last registration tears the SSE connection
+            // down instead of leaking it (audit gap #11 teardown).
+            if let Some(removed) = sessions
                 .notifications()
-                .unregister(session_id, input_handle_index);
+                .unregister_returning(session_id, input_handle_index)
+                && removed.notification_types & NT_NEW_MAIL != 0
+            {
+                push_registry.release_email_monitor(&removed.owner);
+            }
             crate::mapi::rops::RopReleaseResponse {
                 input_handle_index,
                 return_value: RopErrorCode::Success,

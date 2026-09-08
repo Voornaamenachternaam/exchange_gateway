@@ -232,34 +232,117 @@ pub fn build_sieve_script(
     Ok(script)
 }
 
-/// Extract the human-readable OOF reply body from a Sieve `vacation` command.
+/// Extract the human-readable OOF reply bodies from a Sieve script (RFC 5230).
 ///
-/// The gateway's `build_sieve_script` emits `vacation :days 1 :subject "Out of
-/// Office" "<body>";` (Sieve/RFC 5230 §4.6), where `<body>` is the *last*
-/// double-quoted string literal before the terminating `;`. This helper locates
-/// the first `vacation` command in `script` and returns that body with Sieve
-/// string escapes (`\\`, `\"`) and line continuations reversed, so the text is
-/// directly renderable in a `GetMailTips`/`GetUserOofSettings` reply. Returns
-/// `None` when the script carries no `vacation` action (OOF disabled).
-fn extract_sieve_reply_body(script: &str) -> Option<String> {
-    // The `vacation` keyword may be preceded by `:`-arguments/tagged-arguments
-    // and terminated by `;`. Locate the keyword and scan the following tokens.
-    let vac_pos = script.find("vacation")?;
-    let after = &script[vac_pos..];
+/// The gateway's `build_sieve_script` emits one `vacation` command per audience,
+/// keyed by the enclosing `if` condition — `envelope :domain "from" "<domain>"`
+/// for internal senders and `not envelope :domain "from" "<domain>"` for
+/// external senders. Both commands have the shape
+/// `vacation :days 1 :subject "Out of Office" "<body>";`, where `<body>` is the
+/// *last* double-quoted literal before the terminating `;`.
+///
+/// This helper locates each *real* `vacation` command (a bare identifier, not
+/// the `"vacation"` capability string inside `require [ ... ]`), recovers its
+/// body with Sieve escapes (`\\`, `\"`, `\n`) reversed, and returns
+/// `(internal_reply, external_reply)`. A `None` on either side means that
+/// audience has no reply configured (OOF disabled for it).
+fn parse_vacation_replies(script: &str) -> (Option<String>, Option<String>) {
+    let mut internal = None;
+    let mut external = None;
+    for cmd in vacation_commands(script) {
+        let (is_internal, body) = cmd;
+        if body.is_none() {
+            continue;
+        }
+        if is_internal {
+            if internal.is_none() {
+                internal = body;
+            }
+        } else if external.is_none() {
+            external = body;
+        }
+    }
+    (internal, external)
+}
 
-    // Scan the command token-by-token (escaping-aware: a `\"` must not be
-    // treated as the close of a string literal, and the command ends at the
-    // first top-level `;`).
-    let mut in_string = false;
-    let chars: Vec<char> = after.chars().collect();
+/// Locate every real `vacation` command in a Sieve script, in document order,
+/// each tagged `(is_internal, body)`. Skips the `"vacation"` capability string
+/// inside `require [ ... ]` (where the keyword is a quoted literal, not a
+/// command), and skips any `vacation` that appears inside a running string.
+fn vacation_commands(script: &str) -> Vec<(bool, Option<String>)> {
+    let bytes = script.as_bytes();
+    let mut out = Vec::new();
     let mut i = 0usize;
+    let mut in_string = false;
+
+    while i < bytes.len() {
+        let c = bytes[i];
+        if c == b'\\' {
+            // Skip the escaped char so a `\"` inside a string is not seen as
+            // the string terminator, and `\n` etc. stay opaque here.
+            i += 2;
+            continue;
+        }
+        if c == b'"' {
+            in_string = !in_string;
+            i += 1;
+            continue;
+        }
+        if !in_string && bytes[i..].starts_with(b"vacation") {
+            // A real command: the keyword is followed by whitespace or `:` (its
+            // first `:days`/`:subject` tagged argument), not by a string quote.
+            let next = bytes.get(i + b"vacation".len()).copied();
+            if matches!(next, Some(b' ') | Some(b':') | Some(b'\t') | Some(b'\n')) {
+                let (is_internal, body) = parse_vacation_command(script, i);
+                out.push((is_internal, body));
+            }
+        }
+        i += 1;
+    }
+    out
+}
+
+/// Parse the `vacation` command starting at byte offset `start` (which points at
+/// the `v` of the `vacation` keyword). Returns `(is_internal, body)` where
+/// `is_internal` comes from the enclosing `if` condition and `body` is the last
+/// string literal before the command's terminating `;`.
+fn parse_vacation_command(script: &str, start: usize) -> (bool, Option<String>) {
+    let is_internal = is_internal_audience(script, start);
+    let body = last_string_literal_before_terminator(script, start);
+    (is_internal, body)
+}
+
+/// Return `true` when the `vacation` command at byte offset `start` sits inside
+/// an internal-audience block (`envelope :domain "from"`, no `not`), and `false`
+/// when it is external (`not envelope :domain "from"`). The gateway's own
+/// scripts place the command directly inside its `if allof (...)` block, so the
+/// nearest `envelope` before the command is the governing test; the token
+/// immediately preceding that `envelope` is `not` exactly for the external block.
+fn is_internal_audience(script: &str, start: usize) -> bool {
+    let before = &script[..start];
+    let Some(env) = before.rfind("envelope") else {
+        return true;
+    };
+    // Inspect the token boundary just before `envelope`: the external condition
+    // is `not envelope ...`, so a trailing `not` (preceded by a boundary) marks
+    // the external audience.
+    let prefix = before[..env].trim_end();
+    !prefix.ends_with("not")
+}
+
+/// Extract the body of the `vacation` command at `start`: the last non-empty
+/// string literal before the command's top-level `;`, with Sieve escapes
+/// reversed. Returns `None` if the command carries no body string.
+fn last_string_literal_before_terminator(script: &str, start: usize) -> Option<String> {
+    let chars: Vec<char> = script[start..].chars().collect();
+    let mut i = 0usize;
+    let mut in_string = false;
     let mut string_literals: Vec<String> = Vec::new();
     let mut current = String::new();
     while i < chars.len() {
         let c = chars[i];
         if in_string {
             if c == '\\' && i + 1 < chars.len() {
-                // Reverse Sieve escapes for the reply body only.
                 match chars[i + 1] {
                     'n' => current.push('\n'),
                     '"' => current.push('"'),
@@ -280,23 +363,16 @@ fn extract_sieve_reply_body(script: &str) -> Option<String> {
             continue;
         }
         match c {
-            '"' => {
-                in_string = true;
-            }
+            '"' => in_string = true,
             ';' => break,
             _ => {}
         }
         i += 1;
     }
-
-    // The body is the LAST string literal in the `vacation` command (the
-    // `:subject` tagged argument precedes it). Prefer a non-empty final literal;
-    // fall back to the last non-empty one if the trailing literal was empty.
     string_literals
-        .iter()
+        .into_iter()
         .rev()
         .find(|s| !s.trim().is_empty())
-        .cloned()
 }
 
 /// JMAP‑based OOF manager using Stalwart's JMAP Sieve extension.
@@ -402,19 +478,19 @@ impl OofManager for JmapOofManager {
         let enabled = script_opt.as_ref().is_some_and(|s| s.contains("vacation"));
         // Surface the actual OOF reply text so `GetMailTips`/`GetUserOofSettings`
         // report the message the mailbox would send rather than an empty body.
-        // The Sieve script keys replies by audience (`envelope :domain "from"`),
-        // but the gateway's own `build_sieve_script` stores a single body for the
-        // common case; treat it as the external reply and echo it back for
-        // internal too (a mailbox with a single vacation message). When the
-        // script carries no vacation action, both replies stay `None`.
-        let reply = script_opt
+        // The Sieve script keys replies by audience (`envelope :domain "from"`
+        // vs `not envelope :domain "from"`), and this parser recovers each
+        // audience's body independently rather than collapsing both to a single
+        // reply. A script with no vacation action yields `None` for both.
+        let (internal_reply, external_reply) = script_opt
             .as_deref()
-            .and_then(extract_sieve_reply_body);
+            .map(parse_vacation_replies)
+            .unwrap_or((None, None));
         Ok(OofSettings {
             enabled,
             external_audience: ExternalAudience::All,
-            internal_reply: reply.clone(),
-            external_reply: reply,
+            internal_reply,
+            external_reply,
             start_time: None,
             end_time: None,
         })
@@ -626,5 +702,70 @@ mod tests {
         );
         // Timestamps must be ISO 8601 (`T` separator), not a space-separated form.
         assert!(script.contains('T'));
+    }
+
+    #[test]
+    fn test_parse_vacation_replies_maps_audiences() {
+        let script = build_sieve_script(
+            "example.com",
+            Some("Internal body"),
+            Some("External body"),
+            ExternalAudience::All,
+            None,
+            None,
+        )
+        .unwrap();
+        let (internal, external) = parse_vacation_replies(&script);
+        assert_eq!(internal.as_deref(), Some("Internal body"));
+        assert_eq!(external.as_deref(), Some("External body"));
+    }
+
+    #[test]
+    fn test_parse_vacation_replies_skips_require_capability() {
+        // The `"vacation"` capability string inside `require [ ... ]` must not be
+        // mistaken for a command; only the real command's body is recovered.
+        let script = "require [\"vacation\", \"envelope\"];\nif allof (envelope :domain \"from\" \"example.com\") {\n  vacation :days 1 :subject \"Out of Office\" \"Only body\";\n}\n";
+        let (internal, external) = parse_vacation_replies(script);
+        assert_eq!(internal.as_deref(), Some("Only body"));
+        assert_eq!(external, None);
+    }
+
+    #[test]
+    fn test_parse_vacation_replies_external_only() {
+        let script = build_sieve_script(
+            "example.com",
+            None,
+            Some("External only"),
+            ExternalAudience::External,
+            None,
+            None,
+        )
+        .unwrap();
+        let (internal, external) = parse_vacation_replies(&script);
+        assert_eq!(internal, None);
+        assert_eq!(external.as_deref(), Some("External only"));
+    }
+
+    #[test]
+    fn test_parse_vacation_replies_unescapes_sieve() {
+        // `escape_sieve` turns `"` into `\"` (and folds newlines to spaces); the
+        // parser must reverse the `\"` escape so the body round-trips.
+        let script = build_sieve_script(
+            "example.com",
+            Some("Say \"hi\" now"),
+            None,
+            ExternalAudience::All,
+            None,
+            None,
+        )
+        .unwrap();
+        let (internal, _external) = parse_vacation_replies(&script);
+        assert_eq!(internal.as_deref(), Some("Say \"hi\" now"));
+    }
+
+    #[test]
+    fn test_parse_vacation_replies_no_vacation_returns_none() {
+        assert_eq!(parse_vacation_replies("require [\"envelope\"];\n"), (None, None));
+        assert_eq!(parse_vacation_replies(""), (None, None));
     }
 }

@@ -910,6 +910,25 @@ impl NotificationRegistry {
         false
     }
 
+    /// Remove and return the sink at `(session_id, handle_index)`, so a caller
+    /// can inspect the removed sink (e.g. its `notification_types` or `owner`)
+    /// before it is dropped — used to tear down a per-mailbox push monitor only
+    /// when a NewMail sink is actually released. Returns `None` if no sink was
+    /// registered at that index.
+    pub fn unregister_returning(
+        &self,
+        session_id: &Uuid,
+        handle_index: u8,
+    ) -> Option<MapiNotificationSink> {
+        let mut guard = self.inner.write();
+        let per = guard.get_mut(session_id)?;
+        let removed = per.remove(&handle_index)?;
+        if per.is_empty() {
+            guard.remove(session_id);
+        }
+        Some(removed)
+    }
+
     /// Drop every sink for a session (called on `Disconnect` / idle expiry).
     pub fn clear_session(&self, session_id: &Uuid) {
         self.inner.write().remove(session_id);

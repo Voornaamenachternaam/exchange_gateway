@@ -2729,15 +2729,44 @@ END:VTIMEZONE";
             let round_tripped = recon
                 .to_rrule()
                 .unwrap_or_else(|| panic!("to_rrule failed for {input}"));
+            let rrule_has = |token: &str| round_tripped.contains(token);
+
             assert!(
-                round_tripped.contains(&format!("FREQ={expected_freq}")),
+                rrule_has(&format!("FREQ={expected_freq}")),
                 "FREQ drift for {input}: round-tripped {round_tripped}"
             );
             if interval > 1 {
                 assert!(
-                    round_tripped.contains(&format!("INTERVAL={interval}")),
+                    rrule_has(&format!("INTERVAL={interval}")),
                     "INTERVAL drift for {input}: round-tripped {round_tripped}"
                 );
+            }
+            // Assert the day/week/month/ordinal pattern too, not just FREQ, so a
+            // silent drift in BYDAY/BYMONTHDAY/BYMONTH cannot pass unnoticed.
+            match input {
+                "FREQ=WEEKLY;BYDAY=MO,WE,FR" => assert!(
+                    rrule_has("BYDAY=MO,WE,FR"),
+                    "weekly BYDAY drift for {input}: {round_tripped}"
+                ),
+                "FREQ=MONTHLY;BYDAY=2MO" => assert!(
+                    rrule_has("BYDAY=2MO"),
+                    "relative-monthly BYDAY drift for {input}: {round_tripped}"
+                ),
+                "FREQ=YEARLY;BYDAY=-1FR;BYMONTH=3" => {
+                    assert!(
+                        rrule_has("BYDAY=-1FR"),
+                        "yearly BYDAY drift for {input}: {round_tripped}"
+                    );
+                    assert!(
+                        rrule_has("BYMONTH=3"),
+                        "yearly BYMONTH drift for {input}: {round_tripped}"
+                    );
+                }
+                "FREQ=MONTHLY;BYMONTHDAY=15" => assert!(
+                    rrule_has("BYMONTHDAY=15"),
+                    "absolute-monthly BYMONTHDAY drift for {input}: {round_tripped}"
+                ),
+                _ => {}
             }
             if let Some(w) = expected_week {
                 assert_eq!(
@@ -2785,10 +2814,49 @@ END:VTIMEZONE";
             let wrapped = format!(r#"<root xmlns:t="{T_NS}">{xml}</root>"#);
             let round_tripped = parse_ews_recurrence(&wrapped)
                 .unwrap_or_else(|| panic!("parse_ews_recurrence failed for {input}"));
+            let has = |token: &str| round_tripped.contains(token);
+
             assert!(
                 round_tripped.starts_with(expected_freq) || round_tripped.contains(expected_freq),
                 "FREQ drift for {input}: round-tripped {round_tripped}"
             );
+            // Assert the full pattern (interval, weekday/ordinal, month/day,
+            // count), not just FREQ, so a drift in any field cannot pass.
+            match input {
+                "FREQ=DAILY;INTERVAL=3" => assert!(
+                    has("INTERVAL=3"),
+                    "DAILY INTERVAL drift for {input}: {round_tripped}"
+                ),
+                "FREQ=WEEKLY;INTERVAL=1;BYDAY=TU,TH" => assert!(
+                    has("BYDAY=TU,TH"),
+                    "WEEKLY BYDAY drift for {input}: {round_tripped}"
+                ),
+                "FREQ=MONTHLY;INTERVAL=1;BYDAY=2MO" => assert!(
+                    has("BYDAY=2MO"),
+                    "MONTHLY ordinal drift for {input}: {round_tripped}"
+                ),
+                "FREQ=YEARLY;INTERVAL=1;BYDAY=-1FR;BYMONTH=3" => {
+                    assert!(
+                        has("BYDAY=-1FR"),
+                        "YEARLY ordinal drift for {input}: {round_tripped}"
+                    );
+                    assert!(
+                        has("BYMONTH=3"),
+                        "YEARLY BYMONTH drift for {input}: {round_tripped}"
+                    );
+                }
+                "FREQ=MONTHLY;INTERVAL=1;BYMONTHDAY=15;COUNT=10" => {
+                    assert!(
+                        has("BYMONTHDAY=15"),
+                        "MONTHLY BYMONTHDAY drift for {input}: {round_tripped}"
+                    );
+                    assert!(
+                        has("COUNT=10"),
+                        "MONTHLY COUNT drift for {input}: {round_tripped}"
+                    );
+                }
+                _ => {}
+            }
         }
     }
 }

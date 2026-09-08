@@ -477,6 +477,50 @@ fn extract_tag_texts(xml: &str, tag: &[u8]) -> Vec<String> {
     }
 }
 
+/// Extract `EmailAddress` text values strictly within `<m:Recipients>`, in
+/// document order. A `GetMailTips` request also carries the sender under
+/// `<m:SendingAs><t:EmailAddress>`; matching every `EmailAddress` therefore
+/// fabricates a spurious `MailTips` entry for the sender. Tracking the
+/// `Recipients` element's nesting excludes the `SendingAs` address.
+fn extract_recipient_email_addresses(xml: &str) -> Vec<String> {
+    let mut reader = Reader::from_str(xml);
+    reader.config_mut().trim_text(true);
+    let mut buf = Vec::new();
+    let mut recipients_depth = 0u32;
+    let mut in_email_address = false;
+    let mut values = Vec::new();
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(e)) => {
+                let name = e.name().local_name();
+                if name.as_ref() == b"Recipients" {
+                    recipients_depth += 1;
+                } else if name.as_ref() == b"EmailAddress" && recipients_depth > 0 {
+                    in_email_address = true;
+                }
+            }
+            Ok(Event::Text(t)) if in_email_address => {
+                if let Ok(value) = t.decode()
+                    && !value.trim().is_empty()
+                {
+                    values.push(value.into_owned());
+                }
+            }
+            Ok(Event::End(e)) => {
+                let name = e.name().local_name();
+                if name.as_ref() == b"EmailAddress" && in_email_address {
+                    in_email_address = false;
+                } else if name.as_ref() == b"Recipients" && recipients_depth > 0 {
+                    recipients_depth -= 1;
+                }
+            }
+            Ok(Event::Eof) | Err(_) => return values,
+            _ => {}
+        }
+        buf.clear();
+    }
+}
+
 fn extract_first_attr(xml: &str, tag: &[u8], attr: &[u8]) -> Option<String> {
     let mut reader = Reader::from_str(xml);
     reader.config_mut().trim_text(true);
@@ -7919,7 +7963,9 @@ async fn handle_get_mail_tips(state: &Arc<AppState>, auth: &AuthContext, body: &
     // reported with an empty `OutOfOffice` reply — the spec-compliant
     // "not currently sending OOF" shape — rather than a hard error, matching
     // the gateway's OOF-disabled posture.
-    let recipients = extract_tag_texts(body, b"EmailAddress");
+    // Scope to `Recipients` so the sender's `SendingAs` address is not emitted
+    // as an extra `MailTips` entry.
+    let recipients = extract_recipient_email_addresses(body);
     let recipients: Vec<String> = if recipients.is_empty() {
         // The requester's own mailbox is the default when the client omits an
         // explicit recipient list (Outlook sends an explicit list, but tolerate
@@ -8275,8 +8321,9 @@ async fn handle_convert_id(auth: &AuthContext, body: &str) -> Response {
     // The request carries `<m:SourceIds>` with one or more
     // `<t:AlternateId Id="…" Format="…" Mailbox="…"/>` entries (and
     // `AlternatePublicFolderId`/`AlternatePublicFolderItemId` variants), plus a
-    // `<m:DestinationFormat>`. The gateway only ever produces EwsId-format ids,
-    // so the destination format is acknowledged but the `Id` value is preserved
+    // `DestinationFormat` *attribute* on the `<m:ConvertId>` root (MS-OXWSCVTID
+    // §3.1.4.1.1.1). The gateway only ever produces EwsId-format ids, so the
+    // destination format is acknowledged but the `Id` value is preserved
     // (Exchange ids are opaque; the client must not interpret their bytes).
     let source_ids: Vec<String> = extract_first_attrs(body, b"AlternateId", b"Id")
         .into_iter()
@@ -8288,8 +8335,9 @@ async fn handle_convert_id(auth: &AuthContext, body: &str) -> Response {
         ))
         .collect();
 
-    // Determine the destination format (default EwsId when omitted).
-    let dest_format = extract_first_tag_text(body, b"DestinationFormat")
+    // Determine the destination format from the `ConvertId` attribute (default
+    // EwsId when absent or blank).
+    let dest_format = extract_first_attr(body, b"ConvertId", b"DestinationFormat")
         .filter(|f| !f.trim().is_empty())
         .unwrap_or_else(|| "EwsId".to_string());
 
@@ -8303,10 +8351,15 @@ async fn handle_convert_id(auth: &AuthContext, body: &str) -> Response {
         );
     }
 
-    let mut converted_xml = String::new();
+    // MS-OXWSCVTID §3.1.4.1.2.2: one `ConvertIdResponseMessage` per converted
+    // source id, each carrying a single `AlternateId` element (which has no
+    // child elements). Wrapping them all inside one `<m:AlternateId>` (the
+    // previous shape) produced a schema-invalid nested element that clients
+    // reject.
+    let mut response_messages = String::new();
     for id in source_ids {
-        converted_xml.push_str(&format!(
-            r#"<m:AlternateId Id="{}" Format="{}" Mailbox="{}"/>"#,
+        response_messages.push_str(&format!(
+            r#"<m:ConvertIdResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:AlternateId Id="{}" Format="{}" Mailbox="{}"/></m:ConvertIdResponseMessage>"#,
             xml_escape(&id),
             xml_escape(&dest_format),
             xml_escape(&auth.username)
@@ -8314,15 +8367,8 @@ async fn handle_convert_id(auth: &AuthContext, body: &str) -> Response {
     }
 
     let inner = format!(
-        r#"<m:ConvertIdResponse xmlns:m="{}" xmlns:t="{}">
-<m:ResponseMessages>
-<m:ConvertIdResponseMessage ResponseClass="Success">
-<m:ResponseCode>NoError</m:ResponseCode>
-<m:AlternateId>{}</m:AlternateId>
-</m:ConvertIdResponseMessage>
-</m:ResponseMessages>
-</m:ConvertIdResponse>"#,
-        EWS_MSG_NS, EWS_TYPE_NS, converted_xml
+        r#"<m:ConvertIdResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages>{}</m:ResponseMessages></m:ConvertIdResponse>"#,
+        EWS_MSG_NS, EWS_TYPE_NS, response_messages
     );
     soap_ok(inner)
 }

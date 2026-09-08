@@ -1,6 +1,6 @@
 // src/jmap_push.rs
 //
-// Live JMAP push subscription (`urn:ietf:params:jmap:push`, RFC 8620 §7.2).
+// Live JMAP push subscription (`urn:ietf:params:jmap:push`, RFC 8620 §7).
 //
 // The gateway's email-change detection historically relied on *client-driven*
 // polling: a mailbox only learned about new mail when a client issued an
@@ -9,30 +9,44 @@
 // poll cadence, so "new mail" can lag by the poll interval (audit gap #11).
 //
 // This module replaces that reliance with a live `text/event-stream` (SSE)
-// subscription to Stalwart's JMAP push endpoint. The server emits a JMAP
-// `StateChange` event (RFC 8620 §7.2.1) whenever the account's `Email` state
-// advances; on each event the monitor resolves the delta through the existing
-// `Email/changes` + `Email/get` path (already used by EWS/EAS sync) and
-// publishes `NotificationEvent::NewMail` into the shared subscription manager.
+// subscription to Stalwart's JMAP push endpoint. Per RFC 8620 §7.3 the server
+// emits an event *named* `state` whose data is a `StateChange` object
+// (§7.1) whenever the account's `Email` state advances. On each event the
+// monitor resolves the delta through the existing `Email/changes` + `Email/get`
+// path (already used by EWS/EAS sync) and publishes `NotificationEvent::NewMail`
+// / `ItemModified` / `ItemDeleted` into the shared subscription manager.
 // The credentials are the user's own (Basic auth), obtained in-band at the
 // point the client registers for notifications — never persisted.
 //
 // SSE wire format (WHATWG HTML "server-sent events"):
-//   event: Email
+//   event: state
 //   data: {"@type":"StateChange","changed":{"<accountId>":{"Email":"<state>"}}}
 //
 // A frame is terminated by a blank line; `data:` lines within a frame are
-// joined with a single `\n`. Reconnects are handled with bounded exponential
-// backoff, and the monitor self-terminates when its shutdown token is
-// signalled (e.g. the last MAPI notification sink for the mailbox is released).
+// joined with a single `\n`. Reconnects use bounded exponential backoff, an
+// idle timeout guards half-open connections, and the monitor self-terminates
+// via its [`CancellationToken`] when the last notification sink for the
+// mailbox is released (see [`PushMonitorRegistry::release_email_monitor`]).
 
 use crate::jmap::JmapClient;
 use crate::notifications::{NotificationEvent, SubscriptionManager};
 use reqwest::header::AUTHORIZATION;
 use secrecy::SecretString;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::watch;
+use tokio_util::sync::CancellationToken;
+
+/// Upper bound on the accumulated, unterminated SSE frame text. A single frame
+/// without a trailing blank line must never grow the buffer without limit
+/// (denial-of-service guard); exceeding this reconnects the stream.
+const MAX_SSE_FRAME_BYTES: usize = 64 * 1024;
+
+/// Reconnect idle guard: if the EventSource produces no bytes (and no
+/// heartbeat comment) for this long, the connection is treated as half-open and
+/// re-established. Deliberately generous — a genuinely quiet mailbox must not
+/// be torn down.
+const SSE_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// One parsed server-sent event frame (event type and its `data:` payload).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -43,11 +57,11 @@ pub struct SseEvent {
 
 /// Parse a raw `text/event-stream` chunk into zero or more complete frames.
 ///
-/// Frames are separated by a blank line (`\n\n`). Within a frame, `event:` and
-/// `data:` fields are captured; multiple `data:` lines are joined with `\n`
-/// (per the WHATWG incrementing rules). Comment lines (`:` prefix) and
-/// `retry:`/`id:` fields are ignored. Partial frames (no trailing blank line)
-/// are returned in `rest` so the caller can prepend it to the next chunk.
+/// Frames are separated by a blank line. Within a frame, `event:` and `data:`
+/// fields are captured; multiple `data:` lines are joined with `\n` (per the
+/// WHATWG incrementing rules). Comment lines (`:` prefix) and `retry:`/`id:`
+/// fields are ignored. Partial frames (no trailing blank line) are returned in
+/// `rest` so the caller can prepend it to the next chunk.
 pub fn parse_sse_frames(input: &str) -> (Vec<SseEvent>, String) {
     let mut frames = Vec::new();
 
@@ -55,10 +69,8 @@ pub fn parse_sse_frames(input: &str) -> (Vec<SseEvent>, String) {
     // separator can be located uniformly (SSE allows any of `\r\n`, `\n`, `\r`).
     let normalized = input.replace("\r\n", "\n").replace('\r', "\n");
 
-    // Split into complete frames on blank-line boundaries, then parse each
-    // frame's fields. The trailing segment after the final blank line is a
-    // partial frame and is returned in `rest` for the caller to re-feed with
-    // the next chunk.
+    // Locate every complete frame up to the last blank-line separator; the
+    // trailing segment after it is a partial frame returned as `rest`.
     let mut last_blank = None;
     let mut idx = 0usize;
     while let Some(pos) = normalized[idx..].find("\n\n") {
@@ -78,8 +90,8 @@ pub fn parse_sse_frames(input: &str) -> (Vec<SseEvent>, String) {
         let mut event: Option<String> = None;
         let mut data_lines: Vec<String> = Vec::new();
         for line in frame_text.lines() {
-            if let Some(comment) = line.strip_prefix(':') {
-                let _ = comment;
+            if line.starts_with(':') {
+                // Comment / keep-alive heartbeat — ignored.
                 continue;
             }
             match line.split_once(':') {
@@ -90,42 +102,50 @@ pub fn parse_sse_frames(input: &str) -> (Vec<SseEvent>, String) {
                 _ => { /* retry/id — ignored */ }
             }
         }
-        let data = if data_lines.is_empty() {
-            None
-        } else {
-            Some(data_lines.join("\n"))
-        };
-        if event.is_some() || data.is_some() {
-            frames.push(SseEvent { event, data });
+        if !data_lines.is_empty() {
+            frames.push(SseEvent {
+                event,
+                data: Some(data_lines.join("\n")),
+            });
         }
     }
 
     (frames, rest)
 }
 
-/// A parsed JMAP `StateChange` push payload (RFC 8620 §7.2.1): the data type(s)
-/// whose state advanced and the new state token for each.
+/// A parsed JMAP `StateChange` push payload (RFC 8620 §7.1): the account id and
+/// the `(data_type, new_state)` pairs whose state advanced.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StateChange {
     pub account_id: String,
-    /// (data_type, new_state) pairs — e.g. `("Email", "s-123")`.
+    /// `(data_type, new_state)` pairs — e.g. `("Email", "s-123")`.
     pub changed: Vec<(String, String)>,
 }
 
-/// Parse a JMAP `StateChange` JSON `data` payload into `StateChange`.
+/// Parse a JMAP `StateChange` JSON `data` payload into [`StateChange`].
 ///
-/// The payload is `{ "changed": { "<accountId>": { "<type>": "<state>" } } }`.
-/// Handles the standard single-account shape; multiple accounts are flattened
-/// into the returned `changed` vec. Returns `None` for malformed / non-
-/// `StateChange` payloads.
+/// The payload is `{ "@type":"StateChange", "changed":
+/// { "<accountId>": { "<type>": "<state>" } } }`. The `@type` member MUST be
+/// `StateChange` (RFC 8620 §7.1); other-shaped objects are rejected so an
+/// unrelated EventSource payload can never be mistaken for a state change.
+/// Entries whose value is not a state string are skipped rather than discarding
+/// the whole payload. Returns `None` for malformed / non-`StateChange` data or
+/// when no valid pair survives.
 pub fn parse_state_change(data: &str) -> Option<StateChange> {
     let value: serde_json::Value = serde_json::from_str(data).ok()?;
+    if value.get("@type").and_then(|t| t.as_str()) != Some("StateChange") {
+        return None;
+    }
     let changed = value.get("changed")?.as_object()?;
-    // Take the first account (the gateway's account is the only one).
     let (account_id, types) = changed.iter().next()?;
     let mut pairs = Vec::new();
     for (data_type, state) in types.as_object()? {
-        pairs.push((data_type.clone(), state.as_str()?.to_string()));
+        if let Some(s) = state.as_str() {
+            pairs.push((data_type.clone(), s.to_string()));
+        }
+    }
+    if pairs.is_empty() {
+        return None;
     }
     Some(StateChange {
         account_id: account_id.clone(),
@@ -133,13 +153,38 @@ pub fn parse_state_change(data: &str) -> Option<StateChange> {
     })
 }
 
+/// Decide whether an SSE frame represents an email state change.
+///
+/// RFC 8620 §7.3 pushes an event *named* `state` (not `Email`); the actual
+/// signal is the parsed `StateChange` data carrying an `Email` entry. A frame
+/// whose SSE event name is already `Email` (older/lenient servers) is accepted
+/// for tolerance, but the authoritative check is the data payload. Extracted as
+/// a free function so it is unit-testable without a live `JmapClient`.
+fn is_email_frame(frame: &SseEvent) -> bool {
+    if let Some(data) = frame.data.as_deref()
+        && let Some(sc) = parse_state_change(data)
+    {
+        return sc.changed.iter().any(|(t, _)| t == "Email");
+    }
+    frame.event.as_deref() == Some("Email")
+}
+
+/// Outcome of one EventSource connection attempt.
+enum StreamEnd {
+    /// Server closed the stream cleanly (EOF) or shutdown was requested.
+    Clean,
+    /// A forced reconnect guard fired (idle/half-open or oversized frame).
+    Reconnect,
+    /// The connection failed; the enclosed message is the cause.
+    Error(String),
+}
+
 /// Live JMAP email push monitor.
 ///
-/// Spawn with [`JmapEmailPushMonitor::spawn`]; the returned [`watch::Sender`]
-/// cancels the reconnect loop (send `false`). Every email state change is
-/// translated to a `NewMail` / `ItemModified` / `ItemDeleted`
-/// `NotificationEvent` for the affected folder, matching the existing
-/// `Email/changes`-backed sync surface.
+/// Spawn with [`JmapEmailPushMonitor::spawn`]; the returned [`CancellationToken`]
+/// cancels the reconnect loop when `.cancel()` is invoked. Every email state
+/// change is translated to a `NewMail` / `ItemModified` / `ItemDeleted`
+/// `NotificationEvent` for the affected folder.
 pub struct JmapEmailPushMonitor {
     jmap: Arc<JmapClient>,
     username: String,
@@ -162,19 +207,19 @@ impl JmapEmailPushMonitor {
         }
     }
 
-    /// Spawn the monitor as a background task. The returned sender cancels the
-    /// loop when sent `false` (or dropped); dropping it without signalling keeps
-    /// the monitor alive indefinitely.
-    pub fn spawn(self) -> watch::Sender<bool> {
-        let (tx, rx) = watch::channel(true);
+    /// Spawn the monitor as a background task. The returned [`CancellationToken`]
+    /// tears the reconnect loop down when `.cancel()` is called (e.g. by the
+    /// registry when the last notification sink for the mailbox is released).
+    pub fn spawn(self) -> CancellationToken {
+        let token = CancellationToken::new();
+        let task_token = token.clone();
         tokio::spawn(async move {
-            self.run(rx).await;
+            self.run(task_token).await;
         });
-        tx
+        token
     }
 
-    async fn run(&self, mut cancel: watch::Receiver<bool>) {
-        // Resolve the account id once; it is stable for the mailbox.
+    async fn run(&self, cancel: CancellationToken) {
         let account_id = match self
             .jmap
             .get_account_id(&self.username, &self.password)
@@ -187,8 +232,6 @@ impl JmapEmailPushMonitor {
             }
         };
 
-        // Seed the current state so the first change report is a delta, not the
-        // whole mailbox.
         let mut current_state = self
             .jmap
             .get_email_state(&account_id, &self.username, &self.password)
@@ -197,27 +240,23 @@ impl JmapEmailPushMonitor {
 
         let mut backoff = Duration::from_secs(1);
         loop {
-            if is_cancelled(&cancel) {
+            if cancel.is_cancelled() {
                 break;
             }
             match self
                 .connect_and_stream(&account_id, &mut current_state, &cancel)
                 .await
             {
-                Ok(()) => {
-                    // Server ended the stream cleanly (or shutdown) — reconnect
-                    // promptly, then back off if it keeps happening.
-                    backoff = Duration::from_secs(1);
-                }
-                Err(e) => {
+                StreamEnd::Clean | StreamEnd::Reconnect => {}
+                StreamEnd::Error(e) => {
                     tracing::debug!(target: "jmap_push", error = %e, "JMAP push stream ended; reconnecting");
                 }
             }
-            if is_cancelled(&cancel) {
+            if cancel.is_cancelled() {
                 break;
             }
             tokio::select! {
-                _ = cancel.changed() => break,
+                _ = cancel.cancelled() => break,
                 _ = tokio::time::sleep(backoff) => {
                     backoff = (backoff * 2).min(Duration::from_secs(60));
                 }
@@ -229,21 +268,24 @@ impl JmapEmailPushMonitor {
         &self,
         account_id: &str,
         current_state: &mut String,
-        cancel: &watch::Receiver<bool>,
-    ) -> Result<(), String> {
-        let (url, auth_header) = self
+        cancel: &CancellationToken,
+    ) -> StreamEnd {
+        let (url, auth_header) = match self
             .jmap
             .push_endpoint(&self.username, &self.password)
             .await
-            .map_err(|e| e.to_string())?;
+        {
+            Ok(v) => v,
+            Err(e) => return StreamEnd::Error(e.to_string()),
+        };
 
-        // Long-lived SSE connection: no overall timeout (a push stream must stay
-        // open indefinitely), but keep a connect timeout so a dead endpoint
-        // fails fast rather than hanging the reconnect loop.
-        let client = reqwest::Client::builder()
+        let client = match reqwest::Client::builder()
             .connect_timeout(Duration::from_secs(10))
             .build()
-            .map_err(|e| e.to_string())?;
+        {
+            Ok(c) => c,
+            Err(e) => return StreamEnd::Error(e.to_string()),
+        };
 
         let query_url = if url.contains('?') {
             format!("{url}&types=Email")
@@ -251,42 +293,55 @@ impl JmapEmailPushMonitor {
             format!("{url}?types=Email")
         };
 
-        let response = client
+        let response = match client
             .get(&query_url)
             .header(AUTHORIZATION, &auth_header)
             .send()
             .await
-            .map_err(|e| e.to_string())?;
+        {
+            Ok(r) => r,
+            Err(e) => return StreamEnd::Error(e.to_string()),
+        };
 
         if !response.status().is_success() {
-            return Err(format!("push endpoint returned HTTP {}", response.status()));
+            return StreamEnd::Error(format!(
+                "push endpoint returned HTTP {}",
+                response.status()
+            ));
         }
 
         use futures_util::StreamExt;
         let mut stream = response.bytes_stream();
         let mut carry = String::new();
 
-        while let Some(chunk) = stream.next().await {
-            if is_cancelled(cancel) {
-                return Ok(());
-            }
-            let bytes = chunk.map_err(|e| e.to_string())?;
-            // Accumulate into a lossy UTF-8 buffer (SSE is UTF-8 text).
-            carry.push_str(&String::from_utf8_lossy(&bytes));
-
-            // Extract complete frames, retaining any trailing partial frame.
-            let (frames, rest) = parse_sse_frames(&carry);
-            carry = rest;
-
-            for frame in frames {
-                if is_cancelled(cancel) {
-                    return Ok(());
+        loop {
+            tokio::select! {
+                _ = cancel.cancelled() => return StreamEnd::Clean,
+                next = stream.next() => {
+                    match next {
+                        None => return StreamEnd::Clean,
+                        Some(Err(e)) => return StreamEnd::Error(e.to_string()),
+                        Some(Ok(bytes)) => {
+                            carry.push_str(&String::from_utf8_lossy(&bytes));
+                            if carry.len() > MAX_SSE_FRAME_BYTES {
+                                return StreamEnd::Reconnect;
+                            }
+                            let (frames, rest) = parse_sse_frames(&carry);
+                            carry = rest;
+                            for frame in frames {
+                                if cancel.is_cancelled() {
+                                    return StreamEnd::Clean;
+                                }
+                                self.handle_frame(account_id, current_state, &frame).await;
+                            }
+                        }
+                    }
                 }
-                self.handle_frame(account_id, current_state, &frame).await;
+                _ = tokio::time::sleep(SSE_IDLE_TIMEOUT) => {
+                    return StreamEnd::Reconnect;
+                }
             }
         }
-
-        Ok(())
     }
 
     async fn handle_frame(
@@ -295,44 +350,63 @@ impl JmapEmailPushMonitor {
         current_state: &mut String,
         frame: &SseEvent,
     ) {
-        // A push frame reports which data type changed. We only act on email
-        // changes; calendar/contact changes are already served by the existing
-        // change-journal poll paths.
-        let is_email = match (&frame.event, frame.data.as_deref()) {
-            (Some(ev), _) => ev == "Email",
-            (_, Some(data)) => parse_state_change(data)
-                .is_some_and(|sc| sc.changed.iter().any(|(t, _)| t == "Email")),
-            _ => false,
-        };
-        if !is_email {
+        if !is_email_frame(frame) {
             return;
         }
 
-        // Resolve the delta since the last observed state and advance.
-        let changes = match self
-            .jmap
-            .sync_email_changes(account_id, current_state, &self.username, &self.password)
-            .await
+        if current_state.is_empty()
+            && let Ok(seeded) = self
+                .jmap
+                .get_email_state(account_id, &self.username, &self.password)
+                .await
         {
-            Ok(c) => c,
-            Err(e) => {
-                tracing::warn!(target: "jmap_push", error = %e, "Email/changes failed on push event");
-                return;
-            }
-        };
-        *current_state = changes.new_state.clone();
+            *current_state = seeded;
+        }
 
-        for email_id in changes.created {
-            self.publish_for(&changes.new_state, account_id, &email_id, false)
-                .await;
+        let mut created = Vec::new();
+        let mut updated = Vec::new();
+        let mut destroyed = Vec::new();
+        let mut since = current_state.clone();
+        loop {
+            let changes = match self
+                .jmap
+                .sync_email_changes(account_id, &since, &self.username, &self.password)
+                .await
+            {
+                Ok(c) => c,
+                Err(e) => {
+                    tracing::warn!(target: "jmap_push", error = %e, "Email/changes failed on push event");
+                    return;
+                }
+            };
+            created.extend(changes.created);
+            updated.extend(changes.updated);
+            destroyed.extend(changes.destroyed);
+            since = changes.new_state.clone();
+            if !changes.has_more_changes {
+                break;
+            }
         }
-        for email_id in changes.updated {
-            self.publish_for(&changes.new_state, account_id, &email_id, true)
-                .await;
+        *current_state = since;
+
+        let mut lookup = Vec::with_capacity(created.len() + updated.len());
+        lookup.extend(created.iter().cloned());
+        lookup.extend(updated.iter().cloned());
+        let emails = self
+            .jmap
+            .get_emails(account_id, &lookup, None, &self.username, &self.password)
+            .await
+            .unwrap_or_default();
+        let mut emails = emails.into_iter();
+        for email_id in created {
+            let email = emails.next();
+            self.publish_for(&self.username, email_id, email, current_state, false);
         }
-        // Deleted emails have no folder: publish a Deleted event with an empty
-        // folder so store-wide subscriptions still surface the DOM change.
-        for email_id in changes.destroyed {
+        for email_id in updated {
+            let email = emails.next();
+            self.publish_for(&self.username, email_id, email, current_state, true);
+        }
+        for email_id in destroyed {
             self.subscription_manager
                 .publish(NotificationEvent::ItemDeleted {
                     owner: self.username.clone(),
@@ -342,41 +416,36 @@ impl JmapEmailPushMonitor {
         }
     }
 
-    async fn publish_for(
+    fn publish_for(
         &self,
-        state: &str,
-        account_id: &str,
-        email_id: &str,
+        owner: &str,
+        email_id: String,
+        email: Option<crate::jmap::JmapEmail>,
+        change_key: &str,
         modified: bool,
     ) {
-        let Some(email) = self
-            .jmap
-            .get_email(account_id, email_id, &self.username, &self.password)
-            .await
-            .ok()
-            .flatten()
-        else {
+        let Some(email) = email else {
             return;
         };
         let folder_id = email
             .mailbox_ids
             .as_ref()
-            .and_then(|m| m.keys().next())
+            .and_then(|m| m.keys().min())
             .cloned()
             .unwrap_or_default();
-        let change_key = state.to_string();
+        let change_key = change_key.to_string();
         let event = if modified {
             NotificationEvent::ItemModified {
-                owner: self.username.clone(),
+                owner: owner.to_string(),
                 folder_id,
-                item_id: email_id.to_string(),
+                item_id: email_id,
                 change_key,
             }
         } else {
             NotificationEvent::NewMail {
-                owner: self.username.clone(),
+                owner: owner.to_string(),
                 folder_id,
-                item_id: email_id.to_string(),
+                item_id: email_id,
                 change_key,
             }
         };
@@ -384,22 +453,19 @@ impl JmapEmailPushMonitor {
     }
 }
 
-/// Read a [`watch::Receiver`] cancellation signal. `false` means cancel.
-fn is_cancelled(rx: &watch::Receiver<bool>) -> bool {
-    !*rx.borrow()
+struct MonitorHandle {
+    cancel: CancellationToken,
+    sinks: AtomicUsize,
 }
 
 /// Deduplicating registry of live per-mailbox JMAP push monitors.
 ///
-/// The MAPI notification path re-registers frequently (every
-/// `RopRegisterNotification` for NewMail), so spawning a fresh push monitor per
-/// registration would leak a long-lived SSE connection each time. This registry
-/// keeps at most one [`JmapEmailPushMonitor`] per mailbox; `ensure_email_monitor`
-/// is a no-op when a live monitor already exists, and lazily re-spawns one when
-/// the previous monitor's task ended (detected via the `watch` sender being
-/// closed).
+/// Keeps at most one [`JmapEmailPushMonitor`] per mailbox: `ensure_email_monitor`
+/// atomically increments a refcount (spawning only when no live monitor exists),
+/// and `release_email_monitor` decrements it, cancelling the monitor — releasing
+/// its SSE connection and in-memory credential — when the last sink is gone.
 pub struct PushMonitorRegistry {
-    monitors: dashmap::DashMap<String, watch::Sender<bool>>,
+    monitors: dashmap::DashMap<String, MonitorHandle>,
 }
 
 impl PushMonitorRegistry {
@@ -409,10 +475,6 @@ impl PushMonitorRegistry {
         }
     }
 
-    /// Ensure a single live email push monitor exists for `username`, or spawn
-    /// one (replaced if the prior monitor died). `password` is the mailbox's
-    /// own credential (Basic auth), held in a `SecretString` and only used to
-    /// open the JMAP push stream — never persisted or logged.
     pub fn ensure_email_monitor(
         &self,
         jmap: Arc<JmapClient>,
@@ -420,19 +482,33 @@ impl PushMonitorRegistry {
         password: SecretString,
         subscription_manager: Arc<SubscriptionManager>,
     ) {
-        if let Some(existing) = self.monitors.get(&username) {
-            // A closed sender means every receiver (the monitor task) dropped —
-            // the monitor is gone and needs respawning.
-            if !existing.is_closed() {
-                return;
+        use dashmap::mapref::entry::Entry;
+        match self.monitors.entry(username.clone()) {
+            Entry::Vacant(v) => {
+                let monitor =
+                    JmapEmailPushMonitor::new(jmap, username, password, subscription_manager);
+                let cancel = monitor.spawn();
+                v.insert(MonitorHandle {
+                    cancel,
+                    sinks: AtomicUsize::new(1),
+                });
             }
-            drop(existing);
-            self.monitors.remove(&username);
+            Entry::Occupied(o) => {
+                o.get().sinks.fetch_add(1, Ordering::Relaxed);
+            }
         }
+    }
 
-        let monitor = JmapEmailPushMonitor::new(jmap, username.clone(), password, subscription_manager);
-        let handle = monitor.spawn();
-        self.monitors.insert(username, handle);
+    pub fn release_email_monitor(&self, username: &str) {
+        let should_cancel = match self.monitors.get(username) {
+            Some(handle) => handle.sinks.fetch_sub(1, Ordering::AcqRel) == 1,
+            None => return,
+        };
+        if should_cancel
+            && let Some((_, handle)) = self.monitors.remove(username)
+        {
+            handle.cancel.cancel();
+        }
     }
 }
 
@@ -448,9 +524,6 @@ mod tests {
 
     #[test]
     fn parse_sse_frames_splits_frames_and_joins_data_lines() {
-        // A `retry:` frame carries no event/data and is skipped; the trailing
-        // `event: Ping` frame is a separate event. Verify multi-line `data:` is
-        // joined with `\n` and CRLF-tolerated.
         let stream = "event: Email\ndata: {\"a\":\ndata: 1}\r\n\r\nretry: 3000\r\n\r\nevent: Ping\r\ndata: x\r\n\r\n";
         let (frames, rest) = parse_sse_frames(stream);
         assert!(rest.is_empty(), "no partial frame expected");
@@ -479,9 +552,53 @@ mod tests {
     }
 
     #[test]
+    fn parse_state_change_requires_type_marker() {
+        assert!(parse_state_change(r#"{"changed":{"acc1":{"Email":"s-1"}}}"#).is_none());
+        assert!(
+            parse_state_change(r#"{"@type":"Foo","changed":{"acc1":{"Email":"s-1"}}}"#).is_none()
+        );
+    }
+
+    #[test]
+    fn parse_state_change_skips_non_string_values() {
+        let data = r#"{"@type":"StateChange","changed":{"acc1":{"Email":"s-1","Other":3}}}"#;
+        let sc = parse_state_change(data).expect("valid StateChange");
+        assert_eq!(sc.changed, vec![("Email".to_string(), "s-1".to_string())]);
+    }
+
+    #[test]
     fn parse_state_change_rejects_malformed() {
         assert!(parse_state_change("not json").is_none());
         assert!(parse_state_change("{}").is_none());
         assert!(parse_state_change(r#"{"changed":{}}"#).is_none());
+    }
+
+    #[test]
+    fn is_email_frame_uses_state_event_data() {
+        let frame = SseEvent {
+            event: Some("state".to_string()),
+            data: Some(
+                r#"{"@type":"StateChange","changed":{"acc1":{"Email":"s-99"}}}"#.to_string(),
+            ),
+        };
+        assert!(is_email_frame(&frame));
+
+        let non_email = SseEvent {
+            event: Some("state".to_string()),
+            data: Some(
+                r#"{"@type":"StateChange","changed":{"acc1":{"CalendarEvent":"c-1"}}}"#
+                    .to_string(),
+            ),
+        };
+        assert!(!is_email_frame(&non_email));
+    }
+
+    #[test]
+    fn is_email_frame_tolerates_legacy_email_name() {
+        let frame = SseEvent {
+            event: Some("Email".to_string()),
+            data: None,
+        };
+        assert!(is_email_frame(&frame));
     }
 }

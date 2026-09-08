@@ -888,6 +888,26 @@ impl JmapClient {
             session.download_url = internal;
         }
 
+        // Likewise pin the EventSource push URL (RFC 8620 §7.3 `eventSourceUrl`)
+        // to the configured internal `base_url`. The push monitor attaches the
+        // mailbox's Basic `Authorization` header to this URL, so it must never
+        // resolve to the server-advertised external host — that would transmit
+        // the credential to an out-of-network address (CWE-319 cleartext
+        // transmission). Only swap the scheme+host[+port]; the path/query
+        // (`/jmap/eventsource?...`) is preserved verbatim.
+        if !session.event_source_url.is_empty()
+            && let Some(internal) =
+                Self::internalize_template(&session.event_source_url, &self.base_url)
+            && internal != session.event_source_url
+        {
+            debug!(
+                target: "jmap",
+                session_event_source_url = %session.event_source_url,
+                "Overriding session eventSourceUrl with internal base for push"
+            );
+            session.event_source_url = internal;
+        }
+
         // Cache the session with expiry
         let expires = Instant::now() + SESSION_CACHE_TTL;
         self.session_cache
