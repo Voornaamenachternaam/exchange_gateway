@@ -407,3 +407,15 @@ CREATE TABLE IF NOT EXISTS note_map (
 );
 
 CREATE INDEX IF NOT EXISTS idx_note_map_owner ON note_map(owner);
+-- Gateway-local user photo store (MS-OXWSPHOTO / EWS GetUserPhoto). Stalwart
+-- has no native avatar/photo object, so recipient photos are stored locally as
+-- an opaque binary blob keyed by the owning mailbox's normalized SMTP address.
+-- Only a photo that the operator (or a future SetUserPhoto path) has explicitly
+-- stored is served; lookups never consult the directory, so an authenticated
+-- mailbox user cannot enumerate the account set via the Success/empty split.
+CREATE TABLE IF NOT EXISTS user_photo (
+    owner TEXT PRIMARY KEY,
+    data BLOB NOT NULL,
+    content_type TEXT NOT NULL,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);

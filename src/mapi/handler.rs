@@ -53,7 +53,7 @@ use crate::mapi::rops::{
     RopTransportSendRequest, RopTransportSendSuccess, RopWriteStreamRequest, RopWriteStreamSuccess,
 };
 use crate::mapi::session::{
-    FolderKind, Handle, MapiNotificationSink, NotificationScope, SessionManager,
+    FolderKind, Handle, MapiNotificationSink, NotificationScope, SessionManager, NT_NEW_MAIL,
 };
 use crate::mapi::store;
 use crate::mapi::transport::{MapiRequest, MapiRequestType, MapiResponse, ResponseCode, RpcKind};
@@ -125,6 +125,16 @@ pub struct MapiState {
     /// `search_blocking` resolution (the per-RPC amplification noted in PR #1845
     /// review). Allocated whenever a `directory` is wired; `None` in fixtures.
     pub gal_cache: Option<std::sync::Arc<crate::mapi::nspi::GalCache>>,
+    /// Deduplicating registry of live JMAP push monitors (audit gap #11). When
+    /// `RopRegisterNotification` requests NewMail, the MAPI path establishes a
+    /// live JMAP EventSource subscription for the mailbox so new mail is
+    /// injected into the shared subscription manager in real time, instead of
+    /// only surfacing on the client's next poll/sync cycle. Always allocated;
+    /// unit-test fixtures stay free of a live background task because the
+    /// registration arm only spawns when a `SubscriptionManager`, a
+    /// `JmapClient`, and credentials are all wired, none of which the fixtures
+    /// provide.
+    pub push_registry: std::sync::Arc<crate::jmap_push::PushMonitorRegistry>,
 }
 
 impl MapiState {
@@ -137,6 +147,7 @@ impl MapiState {
             attachment_manager: None,
             directory: None,
             gal_cache: None,
+            push_registry: std::sync::Arc::new(crate::jmap_push::PushMonitorRegistry::new()),
         }
     }
 
@@ -156,6 +167,7 @@ impl MapiState {
             attachment_manager: None,
             directory: None,
             gal_cache: None,
+            push_registry: std::sync::Arc::new(crate::jmap_push::PushMonitorRegistry::new()),
         }
     }
 
@@ -706,6 +718,7 @@ async fn handle_execute(req: MapiRequest, state: &MapiState) -> MapiResponse {
         logon_id,
         subscription_manager: state.subscription_manager.as_ref(),
         attachment_manager: state.attachment_manager.as_ref(),
+        push_registry: &state.push_registry,
     };
 
     // ROP-chain loop: each iteration decodes one RopId plus the surrounding
@@ -773,6 +786,7 @@ struct RopContext<'a> {
     logon_id: u8,
     subscription_manager: Option<&'a std::sync::Arc<crate::notifications::SubscriptionManager>>,
     attachment_manager: Option<&'a std::sync::Arc<crate::attachment::AttachmentManager>>,
+    push_registry: &'a std::sync::Arc<crate::jmap_push::PushMonitorRegistry>,
 }
 
 /// Dispatch one ROP, writing its response bytes into `out`. The cursor
@@ -794,6 +808,7 @@ async fn execute_one_rop(
         logon_id,
         subscription_manager,
         attachment_manager,
+        push_registry,
     } = *ctx;
     // Each ROP variant reads its own logon-id + handle indices per its spec
     // header shape, so the dispatch is per-variant rather than a uniform
@@ -866,9 +881,16 @@ async fn execute_one_rop(
             // too so its broadcast receiver is released (mirrors the spec's
             // RopRelease tearing down the notification Server object installed
             // by RopRegisterNotification; no-op for ordinary handle indices).
-            sessions
+            // When that sink requested NewMail, release the mailbox's live JMAP
+            // push monitor ref so the last registration tears the SSE connection
+            // down instead of leaking it (audit gap #11 teardown).
+            if let Some(removed) = sessions
                 .notifications()
-                .unregister(session_id, input_handle_index);
+                .unregister_returning(session_id, input_handle_index)
+                && removed.notification_types & NT_NEW_MAIL != 0
+            {
+                push_registry.release_email_monitor(&removed.owner);
+            }
             crate::mapi::rops::RopReleaseResponse {
                 input_handle_index,
                 return_value: RopErrorCode::Success,
@@ -4453,6 +4475,25 @@ async fn execute_one_rop(
                         receiver,
                     ),
                 );
+
+                // Establish a live JMAP push subscription for NEW mail (audit
+                // gap #11): when a client requests NewMail notifications and a
+                // JMAP endpoint + the mailbox's own credentials are in hand,
+                // the gateway opens an EventSource push stream so new mail is
+                // injected into this shared subscription manager in real time,
+                // rather than only surfacing on the client's next poll/sync.
+                // The registry de-duplicates (one live stream per mailbox) and
+                // the monitor never persists the credential.
+                if notification_types & NT_NEW_MAIL != 0
+                    && let (Some(jc), Some(pw)) = (jmap, password)
+                {
+                    push_registry.ensure_email_monitor(
+                        std::sync::Arc::new((*jc).clone()),
+                        username.to_string(),
+                        (*pw).clone(),
+                        mgr.clone(),
+                    );
+                }
             }
             // Echo the spec response (RopId · OutputHandleIndex ·
             // ReturnValue=Success).
@@ -7776,6 +7817,7 @@ mod tests {
             logon_id: 0,
             subscription_manager: None,
             attachment_manager: None,
+            push_registry: &std::sync::Arc::new(crate::jmap_push::PushMonitorRegistry::new()),
         };
         execute_one_rop(
             crate::mapi::rops::RopId::ROP_SET_COLUMNS,
@@ -7808,6 +7850,7 @@ mod tests {
                 logon_id: 0,
                 subscription_manager: None,
                 attachment_manager: None,
+                push_registry: &std::sync::Arc::new(crate::jmap_push::PushMonitorRegistry::new()),
             },
         )
         .await
@@ -7916,6 +7959,7 @@ mod tests {
                 logon_id: 0,
                 subscription_manager: None,
                 attachment_manager: None,
+                push_registry: &std::sync::Arc::new(crate::jmap_push::PushMonitorRegistry::new()),
             },
         )
         .await
@@ -8598,6 +8642,7 @@ mod tests {
                 logon_id: 0,
                 subscription_manager: None,
                 attachment_manager: None,
+                push_registry: &std::sync::Arc::new(crate::jmap_push::PushMonitorRegistry::new()),
             },
         )
         .await

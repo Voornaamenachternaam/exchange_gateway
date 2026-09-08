@@ -692,7 +692,7 @@ fn class_placeholder_app_data(content_class: &str, owner: &str) -> String {
     }
 }
 
-fn map_rrule_to_recurrence_xml(rrule: &str) -> Option<String> {
+pub(crate) fn map_rrule_to_recurrence_xml(rrule: &str) -> Option<String> {
     let parts: Vec<&str> = rrule.split(';').collect();
     let mut freq: Option<u8> = None;
     let mut interval = 1u32;

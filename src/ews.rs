@@ -317,7 +317,7 @@ pub async fn handle(
         EwsAction::GetServiceConfiguration => handle_get_service_configuration(&state).await,
         EwsAction::GetServerTimeZones => handle_get_server_time_zones().await,
         EwsAction::GetFolderInfo => handle_get_folder_info().await,
-        EwsAction::GetMailTips => handle_get_mail_tips(&auth, &body).await,
+        EwsAction::GetMailTips => handle_get_mail_tips(&state, &auth, &body).await,
         EwsAction::FindPeople => handle_find_people(&state, &auth, &body).await,
         EwsAction::GetConversationItems => handle_get_conversation_items(&state, &auth, &body).await,
         EwsAction::ConvertId => handle_convert_id(&auth, &body).await,
@@ -470,6 +470,50 @@ fn extract_tag_texts(xml: &str, tag: &[u8]) -> Vec<String> {
                 }
             }
             Ok(Event::End(e)) if e.name().local_name().as_ref() == tag => inside = false,
+            Ok(Event::Eof) | Err(_) => return values,
+            _ => {}
+        }
+        buf.clear();
+    }
+}
+
+/// Extract `EmailAddress` text values strictly within `<m:Recipients>`, in
+/// document order. A `GetMailTips` request also carries the sender under
+/// `<m:SendingAs><t:EmailAddress>`; matching every `EmailAddress` therefore
+/// fabricates a spurious `MailTips` entry for the sender. Tracking the
+/// `Recipients` element's nesting excludes the `SendingAs` address.
+fn extract_recipient_email_addresses(xml: &str) -> Vec<String> {
+    let mut reader = Reader::from_str(xml);
+    reader.config_mut().trim_text(true);
+    let mut buf = Vec::new();
+    let mut recipients_depth = 0u32;
+    let mut in_email_address = false;
+    let mut values = Vec::new();
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(e)) => {
+                let name = e.name().local_name();
+                if name.as_ref() == b"Recipients" {
+                    recipients_depth += 1;
+                } else if name.as_ref() == b"EmailAddress" && recipients_depth > 0 {
+                    in_email_address = true;
+                }
+            }
+            Ok(Event::Text(t)) if in_email_address => {
+                if let Ok(value) = t.decode()
+                    && !value.trim().is_empty()
+                {
+                    values.push(value.into_owned());
+                }
+            }
+            Ok(Event::End(e)) => {
+                let name = e.name().local_name();
+                if name.as_ref() == b"EmailAddress" && in_email_address {
+                    in_email_address = false;
+                } else if name.as_ref() == b"Recipients" && recipients_depth > 0 {
+                    recipients_depth -= 1;
+                }
+            }
             Ok(Event::Eof) | Err(_) => return values,
             _ => {}
         }
@@ -935,7 +979,7 @@ fn parse_rrule_byday(value: &str) -> Option<(i32, String)> {
     Some((ordinal, code))
 }
 
-fn render_ews_recurrence_xml(rrule: &str, start: chrono::DateTime<chrono::Utc>) -> String {
+pub(crate) fn render_ews_recurrence_xml(rrule: &str, start: chrono::DateTime<chrono::Utc>) -> String {
     let mut freq = "";
     let mut interval = "1".to_string();
     let mut byday = None;
@@ -7906,22 +7950,80 @@ async fn handle_get_folder_info() -> Response {
     soap_ok(inner)
 }
 
-async fn handle_get_mail_tips(auth: &AuthContext, _body: &str) -> Response {
+async fn handle_get_mail_tips(state: &Arc<AppState>, auth: &AuthContext, body: &str) -> Response {
+    // MS-OXWSTIPS / GetMailTips §3.1.4.1 — the request carries one or more
+    // `<t:Mailbox>` recipients (each with an `<t:EmailAddress>`). The response
+    // must contain one `MailTips` entry per recipient, whose `OutOfOffice`
+    // block surfaces that recipient mailbox's real OOF reply. This is read from
+    // the same Sieve OOF manager `GetUserOofSettings`/`SetUserOofSettings` use
+    // (`state.oof_manager`), so a mailbox that enabled OOF now shows its
+    // message here instead of the previous always-empty stub.
+    //
+    // When no OOF manager is configured (or a lookup fails), the recipient is
+    // reported with an empty `OutOfOffice` reply — the spec-compliant
+    // "not currently sending OOF" shape — rather than a hard error, matching
+    // the gateway's OOF-disabled posture.
+    // Scope to `Recipients` so the sender's `SendingAs` address is not emitted
+    // as an extra `MailTips` entry.
+    let recipients = extract_recipient_email_addresses(body);
+    let recipients: Vec<String> = if recipients.is_empty() {
+        // The requester's own mailbox is the default when the client omits an
+        // explicit recipient list (Outlook sends an explicit list, but tolerate
+        // an absent one the same way the legacy stub did).
+        vec![auth.username.clone()]
+    } else {
+        recipients
+    };
+
+    let mut tips_xml = String::new();
+    for recipient in recipients {
+        let owner = crate::util::normalize_email(&recipient);
+        // Read OOF state for THIS recipient's mailbox (admin-authenticated
+        // Sieve lookup keyed by the recipient address).
+        let (oofing, reply_message) = match &state.oof_manager {
+            Some(oof_mgr) => match oof_mgr.get_oof_settings(&owner) {
+                Ok(settings) => (
+                    settings.enabled,
+                    settings
+                        .external_reply
+                        .or(settings.internal_reply)
+                        .unwrap_or_default(),
+                ),
+                Err(e) => {
+                    tracing::warn!(target: "ews", recipient = %owner, error = %e, "GetMailTips OOF lookup failed");
+                    (false, String::new())
+                }
+            },
+            None => (false, String::new()),
+        };
+
+        let oof_block = if oofing {
+            format!(
+                "<t:OutOfOffice><t:ReplyBody><t:Message>{}</t:Message></t:ReplyBody></t:OutOfOffice>",
+                xml_escape(&reply_message)
+            )
+        } else {
+            // An empty ReplyBody (no <t:Message>) is the "no OOF" shape.
+            "<t:OutOfOffice><t:ReplyBody/></t:OutOfOffice>".to_string()
+        };
+
+        tips_xml.push_str(&format!(
+            "<m:MailTips><t:RecipientAddress><t:EmailAddress>{}</t:EmailAddress></t:RecipientAddress>{}</m:MailTips>",
+            xml_escape(&recipient),
+            oof_block
+        ));
+    }
+
     let inner = format!(
         r#"<m:GetMailTipsResponse xmlns:m="{}" xmlns:t="{}">
   <m:ResponseMessages>
     <m:MailTipsResponseMessage ResponseClass="Success">
       <m:ResponseCode>NoError</m:ResponseCode>
-      <m:MailTips>
-        <t:RecipientAddress><t:EmailAddress>{}</t:EmailAddress></t:RecipientAddress>
-        <t:OutOfOffice><t:ReplyBody><t:Message></t:Message></t:ReplyBody></t:OutOfOffice>
-      </m:MailTips>
+      {}
     </m:MailTipsResponseMessage>
   </m:ResponseMessages>
 </m:GetMailTipsResponse>"#,
-        EWS_MSG_NS,
-        EWS_TYPE_NS,
-        xml_escape(&auth.username)
+        EWS_MSG_NS, EWS_TYPE_NS, tips_xml
     );
     soap_ok(inner)
 }
@@ -8207,20 +8309,66 @@ async fn handle_get_conversation_items(
     );
     soap_ok(inner)
 }
-async fn handle_convert_id(auth: &AuthContext, _body: &str) -> Response {
+async fn handle_convert_id(auth: &AuthContext, body: &str) -> Response {
+    // MS-OXWSCVTID / ConvertId §3.1.4.1 — translates item/folder ids between
+    // Exchange id formats. The gateway's canonical evergreen id is the EWS
+    // `Id` (with `ChangeKey`) it already serves on every other operation, so
+    // the "conversion" is id-preserving: each source id is returned verbatim
+    // under the destination format, never the caller's username (the previous
+    // stub masked the real id with `auth.username`, silently corrupting any
+    // client that used the result to re-address an item).
+    //
+    // The request carries `<m:SourceIds>` with one or more
+    // `<t:AlternateId Id="…" Format="…" Mailbox="…"/>` entries (and
+    // `AlternatePublicFolderId`/`AlternatePublicFolderItemId` variants), plus a
+    // `DestinationFormat` *attribute* on the `<m:ConvertId>` root (MS-OXWSCVTID
+    // §3.1.4.1.1.1). The gateway only ever produces EwsId-format ids, so the
+    // destination format is acknowledged but the `Id` value is preserved
+    // (Exchange ids are opaque; the client must not interpret their bytes).
+    let source_ids: Vec<String> = extract_first_attrs(body, b"AlternateId", b"Id")
+        .into_iter()
+        .chain(extract_first_attrs(body, b"AlternatePublicFolderId", b"FolderId"))
+        .chain(extract_first_attrs(
+            body,
+            b"AlternatePublicFolderItemId",
+            b"ItemId",
+        ))
+        .collect();
+
+    // Determine the destination format from the `ConvertId` attribute (default
+    // EwsId when absent or blank).
+    let dest_format = extract_first_attr(body, b"ConvertId", b"DestinationFormat")
+        .filter(|f| !f.trim().is_empty())
+        .unwrap_or_else(|| "EwsId".to_string());
+
+    // An empty source set is a protocol error (MS-OXWSCVTID requires >= 1 id).
+    if source_ids.is_empty() {
+        return operation_error_response(
+            &EwsAction::ConvertId,
+            "ErrorInvalidIdMalformed",
+            "ConvertId requires at least one source id",
+            StatusCode::BAD_REQUEST,
+        );
+    }
+
+    // MS-OXWSCVTID §3.1.4.1.2.2: one `ConvertIdResponseMessage` per converted
+    // source id, each carrying a single `AlternateId` element (which has no
+    // child elements). Wrapping them all inside one `<m:AlternateId>` (the
+    // previous shape) produced a schema-invalid nested element that clients
+    // reject.
+    let mut response_messages = String::new();
+    for id in source_ids {
+        response_messages.push_str(&format!(
+            r#"<m:ConvertIdResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:AlternateId Id="{}" Format="{}" Mailbox="{}"/></m:ConvertIdResponseMessage>"#,
+            xml_escape(&id),
+            xml_escape(&dest_format),
+            xml_escape(&auth.username)
+        ));
+    }
+
     let inner = format!(
-        r#"<m:ConvertIdResponse xmlns:m="{}" xmlns:t="{}">
-<m:ResponseMessages>
-<m:ConvertIdResponseMessage ResponseClass="Success">
-<m:ResponseCode>NoError</m:ResponseCode>
-<m:AlternateId Id="{}" Format="EwsId" Mailbox="{}"/>
-</m:ConvertIdResponseMessage>
-</m:ResponseMessages>
-</m:ConvertIdResponse>"#,
-        EWS_MSG_NS,
-        EWS_TYPE_NS,
-        xml_escape(&auth.username),
-        xml_escape(&auth.username)
+        r#"<m:ConvertIdResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages>{}</m:ResponseMessages></m:ConvertIdResponse>"#,
+        EWS_MSG_NS, EWS_TYPE_NS, response_messages
     );
     soap_ok(inner)
 }
@@ -8297,57 +8445,75 @@ async fn handle_update_delegate(state: &Arc<AppState>, auth: &AuthContext, body:
 }
 
 async fn handle_get_user_photo(state: &Arc<AppState>, _auth: &AuthContext, body: &str) -> Response {
-    // MS-OXWSAVATAR §3.1.4.1 — the client supplies the requested recipient
-    // email and a `SizeRequested` (HR48x48/HR64x64/HR96x96/HR120x120/
-    // HR240x240/HR360x360/HR432x432/HR504x504/HR648x648).
+    // MS-OXWSPHOTO §3.1.4.1 — the client supplies the requested recipient email
+    // and a `SizeRequested` (HR48x48/…/HR648x648).
     //
-    // The gateway has NO Stalwart-side photo backend (audit §2d: getUserPhoto
-    // for MAPI returns empty; no Stalwart-native photo storage exists), so it
-    // MUST NOT probe the directory to differentiate "exists" from "does not
-    // exist": doing so would let any authenticated mailbox user enumerate the
-    // Stalwart account set via the Success/ErrorNoSuchEmailAddress split, the
-    // same directory-disclosure vector `autodiscover::resolve_user_display_name`
-    // (PR #1821) deliberately guards against. It would ALSO misclassify every
-    // recipient as "no such address" when no directory is configured, and would
-    // silently drop `spawn_blocking` `JoinError`s (PR #1845 cubic) into that
-    // same error code.
+    // Stalwart exposes no avatar/photo object (audit §2d), so the gateway
+    // serves photos from a LOCAL opt-in store (`storage::user_photo`, keyed by
+    // normalized SMTP address). Only photos an operator (or a future
+    // `SetUserPhoto` path) explicitly persisted are ever returned, and the
+    // lookup is keyed purely on the client-supplied address string — it never
+    // consults the directory. That keeps the operation disclosure-free: every
+    // syntactically-valid recipient receives a `Success` response with either
+    // `HasChanged=true` + base64 `PictureData` (photo stored) or
+    // `HasChanged=false` + empty `PictureData` (no photo / no such address).
+    // There is no `Success`/`ErrorNoSuchEmailAddress` split, so an
+    // authenticated mailbox user cannot enumerate the Stalwart account set via
+    // this operation (the same vector `autodiscover::resolve_user_display_name`
+    // guards, PR #1821).
     //
-    // Instead: validate the email SYNTAX (a disclosure-free, constant-time
-    // property of the client-supplied string), reject malformed/empty values
-    // with `ErrorInvalidSmtpAddress`, and return the spec's "no photo
-    // published" shape (`HasChanged="false"`, empty `PictureData`) for every
-    // syntactically-valid recipient. Outlook renders the recipient's default
-    // avatar — it does NOT error — so recipient previews and "Check Names" are
-    // unaffected while zero directory surface is exposed.
-    let _ = state; // No directory consult — see rationale above.
+    // A malformed/empty address is still rejected with `ErrorInvalidSmtpAddress`
+    // (a syntax property of the string, not a directory consult). The requested
+    // `SizeRequested` is honoured as a hint only: a single canonical photo is
+    // stored per owner and returned as-is (Outlook scales to fit).
     let email = extract_first_tag_text(body, b"Email")
         .or_else(|| extract_first_tag_text(body, b"EmailAddress"))
         .unwrap_or_default();
     let _size_requested = extract_first_tag_text(body, b"SizeRequested").unwrap_or_default();
-    let valid = is_valid_smtp_address(&email);
-    let (class, code) = if valid {
-        ("Success", "NoError")
-    } else {
-        ("Error", "ErrorInvalidSmtpAddress")
+    if !is_valid_smtp_address(&email) {
+        let inner = format!(
+            r#"<m:GetUserPhotoResponse xmlns:m="{}" xmlns:t="{}">
+<m:ResponseMessages>
+<m:GetUserPhotoResponseMessage ResponseClass="Error">
+<m:ResponseCode>ErrorInvalidSmtpAddress</m:ResponseCode>
+</m:GetUserPhotoResponseMessage>
+</m:ResponseMessages>
+</m:GetUserPhotoResponse>"#,
+            EWS_MSG_NS, EWS_TYPE_NS
+        );
+        return soap_ok(inner);
+    }
+
+    // Normalize exactly as every other owner-keyed store does, so a photo saved
+    // for `User@Example.com` matches a request for `user@example.com`.
+    let owner = crate::util::normalize_email(&email);
+    let photo = state.storage.get_user_photo(&owner).await;
+
+    let (has_changed, picture_data) = match photo {
+        Ok(Some(row)) => (true, STANDARD.encode(&row.data)),
+        Ok(None) => (false, String::new()),
+        Err(e) => {
+            // A storage failure must not surface a sensitive internal error;
+            // degrade to the "no photo" shape (Outlook falls back to initials).
+            tracing::warn!(target: "ews", owner = %owner, error = %e, "GetUserPhoto storage lookup failed");
+            (false, String::new())
+        }
     };
+
     let inner = format!(
         r#"<m:GetUserPhotoResponse xmlns:m="{}" xmlns:t="{}">
 <m:ResponseMessages>
-<m:GetUserPhotoResponseMessage ResponseClass="{}">
-<m:ResponseCode>{}</m:ResponseCode>
-{}
+<m:GetUserPhotoResponseMessage ResponseClass="Success">
+<m:ResponseCode>NoError</m:ResponseCode>
+<m:HasChanged>{}</m:HasChanged>
+<m:PictureData>{}</m:PictureData>
 </m:GetUserPhotoResponseMessage>
 </m:ResponseMessages>
 </m:GetUserPhotoResponse>"#,
         EWS_MSG_NS,
         EWS_TYPE_NS,
-        class,
-        code,
-        if valid {
-            "<m:HasChanged>false</m:HasChanged><m:PictureData/>"
-        } else {
-            ""
-        }
+        if has_changed { "true" } else { "false" },
+        picture_data
     );
     soap_ok(inner)
 }
