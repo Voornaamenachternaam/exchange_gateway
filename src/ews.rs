@@ -319,7 +319,9 @@ pub async fn handle(
         EwsAction::GetFolderInfo => handle_get_folder_info().await,
         EwsAction::GetMailTips => handle_get_mail_tips(&state, &auth, &body).await,
         EwsAction::FindPeople => handle_find_people(&state, &auth, &body).await,
-        EwsAction::GetConversationItems => handle_get_conversation_items(&state, &auth, &body).await,
+        EwsAction::GetConversationItems => {
+            handle_get_conversation_items(&state, &auth, &body).await
+        }
         EwsAction::ConvertId => handle_convert_id(&auth, &body).await,
         EwsAction::GetRoomLists => handle_get_room_lists(&state, &auth).await,
         EwsAction::GetRooms => handle_get_rooms(&state, &auth, &body).await,
@@ -333,7 +335,9 @@ pub async fn handle(
         EwsAction::GetAppMarketplaceUrl => handle_get_app_marketplace_url().await,
         EwsAction::InstallApp => handle_install_app().await,
         EwsAction::UninstallApp => handle_uninstall_app().await,
-        EwsAction::GetClientAccessToken => handle_get_client_access_token(&state, &auth, &body).await,
+        EwsAction::GetClientAccessToken => {
+            handle_get_client_access_token(&state, &auth, &body).await
+        }
         EwsAction::GetReminders => handle_get_reminders(&state, &auth, &body).await,
         EwsAction::PerformReminderAction => {
             handle_perform_reminder_action(&state, &auth, &body).await
@@ -556,9 +560,7 @@ fn extract_first_attrs(xml: &str, tag: &[u8], attr: &[u8]) -> Vec<String> {
     let mut values = Vec::new();
     loop {
         match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(e)) | Ok(Event::Empty(e))
-                if e.name().local_name().as_ref() == tag =>
-            {
+            Ok(Event::Start(e)) | Ok(Event::Empty(e)) if e.name().local_name().as_ref() == tag => {
                 for a in e.attributes().flatten() {
                     if a.key.local_name().as_ref() == attr
                         && let Ok(v) = a
@@ -979,7 +981,10 @@ fn parse_rrule_byday(value: &str) -> Option<(i32, String)> {
     Some((ordinal, code))
 }
 
-pub(crate) fn render_ews_recurrence_xml(rrule: &str, start: chrono::DateTime<chrono::Utc>) -> String {
+pub(crate) fn render_ews_recurrence_xml(
+    rrule: &str,
+    start: chrono::DateTime<chrono::Utc>,
+) -> String {
     let mut freq = "";
     let mut interval = "1".to_string();
     let mut byday = None;
@@ -8257,9 +8262,8 @@ async fn handle_get_conversation_items(
         let emails = query.emails;
         let mut nodes_xml = String::new();
         for email in &emails {
-            let server_id = crate::email::email_server_id_from_jmap_id(
-                email.id.as_deref().unwrap_or_default(),
-            );
+            let server_id =
+                crate::email::email_server_id_from_jmap_id(email.id.as_deref().unwrap_or_default());
             let change_key = server_id.clone();
             let internet_message_id = email
                 .message_id
@@ -8276,11 +8280,8 @@ async fn handle_get_conversation_items(
             // One node per message; the Items element carries the email rendered
             // as an EWS Message (same shape as GetItem) so the client has subject,
             // sender, received time and preview for the expanded thread.
-            let message_xml = crate::email::render_jmap_email_as_ews_message(
-                email,
-                &server_id,
-                &change_key,
-            );
+            let message_xml =
+                crate::email::render_jmap_email_as_ews_message(email, &server_id, &change_key);
             nodes_xml.push_str(&format!(
                 r#"<t:ConversationNode><t:InternetMessageId>{}</t:InternetMessageId><t:ParentInternetMessageId>{}</t:ParentInternetMessageId><t:Items>{}</t:Items></t:ConversationNode>"#,
                 internet_message_id, parent_message_id, message_xml
@@ -8327,7 +8328,11 @@ async fn handle_convert_id(auth: &AuthContext, body: &str) -> Response {
     // (Exchange ids are opaque; the client must not interpret their bytes).
     let source_ids: Vec<String> = extract_first_attrs(body, b"AlternateId", b"Id")
         .into_iter()
-        .chain(extract_first_attrs(body, b"AlternatePublicFolderId", b"FolderId"))
+        .chain(extract_first_attrs(
+            body,
+            b"AlternatePublicFolderId",
+            b"FolderId",
+        ))
         .chain(extract_first_attrs(
             body,
             b"AlternatePublicFolderItemId",
@@ -8724,7 +8729,11 @@ async fn handle_uninstall_app() -> Response {
 /// the client proceed without treating the operation as an error. This is the
 /// correct "no token issued" shape (MS-OXWSCORE §2.2.5.4.3) rather than the
 /// previous hard-coded empty `<Token/>` nop.
-async fn handle_get_client_access_token(_state: &Arc<AppState>, _auth: &AuthContext, body: &str) -> Response {
+async fn handle_get_client_access_token(
+    _state: &Arc<AppState>,
+    _auth: &AuthContext,
+    body: &str,
+) -> Response {
     let token_requests = extract_first_attrs(body, b"TokenRequest", b"Id");
 
     let mut tokens_xml = String::new();
@@ -8761,7 +8770,10 @@ async fn handle_get_client_access_token(_state: &Arc<AppState>, _auth: &AuthCont
 /// standard `DTSTART`/`RRULE`/`EXDATE` iCalendar block). On parse failure we
 /// fall back to the base `start` rather than dropping the reminder, so a
 /// malformed (but still stored) event does not silently lose its reminder.
-fn next_occurrence_start(item: &crate::calendar::CalendarItem, now: chrono::DateTime<Utc>) -> chrono::DateTime<Utc> {
+fn next_occurrence_start(
+    item: &crate::calendar::CalendarItem,
+    now: chrono::DateTime<Utc>,
+) -> chrono::DateTime<Utc> {
     let start_utc = item.start;
     let Some(rrule) = item.rrule.as_deref() else {
         return start_utc;
@@ -8817,25 +8829,21 @@ async fn handle_get_reminders(state: &Arc<AppState>, auth: &AuthContext, body: &
     // bounded horizon to keep the calendar query cheap and predictable.
     let load_start = window_start.min(now).max(now - chrono::Duration::days(365));
     let load_end = window_end.max(now).min(now + chrono::Duration::days(365));
-    let items = match load_current_calendar_items(
-        state,
-        owner,
-        password,
-        Some((load_start, load_end)),
-    )
-    .await
-    {
-        Ok(v) => v,
-        Err(e) => {
-            tracing::error!(error = %e, "GetReminders: failed to load calendar items");
-            return operation_error_response(
-                &EwsAction::GetReminders,
-                "ErrorInternalServerError",
-                "An internal error occurred while loading calendar items",
-                StatusCode::INTERNAL_SERVER_ERROR,
-            );
-        }
-    };
+    let items =
+        match load_current_calendar_items(state, owner, password, Some((load_start, load_end)))
+            .await
+        {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::error!(error = %e, "GetReminders: failed to load calendar items");
+                return operation_error_response(
+                    &EwsAction::GetReminders,
+                    "ErrorInternalServerError",
+                    "An internal error occurred while loading calendar items",
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                );
+            }
+        };
 
     // Cap the returned set to bound the response for pathological data.
     let max_items = extract_int(body, b"MaxItems", 200).clamp(1, 2000);
@@ -8917,10 +8925,8 @@ fn parse_reminder_window(
         // EWS surface instead of silently falling back to the default window.
         extract_first_tag_text(body, tag).and_then(|s| crate::calendar::parse_datetime(&s))
     };
-    let start = parse(b"BeginTime")
-        .unwrap_or_else(|| now - chrono::Duration::days(30));
-    let end = parse(b"EndTime")
-        .unwrap_or_else(|| now + chrono::Duration::days(14));
+    let start = parse(b"BeginTime").unwrap_or_else(|| now - chrono::Duration::days(30));
+    let end = parse(b"EndTime").unwrap_or_else(|| now + chrono::Duration::days(14));
     (start, end)
 }
 
@@ -10021,10 +10027,16 @@ mod tests {
             ..Default::default()
         };
         let next = next_occurrence_start(&item, now);
-        assert!(next >= now, "next occurrence must be at/after now: {next:?}");
+        assert!(
+            next >= now,
+            "next occurrence must be at/after now: {next:?}"
+        );
         // It must be the base start advanced by whole days (ignoring sub-day drift).
         let days = (next - start).num_days();
-        assert!(days >= 30, "daily recurrence should have advanced ~30 days: {days}");
+        assert!(
+            days >= 30,
+            "daily recurrence should have advanced ~30 days: {days}"
+        );
     }
 
     #[test]
@@ -10041,10 +10053,16 @@ mod tests {
         let now = chrono::Utc::now();
         // Truncate to whole seconds: GetReminders bounds are UTC second-precision
         // date-times, and `format_ews_datetime` drops sub-second components.
-        let begin = chrono::DateTime::<Utc>::from_timestamp((now - chrono::Duration::days(2)).timestamp(), 0)
-            .unwrap();
-        let end = chrono::DateTime::<Utc>::from_timestamp((now + chrono::Duration::days(3)).timestamp(), 0)
-            .unwrap();
+        let begin = chrono::DateTime::<Utc>::from_timestamp(
+            (now - chrono::Duration::days(2)).timestamp(),
+            0,
+        )
+        .unwrap();
+        let end = chrono::DateTime::<Utc>::from_timestamp(
+            (now + chrono::Duration::days(3)).timestamp(),
+            0,
+        )
+        .unwrap();
         let body = format!(
             r#"<m:GetReminders><m:BeginTime>{}</m:BeginTime><m:EndTime>{}</m:EndTime></m:GetReminders>"#,
             crate::util::format_ews_datetime(&begin),
@@ -10060,10 +10078,16 @@ mod tests {
         // EWS xs:dateTime permits an offsetless value; the shared parser must
         // accept it (not silently fall back to the default window).
         let now = chrono::Utc::now();
-        let begin = chrono::DateTime::<Utc>::from_timestamp((now - chrono::Duration::hours(2)).timestamp(), 0)
-            .unwrap();
-        let end = chrono::DateTime::<Utc>::from_timestamp((now + chrono::Duration::hours(2)).timestamp(), 0)
-            .unwrap();
+        let begin = chrono::DateTime::<Utc>::from_timestamp(
+            (now - chrono::Duration::hours(2)).timestamp(),
+            0,
+        )
+        .unwrap();
+        let end = chrono::DateTime::<Utc>::from_timestamp(
+            (now + chrono::Duration::hours(2)).timestamp(),
+            0,
+        )
+        .unwrap();
         let fmt = |d: &chrono::DateTime<Utc>| d.format("%Y-%m-%dT%H:%M:%S").to_string();
         let body = format!(
             r#"<m:GetReminders><m:BeginTime>{}</m:BeginTime><m:EndTime>{}</m:EndTime></m:GetReminders>"#,

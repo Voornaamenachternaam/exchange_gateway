@@ -42,18 +42,18 @@ use crate::mapi::rops::{
     RopHeader4, RopId, RopLogonRequest, RopLogonSuccess, RopMoveCopyMessagesRequest,
     RopMoveCopyMessagesResponse, RopOpenAttachmentRequest, RopOpenAttachmentSuccess,
     RopOpenMessageRequest, RopOpenMessageSuccess, RopOpenStreamRequest, RopOpenStreamSuccess,
-    RopOpenTableRequest,
-    RopPropertyWriteSuccess, RopQueryRowsRequest, RopReadStreamRequest, RopReadStreamSuccess,
-    RopRegisterNotificationResponse, RopReleaseRequest, RopSaveChangesAttachmentRequest,
-    RopSaveChangesAttachmentResponse, RopSaveChangesMessageRequest, RopSaveChangesMessageSuccess,
-    RopSetReadFlagsRequest,
-    RopSeekStreamRequest, RopSeekStreamSuccess, RopSetColumnsRequest, RopSetMessageReadFlagRequest,
-    RopSetPropertiesRequest, RopSetStreamSizeRequest, RopSetStreamSizeResponse,
-    RopSubmitMessageRequest, RopSubmitMessageResponse, RopTransportSendFailure,
-    RopTransportSendRequest, RopTransportSendSuccess, RopWriteStreamRequest, RopWriteStreamSuccess,
+    RopOpenTableRequest, RopPropertyWriteSuccess, RopQueryRowsRequest, RopReadStreamRequest,
+    RopReadStreamSuccess, RopRegisterNotificationResponse, RopReleaseRequest,
+    RopSaveChangesAttachmentRequest, RopSaveChangesAttachmentResponse,
+    RopSaveChangesMessageRequest, RopSaveChangesMessageSuccess, RopSeekStreamRequest,
+    RopSeekStreamSuccess, RopSetColumnsRequest, RopSetMessageReadFlagRequest,
+    RopSetPropertiesRequest, RopSetReadFlagsRequest, RopSetStreamSizeRequest,
+    RopSetStreamSizeResponse, RopSubmitMessageRequest, RopSubmitMessageResponse,
+    RopTransportSendFailure, RopTransportSendRequest, RopTransportSendSuccess,
+    RopWriteStreamRequest, RopWriteStreamSuccess,
 };
 use crate::mapi::session::{
-    FolderKind, Handle, MapiNotificationSink, NotificationScope, SessionManager, NT_NEW_MAIL,
+    FolderKind, Handle, MapiNotificationSink, NT_NEW_MAIL, NotificationScope, SessionManager,
 };
 use crate::mapi::store;
 use crate::mapi::transport::{MapiRequest, MapiRequestType, MapiResponse, ResponseCode, RpcKind};
@@ -62,27 +62,27 @@ use secrecy::ExposeSecret;
 use crate::mapi::fxics::{IcsStreamBuilder, Marker, Tokenizer};
 use crate::mapi::restrict::{CellForMatcher, SRestriction, restriction_referenced_tags};
 use crate::mapi::rops::{
-    RopCreateBookmarkRequest, RopCreateBookmarkResponse,
+    RopCopyPropertiesRequest, RopCreateBookmarkRequest, RopCreateBookmarkResponse,
+    RopCreateFolderRequest, RopDeleteFolderRequest, RopDeletePropertiesNoReplicateRequest,
     RopFastTransferDestinationConfigureRequest, RopFastTransferDestinationPutBufferRequest,
     RopFastTransferDestinationPutBufferResponse, RopFastTransferSourceCopyFolderRequest,
     RopFastTransferSourceCopyMessagesRequest, RopFastTransferSourceCopyPropertiesRequest,
     RopFastTransferSourceCopyToRequest, RopFastTransferSourceGetBufferRequest,
-    RopFastTransferSourceGetBufferSuccess, RopFastTransferSourceOpenResponse,
-    RopFreeBookmarkRequest, RopFreeBookmarkResponse, RopNotifyResponse, RopPendingResponse,
-    RopQueryPositionRequest, RopQueryPositionResponse, RopResetTableRequest, RopResetTableResponse,
-    RopRestrictRequest, RopRestrictResponse, RopSeekRowBookmarkRequest, RopSeekRowBookmarkResponse,
-    RopSeekRowFractionalRequest, RopSeekRowFractionalResponse, RopSeekRowRequest,
-    RopSeekRowResponse, RopSortTableRequest, RopSortTableResponse, RopSynchronizationAckResponse,
-    RopSynchronizationConfigureRequest, RopCopyPropertiesRequest, RopCreateFolderRequest,
-    RopDeleteFolderRequest, RopFindRowRequest, RopGetNamesFromPropertyIdsRequest,
-    RopGetPropertyIdsFromNamesRequest, RopMoveCopyFolderRequest, RopOpenEmbeddedMessageRequest,
-    RopReloadCachedInformationRequest, RopSetSearchCriteriaRequest, RopGetSearchCriteriaRequest,
-    RopQueryNamedPropertiesRequest, RopGetRulesPermissionsTableRequest, RopModifyRulesRequest,
-    RopModifyPermissionsRequest, RopGetReceiveFolderRequest, RopModifyRecipientsRequest,
-    RopUpdateDeferredActionMessagesRequest, RopSetCollapseStateRequest,
-    RopSetPropertiesNoReplicateRequest, RopDeletePropertiesNoReplicateRequest,
-    RopWriteAndCommitStreamRequest, RopSetLocalReplicaMidsetDeletedRequest,
-    RopGetPerUserLongTermIdsRequest, decode_header3, decode_header4, SortOrder,
+    RopFastTransferSourceGetBufferSuccess, RopFastTransferSourceOpenResponse, RopFindRowRequest,
+    RopFreeBookmarkRequest, RopFreeBookmarkResponse, RopGetNamesFromPropertyIdsRequest,
+    RopGetPerUserLongTermIdsRequest, RopGetPropertyIdsFromNamesRequest, RopGetReceiveFolderRequest,
+    RopGetRulesPermissionsTableRequest, RopGetSearchCriteriaRequest, RopModifyPermissionsRequest,
+    RopModifyRecipientsRequest, RopModifyRulesRequest, RopMoveCopyFolderRequest, RopNotifyResponse,
+    RopOpenEmbeddedMessageRequest, RopPendingResponse, RopQueryNamedPropertiesRequest,
+    RopQueryPositionRequest, RopQueryPositionResponse, RopReloadCachedInformationRequest,
+    RopResetTableRequest, RopResetTableResponse, RopRestrictRequest, RopRestrictResponse,
+    RopSeekRowBookmarkRequest, RopSeekRowBookmarkResponse, RopSeekRowFractionalRequest,
+    RopSeekRowFractionalResponse, RopSeekRowRequest, RopSeekRowResponse,
+    RopSetCollapseStateRequest, RopSetLocalReplicaMidsetDeletedRequest,
+    RopSetPropertiesNoReplicateRequest, RopSetSearchCriteriaRequest, RopSortTableRequest,
+    RopSortTableResponse, RopSynchronizationAckResponse, RopSynchronizationConfigureRequest,
+    RopUpdateDeferredActionMessagesRequest, RopWriteAndCommitStreamRequest, SortOrder,
+    decode_header3, decode_header4,
 };
 
 /// Bundle of state the handler needs. Constructed once in `main.rs` (or a
@@ -5280,7 +5280,9 @@ async fn resolve_open_message_backend(
             // The input handle may already be a Folder (for a synthetic open)
             // or a Message (re-open); fall back to Mail with an empty parent.
             Handle::Folder { kind, backend_id } => (*kind, backend_id.clone()),
-            Handle::Message { kind, mailbox_id, .. } => (*kind, mailbox_id.clone()),
+            Handle::Message {
+                kind, mailbox_id, ..
+            } => (*kind, mailbox_id.clone()),
             _ => (FolderKind::Mail, String::new()),
         })
         .unwrap_or((FolderKind::Mail, String::new()));
@@ -5335,8 +5337,15 @@ async fn resolve_open_message_backend(
                 Ok(a) if !a.is_empty() => a,
                 _ => return (String::new(), parent_backend_id, FolderKind::Mail),
             };
-            let jid = find_jmap_email_id(jc, &account_id, &parent_backend_id, message_id, username, pw)
-                .await;
+            let jid = find_jmap_email_id(
+                jc,
+                &account_id,
+                &parent_backend_id,
+                message_id,
+                username,
+                pw,
+            )
+            .await;
             (jid, parent_backend_id, FolderKind::Mail)
         }
     }
@@ -8695,19 +8704,19 @@ mod tests {
         // RopId byte is prepended when building the full buffer below).
         let cases: Vec<(u8, Vec<u8>)> = vec![
             // Bare 3-byte header ROPs (no trailing body).
-            (0x09, vec![0x00, 0x01]),                   // RopGetPropertiesList
-            (0x37, vec![0x00, 0x01]),                   // RopQueryColumnsAll
-            (0x38, vec![0x00, 0x01]),                   // RopAbort
-            (0x49, vec![0x00, 0x01]),                   // RopGetAddressTypes
-            (0x7B, vec![0x00, 0x01]),                   // RopGetStoreState
-            (0x68, vec![0x00, 0x01]),                   // RopGetReceiveFolderTable
-            (0x6D, vec![0x00, 0x01]),                   // RopGetTransportFolder
+            (0x09, vec![0x00, 0x01]), // RopGetPropertiesList
+            (0x37, vec![0x00, 0x01]), // RopQueryColumnsAll
+            (0x38, vec![0x00, 0x01]), // RopAbort
+            (0x49, vec![0x00, 0x01]), // RopGetAddressTypes
+            (0x7B, vec![0x00, 0x01]), // RopGetStoreState
+            (0x68, vec![0x00, 0x01]), // RopGetReceiveFolderTable
+            (0x6D, vec![0x00, 0x01]), // RopGetTransportFolder
             // RopHeader + fixed trailing field (FolderId/ObjectId 8 bytes).
             (0x42, vec![0x00, 0x01, 0, 0, 0, 0, 0, 0, 0, 1]), // RopGetOwningServers
             (0x43, vec![0x00, 0x01, 0, 0, 0, 0, 0, 0, 0, 1]), // RopLongTermIdFromId
             // RopHeader4 (Logon+Input+Output) + TableFlags.
-            (0x3F, vec![0x00, 0x01, 0x02, 0x00]),       // RopGetRulesTable
-            (0x3E, vec![0x00, 0x01, 0x02, 0x00]),       // RopGetPermissionsTable
+            (0x3F, vec![0x00, 0x01, 0x02, 0x00]), // RopGetRulesTable
+            (0x3E, vec![0x00, 0x01, 0x02, 0x00]), // RopGetPermissionsTable
             // RopHeader + fixed trailing field (24-byte LongTermId).
             (0x44, {
                 let mut b = vec![0x00, 0x01];
@@ -8795,7 +8804,11 @@ mod tests {
                 body: full,
             };
             let resp = handle(req, &state).await;
-            assert_eq!(resp.code, ResponseCode::Success, "rop 0x{rop_id:02X} framed");
+            assert_eq!(
+                resp.code,
+                ResponseCode::Success,
+                "rop 0x{rop_id:02X} framed"
+            );
             let (_status, _h, _ct, body_out) = resp.render();
             let payload = &body_out[4..];
 

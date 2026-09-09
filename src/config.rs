@@ -760,8 +760,7 @@ fn apply_environment_overrides(cfg: &mut Config) {
     if let Some(val) = get_env_with_fallback(ENV_ALLOW_INSECURE_HTTP, None) {
         let lower = val.to_lowercase();
         tracing::debug!("Applying {} from environment", ENV_ALLOW_INSECURE_HTTP);
-        cfg.allow_insecure_http =
-            matches!(lower.as_str(), "1" | "true" | "yes" | "on" | "enabled");
+        cfg.allow_insecure_http = matches!(lower.as_str(), "1" | "true" | "yes" | "on" | "enabled");
     }
     if let Some(val) = get_env_with_fallback(ENV_PREFER_CALDAV_FREEBUSY, None) {
         let lower = val.to_lowercase();
@@ -978,18 +977,17 @@ fn http_host_is_loopback(host: &url::Host<&str>) -> bool {
 /// `http://` URL transmits mailbox credentials in cleartext (CWE-319). Unless
 /// `allow_insecure_http` is set, only `https` (or loopback `http`) is accepted.
 fn validate_jmap_url(url: &str, field_name: &str, allow_insecure_http: bool) -> anyhow::Result<()> {
-    let parsed = url::Url::parse(url).map_err(|e| {
-        anyhow::anyhow!("Config: '{}' is not a valid URL: {}", field_name, e)
-    })?;
+    let parsed = url::Url::parse(url)
+        .map_err(|e| anyhow::anyhow!("Config: '{}' is not a valid URL: {}", field_name, e))?;
     match parsed.scheme() {
         "https" => Ok(()),
         "http" => {
             if allow_insecure_http {
                 return Ok(());
             }
-            let host = parsed.host().ok_or_else(|| {
-                anyhow::anyhow!("Config: '{}' must include a host", field_name)
-            })?;
+            let host = parsed
+                .host()
+                .ok_or_else(|| anyhow::anyhow!("Config: '{}' must include a host", field_name))?;
             if http_host_is_loopback(&host) {
                 Ok(())
             } else {
@@ -1414,7 +1412,11 @@ mod tests {
 
     #[test]
     fn test_jmap_url_rejects_non_http_schemes() {
-        for bad in ["ftp://jmap.example.com", "file:///jmap", "ws://jmap.example.com"] {
+        for bad in [
+            "ftp://jmap.example.com",
+            "file:///jmap",
+            "ws://jmap.example.com",
+        ] {
             let cfg = Config {
                 jmap_base: bad.to_string(),
                 bind: "[::]:8134".to_string(),
