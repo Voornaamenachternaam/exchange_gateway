@@ -783,11 +783,7 @@ impl Storage {
     /// the `server_id` already issued under CalDAV, so flipping the calendar
     /// backend does not present existing clients with the same event under a
     /// new Exchange ID.
-    pub async fn get_ews_item_by_uid(
-        &self,
-        owner: &str,
-        uid: &str,
-    ) -> Result<Option<EwsItemRow>> {
+    pub async fn get_ews_item_by_uid(&self, owner: &str, uid: &str) -> Result<Option<EwsItemRow>> {
         sqlx::query_as::<_, EwsItemRow>(
             "SELECT server_id, caldav_href, resource_href, uid, etag, updated_at FROM item_map WHERE owner = ?1 AND uid = ?2 ORDER BY updated_at DESC, server_id ASC LIMIT 1"
         )
@@ -1775,12 +1771,7 @@ impl Storage {
     }
 
     /// Upsert a gateway-local photo for `owner`, replacing any existing blob.
-    pub async fn set_user_photo(
-        &self,
-        owner: &str,
-        data: &[u8],
-        content_type: &str,
-    ) -> Result<()> {
+    pub async fn set_user_photo(&self, owner: &str, data: &[u8], content_type: &str) -> Result<()> {
         sqlx::query(
             "INSERT INTO user_photo (owner, data, content_type, updated_at) \
              VALUES (?1, ?2, ?3, CURRENT_TIMESTAMP) \

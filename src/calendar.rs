@@ -2798,7 +2798,10 @@ END:VTIMEZONE";
             ("FREQ=WEEKLY;INTERVAL=1;BYDAY=TU,TH", "FREQ=WEEKLY"),
             ("FREQ=MONTHLY;INTERVAL=1;BYDAY=2MO", "FREQ=MONTHLY"),
             ("FREQ=YEARLY;INTERVAL=1;BYDAY=-1FR;BYMONTH=3", "FREQ=YEARLY"),
-            ("FREQ=MONTHLY;INTERVAL=1;BYMONTHDAY=15;COUNT=10", "FREQ=MONTHLY"),
+            (
+                "FREQ=MONTHLY;INTERVAL=1;BYMONTHDAY=15;COUNT=10",
+                "FREQ=MONTHLY",
+            ),
         ];
 
         for (input, expected_freq) in cases {

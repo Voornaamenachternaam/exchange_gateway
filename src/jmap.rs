@@ -207,12 +207,7 @@ impl JmapEmail {
     pub fn category_labels(&self) -> Vec<String> {
         self.keywords
             .as_ref()
-            .map(|k| {
-                k.keys()
-                    .filter(|k| !k.starts_with('$'))
-                    .cloned()
-                    .collect()
-            })
+            .map(|k| k.keys().filter(|k| !k.starts_with('$')).cloned().collect())
             .unwrap_or_default()
     }
 }
@@ -1071,17 +1066,14 @@ impl JmapClient {
     /// that only need to reverse-map a MAPI mid to a JMAP id: it avoids
     /// downloading `mail_properties()`, `bodyStructure`, and `bodyValues` for
     /// every page, which `query_emails` batches in.
-    pub async fn query_email_ids(
-        &self,
-        params: QueryEmailsParams<'_>,
-    ) -> Result<Vec<String>> {
+    pub async fn query_email_ids(&self, params: QueryEmailsParams<'_>) -> Result<Vec<String>> {
         let session = self.get_session(params.username, params.password).await?;
         let api_url = &session.api_url;
 
         let filter_val = params.filter.unwrap_or_else(|| json!({}));
-        let sort_val = params.sort.unwrap_or_else(|| {
-            vec![json!({"property": "receivedAt", "isAscending": false})]
-        });
+        let sort_val = params
+            .sort
+            .unwrap_or_else(|| vec![json!({"property": "receivedAt", "isAscending": false})]);
 
         let method_calls = vec![(
             "Email/query",
@@ -1529,9 +1521,7 @@ impl JmapClient {
                 error = %err,
                 "Email/set set_read_flags rejected at method level"
             );
-            return Err(anyhow::anyhow!(
-                "Email/set set_read_flags rejected: {err}"
-            ));
+            return Err(anyhow::anyhow!("Email/set set_read_flags rejected: {err}"));
         }
         for (id, desc) in &outcome.not_updated {
             tracing::warn!(
