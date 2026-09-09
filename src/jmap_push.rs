@@ -32,8 +32,8 @@ use crate::jmap::JmapClient;
 use crate::notifications::{NotificationEvent, SubscriptionManager};
 use reqwest::header::AUTHORIZATION;
 use secrecy::SecretString;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
@@ -304,10 +304,7 @@ impl JmapEmailPushMonitor {
         };
 
         if !response.status().is_success() {
-            return StreamEnd::Error(format!(
-                "push endpoint returned HTTP {}",
-                response.status()
-            ));
+            return StreamEnd::Error(format!("push endpoint returned HTTP {}", response.status()));
         }
 
         use futures_util::StreamExt;
@@ -344,12 +341,7 @@ impl JmapEmailPushMonitor {
         }
     }
 
-    async fn handle_frame(
-        &self,
-        account_id: &str,
-        current_state: &mut String,
-        frame: &SseEvent,
-    ) {
+    async fn handle_frame(&self, account_id: &str, current_state: &mut String, frame: &SseEvent) {
         if !is_email_frame(frame) {
             return;
         }
@@ -504,9 +496,7 @@ impl PushMonitorRegistry {
             Some(handle) => handle.sinks.fetch_sub(1, Ordering::AcqRel) == 1,
             None => return,
         };
-        if should_cancel
-            && let Some((_, handle)) = self.monitors.remove(username)
-        {
+        if should_cancel && let Some((_, handle)) = self.monitors.remove(username) {
             handle.cancel.cancel();
         }
     }
@@ -538,7 +528,10 @@ mod tests {
     fn parse_sse_frames_keeps_partial_frame_as_rest() {
         let (frames, rest) = parse_sse_frames("event: Email\ndata: {\"sta");
         assert!(frames.is_empty());
-        assert!(rest.contains("event: Email"), "partial frame returned as rest");
+        assert!(
+            rest.contains("event: Email"),
+            "partial frame returned as rest"
+        );
     }
 
     #[test]
@@ -547,8 +540,14 @@ mod tests {
             r#"{"@type":"StateChange","changed":{"acc1":{"Email":"s-42","CalendarEvent":"c-9"}}}"#;
         let sc = parse_state_change(data).expect("valid StateChange");
         assert_eq!(sc.account_id, "acc1");
-        assert!(sc.changed.contains(&("Email".to_string(), "s-42".to_string())));
-        assert!(sc.changed.contains(&("CalendarEvent".to_string(), "c-9".to_string())));
+        assert!(
+            sc.changed
+                .contains(&("Email".to_string(), "s-42".to_string()))
+        );
+        assert!(
+            sc.changed
+                .contains(&("CalendarEvent".to_string(), "c-9".to_string()))
+        );
     }
 
     #[test]
@@ -586,8 +585,7 @@ mod tests {
         let non_email = SseEvent {
             event: Some("state".to_string()),
             data: Some(
-                r#"{"@type":"StateChange","changed":{"acc1":{"CalendarEvent":"c-1"}}}"#
-                    .to_string(),
+                r#"{"@type":"StateChange","changed":{"acc1":{"CalendarEvent":"c-1"}}}"#.to_string(),
             ),
         };
         assert!(!is_email_frame(&non_email));

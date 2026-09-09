@@ -765,7 +765,10 @@ mod tests {
 
     #[test]
     fn test_parse_vacation_replies_no_vacation_returns_none() {
-        assert_eq!(parse_vacation_replies("require [\"envelope\"];\n"), (None, None));
+        assert_eq!(
+            parse_vacation_replies("require [\"envelope\"];\n"),
+            (None, None)
+        );
         assert_eq!(parse_vacation_replies(""), (None, None));
     }
 }

@@ -1311,11 +1311,13 @@ pub async fn fetch_emails_jmap(
             let filter = match search_filter {
                 // Combine the mailbox scope with the search conditions under
                 // a single AND so a search is always confined to this mailbox.
-                Some(search) => Some(crate::ews_search::combine_with_in_mailbox(
-                    &mailbox_ids[0],
-                    Some(search.clone()),
-                )
-                .unwrap_or(in_mailbox)),
+                Some(search) => Some(
+                    crate::ews_search::combine_with_in_mailbox(
+                        &mailbox_ids[0],
+                        Some(search.clone()),
+                    )
+                    .unwrap_or(in_mailbox),
+                ),
                 None => Some(in_mailbox),
             };
             let result = jmap

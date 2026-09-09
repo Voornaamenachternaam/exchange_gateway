@@ -338,7 +338,9 @@ impl AqsParser {
                     let right = self.parse_unary()?;
                     left = mk_and(left, right);
                 }
-                Some(Token::Term(_)) | Some(Token::Field(..)) | Some(Token::Not)
+                Some(Token::Term(_))
+                | Some(Token::Field(..))
+                | Some(Token::Not)
                 | Some(Token::LParen) => {
                     // Implicit AND between adjacent terms.
                     let right = self.parse_unary()?;
@@ -495,7 +497,10 @@ fn extract_field_uri(node: roxmltree::Node) -> Option<String> {
 
 /// Extract the `Value` attribute of the first `Constant` child.
 fn constant_value(node: roxmltree::Node) -> Option<String> {
-    for c in node.descendants().filter(|c| c.is_element() && is_t(c, "Constant")) {
+    for c in node
+        .descendants()
+        .filter(|c| c.is_element() && is_t(c, "Constant"))
+    {
         if let Some(v) = c.attribute("Value") {
             return Some(v.to_string());
         }
@@ -597,9 +602,7 @@ pub fn combine_with_in_mailbox(mailbox_id: &str, search: Option<Value>) -> Optio
     if mailbox_id.is_empty() {
         return search;
     }
-    search.map(|search| {
-        and_conditions(vec![json!({ "inMailbox": mailbox_id }), search])
-    })
+    search.map(|search| and_conditions(vec![json!({ "inMailbox": mailbox_id }), search]))
 }
 
 #[cfg(test)]
