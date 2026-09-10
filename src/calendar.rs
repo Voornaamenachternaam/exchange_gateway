@@ -1627,7 +1627,6 @@ pub fn parse_eas_sync_mutations(xml: &str) -> Result<Vec<EasSyncMutation>> {
     Ok(out)
 }
 
-
 /// Assign accumulated leaf text to the appropriate `EasBuilder` field based
 /// on the leaf element name (`stack.last()`) and its ancestor context.
 fn assign_eas_field(
@@ -1638,9 +1637,7 @@ fn assign_eas_field(
     let last_tag = stack.last().map(|v| v.as_slice());
     match last_tag {
         Some(b"ClientId") => current.client_id = Some(value),
-        Some(b"ServerId")
-            if !stack.iter().any(|v| v.as_slice() == b"Exception") =>
-        {
+        Some(b"ServerId") if !stack.iter().any(|v| v.as_slice() == b"Exception") => {
             current.server_id = Some(value);
         }
         Some(b"InstanceId") => {
@@ -1660,9 +1657,7 @@ fn assign_eas_field(
                 current.location = Some(value);
             }
         }
-        Some(b"DisplayName")
-            if stack.iter().any(|v| v.as_slice() == b"Location") =>
-        {
+        Some(b"DisplayName") if stack.iter().any(|v| v.as_slice() == b"Location") => {
             if let Some(ex) = current.current_exception.as_mut() {
                 ex.location = Some(value);
             } else {
@@ -1672,8 +1667,7 @@ fn assign_eas_field(
         Some(b"Timezone") => {
             // EAS Timezone is a base64 Windows timezone blob (MS-ASSETTINGS).
             // Convert to an IANA id so render_ics emits DTSTART;TZID=<iana>.
-            let tz =
-                crate::timezone::eas_timezone_blob_to_iana(&value).unwrap_or(value);
+            let tz = crate::timezone::eas_timezone_blob_to_iana(&value).unwrap_or(value);
             current.timezone = Some(tz);
         }
         Some(b"DtStamp") => current.dtstamp = parse_datetime(&value),
@@ -1723,12 +1717,8 @@ fn assign_eas_field(
                 current.reminder = value.parse().ok();
             }
         }
-        Some(b"ResponseRequested") => {
-            current.response_requested = Some(value == "1")
-        }
-        Some(b"DisallowNewTimeProposal") => {
-            current.disallow_new_time_proposal = Some(value == "1")
-        }
+        Some(b"ResponseRequested") => current.response_requested = Some(value == "1"),
+        Some(b"DisallowNewTimeProposal") => current.disallow_new_time_proposal = Some(value == "1"),
         Some(b"AppointmentReplyTime") => {
             if let Some(ex) = current.current_exception.as_mut() {
                 ex.appointment_reply_time = parse_datetime(&value);
@@ -1750,12 +1740,8 @@ fn assign_eas_field(
                 current.response_type = value.parse().ok();
             }
         }
-        Some(b"OnlineMeetingConfLink") => {
-            current.online_meeting_conf_link = Some(value)
-        }
-        Some(b"OnlineMeetingExternalLink") => {
-            current.online_meeting_external_link = Some(value)
-        }
+        Some(b"OnlineMeetingConfLink") => current.online_meeting_conf_link = Some(value),
+        Some(b"OnlineMeetingExternalLink") => current.online_meeting_external_link = Some(value),
         Some(b"Category") => {
             if let Some(ex) = current.current_exception.as_mut() {
                 ex.categories.get_or_insert_with(Vec::new).push(value);
@@ -1775,17 +1761,13 @@ fn assign_eas_field(
                 .get_or_insert_with(Attendee::default)
                 .email = value;
         }
-        Some(b"AttendeeType")
-            if stack.iter().any(|v| v.as_slice() == b"Attendee") =>
-        {
+        Some(b"AttendeeType") if stack.iter().any(|v| v.as_slice() == b"Attendee") => {
             current
                 .current_attendee
                 .get_or_insert_with(Attendee::default)
                 .attendee_type = value.parse().ok();
         }
-        Some(b"AttendeeStatus")
-            if stack.iter().any(|v| v.as_slice() == b"Attendee") =>
-        {
+        Some(b"AttendeeStatus") if stack.iter().any(|v| v.as_slice() == b"Attendee") => {
             let attendee = current
                 .current_attendee
                 .get_or_insert_with(Attendee::default);
@@ -1798,12 +1780,10 @@ fn assign_eas_field(
                 ex.deleted = value == "1";
             }
         }
-        Some(b"ExceptionStartTime")
-            if stack.iter().any(|v| v.as_slice() == b"Exception") =>
-        {
+        Some(b"ExceptionStartTime") if stack.iter().any(|v| v.as_slice() == b"Exception") => {
             if let Some(ex) = current.current_exception.as_mut() {
-                ex.exception_start = parse_datetime(&value)
-                    .ok_or_else(|| anyhow!("invalid ExceptionStartTime"))?;
+                ex.exception_start =
+                    parse_datetime(&value).ok_or_else(|| anyhow!("invalid ExceptionStartTime"))?;
             }
         }
         Some(b"Data") if stack.iter().any(|v| v.as_slice() == b"Body") => {
@@ -1816,81 +1796,56 @@ fn assign_eas_field(
         Some(b"Type") if stack.iter().any(|v| v.as_slice() == b"Recurrence") => {
             current.recurrence.kind = value.parse().ok()
         }
-        Some(b"Interval")
-            if stack.iter().any(|v| v.as_slice() == b"Recurrence") =>
-        {
+        Some(b"Interval") if stack.iter().any(|v| v.as_slice() == b"Recurrence") => {
             current.recurrence.interval = value.parse().ok()
         }
-        Some(b"DayOfWeek")
-            if stack.iter().any(|v| v.as_slice() == b"Recurrence") =>
-        {
+        Some(b"DayOfWeek") if stack.iter().any(|v| v.as_slice() == b"Recurrence") => {
             current.recurrence.day_of_week = Some(value)
         }
-        Some(b"DayOfMonth")
-            if stack.iter().any(|v| v.as_slice() == b"Recurrence") =>
-        {
+        Some(b"DayOfMonth") if stack.iter().any(|v| v.as_slice() == b"Recurrence") => {
             current.recurrence.day_of_month = value.parse().ok()
         }
-        Some(b"WeekOfMonth")
-            if stack.iter().any(|v| v.as_slice() == b"Recurrence") =>
-        {
+        Some(b"WeekOfMonth") if stack.iter().any(|v| v.as_slice() == b"Recurrence") => {
             current.recurrence.week_of_month = value.parse().ok()
         }
-        Some(b"MonthOfYear")
-            if stack.iter().any(|v| v.as_slice() == b"Recurrence") =>
-        {
+        Some(b"MonthOfYear") if stack.iter().any(|v| v.as_slice() == b"Recurrence") => {
             current.recurrence.month_of_year = value.parse().ok()
         }
         Some(b"Until") if stack.iter().any(|v| v.as_slice() == b"Recurrence") => {
             current.recurrence.until = Some(value)
         }
-        Some(b"Occurrences")
-            if stack.iter().any(|v| v.as_slice() == b"Recurrence") =>
-        {
+        Some(b"Occurrences") if stack.iter().any(|v| v.as_slice() == b"Recurrence") => {
             current.recurrence.occurrences = value.parse().ok()
         }
-        Some(b"FirstDayOfWeek")
-            if stack.iter().any(|v| v.as_slice() == b"Recurrence") =>
-        {
+        Some(b"FirstDayOfWeek") if stack.iter().any(|v| v.as_slice() == b"Recurrence") => {
             current.recurrence.first_day_of_week = value.parse().ok()
         }
-        Some(b"CalendarType")
-            if stack.iter().any(|v| v.as_slice() == b"Recurrence") =>
-        {
+        Some(b"CalendarType") if stack.iter().any(|v| v.as_slice() == b"Recurrence") => {
             current.recurrence.calendar_type = value.parse().ok()
         }
-        Some(b"DisplayName")
-            if current.in_att_display_name && current.current_att.is_some() =>
-        {
+        Some(b"DisplayName") if current.in_att_display_name && current.current_att.is_some() => {
             if let Some(att) = current.current_att.as_mut() {
                 att.display_name = value;
             }
         }
-        Some(b"Method")
-            if current.in_att_method && current.current_att.is_some() =>
-        {
+        Some(b"Method") if current.in_att_method && current.current_att.is_some() => {
             if let Some(att) = current.current_att.as_mut() {
                 att.method = value.parse().unwrap_or(1);
             }
         }
         Some(b"EstimatedDataSize")
-            if current.in_att_estimated_data_size
-                && current.current_att.is_some() =>
+            if current.in_att_estimated_data_size && current.current_att.is_some() =>
         {
             if let Some(att) = current.current_att.as_mut() {
                 att.estimated_data_size = value.parse().unwrap_or(0);
             }
         }
-        Some(b"ContentType")
-            if current.in_att_content_type && current.current_att.is_some() =>
-        {
+        Some(b"ContentType") if current.in_att_content_type && current.current_att.is_some() => {
             if let Some(att) = current.current_att.as_mut() {
                 att.content_type = value;
             }
         }
-        Some(b"ContentId")
-            if current.in_att_content_id && current.current_att.is_some() =>
-        {
+        Some(b"ContentId") if current.in_att_content_id && current.current_att.is_some() => {
             if let Some(att) = current.current_att.as_mut() {
                 att.content_id = Some(value);
             }
@@ -1902,9 +1857,7 @@ fn assign_eas_field(
                 att.content_location = Some(value);
             }
         }
-        Some(b"IsInline")
-            if current.in_att_is_inline && current.current_att.is_some() =>
-        {
+        Some(b"IsInline") if current.in_att_is_inline && current.current_att.is_some() => {
             if let Some(att) = current.current_att.as_mut() {
                 att.is_inline = value == "1" || value.eq_ignore_ascii_case("true");
             }

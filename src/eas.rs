@@ -7,7 +7,9 @@ use crate::jmap::{JmapClient, QueryCalendarEventsParams};
 use crate::models::AppState;
 use crate::permission::{PermissionContext, PermissionEnforcement};
 use crate::sync::{self, SyncOptions, filter_type_to_start};
-use crate::util::{canonicalize_username, nfc, normalize_username, resolve_xml_reference, xml_escape};
+use crate::util::{
+    canonicalize_username, nfc, normalize_username, resolve_xml_reference, xml_escape,
+};
 use crate::wbxml::Wbxml;
 use axum::extract::{Query, State};
 use axum::http::{HeaderMap, HeaderValue};
@@ -506,7 +508,9 @@ fn extract_first_tag_text(xml: &str, tag: &[u8]) -> Option<String> {
             }
             Ok(Event::Text(t)) if inside => value.push_str(t.as_ref()),
             Ok(Event::CData(t)) if inside => value.push_str(t.as_ref()),
-            Ok(Event::GeneralRef(r)) if inside => value.push_str(&resolve_xml_reference(r.as_ref())),
+            Ok(Event::GeneralRef(r)) if inside => {
+                value.push_str(&resolve_xml_reference(r.as_ref()))
+            }
             Ok(Event::End(e)) if e.name().local_name().as_ref().as_bytes() == tag => {
                 return Some(value);
             }
@@ -532,7 +536,9 @@ fn extract_all_tag_text(xml: &str, tag: &[u8]) -> Vec<String> {
             }
             Ok(Event::Text(t)) if inside => value.push_str(t.as_ref()),
             Ok(Event::CData(t)) if inside => value.push_str(t.as_ref()),
-            Ok(Event::GeneralRef(r)) if inside => value.push_str(&resolve_xml_reference(r.as_ref())),
+            Ok(Event::GeneralRef(r)) if inside => {
+                value.push_str(&resolve_xml_reference(r.as_ref()))
+            }
             Ok(Event::End(e)) if e.name().local_name().as_ref().as_bytes() == tag => {
                 inside = false;
                 values.push(std::mem::take(&mut value));
@@ -757,7 +763,9 @@ fn parse_ping_folders(xml: &str) -> Vec<PingFolder> {
             }
             Ok(Event::Text(t)) if in_id => id_buf.push_str(t.as_ref()),
             Ok(Event::Text(t)) if in_class => class_buf.push_str(t.as_ref()),
-            Ok(Event::GeneralRef(r)) if in_id => id_buf.push_str(&resolve_xml_reference(r.as_ref())),
+            Ok(Event::GeneralRef(r)) if in_id => {
+                id_buf.push_str(&resolve_xml_reference(r.as_ref()))
+            }
             Ok(Event::GeneralRef(r)) if in_class => {
                 class_buf.push_str(&resolve_xml_reference(r.as_ref()))
             }

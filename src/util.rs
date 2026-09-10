@@ -25,11 +25,12 @@ pub fn escape_xml_text(s: &str) -> Cow<'_, str> {
 /// `None` (the caller decides how to handle them).
 pub fn resolve_xml_reference_strict(reference: &str) -> Option<String> {
     if let Some(rest) = reference.strip_prefix('#') {
-        let (digits, radix) = if let Some(hex) = rest.strip_prefix('x').or_else(|| rest.strip_prefix('X')) {
-            (hex, 16)
-        } else {
-            (rest, 10)
-        };
+        let (digits, radix) =
+            if let Some(hex) = rest.strip_prefix('x').or_else(|| rest.strip_prefix('X')) {
+                (hex, 16)
+            } else {
+                (rest, 10)
+            };
         if let Ok(cp) = u32::from_str_radix(digits, radix)
             && let Some(c) = char::from_u32(cp)
         {
