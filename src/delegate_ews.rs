@@ -150,14 +150,12 @@ fn parse_add_delegate_request(xml: &str) -> ParsedDelegateRequest {
                             parse_delegate_permission_level(&std::mem::take(&mut current_text));
                     }
                     "ReceiveCopiesOfMeetingMessages" => {
-                        result.receive_copies = Some(
-                            std::mem::take(&mut current_text).eq_ignore_ascii_case("true"),
-                        );
+                        result.receive_copies =
+                            Some(std::mem::take(&mut current_text).eq_ignore_ascii_case("true"));
                     }
                     "ViewPrivateItems" => {
-                        result.view_private = Some(
-                            std::mem::take(&mut current_text).eq_ignore_ascii_case("true"),
-                        );
+                        result.view_private =
+                            Some(std::mem::take(&mut current_text).eq_ignore_ascii_case("true"));
                     }
                     _ => {}
                 }

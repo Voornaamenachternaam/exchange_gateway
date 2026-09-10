@@ -1254,7 +1254,9 @@ impl Wbxml {
                         let key_bytes = attr.key.as_ref();
                         if key_bytes.starts_with("xmlns:") && key_bytes.len() > 6 {
                             let prefix = key_bytes[6..].to_string();
-                            if let Ok(val) = attr.normalized_value(quick_xml::XmlVersion::Implicit1_0) {
+                            if let Ok(val) =
+                                attr.normalized_value(quick_xml::XmlVersion::Implicit1_0)
+                            {
                                 let cp = namespace_to_code_page(val.as_ref());
                                 new_prefixes.insert(prefix, cp);
                             }
@@ -1302,7 +1304,9 @@ impl Wbxml {
                         let key_bytes = attr.key.as_ref();
                         if key_bytes.starts_with("xmlns:") && key_bytes.len() > 6 {
                             let prefix = key_bytes[6..].to_string();
-                            if let Ok(val) = attr.normalized_value(quick_xml::XmlVersion::Implicit1_0) {
+                            if let Ok(val) =
+                                attr.normalized_value(quick_xml::XmlVersion::Implicit1_0)
+                            {
                                 let cp = namespace_to_code_page(val.as_ref());
                                 new_prefixes.insert(prefix, cp);
                             }
@@ -1354,7 +1358,10 @@ impl Wbxml {
                 }
                 Ok(quick_xml::events::Event::GeneralRef(ref r)) => {
                     let text = resolve_xml_reference_strict(r.as_ref()).ok_or_else(|| {
-                        anyhow!("XML encode error: unsupported entity reference &{};", r.as_ref())
+                        anyhow!(
+                            "XML encode error: unsupported entity reference &{};",
+                            r.as_ref()
+                        )
                     })?;
                     if !text.is_empty() {
                         buf.push(STR_I);
@@ -1399,9 +1406,7 @@ impl Wbxml {
     }
 }
 
-fn extract_xmlns_cp<'a>(
-    e: &quick_xml::events::BytesStart<'a>,
-) -> Option<u8> {
+fn extract_xmlns_cp<'a>(e: &quick_xml::events::BytesStart<'a>) -> Option<u8> {
     for attr in e.attributes().flatten() {
         if attr.key.as_ref() == "xmlns"
             && let Ok(val) = attr.normalized_value(quick_xml::XmlVersion::Implicit1_0)

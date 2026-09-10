@@ -475,7 +475,9 @@ fn extract_tag_texts(xml: &str, tag: &[u8]) -> Vec<String> {
             }
             Ok(Event::Text(t)) if inside => value.push_str(t.as_ref()),
             Ok(Event::CData(t)) if inside => value.push_str(t.as_ref()),
-            Ok(Event::GeneralRef(r)) if inside => value.push_str(&resolve_xml_reference(r.as_ref())),
+            Ok(Event::GeneralRef(r)) if inside => {
+                value.push_str(&resolve_xml_reference(r.as_ref()))
+            }
             Ok(Event::End(e)) if e.name().local_name().as_ref().as_bytes() == tag => {
                 inside = false;
                 values.push(std::mem::take(&mut value));
@@ -541,7 +543,9 @@ fn extract_first_attr(xml: &str, tag: &[u8], attr: &[u8]) -> Option<String> {
     let mut buf = Vec::new();
     loop {
         match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(e)) | Ok(Event::Empty(e)) if e.name().local_name().as_ref().as_bytes() == tag => {
+            Ok(Event::Start(e)) | Ok(Event::Empty(e))
+                if e.name().local_name().as_ref().as_bytes() == tag =>
+            {
                 for a in e.attributes().flatten() {
                     if a.key.local_name().as_ref().as_bytes() == attr
                         && let Ok(v) = a.normalized_value(XmlVersion::Implicit1_0)
@@ -569,7 +573,9 @@ fn extract_first_attrs(xml: &str, tag: &[u8], attr: &[u8]) -> Vec<String> {
     let mut values = Vec::new();
     loop {
         match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(e)) | Ok(Event::Empty(e)) if e.name().local_name().as_ref().as_bytes() == tag => {
+            Ok(Event::Start(e)) | Ok(Event::Empty(e))
+                if e.name().local_name().as_ref().as_bytes() == tag =>
+            {
                 for a in e.attributes().flatten() {
                     if a.key.local_name().as_ref().as_bytes() == attr
                         && let Ok(v) = a.normalized_value(XmlVersion::Implicit1_0)
