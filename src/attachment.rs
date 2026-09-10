@@ -1,7 +1,7 @@
 // src/attachment.rs
 use crate::protocol_fixtures::{EWS_MSG_NS, EWS_TYPE_NS};
 use crate::storage::Storage;
-use crate::util::{format_ews_datetime, xml_escape};
+use crate::util::{format_ews_datetime, resolve_xml_reference, xml_escape};
 use anyhow::{Result, anyhow};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
@@ -703,6 +703,24 @@ pub fn parse_create_attachment_request(xml: &str) -> Option<ParsedCreateAttachme
                         .push_str(&text);
                 }
             }
+            Ok(Event::GeneralRef(e)) => {
+                let text = resolve_xml_reference(e.as_ref());
+                if in_name {
+                    name.push_str(&text);
+                } else if in_content_type {
+                    content_type.push_str(&text);
+                } else if in_content {
+                    content_base64.push_str(&text);
+                } else if in_is_inline {
+                    is_inline_buf.push_str(&text);
+                } else if in_content_id {
+                    content_id.get_or_insert_with(String::new).push_str(&text);
+                } else if in_content_location {
+                    content_location
+                        .get_or_insert_with(String::new)
+                        .push_str(&text);
+                }
+            }
             Ok(Event::End(e)) => {
                 let local = e.name().local_name();
                 match local.as_ref() {
@@ -1281,6 +1299,28 @@ pub fn parse_eas_attachment_adds(xml: &str) -> Vec<ParsedEasAttachmentAdd> {
                     data.push_str(text);
                 }
             }
+            Ok(Event::GeneralRef(t)) => {
+                let text = resolve_xml_reference(t.as_ref());
+                if in_display_name {
+                    display_name.push_str(&text);
+                } else if in_method {
+                    method_buf.push_str(&text);
+                } else if in_estimated_data_size {
+                    estimated_data_size_buf.push_str(&text);
+                } else if in_content_type {
+                    content_type.push_str(&text);
+                } else if in_content_id {
+                    content_id.get_or_insert_with(String::new).push_str(&text);
+                } else if in_content_location {
+                    content_location
+                        .get_or_insert_with(String::new)
+                        .push_str(&text);
+                } else if in_is_inline {
+                    is_inline_buf.push_str(&text);
+                } else if in_data {
+                    data.push_str(&text);
+                }
+            }
             Ok(Event::Eof) | Err(_) => break,
             _ => {}
         }
@@ -1307,18 +1347,26 @@ pub fn parse_eas_attachment_deletes(xml: &str) -> Vec<String> {
     let mut buf = Vec::new();
     let mut ids = Vec::new();
     let mut in_file_reference = false;
+    let mut current = String::new();
 
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(e)) if e.name().local_name().as_ref() == "FileReference" => {
                 in_file_reference = true;
+                current.clear();
             }
             Ok(Event::End(e)) if e.name().local_name().as_ref() == "FileReference" => {
                 in_file_reference = false;
+                ids.push(std::mem::take(&mut current));
             }
             Ok(Event::Text(t)) => {
                 if in_file_reference {
-                    ids.push(t.to_string());
+                    current.push_str(t.as_ref());
+                }
+            }
+            Ok(Event::GeneralRef(t)) => {
+                if in_file_reference {
+                    current.push_str(&resolve_xml_reference(t.as_ref()));
                 }
             }
             Ok(Event::Eof) | Err(_) => break,

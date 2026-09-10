@@ -12,6 +12,7 @@
 // them, exactly like calendar mutations.
 use crate::models::AppState;
 use crate::storage::{NoteFields, NoteRow, TaskFields, TaskRow};
+use crate::util::resolve_xml_reference;
 use anyhow::Result;
 use quick_xml::Reader;
 use quick_xml::events::Event;
@@ -324,6 +325,8 @@ fn parse_raw_mutations(xml: &str) -> Result<Vec<RawMutation>> {
 
     // A tiny struct-free way to remember pending leaf name for the next text event.
     let mut pending_leaf: Option<Vec<u8>> = None;
+    // Accumulated text of the current leaf element (resolves entity references).
+    let mut leaf_text = String::new();
 
     loop {
         match reader.read_event_into(&mut buf) {
@@ -358,6 +361,7 @@ fn parse_raw_mutations(xml: &str) -> Result<Vec<RawMutation>> {
                 }
                 pending_leaf = Some(name.clone());
                 element_stack.push(name);
+                leaf_text.clear();
             }
             Ok(Event::End(e)) => {
                 let name = e.name().local_name().as_ref().as_bytes().to_vec();
@@ -378,33 +382,41 @@ fn parse_raw_mutations(xml: &str) -> Result<Vec<RawMutation>> {
                 if let Some(pos) = element_stack.iter().rposition(|n| n == &name) {
                     element_stack.truncate(pos);
                 }
-                pending_leaf = None;
-            }
-            Ok(Event::Text(t)) => {
-                let text = t.to_string();
-                if text.trim().is_empty() {
-                    buf.clear();
-                    continue;
-                }
-                if let Some(leaf) = pending_leaf.clone() {
+                // Flush the leaf's accumulated text (entity references already
+                // resolved) into the current mutation field.
+                if !leaf_text.trim().is_empty()
+                    && let Some(leaf) = pending_leaf.as_ref()
+                {
                     match leaf.as_slice() {
-                        b"ServerId" if !in_app_data => current.server_id = Some(text),
-                        b"ClientId" if !in_app_data => current.client_id = Some(text),
+                        b"ServerId" if !in_app_data => {
+                            current.server_id = Some(std::mem::take(&mut leaf_text));
+                        }
+                        b"ClientId" if !in_app_data => {
+                            current.client_id = Some(std::mem::take(&mut leaf_text));
+                        }
                         b"Category" if in_app_data => {
                             // Accumulate categories joined by ';'.
-                            merge_category(&mut current, &text);
+                            merge_category(&mut current, &std::mem::take(&mut leaf_text));
                         }
                         _ if in_app_data => {
                             // Leaf field text (Subject, Body, Data, Complete,
                             // Importance, MessageClass, ...). "Body" (Tasks:Body)
                             // and "Data" (AirSyncBase:Body/Data) are both mapped
                             // to the body field in apply_*_field below.
-                            let local = String::from_utf8_lossy(&leaf).into_owned();
-                            current.fields.push((local, text));
+                            let local = String::from_utf8_lossy(leaf).into_owned();
+                            current.fields.push((local, std::mem::take(&mut leaf_text)));
                         }
                         _ => {}
                     }
                 }
+                pending_leaf = None;
+                leaf_text.clear();
+            }
+            Ok(Event::Text(t)) => {
+                leaf_text.push_str(t.as_ref());
+            }
+            Ok(Event::GeneralRef(r)) => {
+                leaf_text.push_str(&resolve_xml_reference(r.as_ref()));
             }
             Ok(Event::Eof) => break,
             Err(e) => return Err(anyhow::anyhow!("Failed to parse Sync XML: {}", e)),

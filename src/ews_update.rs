@@ -287,6 +287,20 @@ pub fn parse_item_changes(body: &str) -> Vec<EwsFieldChange> {
                     payload_xml.push_str(&xml_escape_text(t.as_ref()));
                 }
             }
+            Ok(Event::GeneralRef(r)) => {
+                if let State::InVerb {
+                    collecting_payload: true,
+                    payload_xml,
+                    ..
+                } = &mut state
+                {
+                    // Reconstruct the entity reference verbatim rather than
+                    // re-escaping it, which would double-escape the text.
+                    payload_xml.push('&');
+                    payload_xml.push_str(r.as_ref());
+                    payload_xml.push(';');
+                }
+            }
             Ok(Event::Eof) | Err(_) => break,
             _ => {}
         }

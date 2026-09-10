@@ -1,5 +1,5 @@
 // src/wbxml.rs
-use crate::util::xml_escape_text;
+use crate::util::{resolve_xml_reference_strict, xml_escape_text};
 use anyhow::{Result, anyhow};
 use base64::Engine;
 
@@ -1349,6 +1349,16 @@ impl Wbxml {
                     if !txt.is_empty() {
                         buf.push(STR_I);
                         buf.extend_from_slice(txt.as_bytes());
+                        buf.push(0x00);
+                    }
+                }
+                Ok(quick_xml::events::Event::GeneralRef(ref r)) => {
+                    let text = resolve_xml_reference_strict(r.as_ref()).ok_or_else(|| {
+                        anyhow!("XML encode error: unsupported entity reference &{};", r.as_ref())
+                    })?;
+                    if !text.is_empty() {
+                        buf.push(STR_I);
+                        buf.extend_from_slice(text.as_bytes());
                         buf.push(0x00);
                     }
                 }

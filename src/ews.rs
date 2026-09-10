@@ -33,7 +33,8 @@ use crate::room::{
 use crate::storage::EwsItemRow;
 use crate::sync::generate_server_id;
 use crate::util::{
-    canonicalize_username, format_ews_datetime, nfc, normalize_username, xml_escape,
+    canonicalize_username, format_ews_datetime, nfc, normalize_username, resolve_xml_reference,
+    xml_escape,
 };
 use crate::version;
 use anyhow::anyhow;
@@ -464,14 +465,21 @@ fn extract_tag_texts(xml: &str, tag: &[u8]) -> Vec<String> {
     reader.config_mut().trim_text(true);
     let mut buf = Vec::new();
     let mut inside = false;
+    let mut value = String::new();
     let mut values = Vec::new();
     loop {
         match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(e)) if e.name().local_name().as_ref().as_bytes() == tag => inside = true,
-            Ok(Event::Text(t)) if inside => {
-                values.push(t.to_string());
+            Ok(Event::Start(e)) if e.name().local_name().as_ref().as_bytes() == tag => {
+                inside = true;
+                value.clear();
             }
-            Ok(Event::End(e)) if e.name().local_name().as_ref().as_bytes() == tag => inside = false,
+            Ok(Event::Text(t)) if inside => value.push_str(t.as_ref()),
+            Ok(Event::CData(t)) if inside => value.push_str(t.as_ref()),
+            Ok(Event::GeneralRef(r)) if inside => value.push_str(&resolve_xml_reference(r.as_ref())),
+            Ok(Event::End(e)) if e.name().local_name().as_ref().as_bytes() == tag => {
+                inside = false;
+                values.push(std::mem::take(&mut value));
+            }
             Ok(Event::Eof) | Err(_) => return values,
             _ => {}
         }
@@ -490,6 +498,7 @@ fn extract_recipient_email_addresses(xml: &str) -> Vec<String> {
     let mut buf = Vec::new();
     let mut recipients_depth = 0u32;
     let mut in_email_address = false;
+    let mut current_email = String::new();
     let mut values = Vec::new();
     loop {
         match reader.read_event_into(&mut buf) {
@@ -499,17 +508,22 @@ fn extract_recipient_email_addresses(xml: &str) -> Vec<String> {
                     recipients_depth += 1;
                 } else if name.as_ref() == "EmailAddress" && recipients_depth > 0 {
                     in_email_address = true;
+                    current_email.clear();
                 }
             }
             Ok(Event::Text(t)) if in_email_address => {
-                if !t.trim().is_empty() {
-                    values.push(t.to_string());
-                }
+                current_email.push_str(t.as_ref());
+            }
+            Ok(Event::GeneralRef(r)) if in_email_address => {
+                current_email.push_str(&resolve_xml_reference(r.as_ref()));
             }
             Ok(Event::End(e)) => {
                 let name = e.name().local_name();
                 if name.as_ref() == "EmailAddress" && in_email_address {
                     in_email_address = false;
+                    if !current_email.trim().is_empty() {
+                        values.push(std::mem::take(&mut current_email));
+                    }
                 } else if name.as_ref() == "Recipients" && recipients_depth > 0 {
                     recipients_depth -= 1;
                 }
@@ -1496,6 +1510,9 @@ async fn merged_freebusy_for_mailbox(
                 Ok(Event::CData(ref t)) if in_calendar_data => {
                     caldata_buf.push_str(t.as_ref());
                 }
+                Ok(Event::GeneralRef(ref r)) if in_calendar_data => {
+                    caldata_buf.push_str(&resolve_xml_reference(r.as_ref()));
+                }
                 Ok(Event::End(e)) if e.name().local_name().as_ref() == "calendar-data" => {
                     in_calendar_data = false;
                     let ics = caldata_buf.trim();
@@ -1934,6 +1951,8 @@ async fn load_current_calendar_items_caldav(
     reader.config_mut().trim_text(false);
     let mut buf = Vec::new();
     let mut in_caldata = false;
+    let mut in_href = false;
+    let mut in_getetag = false;
     let mut caldata_buf = String::new();
     let mut href = String::new();
     let mut etag = String::new();
@@ -1943,14 +1962,12 @@ async fn load_current_calendar_items_caldav(
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(ref e)) => match e.name().local_name().as_ref() {
                 "href" => {
-                    if let Ok(Event::Text(t)) = reader.read_event_into(&mut buf) {
-                        href = t.trim().to_string();
-                    }
+                    in_href = true;
+                    href.clear();
                 }
                 "getetag" => {
-                    if let Ok(Event::Text(t)) = reader.read_event_into(&mut buf) {
-                        etag = t.trim_matches('"').to_string();
-                    }
+                    in_getetag = true;
+                    etag.clear();
                 }
                 "calendar-data" => {
                     in_caldata = true;
@@ -1958,13 +1975,36 @@ async fn load_current_calendar_items_caldav(
                 }
                 _ => {}
             },
+            Ok(Event::Text(ref t)) if in_href => {
+                href.push_str(t.as_ref());
+            }
+            Ok(Event::GeneralRef(ref r)) if in_href => {
+                href.push_str(&resolve_xml_reference(r.as_ref()));
+            }
+            Ok(Event::Text(ref t)) if in_getetag => {
+                etag.push_str(t.as_ref());
+            }
+            Ok(Event::GeneralRef(ref r)) if in_getetag => {
+                etag.push_str(&resolve_xml_reference(r.as_ref()));
+            }
             Ok(Event::Text(ref t)) if in_caldata => {
                 caldata_buf.push_str(t);
             }
             Ok(Event::CData(ref t)) if in_caldata => {
                 caldata_buf.push_str(t.as_ref());
             }
+            Ok(Event::GeneralRef(ref r)) if in_caldata => {
+                caldata_buf.push_str(&resolve_xml_reference(r.as_ref()));
+            }
             Ok(Event::End(ref e)) => match e.name().local_name().as_ref() {
+                "href" => {
+                    in_href = false;
+                    href = href.trim().to_string();
+                }
+                "getetag" => {
+                    in_getetag = false;
+                    etag = etag.trim().trim_matches('"').to_string();
+                }
                 "calendar-data" if in_caldata => {
                     in_caldata = false;
                     ics = caldata_buf.trim().to_string();

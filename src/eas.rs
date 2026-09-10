@@ -7,7 +7,7 @@ use crate::jmap::{JmapClient, QueryCalendarEventsParams};
 use crate::models::AppState;
 use crate::permission::{PermissionContext, PermissionEnforcement};
 use crate::sync::{self, SyncOptions, filter_type_to_start};
-use crate::util::{canonicalize_username, nfc, normalize_username, xml_escape};
+use crate::util::{canonicalize_username, nfc, normalize_username, resolve_xml_reference, xml_escape};
 use crate::wbxml::Wbxml;
 use axum::extract::{Query, State};
 use axum::http::{HeaderMap, HeaderValue};
@@ -497,11 +497,19 @@ fn extract_first_tag_text(xml: &str, tag: &[u8]) -> Option<String> {
     reader.config_mut().trim_text(true);
     let mut buf = Vec::new();
     let mut inside = false;
+    let mut value = String::new();
     loop {
         match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(e)) if e.name().local_name().as_ref().as_bytes() == tag => inside = true,
-            Ok(Event::Text(t)) if inside => return Some(t.to_string()),
-            Ok(Event::End(e)) if e.name().local_name().as_ref().as_bytes() == tag => inside = false,
+            Ok(Event::Start(e)) if e.name().local_name().as_ref().as_bytes() == tag => {
+                inside = true;
+                value.clear();
+            }
+            Ok(Event::Text(t)) if inside => value.push_str(t.as_ref()),
+            Ok(Event::CData(t)) if inside => value.push_str(t.as_ref()),
+            Ok(Event::GeneralRef(r)) if inside => value.push_str(&resolve_xml_reference(r.as_ref())),
+            Ok(Event::End(e)) if e.name().local_name().as_ref().as_bytes() == tag => {
+                return Some(value);
+            }
             Ok(Event::Eof) | Err(_) => return None,
             _ => {}
         }
@@ -514,14 +522,21 @@ fn extract_all_tag_text(xml: &str, tag: &[u8]) -> Vec<String> {
     reader.config_mut().trim_text(true);
     let mut buf = Vec::new();
     let mut inside = false;
+    let mut value = String::new();
     let mut values = Vec::new();
     loop {
         match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(e)) if e.name().local_name().as_ref().as_bytes() == tag => inside = true,
-            Ok(Event::Text(t)) if inside => {
-                values.push(t.to_string());
+            Ok(Event::Start(e)) if e.name().local_name().as_ref().as_bytes() == tag => {
+                inside = true;
+                value.clear();
             }
-            Ok(Event::End(e)) if e.name().local_name().as_ref().as_bytes() == tag => inside = false,
+            Ok(Event::Text(t)) if inside => value.push_str(t.as_ref()),
+            Ok(Event::CData(t)) if inside => value.push_str(t.as_ref()),
+            Ok(Event::GeneralRef(r)) if inside => value.push_str(&resolve_xml_reference(r.as_ref())),
+            Ok(Event::End(e)) if e.name().local_name().as_ref().as_bytes() == tag => {
+                inside = false;
+                values.push(std::mem::take(&mut value));
+            }
             Ok(Event::Eof) | Err(_) => break,
             _ => {}
         }
@@ -637,6 +652,24 @@ fn parse_sync_collections(xml: &str) -> Vec<SyncCollection> {
                     }
                 }
             }
+            Ok(Event::GeneralRef(r)) => {
+                // Treat entity references like Text/CDATA.
+                if depth == 2
+                    && let Some(tag) = current_tag.as_ref()
+                    && let Some(coll) = current_collection.as_mut()
+                {
+                    let text = resolve_xml_reference(r.as_ref());
+                    match tag.as_slice() {
+                        b"SyncKey" => coll.sync_key = Some(text),
+                        b"CollectionId" => coll.collection_id = Some(text),
+                        b"Class" => coll.class = Some(text),
+                        b"WindowSize" => coll.window_size = text.parse().ok(),
+                        b"FilterType" => coll.filter_type = text.parse().ok(),
+                        b"GetChanges" => coll.get_changes = text.trim() != "0",
+                        _ => {}
+                    }
+                }
+            }
             Ok(Event::End(e)) => {
                 if e.name().local_name().as_ref() == "Collection" {
                     if let Some(mut coll) = current_collection.take() {
@@ -700,8 +733,12 @@ fn parse_ping_folders(xml: &str) -> Vec<PingFolder> {
     reader.config_mut().trim_text(true);
     let mut buf = Vec::new();
     let mut in_folder = false;
+    let mut in_id = false;
+    let mut in_class = false;
     let mut current_id: Option<String> = None;
     let mut current_class: Option<String> = None;
+    let mut id_buf = String::new();
+    let mut class_buf = String::new();
     let mut folders = Vec::new();
     loop {
         match reader.read_event_into(&mut buf) {
@@ -711,14 +748,26 @@ fn parse_ping_folders(xml: &str) -> Vec<PingFolder> {
                 current_class = None;
             }
             Ok(Event::Start(e)) if in_folder && e.name().local_name().as_ref() == "Id" => {
-                if let Ok(Event::Text(t)) = reader.read_event_into(&mut buf) {
-                    current_id = Some(t.to_string());
-                }
+                in_id = true;
+                id_buf.clear();
             }
             Ok(Event::Start(e)) if in_folder && e.name().local_name().as_ref() == "Class" => {
-                if let Ok(Event::Text(t)) = reader.read_event_into(&mut buf) {
-                    current_class = Some(t.to_string());
-                }
+                in_class = true;
+                class_buf.clear();
+            }
+            Ok(Event::Text(t)) if in_id => id_buf.push_str(t.as_ref()),
+            Ok(Event::Text(t)) if in_class => class_buf.push_str(t.as_ref()),
+            Ok(Event::GeneralRef(r)) if in_id => id_buf.push_str(&resolve_xml_reference(r.as_ref())),
+            Ok(Event::GeneralRef(r)) if in_class => {
+                class_buf.push_str(&resolve_xml_reference(r.as_ref()))
+            }
+            Ok(Event::End(e)) if e.name().local_name().as_ref() == "Id" => {
+                in_id = false;
+                current_id = Some(std::mem::take(&mut id_buf));
+            }
+            Ok(Event::End(e)) if e.name().local_name().as_ref() == "Class" => {
+                in_class = false;
+                current_class = Some(std::mem::take(&mut class_buf));
             }
             Ok(Event::End(e)) if e.name().local_name().as_ref() == "Folder" => {
                 if let (Some(id), Some(class_name)) = (current_id.take(), current_class.take()) {
@@ -752,6 +801,18 @@ fn parse_item_operations_fetches(xml: &str) -> Vec<ItemOperationsFetch> {
             }
             Ok(Event::Text(t)) if current.is_some() => {
                 let text = t.to_string();
+                if let Some(fetch) = current.as_mut() {
+                    match current_tag.as_deref() {
+                        Some(b"Store") => fetch.store = text,
+                        Some(b"CollectionId") => fetch.collection_id = Some(text),
+                        Some(b"ServerId") => fetch.server_id = Some(text),
+                        Some(b"LongId") => fetch.long_id = Some(text),
+                        _ => {}
+                    }
+                }
+            }
+            Ok(Event::GeneralRef(r)) if current.is_some() => {
+                let text = resolve_xml_reference(r.as_ref());
                 if let Some(fetch) = current.as_mut() {
                     match current_tag.as_deref() {
                         Some(b"Store") => fetch.store = text,
@@ -2407,6 +2468,9 @@ async fn merged_freebusy_for_mailbox(
                     Ok(Event::CData(ref t)) if in_cal_data => {
                         caldata_buf.push_str(t.as_ref());
                     }
+                    Ok(Event::GeneralRef(ref r)) if in_cal_data => {
+                        caldata_buf.push_str(&resolve_xml_reference(r.as_ref()));
+                    }
                     Ok(Event::End(e)) if e.name().local_name().as_ref() == "calendar-data" => {
                         in_cal_data = false;
                         let ics = caldata_buf.trim();
@@ -2602,14 +2666,14 @@ async fn load_calendar_events(
     let mut href = String::new();
     let mut caldata_buf = String::new();
     let mut in_cal_data = false;
+    let mut in_href = false;
     let mut out = Vec::new();
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(ref e)) => match e.name().local_name().as_ref() {
                 "href" => {
-                    if let Ok(Event::Text(t)) = reader.read_event_into(&mut buf) {
-                        href = t.to_string();
-                    }
+                    in_href = true;
+                    href.clear();
                 }
                 "calendar-data" => {
                     in_cal_data = true;
@@ -2617,13 +2681,25 @@ async fn load_calendar_events(
                 }
                 _ => {}
             },
+            Ok(Event::Text(ref t)) if in_href => {
+                href.push_str(t.as_ref());
+            }
+            Ok(Event::GeneralRef(ref r)) if in_href => {
+                href.push_str(&resolve_xml_reference(r.as_ref()));
+            }
             Ok(Event::Text(ref t)) if in_cal_data => {
                 caldata_buf.push_str(t);
             }
             Ok(Event::CData(ref t)) if in_cal_data => {
                 caldata_buf.push_str(t.as_ref());
             }
+            Ok(Event::GeneralRef(ref r)) if in_cal_data => {
+                caldata_buf.push_str(&resolve_xml_reference(r.as_ref()));
+            }
             Ok(Event::End(ref e)) => {
+                if e.name().local_name().as_ref() == "href" {
+                    in_href = false;
+                }
                 if e.name().local_name().as_ref() == "calendar-data" {
                     in_cal_data = false;
                 }

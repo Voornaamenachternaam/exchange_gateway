@@ -5964,6 +5964,9 @@ fn parse_calendar_multistatus(xml: &str) -> Vec<crate::mapi::session::TableRow> 
             Ok(Event::CData(ref t)) if in_calendar_data => {
                 caldata_buf.push_str(t.as_ref());
             }
+            Ok(Event::GeneralRef(ref r)) if in_calendar_data => {
+                caldata_buf.push_str(&crate::util::resolve_xml_reference(r.as_ref()));
+            }
             Ok(Event::End(e)) if e.name().local_name().as_ref() == "calendar-data" => {
                 in_calendar_data = false;
                 let ics = caldata_buf.trim();
