@@ -134,52 +134,50 @@ fn parse_add_delegate_request(xml: &str) -> ParsedDelegateRequest {
             Ok(Event::Start(e)) => {
                 let local = e.name().local_name();
                 match local.as_ref() {
-                    b"EmailAddress" => {
+                    "EmailAddress" => {
                         in_email = true;
                     }
-                    b"DisplayName" => {
+                    "DisplayName" => {
                         in_display_name = true;
                     }
-                    b"CalendarFolderPermissionLevel" => {
+                    "CalendarFolderPermissionLevel" => {
                         in_calendar_perm = true;
                     }
-                    b"InboxFolderPermissionLevel" => {
+                    "InboxFolderPermissionLevel" => {
                         _in_inbox_perm = true;
                     }
-                    b"ReceiveCopiesOfMeetingMessages" => {
+                    "ReceiveCopiesOfMeetingMessages" => {
                         in_receive_copies = true;
                     }
-                    b"ViewPrivateItems" => {
+                    "ViewPrivateItems" => {
                         in_view_private = true;
                     }
                     _ => {}
                 }
             }
             Ok(Event::Text(e)) => {
-                if let Ok(text) = e.decode() {
-                    let text = text.into_owned();
-                    if in_email {
-                        result.delegate_email = Some(text);
-                    } else if in_display_name {
-                        result.delegate_name = Some(text);
-                    } else if in_calendar_perm {
-                        result.calendar_permission = parse_delegate_permission_level(&text);
-                    } else if in_receive_copies {
-                        result.receive_copies = Some(text.eq_ignore_ascii_case("true"));
-                    } else if in_view_private {
-                        result.view_private = Some(text.eq_ignore_ascii_case("true"));
-                    }
+                let text = e.to_string();
+                if in_email {
+                    result.delegate_email = Some(text);
+                } else if in_display_name {
+                    result.delegate_name = Some(text);
+                } else if in_calendar_perm {
+                    result.calendar_permission = parse_delegate_permission_level(&text);
+                } else if in_receive_copies {
+                    result.receive_copies = Some(text.eq_ignore_ascii_case("true"));
+                } else if in_view_private {
+                    result.view_private = Some(text.eq_ignore_ascii_case("true"));
                 }
             }
             Ok(Event::End(e)) => {
                 let local = e.name().local_name();
                 match local.as_ref() {
-                    b"EmailAddress" => in_email = false,
-                    b"DisplayName" => in_display_name = false,
-                    b"CalendarFolderPermissionLevel" => in_calendar_perm = false,
-                    b"InboxFolderPermissionLevel" => _in_inbox_perm = false,
-                    b"ReceiveCopiesOfMeetingMessages" => in_receive_copies = false,
-                    b"ViewPrivateItems" => in_view_private = false,
+                    "EmailAddress" => in_email = false,
+                    "DisplayName" => in_display_name = false,
+                    "CalendarFolderPermissionLevel" => in_calendar_perm = false,
+                    "InboxFolderPermissionLevel" => _in_inbox_perm = false,
+                    "ReceiveCopiesOfMeetingMessages" => in_receive_copies = false,
+                    "ViewPrivateItems" => in_view_private = false,
                     _ => {}
                 }
             }
@@ -200,12 +198,12 @@ fn parse_remove_delegate_request(xml: &str) -> Option<String> {
 
     loop {
         match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(e)) if e.name().local_name().as_ref() == b"EmailAddress" => {
+            Ok(Event::Start(e)) if e.name().local_name().as_ref() == "EmailAddress" => {
                 in_email = true;
             }
             Ok(Event::Text(e)) => {
-                if in_email && let Ok(text) = e.decode() {
-                    return Some(text.into_owned());
+                if in_email {
+                    return Some(e.to_string());
                 }
             }
             Ok(Event::End(_)) => {

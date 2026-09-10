@@ -1464,7 +1464,7 @@ pub fn parse_eas_sync_mutations(xml: &str) -> Result<Vec<EasSyncMutation>> {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(e)) => {
                 let local = e.name().local_name();
-                let name: &[u8] = local.as_ref();
+                let name: &[u8] = local.as_ref().as_bytes();
                 let tag: SmallVec<[u8; 16]> = SmallVec::from_slice(name);
                 if matches!(name, b"Add" | b"Change" | b"Delete") {
                     current_kind = Some(match name {
@@ -1509,7 +1509,7 @@ pub fn parse_eas_sync_mutations(xml: &str) -> Result<Vec<EasSyncMutation>> {
             }
             Ok(Event::Empty(e)) => {
                 let local = e.name().local_name();
-                let name: &[u8] = local.as_ref();
+                let name: &[u8] = local.as_ref().as_bytes();
                 let tag: SmallVec<[u8; 16]> = SmallVec::from_slice(name);
                 if name == b"Recurrence" {
                     current.recurrence.is_empty = true;
@@ -1519,10 +1519,7 @@ pub fn parse_eas_sync_mutations(xml: &str) -> Result<Vec<EasSyncMutation>> {
             }
             Ok(Event::Text(t)) => {
                 if let Some(_kind) = current_kind {
-                    let value = match t.decode() {
-                        Ok(v) => v.into_owned(),
-                        Err(_) => String::new(),
-                    };
+                    let value = t.to_string();
                     let last_tag = stack.last().map(|v| v.as_slice());
                     match last_tag {
                         Some(b"ClientId") => current.client_id = Some(value),
@@ -1811,7 +1808,7 @@ pub fn parse_eas_sync_mutations(xml: &str) -> Result<Vec<EasSyncMutation>> {
             }
             Ok(Event::End(e)) => {
                 let local = e.name().local_name();
-                let name: &[u8] = local.as_ref();
+                let name: &[u8] = local.as_ref().as_bytes();
                 if name == b"Attendee"
                     && let Some(attendee) = current.current_attendee.take()
                     && !attendee.email.is_empty()

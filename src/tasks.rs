@@ -328,7 +328,7 @@ fn parse_raw_mutations(xml: &str) -> Result<Vec<RawMutation>> {
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(e)) => {
-                let name = e.name().local_name().as_ref().to_vec();
+                let name = e.name().local_name().as_ref().as_bytes().to_vec();
                 match name.as_slice() {
                     b"Add" => {
                         op_kind = Some(MutationKind::Add);
@@ -360,7 +360,7 @@ fn parse_raw_mutations(xml: &str) -> Result<Vec<RawMutation>> {
                 element_stack.push(name);
             }
             Ok(Event::End(e)) => {
-                let name = e.name().local_name().as_ref().to_vec();
+                let name = e.name().local_name().as_ref().as_bytes().to_vec();
                 match name.as_slice() {
                     b"Add" | b"Change" | b"Delete" => {
                         if op_kind.is_some() {
@@ -381,7 +381,7 @@ fn parse_raw_mutations(xml: &str) -> Result<Vec<RawMutation>> {
                 pending_leaf = None;
             }
             Ok(Event::Text(t)) => {
-                let text = t.decode().unwrap_or_default().into_owned();
+                let text = t.to_string();
                 if text.trim().is_empty() {
                     buf.clear();
                     continue;

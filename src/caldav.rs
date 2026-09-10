@@ -734,22 +734,20 @@ fn parse_etag_from_multistatus(xml_body: &str) -> Option<String> {
         match reader.read_event_into(&mut buf) {
             Ok(quick_xml::events::Event::Start(ref e)) => {
                 let local = e.name().local_name();
-                if local.as_ref() == b"getetag" {
+                if local.as_ref() == "getetag" {
                     in_getetag = true;
                 }
             }
             Ok(quick_xml::events::Event::End(ref e)) => {
                 let local = e.name().local_name();
-                if local.as_ref() == b"getetag" {
+                if local.as_ref() == "getetag" {
                     in_getetag = false;
                 }
             }
             Ok(quick_xml::events::Event::Text(ref t)) if in_getetag => {
-                if let Ok(text) = t.decode() {
-                    let etag = normalize_etag_to_internal(&text);
-                    if !etag.is_empty() {
-                        return Some(etag);
-                    }
+                let etag = normalize_etag_to_internal(t);
+                if !etag.is_empty() {
+                    return Some(etag);
                 }
             }
             Ok(quick_xml::events::Event::Eof) | Err(_) => break,

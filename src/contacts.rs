@@ -263,7 +263,7 @@ pub fn parse_contacts_mutations(xml: &str) -> anyhow::Result<Vec<ContactsMutatio
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(e)) => {
-                let name_bytes = e.name().as_ref().to_vec();
+                let name_bytes = e.name().as_ref().as_bytes().to_vec();
                 let name = String::from_utf8_lossy(&name_bytes).to_string();
                 if name == "Add" || name == "Change" || name == "Delete" {
                     current_kind = match name.as_str() {
@@ -322,7 +322,7 @@ pub fn parse_contacts_mutations(xml: &str) -> anyhow::Result<Vec<ContactsMutatio
                 }
             }
             Ok(Event::Text(e)) => {
-                let text = e.decode().unwrap_or_default().to_string();
+                let text = e.to_string();
                 let in_vcard = stack.iter().any(|n| n == b"vCard");
                 let in_server_id = stack.iter().any(|n| n == b"ServerId");
                 if in_server_id {

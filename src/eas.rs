@@ -336,18 +336,18 @@ fn validate_payload(command: &str, xml: &str) -> Result<(), &'static str> {
     let (root_name, root_ns) = loop {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(e)) | Ok(Event::Empty(e)) => {
-                let name = String::from_utf8_lossy(e.name().local_name().as_ref()).to_string();
+                let name = e.name().local_name().as_ref().to_string();
                 let qname = e.name();
                 let qname_bytes = qname.as_ref();
 
-                let ns = if let Some(colon_pos) = qname_bytes.iter().position(|&b| b == b':') {
+                let ns = if let Some(colon_pos) = qname_bytes.find(':') {
                     let prefix = &qname_bytes[..colon_pos];
                     e.attributes()
                         .flatten()
                         .find_map(|attr| {
                             let key = attr.key.as_ref();
-                            if key.starts_with(b"xmlns:") && &key[6..] == prefix {
-                                Some(String::from_utf8_lossy(attr.value.as_ref()).to_string())
+                            if key.starts_with("xmlns:") && &key[6..] == prefix {
+                                Some(attr.value.to_string())
                             } else {
                                 None
                             }
@@ -357,8 +357,8 @@ fn validate_payload(command: &str, xml: &str) -> Result<(), &'static str> {
                     e.attributes()
                         .flatten()
                         .find_map(|attr| {
-                            if attr.key.as_ref() == b"xmlns" {
-                                Some(String::from_utf8_lossy(attr.value.as_ref()).to_string())
+                            if attr.key.as_ref() == "xmlns" {
+                                Some(attr.value.to_string())
                             } else {
                                 None
                             }
@@ -389,7 +389,7 @@ fn validate_payload(command: &str, xml: &str) -> Result<(), &'static str> {
         loop {
             match reader.read_event_into(&mut buf) {
                 Ok(Event::Start(e)) | Ok(Event::Empty(e))
-                    if e.name().local_name().as_ref() == local_name.as_bytes() =>
+                    if e.name().local_name().as_ref() == local_name =>
                 {
                     return true;
                 }
@@ -421,14 +421,14 @@ fn validate_payload(command: &str, xml: &str) -> Result<(), &'static str> {
                 match reader.read_event_into(&mut buf) {
                     Ok(Event::Start(e)) => {
                         let name = e.name().local_name();
-                        if name.as_ref() == b"Collections" {
+                        if name.as_ref() == "Collections" {
                             in_collections = true;
-                        } else if in_collections && name.as_ref() == b"Collection" {
+                        } else if in_collections && name.as_ref() == "Collection" {
                             found_collection = true;
                         }
                     }
                     Ok(Event::End(e)) => {
-                        if e.name().local_name().as_ref() == b"Collections" {
+                        if e.name().local_name().as_ref() == "Collections" {
                             in_collections = false;
                         }
                     }
@@ -483,7 +483,7 @@ fn extract_root_command(xml: &str) -> Option<String> {
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(e)) | Ok(Event::Empty(e)) => {
-                return Some(String::from_utf8_lossy(e.name().local_name().as_ref()).to_string());
+                return Some(e.name().local_name().as_ref().to_string());
             }
             Ok(Event::Eof) | Err(_) => return None,
             _ => {}
@@ -499,9 +499,9 @@ fn extract_first_tag_text(xml: &str, tag: &[u8]) -> Option<String> {
     let mut inside = false;
     loop {
         match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(e)) if e.name().local_name().as_ref() == tag => inside = true,
-            Ok(Event::Text(t)) if inside => return t.decode().ok().map(|v| v.into_owned()),
-            Ok(Event::End(e)) if e.name().local_name().as_ref() == tag => inside = false,
+            Ok(Event::Start(e)) if e.name().local_name().as_ref().as_bytes() == tag => inside = true,
+            Ok(Event::Text(t)) if inside => return Some(t.to_string()),
+            Ok(Event::End(e)) if e.name().local_name().as_ref().as_bytes() == tag => inside = false,
             Ok(Event::Eof) | Err(_) => return None,
             _ => {}
         }
@@ -517,13 +517,11 @@ fn extract_all_tag_text(xml: &str, tag: &[u8]) -> Vec<String> {
     let mut values = Vec::new();
     loop {
         match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(e)) if e.name().local_name().as_ref() == tag => inside = true,
+            Ok(Event::Start(e)) if e.name().local_name().as_ref().as_bytes() == tag => inside = true,
             Ok(Event::Text(t)) if inside => {
-                if let Ok(v) = t.decode() {
-                    values.push(v.into_owned());
-                }
+                values.push(t.to_string());
             }
-            Ok(Event::End(e)) if e.name().local_name().as_ref() == tag => inside = false,
+            Ok(Event::End(e)) if e.name().local_name().as_ref().as_bytes() == tag => inside = false,
             Ok(Event::Eof) | Err(_) => break,
             _ => {}
         }
@@ -583,7 +581,7 @@ fn parse_sync_collections(xml: &str) -> Vec<SyncCollection> {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(e)) => {
                 let name = e.name().local_name();
-                if name.as_ref() == b"Collection" {
+                if name.as_ref() == "Collection" {
                     // Entering a new Collection element.
                     collection_start = Some(start_pos);
                     current_collection = Some(SyncCollection::default());
@@ -591,7 +589,7 @@ fn parse_sync_collections(xml: &str) -> Vec<SyncCollection> {
                     current_tag = None;
                 } else if depth == 1 && current_collection.is_some() {
                     // Direct child of Collection: track its tag name for potential text capture.
-                    current_tag = Some(name.as_ref().to_vec());
+                    current_tag = Some(name.as_ref().as_bytes().to_vec());
                     depth = 2;
                 } else if depth >= 2 {
                     // Nested further inside; increment depth.
@@ -605,10 +603,9 @@ fn parse_sync_collections(xml: &str) -> Vec<SyncCollection> {
                 } else if depth == 2 {
                     // Text content of a direct child element.
                     if let Some(tag) = current_tag.as_ref()
-                        && let Ok(text) = t.decode()
                         && let Some(coll) = current_collection.as_mut()
                     {
-                        let text = text.into_owned();
+                        let text = t.to_string();
                         match tag.as_slice() {
                             b"SyncKey" => coll.sync_key = Some(text),
                             b"CollectionId" => coll.collection_id = Some(text),
@@ -626,10 +623,9 @@ fn parse_sync_collections(xml: &str) -> Vec<SyncCollection> {
                 // Treat CDATA exactly like Text; decode to String.
                 if depth == 2
                     && let Some(tag) = current_tag.as_ref()
-                    && let Ok(text) = cdata.decode()
                     && let Some(coll) = current_collection.as_mut()
                 {
-                    let text = text.into_owned();
+                    let text = cdata.to_string();
                     match tag.as_slice() {
                         b"SyncKey" => coll.sync_key = Some(text),
                         b"CollectionId" => coll.collection_id = Some(text),
@@ -642,7 +638,7 @@ fn parse_sync_collections(xml: &str) -> Vec<SyncCollection> {
                 }
             }
             Ok(Event::End(e)) => {
-                if e.name().local_name().as_ref() == b"Collection" {
+                if e.name().local_name().as_ref() == "Collection" {
                     if let Some(mut coll) = current_collection.take() {
                         // After reading the End event, buffer_position() is just after the closing '>'
                         let end_pos = reader.buffer_position();
@@ -709,22 +705,22 @@ fn parse_ping_folders(xml: &str) -> Vec<PingFolder> {
     let mut folders = Vec::new();
     loop {
         match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(e)) if e.name().local_name().as_ref() == b"Folder" => {
+            Ok(Event::Start(e)) if e.name().local_name().as_ref() == "Folder" => {
                 in_folder = true;
                 current_id = None;
                 current_class = None;
             }
-            Ok(Event::Start(e)) if in_folder && e.name().local_name().as_ref() == b"Id" => {
+            Ok(Event::Start(e)) if in_folder && e.name().local_name().as_ref() == "Id" => {
                 if let Ok(Event::Text(t)) = reader.read_event_into(&mut buf) {
-                    current_id = t.decode().ok().map(|v| v.into_owned());
+                    current_id = Some(t.to_string());
                 }
             }
-            Ok(Event::Start(e)) if in_folder && e.name().local_name().as_ref() == b"Class" => {
+            Ok(Event::Start(e)) if in_folder && e.name().local_name().as_ref() == "Class" => {
                 if let Ok(Event::Text(t)) = reader.read_event_into(&mut buf) {
-                    current_class = t.decode().ok().map(|v| v.into_owned());
+                    current_class = Some(t.to_string());
                 }
             }
-            Ok(Event::End(e)) if e.name().local_name().as_ref() == b"Folder" => {
+            Ok(Event::End(e)) if e.name().local_name().as_ref() == "Folder" => {
                 if let (Some(id), Some(class_name)) = (current_id.take(), current_class.take()) {
                     folders.push(PingFolder { id, class_name });
                 }
@@ -747,15 +743,15 @@ fn parse_item_operations_fetches(xml: &str) -> Vec<ItemOperationsFetch> {
     let mut current_tag: Option<Vec<u8>> = None;
     loop {
         match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(e)) if e.name().local_name().as_ref() == b"Fetch" => {
+            Ok(Event::Start(e)) if e.name().local_name().as_ref() == "Fetch" => {
                 current = Some(ItemOperationsFetch::default());
                 current_tag = None;
             }
             Ok(Event::Start(e)) if current.is_some() => {
-                current_tag = Some(e.name().local_name().as_ref().to_vec());
+                current_tag = Some(e.name().local_name().as_ref().as_bytes().to_vec());
             }
             Ok(Event::Text(t)) if current.is_some() => {
-                let text = t.decode().ok().map(|v| v.into_owned()).unwrap_or_default();
+                let text = t.to_string();
                 if let Some(fetch) = current.as_mut() {
                     match current_tag.as_deref() {
                         Some(b"Store") => fetch.store = text,
@@ -766,7 +762,7 @@ fn parse_item_operations_fetches(xml: &str) -> Vec<ItemOperationsFetch> {
                     }
                 }
             }
-            Ok(Event::End(e)) if e.name().local_name().as_ref() == b"Fetch" => {
+            Ok(Event::End(e)) if e.name().local_name().as_ref() == "Fetch" => {
                 if let Some(fetch) = current.take() {
                     fetches.push(fetch);
                 }
@@ -2401,19 +2397,17 @@ async fn merged_freebusy_for_mailbox(
             let mut caldata_buf = String::new();
             loop {
                 match reader.read_event_into(&mut buf) {
-                    Ok(Event::Start(e)) if e.name().local_name().as_ref() == b"calendar-data" => {
+                    Ok(Event::Start(e)) if e.name().local_name().as_ref() == "calendar-data" => {
                         in_cal_data = true;
                         caldata_buf.clear();
                     }
                     Ok(Event::Text(ref t)) if in_cal_data => {
-                        if let Ok(ics) = t.decode() {
-                            caldata_buf.push_str(&ics);
-                        }
+                        caldata_buf.push_str(t);
                     }
                     Ok(Event::CData(ref t)) if in_cal_data => {
-                        caldata_buf.push_str(&String::from_utf8_lossy(t.as_ref()));
+                        caldata_buf.push_str(t.as_ref());
                     }
-                    Ok(Event::End(e)) if e.name().local_name().as_ref() == b"calendar-data" => {
+                    Ok(Event::End(e)) if e.name().local_name().as_ref() == "calendar-data" => {
                         in_cal_data = false;
                         let ics = caldata_buf.trim();
                         // Skip empty calendar-data (likely calendar collection root)
@@ -2612,30 +2606,28 @@ async fn load_calendar_events(
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(ref e)) => match e.name().local_name().as_ref() {
-                b"href" => {
+                "href" => {
                     if let Ok(Event::Text(t)) = reader.read_event_into(&mut buf) {
-                        href = t.decode().unwrap_or_default().to_string();
+                        href = t.to_string();
                     }
                 }
-                b"calendar-data" => {
+                "calendar-data" => {
                     in_cal_data = true;
                     caldata_buf.clear();
                 }
                 _ => {}
             },
             Ok(Event::Text(ref t)) if in_cal_data => {
-                if let Ok(text) = t.decode() {
-                    caldata_buf.push_str(&text);
-                }
+                caldata_buf.push_str(t);
             }
             Ok(Event::CData(ref t)) if in_cal_data => {
-                caldata_buf.push_str(&String::from_utf8_lossy(t.as_ref()));
+                caldata_buf.push_str(t.as_ref());
             }
             Ok(Event::End(ref e)) => {
-                if e.name().local_name().as_ref() == b"calendar-data" {
+                if e.name().local_name().as_ref() == "calendar-data" {
                     in_cal_data = false;
                 }
-                if e.name().local_name().as_ref() == b"response" {
+                if e.name().local_name().as_ref() == "response" {
                     let ics = caldata_buf.trim();
                     // Skip empty calendar-data (likely calendar collection root)
                     if !href.is_empty()

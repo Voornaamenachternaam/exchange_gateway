@@ -1572,34 +1572,34 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
         loop {
             match reader.read_event_into(&mut buf) {
                 Ok(Event::Start(ref e)) => match e.name().local_name().as_ref() {
-                    b"href" => {
+                    "href" => {
                         if let Ok(Event::Text(e)) = reader.read_event_into(&mut buf) {
-                            current.href = e.decode().unwrap_or_default().trim().to_string();
+                            current.href = e.trim().to_string();
                         }
                     }
-                    b"getetag" => {
+                    "getetag" => {
                         if let Ok(Event::Text(e)) = reader.read_event_into(&mut buf) {
-                            current.etag = e.decode().unwrap_or_default().trim().to_string();
+                            current.etag = e.trim().to_string();
                         }
                     }
-                    b"calendar-data" => {
+                    "calendar-data" => {
                         in_caldata = true;
                         caldata_buf.clear();
                     }
                     _ => {}
                 },
                 Ok(Event::Text(ref e)) if in_caldata => {
-                    caldata_buf.push_str(&e.decode().unwrap_or_default());
+                    caldata_buf.push_str(e);
                 }
                 Ok(Event::CData(ref e)) if in_caldata => {
-                    caldata_buf.push_str(&String::from_utf8_lossy(e.as_ref()));
+                    caldata_buf.push_str(e.as_ref());
                 }
                 Ok(Event::End(ref e)) => match e.name().local_name().as_ref() {
-                    b"calendar-data" if in_caldata => {
+                    "calendar-data" if in_caldata => {
                         in_caldata = false;
                         current.ics = caldata_buf.trim().to_string();
                     }
-                    b"response" => {
+                    "response" => {
                         // Skip the calendar collection itself (which has no calendar-data)
                         // Only process individual events that have ICS data
                         if !current.href.is_empty()

@@ -188,24 +188,18 @@ pub fn parse_get_rooms_request(xml: &str) -> Option<String> {
             Ok(Event::Start(e)) => {
                 let local = e.name().local_name();
                 match local.as_ref() {
-                    b"RoomList" => {
+                    "RoomList" => {
                         in_room_list = true;
                     }
-                    b"EmailAddress" if in_room_list => {
+                    "EmailAddress" if in_room_list => {
                         if let Ok(text) = reader.read_text(e.to_end().name()) {
-                            return Some(
-                                reader
-                                    .decoder()
-                                    .decode(text.as_ref())
-                                    .unwrap_or_default()
-                                    .into_owned(),
-                            );
+                            return Some(text.to_string());
                         }
                     }
                     _ => {}
                 }
             }
-            Ok(Event::End(e)) if e.name().local_name().as_ref() == b"RoomList" => {
+            Ok(Event::End(e)) if e.name().local_name().as_ref() == "RoomList" => {
                 in_room_list = false;
             }
             Ok(Event::Eof) | Err(_) => break,
