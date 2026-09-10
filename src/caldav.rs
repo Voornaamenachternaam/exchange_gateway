@@ -729,28 +729,33 @@ fn parse_etag_from_multistatus(xml_body: &str) -> Option<String> {
     reader.config_mut().trim_text(true);
     let mut buf = Vec::new();
     let mut in_getetag = false;
+    let mut value = String::new();
 
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(quick_xml::events::Event::Start(ref e)) => {
                 let local = e.name().local_name();
-                if local.as_ref() == b"getetag" {
+                if local.as_ref() == "getetag" {
                     in_getetag = true;
+                    value.clear();
                 }
             }
             Ok(quick_xml::events::Event::End(ref e)) => {
                 let local = e.name().local_name();
-                if local.as_ref() == b"getetag" {
+                if local.as_ref() == "getetag" {
                     in_getetag = false;
-                }
-            }
-            Ok(quick_xml::events::Event::Text(ref t)) if in_getetag => {
-                if let Ok(text) = t.decode() {
-                    let etag = normalize_etag_to_internal(&text);
+                    let etag = normalize_etag_to_internal(&value);
                     if !etag.is_empty() {
                         return Some(etag);
                     }
+                    value.clear();
                 }
+            }
+            Ok(quick_xml::events::Event::Text(ref t)) if in_getetag => {
+                value.push_str(t.as_ref());
+            }
+            Ok(quick_xml::events::Event::GeneralRef(ref r)) if in_getetag => {
+                value.push_str(&crate::util::resolve_xml_reference(r.as_ref()));
             }
             Ok(quick_xml::events::Event::Eof) | Err(_) => break,
             _ => {}

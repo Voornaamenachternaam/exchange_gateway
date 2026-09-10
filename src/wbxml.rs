@@ -1,5 +1,5 @@
 // src/wbxml.rs
-use crate::util::xml_escape_text;
+use crate::util::{resolve_xml_reference_strict, xml_escape_text};
 use anyhow::{Result, anyhow};
 use base64::Engine;
 
@@ -1252,24 +1252,21 @@ impl Wbxml {
                         std::collections::HashMap::new();
                     for attr in e.attributes().flatten() {
                         let key_bytes = attr.key.as_ref();
-                        if key_bytes.starts_with(b"xmlns:") && key_bytes.len() > 6 {
-                            let prefix = String::from_utf8_lossy(&key_bytes[6..]);
-                            if let Ok(val) = attr.decoded_and_normalized_value(
-                                quick_xml::XmlVersion::Implicit1_0,
-                                reader.decoder(),
-                            ) {
+                        if key_bytes.starts_with("xmlns:") && key_bytes.len() > 6 {
+                            let prefix = key_bytes[6..].to_string();
+                            if let Ok(val) = attr.normalized_value(quick_xml::XmlVersion::Implicit1_0) {
                                 let cp = namespace_to_code_page(val.as_ref());
-                                new_prefixes.insert(prefix.into_owned(), cp);
+                                new_prefixes.insert(prefix, cp);
                             }
                         }
                     }
                     prefix_ns_stack.push(new_prefixes);
 
-                    let ns_cp = extract_xmlns_cp(e, &reader);
+                    let ns_cp = extract_xmlns_cp(e);
                     ns_stack.push(ns_cp);
 
                     let qname = e.name();
-                    let full_name = String::from_utf8_lossy(qname.as_ref());
+                    let full_name = qname.as_ref();
                     let (local_name, effective_cp) = if let Some(pos) = full_name.find(':') {
                         let prefix = &full_name[..pos];
                         let local = &full_name[pos + 1..];
@@ -1285,7 +1282,7 @@ impl Wbxml {
                         )
                     } else {
                         (
-                            &*full_name,
+                            full_name,
                             ns_cp.or_else(|| ns_stack.iter().rev().find_map(|&x| x)),
                         )
                     };
@@ -1303,23 +1300,20 @@ impl Wbxml {
                         std::collections::HashMap::new();
                     for attr in e.attributes().flatten() {
                         let key_bytes = attr.key.as_ref();
-                        if key_bytes.starts_with(b"xmlns:") && key_bytes.len() > 6 {
-                            let prefix = String::from_utf8_lossy(&key_bytes[6..]);
-                            if let Ok(val) = attr.decoded_and_normalized_value(
-                                quick_xml::XmlVersion::Implicit1_0,
-                                reader.decoder(),
-                            ) {
+                        if key_bytes.starts_with("xmlns:") && key_bytes.len() > 6 {
+                            let prefix = key_bytes[6..].to_string();
+                            if let Ok(val) = attr.normalized_value(quick_xml::XmlVersion::Implicit1_0) {
                                 let cp = namespace_to_code_page(val.as_ref());
-                                new_prefixes.insert(prefix.into_owned(), cp);
+                                new_prefixes.insert(prefix, cp);
                             }
                         }
                     }
                     prefix_ns_stack.push(new_prefixes);
 
-                    let ns_cp = extract_xmlns_cp(e, &reader);
+                    let ns_cp = extract_xmlns_cp(e);
 
                     let qname = e.name();
-                    let full_name = String::from_utf8_lossy(qname.as_ref());
+                    let full_name = qname.as_ref();
                     let (local_name, effective_cp) = if let Some(pos) = full_name.find(':') {
                         let prefix = &full_name[..pos];
                         let local = &full_name[pos + 1..];
@@ -1335,7 +1329,7 @@ impl Wbxml {
                         )
                     } else {
                         (
-                            &*full_name,
+                            full_name,
                             ns_cp.or_else(|| ns_stack.iter().rev().find_map(|&x| x)),
                         )
                     };
@@ -1351,13 +1345,20 @@ impl Wbxml {
                     prefix_ns_stack.pop();
                 }
                 Ok(quick_xml::events::Event::Text(ref e)) => {
-                    let txt = e
-                        .decode()
-                        .map_err(|e| anyhow!("XML decode error: {e}"))?
-                        .into_owned();
+                    let txt = e.to_string();
                     if !txt.is_empty() {
                         buf.push(STR_I);
                         buf.extend_from_slice(txt.as_bytes());
+                        buf.push(0x00);
+                    }
+                }
+                Ok(quick_xml::events::Event::GeneralRef(ref r)) => {
+                    let text = resolve_xml_reference_strict(r.as_ref()).ok_or_else(|| {
+                        anyhow!("XML encode error: unsupported entity reference &{};", r.as_ref())
+                    })?;
+                    if !text.is_empty() {
+                        buf.push(STR_I);
+                        buf.extend_from_slice(text.as_bytes());
                         buf.push(0x00);
                     }
                 }
@@ -1398,14 +1399,12 @@ impl Wbxml {
     }
 }
 
-fn extract_xmlns_cp<'a, R: std::io::BufRead>(
+fn extract_xmlns_cp<'a>(
     e: &quick_xml::events::BytesStart<'a>,
-    reader: &quick_xml::Reader<R>,
 ) -> Option<u8> {
     for attr in e.attributes().flatten() {
-        if attr.key.as_ref() == b"xmlns"
-            && let Ok(val) = attr
-                .decoded_and_normalized_value(quick_xml::XmlVersion::Implicit1_0, reader.decoder())
+        if attr.key.as_ref() == "xmlns"
+            && let Ok(val) = attr.normalized_value(quick_xml::XmlVersion::Implicit1_0)
         {
             if let Some(cp) = namespace_to_code_page(val.as_ref()) {
                 return Some(cp);

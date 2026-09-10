@@ -1,7 +1,7 @@
 // src/attachment.rs
 use crate::protocol_fixtures::{EWS_MSG_NS, EWS_TYPE_NS};
 use crate::storage::Storage;
-use crate::util::{format_ews_datetime, xml_escape};
+use crate::util::{format_ews_datetime, resolve_xml_reference, xml_escape};
 use anyhow::{Result, anyhow};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
@@ -623,55 +623,49 @@ pub fn parse_create_attachment_request(xml: &str) -> Option<ParsedCreateAttachme
             Ok(Event::Start(e)) => {
                 let local = e.name().local_name();
                 match local.as_ref() {
-                    b"ParentItemId" => {
+                    "ParentItemId" => {
                         for attr in e.attributes().flatten() {
-                            if attr.key.local_name().as_ref() == b"Id"
-                                && let Ok(v) = attr.decoded_and_normalized_value(
-                                    XmlVersion::Implicit1_0,
-                                    reader.decoder(),
-                                )
+                            if attr.key.local_name().as_ref() == "Id"
+                                && let Ok(v) = attr.normalized_value(XmlVersion::Implicit1_0)
                             {
                                 parent_item_id = Some(v.into_owned());
                             }
                         }
                     }
-                    b"ItemId" if parent_item_id.is_none() => {
+                    "ItemId" if parent_item_id.is_none() => {
                         for attr in e.attributes().flatten() {
-                            if attr.key.local_name().as_ref() == b"Id"
-                                && let Ok(v) = attr.decoded_and_normalized_value(
-                                    XmlVersion::Implicit1_0,
-                                    reader.decoder(),
-                                )
+                            if attr.key.local_name().as_ref() == "Id"
+                                && let Ok(v) = attr.normalized_value(XmlVersion::Implicit1_0)
                             {
                                 parent_item_id = Some(v.into_owned());
                             }
                         }
                     }
-                    b"FileAttachment" => {
+                    "FileAttachment" => {
                         in_file_attachment = true;
                         attachment_type = AttachmentType::File;
                     }
-                    b"ItemAttachment" => {
+                    "ItemAttachment" => {
                         in_item_attachment = true;
                         attachment_type = AttachmentType::Item;
                     }
-                    b"Name" if in_file_attachment || in_item_attachment => {
+                    "Name" if in_file_attachment || in_item_attachment => {
                         in_name = true;
                     }
-                    b"ContentType" if in_file_attachment || in_item_attachment => {
+                    "ContentType" if in_file_attachment || in_item_attachment => {
                         in_content_type = true;
                     }
-                    b"Content" if in_file_attachment => {
+                    "Content" if in_file_attachment => {
                         in_content = true;
                     }
-                    b"IsInline" if in_file_attachment || in_item_attachment => {
+                    "IsInline" if in_file_attachment || in_item_attachment => {
                         in_is_inline = true;
                         is_inline_buf.clear();
                     }
-                    b"ContentId" if in_file_attachment || in_item_attachment => {
+                    "ContentId" if in_file_attachment || in_item_attachment => {
                         in_content_id = true;
                     }
-                    b"ContentLocation" if in_file_attachment || in_item_attachment => {
+                    "ContentLocation" if in_file_attachment || in_item_attachment => {
                         in_content_location = true;
                     }
                     _ => {}
@@ -679,15 +673,12 @@ pub fn parse_create_attachment_request(xml: &str) -> Option<ParsedCreateAttachme
             }
             Ok(Event::Empty(e)) => {
                 let local = e.name().local_name();
-                if (local.as_ref() == b"ParentItemId" || local.as_ref() == b"ItemId")
+                if (local.as_ref() == "ParentItemId" || local.as_ref() == "ItemId")
                     && parent_item_id.is_none()
                 {
                     for attr in e.attributes().flatten() {
-                        if attr.key.local_name().as_ref() == b"Id"
-                            && let Ok(v) = attr.decoded_and_normalized_value(
-                                XmlVersion::Implicit1_0,
-                                reader.decoder(),
-                            )
+                        if attr.key.local_name().as_ref() == "Id"
+                            && let Ok(v) = attr.normalized_value(XmlVersion::Implicit1_0)
                         {
                             parent_item_id = Some(v.into_owned());
                         }
@@ -695,50 +686,67 @@ pub fn parse_create_attachment_request(xml: &str) -> Option<ParsedCreateAttachme
                 }
             }
             Ok(Event::Text(e)) => {
-                if let Ok(text) = e.decode() {
-                    if in_name {
-                        name.push_str(&text);
-                    } else if in_content_type {
-                        content_type.push_str(&text);
-                    } else if in_content {
-                        content_base64.push_str(&text);
-                    } else if in_is_inline {
-                        is_inline_buf.push_str(&text);
-                    } else if in_content_id {
-                        content_id.get_or_insert_with(String::new).push_str(&text);
-                    } else if in_content_location {
-                        content_location
-                            .get_or_insert_with(String::new)
-                            .push_str(&text);
-                    }
+                let text = e.to_string();
+                if in_name {
+                    name.push_str(&text);
+                } else if in_content_type {
+                    content_type.push_str(&text);
+                } else if in_content {
+                    content_base64.push_str(&text);
+                } else if in_is_inline {
+                    is_inline_buf.push_str(&text);
+                } else if in_content_id {
+                    content_id.get_or_insert_with(String::new).push_str(&text);
+                } else if in_content_location {
+                    content_location
+                        .get_or_insert_with(String::new)
+                        .push_str(&text);
+                }
+            }
+            Ok(Event::GeneralRef(e)) => {
+                let text = resolve_xml_reference(e.as_ref());
+                if in_name {
+                    name.push_str(&text);
+                } else if in_content_type {
+                    content_type.push_str(&text);
+                } else if in_content {
+                    content_base64.push_str(&text);
+                } else if in_is_inline {
+                    is_inline_buf.push_str(&text);
+                } else if in_content_id {
+                    content_id.get_or_insert_with(String::new).push_str(&text);
+                } else if in_content_location {
+                    content_location
+                        .get_or_insert_with(String::new)
+                        .push_str(&text);
                 }
             }
             Ok(Event::End(e)) => {
                 let local = e.name().local_name();
                 match local.as_ref() {
-                    b"FileAttachment" => {
+                    "FileAttachment" => {
                         in_file_attachment = false;
                     }
-                    b"ItemAttachment" => {
+                    "ItemAttachment" => {
                         in_item_attachment = false;
                     }
-                    b"Name" => {
+                    "Name" => {
                         in_name = false;
                     }
-                    b"ContentType" => {
+                    "ContentType" => {
                         in_content_type = false;
                     }
-                    b"Content" => {
+                    "Content" => {
                         in_content = false;
                     }
-                    b"IsInline" => {
+                    "IsInline" => {
                         is_inline = is_inline_buf.trim().eq_ignore_ascii_case("true");
                         in_is_inline = false;
                     }
-                    b"ContentId" => {
+                    "ContentId" => {
                         in_content_id = false;
                     }
-                    b"ContentLocation" => {
+                    "ContentLocation" => {
                         in_content_location = false;
                     }
                     _ => {}
@@ -788,13 +796,10 @@ pub fn parse_get_attachment_request(xml: &str) -> Vec<String> {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(e)) | Ok(Event::Empty(e)) => {
                 let local = e.name().local_name();
-                if local.as_ref() == b"AttachmentId" || local.as_ref() == b"RequestAttachmentId" {
+                if local.as_ref() == "AttachmentId" || local.as_ref() == "RequestAttachmentId" {
                     for attr in e.attributes().flatten() {
-                        if attr.key.local_name().as_ref() == b"Id"
-                            && let Ok(v) = attr.decoded_and_normalized_value(
-                                XmlVersion::Implicit1_0,
-                                reader.decoder(),
-                            )
+                        if attr.key.local_name().as_ref() == "Id"
+                            && let Ok(v) = attr.normalized_value(XmlVersion::Implicit1_0)
                         {
                             ids.push(v.into_owned());
                         }
@@ -820,13 +825,10 @@ pub fn parse_delete_attachment_request(xml: &str) -> Option<ParsedDeleteAttachme
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(e)) | Ok(Event::Empty(e)) => {
                 let local = e.name().local_name();
-                if local.as_ref() == b"AttachmentId" {
+                if local.as_ref() == "AttachmentId" {
                     for attr in e.attributes().flatten() {
-                        if attr.key.local_name().as_ref() == b"Id"
-                            && let Ok(v) = attr.decoded_and_normalized_value(
-                                XmlVersion::Implicit1_0,
-                                reader.decoder(),
-                            )
+                        if attr.key.local_name().as_ref() == "Id"
+                            && let Ok(v) = attr.normalized_value(XmlVersion::Implicit1_0)
                         {
                             attachment_ids.push(v.into_owned());
                         }
@@ -1184,7 +1186,7 @@ pub fn parse_eas_attachment_adds(xml: &str) -> Vec<ParsedEasAttachmentAdd> {
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(e)) => match e.name().local_name().as_ref() {
-                b"Attachment" => {
+                "Attachment" => {
                     if in_attachment {
                         display_name.clear();
                         content_type.clear();
@@ -1200,27 +1202,27 @@ pub fn parse_eas_attachment_adds(xml: &str) -> Vec<ParsedEasAttachmentAdd> {
                     }
                     in_attachment = true;
                 }
-                b"DisplayName" => in_display_name = true,
-                b"Method" => {
+                "DisplayName" => in_display_name = true,
+                "Method" => {
                     in_method = true;
                     method_buf.clear();
                 }
-                b"EstimatedDataSize" => {
+                "EstimatedDataSize" => {
                     in_estimated_data_size = true;
                     estimated_data_size_buf.clear();
                 }
-                b"ContentType" => in_content_type = true,
-                b"ContentId" => in_content_id = true,
-                b"ContentLocation" => in_content_location = true,
-                b"IsInline" => {
+                "ContentType" => in_content_type = true,
+                "ContentId" => in_content_id = true,
+                "ContentLocation" => in_content_location = true,
+                "IsInline" => {
                     in_is_inline = true;
                     is_inline_buf.clear();
                 }
-                b"Data" => in_data = true,
+                "Data" => in_data = true,
                 _ => {}
             },
             Ok(Event::End(e)) => match e.name().local_name().as_ref() {
-                b"Attachment" => {
+                "Attachment" => {
                     if in_attachment && !data.is_empty() {
                         let dn = std::mem::take(&mut display_name);
                         let ct = std::mem::take(&mut content_type);
@@ -1255,48 +1257,68 @@ pub fn parse_eas_attachment_adds(xml: &str) -> Vec<ParsedEasAttachmentAdd> {
                     content_location = None;
                     is_inline = false;
                 }
-                b"DisplayName" => in_display_name = false,
-                b"Method" => {
+                "DisplayName" => in_display_name = false,
+                "Method" => {
                     method = method_buf.trim().parse().unwrap_or(1);
                     in_method = false;
                 }
-                b"EstimatedDataSize" => {
+                "EstimatedDataSize" => {
                     estimated_data_size = estimated_data_size_buf.trim().parse().unwrap_or(0);
                     in_estimated_data_size = false;
                 }
-                b"ContentType" => in_content_type = false,
-                b"ContentId" => in_content_id = false,
-                b"ContentLocation" => in_content_location = false,
-                b"IsInline" => {
+                "ContentType" => in_content_type = false,
+                "ContentId" => in_content_id = false,
+                "ContentLocation" => in_content_location = false,
+                "IsInline" => {
                     let v = is_inline_buf.trim();
                     is_inline = v == "1" || v.eq_ignore_ascii_case("true");
                     in_is_inline = false;
                 }
-                b"Data" => in_data = false,
+                "Data" => in_data = false,
                 _ => {}
             },
             Ok(Event::Text(t)) => {
-                if let Ok(v) = t.decode() {
-                    let text = v.as_ref();
-                    if in_display_name {
-                        display_name.push_str(text);
-                    } else if in_method {
-                        method_buf.push_str(text);
-                    } else if in_estimated_data_size {
-                        estimated_data_size_buf.push_str(text);
-                    } else if in_content_type {
-                        content_type.push_str(text);
-                    } else if in_content_id {
-                        content_id.get_or_insert_with(String::new).push_str(text);
-                    } else if in_content_location {
-                        content_location
-                            .get_or_insert_with(String::new)
-                            .push_str(text);
-                    } else if in_is_inline {
-                        is_inline_buf.push_str(text);
-                    } else if in_data {
-                        data.push_str(text);
-                    }
+                let text = t.as_ref();
+                if in_display_name {
+                    display_name.push_str(text);
+                } else if in_method {
+                    method_buf.push_str(text);
+                } else if in_estimated_data_size {
+                    estimated_data_size_buf.push_str(text);
+                } else if in_content_type {
+                    content_type.push_str(text);
+                } else if in_content_id {
+                    content_id.get_or_insert_with(String::new).push_str(text);
+                } else if in_content_location {
+                    content_location
+                        .get_or_insert_with(String::new)
+                        .push_str(text);
+                } else if in_is_inline {
+                    is_inline_buf.push_str(text);
+                } else if in_data {
+                    data.push_str(text);
+                }
+            }
+            Ok(Event::GeneralRef(t)) => {
+                let text = resolve_xml_reference(t.as_ref());
+                if in_display_name {
+                    display_name.push_str(&text);
+                } else if in_method {
+                    method_buf.push_str(&text);
+                } else if in_estimated_data_size {
+                    estimated_data_size_buf.push_str(&text);
+                } else if in_content_type {
+                    content_type.push_str(&text);
+                } else if in_content_id {
+                    content_id.get_or_insert_with(String::new).push_str(&text);
+                } else if in_content_location {
+                    content_location
+                        .get_or_insert_with(String::new)
+                        .push_str(&text);
+                } else if in_is_inline {
+                    is_inline_buf.push_str(&text);
+                } else if in_data {
+                    data.push_str(&text);
                 }
             }
             Ok(Event::Eof) | Err(_) => break,
@@ -1325,18 +1347,26 @@ pub fn parse_eas_attachment_deletes(xml: &str) -> Vec<String> {
     let mut buf = Vec::new();
     let mut ids = Vec::new();
     let mut in_file_reference = false;
+    let mut current = String::new();
 
     loop {
         match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(e)) if e.name().local_name().as_ref() == b"FileReference" => {
+            Ok(Event::Start(e)) if e.name().local_name().as_ref() == "FileReference" => {
                 in_file_reference = true;
+                current.clear();
             }
-            Ok(Event::End(e)) if e.name().local_name().as_ref() == b"FileReference" => {
+            Ok(Event::End(e)) if e.name().local_name().as_ref() == "FileReference" => {
                 in_file_reference = false;
+                ids.push(std::mem::take(&mut current));
             }
             Ok(Event::Text(t)) => {
-                if in_file_reference && let Ok(v) = t.decode() {
-                    ids.push(v.into_owned());
+                if in_file_reference {
+                    current.push_str(t.as_ref());
+                }
+            }
+            Ok(Event::GeneralRef(t)) => {
+                if in_file_reference {
+                    current.push_str(&resolve_xml_reference(t.as_ref()));
                 }
             }
             Ok(Event::Eof) | Err(_) => break,

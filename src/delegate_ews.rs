@@ -3,7 +3,7 @@ use crate::permission::delegate::DelegateManager;
 use crate::permission::types::{DelegateInfo, PermissionLevel};
 use crate::protocol_fixtures::{EWS_MSG_NS, EWS_TYPE_NS};
 use crate::storage::Storage;
-use crate::util::xml_escape;
+use crate::util::{resolve_xml_reference, xml_escape};
 use quick_xml::Reader;
 use quick_xml::events::Event;
 use std::sync::Arc;
@@ -122,64 +122,43 @@ fn parse_add_delegate_request(xml: &str) -> ParsedDelegateRequest {
     let mut reader = Reader::from_str(xml);
     reader.config_mut().trim_text(true);
     let mut buf = Vec::new();
-    let mut in_email = false;
-    let mut in_display_name = false;
-    let mut in_calendar_perm = false;
-    let mut _in_inbox_perm = false;
-    let mut in_receive_copies = false;
-    let mut in_view_private = false;
+    let mut current_text = String::new();
 
     loop {
         match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(e)) => {
-                let local = e.name().local_name();
-                match local.as_ref() {
-                    b"EmailAddress" => {
-                        in_email = true;
-                    }
-                    b"DisplayName" => {
-                        in_display_name = true;
-                    }
-                    b"CalendarFolderPermissionLevel" => {
-                        in_calendar_perm = true;
-                    }
-                    b"InboxFolderPermissionLevel" => {
-                        _in_inbox_perm = true;
-                    }
-                    b"ReceiveCopiesOfMeetingMessages" => {
-                        in_receive_copies = true;
-                    }
-                    b"ViewPrivateItems" => {
-                        in_view_private = true;
-                    }
-                    _ => {}
-                }
+            Ok(Event::Start(_)) => {
+                // Each field begins a fresh text accumulation.
+                current_text.clear();
             }
             Ok(Event::Text(e)) => {
-                if let Ok(text) = e.decode() {
-                    let text = text.into_owned();
-                    if in_email {
-                        result.delegate_email = Some(text);
-                    } else if in_display_name {
-                        result.delegate_name = Some(text);
-                    } else if in_calendar_perm {
-                        result.calendar_permission = parse_delegate_permission_level(&text);
-                    } else if in_receive_copies {
-                        result.receive_copies = Some(text.eq_ignore_ascii_case("true"));
-                    } else if in_view_private {
-                        result.view_private = Some(text.eq_ignore_ascii_case("true"));
-                    }
-                }
+                current_text.push_str(e.as_ref());
+            }
+            Ok(Event::GeneralRef(e)) => {
+                current_text.push_str(&resolve_xml_reference(e.as_ref()));
             }
             Ok(Event::End(e)) => {
                 let local = e.name().local_name();
                 match local.as_ref() {
-                    b"EmailAddress" => in_email = false,
-                    b"DisplayName" => in_display_name = false,
-                    b"CalendarFolderPermissionLevel" => in_calendar_perm = false,
-                    b"InboxFolderPermissionLevel" => _in_inbox_perm = false,
-                    b"ReceiveCopiesOfMeetingMessages" => in_receive_copies = false,
-                    b"ViewPrivateItems" => in_view_private = false,
+                    "EmailAddress" => {
+                        result.delegate_email = Some(std::mem::take(&mut current_text));
+                    }
+                    "DisplayName" => {
+                        result.delegate_name = Some(std::mem::take(&mut current_text));
+                    }
+                    "CalendarFolderPermissionLevel" => {
+                        result.calendar_permission =
+                            parse_delegate_permission_level(&std::mem::take(&mut current_text));
+                    }
+                    "ReceiveCopiesOfMeetingMessages" => {
+                        result.receive_copies = Some(
+                            std::mem::take(&mut current_text).eq_ignore_ascii_case("true"),
+                        );
+                    }
+                    "ViewPrivateItems" => {
+                        result.view_private = Some(
+                            std::mem::take(&mut current_text).eq_ignore_ascii_case("true"),
+                        );
+                    }
                     _ => {}
                 }
             }
@@ -197,19 +176,28 @@ fn parse_remove_delegate_request(xml: &str) -> Option<String> {
     reader.config_mut().trim_text(true);
     let mut buf = Vec::new();
     let mut in_email = false;
+    let mut current = String::new();
 
     loop {
         match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(e)) if e.name().local_name().as_ref() == b"EmailAddress" => {
+            Ok(Event::Start(e)) if e.name().local_name().as_ref() == "EmailAddress" => {
                 in_email = true;
+                current.clear();
             }
             Ok(Event::Text(e)) => {
-                if in_email && let Ok(text) = e.decode() {
-                    return Some(text.into_owned());
+                if in_email {
+                    current.push_str(e.as_ref());
                 }
             }
-            Ok(Event::End(_)) => {
-                in_email = false;
+            Ok(Event::GeneralRef(e)) => {
+                if in_email {
+                    current.push_str(&resolve_xml_reference(e.as_ref()));
+                }
+            }
+            Ok(Event::End(e)) if e.name().local_name().as_ref() == "EmailAddress" => {
+                if in_email {
+                    return Some(std::mem::take(&mut current));
+                }
             }
             Ok(Event::Eof) | Err(_) => break,
             _ => {}

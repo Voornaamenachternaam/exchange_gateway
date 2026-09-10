@@ -5954,19 +5954,20 @@ fn parse_calendar_multistatus(xml: &str) -> Vec<crate::mapi::session::TableRow> 
     let mut rows = Vec::new();
     loop {
         match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(e)) if e.name().local_name().as_ref() == b"calendar-data" => {
+            Ok(Event::Start(e)) if e.name().local_name().as_ref() == "calendar-data" => {
                 in_calendar_data = true;
                 caldata_buf.clear();
             }
             Ok(Event::Text(ref t)) if in_calendar_data => {
-                if let Ok(ics) = t.decode() {
-                    caldata_buf.push_str(&ics);
-                }
+                caldata_buf.push_str(t);
             }
             Ok(Event::CData(ref t)) if in_calendar_data => {
-                caldata_buf.push_str(&String::from_utf8_lossy(t.as_ref()));
+                caldata_buf.push_str(t.as_ref());
             }
-            Ok(Event::End(e)) if e.name().local_name().as_ref() == b"calendar-data" => {
+            Ok(Event::GeneralRef(ref r)) if in_calendar_data => {
+                caldata_buf.push_str(&crate::util::resolve_xml_reference(r.as_ref()));
+            }
+            Ok(Event::End(e)) if e.name().local_name().as_ref() == "calendar-data" => {
                 in_calendar_data = false;
                 let ics = caldata_buf.trim();
                 if !ics.is_empty()

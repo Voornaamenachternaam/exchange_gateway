@@ -17,6 +17,43 @@ pub fn escape_xml_text(s: &str) -> Cow<'_, str> {
     xml_escape(s)
 }
 
+/// Resolve an XML entity/character reference to its literal text.
+///
+/// `reference` is the raw text between `&` and `;` (e.g. `amp`, `#x26`, `#38`).
+/// Numeric character references and the five predefined XML entities are
+/// resolved to their characters, while unrecognized named references yield
+/// `None` (the caller decides how to handle them).
+pub fn resolve_xml_reference_strict(reference: &str) -> Option<String> {
+    if let Some(rest) = reference.strip_prefix('#') {
+        let (digits, radix) = if let Some(hex) = rest.strip_prefix('x').or_else(|| rest.strip_prefix('X')) {
+            (hex, 16)
+        } else {
+            (rest, 10)
+        };
+        if let Ok(cp) = u32::from_str_radix(digits, radix)
+            && let Some(c) = char::from_u32(cp)
+        {
+            return Some(c.to_string());
+        }
+        return None;
+    }
+    match reference {
+        "amp" => Some("&".to_string()),
+        "lt" => Some("<".to_string()),
+        "gt" => Some(">".to_string()),
+        "quot" => Some("\"".to_string()),
+        "apos" => Some("'".to_string()),
+        _ => None,
+    }
+}
+
+/// Resolve an XML entity/character reference to its literal text, preserving
+/// unrecognized named references verbatim (`&name;`) so that no content is
+/// silently dropped.
+pub fn resolve_xml_reference(reference: &str) -> String {
+    resolve_xml_reference_strict(reference).unwrap_or_else(|| format!("&{};", reference))
+}
+
 pub fn sanitize_path_segment(s: &str) -> String {
     s.chars()
         .map(|c| {

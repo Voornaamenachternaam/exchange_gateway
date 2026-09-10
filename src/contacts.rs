@@ -1,5 +1,6 @@
 // src/contacts.rs
 use crate::carddav::Contact as CarddavContact;
+use crate::util::resolve_xml_reference;
 use crate::vcard::{Vcard, parse_vcard_from_data};
 use anyhow::anyhow;
 use reqwest::StatusCode;
@@ -263,7 +264,7 @@ pub fn parse_contacts_mutations(xml: &str) -> anyhow::Result<Vec<ContactsMutatio
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(e)) => {
-                let name_bytes = e.name().as_ref().to_vec();
+                let name_bytes = e.name().as_ref().as_bytes().to_vec();
                 let name = String::from_utf8_lossy(&name_bytes).to_string();
                 if name == "Add" || name == "Change" || name == "Delete" {
                     current_kind = match name.as_str() {
@@ -322,7 +323,20 @@ pub fn parse_contacts_mutations(xml: &str) -> anyhow::Result<Vec<ContactsMutatio
                 }
             }
             Ok(Event::Text(e)) => {
-                let text = e.decode().unwrap_or_default().to_string();
+                let text = e.to_string();
+                let in_vcard = stack.iter().any(|n| n == b"vCard");
+                let in_server_id = stack.iter().any(|n| n == b"ServerId");
+                if in_server_id {
+                    current_server_id.push_str(&text);
+                } else if in_vcard
+                    && (current_kind == Some(ContactsOpKind::Add)
+                        || current_kind == Some(ContactsOpKind::Change))
+                {
+                    current_vcard.push_str(&text);
+                }
+            }
+            Ok(Event::GeneralRef(e)) => {
+                let text = resolve_xml_reference(e.as_ref());
                 let in_vcard = stack.iter().any(|n| n == b"vCard");
                 let in_server_id = stack.iter().any(|n| n == b"ServerId");
                 if in_server_id {

@@ -6,7 +6,7 @@ use crate::calendar::{
 };
 use crate::jmap::QueryCalendarEventsParams;
 use crate::models::AppState;
-use crate::util::{normalize_email, xml_escape};
+use crate::util::{normalize_email, resolve_xml_reference, xml_escape};
 use anyhow::{Result, anyhow};
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -1567,39 +1567,62 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
         };
         let mut buf = Vec::new();
         let mut in_caldata = false;
+        let mut in_href = false;
+        let mut in_getetag = false;
         let mut caldata_buf = String::new();
 
         loop {
             match reader.read_event_into(&mut buf) {
                 Ok(Event::Start(ref e)) => match e.name().local_name().as_ref() {
-                    b"href" => {
-                        if let Ok(Event::Text(e)) = reader.read_event_into(&mut buf) {
-                            current.href = e.decode().unwrap_or_default().trim().to_string();
-                        }
+                    "href" => {
+                        in_href = true;
+                        current.href.clear();
                     }
-                    b"getetag" => {
-                        if let Ok(Event::Text(e)) = reader.read_event_into(&mut buf) {
-                            current.etag = e.decode().unwrap_or_default().trim().to_string();
-                        }
+                    "getetag" => {
+                        in_getetag = true;
+                        current.etag.clear();
                     }
-                    b"calendar-data" => {
+                    "calendar-data" => {
                         in_caldata = true;
                         caldata_buf.clear();
                     }
                     _ => {}
                 },
+                Ok(Event::Text(ref e)) if in_href => {
+                    current.href.push_str(e.as_ref());
+                }
+                Ok(Event::GeneralRef(ref r)) if in_href => {
+                    current.href.push_str(&resolve_xml_reference(r.as_ref()));
+                }
+                Ok(Event::Text(ref e)) if in_getetag => {
+                    current.etag.push_str(e.as_ref());
+                }
+                Ok(Event::GeneralRef(ref r)) if in_getetag => {
+                    current.etag.push_str(&resolve_xml_reference(r.as_ref()));
+                }
                 Ok(Event::Text(ref e)) if in_caldata => {
-                    caldata_buf.push_str(&e.decode().unwrap_or_default());
+                    caldata_buf.push_str(e);
                 }
                 Ok(Event::CData(ref e)) if in_caldata => {
-                    caldata_buf.push_str(&String::from_utf8_lossy(e.as_ref()));
+                    caldata_buf.push_str(e.as_ref());
+                }
+                Ok(Event::GeneralRef(ref r)) if in_caldata => {
+                    caldata_buf.push_str(&resolve_xml_reference(r.as_ref()));
                 }
                 Ok(Event::End(ref e)) => match e.name().local_name().as_ref() {
-                    b"calendar-data" if in_caldata => {
+                    "href" => {
+                        in_href = false;
+                        current.href = current.href.trim().to_string();
+                    }
+                    "getetag" => {
+                        in_getetag = false;
+                        current.etag = current.etag.trim().to_string();
+                    }
+                    "calendar-data" if in_caldata => {
                         in_caldata = false;
                         current.ics = caldata_buf.trim().to_string();
                     }
-                    b"response" => {
+                    "response" => {
                         // Skip the calendar collection itself (which has no calendar-data)
                         // Only process individual events that have ICS data
                         if !current.href.is_empty()

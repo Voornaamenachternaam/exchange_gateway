@@ -30,37 +30,36 @@ fn verb_from_local_name(local: &str) -> Option<ChangeVerb> {
     }
 }
 
-fn local_name_bytes(name: &[u8]) -> String {
-    let local = name.rsplit(|b| *b == b':').next().unwrap_or(name);
-    String::from_utf8_lossy(local).into_owned()
+fn local_name_bytes(name: &str) -> String {
+    name.rsplit(':').next().unwrap_or(name).to_string()
 }
 
-fn push_start_tag(out: &mut String, e: &BytesStart<'_>, decoder: quick_xml::Decoder) {
+fn push_start_tag(out: &mut String, e: &BytesStart<'_>) {
     out.push('<');
-    out.push_str(&String::from_utf8_lossy(e.name().as_ref()));
+    out.push_str(e.name().as_ref());
     for attr in e.attributes().flatten() {
         out.push(' ');
-        out.push_str(&String::from_utf8_lossy(attr.key.as_ref()));
+        out.push_str(attr.key.as_ref());
         out.push_str("=\"");
-        match attr.decoded_and_normalized_value(XmlVersion::Implicit1_0, decoder) {
+        match attr.normalized_value(XmlVersion::Implicit1_0) {
             Ok(value) => out.push_str(&xml_escape(&value)),
-            Err(_) => out.push_str(&xml_escape(&String::from_utf8_lossy(attr.value.as_ref()))),
+            Err(_) => out.push_str(&xml_escape(&attr.value)),
         }
         out.push('"');
     }
     out.push('>');
 }
 
-fn push_empty_tag(out: &mut String, e: &BytesStart<'_>, decoder: quick_xml::Decoder) {
+fn push_empty_tag(out: &mut String, e: &BytesStart<'_>) {
     out.push('<');
-    out.push_str(&String::from_utf8_lossy(e.name().as_ref()));
+    out.push_str(e.name().as_ref());
     for attr in e.attributes().flatten() {
         out.push(' ');
-        out.push_str(&String::from_utf8_lossy(attr.key.as_ref()));
+        out.push_str(attr.key.as_ref());
         out.push_str("=\"");
-        match attr.decoded_and_normalized_value(XmlVersion::Implicit1_0, decoder) {
+        match attr.normalized_value(XmlVersion::Implicit1_0) {
             Ok(value) => out.push_str(&xml_escape(&value)),
-            Err(_) => out.push_str(&xml_escape(&String::from_utf8_lossy(attr.value.as_ref()))),
+            Err(_) => out.push_str(&xml_escape(&attr.value)),
         }
         out.push('"');
     }
@@ -69,7 +68,7 @@ fn push_empty_tag(out: &mut String, e: &BytesStart<'_>, decoder: quick_xml::Deco
 
 fn push_end_tag(out: &mut String, e: &BytesEnd<'_>) {
     out.push_str("</");
-    out.push_str(&String::from_utf8_lossy(e.name().as_ref()));
+    out.push_str(e.name().as_ref());
     out.push('>');
 }
 
@@ -86,7 +85,6 @@ fn first_ews_i32(payload: &str, candidates: &[&[u8]]) -> Option<i32> {
 pub fn parse_item_changes(body: &str) -> Vec<EwsFieldChange> {
     let mut reader = Reader::from_str(body);
     reader.config_mut().trim_text(true);
-    let decoder = reader.decoder();
 
     let mut buf = Vec::new();
     let mut results = Vec::new();
@@ -107,15 +105,14 @@ pub fn parse_item_changes(body: &str) -> Vec<EwsFieldChange> {
     /// For ExtendedFieldURI: returns "PropertyTag:PropertyId" or "DistinguishedPropertySetId:PropertyId".
     fn extract_field_uri_from_element(
         e: &quick_xml::events::BytesStart<'_>,
-        decoder: quick_xml::Decoder,
         local: &str,
     ) -> Option<String> {
         match local {
             "FieldURI" => {
                 // <t:FieldURI FieldURI="calendar:Start" />
                 e.attributes().flatten().find_map(|attr| {
-                    if attr.key.local_name().as_ref() == b"FieldURI" {
-                        attr.decoded_and_normalized_value(XmlVersion::Implicit1_0, decoder)
+                    if attr.key.local_name().as_ref() == "FieldURI" {
+                        attr.normalized_value(XmlVersion::Implicit1_0)
                             .ok()
                             .map(|v| v.to_string())
                     } else {
@@ -129,15 +126,12 @@ pub fn parse_item_changes(body: &str) -> Vec<EwsFieldChange> {
                 let mut field_index = None;
                 for attr in e.attributes().flatten() {
                     let key = attr.key.local_name();
-                    if key.as_ref() == b"FieldURI" {
-                        if let Ok(v) =
-                            attr.decoded_and_normalized_value(XmlVersion::Implicit1_0, decoder)
-                        {
+                    if key.as_ref() == "FieldURI" {
+                        if let Ok(v) = attr.normalized_value(XmlVersion::Implicit1_0) {
                             field_uri = Some(v.to_string());
                         }
-                    } else if key.as_ref() == b"FieldIndex"
-                        && let Ok(v) =
-                            attr.decoded_and_normalized_value(XmlVersion::Implicit1_0, decoder)
+                    } else if key.as_ref() == "FieldIndex"
+                        && let Ok(v) = attr.normalized_value(XmlVersion::Implicit1_0)
                     {
                         field_index = Some(v.to_string());
                     }
@@ -156,21 +150,16 @@ pub fn parse_item_changes(body: &str) -> Vec<EwsFieldChange> {
                 let mut dist_prop_set = None;
                 for attr in e.attributes().flatten() {
                     let key = attr.key.local_name();
-                    if key.as_ref() == b"PropertyTag" {
-                        if let Ok(v) =
-                            attr.decoded_and_normalized_value(XmlVersion::Implicit1_0, decoder)
-                        {
+                    if key.as_ref() == "PropertyTag" {
+                        if let Ok(v) = attr.normalized_value(XmlVersion::Implicit1_0) {
                             tag = Some(v.to_string());
                         }
-                    } else if key.as_ref() == b"PropertyId" {
-                        if let Ok(v) =
-                            attr.decoded_and_normalized_value(XmlVersion::Implicit1_0, decoder)
-                        {
+                    } else if key.as_ref() == "PropertyId" {
+                        if let Ok(v) = attr.normalized_value(XmlVersion::Implicit1_0) {
                             prop_id = Some(v.to_string());
                         }
-                    } else if key.as_ref() == b"DistinguishedPropertySetId"
-                        && let Ok(v) =
-                            attr.decoded_and_normalized_value(XmlVersion::Implicit1_0, decoder)
+                    } else if key.as_ref() == "DistinguishedPropertySetId"
+                        && let Ok(v) = attr.normalized_value(XmlVersion::Implicit1_0)
                     {
                         dist_prop_set = Some(v.to_string());
                     }
@@ -218,10 +207,10 @@ pub fn parse_item_changes(body: &str) -> Vec<EwsFieldChange> {
                                 "FieldURI" | "IndexedFieldURI" | "ExtendedFieldURI"
                             )
                         {
-                            *field_uri = extract_field_uri_from_element(e, decoder, &local);
+                            *field_uri = extract_field_uri_from_element(e, &local);
                         } else if field_uri.is_some() {
                             *collecting_payload = true;
-                            push_start_tag(payload_xml, e, decoder);
+                            push_start_tag(payload_xml, e);
                         }
                     }
                 }
@@ -242,10 +231,10 @@ pub fn parse_item_changes(body: &str) -> Vec<EwsFieldChange> {
                                 "FieldURI" | "IndexedFieldURI" | "ExtendedFieldURI"
                             )
                         {
-                            *field_uri = extract_field_uri_from_element(e, decoder, &local);
+                            *field_uri = extract_field_uri_from_element(e, &local);
                         } else if field_uri.is_some() {
                             *collecting_payload = true;
-                            push_empty_tag(payload_xml, e, decoder);
+                            push_empty_tag(payload_xml, e);
                         }
                     }
                 }
@@ -284,9 +273,8 @@ pub fn parse_item_changes(body: &str) -> Vec<EwsFieldChange> {
                     payload_xml,
                     ..
                 } = &mut state
-                    && let Ok(text) = t.decode()
                 {
-                    payload_xml.push_str(&xml_escape_text(&text));
+                    payload_xml.push_str(&xml_escape_text(t.as_ref()));
                 }
             }
             Ok(Event::CData(t)) => {
@@ -295,9 +283,22 @@ pub fn parse_item_changes(body: &str) -> Vec<EwsFieldChange> {
                     payload_xml,
                     ..
                 } = &mut state
-                    && let Ok(text) = t.decode()
                 {
-                    payload_xml.push_str(&xml_escape_text(&text));
+                    payload_xml.push_str(&xml_escape_text(t.as_ref()));
+                }
+            }
+            Ok(Event::GeneralRef(r)) => {
+                if let State::InVerb {
+                    collecting_payload: true,
+                    payload_xml,
+                    ..
+                } = &mut state
+                {
+                    // Reconstruct the entity reference verbatim rather than
+                    // re-escaping it, which would double-escape the text.
+                    payload_xml.push('&');
+                    payload_xml.push_str(r.as_ref());
+                    payload_xml.push(';');
                 }
             }
             Ok(Event::Eof) | Err(_) => break,

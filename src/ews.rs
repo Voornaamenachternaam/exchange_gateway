@@ -33,7 +33,8 @@ use crate::room::{
 use crate::storage::EwsItemRow;
 use crate::sync::generate_server_id;
 use crate::util::{
-    canonicalize_username, format_ews_datetime, nfc, normalize_username, xml_escape,
+    canonicalize_username, format_ews_datetime, nfc, normalize_username, resolve_xml_reference,
+    xml_escape,
 };
 use crate::version;
 use anyhow::anyhow;
@@ -396,52 +397,52 @@ fn detect_action(xml: &str) -> Option<EwsAction> {
             Ok(Event::Start(e)) => {
                 let name = e.name().local_name();
                 return Some(match name.as_ref() {
-                    b"GetFolder" => EwsAction::GetFolder,
-                    b"FindFolder" => EwsAction::FindFolder,
-                    b"FindItem" => EwsAction::FindItem,
-                    b"GetItem" => EwsAction::GetItem,
-                    b"GetUserAvailabilityRequest" => EwsAction::GetUserAvailability,
-                    b"SyncFolderItems" => EwsAction::SyncFolderItems,
-                    b"SyncFolderHierarchy" => EwsAction::SyncFolderHierarchy,
-                    b"Subscribe" => EwsAction::Subscribe,
-                    b"Unsubscribe" => EwsAction::Unsubscribe,
-                    b"GetEvents" => EwsAction::GetEvents,
-                    b"GetStreamingEvents" => EwsAction::GetStreamingEvents,
-                    b"CreateItem" => EwsAction::CreateItem,
-                    b"UpdateItem" => EwsAction::UpdateItem,
-                    b"DeleteItem" => EwsAction::DeleteItem,
-                    b"SendItem" => EwsAction::SendItem,
-                    b"MoveItem" => EwsAction::MoveItem,
-                    b"ResolveNames" => EwsAction::ResolveNames,
-                    b"GetUserOofSettingsRequest" => EwsAction::GetUserOofSettings,
-                    b"SetUserOofSettingsRequest" => EwsAction::SetUserOofSettings,
-                    b"GetServiceConfiguration" => EwsAction::GetServiceConfiguration,
-                    b"GetServerTimeZones" => EwsAction::GetServerTimeZones,
-                    b"GetFolderInfo" => EwsAction::GetFolderInfo,
-                    b"GetMailTips" => EwsAction::GetMailTips,
-                    b"FindPeople" => EwsAction::FindPeople,
-                    b"GetConversationItems" => EwsAction::GetConversationItems,
-                    b"ConvertId" => EwsAction::ConvertId,
-                    b"GetRoomLists" => EwsAction::GetRoomLists,
-                    b"GetRooms" => EwsAction::GetRooms,
-                    b"GetDelegate" => EwsAction::GetDelegate,
-                    b"AddDelegate" => EwsAction::AddDelegate,
-                    b"RemoveDelegate" => EwsAction::RemoveDelegate,
-                    b"UpdateDelegate" => EwsAction::UpdateDelegate,
-                    b"GetUserPhoto" => EwsAction::GetUserPhoto,
-                    b"MarkAsJunk" => EwsAction::MarkAsJunk,
-                    b"GetAppManifests" => EwsAction::GetAppManifests,
-                    b"GetAppMarketplaceUrl" => EwsAction::GetAppMarketplaceUrl,
-                    b"InstallApp" => EwsAction::InstallApp,
-                    b"UninstallApp" => EwsAction::UninstallApp,
-                    b"GetClientAccessToken" => EwsAction::GetClientAccessToken,
-                    b"GetReminders" => EwsAction::GetReminders,
-                    b"PerformReminderAction" => EwsAction::PerformReminderAction,
-                    b"GetPersona" => EwsAction::GetPersona,
-                    b"CreateAttachment" => EwsAction::CreateAttachment,
-                    b"GetAttachment" => EwsAction::GetAttachment,
-                    b"DeleteAttachment" => EwsAction::DeleteAttachment,
-                    b"GetUserConfiguration" => EwsAction::GetUserConfiguration,
+                    "GetFolder" => EwsAction::GetFolder,
+                    "FindFolder" => EwsAction::FindFolder,
+                    "FindItem" => EwsAction::FindItem,
+                    "GetItem" => EwsAction::GetItem,
+                    "GetUserAvailabilityRequest" => EwsAction::GetUserAvailability,
+                    "SyncFolderItems" => EwsAction::SyncFolderItems,
+                    "SyncFolderHierarchy" => EwsAction::SyncFolderHierarchy,
+                    "Subscribe" => EwsAction::Subscribe,
+                    "Unsubscribe" => EwsAction::Unsubscribe,
+                    "GetEvents" => EwsAction::GetEvents,
+                    "GetStreamingEvents" => EwsAction::GetStreamingEvents,
+                    "CreateItem" => EwsAction::CreateItem,
+                    "UpdateItem" => EwsAction::UpdateItem,
+                    "DeleteItem" => EwsAction::DeleteItem,
+                    "SendItem" => EwsAction::SendItem,
+                    "MoveItem" => EwsAction::MoveItem,
+                    "ResolveNames" => EwsAction::ResolveNames,
+                    "GetUserOofSettingsRequest" => EwsAction::GetUserOofSettings,
+                    "SetUserOofSettingsRequest" => EwsAction::SetUserOofSettings,
+                    "GetServiceConfiguration" => EwsAction::GetServiceConfiguration,
+                    "GetServerTimeZones" => EwsAction::GetServerTimeZones,
+                    "GetFolderInfo" => EwsAction::GetFolderInfo,
+                    "GetMailTips" => EwsAction::GetMailTips,
+                    "FindPeople" => EwsAction::FindPeople,
+                    "GetConversationItems" => EwsAction::GetConversationItems,
+                    "ConvertId" => EwsAction::ConvertId,
+                    "GetRoomLists" => EwsAction::GetRoomLists,
+                    "GetRooms" => EwsAction::GetRooms,
+                    "GetDelegate" => EwsAction::GetDelegate,
+                    "AddDelegate" => EwsAction::AddDelegate,
+                    "RemoveDelegate" => EwsAction::RemoveDelegate,
+                    "UpdateDelegate" => EwsAction::UpdateDelegate,
+                    "GetUserPhoto" => EwsAction::GetUserPhoto,
+                    "MarkAsJunk" => EwsAction::MarkAsJunk,
+                    "GetAppManifests" => EwsAction::GetAppManifests,
+                    "GetAppMarketplaceUrl" => EwsAction::GetAppMarketplaceUrl,
+                    "InstallApp" => EwsAction::InstallApp,
+                    "UninstallApp" => EwsAction::UninstallApp,
+                    "GetClientAccessToken" => EwsAction::GetClientAccessToken,
+                    "GetReminders" => EwsAction::GetReminders,
+                    "PerformReminderAction" => EwsAction::PerformReminderAction,
+                    "GetPersona" => EwsAction::GetPersona,
+                    "CreateAttachment" => EwsAction::CreateAttachment,
+                    "GetAttachment" => EwsAction::GetAttachment,
+                    "DeleteAttachment" => EwsAction::DeleteAttachment,
+                    "GetUserConfiguration" => EwsAction::GetUserConfiguration,
                     _ => {
                         buf.clear();
                         continue;
@@ -464,16 +465,21 @@ fn extract_tag_texts(xml: &str, tag: &[u8]) -> Vec<String> {
     reader.config_mut().trim_text(true);
     let mut buf = Vec::new();
     let mut inside = false;
+    let mut value = String::new();
     let mut values = Vec::new();
     loop {
         match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(e)) if e.name().local_name().as_ref() == tag => inside = true,
-            Ok(Event::Text(t)) if inside => {
-                if let Ok(value) = t.decode() {
-                    values.push(value.into_owned());
-                }
+            Ok(Event::Start(e)) if e.name().local_name().as_ref().as_bytes() == tag => {
+                inside = true;
+                value.clear();
             }
-            Ok(Event::End(e)) if e.name().local_name().as_ref() == tag => inside = false,
+            Ok(Event::Text(t)) if inside => value.push_str(t.as_ref()),
+            Ok(Event::CData(t)) if inside => value.push_str(t.as_ref()),
+            Ok(Event::GeneralRef(r)) if inside => value.push_str(&resolve_xml_reference(r.as_ref())),
+            Ok(Event::End(e)) if e.name().local_name().as_ref().as_bytes() == tag => {
+                inside = false;
+                values.push(std::mem::take(&mut value));
+            }
             Ok(Event::Eof) | Err(_) => return values,
             _ => {}
         }
@@ -492,29 +498,33 @@ fn extract_recipient_email_addresses(xml: &str) -> Vec<String> {
     let mut buf = Vec::new();
     let mut recipients_depth = 0u32;
     let mut in_email_address = false;
+    let mut current_email = String::new();
     let mut values = Vec::new();
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(e)) => {
                 let name = e.name().local_name();
-                if name.as_ref() == b"Recipients" {
+                if name.as_ref() == "Recipients" {
                     recipients_depth += 1;
-                } else if name.as_ref() == b"EmailAddress" && recipients_depth > 0 {
+                } else if name.as_ref() == "EmailAddress" && recipients_depth > 0 {
                     in_email_address = true;
+                    current_email.clear();
                 }
             }
             Ok(Event::Text(t)) if in_email_address => {
-                if let Ok(value) = t.decode()
-                    && !value.trim().is_empty()
-                {
-                    values.push(value.into_owned());
-                }
+                current_email.push_str(t.as_ref());
+            }
+            Ok(Event::GeneralRef(r)) if in_email_address => {
+                current_email.push_str(&resolve_xml_reference(r.as_ref()));
             }
             Ok(Event::End(e)) => {
                 let name = e.name().local_name();
-                if name.as_ref() == b"EmailAddress" && in_email_address {
+                if name.as_ref() == "EmailAddress" && in_email_address {
                     in_email_address = false;
-                } else if name.as_ref() == b"Recipients" && recipients_depth > 0 {
+                    if !current_email.trim().is_empty() {
+                        values.push(std::mem::take(&mut current_email));
+                    }
+                } else if name.as_ref() == "Recipients" && recipients_depth > 0 {
                     recipients_depth -= 1;
                 }
             }
@@ -531,11 +541,10 @@ fn extract_first_attr(xml: &str, tag: &[u8], attr: &[u8]) -> Option<String> {
     let mut buf = Vec::new();
     loop {
         match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(e)) | Ok(Event::Empty(e)) if e.name().local_name().as_ref() == tag => {
+            Ok(Event::Start(e)) | Ok(Event::Empty(e)) if e.name().local_name().as_ref().as_bytes() == tag => {
                 for a in e.attributes().flatten() {
-                    if a.key.local_name().as_ref() == attr
-                        && let Ok(v) = a
-                            .decoded_and_normalized_value(XmlVersion::Implicit1_0, reader.decoder())
+                    if a.key.local_name().as_ref().as_bytes() == attr
+                        && let Ok(v) = a.normalized_value(XmlVersion::Implicit1_0)
                     {
                         return Some(v.into_owned());
                     }
@@ -560,11 +569,10 @@ fn extract_first_attrs(xml: &str, tag: &[u8], attr: &[u8]) -> Vec<String> {
     let mut values = Vec::new();
     loop {
         match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(e)) | Ok(Event::Empty(e)) if e.name().local_name().as_ref() == tag => {
+            Ok(Event::Start(e)) | Ok(Event::Empty(e)) if e.name().local_name().as_ref().as_bytes() == tag => {
                 for a in e.attributes().flatten() {
-                    if a.key.local_name().as_ref() == attr
-                        && let Ok(v) = a
-                            .decoded_and_normalized_value(XmlVersion::Implicit1_0, reader.decoder())
+                    if a.key.local_name().as_ref().as_bytes() == attr
+                        && let Ok(v) = a.normalized_value(XmlVersion::Implicit1_0)
                     {
                         values.push(v.into_owned());
                     }
@@ -1492,19 +1500,20 @@ async fn merged_freebusy_for_mailbox(
         let mut caldata_buf = String::new();
         loop {
             match reader.read_event_into(&mut buf) {
-                Ok(Event::Start(e)) if e.name().local_name().as_ref() == b"calendar-data" => {
+                Ok(Event::Start(e)) if e.name().local_name().as_ref() == "calendar-data" => {
                     in_calendar_data = true;
                     caldata_buf.clear();
                 }
                 Ok(Event::Text(ref t)) if in_calendar_data => {
-                    if let Ok(ics) = t.decode() {
-                        caldata_buf.push_str(&ics);
-                    }
+                    caldata_buf.push_str(t);
                 }
                 Ok(Event::CData(ref t)) if in_calendar_data => {
-                    caldata_buf.push_str(&String::from_utf8_lossy(t.as_ref()));
+                    caldata_buf.push_str(t.as_ref());
                 }
-                Ok(Event::End(e)) if e.name().local_name().as_ref() == b"calendar-data" => {
+                Ok(Event::GeneralRef(ref r)) if in_calendar_data => {
+                    caldata_buf.push_str(&resolve_xml_reference(r.as_ref()));
+                }
+                Ok(Event::End(e)) if e.name().local_name().as_ref() == "calendar-data" => {
                     in_calendar_data = false;
                     let ics = caldata_buf.trim();
                     // Skip empty calendar-data (likely calendar collection root)
@@ -1942,6 +1951,8 @@ async fn load_current_calendar_items_caldav(
     reader.config_mut().trim_text(false);
     let mut buf = Vec::new();
     let mut in_caldata = false;
+    let mut in_href = false;
+    let mut in_getetag = false;
     let mut caldata_buf = String::new();
     let mut href = String::new();
     let mut etag = String::new();
@@ -1950,36 +1961,55 @@ async fn load_current_calendar_items_caldav(
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(ref e)) => match e.name().local_name().as_ref() {
-                b"href" => {
-                    if let Ok(Event::Text(t)) = reader.read_event_into(&mut buf) {
-                        href = t.decode().unwrap_or_default().trim().to_string();
-                    }
+                "href" => {
+                    in_href = true;
+                    href.clear();
                 }
-                b"getetag" => {
-                    if let Ok(Event::Text(t)) = reader.read_event_into(&mut buf) {
-                        etag = t.decode().unwrap_or_default().trim_matches('"').to_string();
-                    }
+                "getetag" => {
+                    in_getetag = true;
+                    etag.clear();
                 }
-                b"calendar-data" => {
+                "calendar-data" => {
                     in_caldata = true;
                     caldata_buf.clear();
                 }
                 _ => {}
             },
+            Ok(Event::Text(ref t)) if in_href => {
+                href.push_str(t.as_ref());
+            }
+            Ok(Event::GeneralRef(ref r)) if in_href => {
+                href.push_str(&resolve_xml_reference(r.as_ref()));
+            }
+            Ok(Event::Text(ref t)) if in_getetag => {
+                etag.push_str(t.as_ref());
+            }
+            Ok(Event::GeneralRef(ref r)) if in_getetag => {
+                etag.push_str(&resolve_xml_reference(r.as_ref()));
+            }
             Ok(Event::Text(ref t)) if in_caldata => {
-                if let Ok(txt) = t.decode() {
-                    caldata_buf.push_str(&txt);
-                }
+                caldata_buf.push_str(t);
             }
             Ok(Event::CData(ref t)) if in_caldata => {
-                caldata_buf.push_str(&String::from_utf8_lossy(t.as_ref()));
+                caldata_buf.push_str(t.as_ref());
+            }
+            Ok(Event::GeneralRef(ref r)) if in_caldata => {
+                caldata_buf.push_str(&resolve_xml_reference(r.as_ref()));
             }
             Ok(Event::End(ref e)) => match e.name().local_name().as_ref() {
-                b"calendar-data" if in_caldata => {
+                "href" => {
+                    in_href = false;
+                    href = href.trim().to_string();
+                }
+                "getetag" => {
+                    in_getetag = false;
+                    etag = etag.trim().trim_matches('"').to_string();
+                }
+                "calendar-data" if in_caldata => {
                     in_caldata = false;
                     ics = caldata_buf.trim().to_string();
                 }
-                b"response" => {
+                "response" => {
                     if !href.is_empty()
                         && let Some(item) = parse_ics_event(&ics)
                     {
@@ -2074,24 +2104,23 @@ fn extract_find_folder_parent_id(body: &str) -> Option<RequestedFolderRef> {
 
     loop {
         match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(e)) if e.name().local_name().as_ref() == b"ParentFolderIds" => {
+            Ok(Event::Start(e)) if e.name().local_name().as_ref() == "ParentFolderIds" => {
                 in_parent_folder_ids = true;
             }
             Ok(Event::Start(e)) | Ok(Event::Empty(e))
                 if in_parent_folder_ids
                     && matches!(
                         e.name().local_name().as_ref(),
-                        b"FolderId" | b"DistinguishedFolderId"
+                        "FolderId" | "DistinguishedFolderId"
                     ) =>
             {
                 for a in e.attributes().flatten() {
-                    if a.key.local_name().as_ref() == b"Id"
-                        && let Ok(v) = a
-                            .decoded_and_normalized_value(XmlVersion::Implicit1_0, reader.decoder())
+                    if a.key.local_name().as_ref() == "Id"
+                        && let Ok(v) = a.normalized_value(XmlVersion::Implicit1_0)
                     {
                         let id = v.into_owned();
                         return Some(
-                            if e.name().local_name().as_ref() == b"DistinguishedFolderId" {
+                            if e.name().local_name().as_ref() == "DistinguishedFolderId" {
                                 RequestedFolderRef::Distinguished(id)
                             } else {
                                 RequestedFolderRef::Explicit(id)
@@ -2100,7 +2129,7 @@ fn extract_find_folder_parent_id(body: &str) -> Option<RequestedFolderRef> {
                     }
                 }
             }
-            Ok(Event::End(e)) if e.name().local_name().as_ref() == b"ParentFolderIds" => {
+            Ok(Event::End(e)) if e.name().local_name().as_ref() == "ParentFolderIds" => {
                 in_parent_folder_ids = false;
             }
             Ok(Event::Eof) | Err(_) => return None,
@@ -4568,20 +4597,20 @@ fn detect_subscription_request_kind(body: &str) -> Option<DetectedSubscriptionRe
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(e)) => {
                 let name = e.name().local_name();
-                if name.as_ref() == b"Subscribe" {
+                if name.as_ref() == "Subscribe" {
                     subscribe_depth += 1;
                 } else if kind.is_none()
                     && subscribe_depth > 0
                     && matches!(
                         name.as_ref(),
-                        b"PullSubscriptionRequest"
-                            | b"StreamingSubscriptionRequest"
-                            | b"PushSubscriptionRequest"
+                        "PullSubscriptionRequest"
+                            | "StreamingSubscriptionRequest"
+                            | "PushSubscriptionRequest"
                     )
                 {
                     kind = Some(match name.as_ref() {
-                        b"PullSubscriptionRequest" => DetectedSubscriptionRequest::Pull,
-                        b"StreamingSubscriptionRequest" => DetectedSubscriptionRequest::Streaming,
+                        "PullSubscriptionRequest" => DetectedSubscriptionRequest::Pull,
+                        "StreamingSubscriptionRequest" => DetectedSubscriptionRequest::Streaming,
                         // unreachable: guarded by the `matches!` above.
                         _ => DetectedSubscriptionRequest::Push,
                     });
@@ -4591,18 +4620,18 @@ fn detect_subscription_request_kind(body: &str) -> Option<DetectedSubscriptionRe
                 let name = e.name().local_name();
                 if matches!(
                     name.as_ref(),
-                    b"PullSubscriptionRequest"
-                        | b"StreamingSubscriptionRequest"
-                        | b"PushSubscriptionRequest"
+                    "PullSubscriptionRequest"
+                        | "StreamingSubscriptionRequest"
+                        | "PushSubscriptionRequest"
                 ) {
                     kind = Some(match name.as_ref() {
-                        b"PullSubscriptionRequest" => DetectedSubscriptionRequest::Pull,
-                        b"StreamingSubscriptionRequest" => DetectedSubscriptionRequest::Streaming,
+                        "PullSubscriptionRequest" => DetectedSubscriptionRequest::Pull,
+                        "StreamingSubscriptionRequest" => DetectedSubscriptionRequest::Streaming,
                         _ => DetectedSubscriptionRequest::Push,
                     });
                 }
             }
-            Ok(Event::End(e)) if e.name().local_name().as_ref() == b"Subscribe" => {
+            Ok(Event::End(e)) if e.name().local_name().as_ref() == "Subscribe" => {
                 if subscribe_depth > 0 {
                     subscribe_depth -= 1;
                 }
@@ -4683,21 +4712,20 @@ fn extract_folder_ids_from_block(body: &str) -> HashSet<String> {
     let mut in_folder_ids = false;
     loop {
         match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(e)) if e.name().local_name().as_ref() == b"FolderIds" => {
+            Ok(Event::Start(e)) if e.name().local_name().as_ref() == "FolderIds" => {
                 in_folder_ids = true;
             }
-            Ok(Event::End(e)) if e.name().local_name().as_ref() == b"FolderIds" => {
+            Ok(Event::End(e)) if e.name().local_name().as_ref() == "FolderIds" => {
                 in_folder_ids = false;
             }
             Ok(Event::Start(e)) | Ok(Event::Empty(e))
                 if in_folder_ids
-                    && (e.name().local_name().as_ref() == b"FolderId"
-                        || e.name().local_name().as_ref() == b"DistinguishedFolderId") =>
+                    && (e.name().local_name().as_ref() == "FolderId"
+                        || e.name().local_name().as_ref() == "DistinguishedFolderId") =>
             {
                 for a in e.attributes().flatten() {
-                    if a.key.local_name().as_ref() == b"Id"
-                        && let Ok(v) = a
-                            .decoded_and_normalized_value(XmlVersion::Implicit1_0, reader.decoder())
+                    if a.key.local_name().as_ref() == "Id"
+                        && let Ok(v) = a.normalized_value(XmlVersion::Implicit1_0)
                     {
                         ids.insert(v.into_owned());
                     }
