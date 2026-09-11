@@ -36,6 +36,7 @@ pub mod data;
 pub mod fxics;
 pub mod handler;
 pub mod logon;
+pub mod namedprops;
 pub mod nspi;
 pub mod restrict;
 pub mod rops;

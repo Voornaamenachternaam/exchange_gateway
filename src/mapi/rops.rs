@@ -4081,6 +4081,36 @@ impl RopGetSearchCriteriaRequest {
     }
 }
 
+/// `RopGetSearchCriteria` (0x31) success response (MS-OXCROPS §2.2.4.6.2):
+///   `RopId · InputHandleIndex · ReturnValue(4 LE) · RestrictionSize(2 LE)
+///    · RestrictionData[] · FolderIdCount(2 LE) · FolderIds[] · SearchFlags(4
+///    LE)`. The gateway persists no server-side search folder, so the response
+///    carries an empty restriction and empty folder set with `SearchFlags=0`.
+#[derive(Debug, Clone)]
+pub struct RopGetSearchCriteriaSuccess {
+    pub input_handle_index: u8,
+    pub return_value: RopErrorCode,
+    pub restriction_data: Vec<u8>,
+    pub folder_ids: Vec<u64>,
+    pub search_flags: u32,
+}
+impl RopGetSearchCriteriaSuccess {
+    pub fn encode(&self, out: &mut Vec<u8>) {
+        out.push(RopId::ROP_GET_SEARCH_CRITERIA.to_u8());
+        out.push(self.input_handle_index);
+        out.extend(&self.return_value.to_u32().to_le_bytes());
+        let rsize = u16::try_from(self.restriction_data.len()).unwrap_or(u16::MAX);
+        out.extend_from_slice(&rsize.to_le_bytes());
+        out.extend_from_slice(&self.restriction_data);
+        let fcount = u16::try_from(self.folder_ids.len()).unwrap_or(u16::MAX);
+        out.extend_from_slice(&fcount.to_le_bytes());
+        for fid in &self.folder_ids {
+            out.extend_from_slice(&fid.to_le_bytes());
+        }
+        out.extend_from_slice(&self.search_flags.to_le_bytes());
+    }
+}
+
 /// `RopQueryNamedProperties` (0x5F) request body (MS-OXCROPS §2.2.8.10.1).
 /// A `HasGuid` flag gates an optional 16-byte `PropertyGuid`; the property-id
 /// list follows as a count + fixed-width 16-bit array.
@@ -4111,6 +4141,28 @@ impl RopQueryNamedPropertiesRequest {
             query_flags,
             property_ids,
         })
+    }
+}
+
+/// `RopQueryNamedProperties` (0x5F) success response (MS-OXCROPS §2.2.8.10.2):
+///   `RopId · OutputHandleIndex · ReturnValue(4 LE) · PropertyIdCount(2 LE)
+///    · PropertyIds[count]`.
+#[derive(Debug, Clone)]
+pub struct RopQueryNamedPropertiesSuccess {
+    pub output_handle_index: u8,
+    pub return_value: RopErrorCode,
+    pub property_ids: Vec<u16>,
+}
+impl RopQueryNamedPropertiesSuccess {
+    pub fn encode(&self, out: &mut Vec<u8>) {
+        out.push(RopId::ROP_QUERY_NAMED_PROPERTIES.to_u8());
+        out.push(self.output_handle_index);
+        out.extend(&self.return_value.to_u32().to_le_bytes());
+        let count = u16::try_from(self.property_ids.len()).unwrap_or(u16::MAX);
+        out.extend_from_slice(&count.to_le_bytes());
+        for id in &self.property_ids {
+            out.extend_from_slice(&id.to_le_bytes());
+        }
     }
 }
 

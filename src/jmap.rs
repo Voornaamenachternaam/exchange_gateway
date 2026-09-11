@@ -1874,6 +1874,228 @@ impl JmapClient {
         Ok(created)
     }
 
+    /// Create a mailbox via JMAP `Mailbox/set` (RFC 8621 §5.2). Returns the
+    /// server-assigned mailbox id on success. Backs `RopCreateFolder` and the
+    /// "copy folder" ROP (`RopCopyFolder` needs to first materialise an empty
+    /// mailbox under the destination parent before the message copy fills it).
+    ///
+    /// `parent_id` may be `None` to create a top-level mailbox; `name` is the
+    /// display name (RFC 8621 requires a non-empty `name` and rejects a set
+    /// with neither `parentId` nor `name`).
+    pub async fn create_mailbox(
+        &self,
+        account_id: &str,
+        name: &str,
+        parent_id: Option<&str>,
+        username: &str,
+        password: &SecretString,
+    ) -> Result<String> {
+        let mut create_args = serde_json::Map::new();
+        create_args.insert("name".to_string(), json!(name));
+        if let Some(p) = parent_id {
+            create_args.insert("parentId".to_string(), json!(p));
+        }
+
+        let session = self.get_session(username, password).await?;
+        let api_url = &session.api_url;
+        let calls = vec![(
+            "Mailbox/set",
+            json!({
+                "accountId": account_id,
+                "create": { "c0": Value::Object(create_args) },
+            }),
+            "ms0",
+        )];
+        let resp = self
+            .api_call(
+                api_url,
+                &["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:mail"],
+                calls,
+                username,
+                password,
+            )
+            .await?;
+
+        for (method, data, _) in resp.method_responses {
+            if method != "Mailbox/set" {
+                continue;
+            }
+            if let Some(err) = data.get("error").filter(|v| !v.is_null()) {
+                let desc = err
+                    .get("description")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("Mailbox/set method rejected");
+                return Err(anyhow!("Mailbox/set create rejected: {desc}"));
+            }
+            if let Some(not_created) = data.get("notCreated")
+                && !not_created.is_null()
+                && let Some(obj) = not_created.as_object()
+                && !obj.is_empty()
+            {
+                let desc = obj
+                    .values()
+                    .next()
+                    .and_then(|v| v.get("description"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown");
+                return Err(anyhow!("Mailbox/set create failed: {desc}"));
+            }
+            if let Some(created) = data.get("created").and_then(|v| v.as_object()) {
+                if let Some(v) = created.get("c0") {
+                    if let Some(id) = v.as_str() {
+                        if !id.is_empty() {
+                            return Ok(id.to_string());
+                        }
+                    }
+                }
+            }
+        }
+        Err(anyhow!("Mailbox/set response missing created mailbox id"))
+    }
+
+    /// Update a mailbox via JMAP `Mailbox/set` `update` (RFC 8621 §5.2). Used
+    /// for folder *rename* (patch `name`) and folder *move* (patch
+    /// `parentId`). Returns true when the mailbox was updated.
+    pub async fn update_mailbox(
+        &self,
+        account_id: &str,
+        mailbox_id: &str,
+        name: Option<&str>,
+        parent_id: Option<Option<&str>>,
+        username: &str,
+        password: &SecretString,
+    ) -> Result<bool> {
+        let mut patch = serde_json::Map::new();
+        if let Some(n) = name {
+            patch.insert("name".to_string(), json!(n));
+        }
+        // `parent_id` is an `Option<Option<&str>>`: `Some(Some(id))` sets the
+        // parent, `Some(None)` clears it (top-level mailbox). `None` means
+        // "don't touch parentId".
+        if let Some(p) = parent_id {
+            patch.insert(
+                "parentId".to_string(),
+                match p {
+                    Some(id) => json!(id),
+                    None => json!(null),
+                },
+            );
+        }
+        if patch.is_empty() {
+            return Ok(true);
+        }
+
+        let session = self.get_session(username, password).await?;
+        let api_url = &session.api_url;
+        let mut update = serde_json::Map::new();
+        update.insert(mailbox_id.to_string(), Value::Object(patch));
+        let calls = vec![(
+            "Mailbox/set",
+            json!({
+                "accountId": account_id,
+                "update": Value::Object(update),
+            }),
+            "ms1",
+        )];
+        let resp = self
+            .api_call(
+                api_url,
+                &["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:mail"],
+                calls,
+                username,
+                password,
+            )
+            .await?;
+
+        for (method, data, _) in resp.method_responses {
+            if method != "Mailbox/set" {
+                continue;
+            }
+            if let Some(err) = data.get("error").filter(|v| !v.is_null()) {
+                let desc = err
+                    .get("description")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("Mailbox/set method rejected");
+                return Err(anyhow!("Mailbox/set update rejected: {desc}"));
+            }
+            if let Some(updated) = data.get("updated").and_then(|v| v.as_object()) {
+                return Ok(updated.contains_key(mailbox_id));
+            }
+            if let Some(not_updated) = data.get("notUpdated")
+                && !not_updated.is_null()
+                && let Some(obj) = not_updated.as_object()
+                && obj.contains_key(mailbox_id)
+            {
+                let desc = obj
+                    .get(mailbox_id)
+                    .and_then(|v| v.get("description"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown");
+                return Err(anyhow!("Mailbox/set update failed: {desc}"));
+            }
+        }
+        Err(anyhow!("Mailbox/set response missing update outcome"))
+    }
+
+    /// Destroy a mailbox via JMAP `Mailbox/set` `destroy` (RFC 8621 §5.2).
+    /// Backs `RopDeleteFolder`. Returns true when the mailbox was destroyed.
+    pub async fn destroy_mailbox(
+        &self,
+        account_id: &str,
+        mailbox_id: &str,
+        username: &str,
+        password: &SecretString,
+    ) -> Result<bool> {
+        let session = self.get_session(username, password).await?;
+        let api_url = &session.api_url;
+        let calls = vec![(
+            "Mailbox/set",
+            json!({
+                "accountId": account_id,
+                "destroy": [mailbox_id],
+            }),
+            "ms2",
+        )];
+        let resp = self
+            .api_call(
+                api_url,
+                &["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:mail"],
+                calls,
+                username,
+                password,
+            )
+            .await?;
+
+        for (method, data, _) in resp.method_responses {
+            if method != "Mailbox/set" {
+                continue;
+            }
+            if let Some(err) = data.get("error").filter(|v| !v.is_null()) {
+                let desc = err
+                    .get("description")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("Mailbox/set method rejected");
+                return Err(anyhow!("Mailbox/set destroy rejected: {desc}"));
+            }
+            if let Some(destroyed) = data.get("destroyed").and_then(|v| v.as_array()) {
+                return Ok(destroyed.iter().any(|v| v.as_str() == Some(mailbox_id)));
+            }
+            if let Some(not_destroyed) = data.get("notDestroyed")
+                && !not_destroyed.is_null()
+                && let Some(obj) = not_destroyed.as_object()
+                && obj.contains_key(mailbox_id)
+            {
+                let desc = obj
+                    .get(mailbox_id)
+                    .and_then(|v| v.get("description"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown");
+                return Err(anyhow!("Mailbox/set destroy failed: {desc}"));
+            }
+        }
+        Ok(false)
+    }
+
     /// Submit an already-saved email (draft) for delivery via JMAP
     /// `EmailSubmission/set` (RFC 8621 §2.7), referencing the existing
     /// `email_id`. `envelope_to` is the recipient address list for the
