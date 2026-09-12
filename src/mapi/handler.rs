@@ -5679,7 +5679,7 @@ async fn execute_one_rop(
                         let buf = data.get_or_insert_with(Vec::new);
                         let start = usize::try_from(*cursor).unwrap_or(buf.len()).min(buf.len());
                         let n = usize::try_from(byte_count).unwrap_or(usize::MAX);
-                        let end = (start + n).min(buf.len());
+                        let end = start.saturating_add(n).min(buf.len());
                         let chunk = buf[start..end].to_vec();
                         *cursor = u64::try_from(end).unwrap_or(u64::MAX);
                         chunk
