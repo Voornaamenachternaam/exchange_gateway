@@ -555,18 +555,10 @@ impl RopFindRowSuccess {
 // ---------- WithNamedProperties (0x55 / 0x56) --------------------------------
 
 /// A named-property identifier pair as carried over the wire by
-/// `RopGetNamesFromPropertyIds` / `RopGetPropertyIdsFromNames`
-/// (MS-OXCROPS §2.2.19.1 / §2.2.20.1). `property_id` is the 16-bit id from
-/// the 0x8000 named range; `guid` is the 16-byte property-set GUID; `kind`
-/// is 0 for a numeric (LID) id or 1 for a string name; `name` is the LID
-/// (4 bytes) or the string name for the id.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NamedPropertyId {
-    pub property_id: u16,
-    pub guid: [u8; 16],
-    pub kind: u8,
-    pub name: NamedPropertyName,
-}
+/// `RopGetNamesFromPropertyIds` / `RopGetPropertyIdsFromNames`.
+/// The response codecs use `NamedPropertyNameSpec` and encode `PropertyName`
+/// structures per [MS-OXCDATA] section 2.6.1; the former `NamedPropertyId`
+/// struct (property_id + guid + kind + name) was incorrect for responses.
 
 /// The name of a named property: either a numeric LID (`kind == 0`) or a
 /// string name (`kind == 1`).
@@ -574,6 +566,29 @@ pub struct NamedPropertyId {
 pub enum NamedPropertyName {
     Lid(u32),
     String(String),
+}
+
+/// Encode a `PropertyName` structure ([MS-OXCDATA] section 2.6.1) used by the
+/// `RopGetNamesFromPropertyIds` and `RopQueryNamedProperties` success
+/// responses. The on-wire layout is:
+///   `Kind(1) · GUID(16) · [LID(4) if Kind=0 | NameSize(1)+Name if Kind=1]`.
+/// `Kind == 0xFF` encodes "no named property" (GUID present, no LID/name).
+fn encode_property_name_struct(kind: u8, guid: &[u8; 16], name: &NamedPropertyName, out: &mut Vec<u8>) {
+    out.push(kind);
+    out.extend_from_slice(guid);
+    match (kind, name) {
+        (0x00, NamedPropertyName::Lid(lid)) => out.extend_from_slice(&lid.to_le_bytes()),
+        (0x01, NamedPropertyName::String(str)) => {
+            let bytes = str.as_bytes();
+            // NameSize is a single byte (max 255). Clamp to the byte length the
+            // prefix can represent so the reader stays byte-aligned.
+            let len = u8::try_from(bytes.len()).unwrap_or(u8::MAX);
+            out.push(len);
+            out.extend_from_slice(&bytes[..usize::from(len)]);
+        }
+        // Kind 0xFF (no name), or a kind/name mismatch: emit only Kind + GUID.
+        _ => {}
+    }
 }
 
 /// `RopGetNamesFromPropertyIds` request, MS-OXCROPS §2.2.19.1. After the
@@ -610,14 +625,20 @@ impl RopGetNamesFromPropertyIdsRequest {
     }
 }
 
-/// `RopGetNamesFromPropertyIds` success response, MS-OXCROPS §2.2.19.2:
-///   `RopId(0x55) · InputHandleIndex · ReturnValue(4 LE) · PropertyIdCount(2
-///    LE) · [PropertyId(2) · Guid(16) · NameKind(1) · Name(...)]`.
+/// `RopGetNamesFromPropertyIds` success response, MS-OXCROPS §2.2.8.2.2 /
+/// MS-OXCPRPT §2.2.13.2:
+///   `RopId(0x55) · InputHandleIndex · ReturnValue(4 LE) · PropertyNameCount(2
+///    LE) · PropertyNames[PropertyNameCount]`.
+///
+/// `PropertyNameCount` MUST equal the request's `PropertyIdCount`, and the
+/// entries are positional: each `PropertyName` structure corresponds to the
+/// property id at the same index in the request. A property id with no known
+/// name maps to a `PropertyName` with `Kind == 0xFF` (GUID present, no LID).
 #[derive(Debug, Clone)]
 pub struct RopGetNamesFromPropertyIdsSuccess {
     pub input_handle_index: u8,
     pub return_value: RopErrorCode,
-    pub names: Vec<NamedPropertyId>,
+    pub names: Vec<NamedPropertyNameSpec>,
 }
 impl RopGetNamesFromPropertyIdsSuccess {
     pub fn encode(&self, out: &mut Vec<u8>) {
@@ -627,10 +648,7 @@ impl RopGetNamesFromPropertyIdsSuccess {
         let count = u16::try_from(self.names.len()).unwrap_or(u16::MAX);
         out.extend_from_slice(&count.to_le_bytes());
         for n in &self.names {
-            out.extend_from_slice(&n.property_id.to_le_bytes());
-            out.extend_from_slice(&n.guid);
-            out.push(n.kind);
-            encode_property_name(n, out);
+            encode_property_name_struct(n.kind, &n.guid, &n.name, out);
         }
     }
 }
@@ -714,22 +732,6 @@ impl RopGetPropertyIdsFromNamesSuccess {
     }
 }
 
-/// Encode a `NamedPropertyId`'s kind+name tail (shared by the two
-/// named-property ROP codecs).
-fn encode_property_name(n: &NamedPropertyId, out: &mut Vec<u8>) {
-    match &n.name {
-        NamedPropertyName::Lid(lid) => out.extend_from_slice(&lid.to_le_bytes()),
-        NamedPropertyName::String(s) => {
-            let bytes = s.as_bytes();
-            let len = u8::try_from(bytes.len()).unwrap_or(u8::MAX);
-            out.push(len);
-            // The length prefix is a single byte (max 255); truncate the
-            // payload to match so the reader stays byte-aligned with the
-            // following fields rather than over-reading past the prefix.
-            out.extend_from_slice(&bytes[..usize::from(len)]);
-        }
-    }
-}
 
 // ---------- Move/CopyFolder (0x35 / 0x36) ------------------------------------
 
@@ -4145,13 +4147,17 @@ impl RopQueryNamedPropertiesRequest {
 }
 
 /// `RopQueryNamedProperties` (0x5F) success response (MS-OXCROPS §2.2.8.10.2):
-///   `RopId · OutputHandleIndex · ReturnValue(4 LE) · PropertyIdCount(2 LE)
-///    · PropertyIds[count]`.
+///   `RopId · InputHandleIndex · ReturnValue(4 LE) · IdCount(2 LE)
+///    · PropertyIds[IdCount] · PropertyNames[IdCount]`.
+///
+/// `PropertyNames` carries one `PropertyName` structure per `PropertyIds`
+/// entry (same order), per MS-OXCDATA section 2.6.1.
 #[derive(Debug, Clone)]
 pub struct RopQueryNamedPropertiesSuccess {
     pub output_handle_index: u8,
     pub return_value: RopErrorCode,
     pub property_ids: Vec<u16>,
+    pub property_names: Vec<NamedPropertyNameSpec>,
 }
 impl RopQueryNamedPropertiesSuccess {
     pub fn encode(&self, out: &mut Vec<u8>) {
@@ -4162,6 +4168,9 @@ impl RopQueryNamedPropertiesSuccess {
         out.extend_from_slice(&count.to_le_bytes());
         for id in &self.property_ids {
             out.extend_from_slice(&id.to_le_bytes());
+        }
+        for n in &self.property_names {
+            encode_property_name_struct(n.kind, &n.guid, &n.name, out);
         }
     }
 }
