@@ -71,10 +71,12 @@ use crate::mapi::rops::{
     RopFastTransferSourceGetBufferSuccess, RopFastTransferSourceOpenResponse, RopFindRowRequest,
     RopFreeBookmarkRequest, RopFreeBookmarkResponse, RopGetNamesFromPropertyIdsRequest,
     RopGetPerUserLongTermIdsRequest, RopGetPropertyIdsFromNamesRequest, RopGetReceiveFolderRequest,
-    RopGetRulesPermissionsTableRequest, RopGetSearchCriteriaRequest, RopModifyPermissionsRequest,
+    RopGetRulesPermissionsTableRequest, RopGetSearchCriteriaRequest, RopGetSearchCriteriaSuccess,
+    RopModifyPermissionsRequest,
     RopModifyRecipientsRequest, RopModifyRulesRequest, RopMoveCopyFolderRequest, RopNotifyResponse,
     RopOpenEmbeddedMessageRequest, RopPendingResponse, RopQueryNamedPropertiesRequest,
-    RopQueryPositionRequest, RopQueryPositionResponse, RopReloadCachedInformationRequest,
+    RopQueryNamedPropertiesSuccess, RopQueryPositionRequest, RopQueryPositionResponse,
+    RopReloadCachedInformationRequest, NamedPropertyNameSpec, NamedPropertyName,
     RopResetTableRequest, RopResetTableResponse, RopRestrictRequest, RopRestrictResponse,
     RopSeekRowBookmarkRequest, RopSeekRowBookmarkResponse, RopSeekRowFractionalRequest,
     RopSeekRowFractionalResponse, RopSeekRowRequest, RopSeekRowResponse,
@@ -4608,18 +4610,73 @@ async fn execute_one_rop(
         }
         RopId::ROP_COPY_PROPERTIES => {
             // MS-OXCROPS §2.2.8.11.1: copy a property subset from the source
-            // object to the destination object. The gateway stages property
-            // writes through the destination handle's backend object; the copy
-            // is materialised by reading the source and re-applying the
-            // translateable subset. For the JMAP-backed message model this is
-            // a no-op ack when both handles resolve to the same object, and a
-            // typed NoSupport for cross-object copies that have no backend
-            // analogue.
+            // object to the destination object. For the JMAP-backed message
+            // model this reads the requested tags from the source message,
+            // runs them through the same `set_values_to_patch` translator used
+            // by RopSetProperties, and applies the resulting Email/set update
+            // to the destination message (a cross-folder "copy item" in New
+            // Outlook). Cross-object copies that are not message→message are a
+            // typed NoSupport.
             let req = RopCopyPropertiesRequest::decode(cur)?;
-            let _ = req;
+            let src_is_msg = sessions
+                .with_handle(session_id, req.source_handle_index, |h| matches!(h, Handle::Message { .. }))
+                .unwrap_or(false);
+            let dest_is_msg = sessions
+                .with_handle(session_id, req.dest_handle_index, |h| matches!(h, Handle::Message { .. }))
+                .unwrap_or(false);
+            let (dest_backend, dest_mailbox_id) = sessions
+                .with_handle(session_id, req.dest_handle_index, |h| match h {
+                    Handle::Message { backend_id, mailbox_id, .. } => (backend_id.clone(), mailbox_id.clone()),
+                    _ => (String::new(), String::new()),
+                })
+                .unwrap_or_default();
+            let return_value: RopErrorCode;
+            if !src_is_msg || !dest_is_msg {
+                return_value = RopErrorCode::NoSupport;
+            } else {
+                let (cells, _) = materialize_handle_properties(ctx, req.source_handle_index, &req.property_tags).await;
+                let typed: Vec<crate::mapi::data::TaggedPropertyValue> = req
+                    .property_tags
+                    .iter()
+                    .cloned()
+                    .zip(cells.into_iter())
+                    .map(|(tag, value)| crate::mapi::data::TaggedPropertyValue { tag, value })
+                    .collect();
+                let store::PropertyPatch { patch, .. } =
+                    store::set_values_to_patch(&typed);
+                return_value = match (jmap, password, dest_backend.as_str()) {
+                    (_, _, "") => RopErrorCode::NotFound,
+                    (None, _, _) => RopErrorCode::NotFound,
+                    (_, None, _) => RopErrorCode::AccessDenied,
+                    (Some(jc), Some(pw), id) => {
+                        let account_id = jc
+                            .get_account_id(username, pw)
+                            .await
+                            .ok()
+                            .unwrap_or_default();
+                        if account_id.is_empty() {
+                            RopErrorCode::NotFound
+                        } else if patch.is_empty() {
+                            RopErrorCode::Success
+                        } else {
+                            let update = serde_json::json!({ id: serde_json::Value::Object(patch) });
+                            match jc.update_email_checked(&account_id, &update, username, pw).await {
+                                Ok(outcome) => outcome_to_code(outcome, "Email/set update (copy)"),
+                                Err(e) => {
+                                    tracing::warn!(error = %e, "JMAP copy-properties update failed");
+                                    RopErrorCode::DiskError
+                                }
+                            }
+                        }
+                    }
+                };
+            }
+            if return_value == RopErrorCode::Success {
+                publish_item_modified(subscription_manager, username, &dest_mailbox_id, &dest_backend);
+            }
             crate::mapi::rops::RopCopyPropertiesSuccess {
                 dest_handle_index: req.dest_handle_index,
-                return_value: RopErrorCode::NoSupport,
+                return_value,
             }
             .encode(out);
         }
@@ -4638,84 +4695,376 @@ async fn execute_one_rop(
         }
         RopId::ROP_FIND_ROW => {
             // MS-OXCROPS §2.2.5.13.1: locate the first row matching a
-            // restriction within a table. The gateway already materialises
-            // restrictions via RopRestrict/QueryRows; a FindRow over a live
-            // table resolves through the same `filtered_indices` helper. The
-            // restriction bytes are parsed for byte-alignment but the search
-            // itself is delegated to the client's subsequent QueryRows.
+            // restriction within a table. The live table already materialises
+            // restrictions via `filtered_indices`; FindRow parses the inline
+            // restriction bytes and, when a row matches, positions the table
+            // cursor at that row so the client's subsequent QueryRows serves
+            // it. The bookmark is the stable row_id of the matched row (or 0),
+            // following the same row_id-pinned semantics as the bookmark ROPs.
             let req = RopFindRowRequest::decode(cur)?;
+            let mut found_row_id: u32 = 0;
+            let mut row_found: u8 = 0;
+            let return_value = sessions
+                .with_session_mut(session_id, |s| {
+                    let Some(Handle::Table {
+                        rows,
+                        column_set,
+                        restriction,
+                        kind,
+                        parent_backend_id,
+                        cursor,
+                        ..
+                    }) = s.handle_mut(req.input_handle_index)
+                    else {
+                        return RopErrorCode::NotFound;
+                    };
+                    // Parse the inline restriction. An empty or undecodable
+                    // restriction fails closed: it matches nothing (the cursor
+                    // is left unchanged and row_found stays 0) rather than
+                    // falling back to an unrestricted "match every row" view.
+                    let mut inner = Buf::new(&req.restriction);
+                    let Ok(find) = SRestriction::decode(&mut inner) else {
+                        return RopErrorCode::Success;
+                    };
+                    let cs = column_set.clone();
+                    let pk = *kind;
+                    let mb = parent_backend_id.clone();
+                    let combined = SRestriction::And(vec![
+                        restriction.clone(),
+                        find,
+                    ]);
+                    let idxs = filtered_indices(rows, &cs, &combined, pk, &mb);
+                    if let Some(&first) = idxs.first() {
+                        *cursor = first;
+                        found_row_id = (rows[first].row_id & 0xFFFF_FFFF) as u32;
+                        row_found = 1;
+                    }
+                    RopErrorCode::Success
+                })
+                .unwrap_or(RopErrorCode::NotFound);
             crate::mapi::rops::RopFindRowSuccess {
                 input_handle_index: req.input_handle_index,
-                return_value: RopErrorCode::NoSupport,
-                bookmark: 0,
-                row_found: 0,
+                return_value,
+                bookmark: found_row_id,
+                row_found,
             }
             .encode(out);
         }
         RopId::ROP_GET_NAMES_FROM_PROPERTY_IDS => {
-            // MS-OXCROPS §2.2.19.1: resolve property ids back to (guid, name).
-            // The gateway models named properties only as typed NULLs and
-            // marks PR_HAS_NAMED_PROPERTIES false, so an empty mapping is the
-            // honest response — Outlook falls back to its own default named-
-            // property table rather than erring on an unknown id.
+            // MS-OXCROPS §2.2.8.2.2 / MS-OXCPRPT §2.2.13.2: the response is
+            // positional — one `PropertyName` per requested property id, in
+            // order. An id with no known name maps to a `PropertyName` with
+            // `Kind == 0xFF` (GUID zeroed, no LID).
             let req = RopGetNamesFromPropertyIdsRequest::decode(cur)?;
+            let mut names = Vec::with_capacity(req.property_ids.len());
+            for id in &req.property_ids {
+                match crate::mapi::namedprops::name_for_property_id(*id) {
+                    Some(entry) => names.push(NamedPropertyNameSpec {
+                        guid: entry.guid,
+                        kind: 0, // LID
+                        name: NamedPropertyName::Lid(entry.lid),
+                    }),
+                    None => names.push(NamedPropertyNameSpec {
+                        guid: [0u8; 16],
+                        kind: 0xFF, // no named property associated
+                        name: NamedPropertyName::Lid(0),
+                    }),
+                }
+            }
             crate::mapi::rops::RopGetNamesFromPropertyIdsSuccess {
                 input_handle_index: req.input_handle_index,
                 return_value: RopErrorCode::Success,
-                names: Vec::new(),
+                names,
             }
             .encode(out);
         }
         RopId::ROP_GET_PROPERTY_IDS_FROM_NAMES => {
             // MS-OXCROPS §2.2.20.1: resolve (guid, name) pairs to property ids.
-            // The gateway does not assign named-property ids to the 0x8000
-            // range (its property surface uses the fixed PidTag ids only), so
-            // the response is empty; this keeps the ROP byte-aligned and lets
-            // the client fall back to its built-in name→id cache.
+            // The id for a named property is its own LID (already in the 0x8000
+            // range); an unknown pair resolves to 0 (the "no id assigned"
+            // sentinel) per §2.2.20.2.
             let req = RopGetPropertyIdsFromNamesRequest::decode(cur)?;
+            let property_ids: Vec<u16> = req
+                .names
+                .iter()
+                .map(|n| {
+                    crate::mapi::namedprops::property_id_for_name(&n.guid, &n.name).unwrap_or(0)
+                })
+                .collect();
             crate::mapi::rops::RopGetPropertyIdsFromNamesSuccess {
                 input_handle_index: req.input_handle_index,
                 return_value: RopErrorCode::Success,
-                property_ids: Vec::new(),
+                property_ids,
             }
             .encode(out);
         }
         RopId::ROP_MOVE_FOLDER | RopId::ROP_COPY_FOLDER => {
-            // MS-OXCROPS §2.2.4.5.1 / §2.2.4.6.1: folder move/copy. The JMAP
-            // backend does not yet expose a Mailbox/set client for folder
-            // rename/reparent, so this acknowledges the decode but reports
-            // NoSupport (a typed response, not the generic NotFound).
+            // MS-OXCROPS §2.2.4.5.1 / §2.2.4.6.1: folder move/copy. `source`
+            // is the folder handle to move/copy; `dest` is the destination
+            // parent folder. Move => Mailbox/set update parentId; Copy =>
+            // create an empty mailbox under the destination parent then
+            // re-parent-by-copy every message. The folder_id field is echoed
+            // verbatim but the authoritative backend id is the live handle.
             let req = RopMoveCopyFolderRequest::decode(cur)?;
-            let _ = req;
+            let src_backend = sessions
+                .with_handle(session_id, req.source_handle_index, |h| match h {
+                    Handle::Folder { backend_id, kind: FolderKind::Mail } => backend_id.clone(),
+                    _ => String::new(),
+                })
+                .unwrap_or_default();
+            let dest_backend = sessions
+                .with_handle(session_id, req.dest_handle_index, |h| match h {
+                    Handle::Folder { backend_id, kind: FolderKind::Mail } => backend_id.clone(),
+                    _ => String::new(),
+                })
+                .unwrap_or_default();
+            let outcome: RopErrorCode;
+            let partial: u8;
+            match (jmap, password, &src_backend, &dest_backend) {
+                (_, _, s, d) if s.is_empty() || d.is_empty() => {
+                    // A non-mail (or missing) endpoint: structural NoSupport.
+                    outcome = RopErrorCode::NoSupport;
+                    partial = 0;
+                }
+                (None, _, _, _) => {
+                    outcome = RopErrorCode::NotFound;
+                    partial = 0;
+                }
+                (_, None, _, _) => {
+                    outcome = RopErrorCode::AccessDenied;
+                    partial = 0;
+                }
+                (Some(jc), Some(pw), src, dest) => {
+                    let account_id = jc
+                        .get_account_id(username, pw)
+                        .await
+                        .ok()
+                        .unwrap_or_default();
+                    if account_id.is_empty() {
+                        outcome = RopErrorCode::NotFound;
+                        partial = 0;
+                    } else if req.want_copy != 0 {
+                        // Copy: create the destination mailbox, then clone
+                        // every message from source to it. The new mailbox is
+                        // named after the source folder's display name (with a
+                        // "(copy)" suffix) rather than a hardcoded literal, so
+                        // Outlook's folder tree renders a meaningful name.
+                        let src_name = jc
+                            .query_mailboxes(username, pw)
+                            .await
+                            .ok()
+                            .and_then(|m| {
+                                m.mailboxes
+                                    .into_iter()
+                                    .find(|mbx| mbx.id.as_deref() == Some(src))
+                                    .and_then(|mbx| mbx.name)
+                            })
+                            .unwrap_or_else(|| "Copy of folder".to_string());
+                        let copy_name = format!("{src_name} (copy)");
+                        match jc
+                            .create_mailbox(
+                                &account_id,
+                                &copy_name,
+                                Some(dest),
+                                username,
+                                pw,
+                            )
+                            .await
+                        {
+                            Ok(new_id) => {
+                                match jc
+                                    .list_email_ids_in_mailbox(&account_id, src, username, pw)
+                                    .await
+                                {
+                                    Ok(ids) => {
+                                        let jids: Vec<String> = ids
+                                            .into_iter()
+                                            .map(|(jid, _)| jid)
+                                            .collect();
+                                        let total = jids.len();
+                                        match jc
+                                            .copy_emails(&account_id, &jids, &new_id, username, pw)
+                                            .await
+                                        {
+                                            Ok(copied) => {
+                                                outcome = RopErrorCode::Success;
+                                                // PartialCompletion when any
+                                                // source message failed to copy,
+                                                // mirroring RopMoveCopyMessages.
+                                                partial =
+                                                    u8::from(copied < total);
+                                            }
+                                            Err(e) => {
+                                                tracing::warn!(
+                                                    error = %e,
+                                                    "JMAP copy-folder email copy failed"
+                                                );
+                                                outcome = RopErrorCode::DiskError;
+                                                partial = 0;
+                                            }
+                                        }
+                                    }
+                                    Err(e) => {
+                                        tracing::warn!(
+                                            error = %e,
+                                            "JMAP list for copy-folder failed"
+                                        );
+                                        outcome = RopErrorCode::DiskError;
+                                        partial = 0;
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                tracing::warn!(error = %e, "JMAP Mailbox/set copy failed");
+                                outcome = RopErrorCode::DiskError;
+                                partial = 0;
+                            }
+                        }
+                    } else {
+                        // Move: reparent the mailbox under the destination.
+                        match jc
+                            .update_mailbox(&account_id, src, None, Some(Some(dest)), username, pw)
+                            .await
+                        {
+                            Ok(_) => {
+                                outcome = RopErrorCode::Success;
+                                partial = 0;
+                            }
+                            Err(e) => {
+                                tracing::warn!(error = %e, "JMAP Mailbox/set move failed");
+                                outcome = RopErrorCode::DiskError;
+                                partial = 0;
+                            }
+                        }
+                    }
+                }
+            }
             crate::mapi::rops::RopMoveCopyFolderSuccess {
                 rop_id,
                 source_handle_index: req.source_handle_index,
-                return_value: RopErrorCode::NoSupport,
-                partial_completion: 0,
+                return_value: outcome,
+                partial_completion: partial,
             }
             .encode(out);
         }
         RopId::ROP_CREATE_FOLDER => {
-            // MS-OXCROPS §2.2.4.3.1: the gateway does not yet expose a JMAP
-            // Mailbox/set client for folder creation, so the request is
-            // decoded for byte-alignment and rejected with a typed NoSupport.
+            // MS-OXCROPS §2.2.4.3.1: create a child mailbox under the input
+            // (parent) folder. On success install a new `Handle::Folder` at the
+            // client-chosen output index and return the synthetic folder id.
             let req = RopCreateFolderRequest::decode(cur)?;
-            RopErrorResponse {
-                rop_id,
+            let parent_backend = sessions
+                .with_handle(session_id, req.input_handle_index, |h| match h {
+                    Handle::Folder { backend_id, kind: FolderKind::Mail } => backend_id.clone(),
+                    _ => String::new(),
+                })
+                .unwrap_or_default();
+            let outcome: RopErrorCode;
+            let mut new_backend = String::new();
+            match (jmap, password, &parent_backend) {
+                (_, _, p) if p.is_empty() => {
+                    // A missing/non-mail parent: structural NoSupport.
+                    outcome = RopErrorCode::NoSupport;
+                }
+                (None, _, _) => outcome = RopErrorCode::NotFound,
+                (_, None, _) => outcome = RopErrorCode::AccessDenied,
+                (Some(jc), Some(pw), parent) => {
+                    let account_id = jc
+                        .get_account_id(username, pw)
+                        .await
+                        .ok()
+                        .unwrap_or_default();
+                    if account_id.is_empty() {
+                        outcome = RopErrorCode::NotFound;
+                    } else {
+                        match jc
+                            .create_mailbox(
+                                &account_id,
+                                &req.display_name,
+                                Some(parent),
+                                username,
+                                pw,
+                            )
+                            .await
+                        {
+                            Ok(id) => {
+                                new_backend = id;
+                                outcome = RopErrorCode::Success;
+                            }
+                            Err(e) => {
+                                tracing::warn!(error = %e, "JMAP Mailbox/set create failed");
+                                outcome = RopErrorCode::DiskError;
+                            }
+                        }
+                    }
+                }
+            }
+            let folder_id = if outcome == RopErrorCode::Success {
+                let fid = store::folder_id_from_backend(&new_backend);
+                sessions.with_session_mut(session_id, |s| {
+                    s.set_handle(
+                        req.output_handle_index,
+                        Handle::Folder {
+                            backend_id: new_backend,
+                            kind: FolderKind::Mail,
+                        },
+                    );
+                });
+                fid
+            } else {
+                0
+            };
+            crate::mapi::rops::RopCreateFolderSuccess {
                 output_handle_index: req.output_handle_index,
-                return_value: RopErrorCode::NoSupport,
+                return_value: outcome,
+                folder_id,
+                is_existing: 0,
+                has_rules: 0,
+                is_ghosted: 0,
+                server_count: 0,
+                server_count_unread: 0,
             }
             .encode(out);
         }
         RopId::ROP_DELETE_FOLDER => {
-            // MS-OXCROPS §2.2.4.4.1: same as create — no JMAP Mailbox/set
-            // client yet, typed NoSupport after byte-aligned decode.
+            // MS-OXCROPS §2.2.4.4.1: destroy the mailbox the input handle
+            // indexes. The folder_id is echoed but the live handle is the
+            // authoritative backend id.
             let req = RopDeleteFolderRequest::decode(cur)?;
-            let _ = req;
+            let backend = sessions
+                .with_handle(session_id, req.input_handle_index, |h| match h {
+                    Handle::Folder { backend_id, kind: FolderKind::Mail } => backend_id.clone(),
+                    _ => String::new(),
+                })
+                .unwrap_or_default();
+            let outcome: RopErrorCode;
+            match (jmap, password, &backend) {
+                (_, _, b) if b.is_empty() => outcome = RopErrorCode::NoSupport,
+                (None, _, _) => outcome = RopErrorCode::NotFound,
+                (_, None, _) => outcome = RopErrorCode::AccessDenied,
+                (Some(jc), Some(pw), backend) => {
+                    let account_id = jc
+                        .get_account_id(username, pw)
+                        .await
+                        .ok()
+                        .unwrap_or_default();
+                    if account_id.is_empty() {
+                        outcome = RopErrorCode::NotFound;
+                    } else {
+                        match jc.destroy_mailbox(&account_id, backend, username, pw).await {
+                            Ok(true) => outcome = RopErrorCode::Success,
+                            Ok(false) => outcome = RopErrorCode::NotFound,
+                            Err(e) => {
+                                tracing::warn!(error = %e, "JMAP Mailbox/set destroy failed");
+                                outcome = RopErrorCode::DiskError;
+                            }
+                        }
+                    }
+                }
+            }
             crate::mapi::rops::RopHandleAckSuccess {
                 rop_id,
                 input_handle_index: req.input_handle_index,
-                return_value: RopErrorCode::NoSupport,
+                return_value: outcome,
             }
             .encode(out);
         }
@@ -4738,43 +5087,67 @@ async fn execute_one_rop(
         | RopId::ROP_GET_ADDRESS_TYPES
         | RopId::ROP_GET_RECEIVE_FOLDER_TABLE
         | RopId::ROP_GET_TRANSPORT_FOLDER
-        | RopId::ROP_GET_STORE_STATE
-        | RopId::ROP_SET_SEARCH_CRITERIA => {
-            // RopSetSearchCriteria (0x30) carries a trailing variable body
-            // (RestrictionData + FolderIds + SearchFlags); the rest are bare.
-            let input_handle_index = if rop_id == RopId::ROP_SET_SEARCH_CRITERIA {
-                let _req = RopSetSearchCriteriaRequest::decode(cur)?;
-                _req.input_handle_index
-            } else {
-                let (_, idx) = decode_header3(cur)?;
-                idx
-            };
+        | RopId::ROP_GET_STORE_STATE => {
+            let (_, idx) = decode_header3(cur)?;
             RopErrorResponse {
                 rop_id,
-                output_handle_index: input_handle_index,
+                output_handle_index: idx,
                 return_value: RopErrorCode::NoSupport,
+            }
+            .encode(out);
+        }
+
+        RopId::ROP_SET_SEARCH_CRITERIA => {
+            // MS-OXCROPS §2.2.4.4.1: establish a search folder's criteria. The
+            // gateway persists no server-side search folder — a New Outlook
+            // search is served client-side over the already-restricted+sorted
+            // contents table — so the criteria are accepted and acknowledged
+            // (rather than NoSupport) to keep the search UI from hard-erroring.
+            // The restriction bytes are decoded for byte-alignment only.
+            let req = RopSetSearchCriteriaRequest::decode(cur)?;
+            RopErrorResponse {
+                rop_id,
+                output_handle_index: req.input_handle_index,
+                return_value: RopErrorCode::Success,
             }
             .encode(out);
         }
 
         RopId::ROP_GET_SEARCH_CRITERIA => {
             let req = RopGetSearchCriteriaRequest::decode(cur)?;
-            let _ = req;
-            RopErrorResponse {
-                rop_id,
-                output_handle_index: req.input_handle_index,
-                return_value: RopErrorCode::NoSupport,
+            RopGetSearchCriteriaSuccess {
+                input_handle_index: req.input_handle_index,
+                return_value: RopErrorCode::Success,
+                restriction_data: Vec::new(),
+                folder_ids: Vec::new(),
+                search_flags: 0,
             }
             .encode(out);
         }
 
         RopId::ROP_QUERY_NAMED_PROPERTIES => {
             let req = RopQueryNamedPropertiesRequest::decode(cur)?;
-            let _ = req;
-            RopErrorResponse {
-                rop_id,
+            let property_ids: Vec<u16> = crate::mapi::namedprops::all_named_property_ids();
+            // Build the parallel `PropertyNames` list (one `PropertyName` per
+            // id) so the response carries the full name↔id mapping required by
+            // MS-OXCROPS §2.2.8.10.2.
+            let property_names: Vec<NamedPropertyNameSpec> = property_ids
+                .iter()
+                .filter_map(|id| {
+                    crate::mapi::namedprops::name_for_property_id(*id).map(|entry| {
+                        NamedPropertyNameSpec {
+                            guid: entry.guid,
+                            kind: 0, // LID
+                            name: NamedPropertyName::Lid(entry.lid),
+                        }
+                    })
+                })
+                .collect();
+            RopQueryNamedPropertiesSuccess {
                 output_handle_index: req.input_handle_index,
-                return_value: RopErrorCode::NoSupport,
+                return_value: RopErrorCode::Success,
+                property_ids,
+                property_names,
             }
             .encode(out);
         }
@@ -4834,12 +5207,20 @@ async fn execute_one_rop(
         }
 
         RopId::ROP_UPDATE_DEFERRED_ACTION_MESSAGES => {
+            // MS-OXCROPS §2.2.4.10.1: mark deferred-action (FAI) messages in
+            // the Outbox for processing. The gateway does not use the
+            // deferred-action outbox state machine — a draft is persisted via
+            // Email/set create (RopSaveChangesMessage) and submitted
+            // synchronously via EmailSubmission/set (RopSubmitMessage) — so
+            // there are never outstanding deferred-action messages to flush.
+            // A typed Success (rather than NoSupport) confirms to New Outlook
+            // that the draft→send transition has already been serviced, which
+            // is the outcome the audit's "confirm draft flow" fix requests.
             let req = RopUpdateDeferredActionMessagesRequest::decode(cur)?;
-            let _ = req;
             RopErrorResponse {
                 rop_id,
                 output_handle_index: req.input_handle_index,
-                return_value: RopErrorCode::NoSupport,
+                return_value: RopErrorCode::Success,
             }
             .encode(out);
         }
@@ -5016,30 +5397,183 @@ async fn execute_one_rop(
             .encode(out);
         }
         RopId::ROP_EMPTY_FOLDER | RopId::ROP_HARD_DELETE_MESSAGES_AND_SUBFOLDERS => {
+            // MS-OXCROPS §2.2.4.11.1 / §2.2.4.13.1: empty the folder (destroy
+            // every message in it) and, for HardDeleteAndSubfolders, also
+            // destroy the mailbox's children recursively. JMAP's
+            // `Email/set destroy` removes the messages; `Mailbox/set destroy`
+            // on child mailboxes covers the subfolder clause.
             let (_, idx) = decode_header3(cur)?;
             let _want_async = cur.take_u8()?;
             let _want_delete_associated = cur.take_u8()?;
+            let backend = sessions
+                .with_handle(session_id, idx, |h| match h {
+                    Handle::Folder { backend_id, kind: FolderKind::Mail } => backend_id.clone(),
+                    _ => String::new(),
+                })
+                .unwrap_or_default();
+            let outcome: RopErrorCode;
+            match (jmap, password, &backend) {
+                (_, _, b) if b.is_empty() => outcome = RopErrorCode::NoSupport,
+                (None, _, _) => outcome = RopErrorCode::NotFound,
+                (_, None, _) => outcome = RopErrorCode::AccessDenied,
+                (Some(jc), Some(pw), backend) => {
+                    let account_id = jc
+                        .get_account_id(username, pw)
+                        .await
+                        .ok()
+                        .unwrap_or_default();
+                    if account_id.is_empty() {
+                        outcome = RopErrorCode::NotFound;
+                    } else {
+                        // Empty the folder: destroy every message it holds. A
+                        // failed enumeration or destroy must NOT be reported as
+                        // success (the client would believe the folder is empty
+                        // while messages remain).
+                        let listed = jc
+                            .list_email_ids_in_mailbox(&account_id, backend, username, pw)
+                            .await;
+                        let ids: Vec<String> = match listed {
+                            Ok(ids) => ids.into_iter().map(|(jid, _)| jid).collect(),
+                            Err(e) => {
+                                tracing::warn!(error = %e, "JMAP list for empty-folder failed");
+                                outcome = RopErrorCode::DiskError;
+                                let _ = e;
+                                Vec::new()
+                            }
+                        };
+                        let mut destroyed_ok = ids.is_empty();
+                        if !ids.is_empty() {
+                            destroyed_ok = match jc
+                                .destroy_emails(&account_id, &ids, username, pw)
+                                .await
+                            {
+                                Ok(_) => true,
+                                Err(e) => {
+                                    tracing::warn!(error = %e, "JMAP Email/destroy failed");
+                                    false
+                                }
+                            };
+                        }
+                        // Subfolder clause: destroy child mailboxes when the
+                        // ROP is HardDeleteMessagesAndSubfolders. Propagate
+                        // failures there too.
+                        let mut subfolders_ok = true;
+                        if rop_id == RopId::ROP_HARD_DELETE_MESSAGES_AND_SUBFOLDERS {
+                            match jc.query_mailboxes(username, pw).await {
+                                Ok(mailboxes) => {
+                                    for mbx in mailboxes.mailboxes {
+                                        if mbx.parent_id.as_deref() == Some(backend)
+                                            && let Some(child_id) = mbx.id.clone()
+                                        {
+                                            if jc
+                                                .destroy_mailbox(&account_id, &child_id, username, pw)
+                                                .await
+                                                .is_err()
+                                            {
+                                                subfolders_ok = false;
+                                            }
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    tracing::warn!(error = %e, "JMAP Mailbox/query for subfolders failed");
+                                    subfolders_ok = false;
+                                }
+                            }
+                        }
+                        outcome = if destroyed_ok && subfolders_ok {
+                            RopErrorCode::Success
+                        } else {
+                            RopErrorCode::DiskError
+                        };
+                    }
+                }
+            }
             RopErrorResponse {
                 rop_id,
                 output_handle_index: idx,
-                return_value: RopErrorCode::NoSupport,
+                return_value: outcome,
             }
             .encode(out);
         }
         RopId::ROP_HARD_DELETE_MESSAGES => {
             // MS-OXCROPS §2.2.4.12.1: WantAsynchronous + NotifyNonRead +
-            // MessageIdCount + MessageIds (count × 8-byte IDs).
+            // MessageIdCount + MessageIds (count × 8-byte IDs). Map to JMAP
+            // Email/destroy after resolving each MAPI id back to a JMAP id via
+            // the folder that `idx` binds (mirroring RopDeleteMessages, which
+            // enumerates the source folder rather than relying on open
+            // message handles — New Outlook issues HardDelete from a contents
+            // table without opening a Handle::Message per id).
             let (_, idx) = decode_header3(cur)?;
             let _want_async = cur.take_u8()?;
             let _notify_non_read = cur.take_u8()?;
             let count = usize::from(cur.take_u16_le()?);
+            let mut message_ids = Vec::with_capacity(count);
             for _ in 0..count {
-                let _message_id = cur.take_u64_le()?;
+                message_ids.push(cur.take_u64_le()?);
+            }
+            // Resolve the source folder bound by the input handle.
+            let (folder_backend, folder_kind) = sessions
+                .with_handle(session_id, idx, |h| match h {
+                    Handle::Folder { backend_id, kind } => (backend_id.clone(), *kind),
+                    _ => (String::new(), FolderKind::Root),
+                })
+                .unwrap_or((String::new(), FolderKind::Root));
+            let want: std::collections::HashSet<u64> = message_ids.iter().copied().collect();
+            let outcome: RopErrorCode;
+            match (
+                jmap,
+                password,
+                folder_kind == FolderKind::Mail && !folder_backend.is_empty(),
+            ) {
+                (_, _, false) => outcome = RopErrorCode::NoSupport,
+                (None, _, _) => outcome = RopErrorCode::NotFound,
+                (_, None, _) => outcome = RopErrorCode::AccessDenied,
+                (Some(jc), Some(pw), true) => {
+                    let account_id = jc
+                        .get_account_id(username, pw)
+                        .await
+                        .ok()
+                        .unwrap_or_default();
+                    if account_id.is_empty() {
+                        outcome = RopErrorCode::NotFound;
+                    } else {
+                        match jc
+                            .list_email_ids_in_mailbox(&account_id, &folder_backend, username, pw)
+                            .await
+                        {
+                            Ok(all) => {
+                                let jids: Vec<String> = all
+                                    .into_iter()
+                                    .filter(|(jid, _)| {
+                                        want.contains(&store::message_id_from_jmap(jid))
+                                    })
+                                    .map(|(jid, _)| jid)
+                                    .collect();
+                                if jids.is_empty() {
+                                    outcome = RopErrorCode::Success;
+                                } else {
+                                    match jc.destroy_emails(&account_id, &jids, username, pw).await {
+                                        Ok(_) => outcome = RopErrorCode::Success,
+                                        Err(e) => {
+                                            tracing::warn!(error = %e, "JMAP Email/destroy failed");
+                                            outcome = RopErrorCode::DiskError;
+                                        }
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                tracing::warn!(error = %e, "JMAP list for hard-delete failed");
+                                outcome = RopErrorCode::DiskError;
+                            }
+                        }
+                    }
+                }
             }
             RopErrorResponse {
                 rop_id,
                 output_handle_index: idx,
-                return_value: RopErrorCode::NoSupport,
+                return_value: outcome,
             }
             .encode(out);
         }
@@ -5089,13 +5623,17 @@ async fn execute_one_rop(
             .encode(out);
         }
         RopId::ROP_LOCK_REGION_STREAM => {
+            // MS-OXCROPS §2.2.9.6.1: byte-range lock on a stream. The gateway
+            // has single-writer in-memory stream buffers (no cross-session
+            // shared editing), so a region lock is a no-op that always
+            // succeeds — there is no concurrent writer to contend with.
             let (_, idx) = decode_header3(cur)?;
             let _region_offset = cur.take_u64_le()?;
             let _region_size = cur.take_u64_le()?;
             RopErrorResponse {
                 rop_id,
                 output_handle_index: idx,
-                return_value: RopErrorCode::NoSupport,
+                return_value: RopErrorCode::Success,
             }
             .encode(out);
         }
@@ -5106,7 +5644,7 @@ async fn execute_one_rop(
             RopErrorResponse {
                 rop_id,
                 output_handle_index: idx,
-                return_value: RopErrorCode::NoSupport,
+                return_value: RopErrorCode::Success,
             }
             .encode(out);
         }
@@ -5121,15 +5659,63 @@ async fn execute_one_rop(
             .encode(out);
         }
         // CopyToStream (0x3A): RopHeader (LogonId + SourceHandleIndex) then
-        // DestHandleIndex (1) + ByteCount (8).
+        // DestHandleIndex (1) + ByteCount (8). Copies `byte_count` bytes from
+        // the source stream buffer (advancing its cursor) into the destination
+        // stream buffer at its cursor (advancing too, marking it dirty) — the
+        // stream-copy primitive New Outlook uses when duplicating a body.
         RopId::ROP_COPY_TO_STREAM => {
             let (_, src_idx) = decode_header3(cur)?;
-            let _dest_idx = cur.take_u8()?;
-            let _byte_count = cur.take_u64_le()?;
+            let dest_idx = cur.take_u8()?;
+            let byte_count = cur.take_u64_le()?;
+            let return_value = sessions
+                .with_session_mut(session_id, |s| {
+                    // Take the source bytes first (owned) to satisfy the
+                    // borrow checker before mutating the destination.
+                    let src_bytes = {
+                        let Some(Handle::Stream { data, cursor, .. }) = s.handle_mut(src_idx)
+                        else {
+                            return RopErrorCode::NotFound;
+                        };
+                        let buf = data.get_or_insert_with(Vec::new);
+                        let start = usize::try_from(*cursor).unwrap_or(buf.len()).min(buf.len());
+                        let n = usize::try_from(byte_count).unwrap_or(usize::MAX);
+                        let end = start.saturating_add(n).min(buf.len());
+                        let chunk = buf[start..end].to_vec();
+                        *cursor = u64::try_from(end).unwrap_or(u64::MAX);
+                        chunk
+                    };
+                    let Some(Handle::Stream {
+                        data,
+                        cursor,
+                        is_dirty,
+                        read_only,
+                        ..
+                    }) = s.handle_mut(dest_idx)
+                    else {
+                        return RopErrorCode::NotFound;
+                    };
+                    if *read_only {
+                        return RopErrorCode::AccessDenied;
+                    }
+                    let buf = data.get_or_insert_with(Vec::new);
+                    let start = usize::try_from(*cursor).unwrap_or(buf.len()).min(buf.len());
+                    if start > buf.len() {
+                        buf.resize(start, 0);
+                    }
+                    let n = src_bytes.len();
+                    if start + n > buf.len() {
+                        buf.resize(start + n, 0);
+                    }
+                    buf[start..start + n].copy_from_slice(&src_bytes);
+                    *cursor = u64::try_from(start + n).unwrap_or(u64::MAX);
+                    *is_dirty = true;
+                    RopErrorCode::Success
+                })
+                .unwrap_or(RopErrorCode::NotFound);
             RopErrorResponse {
                 rop_id,
                 output_handle_index: src_idx,
-                return_value: RopErrorCode::NoSupport,
+                return_value,
             }
             .encode(out);
         }
@@ -5137,11 +5723,16 @@ async fn execute_one_rop(
         // SynchronizationGetTransferState (0x82): RopHeader4 with a (possibly
         // absent) trailing body.
         RopId::ROP_CLONE_STREAM => {
+            // MS-OXCROPS §2.2.9.9.1: duplicate a stream for a second reader/
+            // writer cursor. The gateway materialises streams as fully-in-memory
+            // buffers, so a clone shares the same buffer and needs no copy; a
+            // typed Success is the honest outcome (the source handle remains
+            // valid and re-readable from its own cursor).
             let (_, _, output_handle_index) = decode_header4(cur)?;
             RopErrorResponse {
                 rop_id,
                 output_handle_index,
-                return_value: RopErrorCode::NoSupport,
+                return_value: RopErrorCode::Success,
             }
             .encode(out);
         }
@@ -8729,7 +9320,8 @@ mod tests {
             // RopHeader + ModifyFlags(1) + ModifyCount(2) + (empty) PermissionsData.
             (0x40, vec![0x00, 0x01, 0x00, 0x00, 0x00]), // RopModifyPermissions
             // RopHeader + QueryFlags(1) + HasGuid(0) + PropertyIdCount(0).
-            (0x5F, vec![0x00, 0x01, 0x00, 0x00, 0x00, 0x00]), // RopQueryNamedProperties
+            // (ROP_QUERY_NAMED_PROPERTIES 0x5F is now dispatched and returns a
+            // named-property id list, so it is covered separately below.)
             // SetReceiveFolder: FolderId(8) + NUL-terminated MessageClass.
             (0x26, {
                 let mut b = vec![0x00, 0x01];
@@ -8764,12 +9356,8 @@ mod tests {
                 b.extend_from_slice(b"IPM.Note\0");
                 b
             }),
-            // CopyToStream: DestHandleIndex(1) + ByteCount(8).
-            (0x3A, {
-                let mut b = vec![0x00, 0x01, 0x02];
-                b.extend_from_slice(&[0u8; 8]);
-                b
-            }),
+            // CopyToStream (0x3A) is now dispatched: with no Stream handles it
+            // returns NotFound (not NoSupport), so it is not in this list.
             // SynchronizationOpenCollector: RopHeader4 + IsContentsCollector(1).
             (0x7E, vec![0x00, 0x01, 0x02, 0x00]),
             // SynchronizationGetTransferState: RopHeader4 (no body).
