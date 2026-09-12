@@ -1664,29 +1664,43 @@ impl JmapClient {
         username: &str,
         password: &SecretString,
     ) -> Result<Vec<(String, Vec<String>)>> {
-        let params = QueryEmailsParams {
-            account_id,
-            filter: Some(json!({"inMailbox": mailbox_id})),
-            sort: None,
-            position: 0,
-            limit: 500,
-            username,
-            password,
-        };
-        let list = self.query_emails(params).await?;
-        Ok(list
-            .emails
-            .into_iter()
-            .filter_map(|e| {
+        // Page through the mailbox until it is fully drained. `Email/query`
+        // pages with `position`+`limit`; a single 500-item page silently drops
+        // the remainder of a larger folder (and worse, an empty-folder caller
+        // would report success while leaving messages behind), so loop while
+        // the server reports more than the current page.
+        const PAGE: u64 = 500;
+        let mut out: Vec<(String, Vec<String>)> = Vec::new();
+        let mut position: u64 = 0;
+        loop {
+            let params = QueryEmailsParams {
+                account_id,
+                filter: Some(json!({"inMailbox": mailbox_id})),
+                sort: None,
+                position,
+                limit: PAGE,
+                username,
+                password,
+            };
+            let list = self.query_emails(params).await?;
+            let fetched = list.emails.len() as u64;
+            for e in list.emails {
                 let jid = e.id.clone()?;
                 let mids = e
                     .mailbox_ids
                     .as_ref()
                     .map(|m| m.keys().cloned().collect())
                     .unwrap_or_default();
-                Some((jid, mids))
-            })
-            .collect())
+                out.push((jid, mids));
+            }
+            position += fetched;
+            // Stop when the server returned a partial/empty page or we reached
+            // the reported total.
+            if fetched < PAGE || position >= list.total {
+                break;
+            }
+        }
+        Ok(out)
     }
 
     /// Move emails from their current mailbox(es) to a target mailbox by
@@ -1941,12 +1955,13 @@ impl JmapClient {
                 return Err(anyhow!("Mailbox/set create failed: {desc}"));
             }
             if let Some(created) = data.get("created").and_then(|v| v.as_object()) {
-                if let Some(v) = created.get("c0") {
-                    if let Some(id) = v.as_str() {
-                        if !id.is_empty() {
-                            return Ok(id.to_string());
-                        }
-                    }
+                if let Some(id) = created
+                    .get("c0")
+                    .and_then(|v| v.get("id"))
+                    .and_then(|v| v.as_str())
+                    && !id.is_empty()
+                {
+                    return Ok(id.to_string());
                 }
             }
         }
@@ -2018,9 +2033,6 @@ impl JmapClient {
                     .unwrap_or("Mailbox/set method rejected");
                 return Err(anyhow!("Mailbox/set update rejected: {desc}"));
             }
-            if let Some(updated) = data.get("updated").and_then(|v| v.as_object()) {
-                return Ok(updated.contains_key(mailbox_id));
-            }
             if let Some(not_updated) = data.get("notUpdated")
                 && !not_updated.is_null()
                 && let Some(obj) = not_updated.as_object()
@@ -2032,6 +2044,9 @@ impl JmapClient {
                     .and_then(|v| v.as_str())
                     .unwrap_or("unknown");
                 return Err(anyhow!("Mailbox/set update failed: {desc}"));
+            }
+            if let Some(updated) = data.get("updated").and_then(|v| v.as_object()) {
+                return Ok(updated.contains_key(mailbox_id));
             }
         }
         Err(anyhow!("Mailbox/set response missing update outcome"))
@@ -2077,9 +2092,6 @@ impl JmapClient {
                     .unwrap_or("Mailbox/set method rejected");
                 return Err(anyhow!("Mailbox/set destroy rejected: {desc}"));
             }
-            if let Some(destroyed) = data.get("destroyed").and_then(|v| v.as_array()) {
-                return Ok(destroyed.iter().any(|v| v.as_str() == Some(mailbox_id)));
-            }
             if let Some(not_destroyed) = data.get("notDestroyed")
                 && !not_destroyed.is_null()
                 && let Some(obj) = not_destroyed.as_object()
@@ -2091,6 +2103,9 @@ impl JmapClient {
                     .and_then(|v| v.as_str())
                     .unwrap_or("unknown");
                 return Err(anyhow!("Mailbox/set destroy failed: {desc}"));
+            }
+            if let Some(destroyed) = data.get("destroyed").and_then(|v| v.as_array()) {
+                return Ok(destroyed.iter().any(|v| v.as_str() == Some(mailbox_id)));
             }
         }
         Ok(false)
