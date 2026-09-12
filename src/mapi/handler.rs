@@ -76,7 +76,7 @@ use crate::mapi::rops::{
     RopModifyRecipientsRequest, RopModifyRulesRequest, RopMoveCopyFolderRequest, RopNotifyResponse,
     RopOpenEmbeddedMessageRequest, RopPendingResponse, RopQueryNamedPropertiesRequest,
     RopQueryNamedPropertiesSuccess, RopQueryPositionRequest, RopQueryPositionResponse,
-    RopReloadCachedInformationRequest, NamedPropertyId, NamedPropertyName,
+    RopReloadCachedInformationRequest, NamedPropertyNameSpec, NamedPropertyName,
     RopResetTableRequest, RopResetTableResponse, RopRestrictRequest, RopRestrictResponse,
     RopSeekRowBookmarkRequest, RopSeekRowBookmarkResponse, RopSeekRowFractionalRequest,
     RopSeekRowFractionalResponse, RopSeekRowRequest, RopSeekRowResponse,
@@ -4624,10 +4624,10 @@ async fn execute_one_rop(
             let dest_is_msg = sessions
                 .with_handle(session_id, req.dest_handle_index, |h| matches!(h, Handle::Message { .. }))
                 .unwrap_or(false);
-            let dest_backend = sessions
+            let (dest_backend, dest_mailbox_id) = sessions
                 .with_handle(session_id, req.dest_handle_index, |h| match h {
-                    Handle::Message { backend_id, .. } => backend_id.clone(),
-                    _ => String::new(),
+                    Handle::Message { backend_id, mailbox_id, .. } => (backend_id.clone(), mailbox_id.clone()),
+                    _ => (String::new(), String::new()),
                 })
                 .unwrap_or_default();
             let return_value: RopErrorCode;
@@ -4670,6 +4670,9 @@ async fn execute_one_rop(
                         }
                     }
                 };
+            }
+            if return_value == RopErrorCode::Success {
+                publish_item_modified(subscription_manager, username, &dest_mailbox_id, &dest_backend);
             }
             crate::mapi::rops::RopCopyPropertiesSuccess {
                 dest_handle_index: req.dest_handle_index,
@@ -4715,16 +4718,17 @@ async fn execute_one_rop(
                     else {
                         return RopErrorCode::NotFound;
                     };
-                    // Parse the inline restriction; an empty/undecodable one
-                    // matches nothing (stay on the existing restriction).
+                    // Parse the inline restriction. An empty or undecodable
+                    // restriction fails closed: it matches nothing (the cursor
+                    // is left unchanged and row_found stays 0) rather than
+                    // falling back to an unrestricted "match every row" view.
                     let mut inner = Buf::new(&req.restriction);
-                    let find = SRestriction::decode(&mut inner).unwrap_or_default();
+                    let Ok(find) = SRestriction::decode(&mut inner) else {
+                        return RopErrorCode::Success;
+                    };
                     let cs = column_set.clone();
                     let pk = *kind;
                     let mb = parent_backend_id.clone();
-                    // AND the FindRow restriction with the table's active
-                    // restriction (MS-OXCROPS: FindRow searches within the
-                    // already-restricted view).
                     let combined = SRestriction::And(vec![
                         restriction.clone(),
                         find,
@@ -4747,20 +4751,24 @@ async fn execute_one_rop(
             .encode(out);
         }
         RopId::ROP_GET_NAMES_FROM_PROPERTY_IDS => {
-            // MS-OXCROPS §2.2.19.1: resolve property ids back to (guid, name).
-            // Backed by the named-property table in `namedprops.rs` so the
-            // well-known PidLid properties Outlook synthesises (categories,
-            // flags, task status) round-trip instead of reading as Null.
+            // MS-OXCROPS §2.2.8.2.2 / MS-OXCPRPT §2.2.13.2: the response is
+            // positional — one `PropertyName` per requested property id, in
+            // order. An id with no known name maps to a `PropertyName` with
+            // `Kind == 0xFF` (GUID zeroed, no LID).
             let req = RopGetNamesFromPropertyIdsRequest::decode(cur)?;
             let mut names = Vec::with_capacity(req.property_ids.len());
             for id in &req.property_ids {
-                if let Some(entry) = crate::mapi::namedprops::name_for_property_id(*id) {
-                    names.push(NamedPropertyId {
-                        property_id: entry.property_id,
+                match crate::mapi::namedprops::name_for_property_id(*id) {
+                    Some(entry) => names.push(NamedPropertyNameSpec {
                         guid: entry.guid,
                         kind: 0, // LID
-                        name: NamedPropertyName::Lid(u32::from(entry.property_id)),
-                    });
+                        name: NamedPropertyName::Lid(entry.lid),
+                    }),
+                    None => names.push(NamedPropertyNameSpec {
+                        guid: [0u8; 16],
+                        kind: 0xFF, // no named property associated
+                        name: NamedPropertyName::Lid(0),
+                    }),
                 }
             }
             crate::mapi::rops::RopGetNamesFromPropertyIdsSuccess {
@@ -4837,11 +4845,26 @@ async fn execute_one_rop(
                         partial = 0;
                     } else if req.want_copy != 0 {
                         // Copy: create the destination mailbox, then clone
-                        // every message from source to it.
+                        // every message from source to it. The new mailbox is
+                        // named after the source folder's display name (with a
+                        // "(copy)" suffix) rather than a hardcoded literal, so
+                        // Outlook's folder tree renders a meaningful name.
+                        let src_name = jc
+                            .query_mailboxes(username, pw)
+                            .await
+                            .ok()
+                            .and_then(|m| {
+                                m.mailboxes
+                                    .into_iter()
+                                    .find(|mbx| mbx.id.as_deref() == Some(src))
+                                    .and_then(|mbx| mbx.name)
+                            })
+                            .unwrap_or_else(|| "Copy of folder".to_string());
+                        let copy_name = format!("{src_name} (copy)");
                         match jc
                             .create_mailbox(
                                 &account_id,
-                                "Copy of folder",
+                                &copy_name,
                                 Some(dest),
                                 username,
                                 pw,
@@ -4858,13 +4881,18 @@ async fn execute_one_rop(
                                             .into_iter()
                                             .map(|(jid, _)| jid)
                                             .collect();
+                                        let total = jids.len();
                                         match jc
                                             .copy_emails(&account_id, &jids, &new_id, username, pw)
                                             .await
                                         {
-                                            Ok(_) => {
+                                            Ok(copied) => {
                                                 outcome = RopErrorCode::Success;
-                                                partial = 0;
+                                                // PartialCompletion when any
+                                                // source message failed to copy,
+                                                // mirroring RopMoveCopyMessages.
+                                                partial =
+                                                    u8::from(copied < total);
                                             }
                                             Err(e) => {
                                                 tracing::warn!(
@@ -5099,10 +5127,27 @@ async fn execute_one_rop(
 
         RopId::ROP_QUERY_NAMED_PROPERTIES => {
             let req = RopQueryNamedPropertiesRequest::decode(cur)?;
+            let property_ids: Vec<u16> = crate::mapi::namedprops::all_named_property_ids();
+            // Build the parallel `PropertyNames` list (one `PropertyName` per
+            // id) so the response carries the full name↔id mapping required by
+            // MS-OXCROPS §2.2.8.10.2.
+            let property_names: Vec<NamedPropertyNameSpec> = property_ids
+                .iter()
+                .filter_map(|id| {
+                    crate::mapi::namedprops::name_for_property_id(*id).map(|entry| {
+                        NamedPropertyNameSpec {
+                            guid: entry.guid,
+                            kind: 0, // LID
+                            name: NamedPropertyName::Lid(entry.lid),
+                        }
+                    })
+                })
+                .collect();
             RopQueryNamedPropertiesSuccess {
                 output_handle_index: req.input_handle_index,
                 return_value: RopErrorCode::Success,
-                property_ids: crate::mapi::namedprops::all_named_property_ids(),
+                property_ids,
+                property_names,
             }
             .encode(out);
         }
@@ -5380,40 +5425,67 @@ async fn execute_one_rop(
                     if account_id.is_empty() {
                         outcome = RopErrorCode::NotFound;
                     } else {
-                        // Empty the folder: destroy every message it holds.
-                        let ids = match jc
+                        // Empty the folder: destroy every message it holds. A
+                        // failed enumeration or destroy must NOT be reported as
+                        // success (the client would believe the folder is empty
+                        // while messages remain).
+                        let listed = jc
                             .list_email_ids_in_mailbox(&account_id, backend, username, pw)
-                            .await
-                        {
-                            Ok(ids) => {
-                                ids.into_iter().map(|(jid, _)| jid).collect::<Vec<_>>()
-                            }
+                            .await;
+                        let ids: Vec<String> = match listed {
+                            Ok(ids) => ids.into_iter().map(|(jid, _)| jid).collect(),
                             Err(e) => {
                                 tracing::warn!(error = %e, "JMAP list for empty-folder failed");
+                                outcome = RopErrorCode::DiskError;
+                                let _ = e;
                                 Vec::new()
                             }
                         };
+                        let mut destroyed_ok = ids.is_empty();
                         if !ids.is_empty() {
-                            let _ = jc
+                            destroyed_ok = match jc
                                 .destroy_emails(&account_id, &ids, username, pw)
-                                .await;
+                                .await
+                            {
+                                Ok(_) => true,
+                                Err(e) => {
+                                    tracing::warn!(error = %e, "JMAP Email/destroy failed");
+                                    false
+                                }
+                            };
                         }
                         // Subfolder clause: destroy child mailboxes when the
-                        // ROP is HardDeleteMessagesAndSubfolders.
-                        if rop_id == RopId::ROP_HARD_DELETE_MESSAGES_AND_SUBFOLDERS
-                            && let Ok(mailboxes) = jc.query_mailboxes(username, pw).await
-                        {
-                            for mbx in mailboxes.mailboxes {
-                                if mbx.parent_id.as_deref() == Some(backend)
-                                    && let Some(child_id) = mbx.id.as_deref()
-                                {
-                                    let _ = jc
-                                        .destroy_mailbox(&account_id, child_id, username, pw)
-                                        .await;
+                        // ROP is HardDeleteMessagesAndSubfolders. Propagate
+                        // failures there too.
+                        let mut subfolders_ok = true;
+                        if rop_id == RopId::ROP_HARD_DELETE_MESSAGES_AND_SUBFOLDERS {
+                            match jc.query_mailboxes(username, pw).await {
+                                Ok(mailboxes) => {
+                                    for mbx in mailboxes.mailboxes {
+                                        if mbx.parent_id.as_deref() == Some(backend)
+                                            && let Some(child_id) = mbx.id.clone()
+                                        {
+                                            if jc
+                                                .destroy_mailbox(&account_id, &child_id, username, pw)
+                                                .await
+                                                .is_err()
+                                            {
+                                                subfolders_ok = false;
+                                            }
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    tracing::warn!(error = %e, "JMAP Mailbox/query for subfolders failed");
+                                    subfolders_ok = false;
                                 }
                             }
                         }
-                        outcome = RopErrorCode::Success;
+                        outcome = if destroyed_ok && subfolders_ok {
+                            RopErrorCode::Success
+                        } else {
+                            RopErrorCode::DiskError
+                        };
                     }
                 }
             }
@@ -5428,7 +5500,10 @@ async fn execute_one_rop(
             // MS-OXCROPS §2.2.4.12.1: WantAsynchronous + NotifyNonRead +
             // MessageIdCount + MessageIds (count × 8-byte IDs). Map to JMAP
             // Email/destroy after resolving each MAPI id back to a JMAP id via
-            // the session's message handles.
+            // the folder that `idx` binds (mirroring RopDeleteMessages, which
+            // enumerates the source folder rather than relying on open
+            // message handles — New Outlook issues HardDelete from a contents
+            // table without opening a Handle::Message per id).
             let (_, idx) = decode_header3(cur)?;
             let _want_async = cur.take_u8()?;
             let _notify_non_read = cur.take_u8()?;
@@ -5437,23 +5512,24 @@ async fn execute_one_rop(
             for _ in 0..count {
                 message_ids.push(cur.take_u64_le()?);
             }
-            // Resolve each requested MAPI message id to a JMAP email id through
-            // the live message handles in the snapshot.
+            // Resolve the source folder bound by the input handle.
+            let (folder_backend, folder_kind) = sessions
+                .with_handle(session_id, idx, |h| match h {
+                    Handle::Folder { backend_id, kind } => (backend_id.clone(), *kind),
+                    _ => (String::new(), FolderKind::Root),
+                })
+                .unwrap_or((String::new(), FolderKind::Root));
             let want: std::collections::HashSet<u64> = message_ids.iter().copied().collect();
-            let mut jids: Vec<String> = Vec::new();
-            for (_, h) in &snap.handles {
-                if let Handle::Message { backend_id, .. } = h
-                    && !backend_id.is_empty()
-                    && want.contains(&store::message_id_from_jmap(backend_id))
-                {
-                    jids.push(backend_id.clone());
-                }
-            }
             let outcome: RopErrorCode;
-            match (jmap, password) {
-                (None, _) => outcome = RopErrorCode::NotFound,
-                (_, None) => outcome = RopErrorCode::AccessDenied,
-                (Some(jc), Some(pw)) => {
+            match (
+                jmap,
+                password,
+                folder_kind == FolderKind::Mail && !folder_backend.is_empty(),
+            ) {
+                (_, _, false) => outcome = RopErrorCode::NoSupport,
+                (None, _, _) => outcome = RopErrorCode::NotFound,
+                (_, None, _) => outcome = RopErrorCode::AccessDenied,
+                (Some(jc), Some(pw), true) => {
                     let account_id = jc
                         .get_account_id(username, pw)
                         .await
@@ -5461,13 +5537,33 @@ async fn execute_one_rop(
                         .unwrap_or_default();
                     if account_id.is_empty() {
                         outcome = RopErrorCode::NotFound;
-                    } else if jids.is_empty() {
-                        outcome = RopErrorCode::Success;
                     } else {
-                        match jc.destroy_emails(&account_id, &jids, username, pw).await {
-                            Ok(_) => outcome = RopErrorCode::Success,
+                        match jc
+                            .list_email_ids_in_mailbox(&account_id, &folder_backend, username, pw)
+                            .await
+                        {
+                            Ok(all) => {
+                                let jids: Vec<String> = all
+                                    .into_iter()
+                                    .filter(|(jid, _)| {
+                                        want.contains(&store::message_id_from_jmap(jid))
+                                    })
+                                    .map(|(jid, _)| jid)
+                                    .collect();
+                                if jids.is_empty() {
+                                    outcome = RopErrorCode::Success;
+                                } else {
+                                    match jc.destroy_emails(&account_id, &jids, username, pw).await {
+                                        Ok(_) => outcome = RopErrorCode::Success,
+                                        Err(e) => {
+                                            tracing::warn!(error = %e, "JMAP Email/destroy failed");
+                                            outcome = RopErrorCode::DiskError;
+                                        }
+                                    }
+                                }
+                            }
                             Err(e) => {
-                                tracing::warn!(error = %e, "JMAP Email/destroy failed");
+                                tracing::warn!(error = %e, "JMAP list for hard-delete failed");
                                 outcome = RopErrorCode::DiskError;
                             }
                         }
