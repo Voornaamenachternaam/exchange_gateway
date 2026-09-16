@@ -1979,6 +1979,7 @@ mod tests {
             total_threads: None,
             unread_threads: None,
             is_subscribed: None,
+            share_with: None,
         };
         let cols = vec![
             PropertyTag::new(PropertyType::PTYP_INTEGER64, PR_FOLDER_ID),

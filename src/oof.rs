@@ -501,11 +501,31 @@ impl OofManager for JmapOofManager {
         username: &str,
         settings: OofSettings,
     ) -> Result<OofSettings, OofError> {
+        // The Sieve script is a shared resource: the MAPI rules engine
+        // (`mapi::rules`) persists inbox rules in the same active script. Any
+        // rewrite (enable or disable OOF) must carry the rules block across,
+        // otherwise changing OOF would silently delete the user's rules.
+        let carry_rules = self
+            .get_script_blocking(username)
+            .ok()
+            .flatten()
+            .and_then(|existing| crate::mapi::rules::rules_segment(&existing));
+        let append_rules = |script: &mut String| {
+            if let Some(block) = &carry_rules
+                && !script.contains(block.as_str())
+            {
+                script.push('\n');
+                script.push_str(block);
+                script.push('\n');
+            }
+        };
         if !settings.enabled {
-            self.set_script_blocking(username, "")?;
+            let mut script = String::new();
+            append_rules(&mut script);
+            self.set_script_blocking(username, &script)?;
             return Ok(settings);
         }
-        let script = build_sieve_script(
+        let mut script = build_sieve_script(
             &self.mail_domain,
             settings.internal_reply.as_deref(),
             settings.external_reply.as_deref(),
@@ -513,6 +533,7 @@ impl OofManager for JmapOofManager {
             settings.start_time,
             settings.end_time,
         )?;
+        append_rules(&mut script);
         self.set_script_blocking(username, &script)?;
         Ok(settings)
     }
