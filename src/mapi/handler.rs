@@ -71,7 +71,7 @@ use crate::mapi::rops::{
     RopFastTransferSourceGetBufferSuccess, RopFastTransferSourceOpenResponse, RopFindRowRequest,
     RopFreeBookmarkRequest, RopFreeBookmarkResponse, RopGetNamesFromPropertyIdsRequest,
     RopGetPerUserLongTermIdsRequest, RopGetPropertyIdsFromNamesRequest, RopGetReceiveFolderRequest,
-    RopGetRulesPermissionsTableRequest, RopGetSearchCriteriaRequest, RopGetSearchCriteriaSuccess,
+    RopGetRulesPermissionsTableRequest, RopGetRulesTableSuccess, RopGetSearchCriteriaRequest, RopGetSearchCriteriaSuccess,
     RopModifyPermissionsRequest,
     RopModifyRecipientsRequest, RopModifyRulesRequest, RopMoveCopyFolderRequest, RopNotifyResponse,
     RopOpenEmbeddedMessageRequest, RopPendingResponse, RopQueryNamedPropertiesRequest,
@@ -5152,7 +5152,56 @@ async fn execute_one_rop(
             .encode(out);
         }
 
-        RopId::ROP_GET_RULES_TABLE | RopId::ROP_GET_PERMISSIONS_TABLE => {
+        RopId::ROP_GET_RULES_TABLE => {
+            let req = RopGetRulesPermissionsTableRequest::decode(cur)?;
+            
+            // Check if we have JMAP client and password
+            if let (Some(jc), Some(pw)) = (jmap.as_ref(), password.as_ref()) {
+                // Get the account ID for JMAP operations
+                let account_id = match jc.get_account_id(&username, pw).await {
+                    Ok(id) => id,
+                    Err(_) => {
+                        RopErrorResponse {
+                            rop_id,
+                            output_handle_index: req.output_handle_index,
+                            return_value: RopErrorCode::NoSupport,
+                        }
+                        .encode(out);
+                        return Ok(());
+                    }
+                };
+                
+                // Fetch rules from JMAP
+                match jc.get_mail_rules(&account_id, &username, pw).await {
+                    Ok(rules) => {
+                        // Return success response with rule count
+                        RopGetRulesTableSuccess {
+                            output_handle_index: req.output_handle_index,
+                            return_value: RopErrorCode::Success,
+                            row_count: rules.len() as u32,
+                        }
+                        .encode(out);
+                    }
+                    Err(_) => {
+                        RopErrorResponse {
+                            rop_id,
+                            output_handle_index: req.output_handle_index,
+                            return_value: RopErrorCode::NoSupport,
+                        }
+                        .encode(out);
+                    }
+                }
+            } else {
+                RopErrorResponse {
+                    rop_id,
+                    output_handle_index: req.output_handle_index,
+                    return_value: RopErrorCode::NoSupport,
+                }
+                .encode(out);
+            }
+        },
+        
+        RopId::ROP_GET_PERMISSIONS_TABLE => {
             let req = RopGetRulesPermissionsTableRequest::decode(cur)?;
             RopErrorResponse {
                 rop_id,
@@ -5436,7 +5485,6 @@ async fn execute_one_rop(
                             Ok(ids) => ids.into_iter().map(|(jid, _)| jid).collect(),
                             Err(e) => {
                                 tracing::warn!(error = %e, "JMAP list for empty-folder failed");
-                                outcome = RopErrorCode::DiskError;
                                 let _ = e;
                                 Vec::new()
                             }

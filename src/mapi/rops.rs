@@ -1924,6 +1924,22 @@ impl RopGetAttachmentTableSuccess {
     }
 }
 
+/// `RopGetRulesTable` success response (MS-OXORULE §2.2.8)
+pub struct RopGetRulesTableSuccess {
+    pub output_handle_index: u8,
+    pub return_value: RopErrorCode,
+    pub row_count: u32,
+}
+
+impl RopGetRulesTableSuccess {
+    pub fn encode(&self, out: &mut Vec<u8>) {
+        out.push(RopId::ROP_GET_RULES_TABLE.to_u8());
+        out.push(self.output_handle_index);
+        out.extend_from_slice(&self.return_value.to_u32().to_le_bytes());
+        out.extend_from_slice(&self.row_count.to_le_bytes());
+    }
+}
+
 /// `RopOpenAttachment` request, MS-OXCROPS §2.2.6.12.1. Body after the
 /// `RopHeader4` is `OpenAttachmentFlags(1) · AttachmentID(4 LE)` where
 /// `AttachmentID` is the `PR_ATTACH_NUM` ([MS-OXCMSG] §2.2.2.6).

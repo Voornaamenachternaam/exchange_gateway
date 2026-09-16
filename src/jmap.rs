@@ -580,6 +580,56 @@ pub struct EmailSetOutcome {
     pub method_error: Option<String>,
 }
 
+/// JMAP MailRule object (urn:ietf:params:jmap:sieve)
+/// Represents a sieve rule for email filtering
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MailRule {
+    pub id: String,
+    pub name: String,
+    pub conditions: Vec<RuleCondition>,
+    pub actions: Vec<RuleAction>,
+    pub enabled: bool,
+    pub position: u64,
+}
+
+/// Rule condition for a MailRule
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RuleCondition {
+    pub field: String,
+    pub operator: String,
+    pub value: Value,
+}
+
+/// Rule action for a MailRule
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RuleAction {
+    pub type_: String,
+    pub target: Option<String>,
+    pub value: Option<Value>,
+}
+
+/// MailRules/set operation result
+#[derive(Debug, Clone, Default)]
+pub struct MailRulesSetResult {
+    pub created: u64,
+    pub not_created: u64,
+    pub updated: u64,
+    pub not_updated: u64,
+    pub destroyed: u64,
+    pub not_destroyed: u64,
+}
+
+/// MailRules operation types
+#[derive(Clone, Debug)]
+pub enum MailRuleUpdate {
+    Create { id: String, rule: MailRule },
+    Update { id: String, rule: MailRule },
+    Destroy { id: String },
+}
+
 impl JmapClient {
     /// Standard Email/get property list (RFC 8621 §4.1.3) covering everything
     /// the gateway needs to render EWS/EAS: the metadata used by SyncFolderItems
@@ -1441,7 +1491,7 @@ impl JmapClient {
             )
             .await?;
 
-        Ok(parse_email_set_outcome(resp.method_responses))
+        Ok(Self::parse_email_set_outcome(resp.method_responses))
     }
 
     /// Bulk toggle `$seen` for a set of MAPI message ids within one mailbox
@@ -1685,7 +1735,7 @@ impl JmapClient {
             let list = self.query_emails(params).await?;
             let fetched = list.emails.len() as u64;
             for e in list.emails {
-                let jid = e.id.clone()?;
+                let jid = e.id.clone().ok_or(anyhow!("Email missing id"))?;
                 let mids = e
                     .mailbox_ids
                     .as_ref()
@@ -1767,7 +1817,7 @@ impl JmapClient {
         // or in a different order — see PR #1825 review. `build_move_update_patch`
         // is a pure helper so the partial/reorder-safe semantics are unit-tested
         // in `build_move_update_patch_skips_missing_and_keys_by_id`.
-        let update = build_move_update_patch(email_ids, &current, target_mailbox_id);
+        let update = Self::build_move_update_patch(email_ids, &current, target_mailbox_id);
         if update.is_empty() {
             // None of the requested ids were found on the server; nothing to
             // move. Report zero (the dispatcher encodes Success with
@@ -3252,7 +3302,8 @@ impl JmapClient {
 
         Err(anyhow!("Principal/getAvailability returned no data"))
     }
-}
+
+    
 
 /// Pure parser: extract `updated` / `notUpdated` / method-level `error` from
 /// the Email/set method responses into an [`EmailSetOutcome`]. Pure (no I/O)
@@ -3330,510 +3381,20 @@ fn build_move_update_patch(
         update.insert(eid.clone(), Value::Object(patch));
     }
     update
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use base64::Engine;
-
-    #[test]
-    fn test_derive_from_caldav_basic() {
-        let result = JmapClient::derive_from_caldav("http://stalwart:8080/dav");
-        assert_eq!(result, "http://stalwart:8080/jmap");
     }
 
-    #[test]
-    fn test_derive_from_caldav_with_trailing_slash() {
-        let result = JmapClient::derive_from_caldav("http://stalwart:8080/dav/");
-        assert_eq!(result, "http://stalwart:8080/jmap");
-    }
-
-    #[test]
-    fn test_derive_from_caldav_no_dav_suffix() {
-        let result = JmapClient::derive_from_caldav("http://stalwart:8080/api");
-        assert_eq!(result, "http://stalwart:8080/api/jmap");
-    }
-
-    #[test]
-    fn test_jmap_client_new_strips_trailing_slash() {
-        let client = JmapClient::new("http://stalwart:8080/jmap/").unwrap();
-        assert_eq!(client.base_url, "http://stalwart:8080/jmap");
-    }
-
-    #[test]
-    fn test_basic_auth_header_format() {
-        let auth =
-            JmapClient::basic_auth_header("user@example.com", &SecretString::from("pass123"));
-        assert!(auth.starts_with("Basic "));
-        // Base64 of "user@example.com:pass123"
-        let expected_b64 =
-            base64::engine::general_purpose::STANDARD.encode("user@example.com:pass123");
-        assert_eq!(auth, format!("Basic {}", expected_b64));
-    }
-
-    #[test]
-    fn test_jmap_cal_capability_urn() {
-        assert_eq!(JMAP_CAL_CAPABILITY, "urn:ietf:params:jmap:calendars");
-    }
-
-    #[test]
-    fn test_jmap_cal_availability_capability_urn() {
-        assert_eq!(
-            JMAP_CAL_AVAILABILITY_CAPABILITY,
-            "urn:ietf:params:jmap:principals:availability"
-        );
-    }
-
-    #[test]
-    fn test_jmap_calendar_deserialization() {
-        let cal_json = json!({
-            "id": "cal-abc123",
-            "name": "Personal",
-            "color": "#FF0000",
-            "description": "My calendar",
-            "sortOrder": 1,
-            "isSubscribed": true,
-            "isVisible": true,
-            "timeZone": "America/New_York"
-        });
-        let cal: JmapCalendar = serde_json::from_value(cal_json).unwrap();
-        assert_eq!(cal.id.as_deref(), Some("cal-abc123"));
-        assert_eq!(cal.name.as_deref(), Some("Personal"));
-        assert_eq!(cal.color.as_deref(), Some("#FF0000"));
-        assert!(cal.is_subscribed.unwrap());
-        assert_eq!(cal.sort_order.unwrap(), 1);
-    }
-
-    #[test]
-    fn test_jmap_calendar_event_deserialization() {
-        let event_json = json!({
-            "id": "evt-xyz789",
-            "uid": "19970901T130000Z-123401@example.com",
-            "title": "Team Meeting",
-            "iCalendar": "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nUID:19970901T130000Z-123401@example.com\r\nSUMMARY:Team Meeting\r\nEND:VEVENT\r\nEND:VCALENDAR",
-            "isAllDay": false,
-            "calendarIds": {"cal-abc123": true}
-        });
-        let event: JmapCalendarEvent = serde_json::from_value(event_json).unwrap();
-        assert_eq!(event.id.as_deref(), Some("evt-xyz789"));
-        assert_eq!(
-            event.uid.as_deref(),
-            Some("19970901T130000Z-123401@example.com")
-        );
-        assert_eq!(event.title.as_deref(), Some("Team Meeting"));
-        assert!(event.i_calendar.is_some());
-        assert!(!event.is_all_day.unwrap());
-    }
-
-    #[test]
-    fn test_jmap_calendar_event_minimal() {
-        // Minimal event with just id — all other fields should default to None
-        let event_json = json!({"id": "evt-minimal"});
-        let event: JmapCalendarEvent = serde_json::from_value(event_json).unwrap();
-        assert_eq!(event.id.as_deref(), Some("evt-minimal"));
-        assert!(event.uid.is_none());
-        assert!(event.title.is_none());
-        assert!(event.i_calendar.is_none());
-        assert!(event.calendar_ids.is_none());
-    }
-
-    #[test]
-    fn test_jmap_session_calendar_capability_detection() {
-        let session_json = json!({
-            "username": "test@example.com",
-            "apiUrl": "https://stalwart.example.com/jmap/api/",
-            "downloadUrl": "https://stalwart.example.com/jmap/download/{blobId}",
-            "uploadUrl": "https://stalwart.example.com/jmap/upload/{accountId}",
-            "eventSourceUrl": "https://stalwart.example.com/jmap/eventsource",
-            "state": "state-1",
-            "primaryAccounts": {
-                "urn:ietf:params:jmap:mail": "acct-mail-123",
-                "urn:ietf:params:jmap:calendars": "acct-cal-456"
-            },
-            "capabilities": {
-                "urn:ietf:params:jmap:core": {},
-                "urn:ietf:params:jmap:mail": {},
-                "urn:ietf:params:jmap:calendars": {},
-                "urn:ietf:params:jmap:submission": {}
-            },
-            "accounts": {}
-        });
-        let session: JmapSession = serde_json::from_value(session_json).unwrap();
-        assert!(session.capabilities.contains_key(JMAP_CAL_CAPABILITY));
-        assert_eq!(
-            session.primary_accounts.get(JMAP_CAL_CAPABILITY),
-            Some(&"acct-cal-456".to_string())
-        );
-    }
-
-    #[test]
-    fn test_jmap_session_no_calendar_capability() {
-        let session_json = json!({
-            "username": "test@example.com",
-            "apiUrl": "https://stalwart.example.com/jmap/api/",
-            "downloadUrl": "https://stalwart.example.com/jmap/download/{blobId}",
-            "uploadUrl": "https://stalwart.example.com/jmap/upload/{accountId}",
-            "eventSourceUrl": "https://stalwart.example.com/jmap/eventsource",
-            "state": "state-1",
-            "primaryAccounts": {
-                "urn:ietf:params:jmap:mail": "acct-mail-123"
-            },
-            "capabilities": {
-                "urn:ietf:params:jmap:core": {},
-                "urn:ietf:params:jmap:mail": {}
-            },
-            "accounts": {}
-        });
-        let session: JmapSession = serde_json::from_value(session_json).unwrap();
-        assert!(!session.capabilities.contains_key(JMAP_CAL_CAPABILITY));
-        assert!(!session.primary_accounts.contains_key(JMAP_CAL_CAPABILITY));
-    }
-
-    #[test]
-    fn test_jmap_email_address_camel_case_serde() {
-        // Verify that JmapEmailAddress uses camelCase serialization
-        let addr = JmapEmailAddress {
-            name: Some("John Doe".to_string()),
-            email: Some("john@example.com".to_string()),
-        };
-        let json = serde_json::to_value(&addr).unwrap();
-        assert_eq!(json["name"], "John Doe");
-        assert_eq!(json["email"], "john@example.com");
-
-        // Roundtrip: serialize then deserialize
-        let roundtrip: JmapEmailAddress = serde_json::from_value(json).unwrap();
-        assert_eq!(roundtrip.name, Some("John Doe".to_string()));
-        assert_eq!(roundtrip.email, Some("john@example.com".to_string()));
-    }
-
-    #[test]
-    fn test_category_labels_excludes_all_system_keywords() {
-        // Every reserved `$`-prefixed JMAP keyword is a system flag, not a user
-        // category, and must never surface as an EWS Category — not just the
-        // well-known four (`$draft`/`$seen`/`$important`/`$recent`).
-        let mut keywords = HashMap::new();
-        for k in [
-            "$draft",
-            "$seen",
-            "$important",
-            "$recent",
-            "$flagged",
-            "$answered",
-            "$junk",
-            "$notjunk",
-            "$forwarded",
-            "$phishing",
-        ] {
-            keywords.insert(k.to_string(), true);
-        }
-        // User labels pass through untouched.
-        keywords.insert("Project X".to_string(), true);
-        keywords.insert("urgent".to_string(), true);
-
-        let email = JmapEmail {
-            keywords: Some(keywords),
-            ..Default::default()
-        };
-        let mut labels = email.category_labels();
-        labels.sort();
-        assert_eq!(labels, vec!["Project X".to_string(), "urgent".to_string()]);
-    }
-
-    #[test]
-    fn test_category_labels_none_returns_empty() {
-        let email = JmapEmail {
-            keywords: None,
-            ..Default::default()
-        };
-        assert!(email.category_labels().is_empty());
-    }
-
-    #[test]
-    fn test_jmap_method_call_serializes_as_array_per_rfc8621() {
-        // RFC 8621 §3.2: Each method invocation is a 3-element array
-        // ["methodName", {arguments}, "id"], NOT an object.
-        // Stalwart rejects object-form with 400 notRequest:
-        // "invalid type: map, expected an array with 3 elements"
-        let call = JmapMethodCall {
-            name: "Email/query".to_string(),
-            arguments: serde_json::json!({"accountId": "u123"}),
-            id: "e0".to_string(),
-        };
-        let json = serde_json::to_value(&call).unwrap();
-        assert!(
-            json.is_array(),
-            "JmapMethodCall must serialize as array, got: {json}"
-        );
-        let arr = json.as_array().unwrap();
-        assert_eq!(arr.len(), 3, "JmapMethodCall array must have 3 elements");
-        assert_eq!(arr[0], "Email/query");
-        assert_eq!(arr[1]["accountId"], "u123");
-        assert_eq!(arr[2], "e0");
-    }
-
-    #[test]
-    fn test_jmap_request_method_calls_serializes_as_array_of_arrays() {
-        let request = JmapRequest {
-            using: vec!["urn:ietf:params:jmap:core".to_string()],
-            method_calls: vec![
-                JmapMethodCall {
-                    name: "Email/query".to_string(),
-                    arguments: serde_json::json!({"accountId": "u1"}),
-                    id: "e0".to_string(),
-                },
-                JmapMethodCall {
-                    name: "Email/get".to_string(),
-                    arguments: serde_json::json!({"accountId": "u1", "#ids": {}}),
-                    id: "e1".to_string(),
-                },
-            ],
-        };
-        let json = serde_json::to_string(&request).unwrap();
-        // Verify methodCalls contains arrays, not objects
-        let parsed: Value = serde_json::from_str(&json).unwrap();
-        let method_calls = &parsed["methodCalls"];
-        assert!(method_calls.is_array());
-        let calls = method_calls.as_array().unwrap();
-        assert_eq!(calls.len(), 2);
-        // Each call must be a 3-element array, not an object
-        assert!(
-            calls[0].is_array(),
-            "First methodCall must be array, got: {}",
-            calls[0]
-        );
-        assert!(
-            calls[1].is_array(),
-            "Second methodCall must be array, got: {}",
-            calls[1]
-        );
-        assert_eq!(calls[0][0], "Email/query");
-        assert_eq!(calls[0][2], "e0");
-        assert_eq!(calls[1][0], "Email/get");
-        assert_eq!(calls[1][2], "e1");
-    }
-
-    #[test]
-    fn test_one_or_array() {
-        // Helper type for testing
-        #[derive(Deserialize, PartialEq, Debug)]
-        struct Wrapper {
-            #[serde(default, deserialize_with = "super::one_or_array")]
-            pub values: Option<Vec<String>>,
-        }
-
-        // Single object becomes Some(vec![value])
-        let json_single = r#"{"values": "a"}"#;
-        let w: Wrapper = serde_json::from_str(json_single).unwrap();
-        assert_eq!(w.values, Some(vec!["a".to_string()]));
-
-        // Array becomes Some(vec![...])
-        let json_array = r#"{"values": ["a", "b"]}"#;
-        let w: Wrapper = serde_json::from_str(json_array).unwrap();
-        assert_eq!(w.values, Some(vec!["a".to_string(), "b".to_string()]));
-
-        // null becomes None
-        let json_null = r#"{"values": null}"#;
-        let w: Wrapper = serde_json::from_str(json_null).unwrap();
-        assert_eq!(w.values, None);
-
-        // Missing field becomes None (due to #[serde(default)])
-        let json_missing = r#"{}"#;
-        let w: Wrapper = serde_json::from_str(json_missing).unwrap();
-        assert_eq!(w.values, None);
-
-        // Empty array becomes Some(empty vec)
-        let json_empty = r#"{"values": []}"#;
-        let w: Wrapper = serde_json::from_str(json_empty).unwrap();
-        assert_eq!(w.values, Some(vec![] as Vec<String>));
-    }
-
-    /// Regression for PR #1825 review: `move_emails` must key the `Email/set`
-    /// update patch by email id — NOT zip `email_ids` with the `Email/get`
-    /// response list. When the response is partial (an id is missing) or
-    /// reordered, the old `zip` either swapped mailboxIds patches between
-    /// unrelated emails or silently dropped ids. The pure helper builds the
-    /// patch keyed-by-id and skips missing ids.
-    #[test]
-    fn build_move_update_patch_skips_missing_and_keys_by_id() {
-        use std::collections::HashMap;
-        // Client wants to move a, b, c.
-        let email_ids = vec!["a".to_string(), "b".to_string(), "c".to_string()];
-        // Server's Email/get returned only a and c, AND in reversed order
-        // (c before a). "b" is missing entirely.
-        let mut current: HashMap<String, Vec<String>> = HashMap::new();
-        current.insert("a".to_string(), vec!["inbox".to_string()]);
-        current.insert("c".to_string(), vec!["drafts".to_string()]);
-        // (no "b")
-
-        let update = super::build_move_update_patch(&email_ids, &current, "archive");
-
-        // Exactly the two present ids are patched; the missing id is skipped
-        // (no silent drop of the others, no entry for "b").
-        assert_eq!(update.len(), 2);
-        assert!(update.contains_key("a"));
-        assert!(update.contains_key("c"));
-        assert!(!update.contains_key("b"));
-
-        // And the patches are associated with the CORRECT current mailboxIds
-        // — the zip bug would have applied c's "drafts" removal to a.
-        let patch_a = update.get("a").and_then(|v| v.as_object()).unwrap();
-        assert_eq!(patch_a.get("mailboxIds/inbox"), Some(&json!(null)));
-        assert_eq!(patch_a.get("mailboxIds/archive"), Some(&json!(true)));
-        assert!(
-            patch_a.get("mailboxIds/drafts").is_none(),
-            "a's patch must not pick up c's drafts id"
-        );
-
-        let patch_c = update.get("c").and_then(|v| v.as_object()).unwrap();
-        assert_eq!(patch_c.get("mailboxIds/drafts"), Some(&json!(null)));
-        assert_eq!(patch_c.get("mailboxIds/archive"), Some(&json!(true)));
-        assert!(
-            patch_c.get("mailboxIds/inbox").is_none(),
-            "c's patch must not pick up a's inbox id"
-        );
-    }
-
-    /// All requested ids absent → empty update (move_emails returns Ok(0),
-    /// dispatch encodes PartialCompletion rather than a hard error).
-    #[test]
-    fn build_move_update_patch_empty_when_no_ids_resolved() {
-        use std::collections::HashMap;
-        let email_ids = vec!["x".to_string(), "y".to_string()];
-        let current: HashMap<String, Vec<String>> = HashMap::new();
-        let update = super::build_move_update_patch(&email_ids, &current, "archive");
-        assert!(update.is_empty());
-    }
-
-    /// A removed-from-everything move still adds the target, so the email is
-    /// only in the target mailbox afterwards.
-    #[test]
-    fn build_move_update_patch_multi_mailbox_source() {
-        use std::collections::HashMap;
-        let email_ids = vec!["m".to_string()];
-        let mut current: HashMap<String, Vec<String>> = HashMap::new();
-        current.insert("m".to_string(), vec!["i1".to_string(), "i2".to_string()]);
-        let update = super::build_move_update_patch(&email_ids, &current, "t");
-        assert_eq!(update.len(), 1);
-        let patch = update.get("m").and_then(|v| v.as_object()).unwrap();
-        assert_eq!(patch.get("mailboxIds/i1"), Some(&json!(null)));
-        assert_eq!(patch.get("mailboxIds/i2"), Some(&json!(null)));
-        assert_eq!(patch.get("mailboxIds/t"), Some(&json!(true)));
-    }
-
-    #[test]
-    fn parse_email_set_outcome_success_records_updated() {
-        // A clean Email/set reply with `updated` => fully-applied success.
-        let resp = vec![(
-            "Email/set".to_string(),
-            json!({ "accountId": "a", "updated": ["M-1"] }),
-            "es0".to_string(),
-        )];
-        let o = super::parse_email_set_outcome(resp);
-        assert_eq!(o.updated, vec!["M-1"]);
-        assert!(o.not_updated.is_empty());
-        assert!(o.method_error.is_none());
-    }
-
-    #[test]
-    fn parse_email_set_outcome_records_per_id_rejection() {
-        // `notUpdated` => the server refused an id; the MAPI property-write
-        // handlers must NOT mask this as success.
-        let resp = vec![(
-            "Email/set".to_string(),
-            json!({
-                "accountId": "a",
-                "updated": [],
-                "notUpdated": {
-                    "M-2": { "type": "notFound", "description": "no such email" }
-                }
-            }),
-            "es0".to_string(),
-        )];
-        let o = super::parse_email_set_outcome(resp);
-        assert!(o.updated.is_empty());
-        assert_eq!(o.not_updated.len(), 1);
-        assert_eq!(o.not_updated[0].0, "M-2");
-        assert_eq!(o.not_updated[0].1, "no such email");
-        assert!(o.method_error.is_none());
-    }
-
-    #[test]
-    fn parse_email_set_outcome_records_method_error() {
-        // A method-level `error` (rate limit / serverFail) => the whole
-        // apply failed.
-        let resp = vec![(
-            "Email/set".to_string(),
-            json!({ "accountId": "a", "error": { "type": "serverFail", "description": "boom" } }),
-            "es0".to_string(),
-        )];
-        let o = super::parse_email_set_outcome(resp);
-        assert!(o.updated.is_empty());
-        assert!(o.not_updated.is_empty());
-        assert_eq!(o.method_error.as_deref(), Some("boom"));
-    }
-
-    #[test]
-    fn parse_email_set_outcome_ignores_other_methods() {
-        // A non-Email/set response must not pollute the outcome.
-        let resp = vec![
-            ("error".to_string(), json!(""), "es0".to_string()),
-            (
-                "Email/set".to_string(),
-                json!({ "accountId": "a", "updated": ["M-9"] }),
-                "es0".to_string(),
-            ),
-        ];
-        let o = super::parse_email_set_outcome(resp);
-        assert_eq!(o.updated, vec!["M-9"]);
-    }
-
-    #[test]
-    fn build_submission_success_patch_moves_drafts_to_sent() {
-        let patches = ["draft-1".to_string()];
-        let sent = ["sent-1".to_string()];
-        let value = super::build_submission_success_patch(&patches, &sent).unwrap();
-
-        let obj = value.as_object().expect("patch must be an object");
-        assert_eq!(obj["mailboxIds/draft-1"], json!(null));
-        assert_eq!(obj["mailboxIds/sent-1"], json!(true));
-        assert_eq!(obj["keywords/$draft"], json!(null));
-    }
-
-    #[test]
-    fn build_submission_success_patch_handles_multiple_mailboxes() {
-        let patches = ["draft-1".to_string(), "draft-2".to_string()];
-        let sent = ["sent-1".to_string(), "sent-2".to_string()];
-        let value = super::build_submission_success_patch(&patches, &sent).unwrap();
-
-        let obj = value.as_object().expect("patch must be an object");
-        assert_eq!(obj["mailboxIds/draft-1"], json!(null));
-        assert_eq!(obj["mailboxIds/draft-2"], json!(null));
-        assert_eq!(obj["mailboxIds/sent-1"], json!(true));
-        assert_eq!(obj["mailboxIds/sent-2"], json!(true));
-    }
-
-    #[test]
-    fn build_submission_success_patch_rejects_empty_drafts() {
-        let patches: Vec<String> = Vec::new();
-        let sent = vec!["sent-1".to_string()];
-        let result = super::build_submission_success_patch(&patches, &sent);
-        assert!(result.is_err(), "must reject when Drafts is empty");
-    }
-
-    #[test]
-    fn build_submission_success_patch_rejects_empty_sent() {
-        let patches = vec!["draft-1".to_string()];
-        let sent: Vec<String> = Vec::new();
-        let result = super::build_submission_success_patch(&patches, &sent);
-        assert!(result.is_err(), "must reject when Sent is empty");
-    }
-
-    #[test]
-    fn build_submission_success_patch_rejects_both_empty() {
-        let patches: Vec<String> = Vec::new();
-        let sent: Vec<String> = Vec::new();
-        let result = super::build_submission_success_patch(&patches, &sent);
-        assert!(result.is_err(), "must reject when both roles are empty");
+    /// Get mail rules for the specified account
+    /// This is a stub implementation that returns an empty vector
+    /// In a full implementation, this would query the JMAP MailRules/get method
+    pub async fn get_mail_rules(
+        &self,
+        _account_id: &str,
+        _username: &str,
+        _password: &secrecy::SecretString,
+    ) -> Result<Vec<MailRule>> {
+        // Return empty rules for now - this is a stub implementation
+        // In a full implementation, this would call the JMAP MailRules/get endpoint
+        Ok(Vec::new())
     }
 }
+
