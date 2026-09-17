@@ -2348,10 +2348,10 @@ async fn handle_find_folder(state: &Arc<AppState>, auth: &AuthContext, body: &st
             _ => None,
         }
     };
-    if custom_parent_id.is_none() {
-        if let Err(resp) = validate_requested_folder(&EwsAction::FindFolder, owner, body) {
-            return *resp;
-        }
+    if custom_parent_id.is_none()
+        && let Err(resp) = validate_requested_folder(&EwsAction::FindFolder, owner, body)
+    {
+        return *resp;
     }
     if let Some(parent_id) = custom_parent_id {
         return find_folder_custom_children(state, auth, &parent_id).await;
@@ -2370,43 +2370,43 @@ async fn handle_find_folder(state: &Arc<AppState>, auth: &AuthContext, body: &st
         // children with their JMAP ids, mirroring what MAPI's content table
         // and the EWS CreateFolder response expose.
         let mut extra = 0usize;
-        if let Some(jmap) = state.jmap_client.as_ref() {
-            if let Ok(mailboxes) = jmap.query_mailboxes(&auth.username, &auth.password).await {
-                let root_parent_id = folder_id_for(owner, DistinguishedFolder::MsgFolderRoot);
-                for m in &mailboxes.mailboxes {
-                    // Role-based mailboxes are already rendered by
-                    // render_root_and_children under their distinguished names.
-                    if m.role.is_some() {
-                        continue;
-                    }
-                    if m.parent_id.is_some() {
-                        // Nested folders are surfaced via FindFolder/CreateFolder
-                        // ids; only root-level customs are rendered here.
-                        continue;
-                    }
-                    let Some(id) = m.id.as_deref() else { continue };
-                    let name = m.name.clone().unwrap_or_else(|| "Folder".to_string());
-                    let child_count = mailboxes
-                        .mailboxes
-                        .iter()
-                        .filter(|c| c.parent_id.as_deref() == Some(id))
-                        .count();
-                    xml.push_str(&format!(
-                        "<t:Folder><t:FolderId Id=\"{}\" ChangeKey=\"1\"/>\
+        if let Some(jmap) = state.jmap_client.as_ref()
+            && let Ok(mailboxes) = jmap.query_mailboxes(&auth.username, &auth.password).await
+        {
+            let root_parent_id = folder_id_for(owner, DistinguishedFolder::MsgFolderRoot);
+            for m in &mailboxes.mailboxes {
+                // Role-based mailboxes are already rendered by
+                // render_root_and_children under their distinguished names.
+                if m.role.is_some() {
+                    continue;
+                }
+                if m.parent_id.is_some() {
+                    // Nested folders are surfaced via FindFolder/CreateFolder
+                    // ids; only root-level customs are rendered here.
+                    continue;
+                }
+                let Some(id) = m.id.as_deref() else { continue };
+                let name = m.name.clone().unwrap_or_else(|| "Folder".to_string());
+                let child_count = mailboxes
+                    .mailboxes
+                    .iter()
+                    .filter(|c| c.parent_id.as_deref() == Some(id))
+                    .count();
+                xml.push_str(&format!(
+                    "<t:Folder><t:FolderId Id=\"{}\" ChangeKey=\"1\"/>\
                          <t:ParentFolderId Id=\"{}\"/>\
                          <t:DisplayName>{}</t:DisplayName>\
                          <t:TotalCount>{}</t:TotalCount>\
                          <t:ChildFolderCount>{}</t:ChildFolderCount>\
                          <t:UnreadCount>{}</t:UnreadCount></t:Folder>",
-                        xml_escape(id),
-                        xml_escape(&root_parent_id),
-                        xml_escape(&name),
-                        m.total_emails.unwrap_or(0),
-                        child_count,
-                        m.unread_emails.unwrap_or(0),
-                    ));
-                    extra += 1;
-                }
+                    xml_escape(id),
+                    xml_escape(&root_parent_id),
+                    xml_escape(&name),
+                    m.total_emails.unwrap_or(0),
+                    child_count,
+                    m.unread_emails.unwrap_or(0),
+                ));
+                extra += 1;
             }
         }
         (n0 + extra, xml)

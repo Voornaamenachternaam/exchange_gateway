@@ -105,6 +105,20 @@ struct PingCacheEntry {
     folders: Vec<PingFolder>,
 }
 
+/// RAII guard: releases the per-mailbox JMAP EventSource push monitor when
+/// the Ping request ends, so the SSE stream is only held open while a client
+/// is actually waiting on it.
+struct PingMonitorGuard<'a> {
+    registry: &'a crate::jmap_push::PushMonitorRegistry,
+    owner: String,
+}
+
+impl Drop for PingMonitorGuard<'_> {
+    fn drop(&mut self) {
+        self.registry.release_email_monitor(&self.owner);
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 struct ItemOperationsFetch {
     store: String,
@@ -1442,15 +1456,104 @@ async fn handle_folder_sync(
     r
 }
 
-async fn handle_ping(
-    state: &Arc<AppState>,
-    owner: &str,
-    req: &EasRequest,
-    xml: &str,
+/// Everything a Ping invocation needs beyond the response encoder, grouped
+/// to keep `handle_ping` readable as the surface grows.
+struct PingInvocation<'a> {
+    owner: &'a str,
+    password: &'a SecretString,
+    req: &'a EasRequest,
+    xml: &'a str,
+    request_id: &'a str,
+}
+
+/// Build the Ping `Status 2` response listing `folder_ids` as changed.
+fn ping_changed_response(
     wbxml: &Wbxml,
     as_wbxml: bool,
+    folder_ids: &[String],
     request_id: &str,
 ) -> Response {
+    let xml = format!(
+        r#"<?xml version="1.0" encoding="utf-8"?><Ping xmlns="Ping:"><Status>2</Status><Folders>{}</Folders></Ping>"#,
+        folder_ids
+            .iter()
+            .map(|id| format!("<Folder>{}</Folder>", xml_escape(id)))
+            .collect::<Vec<_>>()
+            .join("")
+    );
+    xml_or_wbxml_response(wbxml, as_wbxml, &xml, request_id)
+}
+
+/// Per-folder `Email/changes` probe: returns the pinged email folders whose
+/// stored JMAP state token no longer matches the server's. Run at Ping start
+/// (to catch changes that landed while no Ping was in flight), on every
+/// owner-matching push event (to pinpoint exactly which folders changed
+/// instead of over-reporting), and after a lagged broadcast (to recover from
+/// dropped push events, since the monitor does not write to the journal).
+async fn probe_email_folder_changes(
+    state: &Arc<AppState>,
+    owner: &str,
+    password: &SecretString,
+    device_id: &str,
+    email_folder_ids: &[String],
+    jmap_account: &Option<(Arc<JmapClient>, String)>,
+    request_id: &str,
+) -> Vec<String> {
+    let Some((jmap, account_id)) = jmap_account.as_ref() else {
+        return Vec::new();
+    };
+    let mut changed = Vec::new();
+    for folder_id in email_folder_ids {
+        let collection_id = scoped_collection_id(folder_id, device_id);
+        let jmap_state = state
+            .storage
+            .get_sync_key(owner, &collection_id)
+            .await
+            .ok()
+            .flatten()
+            .and_then(|(_, token)| token)
+            .filter(|t| !t.starts_with("seq:"));
+        let Some(since) = jmap_state else {
+            continue;
+        };
+        match jmap
+            .sync_email_changes(account_id, &since, owner, password)
+            .await
+        {
+            Ok(changes) => {
+                if !changes.created.is_empty()
+                    || !changes.updated.is_empty()
+                    || !changes.destroyed.is_empty()
+                    || changes.new_state != since
+                {
+                    changed.push(folder_id.clone());
+                }
+            }
+            Err(e) => {
+                tracing::debug!(
+                    request_id = %request_id,
+                    error = %e,
+                    "EAS Ping Email/changes probe failed; deferring to push/journal checks"
+                );
+            }
+        }
+    }
+    changed
+}
+
+async fn handle_ping(
+    state: &Arc<AppState>,
+    inv: &PingInvocation<'_>,
+    wbxml: &Wbxml,
+    as_wbxml: bool,
+) -> Response {
+    let PingInvocation {
+        owner,
+        password,
+        req,
+        xml,
+        request_id,
+    } = *inv;
     const MIN_HEARTBEAT_SECS: u64 = 60;
     const MAX_HEARTBEAT_SECS: u64 = 3540;
     const MAX_PING_FOLDERS: usize = 200;
@@ -1509,6 +1612,69 @@ async fn handle_ping(
                 folders: folders.clone(),
             },
         );
+    }
+
+    // ---- Live push wiring (audit gap #13) ---------------------------------
+    // Email change detection previously relied solely on the ≤15s
+    // change-journal poll below, so new mail could lag a full tick after
+    // arrival. With live JMAP EventSource push (RFC 8620 §7.3) the Ping wakes
+    // the instant the mailbox state advances: register the mailbox in the
+    // shared push monitor (deduplicated per mailbox, released when this Ping
+    // ends via `PingMonitorGuard`) and probe the stored JMAP Email state once
+    // up front so a change that landed while no Ping was in flight is also
+    // caught (covers the gap between consecutive Pings).
+    let email_folder_ids: Vec<String> = folders
+        .iter()
+        .filter(|f| matches!(ping_folder_kind(f), Some(PingFolderKind::Email)))
+        .map(|f| f.id.clone())
+        .collect();
+    // Subscribe *before* registering the monitor so an event published in
+    // between is never lost to this Ping.
+    let mut notify_rx = if email_folder_ids.is_empty() {
+        None
+    } else {
+        Some(state.subscription_manager.subscribe_raw())
+    };
+    let push_guard = if notify_rx.is_none() {
+        None
+    } else {
+        state.jmap_client.as_ref().map(|jmap| {
+            state.push_registry.ensure_email_monitor(
+                jmap.clone(),
+                owner.to_string(),
+                password.clone(),
+                state.subscription_manager.clone(),
+            );
+            PingMonitorGuard {
+                registry: &state.push_registry,
+                owner: owner.to_string(),
+            }
+        })
+    };
+    // Resolve the JMAP account once per Ping; reused by every probe below.
+    let jmap_account: Option<(Arc<JmapClient>, String)> = if push_guard.is_some() {
+        match state.jmap_client.as_ref() {
+            Some(jmap) => match jmap.get_account_id(owner, password).await {
+                Ok(id) if !id.is_empty() => Some((jmap.clone(), id)),
+                _ => None,
+            },
+            None => None,
+        }
+    } else {
+        None
+    };
+    let probe_changed = probe_email_folder_changes(
+        state,
+        owner,
+        password,
+        device_id,
+        &email_folder_ids,
+        &jmap_account,
+        request_id,
+    )
+    .await;
+    if !probe_changed.is_empty() {
+        return ping_changed_response(wbxml, as_wbxml, &probe_changed, request_id);
     }
 
     let deadline = Instant::now() + StdDuration::from_secs(heartbeat);
@@ -1585,7 +1751,101 @@ async fn handle_ping(
             return xml_or_wbxml_response(wbxml, as_wbxml, xml, request_id);
         }
         let remaining = deadline.saturating_duration_since(Instant::now());
-        tokio::time::sleep(remaining.min(StdDuration::from_secs(15))).await;
+        let tick = remaining.min(StdDuration::from_secs(15));
+        use tokio::sync::broadcast::error::RecvError;
+        // Why the wake happened, if it did before the poll tick elapsed.
+        enum Wake {
+            Tick,
+            OwnerEvent(crate::notifications::NotificationEvent),
+            Lagged,
+        }
+        let wake = match notify_rx.as_mut() {
+            Some(rx) => {
+                let tick_deadline = Instant::now() + tick;
+                loop {
+                    let t = tick_deadline.saturating_duration_since(Instant::now());
+                    if t.is_zero() {
+                        break Wake::Tick;
+                    }
+                    tokio::select! {
+                        _ = tokio::time::sleep(t) => break Wake::Tick,
+                        recv = rx.recv() => match recv {
+                            Ok(ev) if ev.owner() == owner => break Wake::OwnerEvent(ev),
+                            // Foreign-owner events share this broadcast feed;
+                            // keep waiting out the tick instead of re-running
+                            // this Ping's journal/storage queries (which would
+                            // scale queries with global notification rate).
+                            Ok(_) => continue,
+                            Err(RecvError::Lagged(_)) => break Wake::Lagged,
+                            Err(RecvError::Closed) => {
+                                notify_rx = None;
+                                break Wake::Tick;
+                            }
+                        },
+                    }
+                }
+            }
+            None => {
+                tokio::time::sleep(tick).await;
+                Wake::Tick
+            }
+        };
+        match wake {
+            Wake::Tick => {}
+            Wake::OwnerEvent(ev) => {
+                // Probe JMAP directly so only email folders whose stored state
+                // actually advanced are reported — calendar/contacts events and
+                // foreign-folder email changes fall through to the journal
+                // checks on the next loop pass instead of forcing an
+                // over-broad Status 2.
+                let changed = if jmap_account.is_some() {
+                    probe_email_folder_changes(
+                        state,
+                        owner,
+                        password,
+                        device_id,
+                        &email_folder_ids,
+                        &jmap_account,
+                        request_id,
+                    )
+                    .await
+                } else if matches!(ev, crate::notifications::NotificationEvent::NewMail { .. }) {
+                    // No JMAP session to verify against. NewMail is an
+                    // unambiguous email event, and the push monitor is then
+                    // the only email signal this Ping can see, so report the
+                    // pinged email folders rather than sleeping through it.
+                    email_folder_ids.clone()
+                } else {
+                    Vec::new()
+                };
+                if !changed.is_empty() {
+                    return ping_changed_response(wbxml, as_wbxml, &changed, request_id);
+                }
+            }
+            Wake::Lagged => {
+                // Push events were dropped under burst. The monitor does not
+                // write to the change journal, so re-probe JMAP state per
+                // folder; without a live JMAP session, conservatively report
+                // the email folders rather than risk sleeping through mail.
+                let changed = if jmap_account.is_some() {
+                    probe_email_folder_changes(
+                        state,
+                        owner,
+                        password,
+                        device_id,
+                        &email_folder_ids,
+                        &jmap_account,
+                        request_id,
+                    )
+                    .await
+                } else {
+                    email_folder_ids.clone()
+                };
+                if !changed.is_empty() {
+                    return ping_changed_response(wbxml, as_wbxml, &changed, request_id);
+                }
+            }
+        }
     }
 
     // Timeout reached with no changes
@@ -4020,12 +4280,15 @@ pub async fn handle(
         "Ping" => {
             handle_ping(
                 &state,
-                &username,
-                &req,
-                &xml,
+                &PingInvocation {
+                    owner: &username,
+                    password: &password,
+                    req: &req,
+                    xml: &xml,
+                    request_id: &request_id,
+                },
                 &wbxml,
                 wants_wbxml,
-                &request_id,
             )
             .await
         }
@@ -4597,5 +4860,80 @@ mod tests {
                 class
             );
         }
+    }
+
+    #[tokio::test]
+    async fn test_ping_email_folder_wakes_on_push_event() {
+        use crate::models::AppState;
+
+        let storage = crate::storage::Storage::new("sqlite::memory:")
+            .await
+            .expect("in-memory storage");
+        // A JMAP base pointing at unroutable loopback: the push monitor's
+        // reconnect loop idles there for the lifetime of the test, and the
+        // Email/changes probe fails fast, so the Ping falls through to the
+        // broadcast-wake path under test.
+        let cfg = crate::config::Config {
+            jmap_base: "http://127.0.0.1:1".to_string(),
+            email_enabled: true,
+            mail_domain: "example.com".to_string(),
+            hmac_secret: SecretString::from("a".repeat(32)),
+            ..Default::default()
+        };
+        let state = Arc::new(AppState::new(cfg, Arc::new(storage)));
+        let xml = r#"<?xml version="1.0" encoding="utf-8"?>
+<Ping xmlns="Ping:"><HeartbeatInterval>120</HeartbeatInterval>
+<Folders><Folder><Id>4</Id><Class>Email</Class></Folder></Folders></Ping>"#;
+        let wbxml = Wbxml::new();
+        let req = EasRequest {
+            command: "Ping".to_string(),
+            device_id: Some("push-test-device".to_string()),
+            ..Default::default()
+        };
+
+        let mgr = state.subscription_manager.clone();
+        let publisher = tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            mgr.publish(crate::notifications::NotificationEvent::NewMail {
+                owner: "user@example.com".to_string(),
+                folder_id: "mb-inbox".to_string(),
+                item_id: "email-1".to_string(),
+                change_key: "s-1".to_string(),
+            });
+        });
+
+        let password = SecretString::from("pw");
+        let resp = handle_ping(
+            &state,
+            &PingInvocation {
+                owner: "user@example.com",
+                password: &password,
+                req: &req,
+                xml,
+                request_id: "req-push-wake",
+            },
+            &wbxml,
+            false,
+        )
+        .await;
+        publisher.abort();
+
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .expect("response body");
+        let text = String::from_utf8_lossy(&body);
+        assert!(
+            text.contains("<Status>2</Status>"),
+            "push event must wake Ping with Status 2, got: {text}"
+        );
+        assert!(
+            text.contains("<Folder>4</Folder>"),
+            "changed folder must be listed, got: {text}"
+        );
+        assert_eq!(
+            state.push_registry.monitor_count(),
+            0,
+            "Ping exit must release its push-monitor sink"
+        );
     }
 }
