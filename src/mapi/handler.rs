@@ -5187,17 +5187,36 @@ async fn execute_one_rop(
                     _ => String::new(),
                 })
                 .unwrap_or_default();
-            let rules = match (jmap, password) {
+            // A failed read must surface as an error, never as an empty
+            // table — an empty table would tell the client "you have no
+            // rules" and invite it to overwrite a rule set we couldn't load.
+            let fetch = match (jmap, password) {
                 (Some(jc), Some(pw)) => match jc.get_sieve_script(username, pw).await {
-                    Ok(script) => crate::mapi::rules::parse_rules(script.as_deref().unwrap_or("")),
+                    Ok(script) => Ok(script.unwrap_or_default()),
                     Err(e) => {
                         tracing::warn!(error = %e, "SieveScript/get for rules table failed");
-                        Vec::new()
+                        Err(e)
                     }
                 },
-                _ => Vec::new(),
+                (None, _) => {
+                    tracing::warn!("rules table requested without a JMAP backend");
+                    Err(anyhow::anyhow!("no JMAP backend for rules table"))
+                }
+                (_, None) => {
+                    tracing::warn!("rules table requested without credentials");
+                    Err(anyhow::anyhow!("no credentials for rules table"))
+                }
             };
-            let mut rules = rules;
+            let Ok(script) = fetch else {
+                RopErrorResponse {
+                    rop_id,
+                    output_handle_index: req.output_handle_index,
+                    return_value: RopErrorCode::DiskError,
+                }
+                .encode(out);
+                return Ok(());
+            };
+            let mut rules = crate::mapi::rules::parse_rules(&script);
             rules.sort_by_key(|r| r.sequence);
             let total = rules.len() as u64;
             let rows: Vec<crate::mapi::session::TableRow> = rules
@@ -5319,15 +5338,26 @@ async fn execute_one_rop(
                 (None, _) => RopErrorCode::NotFound,
                 (_, None) => RopErrorCode::AccessDenied,
                 (Some(jc), Some(pw)) => {
+                    // A failed read must abort the whole write: proceeding
+                    // with an empty script would regenerate the script
+                    // header minus the rules the client already stored,
+                    // destroying data.
                     let fetched = match jc.get_sieve_script(username, pw).await {
                         Ok(s) => s.unwrap_or_default(),
                         Err(e) => {
                             tracing::warn!(error = %e, "SieveScript/get for modify-rules failed");
-                            String::new()
+                            RopErrorResponse {
+                                rop_id,
+                                output_handle_index: req.input_handle_index,
+                                return_value: RopErrorCode::DiskError,
+                            }
+                            .encode(out);
+                            return Ok(());
                         }
                     };
                     let mut rule_set = mrules::parse_rules(&fetched);
                     let mut remove_failed = false;
+                    let mut modify_of_unknown_rule = false;
                     for entry in &req.entries {
                         if entry.flags & mrules::RULE_ROW_REMOVE != 0 {
                             // Removal keys off PR_RULE_ID (MS-OXORULE §2.2.1.3.1.1).
@@ -5367,6 +5397,17 @@ async fn execute_one_rop(
                         } else {
                             None
                         };
+                        // MS-OXORULE §2.2.4.2: a pure modify must reference a
+                        // rule the server already has; inventing a new rule
+                        // for a modify whose id we don't know would silently
+                        // duplicate rules across clients.
+                        if entry.flags & mrules::RULE_ROW_MODIFY != 0
+                            && entry.flags & mrules::RULE_ROW_ADD == 0
+                            && existing.is_none()
+                        {
+                            modify_of_unknown_rule = true;
+                            continue;
+                        }
                         let mut rule = mrules::rule_from_rule_data(
                             entry.flags,
                             &entry.properties,
@@ -5413,7 +5454,7 @@ async fn execute_one_rop(
                     let (new_script, rendered) =
                         mrules::render_script(&fetched, &rule_set, &resolve);
                     let _ = rendered; // ST_ERROR bits persisted in the block itself
-                    if remove_failed {
+                    if remove_failed || modify_of_unknown_rule {
                         RopErrorCode::InvalidParameter
                     } else {
                         match jc.set_sieve_script(&new_script, username, pw).await {

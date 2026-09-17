@@ -2181,7 +2181,11 @@ impl JmapClient {
 
     /// Fetch the user's active Sieve script (`SieveScript/get`, RFC 9661)
     /// keyed by the username, the same id the OOF manager uses. Returns
-    /// `Ok(None)` when no script exists yet.
+    /// `Ok(None)` *only* when the script genuinely does not exist (the id
+    /// lands in `notFound`): a transport failure, a JMAP-level `error`
+    /// method response, or a structurally incomplete success response are
+    /// all returned as `Err` so a caller writing the script back never
+    /// mistakes a failed read for "no rules/OOF configured".
     pub async fn get_sieve_script(
         &self,
         username: &str,
@@ -2191,7 +2195,7 @@ impl JmapClient {
         let resp = self
             .api_call(
                 self.base_url(),
-                &[JMAP_SIEVE_CAPABILITY],
+                &["urn:ietf:params:jmap:core", JMAP_SIEVE_CAPABILITY],
                 vec![(
                     "SieveScript/get",
                     json!({"accountId": account_id, "ids": [username]}),
@@ -2201,14 +2205,37 @@ impl JmapClient {
                 password,
             )
             .await?;
-        if let Some((_name, value, _id)) = resp.method_responses.first()
-            && let Some(list) = value.get("list").and_then(|v| v.as_array())
-            && let Some(entry) = list.first()
-            && let Some(script) = entry.get("script").and_then(|s| s.as_str())
-        {
-            return Ok(Some(script.to_string()));
+        let (name, value, _id) = resp
+            .method_responses
+            .first()
+            .ok_or_else(|| anyhow!("SieveScript/get returned no method response"))?;
+        if name == "error" {
+            let desc = value
+                .get("description")
+                .and_then(|v| v.as_str())
+                .or_else(|| value.get("detail").and_then(|v| v.as_str()))
+                .unwrap_or("unknown JMAP error");
+            return Err(anyhow!("SieveScript/get rejected: {desc}"));
         }
-        Ok(None)
+        // A genuine "script does not exist" answer.
+        if let Some(not_found) = value.get("notFound")
+            && not_found
+                .as_array()
+                .map(|ids| ids.iter().any(|i| i.as_str() == Some(username)))
+                .unwrap_or(false)
+        {
+            return Ok(None);
+        }
+        let entry = value
+            .get("list")
+            .and_then(|v| v.as_array())
+            .and_then(|list| list.first())
+            .ok_or_else(|| anyhow!("SieveScript/get response missing `list` entries"))?;
+        let script = entry
+            .get("script")
+            .and_then(|s| s.as_str())
+            .ok_or_else(|| anyhow!("SieveScript/get response missing script content"))?;
+        Ok(Some(script.to_string()))
     }
 
     /// Write the user's active Sieve script (`SieveScript/set`, RFC 9661),
@@ -2223,7 +2250,7 @@ impl JmapClient {
         let resp = self
             .api_call(
                 self.base_url(),
-                &[JMAP_SIEVE_CAPABILITY],
+                &["urn:ietf:params:jmap:core", JMAP_SIEVE_CAPABILITY],
                 vec![(
                     "SieveScript/set",
                     json!({

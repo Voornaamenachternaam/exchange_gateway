@@ -422,7 +422,7 @@ impl JmapOofManager {
             let resp = client
                 .api_call(
                     client.base_url(),
-                    &[JMAP_SIEVE_CAPABILITY],
+                    &["urn:ietf:params:jmap:core", JMAP_SIEVE_CAPABILITY],
                     vec![("SieveScript/get", args, "a0")],
                     &usr,
                     &pwd,
@@ -460,7 +460,7 @@ impl JmapOofManager {
             client
                 .api_call(
                     client.base_url(),
-                    &[JMAP_SIEVE_CAPABILITY],
+                    &["urn:ietf:params:jmap:core", JMAP_SIEVE_CAPABILITY],
                     vec![("SieveScript/set", args, "a0")],
                     &usr,
                     &pwd,
@@ -505,10 +505,10 @@ impl OofManager for JmapOofManager {
         // (`mapi::rules`) persists inbox rules in the same active script. Any
         // rewrite (enable or disable OOF) must carry the rules block across,
         // otherwise changing OOF would silently delete the user's rules.
+        // Propagate a read failure rather than replacing what we could not
+        // read.
         let carry_rules = self
-            .get_script_blocking(username)
-            .ok()
-            .flatten()
+            .get_script_blocking(username)?
             .and_then(|existing| crate::mapi::rules::rules_segment(&existing));
         let append_rules = |script: &mut String| {
             if let Some(block) = &carry_rules

@@ -401,6 +401,13 @@ pub fn render_script(
 
 // ---- Sieve translation -------------------------------------------------------
 
+/// Collapse CR/LF so a client-supplied name cannot escape a single-line
+/// Sieve comment (a raw newline would terminate the comment and turn the
+/// remainder into attacker-controlled Sieve source).
+fn sieve_comment_text(s: &str) -> String {
+    s.replace(['\r', '\n'], " ")
+}
+
 /// Escape a string for embedding in a Sieve double-quoted literal.
 fn sieve_quote(s: &str) -> String {
     s.replace('\\', "\\\\").replace('"', "\\\"")
@@ -676,7 +683,11 @@ fn sieve_for_rule(
     if rule.state & ST_EXIT_LEVEL != 0 {
         cmds.push("stop;".to_string());
     }
-    let mut lines = vec![format!("# rule {}: {}", rule.id, rule.name)];
+    let mut lines = vec![format!(
+        "# rule {}: {}",
+        rule.id,
+        sieve_comment_text(&rule.name)
+    )];
     lines.push(format!("if {cond} {{"));
     lines.extend(cmds.iter().map(|c| format!("  {c}")));
     lines.push("}".to_string());

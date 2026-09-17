@@ -4253,6 +4253,10 @@ fn decode_rule_property_value(
         PropertyType::PTYP_RULE_ACTION => {
             let start = cur.pos();
             let count = usize::from(cur.take_u16_le()?);
+            // MS-OXORULE §2.2.5.1: NoOfActions MUST be > 0.
+            if count == 0 {
+                return Err(DecodeError::InvalidValue);
+            }
             for _ in 0..count {
                 let len = usize::from(cur.take_u16_le()?);
                 if len < 9 {
@@ -4286,6 +4290,11 @@ impl RopModifyRulesRequest {
         for _ in 0..rules_count {
             let rule_data_flags = cur.take_u8()?;
             let property_value_count = usize::from(cur.take_u16_le()?);
+            // MS-OXCROPS §2.2.11.1.1.1: RuleData MUST contain at least one
+            // property — an empty set cannot express add/modify/remove.
+            if property_value_count == 0 {
+                return Err(DecodeError::InvalidValue);
+            }
             if property_value_count > 1024 {
                 return Err(DecodeError::ExcessLength);
             }
