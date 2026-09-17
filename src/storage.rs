@@ -1825,3 +1825,100 @@ pub struct NoteFields<'a> {
     pub categories: Option<&'a str>,
     pub last_modified_date: Option<&'a str>,
 }
+
+/// Row for a persisted EWS UserConfiguration object (MS-OXWSUSRCFG).
+pub struct UserConfigRow {
+    pub folder_id: String,
+    pub name: String,
+    pub dictionary: Option<String>,
+    pub xml_data: Option<String>,
+    pub binary_data: Option<String>,
+    pub change_key: i64,
+}
+
+impl Storage {
+    /// Fetch a persisted UserConfiguration object by (owner, folder, name).
+    pub async fn get_user_config(
+        &self,
+        owner: &str,
+        folder_id: &str,
+        name: &str,
+    ) -> Result<Option<UserConfigRow>> {
+        let row = sqlx::query(
+            "SELECT folder_id, name, dictionary, xml_data, binary_data, change_key
+             FROM user_config WHERE owner = ?1 AND folder_id = ?2 AND name = ?3",
+        )
+        .bind(owner)
+        .bind(folder_id)
+        .bind(name)
+        .fetch_optional(self.pool.as_ref())
+        .await
+        .map_err(|e| GatewayError::Storage(format!("user_config query error: {}", e)))?;
+        Ok(row.map(|r| UserConfigRow {
+            folder_id: r.get(0),
+            name: r.get(1),
+            dictionary: r.get(2),
+            xml_data: r.get(3),
+            binary_data: r.get(4),
+            change_key: r.get(5),
+        }))
+    }
+
+    /// Insert or replace a UserConfiguration object, bumping change_key.
+    /// Returns the new change_key.
+    pub async fn put_user_config(
+        &self,
+        owner: &str,
+        folder_id: &str,
+        name: &str,
+        dictionary: Option<&str>,
+        xml_data: Option<&str>,
+        binary_data: Option<&str>,
+    ) -> Result<i64> {
+        sqlx::query(
+            "INSERT INTO user_config (owner, folder_id, name, dictionary, xml_data, binary_data, change_key)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1)
+             ON CONFLICT(owner, folder_id, name) DO UPDATE SET
+               dictionary = ?4, xml_data = ?5, binary_data = ?6,
+               change_key = change_key + 1, updated_at = CURRENT_TIMESTAMP",
+        )
+        .bind(owner)
+        .bind(folder_id)
+        .bind(name)
+        .bind(dictionary)
+        .bind(xml_data)
+        .bind(binary_data)
+        .execute(self.pool.as_ref())
+        .await
+        .map_err(|e| GatewayError::Storage(format!("user_config upsert error: {}", e)))?;
+        let row: (i64,) = sqlx::query_as(
+            "SELECT change_key FROM user_config WHERE owner = ?1 AND folder_id = ?2 AND name = ?3",
+        )
+        .bind(owner)
+        .bind(folder_id)
+        .bind(name)
+        .fetch_one(self.pool.as_ref())
+        .await
+        .map_err(|e| GatewayError::Storage(format!("user_config readback error: {}", e)))?;
+        Ok(row.0)
+    }
+
+    /// Delete a UserConfiguration object. Returns true when a row existed.
+    pub async fn delete_user_config(
+        &self,
+        owner: &str,
+        folder_id: &str,
+        name: &str,
+    ) -> Result<bool> {
+        let res = sqlx::query(
+            "DELETE FROM user_config WHERE owner = ?1 AND folder_id = ?2 AND name = ?3",
+        )
+        .bind(owner)
+        .bind(folder_id)
+        .bind(name)
+        .execute(self.pool.as_ref())
+        .await
+        .map_err(|e| GatewayError::Storage(format!("user_config delete error: {}", e)))?;
+        Ok(res.rows_affected() > 0)
+    }
+}

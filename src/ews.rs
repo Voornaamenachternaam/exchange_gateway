@@ -64,9 +64,9 @@ use std::time::Duration;
 use tracing::warn;
 
 #[derive(Clone)]
-struct AuthContext {
-    username: String,
-    password: SecretString,
+pub(crate) struct AuthContext {
+    pub(crate) username: String,
+    pub(crate) password: SecretString,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -76,8 +76,8 @@ enum ItemShape {
     AllProperties,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-enum EwsAction {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum EwsAction {
     GetFolder,
     FindFolder,
     FindItem,
@@ -125,6 +125,26 @@ enum EwsAction {
     GetAttachment,
     DeleteAttachment,
     GetUserConfiguration,
+    CreateFolder,
+    UpdateFolder,
+    MoveFolder,
+    CopyFolder,
+    DeleteFolder,
+    EmptyFolder,
+    MarkAllItemsAsRead,
+    FindConversation,
+    ExpandDL,
+    GetUserRetentionPolicyTags,
+    GetSearchableMailboxes,
+    GetSharingMetadata,
+    GetSharingFolder,
+    RefreshSharingFolder,
+    GetMessageTrackingReport,
+    SetUserConfiguration,
+    UpdateUserConfiguration,
+    DeleteUserConfiguration,
+    UploadItems,
+    ExportItems,
 }
 
 impl EwsAction {
@@ -135,7 +155,7 @@ impl EwsAction {
         matches!(self, EwsAction::FindItem | EwsAction::SyncFolderItems)
     }
 
-    const fn response_message_name(&self) -> &'static str {
+    pub(crate) const fn response_message_name(&self) -> &'static str {
         match self {
             EwsAction::GetFolder => "GetFolderResponseMessage",
             EwsAction::FindFolder => "FindFolderResponseMessage",
@@ -184,6 +204,26 @@ impl EwsAction {
             EwsAction::GetAttachment => "GetAttachmentResponseMessage",
             EwsAction::DeleteAttachment => "DeleteAttachmentResponseMessage",
             EwsAction::GetUserConfiguration => "GetUserConfigurationResponseMessage",
+            EwsAction::CreateFolder => "CreateFolderResponseMessage",
+            EwsAction::UpdateFolder => "UpdateFolderResponseMessage",
+            EwsAction::MoveFolder => "MoveFolderResponseMessage",
+            EwsAction::CopyFolder => "CopyFolderResponseMessage",
+            EwsAction::DeleteFolder => "DeleteFolderResponseMessage",
+            EwsAction::EmptyFolder => "EmptyFolderResponseMessage",
+            EwsAction::MarkAllItemsAsRead => "MarkAllItemsAsReadResponseMessage",
+            EwsAction::FindConversation => "FindConversationResponseMessage",
+            EwsAction::ExpandDL => "ExpandDLResponseMessage",
+            EwsAction::GetUserRetentionPolicyTags => "GetUserRetentionPolicyTagsResponseMessage",
+            EwsAction::GetSearchableMailboxes => "GetSearchableMailboxesResponseMessage",
+            EwsAction::GetSharingMetadata => "GetSharingMetadataResponseMessage",
+            EwsAction::GetSharingFolder => "GetSharingFolderResponseMessage",
+            EwsAction::RefreshSharingFolder => "RefreshSharingFolderResponseMessage",
+            EwsAction::GetMessageTrackingReport => "GetMessageTrackingReportResponseMessage",
+            EwsAction::SetUserConfiguration => "SetUserConfigurationResponseMessage",
+            EwsAction::UpdateUserConfiguration => "UpdateUserConfigurationResponseMessage",
+            EwsAction::DeleteUserConfiguration => "DeleteUserConfigurationResponseMessage",
+            EwsAction::UploadItems => "UploadItemsResponseMessage",
+            EwsAction::ExportItems => "ExportItemsResponseMessage",
         }
     }
 }
@@ -209,7 +249,7 @@ fn validate_schema(action: &EwsAction, xml: &str) -> Result<(), &'static str> {
     Ok(())
 }
 
-fn operation_error_response(
+pub(crate) fn operation_error_response(
     action: &EwsAction,
     code: &str,
     message: &str,
@@ -350,6 +390,60 @@ pub async fn handle(
         EwsAction::GetUserConfiguration => {
             handle_get_user_configuration(&state, &auth, &body).await
         }
+        EwsAction::CreateFolder => {
+            crate::ews_folder_ops::handle_create_folder(&state, &auth, &body).await
+        }
+        EwsAction::UpdateFolder => {
+            crate::ews_folder_ops::handle_update_folder(&state, &auth, &body).await
+        }
+        EwsAction::MoveFolder => {
+            crate::ews_folder_ops::handle_move_folder(&state, &auth, &body).await
+        }
+        EwsAction::CopyFolder => {
+            crate::ews_folder_ops::handle_copy_folder(&state, &auth, &body).await
+        }
+        EwsAction::DeleteFolder => {
+            crate::ews_folder_ops::handle_delete_folder(&state, &auth, &body).await
+        }
+        EwsAction::EmptyFolder => {
+            crate::ews_folder_ops::handle_empty_folder(&state, &auth, &body).await
+        }
+        EwsAction::MarkAllItemsAsRead => {
+            crate::ews_folder_ops::handle_mark_all_items_as_read(&state, &auth, &body).await
+        }
+        EwsAction::FindConversation => {
+            crate::ews_folder_ops::handle_find_conversation(&state, &auth, &body).await
+        }
+        EwsAction::ExpandDL => crate::ews_folder_ops::handle_expand_dl(&state, &auth, &body).await,
+        EwsAction::GetUserRetentionPolicyTags => {
+            crate::ews_folder_ops::handle_get_user_retention_policy_tags(&auth).await
+        }
+        EwsAction::GetSearchableMailboxes => {
+            crate::ews_folder_ops::handle_get_searchable_mailboxes(&state, &auth, &body).await
+        }
+        EwsAction::GetSharingMetadata => {
+            crate::ews_folder_ops::handle_get_sharing_metadata(&auth).await
+        }
+        EwsAction::GetSharingFolder => {
+            crate::ews_folder_ops::handle_get_sharing_folder(&auth).await
+        }
+        EwsAction::RefreshSharingFolder => {
+            crate::ews_folder_ops::handle_refresh_sharing_folder(&auth).await
+        }
+        EwsAction::GetMessageTrackingReport => {
+            crate::ews_folder_ops::handle_get_message_tracking_report(&auth).await
+        }
+        EwsAction::SetUserConfiguration => {
+            crate::ews_folder_ops::handle_set_user_configuration(&state, &auth, &body).await
+        }
+        EwsAction::UpdateUserConfiguration => {
+            crate::ews_folder_ops::handle_set_user_configuration(&state, &auth, &body).await
+        }
+        EwsAction::DeleteUserConfiguration => {
+            crate::ews_folder_ops::handle_delete_user_configuration(&state, &auth, &body).await
+        }
+        EwsAction::UploadItems => crate::ews_folder_ops::handle_upload_items(&auth).await,
+        EwsAction::ExportItems => crate::ews_folder_ops::handle_export_items(&auth).await,
     }
 }
 
@@ -388,7 +482,7 @@ fn forwarded_https_enforced(headers: &HeaderMap) -> bool {
     }
 }
 
-fn detect_action(xml: &str) -> Option<EwsAction> {
+pub(crate) fn detect_action(xml: &str) -> Option<EwsAction> {
     let mut reader = Reader::from_str(xml);
     reader.config_mut().trim_text(true);
     let mut buf = Vec::new();
@@ -443,6 +537,27 @@ fn detect_action(xml: &str) -> Option<EwsAction> {
                     "GetAttachment" => EwsAction::GetAttachment,
                     "DeleteAttachment" => EwsAction::DeleteAttachment,
                     "GetUserConfiguration" => EwsAction::GetUserConfiguration,
+                    "CreateFolder" => EwsAction::CreateFolder,
+                    "UpdateFolder" => EwsAction::UpdateFolder,
+                    "MoveFolder" => EwsAction::MoveFolder,
+                    "CopyFolder" => EwsAction::CopyFolder,
+                    "DeleteFolder" => EwsAction::DeleteFolder,
+                    "EmptyFolder" => EwsAction::EmptyFolder,
+                    "MarkAllItemsAsRead" => EwsAction::MarkAllItemsAsRead,
+                    "FindConversation" => EwsAction::FindConversation,
+                    "ExpandDL" => EwsAction::ExpandDL,
+                    "GetUserRetentionPolicyTags" => EwsAction::GetUserRetentionPolicyTags,
+                    "GetSearchableMailboxes" => EwsAction::GetSearchableMailboxes,
+                    "GetSharingMetadata" => EwsAction::GetSharingMetadata,
+                    "GetSharingFolder" => EwsAction::GetSharingFolder,
+                    "RefreshSharingFolder" => EwsAction::RefreshSharingFolder,
+                    "GetMessageTrackingReport" => EwsAction::GetMessageTrackingReport,
+                    "SetUserConfiguration" => EwsAction::SetUserConfiguration,
+                    "UpdateUserConfiguration" => EwsAction::UpdateUserConfiguration,
+                    "DeleteUserConfiguration" => EwsAction::DeleteUserConfiguration,
+                    "UploadItems" => EwsAction::UploadItems,
+                    "ExportItems" => EwsAction::ExportItems,
+                    "CopyItem" => EwsAction::CopyItem,
                     _ => {
                         buf.clear();
                         continue;
@@ -1658,7 +1773,7 @@ fn unauthorized() -> Response {
         .into_response()
 }
 
-fn soap_ok(inner: String) -> Response {
+pub(crate) fn soap_ok(inner: String) -> Response {
     let xml = format!(
         r#"<?xml version="1.0" encoding="utf-8"?>
 <s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
@@ -2218,8 +2333,31 @@ async fn handle_get_folder(state: &Arc<AppState>, auth: &AuthContext, body: &str
 
 async fn handle_find_folder(state: &Arc<AppState>, auth: &AuthContext, body: &str) -> Response {
     let owner = owner_from_username(&auth.username);
-    if let Err(resp) = validate_requested_folder(&EwsAction::FindFolder, owner, body) {
-        return *resp;
+    // An explicit FolderId that doesn't match any distinguished folder is an
+    // EWS/JMAP custom folder id (created via CreateFolder). FindFolder against
+    // it lists that mailbox's custom children instead of erroring.
+    let custom_parent_id: Option<String> = {
+        let explicit = extract_first_attr(body, b"FolderId", b"Id");
+        let distinguished = extract_first_attr(body, b"DistinguishedFolderId", b"Id");
+        match (&explicit, &distinguished) {
+            (Some(id), None) if resolve_folder_id(id, owner).is_none() => {
+                let req = format!("<t:FolderId Id=\"{}\"/>", id);
+                if body.contains(&req) || body.contains(&format!("\"{}\"", id)) {
+                    Some(id.clone())
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        }
+    };
+    if custom_parent_id.is_none() {
+        if let Err(resp) = validate_requested_folder(&EwsAction::FindFolder, owner, body) {
+            return *resp;
+        }
+    }
+    if let Some(parent_id) = custom_parent_id {
+        return find_folder_custom_children(state, auth, &parent_id).await;
     }
     let parent_folder = requested_find_folder_parent_from_ids(body, owner);
     let (total_count, folders_xml) = if matches!(parent_folder, DistinguishedFolder::MsgFolderRoot)
@@ -2230,13 +2368,127 @@ async fn handle_find_folder(state: &Arc<AppState>, auth: &AuthContext, body: &st
             .unwrap_or(0);
         // Return MsgFolderRoot's direct children so clients have folder IDs for
         // operations like GetUserConfiguration.
-        render_root_and_children(owner, count)
+        let (n0, mut xml) = render_root_and_children(owner, count);
+        // Append custom JMAP mailboxes (user-created folders) as direct
+        // children with their JMAP ids, mirroring what MAPI's content table
+        // and the EWS CreateFolder response expose.
+        let mut extra = 0usize;
+        if let Some(jmap) = state.jmap_client.as_ref() {
+            if let Ok(mailboxes) = jmap
+                .query_mailboxes(&auth.username, &auth.password)
+                .await
+            {
+                let root_parent_id = folder_id_for(owner, DistinguishedFolder::MsgFolderRoot);
+                for m in &mailboxes.mailboxes {
+                    // Role-based mailboxes are already rendered by
+                    // render_root_and_children under their distinguished names.
+                    if m.role.is_some() {
+                        continue;
+                    }
+                    if m.parent_id.is_some() {
+                        // Nested folders are surfaced via FindFolder/CreateFolder
+                        // ids; only root-level customs are rendered here.
+                        continue;
+                    }
+                    let Some(id) = m.id.as_deref() else { continue };
+                    let name = m.name.clone().unwrap_or_else(|| "Folder".to_string());
+                    xml.push_str(&format!(
+                        "<t:Folder><t:FolderId Id=\"{}\" ChangeKey=\"1\"/>\
+                         <t:ParentFolderId Id=\"{}\"/>\
+                         <t:DisplayName>{}</t:DisplayName>\
+                         <t:TotalCount>{}</t:TotalCount>\
+                         <t:ChildFolderCount>1</t:ChildFolderCount>\
+                         <t:UnreadCount>{}</t:UnreadCount></t:Folder>",
+                        xml_escape(id),
+                        xml_escape(&root_parent_id),
+                        xml_escape(&name),
+                        m.total_emails.unwrap_or(0),
+                        m.unread_emails.unwrap_or(0),
+                    ));
+                    extra += 1;
+                }
+            }
+        }
+        (n0 + extra, xml)
     } else {
         (0usize, String::new())
     };
     let response = format!(
         r#"<m:FindFolderResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:FindFolderResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:RootFolder TotalItemsInView="{}" IncludesLastItemInRange="true"><t:Folders>{}</t:Folders></m:RootFolder></m:FindFolderResponseMessage></m:ResponseMessages></m:FindFolderResponse>"#,
         EWS_MSG_NS, EWS_TYPE_NS, total_count, folders_xml
+    );
+    soap_ok(response)
+}
+
+/// FindFolder against a custom (JMAP mailbox) parent: render its JMAP
+/// children as Folder elements addressed by their JMAP ids.
+async fn find_folder_custom_children(
+    state: &Arc<AppState>,
+    auth: &AuthContext,
+    parent_id: &str,
+) -> Response {
+    let Some(jmap) = state.jmap_client.as_ref() else {
+        return operation_error_response(
+            &EwsAction::FindFolder,
+            "ErrorInternalServerError",
+            "JMAP backend not configured",
+            StatusCode::INTERNAL_SERVER_ERROR,
+        );
+    };
+    let mailboxes = match jmap
+        .query_mailboxes(&auth.username, &auth.password)
+        .await
+    {
+        Ok(m) => m,
+        Err(e) => {
+            tracing::error!(error = %e, "Mailbox/query failed in FindFolder");
+            return operation_error_response(
+                &EwsAction::FindFolder,
+                "ErrorInternalServerError",
+                "Could not list custom folders",
+                StatusCode::INTERNAL_SERVER_ERROR,
+            );
+        }
+    };
+    if !mailboxes
+        .mailboxes
+        .iter()
+        .any(|m| m.id.as_deref() == Some(parent_id))
+    {
+        return operation_error_response(
+            &EwsAction::FindFolder,
+            "ErrorFolderNotFound",
+            "Requested folder was not found for this mailbox",
+            StatusCode::OK,
+        );
+    }
+    let mut xml = String::new();
+    let mut total = 0usize;
+    for m in mailboxes
+        .mailboxes
+        .iter()
+        .filter(|m| m.parent_id.as_deref() == Some(parent_id))
+    {
+        let Some(id) = m.id.as_deref() else { continue };
+        let name = m.name.clone().unwrap_or_else(|| "Folder".to_string());
+        xml.push_str(&format!(
+            "<t:Folder><t:FolderId Id=\"{}\" ChangeKey=\"1\"/>\
+             <t:ParentFolderId Id=\"{}\"/>\
+             <t:DisplayName>{}</t:DisplayName>\
+             <t:TotalCount>{}</t:TotalCount>\
+             <t:ChildFolderCount>1</t:ChildFolderCount>\
+             <t:UnreadCount>{}</t:UnreadCount></t:Folder>",
+            xml_escape(id),
+            xml_escape(parent_id),
+            xml_escape(&name),
+            m.total_emails.unwrap_or(0),
+            m.unread_emails.unwrap_or(0),
+        ));
+        total += 1;
+    }
+    let response = format!(
+        r#"<m:FindFolderResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:FindFolderResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:RootFolder TotalItemsInView="{}" IncludesLastItemInRange="true"><t:Folders>{}</t:Folders></m:RootFolder></m:FindFolderResponseMessage></m:ResponseMessages></m:FindFolderResponse>"#,
+        EWS_MSG_NS, EWS_TYPE_NS, total, xml
     );
     soap_ok(response)
 }
@@ -9305,7 +9557,53 @@ async fn handle_get_user_configuration(
     // Build the configuration dictionary for the requested object name. Only
     // the objects the gateway can derive real data for are populated; the rest
     // are returned empty per the "no object stored" shape.
-    let dictionary_xml = build_user_configuration_dictionary(state, auth, &config_name).await;
+    // Prefer a persisted configuration object written via
+    // SetUserConfiguration/UpdateUserConfiguration (stored in the user_config
+    // table, keyed with the same folder semantics as ews_folder_ops). Fall back
+    // to the derived dictionary when nothing was stored.
+    let (dictionary_xml, xml_data_xml, binary_data_xml, stored_change_key): (
+        String,
+        String,
+        String,
+        Option<i64>,
+    ) = {
+        let owner = owner_from_username(&auth.username);
+        let folder_key =
+            if let Some(d) = extract_first_attr(body, b"DistinguishedFolderId", b"Id") {
+                d.to_ascii_lowercase()
+            } else if let Some(f) = extract_first_attr(body, b"FolderId", b"Id") {
+                f
+            } else {
+                "msgfolderroot".to_string()
+            };
+        match state
+            .storage
+            .get_user_config(owner, &folder_key, &config_name)
+            .await
+        {
+            Ok(Some(row)) => {
+                let dict = row.dictionary.unwrap_or_default();
+                let xml = row
+                    .xml_data
+                    .map(|x| format!("<t:XmlData>{}</t:XmlData>", x))
+                    .unwrap_or_default();
+                let bin = row
+                    .binary_data
+                    .map(|b| format!("<t:BinaryData>{}</t:BinaryData>", b))
+                    .unwrap_or_default();
+                (dict, xml, bin, Some(row.change_key))
+            }
+            _ => (
+                build_user_configuration_dictionary(state, auth, &config_name).await,
+                String::new(),
+                String::new(),
+                None,
+            ),
+        }
+    };
+    let change_key = stored_change_key
+        .map(|k| k.to_string())
+        .unwrap_or_else(|| change_key.to_string());
 
     let response_xml = format!(
         r#"<?xml version="1.0" encoding="utf-8"?>
@@ -9322,7 +9620,7 @@ async fn handle_get_user_configuration(
             <t:UserConfigurationName Name="{}">{}</t:UserConfigurationName>
             {}
             <t:ItemId Id="{}" ChangeKey="{}" />
-            <t:Dictionary>{}</t:Dictionary>
+            <t:Dictionary>{}</t:Dictionary>{}{}
           </m:UserConfiguration>
         </m:GetUserConfigurationResponseMessage>
       </m:ResponseMessages>
@@ -9335,6 +9633,8 @@ async fn handle_get_user_configuration(
         STANDARD.encode(&synthetic_id),
         change_key,
         dictionary_xml,
+        xml_data_xml,
+        binary_data_xml,
         svi = version::current().render_ews_header(EWS_TYPE_NS),
     );
 

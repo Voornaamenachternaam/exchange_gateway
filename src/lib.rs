@@ -15,6 +15,7 @@ pub mod email;
 pub mod error;
 pub mod ews;
 pub mod ews_folders;
+pub mod ews_folder_ops;
 pub mod ews_search;
 pub mod ews_update;
 pub mod ical_parser;
