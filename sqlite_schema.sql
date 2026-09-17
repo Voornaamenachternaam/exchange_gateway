@@ -419,3 +419,23 @@ CREATE TABLE IF NOT EXISTS user_photo (
     content_type TEXT NOT NULL,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
+
+-- Gateway-local EWS UserConfiguration store (MS-OXWSUSRCFG). Stalwart has no
+-- native backing store for per-folder user configuration objects (folder view
+-- settings, categories, reading-pane/sort state), so Set/Delete/GetUserConfiguration
+-- persist the opaque Dictionary/XmlData/BinaryData payloads here, keyed by the
+-- owning mailbox, the folder reference, and the configuration name. change_key
+-- is a monotonically-bumped version echoed back to clients as the ChangeKey.
+CREATE TABLE IF NOT EXISTS user_config (
+    owner TEXT NOT NULL,
+    folder_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    dictionary TEXT,
+    xml_data TEXT,
+    binary_data TEXT,
+    change_key INTEGER NOT NULL DEFAULT 1,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (owner, folder_id, name)
+);
+
+CREATE INDEX IF NOT EXISTS idx_user_config_owner ON user_config(owner);
