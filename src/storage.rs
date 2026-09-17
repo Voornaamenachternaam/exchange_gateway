@@ -1875,6 +1875,12 @@ impl Storage {
         xml_data: Option<&str>,
         binary_data: Option<&str>,
     ) -> Result<i64> {
+        // Upsert and change_key readback must be one transaction: a
+        // concurrent writer committing in between would let us read its
+        // change_key instead of the one this call produced.
+        let mut tx = sqlx::Acquire::begin(self.pool.as_ref())
+            .await
+            .map_err(|e| GatewayError::Storage(format!("user_config transaction error: {}", e)))?;
         sqlx::query(
             "INSERT INTO user_config (owner, folder_id, name, dictionary, xml_data, binary_data, change_key)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1)
@@ -1888,7 +1894,7 @@ impl Storage {
         .bind(dictionary)
         .bind(xml_data)
         .bind(binary_data)
-        .execute(self.pool.as_ref())
+        .execute(&mut *tx)
         .await
         .map_err(|e| GatewayError::Storage(format!("user_config upsert error: {}", e)))?;
         let row: (i64,) = sqlx::query_as(
@@ -1897,9 +1903,12 @@ impl Storage {
         .bind(owner)
         .bind(folder_id)
         .bind(name)
-        .fetch_one(self.pool.as_ref())
+        .fetch_one(&mut *tx)
         .await
         .map_err(|e| GatewayError::Storage(format!("user_config readback error: {}", e)))?;
+        tx.commit()
+            .await
+            .map_err(|e| GatewayError::Storage(format!("user_config commit error: {}", e)))?;
         Ok(row.0)
     }
 

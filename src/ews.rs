@@ -433,11 +433,8 @@ pub async fn handle(
         EwsAction::GetMessageTrackingReport => {
             crate::ews_folder_ops::handle_get_message_tracking_report(&auth).await
         }
-        EwsAction::SetUserConfiguration => {
-            crate::ews_folder_ops::handle_set_user_configuration(&state, &auth, &body).await
-        }
-        EwsAction::UpdateUserConfiguration => {
-            crate::ews_folder_ops::handle_set_user_configuration(&state, &auth, &body).await
+        EwsAction::SetUserConfiguration | EwsAction::UpdateUserConfiguration => {
+            crate::ews_folder_ops::handle_set_user_configuration(&state, &auth, &body, action).await
         }
         EwsAction::DeleteUserConfiguration => {
             crate::ews_folder_ops::handle_delete_user_configuration(&state, &auth, &body).await
@@ -2374,10 +2371,7 @@ async fn handle_find_folder(state: &Arc<AppState>, auth: &AuthContext, body: &st
         // and the EWS CreateFolder response expose.
         let mut extra = 0usize;
         if let Some(jmap) = state.jmap_client.as_ref() {
-            if let Ok(mailboxes) = jmap
-                .query_mailboxes(&auth.username, &auth.password)
-                .await
-            {
+            if let Ok(mailboxes) = jmap.query_mailboxes(&auth.username, &auth.password).await {
                 let root_parent_id = folder_id_for(owner, DistinguishedFolder::MsgFolderRoot);
                 for m in &mailboxes.mailboxes {
                     // Role-based mailboxes are already rendered by
@@ -2392,17 +2386,23 @@ async fn handle_find_folder(state: &Arc<AppState>, auth: &AuthContext, body: &st
                     }
                     let Some(id) = m.id.as_deref() else { continue };
                     let name = m.name.clone().unwrap_or_else(|| "Folder".to_string());
+                    let child_count = mailboxes
+                        .mailboxes
+                        .iter()
+                        .filter(|c| c.parent_id.as_deref() == Some(id))
+                        .count();
                     xml.push_str(&format!(
                         "<t:Folder><t:FolderId Id=\"{}\" ChangeKey=\"1\"/>\
                          <t:ParentFolderId Id=\"{}\"/>\
                          <t:DisplayName>{}</t:DisplayName>\
                          <t:TotalCount>{}</t:TotalCount>\
-                         <t:ChildFolderCount>1</t:ChildFolderCount>\
+                         <t:ChildFolderCount>{}</t:ChildFolderCount>\
                          <t:UnreadCount>{}</t:UnreadCount></t:Folder>",
                         xml_escape(id),
                         xml_escape(&root_parent_id),
                         xml_escape(&name),
                         m.total_emails.unwrap_or(0),
+                        child_count,
                         m.unread_emails.unwrap_or(0),
                     ));
                     extra += 1;
@@ -2435,10 +2435,7 @@ async fn find_folder_custom_children(
             StatusCode::INTERNAL_SERVER_ERROR,
         );
     };
-    let mailboxes = match jmap
-        .query_mailboxes(&auth.username, &auth.password)
-        .await
-    {
+    let mailboxes = match jmap.query_mailboxes(&auth.username, &auth.password).await {
         Ok(m) => m,
         Err(e) => {
             tracing::error!(error = %e, "Mailbox/query failed in FindFolder");
@@ -2471,17 +2468,23 @@ async fn find_folder_custom_children(
     {
         let Some(id) = m.id.as_deref() else { continue };
         let name = m.name.clone().unwrap_or_else(|| "Folder".to_string());
+        let child_count = mailboxes
+            .mailboxes
+            .iter()
+            .filter(|c| c.parent_id.as_deref() == Some(id))
+            .count();
         xml.push_str(&format!(
             "<t:Folder><t:FolderId Id=\"{}\" ChangeKey=\"1\"/>\
              <t:ParentFolderId Id=\"{}\"/>\
              <t:DisplayName>{}</t:DisplayName>\
              <t:TotalCount>{}</t:TotalCount>\
-             <t:ChildFolderCount>1</t:ChildFolderCount>\
+             <t:ChildFolderCount>{}</t:ChildFolderCount>\
              <t:UnreadCount>{}</t:UnreadCount></t:Folder>",
             xml_escape(id),
             xml_escape(parent_id),
             xml_escape(&name),
             m.total_emails.unwrap_or(0),
+            child_count,
             m.unread_emails.unwrap_or(0),
         ));
         total += 1;
@@ -9568,14 +9571,14 @@ async fn handle_get_user_configuration(
         Option<i64>,
     ) = {
         let owner = owner_from_username(&auth.username);
-        let folder_key =
-            if let Some(d) = extract_first_attr(body, b"DistinguishedFolderId", b"Id") {
-                d.to_ascii_lowercase()
-            } else if let Some(f) = extract_first_attr(body, b"FolderId", b"Id") {
-                f
-            } else {
-                "msgfolderroot".to_string()
-            };
+        let folder_key = if let Some(d) = extract_first_attr(body, b"DistinguishedFolderId", b"Id")
+        {
+            d.to_ascii_lowercase()
+        } else if let Some(f) = extract_first_attr(body, b"FolderId", b"Id") {
+            f
+        } else {
+            "msgfolderroot".to_string()
+        };
         match state
             .storage
             .get_user_config(owner, &folder_key, &config_name)
@@ -9593,12 +9596,25 @@ async fn handle_get_user_configuration(
                     .unwrap_or_default();
                 (dict, xml, bin, Some(row.change_key))
             }
-            _ => (
+            Ok(None) => (
                 build_user_configuration_dictionary(state, auth, &config_name).await,
                 String::new(),
                 String::new(),
                 None,
             ),
+            Err(e) => {
+                // A storage failure indistinguishable from "no row" would
+                // return synthesized data under NoError and hide the real
+                // persisted configuration, even after it was written. Surface
+                // the failure instead.
+                tracing::error!(error = %e, "user_config read failed");
+                return operation_error_response(
+                    &EwsAction::GetUserConfiguration,
+                    "ErrorInternalServerError",
+                    "Could not read the requested user configuration",
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                );
+            }
         }
     };
     let change_key = stored_change_key

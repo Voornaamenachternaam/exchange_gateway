@@ -76,8 +76,12 @@ fn all_attrs(xml: &str, container: Option<&str>, tag: &str, attr: &str) -> Vec<S
 enum MailboxTarget {
     /// JMAP mailbox id, usable directly in JMAP calls.
     Id(String),
-    /// Folder has no JMAP mailbox behind it (MsgFolderRoot and non-mail
-    /// folders). Folder-scoped mail operations cannot run against it.
+    /// The distinguished MsgFolderRoot: the root under which new top-level
+    /// mailboxes are created/moved (JMAP `parentId = None`).
+    MsgFolderRoot,
+    /// A folder that is neither the root nor a mail folder (Calendar,
+    /// Contacts, Tasks, Notes, Journal, Outbox): no JMAP mailbox maps to it
+    /// and EWS folder operations must be rejected.
     NotAMailFolder,
     /// The reference could not be resolved at all (no such folder).
     NotFound,
@@ -85,14 +89,19 @@ enum MailboxTarget {
 
 /// Map a `DistinguishedFolder` to its JMAP mailbox role, if it is a mail
 /// folder. `MsgFolderRoot`/`Outbox` and non-mail folders have no mapping.
+///
+/// EWS's `Outbox` purposefully does **not** alias the JMAP `sent`-role
+/// mailbox — JMAP/Time-Zone backends have no Outbox mailbox, and letting
+/// EWS operations that target Outbox quietly scribble on Sent Items would
+/// be data corruption, not graceful degradation.
 fn role_for_folder(f: DistinguishedFolder) -> Option<&'static str> {
     match f {
         DistinguishedFolder::Inbox => Some("inbox"),
-        DistinguishedFolder::SentItems | DistinguishedFolder::Outbox => Some("sent"),
+        DistinguishedFolder::SentItems => Some("sent"),
         DistinguishedFolder::DeletedItems => Some("trash"),
         DistinguishedFolder::Drafts => Some("drafts"),
         DistinguishedFolder::JunkEmail => Some("junk"),
-        // MsgFolderRoot / Calendar / Contacts / Tasks / Notes / Journal
+        // Outbox / MsgFolderRoot / Calendar / Contacts / Tasks / Notes / Journal
         _ => None,
     }
 }
@@ -115,22 +124,7 @@ async fn resolve_mailbox_target(
         let Ok(df) = parsed else {
             return MailboxTarget::NotFound;
         };
-        return match role_for_folder(df) {
-            None => MailboxTarget::NotAMailFolder,
-            Some(role) => match jmap
-                .get_mailbox_ids_for_role(account_id, role, username, password)
-                .await
-            {
-                Ok(ids) => match ids.into_iter().next() {
-                    Some(id) => MailboxTarget::Id(id),
-                    None => MailboxTarget::NotFound,
-                },
-                Err(e) => {
-                    tracing::warn!(error = %e, role = %role, "Mailbox/query by role failed");
-                    MailboxTarget::NotFound
-                }
-            },
-        };
+        return mailbox_target_for_distinguished(jmap, account_id, df, username, password).await;
     }
 
     // 2. Explicit FolderId.
@@ -139,25 +133,42 @@ async fn resolve_mailbox_target(
     };
     match resolve_folder_id(id, owner) {
         // Synthetic id emitted by `folder_id_for` for a distinguished folder.
-        Some(df) => match role_for_folder(df) {
-            None => MailboxTarget::NotAMailFolder,
-            Some(role) => match jmap
-                .get_mailbox_ids_for_role(account_id, role, username, password)
-                .await
-            {
-                Ok(ids) => match ids.into_iter().next() {
-                    Some(m) => MailboxTarget::Id(m),
-                    None => MailboxTarget::NotFound,
-                },
-                Err(e) => {
-                    tracing::warn!(error = %e, role = %role, "Mailbox/query by role failed");
-                    MailboxTarget::NotFound
-                }
-            },
-        },
+        Some(df) => {
+            mailbox_target_for_distinguished(jmap, account_id, df, username, password).await
+        }
         // Anything else is treated as a native JMAP mailbox id (this is how
         // user-created folders are referenced, symmetric with MAPI).
         None => MailboxTarget::Id(id.to_string()),
+    }
+}
+
+/// Map a parsed distinguished folder to its mailbox target, keeping root,
+/// non-mail, and not-found outcomes distinguishable for handlers.
+async fn mailbox_target_for_distinguished(
+    jmap: &JmapClient,
+    account_id: &str,
+    df: DistinguishedFolder,
+    username: &str,
+    password: &SecretString,
+) -> MailboxTarget {
+    if df == DistinguishedFolder::MsgFolderRoot {
+        return MailboxTarget::MsgFolderRoot;
+    }
+    match role_for_folder(df) {
+        None => MailboxTarget::NotAMailFolder,
+        Some(role) => match jmap
+            .get_mailbox_ids_for_role(account_id, role, username, password)
+            .await
+        {
+            Ok(ids) => match ids.into_iter().next() {
+                Some(m) => MailboxTarget::Id(m),
+                None => MailboxTarget::NotFound,
+            },
+            Err(e) => {
+                tracing::warn!(error = %e, role = %role, "Mailbox/query by role failed");
+                MailboxTarget::NotFound
+            }
+        },
     }
 }
 
@@ -227,10 +238,7 @@ fn success_response(action: &str, inner: &str) -> Response {
 }
 
 fn folder_id_el(id: &str) -> String {
-    format!(
-        "<t:FolderId Id=\"{}\" ChangeKey=\"1\"/>",
-        xml_escape(id)
-    )
+    format!("<t:FolderId Id=\"{}\" ChangeKey=\"1\"/>", xml_escape(id))
 }
 
 // ---------------------------------------------------------------------------
@@ -262,8 +270,19 @@ pub(crate) async fn handle_create_folder(
     .await;
     let parent_id = match parent_target {
         MailboxTarget::Id(id) => Some(id),
-        // Creating under MsgFolderRoot means a top-level mailbox.
-        MailboxTarget::NotAMailFolder => None,
+        // MsgFolderRoot is the EWS root: a new mailbox created under it is a
+        // top-level JMAP mailbox (no parentId).
+        MailboxTarget::MsgFolderRoot => None,
+        // Calendar/Contacts/Outbox/etc have no JMAP mailbox — reject rather
+        // than silently creating a top-level mailbox.
+        MailboxTarget::NotAMailFolder => {
+            return operation_error_response(
+                &action,
+                "ErrorInvalidFolderTypeForOperation",
+                "The parent folder is not a mail folder; a new folder cannot be created there",
+                StatusCode::OK,
+            );
+        }
         MailboxTarget::NotFound => {
             return operation_error_response(
                 &action,
@@ -280,7 +299,13 @@ pub(crate) async fn handle_create_folder(
     // because they must live on the CalDAV/CardDAV side.
     let doc = match roxmltree::Document::parse(body) {
         Ok(d) => d,
-        Err(e) => return internal_error(action, "Malformed CreateFolder XML", &anyhow::Error::from(e)),
+        Err(e) => {
+            return internal_error(
+                action,
+                "Malformed CreateFolder XML",
+                &anyhow::Error::from(e),
+            );
+        }
     };
     let in_folders = doc
         .descendants()
@@ -308,10 +333,13 @@ pub(crate) async fn handle_create_folder(
             .collect(),
     };
     // Non-mail folder types must not create JMAP mailboxes.
-    if doc
-        .descendants()
-        .any(|n| n.is_element() && matches!(n.tag_name().name(), "CalendarFolder" | "ContactsFolder" | "SearchFolder" | "TasksFolder"))
-    {
+    if doc.descendants().any(|n| {
+        n.is_element()
+            && matches!(
+                n.tag_name().name(),
+                "CalendarFolder" | "ContactsFolder" | "SearchFolder" | "TasksFolder"
+            )
+    }) {
         return operation_error_response(
             &action,
             "ErrorInvalidFolderTypeForOperation",
@@ -328,32 +356,41 @@ pub(crate) async fn handle_create_folder(
         );
     }
 
-    let name = folder_specs.first().map(|(n, _)| n.clone()).unwrap();
-    if name.trim().is_empty() {
-        return operation_error_response(
-            &action,
-            "ErrorInvalidProperty",
-            "DisplayName cannot be empty",
-            StatusCode::OK,
-        );
+    // Create every requested folder (MS-OXWSFOLD §3.1.4.8: one
+    // CreateFolderResponseMessage per requested folder).
+    let mut created_ids: Vec<String> = Vec::with_capacity(folder_specs.len());
+    for (name, _class) in &folder_specs {
+        if name.trim().is_empty() {
+            return operation_error_response(
+                &action,
+                "ErrorInvalidProperty",
+                "DisplayName cannot be empty",
+                StatusCode::OK,
+            );
+        }
+        match jmap
+            .create_mailbox(
+                &account_id,
+                name.trim(),
+                parent_id.as_deref(),
+                &auth.username,
+                &auth.password,
+            )
+            .await
+        {
+            Ok(id) => created_ids.push(id),
+            Err(e) => return internal_error(action, "Mailbox/set create failed", &e),
+        }
     }
 
-    match jmap
-        .create_mailbox(
-            &account_id,
-            name.trim(),
-            parent_id.as_deref(),
-            &auth.username,
-            &auth.password,
-        )
-        .await
-    {
-        Ok(id) => success_response(
-            "CreateFolder",
-            &format!("<m:Folders><t:Folder>{}</t:Folder></m:Folders>", folder_id_el(&id)),
-        ),
-        Err(e) => internal_error(action, "Mailbox/set create failed", &e),
-    }
+    let folders_xml: String = created_ids
+        .iter()
+        .map(|id| format!("<t:Folder>{}</t:Folder>", folder_id_el(id)))
+        .collect();
+    success_response(
+        "CreateFolder",
+        &format!("<m:Folders>{}</m:Folders>", folders_xml),
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -383,6 +420,16 @@ pub(crate) async fn handle_update_folder(
             );
         }
     };
+    // Renaming a distinguished/system folder is not permitted: it maps to a
+    // role mailbox whose name Exchange semantics treat as fixed.
+    if resolve_folder_id(&id, &owner).is_some() {
+        return operation_error_response(
+            &action,
+            "ErrorCannotRenameFolder",
+            "Distinguished folders cannot be renamed",
+            StatusCode::OK,
+        );
+    }
     let mailbox_id = match resolve_mailbox_target(
         &jmap,
         &account_id,
@@ -395,7 +442,7 @@ pub(crate) async fn handle_update_folder(
     .await
     {
         MailboxTarget::Id(m) => m,
-        MailboxTarget::NotAMailFolder => {
+        MailboxTarget::NotAMailFolder | MailboxTarget::MsgFolderRoot => {
             return operation_error_response(
                 &action,
                 "ErrorFolderNotFound",
@@ -417,7 +464,13 @@ pub(crate) async fn handle_update_folder(
     // <t:Updates><t:SetFolderField><t:Folder><t:DisplayName>..
     let doc = match roxmltree::Document::parse(body) {
         Ok(d) => d,
-        Err(e) => return internal_error(action, "Malformed UpdateFolder XML", &anyhow::Error::from(e)),
+        Err(e) => {
+            return internal_error(
+                action,
+                "Malformed UpdateFolder XML",
+                &anyhow::Error::from(e),
+            );
+        }
     };
     let new_name = doc
         .descendants()
@@ -483,7 +536,9 @@ pub(crate) async fn handle_move_folder(
     // <m:ToFolderId><t:(Distinguished)FolderId/></m:ToFolderId>
     let doc = match roxmltree::Document::parse(body) {
         Ok(d) => d,
-        Err(e) => return internal_error(action, "Malformed MoveFolder XML", &anyhow::Error::from(e)),
+        Err(e) => {
+            return internal_error(action, "Malformed MoveFolder XML", &anyhow::Error::from(e));
+        }
     };
     let to_node = doc
         .descendants()
@@ -519,7 +574,15 @@ pub(crate) async fn handle_move_folder(
     .await;
     let new_parent = match to_target {
         MailboxTarget::Id(id) => Some(id),
-        MailboxTarget::NotAMailFolder => None, // MsgFolderRoot -> top level
+        MailboxTarget::MsgFolderRoot => None, // move to top level
+        MailboxTarget::NotAMailFolder => {
+            return operation_error_response(
+                &action,
+                "ErrorInvalidFolderTypeForOperation",
+                "The destination folder is not a mail folder",
+                StatusCode::OK,
+            );
+        }
         MailboxTarget::NotFound => {
             return operation_error_response(
                 &action,
@@ -531,6 +594,16 @@ pub(crate) async fn handle_move_folder(
     };
 
     for id in all_attrs(body, Some("FolderIds"), "FolderId", "Id") {
+        // Moving a distinguished/system folder (Inbox, Trash, ...) is not
+        // permitted; only user-created mailboxes move.
+        if resolve_folder_id(&id, &owner).is_some() {
+            return operation_error_response(
+                &action,
+                "ErrorInvalidFolderId",
+                "Distinguished folders cannot be moved",
+                StatusCode::OK,
+            );
+        }
         let mailbox_id = match resolve_mailbox_target(
             &jmap,
             &account_id,
@@ -543,7 +616,9 @@ pub(crate) async fn handle_move_folder(
         .await
         {
             MailboxTarget::Id(m) => m,
-            MailboxTarget::NotAMailFolder | MailboxTarget::NotFound => {
+            MailboxTarget::NotAMailFolder
+            | MailboxTarget::MsgFolderRoot
+            | MailboxTarget::NotFound => {
                 return operation_error_response(
                     &action,
                     "ErrorFolderNotFound",
@@ -657,7 +732,9 @@ pub(crate) async fn handle_copy_folder(
 
     let doc = match roxmltree::Document::parse(body) {
         Ok(d) => d,
-        Err(e) => return internal_error(action, "Malformed CopyFolder XML", &anyhow::Error::from(e)),
+        Err(e) => {
+            return internal_error(action, "Malformed CopyFolder XML", &anyhow::Error::from(e));
+        }
     };
     let to_node = doc
         .descendants()
@@ -693,7 +770,15 @@ pub(crate) async fn handle_copy_folder(
     .await
     {
         MailboxTarget::Id(id) => Some(id),
-        MailboxTarget::NotAMailFolder => None,
+        MailboxTarget::MsgFolderRoot => None,
+        MailboxTarget::NotAMailFolder => {
+            return operation_error_response(
+                &action,
+                "ErrorInvalidFolderTypeForOperation",
+                "The destination folder is not a mail folder",
+                StatusCode::OK,
+            );
+        }
         MailboxTarget::NotFound => {
             return operation_error_response(
                 &action,
@@ -718,7 +803,9 @@ pub(crate) async fn handle_copy_folder(
         .await
         {
             MailboxTarget::Id(m) => m,
-            MailboxTarget::NotAMailFolder | MailboxTarget::NotFound => {
+            MailboxTarget::NotAMailFolder
+            | MailboxTarget::MsgFolderRoot
+            | MailboxTarget::NotFound => {
                 return operation_error_response(
                     &action,
                     "ErrorFolderNotFound",
@@ -809,6 +896,24 @@ pub(crate) async fn handle_delete_folder(
         } else {
             (Some(id), None)
         };
+        // A reference to any distinguished folder (by DistinguishedFolderId,
+        // or by one of the synthetic `folder_id_for` ids which clients get
+        // from FindFolder for distinguished folders) targets a system
+        // mailbox (Inbox, Sent, Trash, Drafts, Junk) that must not be
+        // destroyed — only its contents can be emptied. Only user-created
+        // JMAP mailboxes are ever deleted.
+        if distinguished.is_some()
+            || explicit
+                .as_deref()
+                .is_some_and(|e| resolve_folder_id(e, &owner).is_some())
+        {
+            return operation_error_response(
+                &action,
+                "ErrorCannotDeleteObject",
+                "System (distinguished) folders cannot be deleted",
+                StatusCode::OK,
+            );
+        }
         let mailbox_id = match resolve_mailbox_target(
             &jmap,
             &account_id,
@@ -821,11 +926,11 @@ pub(crate) async fn handle_delete_folder(
         .await
         {
             MailboxTarget::Id(m) => m,
-            MailboxTarget::NotAMailFolder => {
+            MailboxTarget::NotAMailFolder | MailboxTarget::MsgFolderRoot => {
                 return operation_error_response(
                     &action,
-                    "ErrorFolderNotFound",
-                    "Distinguished/system folders cannot be deleted",
+                    "ErrorCannotDeleteObject",
+                    "System folders cannot be deleted",
                     StatusCode::OK,
                 );
             }
@@ -840,55 +945,98 @@ pub(crate) async fn handle_delete_folder(
         };
 
         if !hard {
-            // Soft delete: reparent under Trash. If the server has no Trash
-            // (or the move fails outright), fall back to a destroy, matching
-            // the permissive JMAP semantics Stalwart applies.
-            let moved = match &trash_id {
-                Some(t) if *t != mailbox_id => jmap
-                    .update_mailbox(
-                        &account_id,
-                        &mailbox_id,
-                        None,
-                        Some(Some(t.as_str())),
-                        &auth.username,
-                        &auth.password,
-                    )
-                    .await
-                    .is_ok(),
-                Some(t) => {
-                    // Deleting Trash itself: contents are hard-deleted.
-                    let _ = t;
-                    false
+            // Soft delete (SoftDelete / MoveToDeletedItems): reparent the
+            // mailbox under Trash. A failed move must surface as an error —
+            // EWS clients distinguish recoverable deletes from permanent
+            // hard deletes, so we never fall back to destroying data the
+            // client expected to be recoverable.
+            match &trash_id {
+                Some(t) if *t != mailbox_id => {
+                    if let Err(e) = jmap
+                        .update_mailbox(
+                            &account_id,
+                            &mailbox_id,
+                            None,
+                            Some(Some(t.as_str())),
+                            &auth.username,
+                            &auth.password,
+                        )
+                        .await
+                    {
+                        return internal_error(action, "Mailbox/set move-to-trash failed", &e);
+                    }
+                    continue;
                 }
-                None => false,
-            };
-            if moved {
-                continue;
+                Some(t) => {
+                    // Deleting Trash itself in a soft-delete request: no
+                    // recoverable destination exists; report a typed error.
+                    let _ = t;
+                    return operation_error_response(
+                        &action,
+                        "ErrorCannotDeleteObject",
+                        "The Deleted Items folder cannot be soft-deleted",
+                        StatusCode::OK,
+                    );
+                }
+                None => {
+                    return operation_error_response(
+                        &action,
+                        "ErrorFolderNotFound",
+                        "No Deleted Items (trash) mailbox exists on this server",
+                        StatusCode::OK,
+                    );
+                }
             }
         }
 
-        // Hard delete (or soft-fallback): empty the mailbox, then destroy it.
-        let ids_in = match jmap
-            .list_email_ids_in_mailbox(&account_id, &mailbox_id, &auth.username, &auth.password)
-            .await
-        {
-            Ok(v) => v.into_iter().map(|(jid, _)| jid).collect::<Vec<_>>(),
-            Err(e) => return internal_error(action, "Email/query for hard delete failed", &e),
+        // Hard delete: destroy the entire subtree bottom-up, because JMAP
+        // servers refuse to destroy a mailbox that still has children. List
+        // the subtree (children before parents), destroying each mailbox's
+        // messages first and the mailbox second.
+        let hierarchy = match jmap.query_mailboxes(&auth.username, &auth.password).await {
+            Ok(m) => m,
+            Err(e) => return internal_error(action, "Mailbox/query failed", &e),
         };
-        if !ids_in.is_empty() {
-            if let Err(e) = jmap
-                .destroy_emails(&account_id, &ids_in, &auth.username, &auth.password)
-                .await
+        let mut visit_stack: Vec<String> = vec![mailbox_id.clone()];
+        let mut destruction_order: Vec<String> = vec![mailbox_id.clone()];
+        let mut seen: std::collections::HashSet<String> =
+            destruction_order.iter().cloned().collect();
+        while let Some(cur) = visit_stack.pop() {
+            for child in hierarchy
+                .mailboxes
+                .iter()
+                .filter(|m| m.parent_id.as_deref() == Some(cur.as_str()))
             {
-                return internal_error(action, "Email/set destroy failed", &e);
+                if let Some(cid) = &child.id {
+                    if seen.insert(cid.clone()) {
+                        visit_stack.push(cid.clone());
+                        destruction_order.push(cid.clone());
+                    }
+                }
             }
         }
-        match jmap
-            .destroy_mailbox(&account_id, &mailbox_id, &auth.username, &auth.password)
-            .await
-        {
-            Ok(_) => {}
-            Err(e) => return internal_error(action, "Mailbox/set destroy failed", &e),
+        for cb_id in destruction_order.iter().rev() {
+            let ids_in = match jmap
+                .list_email_ids_in_mailbox(&account_id, cb_id, &auth.username, &auth.password)
+                .await
+            {
+                Ok(v) => v.into_iter().map(|(jid, _)| jid).collect::<Vec<_>>(),
+                Err(e) => return internal_error(action, "Email/query for hard delete failed", &e),
+            };
+            if !ids_in.is_empty() {
+                if let Err(e) = jmap
+                    .destroy_emails(&account_id, &ids_in, &auth.username, &auth.password)
+                    .await
+                {
+                    return internal_error(action, "Email/set destroy failed", &e);
+                }
+            }
+            if let Err(e) = jmap
+                .destroy_mailbox(&account_id, cb_id, &auth.username, &auth.password)
+                .await
+            {
+                return internal_error(action, "Mailbox/set destroy failed", &e);
+            }
         }
     }
 
@@ -958,7 +1106,9 @@ pub(crate) async fn handle_empty_folder(
         .await
         {
             MailboxTarget::Id(m) => m,
-            MailboxTarget::NotAMailFolder | MailboxTarget::NotFound => {
+            MailboxTarget::NotAMailFolder
+            | MailboxTarget::MsgFolderRoot
+            | MailboxTarget::NotFound => {
                 return operation_error_response(
                     &action,
                     "ErrorFolderNotFound",
@@ -1025,7 +1175,11 @@ pub(crate) async fn handle_empty_folder(
                 }
             }
         } else if let Some(trash) = trash_id.as_ref() {
-            // Soft delete: move messages to Trash via Email/set mailboxIds patch.
+            // Soft delete: move each message to Trash via Email/set. The
+            // `mailboxIds` patch *replaces* the whole map per email (RFC 8621
+            // §5.2), so we explicitly construct a `{trash: true}`-only map —
+            // removing every source membership — rather than merely adding
+            // Trash on top of the existing set.
             let mut update = serde_json::Map::new();
             for jid in &all_ids {
                 update.insert(
@@ -1046,8 +1200,16 @@ pub(crate) async fn handle_empty_folder(
                     return internal_error(action, "Email/set move to Trash failed", &e);
                 }
             }
+        } else {
+            // A soft-delete EmptyFolder with no Trash mailbox on the server
+            // cannot be honoured; reporting success would hide the messages.
+            return operation_error_response(
+                &action,
+                "ErrorFolderNotFound",
+                "No Deleted Items (trash) mailbox exists on this server",
+                StatusCode::OK,
+            );
         }
-        // else: no Trash role exists; treat as success-no-op (nothing to move to)
     }
 
     success_response("EmptyFolder", "")
@@ -1100,7 +1262,9 @@ pub(crate) async fn handle_mark_all_items_as_read(
         .await
         {
             MailboxTarget::Id(m) => m,
-            MailboxTarget::NotAMailFolder | MailboxTarget::NotFound => {
+            MailboxTarget::NotAMailFolder
+            | MailboxTarget::MsgFolderRoot
+            | MailboxTarget::NotFound => {
                 return operation_error_response(
                     &action,
                     "ErrorFolderNotFound",
@@ -1172,7 +1336,13 @@ pub(crate) async fn handle_find_conversation(
                         .find(|n| n.is_element() && n.tag_name().name() == "FolderId")
                         .and_then(|n| n.attribute("Id").map(|s| s.to_string()))
                 }),
-            Err(e) => return internal_error(action, "Malformed FindConversation XML", &anyhow::Error::from(e)),
+            Err(e) => {
+                return internal_error(
+                    action,
+                    "Malformed FindConversation XML",
+                    &anyhow::Error::from(e),
+                );
+            }
         }
     };
     let _ = parent_explicit;
@@ -1191,7 +1361,7 @@ pub(crate) async fn handle_find_conversation(
     .await
     {
         MailboxTarget::Id(m) => m,
-        MailboxTarget::NotAMailFolder | MailboxTarget::NotFound => {
+        MailboxTarget::NotAMailFolder | MailboxTarget::MsgFolderRoot | MailboxTarget::NotFound => {
             return operation_error_response(
                 &action,
                 "ErrorFolderNotFound",
@@ -1209,27 +1379,61 @@ pub(crate) async fn handle_find_conversation(
         .and_then(|v| v.parse::<u64>().ok())
         .unwrap_or(0);
 
-    let list = match jmap
-        .query_emails(crate::jmap::QueryEmailsParams {
-            account_id: &account_id,
-            filter: Some(json!({"inMailbox": mailbox_id})),
-            sort: Some(vec![json!({"property": "receivedAt", "isAscending": false})]),
-            position: 0,
-            limit: offset.saturating_add(max_entries).max(50),
-            username: &auth.username,
-            password: &auth.password,
-        })
-        .await
-    {
-        Ok(l) => l,
-        Err(e) => return internal_error(action, "Email/query failed", &e),
-    };
+    // Email/query pages back *messages*, but FindConversation pages
+    // *conversations*: a multi-message thread consumes several slots of the
+    // source window while advancing the conversation page by one. Keep
+    // fetching message batches until we have enough distinct conversations
+    // to fill the requested page (or the folder is exhausted), so paging and
+    // TotalConversationsInView are computed over conversations, not
+    // messages. Bounded by a hard cap so huge folders don't run away.
+    let batch: u64 = 200;
+    let need_convs = offset.saturating_add(max_entries) as usize;
+    let mut all_emails: Vec<crate::jmap::JmapEmail> = Vec::new();
+    let mut cursor: u64 = 0;
+    let mut done = false;
+    while !done {
+        let list = match jmap
+            .query_emails(crate::jmap::QueryEmailsParams {
+                account_id: &account_id,
+                filter: Some(json!({"inMailbox": mailbox_id})),
+                sort: Some(vec![
+                    json!({"property": "receivedAt", "isAscending": false}),
+                ]),
+                position: cursor,
+                limit: batch,
+                username: &auth.username,
+                password: &auth.password,
+            })
+            .await
+        {
+            Ok(l) => l,
+            Err(e) => return internal_error(action, "Email/query failed", &e),
+        };
+        cursor = cursor.saturating_add(list.emails.len() as u64);
+        done = (list.emails.len() as u64) < batch || cursor >= 10_000;
+
+        // Track the distinct conversation count incrementally so we can
+        // stop early once the needed window of conversations is reachable.
+        let mut seen = std::collections::HashSet::new();
+        for e in all_emails.iter().chain(list.emails.iter()) {
+            seen.insert(
+                e.thread_id
+                    .clone()
+                    .or_else(|| e.id.clone())
+                    .unwrap_or_default(),
+            );
+        }
+        all_emails.extend(list.emails);
+        if seen.len() >= need_convs {
+            done = true;
+        }
+    }
 
     // Group by threadId, preserving first-appearance order (descending date).
     let mut order: Vec<String> = Vec::new();
     let mut groups: std::collections::HashMap<String, Vec<&crate::jmap::JmapEmail>> =
         std::collections::HashMap::new();
-    for e in &list.emails {
+    for e in &all_emails {
         let thread = e
             .thread_id
             .clone()
@@ -1265,7 +1469,12 @@ pub(crate) async fn handle_find_conversation(
 
         let unread = msgs
             .iter()
-            .filter(|m| m.keywords.as_ref().map(|k| !k.contains_key("$seen")).unwrap_or(true))
+            .filter(|m| {
+                m.keywords
+                    .as_ref()
+                    .map(|k| !k.contains_key("$seen"))
+                    .unwrap_or(true)
+            })
             .count();
         let has_att = msgs.iter().any(|m| m.has_attachment == Some(true));
         let senders: Vec<String> = {
@@ -1279,7 +1488,10 @@ pub(crate) async fn handle_find_conversation(
             v
         };
 
-        let conv_id = format!("conv-{}", thread_id);
+        // The ConversationId round-trips back to us via GetConversationItems
+        // which feeds it verbatim into a JMAP Email/query `threadId` filter,
+        // so it must be the raw JMAP threadId, not a prefixed variant.
+        let conv_id = thread_id;
         convs.push_str(&format!(
             "<t:Conversation>\
              <t:ConversationId Id=\"{id}\"/>\
@@ -1338,13 +1550,11 @@ pub(crate) async fn handle_expand_dl(
     _auth: &AuthContext,
     body: &str,
 ) -> Response {
-    let email_match = roxmltree::Document::parse(body)
-        .ok()
-        .and_then(|d| {
-            d.descendants()
-                .find(|n| n.is_element() && n.tag_name().name() == "EmailAddress")
-                .and_then(|n| n.text().map(|s| s.to_string()))
-        });
+    let email_match = roxmltree::Document::parse(body).ok().and_then(|d| {
+        d.descendants()
+            .find(|n| n.is_element() && n.tag_name().name() == "EmailAddress")
+            .and_then(|n| n.text().map(|s| s.to_string()))
+    });
 
     let inner = match email_match {
         Some(email) => format!(
@@ -1354,8 +1564,7 @@ pub(crate) async fn handle_expand_dl(
             xml_escape(&email)
         ),
         None => {
-            "<m:DLExpansion TotalItemsInView=\"0\" IncludesLastItemInRange=\"true\"/>"
-                .to_string()
+            "<m:DLExpansion TotalItemsInView=\"0\" IncludesLastItemInRange=\"true\"/>".to_string()
         }
     };
     success_response("ExpandDL", &inner)
@@ -1489,18 +1698,20 @@ fn raw_inner_xml<'a>(uc_node: roxmltree::Node<'_, 'a>, body: &'a str, tag: &str)
     }
 }
 
+/// Handles both SetUserConfiguration and UpdateUserConfiguration. The
+/// dispatcher passes the already-detected action, since it is determined by
+/// the XML local name (namespace-prefix agnostic); sniffing raw text here
+/// would misclassify a request using a non-`m` prefix.
 pub(crate) async fn handle_set_user_configuration(
     state: &Arc<AppState>,
     auth: &AuthContext,
     body: &str,
+    action: EwsAction,
 ) -> Response {
-    let is_update = body.contains("<m:UpdateUserConfiguration")
-        || body.contains("<UpdateUserConfiguration");
-    let action = if is_update {
-        EwsAction::UpdateUserConfiguration
-    } else {
-        EwsAction::SetUserConfiguration
-    };
+    debug_assert!(matches!(
+        action,
+        EwsAction::SetUserConfiguration | EwsAction::UpdateUserConfiguration
+    ));
     let owner = owner_from_username(&auth.username).to_string();
     let folder_key = config_folder_key(body);
 
@@ -1563,10 +1774,9 @@ pub(crate) async fn handle_set_user_configuration(
         .await
     {
         Ok(_) => success_response(
-            if is_update {
-                "UpdateUserConfiguration"
-            } else {
-                "SetUserConfiguration"
+            match action {
+                EwsAction::UpdateUserConfiguration => "UpdateUserConfiguration",
+                _ => "SetUserConfiguration",
             },
             "",
         ),
@@ -1602,7 +1812,6 @@ pub(crate) async fn handle_delete_user_configuration(
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1636,7 +1845,10 @@ mod tests {
 
     #[test]
     fn config_folder_key_defaults_to_root() {
-        assert_eq!(config_folder_key("<m:SetUserConfiguration/>"), "msgfolderroot");
+        assert_eq!(
+            config_folder_key("<m:SetUserConfiguration/>"),
+            "msgfolderroot"
+        );
         let with_dist = r#"<m:SetUserConfiguration xmlns:m="m" xmlns:t="t"><m:UserConfiguration><t:UserConfigurationName Name="X"><t:DistinguishedFolderId Id="Calendar"/></t:UserConfigurationName></m:UserConfiguration></m:SetUserConfiguration>"#;
         assert_eq!(config_folder_key(with_dist), "calendar");
     }
