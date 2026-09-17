@@ -46,6 +46,10 @@ pub struct AppState {
     pub rate_limiter: Option<Arc<RateLimiter<NotKeyed, InMemoryState, DefaultClock>>>,
     /// MAPI/HTTP (MS-OXCMAPIHTTP) session state. None if `mapi_enabled` is false.
     pub mapi: Option<Arc<MapiState>>,
+    /// Shared registry of live JMAP EventSource push monitors (RFC 8620 §7.3),
+    /// deduplicated per mailbox. The MAPI notification path and the EAS Ping
+    /// loop both register here so one SSE stream feeds every consumer.
+    pub push_registry: Arc<crate::jmap_push::PushMonitorRegistry>,
 }
 
 impl AppState {
@@ -206,6 +210,11 @@ impl AppState {
             None
         };
 
+        // One shared JMAP push-monitor registry for every surface that wants
+        // live new-mail events (MAPI RopRegisterNotification, EAS Ping), so a
+        // single EventSource stream per mailbox feeds all of them.
+        let push_registry = Arc::new(crate::jmap_push::PushMonitorRegistry::new());
+
         // MAPI/HTTP (MS-OXCMAPIHTTP) surface. Constructed only when
         // `mapi_enabled`; the session/logon runtime is in `crate::mapi`.
         // We clone the Config and the shared AuthVerifier — the Config is a
@@ -219,7 +228,8 @@ impl AppState {
                 auth_verifier.clone(),
                 subscription_manager.clone(),
             )
-            .with_attachment_manager(attachment_manager.clone());
+            .with_attachment_manager(attachment_manager.clone())
+            .with_push_registry(push_registry.clone());
             // Wire the operator-configured directory so the NSPI address-book
             // surface (`/mapi/nspi`) serves a real GAL rather than the
             // caller-only minimal stub (audit gap §2d). When no JMAP-backed
@@ -248,6 +258,7 @@ impl AppState {
             metrics,
             rate_limiter,
             mapi,
+            push_registry,
         }
     }
 

@@ -500,6 +500,11 @@ impl PushMonitorRegistry {
             handle.cancel.cancel();
         }
     }
+
+    /// Number of live monitors (test/observability hook).
+    pub fn monitor_count(&self) -> usize {
+        self.monitors.len()
+    }
 }
 
 impl Default for PushMonitorRegistry {
@@ -598,5 +603,48 @@ mod tests {
             data: None,
         };
         assert!(is_email_frame(&frame));
+    }
+
+    #[tokio::test]
+    async fn registry_deduplicates_and_cancels_when_last_sink_releases() {
+        let registry = PushMonitorRegistry::new();
+        // The monitor never successfully connects to this unroutable loopback
+        // endpoint; the reconnect loop idles, which is exactly the shape needed
+        // to exercise the registry refcount logic without network access.
+        let jmap = Arc::new(JmapClient::new("http://127.0.0.1:1").expect("client"));
+        let manager = Arc::new(SubscriptionManager::new());
+
+        registry.ensure_email_monitor(
+            jmap.clone(),
+            "user".into(),
+            SecretString::from("pw"),
+            manager.clone(),
+        );
+        registry.ensure_email_monitor(
+            jmap.clone(),
+            "user".into(),
+            SecretString::from("pw"),
+            manager.clone(),
+        );
+        assert_eq!(registry.monitors.len(), 1, "deduplicates per mailbox");
+        assert_eq!(
+            registry
+                .monitors
+                .get("user")
+                .unwrap()
+                .sinks
+                .load(Ordering::Relaxed),
+            2
+        );
+
+        registry.release_email_monitor("user");
+        assert_eq!(registry.monitors.len(), 1, "first release keeps monitor");
+        registry.release_email_monitor("user");
+        assert!(registry.monitors.is_empty(), "last release cancels monitor");
+        registry.release_email_monitor("user");
+        assert!(
+            registry.monitors.is_empty(),
+            "release of absent mailbox is a no-op"
+        );
     }
 }

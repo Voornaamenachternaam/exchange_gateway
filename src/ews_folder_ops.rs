@@ -181,28 +181,28 @@ async fn jmap_account(
     state: &Arc<AppState>,
     auth: &AuthContext,
     action: EwsAction,
-) -> Result<(Arc<JmapClient>, String), Response> {
+) -> Result<(Arc<JmapClient>, String), Box<Response>> {
     let jmap = match state.jmap_client.clone() {
         Some(j) => j,
         None => {
-            return Err(operation_error_response(
+            return Err(Box::new(operation_error_response(
                 &action,
                 "ErrorInternalServerError",
                 "JMAP backend not configured",
                 StatusCode::INTERNAL_SERVER_ERROR,
-            ));
+            )));
         }
     };
     let account_id = match jmap.get_account_id(&auth.username, &auth.password).await {
         Ok(id) => id,
         Err(e) => {
             tracing::error!(error = %e, "JMAP account lookup failed");
-            return Err(operation_error_response(
+            return Err(Box::new(operation_error_response(
                 &action,
                 "ErrorInternalServerError",
                 "Could not resolve the mailbox account",
                 StatusCode::INTERNAL_SERVER_ERROR,
-            ));
+            )));
         }
     };
     Ok((jmap, account_id))
@@ -254,7 +254,7 @@ pub(crate) async fn handle_create_folder(
     let owner = owner_from_username(&auth.username).to_string();
     let (jmap, account_id) = match jmap_account(state, auth, action).await {
         Ok(t) => t,
-        Err(r) => return r,
+        Err(r) => return *r,
     };
 
     // Parent: <m:ParentFolderId><t:(DistinguishedFolderId|FolderId) Id=".."/>
@@ -406,7 +406,7 @@ pub(crate) async fn handle_update_folder(
     let owner = owner_from_username(&auth.username).to_string();
     let (jmap, account_id) = match jmap_account(state, auth, action).await {
         Ok(t) => t,
-        Err(r) => return r,
+        Err(r) => return *r,
     };
 
     let id = match first_attr(body, "FolderId", "Id") {
@@ -530,7 +530,7 @@ pub(crate) async fn handle_move_folder(
     let owner = owner_from_username(&auth.username).to_string();
     let (jmap, account_id) = match jmap_account(state, auth, action).await {
         Ok(t) => t,
-        Err(r) => return r,
+        Err(r) => return *r,
     };
 
     // <m:ToFolderId><t:(Distinguished)FolderId/></m:ToFolderId>
@@ -652,12 +652,17 @@ pub(crate) async fn handle_move_folder(
 //  only server-side copy). Subfolders are copied recursively.
 // ---------------------------------------------------------------------------
 
-fn copy_folder_recursive<'a>(
-    state: &'a Arc<AppState>,
+/// Shared backend context for the recursive folder-copy walk.
+#[derive(Clone, Copy)]
+struct FolderCopyCtx<'a> {
     username: &'a str,
     password: &'a SecretString,
     jmap: &'a Arc<JmapClient>,
     account_id: &'a str,
+}
+
+fn copy_folder_recursive<'a>(
+    ctx: FolderCopyCtx<'a>,
     src_mailbox_id: &'a str,
     dest_parent: Option<&'a str>,
     depth: usize,
@@ -668,9 +673,8 @@ fn copy_folder_recursive<'a>(
         if depth > MAX_DEPTH {
             anyhow::bail!("folder copy exceeded depth {MAX_DEPTH}");
         }
-        let _ = state;
 
-        let all = jmap.query_mailboxes(username, password).await?;
+        let all = ctx.jmap.query_mailboxes(ctx.username, ctx.password).await?;
         let src = all
             .mailboxes
             .iter()
@@ -679,19 +683,28 @@ fn copy_folder_recursive<'a>(
         let src_name = src.name.clone().unwrap_or_else(|| "Folder".to_string());
 
         // Materialise the destination folder mirroring the source name.
-        let new_id = jmap
-            .create_mailbox(account_id, &src_name, dest_parent, username, password)
+        let new_id = ctx
+            .jmap
+            .create_mailbox(
+                ctx.account_id,
+                &src_name,
+                dest_parent,
+                ctx.username,
+                ctx.password,
+            )
             .await?;
 
         // Copy all messages currently in the source folder.
-        let ids: Vec<String> = jmap
-            .list_email_ids_in_mailbox(account_id, src_mailbox_id, username, password)
+        let ids: Vec<String> = ctx
+            .jmap
+            .list_email_ids_in_mailbox(ctx.account_id, src_mailbox_id, ctx.username, ctx.password)
             .await?
             .into_iter()
             .map(|(jid, _)| jid)
             .collect();
         if !ids.is_empty() {
-            jmap.copy_emails(account_id, &ids, &new_id, username, password)
+            ctx.jmap
+                .copy_emails(ctx.account_id, &ids, &new_id, ctx.username, ctx.password)
                 .await?;
         }
 
@@ -702,11 +715,7 @@ fn copy_folder_recursive<'a>(
             .filter(|m| m.parent_id.as_deref() == Some(src_mailbox_id))
         {
             copy_folder_recursive(
-                state,
-                username,
-                password,
-                jmap,
-                account_id,
+                ctx,
                 child.id.as_deref().unwrap_or(""),
                 Some(&new_id),
                 depth + 1,
@@ -727,7 +736,7 @@ pub(crate) async fn handle_copy_folder(
     let owner = owner_from_username(&auth.username).to_string();
     let (jmap, account_id) = match jmap_account(state, auth, action).await {
         Ok(t) => t,
-        Err(r) => return r,
+        Err(r) => return *r,
     };
 
     let doc = match roxmltree::Document::parse(body) {
@@ -815,11 +824,12 @@ pub(crate) async fn handle_copy_folder(
             }
         };
         match copy_folder_recursive(
-            state,
-            &auth.username,
-            &auth.password,
-            &jmap,
-            &account_id,
+            FolderCopyCtx {
+                username: &auth.username,
+                password: &auth.password,
+                jmap: &jmap,
+                account_id: &account_id,
+            },
             &mailbox_id,
             dest_parent.as_deref(),
             0,
@@ -857,7 +867,7 @@ pub(crate) async fn handle_delete_folder(
     let owner = owner_from_username(&auth.username).to_string();
     let (jmap, account_id) = match jmap_account(state, auth, action).await {
         Ok(t) => t,
-        Err(r) => return r,
+        Err(r) => return *r,
     };
 
     // DeleteType attribute on the <m:DeleteFolder> element itself:
@@ -1007,11 +1017,11 @@ pub(crate) async fn handle_delete_folder(
                 .iter()
                 .filter(|m| m.parent_id.as_deref() == Some(cur.as_str()))
             {
-                if let Some(cid) = &child.id {
-                    if seen.insert(cid.clone()) {
-                        visit_stack.push(cid.clone());
-                        destruction_order.push(cid.clone());
-                    }
+                if let Some(cid) = &child.id
+                    && seen.insert(cid.clone())
+                {
+                    visit_stack.push(cid.clone());
+                    destruction_order.push(cid.clone());
                 }
             }
         }
@@ -1023,13 +1033,12 @@ pub(crate) async fn handle_delete_folder(
                 Ok(v) => v.into_iter().map(|(jid, _)| jid).collect::<Vec<_>>(),
                 Err(e) => return internal_error(action, "Email/query for hard delete failed", &e),
             };
-            if !ids_in.is_empty() {
-                if let Err(e) = jmap
+            if !ids_in.is_empty()
+                && let Err(e) = jmap
                     .destroy_emails(&account_id, &ids_in, &auth.username, &auth.password)
                     .await
-                {
-                    return internal_error(action, "Email/set destroy failed", &e);
-                }
+            {
+                return internal_error(action, "Email/set destroy failed", &e);
             }
             if let Err(e) = jmap
                 .destroy_mailbox(&account_id, cb_id, &auth.username, &auth.password)
@@ -1056,7 +1065,7 @@ pub(crate) async fn handle_empty_folder(
     let owner = owner_from_username(&auth.username).to_string();
     let (jmap, account_id) = match jmap_account(state, auth, action).await {
         Ok(t) => t,
-        Err(r) => return r,
+        Err(r) => return *r,
     };
 
     let hard = first_attr(body, "EmptyFolder", "DeleteType")
@@ -1156,23 +1165,22 @@ pub(crate) async fn handle_empty_folder(
                     .iter()
                     .filter(|m| m.parent_id.as_deref() == Some(cur.as_str()))
                 {
-                    if let Some(child_id) = &child.id {
-                        if seen.insert(child_id.clone()) {
-                            queue.push_back(child_id.clone());
-                        }
+                    if let Some(child_id) = &child.id
+                        && seen.insert(child_id.clone())
+                    {
+                        queue.push_back(child_id.clone());
                     }
                 }
             }
         }
 
         if hard {
-            if !all_ids.is_empty() {
-                if let Err(e) = jmap
+            if !all_ids.is_empty()
+                && let Err(e) = jmap
                     .destroy_emails(&account_id, &all_ids, &auth.username, &auth.password)
                     .await
-                {
-                    return internal_error(action, "Email/set destroy failed", &e);
-                }
+            {
+                return internal_error(action, "Email/set destroy failed", &e);
             }
         } else if let Some(trash) = trash_id.as_ref() {
             // Soft delete: move each message to Trash via Email/set. The
@@ -1228,7 +1236,7 @@ pub(crate) async fn handle_mark_all_items_as_read(
     let owner = owner_from_username(&auth.username).to_string();
     let (jmap, account_id) = match jmap_account(state, auth, action).await {
         Ok(t) => t,
-        Err(r) => return r,
+        Err(r) => return *r,
     };
 
     let mut folder_ids: Vec<String> = all_attrs(body, Some("FolderIds"), "FolderId", "Id");
@@ -1322,7 +1330,7 @@ pub(crate) async fn handle_find_conversation(
     let owner = owner_from_username(&auth.username).to_string();
     let (jmap, account_id) = match jmap_account(state, auth, action).await {
         Ok(t) => t,
-        Err(r) => return r,
+        Err(r) => return *r,
     };
 
     // Parent folder of the conversation listing.

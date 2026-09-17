@@ -198,6 +198,17 @@ impl MapiState {
         self.directory = Some(directory);
         self
     }
+
+    /// Share the app-wide JMAP push-monitor registry with the MAPI state so
+    /// the EAS Ping loop and the MAPI notification path deduplicate onto one
+    /// EventSource stream per mailbox instead of each opening its own.
+    pub fn with_push_registry(
+        mut self,
+        registry: std::sync::Arc<crate::jmap_push::PushMonitorRegistry>,
+    ) -> Self {
+        self.push_registry = registry;
+        self
+    }
 }
 
 /// Async entry: dispatch a parsed request to the matching handler.
