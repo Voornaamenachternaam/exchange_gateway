@@ -62,27 +62,27 @@ use secrecy::ExposeSecret;
 use crate::mapi::fxics::{IcsStreamBuilder, Marker, Tokenizer};
 use crate::mapi::restrict::{CellForMatcher, SRestriction, restriction_referenced_tags};
 use crate::mapi::rops::{
-    RopCopyPropertiesRequest, RopCreateBookmarkRequest, RopCreateBookmarkResponse,
-    RopCreateFolderRequest, RopDeleteFolderRequest, RopDeletePropertiesNoReplicateRequest,
-    RopFastTransferDestinationConfigureRequest, RopFastTransferDestinationPutBufferRequest,
-    RopFastTransferDestinationPutBufferResponse, RopFastTransferSourceCopyFolderRequest,
-    RopFastTransferSourceCopyMessagesRequest, RopFastTransferSourceCopyPropertiesRequest,
-    RopFastTransferSourceCopyToRequest, RopFastTransferSourceGetBufferRequest,
-    RopFastTransferSourceGetBufferSuccess, RopFastTransferSourceOpenResponse, RopFindRowRequest,
-    RopFreeBookmarkRequest, RopFreeBookmarkResponse, RopGetNamesFromPropertyIdsRequest,
-    RopGetPerUserLongTermIdsRequest, RopGetPropertyIdsFromNamesRequest, RopGetReceiveFolderRequest,
+    NamedPropertyName, NamedPropertyNameSpec, RopCopyPropertiesRequest, RopCreateBookmarkRequest,
+    RopCreateBookmarkResponse, RopCreateFolderRequest, RopDeleteFolderRequest,
+    RopDeletePropertiesNoReplicateRequest, RopFastTransferDestinationConfigureRequest,
+    RopFastTransferDestinationPutBufferRequest, RopFastTransferDestinationPutBufferResponse,
+    RopFastTransferSourceCopyFolderRequest, RopFastTransferSourceCopyMessagesRequest,
+    RopFastTransferSourceCopyPropertiesRequest, RopFastTransferSourceCopyToRequest,
+    RopFastTransferSourceGetBufferRequest, RopFastTransferSourceGetBufferSuccess,
+    RopFastTransferSourceOpenResponse, RopFindRowRequest, RopFreeBookmarkRequest,
+    RopFreeBookmarkResponse, RopGetNamesFromPropertyIdsRequest, RopGetPerUserLongTermIdsRequest,
+    RopGetPropertyIdsFromNamesRequest, RopGetReceiveFolderRequest,
     RopGetRulesPermissionsTableRequest, RopGetSearchCriteriaRequest, RopGetSearchCriteriaSuccess,
-    RopModifyPermissionsRequest,
-    RopModifyRecipientsRequest, RopModifyRulesRequest, RopMoveCopyFolderRequest, RopNotifyResponse,
-    RopOpenEmbeddedMessageRequest, RopPendingResponse, RopQueryNamedPropertiesRequest,
-    RopQueryNamedPropertiesSuccess, RopQueryPositionRequest, RopQueryPositionResponse,
-    RopReloadCachedInformationRequest, NamedPropertyNameSpec, NamedPropertyName,
-    RopResetTableRequest, RopResetTableResponse, RopRestrictRequest, RopRestrictResponse,
-    RopSeekRowBookmarkRequest, RopSeekRowBookmarkResponse, RopSeekRowFractionalRequest,
-    RopSeekRowFractionalResponse, RopSeekRowRequest, RopSeekRowResponse,
-    RopSetCollapseStateRequest, RopSetLocalReplicaMidsetDeletedRequest,
-    RopSetPropertiesNoReplicateRequest, RopSetSearchCriteriaRequest, RopSortTableRequest,
-    RopSortTableResponse, RopSynchronizationAckResponse, RopSynchronizationConfigureRequest,
+    RopModifyPermissionsRequest, RopModifyRecipientsRequest, RopModifyRulesRequest,
+    RopMoveCopyFolderRequest, RopNotifyResponse, RopOpenEmbeddedMessageRequest, RopPendingResponse,
+    RopQueryNamedPropertiesRequest, RopQueryNamedPropertiesSuccess, RopQueryPositionRequest,
+    RopQueryPositionResponse, RopReloadCachedInformationRequest, RopResetTableRequest,
+    RopResetTableResponse, RopRestrictRequest, RopRestrictResponse, RopSeekRowBookmarkRequest,
+    RopSeekRowBookmarkResponse, RopSeekRowFractionalRequest, RopSeekRowFractionalResponse,
+    RopSeekRowRequest, RopSeekRowResponse, RopSetCollapseStateRequest,
+    RopSetLocalReplicaMidsetDeletedRequest, RopSetPropertiesNoReplicateRequest,
+    RopSetSearchCriteriaRequest, RopSortTableRequest, RopSortTableResponse,
+    RopSynchronizationAckResponse, RopSynchronizationConfigureRequest,
     RopUpdateDeferredActionMessagesRequest, RopWriteAndCommitStreamRequest, SortOrder,
     decode_header3, decode_header4,
 };
@@ -1143,6 +1143,10 @@ async fn execute_one_rop(
                                     &cs,
                                     mailbox_id.as_str(),
                                 );
+                            } else if let Some(rr) = src.downcast_ref::<RuleRowSource>() {
+                                r.cells = crate::mapi::rules::rule_to_cells(&rr.rule, &cs);
+                            } else if let Some(pm) = src.downcast_ref::<PermissionRowSource>() {
+                                r.cells = permission_row_cells(pm, &cs);
                             } else if let Some(v) = src.downcast_ref::<String>() {
                                 r.cells = crate::mapi::converters::contact_to_cells(
                                     v,
@@ -4619,32 +4623,41 @@ async fn execute_one_rop(
             // typed NoSupport.
             let req = RopCopyPropertiesRequest::decode(cur)?;
             let src_is_msg = sessions
-                .with_handle(session_id, req.source_handle_index, |h| matches!(h, Handle::Message { .. }))
+                .with_handle(session_id, req.source_handle_index, |h| {
+                    matches!(h, Handle::Message { .. })
+                })
                 .unwrap_or(false);
             let dest_is_msg = sessions
-                .with_handle(session_id, req.dest_handle_index, |h| matches!(h, Handle::Message { .. }))
+                .with_handle(session_id, req.dest_handle_index, |h| {
+                    matches!(h, Handle::Message { .. })
+                })
                 .unwrap_or(false);
             let (dest_backend, dest_mailbox_id) = sessions
                 .with_handle(session_id, req.dest_handle_index, |h| match h {
-                    Handle::Message { backend_id, mailbox_id, .. } => (backend_id.clone(), mailbox_id.clone()),
+                    Handle::Message {
+                        backend_id,
+                        mailbox_id,
+                        ..
+                    } => (backend_id.clone(), mailbox_id.clone()),
                     _ => (String::new(), String::new()),
                 })
                 .unwrap_or_default();
-            let return_value: RopErrorCode;
-            if !src_is_msg || !dest_is_msg {
-                return_value = RopErrorCode::NoSupport;
+
+            let return_value: RopErrorCode = if !src_is_msg || !dest_is_msg {
+                RopErrorCode::NoSupport
             } else {
-                let (cells, _) = materialize_handle_properties(ctx, req.source_handle_index, &req.property_tags).await;
+                let (cells, _) =
+                    materialize_handle_properties(ctx, req.source_handle_index, &req.property_tags)
+                        .await;
                 let typed: Vec<crate::mapi::data::TaggedPropertyValue> = req
                     .property_tags
                     .iter()
                     .cloned()
-                    .zip(cells.into_iter())
+                    .zip(cells)
                     .map(|(tag, value)| crate::mapi::data::TaggedPropertyValue { tag, value })
                     .collect();
-                let store::PropertyPatch { patch, .. } =
-                    store::set_values_to_patch(&typed);
-                return_value = match (jmap, password, dest_backend.as_str()) {
+                let store::PropertyPatch { patch, .. } = store::set_values_to_patch(&typed);
+                match (jmap, password, dest_backend.as_str()) {
                     (_, _, "") => RopErrorCode::NotFound,
                     (None, _, _) => RopErrorCode::NotFound,
                     (_, None, _) => RopErrorCode::AccessDenied,
@@ -4659,8 +4672,12 @@ async fn execute_one_rop(
                         } else if patch.is_empty() {
                             RopErrorCode::Success
                         } else {
-                            let update = serde_json::json!({ id: serde_json::Value::Object(patch) });
-                            match jc.update_email_checked(&account_id, &update, username, pw).await {
+                            let update =
+                                serde_json::json!({ id: serde_json::Value::Object(patch) });
+                            match jc
+                                .update_email_checked(&account_id, &update, username, pw)
+                                .await
+                            {
                                 Ok(outcome) => outcome_to_code(outcome, "Email/set update (copy)"),
                                 Err(e) => {
                                     tracing::warn!(error = %e, "JMAP copy-properties update failed");
@@ -4669,10 +4686,15 @@ async fn execute_one_rop(
                             }
                         }
                     }
-                };
-            }
+                }
+            };
             if return_value == RopErrorCode::Success {
-                publish_item_modified(subscription_manager, username, &dest_mailbox_id, &dest_backend);
+                publish_item_modified(
+                    subscription_manager,
+                    username,
+                    &dest_mailbox_id,
+                    &dest_backend,
+                );
             }
             crate::mapi::rops::RopCopyPropertiesSuccess {
                 dest_handle_index: req.dest_handle_index,
@@ -4729,10 +4751,7 @@ async fn execute_one_rop(
                     let cs = column_set.clone();
                     let pk = *kind;
                     let mb = parent_backend_id.clone();
-                    let combined = SRestriction::And(vec![
-                        restriction.clone(),
-                        find,
-                    ]);
+                    let combined = SRestriction::And(vec![restriction.clone(), find]);
                     let idxs = filtered_indices(rows, &cs, &combined, pk, &mb);
                     if let Some(&first) = idxs.first() {
                         *cursor = first;
@@ -4808,13 +4827,19 @@ async fn execute_one_rop(
             let req = RopMoveCopyFolderRequest::decode(cur)?;
             let src_backend = sessions
                 .with_handle(session_id, req.source_handle_index, |h| match h {
-                    Handle::Folder { backend_id, kind: FolderKind::Mail } => backend_id.clone(),
+                    Handle::Folder {
+                        backend_id,
+                        kind: FolderKind::Mail,
+                    } => backend_id.clone(),
                     _ => String::new(),
                 })
                 .unwrap_or_default();
             let dest_backend = sessions
                 .with_handle(session_id, req.dest_handle_index, |h| match h {
-                    Handle::Folder { backend_id, kind: FolderKind::Mail } => backend_id.clone(),
+                    Handle::Folder {
+                        backend_id,
+                        kind: FolderKind::Mail,
+                    } => backend_id.clone(),
                     _ => String::new(),
                 })
                 .unwrap_or_default();
@@ -4862,13 +4887,7 @@ async fn execute_one_rop(
                             .unwrap_or_else(|| "Copy of folder".to_string());
                         let copy_name = format!("{src_name} (copy)");
                         match jc
-                            .create_mailbox(
-                                &account_id,
-                                &copy_name,
-                                Some(dest),
-                                username,
-                                pw,
-                            )
+                            .create_mailbox(&account_id, &copy_name, Some(dest), username, pw)
                             .await
                         {
                             Ok(new_id) => {
@@ -4877,10 +4896,8 @@ async fn execute_one_rop(
                                     .await
                                 {
                                     Ok(ids) => {
-                                        let jids: Vec<String> = ids
-                                            .into_iter()
-                                            .map(|(jid, _)| jid)
-                                            .collect();
+                                        let jids: Vec<String> =
+                                            ids.into_iter().map(|(jid, _)| jid).collect();
                                         let total = jids.len();
                                         match jc
                                             .copy_emails(&account_id, &jids, &new_id, username, pw)
@@ -4891,8 +4908,7 @@ async fn execute_one_rop(
                                                 // PartialCompletion when any
                                                 // source message failed to copy,
                                                 // mirroring RopMoveCopyMessages.
-                                                partial =
-                                                    u8::from(copied < total);
+                                                partial = u8::from(copied < total);
                                             }
                                             Err(e) => {
                                                 tracing::warn!(
@@ -4954,7 +4970,10 @@ async fn execute_one_rop(
             let req = RopCreateFolderRequest::decode(cur)?;
             let parent_backend = sessions
                 .with_handle(session_id, req.input_handle_index, |h| match h {
-                    Handle::Folder { backend_id, kind: FolderKind::Mail } => backend_id.clone(),
+                    Handle::Folder {
+                        backend_id,
+                        kind: FolderKind::Mail,
+                    } => backend_id.clone(),
                     _ => String::new(),
                 })
                 .unwrap_or_default();
@@ -5032,7 +5051,10 @@ async fn execute_one_rop(
             let req = RopDeleteFolderRequest::decode(cur)?;
             let backend = sessions
                 .with_handle(session_id, req.input_handle_index, |h| match h {
-                    Handle::Folder { backend_id, kind: FolderKind::Mail } => backend_id.clone(),
+                    Handle::Folder {
+                        backend_id,
+                        kind: FolderKind::Mail,
+                    } => backend_id.clone(),
                     _ => String::new(),
                 })
                 .unwrap_or_default();
@@ -5152,34 +5174,423 @@ async fn execute_one_rop(
             .encode(out);
         }
 
-        RopId::ROP_GET_RULES_TABLE | RopId::ROP_GET_PERMISSIONS_TABLE => {
+        RopId::ROP_GET_RULES_TABLE => {
+            // MS-OXORULE §3.2.4.1: enumerate the mailbox's rules as a table.
+            // The rule set is persisted inside the user's active Sieve script
+            // (RFC 9661 `SieveScript/get`) so a second Outlook instance sees
+            // the same rules; the rows are materialised lazily from the
+            // stored rule objects against the client's column set.
             let req = RopGetRulesPermissionsTableRequest::decode(cur)?;
-            RopErrorResponse {
-                rop_id,
+            let parent_backend = sessions
+                .with_handle(session_id, req.input_handle_index, |h| match h {
+                    Handle::Folder { backend_id, .. } => backend_id.clone(),
+                    _ => String::new(),
+                })
+                .unwrap_or_default();
+            // A failed read must surface as an error, never as an empty
+            // table — an empty table would tell the client "you have no
+            // rules" and invite it to overwrite a rule set we couldn't load.
+            let fetch = match (jmap, password) {
+                (Some(jc), Some(pw)) => match jc.get_sieve_script(username, pw).await {
+                    Ok(script) => Ok(script.unwrap_or_default()),
+                    Err(e) => {
+                        tracing::warn!(error = %e, "SieveScript/get for rules table failed");
+                        Err(e)
+                    }
+                },
+                (None, _) => {
+                    tracing::warn!("rules table requested without a JMAP backend");
+                    Err(anyhow::anyhow!("no JMAP backend for rules table"))
+                }
+                (_, None) => {
+                    tracing::warn!("rules table requested without credentials");
+                    Err(anyhow::anyhow!("no credentials for rules table"))
+                }
+            };
+            let Ok(script) = fetch else {
+                RopErrorResponse {
+                    rop_id,
+                    output_handle_index: req.output_handle_index,
+                    return_value: RopErrorCode::DiskError,
+                }
+                .encode(out);
+                return Ok(());
+            };
+            let mut rules = crate::mapi::rules::parse_rules(&script);
+            rules.sort_by_key(|r| r.sequence);
+            let total = rules.len() as u64;
+            let rows: Vec<crate::mapi::session::TableRow> = rules
+                .into_iter()
+                .map(|rule| crate::mapi::session::TableRow {
+                    row_id: rule.id,
+                    cells: Vec::new(),
+                    source: Some(std::sync::Arc::new(RuleRowSource { rule })),
+                })
+                .collect();
+            sessions.with_session_mut(session_id, |s| {
+                s.set_handle(
+                    req.output_handle_index,
+                    Handle::Table {
+                        kind: FolderKind::Mail,
+                        parent_handle: req.input_handle_index as i16,
+                        parent_backend_id: parent_backend,
+                        column_set: Vec::new(),
+                        rows,
+                        cursor: 0,
+                        total,
+                        restriction: crate::mapi::restrict::SRestriction::default(),
+                        sort_orders: Vec::new(),
+                        next_bookmark: 0,
+                    },
+                );
+            });
+            crate::mapi::rops::RopOpenTableSuccess {
                 output_handle_index: req.output_handle_index,
-                return_value: RopErrorCode::NoSupport,
+                return_value: RopErrorCode::Success,
+                row_count: u32::try_from(total.min(u32::MAX as u64)).unwrap_or(0),
             }
-            .encode(out);
+            .encode(out, rop_id);
+        }
+
+        RopId::ROP_GET_PERMISSIONS_TABLE => {
+            // MS-OXCPERM §2.2.6: enumerate the folder's sharing members. The
+            // source of truth is the mailbox's JMAP `shareWith` object; a
+            // mailbox with no sharing entries yields an empty (valid) table.
+            let req = RopGetRulesPermissionsTableRequest::decode(cur)?;
+            let parent_backend = sessions
+                .with_handle(session_id, req.input_handle_index, |h| match h {
+                    Handle::Folder {
+                        backend_id,
+                        kind: FolderKind::Mail,
+                    } => backend_id.clone(),
+                    _ => String::new(),
+                })
+                .unwrap_or_default();
+            let members: Vec<PermissionRowSource> = match (jmap, password, &parent_backend) {
+                (_, _, b) if b.is_empty() => Vec::new(),
+                (Some(jc), Some(pw), backend) => {
+                    let shared = match jc.query_mailboxes(username, pw).await {
+                        Ok(ml) => ml
+                            .mailboxes
+                            .into_iter()
+                            .find(|m| m.id.as_deref() == Some(backend.as_str()))
+                            .and_then(|m| m.share_with)
+                            .unwrap_or_default(),
+                        Err(e) => {
+                            tracing::warn!(error = %e, "Mailbox/query for permission table failed");
+                            Default::default()
+                        }
+                    };
+                    shared
+                        .into_iter()
+                        .map(|(principal, rights)| PermissionRowSource {
+                            member_id: store::folder_id_from_backend(&principal) as i64,
+                            member_rights: crate::mapi::rules::jmap_rights_to_mapi(&rights),
+                            member_name: principal,
+                        })
+                        .collect()
+                }
+                _ => Vec::new(),
+            };
+            let total = members.len() as u64;
+            let rows: Vec<crate::mapi::session::TableRow> = members
+                .into_iter()
+                .map(|m| crate::mapi::session::TableRow {
+                    row_id: m.member_id as u64,
+                    cells: Vec::new(),
+                    source: Some(std::sync::Arc::new(m)),
+                })
+                .collect();
+            sessions.with_session_mut(session_id, |s| {
+                s.set_handle(
+                    req.output_handle_index,
+                    Handle::Table {
+                        kind: FolderKind::Mail,
+                        parent_handle: req.input_handle_index as i16,
+                        parent_backend_id: parent_backend,
+                        column_set: Vec::new(),
+                        rows,
+                        cursor: 0,
+                        total,
+                        restriction: crate::mapi::restrict::SRestriction::default(),
+                        sort_orders: Vec::new(),
+                        next_bookmark: 0,
+                    },
+                );
+            });
+            crate::mapi::rops::RopOpenTableSuccess {
+                output_handle_index: req.output_handle_index,
+                return_value: RopErrorCode::Success,
+                row_count: u32::try_from(total.min(u32::MAX as u64)).unwrap_or(0),
+            }
+            .encode(out, rop_id);
         }
 
         RopId::ROP_MODIFY_RULES => {
+            // MS-OXORULE §2.2.4.2 / MS-OXCROPS §2.2.11.1: apply the RuleData
+            // list (ROW_ADD/ROW_MODIFY/ROW_REMOVE), persist the resulting
+            // rule set into the user's Sieve script, and regenerate the
+            // executable Sieve section. Failures on any write surface as
+            // DiskError (not silent success).
             let req = RopModifyRulesRequest::decode(cur)?;
-            let _ = req;
+            use crate::mapi::rules as mrules;
+            let outcome: RopErrorCode = match (jmap, password) {
+                (None, _) => RopErrorCode::NotFound,
+                (_, None) => RopErrorCode::AccessDenied,
+                (Some(jc), Some(pw)) => {
+                    // A failed read must abort the whole write: proceeding
+                    // with an empty script would regenerate the script
+                    // header minus the rules the client already stored,
+                    // destroying data.
+                    let fetched = match jc.get_sieve_script(username, pw).await {
+                        Ok(s) => s.unwrap_or_default(),
+                        Err(e) => {
+                            tracing::warn!(error = %e, "SieveScript/get for modify-rules failed");
+                            RopErrorResponse {
+                                rop_id,
+                                output_handle_index: req.input_handle_index,
+                                return_value: RopErrorCode::DiskError,
+                            }
+                            .encode(out);
+                            return Ok(());
+                        }
+                    };
+                    let mut rule_set = mrules::parse_rules(&fetched);
+                    let mut remove_failed = false;
+                    let mut modify_of_unknown_rule = false;
+                    for entry in &req.entries {
+                        if entry.flags & mrules::RULE_ROW_REMOVE != 0 {
+                            // Removal keys off PR_RULE_ID (MS-OXORULE §2.2.1.3.1.1).
+                            let id = entry
+                                .properties
+                                .iter()
+                                .find(|p| p.tag.property_id == mrules::PR_RULE_ID)
+                                .and_then(|p| match &p.value {
+                                    crate::mapi::data::PropertyValue::Integer64(n) => {
+                                        Some(*n as u64)
+                                    }
+                                    _ => None,
+                                });
+                            match id {
+                                Some(id) => rule_set.retain(|r| r.id != id),
+                                None => remove_failed = true,
+                            }
+                            continue;
+                        }
+                        // Add or modify. On modify the client identifies the
+                        // rule by PR_RULE_ID; on add the server assigns one
+                        // (spec: the client MUST NOT set it on adds, but New
+                        // Outlook still sends a value, which we honour only
+                        // when it does not collide).
+                        let supplied_id = entry
+                            .properties
+                            .iter()
+                            .find(|p| p.tag.property_id == mrules::PR_RULE_ID)
+                            .and_then(|p| match &p.value {
+                                crate::mapi::data::PropertyValue::Integer64(n) => Some(*n as u64),
+                                _ => None,
+                            });
+                        let existing = supplied_id
+                            .and_then(|id| rule_set.iter().find(|r| r.id == id).cloned());
+                        let existing = if entry.flags & mrules::RULE_ROW_MODIFY != 0 {
+                            existing
+                        } else {
+                            None
+                        };
+                        // MS-OXORULE §2.2.4.2: a pure modify must reference a
+                        // rule the server already has; inventing a new rule
+                        // for a modify whose id we don't know would silently
+                        // duplicate rules across clients.
+                        if entry.flags & mrules::RULE_ROW_MODIFY != 0
+                            && entry.flags & mrules::RULE_ROW_ADD == 0
+                            && existing.is_none()
+                        {
+                            modify_of_unknown_rule = true;
+                            continue;
+                        }
+                        let mut rule = mrules::rule_from_rule_data(
+                            entry.flags,
+                            &entry.properties,
+                            existing.as_ref(),
+                        );
+                        if rule.provider.is_empty() {
+                            rule.provider = mrules::GATEWAY_RULE_PROVIDER.to_string();
+                        }
+                        if entry.flags & mrules::RULE_ROW_ADD != 0
+                            || existing.is_none()
+                            || rule.id == 0
+                        {
+                            // Allocate: lowest unused id above the current max
+                            // keeps ids stable across clients and debuggable.
+                            rule.id = rule_set
+                                .iter()
+                                .map(|r| r.id)
+                                .max()
+                                .unwrap_or(0)
+                                .wrapping_add(1);
+                            if rule.id == 0 {
+                                rule.id = 1;
+                            }
+                        }
+                        match rule_set.iter_mut().find(|r| r.id == rule.id) {
+                            Some(slot) => *slot = rule,
+                            None => rule_set.push(rule),
+                        }
+                    }
+                    // Folder-id resolution for the Sieve translation: the
+                    // OP_MOVE/OP_COPY destination ids are MAPI folder ids
+                    // (hashes of the mailbox id), so invert via enumeration.
+                    let mailboxes: Vec<String> = jc
+                        .query_mailboxes(username, pw)
+                        .await
+                        .map(|m| m.mailboxes.into_iter().filter_map(|m| m.id).collect())
+                        .unwrap_or_default();
+                    let resolve = move |fid: u64| {
+                        mailboxes
+                            .iter()
+                            .find(|b| store::folder_id_from_backend(b) == fid)
+                            .cloned()
+                    };
+                    let (new_script, rendered) =
+                        mrules::render_script(&fetched, &rule_set, &resolve);
+                    let _ = rendered; // ST_ERROR bits persisted in the block itself
+                    if remove_failed || modify_of_unknown_rule {
+                        RopErrorCode::InvalidParameter
+                    } else {
+                        match jc.set_sieve_script(&new_script, username, pw).await {
+                            Ok(()) => RopErrorCode::Success,
+                            Err(e) => {
+                                tracing::warn!(error = %e, "SieveScript/set for modify-rules failed");
+                                RopErrorCode::DiskError
+                            }
+                        }
+                    }
+                }
+            };
             RopErrorResponse {
                 rop_id,
                 output_handle_index: req.input_handle_index,
-                return_value: RopErrorCode::NoSupport,
+                return_value: outcome,
             }
             .encode(out);
         }
 
         RopId::ROP_MODIFY_PERMISSIONS => {
+            // MS-OXCPERM §2.2.6.1: apply member adds/modifies/removes against
+            // the mailbox's JMAP `shareWith` map and persist via Mailbox/set.
             let req = RopModifyPermissionsRequest::decode(cur)?;
-            let _ = req;
+            let parent_backend = sessions
+                .with_handle(session_id, req.input_handle_index, |h| match h {
+                    Handle::Folder {
+                        backend_id,
+                        kind: FolderKind::Mail,
+                    } => backend_id.clone(),
+                    _ => String::new(),
+                })
+                .unwrap_or_default();
+            let outcome: RopErrorCode = match (jmap, password, &parent_backend) {
+                (_, _, b) if b.is_empty() => RopErrorCode::NoSupport,
+                (None, _, _) => RopErrorCode::NotFound,
+                (_, None, _) => RopErrorCode::AccessDenied,
+                (Some(jc), Some(pw), backend) => {
+                    let account_id = jc
+                        .get_account_id(username, pw)
+                        .await
+                        .ok()
+                        .unwrap_or_default();
+                    if account_id.is_empty() {
+                        RopErrorCode::NotFound
+                    } else {
+                        // Load the current map unless the client requested a
+                        // wholesale replace (ModifyFlags ReplaceRows = 0x01).
+                        let replace = req.modify_flags & 0x01 != 0;
+                        let current = if replace {
+                            serde_json::Map::new()
+                        } else {
+                            jc.query_mailboxes(username, pw)
+                                .await
+                                .ok()
+                                .and_then(|ml| {
+                                    ml.mailboxes
+                                        .into_iter()
+                                        .find(|m| m.id.as_deref() == Some(backend.as_str()))
+                                })
+                                .and_then(|m| m.share_with)
+                                .unwrap_or_default()
+                                .into_iter()
+                                .collect()
+                        };
+                        let mut map: serde_json::Map<String, serde_json::Value> = current;
+                        let mut applied = true;
+                        for entry in &req.entries {
+                            let name = entry
+                                .properties
+                                .iter()
+                                .find(|p| p.tag.property_id == PR_MEMBER_NAME)
+                                .and_then(|p| match &p.value {
+                                    crate::mapi::data::PropertyValue::String(s)
+                                    | crate::mapi::data::PropertyValue::String8(s) => {
+                                        Some(s.clone())
+                                    }
+                                    _ => None,
+                                });
+                            let rights = entry
+                                .properties
+                                .iter()
+                                .find(|p| p.tag.property_id == PR_MEMBER_RIGHTS)
+                                .and_then(|p| match &p.value {
+                                    crate::mapi::data::PropertyValue::Integer32(n) => {
+                                        Some(*n as u32)
+                                    }
+                                    _ => None,
+                                })
+                                .unwrap_or(0);
+                            // PermissionDataFlags: AddRow 0x01, ModifyRow 0x02,
+                            // RemoveRow 0x04 (MS-OXCROPS §2.2.10.1.1.1).
+                            let flags = entry.flags;
+                            if flags & 0x04 != 0 {
+                                if let Some(name) = name {
+                                    map.remove(&name);
+                                }
+                            } else if flags & (0x01 | 0x02) != 0 {
+                                match name {
+                                    Some(name) if !name.is_empty() => {
+                                        map.insert(
+                                            name,
+                                            crate::mapi::rules::mapi_rights_to_jmap(rights),
+                                        );
+                                    }
+                                    _ => applied = false,
+                                }
+                            }
+                        }
+                        if !applied {
+                            RopErrorCode::InvalidParameter
+                        } else {
+                            match jc
+                                .update_mailbox_share_with(
+                                    &account_id,
+                                    backend,
+                                    serde_json::Value::Object(map),
+                                    username,
+                                    pw,
+                                )
+                                .await
+                            {
+                                Ok(()) => RopErrorCode::Success,
+                                Err(e) => {
+                                    tracing::warn!(error = %e, "Mailbox/set shareWith failed");
+                                    RopErrorCode::DiskError
+                                }
+                            }
+                        }
+                    }
+                }
+            };
             RopErrorResponse {
                 rop_id,
                 output_handle_index: req.input_handle_index,
-                return_value: RopErrorCode::NoSupport,
+                return_value: outcome,
             }
             .encode(out);
         }
@@ -5407,7 +5818,10 @@ async fn execute_one_rop(
             let _want_delete_associated = cur.take_u8()?;
             let backend = sessions
                 .with_handle(session_id, idx, |h| match h {
-                    Handle::Folder { backend_id, kind: FolderKind::Mail } => backend_id.clone(),
+                    Handle::Folder {
+                        backend_id,
+                        kind: FolderKind::Mail,
+                    } => backend_id.clone(),
                     _ => String::new(),
                 })
                 .unwrap_or_default();
@@ -5432,27 +5846,23 @@ async fn execute_one_rop(
                         let listed = jc
                             .list_email_ids_in_mailbox(&account_id, backend, username, pw)
                             .await;
-                        let ids: Vec<String> = match listed {
-                            Ok(ids) => ids.into_iter().map(|(jid, _)| jid).collect(),
+                        let (listed_ok, ids): (bool, Vec<String>) = match listed {
+                            Ok(ids) => (true, ids.into_iter().map(|(jid, _)| jid).collect()),
                             Err(e) => {
                                 tracing::warn!(error = %e, "JMAP list for empty-folder failed");
-                                outcome = RopErrorCode::DiskError;
-                                let _ = e;
-                                Vec::new()
+                                (false, Vec::new())
                             }
                         };
-                        let mut destroyed_ok = ids.is_empty();
+                        let mut destroyed_ok = listed_ok;
                         if !ids.is_empty() {
-                            destroyed_ok = match jc
-                                .destroy_emails(&account_id, &ids, username, pw)
-                                .await
-                            {
-                                Ok(_) => true,
-                                Err(e) => {
-                                    tracing::warn!(error = %e, "JMAP Email/destroy failed");
-                                    false
-                                }
-                            };
+                            destroyed_ok =
+                                match jc.destroy_emails(&account_id, &ids, username, pw).await {
+                                    Ok(_) => true,
+                                    Err(e) => {
+                                        tracing::warn!(error = %e, "JMAP Email/destroy failed");
+                                        false
+                                    }
+                                };
                         }
                         // Subfolder clause: destroy child mailboxes when the
                         // ROP is HardDeleteMessagesAndSubfolders. Propagate
@@ -5464,14 +5874,17 @@ async fn execute_one_rop(
                                     for mbx in mailboxes.mailboxes {
                                         if mbx.parent_id.as_deref() == Some(backend)
                                             && let Some(child_id) = mbx.id.clone()
-                                        {
-                                            if jc
-                                                .destroy_mailbox(&account_id, &child_id, username, pw)
+                                            && jc
+                                                .destroy_mailbox(
+                                                    &account_id,
+                                                    &child_id,
+                                                    username,
+                                                    pw,
+                                                )
                                                 .await
                                                 .is_err()
-                                            {
-                                                subfolders_ok = false;
-                                            }
+                                        {
+                                            subfolders_ok = false;
                                         }
                                     }
                                 }
@@ -5553,7 +5966,8 @@ async fn execute_one_rop(
                                 if jids.is_empty() {
                                     outcome = RopErrorCode::Success;
                                 } else {
-                                    match jc.destroy_emails(&account_id, &jids, username, pw).await {
+                                    match jc.destroy_emails(&account_id, &jids, username, pw).await
+                                    {
                                         Ok(_) => outcome = RopErrorCode::Success,
                                         Err(e) => {
                                             tracing::warn!(error = %e, "JMAP Email/destroy failed");
@@ -6160,6 +6574,7 @@ async fn materialize_handle_properties(
                 total_threads: None,
                 unread_threads: None,
                 is_subscribed: None,
+                share_with: None,
             };
             store::mailbox_to_cells(&mbx, tags)
         }
@@ -6521,6 +6936,7 @@ fn synth_folder_row(backend_id: &str, name: &str, role: &str) -> crate::mapi::se
         total_threads: None,
         unread_threads: None,
         is_subscribed: None,
+        share_with: None,
     };
     let source: std::sync::Arc<dyn std::any::Any + Send + Sync> = std::sync::Arc::new(mbx);
     crate::mapi::session::TableRow {
@@ -6618,6 +7034,43 @@ fn folder_kind_for_backend(
     // Unknown folder ids default to Mail; the contents-table probe will
     // surface NoSupport if the backend can't serve them.
     FolderKind::Mail
+}
+
+/// Row source for the rules table: the persisted MAPI rule whose cells are
+/// materialised lazily against whatever column set the client chose.
+struct RuleRowSource {
+    rule: crate::mapi::rules::StoredRule,
+}
+
+/// Row source for the permissions table: one folder-sharing member.
+struct PermissionRowSource {
+    member_id: i64,
+    member_name: String,
+    member_rights: u32,
+}
+
+const PR_MEMBER_ID: u16 = 0x6671; // PtypInteger64
+const PR_MEMBER_NAME: u16 = 0x6672; // PtypString
+const PR_MEMBER_RIGHTS: u16 = 0x6673; // PtypInteger32
+const PR_ENTRY_ID: u16 = 0x0FFF; // PtypBinary
+
+fn permission_row_cells(
+    member: &PermissionRowSource,
+    tags: &[crate::mapi::data::PropertyTag],
+) -> Vec<crate::mapi::data::PropertyValue> {
+    use crate::mapi::data::PropertyValue;
+    tags.iter()
+        .map(|t| match t.property_id {
+            PR_MEMBER_ID => PropertyValue::Integer64(member.member_id),
+            PR_MEMBER_NAME => PropertyValue::String(member.member_name.clone()),
+            PR_MEMBER_RIGHTS => PropertyValue::Integer32(member.member_rights as i32),
+            // The ACL entry id is opaque to the client; a deterministic byte
+            // form of the member name keeps it stable across sessions so the
+            // client's row caching behaves.
+            PR_ENTRY_ID => PropertyValue::Binary(member.member_name.as_bytes().to_vec()),
+            _ => PropertyValue::Null,
+        })
+        .collect()
 }
 
 /// Encode a row cell: emit the materialised `PropertyValue` when present and
@@ -6723,6 +7176,10 @@ fn matcher_cells(
                 store::attachment_to_cells(a, num, column_set)
             } else if let Some(c) = src.downcast_ref::<crate::calendar::CalendarItem>() {
                 crate::mapi::converters::calendar_to_cells(c, column_set, mailbox_id)
+            } else if let Some(rr) = src.downcast_ref::<RuleRowSource>() {
+                crate::mapi::rules::rule_to_cells(&rr.rule, column_set)
+            } else if let Some(pm) = src.downcast_ref::<PermissionRowSource>() {
+                permission_row_cells(pm, column_set)
             } else if let Some(v) = src.downcast_ref::<String>() {
                 crate::mapi::converters::contact_to_cells(v, column_set, mailbox_id)
             } else {
@@ -9307,8 +9764,9 @@ mod tests {
             (0x42, vec![0x00, 0x01, 0, 0, 0, 0, 0, 0, 0, 1]), // RopGetOwningServers
             (0x43, vec![0x00, 0x01, 0, 0, 0, 0, 0, 0, 0, 1]), // RopLongTermIdFromId
             // RopHeader4 (Logon+Input+Output) + TableFlags.
-            (0x3F, vec![0x00, 0x01, 0x02, 0x00]), // RopGetRulesTable
-            (0x3E, vec![0x00, 0x01, 0x02, 0x00]), // RopGetPermissionsTable
+            // (RopGetRulesTable 0x3F / RopGetPermissionsTable 0x3E are now
+            // dispatched against the Sieve/JMAP-sharing backends and return a
+            // real table, so they are no longer NoSupport probes.)
             // RopHeader + fixed trailing field (24-byte LongTermId).
             (0x44, {
                 let mut b = vec![0x00, 0x01];
@@ -9316,9 +9774,10 @@ mod tests {
                 b
             }),
             // RopHeader + ModifyRulesFlags(1) + RulesCount(2) + (empty) RulesData.
-            (0x41, vec![0x00, 0x01, 0x00, 0x00, 0x00]), // RopModifyRules
-            // RopHeader + ModifyFlags(1) + ModifyCount(2) + (empty) PermissionsData.
-            (0x40, vec![0x00, 0x01, 0x00, 0x00, 0x00]), // RopModifyPermissions
+            // (RopModifyRules 0x41 / RopModifyPermissions 0x40 are now
+            // dispatched and write via SieveScript/set / Mailbox/set, so they
+            // no longer belong in the NoSupport probe list. Their byte-shape
+            // contract is covered by dedicated tests in src/mapi/rules.rs.)
             // RopHeader + QueryFlags(1) + HasGuid(0) + PropertyIdCount(0).
             // (ROP_QUERY_NAMED_PROPERTIES 0x5F is now dispatched and returns a
             // named-property id list, so it is covered separately below.)

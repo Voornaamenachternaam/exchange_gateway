@@ -20,40 +20,49 @@
 // `Guid` field of a `RopGetPropertyIdsFromNames` request).
 
 /// PS_PUBLIC_STRINGS   `{00020329-0000-0000-C000-000000000046}`
-pub const PS_PUBLIC_STRINGS: [u8; 16] =
-    [0x29, 0x03, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0xC0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46];
+pub const PS_PUBLIC_STRINGS: [u8; 16] = [
+    0x29, 0x03, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0xC0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46,
+];
 
 /// PSETID_Common       `{00062008-0000-0000-C000-000000000046}`
-pub const PSETID_COMMON: [u8; 16] =
-    [0x08, 0x20, 0x06, 0x00, 0x00, 0x00, 0x00, 0x00, 0xC0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46];
+pub const PSETID_COMMON: [u8; 16] = [
+    0x08, 0x20, 0x06, 0x00, 0x00, 0x00, 0x00, 0x00, 0xC0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46,
+];
 
 /// PSETID_Address      `{00062004-0000-0000-C000-000000000046}`
-pub const PSETID_ADDRESS: [u8; 16] =
-    [0x04, 0x20, 0x06, 0x00, 0x00, 0x00, 0x00, 0x00, 0xC0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46];
+pub const PSETID_ADDRESS: [u8; 16] = [
+    0x04, 0x20, 0x06, 0x00, 0x00, 0x00, 0x00, 0x00, 0xC0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46,
+];
 
 /// PSETID_Appointment  `{00062002-0000-0000-C000-000000000046}`
-pub const PSETID_APPOINTMENT: [u8; 16] =
-    [0x02, 0x20, 0x06, 0x00, 0x00, 0x00, 0x00, 0x00, 0xC0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46];
+pub const PSETID_APPOINTMENT: [u8; 16] = [
+    0x02, 0x20, 0x06, 0x00, 0x00, 0x00, 0x00, 0x00, 0xC0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46,
+];
 
 /// PSETID_Task         `{00062003-0000-0000-C000-000000000046}`
-pub const PSETID_TASK: [u8; 16] =
-    [0x03, 0x20, 0x06, 0x00, 0x00, 0x00, 0x00, 0x00, 0xC0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46];
+pub const PSETID_TASK: [u8; 16] = [
+    0x03, 0x20, 0x06, 0x00, 0x00, 0x00, 0x00, 0x00, 0xC0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46,
+];
 
 /// PSETID_Log          `{0006200A-0000-0000-C000-000000000046}`
-pub const PSETID_LOG: [u8; 16] =
-    [0x0A, 0x20, 0x06, 0x00, 0x00, 0x00, 0x00, 0x00, 0xC0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46];
+pub const PSETID_LOG: [u8; 16] = [
+    0x0A, 0x20, 0x06, 0x00, 0x00, 0x00, 0x00, 0x00, 0xC0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46,
+];
 
 /// PSETID_Note         `{0006200E-0000-0000-C000-000000000046}`
-pub const PSETID_NOTE: [u8; 16] =
-    [0x0E, 0x20, 0x06, 0x00, 0x00, 0x00, 0x00, 0x00, 0xC0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46];
+pub const PSETID_NOTE: [u8; 16] = [
+    0x0E, 0x20, 0x06, 0x00, 0x00, 0x00, 0x00, 0x00, 0xC0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46,
+];
 
 /// PSETID_Meeting      `{6ED8DA90-450B-101B-98DA-00AA003F1305}`
-pub const PSETID_MEETING: [u8; 16] =
-    [0x90, 0xDA, 0xD8, 0x6E, 0x0B, 0x45, 0x1B, 0x10, 0x98, 0xDA, 0x00, 0xAA, 0x00, 0x3F, 0x13, 0x05];
+pub const PSETID_MEETING: [u8; 16] = [
+    0x90, 0xDA, 0xD8, 0x6E, 0x0B, 0x45, 0x1B, 0x10, 0x98, 0xDA, 0x00, 0xAA, 0x00, 0x3F, 0x13, 0x05,
+];
 
 /// PSETID_Report       `{00062013-0000-0000-C000-000000000046}`
-pub const PSETID_REPORT: [u8; 16] =
-    [0x13, 0x20, 0x06, 0x00, 0x00, 0x00, 0x00, 0x00, 0xC0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46];
+pub const PSETID_REPORT: [u8; 16] = [
+    0x13, 0x20, 0x06, 0x00, 0x00, 0x00, 0x00, 0x00, 0xC0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46,
+];
 
 /// One entry in the gateways well-known named-property table.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -77,29 +86,101 @@ pub struct NamedPropEntry {
 /// MS-OXPROPS values.
 const KNOWN_NAMED_PROPS: &[NamedPropEntry] = &[
     // PSETID_Common — reminders, classification, follow-up flags.
-    NamedPropEntry { guid: PSETID_COMMON, property_id: 0x8501, lid: 0x00008501 }, // PidLidReminderDelta
-    NamedPropEntry { guid: PSETID_COMMON, property_id: 0x8502, lid: 0x00008502 }, // PidLidReminderTime
-    NamedPropEntry { guid: PSETID_COMMON, property_id: 0x8503, lid: 0x00008503 }, // PidLidReminderSet
-    NamedPropEntry { guid: PSETID_COMMON, property_id: 0x8530, lid: 0x00008530 }, // PidLidFlagRequest
-    NamedPropEntry { guid: PSETID_COMMON, property_id: 0x85B6, lid: 0x000085B6 }, // PidLidClassification
+    NamedPropEntry {
+        guid: PSETID_COMMON,
+        property_id: 0x8501,
+        lid: 0x00008501,
+    }, // PidLidReminderDelta
+    NamedPropEntry {
+        guid: PSETID_COMMON,
+        property_id: 0x8502,
+        lid: 0x00008502,
+    }, // PidLidReminderTime
+    NamedPropEntry {
+        guid: PSETID_COMMON,
+        property_id: 0x8503,
+        lid: 0x00008503,
+    }, // PidLidReminderSet
+    NamedPropEntry {
+        guid: PSETID_COMMON,
+        property_id: 0x8530,
+        lid: 0x00008530,
+    }, // PidLidFlagRequest
+    NamedPropEntry {
+        guid: PSETID_COMMON,
+        property_id: 0x85B6,
+        lid: 0x000085B6,
+    }, // PidLidClassification
     // PS_PUBLIC_STRINGS — keyword/category strings.
-    NamedPropEntry { guid: PS_PUBLIC_STRINGS, property_id: 0x9000, lid: 0x00009000 }, // PidLidCategory (categories keyword)
+    NamedPropEntry {
+        guid: PS_PUBLIC_STRINGS,
+        property_id: 0x9000,
+        lid: 0x00009000,
+    }, // PidLidCategory (categories keyword)
     // PSETID_Address — name/contact identity.
-    NamedPropEntry { guid: PSETID_ADDRESS, property_id: 0x802E, lid: 0x0000802E }, // PidLidYomiCompanyName
+    NamedPropEntry {
+        guid: PSETID_ADDRESS,
+        property_id: 0x802E,
+        lid: 0x0000802E,
+    }, // PidLidYomiCompanyName
     // PSETID_Appointment — calendar identity.
-    NamedPropEntry { guid: PSETID_APPOINTMENT, property_id: 0x8205, lid: 0x00008205 }, // PidLidBusyStatus
-    NamedPropEntry { guid: PSETID_APPOINTMENT, property_id: 0x8208, lid: 0x00008208 }, // PidLidLocation
-    NamedPropEntry { guid: PSETID_APPOINTMENT, property_id: 0x820D, lid: 0x0000820D }, // PidLidAppointmentStartWhole
-    NamedPropEntry { guid: PSETID_APPOINTMENT, property_id: 0x820E, lid: 0x0000820E }, // PidLidAppointmentEndWhole
-    NamedPropEntry { guid: PSETID_APPOINTMENT, property_id: 0x8238, lid: 0x00008238 }, // PidLidAllAttendeesString
+    NamedPropEntry {
+        guid: PSETID_APPOINTMENT,
+        property_id: 0x8205,
+        lid: 0x00008205,
+    }, // PidLidBusyStatus
+    NamedPropEntry {
+        guid: PSETID_APPOINTMENT,
+        property_id: 0x8208,
+        lid: 0x00008208,
+    }, // PidLidLocation
+    NamedPropEntry {
+        guid: PSETID_APPOINTMENT,
+        property_id: 0x820D,
+        lid: 0x0000820D,
+    }, // PidLidAppointmentStartWhole
+    NamedPropEntry {
+        guid: PSETID_APPOINTMENT,
+        property_id: 0x820E,
+        lid: 0x0000820E,
+    }, // PidLidAppointmentEndWhole
+    NamedPropEntry {
+        guid: PSETID_APPOINTMENT,
+        property_id: 0x8238,
+        lid: 0x00008238,
+    }, // PidLidAllAttendeesString
     // PSETID_Task — task status/date round-trip.
-    NamedPropEntry { guid: PSETID_TASK, property_id: 0x8101, lid: 0x00008101 }, // PidLidTaskStatus
-    NamedPropEntry { guid: PSETID_TASK, property_id: 0x8102, lid: 0x00008102 }, // PidLidPercentComplete
-    NamedPropEntry { guid: PSETID_TASK, property_id: 0x8104, lid: 0x00008104 }, // PidLidTaskStartDate
-    NamedPropEntry { guid: PSETID_TASK, property_id: 0x8105, lid: 0x00008105 }, // PidLidTaskDueDate
-    NamedPropEntry { guid: PSETID_TASK, property_id: 0x811C, lid: 0x0000811C }, // PidLidTaskComplete
+    NamedPropEntry {
+        guid: PSETID_TASK,
+        property_id: 0x8101,
+        lid: 0x00008101,
+    }, // PidLidTaskStatus
+    NamedPropEntry {
+        guid: PSETID_TASK,
+        property_id: 0x8102,
+        lid: 0x00008102,
+    }, // PidLidPercentComplete
+    NamedPropEntry {
+        guid: PSETID_TASK,
+        property_id: 0x8104,
+        lid: 0x00008104,
+    }, // PidLidTaskStartDate
+    NamedPropEntry {
+        guid: PSETID_TASK,
+        property_id: 0x8105,
+        lid: 0x00008105,
+    }, // PidLidTaskDueDate
+    NamedPropEntry {
+        guid: PSETID_TASK,
+        property_id: 0x811C,
+        lid: 0x0000811C,
+    }, // PidLidTaskComplete
     // PSETID_Meeting — meeting-request type (LID below 0x8000: named id = 0x8000|LID).
-    NamedPropEntry { guid: PSETID_MEETING, property_id: 0x8026, lid: 0x00000026 }, // PidLidMeetingType
+    NamedPropEntry {
+        guid: PSETID_MEETING,
+        property_id: 0x8026,
+        lid: 0x00000026,
+    }, // PidLidMeetingType
 ];
 
 /// Resolve a `(guid, kind, lid/name)` request triple to a property id.
@@ -107,12 +188,10 @@ const KNOWN_NAMED_PROPS: &[NamedPropEntry] = &[
 /// the caller, per MS-OXCROPS §2.2.20.2) for an unknown one.
 pub fn property_id_for_name(guid: &[u8; 16], name: &NamedPropertyName) -> Option<u16> {
     match name {
-        NamedPropertyName::Lid(lid) => {
-            KNOWN_NAMED_PROPS
-                .iter()
-                .find(|e| e.guid == *guid && e.lid == *lid)
-                .map(|e| e.property_id)
-        }
+        NamedPropertyName::Lid(lid) => KNOWN_NAMED_PROPS
+            .iter()
+            .find(|e| e.guid == *guid && e.lid == *lid)
+            .map(|e| e.property_id),
         // String-named properties are not in the well-known table; returning
         // None maps to the id-0 "not found" sentinel (not an error).
         NamedPropertyName::String(_) => None,
@@ -130,10 +209,7 @@ pub fn name_for_property_id(property_id: u16) -> Option<NamedPropEntry> {
 
 /// The full list of known named-property ids, for `RopQueryNamedProperties`.
 pub fn all_named_property_ids() -> Vec<u16> {
-    KNOWN_NAMED_PROPS
-        .iter()
-        .map(|e| e.property_id)
-        .collect()
+    KNOWN_NAMED_PROPS.iter().map(|e| e.property_id).collect()
 }
 
 /// Re-export the name kinds used by the ROP codecs so callers need no

@@ -559,7 +559,7 @@ impl RopFindRowSuccess {
 /// The response codecs use `NamedPropertyNameSpec` and encode `PropertyName`
 /// structures per [MS-OXCDATA] section 2.6.1; the former `NamedPropertyId`
 /// struct (property_id + guid + kind + name) was incorrect for responses.
-
+///
 /// The name of a named property: either a numeric LID (`kind == 0`) or a
 /// string name (`kind == 1`).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -573,7 +573,12 @@ pub enum NamedPropertyName {
 /// responses. The on-wire layout is:
 ///   `Kind(1) · GUID(16) · [LID(4) if Kind=0 | NameSize(1)+Name if Kind=1]`.
 /// `Kind == 0xFF` encodes "no named property" (GUID present, no LID/name).
-fn encode_property_name_struct(kind: u8, guid: &[u8; 16], name: &NamedPropertyName, out: &mut Vec<u8>) {
+fn encode_property_name_struct(
+    kind: u8,
+    guid: &[u8; 16],
+    name: &NamedPropertyName,
+    out: &mut Vec<u8>,
+) {
     out.push(kind);
     out.extend_from_slice(guid);
     match (kind, name) {
@@ -731,7 +736,6 @@ impl RopGetPropertyIdsFromNamesSuccess {
         }
     }
 }
-
 
 // ---------- Move/CopyFolder (0x35 / 0x36) ------------------------------------
 
@@ -1023,6 +1027,13 @@ impl<'a> Buf<'a> {
     }
     pub fn pos(&self) -> usize {
         self.pos
+    }
+    /// Return the byte span `[start, end)` of the underlying buffer. Callers
+    /// use `pos()` before/after decoding a variable-length region to capture
+    /// its exact wire bytes (used when a property's raw form must be
+    /// round-tripped verbatim, e.g. rule restrictions/actions).
+    pub fn span(&self, start: usize, end: usize) -> &'a [u8] {
+        &self.buf[start.min(self.buf.len())..end.min(self.buf.len())]
     }
     /// Alias retained for readability in ROP-chaining code.
     pub fn position(&self) -> usize {
@@ -4203,10 +4214,65 @@ impl RopGetRulesPermissionsTableRequest {
 /// (MS-OXCROPS §2.2.11.1.1.1) is `RuleDataFlags` + `PropertyValueCount` + that
 /// many `TaggedPropertyValue` structures; walking them keeps the cursor byte-
 /// aligned so a trailing ROP is not swallowed by `take_remaining`.
+/// One `RuleData` entry from a `RopModifyRules` request: the flags byte +
+/// the decoded properties. `PtypRestriction` and `PtypRuleAction` values are
+/// captured as `PropertyValue::Opaque` holding their exact wire bytes, so the
+/// store layer can persist them losslessly (see `mapi::rules`).
+pub struct RopRuleDataEntry {
+    pub flags: u8,
+    pub properties: Vec<crate::mapi::data::TaggedPropertyValue>,
+}
+
 pub struct RopModifyRulesRequest {
     pub logon_id: u8,
     pub input_handle_index: u8,
     pub modify_rules_flags: u8,
+    pub entries: Vec<RopRuleDataEntry>,
+}
+
+/// Decode a singleTaggedPropertyValue in a rule/permission context: the two
+/// rule-only types have self-delimiting payloads per MS-OXCDATA §2.11.1
+/// (`PtypRestriction` = one SRestriction; `PtypRuleAction` = 16-bit count +
+/// that many ActionBlocks, each ActionLength-delimited), so we decode them
+/// with the dedicated parsers and capture the consumed span verbatim.
+fn decode_rule_property_value(
+    cur: &mut Buf<'_>,
+) -> Result<crate::mapi::data::TaggedPropertyValue, DecodeError> {
+    use crate::mapi::data::{PropertyTag, PropertyType, PropertyValue, TaggedPropertyValue};
+    let tag = PropertyTag::decode(cur)?;
+    let value = match tag.property_type {
+        PropertyType::PTYP_RESTRICTION => {
+            let start = cur.pos();
+            let rst = crate::mapi::restrict::SRestriction::decode(cur)?;
+            let _ = rst;
+            PropertyValue::Opaque {
+                property_type: PropertyType::PTYP_RESTRICTION,
+                bytes: cur.span(start, cur.pos()).to_vec(),
+            }
+        }
+        PropertyType::PTYP_RULE_ACTION => {
+            let start = cur.pos();
+            let count = usize::from(cur.take_u16_le()?);
+            // MS-OXORULE §2.2.5.1: NoOfActions MUST be > 0.
+            if count == 0 {
+                return Err(DecodeError::InvalidValue);
+            }
+            for _ in 0..count {
+                let len = usize::from(cur.take_u16_le()?);
+                if len < 9 {
+                    return Err(DecodeError::InvalidValue);
+                }
+                // ActionLength covers every byte after the length field.
+                cur.take_bytes(len)?;
+            }
+            PropertyValue::Opaque {
+                property_type: PropertyType::PTYP_RULE_ACTION,
+                bytes: cur.span(start, cur.pos()).to_vec(),
+            }
+        }
+        _ => PropertyValue::decode(cur, &tag)?,
+    };
+    Ok(TaggedPropertyValue { tag, value })
 }
 
 impl RopModifyRulesRequest {
@@ -4214,22 +4280,38 @@ impl RopModifyRulesRequest {
         let (logon_id, input_handle_index) = decode_header3(cur)?;
         let modify_rules_flags = cur.take_u8()?;
         let rules_count = usize::from(cur.take_u16_le()?);
+        // Bound the decode work: MS-OXORULE caps rules at 0xFFFF but real
+        // mailboxes carry a handful; 4096 keeps a hostile/fuzzed buffer from
+        // forcing a large allocation.
+        if rules_count > 4096 {
+            return Err(DecodeError::ExcessLength);
+        }
+        let mut entries = Vec::with_capacity(rules_count.min(64));
         for _ in 0..rules_count {
-            // RuleDataFlags (1) is ignored; the PropertyValueCount that follows
-            // bounds the TaggedPropertyValue array we must walk for alignment.
-            let _rule_data_flags = cur.take_u8()?;
+            let rule_data_flags = cur.take_u8()?;
             let property_value_count = usize::from(cur.take_u16_le()?);
-            for _ in 0..property_value_count {
-                // Fully decode each TaggedPropertyValue (property tag + typed
-                // value) so variable-length string/binary payloads are skipped
-                // exactly.
-                let _ = crate::mapi::data::TaggedPropertyValue::decode(cur)?;
+            // MS-OXCROPS §2.2.11.1.1.1: RuleData MUST contain at least one
+            // property — an empty set cannot express add/modify/remove.
+            if property_value_count == 0 {
+                return Err(DecodeError::InvalidValue);
             }
+            if property_value_count > 1024 {
+                return Err(DecodeError::ExcessLength);
+            }
+            let mut properties = Vec::with_capacity(property_value_count.min(32));
+            for _ in 0..property_value_count {
+                properties.push(decode_rule_property_value(cur)?);
+            }
+            entries.push(RopRuleDataEntry {
+                flags: rule_data_flags,
+                properties,
+            });
         }
         Ok(Self {
             logon_id,
             input_handle_index,
             modify_rules_flags,
+            entries,
         })
     }
 }
@@ -4237,12 +4319,20 @@ impl RopModifyRulesRequest {
 /// `RopModifyPermissions` (0x40) request body (MS-OXCPERM §2.2.6.1).
 /// `ModifyFlags` + `ModifyCount` + `ModifyCount` `PermissionData` entries.
 /// Each `PermissionData` (MS-OXCROPS §2.2.10.1.1.1) is `PermissionDataFlags` +
-/// `PropertyValueCount` + that many `TaggedPropertyValue` structures; walking
-/// them keeps the cursor byte-aligned for any trailing ROP in the chain.
+/// `PropertyValueCount` + that many `TaggedPropertyValue` structures. The
+/// decoded entries are retained so the handler can apply them against the
+/// JMAP sharing map; a request that fails to decode yields a typed
+/// `InvalidParameter`-family error rather than a desynchronised cursor.
+pub struct RopPermissionDataEntry {
+    pub flags: u8,
+    pub properties: Vec<crate::mapi::data::TaggedPropertyValue>,
+}
+
 pub struct RopModifyPermissionsRequest {
     pub logon_id: u8,
     pub input_handle_index: u8,
     pub modify_flags: u8,
+    pub entries: Vec<RopPermissionDataEntry>,
 }
 
 impl RopModifyPermissionsRequest {
@@ -4250,17 +4340,30 @@ impl RopModifyPermissionsRequest {
         let (logon_id, input_handle_index) = decode_header3(cur)?;
         let modify_flags = cur.take_u8()?;
         let modify_count = usize::from(cur.take_u16_le()?);
+        if modify_count > 1024 {
+            return Err(DecodeError::ExcessLength);
+        }
+        let mut entries = Vec::with_capacity(modify_count.min(64));
         for _ in 0..modify_count {
-            let _permission_data_flags = cur.take_u8()?;
+            let permission_data_flags = cur.take_u8()?;
             let property_value_count = usize::from(cur.take_u16_le()?);
-            for _ in 0..property_value_count {
-                let _ = crate::mapi::data::TaggedPropertyValue::decode(cur)?;
+            if property_value_count > 256 {
+                return Err(DecodeError::ExcessLength);
             }
+            let mut properties = Vec::with_capacity(property_value_count.min(32));
+            for _ in 0..property_value_count {
+                properties.push(crate::mapi::data::TaggedPropertyValue::decode(cur)?);
+            }
+            entries.push(RopPermissionDataEntry {
+                flags: permission_data_flags,
+                properties,
+            });
         }
         Ok(Self {
             logon_id,
             input_handle_index,
             modify_flags,
+            entries,
         })
     }
 }

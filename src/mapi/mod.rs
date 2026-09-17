@@ -40,6 +40,7 @@ pub mod namedprops;
 pub mod nspi;
 pub mod restrict;
 pub mod rops;
+pub mod rules;
 pub mod session;
 pub mod store;
 pub mod tnef;

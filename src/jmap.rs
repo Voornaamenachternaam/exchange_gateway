@@ -283,6 +283,11 @@ pub struct JmapMailbox {
     pub unread_threads: Option<u64>,
     #[serde(default)]
     pub is_subscribed: Option<bool>,
+    /// JMAP sharing data (`shareWith`, draft-ietf-jmap-sharing; Stalwart
+    /// exposes per-principal rights objects). Absent when the server does
+    /// not advertise sharing or the mailbox is not shared.
+    #[serde(default, rename = "shareWith")]
+    pub share_with: Option<std::collections::BTreeMap<String, serde_json::Value>>,
 }
 
 /// Result of an Email/query call
@@ -1685,7 +1690,9 @@ impl JmapClient {
             let list = self.query_emails(params).await?;
             let fetched = list.emails.len() as u64;
             for e in list.emails {
-                let jid = e.id.clone()?;
+                let Some(jid) = e.id.clone() else {
+                    continue;
+                };
                 let mids = e
                     .mailbox_ids
                     .as_ref()
@@ -1954,15 +1961,14 @@ impl JmapClient {
                     .unwrap_or("unknown");
                 return Err(anyhow!("Mailbox/set create failed: {desc}"));
             }
-            if let Some(created) = data.get("created").and_then(|v| v.as_object()) {
-                if let Some(id) = created
+            if let Some(created) = data.get("created").and_then(|v| v.as_object())
+                && let Some(id) = created
                     .get("c0")
                     .and_then(|v| v.get("id"))
                     .and_then(|v| v.as_str())
-                    && !id.is_empty()
-                {
-                    return Ok(id.to_string());
-                }
+                && !id.is_empty()
+            {
+                return Ok(id.to_string());
             }
         }
         Err(anyhow!("Mailbox/set response missing created mailbox id"))
@@ -2109,6 +2115,174 @@ impl JmapClient {
             }
         }
         Ok(false)
+    }
+
+    /// Replace a mailbox's `shareWith` map (JMAP sharing, persisted via
+    /// `Mailbox/set` `update`). `share_with` maps a Stalwart principal id to
+    /// the rights object produced by `mapi::rules::mapi_rights_to_jmap`.
+    /// Backs `RopModifyPermissions` (MS-OXCPERM §2.2.6.1).
+    pub async fn update_mailbox_share_with(
+        &self,
+        account_id: &str,
+        mailbox_id: &str,
+        share_with: serde_json::Value,
+        username: &str,
+        password: &SecretString,
+    ) -> Result<()> {
+        let session = self.get_session(username, password).await?;
+        let api_url = &session.api_url;
+        let mut update = serde_json::Map::new();
+        update.insert(mailbox_id.to_string(), json!({ "shareWith": share_with }));
+        let calls = vec![(
+            "Mailbox/set",
+            json!({
+                "accountId": account_id,
+                "update": Value::Object(update),
+            }),
+            "ms3",
+        )];
+        let resp = self
+            .api_call(
+                api_url,
+                &["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:mail"],
+                calls,
+                username,
+                password,
+            )
+            .await?;
+
+        for (method, data, _) in resp.method_responses {
+            if method != "Mailbox/set" {
+                continue;
+            }
+            if let Some(err) = data.get("error").filter(|v| !v.is_null()) {
+                let desc = err
+                    .get("description")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("Mailbox/set method rejected");
+                return Err(anyhow!("Mailbox/set shareWith rejected: {desc}"));
+            }
+            if let Some(not_updated) = data.get("notUpdated")
+                && !not_updated.is_null()
+                && let Some(obj) = not_updated.as_object()
+                && obj.contains_key(mailbox_id)
+            {
+                let desc = obj
+                    .get(mailbox_id)
+                    .and_then(|v| v.get("description"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown");
+                return Err(anyhow!("Mailbox/set shareWith failed: {desc}"));
+            }
+            return Ok(());
+        }
+        Err(anyhow!("Mailbox/set response missing shareWith outcome"))
+    }
+
+    /// Fetch the user's active Sieve script (`SieveScript/get`, RFC 9661)
+    /// keyed by the username, the same id the OOF manager uses. Returns
+    /// `Ok(None)` *only* when the script genuinely does not exist (the id
+    /// lands in `notFound`): a transport failure, a JMAP-level `error`
+    /// method response, or a structurally incomplete success response are
+    /// all returned as `Err` so a caller writing the script back never
+    /// mistakes a failed read for "no rules/OOF configured".
+    pub async fn get_sieve_script(
+        &self,
+        username: &str,
+        password: &SecretString,
+    ) -> Result<Option<String>> {
+        let account_id = self.get_account_id(username, password).await?;
+        let resp = self
+            .api_call(
+                self.base_url(),
+                &["urn:ietf:params:jmap:core", JMAP_SIEVE_CAPABILITY],
+                vec![(
+                    "SieveScript/get",
+                    json!({"accountId": account_id, "ids": [username]}),
+                    "sg0",
+                )],
+                username,
+                password,
+            )
+            .await?;
+        let (name, value, _id) = resp
+            .method_responses
+            .first()
+            .ok_or_else(|| anyhow!("SieveScript/get returned no method response"))?;
+        if name == "error" {
+            let desc = value
+                .get("description")
+                .and_then(|v| v.as_str())
+                .or_else(|| value.get("detail").and_then(|v| v.as_str()))
+                .unwrap_or("unknown JMAP error");
+            return Err(anyhow!("SieveScript/get rejected: {desc}"));
+        }
+        // A genuine "script does not exist" answer.
+        if let Some(not_found) = value.get("notFound")
+            && not_found
+                .as_array()
+                .map(|ids| ids.iter().any(|i| i.as_str() == Some(username)))
+                .unwrap_or(false)
+        {
+            return Ok(None);
+        }
+        let entry = value
+            .get("list")
+            .and_then(|v| v.as_array())
+            .and_then(|list| list.first())
+            .ok_or_else(|| anyhow!("SieveScript/get response missing `list` entries"))?;
+        let script = entry
+            .get("script")
+            .and_then(|s| s.as_str())
+            .ok_or_else(|| anyhow!("SieveScript/get response missing script content"))?;
+        Ok(Some(script.to_string()))
+    }
+
+    /// Write the user's active Sieve script (`SieveScript/set`, RFC 9661),
+    /// creating-or-updating the script keyed by the username.
+    pub async fn set_sieve_script(
+        &self,
+        script: &str,
+        username: &str,
+        password: &SecretString,
+    ) -> Result<()> {
+        let account_id = self.get_account_id(username, password).await?;
+        let resp = self
+            .api_call(
+                self.base_url(),
+                &["urn:ietf:params:jmap:core", JMAP_SIEVE_CAPABILITY],
+                vec![(
+                    "SieveScript/set",
+                    json!({
+                        "accountId": account_id,
+                        "update": { username: { "script": script } },
+                    }),
+                    "ss0",
+                )],
+                username,
+                password,
+            )
+            .await?;
+        if let Some((_name, value, _id)) = resp.method_responses.first() {
+            if let Some(err) = value.get("error").filter(|v| !v.is_null()) {
+                let desc = err
+                    .get("description")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("SieveScript/set rejected");
+                return Err(anyhow!("SieveScript/set rejected: {desc}"));
+            }
+            if let Some(not_updated) = value.get("notUpdated").and_then(|v| v.as_object())
+                && let Some(entry) = not_updated.get(username)
+            {
+                let desc = entry
+                    .get("description")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown");
+                return Err(anyhow!("SieveScript/set failed: {desc}"));
+            }
+            return Ok(());
+        }
+        Err(anyhow!("SieveScript/set response missing outcome"))
     }
 
     /// Submit an already-saved email (draft) for delivery via JMAP
@@ -2565,7 +2739,7 @@ impl JmapClient {
                     "properties": [
                         "id", "name", "parentId", "role", "sortOrder",
                         "totalEmails", "unreadEmails", "totalThreads", "unreadThreads",
-                        "isSubscribed"
+                        "isSubscribed", "shareWith"
                     ],
                 }),
                 "mg0",
