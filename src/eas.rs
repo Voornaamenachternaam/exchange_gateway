@@ -3074,12 +3074,18 @@ async fn handle_search(
     xml_or_wbxml_response(wbxml, as_wbxml, &response, request_id)
 }
 
-/// Handle EAS SendMail command (MS-ASCMD §2.2.2.16).
+/// Handle EAS SendMail / SmartReply / SmartForward commands
+/// (MS-ASCMD §2.2.1.17/2.2.1.19/2.2.1.20).
 ///
-/// Per MS-ASCMD, the SendMail command sends a MIME message to the server
-/// for delivery. The client sends the full MIME message in the request.
-/// For the gateway, we parse the MIME data and send via SMTP, or
-/// parse the simplified XML fields and construct the email.
+/// Per MS-ASCMD, these commands deliver a client-constructed MIME message
+/// (`MIMEData`). The gateway parses that MIME with `mail-parser` to recover
+/// the true envelope (From/To/Cc/Bcc), subject, bodies, and threading
+/// headers; a structurally simple message is re-created losslessly via JMAP
+/// EmailSubmission (SMTP fallback), while anything with attachments, S/MIME,
+/// or nested parts is relayed byte-for-byte over SMTP — mail content is
+/// never dropped or silently rewritten. SmartReply/SmartForward resolve the
+/// referenced message via CollectionId/ItemId so In-Reply-To/References are
+/// set even when the client omits them.
 async fn handle_send_mail(
     state: &Arc<AppState>,
     username: &str,
@@ -3101,46 +3107,69 @@ async fn handle_send_mail(
         );
     }
 
-    // Try to parse the EAS SendMail request and extract the MIME content
-    if let Some(req) = crate::email::parse_eas_sendmail(xml) {
-        // Build an EwsMessage from the parsed request for SMTP submission
-        let msg = crate::email::EwsMessage {
-            subject: String::new(),
-            body: req.mime_data.clone().unwrap_or_default(),
-            body_type: "Text".to_string(),
-            from: username.to_string(),
-            to_recipients: Vec::new(),
-            cc_recipients: Vec::new(),
-            bcc_recipients: Vec::new(),
-            ..Default::default()
-        };
-
-        match crate::email::send_email(state, &msg, username, password).await {
-            Ok(_) => {}
-            Err(e) => {
-                tracing::error!(error = %e, "SMTP send failed for EAS SendMail");
-                return xml_or_wbxml_response(
-                    wbxml,
-                    as_wbxml,
-                    r#"<?xml version="1.0" encoding="utf-8"?><Status xmlns="SendMail:">4</Status>"#,
-                    request_id,
-                );
-            }
-        }
-    } else {
+    // Parse the EAS SendMail/SmartReply/SmartForward request and extract the
+    // client-supplied MIME content plus (for SmartReply/SmartForward) the
+    // referenced original message.
+    let req = crate::email::parse_eas_sendmail(xml);
+    let Some(mime_data) = req.as_ref().and_then(|r| r.mime_data.clone()) else {
         // Per MS-ASCMD §2.2.1.17, Status 2 = "Protocol error" — the request
         // XML was malformed or missing required MIME content. Returning
         // Status 1 (Success) here would cause silent email loss.
-        tracing::warn!("EAS SendMail: failed to parse MIME content from request");
+        tracing::warn!(
+            "EAS SendMail/SmartReply/SmartForward: failed to parse MIME content from request"
+        );
         return xml_or_wbxml_response(
             wbxml,
             as_wbxml,
             r#"<?xml version="1.0" encoding="utf-8"?><Status xmlns="SendMail:">2</Status>"#,
             request_id,
         );
+    };
+
+    // For SmartReply/SmartForward, the referenced item provides threading
+    // headers (MS-ASCMD §2.2.1.19/20 CollectionId + ItemId). The command
+    // name is recovered from the request's root element so this handler
+    // works identically for all three commands.
+    let is_smart_command = xml.contains("<SmartReply")
+        || xml.contains(":SmartReply")
+        || xml.contains("<SmartForward")
+        || xml.contains(":SmartForward");
+    let reference_item_id = if is_smart_command {
+        req.as_ref().and_then(|r| r.item_id.as_deref())
+    } else {
+        None
+    };
+
+    // Parse the MIME with mail-parser, re-express it via JMAP
+    // EmailSubmission when it is structurally simple (lossless), otherwise
+    // relay the bytes verbatim over SMTP and, when SaveInSentItems is set,
+    // import the copy into Sent via JMAP Email/import.
+    match crate::email::send_eas_mime_message(
+        state,
+        username,
+        password,
+        &mime_data,
+        reference_item_id,
+        req.as_ref().map(|r| r.save_in_sent).unwrap_or(true),
+    )
+    .await
+    {
+        Ok(_) => {}
+        Err(e) => {
+            tracing::error!(
+                error = %e,
+                "Failed to send EAS SendMail/SmartReply/SmartForward message"
+            );
+            return xml_or_wbxml_response(
+                wbxml,
+                as_wbxml,
+                r#"<?xml version="1.0" encoding="utf-8"?><Status xmlns="SendMail:">4</Status>"#,
+                request_id,
+            );
+        }
     }
 
-    // Per MS-ASCMD, SendMail returns Status 1 on success
+    // Per MS-ASCMD, SendMail/SmartReply/SmartForward return Status 1 on success
     xml_or_wbxml_response(
         wbxml,
         as_wbxml,

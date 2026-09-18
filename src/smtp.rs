@@ -43,6 +43,10 @@ pub struct SendEmailParams<'a> {
     pub subject: &'a str,
     pub text_body: &'a str,
     pub html_body: Option<&'a str>,
+    /// RFC 5322 In-Reply-To value (message IDs, angle brackets added here).
+    pub in_reply_to: Option<&'a str>,
+    /// RFC 5322 References value (angle brackets added here).
+    pub references: Option<&'a str>,
     pub username: &'a str,
     pub password: &'a SecretString,
 }
@@ -149,6 +153,29 @@ impl SmtpClient {
                 .parse()
                 .map_err(|e| anyhow::anyhow!("Invalid bcc address '{}': {}", recipient, e))?;
             builder = builder.bcc(mailbox);
+        }
+
+        // Threading headers (RFC 5322 §3.6.4). Values arrive without angle
+        // brackets (JMAP normalisation); restore them for the wire.
+        if let Some(irt) = params.in_reply_to {
+            for id in irt.split_whitespace().filter(|s| !s.is_empty()) {
+                let id = id.trim_matches(|c| c == '<' || c == '>');
+                builder =
+                    builder.header(lettre::message::header::InReplyTo::from(format!("<{id}>")));
+            }
+        }
+        if let Some(refs) = params.references {
+            let value = refs
+                .split_whitespace()
+                .map(|id| {
+                    let id = id.trim_matches(|c| c == '<' || c == '>');
+                    format!("<{id}>")
+                })
+                .collect::<Vec<_>>()
+                .join(" ");
+            if !value.is_empty() {
+                builder = builder.header(lettre::message::header::References::from(value));
+            }
         }
 
         let message = if let Some(html) = params.html_body {
@@ -360,6 +387,84 @@ impl SmtpClient {
             Err(e) => {
                 error!(target: "smtp", host = %self.host, from = %from, error = %e, "Failed to send iMIP reply");
                 Err(anyhow::anyhow!("SMTP iMIP send failed: {}", e))
+            }
+        }
+    }
+
+    /// Relay a verbatim RFC 5322 message over SMTP.
+    ///
+    /// Used by EAS SendMail/SmartReply/SmartForward when the client-supplied
+    /// MIME cannot be losslessly re-expressed through the structured JMAP
+    /// submission path — e.g. it carries attachments, S/MIME, nested
+    /// `message/rfc822`, or `application/ms-tnef` parts. The raw bytes are
+    /// delivered untouched so no content is corrupted or dropped; the
+    /// envelope (MAIL FROM / RCPT TO) is derived from the parsed headers by
+    /// the caller.
+    pub async fn send_raw_message(
+        &self,
+        from: &str,
+        recipients: &[String],
+        raw_message: &[u8],
+        username: &str,
+        password: &SecretString,
+    ) -> anyhow::Result<SendResult> {
+        if recipients.is_empty() {
+            return Err(anyhow::anyhow!("Raw message has no recipients"));
+        }
+
+        let from_addr: lettre::Address = from
+            .parse()
+            .map_err(|e| anyhow::anyhow!("Invalid envelope sender '{}': {}", from, e))?;
+
+        let rcpt_addrs: Vec<lettre::Address> = recipients
+            .iter()
+            .map(|r| {
+                r.parse()
+                    .map_err(|e| anyhow::anyhow!("Invalid envelope recipient '{}': {}", r, e))
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?;
+
+        let envelope = lettre::address::Envelope::new(Some(from_addr), rcpt_addrs)
+            .map_err(|e| anyhow::anyhow!("Failed to build SMTP envelope: {}", e))?;
+
+        let transport = self.build_transport(username, password)?;
+
+        // Extract the Message-ID from the raw headers for logging/correlation.
+        let message_id = mail_parser::MessageParser::default()
+            .parse(raw_message)
+            .and_then(|m| m.message_id().map(|id| id.to_string()))
+            .unwrap_or_else(|| {
+                format!(
+                    "{}-{}",
+                    chrono::Utc::now().timestamp_millis(),
+                    uuid::Uuid::new_v4().simple()
+                )
+            });
+
+        match transport.send_raw(&envelope, raw_message).await {
+            Ok(response) => {
+                info!(
+                    target: "smtp",
+                    host = %self.host,
+                    from = %from,
+                    recipient_count = recipients.len(),
+                    response_code = %response.code(),
+                    "Raw MIME message relayed via SMTP"
+                );
+                Ok(SendResult {
+                    message_id,
+                    submitted_at: chrono::Utc::now(),
+                })
+            }
+            Err(e) => {
+                error!(
+                    target: "smtp",
+                    host = %self.host,
+                    from = %from,
+                    error = %e,
+                    "Failed to relay raw MIME message via SMTP"
+                );
+                Err(anyhow::anyhow!("SMTP raw relay failed: {}", e))
             }
         }
     }

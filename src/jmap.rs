@@ -350,6 +350,11 @@ pub struct SubmitEmailParams<'a> {
     pub subject: &'a str,
     pub text_body: &'a str,
     pub html_body: Option<&'a str>,
+    /// In-Reply-To header values (message IDs without angle brackets,
+    /// RFC 8621 §4.1.3), used by SmartReply/Reply cross-protocol threading.
+    pub in_reply_to: Option<&'a [String]>,
+    /// References header values (message IDs without angle brackets).
+    pub references: Option<&'a [String]>,
     pub username: &'a str,
     pub password: &'a SecretString,
 }
@@ -2473,6 +2478,19 @@ impl JmapClient {
             );
         }
 
+        // Threading headers (RFC 8621 §4.1.3). JMAP normalises both to lists of
+        // message IDs without angle brackets.
+        if let Some(irt) = params.in_reply_to
+            && !irt.is_empty()
+        {
+            email_obj["inReplyTo"] = json!(irt);
+        }
+        if let Some(refs) = params.references
+            && !refs.is_empty()
+        {
+            email_obj["references"] = json!(refs);
+        }
+
         // Construct bodyValues, textBody, and htmlBody per RFC 8621 §4.1.4.
         // When both text and HTML are present, we provide both alternatives.
         // When only one is present, we provide only that one.
@@ -2671,6 +2689,80 @@ impl JmapClient {
         }
 
         Ok(ids)
+    }
+
+    /// Import a raw RFC 5322 message into a mailbox via Email/import
+    /// (RFC 8621 §4.1.9). Used to honour EAS `SaveInSentItems` when a message
+    /// was relayed as verbatim raw MIME over SMTP (attachments, S/MIME,
+    /// TNEF), so the copy in Sent Items is byte-identical to what was sent.
+    ///
+    /// Returns the created email ID.
+    pub async fn import_email(
+        &self,
+        account_id: &str,
+        blob_id: &str,
+        mailbox_ids: &[String],
+        username: &str,
+        password: &SecretString,
+    ) -> Result<String> {
+        if mailbox_ids.is_empty() {
+            return Err(anyhow!("Email/import requires at least one mailbox"));
+        }
+        let session = self.get_session(username, password).await?;
+        let api_url = &session.api_url;
+
+        let mailbox_json: serde_json::Map<String, serde_json::Value> = mailbox_ids
+            .iter()
+            .map(|id| (id.clone(), json!(true)))
+            .collect();
+
+        let method_calls = vec![(
+            "Email/import",
+            json!({
+                "accountId": account_id,
+                "emails": {
+                    "i0": {
+                        "blobId": blob_id,
+                        "mailboxIds": serde_json::Value::Object(mailbox_json),
+                        "keywords": { "$seen": true },
+                        "receivedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+                    },
+                },
+            }),
+            "ei0",
+        )];
+
+        let response = self
+            .api_call(
+                api_url,
+                &["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:mail"],
+                method_calls,
+                username,
+                password,
+            )
+            .await?;
+
+        for (method, data, _) in response.method_responses {
+            if method == "Email/import" {
+                if let Some(not_created) = data.get("notCreated")
+                    && !not_created.is_null()
+                    && not_created.as_object().is_none_or(|o| !o.is_empty())
+                {
+                    return Err(anyhow!("Email/import failed: {}", not_created));
+                }
+                if let Some(created) = data.get("created")
+                    && let Some(i0) = created.get("i0")
+                    && let Some(id) = i0.get("id").and_then(|v| v.as_str())
+                {
+                    return Ok(id.to_string());
+                }
+                return Err(anyhow!("Email/import returned no created id"));
+            }
+        }
+
+        Err(anyhow!(
+            "Unexpected JMAP response structure for Email/import"
+        ))
     }
 
     /// Resolve the Drafts and Sent mailboxes required to submit an email.
