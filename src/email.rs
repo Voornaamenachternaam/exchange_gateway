@@ -125,6 +125,13 @@ pub struct EwsMessage {
     /// both text/plain and text/html; `body` then holds the plain-text part
     /// and `body_type` stays "Text".
     pub html_body: Option<String>,
+    /// Client-supplied RFC 5322 Message-ID (angle brackets stripped, if any).
+    ///
+    /// Preserved on the wire when the message is relayed via SMTP
+    /// (SMTP preserves Message-ID headers). JMAP cannot honour it: RFC 8621
+    /// §5.3 mandates that the server assigns the Message-ID on Email/set, so
+    /// a JMAP-submitted copy carries a server-generated ID.
+    pub message_id: Option<String>,
 }
 
 /// Parse a MessageType from EWS SOAP XML body.
@@ -784,6 +791,25 @@ pub async fn send_email(
     username: &str,
     password: &SecretString,
 ) -> anyhow::Result<String> {
+    // When the client supplied a Message-ID (e.g. EAS SendMail carrying
+    // pre-composed MIME), prefer the SMTP path: RFC 8621 §2.7/§5.3 do not
+    // allow EmailSubmission/set to carry a client-chosen Message-ID, so the
+    // JMAP pipeline would silently replace it and break references that
+    // already point at the client-supplied ID. SMTP passes the header
+    // through unchanged.
+    let must_preserve_message_id = msg.message_id.is_some();
+    if must_preserve_message_id && state.smtp_client.is_some() {
+        match send_email_smtp(state, msg, username, password).await {
+            Ok(id) => return Ok(id),
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "SMTP send failed for message with client-supplied Message-ID; falling back to JMAP (Message-ID will be regenerated per RFC 8621 §5.3)"
+                );
+            }
+        }
+    }
+
     // Prefer JMAP EmailSubmission when available
     if let Some(jmap) = &state.jmap_client {
         match send_email_jmap(state, jmap, msg, username, password).await {
@@ -1226,6 +1252,7 @@ pub async fn send_email_smtp(
         html_body,
         in_reply_to: msg.in_reply_to.as_deref(),
         references: msg.references.as_deref(),
+        message_id: msg.message_id.as_deref(),
         username,
         password,
     };
@@ -1591,11 +1618,11 @@ fn mime_header_id_list(hv: &mail_parser::HeaderValue<'_>) -> Vec<String> {
 /// Uses the `mail-parser` crate (already a gateway dependency) for a complete
 /// RFC 5322/2045‑2049 parse, so no headers, encoded words, or nesting levels
 /// are missed. Returns `Err` only when the blob is not valid MIME at all.
-pub fn parse_mime_for_send(raw: &str) -> anyhow::Result<ParsedMimeSendMessage> {
+pub fn parse_mime_for_send(raw: &[u8]) -> anyhow::Result<ParsedMimeSendMessage> {
     use mail_parser::MimeHeaders;
 
     let msg = mail_parser::MessageParser::default()
-        .parse(raw.as_bytes())
+        .parse(raw)
         .ok_or_else(|| anyhow::anyhow!("MIME data is not a parseable RFC 5322 message"))?;
 
     let from = mime_address_list(msg.from())
@@ -1610,7 +1637,12 @@ pub fn parse_mime_for_send(raw: &str) -> anyhow::Result<ParsedMimeSendMessage> {
     let body_text_of = |ids: &[u32], subtype: &str| -> Option<String> {
         ids.iter()
             .filter_map(|id| msg.parts.get(*id as usize))
-            .find(|p| p.is_content_type("text", subtype))
+            .find(|p| match p.content_type() {
+                // RFC 2046 §5.1: a part without a Content-Type header is
+                // text/plain.
+                None => subtype == "plain",
+                Some(_) => p.is_content_type("text", subtype),
+            })
             .and_then(|p| match &p.body {
                 mail_parser::PartType::Text(t) | mail_parser::PartType::Html(t) => {
                     Some(t.to_string())
@@ -1626,18 +1658,24 @@ pub fn parse_mime_for_send(raw: &str) -> anyhow::Result<ParsedMimeSendMessage> {
     // any attachment / nested message / signature part shows up as a non-text
     // leaf, forcing the verbatim raw-relay path.
     let is_simple = msg.parts.iter().all(|part| {
-        part.content_type()
-            .map(|ct| {
+        // RFC 2046 §5.1: a part without a Content-Type header defaults to
+        // text/plain. mail-parser likewise classifies it as TextPlain but
+        // leaves content_type() empty, so a missing header must not force
+        // the complex raw-relay path.
+        match part.content_type() {
+            None => true,
+            Some(ct) => {
                 ct.ctype().eq_ignore_ascii_case("multipart")
                     || (ct.ctype().eq_ignore_ascii_case("text")
-                        && (ct
-                            .subtype()
-                            .is_some_and(|st| st.eq_ignore_ascii_case("plain"))
+                        && (ct.subtype().is_none()
+                            || ct
+                                .subtype()
+                                .is_some_and(|st| st.eq_ignore_ascii_case("plain"))
                             || ct
                                 .subtype()
                                 .is_some_and(|st| st.eq_ignore_ascii_case("html"))))
-            })
-            .unwrap_or(false)
+            }
+        }
     }) && msg.attachments().next().is_none();
 
     Ok(ParsedMimeSendMessage {
@@ -1655,10 +1693,23 @@ pub fn parse_mime_for_send(raw: &str) -> anyhow::Result<ParsedMimeSendMessage> {
     })
 }
 
+/// Which EAS command is sending the MIME payload.
+///
+/// In `SendMail` and `SmartForward` the client MIME headers are already the
+/// full truth and are sent through unchanged. Only `SmartReply` (a reply to a
+/// server-side message) additionally merges the referenced item's
+/// `Message-ID`/`References` into the outbound threading headers.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum EasSmartKind {
+    SendMail,
+    SmartReply,
+    SmartForward,
+}
+
 /// Resolve threading headers (In-Reply-To / References) for an EAS
-/// SmartReply/SmartForward by fetching the referenced original message from
-/// JMAP. Returns computed `(in_reply_to, references)` that already include
-/// any IDs the client itself placed into the MIME headers.
+/// SmartReply by fetching the referenced original message from JMAP. Returns
+/// computed `(in_reply_to, references)` that already include any IDs the
+/// client itself placed into the MIME headers.
 async fn resolve_eas_threading(
     state: &Arc<AppState>,
     username: &str,
@@ -1718,6 +1769,95 @@ async fn resolve_eas_threading(
     (in_reply_to, references)
 }
 
+/// Rewrite RFC 5322 header fields in a raw MIME message.
+///
+/// Each entry in `replacements` names a header (ASCII case-insensitive) and
+/// its new value. Existing header fields with that name — including folded
+/// continuation lines — are removed, and the new fields are written at the
+/// end of the header block in the given order. A `None` value removes the
+/// header without replacement. The message body, MIME boundaries, content
+/// transfer encodings, and all unrelated header bytes are preserved
+/// verbatim, including the original line endings.
+pub fn rewrite_mime_headers(raw: &[u8], replacements: &[(&str, Option<String>)]) -> Vec<u8> {
+    // Locate the end of the header block: the first empty line.
+    let (header_end, sep_len, eol) = raw
+        .windows(4)
+        .position(|w| w == b"\r\n\r\n")
+        .map(|i| (i, 4usize, "\r\n"))
+        .or_else(|| {
+            raw.windows(2)
+                .position(|w| w == b"\n\n")
+                .map(|i| (i, 2usize, "\n"))
+        })
+        // No body separator at all: treat the whole input as headers.
+        .unwrap_or((raw.len(), 0, "\n"));
+
+    // `header_bytes` excludes the terminating line's EOL and the blank line;
+    // the body slice resumes right after the first EOL of the separator, so
+    // the retained blank line keeps acting as the header/body boundary.
+    let header_bytes = &raw[..header_end];
+    let eol_bytes = eol.as_bytes();
+
+    let names: Vec<String> = replacements
+        .iter()
+        .map(|(n, _)| n.to_ascii_lowercase())
+        .collect();
+
+    let mut out: Vec<u8> = Vec::with_capacity(raw.len() + 128);
+    let mut drop_continuation = false;
+
+    for line in header_bytes.split_inclusive(|b| *b == b'\n') {
+        if line[0] == b' ' || line[0] == b'\t' {
+            // RFC 5322 §2.2.3 folded continuation of the previous header.
+            if !drop_continuation {
+                out.extend_from_slice(line);
+            }
+            continue;
+        }
+        let name = line
+            .iter()
+            .position(|b| *b == b':')
+            .map(|i| {
+                std::str::from_utf8(&line[..i])
+                    .map(|h| h.trim().to_ascii_lowercase())
+                    .unwrap_or_default()
+            })
+            .unwrap_or_default();
+        if names.contains(&name) {
+            drop_continuation = true;
+            continue;
+        }
+        drop_continuation = false;
+        out.extend_from_slice(line);
+    }
+
+    let terminated = |b: &[u8]| b.ends_with(b"\r\n") || b.ends_with(b"\n");
+    for (name, value) in replacements {
+        if let Some(v) = value {
+            if !out.is_empty() && !terminated(&out) {
+                out.extend_from_slice(eol_bytes);
+            }
+            out.extend_from_slice(name.as_bytes());
+            out.extend_from_slice(b": ");
+            out.extend_from_slice(v.as_bytes());
+            out.extend_from_slice(eol_bytes);
+        }
+    }
+
+    if sep_len > 0 {
+        // Terminate the last retained header line, then re-attach the body
+        // beginning with the remainder of the blank-line separator. A
+        // header that was just appended already ends with an EOL, so this
+        // is a no-op in that case.
+        if !out.is_empty() && !terminated(&out) {
+            out.extend_from_slice(eol_bytes);
+        }
+        out.extend_from_slice(&raw[header_end + eol.len()..]);
+    }
+
+    out
+}
+
 /// Send an EAS SendMail / SmartReply / SmartForward message.
 ///
 /// The client transfers a complete MIME document in `MIMEData`
@@ -1725,20 +1865,23 @@ async fn resolve_eas_threading(
 ///
 /// 1. The MIME is parsed with `mail-parser` to obtain the envelope (from,
 ///    to/cc/bcc), subject, bodies, and threading headers.
-/// 2. Threading headers are completed from the referenced original message
-///    for SmartReply/SmartForward (CollectionId/ItemId).
+/// 2. For SmartReply, threading headers are completed from the referenced
+///    original message (CollectionId/ItemId). SendMail and SmartForward use
+///    the client's own headers unchanged.
 /// 3. If the MIME is a plain text/html-only message it is re-created
 ///    losslessly through [`send_email`] (JMAP EmailSubmission preferred,
 ///    SMTP fallback) so it lands in Sent Items automatically.
 /// 4. For anything that cannot be re-expressed losslessly (attachments,
-///    S/MIME, TNEF, nested messages) the verbatim bytes are relayed via SMTP
-///    and — when `save_in_sent` is set — imported into the Sent mailbox via
-///    JMAP `Email/import` so Sent Items contains the byte-identical copy.
+///    S/MIME, TNEF, nested messages) the bytes are relayed via SMTP with
+///    only a minimal header rewrite (Bcc stripped; SmartReply threading
+///    headers injected) and — when `save_in_sent` is set — the client copy
+///    is imported into the Sent mailbox via JMAP `Email/import`.
 pub async fn send_eas_mime_message(
     state: &Arc<AppState>,
     username: &str,
     password: &SecretString,
-    raw_mime: &str,
+    raw_mime: &[u8],
+    smart_kind: EasSmartKind,
     reference_item_id: Option<&str>,
     save_in_sent: bool,
 ) -> anyhow::Result<String> {
@@ -1750,15 +1893,21 @@ pub async fn send_eas_mime_message(
         ));
     }
 
-    let (in_reply_to, references) = resolve_eas_threading(
-        state,
-        username,
-        password,
-        reference_item_id,
-        &parsed.in_reply_to,
-        &parsed.references,
-    )
-    .await;
+    // Only SmartReply enriches threading headers from the referenced
+    // message; SendMail and SmartForward trust the client's own headers.
+    let (in_reply_to, references) = if smart_kind == EasSmartKind::SmartReply {
+        resolve_eas_threading(
+            state,
+            username,
+            password,
+            reference_item_id,
+            &parsed.in_reply_to,
+            &parsed.references,
+        )
+        .await
+    } else {
+        (parsed.in_reply_to.clone(), parsed.references.clone())
+    };
 
     if parsed.is_simple {
         let msg = EwsMessage {
@@ -1797,14 +1946,27 @@ pub async fn send_eas_mime_message(
             } else {
                 parsed.html_body.clone()
             },
+            // Keep the client's Message-ID so references that already point
+            // at it (e.g. a SmartReply composed offline) keep working. The
+            // send dispatcher prefers SMTP for such messages because RFC 8621
+            // §5.3 forbids client-chosen Message-IDs in EmailSubmission/set.
+            message_id: parsed.message_id.clone().filter(|id| !id.trim().is_empty()),
             ..Default::default()
         };
         return send_email(state, &msg, username, password).await;
     }
 
     // Complex MIME (attachments, S/MIME, TNEF, nested messages): relay the
-    // verbatim bytes through SMTP to guarantee losslessness, then import the
-    // copy into Sent Items via JMAP when requested.
+    // message bytes through SMTP to guarantee losslessness, then import the
+    // copy into Sent Items via JMAP when requested. Before relaying, the
+    // header block is minimally rewritten (body, boundaries, encodings and
+    // all unrelated bytes stay verbatim):
+    //  - Bcc fields are stripped so hidden recipients are never exposed to
+    //    the receiving sides of the conversation; they still receive the
+    //    message via the SMTP envelope.
+    //  - For SmartReply, the resolved In-Reply-To/References fields replace
+    //    (or add) the client's own threading fields, so replies with
+    //    attachments thread even when the client omitted those headers.
     let smtp = state.smtp_client.as_ref().ok_or_else(|| {
         anyhow::anyhow!(
             "Complex EAS MIME message (attachments/S-MIME) requires SMTP, which is not configured"
@@ -1820,15 +1982,33 @@ pub async fn send_eas_mime_message(
     all_recipients.extend(parsed.cc.iter().cloned());
     all_recipients.extend(parsed.bcc.iter().cloned());
 
+    let bracketed_ids = |ids: &[String]| -> Option<String> {
+        let v = ids
+            .iter()
+            .map(|id| {
+                let id = id.trim_matches(|c| c == '<' || c == '>');
+                format!("<{id}>")
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
+        if v.is_empty() { None } else { Some(v) }
+    };
+    let mut relay_header_ops: Vec<(&str, Option<String>)> = vec![("Bcc", None)];
+    if smart_kind == EasSmartKind::SmartReply {
+        // Replace the client's threading fields with the resolved set. The
+        // resolved sets already include any IDs the client supplied, so a
+        // None value here (nothing known at all) only removes headers whose
+        // values could never reference the original conversation anyway.
+        relay_header_ops.push(("In-Reply-To", bracketed_ids(&in_reply_to)));
+        relay_header_ops.push(("References", bracketed_ids(&references)));
+    }
+    let mut relay_bytes = rewrite_mime_headers(raw_mime, &relay_header_ops);
+
     let result = smtp
-        .send_raw_message(
-            &from,
-            &all_recipients,
-            raw_mime.as_bytes(),
-            username,
-            password,
-        )
+        .send_raw_message(&from, &all_recipients, &relay_bytes, username, password)
         .await?;
+
+    relay_bytes.clear();
 
     if save_in_sent && let Some(jmap) = state.jmap_client.as_ref() {
         // The message is already delivered; failing the command here would
@@ -1840,7 +2020,7 @@ pub async fn send_eas_mime_message(
                 .get_mailbox_ids_for_role(&account_id, "sent", username, password)
                 .await?;
             let blob_id = jmap
-                .upload_blob(&account_id, raw_mime.as_bytes(), None, username, password)
+                .upload_blob(&account_id, raw_mime, None, username, password)
                 .await?;
             jmap.import_email(&account_id, &blob_id, &sent_ids, username, password)
                 .await
@@ -2328,7 +2508,7 @@ mod tests {
                     Content-Type: text/plain; charset=utf-8\r\n\
                     \r\n\
                     Hello world!\r\n";
-        let p = parse_mime_for_send(mime).expect("must parse");
+        let p = parse_mime_for_send(mime.as_bytes()).expect("must parse");
         assert_eq!(p.from, "alice@example.com");
         assert_eq!(p.to, vec!["bob@example.com", "carol@example.com"]);
         assert_eq!(p.cc, vec!["dave@example.com"]);
@@ -2362,7 +2542,7 @@ mod tests {
                     \r\n\
                     <p>HTML body</p>\r\n\
                     --b1--\r\n";
-        let p = parse_mime_for_send(mime).expect("must parse");
+        let p = parse_mime_for_send(mime.as_bytes()).expect("must parse");
         assert_eq!(p.text_body.trim(), "Plain text body");
         assert_eq!(
             p.html_body.as_deref().map(str::trim),
@@ -2393,7 +2573,7 @@ mod tests {
                     \r\n\
                     AAAABBBB\r\n\
                     --mb--\r\n";
-        let p = parse_mime_for_send(mime).expect("must parse");
+        let p = parse_mime_for_send(mime.as_bytes()).expect("must parse");
         assert!(!p.is_simple, "message with attachment must not be simple");
         assert_eq!(p.to, vec!["bob@example.com"]);
         assert_eq!(p.text_body.trim(), "See attached.");
@@ -2417,7 +2597,7 @@ mod tests {
                     \r\n\
                     AAAABBBBCCCC\r\n\
                     --sb--\r\n";
-        let p = parse_mime_for_send(mime).expect("must parse");
+        let p = parse_mime_for_send(mime.as_bytes()).expect("must parse");
         assert!(!p.is_simple, "S/MIME signed message must not be simple");
     }
 
@@ -2426,7 +2606,7 @@ mod tests {
         // mail-parser tolerates headerless input, so the structural parse
         // succeeds; what protects delivery is the empty envelope, which
         // send_eas_mime_message rejects before any network send.
-        let p = parse_mime_for_send("\r\n\r\n").expect("headerless blob still parses");
+        let p = parse_mime_for_send(b"\r\n\r\n").expect("headerless blob still parses");
         assert!(p.to.is_empty() && p.cc.is_empty() && p.bcc.is_empty());
         assert!(p.from.is_empty());
     }
@@ -2456,6 +2636,74 @@ mod tests {
     fn test_mime_header_id_list_strips_brackets() {
         let hv = mail_parser::HeaderValue::Text("  <a@x> <b@y>  ".into());
         assert_eq!(mime_header_id_list(&hv), vec!["a@x", "b@y"]);
+    }
+
+    #[test]
+    fn test_parse_mime_for_send_headerless_defaults_to_simple_text_plain() {
+        // RFC 2046 §5.1: no Content-Type header means text/plain. The
+        // message must NOT be forced down the raw-relay path.
+        let mime =
+            "From: alice@example.com\r\nTo: bob@example.com\r\nSubject: hi\r\n\r\nPlain body\r\n";
+        let p = parse_mime_for_send(mime.as_bytes()).expect("must parse");
+        assert!(p.is_simple, "headerless body must be treated as text/plain");
+        assert_eq!(p.text_body.trim(), "Plain body");
+        assert_eq!(p.to, vec!["bob@example.com"]);
+    }
+
+    #[test]
+    fn test_rewrite_mime_headers_strips_bcc_and_folded_continuations() {
+        let raw = concat!(
+            "From: a@example.com\r\n",
+            "Bcc: hidden1@example.com,\r\n",
+            "     hidden2@example.com\r\n",
+            "To: b@example.com\r\n",
+            "Subject: hi\r\n",
+            "\r\n",
+            "Body bytes: a@example.com hidden1@example.com\r\n"
+        )
+        .as_bytes();
+        let out = rewrite_mime_headers(raw, &[("Bcc", None)]);
+        let out_str = String::from_utf8(out.clone()).unwrap();
+        let header_block = out_str.split("\r\n\r\n").next().unwrap();
+        assert!(!header_block.to_ascii_lowercase().contains("bcc"));
+        assert!(!header_block.contains("hidden1"));
+        assert!(!header_block.contains("hidden2"));
+        // Body is preserved byte-for-byte.
+        assert!(out.ends_with(b"Body bytes: a@example.com hidden1@example.com\r\n"));
+    }
+
+    #[test]
+    fn test_rewrite_mime_headers_replaces_threading_headers() {
+        let raw = b"From: a@example.com\r\n\
+In-Reply-To: <old@example.com>\r\n\
+To: b@example.com\r\n\
+\r\n\
+Body\r\n";
+        let out = rewrite_mime_headers(
+            raw,
+            &[("In-Reply-To", Some("<orig-9@example.com>".to_string()))],
+        );
+        let s = String::from_utf8(out).unwrap();
+        assert!(s.contains("In-Reply-To: <orig-9@example.com>"));
+        assert!(!s.contains("<old@example.com>"));
+        assert!(s.starts_with("From: a@example.com\r\n"));
+        assert!(s.contains("\r\n\r\nBody\r\n"));
+    }
+
+    #[test]
+    fn test_rewrite_mime_headers_adds_missing_headers_lf_endings() {
+        let raw = b"From: a@example.com\nTo: b@example.com\n\nBody\n";
+        let out =
+            rewrite_mime_headers(raw, &[("References", Some("<r1@example.com>".to_string()))]);
+        let s = String::from_utf8(out).unwrap();
+        assert!(s.contains("References: <r1@example.com>\n"));
+        assert!(s.ends_with("Body\n"));
+    }
+
+    #[test]
+    fn test_rewrite_mime_headers_no_replacements_is_identity() {
+        let raw = b"From: a@example.com\r\n\r\nBody\r\n";
+        assert_eq!(rewrite_mime_headers(raw, &[]), raw.to_vec());
     }
 
     #[test]

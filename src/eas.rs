@@ -3111,7 +3111,7 @@ async fn handle_send_mail(
     // client-supplied MIME content plus (for SmartReply/SmartForward) the
     // referenced original message.
     let req = crate::email::parse_eas_sendmail(xml);
-    let Some(mime_data) = req.as_ref().and_then(|r| r.mime_data.clone()) else {
+    let Some(mime_data_b64) = req.as_ref().and_then(|r| r.mime_data.clone()) else {
         // Per MS-ASCMD §2.2.1.17, Status 2 = "Protocol error" — the request
         // XML was malformed or missing required MIME content. Returning
         // Status 1 (Success) here would cause silent email loss.
@@ -3126,31 +3126,59 @@ async fn handle_send_mail(
         );
     };
 
-    // For SmartReply/SmartForward, the referenced item provides threading
-    // headers (MS-ASCMD §2.2.1.19/20 CollectionId + ItemId). The command
-    // name is recovered from the request's root element so this handler
-    // works identically for all three commands.
-    let is_smart_command = xml.contains("<SmartReply")
-        || xml.contains(":SmartReply")
-        || xml.contains("<SmartForward")
-        || xml.contains(":SmartForward");
-    let reference_item_id = if is_smart_command {
-        req.as_ref().and_then(|r| r.item_id.as_deref())
+    // Per MS-ASCMD §2.2.1.7, MIMEData is transported base64-encoded (as
+    // WBXML opaque data in binary requests and as base64 text in XML
+    // requests), so it must be decoded before parsing or relaying.
+    let mime_data: Vec<u8> = {
+        use base64::Engine;
+        let value: String = mime_data_b64.split_whitespace().collect();
+        match base64::engine::general_purpose::STANDARD.decode(&value) {
+            Ok(decoded) => decoded,
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "EAS SendMail/SmartReply/SmartForward: MIMEData is not valid base64"
+                );
+                return xml_or_wbxml_response(
+                    wbxml,
+                    as_wbxml,
+                    r#"<?xml version="1.0" encoding="utf-8"?><Status xmlns="SendMail:">2</Status>"#,
+                    request_id,
+                );
+            }
+        }
+    };
+
+    let req_ref = req.as_ref();
+    // The command name is recovered from the request's root element so this
+    // handler works identically for all three commands. Only SmartReply
+    // enriches threading headers from the referenced item
+    // (MS-ASCMD §2.2.1.19/20 CollectionId + ItemId).
+    let smart_kind = if xml.contains("<SmartReply") || xml.contains(":SmartReply") {
+        crate::email::EasSmartKind::SmartReply
+    } else if xml.contains("<SmartForward") || xml.contains(":SmartForward") {
+        crate::email::EasSmartKind::SmartForward
     } else {
+        crate::email::EasSmartKind::SendMail
+    };
+    let reference_item_id = if smart_kind == crate::email::EasSmartKind::SendMail {
         None
+    } else {
+        req_ref.and_then(|r| r.item_id.as_deref())
     };
 
     // Parse the MIME with mail-parser, re-express it via JMAP
     // EmailSubmission when it is structurally simple (lossless), otherwise
-    // relay the bytes verbatim over SMTP and, when SaveInSentItems is set,
-    // import the copy into Sent via JMAP Email/import.
+    // relay the bytes over SMTP with a minimal header rewrite and, when
+    // SaveInSentItems is set, import the copy into Sent via JMAP Email/import.
     match crate::email::send_eas_mime_message(
         state,
         username,
         password,
         &mime_data,
+        smart_kind,
         reference_item_id,
-        req.as_ref().map(|r| r.save_in_sent).unwrap_or(true),
+        req_ref.map(|r| r.save_in_sent).unwrap_or(true),
     )
     .await
     {
