@@ -1,0 +1,74 @@
+# docker-compose.yml for the Exchange Gateway, matching the Stalwart
+# Mailserver v0.16.20 compose (same host layout, TZ, and external bridge
+# network). Start the Stalwart compose first, then:
+#
+#   docker compose up -d --build
+#
+# The gateway answers on port 8134; terminate TLS in front of it (cloudflared,
+# reverse proxy, ...) and forward with `X-Forwarded-Proto: https` set.
+
+services:
+  exchange-gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: exchange-gateway:latest
+    container_name: exchange-gateway
+    hostname: exchange-gateway
+    restart: unless-stopped
+    environment:
+      - TZ=Europe/Amsterdam
+      - GATEWAY_LOG_LEVEL=${GATEWAY_LOG_LEVEL:-info}
+      - GATEWAY_BIND=${GATEWAY_BIND:-[::]:8134}
+      # Stalwart backend: the HTTP listener (port 8080) serves CalDAV/CardDAV
+      # at /dav and JMAP at /jmap; JMAP and CardDAV bases are derived from the
+      # CalDAV base when not set explicitly.
+      - GATEWAY_CALDAV_BASE=${GATEWAY_CALDAV_BASE:-http://stalwart:8080/dav}
+      - GATEWAY_JMAP_BASE=${GATEWAY_JMAP_BASE:-http://stalwart:8080/jmap}
+      - GATEWAY_CARDDAV_BASE=${GATEWAY_CARDDAV_BASE:-http://stalwart:8080/carddav}
+      # Required: >= 32 characters, no REPLACE_ prefix.
+      - GATEWAY_HMAC_SECRET=${GATEWAY_HMAC_SECRET:?Set GATEWAY_HMAC_SECRET in .env (min 32 chars)}
+      - GATEWAY_HOST=${GATEWAY_HOST:?Set GATEWAY_HOST in .env (public gateway hostname)}
+      - GATEWAY_MAIL_DOMAIN=${GATEWAY_MAIL_DOMAIN:?Set GATEWAY_MAIL_DOMAIN in .env}
+      - GATEWAY_DATABASE_PATH=${GATEWAY_DATABASE_PATH:-/var/lib/exchange-gateway/gateway.db}
+      - GATEWAY_MAX_ATTACHMENT_BYTES=${GATEWAY_MAX_ATTACHMENT_BYTES:-5242880}
+      - GATEWAY_ROOM_BOOKING_ENABLED=${GATEWAY_ROOM_BOOKING_ENABLED:-true}
+      - GATEWAY_AUTH_CACHE_TTL_SECS=${GATEWAY_AUTH_CACHE_TTL_SECS:-300}
+      - GATEWAY_AUTH_CACHE_MAX_ENTRIES=${GATEWAY_AUTH_CACHE_MAX_ENTRIES:-10000}
+      # Stalwart SMTP/IMAP for mail send/receive plumbing.
+      - GATEWAY_SMTP_HOST=${GATEWAY_SMTP_HOST:-stalwart}
+      - GATEWAY_SMTP_PORT=${GATEWAY_SMTP_PORT:-465}
+      - GATEWAY_IMAP_HOST=${GATEWAY_IMAP_HOST:-stalwart}
+      - GATEWAY_IMAP_PORT=${GATEWAY_IMAP_PORT:-993}
+      - GATEWAY_MAIL_HOST=${GATEWAY_MAIL_HOST:-stalwart}
+      # Plain HTTP to Stalwart over the private bridge network only; the
+      # external surface is TLS-terminated in front of the gateway.
+      - GATEWAY_ALLOW_INSECURE_HTTP=${GATEWAY_ALLOW_INSECURE_HTTP:-1}
+      # JMAP-first calendar on Stalwart v0.16.20 (health check falls back to
+      # CalDAV automatically if the JMAP calendar capability is absent).
+      - GATEWAY_PREFER_JMAP_CALENDAR=${GATEWAY_PREFER_JMAP_CALENDAR:-1}
+      # Stalwart admin credentials for the directory/GAL (NSPI + OAB). Leave
+      # empty to fall back to the self-only minimal GAL stub.
+      - GATEWAY_ADMIN_USERNAME=${GATEWAY_ADMIN_USERNAME:-}
+      - GATEWAY_ADMIN_PASSWORD=${GATEWAY_ADMIN_PASSWORD:-}
+      - GATEWAY_MAPI_ENABLED=${GATEWAY_MAPI_ENABLED:-1}
+    ports:
+      - 8134:8134
+    volumes:
+      - /armblock/exchange-gateway/data:/var/lib/exchange-gateway
+    dns:
+      - redacted
+      - redacted
+    networks:
+      - network1
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8134/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+networks:
+  network1:
+    name: my-bridge-network
+    external: true
