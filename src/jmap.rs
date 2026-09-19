@@ -383,6 +383,20 @@ pub const JMAP_STALWART_CAPABILITY: &str = "urn:stalwart:jmap";
 /// store vacation scripts via `SieveScript/get`/`set`.
 pub const JMAP_SIEVE_CAPABILITY: &str = "urn:ietf:params:jmap:sieve";
 
+/// JMAP capability URN for contacts (RFC 9610).
+pub const JMAP_CONTACTS_CAPABILITY: &str = "urn:ietf:params:jmap:contacts";
+
+/// A ContactCard record as returned by `ContactCard/get`, carrying the raw
+/// JSCard JSON (RFC 9553) plus bookkeeping metadata used for change detection.
+#[derive(Clone, Debug)]
+pub struct JmapContactCard {
+    pub id: String,
+    /// Native ETag if the server exposes one (e.g. Stalwart `@etag`).
+    pub etag: Option<String>,
+    /// Raw JSCard document.
+    pub card: Value,
+}
+
 /// JMAP Calendar object (draft-ietf-jmap-calendars §4).
 /// Represents a named collection of CalendarEvents.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -759,10 +773,24 @@ impl JmapClient {
         password: &SecretString,
     ) -> Result<String> {
         let session = self.get_session(username, password).await?;
-        let upload_url = session.upload_url.trim_end_matches('/');
-
-        // Build the upload URL with accountId substituted
-        let url = format!("{}/jmap/{}", upload_url, urlencoding::encode(account_id));
+        // RFC 8620 §3.2: the session uploadUrl is a URI Template containing
+        // {accountId}; substitute it. Fall back to the legacy path layout if
+        // the template is absent.
+        let url = {
+            let template = session.upload_url.trim();
+            if template.is_empty() {
+                format!(
+                    "{}/upload/{}/",
+                    self.base_url.trim_end_matches('/'),
+                    urlencoding::encode(account_id)
+                )
+            } else if template.contains("{accountId}") {
+                template.replace("{accountId}", &urlencoding::encode(account_id))
+            } else {
+                template.to_string()
+            }
+        };
+        let auth = Self::basic_auth_header(username, password);
 
         // Per RFC 8621, upload the raw bytes directly
         let resp = self
@@ -770,6 +798,7 @@ impl JmapClient {
             .post(&url)
             .body(data.to_vec())
             .header("Content-Type", "application/octet-stream")
+            .header(AUTHORIZATION, &auth)
             .send()
             .await
             .map_err(|e| anyhow!("JMAP blob upload request failed: {}", e))?;
@@ -3466,6 +3495,319 @@ impl JmapClient {
         }
 
         Ok(())
+    }
+
+    /// Check whether the JMAP server supports contacts (RFC 9610).
+    pub async fn supports_contacts(&self, username: &str, password: &SecretString) -> bool {
+        match self.get_session(username, password).await {
+            Ok(session) => session.capabilities.contains_key(JMAP_CONTACTS_CAPABILITY),
+            Err(_) => false,
+        }
+    }
+
+    /// Get the primary contacts account id from the JMAP session.
+    pub async fn get_contacts_account_id(
+        &self,
+        username: &str,
+        password: &SecretString,
+    ) -> Result<String> {
+        let session = self.get_session(username, password).await?;
+        session
+            .primary_accounts
+            .get(JMAP_CONTACTS_CAPABILITY)
+            .cloned()
+            .ok_or_else(|| anyhow!("No primary contacts account found in JMAP session"))
+    }
+
+    /// Get the default address book (AddressBook/get, first entry).
+    pub async fn get_default_address_book_id(
+        &self,
+        username: &str,
+        password: &SecretString,
+    ) -> Result<String> {
+        let session = self.get_session(username, password).await?;
+        let api_url = &session.api_url;
+        let account_id = session
+            .primary_accounts
+            .get(JMAP_CONTACTS_CAPABILITY)
+            .ok_or_else(|| anyhow!("No primary contacts account found in JMAP session"))?;
+
+        let method_calls = vec![(
+            "AddressBook/get",
+            json!({
+                "accountId": account_id,
+                "properties": ["id", "name", "isDefault", "myRights"],
+            }),
+            "ab0",
+        )];
+
+        let response = self
+            .api_call(
+                api_url,
+                &["urn:ietf:params:jmap:core", JMAP_CONTACTS_CAPABILITY],
+                method_calls,
+                username,
+                password,
+            )
+            .await?;
+
+        for (method, data, _) in response.method_responses {
+            if method == "AddressBook/get" {
+                let list: Vec<Value> = data
+                    .get("list")
+                    .and_then(|v| v.as_array().cloned())
+                    .unwrap_or_default();
+                let default_book = list
+                    .iter()
+                    .find(|b| b.get("isDefault").and_then(|v| v.as_bool()) == Some(true))
+                    .or_else(|| list.first())
+                    .and_then(|b| b.get("id").and_then(|v| v.as_str()));
+                if let Some(id) = default_book {
+                    return Ok(id.to_string());
+                }
+                return Err(anyhow!("No address books found for contacts account"));
+            }
+        }
+
+        Err(anyhow!("AddressBook/get returned no list"))
+    }
+
+    /// List all contact cards for the user via ContactCard/get (RFC 9610 §4).
+    ///
+    /// Returns the cards plus the server state token for change detection.
+    pub async fn list_contact_cards(
+        &self,
+        username: &str,
+        password: &SecretString,
+    ) -> Result<(Vec<JmapContactCard>, String)> {
+        let session = self.get_session(username, password).await?;
+        let api_url = &session.api_url;
+        let account_id = session
+            .primary_accounts
+            .get(JMAP_CONTACTS_CAPABILITY)
+            .ok_or_else(|| anyhow!("No primary contacts account found in JMAP session"))?;
+
+        let method_calls = vec![("ContactCard/get", json!({ "accountId": account_id }), "cg0")];
+
+        let response = self
+            .api_call(
+                api_url,
+                &["urn:ietf:params:jmap:core", JMAP_CONTACTS_CAPABILITY],
+                method_calls,
+                username,
+                password,
+            )
+            .await?;
+
+        for (method, data, _) in response.method_responses {
+            if method == "ContactCard/get" {
+                let state = data
+                    .get("state")
+                    .and_then(|v| v.as_str().map(|s| s.to_string()))
+                    .unwrap_or_default();
+                let list: Vec<Value> = data
+                    .get("list")
+                    .and_then(|v| v.as_array().cloned())
+                    .unwrap_or_default();
+                let mut cards = Vec::with_capacity(list.len());
+                for item in list {
+                    let Some(id) = item.get("id").and_then(|v| v.as_str()) else {
+                        continue;
+                    };
+                    let etag = item
+                        .get("@etag")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.trim_matches('"').to_string());
+                    cards.push(JmapContactCard {
+                        id: id.to_string(),
+                        etag,
+                        card: item,
+                    });
+                }
+                return Ok((cards, state));
+            }
+        }
+
+        Err(anyhow!(
+            "Unexpected JMAP response structure for ContactCard/get"
+        ))
+    }
+
+    /// Create a new contact card via ContactCard/set.
+    ///
+    /// `card` is the JSCard JSON (with `addressBookIds` set by the caller).
+    /// Returns the new contact id and the ETag if returned.
+    pub async fn create_contact_card(
+        &self,
+        username: &str,
+        password: &SecretString,
+        card: &Value,
+    ) -> Result<(String, Option<String>)> {
+        let session = self.get_session(username, password).await?;
+        let api_url = &session.api_url;
+        let account_id = session
+            .primary_accounts
+            .get(JMAP_CONTACTS_CAPABILITY)
+            .ok_or_else(|| anyhow!("No primary contacts account found in JMAP session"))?;
+
+        let method_calls = vec![(
+            "ContactCard/set",
+            json!({
+                "accountId": account_id,
+                "create": { "c0": card },
+            }),
+            "cs0",
+        )];
+
+        let response = self
+            .api_call(
+                api_url,
+                &["urn:ietf:params:jmap:core", JMAP_CONTACTS_CAPABILITY],
+                method_calls,
+                username,
+                password,
+            )
+            .await?;
+
+        for (method, data, _) in response.method_responses {
+            if method == "ContactCard/set" {
+                if let Some(not_created) = data.get("notCreated")
+                    && let Some(err) = not_created.get("c0")
+                {
+                    return Err(anyhow!("ContactCard/set create failed: {}", err));
+                }
+                if let Some(created) = data.get("created")
+                    && let Some(c0) = created.get("c0")
+                {
+                    let id = c0
+                        .get("id")
+                        .and_then(|v| v.as_str())
+                        .ok_or_else(|| anyhow!("ContactCard/set returned no id"))?
+                        .to_string();
+                    let etag = c0
+                        .get("@etag")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.trim_matches('"').to_string());
+                    return Ok((id, etag));
+                }
+            }
+        }
+
+        Err(anyhow!(
+            "Unexpected JMAP response structure for ContactCard/set (create)"
+        ))
+    }
+
+    /// Update an existing contact card via ContactCard/set (full-field patch
+    /// with null-outs for removed properties handled by the caller).
+    pub async fn update_contact_card(
+        &self,
+        username: &str,
+        password: &SecretString,
+        id: &str,
+        patch: &Value,
+    ) -> Result<Option<String>> {
+        let session = self.get_session(username, password).await?;
+        let api_url = &session.api_url;
+        let account_id = session
+            .primary_accounts
+            .get(JMAP_CONTACTS_CAPABILITY)
+            .ok_or_else(|| anyhow!("No primary contacts account found in JMAP session"))?;
+
+        let method_calls = vec![(
+            "ContactCard/set",
+            json!({
+                "accountId": account_id,
+                "update": { id: patch },
+            }),
+            "cs0",
+        )];
+
+        let response = self
+            .api_call(
+                api_url,
+                &["urn:ietf:params:jmap:core", JMAP_CONTACTS_CAPABILITY],
+                method_calls,
+                username,
+                password,
+            )
+            .await?;
+
+        for (method, data, _) in response.method_responses {
+            if method == "ContactCard/set" {
+                if let Some(not_updated) = data.get("notUpdated")
+                    && let Some(err) = not_updated.get(id)
+                {
+                    return Err(anyhow!("ContactCard/set update failed for {}: {}", id, err));
+                }
+                if let Some(updated) = data.get("updated")
+                    && let Some(u) = updated.get(id)
+                {
+                    return Ok(u
+                        .get("@etag")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.trim_matches('"').to_string()));
+                }
+                return Ok(None);
+            }
+        }
+
+        Err(anyhow!(
+            "Unexpected JMAP response structure for ContactCard/set (update)"
+        ))
+    }
+
+    /// Destroy a contact card via ContactCard/set.
+    pub async fn destroy_contact_card(
+        &self,
+        username: &str,
+        password: &SecretString,
+        id: &str,
+    ) -> Result<()> {
+        let session = self.get_session(username, password).await?;
+        let api_url = &session.api_url;
+        let account_id = session
+            .primary_accounts
+            .get(JMAP_CONTACTS_CAPABILITY)
+            .ok_or_else(|| anyhow!("No primary contacts account found in JMAP session"))?;
+
+        let method_calls = vec![(
+            "ContactCard/set",
+            json!({
+                "accountId": account_id,
+                "destroy": [id],
+            }),
+            "cs0",
+        )];
+
+        let response = self
+            .api_call(
+                api_url,
+                &["urn:ietf:params:jmap:core", JMAP_CONTACTS_CAPABILITY],
+                method_calls,
+                username,
+                password,
+            )
+            .await?;
+
+        for (method, data, _) in response.method_responses {
+            if method == "ContactCard/set" {
+                if let Some(not_destroyed) = data.get("notDestroyed")
+                    && let Some(err) = not_destroyed.get(id)
+                {
+                    return Err(anyhow!(
+                        "ContactCard/set destroy failed for {}: {}",
+                        id,
+                        err
+                    ));
+                }
+                return Ok(());
+            }
+        }
+
+        Err(anyhow!(
+            "Unexpected JMAP response structure for ContactCard/set (destroy)"
+        ))
     }
 
     /// Get free-busy availability via Principal/getAvailability

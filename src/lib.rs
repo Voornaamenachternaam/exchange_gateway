@@ -21,6 +21,7 @@ pub mod ews_update;
 pub mod ical_parser;
 pub mod jmap;
 pub mod jmap_push;
+pub mod jscard;
 pub mod logging;
 pub mod mapi;
 pub mod meeting;
