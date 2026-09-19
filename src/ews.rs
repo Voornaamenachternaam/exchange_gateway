@@ -3254,7 +3254,10 @@ async fn handle_update_contact_item(
             .retain(|p| !matches!(p, vcard::Property::Email(_)));
         old_vcard
             .properties
-            .push(vcard::Property::Email(vcard::Email { email }));
+            .push(vcard::Property::Email(vcard::Email {
+                email,
+                ..Default::default()
+            }));
     }
 
     if let Some(phone) = new_phone {
@@ -3264,8 +3267,8 @@ async fn handle_update_contact_item(
         let tel = vcard::Tel {
             number: phone,
             params: vec![
-                vcard::Parameter::Type(vcard::Type::Work),
-                vcard::Parameter::Type(vcard::Type::Voice),
+                vcard::Parameter::Type(vcard::Type::WORK.to_string()),
+                vcard::Parameter::Type(vcard::Type::VOICE.to_string()),
             ],
         };
         old_vcard.properties.push(vcard::Property::Tel(tel));

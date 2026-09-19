@@ -47,6 +47,7 @@ services:
       # JMAP-first calendar on Stalwart v0.16.20 (health check falls back to
       # CalDAV automatically if the JMAP calendar capability is absent).
       - GATEWAY_PREFER_JMAP_CALENDAR=${GATEWAY_PREFER_JMAP_CALENDAR:-1}
+      - GATEWAY_PREFER_JMAP_CONTACTS=${GATEWAY_PREFER_JMAP_CONTACTS:-1}
       # Stalwart admin credentials for the directory/GAL (NSPI + OAB). Leave
       # empty to fall back to the self-only minimal GAL stub.
       - GATEWAY_ADMIN_USERNAME=${GATEWAY_ADMIN_USERNAME:-}
