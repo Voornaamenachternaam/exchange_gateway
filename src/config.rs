@@ -31,6 +31,7 @@ const ENV_MAIL_HOST: &str = "GATEWAY_MAIL_HOST";
 const ENV_FORCE_CALDAV_CALENDAR: &str = "GATEWAY_FORCE_CALDAV_CALENDAR";
 const ENV_PREFER_CALDAV_FREEBUSY: &str = "GATEWAY_PREFER_CALDAV_FREEBUSY";
 const ENV_PREFER_JMAP_CALENDAR: &str = "GATEWAY_PREFER_JMAP_CALENDAR";
+const ENV_PREFER_JMAP_CONTACTS: &str = "GATEWAY_PREFER_JMAP_CONTACTS";
 const ENV_ALLOW_INSECURE_HTTP: &str = "GATEWAY_ALLOW_INSECURE_HTTP";
 const ENV_ADMIN_USERNAME: &str = "GATEWAY_ADMIN_USERNAME";
 const ENV_ADMIN_PASSWORD: &str = "GATEWAY_ADMIN_PASSWORD";
@@ -122,6 +123,12 @@ pub struct Config {
     // Set to false to force CalDAV (same effect as force_caldav_calendar=true).
     #[serde(default = "default_prefer_jmap_calendar")]
     pub prefer_jmap_calendar: bool,
+    // Prefer JMAP Contacts (RFC 9610 `urn:ietf:params:jmap:contacts`,
+    // ContactCard/AddressBook) over CardDAV. Stalwart v0.16 exposes full
+    // first-class JMAP Contacts support, so this defaults to true (honoring
+    // the JMAP-first directive), with CardDAV kept as fallback.
+    #[serde(default = "default_prefer_jmap_contacts")]
+    pub prefer_jmap_contacts: bool,
     // Prefer CalDAV over JMAP for free/busy queries. Disabled by default on
     // Stalwart v0.16.20, which exposes full JMAP Calendar/availability
     // (`Calendar/availability`) support; enable only for legacy compatibility.
@@ -284,6 +291,12 @@ fn default_force_caldav_calendar() -> bool {
     // Default to JMAP Calendar (the JMAP-first directive). CalDAV remains a
     // fallback behind capability detection (supports_calendar).
     false
+}
+
+fn default_prefer_jmap_contacts() -> bool {
+    // Stalwart v0.16 exposes full first-class JMAP Contacts support
+    // (RFC 9610), so default to JMAP-first with CardDAV as fallback.
+    true
 }
 
 fn default_prefer_jmap_calendar() -> bool {
@@ -757,6 +770,12 @@ fn apply_environment_overrides(cfg: &mut Config) {
         cfg.prefer_jmap_calendar =
             matches!(lower.as_str(), "1" | "true" | "yes" | "on" | "enabled");
     }
+    if let Some(val) = get_env_with_fallback(ENV_PREFER_JMAP_CONTACTS, None) {
+        let lower = val.to_lowercase();
+        tracing::debug!("Applying {} from environment", ENV_PREFER_JMAP_CONTACTS);
+        cfg.prefer_jmap_contacts =
+            matches!(lower.as_str(), "1" | "true" | "yes" | "on" | "enabled");
+    }
     if let Some(val) = get_env_with_fallback(ENV_ALLOW_INSECURE_HTTP, None) {
         let lower = val.to_lowercase();
         tracing::debug!("Applying {} from environment", ENV_ALLOW_INSECURE_HTTP);
@@ -1061,6 +1080,7 @@ impl Default for Config {
             mail_host: String::new(),
             force_caldav_calendar: default_force_caldav_calendar(),
             prefer_jmap_calendar: default_prefer_jmap_calendar(),
+            prefer_jmap_contacts: default_prefer_jmap_contacts(),
             prefer_caldav_freebusy: default_prefer_caldav_freebusy(),
             allow_insecure_http: default_allow_insecure_http(),
             admin_username: String::new(),
