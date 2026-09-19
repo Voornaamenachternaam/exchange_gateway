@@ -445,6 +445,7 @@ fn field_class(local: &str) -> Option<&'static str> {
         "NickName" => K_NICKNAME,
         "WebPage" => K_URL,
         "Picture" => K_PHOTO,
+        "Notes" => K_NOTE,
         "FileAs" => K_FILEAS,
         "Spouse" => K_SPOUSE,
         "Children" | "Child" => K_CHILDREN,
@@ -457,6 +458,7 @@ fn field_class(local: &str) -> Option<&'static str> {
 struct EasContactFields {
     fields: Vec<(String, String)>, // (local name, text)
     note: String,
+    has_note: bool,
 }
 
 impl EasContactFields {
@@ -478,10 +480,15 @@ impl EasContactFields {
     }
 
     fn present(&self) -> HashSet<String> {
-        self.fields
+        let mut set: HashSet<String> = self
+            .fields
             .iter()
             .filter_map(|(name, _)| field_class(name).map(|c| c.to_string()))
-            .collect()
+            .collect();
+        if self.has_note {
+            set.insert(K_NOTE.to_string());
+        }
+        set
     }
 }
 
@@ -720,6 +727,7 @@ fn record_eas_text(out: &mut EasContactFields, stack: &[String], text: String) {
             .map(|p| local_name(p) == "Body")
             .unwrap_or(false);
         if in_body {
+            out.has_note = true;
             if !out.note.is_empty() {
                 out.note.push('\n');
             }
@@ -994,13 +1002,22 @@ pub fn parse_contacts_mutations(xml: &str) -> anyhow::Result<Vec<ContactsMutatio
     Ok(mutations)
 }
 
-/// Re-emit ApplicationData text preserving element structure so the inner
-/// XML can be re-parsed (with tags) for field extraction.
+/// Re-emit ApplicationData text preserving the full element path so the
+/// inner XML can be re-parsed with nesting intact (e.g. AirSyncBase
+/// `<Body><Data>…</Data></Body>` notes).
 fn track_appdata_text(out: &mut String, stack: &[String], text: &str) {
-    let Some(leaf) = stack.last() else { return };
-    let leaf = local_name(leaf);
-    if leaf == "ApplicationData" {
+    // Build the path of local names below (and excluding) ApplicationData.
+    let path: Vec<&str> = stack
+        .iter()
+        .skip_while(|t| local_name(t) != "ApplicationData")
+        .skip(1)
+        .map(|t| local_name(t))
+        .collect();
+    let Some((&leaf, parents)) = path.split_last() else {
         return;
+    };
+    for p in parents {
+        out.push_str(&format!("<{}>", p));
     }
     out.push_str(&format!(
         "<{}>{}</{}>",
@@ -1008,6 +1025,9 @@ fn track_appdata_text(out: &mut String, stack: &[String], text: &str) {
         crate::util::escape_xml_text(text),
         leaf
     ));
+    for p in parents.iter().rev() {
+        out.push_str(&format!("</{}>", p));
+    }
 }
 
 // --------------------------------------------------------------------------
@@ -1515,6 +1535,11 @@ async fn apply_mutation_carddav(
                 Ok(Some(c)) => c,
                 _ => return mutation_failure(mutation, "6"),
             };
+            // A JMAP href is not addressable over CardDAV; no fallback is
+            // possible and the client gets a clean failure status.
+            if db_contact.carddav_href.starts_with("jmap://") {
+                return mutation_failure(mutation, "6");
+            }
 
             // Merge partial Change onto the stored server copy.
             let final_vcard = match (
@@ -1583,6 +1608,9 @@ async fn apply_mutation_carddav(
                 Ok(Some(c)) => c,
                 _ => return mutation_failure(mutation, "6"),
             };
+            if db_contact.carddav_href.starts_with("jmap://") {
+                return mutation_failure(mutation, "6");
+            }
 
             let url = format!(
                 "{}{}",
@@ -1833,5 +1861,32 @@ mod tests {
         let muts = parse_contacts_mutations(xml).unwrap();
         assert_eq!(muts.len(), 1);
         assert!(matches!(&muts[0], ContactsMutation::Add { .. }));
+    }
+
+    #[test]
+    fn test_note_body_is_preserved_on_add_and_change() {
+        let add = "<Add><ServerId>x</ServerId><ApplicationData>\
+            <Contacts:FirstName>N</Contacts:FirstName>\
+            <AirSyncBase:Body><AirSyncBase:Type>1</AirSyncBase:Type>\
+            <AirSyncBase:Data>This is the note</AirSyncBase:Data>\
+            </AirSyncBase:Body></ApplicationData></Add>";
+        let muts = parse_contacts_mutations(add).unwrap();
+        let ContactsMutation::Add { vcard, .. } = &muts[0] else {
+            panic!("expected Add");
+        };
+        let v = vcard::parse_vcard_from_data(vcard).unwrap();
+        assert_eq!(v.note(), Some("This is the note"));
+
+        let change = "<Change><ServerId>s1</ServerId><ApplicationData>\
+            <AirSyncBase:Body><AirSyncBase:Type>1</AirSyncBase:Type>\
+            <AirSyncBase:Data>updated</AirSyncBase:Data>\
+            </AirSyncBase:Body></ApplicationData></Change>";
+        let muts = parse_contacts_mutations(change).unwrap();
+        let ContactsMutation::Change { vcard, present, .. } = &muts[0] else {
+            panic!("expected Change");
+        };
+        let v = vcard::parse_vcard_from_data(vcard).unwrap();
+        assert_eq!(v.note(), Some("updated"));
+        assert!(present.contains(K_NOTE));
     }
 }

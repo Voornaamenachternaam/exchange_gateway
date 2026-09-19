@@ -1104,6 +1104,16 @@ fn namespace_to_code_page(ns: &str) -> Option<u8> {
 }
 
 fn find_encode_tag(qualified_or_local: &str, override_cp: Option<u8>) -> Option<(u8, u8)> {
+    // A qualified name ("Contacts:NickName") is authoritative: resolve it
+    // exactly, independent of the ambient namespace hint. This lets legacy
+    // alias entries (e.g. Contacts:NickName -> Contacts2 code page) encode
+    // correctly even inside a Contacts-namespaced subtree.
+    if qualified_or_local.contains(':')
+        && let Some(&pair) = NAME_TO_TAG.get(qualified_or_local)
+    {
+        return Some((pair[0], pair[1]));
+    }
+
     if let Some(&pair) = NAME_TO_TAG.get(qualified_or_local) {
         if let Some(cp) = override_cp {
             if pair[0] == cp {

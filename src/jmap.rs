@@ -787,9 +787,32 @@ impl JmapClient {
             } else if template.contains("{accountId}") {
                 template.replace("{accountId}", &urlencoding::encode(account_id))
             } else {
-                template.to_string()
+                template
+                    .parse::<url::Url>()
+                    .map(|_| template.to_string())
+                    .map_err(|_| anyhow!("Invalid JMAP upload URL template: {}", template))?
             }
         };
+        // Credentials must never be sent to a host other than the configured
+        // JMAP base: the session-advertised uploadUrl is pinned to the same
+        // origin (scheme/host/port) as the configured base URL.
+        fn same_origin(a: &str, b: &str) -> Result<()> {
+            let pa = url::Url::parse(a)?;
+            let pb = url::Url::parse(b)?;
+            if pa.scheme() == pb.scheme()
+                && pa.host_str() == pb.host_str()
+                && pa.port_or_known_default() == pb.port_or_known_default()
+            {
+                Ok(())
+            } else {
+                Err(anyhow!(
+                    "Refusing to send credentials to JMAP upload URL on a different origin: {} (base: {})",
+                    pa.origin().ascii_serialization(),
+                    pb.origin().ascii_serialization()
+                ))
+            }
+        }
+        same_origin(&url, self.base_url.trim_end_matches('/'))?;
         let auth = Self::basic_auth_header(username, password);
 
         // Per RFC 8621, upload the raw bytes directly
@@ -3741,14 +3764,24 @@ impl JmapClient {
                     return Err(anyhow!("ContactCard/set update failed for {}: {}", id, err));
                 }
                 if let Some(updated) = data.get("updated")
-                    && let Some(u) = updated.get(id)
+                    && updated.get(id).is_some()
                 {
-                    return Ok(u
-                        .get("@etag")
+                    // The updated map entry may be null when no properties
+                    // changed; success is established by the key being present.
+                    let etag = updated
+                        .get(id)
+                        .and_then(|u| u.get("@etag"))
                         .and_then(|v| v.as_str())
-                        .map(|s| s.trim_matches('"').to_string()));
+                        .map(|s| s.trim_matches('"').to_string());
+                    return Ok(etag);
                 }
-                return Ok(None);
+                // An id in neither `updated` nor `notUpdated` means the server
+                // never processed our update: report failure so the caller can
+                // fall back instead of persisting an unconfirmed state.
+                return Err(anyhow!(
+                    "ContactCard/set: id {} absent from both updated and notUpdated",
+                    id
+                ));
             }
         }
 
@@ -3801,7 +3834,19 @@ impl JmapClient {
                         err
                     ));
                 }
-                return Ok(());
+                // Success only if the id is confirmed in `destroyed`.
+                if data
+                    .get("destroyed")
+                    .and_then(|d| d.as_array())
+                    .map(|list| list.iter().any(|v| v.as_str() == Some(id)))
+                    .unwrap_or(false)
+                {
+                    return Ok(());
+                }
+                return Err(anyhow!(
+                    "ContactCard/set: id {} absent from both destroyed and notDestroyed",
+                    id
+                ));
             }
         }
 

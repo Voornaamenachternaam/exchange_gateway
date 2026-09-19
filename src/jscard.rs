@@ -7,12 +7,17 @@
 // + generation), full name, e-mails, phones (voice/cell/fax features and
 // work/home contexts), structured addresses, organizations with units, job
 // titles, nicknames, notes, birthdays and anniversaries, photos (as JMAP
-// blob references), URLs, spouse/children (personalInfo), and FileAs/
-// department (kept as JSCard-conformant local properties so round-trips via
-// CardDAV stay lossless).
+// blob references), URLs, spouse/children (personalInfo), department
+// (organization units), and FileAs (vendor-prefixed extension property).
 
 use crate::vcard::{self, Adr, Email, Name, Parameter, Tel, Vcard};
 use serde_json::{Map, Value, json};
+
+/// Vendor-prefixed JSContact extension (RFC 9553 §3.3) under which the EAS
+/// FileAs value is stored. JSContact has no built-in FileAs field.
+const FILE_AS_EXTENSION: &str = "io.exchange-gateway/fileAs";
+/// Legacy keyword prefix used by earlier builds, still accepted on read.
+const FILE_AS_KEYWORD_PREFIX: &str = "file-as:";
 
 /// Convert a parsed vCard into a JSCard object (RFC 9553).
 ///
@@ -112,28 +117,29 @@ pub fn vcard_to_jscard(v: &Vcard, uid: &str, photo_blob_id: Option<&str>) -> Val
         for (i, a) in addresses.iter().enumerate() {
             let mut obj = Map::new();
             obj.insert("@type".into(), json!("Address"));
+            // Spec-faithful StreetComponent kinds (RFC 9555): street text as
+            // "name", the PO box as "postOfficeBox", and the extended address
+            // as "extension". This gives a lossless vCard round trip.
             let mut street = Map::new();
-            let full_street = {
-                let ext = a.extension.trim();
-                let st = a.street.trim();
-                match (ext.is_empty(), st.is_empty()) {
-                    (true, true) => String::new(),
-                    (false, true) => ext.to_string(),
-                    (true, false) => st.to_string(),
-                    (false, false) => format!("{ext} {st}"),
-                }
-            };
-            if !full_street.is_empty() {
-                // StreetComponent "name": house number + street text without
-                // the street number split (vCard carries one free-form street).
+            for (i, (kind, value)) in [
+                ("name", a.street.as_str()),
+                ("extension", a.extension.as_str()),
+                ("postOfficeBox", a.po_box.as_str()),
+            ]
+            .into_iter()
+            .filter(|(_, v)| !v.is_empty())
+            .enumerate()
+            {
                 street.insert(
-                    "s0".into(),
+                    format!("s{i}"),
                     json!({
                         "@type": "StreetComponent",
-                        "kind": "name",
-                        "value": full_street,
+                        "kind": kind,
+                        "value": value,
                     }),
                 );
+            }
+            if !street.is_empty() {
                 obj.insert("street".into(), Value::Object(street));
             }
             if !a.locality.is_empty() {
@@ -147,11 +153,6 @@ pub fn vcard_to_jscard(v: &Vcard, uid: &str, photo_blob_id: Option<&str>) -> Val
             }
             if !a.country.is_empty() {
                 obj.insert("country".into(), json!(a.country));
-            }
-            if !a.po_box.is_empty() {
-                // Preserve the post-office box as a labelled street extension so
-                // a JMAP->vCard round-trip keeps the data.
-                obj.insert("extraStreet".into(), json!(a.po_box));
             }
             match a.context() {
                 "home" => {
@@ -167,24 +168,38 @@ pub fn vcard_to_jscard(v: &Vcard, uid: &str, photo_blob_id: Option<&str>) -> Val
         card.insert("addresses".into(), Value::Object(addrs));
     }
 
-    // Organization (+ department/unit)
-    if let Some(org) = v.org()
-        && !org.is_empty()
-    {
-        let name = org.first().cloned().unwrap_or_default();
-        let units: Vec<Value> = org
-            .iter()
-            .skip(1)
-            .filter(|u| !u.is_empty())
-            .map(|u| json!({"@type": "OrgUnit", "name": u}))
-            .collect();
+    // Organization (+ department/unit). An explicit X-DEPARTMENT is stored
+    // as an organization unit (RFC 9555) so it round-trips losslessly.
+    let org_comps = v.org().unwrap_or_default();
+    let org_name = org_comps.first().cloned().unwrap_or_default();
+    let mut units: Vec<String> = org_comps
+        .iter()
+        .skip(1)
+        .filter(|u| !u.is_empty())
+        .cloned()
+        .collect();
+    if let Some(dept) = v.department() {
+        let dept = dept.to_string();
+        if !dept.is_empty() && !units.contains(&dept) {
+            units.push(dept);
+        }
+    }
+    if !org_name.is_empty() || !units.is_empty() {
         let mut obj = Map::new();
         obj.insert("@type".into(), json!("Organization"));
-        if !name.is_empty() {
-            obj.insert("name".into(), json!(name));
+        if !org_name.is_empty() {
+            obj.insert("name".into(), json!(org_name));
         }
         if !units.is_empty() {
-            obj.insert("units".into(), json!(units));
+            obj.insert(
+                "units".into(),
+                Value::Array(
+                    units
+                        .iter()
+                        .map(|u| json!({"@type": "OrgUnit", "name": u}))
+                        .collect(),
+                ),
+            );
         }
         card.insert("organizations".into(), json!({"o0": Value::Object(obj)}));
     }
@@ -208,15 +223,26 @@ pub fn vcard_to_jscard(v: &Vcard, uid: &str, photo_blob_id: Option<&str>) -> Val
         card.insert("note".into(), json!(note));
     }
 
-    // Birthdays / anniversaries via JSCard anniversaries (PartialDate).
+    // Birthdays / wedding anniversaries via JSCard anniversaries (PartialDate),
+    // with the RFC 9555 kinds "birth" and "wedding".
+    let mut anni = Map::new();
     if let Some(b) = v.bday()
         && let Some(pd) = parse_partial_date(b)
     {
-        let mut anni = Map::new();
         anni.insert(
             "birth".into(),
-            json!({"@type": "Anniversary", "type": "birth", "date": pd}),
+            json!({"@type": "Anniversary", "kind": "birth", "date": pd}),
         );
+    }
+    if let Some(a) = v.anniversary()
+        && let Some(pd) = parse_partial_date(a)
+    {
+        anni.insert(
+            "wedding".into(),
+            json!({"@type": "Anniversary", "kind": "wedding", "date": pd}),
+        );
+    }
+    if !anni.is_empty() {
         card.insert("anniversaries".into(), Value::Object(anni));
     }
 
@@ -253,20 +279,17 @@ pub fn vcard_to_jscard(v: &Vcard, uid: &str, photo_blob_id: Option<&str>) -> Val
         );
     }
 
-    // FileAs / department are via JSCard "freeBusyUrl"-adjacent extras; keep
-    // them as RFC-conformant extension properties.
+    // FileAs has no JSContact counterpart; keep it in a vendor-prefix
+    // extension property (RFC 9553 §3.3: extension names are prefixed with a
+    // domain). `keywords` is deliberately not used: it is a keyword set, not
+    // a FileAs carrier.
     if let Some(fa) = v.file_as()
         && !fa.is_empty()
     {
-        card.insert("keywords".into(), json!({format!("file-as:{}", fa): true}));
-    }
-    if let Some(dept) = v.department()
-        && !dept.is_empty()
-    {
-        card.insert("keyboardText".into(), json!(dept));
+        card.insert(FILE_AS_EXTENSION.into(), json!(fa));
     }
 
-    // Spouse / children / wedding anniversary via personalInfo (RFC 9553 §1.4.8).
+    // Spouse / children via personalInfo (RFC 9553 §1.4.8).
     let mut personal_info = Map::new();
     if let Some(spouse) = v.spouse()
         && !spouse.is_empty()
@@ -286,13 +309,6 @@ pub fn vcard_to_jscard(v: &Vcard, uid: &str, photo_blob_id: Option<&str>) -> Val
         obj.insert("kind".into(), json!("child"));
         obj.insert("value".into(), json!(child));
         personal_info.insert(format!("child{i}"), Value::Object(obj));
-    }
-    if let Some(a) = v.anniversary() {
-        let mut obj = Map::new();
-        obj.insert("@type".into(), json!("PersonalInfo"));
-        obj.insert("kind".into(), json!("anniversary"));
-        obj.insert("value".into(), json!(a));
-        personal_info.insert("anniversary".into(), Value::Object(obj));
     }
     if !personal_info.is_empty() {
         card.insert("personalInfo".into(), Value::Object(personal_info));
@@ -412,17 +428,34 @@ pub fn jscard_to_vcard(card: &Value, uid: &str) -> Vcard {
         entries.sort_by_key(|(k, _)| k.to_string());
         for (_, a) in entries {
             let mut street = String::new();
+            let mut extension = String::new();
+            let mut po_box = String::new();
             if let Some(street_map) = a.get("street").and_then(|s| s.as_object()) {
                 for comp in street_map.values() {
-                    if let Some(val) = comp.get("value").and_then(|v| v.as_str())
-                        && !val.is_empty()
-                    {
-                        if !street.is_empty() {
-                            street.push(' ');
-                        }
-                        street.push_str(val);
+                    let kind = comp.get("kind").and_then(|k| k.as_str()).unwrap_or("name");
+                    let Some(val) = comp.get("value").and_then(|v| v.as_str()) else {
+                        continue;
+                    };
+                    if val.is_empty() {
+                        continue;
                     }
+                    let target = match kind {
+                        "extension" => &mut extension,
+                        "postOfficeBox" => &mut po_box,
+                        _ => &mut street,
+                    };
+                    if !target.is_empty() {
+                        target.push(' ');
+                    }
+                    target.push_str(val);
                 }
+            }
+            // Legacy: earlier builds stored the PO box in extraStreet.
+            if po_box.is_empty()
+                && let Some(extra) = a.get("extraStreet").and_then(|s| s.as_str())
+                && extension.is_empty()
+            {
+                extension = extra.to_string();
             }
             let mut params = Vec::new();
             if ctx_has(a, "home") {
@@ -432,8 +465,8 @@ pub fn jscard_to_vcard(card: &Value, uid: &str) -> Vcard {
                 params.push(Parameter::Type("work".into()));
             }
             let adr = Adr {
-                po_box: String::new(),
-                extension: js_str(a, "extraStreet"),
+                po_box,
+                extension,
                 street,
                 locality: js_str(a, "locality"),
                 region: js_str(a, "region"),
@@ -445,6 +478,8 @@ pub fn jscard_to_vcard(card: &Value, uid: &str) -> Vcard {
                 || !adr.locality.is_empty()
                 || !adr.postal_code.is_empty()
                 || !adr.country.is_empty()
+                || !adr.po_box.is_empty()
+                || !adr.extension.is_empty()
             {
                 v.properties.push(vcard::Property::Adr(adr));
             }
@@ -455,21 +490,21 @@ pub fn jscard_to_vcard(card: &Value, uid: &str) -> Vcard {
         && let Some((_, org)) = first_org(orgs)
     {
         let mut comps = Vec::new();
-        if let Some(name) = org.get("name").and_then(|n| n.as_str())
-            && !name.is_empty()
-        {
-            comps.push(name.to_string());
-        }
+        let name = org.get("name").and_then(|n| n.as_str()).unwrap_or("");
+        let mut units_found = Vec::new();
         if let Some(units) = org.get("units").and_then(|u| u.as_array()) {
             for u in units {
-                if let Some(name) = u.get("name").and_then(|n| n.as_str())
-                    && !name.is_empty()
+                if let Some(u_name) = u.get("name").and_then(|n| n.as_str())
+                    && !u_name.is_empty()
                 {
-                    comps.push(name.to_string());
+                    units_found.push(u_name.to_string());
                 }
             }
         }
-        if !comps.is_empty() {
+        if !name.is_empty() || !units_found.is_empty() {
+            // Preserve ordering: company name first, department/unit(s) after.
+            comps.push(name.to_string());
+            comps.extend(units_found);
             v.properties
                 .push(vcard::Property::Org(vcard::Org { value: comps }));
         }
@@ -491,17 +526,29 @@ pub fn jscard_to_vcard(card: &Value, uid: &str) -> Vcard {
         v.properties.push(vcard::Property::Note(note.to_string()));
     }
 
-    if let Some(anni) = card.get("anniversaries").and_then(|a| a.as_object())
-        && let Some(birth) = anni
-            .values()
-            .find(|a| a.get("type").and_then(|t| t.as_str()) == Some("birth"))
-        && let Some(date) = birth.get("date")
-        && let Some(y) = date.get("year").and_then(|y| y.as_i64())
-    {
-        let m = date.get("month").and_then(|m| m.as_i64()).unwrap_or(1);
-        let d = date.get("day").and_then(|d| d.as_i64()).unwrap_or(1);
-        v.properties
-            .push(vcard::Property::Bday(format!("{:04}{:02}{:02}", y, m, d)));
+    // Anniversaries: RFC 9553 uses the "kind" key (an earlier revision used
+    // "type"); accept both on read.
+    if let Some(anni) = card.get("anniversaries").and_then(|a| a.as_object()) {
+        fn kind_of(a: &Value) -> &str {
+            a.get("kind")
+                .and_then(|t| t.as_str())
+                .or_else(|| a.get("type").and_then(|t| t.as_str()))
+                .unwrap_or("")
+        }
+        for a in anni.values() {
+            let Some(date) = a.get("date") else { continue };
+            let Some(year) = date.get("year").and_then(|y| y.as_i64()) else {
+                continue;
+            };
+            let month = date.get("month").and_then(|m| m.as_i64()).unwrap_or(1);
+            let day = date.get("day").and_then(|d| d.as_i64()).unwrap_or(1);
+            let iso = format!("{:04}{:02}{:02}", year, month, day);
+            match kind_of(a) {
+                "birth" => v.properties.push(vcard::Property::Bday(iso)),
+                "wedding" => v.properties.push(vcard::Property::Anniversary(iso)),
+                _ => {}
+            }
+        }
     }
 
     if let Some(nicks) = card.get("nicknames").and_then(|n| n.as_object()) {
@@ -539,6 +586,7 @@ pub fn jscard_to_vcard(card: &Value, uid: &str) -> Vcard {
                     .properties
                     .push(vcard::Property::Spouse(value.to_string())),
                 "child" => v.properties.push(vcard::Property::Child(value.to_string())),
+                // Legacy: earlier builds stored the wedding date here.
                 "anniversary" => v
                     .properties
                     .push(vcard::Property::Anniversary(value.to_string())),
@@ -547,21 +595,21 @@ pub fn jscard_to_vcard(card: &Value, uid: &str) -> Vcard {
         }
     }
 
-    if let Some(keywords) = card.get("keywords").and_then(|k| k.as_object()) {
+    // FileAs: RFC-conformant vendor extension first; the legacy keyword
+    // encoding is accepted on read for migration.
+    if let Some(fa) = card.get(FILE_AS_EXTENSION).and_then(|v| v.as_str())
+        && !fa.is_empty()
+    {
+        v.properties.push(vcard::Property::FileAs(fa.to_string()));
+    } else if let Some(keywords) = card.get("keywords").and_then(|k| k.as_object()) {
         for (k, enabled) in keywords {
             if enabled.as_bool() == Some(true)
-                && let Some(fa) = k.strip_prefix("file-as:")
+                && let Some(fa) = k.strip_prefix(FILE_AS_KEYWORD_PREFIX)
             {
                 v.properties.push(vcard::Property::FileAs(fa.to_string()));
+                break;
             }
         }
-    }
-
-    if let Some(dept) = card.get("keyboardText").and_then(|d| d.as_str())
-        && !dept.is_empty()
-    {
-        v.properties
-            .push(vcard::Property::Department(dept.to_string()));
     }
 
     v
@@ -712,5 +760,109 @@ mod tests {
         assert_eq!(v.full_name(), Some("Only Name"));
         assert!(v.addresses().is_empty());
         assert!(v.structured_name().is_none());
+    }
+
+    #[test]
+    fn po_box_and_extension_roundtrip_via_street_component_kinds() {
+        let mut v = Vcard::default();
+        v.properties.push(vcard::Property::Fn(vcard::Fn {
+            value: "Boxed".into(),
+        }));
+        v.properties.push(vcard::Property::Adr(Adr {
+            po_box: "PO Box 9".into(),
+            extension: "Suite 4".into(),
+            street: "1 Main St".into(),
+            locality: "Town".into(),
+            region: String::new(),
+            postal_code: "10001".into(),
+            country: String::new(),
+            params: vec![Parameter::Type("home".into())],
+        }));
+        let card = vcard_to_jscard(&v, "contact-x", None);
+        // Street components must use dedicated kinds; nothing in extraStreet.
+        let addr = &card["addresses"]["a0"];
+        assert!(addr.get("extraStreet").is_none() || addr["extraStreet"].is_null());
+        let street = addr["street"].as_object().unwrap();
+        let has_kind = |k: &str, val: &str| {
+            street.values().any(|c| {
+                c.get("kind").and_then(|x| x.as_str()) == Some(k)
+                    && c.get("value").and_then(|x| x.as_str()) == Some(val)
+            })
+        };
+        assert!(has_kind("name", "1 Main St"));
+        assert!(has_kind("extension", "Suite 4"));
+        assert!(has_kind("postOfficeBox", "PO Box 9"));
+
+        let back = jscard_to_vcard(&card, "contact-x");
+        let adr = &back.addresses()[0];
+        assert_eq!(adr.po_box, "PO Box 9");
+        assert_eq!(adr.extension, "Suite 4");
+        assert_eq!(adr.street, "1 Main St");
+        assert_eq!(adr.locality, "Town");
+    }
+
+    #[test]
+    fn wedding_anniversary_uses_kind_wedding_and_reads_kind() {
+        let mut v = Vcard::default();
+        v.properties
+            .push(vcard::Property::Anniversary("19950604".into()));
+        let card = vcard_to_jscard(&v, "contact-a", None);
+        let anni = card["anniversaries"].as_object().unwrap();
+        assert!(
+            anni.values()
+                .any(|a| a.get("kind").and_then(|k| k.as_str()) == Some("wedding"))
+        );
+
+        let back = jscard_to_vcard(&card, "contact-a");
+        assert_eq!(back.anniversary(), Some("19950604"));
+    }
+
+    #[test]
+    fn bday_reads_from_kind_birth() {
+        let card = json!({
+            "@type": "Card", "version": "1.0", "uid": "u",
+            "anniversaries": {
+                "k1": {"@type": "Anniversary", "kind": "birth",
+                       "date": {"year": 1970, "month": 1, "day": 31}}
+            }
+        });
+        let v = jscard_to_vcard(&card, "u");
+        assert_eq!(v.bday(), Some("19700131"));
+    }
+
+    #[test]
+    fn file_as_uses_vendor_extension_not_keywords() {
+        let mut v = Vcard::default();
+        v.properties
+            .push(vcard::Property::FileAs("Smith, John".into()));
+        let card = vcard_to_jscard(&v, "contact-f", None);
+        assert_eq!(card["io.exchange-gateway/fileAs"], "Smith, John");
+        assert!(card.get("keywords").is_none());
+        assert!(card.get("keyboardText").is_none());
+
+        let back = jscard_to_vcard(&card, "contact-f");
+        assert_eq!(back.file_as(), Some("Smith, John"));
+
+        // Legacy keyword encoding still accepted on read.
+        let legacy = json!({
+            "@type": "Card", "version": "1.0", "uid": "u",
+            "keywords": {"file-as:Doe, Jane": true}
+        });
+        assert_eq!(jscard_to_vcard(&legacy, "u").file_as(), Some("Doe, Jane"));
+    }
+
+    #[test]
+    fn department_only_becomes_org_units() {
+        let mut v = Vcard::default();
+        v.properties.push(vcard::Property::Department("R&D".into()));
+        let card = vcard_to_jscard(&v, "contact-d", None);
+        let org = &card["organizations"]["o0"];
+        assert_eq!(org["units"][0]["name"], "R&D");
+        assert!(org.get("name").is_none() || org["name"].is_null());
+
+        let back = jscard_to_vcard(&card, "contact-d");
+        let org = back.org().unwrap();
+        assert_eq!(org[1], "R&D");
+        assert!(org[0].is_empty());
     }
 }

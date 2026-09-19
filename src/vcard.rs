@@ -395,8 +395,8 @@ pub fn build_vcard(
         vcard.properties.push(Property::Email(Email {
             email: email_str.to_string(),
             params: vec![
+                Parameter::Type("INTERNET".to_string()),
                 Parameter::Type(Type::WORK.to_string()),
-                Parameter::Type(Type::VOICE.to_string()),
             ],
         }));
     }
@@ -449,12 +449,32 @@ fn params_to_string(params: &[Parameter]) -> String {
 }
 
 fn write_line(f: &mut std::fmt::Formatter<'_>, line: &str) -> std::fmt::Result {
-    if line.len() <= 74 {
-        f.write_str(&format!("{}\r\n", line))
-    } else {
-        // RFC 6350 folding at 75 octets; continuation lines start with a space.
-        f.write_str(&format!("{}\r\n", line))
+    // RFC 2426 §2.6 / RFC 6350 §3.2: content lines longer than 75 octets
+    // SHOULD be folded with CRLF + a single space; a multi-byte UTF-8
+    // character must never be split across the fold boundary.
+    if line.len() <= 75 {
+        return f.write_str(&format!("{}\r\n", line));
     }
+    let mut rest = line;
+    // First physical line: 75 octets; continuations carry 74 octets of
+    // content (plus the leading space).
+    let mut budget = 75;
+    while !rest.is_empty() {
+        let take = budget.min(rest.len());
+        let cut = rest.floor_char_boundary(take);
+        let (head, tail) = rest.split_at(if cut == 0 { rest.len() } else { cut });
+        if cut == 0 {
+            return f.write_str(&format!("{}\r\n", rest));
+        }
+        if tail.is_empty() {
+            f.write_str(&format!("{}\r\n", head))?;
+            break;
+        }
+        f.write_str(&format!("{}\r\n ", head))?;
+        rest = tail;
+        budget = 74;
+    }
+    Ok(())
 }
 
 impl std::fmt::Display for Vcard {
@@ -837,6 +857,39 @@ pub(crate) fn unescape_text(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_long_lines_fold_and_unfold_utf8_safely() {
+        let mut v = Vcard::default();
+        // >75 bytes worth of multi-byte characters.
+        let note = "é".repeat(60);
+        v.properties.push(Property::Note(note.clone()));
+        let out = v.to_string();
+        // Every physical line must be <= 75 octets (continuation lines have
+        // one leading space + <=74 content bytes).
+        for line in out.split("\r\n") {
+            assert!(line.len() <= 75, "line too long: {} bytes", line.len());
+        }
+        assert!(out.contains("\r\n "), "expected a folded continuation");
+        let back = parse_vcard_from_data(&out).unwrap();
+        assert_eq!(back.note(), Some(note.as_str()));
+    }
+
+    #[test]
+    fn test_long_photo_folds() {
+        let mut v = Vcard::default();
+        let b64 = "AQID".repeat(40); // 160 bytes
+        v.properties.push(Property::Photo(b64.clone()));
+        let out = v.to_string();
+        for line in out.split("\r\n") {
+            assert!(line.len() <= 75);
+        }
+        let back = parse_vcard_from_data(&out).unwrap();
+        // The parser normalizes inline photos to data URIs; the payload must
+        // survive the fold/unfold intact.
+        let photo = back.photo().unwrap();
+        assert!(photo.strip_prefix("data:image/jpeg;base64,") == Some(b64.as_str()));
+    }
 
     #[test]
     fn test_structured_name_full_round_trip() {
