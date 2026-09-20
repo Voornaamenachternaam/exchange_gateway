@@ -25,6 +25,9 @@ services:
       # CalDAV base when not set explicitly.
       - GATEWAY_CALDAV_BASE=${GATEWAY_CALDAV_BASE:-http://stalwart:8080/dav}
       - GATEWAY_JMAP_BASE=${GATEWAY_JMAP_BASE:-http://stalwart:8080/jmap}
+      # Deploy-time JMAP Calendars capability verification: off | warn
+      # (default) | enforce (refuse startup on any finding).
+      - GATEWAY_CALENDAR_CAPABILITY_CHECK=${GATEWAY_CALENDAR_CAPABILITY_CHECK:-warn}
       - GATEWAY_CARDDAV_BASE=${GATEWAY_CARDDAV_BASE:-http://stalwart:8080/carddav}
       # Required: >= 32 characters, no REPLACE_ prefix.
       - GATEWAY_HMAC_SECRET=${GATEWAY_HMAC_SECRET:?Set GATEWAY_HMAC_SECRET in .env (min 32 chars)}

@@ -143,6 +143,115 @@ request_xml \
 require_contains "${TMP_DIR}/availability.xml" "MergedFreeBusy"
 require_contains "${TMP_DIR}/availability.xml" "CalendarEventArray"
 
+# ---------------------------------------------------------------------------
+# Audit item 5: verify JMAP Calendars against Stalwart v0.16.22 at deploy time.
+#
+# When STALWART_JMAP_URL is set (e.g. http://stalwart:8080/jmap), this checks
+# the backend directly — the capability the gateway itself validates at
+# startup via GATEWAY_CALENDAR_CAPABILITY_CHECK — and performs a real
+# CalendarEvent/set write round-trip with a recurring event plus a per-instance
+# exception (the shape EAS MS-ASCAL <Exceptions> relies on), then destroys it.
+# ---------------------------------------------------------------------------
+if [[ -n "${STALWART_JMAP_URL:-}" ]]; then
+  log "Checking Stalwart JMAP session advertises urn:ietf:params:jmap:calendars"
+  stalwart_auth=(-u "${STALWART_USER:-${GATEWAY_USER}}:${STALWART_PASS:-${GATEWAY_PASS}}")
+  jmap_base="${STALWART_JMAP_URL%/}"
+  curl -fsS "${stalwart_auth[@]}" "${jmap_base}/session" >"${TMP_DIR}/jmap-session.json"
+  require_contains "${TMP_DIR}/jmap-session.json" '"urn:ietf:params:jmap:calendars"'
+
+  log "Running CalendarEvent/set recurring+exception round-trip against Stalwart"
+  python3 - "$jmap_base" "${TMP_DIR}/jmap-session.json" "${STALWART_USER:-${GATEWAY_USER}}" "${STALWART_PASS:-${GATEWAY_PASS}}" <<'PY'
+import base64, json, sys, urllib.request
+
+jmap_base, session_file, user, password = sys.argv[1:5]
+session = json.load(open(session_file))
+cap = "urn:ietf:params:jmap:calendars"
+account = session["primaryAccounts"][cap]
+api_url = session["apiUrl"]
+if api_url.startswith("http://") or api_url.startswith("https://"):
+    pass
+else:
+    api_url = jmap_base.rsplit("/", 1)[0] + api_url
+auth = base64.b64encode(f"{user}:{password}".encode()).decode()
+
+def call(using, method_calls):
+    req = urllib.request.Request(
+        api_url,
+        data=json.dumps({"using": using, "methodCalls": method_calls}).encode(),
+        headers={"Authorization": f"Basic {auth}", "Content-Type": "application/json"},
+    )
+    with urllib.request.urlopen(req) as resp:
+        return json.load(resp)
+
+# Find any calendar in the account.
+resp = call(["urn:ietf:params:jmap:core", cap],
+            [["Calendar/get", {"accountId": account, "ids": None}, "g"]])
+cal_list = resp["methodResponses"][0][1]["list"]
+if not cal_list:
+    raise SystemExit("no calendars returned by Calendar/get")
+calendar_id = cal_list[0]["id"]
+
+# Create a weekly recurring event with one excluded instance (exception).
+# Verified live against stalwartlabs/stalwart:v0.16.22: RFC-form
+# `recurrenceRules` arrays are rejected; this build speaks the older-draft
+# spelling `recurrenceRule` (single object) + `recurrenceOverrides`.
+uid = "jmap-cal-smoke-event-001"
+create = {
+    "accountId": account,
+    "create": {
+        "ev1": {
+            "calendarIds": {calendar_id: True},
+            "uid": uid,
+            "title": "jmap-cal-smoke recurring",
+            "start": "2026-03-02T09:00:00",
+            "timeZone": "Europe/Berlin",
+            "duration": "PT1H",
+            "recurrenceRule": {"frequency": "weekly"},
+            "recurrenceOverrides": {
+                "2026-03-09T09:00:00": {"excluded": True}
+            },
+        }
+    },
+}
+resp = call(["urn:ietf:params:jmap:core", cap], [["CalendarEvent/set", create, "s"]])
+args = resp["methodResponses"][0][1]
+if "notCreated" in args:
+    raise SystemExit(f"CalendarEvent/set create failed: {args['notCreated']}")
+event_id = args["created"]["ev1"]["id"]
+
+try:
+    # Read back and assert the recurrence and exception survive.
+    resp = call(
+        ["urn:ietf:params:jmap:core", cap],
+        [["CalendarEvent/get",
+          {"accountId": account, "ids": [event_id],
+           "properties": ["uid", "recurrenceRule", "recurrenceOverrides", "timeZone"]},
+          "r"]],
+    )
+    ev = resp["methodResponses"][0][1]["list"][0]
+    assert ev["recurrenceRule"]["frequency"] == "weekly", ev
+    assert ev["recurrenceOverrides"]["2026-03-09T09:00:00"]["excluded"] is True, ev
+    # The event must expand into its first occurrence window.
+    resp = call(
+        ["urn:ietf:params:jmap:core", cap],
+        [["CalendarEvent/query",
+          {"accountId": account,
+           "filter": {"after": "2026-03-02T00:00:00Z",
+                      "before": "2026-03-03T00:00:00Z"}},
+          "q"]],
+    )
+    ids = resp["methodResponses"][0][1].get("ids", [])
+    assert event_id in ids, ids
+    print("[smoke] recurrence + exception round-trip + occurrence expansion OK")
+finally:
+    call(["urn:ietf:params:jmap:core", cap],
+         [["CalendarEvent/set",
+           {"accountId": account, "destroy": [event_id]}, "d"]])
+PY
+
+  log "Stalwart JMAP calendars capability verified"
+fi
+
 if [[ "${RUN_MUTATION_PROBE:-0}" == "1" ]]; then
   now_stamp="$(date -u +%Y%m%dT%H%M%SZ)"
   subject="gateway-smoke-${now_stamp}"
