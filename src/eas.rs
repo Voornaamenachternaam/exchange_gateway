@@ -21,6 +21,7 @@ use axum::{
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use chrono::Duration as ChronoDuration;
+use dashmap::DashMap;
 use futures_util::future::join_all;
 use lru::LruCache;
 use quick_xml::Reader;
@@ -29,17 +30,31 @@ use roxmltree::Document;
 use secrecy::{ExposeSecret, SecretString};
 use std::collections::HashMap;
 use std::num::NonZeroUsize;
+use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use std::sync::{Arc, LazyLock};
 use std::time::{Duration as StdDuration, Instant};
 use subtle::ConstantTimeEq;
 use tokio::sync::Mutex as TokioMutex;
 use tokio::time::timeout;
+use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 const MAX_FREEBUSY_DAYS: i64 = 30;
 const MAX_BODY_SIZE: usize = 1_048_576;
 const CALDAV_TIMEOUT: StdDuration = StdDuration::from_secs(30);
 const MAX_PING_CACHE_ENTRIES: usize = 10_000;
+/// How long a cached Ping parameter set stays usable without the device
+/// re-pinging it. Devices re-issue Ping back-to-back, so an entry untouched
+/// for this long belongs to a dead/re-provisioned device and must not steer
+/// a future bare Ping (Status 2 storm / battery-drain guard).
+const PING_CACHE_TTL: StdDuration = StdDuration::from_secs(60 * 60);
+/// Upper bound on distinct device ids cached for a single mailbox. Re-provision
+/// churn (new DeviceId per provisioning pass) must not let one account crowd
+/// every other user out of the global LRU.
+const MAX_PING_DEVICES_PER_OWNER: usize = 64;
+/// Device ids are client-controlled strings; bound their contribution to the
+/// cache key so a pathological client cannot blow up entry memory.
+const MAX_PING_DEVICE_ID_LEN: usize = 64;
 /// Maximum number of emails to fetch in a single JMAP Email/query for EAS initial sync.
 /// Matches sync::DEFAULT_WINDOW_SIZE; keeps requests fast and memory-bounded.
 const EMAIL_SYNC_PAGE_SIZE: u64 = 100;
@@ -47,12 +62,85 @@ const EMAIL_SYNC_PAGE_SIZE: u64 = 100;
 type PingCache = LruCache<String, PingCacheEntry>;
 
 const _: () = assert!(MAX_PING_CACHE_ENTRIES > 0);
+const _: () = assert!(MAX_PING_DEVICES_PER_OWNER > 0);
 
 static PING_CACHE: LazyLock<TokioMutex<PingCache>> = LazyLock::new(|| {
     TokioMutex::new(LruCache::new(
         NonZeroUsize::new(MAX_PING_CACHE_ENTRIES).expect("MAX_PING_CACHE_ENTRIES > 0"),
     ))
 });
+
+/// Live Pings keyed `owner:device`, carrying a generation and a cancellation
+/// token so a newly arriving Ping supersedes the previous outstanding one for
+/// the same device (MS-ASCMD servers terminate the older request; without this
+/// both Pings wake on the same change and answer `Status 2` together, then the
+/// client's next Ping storms).
+static PING_IN_FLIGHT: LazyLock<DashMap<String, (u64, CancellationToken)>> =
+    LazyLock::new(DashMap::new);
+static PING_GENERATION: AtomicU64 = AtomicU64::new(0);
+
+/// Normalise the client-supplied device id for cache/dedup keys.
+fn ping_device_key_part(device_id: &str) -> String {
+    device_id.chars().take(MAX_PING_DEVICE_ID_LEN).collect()
+}
+
+/// Fetch cached Ping parameters, expiring entries untouched for `PING_CACHE_TTL`.
+async fn ping_cache_lookup(cache_key: &str) -> Option<PingCacheEntry> {
+    let mut cache = PING_CACHE.lock().await;
+    match cache.get(cache_key) {
+        Some(entry) if entry.last_seen.elapsed() <= PING_CACHE_TTL => Some(entry.clone()),
+        Some(_) => {
+            cache.pop(cache_key);
+            None
+        }
+        None => None,
+    }
+}
+
+/// Store refresh Ping parameters for a device, bounding entries per owner.
+async fn ping_cache_store(owner: &str, cache_key: String, entry: PingCacheEntry) {
+    let mut cache = PING_CACHE.lock().await;
+    let is_new = cache.put(cache_key.clone(), entry).is_none();
+    if !is_new {
+        return;
+    }
+    // New device id for this owner: if the owner now exceeds its fair share,
+    // evict its stalest *other* entry so re-provision churn cannot crowd out
+    // the global LRU.
+    let prefix = format!("{}:", owner);
+    let mut owner_count = 0usize;
+    let mut oldest: Option<(String, Instant)> = None;
+    for (key, value) in cache.iter() {
+        if key.as_str() == cache_key || !key.starts_with(&prefix) {
+            continue;
+        }
+        owner_count += 1;
+        if oldest.as_ref().is_none_or(|(_, ts)| value.last_seen < *ts) {
+            oldest = Some((key.clone(), value.last_seen));
+        }
+    }
+    if owner_count >= MAX_PING_DEVICES_PER_OWNER
+        && let Some((victim, _)) = oldest
+    {
+        cache.pop(&victim);
+    }
+}
+
+/// RAII guard removing this Ping's entry from [`PING_IN_FLIGHT`] when the
+/// request ends — but only if the entry still belongs to this Ping (a newer
+/// Ping for the same device has a higher generation and survives).
+struct PingInFlightGuard {
+    key: String,
+    generation: u64,
+}
+
+impl Drop for PingInFlightGuard {
+    fn drop(&mut self) {
+        PING_IN_FLIGHT.remove_if(&self.key, |_, (generation, _)| {
+            *generation == self.generation
+        });
+    }
+}
 
 #[derive(Clone, Debug)]
 struct PingFolder {
@@ -103,6 +191,9 @@ fn ping_folder_kind(folder: &PingFolder) -> Option<PingFolderKind> {
 struct PingCacheEntry {
     heartbeat: u64,
     folders: Vec<PingFolder>,
+    /// Last time this device was seen pinging; drives TTL expiry so stale
+    /// entries from dead or re-provisioned devices age out of the cache.
+    last_seen: Instant,
 }
 
 /// RAII guard: releases the per-mailbox JMAP EventSource push monitor when
@@ -1484,6 +1575,15 @@ fn ping_changed_response(
     xml_or_wbxml_response(wbxml, as_wbxml, &xml, request_id)
 }
 
+/// Response for a Ping superseded by a newer Ping on the same device: a clean
+/// `Status 1` so the client releases the old request and continues on the new
+/// one, instead of both requests racing on the same change set.
+fn ping_superseded_response(wbxml: &Wbxml, as_wbxml: bool, request_id: &str) -> Response {
+    let xml =
+        r#"<?xml version="1.0" encoding="utf-8"?><Ping xmlns="Ping:"><Status>1</Status></Ping>"#;
+    xml_or_wbxml_response(wbxml, as_wbxml, xml, request_id)
+}
+
 /// Per-folder `Email/changes` probe: returns the pinged email folders whose
 /// stored JMAP state token no longer matches the server's. Run at Ping start
 /// (to catch changes that landed while no Ping was in flight), on every
@@ -1558,12 +1658,9 @@ async fn handle_ping(
     const MAX_HEARTBEAT_SECS: u64 = 3540;
     const MAX_PING_FOLDERS: usize = 200;
     let device_id = req.device_id.as_deref().unwrap_or("unknown-device");
-    let cache_key = format!("{}:{}", owner, device_id);
+    let cache_key = format!("{}:{}", owner, ping_device_key_part(device_id));
 
-    let cached = {
-        let mut cache = PING_CACHE.lock().await;
-        cache.get(&cache_key).cloned()
-    };
+    let cached = ping_cache_lookup(&cache_key).await;
 
     let heartbeat = extract_first_tag_text(xml, b"HeartbeatInterval")
         .and_then(|v| v.parse::<u64>().ok())
@@ -1603,16 +1700,41 @@ async fn handle_ping(
         return xml_or_wbxml_response(wbxml, as_wbxml, xml, request_id);
     }
 
-    {
-        let mut cache = PING_CACHE.lock().await;
-        cache.put(
-            cache_key.clone(),
-            PingCacheEntry {
-                heartbeat,
-                folders: folders.clone(),
-            },
+    ping_cache_store(
+        owner,
+        cache_key.clone(),
+        PingCacheEntry {
+            heartbeat,
+            folders: folders.clone(),
+            last_seen: Instant::now(),
+        },
+    )
+    .await;
+
+    // One outstanding Ping per device: a fresh Ping supersedes any older one
+    // still sleeping on this device. Without this, two overlapping Pings both
+    // wake on the same change and both answer Status 2 — the classic battery
+    // drain storm. The superseded Ping answers Status 1 promptly; the client
+    // immediately re-issues and lands on the surviving request.
+    let ping_generation = PING_GENERATION.fetch_add(1, AtomicOrdering::Relaxed);
+    let supersede_token = CancellationToken::new();
+    if let Some((_, previous)) = PING_IN_FLIGHT.insert(
+        cache_key.clone(),
+        (ping_generation, supersede_token.clone()),
+    ) {
+        tracing::debug!(
+            request_id = %request_id,
+            device = %device_id,
+            "superseding outstanding Ping for device"
         );
+        previous.cancel();
     }
+    // Generation-checked removal: a supersede race must never let this Ping's
+    // guard delete the newer Ping's entry.
+    let _in_flight_guard = PingInFlightGuard {
+        key: cache_key.clone(),
+        generation: ping_generation,
+    };
 
     // ---- Live push wiring (audit gap #13) ---------------------------------
     // Email change detection previously relied solely on the ≤15s
@@ -1677,10 +1799,63 @@ async fn handle_ping(
         return ping_changed_response(wbxml, as_wbxml, &probe_changed, request_id);
     }
 
+    // Per-folder journal baselines for folders without a `seq:`-based sync
+    // watermark (never delta-synced, fresh device, or after a container
+    // restart where a non-email folder token is not seq-based). Captured once
+    // here — before the loop starts — so a change landing after this point is
+    // still reported, while the pre-existing journal history is not replayed.
+    let mut journal_baselines: HashMap<String, i64> = HashMap::new();
+    for folder in &folders {
+        if matches!(ping_folder_kind(folder), None | Some(PingFolderKind::Email)) {
+            continue;
+        }
+        let collection_id = scoped_collection_id(&folder.id, device_id);
+        let has_seq_watermark = state
+            .storage
+            .get_sync_key(owner, &collection_id)
+            .await
+            .ok()
+            .flatten()
+            .and_then(|(_, token)| token)
+            .is_some_and(|t| {
+                t.strip_prefix("seq:")
+                    .and_then(|v| v.parse::<i64>().ok())
+                    .is_some()
+            });
+        if !has_seq_watermark {
+            let head = state.storage.get_latest_change_seq().await.unwrap_or(0);
+            journal_baselines.insert(folder.id.clone(), head);
+        }
+    }
+
     let deadline = Instant::now() + StdDuration::from_secs(heartbeat);
     while Instant::now() < deadline {
+        if supersede_token.is_cancelled() {
+            // This Ping was superseded by a newer one for the same device.
+            return ping_superseded_response(wbxml, as_wbxml, request_id);
+        }
         let mut changed_folders = Vec::new();
         for folder in &folders {
+            let kind = match ping_folder_kind(folder) {
+                Some(k) => k,
+                None => continue,
+            };
+            // Email never consults the change journal: its per-device sync
+            // state is a JMAP `Email` state token, not a `seq:` watermark, so
+            // the journal watermark would have to be fabricated (previously
+            // `0`, which matched every calendar/contacts row the owner ever
+            // journaled — a permanent Status 2 storm). Email changes arrive
+            // exclusively through the live push wake + Email/changes probe.
+            if kind == PingFolderKind::Email {
+                continue;
+            }
+
+            // Watermark from the stored per-device sync token; folders that
+            // never completed a seq-based delta sync (or carry a non-seq
+            // token) fall back to the journal head captured at Ping start, so
+            // only changes *after* this Ping began can fire — never the whole
+            // journal history replayed as a storm after a container restart
+            // or a fresh device provision.
             let collection_id = scoped_collection_id(&folder.id, device_id);
             let since = state
                 .storage
@@ -1691,31 +1866,29 @@ async fn handle_ping(
                 .and_then(|(_, token)| token)
                 .and_then(|t| t.strip_prefix("seq:").map(|v| v.to_string()))
                 .and_then(|v| v.parse::<i64>().ok())
-                .unwrap_or(0);
+                .unwrap_or_else(|| journal_baselines.get(&folder.id).copied().unwrap_or(0));
 
-            let changed = match ping_folder_kind(folder) {
+            let changed = match kind {
                 // Tasks and Notes are gateway-local stores journaled with a
                 // distinct resource_href tag ("task" / "note"), so we can scope
                 // change detection precisely to those folders.
-                Some(PingFolderKind::Tasks) => state
+                PingFolderKind::Tasks => state
                     .storage
                     .list_journal_since_seq(owner, since)
                     .await
                     .unwrap_or_default()
                     .iter()
                     .any(|r| matches!(r.resource_href.as_deref(), Some("task"))),
-                Some(PingFolderKind::Notes) => state
+                PingFolderKind::Notes => state
                     .storage
                     .list_journal_since_seq(owner, since)
                     .await
                     .unwrap_or_default()
                     .iter()
                     .any(|r| matches!(r.resource_href.as_deref(), Some("note"))),
-                // Email, Calendar and Contacts changes flow through item_map and
-                // the shared change journal (op='upsert') plus delete tombstones.
-                Some(PingFolderKind::Calendar)
-                | Some(PingFolderKind::Email)
-                | Some(PingFolderKind::Contacts) => {
+                // Calendar and Contacts changes flow through item_map and the
+                // shared change journal (op='upsert') plus delete tombstones.
+                PingFolderKind::Calendar | PingFolderKind::Contacts => {
                     let changed = state
                         .storage
                         .list_changes_since_seq(owner, since, 1000)
@@ -1728,7 +1901,7 @@ async fn handle_ping(
                         .unwrap_or_default();
                     !changed.is_empty() || !deleted.is_empty()
                 }
-                None => false,
+                PingFolderKind::Email => unreachable!("email folders excluded above"),
             };
 
             if changed {
@@ -1758,6 +1931,7 @@ async fn handle_ping(
             Tick,
             OwnerEvent(crate::notifications::NotificationEvent),
             Lagged,
+            Superseded,
         }
         let wake = match notify_rx.as_mut() {
             Some(rx) => {
@@ -1768,6 +1942,7 @@ async fn handle_ping(
                         break Wake::Tick;
                     }
                     tokio::select! {
+                        _ = supersede_token.cancelled() => break Wake::Superseded,
                         _ = tokio::time::sleep(t) => break Wake::Tick,
                         recv = rx.recv() => match recv {
                             Ok(ev) if ev.owner() == owner => break Wake::OwnerEvent(ev),
@@ -1786,11 +1961,16 @@ async fn handle_ping(
                 }
             }
             None => {
-                tokio::time::sleep(tick).await;
-                Wake::Tick
+                tokio::select! {
+                    _ = supersede_token.cancelled() => Wake::Superseded,
+                    _ = tokio::time::sleep(tick) => Wake::Tick,
+                }
             }
         };
         match wake {
+            Wake::Superseded => {
+                return ping_superseded_response(wbxml, as_wbxml, request_id);
+            }
             Wake::Tick => {}
             Wake::OwnerEvent(ev) => {
                 // Probe JMAP directly so only email folders whose stored state
@@ -4921,23 +5101,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_ping_email_folder_wakes_on_push_event() {
-        use crate::models::AppState;
-
-        let storage = crate::storage::Storage::new("sqlite::memory:")
-            .await
-            .expect("in-memory storage");
-        // A JMAP base pointing at unroutable loopback: the push monitor's
-        // reconnect loop idles there for the lifetime of the test, and the
-        // Email/changes probe fails fast, so the Ping falls through to the
-        // broadcast-wake path under test.
-        let cfg = crate::config::Config {
-            jmap_base: "http://127.0.0.1:1".to_string(),
-            email_enabled: true,
-            mail_domain: "example.com".to_string(),
-            hmac_secret: SecretString::from("a".repeat(32)),
-            ..Default::default()
-        };
-        let state = Arc::new(AppState::new(cfg, Arc::new(storage)));
+        let state = test_ping_state().await;
         let xml = r#"<?xml version="1.0" encoding="utf-8"?>
 <Ping xmlns="Ping:"><HeartbeatInterval>120</HeartbeatInterval>
 <Folders><Folder><Id>4</Id><Class>Email</Class></Folder></Folders></Ping>"#;
@@ -4992,5 +5156,502 @@ mod tests {
             0,
             "Ping exit must release its push-monitor sink"
         );
+    }
+
+    /// Test AppState identically shaped to the live-push test above: JMAP
+    /// pointed at unroutable loopback so monitors idle and probes fail fast.
+    /// Fresh per test so push-registry counts and storage are exact.
+    async fn test_ping_state() -> Arc<AppState> {
+        use crate::models::AppState;
+        let storage = crate::storage::Storage::new("sqlite::memory:")
+            .await
+            .expect("in-memory storage");
+        storage.init_schema().await.expect("schema init");
+        let cfg = crate::config::Config {
+            jmap_base: "http://127.0.0.1:1".to_string(),
+            email_enabled: true,
+            mail_domain: "example.com".to_string(),
+            hmac_secret: SecretString::from("a".repeat(32)),
+            ..Default::default()
+        };
+        Arc::new(AppState::new(cfg, Arc::new(storage)))
+    }
+
+    fn ping_xml(heartbeat: u64, folders: &str) -> String {
+        format!(
+            r#"<?xml version="1.0" encoding="utf-8"?>
+<Ping xmlns="Ping:"><HeartbeatInterval>{heartbeat}</HeartbeatInterval>
+<Folders>{folders}</Folders></Ping>"#
+        )
+    }
+
+    async fn response_text(resp: Response) -> String {
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .expect("response body");
+        String::from_utf8_lossy(&body).into_owned()
+    }
+
+    #[tokio::test]
+    async fn test_ping_cache_entry_expires_after_ttl() {
+        let owner = "ttl-user@example.com";
+        let key = format!("{}:ttl-device", owner);
+        ping_cache_store(
+            owner,
+            key.clone(),
+            PingCacheEntry {
+                heartbeat: 300,
+                folders: vec![PingFolder {
+                    id: "4".to_string(),
+                    class_name: "Email".to_string(),
+                }],
+                last_seen: Instant::now(),
+            },
+        )
+        .await;
+        assert!(
+            ping_cache_lookup(&key).await.is_some(),
+            "fresh entry must be visible"
+        );
+
+        // Age the entry beyond the TTL and confirm it vanishes rather than
+        // steering a future bare Ping with stale folders/heartbeat.
+        {
+            let mut cache = PING_CACHE.lock().await;
+            if let Some(entry) = cache.get_mut(&key) {
+                entry.last_seen = Instant::now()
+                    .checked_sub(PING_CACHE_TTL + StdDuration::from_secs(5))
+                    .expect("TTL fits within Instant history");
+            }
+        }
+        assert!(
+            ping_cache_lookup(&key).await.is_none(),
+            "stale entry must be expired"
+        );
+        let cache = PING_CACHE.lock().await;
+        assert!(
+            cache.peek(&key).is_none(),
+            "expired entry must be evicted, not just hidden"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_ping_cache_caps_devices_per_owner() {
+        let owner = "cap-owner@example.com";
+        let total = MAX_PING_DEVICES_PER_OWNER + 3;
+        for i in 0..total {
+            ping_cache_store(
+                owner,
+                format!("{}:device-{}", owner, i),
+                PingCacheEntry {
+                    heartbeat: 300,
+                    folders: Vec::new(),
+                    last_seen: Instant::now(),
+                },
+            )
+            .await;
+            // Distinct last_seen so eviction order is deterministic.
+            tokio::task::yield_now().await;
+        }
+        let cache = PING_CACHE.lock().await;
+        let prefix = format!("{}:", owner);
+        let kept = cache.iter().filter(|(k, _)| k.starts_with(&prefix)).count();
+        assert_eq!(
+            kept, MAX_PING_DEVICES_PER_OWNER,
+            "re-provision churn must not exceed the per-owner device cap"
+        );
+        // Newest entries survive; the oldest is evicted.
+        assert!(
+            cache
+                .peek(&format!("{}:device-{}", owner, total - 1))
+                .is_some()
+        );
+        assert!(cache.peek(&format!("{}:device-{}", owner, 0)).is_none());
+    }
+
+    #[tokio::test]
+    async fn test_ping_cache_key_truncates_long_device_id() {
+        let long_id = "x".repeat(500);
+        assert_eq!(ping_device_key_part(&long_id).len(), MAX_PING_DEVICE_ID_LEN);
+    }
+
+    #[tokio::test]
+    async fn test_ping_superseded_by_newer_ping_same_device() {
+        let state = test_ping_state().await;
+        let owner = "supersede-user@example.com";
+        let password = SecretString::from("pw");
+        let wbxml = Wbxml::new();
+        let xml = ping_xml(300, r#"<Folder><Id>4</Id><Class>Email</Class></Folder>"#);
+
+        let req_old = EasRequest {
+            command: "Ping".to_string(),
+            device_id: Some("supersede-device".to_string()),
+            ..Default::default()
+        };
+        let state_old = state.clone();
+        let wbxml_old = Wbxml::new();
+        let xml_old = xml.clone();
+        let pw_old = SecretString::from("pw");
+        let old_ping = tokio::spawn(async move {
+            handle_ping(
+                &state_old,
+                &PingInvocation {
+                    owner,
+                    password: &pw_old,
+                    req: &req_old,
+                    xml: &xml_old,
+                    request_id: "req-ping-old",
+                },
+                &wbxml_old,
+                false,
+            )
+            .await
+        });
+
+        // Let the old Ping fully register before the newer one arrives.
+        tokio::time::sleep(StdDuration::from_millis(150)).await;
+        assert!(
+            PING_IN_FLIGHT.contains_key("supersede-user@example.com:supersede-device"),
+            "old Ping must be in flight"
+        );
+
+        let req_new = EasRequest {
+            command: "Ping".to_string(),
+            device_id: Some("supersede-device".to_string()),
+            ..Default::default()
+        };
+        let state_new = state.clone();
+        let new_ping = tokio::spawn(async move {
+            handle_ping(
+                &state_new,
+                &PingInvocation {
+                    owner,
+                    password: &password,
+                    req: &req_new,
+                    xml: &xml,
+                    request_id: "req-ping-new",
+                },
+                &wbxml,
+                false,
+            )
+            .await
+        });
+
+        let old_text = response_text(
+            timeout(StdDuration::from_secs(10), old_ping)
+                .await
+                .expect("superseded Ping must answer promptly")
+                .expect("spawned Ping must not panic"),
+        )
+        .await;
+        assert!(
+            old_text.contains("<Status>1</Status>"),
+            "superseded Ping must answer Status 1, got: {old_text}"
+        );
+        assert!(
+            !old_text.contains("<Status>2</Status>"),
+            "superseded Ping must not report changes, got: {old_text}"
+        );
+        assert!(
+            PING_IN_FLIGHT.contains_key("supersede-user@example.com:supersede-device"),
+            "the newer Ping's entry survives the old Ping's cleanup"
+        );
+
+        // The surviving Ping is still live: wake it with a push event and
+        // confirm it answers Status 2 and cleans up the in-flight map.
+        state
+            .subscription_manager
+            .publish(crate::notifications::NotificationEvent::NewMail {
+                owner: owner.to_string(),
+                folder_id: "mb-inbox".to_string(),
+                item_id: "email-9".to_string(),
+                change_key: "s-1".to_string(),
+            });
+        let new_text = response_text(
+            timeout(StdDuration::from_secs(10), new_ping)
+                .await
+                .expect("surviving Ping must answer on change")
+                .expect("spawned Ping must not panic"),
+        )
+        .await;
+        assert!(
+            new_text.contains("<Status>2</Status>"),
+            "surviving Ping must wake on change, got: {new_text}"
+        );
+        assert!(
+            !PING_IN_FLIGHT.contains_key("supersede-user@example.com:supersede-device"),
+            "supersede test device entry must be removed after both Pings end"
+        );
+        assert_eq!(state.push_registry.monitor_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_ping_multiple_devices_share_monitor_and_both_wake() {
+        let state = test_ping_state().await;
+        let owner = "multi-device@example.com";
+        let xml = ping_xml(300, r#"<Folder><Id>2</Id><Class>Email</Class></Folder>"#);
+
+        let mut handles = Vec::new();
+        for (device, req_id) in [("android-phone", "r1"), ("tablet", "r2")] {
+            let st = state.clone();
+            let xml = xml.clone();
+            let handle = tokio::spawn(async move {
+                let req = EasRequest {
+                    command: "Ping".to_string(),
+                    device_id: Some(device.to_string()),
+                    ..Default::default()
+                };
+                let pw = SecretString::from("pw");
+                let wbxml = Wbxml::new();
+                handle_ping(
+                    &st,
+                    &PingInvocation {
+                        owner,
+                        password: &pw,
+                        req: &req,
+                        xml: &xml,
+                        request_id: req_id,
+                    },
+                    &wbxml,
+                    false,
+                )
+                .await
+            });
+            handles.push(handle);
+        }
+
+        tokio::time::sleep(StdDuration::from_millis(150)).await;
+        assert_eq!(
+            state.push_registry.monitor_count(),
+            1,
+            "two devices of one mailbox share a single push monitor"
+        );
+        assert!(
+            PING_IN_FLIGHT.contains_key("multi-device@example.com:android-phone")
+                && PING_IN_FLIGHT.contains_key("multi-device@example.com:tablet"),
+            "each device has its own Ping"
+        );
+
+        state
+            .subscription_manager
+            .publish(crate::notifications::NotificationEvent::NewMail {
+                owner: owner.to_string(),
+                folder_id: "mb-inbox".to_string(),
+                item_id: "email-7".to_string(),
+                change_key: "s-2".to_string(),
+            });
+
+        for h in handles {
+            let text = response_text(
+                timeout(StdDuration::from_secs(10), h)
+                    .await
+                    .expect("both device Pings must wake")
+                    .expect("spawned Ping must not panic"),
+            )
+            .await;
+            assert!(
+                text.contains("<Status>2</Status>"),
+                "each device wakes on the shared monitor's event, got: {text}"
+            );
+        }
+        assert_eq!(
+            state.push_registry.monitor_count(),
+            0,
+            "monitor torn down once the last device's Ping ends"
+        );
+        assert!(
+            !PING_IN_FLIGHT.contains_key("multi-device@example.com:android-phone")
+                && !PING_IN_FLIGHT.contains_key("multi-device@example.com:tablet")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_ping_journal_history_does_not_storm_email_folder() {
+        let state = test_ping_state().await;
+        let owner = "storm-user@example.com";
+
+        // Simulate journal history (e.g. surviving a container restart):
+        // calendar upserts + a deletion, plus an email folder whose sync
+        // state is a JMAP token — never a `seq:` watermark.
+        state
+            .storage
+            .upsert_item_map(owner, "http://cal/1", "calendar/", "cal-1", "uid-1", "e1")
+            .await
+            .expect("journal upsert");
+        state
+            .storage
+            .add_delete_tombstone(owner, "cal-2")
+            .await
+            .expect("journal delete");
+        state
+            .storage
+            .set_sync_key(owner, "4::storm-device", "synckey", Some("s-42"))
+            .await
+            .expect("store JMAP state token");
+
+        let password = SecretString::from("pw");
+        let req = EasRequest {
+            command: "Ping".to_string(),
+            device_id: Some("storm-device".to_string()),
+            ..Default::default()
+        };
+        let xml = ping_xml(60, r#"<Folder><Id>4</Id><Class>Email</Class></Folder>"#);
+        let wbxml = Wbxml::new();
+
+        // Before the fix, this returned Status 2 immediately (and forever):
+        // since=0 matched every journaled row. It must now stay asleep.
+        let result = timeout(
+            StdDuration::from_millis(600),
+            handle_ping(
+                &state,
+                &PingInvocation {
+                    owner,
+                    password: &password,
+                    req: &req,
+                    xml: &xml,
+                    request_id: "req-storm",
+                },
+                &wbxml,
+                false,
+            ),
+        )
+        .await;
+        assert!(
+            result.is_err(),
+            "email Ping must not answer Status 2 from unrelated journal history"
+        );
+        assert_eq!(state.push_registry.monitor_count(), 0);
+        assert!(!PING_IN_FLIGHT.contains_key("storm-user@example.com:storm-device"));
+    }
+
+    #[tokio::test]
+    async fn test_ping_unsynced_calendar_folder_uses_baseline_not_zero() {
+        let state = test_ping_state().await;
+        let owner = "baseline-user@example.com";
+
+        // Journal history predating this device's first calendar sync.
+        state
+            .storage
+            .upsert_item_map(owner, "http://cal/a", "calendar/", "cal-a", "uid-a", "ea")
+            .await
+            .expect("journal upsert");
+        state
+            .storage
+            .upsert_item_map(owner, "http://cal/b", "calendar/", "cal-b", "uid-b", "eb")
+            .await
+            .expect("journal upsert");
+
+        let password = SecretString::from("pw");
+        let req = EasRequest {
+            command: "Ping".to_string(),
+            device_id: Some("baseline-device".to_string()),
+            ..Default::default()
+        };
+        let xml = ping_xml(60, r#"<Folder><Id>1</Id><Class>Calendar</Class></Folder>"#);
+        let wbxml = Wbxml::new();
+
+        let ping = tokio::spawn(async move {
+            handle_ping(
+                &state,
+                &PingInvocation {
+                    owner,
+                    password: &password,
+                    req: &req,
+                    xml: &xml,
+                    request_id: "req-baseline",
+                },
+                &wbxml,
+                false,
+            )
+            .await
+        });
+
+        // Pre-Ping history must not fire; the Ping sleeps at its baseline.
+        tokio::time::sleep(StdDuration::from_millis(300)).await;
+        assert!(
+            !ping.is_finished(),
+            "pre-existing journal history must not wake the new-device Ping"
+        );
+        ping.abort();
+        let _ = ping.await; // join so the guard's Drop runs before we assert
+        assert!(!PING_IN_FLIGHT.contains_key("baseline-user@example.com:baseline-device"));
+    }
+
+    #[tokio::test]
+    async fn test_ping_seq_watermark_change_wakes_calendar_folder() {
+        let state = test_ping_state().await;
+        let owner = "delta-user@example.com";
+
+        // Device already delta-synced the calendar up to the current head…
+        state
+            .storage
+            .upsert_item_map(owner, "http://cal/1", "calendar/", "cal-1", "uid-1", "e1")
+            .await
+            .expect("journal upsert");
+        let head = state
+            .storage
+            .get_latest_change_seq()
+            .await
+            .expect("journal head");
+        state
+            .storage
+            .set_sync_key(
+                owner,
+                "1::delta-device",
+                "synckey",
+                Some(&format!("seq:{head}")),
+            )
+            .await
+            .expect("store seq watermark");
+
+        let password = SecretString::from("pw");
+        let req = EasRequest {
+            command: "Ping".to_string(),
+            device_id: Some("delta-device".to_string()),
+            ..Default::default()
+        };
+        let xml = ping_xml(60, r#"<Folder><Id>1</Id><Class>Calendar</Class></Folder>"#);
+
+        let st = state.clone();
+        let ping = tokio::spawn(async move {
+            let wbxml = Wbxml::new();
+            handle_ping(
+                &st,
+                &PingInvocation {
+                    owner,
+                    password: &password,
+                    req: &req,
+                    xml: &xml,
+                    request_id: "req-delta",
+                },
+                &wbxml,
+                false,
+            )
+            .await
+        });
+
+        tokio::time::sleep(StdDuration::from_millis(300)).await;
+        assert!(
+            !ping.is_finished(),
+            "no changes yet — Ping must stay asleep"
+        );
+
+        // …then a change lands past the watermark: Tick wake within 15s.
+        state
+            .storage
+            .upsert_item_map(owner, "http://cal/2", "calendar/", "cal-2", "uid-2", "e2")
+            .await
+            .expect("journal upsert");
+
+        let resp = timeout(StdDuration::from_secs(20), ping)
+            .await
+            .expect("calendar change past the watermark must wake the Ping")
+            .expect("spawned Ping must not panic");
+        let text = response_text(resp).await;
+        assert!(
+            text.contains("<Status>2</Status>") && text.contains("<Folder>1</Folder>"),
+            "calendar change past the watermark must report the calendar folder, got: {text}"
+        );
+        assert!(!PING_IN_FLIGHT.contains_key("delta-user@example.com:delta-device"));
     }
 }

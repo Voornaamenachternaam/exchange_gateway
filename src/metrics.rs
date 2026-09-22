@@ -431,6 +431,15 @@ pub struct AppMetrics {
     pub operations: OperationMetrics,
 }
 
+/// Process-wide metrics handle. The Prometheus registry is process-global, so
+/// every `AppState` must share one `AppMetrics` — a second registration of the
+/// same metric names would fail.
+pub fn app_metrics() -> Arc<AppMetrics> {
+    static GLOBAL: std::sync::LazyLock<Arc<AppMetrics>> =
+        std::sync::LazyLock::new(|| Arc::new(AppMetrics::new()));
+    GLOBAL.clone()
+}
+
 impl AppMetrics {
     /// Initialize all metrics with the global registry.
     pub fn new() -> Self {

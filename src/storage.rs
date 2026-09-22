@@ -671,6 +671,60 @@ impl Storage {
         .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))
     }
 
+    /// Lowest `seq:` watermark any device of `owner` could still ask from.
+    /// Only `sync_state` tokens shaped `seq:<n>` count; non-seq tokens (JMAP
+    /// state, opaque blobs) are ignored. `None` when no seq watermark exists,
+    /// in which case nothing may be pruned for this owner.
+    async fn min_seq_watermark(&self, owner: &str) -> Result<Option<i64>> {
+        let row = sqlx::query(
+            "SELECT MIN(CAST(substr(token, 5) AS INTEGER)) \
+             FROM sync_state \
+             WHERE owner = ?1 AND substr(token, 1, 4) = 'seq:' \
+             AND substr(token, 5) GLOB '[0-9]*' AND substr(token, 5) != ''",
+        )
+        .bind(owner)
+        .fetch_one(self.pool.as_ref())
+        .await
+        .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))?;
+        Ok(row.get(0))
+    }
+
+    /// Delete change-journal rows no device of `owner` can ever request again.
+    ///
+    /// Every `id > watermark` lookup a device will ever issue starts from a
+    /// `seq:` watermark stored in `sync_state`; rows at or below the *minimum*
+    /// such watermark are therefore permanently invisible to sync and Ping,
+    /// and removing them keeps the journal bounded without ever cutting a
+    /// delta-sync window out from under a device. Rows are kept whenever no
+    /// seq watermark exists for the owner (nothing synced yet — full replay
+    /// must remain possible after a container restart).
+    pub async fn prune_change_journal(&self, owner: &str) -> Result<u64> {
+        let Some(floor) = self.min_seq_watermark(owner).await? else {
+            return Ok(0);
+        };
+        let res = sqlx::query("DELETE FROM change_journal WHERE owner = ?1 AND id <= ?2")
+            .bind(owner)
+            .bind(floor)
+            .execute(self.pool.as_ref())
+            .await
+            .map_err(|e| GatewayError::Storage(format!("Delete error: {}", e)))?;
+        Ok(res.rows_affected())
+    }
+
+    /// Watermark-safe pruning for every owner present in the journal.
+    pub async fn prune_change_journals(&self) -> Result<u64> {
+        let rows = sqlx::query("SELECT DISTINCT owner FROM change_journal")
+            .fetch_all(self.pool.as_ref())
+            .await
+            .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))?;
+        let mut total = 0u64;
+        for row in rows {
+            let owner: String = row.get(0);
+            total += self.prune_change_journal(&owner).await?;
+        }
+        Ok(total)
+    }
+
     pub async fn set_provision_policy(
         &self,
         owner: &str,
@@ -1929,5 +1983,201 @@ impl Storage {
         .await
         .map_err(|e| GatewayError::Storage(format!("user_config delete error: {}", e)))?;
         Ok(res.rows_affected() > 0)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    async fn mem_storage() -> Storage {
+        let storage = Storage::new("sqlite::memory:")
+            .await
+            .expect("in-memory storage");
+        storage.init_schema().await.expect("schema init");
+        storage
+    }
+
+    async fn journal_len(storage: &Storage, owner: &str) -> usize {
+        storage
+            .list_journal_since_seq(owner, 0)
+            .await
+            .expect("journal listing")
+            .len()
+    }
+
+    #[tokio::test]
+    async fn prune_change_journal_removes_rows_below_all_watermarks() {
+        let storage = mem_storage().await;
+        let owner = "prune-user@example.com";
+        for i in 0..5 {
+            storage
+                .upsert_item_map(
+                    owner,
+                    &format!("http://cal/{i}"),
+                    "calendar/",
+                    &format!("cal-{i}"),
+                    &format!("uid-{i}"),
+                    "e",
+                )
+                .await
+                .expect("journal upsert");
+        }
+        assert_eq!(journal_len(&storage, owner).await, 5);
+
+        // Oldest device syncs at seq 3; everything at/below it is unreadable.
+        storage
+            .set_sync_key(owner, "1::device-b", "key-b", Some("seq:3"))
+            .await
+            .expect("store watermark");
+        storage
+            .set_sync_key(owner, "1::device-a", "key-a", Some("seq:5"))
+            .await
+            .expect("store watermark");
+        // A non-seq token (JMAP state on the email folder) must not confuse
+        // the watermark scan.
+        storage
+            .set_sync_key(owner, "4::device-a", "key-e", Some("s-1234"))
+            .await
+            .expect("store JMAP token");
+
+        let removed = storage
+            .prune_change_journal(owner)
+            .await
+            .expect("prune must succeed");
+        assert_eq!(removed, 3, "rows 1..=3 are below every device watermark");
+        assert_eq!(journal_len(&storage, owner).await, 2);
+
+        // Ids keep advancing — AUTOINCREMENT never reuses pruned ids.
+        storage
+            .upsert_item_map(owner, "http://cal/9", "calendar/", "cal-9", "uid-9", "e9")
+            .await
+            .expect("journal upsert");
+        assert_eq!(
+            storage.get_latest_change_seq().await.expect("head"),
+            6,
+            "journal ids remain monotonic after pruning"
+        );
+    }
+
+    #[tokio::test]
+    async fn prune_change_journal_without_watermark_keeps_everything() {
+        let storage = mem_storage().await;
+        let owner = "never-synced@example.com";
+        storage
+            .upsert_item_map(owner, "http://cal/1", "calendar/", "cal-1", "uid-1", "e1")
+            .await
+            .expect("journal upsert");
+        // Malformed seq-shaped token (no digits) must also block pruning.
+        storage
+            .set_sync_key(owner, "1::dev", "key", Some("seq:"))
+            .await
+            .expect("store malformed watermark");
+        assert_eq!(
+            storage.prune_change_journal(owner).await.expect("prune"),
+            0,
+            "no usable watermark => full journal retained for restart replay"
+        );
+        assert_eq!(journal_len(&storage, owner).await, 1);
+    }
+
+    #[tokio::test]
+    async fn prune_change_journals_only_touches_the_owning_mailbox() {
+        let storage = mem_storage().await;
+        for i in 0..3 {
+            storage
+                .upsert_item_map(
+                    "a@example.com",
+                    &format!("h{i}a"),
+                    "calendar/",
+                    &format!("a-{i}"),
+                    "u",
+                    "e",
+                )
+                .await
+                .expect("journal a");
+            storage
+                .upsert_item_map(
+                    "b@example.com",
+                    &format!("h{i}b"),
+                    "calendar/",
+                    &format!("b-{i}"),
+                    "u",
+                    "e",
+                )
+                .await
+                .expect("journal b");
+        }
+        storage
+            .set_sync_key("a@example.com", "1::dev", "key", Some("seq:100"))
+            .await
+            .expect("watermark a");
+        // b has no watermark: fully retained.
+        let removed = storage.prune_change_journals().await.expect("prune all");
+        assert_eq!(removed, 3, "only owner a's rows are removable");
+        assert_eq!(journal_len(&storage, "b@example.com").await, 3);
+    }
+
+    #[tokio::test]
+    async fn change_journal_survives_reopen_for_restart_replay() {
+        let dir =
+            std::env::temp_dir().join(format!("gateway-storage-restart-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let db = dir.join("gateway.db");
+        let url = format!("sqlite://{}?mode=rwc", db.display());
+        let owner = "restart-user@example.com";
+
+        {
+            let storage = Storage::new(&url).await.expect("open db");
+            storage.init_schema().await.expect("schema init");
+            storage
+                .upsert_item_map(owner, "http://cal/1", "calendar/", "cal-1", "uid-1", "e1")
+                .await
+                .expect("journal upsert");
+            storage
+                .add_delete_tombstone(owner, "cal-0")
+                .await
+                .expect("journal delete");
+            // Watermark before any journal row: on restart the full state
+            // must replay above it.
+            storage
+                .set_sync_key(owner, "1::dev", "key", Some("seq:0"))
+                .await
+                .expect("watermark");
+        }
+
+        // Simulated container restart: reopen the same database file and
+        // replay the journal from the persisted watermark.
+        {
+            let storage = Storage::new(&url).await.expect("reopen db");
+            storage.init_schema().await.expect("schema idempotent");
+            assert_eq!(
+                storage.get_latest_change_seq().await.expect("head"),
+                2,
+                "journal ids persist across restart"
+            );
+            let upserts = storage
+                .list_changes_since_seq(owner, 0, 1000)
+                .await
+                .expect("replay upserts");
+            assert_eq!(upserts.len(), 1, "rows after the watermark replay");
+            let deletes = storage
+                .list_deleted_since_seq(owner, 0)
+                .await
+                .expect("replay deletes");
+            assert_eq!(deletes.len(), 1, "tombstones after the watermark replay");
+
+            storage
+                .prune_change_journals()
+                .await
+                .expect("prune after restart");
+            assert_eq!(
+                storage.get_latest_change_seq().await.expect("head"),
+                2,
+                "pruning keeps ids monotonic after restart"
+            );
+        }
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 }
