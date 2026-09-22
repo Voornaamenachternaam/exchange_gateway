@@ -1271,6 +1271,9 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
                 Some("token"),
             )
             .await?;
+        storage
+            .record_journal_watermark(params.owner, params.state_collection_id)
+            .await?;
         let pseudo_resource = format!(
             "class://{}/{}",
             params.owner,
@@ -1336,6 +1339,9 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
                 &new_sync_key,
                 Some(&sync_seq_to_token(latest_seq)),
             )
+            .await?;
+        storage
+            .set_journal_watermark(params.owner, params.state_collection_id, latest_seq)
             .await?;
         return Ok(format!(
             r#"<?xml version="1.0" encoding="utf-8"?>
@@ -1800,6 +1806,23 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
             &new_sync_key,
             Some(&token_val),
         )
+        .await?;
+    // Journal watermark independent of the provider token (which may be a
+    // non-`seq:` JMAP query_state): everything journaled up to the delivered
+    // set is consumed. When the window clipped (MoreAvailable), undelivered
+    // rows must stay visible to Ping, so hold the watermark at the pre-sync
+    // head; the client's obligatory follow-up Sync drains the remainder.
+    let journal_seq = if more_available {
+        start_db_seq
+    } else {
+        storage
+            .get_latest_change_seq()
+            .await
+            .unwrap_or(0)
+            .max(start_db_seq)
+    };
+    storage
+        .set_journal_watermark(params.owner, params.state_collection_id, journal_seq)
         .await?;
     let more_available_tag = if more_available {
         "<MoreAvailable/>"

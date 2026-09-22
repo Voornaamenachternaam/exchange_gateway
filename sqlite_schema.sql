@@ -21,6 +21,7 @@ CREATE TABLE IF NOT EXISTS sync_state (
     collection_id TEXT NOT NULL,
     sync_key TEXT NOT NULL,
     token TEXT,
+    journal_seq INTEGER,
     protocol_version TEXT DEFAULT '16.1',
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(owner, collection_id)

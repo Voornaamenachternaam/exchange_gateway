@@ -1799,30 +1799,24 @@ async fn handle_ping(
         return ping_changed_response(wbxml, as_wbxml, &probe_changed, request_id);
     }
 
-    // Per-folder journal baselines for folders without a `seq:`-based sync
-    // watermark (never delta-synced, fresh device, or after a container
-    // restart where a non-email folder token is not seq-based). Captured once
-    // here — before the loop starts — so a change landing after this point is
-    // still reported, while the pre-existing journal history is not replayed.
+    // Per-folder journal baselines, used only by folders with no persisted
+    // watermark at all (never synced: no `seq:` token and no `journal_seq`
+    // column value). Captured once here — before the loop starts — so a
+    // change landing after this point is still reported, while pre-existing
+    // journal history is not replayed.
     let mut journal_baselines: HashMap<String, i64> = HashMap::new();
     for folder in &folders {
         if matches!(ping_folder_kind(folder), None | Some(PingFolderKind::Email)) {
             continue;
         }
         let collection_id = scoped_collection_id(&folder.id, device_id);
-        let has_seq_watermark = state
+        let watermark = state
             .storage
-            .get_sync_key(owner, &collection_id)
+            .journal_watermark(owner, &collection_id)
             .await
             .ok()
-            .flatten()
-            .and_then(|(_, token)| token)
-            .is_some_and(|t| {
-                t.strip_prefix("seq:")
-                    .and_then(|v| v.parse::<i64>().ok())
-                    .is_some()
-            });
-        if !has_seq_watermark {
+            .flatten();
+        if watermark.is_none() {
             let head = state.storage.get_latest_change_seq().await.unwrap_or(0);
             journal_baselines.insert(folder.id.clone(), head);
         }
@@ -1850,22 +1844,20 @@ async fn handle_ping(
                 continue;
             }
 
-            // Watermark from the stored per-device sync token; folders that
-            // never completed a seq-based delta sync (or carry a non-seq
-            // token) fall back to the journal head captured at Ping start, so
-            // only changes *after* this Ping began can fire — never the whole
-            // journal history replayed as a storm after a container restart
-            // or a fresh device provision.
+            // Watermark persisted by the collection's last sync completion
+            // (a `seq:` token or the `journal_seq` column for collections
+            // whose sync token carries a provider state). Folders with no
+            // watermark at all — never synced — fall back to the journal head
+            // captured at Ping start, so only changes *after* this Ping began
+            // can fire; the pre-existing journal history surviving a restart
+            // is never replayed as a storm.
             let collection_id = scoped_collection_id(&folder.id, device_id);
             let since = state
                 .storage
-                .get_sync_key(owner, &collection_id)
+                .journal_watermark(owner, &collection_id)
                 .await
                 .ok()
                 .flatten()
-                .and_then(|(_, token)| token)
-                .and_then(|t| t.strip_prefix("seq:").map(|v| v.to_string()))
-                .and_then(|v| v.parse::<i64>().ok())
                 .unwrap_or_else(|| journal_baselines.get(&folder.id).copied().unwrap_or(0));
 
             let changed = match kind {
@@ -2272,14 +2264,20 @@ async fn handle_get_item_estimate(
             }
         }
     }
+    // Use the persisted journal watermark (a `seq:` token or the `journal_seq`
+    // column recorded at sync completion). A collection whose token is a
+    // provider state (JMAP query_state) previously fell through to 0 and
+    // counted the entire journal — wrong (overcount) before pruning and
+    // wrong (undercount) once pruning has removed rows below watermarks.
     let since = if incoming == "0" {
         0
     } else {
-        stored
-            .as_ref()
-            .and_then(|(_, token)| token.as_deref())
-            .and_then(|t| t.strip_prefix("seq:"))
-            .and_then(|v| v.parse::<i64>().ok())
+        state
+            .storage
+            .journal_watermark(owner, &collection_id)
+            .await
+            .ok()
+            .flatten()
             .unwrap_or(0)
     };
     let changed = state
@@ -5575,6 +5573,147 @@ mod tests {
         ping.abort();
         let _ = ping.await; // join so the guard's Drop runs before we assert
         assert!(!PING_IN_FLIGHT.contains_key("baseline-user@example.com:baseline-device"));
+    }
+
+    #[tokio::test]
+    async fn test_ping_uses_journal_seq_column_when_token_is_provider_state() {
+        let state = test_ping_state().await;
+        let owner = "colwm-user@example.com";
+
+        // History the client already consumed; the (JMAP calendar path) token
+        // is a provider state, with the journal watermark in the column.
+        state
+            .storage
+            .upsert_item_map(owner, "http://cal/1", "calendar/", "cal-1", "uid-1", "e1")
+            .await
+            .expect("journal upsert");
+        let head = state
+            .storage
+            .get_latest_change_seq()
+            .await
+            .expect("journal head");
+        state
+            .storage
+            .set_sync_key(
+                owner,
+                "1::colwm-device",
+                "synckey",
+                Some("Some(query-state)"),
+            )
+            .await
+            .expect("store provider token");
+        state
+            .storage
+            .set_journal_watermark(owner, "1::colwm-device", head)
+            .await
+            .expect("store watermark");
+
+        let password = SecretString::from("pw");
+        let req = EasRequest {
+            command: "Ping".to_string(),
+            device_id: Some("colwm-device".to_string()),
+            ..Default::default()
+        };
+        let xml = ping_xml(60, r#"<Folder><Id>1</Id><Class>Calendar</Class></Folder>"#);
+
+        let st = state.clone();
+        let ping = tokio::spawn(async move {
+            let wbxml = Wbxml::new();
+            handle_ping(
+                &st,
+                &PingInvocation {
+                    owner,
+                    password: &password,
+                    req: &req,
+                    xml: &xml,
+                    request_id: "req-colwm",
+                },
+                &wbxml,
+                false,
+            )
+            .await
+        });
+
+        tokio::time::sleep(StdDuration::from_millis(300)).await;
+        assert!(
+            !ping.is_finished(),
+            "consumed history below the column watermark must not wake the Ping"
+        );
+
+        // A change past the watermark is still detected on the next tick.
+        state
+            .storage
+            .upsert_item_map(owner, "http://cal/2", "calendar/", "cal-2", "uid-2", "e2")
+            .await
+            .expect("journal upsert");
+        let resp = timeout(StdDuration::from_secs(20), ping)
+            .await
+            .expect("change past the column watermark must wake the Ping")
+            .expect("spawned Ping must not panic");
+        let text = response_text(resp).await;
+        assert!(
+            text.contains("<Status>2</Status>") && text.contains("<Folder>1</Folder>"),
+            "change past the column watermark must report the folder, got: {text}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_get_item_estimate_counts_only_after_journal_watermark() {
+        let state = test_ping_state().await;
+        let owner = "estimate-user@example.com";
+
+        // Two consumed rows, then one new row after the sync.
+        state
+            .storage
+            .upsert_item_map(owner, "http://cal/1", "calendar/", "cal-1", "uid-1", "e1")
+            .await
+            .expect("journal upsert");
+        state
+            .storage
+            .upsert_item_map(owner, "http://cal/2", "calendar/", "cal-2", "uid-2", "e2")
+            .await
+            .expect("journal upsert");
+        let head = state
+            .storage
+            .get_latest_change_seq()
+            .await
+            .expect("journal head");
+        state
+            .storage
+            .set_sync_key(
+                owner,
+                "1::est-device",
+                "keystored",
+                Some("non-seq-query-state"),
+            )
+            .await
+            .expect("store provider token");
+        state
+            .storage
+            .set_journal_watermark(owner, "1::est-device", head)
+            .await
+            .expect("store watermark");
+        state
+            .storage
+            .upsert_item_map(owner, "http://cal/3", "calendar/", "cal-3", "uid-3", "e3")
+            .await
+            .expect("journal upsert");
+
+        let req = EasRequest {
+            command: "GetItemEstimate".to_string(),
+            sync_key: Some("keystored".to_string()),
+            collection_id: Some("1".to_string()),
+            device_id: Some("est-device".to_string()),
+            ..Default::default()
+        };
+        let resp =
+            handle_get_item_estimate(&state, owner, &req, &Wbxml::new(), false, "req-estimate")
+                .await;
+        let text = response_text(resp).await;
+        assert!(
+            text.contains("<Estimate>1</Estimate>"),
+            "estimate must count only rows after the column watermark, got: {text}"
+        );
     }
 
     #[tokio::test]
