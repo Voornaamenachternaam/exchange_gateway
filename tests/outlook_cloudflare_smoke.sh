@@ -108,10 +108,34 @@ curl -fsS \
 require_contains "${TMP_DIR}/autodiscover.soap.xml" "ExternalEwsUrl"
 require_contains "${TMP_DIR}/autodiscover.soap.xml" "MobileSyncServer"
 
-log "Checking Autodiscover JSON"
-curl -fsS "${base}/autodiscover/autodiscover.json" >"${TMP_DIR}/autodiscover.json"
+log "Checking Autodiscover JSON (Protocol=ActiveSync, as requested by Outlook Android)"
+curl -fsS "${base}/autodiscover/autodiscover.json?Protocol=ActiveSync" >"${TMP_DIR}/autodiscover.json"
 require_contains "${TMP_DIR}/autodiscover.json" "\"Protocol\":\"ActiveSync\""
 require_contains "${TMP_DIR}/autodiscover.json" "\"Url\":\"${base}/Microsoft-Server-ActiveSync\""
+
+log "Checking Autodiscover JSON v1.0 path form with explicit email"
+curl -fsS "${base}/autodiscover/autodiscover.json/v1.0/${GATEWAY_USER}?Protocol=ActiveSync" >"${TMP_DIR}/autodiscover.v1path.json"
+require_contains "${TMP_DIR}/autodiscover.v1path.json" "\"Protocol\":\"ActiveSync\""
+require_contains "${TMP_DIR}/autodiscover.v1path.json" "\"Url\":\"${base}/Microsoft-Server-ActiveSync\""
+
+log "Checking Autodiscover JSON rejects missing/unknown Protocol (real Exchange V2 behaviour)"
+status="$(curl -sS -o "${TMP_DIR}/autodiscover-missing.json" -w '%{http_code}' "${base}/autodiscover/autodiscover.json")"
+[ "${status}" = "400" ] || { echo "FAIL: missing Protocol returned HTTP ${status}, expected 400" >&2; exit 1; }
+require_contains "${TMP_DIR}/autodiscover-missing.json" "\"code\":\"MissingProtocol\""
+status="$(curl -sS -o "${TMP_DIR}/autodiscover-unknown.json" -w '%{http_code}' "${base}/autodiscover/autodiscover.json?Protocol=Substrate")"
+[ "${status}" = "400" ] || { echo "FAIL: unknown Protocol returned HTTP ${status}, expected 400" >&2; exit 1; }
+require_contains "${TMP_DIR}/autodiscover-unknown.json" "\"code\":\"InvalidProtocol\""
+status="$(curl -sS -o "${TMP_DIR}/autodiscover-rest.json" -w '%{http_code}' "${base}/autodiscover/autodiscover.json?Protocol=Rest")"
+[ "${status}" = "400" ] || { echo "FAIL: Rest Protocol returned HTTP ${status}, expected 400 (no REST endpoint)" >&2; exit 1; }
+
+log "Checking Autodiscover XML mobilesync schema (Outlook Android Exchange-account flow)"
+curl -fsS \
+  -H 'Content-Type: text/xml; charset=utf-8' \
+  --data "<?xml version=\"1.0\"?><Autodiscover xmlns=\"http://schemas.microsoft.com/exchange/autodiscover/mobilesync/requestschema/2006\"><Request><EMailAddress>${GATEWAY_USER}</EMailAddress><AcceptableResponseSchema>http://schemas.microsoft.com/exchange/autodiscover/mobilesync/responseschema/2006</AcceptableResponseSchema></Request></Autodiscover>" \
+  "${base}/autodiscover/autodiscover.xml" >"${TMP_DIR}/autodiscover-mobilesync.xml"
+require_contains "${TMP_DIR}/autodiscover-mobilesync.xml" "mobilesync/responseschema/2006"
+require_contains "${TMP_DIR}/autodiscover-mobilesync.xml" "<Url>${base}/Microsoft-Server-ActiveSync</Url>"
+require_contains "${TMP_DIR}/autodiscover-mobilesync.xml" "<Type>MobileSync</Type>"
 
 log "Checking ActiveSync FolderSync bootstrap"
 curl -fsS "${auth[@]}" \

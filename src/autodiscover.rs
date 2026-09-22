@@ -481,37 +481,55 @@ pub fn handle_autodiscover_json(
     //   ?Protocol=AutodiscoverV1 → {"Protocol":"AutodiscoverV1","Url":"<v1>"}
     //
     // "Exchange" is NOT a valid V2 Protocol name — it's a V1 XML concept.
-    // When no Protocol is specified, the gateway defaults to ActiveSync,
-    // which is what AutoDetect and Outlook mobile need. Real Exchange Server
-    // requires Protocol to be specified; the gateway's default is a
-    // convenience for browser/diagnostic access.
+    //
+    // Real Exchange V2 behaviour for a missing or unrecognized Protocol is
+    // an HTTP 400 JSON error, NOT a silent default. Defaulting an absent
+    // Protocol to ActiveSync would let strict clients (AutoDetect, Outlook
+    // mobile) silently accept settings meant for a different protocol, so
+    // the gateway mirrors real Exchange: only the protocols it actually
+    // serves (ActiveSync, Ews, AutodiscoverV1) return 200 + Url; anything
+    // else is an explicit error.
+    //
+    // "Rest" is deliberately NOT mapped to the EWS URL: this gateway has no
+    // REST endpoint, and advertising Rest→EWS sends strict clients down a
+    // dead end. It is rejected like any other unsupported protocol.
 
-    let body = match protocol.map(|p| p.to_ascii_lowercase()).as_deref() {
-        Some("activesync") => format!(
-            r#"{{"Protocol":"ActiveSync","Url":"{as_url}"}}"#,
-            as_url = as_url
-        ),
-        Some("ews") => format!(
-            r#"{{"Protocol":"Ews","Url":"{ews_url}"}}"#,
-            ews_url = ews_url
-        ),
-        Some("autodiscoverv1") => format!(
-            r#"{{"Protocol":"AutodiscoverV1","Url":"{v1_url}"}}"#,
-            v1_url = v1_url
-        ),
-        Some("rest") => format!(
-            r#"{{"Protocol":"Rest","Url":"{ews_url}"}}"#,
-            ews_url = ews_url
-        ),
-        // No Protocol or unrecognized — default to ActiveSync.
-        // This is what AutoDetect and Outlook mobile need.
-        _ => format!(
-            r#"{{"Protocol":"ActiveSync","Url":"{as_url}"}}"#,
-            as_url = as_url
-        ),
-    };
+    fn invalid_protocol(protocol: &str) -> String {
+        let escaped: String = protocol.chars().flat_map(|c| c.escape_default()).collect();
+        format!(
+            r#"{{"error":{{"code":"InvalidProtocol","message":"The protocol '{escaped}' is not supported."}}}}"#
+        )
+    }
 
-    (StatusCode::OK, content_type_json(), body)
+    match protocol.map(|p| p.to_ascii_lowercase()).as_deref() {
+        Some("activesync") => (
+            StatusCode::OK,
+            content_type_json(),
+            format!(
+                r#"{{"Protocol":"ActiveSync","Url":"{as_url}"}}"#,
+                as_url = as_url
+            ),
+        ),
+        Some("ews") => (
+            StatusCode::OK,
+            content_type_json(),
+            format!(r#"{{"Protocol":"Ews","Url":"{ews_url}"}}"#, ews_url = ews_url),
+        ),
+        Some("autodiscoverv1") => (
+            StatusCode::OK,
+            content_type_json(),
+            format!(
+                r#"{{"Protocol":"AutodiscoverV1","Url":"{v1_url}"}}"#,
+                v1_url = v1_url
+            ),
+        ),
+        Some(other) => (StatusCode::BAD_REQUEST, content_type_json(), invalid_protocol(other)),
+        None => (
+            StatusCode::BAD_REQUEST,
+            content_type_json(),
+            r#"{"error":{"code":"MissingProtocol","message":"The Protocol query parameter is required."}}"#.to_string(),
+        ),
+    }
 }
 
 /// Bundled inputs to `handle_autodiscover_xml`.
@@ -1463,33 +1481,51 @@ mod tests {
     }
 
     #[test]
-    fn test_json_rest_protocol() {
+    fn test_json_rest_protocol_rejected() {
+        // The gateway has no REST endpoint; Rest must NOT be mapped to the
+        // EWS URL (that would send strict clients down a dead end). Real
+        // Exchange V2 behaviour for an unsupported protocol is a 400 error.
         let (status, _hdrs, body) =
             handle_autodiscover_json("mail.example.com", Some("Rest"), None);
-        assert_eq!(status, StatusCode::OK);
+        assert_eq!(status, StatusCode::BAD_REQUEST);
         assert_eq!(
             body,
-            r#"{"Protocol":"Rest","Url":"https://mail.example.com/EWS/Exchange.asmx"}"#
+            r#"{"error":{"code":"InvalidProtocol","message":"The protocol 'rest' is not supported."}}"#
         );
     }
 
     #[test]
-    fn test_json_default_is_activesync() {
+    fn test_json_missing_protocol_is_error() {
+        // Real Exchange V2 requires Protocol; an absent Protocol is a 400,
+        // never a silent ActiveSync default.
         let (status, _hdrs, body) = handle_autodiscover_json("mail.example.com", None, None);
-        assert_eq!(status, StatusCode::OK);
+        assert_eq!(status, StatusCode::BAD_REQUEST);
         assert_eq!(
             body,
-            r#"{"Protocol":"ActiveSync","Url":"https://mail.example.com/Microsoft-Server-ActiveSync"}"#
+            r#"{"error":{"code":"MissingProtocol","message":"The Protocol query parameter is required."}}"#
         );
     }
 
     #[test]
-    fn test_json_unrecognized_protocol_defaults_activesync() {
+    fn test_json_unrecognized_protocol_is_error() {
         let (status, _hdrs, body) =
             handle_autodiscover_json("mail.example.com", Some("Substrate"), None);
-        assert_eq!(status, StatusCode::OK);
-        // Unrecognized protocols default to ActiveSync
-        assert!(body.contains(r#""Protocol":"ActiveSync""#));
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(body.contains(r#""code":"InvalidProtocol""#));
+        assert!(!body.contains(r#""Protocol":"ActiveSync""#));
+        assert!(!body.contains("Url"));
+    }
+
+    #[test]
+    fn test_json_error_escapes_protocol_value() {
+        // JSON injection via a crafted Protocol value must be neutralized.
+        let (status, _hdrs, body) =
+            handle_autodiscover_json("mail.example.com", Some("x\",\"Url\":\"http://evil"), None);
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(!body.contains(r#""Url":"http://evil""#));
+        let parsed: serde_json::Value =
+            serde_json::from_str(&body).expect("error body must be valid JSON");
+        assert_eq!(parsed["error"]["code"], "InvalidProtocol");
     }
 
     #[test]
@@ -1518,9 +1554,11 @@ mod tests {
 
     #[test]
     fn test_json_no_exchange_protocol_name() {
-        let (status, _hdrs, body) = handle_autodiscover_json("mail.example.com", None, None);
-        assert_eq!(status, StatusCode::OK);
-        // "Exchange" is not a valid V2 Protocol name
-        assert!(!body.contains(r#""Protocol":"Exchange""#));
+        // "Exchange" is not a valid V2 Protocol name — it must be rejected.
+        let (status, _hdrs, body) =
+            handle_autodiscover_json("mail.example.com", Some("Exchange"), None);
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(!body.contains(r#""Protocol""#));
+        assert!(body.contains(r#""code":"InvalidProtocol""#));
     }
 }
