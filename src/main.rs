@@ -666,6 +666,15 @@ async fn main() -> anyhow::Result<()> {
 
     let app_state = Arc::new(AppState::new(config.clone(), storage));
 
+    // Deploy-time verification of the JMAP Calendars capability
+    // (`urn:ietf:params:jmap:calendars`) against the configured Stalwart
+    // backend (audit item 5). Controlled by
+    // `GATEWAY_CALENDAR_CAPABILITY_CHECK`:
+    //   - "off"     — skip the check entirely;
+    //   - "warn"    — log findings, never fail startup (default);
+    //   - "enforce" — fail startup unless verification is fully clean.
+    verify_calendar_capability_at_startup(&app_state).await;
+
     // Idle-session sweeper (#3593666961): if MAPI/HTTP is enabled, run
     // `SessionManager::sweep_idle` at the configured/idle-TTL cadence so
     // abandoned Connect+Execute sessions (e.g. a soft-kill of the Outlook
@@ -1014,6 +1023,135 @@ async fn metrics_handler() -> impl IntoResponse {
         metrics_text,
     )
         .into_response()
+}
+
+/// Deploy-time JMAP Calendars capability verification (audit item 5).
+///
+/// Probes the configured Stalwart backend with the administrator credentials
+/// and reports whether `urn:ietf:params:jmap:calendars` is fully usable
+/// (session capability + `Calendar/get` + `CalendarEvent/query` + write
+/// round-trip probes in an isolated probe calendar). In "enforce" mode an
+/// unhealthy report aborts startup. In "warn" mode a report proving the
+/// backend discards `iCalendar` payloads additionally disables the JMAP
+/// calendar write path for the process lifetime so create/update traffic
+/// falls back to CalDAV instead of silently losing data.
+async fn verify_calendar_capability_at_startup(state: &Arc<AppState>) {
+    use exchange_gateway::jmap::JmapClient;
+
+    let mode = std::env::var("GATEWAY_CALENDAR_CAPABILITY_CHECK")
+        .unwrap_or_else(|_| "warn".to_string())
+        .to_ascii_lowercase();
+    if mode == "off" {
+        info!(target: "startup", "JMAP calendar capability check disabled (GATEWAY_CALENDAR_CAPABILITY_CHECK=off)");
+        return;
+    }
+    let enforce = mode == "enforce";
+    if mode != "warn" && !enforce {
+        warn!(
+            target: "startup",
+            mode = %mode,
+            "Unknown GATEWAY_CALENDAR_CAPABILITY_CHECK value; expected off|warn|enforce — treating as warn"
+        );
+    }
+
+    if state.cfg.force_caldav_calendar {
+        info!(
+            target: "startup",
+            "GATEWAY_FORCE_CALDAV_CALENDAR is set — JMAP is not used for calendars; skipping capability check"
+        );
+        return;
+    }
+
+    if state.cfg.jmap_base.is_empty() {
+        let msg = "jmap_base is not configured; cannot verify JMAP calendars capability";
+        if enforce {
+            tracing::error!(target: "startup", "{}", msg);
+            std::process::exit(1);
+        }
+        warn!(target: "startup", "{}", msg);
+        return;
+    }
+    if state.cfg.admin_username.is_empty() || state.cfg.admin_password.is_empty() {
+        let msg = "GATEWAY_ADMIN_USERNAME/GATEWAY_ADMIN_PASSWORD not set; skipping deploy-time JMAP calendars capability check";
+        if enforce {
+            tracing::error!(target: "startup", "{}", msg);
+            std::process::exit(1);
+        }
+        warn!(target: "startup", "{}", msg);
+        return;
+    }
+
+    let jmap = match JmapClient::new(&state.cfg.jmap_base) {
+        Ok(j) => j,
+        Err(e) => {
+            let msg = format!("failed to construct JMAP client: {}", e);
+            if enforce {
+                tracing::error!(target: "startup", "{}", msg);
+                std::process::exit(1);
+            }
+            warn!(target: "startup", "{}", msg);
+            return;
+        }
+    };
+    let password = secrecy::SecretString::from(state.cfg.admin_password.clone());
+
+    match jmap
+        .verify_calendar_capability_deploy(&state.cfg.admin_username, &password)
+        .await
+    {
+        Ok(report) => {
+            if report.is_healthy() {
+                info!(
+                    target: "startup",
+                    account_id = ?report.account_id,
+                    may_create_calendar = ?report.may_create_calendar,
+                    max_participants_per_event = ?report.max_participants_per_event,
+                    max_calendars_per_event = ?report.max_calendars_per_event,
+                    min_date_time = ?report.min_date_time,
+                    max_date_time = ?report.max_date_time,
+                    max_expanded_query_duration = ?report.max_expanded_query_duration,
+                    "JMAP calendars capability verified against Stalwart backend"
+                );
+            } else {
+                let msg = format!(
+                    "JMAP calendars capability check found issues: capability_present={} calendar_get_ok={} calendar_event_query_ok={} structured_recurrence_ok={} ics_round_trip_ok={} issues={:?}",
+                    report.capability_present,
+                    report.calendar_get_ok,
+                    report.calendar_event_query_ok,
+                    report.structured_recurrence_ok,
+                    report.ics_round_trip_ok,
+                    report.issues,
+                );
+                if enforce {
+                    tracing::error!(target: "startup", "{}", msg);
+                    std::process::exit(1);
+                }
+                warn!(target: "startup", "{}", msg);
+                // warn-mode must not leave the gateway exposed to a backend
+                // that provably discards `iCalendar` payloads: without this
+                // gate every JMAP event create/update would keep going
+                // through `set_calendar_event` and silently lose data.
+                if !report.ics_round_trip_ok {
+                    state.disable_jmap_calendar_writes();
+                    warn!(
+                        target: "startup",
+                        "JMAP calendar writes disabled for this process lifetime: the backend \
+                         did not round-trip an iCalendar payload, so event create/update falls \
+                         back to CalDAV. Set GATEWAY_CALENDAR_CAPABILITY_CHECK=enforce to abort \
+                         startup on this condition instead."
+                    );
+                }
+            }
+        }
+        Err(e) => {
+            let msg = format!("JMAP calendars capability check failed: {}", e);
+            if enforce {
+                tracing::error!(target: "startup", "{}", msg);
+                std::process::exit(1);
+            }
+            warn!(target: "startup", "{}", msg);
+        }
+    }
 }
 
 async fn verify_jmap_health(state: &Arc<AppState>) -> Result<()> {

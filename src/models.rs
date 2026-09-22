@@ -50,6 +50,11 @@ pub struct AppState {
     /// deduplicated per mailbox. The MAPI notification path and the EAS Ping
     /// loop both register here so one SSE stream feeds every consumer.
     pub push_registry: Arc<crate::jmap_push::PushMonitorRegistry>,
+    /// Runtime gate for JMAP calendar *writes*. The deploy-time capability
+    /// verification (`verify_calendar_capability_at_startup`) clears this when
+    /// the backend provably discards `iCalendar` payloads, so create/update
+    /// traffic falls back to CalDAV instead of silently losing event data.
+    pub jmap_calendar_write_enabled: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl AppState {
@@ -259,7 +264,22 @@ impl AppState {
             rate_limiter,
             mapi,
             push_registry,
+            jmap_calendar_write_enabled: Arc::new(std::sync::atomic::AtomicBool::new(true)),
         }
+    }
+
+    /// Whether event create/update traffic may use the JMAP calendar write
+    /// path. False only after deploy-time verification proved the backend
+    /// discards `iCalendar` payloads (see `GATEWAY_CALENDAR_CAPABILITY_CHECK`).
+    pub fn jmap_calendar_writes_enabled(&self) -> bool {
+        self.jmap_calendar_write_enabled
+            .load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Permanently disable JMAP calendar writes for this process lifetime.
+    pub fn disable_jmap_calendar_writes(&self) {
+        self.jmap_calendar_write_enabled
+            .store(false, std::sync::atomic::Ordering::SeqCst);
     }
 
     pub fn gateway_host(&self) -> &str {

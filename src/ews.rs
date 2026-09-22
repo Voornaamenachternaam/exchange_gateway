@@ -6113,10 +6113,13 @@ async fn handle_create_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
     }
 
     // Try JMAP calendar first, but only when no server-side scheduling is
-    // required (otherwise the JMAP blob write silently drops the iTIP).
+    // required (otherwise the JMAP blob write silently drops the iTIP) and
+    // the deploy-time capability check has not proven the JMAP write path
+    // lossy (`jmap_calendar_writes_enabled`).
     let result = if state.cfg.prefer_jmap_calendar
         && state.jmap_client.is_some()
         && !scheduling_needed
+        && state.jmap_calendar_writes_enabled()
     {
         match try_jmap_create_calendar(state, owner, &password_secret, &item).await {
             Ok(row) => Ok(row),
@@ -6518,11 +6521,13 @@ async fn handle_update_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
     }
 
     // Decide backend: JMAP if preferred and item looks like JMAP and client
-    // available AND no scheduling is required; else CalDAV.
+    // available AND no scheduling is required AND the deploy-time check has
+    // not proven the JMAP write path lossy; else CalDAV.
     let use_jmap = state.cfg.prefer_jmap_calendar
         && state.jmap_client.is_some()
         && stored_item.resource_href.starts_with("jmap://")
-        && !upd_scheduling_needed;
+        && !upd_scheduling_needed
+        && state.jmap_calendar_writes_enabled();
 
     let updated_row = if use_jmap {
         match try_jmap_update_calendar(
@@ -7375,7 +7380,13 @@ async fn handle_copy_item(state: &Arc<AppState>, auth: &AuthContext, body: &str)
         };
 
         // Backend selection: JMAP first if enabled and item is JMAP-backed
-        if state.cfg.prefer_jmap_calendar && lookup.resource_href.starts_with("jmap://") {
+        // and the deploy-time capability check has not proven the JMAP write
+        // path lossy (a copy through a lossy write path would create an
+        // empty event — better to surface a failure than silent data loss).
+        if state.cfg.prefer_jmap_calendar
+            && lookup.resource_href.starts_with("jmap://")
+            && state.jmap_calendar_writes_enabled()
+        {
             // JMAP path
             let jmap = match state.jmap_client.as_ref() {
                 Some(j) => j,
