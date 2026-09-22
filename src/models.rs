@@ -202,7 +202,7 @@ impl AppState {
             "Directory service initialized"
         );
 
-        let metrics = Arc::new(AppMetrics::new());
+        let metrics = crate::metrics::app_metrics();
 
         // Initialize rate limiter if enabled
         let rate_limiter = if cfg.rate_limit_enabled {

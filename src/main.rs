@@ -675,6 +675,31 @@ async fn main() -> anyhow::Result<()> {
     //   - "enforce" — fail startup unless verification is fully clean.
     verify_calendar_capability_at_startup(&app_state).await;
 
+    // Change-journal maintenance: the journal is an append-only SQLite table
+    // whose seq ids are the Ping/Sync watermarks. It survives container
+    // restarts (by design — restart replay keeps `seq:` watermarks valid), so
+    // prune rows hourly at/below the lowest live watermark of each owner;
+    // those are unreadable by any device. AUTOINCREMENT keeps ids monotonic,
+    // so deleting old rows never makes a watermark ambiguous afterwards.
+    {
+        let storage = app_state.storage.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(3600));
+            loop {
+                interval.tick().await;
+                match storage.prune_change_journals().await {
+                    Ok(0) => {}
+                    Ok(removed) => {
+                        info!(removed, "pruned consumed change-journal rows");
+                    }
+                    Err(e) => {
+                        warn!(error = %e, "change-journal pruning failed");
+                    }
+                }
+            }
+        });
+    }
+
     // Idle-session sweeper (#3593666961): if MAPI/HTTP is enabled, run
     // `SessionManager::sweep_idle` at the configured/idle-TTL cadence so
     // abandoned Connect+Execute sessions (e.g. a soft-kill of the Outlook

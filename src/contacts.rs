@@ -1117,6 +1117,14 @@ async fn diff_contacts(
         .storage
         .set_contacts_sync_state(username, &state_collection_id, &new_sync_key)
         .await?;
+    // Persist the journal watermark with every contacts sync: the opaque sync
+    // key carries no `seq:` token, so without this a Ping can never tell
+    // whether anything changed since the last sync and would have to
+    // re-baseline (silently dropping inter-Ping changes) on every request.
+    state
+        .storage
+        .record_journal_watermark(username, &state_collection_id)
+        .await?;
 
     Ok(response)
 }
