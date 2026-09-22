@@ -1029,8 +1029,12 @@ async fn metrics_handler() -> impl IntoResponse {
 ///
 /// Probes the configured Stalwart backend with the administrator credentials
 /// and reports whether `urn:ietf:params:jmap:calendars` is fully usable
-/// (session capability + `Calendar/get` + `CalendarEvent/query`). In
-/// "enforce" mode an unhealthy report aborts startup.
+/// (session capability + `Calendar/get` + `CalendarEvent/query` + write
+/// round-trip probes in an isolated probe calendar). In "enforce" mode an
+/// unhealthy report aborts startup. In "warn" mode a report proving the
+/// backend discards `iCalendar` payloads additionally disables the JMAP
+/// calendar write path for the process lifetime so create/update traffic
+/// falls back to CalDAV instead of silently losing data.
 async fn verify_calendar_capability_at_startup(state: &Arc<AppState>) {
     use exchange_gateway::jmap::JmapClient;
 
@@ -1059,7 +1063,12 @@ async fn verify_calendar_capability_at_startup(state: &Arc<AppState>) {
     }
 
     if state.cfg.jmap_base.is_empty() {
-        warn!(target: "startup", "jmap_base is not configured; cannot verify JMAP calendars capability");
+        let msg = "jmap_base is not configured; cannot verify JMAP calendars capability";
+        if enforce {
+            tracing::error!(target: "startup", "{}", msg);
+            std::process::exit(1);
+        }
+        warn!(target: "startup", "{}", msg);
         return;
     }
     if state.cfg.admin_username.is_empty() || state.cfg.admin_password.is_empty() {
@@ -1118,6 +1127,20 @@ async fn verify_calendar_capability_at_startup(state: &Arc<AppState>) {
                     std::process::exit(1);
                 }
                 warn!(target: "startup", "{}", msg);
+                // warn-mode must not leave the gateway exposed to a backend
+                // that provably discards `iCalendar` payloads: without this
+                // gate every JMAP event create/update would keep going
+                // through `set_calendar_event` and silently lose data.
+                if !report.ics_round_trip_ok {
+                    state.disable_jmap_calendar_writes();
+                    warn!(
+                        target: "startup",
+                        "JMAP calendar writes disabled for this process lifetime: the backend \
+                         did not round-trip an iCalendar payload, so event create/update falls \
+                         back to CalDAV. Set GATEWAY_CALENDAR_CAPABILITY_CHECK=enforce to abort \
+                         startup on this condition instead."
+                    );
+                }
             }
         }
         Err(e) => {

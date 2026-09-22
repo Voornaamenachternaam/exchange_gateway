@@ -160,10 +160,16 @@ if [[ -n "${STALWART_JMAP_URL:-}" ]]; then
   require_contains "${TMP_DIR}/jmap-session.json" '"urn:ietf:params:jmap:calendars"'
 
   log "Running CalendarEvent/set recurring+exception round-trip against Stalwart"
-  python3 - "$jmap_base" "${TMP_DIR}/jmap-session.json" "${STALWART_USER:-${GATEWAY_USER}}" "${STALWART_PASS:-${GATEWAY_PASS}}" <<'PY'
-import base64, json, sys, urllib.request
+  # Credentials go via the environment, never the argument vector: argv is
+  # world-readable through ps and /proc/<pid>/cmdline (CWE-214).
+  SMOKE_JMAP_USER="${STALWART_USER:-${GATEWAY_USER}}" \
+  SMOKE_JMAP_PASS="${STALWART_PASS:-${GATEWAY_PASS}}" \
+  python3 - "$jmap_base" "${TMP_DIR}/jmap-session.json" <<'PY'
+import base64, json, os, sys, urllib.request
 
-jmap_base, session_file, user, password = sys.argv[1:5]
+jmap_base, session_file = sys.argv[1:3]
+user = os.environ["SMOKE_JMAP_USER"]
+password = os.environ["SMOKE_JMAP_PASS"]
 session = json.load(open(session_file))
 cap = "urn:ietf:params:jmap:calendars"
 account = session["primaryAccounts"][cap]
@@ -195,7 +201,10 @@ calendar_id = cal_list[0]["id"]
 # Verified live against stalwartlabs/stalwart:v0.16.22: RFC-form
 # `recurrenceRules` arrays are rejected; this build speaks the older-draft
 # spelling `recurrenceRule` (single object) + `recurrenceOverrides`.
-uid = "jmap-cal-smoke-event-001"
+# Unique UID per run: Stalwart rejects a create whose UID collides with an
+# event orphaned by an earlier failed cleanup, which would break re-runs.
+import uuid
+uid = f"jmap-cal-smoke-event-{uuid.uuid4()}"
 create = {
     "accountId": account,
     "create": {
@@ -215,8 +224,11 @@ create = {
 }
 resp = call(["urn:ietf:params:jmap:core", cap], [["CalendarEvent/set", create, "s"]])
 args = resp["methodResponses"][0][1]
-if "notCreated" in args:
-    raise SystemExit(f"CalendarEvent/set create failed: {args['notCreated']}")
+# notCreated only signals failure when non-null and non-empty; servers may
+# echo an explicit null or empty object on success.
+nc = args.get("notCreated")
+if nc is not None and (not isinstance(nc, dict) or nc):
+    raise SystemExit(f"CalendarEvent/set create failed: {nc}")
 event_id = args["created"]["ev1"]["id"]
 
 try:

@@ -420,18 +420,30 @@ pub struct CalendarCapabilityReport {
 }
 
 impl CalendarCapabilityReport {
-    /// The verification passed with no issues at all.
+    /// The verification passed with no issues at all and every required
+    /// draft-ietf-jmap-calendars §1.5.1 capability field was advertised.
+    /// (The two nullable `max*PerEvent` limits may legitimately be `null`
+    /// ("no limit"), so absence of a value there is not unhealthy; their
+    /// *absence* is caught by `extract_capability_details` recording an
+    /// issue, which already fails this predicate.)
     pub fn is_healthy(&self) -> bool {
         self.capability_present
             && self.calendar_get_ok
             && self.calendar_event_query_ok
             && self.structured_recurrence_ok
             && self.ics_round_trip_ok
+            && self.min_date_time.is_some()
+            && self.max_date_time.is_some()
+            && self.max_expanded_query_duration.is_some()
+            && self.may_create_calendar.is_some()
             && self.issues.is_empty()
     }
 
-    /// Extract draft-ietf-jmap-calendars §1.5.1 capability fields, recording
-    /// an issue for any field advertised with an unexpected type.
+    /// Extract draft-ietf-jmap-calendars §1.5.1 capability fields. Every
+    /// field is REQUIRED by the spec, so an absent field records an issue;
+    /// a field advertised with the wrong type records an issue as well.
+    /// `maxCalendarsPerEvent`/`maxParticipantsPerEvent` may explicitly be
+    /// `null` ("no limit") — that is accepted and stored as `None`.
     fn extract_capability_details(&mut self, details: &Value) {
         self.capability_details = Some(details.clone());
         let Some(obj) = details.as_object() else {
@@ -443,12 +455,19 @@ impl CalendarCapabilityReport {
         };
         let take_u64 = |key: &str, issues: &mut Vec<String>| -> Option<u64> {
             match obj.get(key) {
-                None => None,
+                None => {
+                    issues.push(format!(
+                        "calendars capability is missing required §1.5.1 field {}",
+                        key
+                    ));
+                    None
+                }
+                Some(v) if v.is_null() => None,
                 Some(v) => match v.as_u64() {
                     Some(n) => Some(n),
                     None => {
                         issues.push(format!(
-                            "capability field {} is not an unsigned integer: {}",
+                            "capability field {} is not an unsigned integer or null: {}",
                             key, v
                         ));
                         None
@@ -458,7 +477,13 @@ impl CalendarCapabilityReport {
         };
         let take_string = |key: &str, issues: &mut Vec<String>| -> Option<String> {
             match obj.get(key) {
-                None => None,
+                None => {
+                    issues.push(format!(
+                        "calendars capability is missing required §1.5.1 field {}",
+                        key
+                    ));
+                    None
+                }
                 Some(v) => match v.as_str() {
                     Some(s) => Some(s.to_string()),
                     None => {
@@ -474,14 +499,18 @@ impl CalendarCapabilityReport {
         self.min_date_time = take_string("minDateTime", &mut issues);
         self.max_date_time = take_string("maxDateTime", &mut issues);
         self.max_expanded_query_duration = take_string("maxExpandedQueryDuration", &mut issues);
-        if let Some(v) = obj.get("mayCreateCalendar") {
-            match v.as_bool() {
+        match obj.get("mayCreateCalendar") {
+            None => issues.push(
+                "calendars capability is missing required §1.5.1 field mayCreateCalendar"
+                    .to_string(),
+            ),
+            Some(v) => match v.as_bool() {
                 Some(b) => self.may_create_calendar = Some(b),
                 None => issues.push(format!(
                     "capability field mayCreateCalendar is not a boolean: {}",
                     v
                 )),
-            }
+            },
         }
         if self.may_create_calendar == Some(false) {
             issues.push(
@@ -3272,13 +3301,33 @@ impl JmapClient {
         report: &mut CalendarCapabilityReport,
     ) {
         let using = ["urn:ietf:params:jmap:core", JMAP_CAL_CAPABILITY];
-        let calendar_id = match self
+
+        // The probes write and destroy events. They must never touch a real
+        // user calendar: when cleanup fails (backend outage mid-probe, auth
+        // expiry, process kill), leftovers in a personal calendar would
+        // accumulate on every container start. Run everything inside a
+        // dedicated, uniquely-named probe calendar instead, so any leftover
+        // is isolated, identifiable by name, and removable as one object.
+        if report.may_create_calendar == Some(false) {
+            // Already flagged as an issue by extract_capability_details.
+            report.issues.push(
+                "write probe: skipped — server reports mayCreateCalendar=false, \
+                 cannot create an isolated probe calendar"
+                    .to_string(),
+            );
+            return;
+        }
+        let probe_calendar_name = format!("exchange-gateway-deploy-probe-{}", uuid::Uuid::new_v4());
+        let probe_calendar_id = match self
             .api_call(
                 &session.api_url,
                 &using,
                 vec![(
-                    "Calendar/get",
-                    json!({ "accountId": account_id, "ids": null, "properties": ["id"] }),
+                    "Calendar/set",
+                    json!({
+                        "accountId": account_id,
+                        "create": { "probe": { "name": probe_calendar_name } }
+                    }),
                     "p0",
                 )],
                 username,
@@ -3286,31 +3335,36 @@ impl JmapClient {
             )
             .await
         {
-            Ok(resp) => resp
-                .method_responses
-                .iter()
-                .find(|(m, _, _)| m == "Calendar/get")
-                .and_then(|(_, d, _)| d.get("list")?.as_array()?.first()?.get("id")?.as_str())
-                .map(str::to_string),
+            Ok(resp) => {
+                let created_id = resp
+                    .method_responses
+                    .iter()
+                    .find(|(m, _, _)| m == "Calendar/set")
+                    .and_then(|(_, a, _)| a.get("created"))
+                    .and_then(|c| c.get("probe"))
+                    .and_then(|p| p.get("id"))
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string);
+                match created_id {
+                    Some(id) => id,
+                    None => {
+                        report.issues.push(format!(
+                            "write probe: could not create an isolated probe calendar (responses: {:?}); skipping write probes rather than writing into a real user calendar",
+                            resp.method_responses
+                        ));
+                        return;
+                    }
+                }
+            }
             Err(e) => {
-                report
-                    .issues
-                    .push(format!("write probe: Calendar/get failed: {}", e));
-                None
+                report.issues.push(format!(
+                    "write probe: could not create an isolated probe calendar: {}; skipping write probes rather than writing into a real user calendar",
+                    e
+                ));
+                return;
             }
         };
-        let Some(calendar_id) = calendar_id else {
-            if !report
-                .issues
-                .iter()
-                .any(|i| i.starts_with("write probe: Calendar/get failed"))
-            {
-                report
-                    .issues
-                    .push("write probe: no calendar available".to_string());
-            }
-            return;
-        };
+        let calendar_id = probe_calendar_id.clone();
 
         // --- Probe 1: structured recurring event with one excluded occurrence.
         let struct_uid = format!("gateway-cal-probe-struct-{}", uuid::Uuid::new_v4());
@@ -3424,30 +3478,134 @@ impl JmapClient {
             }
         }
 
-        // Best-effort cleanup of the probe events.
-        let to_destroy: Vec<&str> = [id1.as_deref(), id2.as_deref()]
-            .into_iter()
-            .flatten()
-            .collect();
-        if !to_destroy.is_empty()
-            && let Err(e) = self
+        // Cleanup. Destroy the probe events first (Calendar/set refuses to
+        // destroy a non-empty calendar), then the probe calendar itself. Both
+        // destroys are verified against the `destroyed` list and retried —
+        // a 200 response can still carry `notDestroyed` — and any leftover
+        // is reported as a health-affecting issue naming the exact ids, the
+        // probe calendar id, and its unique name, so an operator can locate
+        // and remove the residue manually instead of it accumulating
+        // invisibly on every container restart.
+        let to_destroy: Vec<String> = [id1, id2].into_iter().flatten().collect();
+        if !to_destroy.is_empty() {
+            self.probe_destroy_confirmed(
+                session,
+                "CalendarEvent/set",
+                account_id,
+                &to_destroy,
+                username,
+                password,
+                report,
+            )
+            .await;
+        }
+        let calendar_leftover = !self
+            .probe_destroy_confirmed(
+                session,
+                "Calendar/set",
+                account_id,
+                std::slice::from_ref(&probe_calendar_id),
+                username,
+                password,
+                report,
+            )
+            .await;
+        if calendar_leftover {
+            report.issues.push(format!(
+                "write probe: probe calendar '{}' (id {}) could not be removed; \
+                 delete it manually in the {} account",
+                probe_calendar_name, probe_calendar_id, account_id
+            ));
+        }
+    }
+
+    /// Destroy `ids` via `method` (`CalendarEvent/set` or `Calendar/set`),
+    /// confirming every id against the returned `destroyed` list and
+    /// retrying transient failures. Returns true when every id was
+    /// confirmed destroyed; otherwise records a report issue naming the
+    /// ids that remain on the server.
+    #[allow(clippy::too_many_arguments)]
+    async fn probe_destroy_confirmed(
+        &self,
+        session: &JmapSession,
+        method: &str,
+        account_id: &str,
+        ids: &[String],
+        username: &str,
+        password: &SecretString,
+        report: &mut CalendarCapabilityReport,
+    ) -> bool {
+        let using = ["urn:ietf:params:jmap:core", JMAP_CAL_CAPABILITY];
+        let mut remaining: Vec<String> = ids.to_vec();
+        let mut last_error = String::new();
+        // One attempt plus two retries for transient failures.
+        for attempt in 0..3 {
+            if remaining.is_empty() {
+                break;
+            }
+            if attempt > 0 {
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            }
+            match self
                 .api_call(
                     &session.api_url,
                     &using,
                     vec![(
-                        "CalendarEvent/set",
-                        json!({ "accountId": account_id, "destroy": to_destroy }),
-                        "p9",
+                        method,
+                        json!({ "accountId": account_id, "destroy": remaining }),
+                        "pd",
                     )],
                     username,
                     password,
                 )
                 .await
-        {
-            report
-                .issues
-                .push(format!("write probe: cleanup destroy failed: {}", e));
+            {
+                Ok(resp) => match resp
+                    .method_responses
+                    .iter()
+                    .find(|(m, _, _)| *m == method)
+                    .and_then(|(_, a, _)| a.get("destroyed"))
+                    .and_then(|d| d.as_array())
+                {
+                    Some(destroyed) => {
+                        let destroyed: Vec<&str> =
+                            destroyed.iter().filter_map(|v| v.as_str()).collect();
+                        remaining.retain(|id| !destroyed.contains(&id.as_str()));
+                        if !remaining.is_empty() {
+                            let not_destroyed = resp
+                                .method_responses
+                                .iter()
+                                .find(|(m, _, _)| *m == method)
+                                .and_then(|(_, a, _)| a.get("notDestroyed"))
+                                .cloned()
+                                .unwrap_or(Value::Null);
+                            last_error = format!("notDestroyed: {}", not_destroyed);
+                        }
+                    }
+                    None => {
+                        last_error = format!(
+                            "no `{}` response carrying a `destroyed` list: {:?}",
+                            method, resp.method_responses
+                        );
+                    }
+                },
+                Err(e) => {
+                    last_error = format!("transport error: {}", e);
+                }
+            }
         }
+        if remaining.is_empty() {
+            return true;
+        }
+        report.issues.push(format!(
+            "write probe: cleanup via {} could not destroy {} object(s) after retries \
+             ({}); leftover ids on the server: {:?}",
+            method,
+            remaining.len(),
+            last_error,
+            remaining
+        ));
+        false
     }
 
     /// Create one probe event; returns the assigned id or None (issue pushed).
@@ -3492,9 +3650,15 @@ impl JmapClient {
                 match created_id {
                     Some(id) => Some(id),
                     None => {
+                        // A method-level `error` response never matches the
+                        // `CalendarEvent/set` name, so `args`/`notCreated`
+                        // alone can miss the server's actual failure —
+                        // include the complete method responses.
                         report.issues.push(format!(
-                            "write probe: CalendarEvent/set create rejected: {:?}",
-                            args.and_then(|a| a.get("notCreated")?.get("probe").cloned())
+                            "write probe: CalendarEvent/set create rejected: {:?} (responses: {:?})",
+                            args.as_ref()
+                                .and_then(|a| a.get("notCreated")?.get("probe").cloned()),
+                            resp.method_responses
                         ));
                         None
                     }
@@ -4776,20 +4940,89 @@ mod tests {
         });
         let mut report = CalendarCapabilityReport::default();
         report.extract_capability_details(&details);
-        assert_eq!(report.issues.len(), 3);
+        // Three wrong-type fields plus the three absent required fields
+        // (maxDateTime, maxExpandedQueryDuration, maxParticipantsPerEvent).
+        assert_eq!(report.issues.len(), 6);
         assert!(
             report
                 .issues
                 .iter()
-                .any(|i| i.contains("maxCalendarsPerEvent"))
+                .any(|i| i.contains("maxCalendarsPerEvent") && !i.contains("missing"))
         );
-        assert!(report.issues.iter().any(|i| i.contains("minDateTime")));
         assert!(
             report
                 .issues
                 .iter()
-                .any(|i| i.contains("mayCreateCalendar"))
+                .any(|i| i.contains("minDateTime") && !i.contains("missing"))
         );
+        assert!(
+            report
+                .issues
+                .iter()
+                .any(|i| i.contains("mayCreateCalendar") && !i.contains("missing"))
+        );
+        assert!(
+            report
+                .issues
+                .iter()
+                .any(|i| i.contains("maxDateTime") && i.contains("missing"))
+        );
+        assert!(
+            report
+                .issues
+                .iter()
+                .any(|i| i.contains("maxExpandedQueryDuration") && i.contains("missing"))
+        );
+        assert!(
+            report
+                .issues
+                .iter()
+                .any(|i| i.contains("maxParticipantsPerEvent") && i.contains("missing"))
+        );
+    }
+
+    #[test]
+    fn test_calendar_capability_report_flags_missing_required_fields() {
+        // An empty capability object must not be accepted as healthy even
+        // though nothing in it has the wrong type.
+        let mut report = CalendarCapabilityReport {
+            capability_present: true,
+            calendar_get_ok: true,
+            calendar_event_query_ok: true,
+            structured_recurrence_ok: true,
+            ics_round_trip_ok: true,
+            ..Default::default()
+        };
+        report.extract_capability_details(&json!({}));
+        assert_eq!(report.issues.len(), 6);
+        assert!(report.issues.iter().all(|i| i.contains("missing required")));
+        assert!(!report.is_healthy());
+    }
+
+    #[test]
+    fn test_calendar_capability_report_accepts_null_max_limits() {
+        // The §1.5.1 max*PerEvent limits may be explicit null ("no limit").
+        let details = json!({
+            "maxCalendarsPerEvent": null,
+            "minDateTime": "0000-01-01T00:00:00Z",
+            "maxDateTime": "9999-12-31T23:59:59Z",
+            "maxExpandedQueryDuration": "P36500D",
+            "maxParticipantsPerEvent": null,
+            "mayCreateCalendar": true
+        });
+        let mut report = CalendarCapabilityReport {
+            capability_present: true,
+            calendar_get_ok: true,
+            calendar_event_query_ok: true,
+            structured_recurrence_ok: true,
+            ics_round_trip_ok: true,
+            ..Default::default()
+        };
+        report.extract_capability_details(&details);
+        assert_eq!(report.max_calendars_per_event, None);
+        assert_eq!(report.max_participants_per_event, None);
+        assert!(report.issues.is_empty(), "issues: {:?}", report.issues);
+        assert!(report.is_healthy());
     }
 
     #[test]
@@ -4811,6 +5044,17 @@ mod tests {
         report.structured_recurrence_ok = true;
         assert!(!report.is_healthy());
         report.ics_round_trip_ok = true;
+        // Probes alone are not enough: the required §1.5.1 capability fields
+        // must also have been advertised.
+        assert!(!report.is_healthy());
+        report.extract_capability_details(&json!({
+            "maxCalendarsPerEvent": 1,
+            "minDateTime": "0000-01-01T00:00:00Z",
+            "maxDateTime": "9999-12-31T23:59:59Z",
+            "maxExpandedQueryDuration": "P36500D",
+            "maxParticipantsPerEvent": 500,
+            "mayCreateCalendar": true
+        }));
         assert!(report.is_healthy());
         report.issues.push("any issue".to_string());
         assert!(!report.is_healthy());

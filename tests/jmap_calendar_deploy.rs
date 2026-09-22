@@ -133,12 +133,16 @@ async fn recurring_event_with_exception_round_trip() {
     // live against v0.16.22: RFC-form `recurrenceRules` arrays are rejected
     // ("invalidProperties"); this build speaks the older-draft spelling
     // `recurrenceRule` (single object) + `recurrenceOverrides`.
+    // Unique UID per run: Stalwart rejects a create whose UID collides with
+    // any event still present in the account (e.g. one orphaned by an
+    // earlier failed cleanup), which would make repeated runs flaky.
+    let event_uid = format!("jmap-cal-deploy-check-{}", uuid::Uuid::new_v4());
     let create = json!({
         "accountId": account,
         "create": {
             "ev1": {
                 "calendarIds": { calendar_id: true },
-                "uid": "jmap-cal-deploy-check-001",
+                "uid": event_uid,
                 "title": "deploy-check recurring",
                 "start": "2026-03-02T09:00:00",
                 "timeZone": "Europe/Berlin",
@@ -166,8 +170,12 @@ async fn recurring_event_with_exception_round_trip() {
         .find(|(m, _, _)| m == "CalendarEvent/set")
         .expect("CalendarEvent/set response")
         .1;
+    // `notCreated` only indicates failure when it is non-null and non-empty;
+    // servers may echo back an explicit null or empty object on success.
     assert!(
-        set_args.get("notCreated").is_none(),
+        set_args
+            .get("notCreated")
+            .is_none_or(|v| { v.is_null() || v.as_object().is_some_and(|o| o.is_empty()) }),
         "create rejected: {:?}",
         set_args.get("notCreated")
     );
@@ -207,7 +215,7 @@ async fn recurring_event_with_exception_round_trip() {
         .1["list"][0];
     assert_eq!(
         ev["uid"],
-        Value::String("jmap-cal-deploy-check-001".to_string()),
+        Value::String(event_uid.clone()),
         "uid did not round-trip: {}",
         ev
     );
