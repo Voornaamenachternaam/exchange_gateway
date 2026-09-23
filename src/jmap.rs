@@ -836,6 +836,33 @@ impl JmapClient {
         Some(format!("{base}{template_path}"))
     }
 
+    /// Build the download URL for a blob, validating that `blob_id` conforms
+    /// to the RFC 8620 `Id` character set (URL-safe base64 alphabet without
+    /// padding, `A-Za-z0-9_-`). `blob_id` reaches the handler from the
+    /// client-supplied EAS `FileReference`; rejecting anything outside the
+    /// allowed alphabet prevents `/`, `?`, `..` etc. from altering the
+    /// request path or query of the URL constructed from `downloadUrl`.
+    fn download_blob_url(&self, session: &JmapSession, account_id: &str, blob_id: &str) -> Result<String> {
+        if blob_id.is_empty()
+            || !blob_id
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+        {
+            return Err(anyhow!("Invalid JMAP blobId: {:?}", blob_id));
+        }
+        let template = if session.download_url.is_empty() {
+            format!(
+                "{}/download/{{accountId}}/{{blobId}}",
+                self.base_url.trim_end_matches('/')
+            )
+        } else {
+            session.download_url.clone()
+        };
+        Ok(template
+            .replace("{accountId}", account_id)
+            .replace("{blobId}", blob_id))
+    }
+
     /// Download a raw blob by `blobId` (RFC 8621 §4.1.3 `downloadUrl`).
     ///
     /// The session `downloadUrl` template contains `{accountId}` and
@@ -851,17 +878,7 @@ impl JmapClient {
         password: &SecretString,
     ) -> Result<Vec<u8>> {
         let session = self.get_session(username, password).await?;
-        let template = if session.download_url.is_empty() {
-            format!(
-                "{}/download/{{accountId}}/{{blobId}}",
-                self.base_url.trim_end_matches('/')
-            )
-        } else {
-            session.download_url.clone()
-        };
-        let url = template
-            .replace("{accountId}", account_id)
-            .replace("{blobId}", blob_id);
+        let url = self.download_blob_url(&session, account_id, blob_id)?;
         let auth = Self::basic_auth_header(username, password);
 
         trace!(target: "jmap", url = %url, blob_id = %blob_id, "Downloading JMAP blob");
@@ -885,6 +902,84 @@ impl JmapClient {
             .await
             .map_err(|e| anyhow!("JMAP blob download body read failed: {}", e))?
             .to_vec())
+    }
+
+    /// Download a blob like [`Self::download_blob`], but with a hard byte cap
+    /// enforced *while streaming* the body.
+    ///
+    /// `download_blob` buffers the whole response via `resp.bytes()`; with a
+    /// raised attachment size cap that would let an oversized blob be pulled
+    /// fully into memory before any limit check runs. This variant instead
+    /// consumes `bytes_stream()` chunk-by-chunk and aborts the transfer as
+    /// soon as the accumulated bytes exceed `max_bytes`. The `Content-Length`
+    /// header (when present) is checked up front so oversized blobs are
+    /// rejected before the first body byte is transferred.
+    ///
+    /// Returns the blob bytes together with the `Content-Type` reported by the
+    /// server (defaulting to `application/octet-stream` when absent), so
+    /// callers can propagate it to EAS `AirSyncBase:ContentType`.
+    pub async fn download_blob_capped(
+        &self,
+        account_id: &str,
+        blob_id: &str,
+        username: &str,
+        password: &SecretString,
+        max_bytes: usize,
+    ) -> Result<(Vec<u8>, String)> {
+        let session = self.get_session(username, password).await?;
+        let url = self.download_blob_url(&session, account_id, blob_id)?;
+        let auth = Self::basic_auth_header(username, password);
+
+        trace!(target: "jmap", url = %url, blob_id = %blob_id, max_bytes, "Downloading JMAP blob (capped, streaming)");
+
+        let resp = self
+            .client
+            .get(&url)
+            .header(AUTHORIZATION, &auth)
+            .send()
+            .await
+            .map_err(|e| anyhow!("JMAP blob download failed: {}", e))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(anyhow!("JMAP blob download returned {}: {}", status, body));
+        }
+
+        let content_type = resp
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_owned)
+            .unwrap_or_else(|| "application/octet-stream".to_string());
+
+        if let Some(len) = resp.content_length()
+            && len > max_bytes as u64
+        {
+            return Err(anyhow!(
+                "JMAP blob too large: Content-Length {} exceeds max {} bytes",
+                len,
+                max_bytes
+            ));
+        }
+
+        let mut buf = Vec::with_capacity(
+            usize::try_from(resp.content_length().unwrap_or(0).min(max_bytes as u64))
+                .unwrap_or(max_bytes),
+        );
+        let mut stream = resp.bytes_stream();
+        while let Some(chunk) = futures_util::StreamExt::next(&mut stream).await {
+            let chunk = chunk.map_err(|e| anyhow!("JMAP blob download stream failed: {}", e))?;
+            if buf.len() + chunk.len() > max_bytes {
+                return Err(anyhow!(
+                    "JMAP blob download aborted: size exceeds max {} bytes",
+                    max_bytes
+                ));
+            }
+            buf.extend_from_slice(&chunk);
+        }
+
+        Ok((buf, content_type))
     }
 
     /// Upload a raw blob to JMAP (RFC 8621 §4.1.2 `uploadUrl`).
@@ -5405,5 +5500,125 @@ mod tests {
         let sent: Vec<String> = Vec::new();
         let result = super::build_submission_success_patch(&patches, &sent);
         assert!(result.is_err(), "must reject when both roles are empty");
+    }
+
+    fn session_json(base: &str) -> Value {
+        json!({
+            "apiUrl": base,
+            "downloadUrl": format!("{base}/download/{{accountId}}/{{blobId}}"),
+            "uploadUrl": format!("{base}/upload/{{accountId}}"),
+            "eventSourceUrl": format!("{base}/eventsource"),
+            "state": "s",
+            "username": "u",
+            "accounts": {},
+            "primaryAccounts": {},
+            "capabilities": {}
+        })
+    }
+
+    /// Spawn a stub JMAP server; blob sizes and Content-Length behaviour are
+    /// selected by the blobId path segment:
+    /// `exact-{n}` = n bytes, `chunked-{n}` = n bytes with no Content-Length,
+    /// `long-{n}` = n bytes with Content-Length.
+    async fn spawn_stub_jmap_server() -> String {
+        use axum::extract::Path as AxumPath;
+        use axum::response::Response;
+        use axum::routing::get;
+
+        async fn session(
+            axum::Extension(base): axum::Extension<String>,
+        ) -> axum::Json<Value> {
+            axum::Json(session_json(&base))
+        }
+        async fn download(
+            AxumPath((_account, blob)): AxumPath<(String, String)>,
+        ) -> Response {
+            let (n, with_length) = if let Some(rest) = blob.strip_prefix("exact-") {
+                (rest.parse::<usize>().unwrap(), true)
+            } else if let Some(rest) = blob.strip_prefix("chunked-") {
+                (rest.parse::<usize>().unwrap(), false)
+            } else {
+                (6_000_000, true)
+            };
+            let payload = vec![b'x'; n];
+            let bytes = axum::body::Bytes::from(payload);
+            if with_length {
+                Response::builder()
+                    .header("content-length", n.to_string())
+                    .body(axum::body::Body::from(bytes))
+                    .unwrap()
+            } else {
+                // Wrap in a stream so no Content-Length is set and the body is
+                // delivered in multiple chunks mid-transfer.
+                let chunks: Vec<Result<axum::body::Bytes, std::io::Error>> = bytes
+                    .chunks(64 * 1024)
+                    .map(|c| Ok(axum::body::Bytes::copy_from_slice(c)))
+                    .collect();
+                let stream = futures_util::stream::iter(chunks);
+                Response::new(axum::body::Body::from_stream(stream))
+            }
+        }
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let base = format!("http://127.0.0.1:{port}");
+        let app = axum::Router::new()
+            .route("/session", get(session))
+            .route("/download/{account}/{blob}", get(download))
+            .layer(axum::Extension(base.clone()));
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        base
+    }
+
+    #[tokio::test]
+    async fn download_blob_capped_succeeds_at_exact_cap() {
+        let base = spawn_stub_jmap_server().await;
+        let client = JmapClient::new(&base).unwrap();
+        let pw = SecretString::from("pw");
+        let (out, _ct) = client
+            .download_blob_capped("a", "exact-1024", "u", &pw, 1024)
+            .await
+            .expect("exact-cap download must succeed");
+        assert_eq!(out.len(), 1024);
+    }
+
+    #[tokio::test]
+    async fn download_blob_capped_rejects_invalid_blob_id() {
+        let base = spawn_stub_jmap_server().await;
+        let client = JmapClient::new(&base).unwrap();
+        let pw = SecretString::from("pw");
+        for bad in ["../../session", "../x", "a?b=1", "a/b", "a%2f..", ""] {
+            let err = client
+                .download_blob_capped("a", bad, "u", &pw, 1024)
+                .await
+                .expect_err("must reject non-RFC-8620 blobId characters");
+            assert!(err.to_string().contains("Invalid JMAP blobId"));
+        }
+    }
+
+    #[tokio::test]
+    async fn download_blob_capped_bails_on_content_length() {
+        let base = spawn_stub_jmap_server().await;
+        let client = JmapClient::new(&base).unwrap();
+        let pw = SecretString::from("pw");
+        let err = client
+            .download_blob_capped("a", "long-6000000", "u", &pw, 1024)
+            .await
+            .expect_err("must reject when Content-Length exceeds cap");
+        assert!(err.to_string().contains("Content-Length"));
+    }
+
+    #[tokio::test]
+    async fn download_blob_capped_aborts_oversized_stream() {
+        let base = spawn_stub_jmap_server().await;
+        let client = JmapClient::new(&base).unwrap();
+        let pw = SecretString::from("pw");
+        let err = client
+            .download_blob_capped("a", "chunked-6000000", "u", &pw, 272_144)
+            .await
+            .expect_err("must abort mid-stream once cap exceeded");
+        assert!(err.to_string().contains("exceeds"));
     }
 }
