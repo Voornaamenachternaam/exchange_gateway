@@ -664,6 +664,31 @@ async fn main() -> anyhow::Result<()> {
         Arc::new(Storage::new(&format!("sqlite://{}?mode=rwc", config.database_path)).await?);
     storage.init_schema().await?;
 
+    // Seed the gateway-local GAL S/MIME certificate store from the optional
+    // operator-maintained directory of DER/PEM certificates (audit item 9).
+    if !config.smime_cert_store_dir.is_empty() {
+        match exchange_gateway::smime::import_cert_dir(
+            &storage,
+            std::path::Path::new(&config.smime_cert_store_dir),
+        )
+        .await
+        {
+            Ok(n) => tracing::info!(
+                dir = %config.smime_cert_store_dir,
+                certificates = n,
+                "S/MIME GAL certificate store seeded"
+            ),
+            Err(e) => {
+                tracing::error!(
+                    dir = %config.smime_cert_store_dir,
+                    error = %e,
+                    "S/MIME GAL certificate store seeding failed"
+                );
+                return Err(e);
+            }
+        }
+    }
+
     let app_state = Arc::new(AppState::new(config.clone(), storage));
 
     // Deploy-time verification of the JMAP Calendars capability

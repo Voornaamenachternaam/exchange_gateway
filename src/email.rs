@@ -1885,6 +1885,17 @@ pub async fn send_eas_mime_message(
     reference_item_id: Option<&str>,
     save_in_sent: bool,
 ) -> anyhow::Result<String> {
+    // Harvest any S/MIME certificates embedded in the outbound MIME into the
+    // GAL certificate store (audit item 9). Harvest failures are logged by
+    // `harvest_and_store` and never abort a send.
+    let stored = crate::smime::harvest_and_store(&state.storage, raw_mime).await;
+    if stored > 0 {
+        tracing::info!(
+            certs = stored,
+            "harvested S/MIME certificate(s) from outbound EAS mail"
+        );
+    }
+
     let parsed = parse_mime_for_send(raw_mime)?;
 
     if parsed.to.is_empty() && parsed.cc.is_empty() && parsed.bcc.is_empty() {

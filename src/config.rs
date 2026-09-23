@@ -44,6 +44,7 @@ const ENV_MAPI_HMA_ENABLED: &str = "GATEWAY_MAPI_HMA_ENABLED";
 const ENV_MAPI_OIDC_ISSUER: &str = "GATEWAY_MAPI_OIDC_ISSUER";
 const ENV_MAPI_OIDC_AUDIENCE: &str = "GATEWAY_MAPI_OIDC_AUDIENCE";
 const ENV_MAPI_ORG: &str = "GATEWAY_MAPI_ORG";
+const ENV_SMIME_CERT_STORE_DIR: &str = "GATEWAY_SMIME_CERT_STORE_DIR";
 /// Per audit §2f.1 — bounds the contents-table row materialisation so large
 /// mailboxes are not silently truncated. See `mapi_max_contents_rows`.
 const ENV_MAPI_MAX_CONTENTS_ROWS: &str = "GATEWAY_MAPI_MAX_CONTENTS_ROWS";
@@ -225,6 +226,18 @@ pub struct Config {
     /// `Exchange2016`.
     #[serde(default = "default_server_exchange_version")]
     pub server_exchange_version: String,
+    /// Optional directory of administrator-seeded S/MIME certificates
+    /// (`.der` and/or `.pem` files) imported into the gateway-local GAL
+    /// certificate store at startup (MS-ASCMD `ResolveRecipients`/
+    /// `CertificateRetrieval` data source). Each certificate is indexed
+    /// under every email identity it claims (SAN rfc822Name / pkcs-9
+    /// emailAddress); when a certificate carries no email identity, the
+    /// file stem (e.g. `alice@example.com.pem`) is used as the identity.
+    /// Empty means "no seeding" — certificates are then populated solely
+    /// by harvesting signed mail flowing through the gateway. Configurable
+    /// via `GATEWAY_SMIME_CERT_STORE_DIR`.
+    #[serde(default)]
+    pub smime_cert_store_dir: String,
 }
 
 fn default_server_version() -> String {
@@ -901,6 +914,13 @@ fn apply_environment_overrides(cfg: &mut Config) {
     apply_env_string(cfg, get_env_with_fallback(ENV_MAPI_ORG, None), |c, v| {
         c.mapi_org = v;
     });
+    apply_env_string(
+        cfg,
+        get_env_with_fallback(ENV_SMIME_CERT_STORE_DIR, None),
+        |c, v| {
+            c.smime_cert_store_dir = v;
+        },
+    );
     // Audit §2f.1 — contents-table row bounds (formerly a hard 200-row cap).
     apply_env_usize(cfg, ENV_MAPI_MAX_CONTENTS_ROWS, |c, v| {
         c.mapi_max_contents_rows = v;
@@ -1097,6 +1117,7 @@ impl Default for Config {
             mapi_contents_page_size: DEFAULT_MAPI_CONTENTS_PAGE_SIZE,
             server_version: default_server_version(),
             server_exchange_version: default_server_exchange_version(),
+            smime_cert_store_dir: String::new(),
         }
     }
 }

@@ -1925,6 +1925,54 @@ impl Storage {
             .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))?;
         Ok(())
     }
+
+    /// Upsert one harvested/S/MIME seed certificate keyed by the email
+    /// identity it claims. Re-seeing the same certificate refreshes
+    /// `last_seen` only; the DER blob and validity window are immutable by
+    /// definition (the fingerprint keys the row).
+    pub async fn put_smime_cert(&self, rec: &crate::smime::SmimeCertificate) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO smime_cert (email, sha256, cert_der, not_before_unix, not_after_unix, last_seen) \
+             VALUES (?1, ?2, ?3, ?4, ?5, CURRENT_TIMESTAMP) \
+             ON CONFLICT(email, sha256) DO UPDATE SET last_seen = CURRENT_TIMESTAMP",
+        )
+        .bind(rec.email.to_lowercase())
+        .bind(&rec.sha256)
+        .bind(&rec.cert_der)
+        .bind(rec.not_before_unix)
+        .bind(rec.not_after_unix)
+        .execute(self.pool.as_ref())
+        .await
+        .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))?;
+        Ok(())
+    }
+
+    /// All currently-valid stored certificates for `email` (lowercased),
+    /// newest `not_after` first. Expired/not-yet-valid certificates are
+    /// excluded — per MS-ASCMD §2.2.3.177.12 a recipient with no valid
+    /// certificate must surface Certificates Status 7, not stale material.
+    pub async fn get_smime_certs(&self, email: &str, now_unix: i64) -> Result<Vec<SmimeCertRow>> {
+        let rows = sqlx::query_as::<_, SmimeCertRow>(
+            "SELECT sha256, cert_der, not_before_unix, not_after_unix FROM smime_cert \
+             WHERE email = ?1 AND not_before_unix <= ?2 AND not_after_unix >= ?2 \
+             ORDER BY not_after_unix DESC",
+        )
+        .bind(email.to_lowercase())
+        .bind(now_unix)
+        .fetch_all(self.pool.as_ref())
+        .await
+        .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))?;
+        Ok(rows)
+    }
+}
+
+/// Row of the gateway-local S/MIME certificate store.
+#[derive(FromRow, Clone)]
+pub struct SmimeCertRow {
+    pub sha256: String,
+    pub cert_der: Vec<u8>,
+    pub not_before_unix: i64,
+    pub not_after_unix: i64,
 }
 
 /// Column values for a gateway-local task upsert.

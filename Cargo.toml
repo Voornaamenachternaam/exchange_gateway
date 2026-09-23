@@ -61,12 +61,12 @@ dashmap = "^6.2.1"
 smallvec = { version = "^1.16.0", features = ["serde", "write"] }
 http = "^1.5.0"
 smartstring = "^1.0.1"
-const-hex = "^1.19.1"
+const-hex = "1.19"
 bitflags = "^2.13.1"
 unicode-normalization = "^0.1.25"
 phf = { version = "^0.14.0", features = ["macros"] }
 icalendar = { version = "^0.17.13", features = ["parser", "chrono-tz"] }
-email_address = "^0.2.9"
+email_address = "0.2"
 iso8601-duration = "^0.2.0"
 roxmltree = "^0.21.1"
 itertools = "^0.15.0"
@@ -81,6 +81,9 @@ governor = "^0.10.4"
 mail-parser = "^0.11.8"
 lzxd = "^0.2.7"
 compressed-rtf = "^1.0.1"
+cms = "0.2.3"
+x509-cert = "0.2.5"
+der = "0.7"
 
 [dev-dependencies]
 proptest = "^1.11.0"

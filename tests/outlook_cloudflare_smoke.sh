@@ -152,6 +152,90 @@ curl -fsS "${auth[@]}" \
   "${base}/Microsoft-Server-ActiveSync?Cmd=Sync&User=${GATEWAY_USER}&DeviceId=smoke-device&DeviceType=Outlook" >"${TMP_DIR}/sync-invalid.xml"
 require_contains "${TMP_DIR}/sync-invalid.xml" "<Status>9</Status>"
 
+# ---------------------------------------------------------------------------
+# Audit item 9: S/MIME certificates in the GAL (MS-ASCMD ResolveRecipients).
+# ---------------------------------------------------------------------------
+log "Checking EAS ResolveRecipients without CertificateRetrieval emits no Certificates block"
+curl -fsS "${auth[@]}" \
+  -H 'Content-Type: application/xml; charset=utf-8' \
+  --data "<?xml version=\"1.0\" encoding=\"utf-8\"?><ResolveRecipients xmlns=\"ResolveRecipients:\"><To>${GATEWAY_USER}</To></ResolveRecipients>" \
+  "${base}/Microsoft-Server-ActiveSync?Cmd=ResolveRecipients&User=${GATEWAY_USER}&DeviceId=smoke-device&DeviceType=Outlook" >"${TMP_DIR}/rr-nocert.xml"
+require_contains "${TMP_DIR}/rr-nocert.xml" "<Status>1</Status>"
+require_contains "${TMP_DIR}/rr-nocert.xml" "<EmailAddress>"
+
+log "Checking EAS ResolveRecipients with CertificateRetrieval=2 (S/MIME GAL certificates)"
+curl -fsS "${auth[@]}" \
+  -H 'Content-Type: application/xml; charset=utf-8' \
+  --data "<?xml version=\"1.0\" encoding=\"utf-8\"?><ResolveRecipients xmlns=\"ResolveRecipients:\"><To>${GATEWAY_USER}</To><Options><CertificateRetrieval>2</CertificateRetrieval></Options></ResolveRecipients>" \
+  "${base}/Microsoft-Server-ActiveSync?Cmd=ResolveRecipients&User=${GATEWAY_USER}&DeviceId=smoke-device&DeviceType=Outlook" >"${TMP_DIR}/rr-cert.xml"
+require_contains "${TMP_DIR}/rr-cert.xml" "<Status>1</Status>"
+require_contains "${TMP_DIR}/rr-cert.xml" "<Certificates>"
+
+log "Checking EAS ResolveRecipients rejects invalid CertificateRetrieval (MS-ASCMD Status 5)"
+curl -fsS "${auth[@]}" \
+  -H 'Content-Type: application/xml; charset=utf-8' \
+  --data "<?xml version=\"1.0\" encoding=\"utf-8\"?><ResolveRecipients xmlns=\"ResolveRecipients:\"><To>${GATEWAY_USER}</To><Options><CertificateRetrieval>9</CertificateRetrieval></Options></ResolveRecipients>" \
+  "${base}/Microsoft-Server-ActiveSync?Cmd=ResolveRecipients&User=${GATEWAY_USER}&DeviceId=smoke-device&DeviceType=Outlook" >"${TMP_DIR}/rr-badopt.xml"
+require_contains "${TMP_DIR}/rr-badopt.xml" "<Status>5</Status>"
+
+log "Checking EAS ResolveRecipients WBXML wire format carries certificates (real Outlook Android form)"
+python3 - "$TMP_DIR" <<'PY'
+"""Encode a ResolveRecipients request in WBXML and POST it to the EAS
+endpoint, then assert the WBXML response contains the code-page-10
+Certificates/Status tokens."""
+import struct, subprocess, sys
+
+tmp = sys.argv[1]
+
+def str_i(s: bytes) -> bytes:
+    return b"\x03" + s + b"\x00"
+
+# Code page 10 (ResolveRecipients) tags per MS-ASWBXML.
+def t(code: int, content: bytes = b"") -> bytes:
+    if content:
+        return bytes([0x40 | code]) + content + b"\x01"
+    return bytes([0x40 | code, 0x01])
+
+wbxml = (
+    b"\x03\x01\x6a\x00"          # header: WBXML 1.3, UTF-8, str table len 0
+    b"\x00\x0a"                  # SWITCH_PAGE 10 (ResolveRecipients)
+    + t(0x05,                    # ResolveRecipients
+        t(0x10, str_i(b"smoke")) # To
+        + t(0x0F,                # Options
+            t(0x11, str_i(b"2")) # CertificateRetrieval = 2 (full certs)
+        )
+    )
+)
+
+import urllib.request
+req = urllib.request.Request(
+    __import__("os").environ["GATEWAY_BASE_URL"].rstrip("/")
+    + "/Microsoft-Server-ActiveSync?Cmd=ResolveRecipients&User="
+    + __import__("os").environ["GATEWAY_USER"]
+    + "&DeviceId=smoke-device&DeviceType=Outlook",
+    data=wbxml,
+    method="POST",
+)
+import base64
+cred = base64.b64encode(
+    (__import__("os").environ["GATEWAY_USER"] + ":" + __import__("os").environ["GATEWAY_PASS"]).encode()
+).decode()
+req.add_header("Authorization", "Basic " + cred)
+req.add_header("Content-Type", "application/vnd.ms-sync")
+req.add_header("MS-ASProtocolVersion", "16.1")
+with urllib.request.urlopen(req) as resp:
+    body = resp.read()
+
+if body[:4] != b"\x03\x01\x6a\x00":
+    raise SystemExit("FAIL: ResolveRecipients response is not WBXML")
+# After the header, expect SWITCH_PAGE 10 and the ResolveRecipients tag.
+if body[4:6] != b"\x00\x0a" or (body[6] & 0x3F) != 0x05:
+    raise SystemExit(f"FAIL: unexpected WBXML token stream: {body[:12].hex()}")
+if (0x0C | 0x40) not in body:
+    raise SystemExit("FAIL: Certificates tag (cp10/0x0C) missing in WBXML response")
+print("[smoke] WBXML ResolveRecipients response carries Certificates on code page 10")
+PY
+
 log "Checking EWS GetFolder"
 request_xml \
   "${base}/EWS/Exchange.asmx" \

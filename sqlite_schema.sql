@@ -440,3 +440,24 @@ CREATE TABLE IF NOT EXISTS user_config (
 );
 
 CREATE INDEX IF NOT EXISTS idx_user_config_owner ON user_config(owner);
+
+-- Gateway-local, directory-wide S/MIME certificate store (MS-ASCMD
+-- ResolveRecipients `CertificateRetrieval` / `Certificates`). Stalwart's
+-- directory does not carry per-user X.509 certificates, so the gateway
+-- harvests them from S/MIME-signed mail that flows through it and from an
+-- administrator-seeded DER/PEM directory (GATEWAY_SMIME_CERT_STORE_DIR).
+-- Keyed by the lowercased email identity the certificate claims and the
+-- SHA-256 fingerprint of its DER encoding.
+CREATE TABLE IF NOT EXISTS smime_cert (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    email TEXT NOT NULL,
+    sha256 TEXT NOT NULL,
+    cert_der BLOB NOT NULL,
+    not_before_unix INTEGER NOT NULL,
+    not_after_unix INTEGER NOT NULL,
+    first_seen DATETIME DEFAULT CURRENT_TIMESTAMP,
+    last_seen DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(email, sha256)
+);
+
+CREATE INDEX IF NOT EXISTS idx_smime_cert_email ON smime_cert(email);

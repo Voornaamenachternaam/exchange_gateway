@@ -35,6 +35,7 @@ pub mod permission;
 pub mod protocol_fixtures;
 pub mod rate_limit;
 pub mod room;
+pub mod smime;
 pub mod smtp;
 pub mod storage;
 pub mod sync;

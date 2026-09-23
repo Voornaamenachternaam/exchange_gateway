@@ -3824,6 +3824,10 @@ async fn handle_meeting_response_object(
         }
     };
 
+    // Harvest any S/MIME certificates embedded in the referenced message
+    // into the GAL certificate store (audit item 9).
+    let _stored = crate::smime::harvest_and_store(&state.storage, &raw_mime).await;
+
     let Some(ics) = crate::email::extract_meeting_request_ics(&raw_mime) else {
         return operation_error_response(
             &EwsAction::CreateItem,
