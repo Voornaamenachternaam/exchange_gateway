@@ -3046,6 +3046,61 @@ async fn handle_resolve_recipients(
             parsed
         }
     };
+    // MS-ASCMD §2.2.1.15 Options: CertificateRetrieval (§2.2.3.22) and
+    // MaxCertificates (§2.2.3.101) govern the S/MIME GAL `Certificates`
+    // block; MaxAmbiguousRecipients (§2.2.3.100) bounds the suggestions
+    // list. All are optional; CertificateRetrieval defaults to 1
+    // ("do not retrieve certificates").
+    let certificate_retrieval: Option<u32> = match extract_first_tag_text(
+        xml,
+        b"CertificateRetrieval",
+    ) {
+        Some(v) => match v.trim().parse::<u32>() {
+            Ok(n @ 1..=3) => Some(n),
+            _ => {
+                // MS-ASCMD §2.2.3.177.12: request-level Status 5 -
+                // protocol error, invalid parameter.
+                return xml_or_wbxml_response(
+                    wbxml,
+                    as_wbxml,
+                    r#"<?xml version="1.0" encoding="utf-8"?><ResolveRecipients xmlns="ResolveRecipients:"><Status>5</Status></ResolveRecipients>"#,
+                    request_id,
+                );
+            }
+        },
+        None => Some(1),
+    };
+    let max_certificates: Option<u32> = match extract_first_tag_text(xml, b"MaxCertificates") {
+        Some(v) => match v.trim().parse::<u32>() {
+            // MS-ASCMD §2.2.3.101: value is limited to 0-9999.
+            Ok(n) if n <= 9999 => Some(n),
+            _ => {
+                return xml_or_wbxml_response(
+                    wbxml,
+                    as_wbxml,
+                    r#"<?xml version="1.0" encoding="utf-8"?><ResolveRecipients xmlns="ResolveRecipients:"><Status>5</Status></ResolveRecipients>"#,
+                    request_id,
+                );
+            }
+        },
+        None => None,
+    };
+    let max_ambiguous: u32 = match extract_first_tag_text(xml, b"MaxAmbiguousRecipients") {
+        Some(v) => match v.trim().parse::<u32>() {
+            // MS-ASCMD §2.2.3.100: value is limited to 0-9999.
+            Ok(n) if n <= 9999 => n,
+            _ => {
+                return xml_or_wbxml_response(
+                    wbxml,
+                    as_wbxml,
+                    r#"<?xml version="1.0" encoding="utf-8"?><ResolveRecipients xmlns="ResolveRecipients:"><Status>5</Status></ResolveRecipients>"#,
+                    request_id,
+                );
+            }
+        },
+        None => 100, // Exchange default when the client does not bound the list.
+    };
+
     let availability_requested = xml.contains("<Availability>");
     let availability_window = if availability_requested {
         let Some(start) =
@@ -3107,45 +3162,131 @@ async fn handle_resolve_recipients(
     });
     let lookup_results = join_all(lookup_futures).await;
 
-    // Build recipient XML combining directory results and freebusy.
-    let mut recipient_xml = String::new();
-    for i in 0..recipients.len() {
-        let recipient = &recipients[i];
+    // The legacy fallback above synthesises one recipient per requested To
+    // when the directory is empty/unavailable; treat recipients.len() as the
+    // authoritative count only when lookup succeeded.
+    let now_unix = chrono::Utc::now().timestamp();
+    let mut responses_xml = String::new();
+    for (i, recipient) in recipients.iter().enumerate() {
         let freebusy = &freebusy_results[i];
         let lookup_res: &Result<Vec<crate::directory::Contact>, Error> = &lookup_results[i];
 
-        let (display_name, email) = match lookup_res {
-            Ok(lookup) if !lookup.is_empty() => {
-                let contact = &lookup[0];
-                (contact.display_name.clone(), contact.email.clone())
-            }
-            _ => (recipient.clone(), recipient.clone()),
+        // Up to `max_ambiguous` matches per To; larger match sets are
+        // partial (Response Status 3), multiple matches are ambiguous
+        // suggestions (Status 2, no certificate nodes per
+        // MS-ASCMD §2.2.3.177.12).
+        let requested = recipient.clone();
+        let mut matches: Vec<(String, String)> = match lookup_res {
+            Ok(contacts) if !contacts.is_empty() => contacts
+                .iter()
+                .map(|c| (c.display_name.clone(), c.email.clone()))
+                .collect(),
+            _ => vec![(recipient.clone(), recipient.clone())],
+        };
+        let total_matches = matches.len() as u32;
+        let truncated = total_matches > max_ambiguous;
+        matches.truncate(max_ambiguous as usize);
+        let response_status: u8 = if truncated {
+            3
+        } else if matches.len() > 1 {
+            2
+        } else {
+            1
         };
 
-        let avail_xml = if availability_window.is_some() {
-            format!(
-                "<Availability><Status>1</Status><MergedFreeBusy>{}</MergedFreeBusy></Availability>",
-                freebusy
-            )
-        } else {
-            String::new()
-        };
-        recipient_xml.push_str(&format!(
-            "<Recipient><Type>1</Type><DisplayName>{}</DisplayName><EmailAddress>{}</EmailAddress>{}</Recipient>",
-            xml_escape(&display_name),
-            xml_escape(&email),
-            avail_xml
+        let mut recipient_xml = String::new();
+        for (display_name, email) in &matches {
+            let avail_xml = if availability_window.is_some() {
+                format!(
+                    "<Availability><Status>1</Status><MergedFreeBusy>{}</MergedFreeBusy></Availability>",
+                    freebusy
+                )
+            } else {
+                String::new()
+            };
+
+            // Certificates block (S/MIME in GAL, audit item 9): only
+            // emitted for exactly-resolved recipients when the client opted
+            // in with CertificateRetrieval 2 or 3.
+            let mut certificates_xml = String::new();
+            if response_status == 1
+                && let Some(retrieval) = certificate_retrieval
+                && retrieval != 1
+            {
+                let email_key = email.to_lowercase();
+                let certs = match state.storage.get_smime_certs(&email_key, now_unix).await {
+                    Ok(certs) => certs,
+                    Err(e) => {
+                        tracing::error!(
+                            error = %e,
+                            recipient = %email_key,
+                            "S/MIME GAL certificate store lookup failed"
+                        );
+                        Vec::new()
+                    }
+                };
+                let limit = max_certificates.unwrap_or(u32::MAX);
+                certificates_xml = if certs.is_empty() {
+                    // Status 7: no valid S/MIME certificate for recipient.
+                    "<Certificates><Status>7</Status></Certificates>".to_string()
+                } else if certs.len() as u32 > limit {
+                    // Status 8: the MaxCertificates limit was reached; no
+                    // certificates are returned, only the unreturned count.
+                    format!(
+                        "<Certificates><Status>8</Status><CertificateCount>{}</CertificateCount><RecipientCount>{}</RecipientCount></Certificates>",
+                        certs.len(),
+                        matches.len()
+                    )
+                } else {
+                    // Status 1 + full X.509 certificates. MS-ASCMD splits
+                    // retrieval modes: 2 -> full X.509 `<Certificate>`,
+                    // 3 -> proprietary `<MiniCertificate>`. The
+                    // minicertificate BLOB format is not defined in any
+                    // Open Specification; full certificates are a strict
+                    // superset, so both modes receive `<Certificate>`.
+                    let mut block = format!(
+                        "<Certificates><Status>1</Status><CertificateCount>{}</CertificateCount><RecipientCount>{}</RecipientCount>",
+                        certs.len(),
+                        matches.len()
+                    );
+                    use base64::Engine;
+                    for cert in &certs {
+                        block.push_str(&format!(
+                            "<Certificate>{}</Certificate>",
+                            base64::engine::general_purpose::STANDARD.encode(&cert.cert_der)
+                        ));
+                    }
+                    block.push_str("</Certificates>");
+                    block
+                };
+            }
+
+            recipient_xml.push_str(&format!(
+                "<Recipient><Type>1</Type><DisplayName>{}</DisplayName><EmailAddress>{}</EmailAddress>{}{}</Recipient>",
+                xml_escape(display_name),
+                xml_escape(email),
+                avail_xml,
+                certificates_xml
+            ));
+        }
+        responses_xml.push_str(&format!(
+            "<Response><To>{}</To><Status>{}</Status><RecipientCount>{}</RecipientCount>{}</Response>",
+            xml_escape(&requested),
+            response_status,
+            matches.len(),
+            recipient_xml
         ));
     }
-    let primary = recipients
-        .first()
-        .cloned()
-        .unwrap_or_else(|| username.to_string());
+    if recipients.is_empty() {
+        let claimed = username.to_string();
+        responses_xml.push_str(&format!(
+            "<Response><To>{}</To><Status>1</Status><RecipientCount>0</RecipientCount></Response>",
+            xml_escape(&claimed)
+        ));
+    }
     let response = format!(
-        r#"<?xml version="1.0" encoding="utf-8"?><ResolveRecipients xmlns="ResolveRecipients:"><Status>1</Status><Response><To>{}</To><Status>1</Status><RecipientCount>{}</RecipientCount>{}</Response></ResolveRecipients>"#,
-        xml_escape(&primary),
-        recipients.len(),
-        recipient_xml
+        r#"<?xml version="1.0" encoding="utf-8"?><ResolveRecipients xmlns="ResolveRecipients:"><Status>1</Status>{}</ResolveRecipients>"#,
+        responses_xml
     );
     xml_or_wbxml_response(wbxml, as_wbxml, &response, request_id)
 }

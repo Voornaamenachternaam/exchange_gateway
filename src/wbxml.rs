@@ -1491,3 +1491,93 @@ fn extract_xmlns_cp<'a>(e: &quick_xml::events::BytesStart<'a>) -> Option<u8> {
     }
     None
 }
+
+#[cfg(test)]
+mod tests {
+    use super::Wbxml;
+
+    /// MS-ASWBXML ResolveRecipients code page (10) tags.
+    const CP10: u8 = 10;
+    const TP_RESPONSE: u8 = 0x06;
+    const TP_CERTIFICATES: u8 = 0x0C;
+    const TP_CERTIFICATE: u8 = 0x0D;
+
+    #[test]
+    fn resolve_recipients_certificates_block_roundtrips_wbxml() {
+        let xml = concat!(
+            r#"<?xml version="1.0" encoding="utf-8"?>"#,
+            r#"<ResolveRecipients xmlns="ResolveRecipients:">"#,
+            "<Status>1</Status>",
+            "<Response><To>alice@example.com</To><Status>1</Status>",
+            "<RecipientCount>1</RecipientCount>",
+            "<Recipient><Type>1</Type><DisplayName>Alice</DisplayName>",
+            "<EmailAddress>alice@example.com</EmailAddress>",
+            "<Certificates><Status>1</Status><CertificateCount>1</CertificateCount>",
+            "<RecipientCount>1</RecipientCount>",
+            "<Certificate>QUJD</Certificate>",
+            "</Certificates>",
+            "</Recipient></Response></ResolveRecipients>"
+        );
+        let wb = Wbxml::new().encode(xml).expect("encode must succeed");
+        // Header is 4 bytes; find the Certificates token (0x0C|0x40) on
+        // code page 10.
+        let mut pages = vec![];
+        let mut cp = 0u8;
+        let mut i = 4usize;
+        while i < wb.len() {
+            if wb[i] == 0x00 {
+                // SWITCH_PAGE
+                cp = wb[i + 1];
+                i += 2;
+                continue;
+            }
+            let token = wb[i] & !0x40u8;
+            pages.push((cp, token));
+            if wb[i] & 0x40 != 0 || wb[i] == 0x01 {
+                // content/END handling: scan inline strings for simplicity
+            }
+            if wb[i] == 0x03 {
+                // STR_I
+                let end = wb[i + 1..].iter().position(|&b| b == 0).unwrap() + i + 1;
+                i = end + 1;
+                continue;
+            }
+            i += 1;
+        }
+        assert!(
+            pages.contains(&(CP10, TP_CERTIFICATES)),
+            "Certificates must encode on code page 10, tokens: {pages:?}"
+        );
+        assert!(
+            pages.contains(&(CP10, TP_CERTIFICATE)),
+            "Certificate must encode on code page 10"
+        );
+        assert!(pages.contains(&(CP10, TP_RESPONSE)));
+        assert!(
+            !pages.contains(&(11u8, TP_CERTIFICATES)),
+            "must not switch to ValidateCert page"
+        );
+
+        // Full decode round-trip preserves the certificate body.
+        let decoded = Wbxml::new().decode(&wb).expect("decode");
+        assert!(decoded.contains("<Certificates>"), "decoded: {decoded}");
+        assert!(decoded.contains("<Certificate>QUJD</Certificate>"));
+        assert!(decoded.contains("<CertificateCount>1</CertificateCount>"));
+    }
+
+    #[test]
+    fn resolve_recipients_certificates_status_only_and_count_only_roundtrip() {
+        let xml = concat!(
+            r#"<?xml version="1.0" encoding="utf-8"?>"#,
+            r#"<ResolveRecipients xmlns="ResolveRecipients:"><Status>1</Status>"#,
+            "<Response><To>a@b.c</To><Status>1</Status><RecipientCount>1</RecipientCount>",
+            "<Recipient><Type>1</Type><DisplayName>A</DisplayName>",
+            "<EmailAddress>a@b.c</EmailAddress>",
+            "<Certificates><Status>7</Status></Certificates>",
+            "</Recipient></Response></ResolveRecipients>"
+        );
+        let wb = Wbxml::new().encode(xml).expect("encode");
+        let decoded = Wbxml::new().decode(&wb).expect("decode");
+        assert!(decoded.contains("<Certificates><Status>7</Status></Certificates>"));
+    }
+}

@@ -842,7 +842,12 @@ impl JmapClient {
     /// client-supplied EAS `FileReference`; rejecting anything outside the
     /// allowed alphabet prevents `/`, `?`, `..` etc. from altering the
     /// request path or query of the URL constructed from `downloadUrl`.
-    fn download_blob_url(&self, session: &JmapSession, account_id: &str, blob_id: &str) -> Result<String> {
+    fn download_blob_url(
+        &self,
+        session: &JmapSession,
+        account_id: &str,
+        blob_id: &str,
+    ) -> Result<String> {
         if blob_id.is_empty()
             || !blob_id
                 .bytes()
@@ -5525,14 +5530,10 @@ mod tests {
         use axum::response::Response;
         use axum::routing::get;
 
-        async fn session(
-            axum::Extension(base): axum::Extension<String>,
-        ) -> axum::Json<Value> {
+        async fn session(axum::Extension(base): axum::Extension<String>) -> axum::Json<Value> {
             axum::Json(session_json(&base))
         }
-        async fn download(
-            AxumPath((_account, blob)): AxumPath<(String, String)>,
-        ) -> Response {
+        async fn download(AxumPath((_account, blob)): AxumPath<(String, String)>) -> Response {
             let (n, with_length) = if let Some(rest) = blob.strip_prefix("exact-") {
                 (rest.parse::<usize>().unwrap(), true)
             } else if let Some(rest) = blob.strip_prefix("chunked-") {

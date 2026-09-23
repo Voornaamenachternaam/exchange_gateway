@@ -2010,6 +2010,26 @@ pub async fn send_eas_mime_message(
 
     relay_bytes.clear();
 
+    // Harvest S/MIME certificates embedded in the outbound MIME into the GAL
+    // certificate store (audit item 9) — only after the relay accepted the
+    // message, and only for identities owned by the authenticated sender:
+    // MIME-level harvesting performs no CMS signature/chain validation, so
+    // GAL entries are written only for the authenticated user's own
+    // addresses (envelope From was accepted by the MTA). Harvest failures
+    // are logged by `harvest_and_store` and never abort a send.
+    let owned = {
+        let mut o = vec![username.to_lowercase(), from.to_lowercase()];
+        o.dedup();
+        o
+    };
+    let stored = crate::smime::harvest_and_store(&state.storage, raw_mime, &owned).await;
+    if stored > 0 {
+        tracing::info!(
+            certs = stored,
+            "harvested S/MIME certificate(s) from outbound EAS mail"
+        );
+    }
+
     if save_in_sent && let Some(jmap) = state.jmap_client.as_ref() {
         // The message is already delivered; failing the command here would
         // make the client retry and send duplicates, so import errors are
