@@ -3824,9 +3824,12 @@ async fn handle_meeting_response_object(
         }
     };
 
-    // Harvest any S/MIME certificates embedded in the referenced message
-    // into the GAL certificate store (audit item 9).
-    let _stored = crate::smime::harvest_and_store(&state.storage, &raw_mime).await;
+    // S/MIME certificates in externally received messages are deliberately
+    // NOT harvested into the GAL: verifying signer-to-identity binding
+    // requires CMS signature verification plus a trusted certificate chain,
+    // which MIME traffic here does not establish. Only operator-seeded
+    // certificates and the authenticated sender's own outbound certificates
+    // enter the GAL store (see smime.rs harvest_and_store call sites).
 
     let Some(ics) = crate::email::extract_meeting_request_ics(&raw_mime) else {
         return operation_error_response(

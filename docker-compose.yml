@@ -57,14 +57,15 @@ services:
       - GATEWAY_ADMIN_PASSWORD=${GATEWAY_ADMIN_PASSWORD:-}
       - GATEWAY_MAPI_ENABLED=${GATEWAY_MAPI_ENABLED:-1}
       # S/MIME GAL certificates (MS-ASCMD ResolveRecipients Certificate block):
-      # optional directory of PEM/DER X.509 / certs-only CMS / PKCS#12 files
-      # imported at startup; leave empty to serve only harvested certificates.
+      # optional directory of PEM/DER X.509 (.pem/.der/.cer/.crt) or
+      # certs-only CMS "PKCS#7" (.p7b/.p7c) files imported at startup;
+      # leave empty to serve only harvested certificates.
       - GATEWAY_SMIME_CERT_STORE_DIR=${GATEWAY_SMIME_CERT_STORE_DIR:-/var/lib/exchange-gateway/certs}
     ports:
       - 8134:8134
     volumes:
       - /armblock/exchange-gateway/data:/var/lib/exchange-gateway
-      # Operator-seeded S/MIME certificate store for the GAL (PEM/DER/p7b/p12).
+      # Operator-seeded S/MIME certificate store for the GAL (PEM/DER/p7b).
       # Populate on the host; remove this line if you only harvest from mail.
       - /armblock/exchange-gateway/certs:/var/lib/exchange-gateway/certs
     dns:

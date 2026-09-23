@@ -3046,6 +3046,61 @@ async fn handle_resolve_recipients(
             parsed
         }
     };
+    // MS-ASCMD §2.2.1.15 Options: CertificateRetrieval (§2.2.3.22) and
+    // MaxCertificates (§2.2.3.101) govern the S/MIME GAL `Certificates`
+    // block; MaxAmbiguousRecipients (§2.2.3.100) bounds the suggestions
+    // list. All are optional; CertificateRetrieval defaults to 1
+    // ("do not retrieve certificates").
+    let certificate_retrieval: Option<u32> = match extract_first_tag_text(
+        xml,
+        b"CertificateRetrieval",
+    ) {
+        Some(v) => match v.trim().parse::<u32>() {
+            Ok(n @ 1..=3) => Some(n),
+            _ => {
+                // MS-ASCMD §2.2.3.177.12: request-level Status 5 -
+                // protocol error, invalid parameter.
+                return xml_or_wbxml_response(
+                    wbxml,
+                    as_wbxml,
+                    r#"<?xml version="1.0" encoding="utf-8"?><ResolveRecipients xmlns="ResolveRecipients:"><Status>5</Status></ResolveRecipients>"#,
+                    request_id,
+                );
+            }
+        },
+        None => Some(1),
+    };
+    let max_certificates: Option<u32> = match extract_first_tag_text(xml, b"MaxCertificates") {
+        Some(v) => match v.trim().parse::<u32>() {
+            // MS-ASCMD §2.2.3.101: value is limited to 0-9999.
+            Ok(n) if n <= 9999 => Some(n),
+            _ => {
+                return xml_or_wbxml_response(
+                    wbxml,
+                    as_wbxml,
+                    r#"<?xml version="1.0" encoding="utf-8"?><ResolveRecipients xmlns="ResolveRecipients:"><Status>5</Status></ResolveRecipients>"#,
+                    request_id,
+                );
+            }
+        },
+        None => None,
+    };
+    let max_ambiguous: u32 = match extract_first_tag_text(xml, b"MaxAmbiguousRecipients") {
+        Some(v) => match v.trim().parse::<u32>() {
+            // MS-ASCMD §2.2.3.100: value is limited to 0-9999.
+            Ok(n) if n <= 9999 => n,
+            _ => {
+                return xml_or_wbxml_response(
+                    wbxml,
+                    as_wbxml,
+                    r#"<?xml version="1.0" encoding="utf-8"?><ResolveRecipients xmlns="ResolveRecipients:"><Status>5</Status></ResolveRecipients>"#,
+                    request_id,
+                );
+            }
+        },
+        None => 100, // Exchange default when the client does not bound the list.
+    };
+
     let availability_requested = xml.contains("<Availability>");
     let availability_window = if availability_requested {
         let Some(start) =
@@ -3107,60 +3162,6 @@ async fn handle_resolve_recipients(
     });
     let lookup_results = join_all(lookup_futures).await;
 
-    // MS-ASCMD §2.2.1.15 Options: CertificateRetrieval (§2.2.3.22) and
-    // MaxCertificates (§2.2.3.101) govern the S/MIME GAL `Certificates`
-    // block; MaxAmbiguousRecipients (§2.2.3.100) bounds the suggestions
-    // list. All are optional; CertificateRetrieval defaults to 1
-    // ("do not retrieve certificates").
-    let certificate_retrieval: Option<u32> = match extract_first_tag_text(
-        xml,
-        b"CertificateRetrieval",
-    ) {
-        Some(v) => match v.trim().parse::<u32>() {
-            Ok(n @ 1..=3) => Some(n),
-            _ => {
-                // MS-ASCMD §2.2.3.177.12: request-level Status 5 -
-                // protocol error, invalid parameter.
-                return xml_or_wbxml_response(
-                    wbxml,
-                    as_wbxml,
-                    r#"<?xml version="1.0" encoding="utf-8"?><ResolveRecipients xmlns="ResolveRecipients:"><Status>5</Status></ResolveRecipients>"#,
-                    request_id,
-                );
-            }
-        },
-        None => Some(1),
-    };
-    let max_certificates: Option<u32> = match extract_first_tag_text(xml, b"MaxCertificates") {
-        Some(v) => match v.trim().parse::<u32>() {
-            // MS-ASCMD §2.2.3.101: value is limited to 0-9999.
-            Ok(n) if n <= 9999 => Some(n),
-            _ => {
-                return xml_or_wbxml_response(
-                    wbxml,
-                    as_wbxml,
-                    r#"<?xml version="1.0" encoding="utf-8"?><ResolveRecipients xmlns="ResolveRecipients:"><Status>5</Status></ResolveRecipients>"#,
-                    request_id,
-                );
-            }
-        },
-        None => None,
-    };
-    let max_ambiguous: u32 = match extract_first_tag_text(xml, b"MaxAmbiguousRecipients") {
-        Some(v) => match v.trim().parse::<u32>() {
-            // MS-ASCMD §2.2.3.100: value is limited to 0-9999.
-            Ok(n) if n <= 9999 => n,
-            _ => {
-                return xml_or_wbxml_response(
-                    wbxml,
-                    as_wbxml,
-                    r#"<?xml version="1.0" encoding="utf-8"?><ResolveRecipients xmlns="ResolveRecipients:"><Status>5</Status></ResolveRecipients>"#,
-                    request_id,
-                );
-            }
-        },
-        None => 100, // Exchange default when the client does not bound the list.
-    };
     // The legacy fallback above synthesises one recipient per requested To
     // when the directory is empty/unavailable; treat recipients.len() as the
     // authoritative count only when lookup succeeded.

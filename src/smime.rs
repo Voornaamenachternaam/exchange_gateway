@@ -181,8 +181,9 @@ pub(crate) fn message_from_addresses(msg: &mail_parser::Message<'_>) -> Vec<Stri
 }
 
 /// Index harvested certs under the email identities they claim
-/// (SAN rfc822Name / subject emailAddress) plus, as a fallback, the
-/// message's From addresses (the originator attached the certificate).
+/// (SAN rfc822Name / subject emailAddress). Certs with no claimed identity
+/// fall back to the message's From addresses (the originator attached the
+/// certificate).
 fn build_records(
     certs: Vec<(x509_cert::Certificate, Vec<u8>)>,
     from: &[String],
@@ -191,10 +192,12 @@ fn build_records(
     let mut records = Vec::new();
     for (cert, der_bytes) in certs {
         let mut emails = cert_email_addresses(&cert);
-        // Index under claimed identities; also always index the sender's
-        // cert under the From addresses so correspondents without SANs are
-        // still discoverable in the GAL.
-        if !from.is_empty() {
+        // From addresses are a fallback identity, used only when the
+        // certificate itself carries no email identity. Extending a cert
+        // that has claimed identities with the envelope sender would let a
+        // sender publish their own certificate under an arbitrary From
+        // address (cross-identity indexing, CWE-345).
+        if emails.is_empty() {
             for f in from {
                 if !emails.iter().any(|e| e == f) {
                     emails.push(f.clone());
@@ -276,10 +279,22 @@ pub fn certs_from_pem_or_der(bytes: &[u8], fallback_email: Option<&str>) -> Vec<
     build_records(certs, &from)
 }
 
-/// Persist harvested certificates; a store failure is an error to the log
-/// but must never abort the mail payload the user asked to send.
-pub async fn harvest_and_store(storage: &crate::storage::Storage, raw_mime: &[u8]) -> usize {
+/// Harvest S/MIME certificates from a MIME message and persist them,
+/// retaining only records whose email identity is in `owned_identities`
+/// (the authenticated sender's mailbox addresses). The MIME path performs
+/// no CMS signature or chain validation, so GAL entries are only ever
+/// written for identities the sender owns.
+pub async fn harvest_and_store(
+    storage: &crate::storage::Storage,
+    raw_mime: &[u8],
+    owned_identities: &[String],
+) -> usize {
     let records = harvest_mime(raw_mime);
+    let owned: BTreeSet<&str> = owned_identities.iter().map(String::as_str).collect();
+    let records: Vec<_> = records
+        .into_iter()
+        .filter(|r| owned.contains(r.email.as_str()))
+        .collect();
     if records.is_empty() {
         return 0;
     }
@@ -299,7 +314,8 @@ pub async fn harvest_and_store(storage: &crate::storage::Storage, raw_mime: &[u8
     stored
 }
 
-/// Import all `*.der` / `*.pem` files from the administrator-seeded S/MIME
+/// Import all `*.pem` / `*.der` / `*.cer` / `*.crt` (X.509) and `*.p7b` /
+/// `*.p7c` (certs-only CMS "PKCS#7") files from the administrator-seeded S/MIME
 /// certificate directory into the store. Returns the number of
 /// certificate/email pairs inserted or refreshed.
 pub async fn import_cert_dir(storage: &crate::storage::Storage, dir: &Path) -> Result<usize> {
@@ -316,9 +332,12 @@ pub async fn import_cert_dir(storage: &crate::storage::Storage, dir: &Path) -> R
             .extension()
             .and_then(|e| e.to_str())
             .map(|e| e.to_ascii_lowercase());
-        let is_der = ext.as_deref() == Some("der");
-        let is_pem = ext.as_deref() == Some("pem");
-        if !is_der && !is_pem {
+        // X.509 containers (PEM/DER) and certs-only CMS "PKCS#7" bundles
+        // (.p7b/.p7c). Anything else is skipped with a warning below; if a
+        // file has an accepted extension but no usable certificates, that is
+        // also logged rather than silently ignored.
+        let ext = ext.as_deref().unwrap_or_default();
+        if !matches!(ext, "pem" | "der" | "cer" | "crt" | "p7b" | "p7c") {
             continue;
         }
         // For plain PEM/DER files the email identities come from the
@@ -330,7 +349,17 @@ pub async fn import_cert_dir(storage: &crate::storage::Storage, dir: &Path) -> R
             .map(|s| s.to_string());
         let bytes = std::fs::read(&path)
             .with_context(|| format!("reading S/MIME cert file {}", path.display()))?;
-        let records = certs_from_pem_or_der(&bytes, stem_email.as_deref());
+        // Try X.509 first, then a certs-only CMS SignedData bundle.
+        let mut records = certs_from_pem_or_der(&bytes, stem_email.as_deref());
+        if records.is_empty() {
+            records = build_records(
+                certs_from_cms_blob(&bytes),
+                &stem_email
+                    .filter(|e| email_address::EmailAddress::is_valid(e))
+                    .map(|e| vec![e.to_lowercase()])
+                    .unwrap_or_default(),
+            );
+        }
         if records.is_empty() {
             tracing::warn!(
                 path = %path.display(),

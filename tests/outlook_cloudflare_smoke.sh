@@ -183,9 +183,9 @@ python3 - "$TMP_DIR" <<'PY'
 """Encode a ResolveRecipients request in WBXML and POST it to the EAS
 endpoint, then assert the WBXML response contains the code-page-10
 Certificates/Status tokens."""
-import struct, subprocess, sys
+import os, sys
 
-tmp = sys.argv[1]
+user = os.environ["GATEWAY_USER"]
 
 def str_i(s: bytes) -> bytes:
     return b"\x03" + s + b"\x00"
@@ -197,12 +197,12 @@ def t(code: int, content: bytes = b"") -> bytes:
     return bytes([0x40 | code, 0x01])
 
 wbxml = (
-    b"\x03\x01\x6a\x00"          # header: WBXML 1.3, UTF-8, str table len 0
-    b"\x00\x0a"                  # SWITCH_PAGE 10 (ResolveRecipients)
-    + t(0x05,                    # ResolveRecipients
-        t(0x10, str_i(b"smoke")) # To
-        + t(0x0F,                # Options
-            t(0x11, str_i(b"2")) # CertificateRetrieval = 2 (full certs)
+    b"\x03\x01\x6a\x00"             # header: WBXML 1.3, UTF-8, str table len 0
+    b"\x00\x0a"                     # SWITCH_PAGE 10 (ResolveRecipients)
+    + t(0x05,                       # ResolveRecipients
+        t(0x10, str_i(user.encode())) # To = the configured mailbox user
+        + t(0x0F,                   # Options
+            t(0x11, str_i(b"2"))    # CertificateRetrieval = 2 (full certs)
         )
     )
 )
@@ -228,11 +228,37 @@ with urllib.request.urlopen(req) as resp:
 
 if body[:4] != b"\x03\x01\x6a\x00":
     raise SystemExit("FAIL: ResolveRecipients response is not WBXML")
-# After the header, expect SWITCH_PAGE 10 and the ResolveRecipients tag.
-if body[4:6] != b"\x00\x0a" or (body[6] & 0x3F) != 0x05:
-    raise SystemExit(f"FAIL: unexpected WBXML token stream: {body[:12].hex()}")
-if (0x0C | 0x40) not in body:
-    raise SystemExit("FAIL: Certificates tag (cp10/0x0C) missing in WBXML response")
+
+# Walk the token stream tracking SWITCH_PAGE and skipping STR_I bodies, so
+# certificates are confirmed as real code-page-10 element tokens and not as
+# byte values inside inline strings (e.g. base64 certificate data).
+tags = []           # (code_page, token) pairs of element-open tokens
+cp = 0
+i = 4
+while i < len(body):
+    b = body[i]
+    if b == 0x00:  # SWITCH_PAGE
+        cp = body[i + 1]
+        i += 2
+        continue
+    if b == 0x03:  # STR_I
+        end = body.index(0, i + 1)
+        i = end + 1
+        continue
+    if b == 0xC3:  # OPAQUE: u32 length + data
+        n = int.from_bytes(body[i + 1 : i + 5], "big")
+        i = i + 5 + n
+        continue
+    if b == 0x01:  # END
+        i += 1
+        continue
+    tags.append((cp, b & 0x3F))
+    i += 1
+
+if not tags or tags[0] != (10, 0x05):
+    raise SystemExit(f"FAIL: first element must be ResolveRecipients on code page 10: {tags[:4]}")
+if (10, 0x0C) not in tags:
+    raise SystemExit(f"FAIL: Certificates element (cp10/0x0C) missing; tokens: {tags}")
 print("[smoke] WBXML ResolveRecipients response carries Certificates on code page 10")
 PY
 
