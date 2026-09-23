@@ -2298,6 +2298,28 @@ async fn handle_get_item_estimate(
     xml_or_wbxml_response(wbxml, as_wbxml, &xml, request_id)
 }
 
+/// Fetch an email attachment's raw bytes from the user's JMAP account and
+/// return them base64-encoded for `AirSyncBase:Data`.
+///
+/// EAS email attachment `FileReference`s carry the JMAP blobId. The download
+/// uses `download_blob_capped` so the body is streamed with the byte cap
+/// enforced mid-transfer (an oversized blob is aborted rather than buffered
+/// whole). The credentials are the requesting user's own, so a blobId from
+/// another mailbox simply fails at Stalwart with 403/404.
+async fn handle_email_attachment_fetch(
+    jmap: &Arc<JmapClient>,
+    username: &str,
+    password: &SecretString,
+    blob_id: &str,
+    max_bytes: usize,
+) -> anyhow::Result<String> {
+    let account_id = jmap.get_account_id(username, password).await?;
+    let bytes = jmap
+        .download_blob_capped(&account_id, blob_id, username, password, max_bytes)
+        .await?;
+    Ok(BASE64.encode(&bytes))
+}
+
 async fn handle_item_operations(
     state: &Arc<AppState>,
     username: &str,
@@ -2392,11 +2414,51 @@ async fn handle_item_operations(
                     ));
                 }
                 Ok(None) => {
-                    responses.push_str(&format!(
-                        "<Fetch><Store>{}</Store><FileReference>{}</FileReference><Status>8</Status></Fetch>",
-                        xml_escape(&store),
-                        xml_escape(file_ref)
-                    ));
+                    // Not a gateway-managed (calendar) attachment: EAS email
+                    // attachment FileReferences carry the JMAP blobId, so fetch
+                    // the bytes from the user's own JMAP account. The download
+                    // is streamed with a hard byte cap so an oversized blob is
+                    // aborted mid-transfer instead of being buffered whole.
+                    let jmap = state.jmap_client.clone();
+                    if !state.cfg.email_enabled || jmap.is_none() {
+                        responses.push_str(&format!(
+                            "<Fetch><Store>{}</Store><FileReference>{}</FileReference><Status>8</Status></Fetch>",
+                            xml_escape(&store),
+                            xml_escape(file_ref)
+                        ));
+                        continue;
+                    }
+                    let jmap = jmap.expect("checked above");
+                    match handle_email_attachment_fetch(
+                        &jmap,
+                        username,
+                        &password,
+                        file_ref,
+                        state.cfg.max_attachment_bytes(),
+                    )
+                    .await
+                    {
+                        Ok(base64_content) => {
+                            responses.push_str(&format!(
+                                "<Fetch><Store>{}</Store><FileReference>{}</FileReference><Class>Email</Class><Status>1</Status><Properties><AirSyncBase:Data>{}</AirSyncBase:Data></Properties></Fetch>",
+                                xml_escape(&store),
+                                xml_escape(file_ref),
+                                base64_content
+                            ));
+                        }
+                        Err(e) => {
+                            tracing::error!(
+                                "ItemOperations JMAP attachment fetch error for {}: {}",
+                                file_ref,
+                                e
+                            );
+                            responses.push_str(&format!(
+                                "<Fetch><Store>{}</Store><FileReference>{}</FileReference><Status>8</Status></Fetch>",
+                                xml_escape(&store),
+                                xml_escape(file_ref)
+                            ));
+                        }
+                    }
                 }
                 Err(e) => {
                     tracing::error!(
