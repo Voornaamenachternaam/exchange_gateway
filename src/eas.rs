@@ -2298,11 +2298,14 @@ async fn handle_get_item_estimate(
     xml_or_wbxml_response(wbxml, as_wbxml, &xml, request_id)
 }
 
-/// Fetch an email attachment's raw bytes from the user's JMAP account and
-/// return them base64-encoded for `AirSyncBase:Data`.
+/// Fetch an email attachment's raw bytes from the user's JMAP account.
+/// Returns `(base64_body, content_type, unencoded_size)` for the
+/// ItemOperations-namespace `Data`/`Total` and `AirSyncBase:ContentType`
+/// elements of the Fetch response (MS-ASCMD 2.2.3.39.2 / 2.2.3.184.2).
 ///
 /// EAS email attachment `FileReference`s carry the JMAP blobId. The download
-/// uses `download_blob_capped` so the body is streamed with the byte cap
+/// uses `download_blob_capped`, which validates the blobId against the
+/// RFC 8620 `Id` character set and streams the body with the byte cap
 /// enforced mid-transfer (an oversized blob is aborted rather than buffered
 /// whole). The credentials are the requesting user's own, so a blobId from
 /// another mailbox simply fails at Stalwart with 403/404.
@@ -2312,12 +2315,13 @@ async fn handle_email_attachment_fetch(
     password: &SecretString,
     blob_id: &str,
     max_bytes: usize,
-) -> anyhow::Result<String> {
+) -> anyhow::Result<(String, String, usize)> {
     let account_id = jmap.get_account_id(username, password).await?;
-    let bytes = jmap
+    let (bytes, content_type) = jmap
         .download_blob_capped(&account_id, blob_id, username, password, max_bytes)
         .await?;
-    Ok(BASE64.encode(&bytes))
+    let total_size = bytes.len();
+    Ok((BASE64.encode(&bytes), content_type, total_size))
 }
 
 async fn handle_item_operations(
@@ -2438,11 +2442,17 @@ async fn handle_item_operations(
                     )
                     .await
                     {
-                        Ok(base64_content) => {
+                        Ok((base64_content, content_type, total_size)) => {
+                            // MS-ASCMD 2.2.3.39.2: an ItemOperations Fetch
+                            // response carries attachment bytes as base64 in
+                            // the ItemOperations-namespace `Data` element,
+                            // with `Total` giving the unencoded size.
                             responses.push_str(&format!(
-                                "<Fetch><Store>{}</Store><FileReference>{}</FileReference><Class>Email</Class><Status>1</Status><Properties><AirSyncBase:Data>{}</AirSyncBase:Data></Properties></Fetch>",
+                                "<Fetch><Store>{}</Store><FileReference>{}</FileReference><Class>Email</Class><Status>1</Status><Properties><AirSyncBase:ContentType>{}</AirSyncBase:ContentType><Total>{}</Total><Data>{}</Data></Properties></Fetch>",
                                 xml_escape(&store),
                                 xml_escape(file_ref),
+                                xml_escape(&content_type),
+                                total_size,
                                 base64_content
                             ));
                         }
