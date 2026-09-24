@@ -16,7 +16,7 @@ use crate::storage::Storage;
 use governor::{
     Quota, RateLimiter,
     clock::DefaultClock,
-    state::{InMemoryState, NotKeyed},
+    state::keyed::DefaultKeyedStateStore,
 };
 use std::num::NonZeroU32;
 use std::sync::Arc;
@@ -42,8 +42,11 @@ pub struct AppState {
     pub carddav_client: Option<Arc<CarddavClient>>,
     /// Application metrics collector.
     pub metrics: Arc<AppMetrics>,
-    /// Global rate limiter to protect against floods. None if rate limiting is disabled.
-    pub rate_limiter: Option<Arc<RateLimiter<NotKeyed, InMemoryState, DefaultClock>>>,
+    /// Per-principal rate limiter (keyed by authenticated user, else edge IP).
+    /// A global bucket would let the target clients throttle each other
+    /// behind Cloudflare/Microsoft datacenter IPs. None if disabled.
+    pub rate_limiter:
+        Option<Arc<RateLimiter<String, DefaultKeyedStateStore<String>, DefaultClock>>>,
     /// MAPI/HTTP (MS-OXCMAPIHTTP) session state. None if `mapi_enabled` is false.
     pub mapi: Option<Arc<MapiState>>,
     /// Shared registry of live JMAP EventSource push monitors (RFC 8620 §7.3),
@@ -210,7 +213,7 @@ impl AppState {
             let rps_u32 = rps.max(1.0).round() as u32;
             let burst = NonZeroU32::new(cfg.rate_limit_max_concurrent.max(1) as u32).unwrap();
             let quota = Quota::per_second(NonZeroU32::new(rps_u32).unwrap()).allow_burst(burst);
-            Some(Arc::new(RateLimiter::direct(quota)))
+            Some(Arc::new(RateLimiter::keyed(quota)))
         } else {
             None
         };
