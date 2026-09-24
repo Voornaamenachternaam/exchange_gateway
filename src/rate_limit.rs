@@ -1,14 +1,27 @@
 // src/rate_limit.rs
-//! Per-principal request rate limiting using governor.
+//! Per-client rate limiting using governor.
 //!
-//! Rate limiting is keyed by the authenticated account (the Basic-auth
-//! username), falling back to the client IP reported by the edge
-//! (`CF-Connecting-IP`, then the first `X-Forwarded-For` entry) and finally
-//! to a global bucket for unidentified traffic. A single global bucket can
-//! not be used: all traffic arrives from Cloudflare edge / Microsoft
-//! datacenter IPs, so a global limiter would make the target clients
-//! (New Outlook for Windows, Outlook Android) throttle each other's
-//! Ping/Sync streams into random 429s and self-DoS.
+//! Buckets are keyed by the client IP as reported by the edge
+//! (`CF-Connecting-IP`, then the RFC 7239 `Forwarded` header, then the first
+//! `X-Forwarded-For` entry), with a shared global bucket as the final
+//! fallback. A single global bucket can not be used: all traffic arrives
+//! from Cloudflare edge / Microsoft datacenter IPs, so a global limiter
+//! would make the target clients (New Outlook for Windows, Outlook Android)
+//! throttle each other's Ping/Sync streams into random 429s and self-DoS.
+//!
+//! The bucket key is deliberately *not* the Basic-auth username:
+//! `check_rate_limit` runs as outer middleware, before any handler has
+//! verified the credentials, so bucketing on the raw `Authorization` header
+//! would let an unauthenticated caller claim another user's bucket
+//! (starving that user) or rotate through unlimited synthetic `user:`
+//! buckets. The edge-provided client IP cannot be forged this way — the
+//! reference deployment fronts the gateway exclusively through the
+//! cloudflared tunnel, and Cloudflare overwrites `CF-Connecting-IP` for all
+//! proxied traffic. Direct exposure without Cloudflare is unsupported (per
+//! `CLOUDFLARED_SETUP.md`); on such a path the oldest-client-first
+//! `X-Forwarded-For` chain is client-controlled, which attackers can already
+//! rotate trivially, so keying on it is no worse than any other pre-auth
+//! signal.
 
 use axum::{
     body::Body,
@@ -17,7 +30,6 @@ use axum::{
     middleware::Next,
     response::{IntoResponse, Response},
 };
-use base64::Engine as _;
 use governor::clock::{Clock, DefaultClock};
 use std::convert::Infallible;
 use std::sync::Arc;
@@ -25,16 +37,16 @@ use tracing::warn;
 
 use crate::models::AppState;
 
-/// Bucket for requests carrying no authenticatable or IP-based identity.
+/// Bucket for requests carrying no usable client-IP identity.
 const GLOBAL_KEY: &str = "__global__";
 
-/// Derive the rate-limit key for a request: authenticated username, else
-/// client IP from the edge headers, else a shared global bucket.
-fn rate_limit_key(headers: &header::HeaderMap) -> String {
-    if let Some(user) = basic_auth_username(headers) {
-        return format!("user:{user}");
-    }
-    if let Some(ip) = headers
+/// Return the rate-limit key and its bounded category label for a request.
+///
+/// The category (`"ip"` or `"global"`) is safe to use as a Prometheus label
+/// value; the key itself is high-cardinality (an IP address) and must only
+/// appear in structured logs, never in metric labels.
+fn rate_limit_key(headers: &header::HeaderMap) -> (String, &'static str) {
+    let ip = headers
         .get("cf-connecting-ip")
         .and_then(|v| v.to_str().ok())
         .map(str::trim)
@@ -59,29 +71,14 @@ fn rate_limit_key(headers: &header::HeaderMap) -> String {
                 .and_then(|v| v.split(',').next())
                 .map(str::trim)
                 .filter(|s| !s.is_empty())
-        })
-    {
-        return format!("ip:{ip}");
+        });
+    match ip {
+        Some(ip) => (format!("ip:{ip}"), "ip"),
+        None => (GLOBAL_KEY.to_string(), "global"),
     }
-    GLOBAL_KEY.to_string()
 }
 
-/// Extract the username portion of an HTTP Basic `Authorization` header.
-fn basic_auth_username(headers: &header::HeaderMap) -> Option<String> {
-    let value = headers.get(header::AUTHORIZATION)?.to_str().ok()?;
-    let encoded = value
-        .get(..6)
-        .filter(|p| p.eq_ignore_ascii_case("basic "))
-        .and_then(|_| value.get(6..))?;
-    let decoded = base64::engine::general_purpose::STANDARD
-        .decode(encoded.trim())
-        .ok()?;
-    let credential = String::from_utf8(decoded).ok()?;
-    let (user, _) = credential.split_once(':').unwrap_or((&credential, ""));
-    (!user.is_empty()).then(|| user.to_string())
-}
-
-/// Middleware that applies per-principal rate limiting to all requests.
+/// Middleware that applies per-client rate limiting to all requests.
 pub async fn check_rate_limit(
     State(state): State<Arc<AppState>>,
     req: Request<Body>,
@@ -95,7 +92,7 @@ pub async fn check_rate_limit(
 
     // If rate limiting is disabled or no limiter configured, pass through immediately.
     if let Some(limiter) = &state.rate_limiter {
-        let key = rate_limit_key(req.headers());
+        let (key, category) = rate_limit_key(req.headers());
         match limiter.check_key(&key) {
             Ok(()) => {
                 let response = next.run(req).await;
@@ -111,11 +108,14 @@ pub async fn check_rate_limit(
                     wait_ms = wait_ms,
                     "Rate limit exceeded"
                 );
+                // The label must stay low-cardinality: one series per
+                // bounded category, never one per IP (each rejected key
+                // would otherwise create a new metric series).
                 state
                     .metrics
                     .http
                     .request_rejections
-                    .with_label_values(&["rate_limit", &key])
+                    .with_label_values(&["rate_limit", category])
                     .inc();
                 // Retry-After in seconds (minimum 1)
                 let retry_after = wait_ms.div_ceil(1000).max(1);
@@ -142,21 +142,27 @@ mod tests {
     use axum::http::HeaderMap;
 
     #[test]
-    fn key_prefers_basic_auth_username() {
+    fn key_prefers_cf_connecting_ip() {
         let mut headers = HeaderMap::new();
-        // "alice:secret" base64
+        headers.insert("cf-connecting-ip", "203.0.113.7".parse().unwrap());
         headers.insert(
-            header::AUTHORIZATION,
-            "Basic YWxpY2U6c2VjcmV0".parse().unwrap(),
+            "x-forwarded-for",
+            "198.51.100.3, 10.0.0.1".parse().unwrap(),
         );
-        assert_eq!(rate_limit_key(&headers), "user:alice");
+        assert_eq!(rate_limit_key(&headers), ("ip:203.0.113.7".into(), "ip"));
     }
 
     #[test]
-    fn key_falls_back_to_cf_connecting_ip() {
+    fn key_falls_back_to_rfc7239_forwarded() {
         let mut headers = HeaderMap::new();
-        headers.insert("cf-connecting-ip", "203.0.113.7".parse().unwrap());
-        assert_eq!(rate_limit_key(&headers), "ip:203.0.113.7");
+        headers.insert(
+            header::FORWARDED,
+            "for=\"198.51.100.9\";proto=https".parse().unwrap(),
+        );
+        assert_eq!(
+            rate_limit_key(&headers),
+            ("ip:198.51.100.9".into(), "ip")
+        );
     }
 
     #[test]
@@ -166,19 +172,30 @@ mod tests {
             "x-forwarded-for",
             "198.51.100.3, 10.0.0.1".parse().unwrap(),
         );
-        assert_eq!(rate_limit_key(&headers), "ip:198.51.100.3");
+        assert_eq!(rate_limit_key(&headers), ("ip:198.51.100.3".into(), "ip"));
     }
 
     #[test]
     fn key_is_global_without_identity() {
         let headers = HeaderMap::new();
-        assert_eq!(rate_limit_key(&headers), GLOBAL_KEY);
+        assert_eq!(rate_limit_key(&headers), (GLOBAL_KEY.into(), "global"));
     }
 
     #[test]
-    fn malformed_basic_is_ignored() {
+    fn authorization_header_does_not_select_bucket() {
         let mut headers = HeaderMap::new();
-        headers.insert(header::AUTHORIZATION, "Basic !!!notb64".parse().unwrap());
-        assert_eq!(rate_limit_key(&headers), GLOBAL_KEY);
+        // "alice:secret" — must not influence keying before verification.
+        headers.insert(
+            header::AUTHORIZATION,
+            "Basic YWxpY2U6c2VjcmV0".parse().unwrap(),
+        );
+        assert_eq!(rate_limit_key(&headers), (GLOBAL_KEY.into(), "global"));
+    }
+
+    #[test]
+    fn empty_ip_values_are_ignored() {
+        let mut headers = HeaderMap::new();
+        headers.insert("cf-connecting-ip", "".parse().unwrap());
+        assert_eq!(rate_limit_key(&headers), (GLOBAL_KEY.into(), "global"));
     }
 }
