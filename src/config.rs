@@ -39,6 +39,12 @@ const ENV_ADMIN_PASSWORD: &str = "GATEWAY_ADMIN_PASSWORD";
 const ENV_RATE_LIMIT_ENABLED: &str = "GATEWAY_RATE_LIMIT_ENABLED";
 const ENV_RATE_LIMIT_REQUESTS_PER_MINUTE: &str = "GATEWAY_RATE_LIMIT_REQUESTS_PER_MINUTE";
 const ENV_RATE_LIMIT_MAX_CONCURRENT: &str = "GATEWAY_RATE_LIMIT_MAX_CONCURRENT";
+const ENV_MAX_PING_HEARTBEAT: &str = "GATEWAY_MAX_PING_HEARTBEAT";
+/// Effective Ping hold-time cap applied to requests detected as
+/// Cloudflare-proxied (`CF-RAY` header) when `GATEWAY_MAX_PING_HEARTBEAT` is
+/// unset. Cloudflare's edge cuts unanswered requests at the 125s default Proxy Read Timeout; 80s
+/// leaves headroom for response delivery and client re-issue.
+pub const DEFAULT_CLOUDFLARE_PING_CAP_SECS: u64 = 80;
 const ENV_MAPI_ENABLED: &str = "GATEWAY_MAPI_ENABLED";
 const ENV_MAPI_HMA_ENABLED: &str = "GATEWAY_MAPI_HMA_ENABLED";
 const ENV_MAPI_OIDC_ISSUER: &str = "GATEWAY_MAPI_OIDC_ISSUER";
@@ -162,6 +168,23 @@ pub struct Config {
     pub rate_limit_requests_per_minute: u32,
     #[serde(default = "default_rate_limit_max_concurrent")]
     pub rate_limit_max_concurrent: usize,
+    /// Hard cap on the effective EAS Ping hold time, in seconds. Cloudflare's
+    /// proxied HTTP (including cloudflared tunnels) terminates any request
+    /// without a response within the 125s Proxy Read Timeout (HTTP 524, adjust only upward on Enterprise plans), silently
+    /// breaking EAS Ping push for any `HeartbeatInterval` above that. When a
+    /// Ping request carries a `CF-RAY` header (i.e. it arrived through the
+    /// Cloudflare edge), the gateway clamps its effective hold time to
+    /// `min(requested, cap)` and answers `Status 1` at the cap, so the client
+    /// re-pings before the edge cuts the connection. The EAS-protocol-level
+    /// heartbeat range (60..=3540) is untouched — the clamp only shortens how
+    /// long *this* connection is held, which the client must already tolerate
+    /// (a server may return `Status 1` at any time). Setting this env var
+    /// applies the cap to *all* Pings, with or without Cloudflare detection;
+    /// unset (the default) applies `DEFAULT_CLOUDFLARE_PING_CAP_SECS` only to
+    /// requests detected as Cloudflare-proxied. Configurable via
+    /// `GATEWAY_MAX_PING_HEARTBEAT`.
+    #[serde(default)]
+    pub max_ping_heartbeat_secs: Option<u64>,
     // MAPI over HTTP (MS-OXCMAPIHTTP) server surface. Enabled by default
     // because New Outlook for Windows (20251205004.10) and Outlook Android
     // connect over MAPI/HTTP rather than EWS; operators may still opt out
@@ -509,6 +532,14 @@ impl Config {
         }
         if !self.jmap_base.is_empty() {
             validate_jmap_url(&self.jmap_base, "jmap_base", self.allow_insecure_http)?;
+        }
+        if let Some(cap) = self.max_ping_heartbeat_secs
+            && cap == 0
+        {
+            return Err(anyhow::anyhow!(
+                "Config: 'max_ping_heartbeat_secs' (set via {}) must be > 0",
+                ENV_MAX_PING_HEARTBEAT
+            ));
         }
         if self.database_path.is_empty() {
             return Err(anyhow::anyhow!(
@@ -874,6 +905,25 @@ fn apply_environment_overrides(cfg: &mut Config) {
         }
     }
 
+    if let Some(val) = env::var(ENV_MAX_PING_HEARTBEAT)
+        .ok()
+        .filter(|v| !v.is_empty())
+    {
+        match val.parse::<u64>() {
+            Ok(parsed) => {
+                tracing::debug!("Applying {} from environment", ENV_MAX_PING_HEARTBEAT);
+                cfg.max_ping_heartbeat_secs = Some(parsed);
+            }
+            Err(_) => {
+                tracing::warn!(
+                    "Invalid value for {}: '{}', using default",
+                    ENV_MAX_PING_HEARTBEAT,
+                    val
+                );
+            }
+        }
+    }
+
     // Derive mail_host from mail_domain if not explicitly set
     if cfg.mail_host.is_empty() && !cfg.mail_domain.is_empty() {
         cfg.mail_host = format!("mail.{}", cfg.mail_domain);
@@ -1108,6 +1158,7 @@ impl Default for Config {
             rate_limit_enabled: true,
             rate_limit_requests_per_minute: 120,
             rate_limit_max_concurrent: 1000,
+            max_ping_heartbeat_secs: None,
             mapi_enabled: default_mapi_enabled(),
             mapi_hma_enabled: false,
             mapi_oidc_issuer: String::new(),
@@ -1323,6 +1374,58 @@ mod tests {
         let original = cfg.bind.clone();
         apply_env_string(&mut cfg, None, |c, v| c.bind = v);
         assert_eq!(cfg.bind, original);
+    }
+
+    #[test]
+    fn test_default_config_max_ping_heartbeat_unset() {
+        assert_eq!(Config::default().max_ping_heartbeat_secs, None);
+        assert_eq!(DEFAULT_CLOUDFLARE_PING_CAP_SECS, 80);
+    }
+
+    #[test]
+    fn test_max_ping_heartbeat_env_override_applies_and_validates() {
+        with_var(ENV_MAX_PING_HEARTBEAT, Some("80"), || {
+            let mut cfg = Config {
+                bind: "[::]:8134".to_string(),
+                mail_domain: "example.com".to_string(),
+                caldav_base: "http://stalwart:8080/dav".to_string(),
+                jmap_base: "http://stalwart:8080/jmap".to_string(),
+                allow_insecure_http: true,
+                hmac_secret: SecretString::from("a".repeat(32)),
+                ..Default::default()
+            };
+            apply_environment_overrides(&mut cfg);
+            assert_eq!(cfg.max_ping_heartbeat_secs, Some(80));
+            assert!(cfg.validate().is_ok());
+        });
+    }
+
+    #[test]
+    fn test_max_ping_heartbeat_invalid_env_falls_back_to_unset() {
+        with_var(ENV_MAX_PING_HEARTBEAT, Some("not-a-number"), || {
+            let mut cfg = Config::default();
+            apply_environment_overrides(&mut cfg);
+            assert_eq!(cfg.max_ping_heartbeat_secs, None);
+        });
+    }
+
+    #[test]
+    fn test_max_ping_heartbeat_rejects_zero() {
+        let cfg = Config {
+            bind: "[::]:8134".to_string(),
+            mail_domain: "example.com".to_string(),
+            caldav_base: "http://stalwart:8080/dav".to_string(),
+            jmap_base: "http://stalwart:8080/jmap".to_string(),
+            allow_insecure_http: true,
+            hmac_secret: SecretString::from("a".repeat(32)),
+            max_ping_heartbeat_secs: Some(0),
+            ..Default::default()
+        };
+        let err = cfg.validate().expect_err("cap of 0 must be rejected");
+        assert!(
+            err.to_string().contains("max_ping_heartbeat_secs"),
+            "error must identify the cap field, got: {err}"
+        );
     }
 
     #[test]
