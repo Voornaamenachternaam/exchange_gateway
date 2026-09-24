@@ -16,9 +16,10 @@ use crate::storage::Storage;
 use governor::{
     Quota, RateLimiter,
     clock::DefaultClock,
-    state::{InMemoryState, NotKeyed},
+    state::keyed::DefaultKeyedStateStore,
 };
 use std::num::NonZeroU32;
+use std::time::Duration;
 use std::sync::Arc;
 
 #[derive(Clone)]
@@ -42,8 +43,18 @@ pub struct AppState {
     pub carddav_client: Option<Arc<CarddavClient>>,
     /// Application metrics collector.
     pub metrics: Arc<AppMetrics>,
-    /// Global rate limiter to protect against floods. None if rate limiting is disabled.
-    pub rate_limiter: Option<Arc<RateLimiter<NotKeyed, InMemoryState, DefaultClock>>>,
+    /// Per-client rate limiter, keyed by the edge-reported client IP
+    /// (`CF-Connecting-IP`, `Forwarded`, then first `X-Forwarded-For`),
+    /// with a shared global fallback bucket. Keying is deliberate: a single
+    /// global bucket would let the target clients throttle each other
+    /// behind Cloudflare/Microsoft datacenter IPs, while a username key
+    /// cannot be used here because the middleware runs pre-authentication
+    /// and the raw Basic header is attacker-controlled. None if disabled.
+    ///
+    /// Stale keys are evicted by a periodic `retain_recent` sweep spawned at
+    /// construction, so the keyed store cannot grow without bound.
+    pub rate_limiter:
+        Option<Arc<RateLimiter<String, DefaultKeyedStateStore<String>, DefaultClock>>>,
     /// MAPI/HTTP (MS-OXCMAPIHTTP) session state. None if `mapi_enabled` is false.
     pub mapi: Option<Arc<MapiState>>,
     /// Shared registry of live JMAP EventSource push monitors (RFC 8620 §7.3),
@@ -210,7 +221,28 @@ impl AppState {
             let rps_u32 = rps.max(1.0).round() as u32;
             let burst = NonZeroU32::new(cfg.rate_limit_max_concurrent.max(1) as u32).unwrap();
             let quota = Quota::per_second(NonZeroU32::new(rps_u32).unwrap()).allow_burst(burst);
-            Some(Arc::new(RateLimiter::direct(quota)))
+            let limiter = Arc::new(RateLimiter::keyed(quota));
+            // The keyed store keeps an entry per distinct client-IP key.
+            // Sweep stale entries periodically so rotating source IPs (e.g.
+            // from an attacker burning through addresses) cannot grow the
+            // map without bound. `retain_recent` drops exactly those keys
+            // whose GCRA state is indistinguishable from a fresh bucket, so
+            // evicting them cannot alter limiter decisions for future
+            // requests; `shrink_to_fit` then returns their capacity.
+            if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+                let limiter = limiter.clone();
+                runtime.spawn(async move {
+                    const SWEEP_INTERVAL: Duration = Duration::from_secs(15 * 60);
+                    let mut ticker = tokio::time::interval(SWEEP_INTERVAL);
+                    ticker.tick().await; // skip the immediate first tick
+                    loop {
+                        ticker.tick().await;
+                        limiter.retain_recent();
+                        limiter.shrink_to_fit();
+                    }
+                });
+            }
+            Some(limiter)
         } else {
             None
         };
