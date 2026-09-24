@@ -42,7 +42,7 @@ const ENV_RATE_LIMIT_MAX_CONCURRENT: &str = "GATEWAY_RATE_LIMIT_MAX_CONCURRENT";
 const ENV_MAX_PING_HEARTBEAT: &str = "GATEWAY_MAX_PING_HEARTBEAT";
 /// Effective Ping hold-time cap applied to requests detected as
 /// Cloudflare-proxied (`CF-RAY` header) when `GATEWAY_MAX_PING_HEARTBEAT` is
-/// unset. Cloudflare free/pro edge cuts unanswered requests at ~100s; 80s
+/// unset. Cloudflare's edge cuts unanswered requests at the 125s default Proxy Read Timeout; 80s
 /// leaves headroom for response delivery and client re-issue.
 pub const DEFAULT_CLOUDFLARE_PING_CAP_SECS: u64 = 80;
 const ENV_MAPI_ENABLED: &str = "GATEWAY_MAPI_ENABLED";
@@ -170,7 +170,7 @@ pub struct Config {
     pub rate_limit_max_concurrent: usize,
     /// Hard cap on the effective EAS Ping hold time, in seconds. Cloudflare's
     /// proxied HTTP (including cloudflared tunnels) terminates any request
-    /// without a response after ~100s (HTTP 524 on free/pro plans), silently
+    /// without a response within the 125s Proxy Read Timeout (HTTP 524, adjust only upward on Enterprise plans), silently
     /// breaking EAS Ping push for any `HeartbeatInterval` above that. When a
     /// Ping request carries a `CF-RAY` header (i.e. it arrived through the
     /// Cloudflare edge), the gateway clamps its effective hold time to
@@ -1414,11 +1414,18 @@ mod tests {
         let cfg = Config {
             bind: "[::]:8134".to_string(),
             mail_domain: "example.com".to_string(),
+            caldav_base: "http://stalwart:8080/dav".to_string(),
+            jmap_base: "http://stalwart:8080/jmap".to_string(),
+            allow_insecure_http: true,
             hmac_secret: SecretString::from("a".repeat(32)),
             max_ping_heartbeat_secs: Some(0),
             ..Default::default()
         };
-        assert!(cfg.validate().is_err(), "cap of 0 must be rejected");
+        let err = cfg.validate().expect_err("cap of 0 must be rejected");
+        assert!(
+            err.to_string().contains("max_ping_heartbeat_secs"),
+            "error must identify the cap field, got: {err}"
+        );
     }
 
     #[test]

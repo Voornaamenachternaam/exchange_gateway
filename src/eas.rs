@@ -242,7 +242,7 @@ struct EasRequest {
     get_changes: bool,
     filter_type: Option<u8>,
     /// The request arrived through Cloudflare's edge (`CF-RAY` header present).
-    /// Ping uses this to clamp its hold time below Cloudflare's ~100s
+    /// Ping uses this to clamp its hold time below Cloudflare's 125s default
     /// unanswered-request cutoff.
     via_cloudflare: bool,
 }
@@ -1075,7 +1075,7 @@ fn parse_request(query: &HashMap<String, String>, xml: &str, headers: &HeaderMap
         get_changes,
         filter_type,
         // `CF-RAY` is emitted exclusively by Cloudflare's edge, so its
-        // presence identifies requests that will be cut at ~100s if left
+        // presence identifies requests subject to the 125s Proxy Read Timeout if left
         // unanswered (cloudflared tunnels traverse the same edge).
         via_cloudflare: headers.contains_key("CF-RAY"),
     }
@@ -1715,7 +1715,7 @@ async fn handle_ping(
     // ---- Cloudflare edge-termination guard (audit P0 #1) -----------------
     // Requests proxied through Cloudflare (every cloudflared tunnel request
     // traverses the CF edge and carries a `CF-RAY` header) are terminated
-    // with HTTP 524 after ~100s without a response. Any Ping heartbeat longer
+    // with HTTP 524 after 125s without a response. Any Ping heartbeat longer
     // than that silently breaks push: the client sees a 524, retry-loops,
     // and new mail arrives late. Clamp the *effective* hold time (never the
     // protocol-level heartbeat negotiation or the cached parameters) to
@@ -5472,7 +5472,7 @@ mod tests {
         assert_eq!(effective_ping_heartbeat(60, None, true), 60);
         assert_eq!(
             DEFAULT_CLOUDFLARE_PING_CAP_SECS, 80,
-            "cap must stay below Cloudflare's ~100s edge cutoff"
+            "cap must stay below Cloudflare's 125s Proxy Read Timeout"
         );
     }
 
