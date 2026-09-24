@@ -387,6 +387,35 @@ The `cloudflared/config.yml` file provides a template for ingress rules. Key con
 
 ---
 
+## EAS Ping vs. Cloudflare's ~100s Request Timeout
+
+Cloudflare's proxied HTTP (which every cloudflared tunnel request traverses)
+terminates any request that receives no response for ~100 seconds with
+**HTTP 524** (free/pro plans). EAS Ping asks the server to hold the
+connection for `HeartbeatInterval` seconds (legal range 60–3540, and both
+Outlook clients request far more than 100s), so without mitigation every
+long Ping is cut at the edge: push appears "synced" but mail arrives late,
+and the clients retry-loop on 524s (battery drain).
+
+The gateway handles this automatically:
+
+- **Detection:** requests arriving through Cloudflare carry a `CF-RAY`
+  header. When detected, the effective Ping hold time is clamped to
+  **80 seconds** and the Ping answers `Status 1` before the edge cutoff; the
+  client immediately re-issues Ping, which is fully spec-legal (MS-ASCMD
+  allows the server to end a Ping at any time). The protocol-level heartbeat
+  negotiation is untouched — direct (non-Cloudflare) connections keep the
+  full client-requested heartbeat.
+- **Override:** set `GATEWAY_MAX_PING_HEARTBEAT=<seconds>` on the gateway to
+  choose the cap yourself. When set, the cap applies to **all** Pings (with
+  or without `CF-RAY` detection); it must be `> 0`. Keep it below ~95s on
+  the Cloudflare free/pro edge.
+
+No client-side configuration is required; Outlook for Windows and Outlook
+Android simply re-ping slightly more often.
+
+---
+
 ## Resources
 
 - [Cloudflare Tunnel Documentation](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/)

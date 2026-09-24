@@ -241,6 +241,10 @@ struct EasRequest {
     window_size: Option<usize>,
     get_changes: bool,
     filter_type: Option<u8>,
+    /// The request arrived through Cloudflare's edge (`CF-RAY` header present).
+    /// Ping uses this to clamp its hold time below Cloudflare's ~100s
+    /// unanswered-request cutoff.
+    via_cloudflare: bool,
 }
 
 /// A single Collection element within a Sync request.
@@ -1070,6 +1074,10 @@ fn parse_request(query: &HashMap<String, String>, xml: &str, headers: &HeaderMap
         window_size,
         get_changes,
         filter_type,
+        // `CF-RAY` is emitted exclusively by Cloudflare's edge, so its
+        // presence identifies requests that will be cut at ~100s if left
+        // unanswered (cloudflared tunnels traverse the same edge).
+        via_cloudflare: headers.contains_key("CF-RAY"),
     }
 }
 
@@ -1641,6 +1649,23 @@ async fn probe_email_folder_changes(
     changed
 }
 
+/// Effective Ping hold time after the Cloudflare edge guard: an explicit
+/// `GATEWAY_MAX_PING_HEARTBEAT` cap always wins; otherwise Cloudflare-proxied
+/// requests (`CF-RAY` header) are clamped to
+/// [`crate::config::DEFAULT_CLOUDFLARE_PING_CAP_SECS`]; direct requests keep
+/// the negotiated heartbeat untouched.
+fn effective_ping_heartbeat(
+    requested: u64,
+    configured_cap: Option<u64>,
+    via_cloudflare: bool,
+) -> u64 {
+    match configured_cap {
+        Some(cap) => requested.min(cap),
+        None if via_cloudflare => requested.min(crate::config::DEFAULT_CLOUDFLARE_PING_CAP_SECS),
+        None => requested,
+    }
+}
+
 async fn handle_ping(
     state: &Arc<AppState>,
     inv: &PingInvocation<'_>,
@@ -1687,6 +1712,33 @@ async fn handle_ping(
         );
         return xml_or_wbxml_response(wbxml, as_wbxml, &xml, request_id);
     }
+    // ---- Cloudflare edge-termination guard (audit P0 #1) -----------------
+    // Requests proxied through Cloudflare (every cloudflared tunnel request
+    // traverses the CF edge and carries a `CF-RAY` header) are terminated
+    // with HTTP 524 after ~100s without a response. Any Ping heartbeat longer
+    // than that silently breaks push: the client sees a 524, retry-loops,
+    // and new mail arrives late. Clamp the *effective* hold time (never the
+    // protocol-level heartbeat negotiation or the cached parameters) to
+    // `config.max_ping_heartbeat_secs` when explicitly configured, otherwise
+    // to `DEFAULT_CLOUDFLARE_PING_CAP_SECS` for Cloudflare-proxied requests
+    // only. Answering Status 1 early is spec-legal — MS-ASCMD §2.2.3.79.7
+    // allows the server to end a Ping at any time — so the client simply
+    // re-issues Ping before the edge cuts the connection.
+    let effective_heartbeat = effective_ping_heartbeat(
+        heartbeat,
+        state.cfg.max_ping_heartbeat_secs,
+        req.via_cloudflare,
+    );
+    if effective_heartbeat != heartbeat {
+        tracing::debug!(
+            request_id = %request_id,
+            device = %device_id,
+            requested_heartbeat = heartbeat,
+            effective_heartbeat,
+            "clamping EAS Ping hold time below Cloudflare edge timeout"
+        );
+    }
+
     if folders.len() > MAX_PING_FOLDERS {
         let xml = format!(
             r#"<?xml version="1.0" encoding="utf-8"?><Ping xmlns="Ping:"><Status>6</Status><MaxFolders>{}</MaxFolders></Ping>"#,
@@ -1822,7 +1874,7 @@ async fn handle_ping(
         }
     }
 
-    let deadline = Instant::now() + StdDuration::from_secs(heartbeat);
+    let deadline = Instant::now() + StdDuration::from_secs(effective_heartbeat);
     while Instant::now() < deadline {
         if supersede_token.is_cancelled() {
             // This Ping was superseded by a newer one for the same device.
@@ -5401,6 +5453,112 @@ mod tests {
             .await
             .expect("response body");
         String::from_utf8_lossy(&body).into_owned()
+    }
+
+    #[test]
+    fn test_effective_ping_heartbeat_clamping() {
+        use crate::config::DEFAULT_CLOUDFLARE_PING_CAP_SECS;
+
+        // A configured cap applies to every Ping, Cloudflare or not.
+        assert_eq!(effective_ping_heartbeat(3540, Some(80), false), 80);
+        assert_eq!(effective_ping_heartbeat(3540, Some(80), true), 80);
+        assert_eq!(effective_ping_heartbeat(60, Some(80), false), 60);
+        // Without a configured cap, only Cloudflare-proxied requests clamp.
+        assert_eq!(
+            effective_ping_heartbeat(3540, None, true),
+            DEFAULT_CLOUDFLARE_PING_CAP_SECS
+        );
+        assert_eq!(effective_ping_heartbeat(3540, None, false), 3540);
+        assert_eq!(effective_ping_heartbeat(60, None, true), 60);
+        assert_eq!(
+            DEFAULT_CLOUDFLARE_PING_CAP_SECS, 80,
+            "cap must stay below Cloudflare's ~100s edge cutoff"
+        );
+    }
+
+    #[test]
+    fn test_parse_request_detects_cloudflare_via_cf_ray() {
+        let xml = ping_xml(300, r#"<Folder><Id>4</Id><Class>Email</Class></Folder>"#);
+        let query = HashMap::new();
+
+        let mut headers = HeaderMap::new();
+        let req = parse_request(&query, &xml, &headers);
+        assert!(
+            !req.via_cloudflare,
+            "direct request must not be flagged as Cloudflare-proxied"
+        );
+
+        headers.insert(
+            "CF-RAY",
+            HeaderValue::from_static("8f3b2a1c0d9e4f56-FRA"),
+        );
+        let req = parse_request(&query, &xml, &headers);
+        assert!(
+            req.via_cloudflare,
+            "CF-RAY header must flag the request as Cloudflare-proxied"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_ping_honors_configured_heartbeat_cap() {
+        use crate::models::AppState;
+        let storage = crate::storage::Storage::new("sqlite::memory:")
+            .await
+            .expect("in-memory storage");
+        storage.init_schema().await.expect("schema init");
+        let cfg = crate::config::Config {
+            jmap_base: "http://127.0.0.1:1".to_string(),
+            email_enabled: true,
+            mail_domain: "example.com".to_string(),
+            hmac_secret: SecretString::from("a".repeat(32)),
+            max_ping_heartbeat_secs: Some(2),
+            ..Default::default()
+        };
+        let state = Arc::new(AppState::new(cfg, Arc::new(storage)));
+
+        let xml = ping_xml(600, r#"<Folder><Id>4</Id><Class>Email</Class></Folder>"#);
+        let wbxml = Wbxml::new();
+        let req = EasRequest {
+            command: "Ping".to_string(),
+            device_id: Some("cap-device".to_string()),
+            // The configured cap applies regardless of Cloudflare detection.
+            via_cloudflare: false,
+            ..Default::default()
+        };
+        let password = SecretString::from("pw");
+
+        let started = Instant::now();
+        let resp = timeout(
+            StdDuration::from_secs(10),
+            handle_ping(
+                &state,
+                &PingInvocation {
+                    owner: "cap-user@example.com",
+                    password: &password,
+                    req: &req,
+                    xml: &xml,
+                    request_id: "req-ping-cap",
+                },
+                &wbxml,
+                false,
+            ),
+        )
+        .await
+        .expect("Ping must not wait the full 600s heartbeat");
+        let text = response_text(resp).await;
+        assert!(
+            text.contains("<Status>1</Status>"),
+            "capped Ping must end with Status 1, got: {text}"
+        );
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed >= StdDuration::from_secs(2),
+            "Ping returned before the configured cap elapsed ({elapsed:?})"
+        );
+        assert!(
+            elapsed < StdDuration::from_secs(10),
+            "Ping must stop at the 2s cap, not the 600s heartbeat ({elapsed:?})"
+        );
     }
 
     #[tokio::test]
