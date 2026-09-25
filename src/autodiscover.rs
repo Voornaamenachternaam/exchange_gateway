@@ -951,8 +951,10 @@ mod tests {
         // from the configured gateway host (GATEWAY_HOST) — never from the
         // request's email domain or the hostname the client probed — so
         // every mailbox domain offered ends up with the single EAS service
-        // URL. Any regression here breaks Android signup for every account
-        // whose mail domain differs from the gateway host's domain.
+        // URL. (Discovery reachability for a given domain additionally
+        // requires that domain's own DNS/tunnel/TLS setup per
+        // CLOUDFLARED_SETUP.md Step 2 — this test pins only the gateway's
+        // mailbox-domain-independent response URL.)
         let gateway_host = "calendar.example.com";
         let expected_url = format!("https://{gateway_host}/Microsoft-Server-ActiveSync");
         let mailboxes = [

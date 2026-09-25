@@ -25,10 +25,18 @@
 #   $GATEWAY_HOST        → the public EAS/Autodiscover service hostname
 #                          (e.g. calendar.example.com)
 #
-# One-liner using the gateway's .env file:
+# One-liner using the gateway's .env file. Export TUNNEL_ID first (from the
+# Zero Trust dashboard, or `cloudflared tunnel list`) so the tunnel UUID is
+# substituted in the SAME pass as the hostnames — running separate sed passes
+# against this template and the deployed file in either order would leave one
+# placeholder type unfilled behind (this template always carries the literal
+# <YOUR-TUNNEL-UUID>, and overwriting ~/.cloudflared/config.yml from it would
+# clobber any UUID edited in earlier):
 #
 #   set -a; . ./.env; set +a; \
-#   sed -e "s|<GATEWAY_MAIL_DOMAIN>|${GATEWAY_MAIL_DOMAIN}|g" \
+#   export TUNNEL_ID=<your-tunnel-uuid>  # from the dashboard or `cloudflared tunnel list`
+#   sed -e "s|<YOUR-TUNNEL-UUID>|${TUNNEL_ID}|g" \
+#       -e "s|<GATEWAY_MAIL_DOMAIN>|${GATEWAY_MAIL_DOMAIN}|g" \
 #       -e "s|<GATEWAY_HOST>|${GATEWAY_HOST}|g" \
 #       cloudflared/config.yml > ~/.cloudflared/config.yml
 # ----------------------------------------------------------------------------
