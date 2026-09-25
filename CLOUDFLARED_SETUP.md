@@ -50,30 +50,128 @@ Cloudflare terminates TLS at the edge. The tunnel provides encrypted transport f
 
 ---
 
-## Step 2: Configure Public Hostname
+## Step 2: Configure Public Hostnames (Android "Exchange" signup requires TWO)
 
-In the same tunnel settings:
+Android's "Exchange" account wizard and Microsoft AutoDetect (the cloud
+probing service used by Outlook Android and New Outlook for Windows)
+derive discovery addresses from **the domain part of the email address the
+user types** — i.e. your `GATEWAY_MAIL_DOMAIN` — per MS-OXDSCLI §2.2.3:
 
-1. Go to the **Public Hostname** tab
-2. Click **Add a public hostname**
-3. Configure:
-   - **Domain**: `calendar.example.com` (subdomain of your choice)
-   - **Type**: HTTP
-   - **Service**: `http://localhost:8134`
-4. Click **Save hostname**
+1. `https://autodiscover.<mail-domain>/autodiscover/autodiscover.xml`
+   (primary probe — **mandatory**),
+2. `https://<mail-domain>/autodiscover/autodiscover.xml`
+   (root-domain fallback probe — some Android builds try it when the first
+   fails or stalls; publishing it makes signup succeed faster and more
+   predictably).
+
+Both probes must reach the gateway, and the gateway's Autodiscover response
+(per `src/autodiscover.rs`, `ResponseSchema::MobileSync` detection) answers
+MobileSync clients with `<Url>https://$GATEWAY_HOST/Microsoft-Server-ActiveSync</Url>`
+— so `GATEWAY_HOST` itself must also be a public hostname on the tunnel.
+
+**Scope note — one discovery setup per mailbox domain.** The sign-up flow
+described here works for mailboxes under `GATEWAY_MAIL_DOMAIN`, because that
+is the (only) domain for which Steps 2–3 publish discovery DNS records,
+tunnel ingress routes, and TLS. The mobilesync response itself returns the
+`GATEWAY_HOST` URL for **any** email domain (verified by
+`mobilesync_response_points_at_gateway_host_for_any_mailbox_domain` in
+`src/autodiscover.rs`), but that only means no per-domain changes are needed
+*in the gateway response* — it does not make `autodiscover.<some other
+domain>` resolvable. To also support Android signup for an additional
+mailbox domain (e.g. `user@example.org`), repeat Hostnames B/C and the
+CNAME records below **for that domain**: add `autodiscover.example.org`
+(and optionally the `example.org` apex) as public hostnames on the tunnel
+with matching ingress entries and Cloudflare-proxied DNS records, and
+ensure Cloudflare issues a TLS certificate for those hostnames (Universal
+SSL on that zone, or move the zone to Cloudflare). Without those per-domain
+records, Android's first probe for that domain never reaches the gateway,
+regardless of what the Autodiscover response contains.
+
+In the same tunnel settings (**Public Hostname** tab), add **two** (or
+**three**) entries, each pointing at the gateway:
+
+#### Hostname A — EAS service hostname (`GATEWAY_HOST`)
+
+- **Subdomain/Domain**: `calendar.example.com` (the value you will set as
+  `GATEWAY_HOST` in `.env`)
+- **Type**: HTTP
+- **Service**: `http://localhost:8134`
+
+#### Hostname B — Autodiscover subdomain (`autodiscover.<GATEWAY_MAIL_DOMAIN>`) — REQUIRED for Android
+
+- **Subdomain/Domain**: `autodiscover.example.com`
+  (i.e. `autodiscover.` + the exact `GATEWAY_MAIL_DOMAIN` from `.env`)
+- **Type**: HTTP
+- **Service**: `http://localhost:8134`
+
+#### Hostname C — root-domain fallback (`<GATEWAY_MAIL_DOMAIN>`) — recommended
+
+- **Subdomain/Domain**: `example.com` (the bare `GATEWAY_MAIL_DOMAIN`)
+- **Type**: HTTP
+- **Service**: `http://localhost:8134`
+
+> Only add Hostname C if the bare mail domain may be served by this tunnel
+> (skip it if the root domain must serve a website or other content).
+> The Android wizard proceeds via Hostname B alone when B answers.
 
 ---
 
-## Step 3: Create DNS Record
+## Step 3: Create DNS Records
 
-1. Go to **Websites → yourdomain.com → DNS**
-2. Click **Add record**
-3. Select **CNAME**
-4. Configure:
-   - **Name**: `calendar`
-   - **Target**: `<tunnel-id>.cfargotunnel.com` (shown in tunnel settings)
-   - **Proxy status**: DNS only (initially), switch to Proxied after testing
-5. Save
+Create one **CNAME** per public hostname from Step 2, all pointing at the
+same tunnel target (`<tunnel-id>.cfargotunnel.com`, shown in the tunnel
+settings). For `GATEWAY_MAIL_DOMAIN=example.com` and
+`GATEWAY_HOST=calendar.example.com`:
+
+| Type  | Name                        | Target                              | Proxy status              |
+|-------|-----------------------------|-------------------------------------|---------------------------|
+| CNAME | `calendar` (GATEWAY_HOST)   | `<tunnel-id>.cfargotunnel.com`      | Proxied                   |
+| CNAME | `autodiscover`              | `<tunnel-id>.cfargotunnel.com`      | Proxied                   |
+| CNAME | `@` (root, optional)        | `<tunnel-id>.cfargotunnel.com`      | Proxied (CNAME flattening)|
+
+All three records MUST be **Proxied** from the start. A DNS-only record
+pointing at `*.cfargotunnel.com` never reaches the tunnel: tunnel routing
+happens only inside Cloudflare's edge, so a DNS-only hostname resolves to a
+CF any-cast address that does not answer HTTP for this service and the
+verification checks below (and the Android wizard itself) would fail
+against the intended public HTTPS path. Public TLS is provided by
+Cloudflare's Proxied mode via Universal SSL; the gateway's Cloudflare-mode
+Ping clamp documented below likewise only engages on Proxied traffic.
+
+The apex (`@` / root) record relies on Cloudflare's CNAME flattening, which
+is supported automatically on Cloudflare-hosted zones.
+
+**Verification (from any network):**
+
+```bash
+MOBILESYNC_XML='<?xml version="1.0"?><Autodiscover xmlns="http://schemas.microsoft.com/exchange/autodiscover/mobilesync/requestschema/2006"><Request><EMailAddress>user@example.com</EMailAddress><AcceptableResponseSchema>http://schemas.microsoft.com/exchange/autodiscover/mobilesync/responseschema/2006</AcceptableResponseSchema></Request></Autodiscover>'
+EXPECTED_URL='<Url>https://calendar.example.com/Microsoft-Server-ActiveSync</Url>'
+
+# Autodiscover subdomain (Hostname B) — must answer the POST with the
+# gateway's mobilesync XML; --fail-with-body aborts on any HTTP error so a
+# broken edge route cannot masquerade as success.
+curl --fail-with-body -sS -X POST \
+  -H 'Content-Type: text/xml' \
+  -d "$MOBILESYNC_XML" \
+  https://autodiscover.example.com/autodiscover/autodiscover.xml \
+  | grep -F "$EXPECTED_URL"
+# The <Url> in the response MUST be https://calendar.example.com/Microsoft-Server-ActiveSync
+# (i.e. GATEWAY_HOST), regardless of the email domain queried.
+
+# Root-domain fallback (Hostname C, only if added) — Android POSTs the same
+# MobileSync Autodiscover request here per MS-OXDSCLI fallback rules, so
+# verify the identical POST + URL assertion instead of a bare GET (a GET
+# carries no AcceptableResponseSchema and cannot prove the POST probe
+# Android actually sends will succeed).
+curl --fail-with-body -sS -X POST \
+  -H 'Content-Type: text/xml' \
+  -d "$MOBILESYNC_XML" \
+  https://example.com/autodiscover/autodiscover.xml \
+  | grep -F "$EXPECTED_URL"
+
+# EAS service hostname (Hostname A)
+curl --fail-with-body -sS https://calendar.example.com/health
+```
 
 ---
 
@@ -119,15 +217,28 @@ sudo systemctl status cloudflared
 
 If you prefer using a config file instead of tokens:
 
-1. Copy the ingress configuration:
+1. Prepare the cloudflared config directory:
 ```bash
 mkdir -p ~/.cloudflared
-cp cloudflared/config.yml ~/.cloudflared/config.yml
 ```
 
-2. Edit `~/.cloudflared/config.yml` to replace:
-   - `<YOUR-TUNNEL-UUID>` with your tunnel UUID from Step 1
-   - `calendar.example.com` with your actual hostname
+2. Render the template into `~/.cloudflared/config.yml` (see the
+   "HOSTNAME SUBSTITUTION" block at
+   the top of `cloudflared/config.yml`). Use the one-liner there — it
+   substitutes the tunnel UUID and both hostnames from your `.env` plus an
+   exported `TUNNEL_ID` in a single `sed` pass, writing the result to
+   `~/.cloudflared/config.yml` directly from the template:
+   - `<YOUR-TUNNEL-UUID>` → your tunnel UUID from Step 1 (`TUNNEL_ID`)
+   - `<GATEWAY_MAIL_DOMAIN>` → the `GATEWAY_MAIL_DOMAIN` from `.env`
+     (drives the `autodiscover.` and root-fallback ingress entries)
+   - `<GATEWAY_HOST>` → the `GATEWAY_HOST` from `.env`
+   (the config file carries the two required hostnames from Step 2 plus the
+   optional root-domain fallback entry — delete that ingress block if the
+   bare mail domain must serve other content)
+   Do NOT edit the UUID into `~/.cloudflared/config.yml` first and then run
+   the one-liner: the command re-reads the template (which always contains
+   the literal `<YOUR-TUNNEL-UUID>`) and would overwrite your edit, leaving
+   an unfilled placeholder in `tunnel:` and `credentials-file:`.
 
 3. Run the tunnel:
 ```bash

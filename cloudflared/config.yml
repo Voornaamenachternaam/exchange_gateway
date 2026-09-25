@@ -13,31 +13,82 @@
 #   cloudflared tunnel run --token <YOUR_TUNNEL_TOKEN>
 #
 # For more information, see: https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/configure-tunnels/
+#
+# ----------------------------------------------------------------------------
+# HOSTNAME SUBSTITUTION (required before use)
+#
+# cloudflared does not expand environment variables, so substitute the two
+# placeholders below with the SAME values used for the gateway's environment:
+#
+#   $GATEWAY_MAIL_DOMAIN → the mailbox domain users sign up with
+#                          (e.g. the "example.com" in "user@example.com")
+#   $GATEWAY_HOST        → the public EAS/Autodiscover service hostname
+#                          (e.g. calendar.example.com)
+#
+# One-liner using the gateway's .env file. Export TUNNEL_ID first (from the
+# Zero Trust dashboard, or `cloudflared tunnel list`) so the tunnel UUID is
+# substituted in the SAME pass as the hostnames — running separate sed passes
+# against this template and the deployed file in either order would leave one
+# placeholder type unfilled behind (this template always carries the literal
+# <YOUR-TUNNEL-UUID>, and overwriting ~/.cloudflared/config.yml from it would
+# clobber any UUID edited in earlier):
+#
+#   set -a; . ./.env; set +a; \
+#   export TUNNEL_ID=<your-tunnel-uuid>  # from the dashboard or `cloudflared tunnel list`
+#   sed -e "s|<YOUR-TUNNEL-UUID>|${TUNNEL_ID}|g" \
+#       -e "s|<GATEWAY_MAIL_DOMAIN>|${GATEWAY_MAIL_DOMAIN}|g" \
+#       -e "s|<GATEWAY_HOST>|${GATEWAY_HOST}|g" \
+#       cloudflared/config.yml > ~/.cloudflared/config.yml
+# ----------------------------------------------------------------------------
 
 tunnel: <YOUR-TUNNEL-UUID>
 credentials-file: ~/.cloudflared/<YOUR-TUNNEL-UUID>.json
 
 ingress:
-  # Autodiscover — Outlook and native Exchange clients look up this subdomain
-  # per MS-OXDSCLI §2.2.3. Handles V1 XML, V2 JSON, and mobilesync.
-  - hostname: autodiscover.example.com
+  # Autodiscover — the Android "Exchange" wizard and Microsoft AutoDetect
+  # (used by Outlook Android / New Outlook for Windows) probe
+  # https://autodiscover.<mail-domain>/autodiscover/autodiscover.xml per
+  # MS-OXDSCLI §2.2.3 before anything else, where <mail-domain> is the
+  # domain part of the email address the user enters. This hostname MUST
+  # therefore be autodiscover.<GATEWAY_MAIL_DOMAIN>; other subdomains are
+  # never probed. Handles V1 XML, V2 JSON, and mobilesync; the mobilesync
+  # response the gateway emits here always points clients back at
+  # https://$GATEWAY_HOST/Microsoft-Server-ActiveSync.
+  - hostname: autodiscover.<GATEWAY_MAIL_DOMAIN>
     service: http://localhost:8134
     originRequest:
       noTLSVerify: false
       connectTimeout: 30s
       tlsTimeout: 10s
-      httpHostHeader: autodiscover.example.com
+      httpHostHeader: autodiscover.<GATEWAY_MAIL_DOMAIN>
 
-  # Calendar / ActiveSync / EWS — all protocol paths are served by the
-  # gateway on a single hostname.  Path routing is handled by the gateway's
-  # internal router, NOT by Cloudflare ingress rules.
-  - hostname: calendar.example.com
+  # Root-domain autodiscover fallback — some Android builds also probe
+  # https://<mail-domain>/autodiscover/autodiscover.xml (root, without the
+  # autodiscover. prefix) per MS-OXDSCLI §2.2.3 fallback rules. Publishing
+  # the bare mail domain through the tunnel makes that probe succeed
+  # instead of timing out, speeding up signup. Only enable this entry when
+  # the bare mail domain is (or may be) pointed at this tunnel; delete it
+  # if the root domain must serve other content.
+  - hostname: <GATEWAY_MAIL_DOMAIN>
     service: http://localhost:8134
     originRequest:
       noTLSVerify: false
       connectTimeout: 30s
       tlsTimeout: 10s
-      httpHostHeader: calendar.example.com
+      httpHostHeader: autodiscover.<GATEWAY_MAIL_DOMAIN>
+
+  # EAS service hostname ($GATEWAY_HOST) — ActiveSync, EWS and all other
+  # protocol paths are served by the gateway on this single hostname; the
+  # Autodiscover responses above redirect every client here. Path routing
+  # is handled by the gateway's internal router, NOT by Cloudflare ingress
+  # rules.
+  - hostname: <GATEWAY_HOST>
+    service: http://localhost:8134
+    originRequest:
+      noTLSVerify: false
+      connectTimeout: 30s
+      tlsTimeout: 10s
+      httpHostHeader: <GATEWAY_HOST>
 
   # Catch-all — required by cloudflared
   - service: http_status:404
