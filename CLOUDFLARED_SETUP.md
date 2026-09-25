@@ -50,30 +50,95 @@ Cloudflare terminates TLS at the edge. The tunnel provides encrypted transport f
 
 ---
 
-## Step 2: Configure Public Hostname
+## Step 2: Configure Public Hostnames (Android "Exchange" signup requires TWO)
 
-In the same tunnel settings:
+Android's "Exchange" account wizard and Microsoft AutoDetect (the cloud
+probing service used by Outlook Android and New Outlook for Windows)
+derive discovery addresses from **the domain part of the email address the
+user types** — i.e. your `GATEWAY_MAIL_DOMAIN` — per MS-OXDSCLI §2.2.3:
 
-1. Go to the **Public Hostname** tab
-2. Click **Add a public hostname**
-3. Configure:
-   - **Domain**: `calendar.example.com` (subdomain of your choice)
-   - **Type**: HTTP
-   - **Service**: `http://localhost:8134`
-4. Click **Save hostname**
+1. `https://autodiscover.<mail-domain>/autodiscover/autodiscover.xml`
+   (primary probe — **mandatory**),
+2. `https://<mail-domain>/autodiscover/autodiscover.xml`
+   (root-domain fallback probe — some Android builds try it when the first
+   fails or stalls; publishing it makes signup succeed faster and more
+   predictably).
+
+Both probes must reach the gateway, and the gateway's Autodiscover response
+(per `src/autodiscover.rs`, `ResponseSchema::MobileSync` detection) answers
+MobileSync clients with `<Url>https://$GATEWAY_HOST/Microsoft-Server-ActiveSync</Url>`
+— so `GATEWAY_HOST` itself must also be a public hostname on the tunnel.
+None of this depends on the mailbox domain of the individual account: the
+mobilesync response returns the `GATEWAY_HOST` URL for **every** mailbox
+domain offered (verified by
+`mobilesync_response_points_at_gateway_host_for_any_mailbox_domain` in
+`src/autodiscover.rs`).
+
+In the same tunnel settings (**Public Hostname** tab), add **two** (or
+**three**) entries, each pointing at the gateway:
+
+#### Hostname A — EAS service hostname (`GATEWAY_HOST`)
+
+- **Subdomain/Domain**: `calendar.example.com` (the value you will set as
+  `GATEWAY_HOST` in `.env`)
+- **Type**: HTTP
+- **Service**: `http://localhost:8134`
+
+#### Hostname B — Autodiscover subdomain (`autodiscover.<GATEWAY_MAIL_DOMAIN>`) — REQUIRED for Android
+
+- **Subdomain/Domain**: `autodiscover.example.com`
+  (i.e. `autodiscover.` + the exact `GATEWAY_MAIL_DOMAIN` from `.env`)
+- **Type**: HTTP
+- **Service**: `http://localhost:8134`
+
+#### Hostname C — root-domain fallback (`<GATEWAY_MAIL_DOMAIN>`) — recommended
+
+- **Subdomain/Domain**: `example.com` (the bare `GATEWAY_MAIL_DOMAIN`)
+- **Type**: HTTP
+- **Service**: `http://localhost:8134`
+
+> Only add Hostname C if the bare mail domain may be served by this tunnel
+> (skip it if the root domain must serve a website or other content).
+> The Android wizard proceeds via Hostname B alone when B answers.
 
 ---
 
-## Step 3: Create DNS Record
+## Step 3: Create DNS Records
 
-1. Go to **Websites → yourdomain.com → DNS**
-2. Click **Add record**
-3. Select **CNAME**
-4. Configure:
-   - **Name**: `calendar`
-   - **Target**: `<tunnel-id>.cfargotunnel.com` (shown in tunnel settings)
-   - **Proxy status**: DNS only (initially), switch to Proxied after testing
-5. Save
+Create one **CNAME** per public hostname from Step 2, all pointing at the
+same tunnel target (`<tunnel-id>.cfargotunnel.com`, shown in the tunnel
+settings). For `GATEWAY_MAIL_DOMAIN=example.com` and
+`GATEWAY_HOST=calendar.example.com`:
+
+| Type  | Name                        | Target                              | Proxy status              |
+|-------|-----------------------------|-------------------------------------|---------------------------|
+| CNAME | `calendar` (GATEWAY_HOST)   | `<tunnel-id>.cfargotunnel.com`      | DNS only → Proxied*       |
+| CNAME | `autodiscover`              | `<tunnel-id>.cfargotunnel.com`      | DNS only → Proxied*       |
+| CNAME | `@` (root, optional)        | `<tunnel-id>.cfargotunnel.com`      | Proxied (CNAME flattening)|
+
+\* Start with **DNS only** for initial testing, then switch to **Proxied**
+once verified (the Android wizard and AutoDetect both require public TLS,
+which Cloudflare's Proxied mode provides via Universal SSL; the gateway's
+Cloudflare-mode Ping clamp documented below only engages on Proxied
+traffic).
+
+The apex (`@` / root) record relies on Cloudflare's CNAME flattening, which
+is supported automatically on Cloudflare-hosted zones.
+
+**Verification (from any network):**
+
+```bash
+# Both Autodiscover endpoints must answer with the gateway's mobilesync XML:
+curl -sS -X POST \
+  -H 'Content-Type: text/xml' \
+  -d '<?xml version="1.0"?><Autodiscover xmlns="http://schemas.microsoft.com/exchange/autodiscover/mobilesync/requestschema/2006"><Request><EMailAddress>user@example.com</EMailAddress><AcceptableResponseSchema>http://schemas.microsoft.com/exchange/autodiscover/mobilesync/responseschema/2006</AcceptableResponseSchema></Request></Autodiscover>' \
+  https://autodiscover.example.com/autodiscover/autodiscover.xml
+# The <Url> in the response MUST be https://calendar.example.com/Microsoft-Server-ActiveSync
+# (i.e. GATEWAY_HOST), regardless of the email domain queried.
+
+curl -sS https://example.com/autodiscover/autodiscover.xml        # root fallback (if Hostname C was added)
+curl -sS https://calendar.example.com/health                      # EAS service hostname
+```
 
 ---
 
@@ -125,9 +190,17 @@ mkdir -p ~/.cloudflared
 cp cloudflared/config.yml ~/.cloudflared/config.yml
 ```
 
-2. Edit `~/.cloudflared/config.yml` to replace:
-   - `<YOUR-TUNNEL-UUID>` with your tunnel UUID from Step 1
-   - `calendar.example.com` with your actual hostname
+2. Substitute the placeholders in `~/.cloudflared/config.yml` (see the
+   "HOSTNAME SUBSTITUTION" block at the top of `cloudflared/config.yml`):
+   - `<YOUR-TUNNEL-UUID>` → your tunnel UUID from Step 1
+   - `<GATEWAY_MAIL_DOMAIN>` → the `GATEWAY_MAIL_DOMAIN` from `.env`
+     (drives the `autodiscover.` and root-fallback ingress entries)
+   - `<GATEWAY_HOST>` → the `GATEWAY_HOST` from `.env`
+   (the config file carries the two required hostnames from Step 2 plus the
+   optional root-domain fallback entry — delete that ingress block if the
+   bare mail domain must serve other content)
+   The substitution one-liner from the config header does both hostname
+   replacements in one step using your `.env` file.
 
 3. Run the tunnel:
 ```bash

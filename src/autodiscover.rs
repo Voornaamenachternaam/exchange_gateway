@@ -940,6 +940,46 @@ mod tests {
     }
 
     #[test]
+    fn mobilesync_response_points_at_gateway_host_for_any_mailbox_domain() {
+        // The Android "Exchange" wizard and Microsoft AutoDetect probe
+        // https://autodiscover.<mail-domain>/autodiscover/autodiscover.xml
+        // (and the root-domain fallback https://<mail-domain>/...), both of
+        // which are served through the same /autodiscover/autodiscover.xml
+        // route on the gateway (see cloudflared/config.yml and
+        // CLOUDFLARED_SETUP.md Step 2-3). Whatever mailbox domain the user
+        // types, the returned MobileSync <Url> AND <Name> MUST be derived
+        // from the configured gateway host (GATEWAY_HOST) — never from the
+        // request's email domain or the hostname the client probed — so
+        // every mailbox domain offered ends up with the single EAS service
+        // URL. Any regression here breaks Android signup for every account
+        // whose mail domain differs from the gateway host's domain.
+        let gateway_host = "calendar.example.com";
+        let expected_url = format!("https://{gateway_host}/Microsoft-Server-ActiveSync");
+        let mailboxes = [
+            "user@example.com",
+            "user@example.org",
+            "user@sub.example.com",
+            "user@mail.other-domain.tld",
+        ];
+        for email in mailboxes {
+            let (status, _hdrs, body) = handle_mobilesync_xml(gateway_host, email, None, "User");
+            assert_eq!(status, StatusCode::OK, "status for {email}");
+            assert!(
+                body.contains(&format!("<Url>{expected_url}</Url>")),
+                "<Url> must be the gateway EAS URL for {email}; got: {body}"
+            );
+            assert!(
+                body.contains(&format!("<Name>{expected_url}</Name>")),
+                "<Name> must be the gateway EAS URL for {email}; got: {body}"
+            );
+            assert!(
+                body.contains(&format!("<EMailAddress>{email}</EMailAddress>")),
+                "echoed email must be preserved for {email}; got: {body}"
+            );
+        }
+    }
+
+    #[test]
     fn test_mobilesync_renders_resolved_display_name() {
         // The mobilesync <User>/<DisplayName> MUST carry the resolved user
         // display name (MS-ASCMD §2.2.3.49.1), not a product brand.
