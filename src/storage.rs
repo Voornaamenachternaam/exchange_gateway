@@ -876,6 +876,276 @@ impl Storage {
         .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))
     }
 
+    /// Persist the EAS email initial-sync paging cursor
+    /// (`position`, captured JMAP state token) for a collection.
+    ///
+    /// Written by the email Sync path (MS-ASCMD §2.2.3.199) when a window
+    /// fills before the mailbox is drained; the next Sync resumes at
+    /// `position`. An empty `state_token` stores NULL.
+    pub async fn set_email_sync_cursor(
+        &self,
+        owner: &str,
+        collection_id: &str,
+        position: u64,
+        state_token: Option<&str>,
+    ) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO email_sync_cursor (owner, collection_id, position, state_token)
+             VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(owner, collection_id) DO UPDATE
+             SET position = ?3, state_token = ?4, updated_at = CURRENT_TIMESTAMP",
+        )
+        .bind(owner)
+        .bind(collection_id)
+        .bind(position as i64)
+        .bind(state_token)
+        .execute(self.pool.as_ref())
+        .await
+        .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+        Ok(())
+    }
+
+    /// Read the EAS email initial-sync paging cursor for a collection, if a
+    /// partially-delivered initial sync left one behind.
+    pub async fn get_email_sync_cursor(
+        &self,
+        owner: &str,
+        collection_id: &str,
+    ) -> Result<Option<(u64, Option<String>)>> {
+        let row = sqlx::query(
+            "SELECT position, state_token FROM email_sync_cursor
+             WHERE owner = ?1 AND collection_id = ?2",
+        )
+        .bind(owner)
+        .bind(collection_id)
+        .fetch_optional(self.pool.as_ref())
+        .await
+        .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))?;
+        Ok(row.map(|r| {
+            let position: i64 = r.get(0);
+            (position.max(0) as u64, r.get(1))
+        }))
+    }
+
+    /// Drop the EAS email initial-sync paging cursor once the mailbox has
+    /// been fully drained (or when a fresh initial sync restarts from zero).
+    pub async fn clear_email_sync_cursor(&self, owner: &str, collection_id: &str) -> Result<()> {
+        sqlx::query("DELETE FROM email_sync_cursor WHERE owner = ?1 AND collection_id = ?2")
+            .bind(owner)
+            .bind(collection_id)
+            .execute(self.pool.as_ref())
+            .await
+            .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+        Ok(())
+    }
+
+    /// Persist the EAS email delta-sync overflow queue for a collection.
+    ///
+    /// `ops_json` is a JSON array of `{"op":"add|change|delete","id":"…"}`
+    /// entries; `base_state` is the JMAP Email state token that follows the
+    /// full accumulated change set (see `email_sync_pending` in
+    /// `sqlite_schema.sql`).
+    pub async fn set_email_sync_pending(
+        &self,
+        owner: &str,
+        collection_id: &str,
+        ops_json: &str,
+        base_state: &str,
+    ) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO email_sync_pending (owner, collection_id, ops_json, base_state)
+             VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(owner, collection_id) DO UPDATE
+             SET ops_json = ?3, base_state = ?4, updated_at = CURRENT_TIMESTAMP",
+        )
+        .bind(owner)
+        .bind(collection_id)
+        .bind(ops_json)
+        .bind(base_state)
+        .execute(self.pool.as_ref())
+        .await
+        .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+        Ok(())
+    }
+
+    /// Read the EAS email delta-sync overflow queue for a collection.
+    /// Returns `None` when no overflow is pending.
+    pub async fn get_email_sync_pending(
+        &self,
+        owner: &str,
+        collection_id: &str,
+    ) -> Result<Option<(String, String)>> {
+        let row = sqlx::query(
+            "SELECT ops_json, base_state FROM email_sync_pending
+             WHERE owner = ?1 AND collection_id = ?2",
+        )
+        .bind(owner)
+        .bind(collection_id)
+        .fetch_optional(self.pool.as_ref())
+        .await
+        .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))?;
+        Ok(row.map(|r| (r.get(0), r.get(1))))
+    }
+
+    /// Drop the EAS email delta-sync overflow queue (queue fully drained).
+    pub async fn clear_email_sync_pending(&self, owner: &str, collection_id: &str) -> Result<()> {
+        sqlx::query("DELETE FROM email_sync_pending WHERE owner = ?1 AND collection_id = ?2")
+            .bind(owner)
+            .bind(collection_id)
+            .execute(self.pool.as_ref())
+            .await
+            .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+        Ok(())
+    }
+
+    /// Persist the gateway-local (Tasks/Notes) initial-sync keyset cursor:
+    /// `last_key` is the highest server_id already delivered in server_id
+    /// ASC order (MS-ASCMD §2.2.3.199 windowing).
+    pub async fn set_local_sync_cursor(
+        &self,
+        owner: &str,
+        collection_id: &str,
+        last_key: &str,
+    ) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO local_sync_cursor (owner, collection_id, last_key)
+             VALUES (?1, ?2, ?3)
+             ON CONFLICT(owner, collection_id) DO UPDATE
+             SET last_key = ?3, updated_at = CURRENT_TIMESTAMP",
+        )
+        .bind(owner)
+        .bind(collection_id)
+        .bind(last_key)
+        .execute(self.pool.as_ref())
+        .await
+        .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+        Ok(())
+    }
+
+    /// Read the gateway-local (Tasks/Notes) initial-sync keyset cursor for a
+    /// collection, if a windowed initial sync is still in progress.
+    pub async fn get_local_sync_cursor(
+        &self,
+        owner: &str,
+        collection_id: &str,
+    ) -> Result<Option<String>> {
+        let row = sqlx::query(
+            "SELECT last_key FROM local_sync_cursor WHERE owner = ?1 AND collection_id = ?2",
+        )
+        .bind(owner)
+        .bind(collection_id)
+        .fetch_optional(self.pool.as_ref())
+        .await
+        .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))?;
+        Ok(row.map(|r| r.get(0)))
+    }
+
+    /// Drop the gateway-local (Tasks/Notes) initial-sync keyset cursor once
+    /// the live set has been fully delivered.
+    pub async fn clear_local_sync_cursor(&self, owner: &str, collection_id: &str) -> Result<()> {
+        sqlx::query("DELETE FROM local_sync_cursor WHERE owner = ?1 AND collection_id = ?2")
+            .bind(owner)
+            .bind(collection_id)
+            .execute(self.pool.as_ref())
+            .await
+            .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+        Ok(())
+    }
+
+    /// Live Tasks (`resource_href = 'task'`) in stable server_id ASC order,
+    /// strictly after `after_server_id` (keyset pagination for windowed
+    /// initial sync, MS-ASCMD §2.2.3.199). `None` delivers from the start.
+    pub async fn list_tasks_after(
+        &self,
+        owner: &str,
+        after_server_id: Option<&str>,
+    ) -> Result<Vec<TaskRow>> {
+        match after_server_id {
+            Some(after) => {
+                sqlx::query_as::<_, TaskRow>(
+                    "SELECT id, owner, server_id, subject, importance, sensitivity, start_date, due_date, \
+                     utc_start_date, utc_due_date, complete, date_completed, reminder_set, reminder_time, \
+                     categories, body, updated_at FROM task_map \
+                     WHERE owner = ?1 AND server_id > ?2 ORDER BY server_id ASC",
+                )
+                .bind(owner)
+                .bind(after)
+                .fetch_all(self.pool.as_ref())
+                .await
+                .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))
+            }
+            None => {
+                sqlx::query_as::<_, TaskRow>(
+                    "SELECT id, owner, server_id, subject, importance, sensitivity, start_date, due_date, \
+                     utc_start_date, utc_due_date, complete, date_completed, reminder_set, reminder_time, \
+                     categories, body, updated_at FROM task_map \
+                     WHERE owner = ?1 ORDER BY server_id ASC",
+                )
+                .bind(owner)
+                .fetch_all(self.pool.as_ref())
+                .await
+                .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))
+            }
+        }
+    }
+
+    /// Live Notes (`resource_href = 'note'`) in stable server_id ASC order,
+    /// strictly after `after_server_id` (keyset pagination for windowed
+    /// initial sync, MS-ASCMD §2.2.3.199). `None` delivers from the start.
+    pub async fn list_notes_after(
+        &self,
+        owner: &str,
+        after_server_id: Option<&str>,
+    ) -> Result<Vec<NoteRow>> {
+        match after_server_id {
+            Some(after) => {
+                sqlx::query_as::<_, NoteRow>(
+                    "SELECT id, owner, server_id, subject, message_class, body, categories, last_modified_date, updated_at \
+                     FROM note_map WHERE owner = ?1 AND server_id > ?2 ORDER BY server_id ASC",
+                )
+                .bind(owner)
+                .bind(after)
+                .fetch_all(self.pool.as_ref())
+                .await
+                .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))
+            }
+            None => {
+                sqlx::query_as::<_, NoteRow>(
+                    "SELECT id, owner, server_id, subject, message_class, body, categories, last_modified_date, updated_at \
+                     FROM note_map WHERE owner = ?1 ORDER BY server_id ASC",
+                )
+                .bind(owner)
+                .fetch_all(self.pool.as_ref())
+                .await
+                .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))
+            }
+        }
+    }
+
+    /// Change-journal rows for one gateway-local content class
+    /// (`resource_href = 'task'` or `'note'`) with `id > since`, in journal
+    /// id ASC order — the resumable delta source for Tasks/Notes Sync
+    /// (MS-ASCMD §2.2.3.199). Rows above the owner's minimum watermark are
+    /// never pruned, so resuming from a stored `seq:<id>` token cannot miss
+    /// anything.
+    pub async fn list_local_content_changes_since_seq(
+        &self,
+        owner: &str,
+        resource_href: &str,
+        since: i64,
+    ) -> Result<Vec<JournalRow>> {
+        sqlx::query_as::<_, JournalRow>(
+            "SELECT id, server_id, op, resource_href FROM change_journal \
+             WHERE owner = ?1 AND id > ?2 AND resource_href = ?3 ORDER BY id ASC",
+        )
+        .bind(owner)
+        .bind(since)
+        .bind(resource_href)
+        .fetch_all(self.pool.as_ref())
+        .await
+        .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))
+    }
+
     pub async fn get_ews_sync_state(&self, owner: &str, folder_id: &str) -> Result<Option<String>> {
         let row = sqlx::query(
             "SELECT sync_state FROM ews_sync_state WHERE user_email = ?1 AND folder_id = ?2",

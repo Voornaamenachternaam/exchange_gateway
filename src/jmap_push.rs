@@ -362,7 +362,7 @@ impl JmapEmailPushMonitor {
         loop {
             let changes = match self
                 .jmap
-                .sync_email_changes(account_id, &since, &self.username, &self.password)
+                .sync_email_changes(account_id, &since, &self.username, &self.password, None)
                 .await
             {
                 Ok(c) => c,

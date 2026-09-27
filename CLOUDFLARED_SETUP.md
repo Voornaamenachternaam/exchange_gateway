@@ -400,6 +400,36 @@ The Exchange Gateway uses SQLite at `/var/lib/exchange-gateway/gateway.db`. The 
 
 ## Security
 
+### The Microsoft cloud sync path (read this before adding an account)
+
+Outlook Android and New Outlook for Windows do **not** talk to the gateway
+directly from the device for third-party (non-Microsoft-365) accounts. Both
+connect the account through **Microsoft's cloud sync infrastructure**, so:
+
+- **Your mailbox password and the mail, calendar and contact data transit
+  Microsoft's servers.** The credentials the client captures at sign-up are
+  sent from the device to Microsoft, and Microsoft's datacenter then opens
+  the EAS connection to your gateway. Do not deploy an account you are not
+  willing to expose to Microsoft in this way.
+- If the account offers "skip cloud sync" / direct-connection mode in the
+  client UI and you enable it, the device connects itself and nothing
+  transits Microsoft — but that is not the default behavior.
+- Traffic arriving at the gateway therefore comes from **Microsoft ASNs**
+  (and Cloudflare's edge in front of them), not from your phone's IP. Any
+  firewall/allowlist must not block Microsoft's datacenter ranges, and the
+  gateway's rate limiter (per edge-client-IP, default 120 requests/minute
+  with a large burst) is sized so a Microsoft connector's Ping/Sync cadence
+  never trips it. For many mailboxes on one gateway, raise
+  `GATEWAY_RATE_LIMIT_REQUESTS_PER_MINUTE` if several users sync
+  simultaneously.
+- Microsoft's connector behaves like a patient, long-running EAS client:
+  long-poll Pings (held below Cloudflare's 125-second edge timeout,
+  see the *EAS Ping* section below) and large sync windows (the gateway
+  honors `WindowSize` up to the protocol maximum of 512 items per
+  collection, sending `<MoreAvailable/>` and a resumable SyncKey when a
+  folder is bigger than one window). No configuration is needed on either
+  side.
+
 ### Cloudflare Dashboard Settings
 
 1. **Proxy status**: Set to Proxied (orange cloud) for DDoS protection

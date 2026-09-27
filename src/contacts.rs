@@ -1034,6 +1034,14 @@ fn track_appdata_text(out: &mut String, stack: &[String], text: &str) {
 // Backend-agnostic sync diff
 // --------------------------------------------------------------------------
 
+/// Windowed contacts Sync delivery (MS-ASCMD §2.2.3.199 / §2.2.3.116):
+/// the `<Add>/<Change>/<Delete>` fragment plus whether the response window
+/// clipped with undelivered changes (`<MoreAvailable/>`).
+pub struct ContactsSyncResult {
+    pub commands_xml: String,
+    pub more_available: bool,
+}
+
 /// Shared diff logic: `current` is the authoritative backend snapshot. The
 /// gateway diff journal (SQLite, unchanged since the last sync) determines
 /// Added/Changed/Deleted relative to the previous snapshot.
@@ -1042,7 +1050,8 @@ async fn diff_contacts(
     username: &str,
     device_id: &str,
     current: &[CarddavContact],
-) -> anyhow::Result<String> {
+    window: Option<usize>,
+) -> anyhow::Result<ContactsSyncResult> {
     let state_collection_id = format!("8::{}", device_id);
 
     let (_server_sync_key, _token) = state
@@ -1066,9 +1075,9 @@ async fn diff_contacts(
         .map(|row| (row.carddav_href.clone(), row))
         .collect();
 
-    let mut adds = Vec::new();
-    let mut changes = Vec::new();
-    let mut deletes = Vec::new();
+    let mut adds: Vec<(String, CarddavContact)> = Vec::new();
+    let mut changes: Vec<(String, CarddavContact)> = Vec::new();
+    let mut deletes: Vec<String> = Vec::new();
 
     for c in current {
         if let Some(db_row) = db_contacts_by_href.get(&c.href) {
@@ -1077,39 +1086,82 @@ async fn diff_contacts(
             }
         } else {
             let new_server_id = format!("contact-{}", Uuid::new_v4().simple());
-            adds.push((new_server_id.clone(), c.clone()));
-            state
-                .storage
-                .insert_contact(
-                    username,
-                    &c.href,
-                    &new_server_id,
-                    c.etag.as_deref(),
-                    Some(&c.vcard),
-                )
-                .await?;
+            adds.push((new_server_id, c.clone()));
         }
     }
 
     for (server_id, db_row) in db_contacts_by_server_id {
         if !current_hrefs.contains(&db_row.carddav_href) {
             deletes.push(server_id.clone());
-            state.storage.delete_contact(username, &server_id).await?;
         }
     }
 
+    // ---- Window the delivery set (MS-ASCMD §2.2.3.199 / §2.2.3.116) -----
+    // The gateway's diff state (contact_map) is only mutated for DELIVERED
+    // ops, so anything beyond the window re-diffs on the client's follow-up
+    // Sync (spec: after <MoreAvailable/> "the client MUST synchronize again
+    // to continue getting items from the server"). `None` = unlimited.
+    let limit = window.unwrap_or(usize::MAX).max(1);
+    let mut adds = adds.into_iter();
+    let mut changes = changes.into_iter();
+    let mut deletes = deletes.into_iter();
+
     let mut response = String::new();
-    for (server_id, contact) in adds {
+    let mut delivered = 0usize;
+    let mut clipped = false;
+
+    for (server_id, contact) in adds.by_ref() {
+        if delivered >= limit {
+            clipped = true;
+            break;
+        }
+        // Mark the add as delivered before mutating: only delivered adds
+        // enter contact_map, so undelivered ones re-diff next Sync.
+        state
+            .storage
+            .insert_contact(
+                username,
+                &contact.href,
+                &server_id,
+                contact.etag.as_deref(),
+                Some(&contact.vcard),
+            )
+            .await?;
         response.push_str(&render_eas_add(&server_id, &contact));
+        delivered += 1;
     }
-    for (server_id, contact) in changes {
+    for (server_id, contact) in changes.by_ref() {
+        if delivered >= limit {
+            clipped = true;
+            break;
+        }
+        // Record the new etag/vcard only once delivered; an undelivered
+        // change keeps its old etag and re-diffs next Sync.
+        state
+            .storage
+            .update_contact(
+                username,
+                &server_id,
+                contact.etag.as_deref(),
+                Some(&contact.vcard),
+            )
+            .await?;
         response.push_str(&render_eas_change(&server_id, &contact));
+        delivered += 1;
     }
-    for server_id in deletes {
+    for server_id in deletes.by_ref() {
+        if delivered >= limit {
+            clipped = true;
+            break;
+        }
+        // Remove the row only once the delete is delivered; an undelivered
+        // delete keeps its row and re-diffs next Sync.
+        state.storage.delete_contact(username, &server_id).await?;
         response.push_str(&format!(
             r#"<Delete><ServerId>{}</ServerId></Delete>"#,
             xml_escape(&server_id)
         ));
+        delivered += 1;
     }
 
     let new_sync_key = Uuid::new_v4().simple().to_string();
@@ -1117,16 +1169,23 @@ async fn diff_contacts(
         .storage
         .set_contacts_sync_state(username, &state_collection_id, &new_sync_key)
         .await?;
-    // Persist the journal watermark with every contacts sync: the opaque sync
-    // key carries no `seq:` token, so without this a Ping can never tell
-    // whether anything changed since the last sync and would have to
-    // re-baseline (silently dropping inter-Ping changes) on every request.
-    state
-        .storage
-        .record_journal_watermark(username, &state_collection_id)
-        .await?;
+    // Persist the journal watermark with every fully-delivered contacts sync:
+    // the opaque sync key carries no `seq:` token, so without this a Ping can
+    // never tell whether anything changed since the last sync and would have
+    // to re-baseline (silently dropping inter-Ping changes) on every request.
+    // On a clip the watermark is held: the undelivered remainder must keep
+    // Ping reporting the collection until the client drains it.
+    if !clipped {
+        state
+            .storage
+            .record_journal_watermark(username, &state_collection_id)
+            .await?;
+    }
 
-    Ok(response)
+    Ok(ContactsSyncResult {
+        commands_xml: response,
+        more_available: clipped,
+    })
 }
 
 // --------------------------------------------------------------------------
@@ -1134,14 +1193,16 @@ async fn diff_contacts(
 // --------------------------------------------------------------------------
 
 /// Sync contacts for a user. JMAP is the primary backend (RFC 9610); CardDAV
-/// is the fallback. Returns the `<Add>/<Change>/<Delete>` fragment.
+/// is the fallback. Returns the windowed `<Add>/<Change>/<Delete>` fragment
+/// plus the `<MoreAvailable/>` flag for the EAS Sync response.
 pub async fn sync_contacts(
     state: &crate::models::AppState,
     username: &str,
     password: &str,
     _client_sync_key: Option<&str>,
     device_id: &str,
-) -> anyhow::Result<String> {
+    window: Option<usize>,
+) -> anyhow::Result<ContactsSyncResult> {
     if state.cfg.prefer_jmap_contacts
         && let Some(jmap) = state.jmap_client.as_ref()
     {
@@ -1149,7 +1210,7 @@ pub async fn sync_contacts(
         if jmap.supports_contacts(username, &secret).await {
             match collect_jmap_contacts(state, username, password).await {
                 Ok(cards) => {
-                    return diff_contacts(state, username, device_id, &cards).await;
+                    return diff_contacts(state, username, device_id, &cards, window).await;
                 }
                 Err(e) => {
                     tracing::warn!(
@@ -1160,7 +1221,7 @@ pub async fn sync_contacts(
             }
         }
     }
-    sync_contacts_carddav(state, username, password, device_id).await
+    sync_contacts_carddav(state, username, password, device_id, window).await
 }
 
 /// Collect all contacts from the JMAP backend as CarddavContact values,
@@ -1223,13 +1284,14 @@ async fn sync_contacts_carddav(
     username: &str,
     password: &str,
     device_id: &str,
-) -> anyhow::Result<String> {
+    window: Option<usize>,
+) -> anyhow::Result<ContactsSyncResult> {
     let carddav = state
         .carddav_client
         .as_ref()
         .ok_or_else(|| anyhow!("CardDAV client not configured"))?;
     let (contacts, _sync_token) = carddav.list_contacts(username, password, None).await?;
-    diff_contacts(state, username, device_id, &contacts).await
+    diff_contacts(state, username, device_id, &contacts, window).await
 }
 
 // --------------------------------------------------------------------------
@@ -1671,9 +1733,18 @@ pub struct ContactsMutationResult {
     pub op_kind: ContactsOpKind,
 }
 
-/// Render the mutation responses for the EAS Sync response body.
+/// Render `<Add>/<Change>/<Delete>` mutation responses for a Sync reply.
+///
+/// The echoes MUST be wrapped in a `<Responses>` container (MS-ASCMD
+/// §2.2.3.154: response Add/Change/Delete elements are legal only as
+/// children of Responses); the container is omitted when nothing was
+/// processed, per §2.2.3.154.
 pub fn render_contacts_mutation_responses(results: &[ContactsMutationResult]) -> String {
-    let mut xml = String::new();
+    if results.is_empty() {
+        return String::new();
+    }
+    let mut xml = String::with_capacity(256 + results.len() * 128);
+    xml.push_str("<Responses>");
     for res in results {
         match res.op_kind {
             ContactsOpKind::Add => {
@@ -1699,6 +1770,7 @@ pub fn render_contacts_mutation_responses(results: &[ContactsMutationResult]) ->
             }
         }
     }
+    xml.push_str("</Responses>");
     xml
 }
 

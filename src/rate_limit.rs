@@ -55,12 +55,14 @@ fn rate_limit_key(headers: &header::HeaderMap) -> (String, &'static str) {
             headers
                 .get(header::FORWARDED.as_str())
                 .and_then(|v| v.to_str().ok())
-                .and_then(|v| v.split(';').find_map(|entry| {
-                    entry
-                        .split(',')
-                        .next()
-                        .and_then(|pair| pair.trim().strip_prefix("for="))
-                }))
+                .and_then(|v| {
+                    v.split(';').find_map(|entry| {
+                        entry
+                            .split(',')
+                            .next()
+                            .and_then(|pair| pair.trim().strip_prefix("for="))
+                    })
+                })
                 .map(|s| s.trim_matches('"').trim())
                 .filter(|s| !s.is_empty())
         })
@@ -145,10 +147,7 @@ mod tests {
     fn key_prefers_cf_connecting_ip() {
         let mut headers = HeaderMap::new();
         headers.insert("cf-connecting-ip", "203.0.113.7".parse().unwrap());
-        headers.insert(
-            "x-forwarded-for",
-            "198.51.100.3, 10.0.0.1".parse().unwrap(),
-        );
+        headers.insert("x-forwarded-for", "198.51.100.3, 10.0.0.1".parse().unwrap());
         assert_eq!(rate_limit_key(&headers), ("ip:203.0.113.7".into(), "ip"));
     }
 
@@ -159,19 +158,13 @@ mod tests {
             header::FORWARDED,
             "for=\"198.51.100.9\";proto=https".parse().unwrap(),
         );
-        assert_eq!(
-            rate_limit_key(&headers),
-            ("ip:198.51.100.9".into(), "ip")
-        );
+        assert_eq!(rate_limit_key(&headers), ("ip:198.51.100.9".into(), "ip"));
     }
 
     #[test]
     fn key_falls_back_to_first_x_forwarded_for() {
         let mut headers = HeaderMap::new();
-        headers.insert(
-            "x-forwarded-for",
-            "198.51.100.3, 10.0.0.1".parse().unwrap(),
-        );
+        headers.insert("x-forwarded-for", "198.51.100.3, 10.0.0.1".parse().unwrap());
         assert_eq!(rate_limit_key(&headers), ("ip:198.51.100.3".into(), "ip"));
     }
 

@@ -93,6 +93,65 @@ CREATE TABLE IF NOT EXISTS ews_sync_state (
     UNIQUE(user_email, folder_id)
 );
 
+-- EAS email initial-sync windowing cursor (MS-ASCMD §2.2.3.199 WindowSize /
+-- §2.2.3.116 MoreAvailable).
+--
+-- The initial email Sync (SyncKey "0") pages JMAP `Email/query` with
+-- `position`/`limit`. When a window fills before the mailbox is drained
+-- (`position + delivered < total`), the response MUST carry
+-- `<MoreAvailable/>` and the next Sync (with the new SyncKey) MUST resume
+-- where this window stopped — otherwise everything beyond the first window
+-- is silently never delivered. This row persists that resume point, plus the
+-- JMAP Email data-type `state` token captured when the initial sync began,
+-- which becomes the delta base once the cursor drains.
+CREATE TABLE IF NOT EXISTS email_sync_cursor (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner TEXT NOT NULL,
+    collection_id TEXT NOT NULL,
+    position INTEGER NOT NULL,
+    state_token TEXT,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(owner, collection_id)
+);
+
+-- EAS email delta-sync overflow queue (MS-ASCMD §2.2.3.199 WindowSize /
+-- §2.2.3.116 MoreAvailable).
+--
+-- When `Email/changes` reports more changed messages than the client's
+-- WindowSize, only the first window is returned with `<MoreAvailable/>`.
+-- The remainder is stashed here as a JSON array of `{"op":"add|change|delete",
+-- "id":"<jmap id>"}` entries together with the JMAP state token that follows
+-- the full accumulated change set. The stored sync-state token is NOT
+-- advanced while the queue is non-empty, so nothing is re-delivered or lost;
+-- once the queue drains, the stored token advances to `base_state` and the
+-- next Sync re-diffs from there.
+CREATE TABLE IF NOT EXISTS email_sync_pending (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner TEXT NOT NULL,
+    collection_id TEXT NOT NULL,
+    ops_json TEXT NOT NULL,
+    base_state TEXT NOT NULL,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(owner, collection_id)
+);
+
+-- EAS gateway-local (Tasks/Notes) initial-sync keyset continuation
+-- (MS-ASCMD §2.2.3.199 WindowSize / §2.2.3.116 MoreAvailable).
+--
+-- When the live Tasks/Notes set does not fit the client's window, the
+-- response carries <MoreAvailable/> and `last_key` records the highest
+-- server_id (server_id ASC ordering) already delivered, so the client's
+-- follow-up Sync resumes strictly after it. Keyset pagination is stable
+-- while items are inserted or removed concurrently.
+CREATE TABLE IF NOT EXISTS local_sync_cursor (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner TEXT NOT NULL,
+    collection_id TEXT NOT NULL,
+    last_key TEXT NOT NULL,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(owner, collection_id)
+);
+
 CREATE TABLE IF NOT EXISTS device_info (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_email TEXT NOT NULL,

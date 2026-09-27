@@ -13,14 +13,10 @@ use crate::oof::{self, OofManager};
 use crate::room::RoomManager;
 use crate::smtp::SmtpClient;
 use crate::storage::Storage;
-use governor::{
-    Quota, RateLimiter,
-    clock::DefaultClock,
-    state::keyed::DefaultKeyedStateStore,
-};
+use governor::{Quota, RateLimiter, clock::DefaultClock, state::keyed::DefaultKeyedStateStore};
 use std::num::NonZeroU32;
-use std::time::Duration;
 use std::sync::Arc;
+use std::time::Duration;
 
 #[derive(Clone)]
 pub struct AppState {

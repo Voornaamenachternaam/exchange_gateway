@@ -4413,6 +4413,7 @@ async fn handle_sync_email_folder_items(
             &old_state_token,
             &auth.username,
             &auth.password,
+            None,
         )
         .await;
 
