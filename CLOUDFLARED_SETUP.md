@@ -402,15 +402,32 @@ The Exchange Gateway uses SQLite at `/var/lib/exchange-gateway/gateway.db`. The 
 
 ### The Microsoft cloud sync path (read this before adding an account)
 
-Outlook Android and New Outlook for Windows do **not** talk to the gateway
-directly from the device for third-party (non-Microsoft-365) accounts. Both
-connect the account through **Microsoft's cloud sync infrastructure**, so:
+The Outlook **Android app** does **not** talk to the gateway directly from
+the device for third-party (non-Microsoft-365) accounts. The account is
+connected through **Microsoft's cloud sync infrastructure**: the app sends
+the credentials you enter to Microsoft, and a Microsoft datacenter service
+is then the EAS client that opens the connection to your gateway. The
+Windows Outlook-class clients that use this gateway's EWS/MAPI/HTTP and
+Autodiscover endpoints connect directly from the machine instead.
+
+**New Outlook for Windows cannot reach this EAS endpoint at all.** Per
+Microsoft's documentation:
+
+- new Outlook for Windows supports Microsoft 365, Outlook.com/Hotmail,
+  Gmail, Yahoo, iCloud and other accounts added via **IMAP or POP** — there
+  is no EAS account type, and "On-premises Exchange accounts aren't
+  supported" ([supported account
+  types](https://learn.microsoft.com/en-us/microsoft-365-apps/outlook/get-started/supported-account-types));
+- its "sync your account to the Microsoft Cloud" feature is documented for
+  **Gmail and Yahoo** accounts only, while Outlook for Android (and iOS/Mac)
+  additionally cover iCloud and IMAP ([sync to the Microsoft
+  Cloud](https://support.microsoft.com/en-us/outlook/getstarted/sync-your-account-in-outlook-to-the-microsoft-cloud)).
+
+For the clients that do use the cloud-sync route, that means:
 
 - **Your mailbox password and the mail, calendar and contact data transit
-  Microsoft's servers.** The credentials the client captures at sign-up are
-  sent from the device to Microsoft, and Microsoft's datacenter then opens
-  the EAS connection to your gateway. Do not deploy an account you are not
-  willing to expose to Microsoft in this way.
+  Microsoft's servers.** Do not deploy an account you are not willing to
+  expose to Microsoft in this way.
 - If the account offers "skip cloud sync" / direct-connection mode in the
   client UI and you enable it, the device connects itself and nothing
   transits Microsoft — but that is not the default behavior.

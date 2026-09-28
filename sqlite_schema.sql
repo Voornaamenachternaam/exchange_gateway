@@ -143,11 +143,19 @@ CREATE TABLE IF NOT EXISTS email_sync_pending (
 -- server_id (server_id ASC ordering) already delivered, so the client's
 -- follow-up Sync resumes strictly after it. Keyset pagination is stable
 -- while items are inserted or removed concurrently.
+--
+-- `base_seq` is the change-journal head captured when the SyncKey "0"
+-- window started. Every continuation window anchors its consumed journal
+-- position to it instead of the current head: mutations recorded while the
+-- initial sync is paginating stay ABOVE `base_seq`, so the first delta
+-- after the cursor drains re-delivers them (and the journal pruner, which
+-- floors on the stored `seq:` watermarks, never erases them).
 CREATE TABLE IF NOT EXISTS local_sync_cursor (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     owner TEXT NOT NULL,
     collection_id TEXT NOT NULL,
     last_key TEXT NOT NULL,
+    base_seq INTEGER NOT NULL DEFAULT 0,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(owner, collection_id)
 );
