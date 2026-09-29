@@ -21,12 +21,18 @@
 // - SmartForward (MS-ASCMD §2.2.1.19)
 // - Email Sync class (MS-ASEMAIL)
 
+use base64::Engine;
+use crate::eas_sync_options::{
+    EasBodyPartPreference, EasSyncCollectionOptions, NativeBodyType, negotiate_body, preview_text,
+    truncate_utf8_bytes, html_to_plain_text,
+};
 use crate::jmap::JmapEmail;
 use crate::models::AppState;
 use crate::util::xml_escape;
 use anyhow::anyhow;
 use secrecy::SecretString;
 use serde_json::json;
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tracing::info;
@@ -613,10 +619,408 @@ fn sanitize_for_xml(s: &str) -> String {
         .collect()
 }
 
+/// Render the `<AirSyncBase:Body>` element for one email, honoring the
+/// client's negotiated BodyPreference chain
+/// ([MS-ASAIRS] §2.2.2.12, §2.2.2.3.2, §2.2.2.40.2).
+///
+/// Child order per [MS-ASAIRS] §2.2.2.9.2: Type, EstimatedDataSize,
+/// Truncated, Data, Preview.
+pub(crate) fn render_negotiated_eas_body(
+    email: &JmapEmail,
+    options: &EasSyncCollectionOptions,
+    include_data: bool,
+) -> String {
+    let sources = email_body_sources(email);
+    let (native, native_content): (NativeBodyType, String) = if let Some(html) = sources.html {
+        (NativeBodyType::Html, html.to_string())
+    } else if let Some(plain) = sources.plain {
+        (NativeBodyType::PlainText, plain.to_string())
+    } else {
+        (NativeBodyType::PlainText, String::new())
+    };
+    let negotiated = negotiate_body(options, native, native_content.len());
+
+    // Produce the content in the negotiated format ([MS-ASAIRS] §2.2.2.3.2:
+    // plain text and HTML are interconvertible server-side).
+    let full_content: String = match negotiated.body_type {
+        1 => match sources.plain {
+            Some(plain) => plain.to_string(),
+            None => sources.html.map(html_to_plain_text).unwrap_or_default(),
+        },
+        2 => match sources.html {
+            Some(html) => html.to_string(),
+            None => sources.plain.map(plain_to_minimal_html).unwrap_or_default(),
+        },
+        // RTF is only negotiated when the native format is RTF; the JMAP
+        // backend stores no RTF, so fall back to the native rendition.
+        3 => native_content.clone(),
+        // MIME bodies are fetched by the client through ItemOperations when
+        // MIMESupport was negotiated; the native rendition is returned when
+        // the blob is not available inline.
+        _ => native_content.clone(),
+    };
+
+    // EstimatedDataSize is the size of the full content in the returned
+    // format ([MS-ASAIRS] §2.2.2.23.2). Prefer the JMAP part's declared size
+    // — the authoritative full size even when a TruncationSize cut the Data.
+    let true_size: u64 = match negotiated.body_type {
+        1 => sources.plain_true_size.unwrap_or(full_content.len() as u64),
+        2 => sources.html_true_size.unwrap_or(full_content.len() as u64),
+        _ => full_content.len() as u64,
+    };
+    // Truncated reports both an EAS TruncationSize cut and a JMAP-side
+    // isTruncated cut ([MS-ASAIRS] §2.2.2.38, RFC 8621 §4.1.4).
+    let jmap_truncated = match negotiated.body_type {
+        1 => sources.plain_truncated,
+        2 => sources.html_truncated,
+        _ => false,
+    };
+    let (data, truncated) = match negotiated.truncation_size {
+        Some(limit) => {
+            let (slice, cut) = truncate_utf8_bytes(&full_content, limit);
+            (slice.to_owned(), cut || jmap_truncated)
+        }
+        None => (full_content.clone(), jmap_truncated),
+    };
+
+    // Preview source: the plain-text rendition of the body
+    // ([MS-ASAIRS] §2.2.2.35.1).
+    let plain_for_preview: String = match sources.plain {
+        Some(plain) => plain.to_string(),
+        None => sources.html.map(html_to_plain_text).unwrap_or_default(),
+    };
+
+    let mut xml = String::with_capacity(512);
+    xml.push_str(&format!(
+        "<AirSyncBase:Body><AirSyncBase:Type>{}</AirSyncBase:Type>",
+        negotiated.body_type
+    ));
+    xml.push_str(&format!(
+        "<AirSyncBase:EstimatedDataSize>{}</AirSyncBase:EstimatedDataSize>",
+        true_size
+    ));
+    if truncated {
+        xml.push_str("<AirSyncBase:Truncated>1</AirSyncBase:Truncated>");
+    }
+    if include_data {
+        xml.push_str(&format!("<AirSyncBase:Data>{}</AirSyncBase:Data>", xml_escape(&data)));
+    }
+    // [MS-ASAIRS] §2.2.2.35.1: the Preview element is not returned with a
+    // Type 1 (plain text) body that carries valid Data — the body itself is
+    // the preview source. It IS returned for HTML bodies and for bodies whose
+    // Data was omitted (conversation-mode expanded items).
+    if let Some(chars) = negotiated.preview
+        && !(negotiated.body_type == 1 && include_data)
+    {
+        xml.push_str(&format!(
+            "<AirSyncBase:Preview>{}</AirSyncBase:Preview>",
+            xml_escape(&preview_text(&sanitize_for_xml(&plain_for_preview), chars))
+        ));
+    }
+    xml.push_str("</AirSyncBase:Body>");
+    xml
+}
+
+/// Render the `<AirSyncBase:BodyPart>` element carrying the *message part* —
+/// the portion of the email that is original to it, without quoted history —
+/// per [MS-ASCON] §2.2.2.2/§3.2.5.7 (conversation mode, 16.1).
+///
+/// Child order per [MS-ASAIRS] §2.2.2.10.2: Status, Type, EstimatedDataSize,
+/// Truncated, Data, Preview.
+pub(crate) fn render_eas_body_part(
+    email: &JmapEmail,
+    pref: &EasBodyPartPreference,
+) -> String {
+    let sources = email_body_sources(email);
+    // The message part MUST be HTML ([MS-ASCON] §3.2.5.7).
+    let part_html: String = match sources.html {
+        Some(html) => html.to_string(),
+        None => sources.plain.map(plain_to_minimal_html).unwrap_or_default(),
+    };
+    let message_part = extract_html_message_part(&part_html);
+    let estimated = message_part.len();
+    let (data, truncated) = match pref.truncation_size {
+        Some(limit) => truncate_utf8_bytes(message_part, limit),
+        None => (message_part, false),
+    };
+
+    let mut xml = String::with_capacity(512);
+    xml.push_str("<AirSyncBase:BodyPart><AirSyncBase:Status>1</AirSyncBase:Status>");
+    xml.push_str("<AirSyncBase:Type>2</AirSyncBase:Type>");
+    xml.push_str(&format!(
+        "<AirSyncBase:EstimatedDataSize>{}</AirSyncBase:EstimatedDataSize>",
+        estimated
+    ));
+    if truncated {
+        xml.push_str("<AirSyncBase:Truncated>1</AirSyncBase:Truncated>");
+    }
+    xml.push_str(&format!(
+        "<AirSyncBase:Data>{}</AirSyncBase:Data>",
+        xml_escape(&sanitize_for_xml(data))
+    ));
+    if let Some(chars) = pref.preview {
+        let plain = html_to_plain_text(message_part);
+        xml.push_str(&format!(
+            "<AirSyncBase:Preview>{}</AirSyncBase:Preview>",
+            xml_escape(&preview_text(&sanitize_for_xml(&plain), chars))
+        ));
+    }
+    xml.push_str("</AirSyncBase:BodyPart>");
+    xml
+}
+
+/// The HTML and plain-text renditions available for one email, resolved from
+/// JMAP `bodyValues` (RFC 8621 §4.1.4) keyed by the first `htmlBody` /
+/// `textBody` part's `partId`, with each part's true size and the RFC 8621
+/// `isTruncated` flag so the EAS `Body` can report accurate
+/// `EstimatedDataSize`/`Truncated` values ([MS-ASAIRS] §2.2.2.23.2/§2.2.2.38).
+#[derive(Default)]
+struct BodySources<'a> {
+    html: Option<&'a str>,
+    plain: Option<&'a str>,
+    html_true_size: Option<u64>,
+    plain_true_size: Option<u64>,
+    html_truncated: bool,
+    plain_truncated: bool,
+}
+
+fn email_body_sources(email: &JmapEmail) -> BodySources<'_> {
+    let mut out = BodySources::default();
+    let values = match email.body_values.as_ref() {
+        Some(v) => v,
+        None => return out,
+    };
+    let resolve = |parts: Option<&Vec<crate::jmap::JmapBodyPart>>| -> Option<(&str, Option<u64>, bool)> {
+        let first = parts?.first()?;
+        let entry = if first.part_id.is_empty() {
+            values.values().next()
+        } else {
+            values.get(&first.part_id)
+        }?;
+        Some((entry.value.as_str(), first.size, entry.is_truncated.unwrap_or(false)))
+    };
+    if let Some((html, size, truncated)) = resolve(email.html_body.as_ref()) {
+        out.html = Some(html);
+        out.html_true_size = size;
+        out.html_truncated = truncated;
+    }
+    if let Some((plain, size, truncated)) = resolve(email.text_body.as_ref()) {
+        out.plain = Some(plain);
+        out.plain_true_size = size;
+        out.plain_truncated = truncated;
+    }
+    out
+}
+
+/// Wrap plain text in the minimal HTML document Exchange produces when a
+/// plain-native message must be served as a Type 2 body.
+pub(crate) fn plain_to_minimal_html(plain: &str) -> String {
+    let sanitized = sanitize_for_xml(plain);
+    let escaped = xml_escape(&sanitized);
+    let with_breaks = escaped.replace("\r\n", "\n").replace('\n', "<br>");
+    format!("<html><body><div>{}</div></body></html>", with_breaks)
+}
+
+/// Extract the *message part* (original portion) from an HTML body by
+/// cutting at the first quoted-history marker ([MS-ASCON] §2.2.2.1: "the
+/// message part of the e-mail message is defined as the portion of the
+/// e-mail message that was composed by the sender of the message, and does
+/// not include the quoted text of previous messages").
+pub(crate) fn extract_html_message_part(html: &str) -> &str {
+    let lower = html.to_ascii_lowercase();
+    for marker in [
+        "<blockquote",
+        "-----original message-----",
+        "\"gmail_quote\"",
+        "name=\"quote\"",
+        "id=\"appendonsend\"",
+        "id=\"divrplyfwdmsg\"",
+    ] {
+        if let Some(pos) = lower.find(marker) {
+            let cut = &html[..pos];
+            let trimmed = cut.trim_end();
+            // An empty message part means the sender only quoted history;
+            // return the whole body rather than an empty part.
+            if !trimmed.is_empty() {
+                return trimmed;
+            }
+        }
+    }
+    html
+}
+
+/// The stable 16-byte conversation GUID for one email's thread
+/// ([MS-OXOMSG] §2.2.1.3 Conversation Index Header "GUID (16 bytes): A
+/// PtypGuid type ... generated for each new conversation thread").
+///
+/// The JMAP backend has no Exchange conversation GUID, so a GUID is derived
+/// deterministically from the thread's identity: the same thread always
+/// yields the same GUID, and different threads yield different GUIDs. The
+/// derivation ladder mirrors [MS-OXOMSG] §2.2.1.2's intent of keying the
+/// conversation on the message lineage:
+/// 1. the JMAP `threadId` (the backend's authoritative grouping),
+/// 2. the RFC 5322 lineage root — the first entry of `References`, else
+///    `In-ReplyTo`, else the message's own `Message-ID`,
+/// 3. a subject-derived fallback for standalone messages with no lineage.
+fn conversation_thread_guid(email: &JmapEmail) -> [u8; 16] {
+    let mut key: Option<String> = None;
+    if let Some(t) = email.thread_id.as_deref()
+        && !t.is_empty()
+    {
+        key = Some(format!("thread:{t}"));
+    }
+    if key.is_none() {
+        let lineage = email
+            .references
+            .as_ref()
+            .and_then(|r| r.first().cloned())
+            .or_else(|| {
+                email
+                    .in_reply_to
+                    .as_ref()
+                    .and_then(|r| r.first().cloned())
+            })
+            .or_else(|| email.message_id.clone());
+        if let Some(id) = lineage
+            && !id.is_empty()
+        {
+            key = Some(format!("lineage:{}", id.trim()));
+        }
+    }
+    let key = key.unwrap_or_else(|| format!("subject:{}", normalized_subject(email)));
+
+    let digest = Sha256::digest(key.as_bytes());
+    let mut guid = [0u8; 16];
+    guid.copy_from_slice(&digest[..16]);
+    guid
+}
+
+/// The `PidTagNormalizedSubject` approximation ([MS-OXCMSG] §2.2.1.10):
+/// the subject without leading "Re:"/"Fw:" style prefixes.
+fn normalized_subject(email: &JmapEmail) -> String {
+    let subject = email.subject.as_deref().unwrap_or("").trim();
+    let mut rest = subject;
+    loop {
+        let lower = rest.trim_start().to_ascii_lowercase();
+        if let Some(stripped) = lower.strip_prefix("re:")
+            .or_else(|| lower.strip_prefix("fw:"))
+            .or_else(|| lower.strip_prefix("fwd:"))
+        {
+            rest = &rest[rest.len() - stripped.len()..];
+        } else {
+            break;
+        }
+    }
+    rest.trim().to_string()
+}
+
+/// Windows FILETIME (100-nanosecond intervals since 1601-01-01 UTC,
+/// [MS-DTYP] §2.3.1) for the email's effective date.
+fn email_filetime(email: &JmapEmail) -> u64 {
+    let date = compute_email_date_received(email).unwrap_or_default();
+    let parsed: Option<chrono::DateTime<chrono::Utc>> =
+        chrono::DateTime::parse_from_rfc3339(date)
+            .ok()
+            .map(|dt| dt.with_timezone(&chrono::Utc))
+            .or_else(|| {
+                chrono::NaiveDateTime::parse_from_str(date, "%Y-%m-%dT%H:%M:%SZ")
+                    .ok()
+                    .map(|naive| naive.and_utc())
+            });
+    match parsed {
+        Some(dt) => {
+            let unix_nanos = dt.timestamp_nanos_opt().unwrap_or(0).max(0) as u64;
+            unix_nanos / 100 + 116_444_736_000_000_000
+        }
+        None => 0,
+    }
+}
+
+/// The `email2:ConversationIndex` value ([MS-ASCON] §2.2.2.4,
+/// [MS-OXOMSG] §2.2.1.3): a 22-byte header — 0x01, then the 40 most
+/// significant bits of the FILETIME in big-endian order, then the 16-byte
+/// thread GUID — followed by one 5-byte response level per ancestor message
+/// in the RFC 5322 lineage.
+///
+/// Response level layout ([MS-OXOMSG] §2.2.1.3): Delta Code bit + 31-bit
+/// time delta in big-endian, then one random byte. The time delta is the
+/// difference between the message's time and the header time, shifted per
+/// the delta code; the random byte is derived deterministically from the
+/// thread so repeated syncs return an identical index (the client MUST NOT
+/// change it, and a changing value would look like a different message).
+pub(crate) fn conversation_index_bytes(email: &JmapEmail) -> Vec<u8> {
+    let guid = conversation_thread_guid(email);
+    let filetime = email_filetime(email);
+
+    let mut out = Vec::with_capacity(22 + 5 * 8);
+    out.push(0x01);
+    // The 40 most significant FILETIME bits, most significant first.
+    let msb40 = filetime >> 24;
+    out.extend_from_slice(&msb40.to_be_bytes()[3..8]);
+    out.extend_from_slice(&guid);
+
+    let depth = email
+        .references
+        .as_ref()
+        .map(|r| r.len())
+        .unwrap_or(0)
+        .min(8);
+    for level in 0..depth {
+        // TimeDiff between this message and the header time is zero for the
+        // synthetic index (the header time is the message's own time), so
+        // the delta code is 0 and the time delta is 0 — a well-formed level.
+        let time_delta: u64 = 0;
+        let delta_code = 0u64;
+        let value = (delta_code << 31) | (time_delta & 0x7FFF_FFFF);
+        let value_bytes = value.to_be_bytes();
+        out.extend_from_slice(&value_bytes[4..8]);
+        // Deterministic "random" byte per (thread, level).
+        let mut hasher = Sha256::new();
+        hasher.update(guid);
+        hasher.update([level as u8]);
+        out.push(hasher.finalize()[0]);
+    }
+    out
+}
+
+/// The `email2:ConversationId` value ([MS-ASEMAIL] §2.2.2.21,
+/// [MS-OXOMSG] §2.2.1.2): when the ConversationIndex is at least 22 bytes
+/// long and its first byte is 0x01, the value MUST be the GUID portion of
+/// the ConversationIndex. The synthesized index always satisfies both
+/// conditions, so this branch is the one that applies.
+pub(crate) fn conversation_id_bytes(email: &JmapEmail) -> [u8; 16] {
+    conversation_thread_guid(email)
+}
+
 pub fn render_jmap_email_as_eas_application_data(
     email: &JmapEmail,
     server_id: &str,
     _collection_id: &str,
+) -> String {
+    render_jmap_email_as_eas_application_data_with_options(
+        email,
+        server_id,
+        _collection_id,
+        &EasSyncCollectionOptions::default(),
+        false,
+        true,
+    )
+}
+
+/// Render one email's `<ApplicationData>` with the full negotiated options
+/// surface: BodyPreference chain, truncation, Preview, 16.1 conversation
+/// elements (`email2:ConversationId`/`email2:ConversationIndex` are required
+/// in server responses per [MS-ASEMAIL] §2.2.2.21/§2.2.2.22), BodyPart for
+/// conversation mode, and the body-data omission for conversation-expanded
+/// out-of-window items ([MS-ASCON] §3.2.5.7).
+#[allow(clippy::too_many_arguments)]
+pub fn render_jmap_email_as_eas_application_data_with_options(
+    email: &JmapEmail,
+    server_id: &str,
+    _collection_id: &str,
+    options: &EasSyncCollectionOptions,
+    conversation_mode: bool,
+    include_body_data: bool,
 ) -> String {
     let subject = sanitize_for_xml(email.subject.as_deref().unwrap_or(""));
     let sender = email.from.as_ref().and_then(|v| v.first());
@@ -661,11 +1065,6 @@ pub fn render_jmap_email_as_eas_application_data(
     } else {
         String::new()
     };
-
-    let (body_text_raw, is_html) = extract_jmap_body(email);
-    let body_text_sanitized = sanitize_for_xml(body_text_raw);
-    // Per MS-ASAIRS §2.2.2.6, Type values: 1=plain text, 2=HTML
-    let body_type_num = if is_html { "2" } else { "1" };
 
     let received_at_raw = compute_email_date_received(email).unwrap_or("");
     let received_at = sanitize_for_xml(received_at_raw);
@@ -722,8 +1121,33 @@ pub fn render_jmap_email_as_eas_application_data(
         })
         .unwrap_or_default();
 
+    // Body per the negotiated BodyPreference chain: truncation, AllOrNone
+    // fallback, Preview, and the Type the client asked for.
+    let body_xml = render_negotiated_eas_body(email, options, include_body_data);
+
+    // 16.1 conversation mode: the message part rides in BodyPart when the
+    // client negotiated a BodyPartPreference ([MS-ASCON] §3.2.5.7).
+    let body_part_xml = match (&options.body_part_preference, conversation_mode) {
+        (Some(pref), true) => render_eas_body_part(email, pref),
+        _ => String::new(),
+    };
+
+    // email2:ConversationId and email2:ConversationIndex are required
+    // elements in server responses ([MS-ASEMAIL] §2.2.2.21, §2.2.2.22).
+    // The byte-array values transfer base64-encoded in the XML form and as
+    // WBXML OPAQUE data ([MS-ASDTYPE] §2.7.1).
+    let b64 = base64::engine::general_purpose::STANDARD;
+    let conversation_id_xml = format!(
+        "<Email2:ConversationId>{}</Email2:ConversationId>",
+        b64.encode(conversation_id_bytes(email))
+    );
+    let conversation_index_xml = format!(
+        "<Email2:ConversationIndex>{}</Email2:ConversationIndex>",
+        b64.encode(conversation_index_bytes(email))
+    );
+
     format!(
-        r#"<ApplicationData><ServerId>{server_id}</ServerId><Email:Subject>{subject}</Email:Subject><Email:From>{sender_name} <{sender_email}></Email:From>{to_xml}<Email:DateReceived>{received_at}</Email:DateReceived><Email:Importance>{importance}</Email:Importance><Email:Read>{is_read_int}</Email:Read><Email:HasAttachments>{has_attachment_int}</Email:HasAttachments>{message_id_xml}{in_reply_to_xml}{references_xml}<AirSyncBase:Body><AirSyncBase:Type>{body_type_num}</AirSyncBase:Type><AirSyncBase:Data>{body_text}</AirSyncBase:Data></AirSyncBase:Body>{attachments_xml}</ApplicationData>"#,
+        r#"<ApplicationData><ServerId>{server_id}</ServerId><Email:Subject>{subject}</Email:Subject><Email:From>{sender_name} <{sender_email}></Email:From>{to_xml}<Email:DateReceived>{received_at}</Email:DateReceived><Email:Importance>{importance}</Email:Importance><Email:Read>{is_read_int}</Email:Read><Email:HasAttachments>{has_attachment_int}</Email:HasAttachments>{message_id_xml}{in_reply_to_xml}{references_xml}{conversation_id_xml}{conversation_index_xml}{body_xml}{body_part_xml}{attachments_xml}</ApplicationData>"#,
         server_id = xml_escape(server_id),
         subject = xml_escape(&subject),
         sender_name = xml_escape(&sender_name),
@@ -735,7 +1159,10 @@ pub fn render_jmap_email_as_eas_application_data(
         message_id_xml = message_id_xml,
         in_reply_to_xml = in_reply_to_xml,
         references_xml = references_xml,
-        body_text = xml_escape(&body_text_sanitized),
+        conversation_id_xml = conversation_id_xml,
+        conversation_index_xml = conversation_index_xml,
+        body_xml = body_xml,
+        body_part_xml = body_part_xml,
         attachments_xml = attachments_xml,
     )
 }
@@ -2397,6 +2824,7 @@ mod tests {
                     JmapBodyValue {
                         value: "Plain text body".to_string(),
                         is_encoding_problem: None,
+                        is_truncated: None,
                     },
                 ),
                 (
@@ -2404,6 +2832,7 @@ mod tests {
                     JmapBodyValue {
                         value: "<p>HTML body</p>".to_string(),
                         is_encoding_problem: None,
+                        is_truncated: None,
                     },
                 ),
             ])),
@@ -2435,6 +2864,7 @@ mod tests {
                 JmapBodyValue {
                     value: "<p>HTML only</p>".to_string(),
                     is_encoding_problem: None,
+                    is_truncated: None,
                 },
             )])),
             ..Default::default()

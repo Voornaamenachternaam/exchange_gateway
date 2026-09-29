@@ -49,7 +49,8 @@ pub const AUTODISCOVER_OUTLOOK_NS: &str =
 pub const AUTODISCOVER_SOAP_NS: &str = "http://schemas.microsoft.com/exchange/2010/Autodiscover";
 
 pub const EAS_SUCCESS_STATUS: &str = "1";
-pub const EAS_INVALID_SYNC_KEY_STATUS: &str = "9";
+/// [MS-ASCMD] §2.2.3.177.17: Sync collection status 3 = invalid sync key.
+pub const EAS_INVALID_SYNC_KEY_STATUS: &str = "3";
 pub const EAS_PROTOCOL_ERROR_STATUS: &str = "6";
 pub const EAS_SERVER_ERROR_STATUS: &str = "5";
 pub const EAS_RETRY_STATUS: &str = "3";

@@ -232,6 +232,11 @@ pub struct JmapBodyValue {
     pub value: String,
     #[serde(default)]
     pub is_encoding_problem: Option<bool>,
+    /// RFC 8621 §4.1.4 `isTruncated`: true when the server returned fewer
+    /// bytes than `maxBodyValueSize` ... i.e. the value was cut short. The
+    /// EAS body renderer maps this to `<AirSyncBase:Truncated>`.
+    #[serde(default)]
+    pub is_truncated: Option<bool>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -1307,6 +1312,14 @@ impl JmapClient {
                     },
                     "properties": properties,
                     "bodyProperties": ["partId", "blobId", "size", "type", "charset", "value"],
+                    // RFC 8621 §4.4.1: without these arguments the server only
+                    // returns body values for text/plain parts. Requesting both
+                    // text and HTML values lets the gateway serve Type 2 (HTML)
+                    // bodies natively for clients whose BodyPreference chain
+                    // starts with HTML — Outlook for Android and New Outlook
+                    // both request HTML first.
+                    "fetchTextBodyValues": true,
+                    "fetchHTMLBodyValues": true,
                 }),
                 "g0",
             ),

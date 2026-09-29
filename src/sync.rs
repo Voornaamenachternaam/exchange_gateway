@@ -21,7 +21,9 @@ use uuid::Uuid;
 
 type HmacSha256 = Hmac<Sha256>;
 
-pub const INVALID_SYNC_KEY_STATUS: &str = "9";
+/// [MS-ASCMD] §2.2.3.177.17: Sync collection status 3 = "Invalid
+/// synchronization key". (FolderSync uses 9; GetItemEstimate uses 4.)
+pub const INVALID_SYNC_KEY_STATUS: &str = "3";
 const DEFAULT_WINDOW_SIZE: usize = 100;
 const MAX_WINDOW_SIZE: usize = 512;
 
@@ -1046,8 +1048,84 @@ fn is_utc_zone(tz: &str) -> bool {
     )
 }
 
-pub(crate) fn render_calendar_app_data(item: &CalendarItem) -> String {
+/// Render the `<AirSyncBase:Body>` element for a calendar item, honoring the
+/// negotiated BodyPreference chain ([MS-ASAIRS] §2.2.2.12, §2.2.2.3.2).
+///
+/// The native storage format of a calendar description is plain text
+/// ([MS-ASAIRS] §2.2.2.41.1). For protocol versions 16.0 and 16.1 the only
+/// valid Type values for calendar items are 1 (plain text) and 2 (HTML), so
+/// RTF/MIME preferences fall back to plain text.
+fn render_calendar_body_xml(description: &str, options: &crate::eas_sync_options::EasSyncCollectionOptions) -> String {
+    use crate::eas_sync_options::{negotiate_body, truncate_utf8_bytes, NativeBodyType};
+
+    let negotiated = negotiate_body(options, NativeBodyType::PlainText, description.len());
+    let body_type = match negotiated.body_type {
+        1 | 2 => negotiated.body_type,
+        _ => 1,
+    };
+    let full_content = if body_type == 2 {
+        crate::email::plain_to_minimal_html(description)
+    } else {
+        description.to_string()
+    };
+    let true_size = full_content.len();
+    let (data, truncated) = match negotiated.truncation_size {
+        Some(limit) => {
+            let (slice, cut) = truncate_utf8_bytes(&full_content, limit);
+            (slice.to_owned(), cut)
+        }
+        None => (full_content.clone(), false),
+    };
+
+    let mut xml = String::with_capacity(256);
+    xml.push_str(&format!(
+        "<AirSyncBase:Body><AirSyncBase:Type>{}</AirSyncBase:Type>",
+        body_type
+    ));
+    xml.push_str(&format!(
+        "<AirSyncBase:EstimatedDataSize>{}</AirSyncBase:EstimatedDataSize>",
+        true_size
+    ));
+    if truncated {
+        xml.push_str("<AirSyncBase:Truncated>1</AirSyncBase:Truncated>");
+    }
+    xml.push_str(&format!(
+        "<AirSyncBase:Data>{}</AirSyncBase:Data>",
+        xml_escape(&data)
+    ));
+    // [MS-ASAIRS] §2.2.2.35.1: no Preview alongside a Type 1 body carrying
+    // valid Data — the body itself is the preview source.
+    if let Some(chars) = negotiated.preview
+        && !(body_type == 1 && !data.is_empty())
+    {
+        xml.push_str(&format!(
+            "<AirSyncBase:Preview>{}</AirSyncBase:Preview>",
+            xml_escape(&crate::eas_sync_options::preview_text(&data, chars))
+        ));
+    }
+    xml.push_str("</AirSyncBase:Body>");
+    xml
+}
+
+/// Options-aware calendar AppData: the `<AirSyncBase:Body>` block follows the
+/// negotiated BodyPreference chain ([MS-ASAIRS] §2.2.2.12); with no
+/// preferences the native plain-text rendition is served untruncated.
+pub(crate) fn render_calendar_app_data_with_options(
+    item: &CalendarItem,
+    options: &crate::eas_sync_options::EasSyncCollectionOptions,
+) -> String {
     let mut xml = String::with_capacity(2048);
+    xml.push_str(&render_calendar_app_data_prefix(item));
+    xml.push_str(&render_calendar_body_xml(&item.description, options));
+    xml.push_str("<AirSyncBase:NativeBodyType>1</AirSyncBase:NativeBodyType>");
+    xml.push_str(&render_calendar_app_data_suffix(item));
+    xml
+}
+
+/// Everything `<ApplicationData>` emits before the `<AirSyncBase:Body>`
+/// block for a calendar item.
+fn render_calendar_app_data_prefix(item: &CalendarItem) -> String {
+    let mut xml = String::with_capacity(1024);
     xml.push_str(&format!(
         "<Calendar:Subject>{}</Calendar:Subject>",
         xml_escape(&item.subject)
@@ -1132,15 +1210,13 @@ pub(crate) fn render_calendar_app_data(item: &CalendarItem) -> String {
         }
         xml.push_str("</Calendar:Categories>");
     }
-    xml.push_str("<AirSyncBase:Body><AirSyncBase:Type>1</AirSyncBase:Type>");
-    xml.push_str(&format!(
-        "<AirSyncBase:EstimatedDataSize>{}</AirSyncBase:EstimatedDataSize>",
-        item.description.len()
-    ));
-    xml.push_str("<AirSyncBase:Truncated>0</AirSyncBase:Truncated><AirSyncBase:Data>");
-    xml.push_str(&xml_escape(&item.description));
-    xml.push_str("</AirSyncBase:Data></AirSyncBase:Body>");
-    xml.push_str("<AirSyncBase:NativeBodyType>1</AirSyncBase:NativeBodyType>");
+    xml
+}
+
+/// Everything `<ApplicationData>` emits after the `<AirSyncBase:Body>` and
+/// `<AirSyncBase:NativeBodyType>` blocks for a calendar item.
+fn render_calendar_app_data_suffix(item: &CalendarItem) -> String {
+    let mut xml = String::with_capacity(1024);
     if !item.all_day
         && let Some(tz) = &item.timezone
         && !is_utc_zone(tz)
@@ -1235,10 +1311,23 @@ pub(crate) fn render_calendar_app_data(item: &CalendarItem) -> String {
     xml
 }
 
+/// Legacy calendar AppData: no negotiated options, so the native plain-text
+/// body is served untruncated ([MS-ASAIRS] §2.2.2.3.2 pass 3).
+pub(crate) fn render_calendar_app_data(item: &CalendarItem) -> String {
+    render_calendar_app_data_with_options(
+        item,
+        &crate::eas_sync_options::EasSyncCollectionOptions::default(),
+    )
+}
+
 pub struct SyncOptions {
     pub window_size: usize,
     pub get_changes: bool,
     pub filter_start: chrono::DateTime<Utc>,
+    /// The sticky-resolved per-collection `<Options>` block
+    /// ([MS-ASCMD] §2.2.3.125.6) driving body negotiation
+    /// ([MS-ASAIRS] §2.2.2.12) for the items rendered in this response.
+    pub body_options: crate::eas_sync_options::EasSyncCollectionOptions,
 }
 
 impl Default for SyncOptions {
@@ -1247,6 +1336,7 @@ impl Default for SyncOptions {
             window_size: DEFAULT_WINDOW_SIZE,
             get_changes: true,
             filter_start: Utc::now() - Duration::weeks(52),
+            body_options: crate::eas_sync_options::EasSyncCollectionOptions::default(),
         }
     }
 }
@@ -1292,7 +1382,7 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
         };
         return Ok(format!(
             r#"<?xml version="1.0" encoding="utf-8"?>
-<Sync xmlns="AirSync:" xmlns:Contacts="Contacts:" xmlns:Tasks="Tasks:" xmlns:Notes="Notes:" xmlns:DocumentLibrary="DocumentLibrary:" xmlns:RightsManagement="RightsManagement:" xmlns:AirSyncBase="AirSyncBase:">
+<Sync xmlns="AirSync:" xmlns:Contacts="Contacts:" xmlns:Contacts2="Contacts2:" xmlns:Tasks="Tasks:" xmlns:Notes="Notes:" xmlns:DocumentLibrary="DocumentLibrary:" xmlns:RightsManagement="RightsManagement:" xmlns:AirSyncBase="AirSyncBase:">
 <Collections><Collection>
 <Class>{}</Class>
 <SyncKey>{}</SyncKey>
@@ -1748,7 +1838,8 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
             )
             .await?;
         if pi.is_add {
-            let mut app_data = render_calendar_app_data(&pi.item);
+            let mut app_data =
+                render_calendar_app_data_with_options(&pi.item, &params.opts.body_options);
             if let Ok(att_list) = params
                 .state
                 .attachment_manager
@@ -1764,7 +1855,8 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
                 pi.server_id, app_data
             ));
         } else {
-            let mut app_data = render_calendar_app_data(&pi.item);
+            let mut app_data =
+                render_calendar_app_data_with_options(&pi.item, &params.opts.body_options);
             if let Ok(att_list) = params
                 .state
                 .attachment_manager

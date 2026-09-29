@@ -160,6 +160,21 @@ CREATE TABLE IF NOT EXISTS local_sync_cursor (
     UNIQUE(owner, collection_id)
 );
 
+-- Sticky Sync <Options> per device-scoped collection ([MS-ASCMD]
+-- §2.2.3.125.6): "If the Options block is not included in a request, the
+-- previous Options block is used." Stores the resolved negotiation state
+-- (FilterType, BodyPreference chain, MIMESupport, ...) as JSON so it
+-- survives gateway restarts mid-session.
+CREATE TABLE IF NOT EXISTS sync_collection_options (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner TEXT NOT NULL,
+    collection_id TEXT NOT NULL,
+    options_json TEXT NOT NULL,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(owner, collection_id)
+);
+
+
 CREATE TABLE IF NOT EXISTS device_info (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_email TEXT NOT NULL,

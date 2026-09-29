@@ -214,6 +214,11 @@ struct ItemOperationsFetch {
     server_id: Option<String>,
     long_id: Option<String>,
     file_reference: Option<String>,
+    /// The `<Options>` block inside this Fetch
+    /// ([MS-ASCMD] §2.2.3.125.4), carrying airsyncbase:BodyPreference /
+    /// BodyPartPreference ([MS-ASAIRS] §2.2.2.12, §2.2.2.3) and
+    /// airsync:MIMESupport for the fetched item's body.
+    options: Option<crate::eas_sync_options::EasSyncCollectionOptions>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -257,6 +262,18 @@ struct SyncCollection {
     /// Per MS-ASCMD §2.2.3.72, GetChanges defaults to true when absent.
     get_changes: bool,
     filter_type: Option<u8>,
+    /// `<airsync:ConversationMode>` ([MS-ASCMD] §2.2.3.36.2, direct child of
+    /// `<Collection>`): enables conversation-based filtering and the
+    /// sync of conversation-based properties. Default when absent is
+    /// disabled ([MS-ASCON] §2.2.2.5 semantics inverted only for
+    /// GetItemEstimate; for Sync an absent element means "off").
+    conversation_mode: bool,
+    /// The parsed `<Options>` block ([MS-ASCMD] §2.2.3.125.6):
+    /// FilterType, BodyPreference chain, BodyPartPreference, MIMESupport,
+    /// MIMETruncation, MaxItems, Conflict, RightsManagementSupport.
+    /// `None` when the request carried no `<Options>` for this collection,
+    /// which means the sticky block from the previous request applies.
+    options: Option<crate::eas_sync_options::EasSyncCollectionOptions>,
     /// The raw XML substring of this <Collection> element, used for
     /// mutation checks and apply_client_sync_mutations instead of
     /// the full request XML. This prevents cross-collection mutation
@@ -275,6 +292,8 @@ impl Default for SyncCollection {
             // defaults to true (client wants server changes).
             get_changes: true,
             filter_type: None,
+            conversation_mode: false,
+            options: None,
             xml: String::new(),
         }
     }
@@ -600,6 +619,37 @@ fn extract_root_command(xml: &str) -> Option<String> {
     }
 }
 
+/// Extract the inner content of every occurrence of `<tag>...</tag>` in
+/// `xml`. Used for repeated sibling blocks such as Settings OofMessage nodes.
+fn extract_all_tag_blocks(xml: &str, tag: &[u8]) -> Vec<String> {
+    let open = b"<"
+        .iter()
+        .chain(tag.iter())
+        .chain(b">".iter())
+        .copied()
+        .collect::<Vec<u8>>();
+    let close = b"</"
+        .iter()
+        .chain(tag.iter())
+        .chain(b">".iter())
+        .copied()
+        .collect::<Vec<u8>>();
+    let mut blocks = Vec::new();
+    let bytes = xml.as_bytes();
+    let mut pos = 0;
+    while let Some(rel) = bytes[pos..].windows(open.len()).position(|w| w == open.as_slice()) {
+        let start = pos + rel + open.len();
+        if let Some(rel_end) = bytes[start..].windows(close.len()).position(|w| w == close.as_slice())
+        {
+            blocks.push(String::from_utf8_lossy(&bytes[start..start + rel_end]).into_owned());
+            pos = start + rel_end + close.len();
+        } else {
+            break;
+        }
+    }
+    blocks
+}
+
 fn extract_first_tag_text(xml: &str, tag: &[u8]) -> Option<String> {
     let mut reader = Reader::from_str(xml);
     reader.config_mut().trim_text(true);
@@ -858,6 +908,19 @@ fn parse_sync_collections(xml: &str) -> Vec<SyncCollection> {
                                 );
                             }
                         }
+                        // Parse the <Options> block ([MS-ASCMD] §2.2.3.125.6)
+                        // and the collection-level control elements
+                        // (<ConversationMode>, <DeletesAsMoves>) from the raw
+                        // Collection XML; they live at Collection scope.
+                        let parsed =
+                            crate::eas_sync_options::parse_collection_options(&coll.xml);
+                        coll.conversation_mode =
+                            parsed.controls.conversation_mode.unwrap_or(false);
+                        coll.options = if parsed.options.explicitly_set {
+                            Some(parsed.options)
+                        } else {
+                            None
+                        };
                         collections.push(coll);
                     }
                     depth = 0;
@@ -1005,6 +1068,18 @@ fn parse_item_operations_fetches(xml: &str) -> Vec<ItemOperationsFetch> {
             _ => {}
         }
         buf.clear();
+    }
+    // Attach each `<Fetch>` block's `<Options>` ([MS-ASCMD] §2.2.3.125.4)
+    // — airsyncbase:BodyPreference / BodyPartPreference and
+    // airsync:MIMESupport — to its fetch, in document order.
+    // `extract_all_tag_blocks` returns the blocks in the same order the
+    // streaming parser emitted them.
+    let blocks = extract_all_tag_blocks(xml, b"Fetch");
+    for (fetch, block) in fetches.iter_mut().zip(blocks) {
+        let parsed = crate::eas_sync_options::parse_collection_options(&block);
+        if parsed.options.explicitly_set {
+            fetch.options = Some(parsed.options);
+        }
     }
     fetches
 }
@@ -1368,7 +1443,9 @@ fn success_status_response(
 }
 
 fn eas_provision_doc_xml() -> &'static str {
-    r#"<Settings xmlns="Settings:">
+    // [MS-ASPROV] §2.2.2.1.1: the Data element of a Provision response
+    // carries an EASProvisionDoc in the Provision namespace.
+    r#"<EASProvisionDoc xmlns="provision:">
 <DevicePasswordEnabled>0</DevicePasswordEnabled>
 <AlphanumericDevicePasswordRequired>0</AlphanumericDevicePasswordRequired>
 <PasswordRecoveryEnabled>0</PasswordRecoveryEnabled>
@@ -1387,7 +1464,7 @@ fn eas_provision_doc_xml() -> &'static str {
 <AllowUnsignedApplications>1</AllowUnsignedApplications>
 <AllowUnsignedInstallationPackages>1</AllowUnsignedInstallationPackages>
 <MinDevicePasswordComplexCharacters>1</MinDevicePasswordComplexCharacters>
-<AllowWifi>1</AllowWifi>
+<AllowWiFi>1</AllowWiFi>
 <AllowTextMessaging>1</AllowTextMessaging>
 <AllowPOPIMAPEmail>1</AllowPOPIMAPEmail>
 <AllowBluetooth>2</AllowBluetooth>
@@ -1409,10 +1486,7 @@ fn eas_provision_doc_xml() -> &'static str {
 <AllowConsumerEmail>1</AllowConsumerEmail>
 <AllowRemoteDesktop>1</AllowRemoteDesktop>
 <AllowInternetSharing>1</AllowInternetSharing>
-<Calendar>
-  <CalendarSyncEnabled>1</CalendarSyncEnabled>
-</Calendar>
-</Settings>"#
+</EASProvisionDoc>"#
 }
 
 async fn handle_provision(
@@ -1463,7 +1537,10 @@ async fn handle_provision(
             .await;
         let response = format!(
             r#"<?xml version="1.0" encoding="utf-8"?>
-<Provision xmlns="Provision:">
+<Provision xmlns="Provision:" xmlns:settings="Settings:">
+  <Settings:DeviceInformation>
+    <Settings:Status>1</Settings:Status>
+  </Settings:DeviceInformation>
   <Status>1</Status>
   <Policies>
     <Policy>
@@ -2143,7 +2220,6 @@ async fn handle_settings(
     let has_oof = xml_body.contains("<Oof>") || xml_body.contains("<Oof/>");
     let has_device_password =
         xml_body.contains("<DevicePassword>") || xml_body.contains("<DevicePassword/>");
-    let has_calendar = xml_body.contains("<Calendar>") || xml_body.contains("<Calendar/>");
 
     // Handle Set - OOF operations if present.
     let oof_inner = {
@@ -2159,16 +2235,15 @@ async fn handle_settings(
         }
     };
     if !oof_inner.is_empty() {
-        // We expect a full Set - Oof block. For simplicity, parse required fields.
+        // A Settings command Oof Set request carries OofState, optional
+        // StartTime/EndTime (when OofState is 2), and one OofMessage node
+        // per audience ([MS-ASCMD] §2.2.3.122).
         let oof_state_text =
             extract_first_tag_text(oof_inner, b"OofState").unwrap_or("0".to_string());
-        let enabled = oof_state_text == "1";
-        let external_audience_text =
-            extract_first_tag_text(oof_inner, b"ExternalAudience").unwrap_or("2".to_string());
-        let external_audience = match external_audience_text.as_str() {
-            "0" => crate::oof::ExternalAudience::External,
-            "1" => crate::oof::ExternalAudience::KnownExternal,
-            _ => crate::oof::ExternalAudience::All,
+        let (enabled, time_based) = match oof_state_text.as_str() {
+            "2" => (true, true),
+            "1" => (true, false),
+            _ => (false, false),
         };
         let start_time = extract_first_tag_text(oof_inner, b"StartTime")
             .and_then(|s| chrono::DateTime::parse_from_rfc3339(&s).ok())
@@ -2176,16 +2251,46 @@ async fn handle_settings(
         let end_time = extract_first_tag_text(oof_inner, b"EndTime")
             .and_then(|s| chrono::DateTime::parse_from_rfc3339(&s).ok())
             .map(|dt| dt.with_timezone(&chrono::Utc));
-        let internal_reply = extract_first_tag_text(oof_inner, b"InternalReply");
-        let external_reply = extract_first_tag_text(oof_inner, b"ExternalReply");
+
+        // Audience-specific messages arrive as OofMessage nodes, each naming
+        // its audience with exactly one of the AppliesTo* elements
+        // ([MS-ASCMD] §2.2.3.123).
+        let mut internal_reply = extract_first_tag_text(oof_inner, b"InternalReply");
+        let mut external_reply = extract_first_tag_text(oof_inner, b"ExternalReply");
+        let mut has_known = false;
+        let mut has_unknown = false;
+        for block in extract_all_tag_blocks(oof_inner, b"OofMessage") {
+            let enabled_text = extract_first_tag_text(&block, b"Enabled").unwrap_or_default();
+            if enabled_text != "1" {
+                continue;
+            }
+            let reply = extract_first_tag_text(&block, b"ReplyMessage");
+            if block.contains("<AppliesToInternal/>") {
+                internal_reply = reply.clone();
+            }
+            if block.contains("<AppliesToExternalKnown/>") {
+                has_known = true;
+                external_reply = reply.clone().or(external_reply);
+            }
+            if block.contains("<AppliesToExternalUnknown/>") {
+                has_unknown = true;
+                external_reply = reply.or(external_reply);
+            }
+        }
+        let external_audience = match (has_known, has_unknown) {
+            (true, true) => crate::oof::ExternalAudience::All,
+            (true, false) => crate::oof::ExternalAudience::KnownExternal,
+            (false, true) => crate::oof::ExternalAudience::External,
+            (false, false) => crate::oof::ExternalAudience::All,
+        };
 
         let settings = crate::oof::OofSettings {
             enabled,
             external_audience,
             internal_reply,
             external_reply,
-            start_time,
-            end_time,
+            start_time: if time_based { start_time } else { None },
+            end_time: if time_based { end_time } else { None },
         };
 
         if let Some(oof_mgr) = &state.oof_manager {
@@ -2195,15 +2300,13 @@ async fn handle_settings(
     }
 
     if has_user_info || (!has_oof && !has_device_password) {
-        let email_entries = active_user_emails(username, &state.cfg.mail_domain)
+        // [MS-ASCMD] §2.2.3.192/§2.2.3.5: for 16.1 clients the addresses are
+        // returned under UserInformation/Get/Accounts/Account, with a single
+        // EmailAddresses container holding one SMTPAddress per address plus
+        // the primary SMTP address ([MS-ASCMD] §2.2.3.57/§2.2.3.171).
+        let smtp_addresses = active_user_emails(username, &state.cfg.mail_domain)
             .into_iter()
-            .map(|email| {
-                format!(
-                    "<EmailAddresses><SMTPAddress>{}</SMTPAddress><PrimarySmtpAddress>{}</PrimarySmtpAddress></EmailAddresses>",
-                    xml_escape(&email),
-                    xml_escape(&primary_email)
-                )
-            })
+            .map(|email| format!("<SMTPAddress>{}</SMTPAddress>", xml_escape(&email)))
             .collect::<String>();
         sections.push_str(&format!(
             r#"<UserInformation>
@@ -2211,61 +2314,97 @@ async fn handle_settings(
     <Get>
       <Accounts>
         <Account>
-          <AccountId>{}</AccountId>
+          <AccountId>1</AccountId>
           <AccountName>{}</AccountName>
-          {}
+          <SendDisabled>0</SendDisabled>
+          <EmailAddresses>
+            {}
+            <PrimarySmtpAddress>{}</PrimarySmtpAddress>
+          </EmailAddresses>
         </Account>
       </Accounts>
     </Get>
   </UserInformation>"#,
             xml_escape(&primary_email),
-            xml_escape(username),
-            email_entries
+            smtp_addresses,
+            xml_escape(&primary_email)
         ));
     }
     if has_oof {
-        // Query OOF settings for this user.
+        // Query OOF settings for this user. The Oof Get response carries
+        // OofState, optional StartTime/EndTime, and one OofMessage node per
+        // audience ([MS-ASCMD] §2.2.3.122/§2.2.3.123).
         let oof_section = if let Some(oof_mgr) = &state.oof_manager {
             match oof_mgr.get_oof_settings(username) {
                 Ok(settings) => {
-                    let state_val = if settings.enabled { "1" } else { "0" };
-                    // External audience: 0=External, 1=KnownExternal, 2=All. In absence of specific mapping, use 2.
-                    let external = match settings.external_audience {
-                        crate::oof::ExternalAudience::External => "0",
-                        crate::oof::ExternalAudience::KnownExternal => "1",
-                        crate::oof::ExternalAudience::All => "2",
-                    };
-                    // Duration: if set, include; else empty.
-                    let duration = if let (Some(start), Some(end)) =
-                        (settings.start_time, settings.end_time)
+                    let (state_val, time_based) = if settings.enabled
+                        && settings.start_time.is_some()
+                        && settings.end_time.is_some()
                     {
+                        ("2", true)
+                    } else if settings.enabled {
+                        ("1", false)
+                    } else {
+                        ("0", false)
+                    };
+                    let duration = if time_based {
                         format!(
                             "<StartTime>{}</StartTime><EndTime>{}</EndTime>",
-                            start.to_rfc3339(),
-                            end.to_rfc3339()
+                            settings.start_time.unwrap().to_rfc3339(),
+                            settings.end_time.unwrap().to_rfc3339()
                         )
                     } else {
                         String::new()
                     };
-                    // Replies: escape them.
                     let internal_reply =
                         xml_escape(settings.internal_reply.as_deref().unwrap_or(""));
                     let external_reply =
                         xml_escape(settings.external_reply.as_deref().unwrap_or(""));
 
+                    let enabled_flag = |on: bool| if on { "1" } else { "0" };
+                    let (external_known, external_unknown) = match settings.external_audience {
+                        crate::oof::ExternalAudience::All => (true, true),
+                        crate::oof::ExternalAudience::KnownExternal => (true, false),
+                        crate::oof::ExternalAudience::External => (false, true),
+                    };
+                    let oof_message = |audience: &str, on: bool, reply: &str| {
+                        format!(
+                            "<OofMessage><{}/><Enabled>{}</Enabled><ReplyMessage>{}</ReplyMessage><BodyType>1</BodyType></OofMessage>",
+                            audience,
+                            enabled_flag(on),
+                            reply
+                        )
+                    };
                     format!(
                         r#"<Oof>
     <Status>1</Status>
     <Get>
       <OofState>{}</OofState>
-      <ExternalAudience>{}</ExternalAudience>
       {}
-      <InternalReply>{}</InternalReply>
-      <ExternalReply>{}</ExternalReply>
-      <AllowExternalOof>true</AllowExternalOof>
+      {}{}{}
     </Get>
   </Oof>"#,
-                        state_val, external, duration, internal_reply, external_reply
+                        state_val,
+                        duration,
+                        oof_message("AppliesToInternal", settings.enabled, &internal_reply),
+                        if external_known {
+                            oof_message(
+                                "AppliesToExternalKnown",
+                                settings.enabled,
+                                &external_reply,
+                            )
+                        } else {
+                            String::new()
+                        },
+                        if external_unknown {
+                            oof_message(
+                                "AppliesToExternalUnknown",
+                                settings.enabled,
+                                &external_reply,
+                            )
+                        } else {
+                            String::new()
+                        },
                     )
                 }
                 Err(e) => {
@@ -2275,8 +2414,9 @@ async fn handle_settings(
     <Status>1</Status>
     <Get>
       <OofState>0</OofState>
-      <ExternalAudience>2</ExternalAudience>
-      <AllowExternalOof>true</AllowExternalOof>
+      <OofMessage><AppliesToInternal/><Enabled>0</Enabled><ReplyMessage></ReplyMessage><BodyType>1</BodyType></OofMessage>
+      <OofMessage><AppliesToExternalKnown/><Enabled>0</Enabled><ReplyMessage></ReplyMessage><BodyType>1</BodyType></OofMessage>
+      <OofMessage><AppliesToExternalUnknown/><Enabled>0</Enabled><ReplyMessage></ReplyMessage><BodyType>1</BodyType></OofMessage>
     </Get>
   </Oof>"#
                         .to_string()
@@ -2288,8 +2428,9 @@ async fn handle_settings(
     <Status>1</Status>
     <Get>
       <OofState>0</OofState>
-      <ExternalAudience>2</ExternalAudience>
-      <AllowExternalOof>true</AllowExternalOof>
+      <OofMessage><AppliesToInternal/><Enabled>0</Enabled><ReplyMessage></ReplyMessage><BodyType>1</BodyType></OofMessage>
+      <OofMessage><AppliesToExternalKnown/><Enabled>0</Enabled><ReplyMessage></ReplyMessage><BodyType>1</BodyType></OofMessage>
+      <OofMessage><AppliesToExternalUnknown/><Enabled>0</Enabled><ReplyMessage></ReplyMessage><BodyType>1</BodyType></OofMessage>
     </Get>
   </Oof>"#
                 .to_string()
@@ -2298,29 +2439,9 @@ async fn handle_settings(
         sections.push_str(&oof_section);
     }
     if has_device_password {
-        sections.push_str(
-            r#"<DevicePassword>
-    <Status>1</Status>
-    <Get>
-      <DevicePasswordEnabled>0</DevicePasswordEnabled>
-      <MinPasswordLength>0</MinPasswordLength>
-      <MaxPasswordLength>0</MaxPasswordLength>
-      <MaxInactivityTimeDeviceLockInMinutes>0</MaxInactivityTimeDeviceLockInMinutes>
-      <MaxFailedPasswordAttempts>0</MaxFailedPasswordAttempts>
-      <PasswordExpirationInDays>0</PasswordExpirationInDays>
-    </Get>
-  </DevicePassword>"#,
-        );
-    }
-    if has_calendar {
-        sections.push_str(
-            r#"<Calendar>
-    <Status>1</Status>
-    <Get>
-      <CalendarSyncEnabled>1</CalendarSyncEnabled>
-    </Get>
-  </Calendar>"#,
-        );
+        // The DevicePassword response reports the status of the Set
+        // operation only ([MS-ASCMD] §2.2.3.46).
+        sections.push_str("<DevicePassword><Status>1</Status></DevicePassword>");
     }
     let response = format!(
         r#"<?xml version="1.0" encoding="utf-8"?>
@@ -2358,8 +2479,7 @@ async fn handle_get_item_estimate(
             Some((expected, _)) if expected.as_bytes().ct_eq(incoming.as_bytes()).into() => {}
             _ => {
                 let xml = format!(
-                    r#"<?xml version="1.0" encoding="utf-8"?><GetItemEstimate xmlns="GetItemEstimate:"><Response><Status>{}</Status><Collection><CollectionId>{}</CollectionId><Estimate>0</Estimate></Collection></Response></GetItemEstimate>"#,
-                    crate::sync::INVALID_SYNC_KEY_STATUS,
+                    r#"<?xml version="1.0" encoding="utf-8"?><GetItemEstimate xmlns="GetItemEstimate:"><Response><Status>4</Status><Collection><CollectionId>{}</CollectionId><Estimate>0</Estimate></Collection></Response></GetItemEstimate>"#,
                     visible_collection_id
                 );
                 return xml_or_wbxml_response(wbxml, as_wbxml, &xml, request_id);
@@ -2426,6 +2546,78 @@ async fn handle_email_attachment_fetch(
     Ok((BASE64.encode(&bytes), content_type, total_size))
 }
 
+/// Fetch one email item for ItemOperations, rendering `<Properties>` per
+/// the resolved request/sticky options ([MS-ASCMD] §2.2.3.125.4,
+/// [MS-ASCON] §3.2.5.7, [MS-ASAIRS] §2.2.2.12).
+///
+/// Returns the Fetch-scoped [MS-ASCMD] §2.2.3.177.8 status on error:
+/// 6 (object not found), 3 (server error), 14 (conversion failure) or 164
+/// (a BodyPartPreference whose Type is not 2, [MS-ASCON] §3.2.5.7).
+async fn handle_email_item_fetch(
+    state: &Arc<AppState>,
+    username: &str,
+    password: &SecretString,
+    options: &crate::eas_sync_options::EasSyncCollectionOptions,
+    server_id: &str,
+) -> Result<String, u16> {
+    let jmap = match state.jmap_client.as_ref() {
+        Some(j) if state.cfg.email_enabled => j.clone(),
+        _ => {
+            // The email backend is unreachable from this deployment: a
+            // server-side failure, not a missing object.
+            return Err(3);
+        }
+    };
+    let Some(jmap_id) = crate::email::jmap_id_from_email_server_id(server_id) else {
+        // Malformed server id: the object it names cannot exist.
+        return Err(6);
+    };
+    let account_id = match jmap.get_account_id(username, password).await {
+        Ok(id) => id,
+        Err(_) => return Err(3),
+    };
+    let emails = match jmap
+        .get_emails(
+            &account_id,
+            std::slice::from_ref(&jmap_id.to_string()),
+            None,
+            username,
+            password,
+        )
+        .await
+    {
+        Ok(emails) => emails,
+        Err(_) => return Err(3),
+    };
+    let Some(email) = emails.into_iter().next() else {
+        return Err(6);
+    };
+
+    // [MS-ASCON] §3.2.5.7 presence table: a BodyPart is emitted when the
+    // request carried a BodyPartPreference; the Body element is emitted
+    // unless the request carried ONLY a BodyPartPreference. A
+    // BodyPartPreference Type other than 2 is answered with status 164.
+    let part_pref = options.body_part_preference.clone();
+    if let Some(pref) = &part_pref
+        && pref.body_type != 2
+    {
+        return Err(164);
+    }
+    let body_pref_requested = !options.body_preferences.is_empty();
+    let mut properties = String::new();
+    if body_pref_requested || part_pref.is_none() {
+        properties.push_str(&crate::email::render_negotiated_eas_body(
+            &email,
+            options,
+            true,
+        ));
+    }
+    if let Some(pref) = &part_pref {
+        properties.push_str(&crate::email::render_eas_body_part(&email, pref));
+    }
+    Ok(properties)
+}
+
 async fn handle_item_operations(
     state: &Arc<AppState>,
     username: &str,
@@ -2454,6 +2646,24 @@ async fn handle_item_operations(
             fetch.store
         };
         let collection_id = fetch.collection_id.unwrap_or_else(|| "1".to_string());
+
+        // [MS-ASCMD] §2.2.3.125.4: "If the Options element is not included
+        // in the request, the previous Options block specified in the Sync
+        // command request is used" — the same sticky-options rule as Sync
+        // collections, resolved against the device-scoped collection key.
+        // ItemOperations requests carry no device-scoping header of their
+        // own, so the plain CollectionId keys the stored block.
+        let sticky = state
+            .storage
+            .get_sync_collection_options(username, &collection_id)
+            .await
+            .ok()
+            .flatten();
+        let resolved_fetch_options = crate::eas_sync_options::EasSyncCollectionOptions::resolve_sticky(
+            sticky,
+            fetch.options.clone(),
+        )
+        .unwrap_or_default();
 
         if let Some(file_ref) = fetch.file_reference.as_deref() {
             match state
@@ -2589,16 +2799,56 @@ async fn handle_item_operations(
         }
 
         let Some(server_id) = fetch.server_id.or(fetch.long_id) else {
+            // [MS-ASCMD] §2.2.3.177.8: 2 = "Protocol error - protocol
+            // violation/XML validation error" — a Fetch with neither
+            // ServerId nor LongId nor FileReference violates the schema.
             responses.push_str(&format!(
-                "<Fetch><Store>{}</Store><Status>6</Status></Fetch>",
+                "<Fetch><Store>{}</Store><Status>2</Status></Fetch>",
                 xml_escape(&store)
             ));
             continue;
         };
+
+        // Email items live in the JMAP backend; calendar items below go
+        // through the CalDAV/JMAP-calendar store. Splitting on the
+        // server-id prefix keeps each backend on its own fetch path.
+        if crate::email::is_email_server_id(&server_id) {
+            let properties = match handle_email_item_fetch(
+                state,
+                username,
+                &password,
+                &resolved_fetch_options,
+                &server_id,
+            )
+            .await
+            {
+                Ok(props) => props,
+                Err(status) => {
+                    responses.push_str(&format!(
+                        "<Fetch><Store>{}</Store><CollectionId>{}</CollectionId><ServerId>{}</ServerId><Status>{}</Status></Fetch>",
+                        xml_escape(&store),
+                        xml_escape(&collection_id),
+                        xml_escape(&server_id),
+                        status
+                    ));
+                    continue;
+                }
+            };
+            responses.push_str(&format!(
+                "<Fetch><Store>{}</Store><CollectionId>{}</CollectionId><ServerId>{}</ServerId><Class>Email</Class><Status>1</Status><Properties>{}</Properties></Fetch>",
+                xml_escape(&store),
+                xml_escape(&collection_id),
+                xml_escape(&server_id),
+                properties
+            ));
+            continue;
+        }
+
         match state.storage.get_item_owner(&server_id).await {
             Ok(None) => {
+                // [MS-ASCMD] §2.2.3.177.8: 6 = "The object was not found".
                 responses.push_str(&format!(
-            "<Fetch><Store>{}</Store><CollectionId>{}</CollectionId><ServerId>{}</ServerId><Status>8</Status></Fetch>",
+            "<Fetch><Store>{}</Store><CollectionId>{}</CollectionId><ServerId>{}</ServerId><Status>6</Status></Fetch>",
             xml_escape(&store),
             xml_escape(&collection_id),
             xml_escape(&server_id)
@@ -2607,8 +2857,9 @@ async fn handle_item_operations(
             }
             Err(e) => {
                 tracing::error!("Failed to lookup item owner for {}: {}", server_id, e);
+                // [MS-ASCMD] §2.2.3.177.8: 3 = "Server error".
                 responses.push_str(&format!(
-            "<Fetch><Store>{}</Store><CollectionId>{}</CollectionId><ServerId>{}</ServerId><Status>8</Status></Fetch>",
+            "<Fetch><Store>{}</Store><CollectionId>{}</CollectionId><ServerId>{}</ServerId><Status>3</Status></Fetch>",
             xml_escape(&store),
             xml_escape(&collection_id),
             xml_escape(&server_id)
@@ -2631,8 +2882,10 @@ async fn handle_item_operations(
         match enforcement.can_read_item(&perm_ctx).await {
             Ok(true) => {}
             Ok(false) => {
+                // [MS-ASCMD] §2.2.3.177.8: 16 = "Access to the resource is
+                // denied" (4 is the document-library URI code).
                 responses.push_str(&format!(
-                    "<Fetch><Store>{}</Store><CollectionId>{}</CollectionId><ServerId>{}</ServerId><Status>4</Status></Fetch>",
+                    "<Fetch><Store>{}</Store><CollectionId>{}</CollectionId><ServerId>{}</ServerId><Status>16</Status></Fetch>",
                     xml_escape(&store),
                     xml_escape(&collection_id),
                     xml_escape(&server_id)
@@ -2642,7 +2895,7 @@ async fn handle_item_operations(
             Err(e) => {
                 tracing::error!("Permission check failed for item {}: {}", server_id, e);
                 responses.push_str(&format!(
-                    "<Fetch><Store>{}</Store><CollectionId>{}</CollectionId><ServerId>{}</ServerId><Status>8</Status></Fetch>",
+                    "<Fetch><Store>{}</Store><CollectionId>{}</CollectionId><ServerId>{}</ServerId><Status>3</Status></Fetch>",
                     xml_escape(&store),
                     xml_escape(&collection_id),
                     xml_escape(&server_id)
@@ -2658,8 +2911,9 @@ async fn handle_item_operations(
         {
             Ok(Some(row)) => row,
             _ => {
+                // [MS-ASCMD] §2.2.3.177.8: 6 = "The object was not found".
                 responses.push_str(&format!(
-                    "<Fetch><Store>{}</Store><CollectionId>{}</CollectionId><ServerId>{}</ServerId><Status>8</Status></Fetch>",
+                    "<Fetch><Store>{}</Store><CollectionId>{}</CollectionId><ServerId>{}</ServerId><Status>6</Status></Fetch>",
                     xml_escape(&store),
                     xml_escape(&collection_id),
                     xml_escape(&server_id)
@@ -2704,8 +2958,9 @@ async fn handle_item_operations(
                 password.expose_secret(),
             );
             let Ok(Ok((ics, etag))) = timeout(CALDAV_TIMEOUT, get_future).await else {
+                // [MS-ASCMD] §2.2.3.177.8: 3 = "Server error".
                 responses.push_str(&format!(
-                    "<Fetch><Store>{}</Store><CollectionId>{}</CollectionId><ServerId>{}</ServerId><Status>8</Status></Fetch>",
+                    "<Fetch><Store>{}</Store><CollectionId>{}</CollectionId><ServerId>{}</ServerId><Status>3</Status></Fetch>",
                     xml_escape(&store),
                     xml_escape(&collection_id),
                     xml_escape(&server_id)
@@ -2715,15 +2970,17 @@ async fn handle_item_operations(
             (ics, etag)
         };
         let Some(item) = parse_ics_event(&ics) else {
+            // [MS-ASCMD] §2.2.3.177.8: 14 = "Mailbox fetch
+            // provider - the item failed conversion".
             responses.push_str(&format!(
-                "<Fetch><Store>{}</Store><CollectionId>{}</CollectionId><ServerId>{}</ServerId><Status>6</Status></Fetch>",
+                "<Fetch><Store>{}</Store><CollectionId>{}</CollectionId><ServerId>{}</ServerId><Status>14</Status></Fetch>",
                 xml_escape(&store),
                 xml_escape(&collection_id),
                 xml_escape(&server_id)
             ));
             continue;
         };
-        let mut app_data = sync::render_calendar_app_data(&item);
+        let mut app_data = sync::render_calendar_app_data_with_options(&item, &resolved_fetch_options);
         if let Ok(att_list) = state
             .attachment_manager
             .get_attachments_for_item(&owner_lower, &server_id)
@@ -3757,6 +4014,31 @@ async fn handle_sync_collections(ctx: &SyncCtx<'_>, collections: &[SyncCollectio
         let collection_id = coll.collection_id.as_deref().unwrap_or("1");
         let state_collection_id = scoped_collection_id(collection_id, device_id);
         let incoming_key = coll.sync_key.as_deref().unwrap_or("0");
+        // Sticky <Options> ([MS-ASCMD] §2.2.3.125.6): "If the Options block
+        // is not included in a request, the previous Options block is used.
+        // Whenever the client specifies new options … the server MUST replace
+        // the original Options block with the new Options block." Resolved
+        // against the per-device collection's last stored block and persisted
+        // so a mid-session gateway restart cannot silently drop body
+        // preferences Outlook sent on the initial SyncKey-0 request.
+        let sticky = state
+            .storage
+            .get_sync_collection_options(username, &state_collection_id)
+            .await
+            .ok()
+            .flatten();
+        let resolved_options = crate::eas_sync_options::EasSyncCollectionOptions::resolve_sticky(
+            sticky,
+            coll.options.clone(),
+        );
+        if let Some(opts) = resolved_options.as_ref()
+            && let Err(e) = state
+                .storage
+                .set_sync_collection_options(username, &state_collection_id, opts)
+                .await
+        {
+            tracing::warn!(request_id = %request_id, error = %e, "Failed to persist sticky Sync options");
+        }
         // This collection's effective response window: the per-collection
         // WindowSize (spec clamps 0 and >512 to 512; absent = 100) capped by
         // the remaining global budget.
@@ -3821,6 +4103,8 @@ async fn handle_sync_collections(ctx: &SyncCtx<'_>, collections: &[SyncCollectio
                     &state_collection_id,
                     incoming_key,
                     effective_collection_window,
+                    resolved_options.as_ref(),
+                    coll.conversation_mode,
                 )
                 .await
                 {
@@ -3976,10 +4260,17 @@ async fn handle_sync_collections(ctx: &SyncCtx<'_>, collections: &[SyncCollectio
                 let opts = SyncOptions {
                     window_size: effective_collection_window,
                     get_changes: coll.get_changes,
-                    filter_start: coll
-                        .filter_type
+                    // FilterType is a child of <Options> for every class
+                    // ([MS-ASCMD] §2.2.3.68.2); the sticky block carries it
+                    // across requests.
+                    filter_start: resolved_options
+                        .as_ref()
+                        .and_then(|o| o.filter_type)
                         .map(filter_type_to_start)
                         .unwrap_or_else(|| chrono::Utc::now() - ChronoDuration::weeks(52)),
+                    // The same sticky block drives body negotiation
+                    // ([MS-ASAIRS] §2.2.2.12) for every rendered item.
+                    body_options: resolved_options.clone().unwrap_or_default(),
                 };
                 match sync::perform_sync(&sync::PerformSyncParams {
                     state: state.clone(),
@@ -4211,7 +4502,7 @@ async fn handle_sync_collections(ctx: &SyncCtx<'_>, collections: &[SyncCollectio
     // Build multi-collection response
     let collections_xml = collection_responses.join("");
     let resp_xml = format!(
-        r#"<?xml version="1.0" encoding="utf-8"?><Sync xmlns="AirSync:" xmlns:Email="Email:" xmlns:Calendar="Calendar:" xmlns:Contacts="Contacts:" xmlns:Tasks="Tasks:" xmlns:Notes="Notes:" xmlns:AirSyncBase="AirSyncBase:"><Collections>{collections_xml}</Collections></Sync>"#
+        r#"<?xml version="1.0" encoding="utf-8"?><Sync xmlns="AirSync:" xmlns:Email="Email:" xmlns:Email2="Email2:" xmlns:Calendar="Calendar:" xmlns:Contacts="Contacts:" xmlns:Tasks="Tasks:" xmlns:Notes="Notes:" xmlns:AirSyncBase="AirSyncBase:"><Collections>{collections_xml}</Collections></Sync>"#
     );
     xml_or_wbxml_response(wbxml, as_wbxml, &resp_xml, request_id)
 }
@@ -4898,13 +5189,19 @@ async fn accumulate_email_changes(
 /// Fetches the current JMAP Email and renders the same `<Add>`/`<Change>`
 /// body the direct delta path produces. Destroyed emails need no fetch.
 async fn render_pending_email_op(
-    jmap: &JmapClient,
-    account_id: &str,
-    username: &str,
-    password: &SecretString,
-    collection_id: &str,
+    ctx: &EmailSyncCtx<'_>,
     op: &PendingEmailOp,
 ) -> String {
+    let EmailSyncCtx {
+        jmap,
+        account_id,
+        username,
+        password,
+        collection_id,
+        options,
+        conversation_mode,
+        ..
+    } = *ctx;
     if op.is_delete() {
         let server_id = crate::email::email_server_id_from_jmap_id(&op.id);
         return format!(
@@ -4943,8 +5240,14 @@ async fn render_pending_email_op(
     };
     let jmap_id = email.id.as_deref().unwrap_or_default();
     let server_id = crate::email::email_server_id_from_jmap_id(jmap_id);
-    let app_data =
-        crate::email::render_jmap_email_as_eas_application_data(&email, &server_id, collection_id);
+    let app_data = crate::email::render_jmap_email_as_eas_application_data_with_options(
+        &email,
+        &server_id,
+        collection_id,
+        options,
+        conversation_mode,
+        true,
+    );
     if op.op == "add" {
         format!(
             "<Add><ServerId>{}</ServerId><ApplicationData>{}</ApplicationData></Add>",
@@ -5027,6 +5330,7 @@ fn route_email_sync(incoming_sync_key: &str, cursor_present: bool) -> EmailSyncR
 /// at all for third-party accounts — Microsoft documents no EAS account
 /// type and no on-premises Exchange support for it — so it never reaches
 /// this path.)
+#[allow(clippy::too_many_arguments)] // irreducible request inputs; mirrors SyncCtx below
 async fn handle_email_sync(
     state: &Arc<AppState>,
     username: &str,
@@ -5035,7 +5339,14 @@ async fn handle_email_sync(
     state_collection_id: &str,
     incoming_sync_key: &str,
     window: usize,
+    options: Option<&crate::eas_sync_options::EasSyncCollectionOptions>,
+    conversation_mode: bool,
 ) -> anyhow::Result<String> {
+    // Sticky <Options> ([MS-ASCMD] §2.2.3.125.6) resolve in
+    // handle_sync_collections before dispatch; an absent block falls back
+    // to the negotiation defaults (native body, untruncated).
+    let default_options = crate::eas_sync_options::EasSyncCollectionOptions::default();
+    let resolved_collection_options = options.unwrap_or(&default_options);
     // Map CollectionId to JMAP mailbox role.
     // Previously hardcoded "inbox" and "2", meaning syncing any other folder
     // (Sent Items, Drafts, etc.) would incorrectly fetch Inbox emails and
@@ -5135,6 +5446,8 @@ async fn handle_email_sync(
                     collection_id,
                     state_collection_id,
                     window,
+                    options: resolved_collection_options,
+                    conversation_mode,
                 },
                 mailbox_role,
             )
@@ -5151,6 +5464,8 @@ async fn handle_email_sync(
                     collection_id,
                     state_collection_id,
                     window,
+                    options: resolved_collection_options,
+                    conversation_mode,
                 },
                 mailbox_role,
             )
@@ -5166,6 +5481,8 @@ async fn handle_email_sync(
                 collection_id,
                 state_collection_id,
                 window,
+                options: resolved_collection_options,
+                conversation_mode,
             })
             .await
         }
@@ -5184,6 +5501,11 @@ struct EmailSyncCtx<'a> {
     collection_id: &'a str,
     state_collection_id: &'a str,
     window: usize,
+    /// The sticky-resolved per-collection `<Options>` block
+    /// ([MS-ASCMD] §2.2.3.125.6) that shapes every rendered body.
+    options: &'a crate::eas_sync_options::EasSyncCollectionOptions,
+    /// `<airsync:ConversationMode>` for this collection ([MS-ASCMD] §2.2.3.36.2).
+    conversation_mode: bool,
 }
 
 /// Initial email sync (EAS SyncKey "0"): page the mailbox by `position`,
@@ -5202,6 +5524,8 @@ async fn handle_email_initial_sync(
         collection_id,
         state_collection_id,
         window,
+        options,
+        conversation_mode,
     } = *ctx;
     // A previous initial sync may have left a resume cursor (window filled
     // before the mailbox drained). Spec-wise the client follows up with the
@@ -5280,10 +5604,13 @@ async fn handle_email_initial_sync(
     for email in &result.emails {
         let jmap_id = email.id.as_deref().unwrap_or("unknown");
         let server_id = crate::email::email_server_id_from_jmap_id(jmap_id);
-        let app_data = crate::email::render_jmap_email_as_eas_application_data(
+        let app_data = crate::email::render_jmap_email_as_eas_application_data_with_options(
             email,
             &server_id,
             collection_id,
+            options,
+            conversation_mode,
+            true,
         );
         commands_xml.push_str(&format!(
             "<Add><ServerId>{}</ServerId><ApplicationData>{}</ApplicationData></Add>",
@@ -5403,6 +5730,7 @@ async fn handle_email_delta_sync(ctx: &EmailSyncCtx<'_>) -> anyhow::Result<Strin
         collection_id,
         state_collection_id,
         window,
+        ..
     } = *ctx;
     let new_sync_key = Uuid::new_v4().simple().to_string();
 
@@ -5429,8 +5757,7 @@ async fn handle_email_delta_sync(ctx: &EmailSyncCtx<'_>) -> anyhow::Result<Strin
         let mut commands_xml = String::new();
         for op in deliver {
             commands_xml.push_str(
-                &render_pending_email_op(jmap, account_id, username, password, collection_id, op)
-                    .await,
+                &render_pending_email_op(ctx, op).await,
             );
         }
 
@@ -5568,7 +5895,7 @@ async fn handle_email_delta_sync(ctx: &EmailSyncCtx<'_>) -> anyhow::Result<Strin
     let mut commands_xml = String::new();
     for op in deliver {
         commands_xml.push_str(
-            &render_pending_email_op(jmap, account_id, username, password, collection_id, op).await,
+            &render_pending_email_op(ctx, op).await,
         );
     }
 
@@ -5751,6 +6078,7 @@ pub async fn handle(
                 let collection_id = req.collection_id.as_deref().unwrap_or("1");
                 let incoming_key = req.sync_key.as_deref().unwrap_or("0");
                 let class = req.class.as_deref().unwrap_or("Calendar");
+                let parsed_legacy = crate::eas_sync_options::parse_collection_options(&xml);
                 let sc = SyncCollection {
                     sync_key: Some(incoming_key.to_string()),
                     collection_id: Some(collection_id.to_string()),
@@ -5759,6 +6087,12 @@ pub async fn handle(
                     // EasRequest.get_changes defaults to true when absent
                     get_changes: req.get_changes,
                     filter_type: req.filter_type,
+                    conversation_mode: parsed_legacy.controls.conversation_mode.unwrap_or(false),
+                    options: if parsed_legacy.options.explicitly_set {
+                        Some(parsed_legacy.options)
+                    } else {
+                        None
+                    },
                     // Use the full xml for single-collection requests so
                     // mutation checks and apply_client_sync_mutations work
                     // correctly (no cross-collection leakage possible).
@@ -7223,6 +7557,8 @@ mod tests {
             window_size: window,
             get_changes: true,
             filter_type: None,
+            conversation_mode: false,
+            options: None,
             xml: String::new(),
         }
     }
