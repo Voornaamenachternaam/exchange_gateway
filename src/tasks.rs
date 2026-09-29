@@ -207,30 +207,6 @@ pub fn render_eas_note_add(server_id: &str, row: &NoteRow) -> String {
     )
 }
 
-/// Full sync of the gateway-local Tasks store for an owner.
-///
-/// Since Tasks are stored locally (no upstream diff), a Sync always renders the
-/// current full set as `<Add>` elements. Returns the XML fragment (without the
-/// enclosing `<Collection>`).
-pub async fn sync_tasks(state: &AppState, username: &str) -> Result<String> {
-    let rows = state.storage.get_all_tasks_for_owner(username).await?;
-    let mut xml = String::new();
-    for row in &rows {
-        xml.push_str(&render_eas_task_add(&row.server_id, row));
-    }
-    Ok(xml)
-}
-
-/// Full sync of the gateway-local Notes store for an owner.
-pub async fn sync_notes(state: &AppState, username: &str) -> Result<String> {
-    let rows = state.storage.get_all_notes_for_owner(username).await?;
-    let mut xml = String::new();
-    for row in &rows {
-        xml.push_str(&render_eas_note_add(&row.server_id, row));
-    }
-    Ok(xml)
-}
-
 /// Operation kinds for task/note client mutations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MutationKind {
@@ -884,8 +860,20 @@ fn now_utc_string() -> String {
 }
 
 /// Render `<Add>/<Change>/<Delete>` mutation responses for a Sync reply.
+///
+/// The echoes MUST be wrapped in a `<Responses>` container (MS-ASCMD
+/// §2.2.3.154: the Responses element "contains responses to operations that
+/// are processed by the server" and is the only legal parent of response
+/// Add/Change/Delete elements); a bare Add directly under Collection is not
+/// schema-valid. The container is omitted entirely when nothing was
+/// processed, per §2.2.3.154 ("present only if the server has processed
+/// operation from the client").
 pub fn render_mutation_responses(results: &[MutationResult]) -> String {
-    let mut xml = String::new();
+    if results.is_empty() {
+        return String::new();
+    }
+    let mut xml = String::with_capacity(256 + results.len() * 128);
+    xml.push_str("<Responses>");
     for res in results {
         match res.kind {
             MutationKind::Add => {
@@ -915,6 +903,7 @@ pub fn render_mutation_responses(results: &[MutationResult]) -> String {
             }
         }
     }
+    xml.push_str("</Responses>");
     xml
 }
 

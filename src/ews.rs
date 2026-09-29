@@ -4277,7 +4277,7 @@ async fn handle_sync_email_folder_items(
 
     let owner = owner_from_username(&auth.username);
     let folder_id = folder_id_for(owner, *folder);
-    let _max_changes = extract_int(body, b"MaxChangesReturned", 100).clamp(1, 512);
+    let max_changes = extract_int(body, b"MaxChangesReturned", 100).clamp(1, 512);
 
     let jmap = match state.jmap_client.as_ref() {
         Some(j) => j,
@@ -4340,7 +4340,7 @@ async fn handle_sync_email_folder_items(
                 account_id: &account_id,
                 mailbox_role,
                 position: 0,
-                limit: _max_changes as u64,
+                limit: max_changes as u64,
                 username: &auth.username,
                 password: &auth.password,
                 search_filter: None,
@@ -4406,13 +4406,17 @@ async fn handle_sync_email_folder_items(
         return soap_ok(response);
     }
 
-    // Subsequent sync: call JMAP Email/changes with the stored state token
+    // Subsequent sync: call JMAP Email/changes with the stored state token.
+    // The client's MaxChangesReturned bounds each batch; hasMoreChanges flows
+    // into IncludesLastItemInRange so the client re-syncs from the new
+    // SyncState for the remainder (MS-OXWSSYNC).
     let changes_result = jmap
         .sync_email_changes(
             &account_id,
             &old_state_token,
             &auth.username,
             &auth.password,
+            Some(max_changes as u32),
         )
         .await;
 

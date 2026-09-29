@@ -400,6 +400,53 @@ The Exchange Gateway uses SQLite at `/var/lib/exchange-gateway/gateway.db`. The 
 
 ## Security
 
+### The Microsoft cloud sync path (read this before adding an account)
+
+The Outlook **Android app** does **not** talk to the gateway directly from
+the device for third-party (non-Microsoft-365) accounts. The account is
+connected through **Microsoft's cloud sync infrastructure**: the app sends
+the credentials you enter to Microsoft, and a Microsoft datacenter service
+is then the EAS client that opens the connection to your gateway. The
+Windows Outlook-class clients that use this gateway's EWS/MAPI/HTTP and
+Autodiscover endpoints connect directly from the machine instead.
+
+**New Outlook for Windows cannot reach this EAS endpoint at all.** Per
+Microsoft's documentation:
+
+- new Outlook for Windows supports Microsoft 365, Outlook.com/Hotmail,
+  Gmail, Yahoo, iCloud and other accounts added via **IMAP or POP** — there
+  is no EAS account type, and "On-premises Exchange accounts aren't
+  supported" ([supported account
+  types](https://learn.microsoft.com/en-us/microsoft-365-apps/outlook/get-started/supported-account-types));
+- its "sync your account to the Microsoft Cloud" feature is documented for
+  **Gmail and Yahoo** accounts only, while Outlook for Android (and iOS/Mac)
+  additionally cover iCloud and IMAP ([sync to the Microsoft
+  Cloud](https://support.microsoft.com/en-us/outlook/getstarted/sync-your-account-in-outlook-to-the-microsoft-cloud)).
+
+For the clients that do use the cloud-sync route, that means:
+
+- **Your mailbox password and the mail, calendar and contact data transit
+  Microsoft's servers.** Do not deploy an account you are not willing to
+  expose to Microsoft in this way.
+- If the account offers "skip cloud sync" / direct-connection mode in the
+  client UI and you enable it, the device connects itself and nothing
+  transits Microsoft — but that is not the default behavior.
+- Traffic arriving at the gateway therefore comes from **Microsoft ASNs**
+  (and Cloudflare's edge in front of them), not from your phone's IP. Any
+  firewall/allowlist must not block Microsoft's datacenter ranges, and the
+  gateway's rate limiter (per edge-client-IP, default 120 requests/minute
+  with a large burst) is sized so a Microsoft connector's Ping/Sync cadence
+  never trips it. For many mailboxes on one gateway, raise
+  `GATEWAY_RATE_LIMIT_REQUESTS_PER_MINUTE` if several users sync
+  simultaneously.
+- Microsoft's connector behaves like a patient, long-running EAS client:
+  long-poll Pings (held below Cloudflare's 125-second edge timeout,
+  see the *EAS Ping* section below) and large sync windows (the gateway
+  honors `WindowSize` up to the protocol maximum of 512 items per
+  collection, sending `<MoreAvailable/>` and a resumable SyncKey when a
+  folder is bigger than one window). No configuration is needed on either
+  side.
+
 ### Cloudflare Dashboard Settings
 
 1. **Proxy status**: Set to Proxied (orange cloud) for DDoS protection

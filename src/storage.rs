@@ -427,6 +427,24 @@ impl Storage {
                 .await
                 .map_err(|e| GatewayError::Storage(format!("Migration error: {}", e)))?;
         }
+        // Same probe for the `base_seq` column of `local_sync_cursor`: it
+        // anchors continuation windows to the journal head captured when
+        // the initial sync started (see sqlite_schema.sql).
+        let cursor_columns = sqlx::query("PRAGMA table_info(local_sync_cursor)")
+            .fetch_all(self.pool.as_ref())
+            .await
+            .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))?;
+        let has_base_seq = cursor_columns
+            .iter()
+            .any(|c| c.get::<String, _>("name") == "base_seq");
+        if !has_base_seq {
+            sqlx::query(
+                "ALTER TABLE local_sync_cursor ADD COLUMN base_seq INTEGER NOT NULL DEFAULT 0",
+            )
+            .execute(self.pool.as_ref())
+            .await
+            .map_err(|e| GatewayError::Storage(format!("Migration error: {}", e)))?;
+        }
         Ok(())
     }
 
@@ -871,6 +889,299 @@ impl Storage {
         .bind(owner)
         .bind(limit)
         .bind(offset)
+        .fetch_all(self.pool.as_ref())
+        .await
+        .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))
+    }
+
+    /// Persist the EAS email initial-sync paging cursor
+    /// (`position`, captured JMAP state token) for a collection.
+    ///
+    /// Written by the email Sync path (MS-ASCMD §2.2.3.199) when a window
+    /// fills before the mailbox is drained; the next Sync resumes at
+    /// `position`. An empty `state_token` stores NULL.
+    pub async fn set_email_sync_cursor(
+        &self,
+        owner: &str,
+        collection_id: &str,
+        position: u64,
+        state_token: Option<&str>,
+    ) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO email_sync_cursor (owner, collection_id, position, state_token)
+             VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(owner, collection_id) DO UPDATE
+             SET position = ?3, state_token = ?4, updated_at = CURRENT_TIMESTAMP",
+        )
+        .bind(owner)
+        .bind(collection_id)
+        .bind(position as i64)
+        .bind(state_token)
+        .execute(self.pool.as_ref())
+        .await
+        .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+        Ok(())
+    }
+
+    /// Read the EAS email initial-sync paging cursor for a collection, if a
+    /// partially-delivered initial sync left one behind.
+    pub async fn get_email_sync_cursor(
+        &self,
+        owner: &str,
+        collection_id: &str,
+    ) -> Result<Option<(u64, Option<String>)>> {
+        let row = sqlx::query(
+            "SELECT position, state_token FROM email_sync_cursor
+             WHERE owner = ?1 AND collection_id = ?2",
+        )
+        .bind(owner)
+        .bind(collection_id)
+        .fetch_optional(self.pool.as_ref())
+        .await
+        .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))?;
+        Ok(row.map(|r| {
+            let position: i64 = r.get(0);
+            (position.max(0) as u64, r.get(1))
+        }))
+    }
+
+    /// Drop the EAS email initial-sync paging cursor once the mailbox has
+    /// been fully drained (or when a fresh initial sync restarts from zero).
+    pub async fn clear_email_sync_cursor(&self, owner: &str, collection_id: &str) -> Result<()> {
+        sqlx::query("DELETE FROM email_sync_cursor WHERE owner = ?1 AND collection_id = ?2")
+            .bind(owner)
+            .bind(collection_id)
+            .execute(self.pool.as_ref())
+            .await
+            .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+        Ok(())
+    }
+
+    /// Persist the EAS email delta-sync overflow queue for a collection.
+    ///
+    /// `ops_json` is a JSON array of `{"op":"add|change|delete","id":"…"}`
+    /// entries; `base_state` is the JMAP Email state token that follows the
+    /// full accumulated change set (see `email_sync_pending` in
+    /// `sqlite_schema.sql`).
+    pub async fn set_email_sync_pending(
+        &self,
+        owner: &str,
+        collection_id: &str,
+        ops_json: &str,
+        base_state: &str,
+    ) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO email_sync_pending (owner, collection_id, ops_json, base_state)
+             VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(owner, collection_id) DO UPDATE
+             SET ops_json = ?3, base_state = ?4, updated_at = CURRENT_TIMESTAMP",
+        )
+        .bind(owner)
+        .bind(collection_id)
+        .bind(ops_json)
+        .bind(base_state)
+        .execute(self.pool.as_ref())
+        .await
+        .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+        Ok(())
+    }
+
+    /// Read the EAS email delta-sync overflow queue for a collection.
+    /// Returns `None` when no overflow is pending.
+    pub async fn get_email_sync_pending(
+        &self,
+        owner: &str,
+        collection_id: &str,
+    ) -> Result<Option<(String, String)>> {
+        let row = sqlx::query(
+            "SELECT ops_json, base_state FROM email_sync_pending
+             WHERE owner = ?1 AND collection_id = ?2",
+        )
+        .bind(owner)
+        .bind(collection_id)
+        .fetch_optional(self.pool.as_ref())
+        .await
+        .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))?;
+        Ok(row.map(|r| (r.get(0), r.get(1))))
+    }
+
+    /// Drop the EAS email delta-sync overflow queue (queue fully drained).
+    pub async fn clear_email_sync_pending(&self, owner: &str, collection_id: &str) -> Result<()> {
+        sqlx::query("DELETE FROM email_sync_pending WHERE owner = ?1 AND collection_id = ?2")
+            .bind(owner)
+            .bind(collection_id)
+            .execute(self.pool.as_ref())
+            .await
+            .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+        Ok(())
+    }
+
+    /// Persist the gateway-local (Tasks/Notes) initial-sync keyset cursor:
+    /// `last_key` is the highest server_id already delivered in server_id
+    /// ASC order, and `base_seq` is the change-journal head captured when
+    /// the SyncKey "0" window started (MS-ASCMD §2.2.3.199 windowing).
+    ///
+    /// `base_seq` anchors the journal watermark of every continuation
+    /// window: mutations recorded while the initial sync paginates stay
+    /// above it and are re-delivered by the first delta after the cursor
+    /// drains, instead of being consumed (and pruned) unseen.
+    pub async fn set_local_sync_cursor(
+        &self,
+        owner: &str,
+        collection_id: &str,
+        last_key: &str,
+        base_seq: i64,
+    ) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO local_sync_cursor (owner, collection_id, last_key, base_seq)
+             VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(owner, collection_id) DO UPDATE
+             SET last_key = ?3, base_seq = ?4, updated_at = CURRENT_TIMESTAMP",
+        )
+        .bind(owner)
+        .bind(collection_id)
+        .bind(last_key)
+        .bind(base_seq)
+        .execute(self.pool.as_ref())
+        .await
+        .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+        Ok(())
+    }
+
+    /// Read the gateway-local (Tasks/Notes) initial-sync keyset cursor for a
+    /// collection, if a windowed initial sync is still in progress.
+    /// Returns `(last_key, base_seq)`.
+    pub async fn get_local_sync_cursor(
+        &self,
+        owner: &str,
+        collection_id: &str,
+    ) -> Result<Option<(String, i64)>> {
+        let row = sqlx::query(
+            "SELECT last_key, base_seq FROM local_sync_cursor WHERE owner = ?1 AND collection_id = ?2",
+        )
+        .bind(owner)
+        .bind(collection_id)
+        .fetch_optional(self.pool.as_ref())
+        .await
+        .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))?;
+        Ok(row.map(|r| (r.get(0), r.get(1))))
+    }
+
+    /// Drop the gateway-local (Tasks/Notes) initial-sync keyset cursor once
+    /// the live set has been fully delivered.
+    pub async fn clear_local_sync_cursor(&self, owner: &str, collection_id: &str) -> Result<()> {
+        sqlx::query("DELETE FROM local_sync_cursor WHERE owner = ?1 AND collection_id = ?2")
+            .bind(owner)
+            .bind(collection_id)
+            .execute(self.pool.as_ref())
+            .await
+            .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+        Ok(())
+    }
+
+    /// Live Tasks (`resource_href = 'task'`) in stable server_id ASC order,
+    /// strictly after `after_server_id` (keyset pagination for windowed
+    /// initial sync, MS-ASCMD §2.2.3.199). `None` delivers from the start.
+    ///
+    /// `limit` bounds the fetch so a continuation window never loads the
+    /// whole remaining set; the caller asks for `window + 1` rows and uses
+    /// the extra row only to decide `<MoreAvailable/>`.
+    pub async fn list_tasks_after(
+        &self,
+        owner: &str,
+        after_server_id: Option<&str>,
+        limit: u64,
+    ) -> Result<Vec<TaskRow>> {
+        match after_server_id {
+            Some(after) => {
+                sqlx::query_as::<_, TaskRow>(
+                    "SELECT id, owner, server_id, subject, importance, sensitivity, start_date, due_date, \
+                     utc_start_date, utc_due_date, complete, date_completed, reminder_set, reminder_time, \
+                     categories, body, updated_at FROM task_map \
+                     WHERE owner = ?1 AND server_id > ?2 ORDER BY server_id ASC LIMIT ?3",
+                )
+                .bind(owner)
+                .bind(after)
+                .bind(limit as i64)
+                .fetch_all(self.pool.as_ref())
+                .await
+                .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))
+            }
+            None => {
+                sqlx::query_as::<_, TaskRow>(
+                    "SELECT id, owner, server_id, subject, importance, sensitivity, start_date, due_date, \
+                     utc_start_date, utc_due_date, complete, date_completed, reminder_set, reminder_time, \
+                     categories, body, updated_at FROM task_map \
+                     WHERE owner = ?1 ORDER BY server_id ASC LIMIT ?2",
+                )
+                .bind(owner)
+                .bind(limit as i64)
+                .fetch_all(self.pool.as_ref())
+                .await
+                .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))
+            }
+        }
+    }
+
+    /// Live Notes (`resource_href = 'note'`) in stable server_id ASC order,
+    /// strictly after `after_server_id` (keyset pagination for windowed
+    /// initial sync, MS-ASCMD §2.2.3.199). `None` delivers from the start.
+    ///
+    /// `limit` bounds the fetch so a continuation window never loads the
+    /// whole remaining set; the caller asks for `window + 1` rows and uses
+    /// the extra row only to decide `<MoreAvailable/>`.
+    pub async fn list_notes_after(
+        &self,
+        owner: &str,
+        after_server_id: Option<&str>,
+        limit: u64,
+    ) -> Result<Vec<NoteRow>> {
+        match after_server_id {
+            Some(after) => {
+                sqlx::query_as::<_, NoteRow>(
+                    "SELECT id, owner, server_id, subject, message_class, body, categories, last_modified_date, updated_at \
+                     FROM note_map WHERE owner = ?1 AND server_id > ?2 ORDER BY server_id ASC LIMIT ?3",
+                )
+                .bind(owner)
+                .bind(after)
+                .bind(limit as i64)
+                .fetch_all(self.pool.as_ref())
+                .await
+                .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))
+            }
+            None => {
+                sqlx::query_as::<_, NoteRow>(
+                    "SELECT id, owner, server_id, subject, message_class, body, categories, last_modified_date, updated_at \
+                     FROM note_map WHERE owner = ?1 ORDER BY server_id ASC LIMIT ?2",
+                )
+                .bind(owner)
+                .bind(limit as i64)
+                .fetch_all(self.pool.as_ref())
+                .await
+                .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))
+            }
+        }
+    }
+
+    /// Change-journal rows for one gateway-local content class
+    /// (`resource_href = 'task'` or `'note'`) with `id > since`, in journal
+    /// id ASC order — the resumable delta source for Tasks/Notes Sync
+    /// (MS-ASCMD §2.2.3.199). Rows above the owner's minimum watermark are
+    /// never pruned, so resuming from a stored `seq:<id>` token cannot miss
+    /// anything.
+    pub async fn list_local_content_changes_since_seq(
+        &self,
+        owner: &str,
+        resource_href: &str,
+        since: i64,
+    ) -> Result<Vec<JournalRow>> {
+        sqlx::query_as::<_, JournalRow>(
+            "SELECT id, server_id, op, resource_href FROM change_journal \
+             WHERE owner = ?1 AND id > ?2 AND resource_href = ?3 ORDER BY id ASC",
+        )
+        .bind(owner)
+        .bind(since)
+        .bind(resource_href)
         .fetch_all(self.pool.as_ref())
         .await
         .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))
@@ -2328,6 +2639,170 @@ mod tests {
             .expect("watermark");
         assert_eq!(storage.prune_change_journal(owner).await.expect("prune"), 2);
         assert_eq!(journal_len(&storage, owner).await, 2);
+    }
+
+    #[tokio::test]
+    async fn local_sync_cursor_roundtrips_base_seq() {
+        // Continuation windows read the journal base captured when the
+        // initial sync started, so the cursor must persist and return it.
+        let storage = mem_storage().await;
+        let owner = "cursor-base@example.com";
+        let coll = "7::dev";
+        assert!(
+            storage
+                .get_local_sync_cursor(owner, coll)
+                .await
+                .expect("cursor read")
+                .is_none()
+        );
+        storage
+            .set_local_sync_cursor(owner, coll, "task-003", 42)
+            .await
+            .expect("cursor write");
+        assert_eq!(
+            storage
+                .get_local_sync_cursor(owner, coll)
+                .await
+                .expect("cursor read"),
+            Some(("task-003".to_string(), 42))
+        );
+        // Re-pointing the keyset cursor keeps updating base_seq atomically.
+        storage
+            .set_local_sync_cursor(owner, coll, "task-007", 42)
+            .await
+            .expect("cursor update");
+        assert_eq!(
+            storage
+                .get_local_sync_cursor(owner, coll)
+                .await
+                .expect("cursor read"),
+            Some(("task-007".to_string(), 42))
+        );
+        storage
+            .clear_local_sync_cursor(owner, coll)
+            .await
+            .expect("cursor clear");
+        assert!(
+            storage
+                .get_local_sync_cursor(owner, coll)
+                .await
+                .expect("cursor read")
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn list_tasks_after_honors_limit_for_windowed_fetch() {
+        // The continuation window asks for window + 1 rows to detect
+        // <MoreAvailable/>; the storage layer must honor the bound instead of
+        // loading the whole remaining set.
+        let storage = mem_storage().await;
+        let owner = "keyset-limit@example.com";
+        for i in 0..5 {
+            storage
+                .upsert_task(
+                    owner,
+                    &format!("task-{i:03}"),
+                    &TaskFields {
+                        subject: Some(&format!("Task {i}")),
+                        ..Default::default()
+                    },
+                )
+                .await
+                .expect("seed task");
+        }
+
+        let from_start = storage
+            .list_tasks_after(owner, None, 3)
+            .await
+            .expect("keyset query");
+        assert_eq!(from_start.len(), 3);
+        assert_eq!(from_start[0].server_id, "task-000");
+        assert_eq!(from_start[2].server_id, "task-002");
+
+        let resumed = storage
+            .list_tasks_after(owner, Some("task-002"), 3)
+            .await
+            .expect("keyset query");
+        assert_eq!(resumed.len(), 2, "only the remaining rows exist");
+        assert_eq!(resumed[0].server_id, "task-003");
+
+        let exact = storage
+            .list_tasks_after(owner, None, 5)
+            .await
+            .expect("keyset query");
+        assert_eq!(exact.len(), 5, "a limit past the set size returns all rows");
+
+        let oversized = storage
+            .list_tasks_after(owner, None, 10)
+            .await
+            .expect("keyset query");
+        assert_eq!(oversized.len(), 5);
+    }
+
+    #[tokio::test]
+    async fn init_schema_migrates_pre_base_seq_cursors() {
+        // Databases created before the base_seq column carried windowed
+        // initial-sync cursors without the journal base; opening them must
+        // add the column (defaulting legacy rows to 0) and keep them usable.
+        let dir = std::env::temp_dir().join(format!(
+            "gateway-storage-cursor-migrate-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let db = dir.join("gateway.db");
+        let url = format!("sqlite://{}?mode=rwc", db.display());
+
+        // Pre-create local_sync_cursor in its pre-migration shape.
+        {
+            let pool = sqlx::SqlitePool::connect(&url).await.expect("raw pool");
+            sqlx::query(
+                "CREATE TABLE local_sync_cursor (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    owner TEXT NOT NULL,
+                    collection_id TEXT NOT NULL,
+                    last_key TEXT NOT NULL,
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(owner, collection_id)
+                )",
+            )
+            .execute(&pool)
+            .await
+            .expect("legacy cursor table");
+            sqlx::query(
+                "INSERT INTO local_sync_cursor (owner, collection_id, last_key) VALUES ('o', '7::dev', 'task-042')",
+            )
+            .execute(&pool)
+            .await
+            .expect("legacy cursor row");
+            pool.close().await;
+        }
+
+        let storage = Storage::new(&url).await.expect("open db");
+        storage.init_schema().await.expect("schema init migrates");
+        // Running init twice must be safe (column now present).
+        storage.init_schema().await.expect("re-init idempotent");
+        assert_eq!(
+            storage
+                .get_local_sync_cursor("o", "7::dev")
+                .await
+                .expect("cursor after migration"),
+            Some(("task-042".to_string(), 0)),
+            "legacy cursor rows survive with the base_seq default"
+        );
+        // The migrated cursor stays fully functional.
+        storage
+            .set_local_sync_cursor("o", "7::dev", "task-050", 9)
+            .await
+            .expect("cursor update after migration");
+        assert_eq!(
+            storage
+                .get_local_sync_cursor("o", "7::dev")
+                .await
+                .expect("cursor read"),
+            Some(("task-050".to_string(), 9))
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]

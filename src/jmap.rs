@@ -35,6 +35,11 @@ use std::sync::Arc;
 use std::time::Instant;
 use tracing::{debug, trace, warn};
 
+/// Default `maxChanges` for `Email/changes` calls (RFC 8621 §4.4) when a
+/// caller does not request a specific bound. Matches the historical page
+/// size used across the gateway's JMAP callers.
+pub const DEFAULT_EMAIL_CHANGES_MAX: u32 = 500;
+
 /// Helper: deserialize a field that may be either a single object, an array, or null.
 /// This accommodates servers that sometimes return a single object instead of an array
 /// for address fields (from, to, cc, bcc, replyTo). Returns `None` for null, `Some(vec)` otherwise.
@@ -1487,12 +1492,21 @@ impl JmapClient {
     /// Sync email changes since a given state token.
     ///
     /// Maps to `Email/changes` (RFC 8621 §4.4).
+    ///
+    /// `max_changes` bounds the server's `maxChanges` property so callers
+    /// that paginate (the EAS Sync path, which must obey the client's
+    /// `WindowSize`) get bounded batches; `None` keeps the historical
+    /// default of 500. The result's `has_more_changes` reflects the JMAP
+    /// `hasMoreChanges` property: when true, more changes exist beyond
+    /// `new_state` and the caller can chain another call with
+    /// `sinceState = new_state` until it drains.
     pub async fn sync_email_changes(
         &self,
         account_id: &str,
         old_state: &str,
         username: &str,
         password: &SecretString,
+        max_changes: Option<u32>,
     ) -> Result<EmailChangesResult> {
         let session = self.get_session(username, password).await?;
         let api_url = &session.api_url;
@@ -1502,7 +1516,7 @@ impl JmapClient {
             json!({
                 "accountId": account_id,
                 "sinceState": old_state,
-                "maxChanges": 500,
+                "maxChanges": max_changes.unwrap_or(crate::jmap::DEFAULT_EMAIL_CHANGES_MAX),
             }),
             "c0",
         )];

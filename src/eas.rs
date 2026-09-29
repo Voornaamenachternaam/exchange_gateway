@@ -55,9 +55,6 @@ const MAX_PING_DEVICES_PER_OWNER: usize = 64;
 /// Device ids are client-controlled strings; bound their contribution to the
 /// cache key so a pathological client cannot blow up entry memory.
 const MAX_PING_DEVICE_ID_LEN: usize = 64;
-/// Maximum number of emails to fetch in a single JMAP Email/query for EAS initial sync.
-/// Matches sync::DEFAULT_WINDOW_SIZE; keeps requests fast and memory-bounded.
-const EMAIL_SYNC_PAGE_SIZE: u64 = 100;
 
 type PingCache = LruCache<String, PingCacheEntry>;
 
@@ -694,6 +691,63 @@ fn extract_all_tag_text(xml: &str, tag: &[u8]) -> Vec<String> {
 /// will not overwrite the collection's Class). It also handles CDATA
 /// sections in the same way as text events, so field values wrapped in CDATA
 /// are not silently lost.
+/// Parse the global EAS Sync `WindowSize` — the `WindowSize` that is a
+/// *direct child* of the `Sync` root element (MS-ASCMD §2.2.3.199), distinct
+/// from the per-collection `WindowSize` nested inside `<Collection>`.
+///
+/// Spec interpretation of the value: 0 and values above 512 are treated as
+/// 512. Returns `None` when the request carries no global WindowSize.
+///
+/// Depth-1 tracking is required because a naive "first `<WindowSize>` in the
+/// document" scan would wrongly capture a collection-level element in
+/// multi-collection requests.
+fn parse_global_window_size(xml: &str) -> Option<usize> {
+    let mut reader = Reader::from_str(xml);
+    reader.config_mut().trim_text(true);
+    let mut buf = Vec::new();
+    // 0 = at/above the root, 1 = direct child of the root element.
+    let mut depth: usize = 0;
+    let mut capture = false;
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(e)) => {
+                let is_target = depth == 1 && e.name().local_name().as_ref() == "WindowSize";
+                if is_target {
+                    capture = true;
+                }
+                depth += 1;
+            }
+            Ok(Event::End(_)) => {
+                depth = depth.saturating_sub(1);
+                if capture && depth == 1 {
+                    // Leaving the target element without having seen text:
+                    // an empty <WindowSize/> — treat as absent.
+                    capture = false;
+                }
+            }
+            Ok(Event::Text(t)) if capture => {
+                let text = t.to_string();
+                if let Ok(v) = text.trim().parse::<usize>() {
+                    return Some(if v == 0 || v > 512 { 512 } else { v });
+                }
+                capture = false;
+            }
+            Ok(Event::CData(c)) if capture => {
+                let text = c.to_string();
+                if let Ok(v) = text.trim().parse::<usize>() {
+                    return Some(if v == 0 || v > 512 { 512 } else { v });
+                }
+                capture = false;
+            }
+            Ok(Event::Eof) => break,
+            Err(_) => break,
+            _ => {}
+        }
+        buf.clear();
+    }
+    None
+}
+
 fn parse_sync_collections(xml: &str) -> Vec<SyncCollection> {
     let mut reader = Reader::from_str(xml);
     reader.config_mut().trim_text(true);
@@ -1033,17 +1087,13 @@ fn parse_device_information(xml: &str) -> DeviceInfo {
 }
 
 fn parse_request(query: &HashMap<String, String>, xml: &str, headers: &HeaderMap) -> EasRequest {
+    // MS-ASCMD §2.2.3.199: the server interprets the value 0 (zero) and
+    // values above 512 as 512. This path only feeds the legacy
+    // single-collection fallback, where the request's WindowSize is the
+    // collection's own window.
     let window_size = extract_first_tag_text(xml, b"WindowSize")
         .and_then(|v| v.parse::<usize>().ok())
-        .map(|v| {
-            if v == 0 {
-                100
-            } else if v > 512 {
-                512
-            } else {
-                v
-            }
-        });
+        .map(|v| if v == 0 || v > 512 { 512 } else { v });
     let get_changes = extract_first_tag_text(xml, b"GetChanges")
         .map(|v| v.trim() != "0")
         .unwrap_or(true);
@@ -1625,7 +1675,7 @@ async fn probe_email_folder_changes(
             continue;
         };
         match jmap
-            .sync_email_changes(account_id, &since, owner, password)
+            .sync_email_changes(account_id, &since, owner, password, None)
             .await
         {
             Ok(changes) => {
@@ -3660,6 +3710,10 @@ struct SyncCtx<'a> {
     as_wbxml: bool,
     request_id: &'a str,
     device_id: &'a str,
+    /// Global Sync `WindowSize` (direct child of the `Sync` element,
+    /// MS-ASCMD §2.2.3.199), already clamped per spec (0 and >512 → 512).
+    /// `None` = not sent by the client.
+    global_window_size: Option<usize>,
 }
 
 /// Handle a multi-collection EAS Sync command.
@@ -3677,13 +3731,36 @@ async fn handle_sync_collections(ctx: &SyncCtx<'_>, collections: &[SyncCollectio
         as_wbxml,
         request_id,
         device_id,
+        global_window_size,
     } = *ctx;
     let mut collection_responses: Vec<String> = Vec::new();
 
+    // Remaining global WindowSize budget (MS-ASCMD §2.2.3.199: the WindowSize
+    // child of the Sync element "impose[s] a global limit on the number of
+    // changes that are returned by the server"). `None` = the client sent no
+    // global WindowSize, so only per-collection windows apply.
+    let mut remaining_global: Option<usize> = global_window_size;
+
     for coll in collections {
+        // "The server will stop processing after the global WindowSize has
+        // been filled and simply not process the remaining collections. Any
+        // server-side changes that are pending in the unprocessed collections
+        // are picked up in the next synchronization." (MS-ASCMD §2.2.3.199)
+        if remaining_global == Some(0) {
+            tracing::debug!(
+                request_id = %request_id,
+                "Global WindowSize exhausted; skipping remaining Sync collections"
+            );
+            continue;
+        }
+
         let collection_id = coll.collection_id.as_deref().unwrap_or("1");
         let state_collection_id = scoped_collection_id(collection_id, device_id);
         let incoming_key = coll.sync_key.as_deref().unwrap_or("0");
+        // This collection's effective response window: the per-collection
+        // WindowSize (spec clamps 0 and >512 to 512; absent = 100) capped by
+        // the remaining global budget.
+        let effective_collection_window = effective_sync_window(coll.window_size, remaining_global);
         // Per MS-ASCMD §2.2.3.30, <Class> is optional in Sync requests.
         // When absent, infer from CollectionId using the central EAS email
         // folder mapping; ID "1" is Calendar. Previously, defaulting to "Calendar" caused
@@ -3743,6 +3820,7 @@ async fn handle_sync_collections(ctx: &SyncCtx<'_>, collections: &[SyncCollectio
                     collection_id,
                     &state_collection_id,
                     incoming_key,
+                    effective_collection_window,
                 )
                 .await
                 {
@@ -3896,7 +3974,7 @@ async fn handle_sync_collections(ctx: &SyncCtx<'_>, collections: &[SyncCollectio
             // otherwise, we need to call perform_sync
             if result_xml.is_empty() {
                 let opts = SyncOptions {
-                    window_size: coll.window_size.unwrap_or(100),
+                    window_size: effective_collection_window,
                     get_changes: coll.get_changes,
                     filter_start: coll
                         .filter_type
@@ -3931,7 +4009,10 @@ async fn handle_sync_collections(ctx: &SyncCtx<'_>, collections: &[SyncCollectio
                 result_xml
             }
         } else if is_contacts {
-            // Contacts sync via CardDAV with client mutation support
+            // Contacts sync via CardDAV with client mutation support.
+            // Yields this collection's XML (rather than returning early) so
+            // multi-collection Sync responses keep every collection and the
+            // global WindowSize budget can be honored across them.
             let mut contact_mutation_responses = String::new();
 
             // Setup permission enforcement for contacts
@@ -3954,6 +4035,10 @@ async fn handle_sync_collections(ctx: &SyncCtx<'_>, collections: &[SyncCollectio
                 || coll_xml_ref.contains(":Add")
                 || coll_xml_ref.contains(":Change")
                 || coll_xml_ref.contains(":Delete");
+
+            // Error short-circuit: set once, checked before the server-side
+            // change delivery below.
+            let mut error_xml: Option<String> = None;
 
             // Apply client mutations if present
             if has_mutations {
@@ -3989,103 +4074,114 @@ async fn handle_sync_collections(ctx: &SyncCtx<'_>, collections: &[SyncCollectio
 
                 if !ok {
                     // Permission denied for mutations
-                    let xml = format!(
+                    error_xml = Some(format!(
                         "<Collection><Class>Contacts</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>4</Status></Collection>",
                         xml_escape(incoming_key),
                         xml_escape(collection_id)
-                    );
-                    return xml_or_wbxml_response(wbxml, as_wbxml, &xml, request_id);
-                }
-
-                // Apply the client mutations
-                match crate::contacts::apply_contacts_mutations(
-                    state,
-                    username,
-                    password.expose_secret(),
-                    coll_xml_ref,
-                )
-                .await
-                {
-                    Ok(results) => {
-                        contact_mutation_responses =
-                            crate::contacts::render_contacts_mutation_responses(&results);
-                    }
-                    Err(e) => {
-                        tracing::error!(request_id = %request_id, error = %e, "Failed to apply contacts mutations");
-                        let xml = format!(
-                            "<Collection><Class>Contacts</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>6</Status></Collection>",
-                            xml_escape(incoming_key),
-                            xml_escape(collection_id)
-                        );
-                        return xml_or_wbxml_response(wbxml, as_wbxml, &xml, request_id);
+                    ));
+                } else {
+                    // Apply the client mutations
+                    match crate::contacts::apply_contacts_mutations(
+                        state,
+                        username,
+                        password.expose_secret(),
+                        coll_xml_ref,
+                    )
+                    .await
+                    {
+                        Ok(results) => {
+                            contact_mutation_responses =
+                                crate::contacts::render_contacts_mutation_responses(&results);
+                        }
+                        Err(e) => {
+                            tracing::error!(request_id = %request_id, error = %e, "Failed to apply contacts mutations");
+                            error_xml = Some(format!(
+                                "<Collection><Class>Contacts</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>6</Status></Collection>",
+                                xml_escape(incoming_key),
+                                xml_escape(collection_id)
+                            ));
+                        }
                     }
                 }
             }
 
-            // Perform server-side sync to fetch changes (after applying client mutations)
-            match crate::contacts::sync_contacts(
-                state,
-                username,
-                password.expose_secret(),
-                Some(incoming_key),
-                device_id,
-            )
-            .await
-            {
-                Ok(server_changes_xml) => {
-                    // Fetch the new sync key stored by sync_contacts
-                    let new_sync_key = match state
-                        .storage
-                        .get_sync_key(username, &state_collection_id)
-                        .await
+            match error_xml {
+                Some(xml) => xml,
+                None => {
+                    // Perform server-side sync to fetch changes (after applying
+                    // client mutations), windowed per MS-ASCMD §2.2.3.199.
+                    match crate::contacts::sync_contacts(
+                        state,
+                        username,
+                        password.expose_secret(),
+                        Some(incoming_key),
+                        device_id,
+                        Some(effective_collection_window),
+                    )
+                    .await
                     {
-                        Ok(Some((key, _))) => key,
-                        Ok(None) => Uuid::new_v4().simple().to_string(),
-                        Err(_) => {
-                            tracing::warn!(request_id = %request_id, collection_id = %collection_id, "Failed to get sync key for contacts, generating fresh");
-                            Uuid::new_v4().simple().to_string()
+                        Ok(result) => {
+                            // Fetch the new sync key stored by sync_contacts
+                            let new_sync_key = match state
+                                .storage
+                                .get_sync_key(username, &state_collection_id)
+                                .await
+                            {
+                                Ok(Some((key, _))) => key,
+                                Ok(None) => Uuid::new_v4().simple().to_string(),
+                                Err(_) => {
+                                    tracing::warn!(request_id = %request_id, collection_id = %collection_id, "Failed to get sync key for contacts, generating fresh");
+                                    Uuid::new_v4().simple().to_string()
+                                }
+                            };
+                            let more_tag = if result.more_available {
+                                "<MoreAvailable/>"
+                            } else {
+                                ""
+                            };
+                            format!(
+                                "<Collection><Class>Contacts</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>1</Status>{}{}<Commands>{}</Commands></Collection>",
+                                xml_escape(&new_sync_key),
+                                xml_escape(collection_id),
+                                more_tag,
+                                contact_mutation_responses,
+                                result.commands_xml
+                            )
                         }
-                    };
-                    let xml = format!(
-                        "<Collection><Class>Contacts</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>1</Status>{}{}</Collection>",
-                        xml_escape(&new_sync_key),
-                        xml_escape(collection_id),
-                        contact_mutation_responses,
-                        server_changes_xml
-                    );
-                    return xml_or_wbxml_response(wbxml, as_wbxml, &xml, request_id);
-                }
-                Err(e) => {
-                    tracing::error!(error = %e, "Contacts sync failed");
-                    let xml = format!(
-                        "<Collection><Class>Contacts</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>6</Status></Collection>",
-                        xml_escape(incoming_key),
-                        xml_escape(collection_id)
-                    );
-                    return xml_or_wbxml_response(wbxml, as_wbxml, &xml, request_id);
+                        Err(e) => {
+                            tracing::error!(error = %e, "Contacts sync failed");
+                            format!(
+                                "<Collection><Class>Contacts</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>6</Status></Collection>",
+                                xml_escape(incoming_key),
+                                xml_escape(collection_id)
+                            )
+                        }
+                    }
                 }
             }
         } else if is_tasks {
-            handle_local_content_sync(
+            handle_local_content_sync(&LocalContentSyncCtx {
                 state,
                 username,
                 collection_id,
-                &state_collection_id,
+                state_collection_id: &state_collection_id,
                 incoming_key,
                 coll,
-                LocalContentKind::Tasks,
-            )
+                kind: LocalContentKind::Tasks,
+                global_budget: remaining_global,
+            })
             .await
         } else if is_notes {
-            handle_local_content_sync(
+            handle_local_content_sync(&LocalContentSyncCtx {
                 state,
                 username,
                 collection_id,
-                &state_collection_id,
+                state_collection_id: &state_collection_id,
                 incoming_key,
                 coll,
-                LocalContentKind::Notes,
-            )
+                kind: LocalContentKind::Notes,
+                global_budget: remaining_global,
+            })
             .await
         } else {
             // Truly unsupported collection type.
@@ -4103,7 +4199,13 @@ async fn handle_sync_collections(ctx: &SyncCtx<'_>, collections: &[SyncCollectio
             )
         };
 
-        collection_responses.push(coll_xml);
+        collection_responses.push(coll_xml.clone());
+
+        // Global WindowSize accounting: subtract this collection's delivered
+        // commands from the remaining budget (MS-ASCMD §2.2.3.199).
+        if let Some(remaining) = remaining_global {
+            remaining_global = Some(remaining.saturating_sub(count_sync_commands(&coll_xml)));
+        }
     }
 
     // Build multi-collection response
@@ -4145,6 +4247,29 @@ impl LocalContentKind {
             LocalContentKind::Notes => "Notes",
         }
     }
+
+    /// Change-journal `resource_href` discriminator for this content class.
+    fn resource_href(self) -> &'static str {
+        match self {
+            LocalContentKind::Tasks => "task",
+            LocalContentKind::Notes => "note",
+        }
+    }
+}
+
+/// Request-scoped context for one gateway-local Tasks/Notes Sync collection,
+/// mirroring `SyncCtx` so the handler stays under clippy's argument-count
+/// threshold.
+#[derive(Clone, Copy)]
+struct LocalContentSyncCtx<'a> {
+    state: &'a Arc<AppState>,
+    username: &'a str,
+    collection_id: &'a str,
+    state_collection_id: &'a str,
+    incoming_key: &'a str,
+    coll: &'a SyncCollection,
+    kind: LocalContentKind,
+    global_budget: Option<usize>,
 }
 
 /// Handle a Sync collection for the gateway-local Tasks or Notes store.
@@ -4158,17 +4283,18 @@ impl LocalContentKind {
 /// changes without a full resend), server changes are wrapped in `<Commands>`,
 /// and GetChanges/WindowSize are honoured. A malformed command body is reported
 /// as a protocol error (Status 4) rather than silently truncating mutations.
-async fn handle_local_content_sync(
-    state: &Arc<AppState>,
-    username: &str,
-    collection_id: &str,
-    state_collection_id: &str,
-    incoming_key: &str,
-    coll: &SyncCollection,
-    kind: LocalContentKind,
-) -> String {
+async fn handle_local_content_sync(ctx: &LocalContentSyncCtx<'_>) -> String {
+    let LocalContentSyncCtx {
+        state,
+        username,
+        collection_id,
+        state_collection_id,
+        incoming_key,
+        coll,
+        kind,
+        global_budget,
+    } = *ctx;
     let class = kind.class_name();
-
     // Parse and apply client mutations (Add/Change/Delete). A malformed command
     // body is a protocol error (Status 4) rather than silently truncating the set.
     let mut mutation_responses = String::new();
@@ -4281,23 +4407,38 @@ async fn handle_local_content_sync(
 
     let latest_seq = state.storage.get_latest_change_seq().await.unwrap_or(0);
     let new_sync_key = Uuid::new_v4().simple().to_string();
-    let watermark = format!("seq:{}", latest_seq);
-    if let Err(e) = state
-        .storage
-        .set_sync_key(
-            username,
-            state_collection_id,
-            &new_sync_key,
-            Some(&watermark),
-        )
-        .await
-    {
-        tracing::warn!(error = %e, "Failed to set {} sync key", class);
-    }
 
     // GetChanges=0 means the client only wants its mutations acknowledged; the
     // key is still rotated so the next Sync yields any new server changes.
     if !coll.get_changes {
+        // Nothing is delivered, so nothing may be consumed from the journal
+        // either (MS-ASCMD §2.2.3.72): the client still expects every change
+        // on its next GetChanges=1 Sync. Carrying the previous `seq:` token
+        // forward keeps the stored watermark — and the journal pruner, which
+        // floors on these watermarks — from erasing undelivered rows.
+        // With no previous token (a prime acknowledged before any state was
+        // delivered), `seq:0` forces the next Sync to replay the whole
+        // journal, reconstructing the initial state through it.
+        let carried_token = state
+            .storage
+            .get_sync_key(username, state_collection_id)
+            .await
+            .ok()
+            .flatten()
+            .and_then(|(_, token)| token)
+            .unwrap_or_else(|| "seq:0".to_string());
+        if let Err(e) = state
+            .storage
+            .set_sync_key(
+                username,
+                state_collection_id,
+                &new_sync_key,
+                Some(&carried_token),
+            )
+            .await
+        {
+            tracing::warn!(error = %e, "Failed to set {} sync key", class);
+        }
         return format!(
             "<Collection><Class>{}</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>1</Status>{}</Collection>",
             class,
@@ -4307,72 +4448,585 @@ async fn handle_local_content_sync(
         );
     }
 
-    let changes_xml = match match kind {
-        LocalContentKind::Tasks => crate::tasks::sync_tasks(state, username).await,
-        LocalContentKind::Notes => crate::tasks::sync_notes(state, username).await,
-    } {
-        Ok(x) => x,
-        Err(e) => {
-            tracing::error!(
-                collection_id = %collection_id,
-                class = class,
-                error = %e,
-                "{} sync failed",
-                class
-            );
-            return format!(
-                "<Collection><Class>{}</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>6</Status></Collection>",
-                class,
-                xml_escape(incoming_key),
-                xml_escape(collection_id)
-            );
-        }
-    };
+    // ---- Windowed server-change delivery (MS-ASCMD §2.2.3.199) ----------
+    // The effective window is the collection WindowSize clamped by the
+    // remaining global WindowSize budget (§2.2.3.199 "repurposed to also
+    // impose a global limit on the number of changes that are returned").
+    let window = effective_sync_window(coll.window_size, global_budget).max(1);
 
-    let window = coll.window_size.unwrap_or(100).max(1);
-    let limited = limit_add_commands(&changes_xml, window);
-    let commands = if limited.is_empty() {
+    // A windowed initial sync may still be in progress: its keyset cursor
+    // (highest delivered server_id) makes this Sync resume the live set
+    // instead of restarting it.
+    let pending_cursor = state
+        .storage
+        .get_local_sync_cursor(username, state_collection_id)
+        .await
+        .unwrap_or(None);
+
+    let mut commands_xml = String::new();
+    let mut more_available = false;
+    // Consumed journal position: the highest journal id whose change this
+    // response delivers. When the window clips, this is where the next
+    // delta Sync resumes (stored as the `seq:<id>` token) — undelivered
+    // journal rows stay above it and Ping keeps reporting the collection.
+    // Both branches below assign it: the initial flow to its base position,
+    // the delta flow to the highest delivered journal row.
+    let mut consumed_seq: i64;
+
+    if incoming_key == "0" || pending_cursor.is_some() {
+        // Initial sync, or continuation of a windowed initial sync: deliver
+        // the live set in stable server_id ASC order, resuming strictly
+        // after the keyset cursor.
+        //
+        // `base_seq` is the journal head captured when the SyncKey "0"
+        // window STARTED. Continuation windows must keep anchoring to it —
+        // not to the current head — because the keyset continuation only
+        // lists live rows after the cursor: mutations of already-delivered
+        // items recorded while paginating would otherwise fall below the
+        // stored watermark and never be delivered (and the journal pruner
+        // would then erase them for good). The first delta after the cursor
+        // drains re-walks from `base_seq` and delivers exactly those.
+        let (after, base_seq) = if incoming_key == "0" {
+            let _ = state
+                .storage
+                .clear_local_sync_cursor(username, state_collection_id)
+                .await;
+            (None, latest_seq)
+        } else {
+            match pending_cursor.as_ref() {
+                Some((last_key, cursor_base)) => (Some(last_key.as_str()), *cursor_base),
+                None => (None, latest_seq),
+            }
+        };
+        consumed_seq = base_seq;
+
+        // Fetch at most window + 1 rows: the extra row exists only to decide
+        // <MoreAvailable/> (MS-ASCMD §2.2.3.116); rendering stays bounded
+        // to the delivered window instead of the whole remaining set.
+        let fetch_limit = (window as u64) + 1;
+        let more;
+        let last_delivered: Option<String>;
+        match kind {
+            LocalContentKind::Tasks => {
+                let rows = match state
+                    .storage
+                    .list_tasks_after(username, after, fetch_limit)
+                    .await
+                {
+                    Ok(rows) => rows,
+                    Err(e) => {
+                        tracing::error!(class = class, error = %e, "Tasks list failed");
+                        return format!(
+                            "<Collection><Class>{}</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>6</Status></Collection>",
+                            class,
+                            xml_escape(incoming_key),
+                            xml_escape(collection_id)
+                        );
+                    }
+                };
+                more = rows.len() > window;
+                let deliver = &rows[..rows.len().min(window)];
+                last_delivered = deliver.last().map(|r| r.server_id.clone());
+                for row in deliver {
+                    commands_xml.push_str(&crate::tasks::render_eas_task_add(&row.server_id, row));
+                }
+            }
+            LocalContentKind::Notes => {
+                let rows = match state
+                    .storage
+                    .list_notes_after(username, after, fetch_limit)
+                    .await
+                {
+                    Ok(rows) => rows,
+                    Err(e) => {
+                        tracing::error!(class = class, error = %e, "Notes list failed");
+                        return format!(
+                            "<Collection><Class>{}</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>6</Status></Collection>",
+                            class,
+                            xml_escape(incoming_key),
+                            xml_escape(collection_id)
+                        );
+                    }
+                };
+                more = rows.len() > window;
+                let deliver = &rows[..rows.len().min(window)];
+                last_delivered = deliver.last().map(|r| r.server_id.clone());
+                for row in deliver {
+                    commands_xml.push_str(&crate::tasks::render_eas_note_add(&row.server_id, row));
+                }
+            }
+        }
+        if more {
+            // Window clipped with live content remaining: persist the keyset
+            // cursor at the last delivered server_id, together with the
+            // base journal position, and require the client to sync again
+            // (MS-ASCMD §2.2.3.116 MoreAvailable).
+            if let Some(last_key) = last_delivered.as_deref()
+                && let Err(e) = state
+                    .storage
+                    .set_local_sync_cursor(username, state_collection_id, last_key, base_seq)
+                    .await
+            {
+                tracing::warn!(error = %e, "Failed to persist {} sync cursor", class);
+            }
+            more_available = true;
+        } else {
+            // Live set fully delivered: drop the cursor.
+            let _ = state
+                .storage
+                .clear_local_sync_cursor(username, state_collection_id)
+                .await;
+        }
+    } else {
+        // Delta sync: resumable change-journal walk from the stored seq token.
+        let stored = state
+            .storage
+            .get_sync_key(username, state_collection_id)
+            .await;
+        let since = stored
+            .ok()
+            .flatten()
+            .and_then(|(_, token)| token)
+            .and_then(|t| t.strip_prefix("seq:").map(|n| n.to_string()))
+            .and_then(|n| n.parse::<i64>().ok())
+            .unwrap_or(0);
+        let journal_rows = match state
+            .storage
+            .list_local_content_changes_since_seq(username, kind.resource_href(), since)
+            .await
+        {
+            Ok(rows) => rows,
+            Err(e) => {
+                tracing::error!(
+                    collection_id = %collection_id,
+                    class = class,
+                    error = %e,
+                    "{} journal query failed",
+                    class
+                );
+                return format!(
+                    "<Collection><Class>{}</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>6</Status></Collection>",
+                    class,
+                    xml_escape(incoming_key),
+                    xml_escape(collection_id)
+                );
+            }
+        };
+        // Collapse to the last op per server_id, preserving journal order of
+        // the surviving (last) op — the exact resumable delivery sequence.
+        let mut last_op: std::collections::HashMap<String, (i64, String)> =
+            std::collections::HashMap::with_capacity(journal_rows.len());
+        for row in &journal_rows {
+            last_op.insert(row.server_id.clone(), (row.id, row.op.clone()));
+        }
+        let mut ordered: Vec<(String, i64, String)> = last_op
+            .into_iter()
+            .map(|(server_id, (id, op))| (server_id, id, op))
+            .collect();
+        ordered.sort_by_key(|(_, id, _)| *id);
+
+        consumed_seq = since;
+        let mut items_included = 0usize;
+        for (server_id, journal_id, op) in &ordered {
+            if items_included >= window {
+                more_available = true;
+                break;
+            }
+            if op == "delete" {
+                commands_xml.push_str(&format!(
+                    "<Delete><ServerId>{}</ServerId></Delete>",
+                    xml_escape(server_id)
+                ));
+                items_included += 1;
+            } else {
+                let add = match kind {
+                    LocalContentKind::Tasks => {
+                        match state.storage.get_task(username, server_id).await {
+                            Ok(Some(row)) => {
+                                Some(crate::tasks::render_eas_task_add(&row.server_id, &row))
+                            }
+                            _ => None,
+                        }
+                    }
+                    LocalContentKind::Notes => {
+                        match state.storage.get_note(username, server_id).await {
+                            Ok(Some(row)) => {
+                                Some(crate::tasks::render_eas_note_add(&row.server_id, &row))
+                            }
+                            _ => None,
+                        }
+                    }
+                };
+                if let Some(add) = add {
+                    commands_xml.push_str(&add);
+                    // The window counts delivered items (MS-ASCMD §2.2.3.199);
+                    // a journal entry whose row vanished before delivery emits
+                    // nothing and consumes no window slot.
+                    items_included += 1;
+                }
+            }
+            consumed_seq = (*journal_id).max(consumed_seq);
+        }
+    }
+
+    // Persist the new key with the consumed journal position. On a clip this
+    // token is the exact resume point (MS-ASCMD §2.2.3.199: "the client MUST
+    // synchronize again to continue getting items from the server").
+    if let Err(e) = state
+        .storage
+        .set_sync_key(
+            username,
+            state_collection_id,
+            &new_sync_key,
+            Some(&format!("seq:{}", consumed_seq)),
+        )
+        .await
+    {
+        tracing::warn!(error = %e, "Failed to set {} sync key", class);
+    }
+    if let Err(e) = state
+        .storage
+        .set_journal_watermark(username, state_collection_id, consumed_seq)
+        .await
+    {
+        tracing::warn!(error = %e, "Failed to set {} journal watermark", class);
+    }
+
+    let more_tag = if more_available {
+        "<MoreAvailable/>"
+    } else {
+        ""
+    };
+    let commands = if commands_xml.is_empty() {
         "<Commands></Commands>".to_string()
     } else {
-        format!("<Commands>{}</Commands>", limited)
+        format!("<Commands>{}</Commands>", commands_xml)
     };
 
     format!(
-        "<Collection><Class>{}</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>1</Status>{}{}</Collection>",
+        "<Collection><Class>{}</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>1</Status>{}{}{}</Collection>",
         class,
         xml_escape(&new_sync_key),
         xml_escape(collection_id),
+        more_tag,
         mutation_responses,
         commands
     )
 }
 
-/// Keep at most `limit` `<Add>...</Add>` commands from a concatenated list of EAS
-/// server change elements. The gateway-local Tasks/Notes stores only emit `<Add>`
-/// elements, so this simple delimiter walk is sufficient.
-fn limit_add_commands(changes_xml: &str, limit: usize) -> String {
-    let mut out = String::with_capacity(changes_xml.len());
-    let mut rest = changes_xml;
-    let mut count = 0;
-    while count < limit {
-        let Some(start) = rest.find("<Add>") else {
-            break;
-        };
-        let Some(end_off) = rest[start..].find("</Add>") else {
-            break;
-        };
-        let end = start + end_off + "</Add>".len();
-        out.push_str(&rest[..end]);
-        rest = &rest[end..];
-        count += 1;
+/// Effective EAS Sync `WindowSize` for a collection (MS-ASCMD §2.2.3.199).
+///
+/// The client value is interpreted exactly per spec: values of 0 and above
+/// 512 are treated as 512, and an absent value behaves as 100. When a
+/// caller also passes a remaining global budget (the `WindowSize` child of
+/// the `Sync` element — §2.2.3.199 "repurposed to also impose a global limit
+/// on the number of changes that are returned"), the per-collection window
+/// is capped by that budget so the whole response never exceeds the client's
+/// global window.
+fn effective_sync_window(requested: Option<usize>, global_budget: Option<usize>) -> usize {
+    let per_collection = match requested {
+        None => 100,
+        Some(0) => 512,
+        Some(v) => v.min(512),
+    };
+    match global_budget {
+        Some(0) => 0,
+        Some(b) => per_collection.min(b),
+        None => per_collection,
     }
-    out
+}
+
+/// Count the `<Add>`/`<Change>`/`<Delete>` commands a rendered EAS Sync
+/// collection response contains, for global WindowSize budget accounting.
+///
+/// Per MS-ASCMD §2.2.3.199 the WindowSize bounds "a maximum number of
+/// changed items in a collection" that the server *returns* — the
+/// server→client commands in `<Commands>`. The `<Responses>` echoes of the
+/// client's own mutations (§2.2.3.154) are acknowledgments, not changed
+/// items, and must not consume the budget. Only the `<Commands>` section is
+/// counted. The gateway generates these responses itself, so marker
+/// counting inside that section is exact.
+fn count_sync_commands(collection_xml: &str) -> usize {
+    let Some(start) = collection_xml.find("<Commands>") else {
+        return 0;
+    };
+    let rest = &collection_xml[start..];
+    let section = rest.find("</Commands>").map_or(rest, |i| &rest[..i]);
+    section.matches("<Add>").count()
+        + section.matches("<Change>").count()
+        + section.matches("<Delete>").count()
+}
+
+/// One queued delta operation for the email overflow continuation.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+struct PendingEmailOp {
+    /// `"add"`, `"change"` or `"delete"`.
+    op: String,
+    /// JMAP Email id.
+    id: String,
+}
+
+impl PendingEmailOp {
+    fn add(id: String) -> Self {
+        PendingEmailOp {
+            op: "add".to_string(),
+            id,
+        }
+    }
+
+    fn change(id: String) -> Self {
+        PendingEmailOp {
+            op: "change".to_string(),
+            id,
+        }
+    }
+
+    fn delete(id: String) -> Self {
+        PendingEmailOp {
+            op: "delete".to_string(),
+            id,
+        }
+    }
+
+    fn is_delete(&self) -> bool {
+        self.op == "delete"
+    }
+}
+
+/// Collapse the accumulated operation list to one operation per email id.
+///
+/// JMAP guarantees the created/updated/destroyed lists are disjoint within a
+/// single `Email/changes` response (RFC 8621 §4.4.5), but across a chained
+/// `hasMoreChanges` sequence the same id can recur: created in batch 1 and
+/// destroyed in batch 2 would otherwise queue an add (skipped, the message
+/// is gone) followed by a `<Delete>` for a ServerId the client never
+/// received. Repeated updates would fetch and re-render the same message
+/// several times. Rules:
+///
+/// * an id first seen as `add` (it did not exist at the diff base) and last
+///   seen as `delete` never existed for the client: emit nothing.
+/// * otherwise the LAST operation wins — except that an id first seen as
+///   `add` stays an `add` even after later changes, because the client never
+///   received that ServerId and a `<Change>` for it would be a client-side
+///   error. Repeated changes collapse to one, and change-then-delete becomes
+///   a single delete.
+///
+/// Each surviving id keeps the position of its FIRST occurrence so the
+/// window consumes the earliest possible slots.
+fn collapse_email_ops(ops: Vec<PendingEmailOp>) -> Vec<PendingEmailOp> {
+    // id -> (index of first occurrence, first op, last op)
+    let mut seen: std::collections::HashMap<String, (usize, String, PendingEmailOp)> =
+        std::collections::HashMap::with_capacity(ops.len());
+    for (idx, op) in ops.into_iter().enumerate() {
+        match seen.get_mut(&op.id) {
+            Some((_, _, last)) => *last = op,
+            None => {
+                let first_op = op.op.clone();
+                seen.insert(op.id.clone(), (idx, first_op, op));
+            }
+        }
+    }
+    let mut collapsed: Vec<(usize, PendingEmailOp)> = seen
+        .into_values()
+        .filter_map(|(idx, first_op, last)| {
+            if first_op == "add" && last.op == "delete" {
+                // Created and destroyed within the diff window: a no-op for
+                // the client, and a delete would reference a ServerId it
+                // never received.
+                return None;
+            }
+            let op = if first_op == "add" {
+                "add".to_string()
+            } else {
+                last.op
+            };
+            Some((idx, PendingEmailOp { op, id: last.id }))
+        })
+        .collect();
+    collapsed.sort_by_key(|(idx, _)| *idx);
+    collapsed.into_iter().map(|(_, op)| op).collect()
+}
+
+/// Upper bound on `Email/changes` accumulation while draining
+/// `hasMoreChanges` chains, so a pathological backend cannot loop forever.
+/// Anything past this bound stays behind `base_state` and is picked up by the
+/// next Sync's diff, so nothing is lost.
+const MAX_EMAIL_CHANGE_ACCUMULATION: usize = 5000;
+
+/// Accumulate every email change between `old_state` and the backend's
+/// current state by chaining `Email/changes` while it reports
+/// `hasMoreChanges` (RFC 8621 §4.4).
+///
+/// Returns the ordered operation list plus the state token that follows the
+/// last delivered change (`base_state`). Callers that do not advance their
+/// stored token past `base_state` never lose or duplicate a change.
+///
+/// Operations are collapsed to one per id before returning: chained batches
+/// can repeat an id (see `collapse_email_ops`).
+async fn accumulate_email_changes(
+    jmap: &Arc<JmapClient>,
+    account_id: &str,
+    old_state: &str,
+    username: &str,
+    password: &SecretString,
+) -> anyhow::Result<(Vec<PendingEmailOp>, String)> {
+    let mut ops: Vec<PendingEmailOp> = Vec::new();
+    let mut since = old_state.to_string();
+    loop {
+        let batch = jmap
+            .sync_email_changes(account_id, &since, username, password, None)
+            .await?;
+        for id in batch.created {
+            ops.push(PendingEmailOp::add(id));
+        }
+        for id in batch.updated {
+            ops.push(PendingEmailOp::change(id));
+        }
+        for id in batch.destroyed {
+            ops.push(PendingEmailOp::delete(id));
+        }
+        since = batch.new_state;
+        if !batch.has_more_changes || ops.len() >= MAX_EMAIL_CHANGE_ACCUMULATION {
+            break;
+        }
+    }
+    Ok((collapse_email_ops(ops), since))
+}
+
+/// Render the EAS `<ApplicationData>` payload for a queued email op.
+///
+/// Fetches the current JMAP Email and renders the same `<Add>`/`<Change>`
+/// body the direct delta path produces. Destroyed emails need no fetch.
+async fn render_pending_email_op(
+    jmap: &JmapClient,
+    account_id: &str,
+    username: &str,
+    password: &SecretString,
+    collection_id: &str,
+    op: &PendingEmailOp,
+) -> String {
+    if op.is_delete() {
+        let server_id = crate::email::email_server_id_from_jmap_id(&op.id);
+        return format!(
+            "<Delete><ServerId>{}</ServerId></Delete>",
+            xml_escape(&server_id)
+        );
+    }
+    let emails = match jmap
+        .get_emails(
+            account_id,
+            std::slice::from_ref(&op.id),
+            None,
+            username,
+            password,
+        )
+        .await
+    {
+        Ok(emails) => emails,
+        Err(e) => {
+            tracing::warn!(
+                target: "eas",
+                error = %e,
+                email_id = %op.id,
+                "Failed to fetch queued email for EAS sync continuation"
+            );
+            Vec::new()
+        }
+    };
+    let Some(email) = emails.into_iter().next() else {
+        // The message vanished between the change report and this fetch
+        // (e.g. moved/destroyed). Emitting nothing loses nothing: a later
+        // diff reports the destruction, and re-adding a vanished id is a
+        // client-side error. Skip silently — same policy as the direct
+        // delta path's created/updated filter.
+        return String::new();
+    };
+    let jmap_id = email.id.as_deref().unwrap_or_default();
+    let server_id = crate::email::email_server_id_from_jmap_id(jmap_id);
+    let app_data =
+        crate::email::render_jmap_email_as_eas_application_data(&email, &server_id, collection_id);
+    if op.op == "add" {
+        format!(
+            "<Add><ServerId>{}</ServerId><ApplicationData>{}</ApplicationData></Add>",
+            xml_escape(&server_id),
+            app_data
+        )
+    } else {
+        format!(
+            "<Change><ServerId>{}</ServerId><ApplicationData>{}</ApplicationData></Change>",
+            xml_escape(&server_id),
+            app_data
+        )
+    }
+}
+
+/// How an email-collection Sync request must be served.
+///
+/// The decision depends on the incoming SyncKey *and* the persisted
+/// initial-sync cursor: a windowed initial sync that clipped returned
+/// `<MoreAvailable/>` with a new SyncKey, and the client's follow-up Sync
+/// carries that non-zero key — so routing on the key alone would wrongly
+/// send a still-draining initial sync to the delta path and permanently
+/// truncate the mailbox. Cursor presence (not the key value) marks a
+/// continuation.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum EmailSyncRoute {
+    /// SyncKey "0": full prime of the collection from position 0. Any state
+    /// left by a previous, abandoned sync must be discarded first.
+    Initial,
+    /// Non-zero key with a persisted initial-sync cursor: resume the
+    /// windowed initial sync from the cursor.
+    InitialContinuation,
+    /// Non-zero key with no cursor: diff changes from the stored state token
+    /// (draining any persisted overflow queue first).
+    Delta,
+}
+
+fn route_email_sync(incoming_sync_key: &str, cursor_present: bool) -> EmailSyncRoute {
+    if incoming_sync_key == "0" {
+        EmailSyncRoute::Initial
+    } else if cursor_present {
+        EmailSyncRoute::InitialContinuation
+    } else {
+        EmailSyncRoute::Delta
+    }
 }
 
 /// Handle EAS Email Sync class by routing to JMAP.
 ///
 /// Per MS-ASEMAIL, the Email sync class synchronizes email messages.
 /// The gateway translates JMAP Email/get and Email/changes to EAS Sync responses.
+///
+/// ## WindowSize / MoreAvailable (MS-ASCMD §2.2.3.199, §2.2.3.116)
+///
+/// `window` is the effective response window already clamped by the caller
+/// (`effective_sync_window`: per-collection WindowSize vs. the global
+/// WindowSize budget). Both the initial sync and the delta path honor it and
+/// emit `<MoreAvailable/>` when the mailbox/change set does not fit, with a
+/// persisted continuation so the client's follow-up Sync (spec: "the client
+/// MUST synchronize again to continue getting items from the server") picks
+/// up exactly where this window stopped:
+///
+/// * **Initial sync** pages JMAP `Email/query` by `position`; the resume
+///   position and the `state` token captured at the start are persisted in
+///   `email_sync_cursor`. A follow-up Sync whose key was issued by a clipped
+///   initial window is routed back to the initial path by cursor presence,
+///   and a fresh SyncKey "0" prime clears the cursor and the overflow queue
+///   so a re-provisioned device restarts from zero.
+/// * **Delta sync** accumulates `Email/changes` (chaining `hasMoreChanges`);
+///   when the accumulated ops exceed the window, the remainder is persisted
+///   in `email_sync_pending` together with the state token that follows the
+///   full change set. The stored sync-state token is not advanced while the
+///   queue is non-empty, so nothing is re-delivered and nothing is lost.
+///
+/// Outlook Android adds third-party accounts through Microsoft's cloud sync
+/// connector, and Android's own Exchange account wizard talks EAS directly;
+/// both request large window sizes during the first sync of a big mailbox,
+/// so without this windowing the first page would be the *only* page ever
+/// delivered. (New Outlook for Windows, by contrast, is not an EAS client
+/// at all for third-party accounts — Microsoft documents no EAS account
+/// type and no on-premises Exchange support for it — so it never reaches
+/// this path.)
 async fn handle_email_sync(
     state: &Arc<AppState>,
     username: &str,
@@ -4380,6 +5034,7 @@ async fn handle_email_sync(
     collection_id: &str,
     state_collection_id: &str,
     incoming_sync_key: &str,
+    window: usize,
 ) -> anyhow::Result<String> {
     // Map CollectionId to JMAP mailbox role.
     // Previously hardcoded "inbox" and "2", meaning syncing any other folder
@@ -4408,7 +5063,7 @@ async fn handle_email_sync(
     };
 
     let jmap = match &state.jmap_client {
-        Some(j) => j,
+        Some(j) => j.clone(),
         None => {
             // JMAP not configured — return empty sync
             let new_sync_key = Uuid::new_v4().simple().to_string();
@@ -4438,50 +5093,155 @@ async fn handle_email_sync(
         }
     };
 
-    // For initial sync (sync_key="0"), fetch all emails and store JMAP state token
-    if incoming_sync_key == "0" {
-        let new_sync_key = Uuid::new_v4().simple().to_string();
-
-        // Fetch emails from JMAP for the requested mailbox
-        let result = match crate::email::fetch_emails_jmap(
-            state,
-            &crate::email::FetchEmailsParams {
-                account_id: &account_id,
-                mailbox_role,
-                position: 0,
-                limit: EMAIL_SYNC_PAGE_SIZE,
-                username,
-                password,
-                search_filter: None,
-            },
-        )
+    // For initial sync (sync_key="0"), fetch all emails and store JMAP state token.
+    // Routing keys off cursor presence: a clipped initial sync returns a new
+    // SyncKey plus <MoreAvailable/>, so the client's follow-up request carries
+    // a non-zero key that must RESUME the initial sync, not diff deltas.
+    let cursor_present = state
+        .storage
+        .get_email_sync_cursor(username, state_collection_id)
         .await
-        {
-            Ok(r) => r,
-            Err(e) => {
-                tracing::warn!(error = %e, "Failed to fetch emails from JMAP for initial sync");
-                return Ok(format!(
-                    "<Collection><Class>Email</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>1</Status></Collection>",
-                    new_sync_key, collection_id
-                ));
-            }
-        };
-
-        // Store the JMAP state token for delta sync
-        if !result.state.is_empty() {
+        .ok()
+        .flatten()
+        .is_some();
+    match route_email_sync(incoming_sync_key, cursor_present) {
+        EmailSyncRoute::Initial => {
+            // A fresh prime must never inherit a previous sync's continuation:
+            // after a Status 3 re-priming, re-provisioning or an account reset
+            // the client restarts from SyncKey "0" and must see the first
+            // messages again, not the tail of the abandoned cursor. A stale
+            // overflow queue from the previous sync state is equally invalid.
             if let Err(e) = state
                 .storage
-                .set_sync_key(
-                    username,
-                    state_collection_id,
-                    &new_sync_key,
-                    Some(&result.state),
-                )
+                .clear_email_sync_cursor(username, state_collection_id)
                 .await
             {
-                tracing::warn!(error = %e, "Failed to set initial email sync key with JMAP state");
+                tracing::warn!(error = %e, "Failed to clear email sync cursor on re-prime");
             }
-        } else {
+            if let Err(e) = state
+                .storage
+                .clear_email_sync_pending(username, state_collection_id)
+                .await
+            {
+                tracing::warn!(error = %e, "Failed to clear email sync queue on re-prime");
+            }
+            return handle_email_initial_sync(
+                &EmailSyncCtx {
+                    state,
+                    jmap: &jmap,
+                    account_id: &account_id,
+                    username,
+                    password,
+                    collection_id,
+                    state_collection_id,
+                    window,
+                },
+                mailbox_role,
+            )
+            .await;
+        }
+        EmailSyncRoute::InitialContinuation => {
+            handle_email_initial_sync(
+                &EmailSyncCtx {
+                    state,
+                    jmap: &jmap,
+                    account_id: &account_id,
+                    username,
+                    password,
+                    collection_id,
+                    state_collection_id,
+                    window,
+                },
+                mailbox_role,
+            )
+            .await
+        }
+        EmailSyncRoute::Delta => {
+            handle_email_delta_sync(&EmailSyncCtx {
+                state,
+                jmap: &jmap,
+                account_id: &account_id,
+                username,
+                password,
+                collection_id,
+                state_collection_id,
+                window,
+            })
+            .await
+        }
+    }
+}
+
+/// Request-scoped context for one email collection Sync, mirroring `SyncCtx`
+/// so the handlers stay under clippy's argument-count threshold.
+#[derive(Clone, Copy)]
+struct EmailSyncCtx<'a> {
+    state: &'a Arc<AppState>,
+    jmap: &'a Arc<JmapClient>,
+    account_id: &'a str,
+    username: &'a str,
+    password: &'a SecretString,
+    collection_id: &'a str,
+    state_collection_id: &'a str,
+    window: usize,
+}
+
+/// Initial email sync (EAS SyncKey "0"): page the mailbox by `position`,
+/// honoring the response window with `<MoreAvailable/>` + a persisted
+/// resume cursor (MS-ASCMD §2.2.3.199).
+async fn handle_email_initial_sync(
+    ctx: &EmailSyncCtx<'_>,
+    mailbox_role: &str,
+) -> anyhow::Result<String> {
+    let EmailSyncCtx {
+        state,
+        jmap: _,
+        account_id,
+        username,
+        password,
+        collection_id,
+        state_collection_id,
+        window,
+    } = *ctx;
+    // A previous initial sync may have left a resume cursor (window filled
+    // before the mailbox drained). Spec-wise the client follows up with the
+    // new SyncKey, and this is the request that must continue, not restart.
+    //
+    // Paging note: `Email/query` sorts `receivedAt` descending (newest
+    // first), so mail that arrives while the initial sync paginates inserts
+    // BEFORE the resume position and shifts the tail backward — the next
+    // window re-delivers the boundary item (a duplicate Add, which clients
+    // resolve by ServerId) and never skips past one. A message destroyed in
+    // the undelivered region is simply never needed; one destroyed after
+    // delivery is reported by the delta diff. Position paging is therefore
+    // stable-with-duplicates under concurrent arrival, not lossy.
+    let (start_position, cursor_state) = state
+        .storage
+        .get_email_sync_cursor(username, state_collection_id)
+        .await
+        .unwrap_or(None)
+        .unwrap_or((0, None));
+
+    // Fetch emails from JMAP for the requested mailbox, one window at a time.
+    let fetch_limit = window.max(1) as u64;
+    let result = match crate::email::fetch_emails_jmap(
+        state,
+        &crate::email::FetchEmailsParams {
+            account_id,
+            mailbox_role,
+            position: start_position,
+            limit: fetch_limit,
+            username,
+            password,
+            search_filter: None,
+        },
+    )
+    .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::warn!(error = %e, "Failed to fetch emails from JMAP for initial sync");
+            let new_sync_key = Uuid::new_v4().simple().to_string();
             if let Err(e) = state
                 .storage
                 .set_sync_key(username, state_collection_id, &new_sync_key, None)
@@ -4489,171 +5249,394 @@ async fn handle_email_sync(
             {
                 tracing::warn!(error = %e, "Failed to set initial email sync key");
             }
-        }
-
-        let emails = &result.emails;
-        tracing::info!(
-            user = %username,
-            collection_id,
-            email_count = emails.len(),
-            sync_type = "initial",
-            "Building EAS email sync response"
-        );
-        let mut commands_xml = String::new();
-        for email in emails {
-            let jmap_id = email.id.as_deref().unwrap_or("unknown");
-            let server_id = crate::email::email_server_id_from_jmap_id(jmap_id);
-            let app_data = crate::email::render_jmap_email_as_eas_application_data(
-                email,
-                &server_id,
-                collection_id,
-            );
-            commands_xml.push_str(&format!(
-                "<Add><ServerId>{}</ServerId><ApplicationData>{}</ApplicationData></Add>",
-                server_id, app_data,
+            return Ok(format!(
+                "<Collection><Class>Email</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>1</Status></Collection>",
+                new_sync_key, collection_id
             ));
         }
+    };
+
+    let new_sync_key = Uuid::new_v4().simple().to_string();
+
+    // JMAP reports the full mailbox size in `total`; the delivered page is
+    // `emails.len()`. The window is exhausted while content remains when
+    // `start_position + delivered < total`.
+    let delivered = result.emails.len() as u64;
+    let remaining = result
+        .total
+        .saturating_sub(start_position.saturating_add(delivered));
+
+    // The `state` token captured here (or carried over from the cursor) is
+    // the delta base once the initial sync drains. `fetch_emails_jmap` only
+    // fills `state` for roles backed by a JMAP mailbox, so keep the cursor's
+    // token when this page could not supply one.
+    let state_token = if result.state.is_empty() {
+        cursor_state.clone()
+    } else {
+        Some(result.state.clone())
+    };
+
+    let mut commands_xml = String::new();
+    for email in &result.emails {
+        let jmap_id = email.id.as_deref().unwrap_or("unknown");
+        let server_id = crate::email::email_server_id_from_jmap_id(jmap_id);
+        let app_data = crate::email::render_jmap_email_as_eas_application_data(
+            email,
+            &server_id,
+            collection_id,
+        );
+        commands_xml.push_str(&format!(
+            "<Add><ServerId>{}</ServerId><ApplicationData>{}</ApplicationData></Add>",
+            server_id, app_data,
+        ));
+    }
+
+    tracing::info!(
+        user = %username,
+        collection_id,
+        position = start_position,
+        delivered = delivered,
+        total = result.total,
+        remaining,
+        email_count = result.emails.len(),
+        sync_type = "initial",
+        "Building EAS email sync response"
+    );
+
+    if remaining > 0 {
+        // Persist the resume point; the stored JMAP state token stays at the
+        // initial-sync value so the delta diff starts from a stable base once
+        // the cursor drains.
+        if let Err(e) = state
+            .storage
+            .set_email_sync_cursor(
+                username,
+                state_collection_id,
+                start_position + delivered,
+                state_token.as_deref(),
+            )
+            .await
+        {
+            tracing::warn!(error = %e, "Failed to persist email initial-sync cursor");
+        }
+        if let Err(e) = state
+            .storage
+            .set_sync_key(
+                username,
+                state_collection_id,
+                &new_sync_key,
+                state_token.as_deref(),
+            )
+            .await
+        {
+            tracing::warn!(error = %e, "Failed to set initial email sync key with JMAP state");
+        }
         let response = format!(
-            "<Collection><Class>Email</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>1</Status><Commands>{}</Commands></Collection>",
+            "<Collection><Class>Email</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>1</Status><MoreAvailable/><Commands>{}</Commands></Collection>",
             new_sync_key, collection_id, commands_xml
         );
         tracing::info!(
             user = %username,
             collection_id,
             sync_type = "initial",
+            window_clipped = true,
             "EAS email sync response built"
         );
         return Ok(response);
     }
 
-    // Subsequent syncs — use JMAP Email/changes for delta sync
+    // Mailbox drained: drop the cursor, persist the state token for deltas.
+    if let Err(e) = state
+        .storage
+        .clear_email_sync_cursor(username, state_collection_id)
+        .await
+    {
+        tracing::warn!(error = %e, "Failed to clear email initial-sync cursor");
+    }
+    if !result.state.is_empty() {
+        if let Err(e) = state
+            .storage
+            .set_sync_key(
+                username,
+                state_collection_id,
+                &new_sync_key,
+                Some(&result.state),
+            )
+            .await
+        {
+            tracing::warn!(error = %e, "Failed to set initial email sync key with JMAP state");
+        }
+    } else {
+        if let Err(e) = state
+            .storage
+            .set_sync_key(username, state_collection_id, &new_sync_key, None)
+            .await
+        {
+            tracing::warn!(error = %e, "Failed to set initial email sync key");
+        }
+    }
+
+    let response = format!(
+        "<Collection><Class>Email</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>1</Status><Commands>{}</Commands></Collection>",
+        new_sync_key, collection_id, commands_xml
+    );
+    tracing::info!(
+        user = %username,
+        collection_id,
+        sync_type = "initial",
+        email_count = result.emails.len(),
+        "EAS email sync response built"
+    );
+    Ok(response)
+}
+
+/// Delta email sync (EAS SyncKey != "0"): drain a persisted overflow queue
+/// first, then diff `Email/changes` from the stored state token, honoring the
+/// response window with `<MoreAvailable/>` (MS-ASCMD §2.2.3.199).
+async fn handle_email_delta_sync(ctx: &EmailSyncCtx<'_>) -> anyhow::Result<String> {
+    let EmailSyncCtx {
+        state,
+        jmap,
+        account_id,
+        username,
+        password,
+        collection_id,
+        state_collection_id,
+        window,
+    } = *ctx;
     let new_sync_key = Uuid::new_v4().simple().to_string();
 
-    // Get the stored JMAP state token
+    // Stored (sync key, JMAP state token).
     let previous_state = state
         .storage
         .get_sync_key(username, state_collection_id)
         .await?;
-    let jmap_state_token = previous_state.and_then(|(_, token)| token);
+    let jmap_state_token = previous_state.as_ref().and_then(|(_, token)| token.clone());
 
-    if let Some(old_state) = jmap_state_token {
-        // Use JMAP Email/changes for delta sync
-        match jmap
-            .sync_email_changes(&account_id, &old_state, username, password)
-            .await
-        {
-            Ok(changes) => {
-                // Store the new JMAP state token
-                if let Err(e) = state
+    // ---- 1) Drain a previously persisted overflow queue first. ----------
+    // Its ops precede (in delivery order) anything a fresh diff would
+    // return, and its `base_state` is the only point the stored token may
+    // advance to without re-delivering queued ops.
+    if let Some((ops_json, base_state)) = state
+        .storage
+        .get_email_sync_pending(username, state_collection_id)
+        .await?
+    {
+        let queue: Vec<PendingEmailOp> = serde_json::from_str(&ops_json).unwrap_or_default();
+        let take = queue.len().min(window.max(1));
+        let (deliver, leftover) = queue.split_at(take);
+
+        let mut commands_xml = String::new();
+        for op in deliver {
+            commands_xml.push_str(
+                &render_pending_email_op(jmap, account_id, username, password, collection_id, op)
+                    .await,
+            );
+        }
+
+        if !leftover.is_empty() {
+            // Still more behind this window: keep the queue (and the stored
+            // token exactly where it is) and tell the client to sync again.
+            if let Ok(leftover_json) = serde_json::to_string(&leftover)
+                && let Err(e) = state
                     .storage
-                    .set_sync_key(
+                    .set_email_sync_pending(
                         username,
                         state_collection_id,
-                        &new_sync_key,
-                        Some(&changes.new_state),
+                        &leftover_json,
+                        &base_state,
                     )
                     .await
-                {
-                    tracing::warn!(error = %e, "Failed to update email sync key with JMAP state");
-                }
-
-                // Fetch full email data for created/updated emails
-                let mut commands_xml = String::new();
-                let all_ids: Vec<String> = changes
-                    .created
-                    .iter()
-                    .chain(changes.updated.iter())
-                    .cloned()
-                    .collect();
-
-                if !all_ids.is_empty() {
-                    // Use Email/get to fetch full email data for changed emails by ID
-                    let emails = match jmap
-                        .get_emails(&account_id, &all_ids, None, username, password)
-                        .await
-                    {
-                        Ok(emails) => emails,
-                        Err(e) => {
-                            tracing::warn!(error = %e, "Failed to fetch changed emails from JMAP");
-                            Vec::new()
-                        }
-                    };
-
-                    // Filter emails to only those in our created/updated list (defensive)
-                    let changed_ids: std::collections::HashSet<&str> =
-                        all_ids.iter().map(|s| s.as_str()).collect();
-                    for email in &emails {
-                        if let Some(id) = email.id.as_deref()
-                            && changed_ids.contains(id)
-                        {
-                            let server_id = crate::email::email_server_id_from_jmap_id(id);
-                            let app_data = crate::email::render_jmap_email_as_eas_application_data(
-                                email,
-                                &server_id,
-                                collection_id,
-                            );
-                            if changes.created.iter().any(|c| c == id) {
-                                commands_xml.push_str(&format!(
-                                    "<Add><ServerId>{}</ServerId><ApplicationData>{}</ApplicationData></Add>",
-                                    server_id, app_data,
-                                ));
-                            } else {
-                                commands_xml.push_str(&format!(
-                                    "<Change><ServerId>{}</ServerId><ApplicationData>{}</ApplicationData></Change>",
-                                    server_id, app_data,
-                                ));
-                            }
-                        }
-                    }
-                }
-
-                // Add Delete commands for destroyed emails
-                for destroyed_id in &changes.destroyed {
-                    let server_id = crate::email::email_server_id_from_jmap_id(destroyed_id);
-                    commands_xml.push_str(&format!(
-                        "<Delete><ServerId>{}</ServerId></Delete>",
-                        server_id,
-                    ));
-                }
-
-                tracing::info!(
-                    user = %username,
-                    collection_id,
-                    changed_count = all_ids.len(),
-                    sync_type = "delta",
-                    "Building EAS email delta sync response"
-                );
-                let response = format!(
-                    "<Collection><Class>Email</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>1</Status><Commands>{}</Commands></Collection>",
-                    new_sync_key, collection_id, commands_xml
-                );
-                tracing::info!(
-                    user = %username,
-                    collection_id,
-                    sync_type = "delta",
-                    "EAS email delta sync response built"
-                );
-                return Ok(response);
+            {
+                tracing::warn!(error = %e, "Failed to persist email delta queue remainder");
             }
-            Err(e) => {
-                tracing::warn!(error = %e, "JMAP Email/changes failed, falling back to full sync");
-                // Fall through to full sync fallback
+            if let Err(e) = state
+                .storage
+                .set_sync_key(
+                    username,
+                    state_collection_id,
+                    &new_sync_key,
+                    jmap_state_token.as_deref(),
+                )
+                .await
+            {
+                tracing::warn!(error = %e, "Failed to set email sync key while draining queue");
             }
+            tracing::info!(
+                user = %username,
+                collection_id,
+                delivered = take,
+                queued = leftover.len(),
+                sync_type = "delta-queue",
+                window_clipped = true,
+                "Building EAS email delta sync response from overflow queue"
+            );
+            return Ok(format!(
+                "<Collection><Class>Email</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>1</Status><MoreAvailable/><Commands>{}</Commands></Collection>",
+                new_sync_key, collection_id, commands_xml
+            ));
         }
+
+        // Queue drained within this window: advance the stored token to the
+        // queue's base state. The next Sync diffs from there and picks up
+        // everything that happened since — no re-delivery, no loss.
+        if let Err(e) = state
+            .storage
+            .clear_email_sync_pending(username, state_collection_id)
+            .await
+        {
+            tracing::warn!(error = %e, "Failed to clear drained email delta queue");
+        }
+        if let Err(e) = state
+            .storage
+            .set_sync_key(
+                username,
+                state_collection_id,
+                &new_sync_key,
+                Some(&base_state),
+            )
+            .await
+        {
+            tracing::warn!(error = %e, "Failed to advance email sync key to queue base state");
+        }
+        tracing::info!(
+            user = %username,
+            collection_id,
+            delivered = take,
+            sync_type = "delta-queue",
+            queue_drained = true,
+            "Building EAS email delta sync response from overflow queue"
+        );
+        return Ok(format!(
+            "<Collection><Class>Email</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>1</Status><Commands>{}</Commands></Collection>",
+            new_sync_key, collection_id, commands_xml
+        ));
     }
 
-    // Fallback: return empty changes (client will do full sync on next attempt)
+    // ---- 2) Fresh diff from the stored JMAP state token. ---------------
+    let Some(old_state) = jmap_state_token.clone() else {
+        // No usable state token yet (e.g. the initial sync never captured
+        // one because the role had no JMAP mailbox). Keep the client's
+        // progress valid and let the next initial sync establish a base.
+        if let Err(e) = state
+            .storage
+            .set_sync_key(username, state_collection_id, &new_sync_key, None)
+            .await
+        {
+            tracing::warn!(error = %e, "Failed to update email sync key");
+        }
+        return Ok(format!(
+            "<Collection><Class>Email</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>1</Status></Collection>",
+            new_sync_key, collection_id
+        ));
+    };
+
+    let (ops, final_state) = match accumulate_email_changes(
+        jmap, account_id, &old_state, username, password,
+    )
+    .await
+    {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!(error = %e, "JMAP Email/changes failed; deferring delta sync");
+            if let Err(e) = state
+                .storage
+                .set_sync_key(
+                    username,
+                    state_collection_id,
+                    &new_sync_key,
+                    jmap_state_token.as_deref(),
+                )
+                .await
+            {
+                tracing::warn!(error = %e, "Failed to update email sync key");
+            }
+            // Backend hiccup: answer an empty, successful window rather
+            // than a Status 6 so the client retries the delta instead
+            // of forcing a full resync.
+            return Ok(format!(
+                "<Collection><Class>Email</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>1</Status></Collection>",
+                new_sync_key, collection_id
+            ));
+        }
+    };
+
+    // ---- 3) Window the accumulated ops. ---------------------------------
+    let take = ops.len().min(window.max(1));
+    let (deliver, leftover) = ops.split_at(take);
+
+    let mut commands_xml = String::new();
+    for op in deliver {
+        commands_xml.push_str(
+            &render_pending_email_op(jmap, account_id, username, password, collection_id, op).await,
+        );
+    }
+
+    if !leftover.is_empty() {
+        // Overflow: stash the remainder plus the state that follows the full
+        // change set, and DO NOT advance the stored token (the next diff
+        // must not re-report the queued ops).
+        if let Ok(leftover_json) = serde_json::to_string(leftover)
+            && let Err(e) = state
+                .storage
+                .set_email_sync_pending(username, state_collection_id, &leftover_json, &final_state)
+                .await
+        {
+            tracing::warn!(error = %e, "Failed to persist email delta overflow queue");
+        }
+        if let Err(e) = state
+            .storage
+            .set_sync_key(
+                username,
+                state_collection_id,
+                &new_sync_key,
+                Some(&old_state),
+            )
+            .await
+        {
+            tracing::warn!(error = %e, "Failed to set email sync key while truncating delta");
+        }
+        tracing::info!(
+            user = %username,
+            collection_id,
+            changed_count = ops.len(),
+            delivered = take,
+            queued = leftover.len(),
+            sync_type = "delta",
+            window_clipped = true,
+            "Building EAS email delta sync response"
+        );
+        return Ok(format!(
+            "<Collection><Class>Email</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>1</Status><MoreAvailable/><Commands>{}</Commands></Collection>",
+            new_sync_key, collection_id, commands_xml
+        ));
+    }
+
+    // Everything fits: advance to the state that follows the delivered set
+    // and finish the window.
     if let Err(e) = state
         .storage
-        .set_sync_key(username, state_collection_id, &new_sync_key, None)
+        .set_sync_key(
+            username,
+            state_collection_id,
+            &new_sync_key,
+            Some(&final_state),
+        )
         .await
     {
-        tracing::warn!(error = %e, "Failed to update email sync key");
+        tracing::warn!(error = %e, "Failed to update email sync key with JMAP state");
     }
 
+    tracing::info!(
+        user = %username,
+        collection_id,
+        changed_count = ops.len(),
+        sync_type = "delta",
+        "Building EAS email delta sync response"
+    );
     Ok(format!(
-        "<Collection><Class>Email</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>1</Status></Collection>",
-        new_sync_key, collection_id
+        "<Collection><Class>Email</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>1</Status><Commands>{}</Commands></Collection>",
+        new_sync_key, collection_id, commands_xml
     ))
 }
 
@@ -4752,6 +5735,15 @@ pub async fn handle(
                 as_wbxml: wants_wbxml,
                 request_id: &request_id,
                 device_id: &device_id,
+                global_window_size: if sync_collections.is_empty() {
+                    // Legacy single-collection requests carry their window as
+                    // a direct child of Sync: it is the collection's own
+                    // window, not a global budget (a budget of one collection
+                    // would be redundant and could over-clip the response).
+                    None
+                } else {
+                    parse_global_window_size(&xml)
+                },
             };
             if sync_collections.is_empty() {
                 // Fallback: use the single-collection fields from EasRequest
@@ -5488,10 +6480,7 @@ mod tests {
             "direct request must not be flagged as Cloudflare-proxied"
         );
 
-        headers.insert(
-            "CF-RAY",
-            HeaderValue::from_static("8f3b2a1c0d9e4f56-FRA"),
-        );
+        headers.insert("CF-RAY", HeaderValue::from_static("8f3b2a1c0d9e4f56-FRA"));
         let req = parse_request(&query, &xml, &headers);
         assert!(
             req.via_cloudflare,
@@ -6163,5 +7152,894 @@ mod tests {
             "calendar change past the watermark must report the calendar folder, got: {text}"
         );
         assert!(!PING_IN_FLIGHT.contains_key("delta-user@example.com:delta-device"));
+    }
+
+    // ===================== Sync WindowSize (MS-ASCMD §2.2.3.199) ===========
+
+    /// Extract the first `<SyncKey>` value from a rendered collection XML.
+    fn first_sync_key(coll_xml: &str) -> String {
+        let start = coll_xml
+            .find("<SyncKey>")
+            .expect("collection response must contain a SyncKey")
+            + "<SyncKey>".len();
+        let end = coll_xml[start..]
+            .find("</SyncKey>")
+            .expect("SyncKey must be closed")
+            + start;
+        coll_xml[start..end].to_string()
+    }
+
+    /// In-memory AppState with JMAP pointed at unroutable loopback, for
+    /// exercising the gateway-local Tasks/Notes sync paths.
+    async fn test_sync_state() -> Arc<AppState> {
+        let storage = crate::storage::Storage::new("sqlite::memory:")
+            .await
+            .expect("in-memory storage");
+        storage.init_schema().await.expect("schema init");
+        let cfg = crate::config::Config {
+            jmap_base: "http://127.0.0.1:1".to_string(),
+            email_enabled: false,
+            mail_domain: "example.com".to_string(),
+            hmac_secret: SecretString::from("a".repeat(32)),
+            ..Default::default()
+        };
+        Arc::new(AppState::new(cfg, Arc::new(storage)))
+    }
+
+    /// Seed `count` tasks owned by `owner` with server ids task-000…
+    async fn seed_tasks(state: &AppState, owner: &str, count: usize) {
+        for i in 0..count {
+            state
+                .storage
+                .upsert_task(
+                    owner,
+                    &format!("task-{i:03}"),
+                    &crate::storage::TaskFields {
+                        subject: Some(&format!("Task {i}")),
+                        importance: Some(1),
+                        sensitivity: Some(0),
+                        start_date: None,
+                        due_date: None,
+                        utc_start_date: None,
+                        utc_due_date: None,
+                        complete: 0,
+                        date_completed: None,
+                        reminder_set: 0,
+                        reminder_time: None,
+                        categories: None,
+                        body: Some("seed"),
+                    },
+                )
+                .await
+                .expect("seed task");
+        }
+    }
+
+    fn tasks_collection(sync_key: &str, window: Option<usize>) -> SyncCollection {
+        SyncCollection {
+            sync_key: Some(sync_key.to_string()),
+            collection_id: Some(crate::tasks::TASKS_COLLECTION_ID.to_string()),
+            class: Some("Tasks".to_string()),
+            window_size: window,
+            get_changes: true,
+            filter_type: None,
+            xml: String::new(),
+        }
+    }
+
+    #[test]
+    fn test_parse_global_window_size_only_direct_child_of_sync_root() {
+        // Present at depth 1 (direct child of Sync) → parsed and clamped.
+        assert_eq!(
+            parse_global_window_size(
+                r#"<Sync xmlns="AirSync:"><WindowSize>25</WindowSize><Collections/></Sync>"#
+            ),
+            Some(25)
+        );
+        // Absent → None.
+        assert_eq!(
+            parse_global_window_size(r#"<Sync xmlns="AirSync:"><Collections/></Sync>"#),
+            None
+        );
+        // Per-collection WindowSize only → NOT a global limit.
+        assert_eq!(
+            parse_global_window_size(
+                r#"<Sync xmlns="AirSync:"><Collections><Collection><WindowSize>25</WindowSize></Collection></Collections></Sync>"#
+            ),
+            None,
+            "per-collection WindowSize must not be mistaken for the global limit"
+        );
+        // Spec clamps: 0 and >512 are interpreted as 512 (MS-ASCMD §2.2.3.199).
+        assert_eq!(
+            parse_global_window_size(r#"<Sync xmlns="AirSync:"><WindowSize>0</WindowSize></Sync>"#),
+            Some(512)
+        );
+        assert_eq!(
+            parse_global_window_size(
+                r#"<Sync xmlns="AirSync:"><WindowSize>600</WindowSize></Sync>"#
+            ),
+            Some(512)
+        );
+        // Empty element → treated as absent.
+        assert_eq!(
+            parse_global_window_size(r#"<Sync xmlns="AirSync:"><WindowSize/></Sync>"#),
+            None
+        );
+    }
+
+    #[test]
+    fn test_effective_sync_window_spec_table() {
+        // No global budget: per-collection rules only (absent → 100, 0 → 512,
+        // >512 → 512, else verbatim).
+        assert_eq!(effective_sync_window(None, None), 100);
+        assert_eq!(effective_sync_window(Some(0), None), 512);
+        assert_eq!(effective_sync_window(Some(513), None), 512);
+        assert_eq!(effective_sync_window(Some(25), None), 25);
+        // Global budget clamps the per-collection value.
+        assert_eq!(effective_sync_window(Some(25), Some(10)), 10);
+        assert_eq!(effective_sync_window(None, Some(10)), 10);
+        assert_eq!(effective_sync_window(Some(0), Some(10)), 10);
+        assert_eq!(effective_sync_window(Some(200), Some(300)), 200);
+        // A global budget of 0 exhausts the window before any collection runs.
+        assert_eq!(effective_sync_window(Some(50), Some(0)), 0);
+    }
+
+    #[test]
+    fn test_count_sync_commands_counts_all_command_kinds() {
+        assert_eq!(
+            count_sync_commands(
+                "<Commands><Add>1</Add><Change>2</Change><Delete>3</Delete></Commands><Status>1</Status>"
+            ),
+            3
+        );
+        assert_eq!(count_sync_commands("<Status>1</Status>"), 0);
+    }
+
+    #[test]
+    fn test_collapse_email_ops_across_chained_batches() {
+        // RFC 8621 §4.4.5 keeps created/updated/destroyed disjoint within one
+        // Email/changes response, but chained hasMoreChanges batches can
+        // repeat an id. One surviving op per id, first-occurrence order.
+        use PendingEmailOp as P;
+        let id = |s: &str| s.to_string();
+
+        // add then delete: the message did not exist at the diff base and no
+        // longer exists — nothing to tell the client.
+        assert!(collapse_email_ops(vec![P::add(id("m1")), P::delete(id("m1")),]).is_empty());
+
+        // add then change: still one add, rendered from current state.
+        assert_eq!(
+            collapse_email_ops(vec![P::add(id("m1")), P::change(id("m1"))]),
+            vec![P::add(id("m1"))]
+        );
+
+        // repeated changes: one change.
+        assert_eq!(
+            collapse_email_ops(vec![P::change(id("m1")), P::change(id("m1"))]),
+            vec![P::change(id("m1"))]
+        );
+
+        // change then delete: existed at the base, gone now — a delete.
+        assert_eq!(
+            collapse_email_ops(vec![P::change(id("m1")), P::delete(id("m1"))]),
+            vec![P::delete(id("m1"))]
+        );
+
+        // delete then add cannot occur (JMAP ids are never reused), but the
+        // last op must win deterministically if a backend misbehaves.
+        assert_eq!(
+            collapse_email_ops(vec![P::delete(id("m1")), P::add(id("m1"))]),
+            vec![P::add(id("m1"))]
+        );
+
+        // Independent ids keep their first-occurrence order.
+        assert_eq!(
+            collapse_email_ops(vec![
+                P::change(id("a")),
+                P::add(id("b")),
+                P::change(id("b")),
+                P::add(id("c")),
+                P::delete(id("c")),
+                P::delete(id("d")),
+            ]),
+            vec![
+                P::change(id("a")),
+                P::add(id("b")),
+                // c: first op is add, last is delete — dropped.
+                P::delete(id("d")),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_route_email_sync_keys_off_cursor_presence() {
+        // SyncKey "0" always primes from scratch, even with a leftover cursor.
+        assert_eq!(route_email_sync("0", false), EmailSyncRoute::Initial);
+        assert_eq!(route_email_sync("0", true), EmailSyncRoute::Initial);
+        // A non-zero key issued by a clipped initial window must RESUME the
+        // initial sync — routing it to the delta path would permanently
+        // truncate the mailbox at one window.
+        assert_eq!(
+            route_email_sync("key-1", true),
+            EmailSyncRoute::InitialContinuation
+        );
+        // No cursor: a non-zero key is a steady-state delta Sync.
+        assert_eq!(route_email_sync("key-1", false), EmailSyncRoute::Delta);
+    }
+
+    #[test]
+    fn test_count_sync_commands_ignores_response_echoes() {
+        // MS-ASCMD §2.2.3.199: the window bounds changed items the server
+        // returns; the <Responses> echoes of the client's own mutations
+        // (§2.2.3.154) are acknowledgments and must not consume budget.
+        assert_eq!(
+            count_sync_commands(
+                "<Collection><Status>1</Status><Responses><Add><ClientId>c1</ClientId><ServerId>s1</ServerId><Status>1</Status></Add><Change><ServerId>s2</ServerId><Status>1</Status></Change></Responses><Commands><Add>x</Add></Commands></Collection>"
+            ),
+            1
+        );
+        // Responses without any Commands section contribute nothing.
+        assert_eq!(
+            count_sync_commands(
+                "<Collection><Status>1</Status><Responses><Delete><ServerId>s3</ServerId><Status>1</Status></Delete></Responses></Collection>"
+            ),
+            0
+        );
+    }
+
+    #[test]
+    fn test_parse_request_window_size_clamps_legacy_path() {
+        // The legacy single-collection fallback path shares the spec rule:
+        // 0 and >512 are interpreted as 512 (MS-ASCMD §2.2.3.199).
+        let mut query = HashMap::new();
+        query.insert("Cmd".to_string(), "Sync".to_string());
+        let headers = HeaderMap::new();
+
+        let req = parse_request(
+            &query,
+            r#"<Sync xmlns="AirSync:"><Collections><Collection><SyncKey>0</SyncKey><CollectionId>7</CollectionId><Class>Tasks</Class><WindowSize>0</WindowSize></Collection></Collections></Sync>"#,
+            &headers,
+        );
+        assert_eq!(req.window_size, Some(512), "0 must be interpreted as 512");
+
+        let req = parse_request(
+            &query,
+            r#"<Sync xmlns="AirSync:"><Collections><Collection><SyncKey>0</SyncKey><CollectionId>7</CollectionId><Class>Tasks</Class><WindowSize>600</WindowSize></Collection></Collections></Sync>"#,
+            &headers,
+        );
+        assert_eq!(
+            req.window_size,
+            Some(512),
+            ">512 must be interpreted as 512"
+        );
+
+        let req = parse_request(
+            &query,
+            r#"<Sync xmlns="AirSync:"><Collections><Collection><SyncKey>0</SyncKey><CollectionId>7</CollectionId><Class>Tasks</Class><WindowSize>25</WindowSize></Collection></Collections></Sync>"#,
+            &headers,
+        );
+        assert_eq!(req.window_size, Some(25), "in-range values pass through");
+
+        let req = parse_request(
+            &query,
+            r#"<Sync xmlns="AirSync:"><Collections><Collection><SyncKey>0</SyncKey><CollectionId>7</CollectionId><Class>Tasks</Class></Collection></Collections></Sync>"#,
+            &headers,
+        );
+        assert_eq!(req.window_size, None, "absent WindowSize stays absent");
+    }
+
+    #[tokio::test]
+    async fn test_local_content_sync_initial_windows_across_requests() {
+        let state = test_sync_state().await;
+        let user = "window-user@example.com";
+        let device = "test-device";
+        let state_coll = scoped_collection_id(crate::tasks::TASKS_COLLECTION_ID, device);
+        seed_tasks(&state, user, 250).await;
+
+        // Window 100 over 250 tasks: 100 Adds + MoreAvailable.
+        let coll = tasks_collection("0", Some(100));
+        let xml = handle_local_content_sync(&LocalContentSyncCtx {
+            state: &state,
+            username: user,
+            collection_id: crate::tasks::TASKS_COLLECTION_ID,
+            state_collection_id: &state_coll,
+            incoming_key: "0",
+            coll: &coll,
+            kind: LocalContentKind::Tasks,
+            global_budget: None,
+        })
+        .await;
+        assert!(xml.contains("<Status>1</Status>"), "first window: {xml}");
+        assert_eq!(xml.matches("<Add>").count(), 100, "first window: {xml}");
+        assert!(xml.contains("<MoreAvailable/>"), "first window: {xml}");
+        assert!(
+            xml.contains("<Commands>"),
+            "server changes must be wrapped in <Commands>: {xml}"
+        );
+        let key1 = first_sync_key(&xml);
+
+        // Follow-up: the cursor resumes at task-100, delivering the next 100.
+        let coll = tasks_collection(&key1, Some(100));
+        let xml = handle_local_content_sync(&LocalContentSyncCtx {
+            state: &state,
+            username: user,
+            collection_id: crate::tasks::TASKS_COLLECTION_ID,
+            state_collection_id: &state_coll,
+            incoming_key: &key1,
+            coll: &coll,
+            kind: LocalContentKind::Tasks,
+            global_budget: None,
+        })
+        .await;
+        assert!(xml.contains("<Status>1</Status>"), "second window: {xml}");
+        assert_eq!(xml.matches("<Add>").count(), 100, "second window: {xml}");
+        assert!(xml.contains("<MoreAvailable/>"), "second window: {xml}");
+        assert!(
+            !xml.contains("task-099<"),
+            "second window must not redeliver first-window items: {xml}"
+        );
+        let key2 = first_sync_key(&xml);
+
+        // Third window: the remaining 50, no MoreAvailable.
+        let coll = tasks_collection(&key2, Some(100));
+        let xml = handle_local_content_sync(&LocalContentSyncCtx {
+            state: &state,
+            username: user,
+            collection_id: crate::tasks::TASKS_COLLECTION_ID,
+            state_collection_id: &state_coll,
+            incoming_key: &key2,
+            coll: &coll,
+            kind: LocalContentKind::Tasks,
+            global_budget: None,
+        })
+        .await;
+        assert!(xml.contains("<Status>1</Status>"), "third window: {xml}");
+        assert_eq!(xml.matches("<Add>").count(), 50, "third window: {xml}");
+        assert!(
+            !xml.contains("<MoreAvailable/>"),
+            "third window must close the sync: {xml}"
+        );
+        let key3 = first_sync_key(&xml);
+
+        // Fourth: a steady-state delta with nothing new — empty Commands.
+        let coll = tasks_collection(&key3, Some(100));
+        let xml = handle_local_content_sync(&LocalContentSyncCtx {
+            state: &state,
+            username: user,
+            collection_id: crate::tasks::TASKS_COLLECTION_ID,
+            state_collection_id: &state_coll,
+            incoming_key: &key3,
+            coll: &coll,
+            kind: LocalContentKind::Tasks,
+            global_budget: None,
+        })
+        .await;
+        assert!(xml.contains("<Status>1</Status>"), "steady state: {xml}");
+        assert_eq!(xml.matches("<Add>").count(), 0, "steady state: {xml}");
+        assert!(!xml.contains("<MoreAvailable/>"), "steady state: {xml}");
+    }
+
+    #[tokio::test]
+    async fn test_local_content_sync_continuation_preserves_journal_changes() {
+        // The exact regression under review: while a windowed initial sync
+        // paginates, mutations of ALREADY-DELIVERED items land in the journal
+        // above the sync's base position. Continuation windows must keep the
+        // stored watermark at that base (not jump it to the current head) so
+        // the delta after the cursor drains delivers the modify/delete —
+        // otherwise the journal pruner erases those rows for good and the
+        // client keeps a deleted task forever.
+        let state = test_sync_state().await;
+        let user = "continuation-journal@example.com";
+        let device = "test-device";
+        let state_coll = scoped_collection_id(crate::tasks::TASKS_COLLECTION_ID, device);
+        seed_tasks(&state, user, 5).await;
+
+        // Window 1 of 2: delivers task-000 and task-001, clips.
+        let coll = tasks_collection("0", Some(2));
+        let xml = handle_local_content_sync(&LocalContentSyncCtx {
+            state: &state,
+            username: user,
+            collection_id: crate::tasks::TASKS_COLLECTION_ID,
+            state_collection_id: &state_coll,
+            incoming_key: "0",
+            coll: &coll,
+            kind: LocalContentKind::Tasks,
+            global_budget: None,
+        })
+        .await;
+        assert!(xml.contains("<Status>1</Status>"), "window 1: {xml}");
+        assert_eq!(xml.matches("<Add>").count(), 2, "window 1: {xml}");
+        assert!(xml.contains("<MoreAvailable/>"), "window 1: {xml}");
+        let key1 = first_sync_key(&xml);
+
+        // Mid-pagination mutations, all journaled above the sync's base:
+        // * task-001 was DELIVERED in window 1 and is now deleted — the
+        //   client must see a <Delete> eventually.
+        // * task-002 is modified before its window delivers it — the client
+        //   must see the new subject in window 2.
+        // * task-000a sorts before the keyset cursor, so no continuation
+        //   window can ever deliver it; only the journal delta can.
+        state
+            .storage
+            .delete_task(user, "task-001")
+            .await
+            .expect("delete task-001");
+        state
+            .storage
+            .upsert_task(
+                user,
+                "task-002",
+                &crate::storage::TaskFields {
+                    subject: Some("Task 2 MODIFIED MID-SYNC"),
+                    importance: Some(1),
+                    ..Default::default()
+                },
+            )
+            .await
+            .expect("modify task-002");
+        state
+            .storage
+            .upsert_task(
+                user,
+                "task-000a",
+                &crate::storage::TaskFields {
+                    subject: Some("Created mid-sync"),
+                    importance: Some(1),
+                    ..Default::default()
+                },
+            )
+            .await
+            .expect("create task-000a");
+
+        // Window 2: continues the keyset live set strictly after task-001.
+        // task-001 is gone from the live set and task-000a sorts before the
+        // cursor, so this window delivers exactly task-002 and task-003.
+        let coll = tasks_collection(&key1, Some(2));
+        let xml = handle_local_content_sync(&LocalContentSyncCtx {
+            state: &state,
+            username: user,
+            collection_id: crate::tasks::TASKS_COLLECTION_ID,
+            state_collection_id: &state_coll,
+            incoming_key: &key1,
+            coll: &coll,
+            kind: LocalContentKind::Tasks,
+            global_budget: None,
+        })
+        .await;
+        assert!(xml.contains("<Status>1</Status>"), "window 2: {xml}");
+        assert!(
+            !xml.contains("task-001<"),
+            "deleted task-001 must not be re-delivered: {xml}"
+        );
+        assert!(
+            !xml.contains("task-000a"),
+            "item below the keyset cursor must wait for the delta: {xml}"
+        );
+        let key2 = first_sync_key(&xml);
+        assert_eq!(
+            state
+                .storage
+                .get_local_sync_cursor(user, &state_coll)
+                .await
+                .expect("cursor read"),
+            Some(("task-003".to_string(), 5)),
+            "cursor must advance to the last delivered key and carry the base seq"
+        );
+
+        // Window 3: the last live item, closing the initial sync.
+        let coll = tasks_collection(&key2, Some(2));
+        let xml = handle_local_content_sync(&LocalContentSyncCtx {
+            state: &state,
+            username: user,
+            collection_id: crate::tasks::TASKS_COLLECTION_ID,
+            state_collection_id: &state_coll,
+            incoming_key: &key2,
+            coll: &coll,
+            kind: LocalContentKind::Tasks,
+            global_budget: None,
+        })
+        .await;
+        assert!(xml.contains("<Status>1</Status>"), "window 3: {xml}");
+        assert_eq!(xml.matches("<Add>").count(), 1, "window 3: {xml}");
+        assert!(!xml.contains("<MoreAvailable/>"), "window 3: {xml}");
+        let key3 = first_sync_key(&xml);
+        assert_eq!(
+            state
+                .storage
+                .get_local_sync_cursor(user, &state_coll)
+                .await
+                .expect("cursor read"),
+            None,
+            "the initial sync must drop its cursor when the live set drains"
+        );
+
+        // The first delta after the drain walks from base_seq. It must
+        // deliver the mid-pagination delete (task-001 was already shown to
+        // the client) and the creation below the keyset cursor; the
+        // modified task-002 was already delivered by window 2's live-set
+        // read and is re-delivered as a harmless duplicate Add.
+        let coll = tasks_collection(&key3, None);
+        let xml = handle_local_content_sync(&LocalContentSyncCtx {
+            state: &state,
+            username: user,
+            collection_id: crate::tasks::TASKS_COLLECTION_ID,
+            state_collection_id: &state_coll,
+            incoming_key: &key3,
+            coll: &coll,
+            kind: LocalContentKind::Tasks,
+            global_budget: None,
+        })
+        .await;
+        assert!(xml.contains("<Status>1</Status>"), "delta: {xml}");
+        assert!(
+            xml.contains("<Delete><ServerId>task-001</ServerId></Delete>"),
+            "the mid-pagination delete must be delta-delivered: {xml}"
+        );
+        assert!(
+            xml.contains("MODIFIED MID-SYNC"),
+            "the mid-pagination modify must be delta-delivered: {xml}"
+        );
+        assert!(
+            xml.contains("task-000a"),
+            "an item created below the keyset cursor must be delta-delivered: {xml}"
+        );
+        assert_eq!(
+            xml.matches("<Add>").count(),
+            2,
+            "exactly the two live additions (modified task-002 and task-000a) may appear: {xml}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_local_content_sync_reprime_with_key_zero_restarts_from_beginning() {
+        // A client that re-primes with SyncKey "0" (Status 3 recovery,
+        // re-provisioning, account reset) must never inherit the cursor of
+        // the sync it abandoned: it restarts from the first item, not from
+        // the old resume position.
+        let state = test_sync_state().await;
+        let user = "reprime-user@example.com";
+        let device = "test-device";
+        let state_coll = scoped_collection_id(crate::tasks::TASKS_COLLECTION_ID, device);
+        seed_tasks(&state, user, 4).await;
+
+        // Window 1 of 2 clips and leaves a cursor at task-001.
+        let coll = tasks_collection("0", Some(2));
+        let xml = handle_local_content_sync(&LocalContentSyncCtx {
+            state: &state,
+            username: user,
+            collection_id: crate::tasks::TASKS_COLLECTION_ID,
+            state_collection_id: &state_coll,
+            incoming_key: "0",
+            coll: &coll,
+            kind: LocalContentKind::Tasks,
+            global_budget: None,
+        })
+        .await;
+        assert_eq!(xml.matches("<Add>").count(), 2, "window 1: {xml}");
+        assert!(
+            state
+                .storage
+                .get_local_sync_cursor(user, &state_coll)
+                .await
+                .expect("cursor read")
+                .is_some(),
+            "clipped window must leave a cursor"
+        );
+
+        // Re-prime: the SAME key "0" must discard the cursor and start over.
+        let coll = tasks_collection("0", Some(2));
+        let xml = handle_local_content_sync(&LocalContentSyncCtx {
+            state: &state,
+            username: user,
+            collection_id: crate::tasks::TASKS_COLLECTION_ID,
+            state_collection_id: &state_coll,
+            incoming_key: "0",
+            coll: &coll,
+            kind: LocalContentKind::Tasks,
+            global_budget: None,
+        })
+        .await;
+        assert!(xml.contains("task-000"), "re-prime restarts at zero: {xml}");
+        assert!(
+            xml.contains("task-001"),
+            "re-prime must not skip already-delivered items: {xml}"
+        );
+        let key = first_sync_key(&xml);
+        assert_eq!(
+            state
+                .storage
+                .get_local_sync_cursor(user, &state_coll)
+                .await
+                .expect("cursor read"),
+            Some(("task-001".to_string(), 4)),
+            "the fresh initial sync owns the cursor again"
+        );
+
+        // The follow-up Sync with the re-issued key continues the new
+        // initial sync (not a delta): the next two items.
+        let coll = tasks_collection(&key, Some(2));
+        let xml = handle_local_content_sync(&LocalContentSyncCtx {
+            state: &state,
+            username: user,
+            collection_id: crate::tasks::TASKS_COLLECTION_ID,
+            state_collection_id: &state_coll,
+            incoming_key: &key,
+            coll: &coll,
+            kind: LocalContentKind::Tasks,
+            global_budget: None,
+        })
+        .await;
+        assert!(xml.contains("task-002"), "continuation: {xml}");
+        assert!(xml.contains("task-003"), "continuation: {xml}");
+        assert!(
+            !xml.contains("task-000<"),
+            "continuation must not re-deliver already-delivered items: {xml}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_local_content_sync_delta_delivers_journal_changes() {
+        let state = test_sync_state().await;
+        let user = "delta-window-user@example.com";
+        let device = "test-device";
+        let state_coll = scoped_collection_id(crate::tasks::TASKS_COLLECTION_ID, device);
+        seed_tasks(&state, user, 2).await;
+
+        let coll = tasks_collection("0", None);
+        let xml = handle_local_content_sync(&LocalContentSyncCtx {
+            state: &state,
+            username: user,
+            collection_id: crate::tasks::TASKS_COLLECTION_ID,
+            state_collection_id: &state_coll,
+            incoming_key: "0",
+            coll: &coll,
+            kind: LocalContentKind::Tasks,
+            global_budget: None,
+        })
+        .await;
+        assert_eq!(xml.matches("<Add>").count(), 2, "initial: {xml}");
+        assert!(!xml.contains("<MoreAvailable/>"), "initial: {xml}");
+        let key = first_sync_key(&xml);
+
+        // A new task lands (journal 'upsert') and one is removed ('delete').
+        state
+            .storage
+            .upsert_task(
+                user,
+                "task-new",
+                &crate::storage::TaskFields {
+                    subject: Some("New task"),
+                    importance: Some(1),
+                    sensitivity: Some(0),
+                    start_date: None,
+                    due_date: None,
+                    utc_start_date: None,
+                    utc_due_date: None,
+                    complete: 0,
+                    date_completed: None,
+                    reminder_set: 0,
+                    reminder_time: None,
+                    categories: None,
+                    body: None,
+                },
+            )
+            .await
+            .expect("journal upsert");
+        state
+            .storage
+            .delete_task(user, "task-001")
+            .await
+            .expect("journal delete");
+
+        let coll = tasks_collection(&key, None);
+        let xml = handle_local_content_sync(&LocalContentSyncCtx {
+            state: &state,
+            username: user,
+            collection_id: crate::tasks::TASKS_COLLECTION_ID,
+            state_collection_id: &state_coll,
+            incoming_key: &key,
+            coll: &coll,
+            kind: LocalContentKind::Tasks,
+            global_budget: None,
+        })
+        .await;
+        assert!(xml.contains("<Status>1</Status>"), "delta: {xml}");
+        assert_eq!(xml.matches("<Add>").count(), 1, "delta adds: {xml}");
+        assert_eq!(xml.matches("<Delete>").count(), 1, "delta deletes: {xml}");
+        assert!(
+            xml.contains("task-new"),
+            "delta must deliver the new task: {xml}"
+        );
+        assert!(
+            !xml.contains("task-000"),
+            "delta must not redeliver unchanged items: {xml}"
+        );
+        assert!(!xml.contains("<MoreAvailable/>"), "delta: {xml}");
+    }
+
+    #[tokio::test]
+    async fn test_local_content_sync_invalid_key_returns_status_3() {
+        let state = test_sync_state().await;
+        let user = "stale-key-user@example.com";
+        let device = "test-device";
+        let state_coll = scoped_collection_id(crate::tasks::TASKS_COLLECTION_ID, device);
+        seed_tasks(&state, user, 1).await;
+
+        let coll = tasks_collection("0", None);
+        let xml = handle_local_content_sync(&LocalContentSyncCtx {
+            state: &state,
+            username: user,
+            collection_id: crate::tasks::TASKS_COLLECTION_ID,
+            state_collection_id: &state_coll,
+            incoming_key: "0",
+            coll: &coll,
+            kind: LocalContentKind::Tasks,
+            global_budget: None,
+        })
+        .await;
+        assert_eq!(xml.matches("<Add>").count(), 1, "initial: {xml}");
+
+        // A key that was never issued must force re-priming (Status 3).
+        let coll = tasks_collection("bogus-key", None);
+        let xml = handle_local_content_sync(&LocalContentSyncCtx {
+            state: &state,
+            username: user,
+            collection_id: crate::tasks::TASKS_COLLECTION_ID,
+            state_collection_id: &state_coll,
+            incoming_key: "bogus-key",
+            coll: &coll,
+            kind: LocalContentKind::Tasks,
+            global_budget: None,
+        })
+        .await;
+        assert!(
+            xml.contains("<Status>3</Status>"),
+            "stale key must answer Status 3: {xml}"
+        );
+        assert!(xml.contains("<SyncKey>0</SyncKey>"), "Status 3: {xml}");
+    }
+
+    #[tokio::test]
+    async fn test_local_content_sync_get_changes_zero_rotates_key_only() {
+        let state = test_sync_state().await;
+        let user = "getchanges-user@example.com";
+        let device = "test-device";
+        let state_coll = scoped_collection_id(crate::tasks::TASKS_COLLECTION_ID, device);
+        seed_tasks(&state, user, 3).await;
+
+        let coll = tasks_collection("0", None);
+        let xml = handle_local_content_sync(&LocalContentSyncCtx {
+            state: &state,
+            username: user,
+            collection_id: crate::tasks::TASKS_COLLECTION_ID,
+            state_collection_id: &state_coll,
+            incoming_key: "0",
+            coll: &coll,
+            kind: LocalContentKind::Tasks,
+            global_budget: None,
+        })
+        .await;
+        let key = first_sync_key(&xml);
+
+        // GetChanges=0: the key must rotate but nothing may be resent, even
+        // though the journal is non-empty at this point.
+        let mut coll = tasks_collection(&key, None);
+        coll.get_changes = false;
+        let xml = handle_local_content_sync(&LocalContentSyncCtx {
+            state: &state,
+            username: user,
+            collection_id: crate::tasks::TASKS_COLLECTION_ID,
+            state_collection_id: &state_coll,
+            incoming_key: &key,
+            coll: &coll,
+            kind: LocalContentKind::Tasks,
+            global_budget: None,
+        })
+        .await;
+        assert!(xml.contains("<Status>1</Status>"), "getchanges=0: {xml}");
+        assert_eq!(xml.matches("<Add>").count(), 0, "getchanges=0: {xml}");
+        let key2 = first_sync_key(&xml);
+        assert_ne!(key, key2, "key must rotate even with no changes sent");
+
+        // GetChanges=0 must not consume the journal: a change that already
+        // landed before the acknowledge-only request still has to reach the
+        // client on the next GetChanges=1 Sync (MS-ASCMD §2.2.3.72), and the
+        // journal pruner must never floor above it. An acknowledge-only
+        // rotation that stored the current head would drop (and then prune)
+        // this row permanently.
+        state
+            .storage
+            .upsert_task(
+                user,
+                "task-001",
+                &crate::storage::TaskFields {
+                    subject: Some("Changed before ack"),
+                    importance: Some(1),
+                    ..Default::default()
+                },
+            )
+            .await
+            .expect("change lands before the GetChanges=0 request");
+        let mut coll = tasks_collection(&key2, None);
+        coll.get_changes = false;
+        let xml = handle_local_content_sync(&LocalContentSyncCtx {
+            state: &state,
+            username: user,
+            collection_id: crate::tasks::TASKS_COLLECTION_ID,
+            state_collection_id: &state_coll,
+            incoming_key: &key2,
+            coll: &coll,
+            kind: LocalContentKind::Tasks,
+            global_budget: None,
+        })
+        .await;
+        assert_eq!(
+            xml.matches("<Add>").count(),
+            0,
+            "second getchanges=0: {xml}"
+        );
+        let key3 = first_sync_key(&xml);
+
+        // The next real Sync must still deliver the pre-ack change.
+        let coll = tasks_collection(&key3, None);
+        let xml = handle_local_content_sync(&LocalContentSyncCtx {
+            state: &state,
+            username: user,
+            collection_id: crate::tasks::TASKS_COLLECTION_ID,
+            state_collection_id: &state_coll,
+            incoming_key: &key3,
+            coll: &coll,
+            kind: LocalContentKind::Tasks,
+            global_budget: None,
+        })
+        .await;
+        assert!(
+            xml.contains("Changed before ack"),
+            "GetChanges=0 must not consume journal changes: {xml}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_sync_collections_global_window_budget_stops_processing() {
+        let state = test_sync_state().await;
+        let user = "global-budget-user@example.com";
+        let device = "budget-device";
+        seed_tasks(&state, user, 7).await;
+
+        let ctx = SyncCtx {
+            state: &state,
+            username: user,
+            password: &SecretString::from("pw"),
+            wbxml: &Wbxml::new(),
+            as_wbxml: false,
+            request_id: "test-req",
+            device_id: device,
+            global_window_size: Some(5),
+        };
+
+        // Two Tasks collections in one request with a global WindowSize of 5:
+        // the first collection consumes the entire budget (5 of 7 tasks) and
+        // the second must not be processed at all (MS-ASCMD §2.2.3.199).
+        let collections = vec![
+            tasks_collection("0", Some(10)),
+            tasks_collection("0", Some(10)),
+        ];
+        let resp = handle_sync_collections(&ctx, &collections).await;
+        let text = response_text(resp).await;
+        assert!(
+            text.contains("<Status>1</Status>"),
+            "global-budget response: {text}"
+        );
+        assert_eq!(
+            text.matches("<Add>").count(),
+            5,
+            "global WindowSize must cap the whole response: {text}"
+        );
+        assert!(text.contains("<MoreAvailable/>"), "global budget: {text}");
+        assert_eq!(
+            text.matches("<CollectionId>").count(),
+            1,
+            "budget-exhausted collections must be skipped entirely: {text}"
+        );
     }
 }
