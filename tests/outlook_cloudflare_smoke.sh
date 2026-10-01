@@ -150,7 +150,9 @@ curl -fsS "${auth[@]}" \
   -H 'Content-Type: application/xml; charset=utf-8' \
   --data "<?xml version=\"1.0\" encoding=\"utf-8\"?><Sync xmlns=\"AirSync:\"><Collections><Collection><Class>Calendar</Class><SyncKey>bogus</SyncKey><CollectionId>1</CollectionId></Collection></Collections></Sync>" \
   "${base}/Microsoft-Server-ActiveSync?Cmd=Sync&User=${GATEWAY_USER}&DeviceId=smoke-device&DeviceType=Outlook" >"${TMP_DIR}/sync-invalid.xml"
-require_contains "${TMP_DIR}/sync-invalid.xml" "<Status>9</Status>"
+# [MS-ASCMD] §2.2.3.177.17: Sync collection status 3 = invalid
+# synchronization key (FolderSync keeps 9).
+require_contains "${TMP_DIR}/sync-invalid.xml" "<Status>3</Status>"
 
 # ---------------------------------------------------------------------------
 # Audit item 9: S/MIME certificates in the GAL (MS-ASCMD ResolveRecipients).

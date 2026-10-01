@@ -597,14 +597,11 @@ fn render_ews_internet_headers_xml(email: &JmapEmail) -> String {
     out
 }
 
-/// Render a JMAP email as an EAS ApplicationData XML element.
-///
-/// Per MS-ASEMAIL §2.2, the Email class includes elements like
-/// Subject, From, To, Body, etc.
-/// Remove characters that are invalid in XML 1.0.
-///
-/// XML 1.0 allowed characters: #x9 | #xA | #xD | [#x20-#xD7FF] | [#xE000-#xFFFD] | [#x10000-#x10FFFF]
-fn sanitize_for_xml(s: &str) -> String {
+/// Strip characters XML 1.0 forbids in character data ([MS-ASDTYPE] §2.3:
+/// control characters other than tab/newline/CR are illegal even as
+/// character references; surrogates and U+FFFE/U+FFFF are excluded by the
+/// same rule).
+pub(crate) fn sanitize_for_xml(s: &str) -> String {
     s.chars()
         .filter(|&c| {
             matches!(
@@ -654,10 +651,22 @@ pub(crate) fn render_negotiated_eas_body(
         // RTF is only negotiated when the native format is RTF; the JMAP
         // backend stores no RTF, so fall back to the native rendition.
         3 => native_content.clone(),
-        // MIME bodies are fetched by the client through ItemOperations when
-        // MIMESupport was negotiated; the native rendition is returned when
-        // the blob is not available inline.
+        // A Type 4 (MIME) body is never negotiated for conversion from a
+        // non-MIME native format (see `is_convertible`): the JMAP backend
+        // exposes structured bodyValues, not a raw RFC 5322 message, and
+        // labeling that content as MIME would misreport the body format. If
+        // a Type 4 preference slipped through, serve the native rendition
+        // truthfully instead.
         _ => native_content.clone(),
+    };
+    // Conversion can grow the content (e.g. plain text wrapped into the
+    // minimal HTML document for a Type 2 body). AllOrNone compares against
+    // the bytes actually returned, so re-negotiate with the converted size
+    // whenever the rendered format differs from the native one.
+    let negotiated = if negotiated.body_type != native.wire_value() {
+        negotiate_body(options, native, full_content.len())
+    } else {
+        negotiated
     };
 
     // EstimatedDataSize is the size of the full content in the returned
@@ -675,12 +684,19 @@ pub(crate) fn render_negotiated_eas_body(
         2 => sources.html_truncated,
         _ => false,
     };
-    let (data, truncated) = match negotiated.truncation_size {
-        Some(limit) => {
-            let (slice, cut) = truncate_utf8_bytes(&full_content, limit);
-            (slice.to_owned(), cut || jmap_truncated)
+    let (data, truncated) = if negotiated.data_withheld {
+        // The client's whole chain was AllOrNone-skipped: it forbade a
+        // truncated response, so no Data is returned — only the size
+        // announcement that lets it ItemOperations-Fetch the full item.
+        (String::new(), false)
+    } else {
+        match negotiated.truncation_size {
+            Some(limit) => {
+                let (slice, cut) = truncate_utf8_bytes(&full_content, limit);
+                (slice.to_owned(), cut || jmap_truncated)
+            }
+            None => (full_content.clone(), jmap_truncated),
         }
-        None => (full_content.clone(), jmap_truncated),
     };
 
     // Preview source: the plain-text rendition of the body
@@ -702,15 +718,22 @@ pub(crate) fn render_negotiated_eas_body(
     if truncated {
         xml.push_str("<AirSyncBase:Truncated>1</AirSyncBase:Truncated>");
     }
-    if include_data {
-        xml.push_str(&format!("<AirSyncBase:Data>{}</AirSyncBase:Data>", xml_escape(&data)));
+    if include_data && !data.is_empty() {
+        // Data is XML character data ([MS-ASDTYPE] §2.3): strip the
+        // characters XML 1.0 forbids even in escaped form before escaping
+        // the remainder.
+        xml.push_str(&format!(
+            "<AirSyncBase:Data>{}</AirSyncBase:Data>",
+            xml_escape(&sanitize_for_xml(&data))
+        ));
     }
     // [MS-ASAIRS] §2.2.2.35.1: the Preview element is not returned with a
     // Type 1 (plain text) body that carries valid Data — the body itself is
     // the preview source. It IS returned for HTML bodies and for bodies whose
-    // Data was omitted (conversation-mode expanded items).
+    // Data was omitted (conversation-mode expanded items or an AllOrNone
+    // response that withheld the body).
     if let Some(chars) = negotiated.preview
-        && !(negotiated.body_type == 1 && include_data)
+        && !(negotiated.body_type == 1 && include_data && !data.is_empty())
     {
         xml.push_str(&format!(
             "<AirSyncBase:Preview>{}</AirSyncBase:Preview>",
@@ -739,13 +762,23 @@ pub(crate) fn render_eas_body_part(
     };
     let message_part = extract_html_message_part(&part_html);
     let estimated = message_part.len();
-    let (data, truncated) = match pref.truncation_size {
-        Some(limit) => truncate_utf8_bytes(message_part, limit),
-        None => (message_part, false),
+    let withheld = pref.all_or_none == Some(true)
+        && pref.truncation_size.is_some_and(|limit| estimated > limit as usize);
+    let (data, truncated) = match (withheld, pref.truncation_size) {
+        // [MS-ASAIRS] §2.2.2.3.1 (AllOrNone) via §2.2.2.37 Status 176: the
+        // part is too large for the client's all-or-none limit, so the part
+        // is not returned truncated — Status 176 announces the failure and
+        // Data/Truncated are omitted.
+        (true, _) => (message_part, false),
+        (false, Some(limit)) => truncate_utf8_bytes(message_part, limit),
+        (false, None) => (message_part, false),
     };
 
     let mut xml = String::with_capacity(512);
-    xml.push_str("<AirSyncBase:BodyPart><AirSyncBase:Status>1</AirSyncBase:Status>");
+    xml.push_str(&format!(
+        "<AirSyncBase:BodyPart><AirSyncBase:Status>{}</AirSyncBase:Status>",
+        if withheld { 176 } else { 1 }
+    ));
     xml.push_str("<AirSyncBase:Type>2</AirSyncBase:Type>");
     xml.push_str(&format!(
         "<AirSyncBase:EstimatedDataSize>{}</AirSyncBase:EstimatedDataSize>",
@@ -754,10 +787,12 @@ pub(crate) fn render_eas_body_part(
     if truncated {
         xml.push_str("<AirSyncBase:Truncated>1</AirSyncBase:Truncated>");
     }
-    xml.push_str(&format!(
-        "<AirSyncBase:Data>{}</AirSyncBase:Data>",
-        xml_escape(&sanitize_for_xml(data))
-    ));
+    if !withheld {
+        xml.push_str(&format!(
+            "<AirSyncBase:Data>{}</AirSyncBase:Data>",
+            xml_escape(&sanitize_for_xml(data))
+        ));
+    }
     if let Some(chars) = pref.preview {
         let plain = html_to_plain_text(message_part);
         xml.push_str(&format!(
@@ -786,16 +821,12 @@ struct BodySources<'a> {
 
 fn email_body_sources(email: &JmapEmail) -> BodySources<'_> {
     let mut out = BodySources::default();
-    let values = match email.body_values.as_ref() {
-        Some(v) => v,
-        None => return out,
-    };
     let resolve = |parts: Option<&Vec<crate::jmap::JmapBodyPart>>| -> Option<(&str, Option<u64>, bool)> {
         let first = parts?.first()?;
         let entry = if first.part_id.is_empty() {
-            values.values().next()
+            values_from(email).values().next()
         } else {
-            values.get(&first.part_id)
+            values_from(email).get(&first.part_id)
         }?;
         Some((entry.value.as_str(), first.size, entry.is_truncated.unwrap_or(false)))
     };
@@ -809,7 +840,24 @@ fn email_body_sources(email: &JmapEmail) -> BodySources<'_> {
         out.plain_true_size = size;
         out.plain_truncated = truncated;
     }
+    if out.html.is_none() && out.plain.is_none() {
+        // RFC 8621 §4.1.4: the server-side preview is the only body-derived
+        // text guaranteed to exist even when bodyValues was not returned
+        // (e.g. a conforming server that omits values without the
+        // fetchTextBodyValues/fetchHTMLBodyValues arguments). Serving it as
+        // the plain-text body keeps the EAS response carrying real content
+        // instead of an empty Data element.
+        if let Some(preview) = email.preview.as_deref().filter(|p| !p.is_empty()) {
+            out.plain = Some(preview);
+        }
+    }
     out
+}
+
+fn values_from(email: &JmapEmail) -> &std::collections::HashMap<String, crate::jmap::JmapBodyValue> {
+    static EMPTY: std::sync::LazyLock<std::collections::HashMap<String, crate::jmap::JmapBodyValue>> =
+        std::sync::LazyLock::new(std::collections::HashMap::new);
+    email.body_values.as_ref().unwrap_or(&EMPTY)
 }
 
 /// Wrap plain text in the minimal HTML document Exchange produces when a
@@ -861,7 +909,14 @@ pub(crate) fn extract_html_message_part(html: &str) -> &str {
 /// 1. the JMAP `threadId` (the backend's authoritative grouping),
 /// 2. the RFC 5322 lineage root — the first entry of `References`, else
 ///    `In-ReplyTo`, else the message's own `Message-ID`,
-/// 3. a subject-derived fallback for standalone messages with no lineage.
+/// 3. the message's own JMAP `id`, for messages that carry no lineage
+///    evidence at all. Keying this rung on the subject would MERGE
+///    unrelated standalone messages that happen to share a subject (or that
+///    both lack one); with no thread, no references, and no Message-ID there
+///    is no evidence two messages are related, so each becomes its own
+///    single-message conversation. ConversationId/ConversationIndex stay
+///    present either way — they are required elements in server responses
+///    ([MS-ASEMAIL] §2.2.2.21, §2.2.2.22).
 fn conversation_thread_guid(email: &JmapEmail) -> [u8; 16] {
     let mut key: Option<String> = None;
     if let Some(t) = email.thread_id.as_deref()
@@ -887,31 +942,12 @@ fn conversation_thread_guid(email: &JmapEmail) -> [u8; 16] {
             key = Some(format!("lineage:{}", id.trim()));
         }
     }
-    let key = key.unwrap_or_else(|| format!("subject:{}", normalized_subject(email)));
+    let key = key.unwrap_or_else(|| format!("id:{}", email.id.as_deref().unwrap_or("")));
 
     let digest = Sha256::digest(key.as_bytes());
     let mut guid = [0u8; 16];
     guid.copy_from_slice(&digest[..16]);
     guid
-}
-
-/// The `PidTagNormalizedSubject` approximation ([MS-OXCMSG] §2.2.1.10):
-/// the subject without leading "Re:"/"Fw:" style prefixes.
-fn normalized_subject(email: &JmapEmail) -> String {
-    let subject = email.subject.as_deref().unwrap_or("").trim();
-    let mut rest = subject;
-    loop {
-        let lower = rest.trim_start().to_ascii_lowercase();
-        if let Some(stripped) = lower.strip_prefix("re:")
-            .or_else(|| lower.strip_prefix("fw:"))
-            .or_else(|| lower.strip_prefix("fwd:"))
-        {
-            rest = &rest[rest.len() - stripped.len()..];
-        } else {
-            break;
-        }
-    }
-    rest.trim().to_string()
 }
 
 /// Windows FILETIME (100-nanosecond intervals since 1601-01-01 UTC,
@@ -937,49 +973,28 @@ fn email_filetime(email: &JmapEmail) -> u64 {
 }
 
 /// The `email2:ConversationIndex` value ([MS-ASCON] §2.2.2.4,
-/// [MS-OXOMSG] §2.2.1.3): a 22-byte header — 0x01, then the 40 most
+/// [MS-OXOMSG] §2.2.1.2/§2.2.1.3): a 22-byte base — 0x01, then the 40 most
 /// significant bits of the FILETIME in big-endian order, then the 16-byte
-/// thread GUID — followed by one 5-byte response level per ancestor message
-/// in the RFC 5322 lineage.
-///
-/// Response level layout ([MS-OXOMSG] §2.2.1.3): Delta Code bit + 31-bit
-/// time delta in big-endian, then one random byte. The time delta is the
-/// difference between the message's time and the header time, shifted per
-/// the delta code; the random byte is derived deterministically from the
-/// thread so repeated syncs return an identical index (the client MUST NOT
-/// change it, and a changing value would look like a different message).
+/// thread GUID. Reply-level entries would extend it by 5 bytes per ancestor
+/// ([MS-OXOMSG] §2.2.1.3), but the gateway cannot produce them truthfully
+/// from JMAP — see the comment inside.
 pub(crate) fn conversation_index_bytes(email: &JmapEmail) -> Vec<u8> {
     let guid = conversation_thread_guid(email);
     let filetime = email_filetime(email);
 
-    let mut out = Vec::with_capacity(22 + 5 * 8);
+    let mut out = Vec::with_capacity(22);
     out.push(0x01);
     // The 40 most significant FILETIME bits, most significant first.
     let msb40 = filetime >> 24;
     out.extend_from_slice(&msb40.to_be_bytes()[3..8]);
     out.extend_from_slice(&guid);
-
-    let depth = email
-        .references
-        .as_ref()
-        .map(|r| r.len())
-        .unwrap_or(0)
-        .min(8);
-    for level in 0..depth {
-        // TimeDiff between this message and the header time is zero for the
-        // synthetic index (the header time is the message's own time), so
-        // the delta code is 0 and the time delta is 0 — a well-formed level.
-        let time_delta: u64 = 0;
-        let delta_code = 0u64;
-        let value = (delta_code << 31) | (time_delta & 0x7FFF_FFFF);
-        let value_bytes = value.to_be_bytes();
-        out.extend_from_slice(&value_bytes[4..8]);
-        // Deterministic "random" byte per (thread, level).
-        let mut hasher = Sha256::new();
-        hasher.update(guid);
-        hasher.update([level as u8]);
-        out.push(hasher.finalize()[0]);
-    }
+    // Reply-level entries are deliberately omitted: JMAP exposes neither
+    // per-ancestor reply timestamps nor a server-computed hierarchy, so the
+    // 5-byte per-level deltas cannot be produced truthfully. Fabricated
+    // levels (zero time deltas, synthetic "random" bytes) would misrepresent
+    // the message's position in the thread to clients that read the level
+    // count as ancestry depth; the base-only index is the well-defined
+    // representation of a root message ([MS-OXOMSG] §2.2.1.2).
     out
 }
 
@@ -1013,6 +1028,12 @@ pub fn render_jmap_email_as_eas_application_data(
 /// in server responses per [MS-ASEMAIL] §2.2.2.21/§2.2.2.22), BodyPart for
 /// conversation mode, and the body-data omission for conversation-expanded
 /// out-of-window items ([MS-ASCON] §3.2.5.7).
+///
+/// `Email:HasAttachments` is deliberately absent: it is not an element of
+/// the Email class ([MS-ASEMAIL] §2.2) and has no token in WBXML code page 2
+/// ([MS-ASWBXML]: AttMethod 0x0A is followed by Body 0x0C). Its only EAS
+/// definition is in the Find namespace (§2.2.3.87). Attachment presence is
+/// conveyed by the `<AirSyncBase:Attachments>` roster below.
 #[allow(clippy::too_many_arguments)]
 pub fn render_jmap_email_as_eas_application_data_with_options(
     email: &JmapEmail,
@@ -1072,7 +1093,6 @@ pub fn render_jmap_email_as_eas_application_data_with_options(
         .keywords
         .as_ref()
         .is_some_and(|k| k.contains_key("$seen"));
-    let has_attachment = email.has_attachment.unwrap_or(false);
     let importance = email.keywords.as_ref().map_or("1", |k| {
         if k.contains_key("$important") {
             "2"
@@ -1147,7 +1167,7 @@ pub fn render_jmap_email_as_eas_application_data_with_options(
     );
 
     format!(
-        r#"<ApplicationData><ServerId>{server_id}</ServerId><Email:Subject>{subject}</Email:Subject><Email:From>{sender_name} <{sender_email}></Email:From>{to_xml}<Email:DateReceived>{received_at}</Email:DateReceived><Email:Importance>{importance}</Email:Importance><Email:Read>{is_read_int}</Email:Read><Email:HasAttachments>{has_attachment_int}</Email:HasAttachments>{message_id_xml}{in_reply_to_xml}{references_xml}{conversation_id_xml}{conversation_index_xml}{body_xml}{body_part_xml}{attachments_xml}</ApplicationData>"#,
+        r#"<ApplicationData><ServerId>{server_id}</ServerId><Email:Subject>{subject}</Email:Subject><Email:From>{sender_name} &lt;{sender_email}&gt;</Email:From>{to_xml}<Email:DateReceived>{received_at}</Email:DateReceived><Email:Importance>{importance}</Email:Importance><Email:Read>{is_read_int}</Email:Read>{message_id_xml}{in_reply_to_xml}{references_xml}{conversation_id_xml}{conversation_index_xml}{body_xml}{body_part_xml}{attachments_xml}</ApplicationData>"#,
         server_id = xml_escape(server_id),
         subject = xml_escape(&subject),
         sender_name = xml_escape(&sender_name),
@@ -1155,7 +1175,6 @@ pub fn render_jmap_email_as_eas_application_data_with_options(
         received_at = xml_escape(&received_at),
         importance = importance,
         is_read_int = if is_read { "1" } else { "0" },
-        has_attachment_int = if has_attachment { "1" } else { "0" },
         message_id_xml = message_id_xml,
         in_reply_to_xml = in_reply_to_xml,
         references_xml = references_xml,
@@ -2162,7 +2181,9 @@ async fn resolve_eas_threading(
 
     let orig = async {
         let account_id = jmap.get_account_id(username, password).await?;
-        jmap.get_email(&account_id, jmap_id, username, password)
+        // Threading needs only `references`/`messageId` (message headers,
+        // already in the property list) — no body values.
+        jmap.get_email(&account_id, jmap_id, username, password, false)
             .await
     }
     .await;
@@ -3171,5 +3192,51 @@ Body\r\n";
         assert!(!is_eas_email_collection_id("0"));
         assert!(!is_eas_email_collection_id("7"));
         assert!(!is_eas_email_collection_id("99"));
+    }
+
+    /// [MS-ASWBXML] code page 2 has no `HasAttachments` token (AttMethod
+    /// 0x0A is followed by Body 0x0C), and the Email class does not define
+    /// the element ([MS-ASEMAIL] §2.2; its only EAS definition is Find's
+    /// §2.2.3.87). The ApplicationData output must therefore never contain
+    /// `Email:HasAttachments` — a WBXML Sync response carrying it fails
+    /// tag lookup and the request degrades to HTTP 500. The stronger guard
+    /// is end-to-end: the rendered ApplicationData (wrapped in the Sync
+    /// namespaces) must WBXML-encode without any unknown-tag error.
+    #[test]
+    fn test_eas_application_data_has_no_unencodable_email_tags() {
+        use crate::jmap::{JmapBodyPart, JmapBodyValue};
+        let email = JmapEmail {
+            id: Some("test".to_string()),
+            subject: Some("Round trip".to_string()),
+            text_body: Some(vec![JmapBodyPart {
+                part_id: "text-part".to_string(),
+                blob_id: None,
+                size: None,
+                content_type: Some("text/plain".to_string()),
+                charset: None,
+            }]),
+            body_values: Some(HashMap::from([(
+                "text-part".to_string(),
+                JmapBodyValue {
+                    value: "Plain body".to_string(),
+                    is_encoding_problem: None,
+                    is_truncated: None,
+                },
+            )])),
+            ..Default::default()
+        };
+        let xml = render_jmap_email_as_eas_application_data(&email, "2:abc", "2");
+        assert!(
+            !xml.contains("HasAttachments"),
+            "Email:HasAttachments is not encodable in code page 2:\n{xml}"
+        );
+        // End-to-end: every element the renderer emits must have a token in
+        // its code page, including the AirSyncBase:Body/Attachments blocks.
+        let wrapped = format!(
+            r#"<Sync xmlns="AirSync:" xmlns:AirSyncBase="AirSyncBase:" xmlns:Email="Email:" xmlns:Email2="Email2:">{xml}</Sync>"#
+        );
+        crate::wbxml::Wbxml::new()
+            .encode(&wrapped)
+            .expect("ApplicationData must be WBXML-encodable without unknown tags");
     }
 }

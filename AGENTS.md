@@ -27,9 +27,10 @@ EAS specs v20250520 (16.1); older EAS compat NOT needed.
   ambient default namespace and can fail tag lookup. eas.rs response templates
   always declare all namespaces they use.
 - EAS request/response XML parsing uses quick-xml LOCAL names (prefix-agnostic);
-  string helpers (`extract_tag_block`, `extract_all_tag_blocks`) match literal
-  unqualified tag names — safe because decode output keeps unqualified names
-  only where they're the document default namespace.
+  string helpers (`extract_all_tag_blocks`, `extract_first_tag_text`,
+  `extract_all_tag_text`) match literal unqualified tag names — safe because
+  decode output keeps unqualified names only where they're the document
+  default namespace.
 - Context structs to dodge clippy arg limits: `SyncCtx`, `EmailSyncCtx` (state,
   jmap, account_id, username, password, collection_id, state_collection_id,
   window, options, conversation_mode — Copy, destructured with `*ctx`).

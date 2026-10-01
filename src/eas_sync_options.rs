@@ -46,14 +46,22 @@ pub struct ParsedCollectionOptions {
 }
 
 /// Parse the `<Options>` block and collection-level control elements out of
-/// one `<Collection>` element's XML.
+/// one element's XML — a `<Collection>` element, the inner content of an
+/// ItemOperations `<Fetch>` element, or a full legacy (non-nested)
+/// `<Sync>` document. The container's name and depth are irrelevant: only
+/// the position of the `<Options>` element inside its container matters,
+/// so the same parser serves every call shape.
 ///
 /// The WBXML decoder emits qualified names for cross-code-page elements
 /// (`<AirSyncBase:BodyPreference>`), while plain XML requests may use either
 /// form; matching on the local name handles both. Text content is matched
 /// case-insensitively for booleans per [MS-ASDTYPE] §2.1 ("1"/"0", with the
 /// spec's default of TRUE for a present-but-valueless boolean tag handled by
-/// the `Empty` event).
+/// the `Empty` event). An EMPTY `<Options/>` block still counts as
+/// "included" ([MS-ASCMD] §2.2.3.125.6: "Whenever the client specifies new
+/// options by including an Options block in the request, the server MUST
+/// replace the original Options block" — it is the inclusion, not its
+/// content, that replaces the previously stored sticky block).
 pub fn parse_collection_options(collection_xml: &str) -> ParsedCollectionOptions {
     let mut parsed = ParsedCollectionOptions::default();
     let mut options_seen = false;
@@ -75,21 +83,31 @@ pub fn parse_collection_options(collection_xml: &str) -> ParsedCollectionOptions
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(e)) => {
                 let local = local_name(e.name().as_ref());
-                // A new BodyPreference opens its own preference slot; the
-                // child elements that follow fill it in request order.
-                if path.len() == 2 && path[1] == "Options" && local == "BodyPreference" {
-                    parsed.options.body_preferences.push(EasBodyPreference::default());
-                }
-                if path.len() == 1 && local == "Options" {
+                if local == "Options" {
                     options_seen = true;
+                } else if path.last().is_some_and(|p| p == "Options")
+                    && local == "BodyPreference"
+                {
+                    // A BodyPreference that is a direct child of Options
+                    // opens its own preference slot; the child elements that
+                    // follow fill it in request order.
+                    parsed
+                        .options
+                        .body_preferences
+                        .push(EasBodyPreference::default());
                 }
                 path.push(local);
                 has_text.push(false);
             }
             Ok(Event::Empty(e)) => {
-                // Self-closing tag: <Partial/>, <ConversationMode/> —
-                // presence without a value defaults the boolean to TRUE.
+                // Self-closing tag: <Partial/>, <ConversationMode/>,
+                // <Options/> — presence without a value defaults the
+                // boolean to TRUE, and a present (even empty) <Options/>
+                // replaces the stored sticky block.
                 let local = local_name(e.name().as_ref());
+                if local == "Options" {
+                    options_seen = true;
+                }
                 let mut empty_path = path.clone();
                 empty_path.push(local.clone());
                 assign_option_text(&mut parsed, &empty_path, &local, "");
@@ -159,6 +177,11 @@ fn is_valueless_boolean_tag(local: &str) -> bool {
 }
 
 /// Assign one element's text to the negotiation structures based on its path.
+///
+/// Paths are matched RELATIVE to the enclosing `<Options>` element so the
+/// parser tolerates any container: a `<Collection>` root, a bare
+/// ItemOperations `<Fetch>` body, or a full legacy `<Sync>` document all
+/// produce `["…", "Options", …]` with the same relative shape.
 fn assign_option_text(
     parsed: &mut ParsedCollectionOptions,
     path: &[String],
@@ -168,58 +191,65 @@ fn assign_option_text(
     let text = text.trim();
     let options = &mut parsed.options;
 
-    // Depth: ["Collection", "Options", ...] — direct children of Options.
-    if path.len() == 3 && path[1] == "Options" {
-        match tag {
-            "FilterType" => options.filter_type = text.parse().ok(),
-            "MIMESupport" => options.mime_support = text.parse().ok(),
-            "MIMETruncation" => options.mime_truncation = text.parse().ok(),
-            "MaxItems" => options.max_items = text.parse().ok(),
-            "Truncation" => options.truncation = text.parse().ok(),
-            "Conflict" => options.conflict = text.parse().ok(),
-            "RightsManagementSupport" => {
-                options.rights_management_support = text != "0";
-            }
+    // Relative path inside the Options subtree: the slice after the LAST
+    // "Options" entry in the open-element stack (the parser never feeds
+    // nested Options, so one level suffices).
+    if let Some(options_idx) = path.iter().rposition(|p| p == "Options") {
+        let rel = &path[options_idx + 1..];
+        match rel.len() {
+            // Direct child of Options: ["Options", tag].
+            1 => match tag {
+                "FilterType" => options.filter_type = text.parse().ok(),
+                "MIMESupport" => options.mime_support = text.parse().ok(),
+                "MIMETruncation" => options.mime_truncation = text.parse().ok(),
+                "MaxItems" => options.max_items = text.parse().ok(),
+                "Truncation" => options.truncation = text.parse().ok(),
+                "Conflict" => options.conflict = text.parse().ok(),
+                "RightsManagementSupport" => {
+                    options.rights_management_support = text != "0";
+                }
+                _ => {}
+            },
+            // Preference child:
+            // ["Options", "BodyPreference"|"BodyPartPreference", child].
+            2 => match rel[0].as_str() {
+                "BodyPreference" => {
+                    // The BodyPreference under construction is the last entry.
+                    let Some(pref) = options.body_preferences.last_mut() else {
+                        return;
+                    };
+                    match tag {
+                        "Type" => pref.body_type = text.parse().unwrap_or(1),
+                        "TruncationSize" => pref.truncation_size = text.parse().ok(),
+                        "AllOrNone" => pref.all_or_none = Some(text != "0"),
+                        "Preview" => pref.preview = text.parse().ok(),
+                        _ => {}
+                    }
+                }
+                "BodyPartPreference" => {
+                    let part = options
+                        .body_part_preference
+                        .get_or_insert_with(EasBodyPartPreference::default);
+                    match tag {
+                        "Type" => part.body_type = text.parse().unwrap_or(2),
+                        "TruncationSize" => part.truncation_size = text.parse().ok(),
+                        "AllOrNone" => part.all_or_none = Some(text != "0"),
+                        "Preview" => part.preview = text.parse().ok(),
+                        _ => {}
+                    }
+                }
+                _ => {}
+            },
             _ => {}
         }
         return;
     }
 
-    // Depth 4: ["Collection", "Options", "BodyPreference"|"BodyPartPreference", child].
-    if path.len() == 4 && path[1] == "Options" {
-        match path[2].as_str() {
-            "BodyPreference" => {
-                // The BodyPreference under construction is the last entry.
-                let Some(pref) = options.body_preferences.last_mut() else {
-                    return;
-                };
-                match tag {
-                    "Type" => pref.body_type = text.parse().unwrap_or(1),
-                    "TruncationSize" => pref.truncation_size = text.parse().ok(),
-                    "AllOrNone" => pref.all_or_none = Some(text != "0"),
-                    "Preview" => pref.preview = text.parse().ok(),
-                    _ => {}
-                }
-            }
-            "BodyPartPreference" => {
-                let part = options
-                    .body_part_preference
-                    .get_or_insert_with(EasBodyPartPreference::default);
-                match tag {
-                    "Type" => part.body_type = text.parse().unwrap_or(2),
-                    "TruncationSize" => part.truncation_size = text.parse().ok(),
-                    "AllOrNone" => part.all_or_none = Some(text != "0"),
-                    "Preview" => part.preview = text.parse().ok(),
-                    _ => {}
-                }
-            }
-            _ => {}
-        }
-        return;
-    }
-
-    // Collection-level direct children (["Collection", tag]).
-    if path.len() == 2 && path[0] == "Collection" {
+    // Collection-level control elements are direct children of the
+    // document root, whatever that root is named ([MS-ASCON] §2.2.2.5
+    // ConversationMode and [MS-ASCMD] §2.2.1.21.3 DeletesAsMoves live at
+    // Collection scope).
+    if path.len() == 2 {
         match tag {
             "ConversationMode" => parsed.controls.conversation_mode = Some(text != "0"),
             "DeletesAsMoves" => parsed.controls.deletes_as_moves = Some(text != "0"),
@@ -292,7 +322,10 @@ pub struct EasSyncCollectionOptions {
     /// MIME, 1 = S/MIME messages only, 2 = all messages.
     pub mime_support: Option<u8>,
     /// `<airsync:MIMETruncation>` ([MS-ASCMD] §2.2.3.111): 0..8 thresholds,
-    /// 8 = never truncate MIME data.
+    /// 8 = never truncate MIME data. Honored trivially: the renderer never
+    /// selects a Type 4 (MIME) rendition (see `is_convertible`), so no MIME
+    /// data is ever emitted and no truncation of it can occur. Parsed and
+    /// persisted anyway for sticky-block wire fidelity.
     pub mime_truncation: Option<u8>,
     /// `<airsync:MaxItems>` ([MS-ASCMD] §2.2.3.103.2).
     pub max_items: Option<u32>,
@@ -356,6 +389,12 @@ pub struct NegotiatedBody {
     /// Preview length in Unicode characters, if the selected preference (or
     /// the BodyPartPreference, which is honored separately) asked for one.
     pub preview: Option<u8>,
+    /// The client's chain was exhausted because every preference was
+    /// AllOrNone-skipped ([MS-ASAIRS] §2.2.2.3.2): the client forbade a
+    /// truncated response for the rejected types, so the Body element is
+    /// emitted WITHOUT a Data child (Type + EstimatedDataSize only) and the
+    /// client can ItemOperations-Fetch the full item.
+    pub data_withheld: bool,
 }
 
 /// The native storage format of an item's body, which drives preference
@@ -396,9 +435,15 @@ impl NativeBodyType {
 ///    preference wins: plain text and HTML are always interconvertible (the
 ///    spec example converts an HTML-native body to plain text for the
 ///    client), RTF/MIME preferences are only satisfied when the native format
-///    already is RTF/MIME (or MIMESupport allows a MIME rendition).
+///    already is RTF/MIME (see `is_convertible` for the MIME gate).
 /// 3. With no preferences at all, return the native format untruncated —
 ///    the pre-16.1 behavior for clients that never negotiate.
+///
+/// Callers that CONVERT the rendition after negotiation (e.g. a plain-text
+/// calendar description served as a Type 2 minimal-HTML body) must
+/// re-negotiate with the converted size: AllOrNone compares against the
+/// bytes actually returned, and a conversion wrapper grows the content past
+/// a limit the native size still fit.
 pub fn negotiate_body(
     options: &EasSyncCollectionOptions,
     native: NativeBodyType,
@@ -410,6 +455,7 @@ pub fn negotiate_body(
             body_type: native.wire_value(),
             truncation_size: None,
             preview: None,
+            data_withheld: false,
         };
     }
 
@@ -420,6 +466,7 @@ pub fn negotiate_body(
                 body_type: pref.body_type,
                 truncation_size: pref.truncation_size,
                 preview: pref.preview,
+                data_withheld: false,
             };
         }
     }
@@ -434,20 +481,28 @@ pub fn negotiate_body(
                 body_type: pref.body_type,
                 truncation_size: pref.truncation_size,
                 preview: pref.preview,
+                data_withheld: false,
             };
         }
     }
 
     // Pass 3: nothing satisfied the client's constraints. [MS-ASAIRS]
     // §2.2.2.12 does not define an error path for an unsatisfiable chain, and
-    // Sync status 6 would force the client to drop the item entirely. Return
-    // the native format with the first requested truncation so the item still
+    // Sync status 6 would force the client to drop the item entirely. When
+    // the FIRST preference was AllOrNone-skipped the client forbade a
+    // truncated body of that type, so none may be returned: the native
+    // format is announced with no truncation limit and `data_withheld`
+    // tells the renderer to omit the Data child, leaving the client the
+    // ItemOperations-Fetch path to the full item. Otherwise return the
+    // native format with the first requested truncation so the item still
     // syncs; the `Truncated` flag tells the client what happened.
     let first = &preferences[0];
+    let withheld = skipped_by_all_or_none(first, native_size_bytes);
     NegotiatedBody {
         body_type: native.wire_value(),
-        truncation_size: first.truncation_size,
+        truncation_size: if withheld { None } else { first.truncation_size },
         preview: first.preview,
+        data_withheld: withheld,
     }
 }
 
@@ -464,13 +519,22 @@ fn skipped_by_all_or_none(pref: &EasBodyPreference, native_size_bytes: usize) ->
 ///
 /// Plain text and HTML are interconvertible (server-side conversion is the
 /// documented behavior in the [MS-ASAIRS] §2.2.2.3.2 example). RTF is never
-/// synthesized. MIME is only produced when the client asked for MIME bodies
-/// via MIMESupport ([MS-ASCMD] §2.2.3.110.3).
-fn is_convertible(wanted: u8, native: NativeBodyType, mime_support: u8) -> bool {
+/// synthesized. A MIME (Type 4) rendition is only truthful when the item's
+/// native storage already IS MIME: this gateway renders bodies from JMAP
+/// `bodyValues` (structured HTML/plain text, not a raw RFC 5322 message),
+/// cannot detect S/MIME status, and a Type 4 Body whose Data carried the
+/// native HTML/plain rendition would mislabel the wire format. MIME is
+/// therefore never CONVERTED into — [MS-ASCMD] §2.2.3.110.3 values 0/1/2
+/// license sending MIME for none/S-MIME-only/all messages respectively, and
+/// emitting none is the only value of that license this renderer can honor
+/// truthfully; the client's chain falls through to its next preference
+/// ([MS-ASAIRS] §2.2.2.3.2). `MIMESupport`/`MIMETruncation` are still
+/// parsed and persisted for sticky-block fidelity.
+fn is_convertible(wanted: u8, native: NativeBodyType, _mime_support: u8) -> bool {
     match wanted {
         1 | 2 => matches!(native, NativeBodyType::PlainText | NativeBodyType::Html),
         3 => native == NativeBodyType::Rtf,
-        4 => mime_support != 0 || native == NativeBodyType::Mime,
+        4 => native == NativeBodyType::Mime,
         _ => false,
     }
 }
@@ -706,16 +770,63 @@ mod tests {
     }
 
     #[test]
-    fn mime_preference_requires_mime_support() {
-        let mut opts = EasSyncCollectionOptions {
-            body_preferences: vec![pref(4), pref(1)],
+    fn mime_preference_is_never_negotiated_for_conversion() {
+        // The renderer cannot synthesize a truthful MIME rendition from JMAP
+        // bodyValues (and has no S/MIME detection), so a Type 4 preference
+        // is never selected by conversion: the chain falls through to the
+        // client's next preference regardless of MIMESupport
+        // ([MS-ASCMD] §2.2.3.110.3).
+        for mime_support in [0u8, 1, 2] {
+            let opts = EasSyncCollectionOptions {
+                body_preferences: vec![pref(4), pref(1)],
+                mime_support: Some(mime_support),
+                ..Default::default()
+            };
+            let body = negotiate_body(&opts, NativeBodyType::Html, 100);
+            assert_eq!(body.body_type, 1, "MIMESupport={mime_support}");
+        }
+        // A native-MIME item still serves Type 4 truthfully (exact match).
+        let opts = EasSyncCollectionOptions {
+            body_preferences: vec![pref(4)],
             ..Default::default()
         };
-        let body = negotiate_body(&opts, NativeBodyType::Html, 100);
-        assert_eq!(body.body_type, 1);
-        opts.mime_support = Some(2);
-        let body = negotiate_body(&opts, NativeBodyType::Html, 100);
+        let body = negotiate_body(&opts, NativeBodyType::Mime, 100);
         assert_eq!(body.body_type, 4);
+    }
+
+    #[test]
+    fn all_or_none_exhaustion_withholds_data() {
+        // A single AllOrNone preference whose limit the body exceeds: the
+        // client forbade a truncated response of that type, so no Data may
+        // be returned ([MS-ASAIRS] §2.2.2.3.2 all-or-NONE semantics).
+        let opts = EasSyncCollectionOptions {
+            body_preferences: vec![EasBodyPreference {
+                body_type: 2,
+                truncation_size: Some(50),
+                all_or_none: Some(true),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let body = negotiate_body(&opts, NativeBodyType::Html, 200);
+        assert_eq!(body.body_type, 2);
+        assert!(body.data_withheld);
+        assert_eq!(body.truncation_size, None);
+        // No truncation without AllOrNone on the first preference: an
+        // unsatisfiable chain (RTF-only) still truncates the native body
+        // to the first requested limit so the item keeps syncing.
+        let opts = EasSyncCollectionOptions {
+            body_preferences: vec![EasBodyPreference {
+                body_type: 3,
+                truncation_size: Some(20),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let body = negotiate_body(&opts, NativeBodyType::Html, 200);
+        assert_eq!(body.body_type, 2);
+        assert!(!body.data_withheld);
+        assert_eq!(body.truncation_size, Some(20));
     }
 
     #[test]
@@ -916,6 +1027,82 @@ mod tests {
         assert!(!parsed.options.explicitly_set);
         assert_eq!(parsed.controls.conversation_mode, None);
         assert!(parsed.options.body_preferences.is_empty());
+    }
+
+    #[test]
+    fn parse_itemoperations_fetch_options_without_wrapper() {
+        // extract_all_tag_blocks hands parse_collection_options the INNER
+        // content of a <Fetch> element — no container root. The parser must
+        // still recognize the <Options> block and everything in it
+        // ([MS-ASCMD] §2.2.3.125.3 per-Fetch Options).
+        let xml = r#"<Store>Mailbox</Store><CollectionId>5</CollectionId><ServerId>mail:abc</ServerId><Options><AirSyncBase:BodyPreference><AirSyncBase:Type>2</AirSyncBase:Type><AirSyncBase:TruncationSize>2048</AirSyncBase:TruncationSize></AirSyncBase:BodyPreference><AirSyncBase:BodyPartPreference><AirSyncBase:Type>2</AirSyncBase:Type><AirSyncBase:TruncationSize>4096</AirSyncBase:TruncationSize></AirSyncBase:BodyPartPreference></Options>"#;
+        let parsed = parse_collection_options(xml);
+        assert!(parsed.options.explicitly_set);
+        assert_eq!(
+            parsed.options.body_preferences,
+            vec![EasBodyPreference {
+                body_type: 2,
+                truncation_size: Some(2048),
+                all_or_none: None,
+                preview: None,
+            }]
+        );
+        assert_eq!(
+            parsed.options.body_part_preference.map(|p| p.truncation_size),
+            Some(Some(4096))
+        );
+    }
+
+    #[test]
+    fn parse_legacy_full_document_options() {
+        // The single-collection Sync fallback parses the WHOLE request
+        // document: <Options> sits under the <Sync> root and the
+        // collection-level controls are direct root children.
+        let xml = r#"<Sync xmlns="AirSync:"><SyncKey>0</SyncKey><ConversationMode>1</ConversationMode><Options><FilterType>2</FilterType><MIMESupport>2</MIMESupport><MIMETruncation>8</MIMETruncation><BodyPreference><Type>1</Type><TruncationSize>512</TruncationSize></BodyPreference></Options></Sync>"#;
+        let parsed = parse_collection_options(xml);
+        assert!(parsed.options.explicitly_set);
+        assert_eq!(parsed.options.filter_type, Some(2));
+        assert_eq!(parsed.options.mime_support, Some(2));
+        assert_eq!(parsed.options.mime_truncation, Some(8));
+        assert_eq!(parsed.controls.conversation_mode, Some(true));
+        assert_eq!(
+            parsed.options.body_preferences,
+            vec![EasBodyPreference {
+                body_type: 1,
+                truncation_size: Some(512),
+                all_or_none: None,
+                preview: None,
+            }]
+        );
+    }
+
+    #[test]
+    fn parse_empty_options_element_replaces_sticky_block() {
+        // [MS-ASCMD] §2.2.3.125.6: inclusion of the Options element — even
+        // empty — means the stored block is replaced, so explicitly_set must
+        // be true for both the WBXML-decoded <Tag></Tag> form and the
+        // self-closing <Tag/> form.
+        for xml in [
+            r#"<Collection><SyncKey>0</SyncKey><CollectionId>2</CollectionId><Options></Options></Collection>"#,
+            r#"<Collection><SyncKey>0</SyncKey><CollectionId>2</CollectionId><Options/></Collection>"#,
+        ] {
+            let parsed = parse_collection_options(xml);
+            assert!(parsed.options.explicitly_set, "xml={xml}");
+            assert!(!parsed.options.is_meaningful(), "xml={xml}");
+            // The empty block REPLACES the stored one — the client's way of
+            // clearing sticky options — rather than being masked by it.
+            let stored = EasSyncCollectionOptions {
+                body_preferences: vec![pref(2)],
+                ..Default::default()
+            };
+            let resolved =
+                EasSyncCollectionOptions::resolve_sticky(Some(stored), Some(parsed.options.clone()));
+            assert_eq!(resolved, Some(parsed.options), "xml={xml}");
+            assert!(
+                resolved.unwrap().body_preferences.is_empty(),
+                "stale sticky preferences must not survive an empty Options block"
+            );
+        }
     }
 
     #[test]

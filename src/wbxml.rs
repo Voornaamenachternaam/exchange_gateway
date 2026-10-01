@@ -1715,10 +1715,11 @@ fn extract_xmlns_cp<'a>(e: &quick_xml::events::BytesStart<'a>) -> Option<u8> {
 ///   array, as specified in [MS-ASDTYPE] section 2.7.1"), code page 17
 ///   token 0x1F.
 ///
-/// Note that itemoperations:ConversationId ([MS-ASCMD] §2.2.3.35.1) is a
-/// plain string despite sharing the local name with the Email2 element, so
-/// the match is on the resolved (code page, token) pair, never on the bare
-/// local name.
+/// ItemOperations:ConversationId ([MS-ASCON] §2.2.2.3.1: "The value of
+/// this element is a byte array, as specified in [MS-ASDTYPE] section
+/// 2.7.1") is a byte array, like the Email2 element sharing its local
+/// name; the match is on the resolved (code page, token) pair, never on
+/// the bare local name.
 fn is_byte_array_element(code_page: u8, token: u8) -> bool {
     // Byte-array elements ([MS-ASDTYPE] §2.7.1) encode as WBXML OPAQUE with
     // the raw bytes; the XML form carries the same bytes base64-encoded.

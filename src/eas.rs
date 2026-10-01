@@ -1444,8 +1444,11 @@ fn success_status_response(
 
 fn eas_provision_doc_xml() -> &'static str {
     // [MS-ASPROV] §2.2.2.1.1: the Data element of a Provision response
-    // carries an EASProvisionDoc in the Provision namespace.
-    r#"<EASProvisionDoc xmlns="provision:">
+    // carries an EASProvisionDoc in the Provision namespace. The declaration
+    // URI must be the exact-case "Provision:" so the WBXML encoder maps the
+    // doc's unqualified children to code page 14 ([MS-ASWBXML]) directly
+    // instead of relying on the ambient default-namespace fallback.
+    r#"<EASProvisionDoc xmlns="Provision:">
 <DevicePasswordEnabled>0</DevicePasswordEnabled>
 <AlphanumericDevicePasswordRequired>0</AlphanumericDevicePasswordRequired>
 <PasswordRecoveryEnabled>0</PasswordRecoveryEnabled>
@@ -1537,7 +1540,7 @@ async fn handle_provision(
             .await;
         let response = format!(
             r#"<?xml version="1.0" encoding="utf-8"?>
-<Provision xmlns="Provision:" xmlns:settings="Settings:">
+<Provision xmlns="Provision:" xmlns:Settings="Settings:">
   <Settings:DeviceInformation>
     <Settings:Status>1</Settings:Status>
   </Settings:DeviceInformation>
@@ -2205,6 +2208,56 @@ async fn handle_ping(
     xml_or_wbxml_response(wbxml, as_wbxml, xml, request_id)
 }
 
+/// Map a Settings Oof Set request's `<OofMessage>` nodes to the per-audience
+/// replies and the ExternalAudience they imply ([MS-ASCMD] §2.2.3.122:
+/// one OofMessage per audience, each naming it with exactly one
+/// AppliesTo* element; §2.2.3.118.1: no AppliesTo* elements at all means
+/// the single external reply covers all external senders).
+///
+/// The WBXML decoder renders a valueless element as
+/// `<AppliesToInternal></AppliesToInternal>` (Start, then End) — never the
+/// self-closing `<AppliesToInternal/>` form a plain XML request carries —
+/// so the audience tags are matched by OPEN-tag prefix: that covers `<Tag>`,
+/// `<Tag/>`, and attribute-carrying forms alike, while `</Tag>` can never
+/// match (the `/` precedes the name in a close tag).
+fn oof_audience_from_oof_messages(
+    oof_inner: &str,
+) -> (
+    Option<String>,
+    Option<String>,
+    crate::oof::ExternalAudience,
+) {
+    let mut internal_reply = extract_first_tag_text(oof_inner, b"InternalReply");
+    let mut external_reply = extract_first_tag_text(oof_inner, b"ExternalReply");
+    let mut has_known = false;
+    let mut has_unknown = false;
+    for block in extract_all_tag_blocks(oof_inner, b"OofMessage") {
+        let enabled_text = extract_first_tag_text(&block, b"Enabled").unwrap_or_default();
+        if enabled_text != "1" {
+            continue;
+        }
+        let reply = extract_first_tag_text(&block, b"ReplyMessage");
+        if block.contains("<AppliesToInternal") {
+            internal_reply = reply.clone();
+        }
+        if block.contains("<AppliesToExternalKnown") {
+            has_known = true;
+            external_reply = reply.clone().or(external_reply);
+        }
+        if block.contains("<AppliesToExternalUnknown") {
+            has_unknown = true;
+            external_reply = reply.or(external_reply);
+        }
+    }
+    let external_audience = match (has_known, has_unknown) {
+        (true, true) => crate::oof::ExternalAudience::All,
+        (true, false) => crate::oof::ExternalAudience::KnownExternal,
+        (false, true) => crate::oof::ExternalAudience::External,
+        (false, false) => crate::oof::ExternalAudience::All,
+    };
+    (internal_reply, external_reply, external_audience)
+}
+
 async fn handle_settings(
     state: &Arc<AppState>,
     username: &str,
@@ -2255,34 +2308,8 @@ async fn handle_settings(
         // Audience-specific messages arrive as OofMessage nodes, each naming
         // its audience with exactly one of the AppliesTo* elements
         // ([MS-ASCMD] §2.2.3.123).
-        let mut internal_reply = extract_first_tag_text(oof_inner, b"InternalReply");
-        let mut external_reply = extract_first_tag_text(oof_inner, b"ExternalReply");
-        let mut has_known = false;
-        let mut has_unknown = false;
-        for block in extract_all_tag_blocks(oof_inner, b"OofMessage") {
-            let enabled_text = extract_first_tag_text(&block, b"Enabled").unwrap_or_default();
-            if enabled_text != "1" {
-                continue;
-            }
-            let reply = extract_first_tag_text(&block, b"ReplyMessage");
-            if block.contains("<AppliesToInternal/>") {
-                internal_reply = reply.clone();
-            }
-            if block.contains("<AppliesToExternalKnown/>") {
-                has_known = true;
-                external_reply = reply.clone().or(external_reply);
-            }
-            if block.contains("<AppliesToExternalUnknown/>") {
-                has_unknown = true;
-                external_reply = reply.or(external_reply);
-            }
-        }
-        let external_audience = match (has_known, has_unknown) {
-            (true, true) => crate::oof::ExternalAudience::All,
-            (true, false) => crate::oof::ExternalAudience::KnownExternal,
-            (false, true) => crate::oof::ExternalAudience::External,
-            (false, false) => crate::oof::ExternalAudience::All,
-        };
+        let (internal_reply, external_reply, external_audience) =
+            oof_audience_from_oof_messages(oof_inner);
 
         let settings = crate::oof::OofSettings {
             enabled,
@@ -2583,6 +2610,7 @@ async fn handle_email_item_fetch(
             None,
             username,
             password,
+            true,
         )
         .await
     {
@@ -2618,6 +2646,33 @@ async fn handle_email_item_fetch(
     Ok(properties)
 }
 
+/// Resolve the effective options for one ItemOperations Fetch:
+/// [MS-ASCMD] §2.2.3.125.6 — "The server preserves the Options block across
+/// requests, using a concept referred to as 'sticky options'. If the Options
+/// block is not included in a request, the previous Options block is used."
+/// Sync persists that block under the device-scoped key
+/// `"{collection_id}::{device_id}"` (`scoped_collection_id`), so this lookup
+/// MUST use the same scoped key or the stored row is never found and the
+/// Fetch silently falls back to default options.
+async fn item_operations_sticky_options(
+    state: &Arc<AppState>,
+    username: &str,
+    collection_id: &str,
+    device_id: &str,
+    request_options: Option<crate::eas_sync_options::EasSyncCollectionOptions>,
+) -> crate::eas_sync_options::EasSyncCollectionOptions {
+    let sticky_key = scoped_collection_id(collection_id, device_id);
+    let sticky = state
+        .storage
+        .get_sync_collection_options(username, &sticky_key)
+        .await
+        .ok()
+        .flatten();
+    crate::eas_sync_options::EasSyncCollectionOptions::resolve_sticky(sticky, request_options)
+        .unwrap_or_default()
+}
+
+#[allow(clippy::too_many_arguments)] // irreducible EAS request params
 async fn handle_item_operations(
     state: &Arc<AppState>,
     username: &str,
@@ -2626,6 +2681,7 @@ async fn handle_item_operations(
     wbxml: &Wbxml,
     as_wbxml: bool,
     request_id: &str,
+    device_id: &str,
 ) -> Response {
     let fetches = parse_item_operations_fetches(xml);
     if fetches.is_empty() {
@@ -2647,23 +2703,17 @@ async fn handle_item_operations(
         };
         let collection_id = fetch.collection_id.unwrap_or_else(|| "1".to_string());
 
-        // [MS-ASCMD] §2.2.3.125.4: "If the Options element is not included
-        // in the request, the previous Options block specified in the Sync
-        // command request is used" — the same sticky-options rule as Sync
-        // collections, resolved against the device-scoped collection key.
-        // ItemOperations requests carry no device-scoping header of their
-        // own, so the plain CollectionId keys the stored block.
-        let sticky = state
-            .storage
-            .get_sync_collection_options(username, &collection_id)
-            .await
-            .ok()
-            .flatten();
-        let resolved_fetch_options = crate::eas_sync_options::EasSyncCollectionOptions::resolve_sticky(
-            sticky,
+        // [MS-ASCMD] §2.2.3.125.6: a Fetch without its own <Options> reuses
+        // the sticky block the previous Sync request established for this
+        // device-scoped collection.
+        let resolved_fetch_options = item_operations_sticky_options(
+            state,
+            username,
+            &collection_id,
+            device_id,
             fetch.options.clone(),
         )
-        .unwrap_or_default();
+        .await;
 
         if let Some(file_ref) = fetch.file_reference.as_deref() {
             match state
@@ -5216,6 +5266,7 @@ async fn render_pending_email_op(
             None,
             username,
             password,
+            true,
         )
         .await
     {
@@ -6130,6 +6181,7 @@ pub async fn handle(
                 &wbxml,
                 wants_wbxml,
                 &request_id,
+                &device_id,
             )
             .await
         }
@@ -8377,5 +8429,202 @@ mod tests {
             1,
             "budget-exhausted collections must be skipped entirely: {text}"
         );
+    }
+
+    /// The initial Provision response (PolicyKey 0 path) must be WBXML-
+    /// encodable. The template mixes `Settings:`-prefixed elements with the
+    /// Provision default namespace, so the `Settings` prefix must be declared
+    /// in the exact case the elements use ([MS-ASPROV] §2.2.2.53;
+    /// `xmlns:settings` would leave `Settings:DeviceInformation` undeclared
+    /// and resolving against the Provision code page, where DeviceInformation
+    /// has no token). The embedded EASProvisionDoc likewise declares the
+    /// exact-case Provision namespace URI so its unqualified children map to
+    /// code page 14 directly.
+    #[test]
+    fn test_initial_provision_response_is_wbxml_encodable() {
+        let doc = eas_provision_doc_xml();
+        let response = format!(
+            r#"<?xml version="1.0" encoding="utf-8"?>
+<Provision xmlns="Provision:" xmlns:Settings="Settings:">
+  <Settings:DeviceInformation>
+    <Settings:Status>1</Settings:Status>
+  </Settings:DeviceInformation>
+  <Status>1</Status>
+  <Policies>
+    <Policy>
+      <PolicyType>MS-EAS-Provisioning-WBXML</PolicyType>
+      <Status>1</Status>
+      <PolicyKey>0</PolicyKey>
+      <Data>
+        {doc}
+      </Data>
+    </Policy>
+  </Policies>
+</Provision>"#,
+        );
+        Wbxml::new()
+            .encode(&response)
+            .expect("initial Provision response must encode without unknown tags");
+    }
+
+    /// [MS-ASCMD] §2.2.3.125.4: an ItemOperations Fetch without its own
+    /// `<Options>` reuses the sticky block the previous Sync established
+    /// for that collection. Sync persists under the device-scoped key
+    /// `"{collection_id}::{device_id}"`, so the ItemOperations lookup must
+    /// resolve the same scoped key — the plain CollectionId would never
+    /// match the stored row and every Fetch would silently fall back to
+    /// default options.
+    #[tokio::test]
+    async fn test_item_operations_sticky_options_use_sync_scoped_key() {
+        use crate::eas_sync_options::{EasBodyPreference, EasSyncCollectionOptions};
+
+        let state = test_sync_state().await;
+        let user = "sticky-io@example.com";
+        let device = "sticky-device";
+        let collection_id = "2";
+
+        let mut opts = EasSyncCollectionOptions {
+            body_preferences: vec![EasBodyPreference {
+                body_type: 1,
+                truncation_size: Some(512),
+                all_or_none: Some(true),
+                preview: Some(64),
+            }],
+            explicitly_set: true,
+            ..Default::default()
+        };
+
+        // What handle_sync_collections does: persist under the scoped key.
+        let state_collection_id = scoped_collection_id(collection_id, device);
+        state
+            .storage
+            .set_sync_collection_options(user, &state_collection_id, &opts)
+            .await
+            .expect("seed sticky options");
+
+        // A Fetch with no Options block of its own must resolve to the
+        // sticky block (same truncation, AllOrNone, and preview).
+        let resolved =
+            item_operations_sticky_options(&state, user, collection_id, device, None).await;
+        assert_eq!(
+            resolved.body_preferences, opts.body_preferences,
+            "sticky block must be found via the device-scoped key"
+        );
+        assert!(resolved.body_preferences[0].all_or_none.is_some());
+
+        // A Fetch that carries its own explicit Options overrides the
+        // sticky block ([MS-ASCMD] §2.2.3.125.4).
+        opts.body_preferences[0].truncation_size = Some(99);
+        opts.body_preferences[0].all_or_none = None;
+        let resolved = item_operations_sticky_options(&state, user, collection_id, device, Some(opts))
+            .await;
+        assert_eq!(resolved.body_preferences[0].truncation_size, Some(99));
+
+        // A different device never sees another device's sticky block.
+        let resolved = item_operations_sticky_options(
+            &state,
+            user,
+            collection_id,
+            "other-device",
+            None,
+        )
+        .await;
+        assert!(
+            resolved.body_preferences.is_empty(),
+            "sticky options are device-scoped: {:?}",
+            resolved.body_preferences
+        );
+    }
+
+    /// The Oof Set audience matching must survive the WBXML wire form: the
+    /// decoder renders valueless elements as `<AppliesToExternalKnown>
+    /// </AppliesToExternalKnown>` (Start+End), not the `<Tag/>` self-closing
+    /// form. A Settings request round-tripped through a real WBXML
+    /// encode/decode must therefore still yield the per-audience replies and
+    /// the ExternalAudience the client asked for ([MS-ASCMD] §2.2.3.122).
+    #[test]
+    fn test_oof_audience_matching_survives_wbxml_decode() {
+        use crate::oof::ExternalAudience;
+
+        let request_xml = r#"<?xml version="1.0" encoding="utf-8"?>
+<Settings xmlns="Settings:">
+  <Oof>
+    <Get/>
+    <Set>
+      <OofState>1</OofState>
+      <OofMessage>
+        <AppliesToInternal/>
+        <Enabled>1</Enabled>
+        <ReplyMessage>I am away (internal)</ReplyMessage>
+      </OofMessage>
+      <OofMessage>
+        <AppliesToExternalKnown/>
+        <Enabled>1</Enabled>
+        <ReplyMessage>I am away (known external)</ReplyMessage>
+      </OofMessage>
+      <OofMessage>
+        <AppliesToExternalUnknown/>
+        <Enabled>1</Enabled>
+        <ReplyMessage>I am away (unknown external)</ReplyMessage>
+      </OofMessage>
+    </Set>
+  </Oof>
+</Settings>"#;
+
+        // The exact wire path a target client takes: WBXML encode, then the
+        // gateway's decode, then the `<Oof>` inner-content extraction.
+        let wbxml = Wbxml::new()
+            .encode(request_xml)
+            .expect("Settings request must encode");
+        let decoded = Wbxml::new()
+            .decode(&wbxml)
+            .expect("Settings request must decode");
+        let oof_inner = decoded
+            .find("<Oof>")
+            .map(|start| start + "<Oof>".len())
+            .and_then(|start| decoded[start..].find("</Oof>").map(|end| &decoded[start..start + end]))
+            .expect("decoded request must carry an Oof block");
+        assert!(
+            oof_inner.contains("<AppliesToInternal></AppliesToInternal>"),
+            "decoder must render valueless tags as Start+End pairs, got: {oof_inner}"
+        );
+
+        let (internal_reply, external_reply, audience) =
+            oof_audience_from_oof_messages(oof_inner);
+        assert_eq!(internal_reply.as_deref(), Some("I am away (internal)"));
+        assert_eq!(
+            external_reply.as_deref(),
+            Some("I am away (unknown external)"),
+            "later OofMessage nodes overwrite the external reply"
+        );
+        assert_eq!(audience, ExternalAudience::All);
+
+        // Known-only audience after WBXML round-trip.
+        let known_only = r#"<?xml version="1.0" encoding="utf-8"?>
+<Settings xmlns="Settings:"><Oof><Set><OofState>1</OofState><OofMessage><AppliesToExternalKnown/><Enabled>1</Enabled><ReplyMessage>away known</ReplyMessage></OofMessage></Set></Oof></Settings>"#;
+        let decoded = Wbxml::new()
+            .decode(&Wbxml::new().encode(known_only).expect("encode"))
+            .expect("decode");
+        let oof_inner = decoded
+            .find("<Oof>")
+            .map(|start| start + "<Oof>".len())
+            .and_then(|start| decoded[start..].find("</Oof>").map(|end| &decoded[start..start + end]))
+            .expect("Oof block");
+        let (_, external_reply, audience) = oof_audience_from_oof_messages(oof_inner);
+        assert_eq!(external_reply.as_deref(), Some("away known"));
+        assert_eq!(audience, ExternalAudience::KnownExternal);
+
+        // Plain-XML self-closing form still matches (XML-mode clients).
+        let plain = "<Set><OofState>1</OofState><OofMessage><AppliesToInternal/><Enabled>1</Enabled><ReplyMessage>plain internal</ReplyMessage></OofMessage></Set>";
+        let (internal_reply, _, audience) = oof_audience_from_oof_messages(plain);
+        assert_eq!(internal_reply.as_deref(), Some("plain internal"));
+        assert_eq!(audience, ExternalAudience::All);
+
+        // Disabled OofMessage nodes are skipped entirely.
+        let disabled = "<Set><OofState>1</OofState><OofMessage><AppliesToExternalUnknown/><Enabled>0</Enabled><ReplyMessage>ignored</ReplyMessage></OofMessage></Set>";
+        let (internal_reply, external_reply, audience) = oof_audience_from_oof_messages(disabled);
+        assert_eq!(internal_reply, None);
+        assert_eq!(external_reply, None);
+        assert_eq!(audience, ExternalAudience::All);
     }
 }
