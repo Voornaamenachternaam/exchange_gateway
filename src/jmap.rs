@@ -232,6 +232,11 @@ pub struct JmapBodyValue {
     pub value: String,
     #[serde(default)]
     pub is_encoding_problem: Option<bool>,
+    /// RFC 8621 §4.1.4 `isTruncated`: true when the server returned fewer
+    /// bytes than `maxBodyValueSize` ... i.e. the value was cut short. The
+    /// EAS body renderer maps this to `<AirSyncBase:Truncated>`.
+    #[serde(default)]
+    pub is_truncated: Option<bool>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -1307,6 +1312,14 @@ impl JmapClient {
                     },
                     "properties": properties,
                     "bodyProperties": ["partId", "blobId", "size", "type", "charset", "value"],
+                    // RFC 8621 §4.4.1: without these arguments the server only
+                    // returns body values for text/plain parts. Requesting both
+                    // text and HTML values lets the gateway serve Type 2 (HTML)
+                    // bodies natively for clients whose BodyPreference chain
+                    // starts with HTML — Outlook for Android and New Outlook
+                    // both request HTML first.
+                    "fetchTextBodyValues": true,
+                    "fetchHTMLBodyValues": true,
                 }),
                 "g0",
             ),
@@ -1421,7 +1434,12 @@ impl JmapClient {
 
     /// Get specific emails by ID.
     ///
-    /// Maps to `Email/get` (RFC 8621 §4.1).
+    /// Maps to `Email/get` (RFC 8621 §4.1). `fetch_bodies` opts in to the
+    /// RFC 8621 §4.4.1 `fetchTextBodyValues`/`fetchHTMLBodyValues` flags;
+    /// only body-rendering callers (Sync change rendering, ItemOperations
+    /// Fetch, EWS GetItem/SyncFolderItems) should pass `true` — a caller
+    /// that reads only metadata (`mailboxIds`, `references`, `blobId`, …)
+    /// would otherwise download full HTML/plain bodies it never uses.
     pub async fn get_emails(
         &self,
         account_id: &str,
@@ -1429,22 +1447,29 @@ impl JmapClient {
         properties: Option<Value>,
         username: &str,
         password: &SecretString,
+        fetch_bodies: bool,
     ) -> Result<Vec<JmapEmail>> {
         let session = self.get_session(username, password).await?;
         let api_url = &session.api_url;
 
         let props = properties.unwrap_or_else(|| json!(Self::mail_properties()));
 
-        let method_calls = vec![(
-            "Email/get",
-            json!({
-                "accountId": account_id,
-                "ids": ids,
-                "properties": props,
-                "bodyProperties": ["partId", "blobId", "size", "type", "charset", "value"],
-            }),
-            "g0",
-        )];
+        let mut arguments = json!({
+            "accountId": account_id,
+            "ids": ids,
+            "properties": props,
+            "bodyProperties": ["partId", "blobId", "size", "type", "charset", "value"],
+        });
+        if fetch_bodies {
+            // RFC 8621 §4.4.1: without these arguments the server returns
+            // no body values at all — delta Sync and ItemOperations, which
+            // fetch through this method rather than query_emails, would
+            // render empty bodies. Both flags mirror query_emails so
+            // Type 1 (plain) and Type 2 (HTML) bodies resolve natively.
+            arguments["fetchTextBodyValues"] = json!(true);
+            arguments["fetchHTMLBodyValues"] = json!(true);
+        }
+        let method_calls = vec![("Email/get", arguments, "g0")];
 
         let response = self
             .api_call(
@@ -1469,13 +1494,16 @@ impl JmapClient {
         Err(anyhow!("Unexpected JMAP response structure for Email/get"))
     }
 
-    /// Get a single email by ID.
+    /// Get a single email by ID. `fetch_bodies` selects the RFC 8621 §4.4.1
+    /// body-value fetch flags; pass `false` for metadata-only reads
+    /// (threading headers, `blobId`, `mailboxIds`).
     pub async fn get_email(
         &self,
         account_id: &str,
         email_id: &str,
         username: &str,
         password: &SecretString,
+        fetch_bodies: bool,
     ) -> Result<Option<JmapEmail>> {
         let emails = self
             .get_emails(
@@ -1484,6 +1512,7 @@ impl JmapClient {
                 Some(json!(Self::mail_properties())),
                 username,
                 password,
+                fetch_bodies,
             )
             .await?;
         Ok(emails.into_iter().next())

@@ -10,6 +10,7 @@ pub mod contacts;
 pub mod delegate_ews;
 pub mod directory;
 pub mod eas;
+pub mod eas_sync_options;
 pub mod ecp;
 pub mod email;
 pub mod error;

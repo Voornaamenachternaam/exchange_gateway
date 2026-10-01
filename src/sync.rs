@@ -21,7 +21,9 @@ use uuid::Uuid;
 
 type HmacSha256 = Hmac<Sha256>;
 
-pub const INVALID_SYNC_KEY_STATUS: &str = "9";
+/// [MS-ASCMD] §2.2.3.177.17: Sync collection status 3 = "Invalid
+/// synchronization key". (FolderSync uses 9; GetItemEstimate uses 4.)
+pub const INVALID_SYNC_KEY_STATUS: &str = "3";
 const DEFAULT_WINDOW_SIZE: usize = 100;
 const MAX_WINDOW_SIZE: usize = 512;
 
@@ -911,7 +913,11 @@ fn derived_response_type(item: &CalendarItem) -> Option<u8> {
     })
 }
 
-fn render_exception_xml(exception: &CalendarException, item: &CalendarItem) -> String {
+fn render_exception_xml(
+    exception: &CalendarException,
+    item: &CalendarItem,
+    options: &crate::eas_sync_options::EasSyncCollectionOptions,
+) -> String {
     let mut xml = String::with_capacity(1024);
     xml.push_str("<Calendar:Exception>");
     xml.push_str(&format!(
@@ -1019,26 +1025,22 @@ fn render_exception_xml(exception: &CalendarException, item: &CalendarItem) -> S
         xml.push_str("</Calendar:Attendees>");
     }
     if let Some(desc) = &exception.description {
-        xml.push_str("<AirSyncBase:Body><AirSyncBase:Type>1</AirSyncBase:Type>");
-        xml.push_str(&format!(
-            "<AirSyncBase:EstimatedDataSize>{}</AirSyncBase:EstimatedDataSize>",
-            desc.len()
-        ));
-        xml.push_str("<AirSyncBase:Truncated>0</AirSyncBase:Truncated><AirSyncBase:Data>");
-        xml.push_str(&xml_escape(desc));
-        xml.push_str("</AirSyncBase:Data></AirSyncBase:Body>");
+        // The negotiated options apply to exception bodies exactly as to the
+        // parent item's body ([MS-ASCMD] §2.2.3.125.6 options are
+        // collection-scoped, not item-scoped).
+        xml.push_str(&render_calendar_body_xml(desc, options));
     }
     xml.push_str("</Calendar:Exception>");
     xml
 }
 
 /// True when `tz` is a UTC (zero-offset, no-DST) id, i.e. an event whose
-/// wall-clock equals its UTC instant and needs no EAS `Timezone` /
-/// `StartTimeZone` / `EndTimeZone` blob. EAS clients treat a UTC event's times
-/// as absolute instants; emitting a TZI blob for UTC is redundant and several
-/// clients render it as an unspecified-failure when the blob's transitions are
-/// all zeroed, so the canonical UTC ids are omitted (MS-ASCAL §2.2.3.9: the
-/// `Timezone` element is "OPTIONAL" and only present for non-UTC events).
+/// wall-clock equals its UTC instant and needs no EAS `Timezone` blob. EAS
+/// clients treat a UTC event's times as absolute instants; emitting a TZI
+/// blob for UTC is redundant and several clients render it as an
+/// unspecified-failure when the blob's transitions are all zeroed, so the
+/// canonical UTC ids are omitted (MS-ASCAL §2.2.3.9: the `Timezone` element
+/// is "OPTIONAL" and only present for non-UTC events).
 fn is_utc_zone(tz: &str) -> bool {
     matches!(
         tz,
@@ -1046,8 +1048,133 @@ fn is_utc_zone(tz: &str) -> bool {
     )
 }
 
-pub(crate) fn render_calendar_app_data(item: &CalendarItem) -> String {
+/// Render the `<AirSyncBase:Body>` element for a calendar item, honoring the
+/// negotiated BodyPreference chain ([MS-ASAIRS] §2.2.2.12, §2.2.2.3.2).
+///
+/// The native storage format of a calendar description is plain text
+/// ([MS-ASAIRS] §2.2.2.41.1). For protocol versions 16.0 and 16.1 the only
+/// valid Type values for calendar items are 1 (plain text) and 2 (HTML), so
+/// RTF/MIME preferences fall back to plain text.
+fn render_calendar_body_xml(
+    description: &str,
+    options: &crate::eas_sync_options::EasSyncCollectionOptions,
+) -> String {
+    use crate::eas_sync_options::{negotiate_body, truncate_utf8_bytes, NativeBodyType};
+
+    let negotiated = negotiate_body(options, NativeBodyType::PlainText, description.len());
+    let mut body_type = match negotiated.body_type {
+        1 | 2 => negotiated.body_type,
+        _ => 1,
+    };
+    let mut full_content = if body_type == 2 {
+        crate::email::plain_to_minimal_html(description)
+    } else {
+        description.to_string()
+    };
+    // Conversion can grow the content (the minimal-HTML wrapper):
+    // AllOrNone compares against the bytes actually returned, so
+    // re-negotiate with the converted size — and honor the type the
+    // re-negotiation selects. A Type 2 chain that fit the plain
+    // description can be AllOrNone-skipped once converted; the
+    // re-negotiation then falls back exactly like the email renderer,
+    // and the served format must follow the selected preference so the
+    // emitted <Type>, the truncation limit, and the content all come
+    // from the same negotiated entry.
+    let mut negotiated = negotiated;
+    if body_type == 2 {
+        negotiated = negotiate_body(options, NativeBodyType::PlainText, full_content.len());
+        let renegotiated_type = match negotiated.body_type {
+            1 | 2 => negotiated.body_type,
+            _ => body_type,
+        };
+        if renegotiated_type != body_type {
+            body_type = renegotiated_type;
+            full_content = if body_type == 2 {
+                crate::email::plain_to_minimal_html(description)
+            } else {
+                description.to_string()
+            };
+        }
+    }
+    let true_size = full_content.len();
+    let (data, truncated) = if negotiated.data_withheld {
+        (String::new(), false)
+    } else {
+        match negotiated.truncation_size {
+            Some(limit) => {
+                let (slice, cut) = truncate_utf8_bytes(&full_content, limit);
+                (slice.to_owned(), cut)
+            }
+            None => (full_content.clone(), false),
+        }
+    };
+
+    let mut xml = String::with_capacity(256);
+    xml.push_str(&format!(
+        "<AirSyncBase:Body><AirSyncBase:Type>{}</AirSyncBase:Type>",
+        body_type
+    ));
+    xml.push_str(&format!(
+        "<AirSyncBase:EstimatedDataSize>{}</AirSyncBase:EstimatedDataSize>",
+        true_size
+    ));
+    if truncated {
+        xml.push_str("<AirSyncBase:Truncated>1</AirSyncBase:Truncated>");
+    }
+    if !data.is_empty() {
+        // Data is XML character data ([MS-ASDTYPE] §2.3): strip the
+        // characters XML 1.0 forbids even in escaped form before escaping
+        // the remainder. A withheld body (data_withheld) emits no Data.
+        xml.push_str(&format!(
+            "<AirSyncBase:Data>{}</AirSyncBase:Data>",
+            xml_escape(&crate::email::sanitize_for_xml(&data))
+        ));
+    }
+    // [MS-ASAIRS] §2.2.2.35.1: no Preview alongside a Type 1 body carrying
+    // valid Data — the body itself is the preview source. The preview is
+    // always cut from the FULL body ([MS-ASAIRS] §2.2.2.35.1: the element
+    // "specifies a preview of the message body"), not from the truncated
+    // Data slice, so the client's `Preview` length setting keeps its meaning
+    // even when TruncationSize cut the body to less.
+    if let Some(chars) = negotiated.preview
+        && !(body_type == 1 && !data.is_empty())
+    {
+        let preview_source = if body_type == 2 {
+            crate::eas_sync_options::html_to_plain_text(&full_content)
+        } else {
+            full_content.clone()
+        };
+        xml.push_str(&format!(
+            "<AirSyncBase:Preview>{}</AirSyncBase:Preview>",
+            xml_escape(&crate::eas_sync_options::preview_text(
+                &crate::email::sanitize_for_xml(&preview_source),
+                chars
+            ))
+        ));
+    }
+    xml.push_str("</AirSyncBase:Body>");
+    xml
+}
+
+/// Options-aware calendar AppData: the `<AirSyncBase:Body>` block follows the
+/// negotiated BodyPreference chain ([MS-ASAIRS] §2.2.2.12); with no
+/// preferences the native plain-text rendition is served untruncated.
+pub(crate) fn render_calendar_app_data_with_options(
+    item: &CalendarItem,
+    options: &crate::eas_sync_options::EasSyncCollectionOptions,
+) -> String {
     let mut xml = String::with_capacity(2048);
+    xml.push_str(&render_calendar_app_data_prefix(item));
+    xml.push_str(&render_calendar_body_xml(&item.description, options));
+    xml.push_str("<AirSyncBase:NativeBodyType>1</AirSyncBase:NativeBodyType>");
+    xml.push_str(&render_calendar_app_data_suffix(item, options));
+    xml
+}
+
+/// Everything `<ApplicationData>` emits before the `<AirSyncBase:Body>`
+/// block for a calendar item.
+fn render_calendar_app_data_prefix(item: &CalendarItem) -> String {
+    let mut xml = String::with_capacity(1024);
     xml.push_str(&format!(
         "<Calendar:Subject>{}</Calendar:Subject>",
         xml_escape(&item.subject)
@@ -1132,43 +1259,25 @@ pub(crate) fn render_calendar_app_data(item: &CalendarItem) -> String {
         }
         xml.push_str("</Calendar:Categories>");
     }
-    xml.push_str("<AirSyncBase:Body><AirSyncBase:Type>1</AirSyncBase:Type>");
-    xml.push_str(&format!(
-        "<AirSyncBase:EstimatedDataSize>{}</AirSyncBase:EstimatedDataSize>",
-        item.description.len()
-    ));
-    xml.push_str("<AirSyncBase:Truncated>0</AirSyncBase:Truncated><AirSyncBase:Data>");
-    xml.push_str(&xml_escape(&item.description));
-    xml.push_str("</AirSyncBase:Data></AirSyncBase:Body>");
-    xml.push_str("<AirSyncBase:NativeBodyType>1</AirSyncBase:NativeBodyType>");
-    if !item.all_day
-        && let Some(tz) = &item.timezone
-        && !is_utc_zone(tz)
-    {
-        // MS-ASCAL §2.2.3.12/§2.2.3.13: <Calendar:StartTimeZone>/<EndTimeZone>
-        // carry a base64-encoded Windows TZI blob (the SAME shape as the
-        // <Calendar:Timezone> element §2.2.3.9), NOT a bare IANA id. Emitting
-        // the IANA string here made Outlook Android mis-derive recurrence/
-        // exception wall-clock times for non-UTC events (and silently dropped
-        // the zone on timezone-stamp-sensitive display). Synthesise the blob
-        // from the stored IANA id via the shared chrono_tz-derived mapping and
-        // fall back to omitting the element if the zone is unmappable (Android
-        // then treats the times as UTC, matching the legacy behaviour) rather
-        // than emitting a malformed raw-string value. UTC events omit the
-        // elements (`is_utc_zone`) since their TZI would be all-zero. The blob
-        // is `xml_escape`-d the same way as `<Calendar:Timezone>` so the
-        // configuration stays consistent even though the base64 alphabet
-        // (`A-Za-z0-9+/=`) carries no XML metacharacters.
-        if let Some(blob) = crate::timezone::iana_to_eas_timezone_blob(tz) {
-            let esc = xml_escape(&blob);
-            xml.push_str(&format!(
-                "<Calendar:StartTimeZone>{esc}</Calendar:StartTimeZone>"
-            ));
-            xml.push_str(&format!(
-                "<Calendar:EndTimeZone>{esc}</Calendar:EndTimeZone>"
-            ));
-        }
-    }
+    xml
+}
+
+/// Everything `<ApplicationData>` emits after the `<AirSyncBase:Body>` and
+/// `<AirSyncBase:NativeBodyType>` blocks for a calendar item.
+fn render_calendar_app_data_suffix(
+    item: &CalendarItem,
+    options: &crate::eas_sync_options::EasSyncCollectionOptions,
+) -> String {
+    let mut xml = String::with_capacity(1024);
+    // NOTE: <Calendar:StartTimeZone>/<EndTimeZone> are deliberately NOT
+    // emitted. [MS-ASWBXML] code page 4 (Calendar) has NO token slots for
+    // them — its only time-zone representation is the <Calendar:Timezone>
+    // byte-array blob (§2.2.3.9), which `render_calendar_app_data_prefix`
+    // already emits. In a WBXML response these elements would have to be
+    // written as literal inline text, which the target clients do not parse
+    // as structured calendar data ([MS-ASCAL] §2.2.3.12/§2.2.3.13 define the
+    // elements for protocols that carry them, but nothing in the 16.0/16.1
+    // client wire shape consumes them here).
     xml.push_str(&format!(
         "<Calendar:UID>{}</Calendar:UID>",
         xml_escape(&item.uid)
@@ -1181,7 +1290,7 @@ pub(crate) fn render_calendar_app_data(item: &CalendarItem) -> String {
     if !item.exceptions.is_empty() {
         xml.push_str("<Calendar:Exceptions>");
         for ex in &item.exceptions {
-            xml.push_str(&render_exception_xml(ex, item));
+            xml.push_str(&render_exception_xml(ex, item, options));
         }
         xml.push_str("</Calendar:Exceptions>");
     }
@@ -1235,10 +1344,23 @@ pub(crate) fn render_calendar_app_data(item: &CalendarItem) -> String {
     xml
 }
 
+/// Legacy calendar AppData: no negotiated options, so the native plain-text
+/// body is served untruncated ([MS-ASAIRS] §2.2.2.3.2 pass 3).
+pub(crate) fn render_calendar_app_data(item: &CalendarItem) -> String {
+    render_calendar_app_data_with_options(
+        item,
+        &crate::eas_sync_options::EasSyncCollectionOptions::default(),
+    )
+}
+
 pub struct SyncOptions {
     pub window_size: usize,
     pub get_changes: bool,
     pub filter_start: chrono::DateTime<Utc>,
+    /// The sticky-resolved per-collection `<Options>` block
+    /// ([MS-ASCMD] §2.2.3.125.6) driving body negotiation
+    /// ([MS-ASAIRS] §2.2.2.12) for the items rendered in this response.
+    pub body_options: crate::eas_sync_options::EasSyncCollectionOptions,
 }
 
 impl Default for SyncOptions {
@@ -1247,6 +1369,7 @@ impl Default for SyncOptions {
             window_size: DEFAULT_WINDOW_SIZE,
             get_changes: true,
             filter_start: Utc::now() - Duration::weeks(52),
+            body_options: crate::eas_sync_options::EasSyncCollectionOptions::default(),
         }
     }
 }
@@ -1292,7 +1415,7 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
         };
         return Ok(format!(
             r#"<?xml version="1.0" encoding="utf-8"?>
-<Sync xmlns="AirSync:" xmlns:Contacts="Contacts:" xmlns:Tasks="Tasks:" xmlns:Notes="Notes:" xmlns:DocumentLibrary="DocumentLibrary:" xmlns:RightsManagement="RightsManagement:" xmlns:AirSyncBase="AirSyncBase:">
+<Sync xmlns="AirSync:" xmlns:Contacts="Contacts:" xmlns:Contacts2="Contacts2:" xmlns:Tasks="Tasks:" xmlns:Notes="Notes:" xmlns:DocumentLibrary="DocumentLibrary:" xmlns:RightsManagement="RightsManagement:" xmlns:AirSyncBase="AirSyncBase:">
 <Collections><Collection>
 <Class>{}</Class>
 <SyncKey>{}</SyncKey>
@@ -1748,7 +1871,8 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
             )
             .await?;
         if pi.is_add {
-            let mut app_data = render_calendar_app_data(&pi.item);
+            let mut app_data =
+                render_calendar_app_data_with_options(&pi.item, &params.opts.body_options);
             if let Ok(att_list) = params
                 .state
                 .attachment_manager
@@ -1764,7 +1888,8 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
                 pi.server_id, app_data
             ));
         } else {
-            let mut app_data = render_calendar_app_data(&pi.item);
+            let mut app_data =
+                render_calendar_app_data_with_options(&pi.item, &params.opts.body_options);
             if let Ok(att_list) = params
                 .state
                 .attachment_manager
@@ -1869,28 +1994,32 @@ mod tests {
         }
     }
 
-    /// MS-ASCAL §2.2.3.12/§2.2.3.13: <Calendar:StartTimeZone>/<EndTimeZone>
-    /// MUST be base64-encoded Windows TZI blobs, NOT the bare IANA id. The
-    /// legacy renderer emitted the raw IANA string here, which made Outlook
-    /// Android mis-derive recurrence wall-clock times for non-UTC events
-    /// (audit gap #1). Verify the blob is real base64 (decodes to TZ_BLOB_LEN
-    /// bytes) and carries the correct Eastern bias.
+    /// [MS-ASWBXML] code page 4 (Calendar) has no token slots for
+    /// <Calendar:StartTimeZone>/<EndTimeZone> — the only time-zone
+    /// representation on the wire is the <Calendar:Timezone> byte-array
+    /// blob ([MS-ASCAL] §2.2.3.9). The renderer MUST NOT emit
+    /// StartTimeZone/EndTimeZone at all: in a WBXML response they could
+    /// only appear as literal inline text, which the target clients do not
+    /// parse as structured data. The Timezone blob itself stays mandatory
+    /// for non-UTC events and must carry the correct Eastern bias.
     #[test]
-    fn eas_calendar_emits_base64_startendtimezone_blob_not_iana() {
+    fn eas_calendar_never_emits_startendtimezone_only_timezone_blob() {
         let item = eastern_item();
         let xml = render_calendar_app_data(&item);
-        // The bare IANA id MUST NOT appear as the element text.
         assert!(
-            !xml.contains("<Calendar:StartTimeZone>America/New_York</Calendar:StartTimeZone>"),
-            "EAS StartTimeZone leaked the raw IANA id:\n{xml}"
+            !xml.contains("StartTimeZone"),
+            "StartTimeZone must never be emitted (no code-page-4 token):\n{xml}"
         );
-        assert!(xml.contains("<Calendar:StartTimeZone>"));
-        assert!(xml.contains("<Calendar:EndTimeZone>"));
-        // Extract the blob text and decode it.
-        let blob = extract_element_text(&xml, "Calendar:StartTimeZone").unwrap();
+        assert!(
+            !xml.contains("EndTimeZone"),
+            "EndTimeZone must never be emitted (no code-page-4 token):\n{xml}"
+        );
+        // The authoritative zone carrier is still present as a real base64
+        // TZI blob with the correct Eastern standard bias.
+        let blob = extract_element_text(&xml, "Calendar:Timezone").unwrap();
         let bytes = base64::engine::general_purpose::STANDARD
             .decode(blob.trim())
-            .expect("StartTimeZone is not valid base64");
+            .expect("Timezone is not valid base64");
         assert_eq!(
             bytes.len(),
             crate::timezone::TZ_BLOB_LEN,
@@ -1900,11 +2029,12 @@ mod tests {
         assert_eq!(bias, 300, "Eastern standard bias = +300");
     }
 
-    /// A UTC event (no stored zone) MUST NOT emit StartTimeZone/EndTimeZone at
-    /// all — the legacy code gated this on `item.timezone`, and the base64
-    /// switch must preserve that gate (Android treats absent zones as UTC).
+    /// A UTC event (no stored zone) omits the <Calendar:Timezone> blob
+    /// entirely — EAS clients treat a UTC event's times as absolute
+    /// instants, and the blob's all-zero transitions read as a failure to
+    /// some clients.
     #[test]
-    fn eas_calendar_omits_startendtimezone_for_utc_event() {
+    fn eas_calendar_omits_timezone_blob_for_utc_event() {
         let item = CalendarItem {
             uid: "utc-001".to_string(),
             subject: "UTC Meeting".to_string(),
@@ -1916,12 +2046,12 @@ mod tests {
         };
         let xml = render_calendar_app_data(&item);
         assert!(
-            !xml.contains("<Calendar:StartTimeZone>"),
-            "UTC event should not carry a StartTimeZone:\n{xml}"
+            !xml.contains("<Calendar:Timezone>"),
+            "UTC event should not carry a Timezone blob:\n{xml}"
         );
         assert!(
-            !xml.contains("<Calendar:EndTimeZone>"),
-            "UTC event should not carry an EndTimeZone:\n{xml}"
+            !xml.contains("StartTimeZone"),
+            "UTC event should not carry a StartTimeZone:\n{xml}"
         );
     }
 
@@ -1933,13 +2063,144 @@ mod tests {
         Some(xml[start..end].to_string())
     }
 
+    /// Collection-scoped Options apply to exception bodies exactly as to the
+    /// parent item's body ([MS-ASCMD] §2.2.3.125.6): a negotiated Type 2
+    /// (HTML) preference must wrap the exception description in the
+    /// minimal-HTML document, and a TruncationSize must cut the exception
+    /// Data too.
+    #[test]
+    fn eas_calendar_exception_body_honors_negotiated_options() {
+        use crate::eas_sync_options::{EasBodyPreference, EasSyncCollectionOptions};
+
+        let item = CalendarItem {
+            exceptions: vec![crate::calendar::CalendarException {
+                exception_start: chrono::Utc.with_ymd_and_hms(2025, 3, 9, 14, 0, 0).unwrap(),
+                deleted: false,
+                subject: Some("Moved meeting".to_string()),
+                description: Some("Exception description body".to_string()),
+                ..Default::default()
+            }],
+            ..eastern_item()
+        };
+        let options = EasSyncCollectionOptions {
+            body_preferences: vec![EasBodyPreference {
+                body_type: 2,
+                truncation_size: Some(1024),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let xml = render_calendar_app_data_with_options(&item, &options);
+        let exception =
+            extract_element_text(&xml, "Calendar:Exception").expect("no exception rendered");
+        assert!(
+            exception.contains("<AirSyncBase:Type>2</AirSyncBase:Type>"),
+            "exception body must honor the negotiated HTML preference:\n{exception}"
+        );
+        assert!(
+            exception.contains("&lt;html&gt;&lt;body&gt;&lt;div&gt;Exception description body"),
+            "exception body must be served as a minimal HTML document (XML-escaped):\n{exception}"
+        );
+        // And with no preferences the native plain text is served.
+        let xml = render_calendar_app_data(&item);
+        let exception =
+            extract_element_text(&xml, "Calendar:Exception").expect("no exception rendered");
+        assert!(
+            exception.contains("<AirSyncBase:Type>1</AirSyncBase:Type>"),
+            "default options must serve the native plain text:\n{exception}"
+        );
+    }
+
+    /// A Type 2 (HTML) preference that fits the plain description can be
+    /// AllOrNone-skipped once the minimal-HTML wrapper grows it past the
+    /// limit: [MS-ASAIRS] §2.2.2.3.2 forbids serving the truncated body, so
+    /// the re-negotiation must withhold the Data — and if a Type 1 fallback
+    /// exists in the chain, the served format must switch to it with the
+    /// Type 1 limit, never an HTML body truncated at the plain limit.
+    #[test]
+    fn eas_calendar_all_or_none_uses_converted_body_size() {
+        use crate::eas_sync_options::{EasBodyPreference, EasSyncCollectionOptions};
+
+        let mut item = CalendarItem {
+            uid: "aon-001".to_string(),
+            subject: "Review".to_string(),
+            start: chrono::Utc.with_ymd_and_hms(2025, 3, 4, 9, 0, 0).unwrap(),
+            end: chrono::Utc.with_ymd_and_hms(2025, 3, 4, 10, 0, 0).unwrap(),
+            ..Default::default()
+        };
+        // The plain description is 100 bytes, so the first negotiation picks
+        // the Type 2 preference (100 <= 120); plain_to_minimal_html grows it
+        // past 120, so the re-negotiation skips it.
+        let description = "d".repeat(100);
+        let converted_len =
+            crate::email::plain_to_minimal_html(&description).len();
+        assert!(
+            converted_len > 120,
+            "fixture must convert past the all-or-none limit: {converted_len}"
+        );
+        item.description.clone_from(&description);
+
+        // No fallback: the client forbade truncated HTML, so no Data.
+        let options = EasSyncCollectionOptions {
+            body_preferences: vec![EasBodyPreference {
+                body_type: 2,
+                truncation_size: Some(120),
+                all_or_none: Some(true),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let xml = render_calendar_body_xml(&item.description, &options);
+        assert!(xml.contains("<AirSyncBase:Type>1</AirSyncBase:Type>"), "the withheld announcement must carry the native type:\n{xml}");
+        assert!(
+            !xml.contains("<AirSyncBase:Data>"),
+            "AllOrNone must withhold the Data of a converted body that grew past the limit:\n{xml}"
+        );
+        assert!(
+            !xml.contains("<AirSyncBase:Truncated>1"),
+            "nothing was served, so Truncated must be absent:\n{xml}"
+        );
+
+        // With a truncatable Type 1 fallback the chain falls back to plain
+        // text at the TYPE 1 limit — the HTML conversion is abandoned.
+        let options = EasSyncCollectionOptions {
+            body_preferences: vec![
+                EasBodyPreference {
+                    body_type: 2,
+                    truncation_size: Some(120),
+                    all_or_none: Some(true),
+                    ..Default::default()
+                },
+                EasBodyPreference {
+                    body_type: 1,
+                    truncation_size: Some(50),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        let xml = render_calendar_body_xml(&item.description, &options);
+        assert!(
+            xml.contains("<AirSyncBase:Type>1</AirSyncBase:Type>"),
+            "fallback must serve the native plain type after the Type 2 skip:\n{xml}"
+        );
+        assert!(
+            xml.matches('d').count() >= 50,
+            "the plain fallback serves the description itself:\n{xml}"
+        );
+        assert!(
+            xml.contains("<AirSyncBase:Truncated>1"),
+            "the 100-byte description cut at the Type 1 limit of 50 is truncated:\n{xml}"
+        );
+    }
+
     #[test]
     fn eas_calendar_omits_bonus_timezone_elements_for_explicit_utc_zone() {
         // An event whose stored timezone is an explicit UTC id (not just an
-        // absent `timezone`) must still omit `Timezone`/`StartTimeZone`/
-        // `EndTimeZone`. The canonical UTC ids carry no offset/DST, so emitting
-        // a zeroed TZI blob would be redundant (and several EAS clients reject
-        // it). Guards the `is_utc_zone` gate added for C6.
+        // absent `timezone`) must still omit `Timezone`. The canonical UTC
+        // ids carry no offset/DST, so emitting a zeroed TZI blob would be
+        // redundant (and several EAS clients reject it). Guards the
+        // `is_utc_zone` gate added for C6.
         for utc_id in ["UTC", "Etc/UTC", "GMT"] {
             let item = CalendarItem {
                 uid: format!("utc-002-{utc_id}"),
@@ -1954,14 +2215,6 @@ mod tests {
             assert!(
                 !xml.contains("<Calendar:Timezone>"),
                 "explicit UTC ({utc_id}) event must omit <Calendar:Timezone>:\n{xml}"
-            );
-            assert!(
-                !xml.contains("<Calendar:StartTimeZone>"),
-                "explicit UTC ({utc_id}) event must omit <Calendar:StartTimeZone>:\n{xml}"
-            );
-            assert!(
-                !xml.contains("<Calendar:EndTimeZone>"),
-                "explicit UTC ({utc_id}) event must omit <Calendar:EndTimeZone>:\n{xml}"
             );
         }
     }

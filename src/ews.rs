@@ -3661,7 +3661,7 @@ async fn handle_get_email_item(
         }
     };
     match jmap
-        .get_email(&account_id, &jmap_id, &auth.username, &auth.password)
+        .get_email(&account_id, &jmap_id, &auth.username, &auth.password, true)
         .await
     {
         Ok(Some(email)) => {
@@ -3784,8 +3784,10 @@ async fn handle_meeting_response_object(
         }
     };
 
+    // Only the raw MIME blob (`blobId`) is consumed here — body values
+    // are not needed for the meeting-request download.
     let email = match jmap
-        .get_email(&account_id, &jmap_id, &auth.username, &auth.password)
+        .get_email(&account_id, &jmap_id, &auth.username, &auth.password, false)
         .await
     {
         Ok(Some(e)) => e,
@@ -4438,7 +4440,7 @@ async fn handle_sync_email_folder_items(
     // Fetch and render created emails
     for email_id in &changes.created {
         if let Ok(Some(email)) = jmap
-            .get_email(&account_id, email_id, &auth.username, &auth.password)
+            .get_email(&account_id, email_id, &auth.username, &auth.password, true)
             .await
         {
             let server_id = email_server_id_from_jmap_id(email_id);
@@ -4453,7 +4455,7 @@ async fn handle_sync_email_folder_items(
     // Fetch and render updated emails
     for email_id in &changes.updated {
         if let Ok(Some(email)) = jmap
-            .get_email(&account_id, email_id, &auth.username, &auth.password)
+            .get_email(&account_id, email_id, &auth.username, &auth.password, true)
             .await
         {
             let server_id = email_server_id_from_jmap_id(email_id);

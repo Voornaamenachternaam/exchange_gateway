@@ -1309,7 +1309,7 @@ async fn execute_one_rop(
                 if account_id.is_empty() {
                     AttachFetch::Empty
                 } else {
-                    match jc.get_email(&account_id, &email_id, username, pw).await {
+                    match jc.get_email(&account_id, &email_id, username, pw, false).await {
                         Ok(Some(e)) => AttachFetch::Rows(
                             store::email_attach_nums(&e)
                                 .into_iter()
@@ -1438,7 +1438,7 @@ async fn execute_one_rop(
                             None,
                         )
                     } else {
-                        match jc.get_email(&account_id, &email_id, username, pw).await {
+                        match jc.get_email(&account_id, &email_id, username, pw, false).await {
                             Ok(Some(e)) => {
                                 match store::email_attachment_by_num(&e, req.attachment_id) {
                                     Some(att) => (
@@ -1550,7 +1550,7 @@ async fn execute_one_rop(
                 if account_id.is_empty() {
                     Vec::new()
                 } else {
-                    match jc.get_email(&account_id, &email_id, username, pw).await {
+                    match jc.get_email(&account_id, &email_id, username, pw, false).await {
                         Ok(Some(e)) => store::email_attach_nums(&e),
                         Ok(None) => Vec::new(),
                         Err(e) => {
@@ -2221,7 +2221,7 @@ async fn execute_one_rop(
                         RopErrorCode::NotFound
                     } else {
                         // Fetch the full email to recover the envelope (from/to).
-                        match jc.get_email(&account_id, &backend_id, username, pw).await {
+                        match jc.get_email(&account_id, &backend_id, username, pw, false).await {
                             Ok(Some(e)) => {
                                 let from_addr = e
                                     .from
@@ -2293,7 +2293,7 @@ async fn execute_one_rop(
                     if account_id.is_empty() {
                         RopErrorCode::NotFound
                     } else {
-                        match jc.get_email(&account_id, &backend_id, username, pw).await {
+                        match jc.get_email(&account_id, &backend_id, username, pw, false).await {
                             Ok(Some(e)) => {
                                 let from_addr = e
                                     .from
@@ -2690,7 +2690,7 @@ async fn execute_one_rop(
                     if account_id.is_empty() {
                         RopErrorCode::NotFound
                     } else {
-                        match jc.get_email(&account_id, src, username, pw).await {
+                        match jc.get_email(&account_id, src, username, pw, false).await {
                             Ok(Some(src_email)) => {
                                 let mut patch = serde_json::Map::new();
                                 if !excluded_subject && let Some(subj) = src_email.subject.as_ref()
@@ -3153,7 +3153,7 @@ async fn execute_one_rop(
                     if account_id.is_empty() {
                         (RopErrorCode::NotFound, String::new(), None, false, None)
                     } else {
-                        match jc.get_email(&account_id, &src_backend, username, pw).await {
+                        match jc.get_email(&account_id, &src_backend, username, pw, true).await {
                             Ok(Some(e)) => {
                                 // Try body property first (cheap, already in JSON).
                                 match store::email_body_stream_bytes(&e, &req.property_tag) {
@@ -6467,7 +6467,7 @@ async fn materialize_handle_properties(
             if account_id.is_empty() {
                 store::typed_null_cells(tags)
             } else {
-                match jc.get_email(&account_id, &backend_id, username, pw).await {
+                match jc.get_email(&account_id, &backend_id, username, pw, true).await {
                     Ok(Some(e)) => store::email_to_cells(&e, tags, kind, &mailbox_id),
                     _ => store::typed_null_cells(tags),
                 }
@@ -6500,7 +6500,7 @@ async fn materialize_handle_properties(
                 if account_id.is_empty() {
                     store::typed_null_cells(tags)
                 } else {
-                    match jc.get_email(&account_id, &backend_id, username, pw).await {
+                    match jc.get_email(&account_id, &backend_id, username, pw, false).await {
                         Ok(Some(e)) => match store::email_attachment_by_num(&e, attach_num) {
                             Some(att) => store::attachment_to_cells(att, attach_num, tags),
                             None => store::typed_null_cells(tags),

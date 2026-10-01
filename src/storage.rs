@@ -486,6 +486,56 @@ impl Storage {
         Ok(row.map(|r| (r.get(0), r.get(1))))
     }
 
+    /// Persist the sticky Sync `<Options>` block for one device-scoped
+    /// collection ([MS-ASCMD] §2.2.3.125.6). The stored form is the resolved
+    /// negotiation state as JSON; it is replaced wholesale whenever a
+    /// request carries a new `<Options>` block and reused verbatim when a
+    /// request carries none.
+    pub async fn set_sync_collection_options(
+        &self,
+        owner: &str,
+        collection_id: &str,
+        options: &crate::eas_sync_options::EasSyncCollectionOptions,
+    ) -> Result<()> {
+        let json = serde_json::to_string(options)
+            .map_err(|e| GatewayError::Storage(format!("Options serialize error: {}", e)))?;
+        sqlx::query(
+            "INSERT INTO sync_collection_options (owner, collection_id, options_json)
+             VALUES (?1, ?2, ?3)
+             ON CONFLICT(owner, collection_id) DO UPDATE
+             SET options_json = ?3, updated_at = CURRENT_TIMESTAMP",
+        )
+        .bind(owner)
+        .bind(collection_id)
+        .bind(&json)
+        .execute(self.pool.as_ref())
+        .await
+        .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+        Ok(())
+    }
+
+    /// Read the sticky Sync `<Options>` block for one device-scoped
+    /// collection, if a previous request established one.
+    pub async fn get_sync_collection_options(
+        &self,
+        owner: &str,
+        collection_id: &str,
+    ) -> Result<Option<crate::eas_sync_options::EasSyncCollectionOptions>> {
+        let row = sqlx::query(
+            "SELECT options_json FROM sync_collection_options WHERE owner = ?1 AND collection_id = ?2",
+        )
+        .bind(owner)
+        .bind(collection_id)
+        .fetch_optional(self.pool.as_ref())
+        .await
+        .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))?;
+        let Some(row) = row else { return Ok(None) };
+        let json: String = row.get(0);
+        let options = serde_json::from_str(&json)
+            .map_err(|e| GatewayError::Storage(format!("Options deserialize error: {}", e)))?;
+        Ok(Some(options))
+    }
+
     pub async fn upsert_item_map(
         &self,
         owner: &str,

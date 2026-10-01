@@ -384,9 +384,11 @@ impl JmapEmailPushMonitor {
         let mut lookup = Vec::with_capacity(created.len() + updated.len());
         lookup.extend(created.iter().cloned());
         lookup.extend(updated.iter().cloned());
+        // publish_for reads only `mailboxIds` — body values are not fetched
+        // so monitor traffic stays metadata-sized.
         let emails = self
             .jmap
-            .get_emails(account_id, &lookup, None, &self.username, &self.password)
+            .get_emails(account_id, &lookup, None, &self.username, &self.password, false)
             .await
             .unwrap_or_default();
         let mut emails = emails.into_iter();
