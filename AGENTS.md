@@ -34,6 +34,14 @@ EAS specs v20250520 (16.1); older EAS compat NOT needed.
 - Context structs to dodge clippy arg limits: `SyncCtx`, `EmailSyncCtx` (state,
   jmap, account_id, username, password, collection_id, state_collection_id,
   window, options, conversation_mode — Copy, destructured with `*ctx`).
+- **Body-value opt-in (jmap.rs)**: `get_emails`/`get_email` take a
+  `fetch_bodies: bool` mapping to RFC 8621 §4.4.1
+  `fetchTextBodyValues`/`fetchHTMLBodyValues` — pass `true` only from callers
+  that render body text (Sync delta/ItemOperations Fetch, EWS GetItem/
+  SyncFolderItems, MAPI body-stream + cell materialization); metadata-only
+  callers (threading headers, push mailboxIds, attachment rosters, submit
+  envelope) pass `false`. New callers must pick deliberately, not copy the
+  nearest flag.
 
 ## Sticky Sync options (§10 work, delivered)
 - Per-collection `<Options>` ([MS-ASCMD] §2.2.3.125.6) resolve sticky and
@@ -52,5 +60,10 @@ EAS specs v20250520 (16.1); older EAS compat NOT needed.
 ## Session notes
 - AUDIT.md §10 (EAS Sync wire-exactness) is COMPLETE and its section now
   documents the delivered behavior — keep it accurate when touching Sync.
+- PR #1969 bot-review triage COMPLETE (commit resolving 31 inline findings:
+  28 fixed, 3 refuted with [MS-ASWBXML]/[MS-ASCMD] evidence — HasAttachments
+  has no code-page-2 token; per-Fetch `<Options>` parsing is depth-agnostic;
+  MIMETruncation can't apply since Type 4 is unreachable). 10 issue comments
+  were non-actionable (billing-blocked bots, CI acks, summaries).
 - Next likely audit items: §11 WBXML conformance hardening (full-table diff
   test vs MS-ASWBXML), §12 ItemOperations attachment ranges.
