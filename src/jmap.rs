@@ -92,6 +92,75 @@ pub struct JmapAccount {
     pub account_capabilities: HashMap<String, Value>,
 }
 
+/// Outcome of a successful windowed blob download for an EAS ItemOperations
+/// Fetch ([MS-ASCMD] §2.2.1.10): the requested bytes plus the metadata the
+/// response `Properties` element carries ([MS-ASCMD] §2.2.3.139.2).
+#[derive(Clone, Debug)]
+pub struct BlobRangeFetch {
+    /// The bytes inside the requested window (already sliced; not the whole
+    /// blob when a range was requested).
+    pub data: Vec<u8>,
+    /// `Content-Type` reported by the backend, for
+    /// `AirSyncBase:ContentType` ([MS-ASAIRS] §2.2.2.18.2).
+    pub content_type: String,
+    /// Whole-blob size in bytes, for `Total` ([MS-ASCMD] §2.2.3.184.2).
+    pub total_size: Option<u64>,
+    /// Half-open absolute window `[start, end)` that `data` actually covers
+    /// — the authoritative value for the response `Range` element
+    /// ([MS-ASCMD] §2.2.3.143.2: "The byte-range that is specified by the
+    /// server in the response is the authoritative value").
+    pub window: (u64, u64),
+    /// Whether the window was served in full. `false` means EOF was reached
+    /// first, which maps to ItemOperations status 17 ("Partial success").
+    pub complete: bool,
+}
+
+/// Typed failure of a windowed blob download, each variant mapping onto an
+/// ItemOperations Fetch status ([MS-ASCMD] §2.2.3.177.8):
+/// `InvalidBlobId`/`NotFound` → 15, `AccessDenied` → 16, `Server` → 3,
+/// `TooLarge` → 11, `RangeTooLarge`/`RangeStartsPastEof` → 8.
+#[derive(Debug)]
+pub enum BlobFetchError {
+    /// The blobId is not a legal RFC 8620 `Id`.
+    InvalidBlobId,
+    /// The backend has no such blob (404/410).
+    NotFound(String),
+    /// The backend refused the download (401/403).
+    AccessDenied(String),
+    /// Transport failure, backend 5xx, or a failed session lookup.
+    Server(anyhow::Error),
+    /// The whole item exceeds the per-request budget (no range requested).
+    TooLarge { total: u64, limit: usize },
+    /// The requested byte range exceeds the per-request window budget.
+    RangeTooLarge { requested: u64, limit: usize },
+    /// The requested range starts at or after the end of the item.
+    RangeStartsPastEof { total: u64 },
+}
+
+impl std::fmt::Display for BlobFetchError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidBlobId => write!(f, "Invalid JMAP blobId"),
+            Self::NotFound(msg) => write!(f, "{msg}"),
+            Self::AccessDenied(msg) => write!(f, "{msg}"),
+            Self::Server(e) => write!(f, "{e}"),
+            Self::TooLarge { total, limit } => write!(
+                f,
+                "JMAP blob too large: {total} bytes exceeds the {limit}-byte budget"
+            ),
+            Self::RangeTooLarge { requested, limit } => write!(
+                f,
+                "Byte range too large: {requested} bytes exceeds the {limit}-byte window budget"
+            ),
+            Self::RangeStartsPastEof { total } => {
+                write!(f, "Byte range starts at or past end of {total}-byte item")
+            }
+        }
+    }
+}
+
+impl std::error::Error for BlobFetchError {}
+
 /// JMAP API request (RFC 8621 §3.1)
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -995,6 +1064,220 @@ impl JmapClient {
         }
 
         Ok((buf, content_type))
+    }
+    /// Download a blob for an EAS ItemOperations Fetch
+    /// ([MS-ASCMD] §2.2.1.10), honoring an optional client byte-range
+    /// ([MS-ASCMD] §2.2.3.143.2: "For attachments, the range applies to the
+    /// file content").
+    ///
+    /// Unlike [`Self::download_blob_capped`], which buffers the whole body,
+    /// this variant only *retains* the bytes inside the requested window:
+    /// bytes before the window are counted and discarded, and the transfer
+    /// is aborted as soon as the last wanted byte has been received whenever
+    /// the total size is already known from `Content-Length`. The window
+    /// buffer is additionally bounded by `max_bytes`, which maps the
+    /// gateway's per-request attachment budget onto the spec's checkpoint
+    /// mechanism ("Facilitates a checkpoint to improve the reliability of
+    /// large data downloads", [MS-ASCMD] §2.2.3.125.3): a client can pull an
+    /// attachment larger than the budget in consecutive window requests.
+    ///
+    /// `range` is a half-open `[start, end)` window in absolute blob
+    /// coordinates. `None` fetches the whole item, subject to `max_bytes`.
+    ///
+    /// The returned `total_size` is the whole blob's size when the server
+    /// advertises it via `Content-Length` or the transfer reached EOF while
+    /// scanning; it is `None` only when a windowed transfer was cut short
+    /// before EOF with no `Content-Length` available — in that case the
+    /// response omits the optional `Total` element rather than reporting a
+    /// wrong value ([MS-ASCMD] §2.2.3.184.2: Total "indicates the total size
+    /// of an item on the server").
+    pub async fn download_blob_range(
+        &self,
+        account_id: &str,
+        blob_id: &str,
+        username: &str,
+        password: &SecretString,
+        range: Option<std::ops::Range<u64>>,
+        max_bytes: usize,
+    ) -> std::result::Result<BlobRangeFetch, BlobFetchError> {
+        if blob_id.is_empty()
+            || !blob_id
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+        {
+            // [MS-ASCMD] §2.2.3.177.8 status 15: "Attachment fetch provider -
+            // Attachment or attachment ID is invalid."
+            return Err(BlobFetchError::InvalidBlobId);
+        }
+        let range = range.filter(|r| r.start < r.end);
+        let window_len = match &range {
+            Some(r) => {
+                let len = r.end - r.start;
+                if len > max_bytes as u64 {
+                    // Status 8: "The byte-range is invalid or too large."
+                    return Err(BlobFetchError::RangeTooLarge {
+                        requested: len,
+                        limit: max_bytes,
+                    });
+                }
+                len
+            }
+            None => 0,
+        };
+
+        let session = self
+            .get_session(username, password)
+            .await
+            .map_err(BlobFetchError::Server)?;
+        let url = self
+            .download_blob_url(&session, account_id, blob_id)
+            .map_err(|_| BlobFetchError::InvalidBlobId)?;
+        let auth = Self::basic_auth_header(username, password);
+
+        trace!(target: "jmap", url = %url, blob_id = %blob_id, ?range, max_bytes, "Downloading JMAP blob (windowed)");
+
+        let resp = self
+            .client
+            .get(&url)
+            .header(AUTHORIZATION, &auth)
+            .send()
+            .await
+            .map_err(|e| BlobFetchError::Server(anyhow!("JMAP blob download failed: {}", e)))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(match status.as_u16() {
+                401 | 403 => BlobFetchError::AccessDenied(format!(
+                    "JMAP blob download returned {}: {}",
+                    status, body
+                )),
+                404 | 410 => BlobFetchError::NotFound(format!(
+                    "JMAP blob download returned {}: {}",
+                    status, body
+                )),
+                _ => BlobFetchError::Server(anyhow!(
+                    "JMAP blob download returned {}: {}",
+                    status,
+                    body
+                )),
+            });
+        }
+
+        let content_type = resp
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_owned)
+            .unwrap_or_else(|| "application/octet-stream".to_string());
+
+        let content_length = resp.content_length();
+        if let (Some(len), None) = (content_length, &range)
+            && len > max_bytes as u64
+        {
+            // [MS-ASCMD] §2.2.3.177.8 status 11: "The requested data size is
+            // too large." The client can retry with explicit windowed ranges.
+            return Err(BlobFetchError::TooLarge {
+                total: len,
+                limit: max_bytes,
+            });
+        }
+        if let (Some(len), Some(r)) = (content_length, &range) {
+            // A window entirely past EOF has no bytes to serve: status 8
+            // ("The byte-range is invalid or too large").
+            if r.start >= len {
+                return Err(BlobFetchError::RangeStartsPastEof { total: len });
+            }
+        }
+
+        // The transfer needs to continue past the window's last byte only
+        // while the total size is still unknown; with `Content-Length`
+        // present the stream is cut as soon as the window is complete. The
+        // declared length travels with the stop position so the early return
+        // names the authoritative total without re-reading headers.
+        let stop_after = match (&range, content_length) {
+            (Some(r), Some(total)) => Some((r.end, total)),
+            _ => None,
+        };
+
+        let mut data: Vec<u8> = Vec::with_capacity(usize::try_from(window_len).unwrap_or(0));
+        let mut position: u64 = 0;
+        let mut stream = resp.bytes_stream();
+        while let Some(chunk) = futures_util::StreamExt::next(&mut stream).await {
+            let chunk = chunk.map_err(|e| {
+                BlobFetchError::Server(anyhow!("JMAP blob download stream failed: {}", e))
+            })?;
+            let chunk_start = position;
+            let chunk_end = position + chunk.len() as u64;
+            match &range {
+                // One chunk can straddle the window boundaries: copy only
+                // the intersection of [chunk_start, chunk_end) with the
+                // requested window.
+                Some(want) => {
+                    let copy_from = chunk_start.max(want.start).saturating_sub(chunk_start);
+                    let copy_to = chunk_end.min(want.end).saturating_sub(chunk_start);
+                    if copy_to > copy_from {
+                        data.extend_from_slice(&chunk[copy_from as usize..copy_to as usize]);
+                    }
+                }
+                None => {
+                    data.extend_from_slice(&chunk);
+                    if data.len() > max_bytes {
+                        return Err(BlobFetchError::TooLarge {
+                            total: chunk_end,
+                            limit: max_bytes,
+                        });
+                    }
+                }
+            }
+            position = chunk_end;
+            if let Some((stop, total)) = stop_after
+                && position >= stop
+            {
+                // The window is fully covered and the total is known from
+                // Content-Length — nothing more to learn from the stream.
+                let (start, end) = range
+                    .as_ref()
+                    .map(|r| (r.start, r.end))
+                    .expect("stop implies a range");
+                return Ok(BlobRangeFetch {
+                    data,
+                    content_type,
+                    total_size: Some(total),
+                    window: (start, end),
+                    complete: true,
+                });
+            }
+        }
+        // EOF: the whole body has been seen, so the total is exact — the
+        // declared Content-Length when the server sent one, otherwise the
+        // bytes actually received. A windowed request that hit EOF before
+        // covering its full span served fewer bytes than requested
+        // ([MS-ASCMD] §2.2.3.177.8 status 17: "Partial success").
+        let total_size = content_length.unwrap_or(position);
+        if let Some(r) = &range
+            && r.start >= position
+        {
+            // The stream ended before the window's first byte, so no byte of
+            // the window exists — the same semantics the Content-Length
+            // precheck applies ([MS-ASCMD] §2.2.3.177.8 status 8: "The
+            // byte-range is invalid or too large"). Without this, a streamed
+            // body would build an inverted (start > end) window that renders
+            // as a nonsensical Range and underflows the inclusive-end
+            // conversion.
+            return Err(BlobFetchError::RangeStartsPastEof { total: position });
+        }
+        let (window, complete) = match &range {
+            Some(r) => ((r.start, position.min(r.end)), position >= r.end),
+            None => ((0, position), true),
+        };
+        Ok(BlobRangeFetch {
+            data,
+            content_type,
+            total_size: Some(total_size),
+            window,
+            complete,
+        })
     }
 
     /// Upload a raw blob to JMAP (RFC 8621 §4.1.2 `uploadUrl`).
@@ -5567,7 +5850,7 @@ mod tests {
     /// Spawn a stub JMAP server; blob sizes and Content-Length behaviour are
     /// selected by the blobId path segment:
     /// `exact-{n}` = n bytes, `chunked-{n}` = n bytes with no Content-Length,
-    /// `long-{n}` = n bytes with Content-Length.
+    /// `long-{n}` = n bytes with Content-Length, `missing` = 404, `denied` = 403.
     async fn spawn_stub_jmap_server() -> String {
         use axum::extract::Path as AxumPath;
         use axum::response::Response;
@@ -5577,6 +5860,18 @@ mod tests {
             axum::Json(session_json(&base))
         }
         async fn download(AxumPath((_account, blob)): AxumPath<(String, String)>) -> Response {
+            if blob == "missing" {
+                return Response::builder()
+                    .status(axum::http::StatusCode::NOT_FOUND)
+                    .body(axum::body::Body::empty())
+                    .unwrap();
+            }
+            if blob == "denied" {
+                return Response::builder()
+                    .status(axum::http::StatusCode::FORBIDDEN)
+                    .body(axum::body::Body::empty())
+                    .unwrap();
+            }
             let (n, with_length) = if let Some(rest) = blob.strip_prefix("exact-") {
                 (rest.parse::<usize>().unwrap(), true)
             } else if let Some(rest) = blob.strip_prefix("chunked-") {
@@ -5664,5 +5959,229 @@ mod tests {
             .await
             .expect_err("must abort mid-stream once cap exceeded");
         assert!(err.to_string().contains("exceeds"));
+    }
+
+    // --- download_blob_range ([MS-ASCMD] §2.2.3.143.2 byte ranges) ---
+
+    #[tokio::test]
+    async fn download_blob_range_serves_whole_item() {
+        let base = spawn_stub_jmap_server().await;
+        let client = JmapClient::new(&base).unwrap();
+        let pw = SecretString::from("pw");
+        let fetch = client
+            .download_blob_range("a", "exact-1000", "u", &pw, None, 1024)
+            .await
+            .expect("whole-item download must succeed");
+        assert_eq!(fetch.data.len(), 1000);
+        assert_eq!(fetch.total_size, Some(1000));
+        assert_eq!(fetch.window, (0, 1000));
+        assert!(fetch.complete);
+    }
+
+    #[tokio::test]
+    async fn download_blob_range_serves_window_with_content_length() {
+        let base = spawn_stub_jmap_server().await;
+        let client = JmapClient::new(&base).unwrap();
+        let pw = SecretString::from("pw");
+        let fetch = client
+            .download_blob_range("a", "exact-1000", "u", &pw, Some(100..300), 1024)
+            .await
+            .expect("windowed download must succeed");
+        assert_eq!(fetch.data.len(), 200, "window 100-299 = 200 bytes");
+        assert_eq!(fetch.window, (100, 300));
+        assert_eq!(fetch.total_size, Some(1000));
+        assert!(fetch.complete);
+    }
+
+    #[tokio::test]
+    async fn download_blob_range_clamps_window_at_eof() {
+        let base = spawn_stub_jmap_server().await;
+        let client = JmapClient::new(&base).unwrap();
+        let pw = SecretString::from("pw");
+        // No Content-Length: the true total is only learned at EOF, and EOF
+        // cuts the requested window short — status 17 territory. The
+        // window's *requested* span stays within the budget; what's
+        // actually served is fewer bytes.
+        let fetch = client
+            .download_blob_range("a", "chunked-600", "u", &pw, Some(500..1500), 1024)
+            .await
+            .expect("clamped window must succeed");
+        assert_eq!(fetch.data.len(), 100, "only bytes 500-599 exist");
+        assert_eq!(fetch.window, (500, 600));
+        assert_eq!(fetch.total_size, Some(600));
+        assert!(
+            !fetch.complete,
+            "short window maps to ItemOperations status 17"
+        );
+    }
+
+    #[tokio::test]
+    async fn download_blob_range_rejects_range_past_eof() {
+        let base = spawn_stub_jmap_server().await;
+        let client = JmapClient::new(&base).unwrap();
+        let pw = SecretString::from("pw");
+        let err = client
+            .download_blob_range("a", "exact-100", "u", &pw, Some(100..200), 1024)
+            .await
+            .expect_err("a range starting at EOF has no bytes");
+        assert!(matches!(
+            err,
+            super::BlobFetchError::RangeStartsPastEof { total: 100 }
+        ));
+    }
+
+    #[tokio::test]
+    async fn download_blob_range_reports_total_for_multichunk_stream() {
+        let base = spawn_stub_jmap_server().await;
+        let client = JmapClient::new(&base).unwrap();
+        let pw = SecretString::from("pw");
+        // No Content-Length: the total is only known at EOF, and the 200 KiB
+        // body arrives as four stream chunks. The reported Total must be the
+        // whole item's size, not the first chunk's end — a client planning
+        // follow-up windows from <Total> would otherwise under-fetch.
+        let fetch = client
+            .download_blob_range("a", "chunked-200000", "u", &pw, None, 262_144)
+            .await
+            .expect("multi-chunk whole-item download must succeed");
+        assert_eq!(fetch.data.len(), 200_000);
+        assert_eq!(fetch.total_size, Some(200_000));
+        assert_eq!(fetch.window, (0, 200_000));
+        assert!(fetch.complete);
+
+        let fetch = client
+            .download_blob_range(
+                "a",
+                "chunked-200000",
+                "u",
+                &pw,
+                Some(150_000..150_100),
+                262_144,
+            )
+            .await
+            .expect("windowed multi-chunk download must succeed");
+        assert_eq!(fetch.data.len(), 100);
+        assert_eq!(fetch.window, (150_000, 150_100));
+        assert_eq!(fetch.total_size, Some(200_000));
+        assert!(fetch.complete);
+    }
+
+    #[tokio::test]
+    async fn download_blob_range_rejects_range_past_eof_without_content_length() {
+        let base = spawn_stub_jmap_server().await;
+        let client = JmapClient::new(&base).unwrap();
+        let pw = SecretString::from("pw");
+        // Streamed body, no Content-Length: EOF is the first moment the
+        // range's invalidity is provable, and the error must carry the bytes
+        // actually observed — not an inverted window that would render as a
+        // nonsensical <Range> or underflow the inclusive-end conversion.
+        let err = client
+            .download_blob_range("a", "chunked-300", "u", &pw, Some(500..600), 1024)
+            .await
+            .expect_err("a streamed range starting past EOF has no bytes");
+        assert!(matches!(
+            err,
+            super::BlobFetchError::RangeStartsPastEof { total: 300 }
+        ));
+    }
+
+    #[tokio::test]
+    async fn download_blob_range_rejects_oversized_window() {
+        let base = spawn_stub_jmap_server().await;
+        let client = JmapClient::new(&base).unwrap();
+        let pw = SecretString::from("pw");
+        let err = client
+            .download_blob_range("a", "exact-100000", "u", &pw, Some(0..2000), 1024)
+            .await
+            .expect_err("window over the per-request budget must fail");
+        assert!(matches!(
+            err,
+            super::BlobFetchError::RangeTooLarge {
+                requested: 2000,
+                limit: 1024
+            }
+        ));
+    }
+
+    #[tokio::test]
+    async fn download_blob_range_rejects_whole_item_over_cap_via_content_length() {
+        let base = spawn_stub_jmap_server().await;
+        let client = JmapClient::new(&base).unwrap();
+        let pw = SecretString::from("pw");
+        let err = client
+            .download_blob_range("a", "exact-6000000", "u", &pw, None, 1024)
+            .await
+            .expect_err("whole-item over the budget must fail");
+        assert!(matches!(
+            err,
+            super::BlobFetchError::TooLarge {
+                total: 6_000_000,
+                limit: 1024
+            }
+        ));
+    }
+
+    #[tokio::test]
+    async fn download_blob_range_aborts_chunked_item_over_cap_mid_stream() {
+        let base = spawn_stub_jmap_server().await;
+        let client = JmapClient::new(&base).unwrap();
+        let pw = SecretString::from("pw");
+        let err = client
+            .download_blob_range("a", "chunked-6000000", "u", &pw, None, 272_144)
+            .await
+            .expect_err("chunked oversized item must abort mid-stream");
+        assert!(matches!(err, super::BlobFetchError::TooLarge { .. }));
+    }
+
+    #[tokio::test]
+    async fn download_blob_range_rejects_invalid_blob_id() {
+        let base = spawn_stub_jmap_server().await;
+        let client = JmapClient::new(&base).unwrap();
+        let pw = SecretString::from("pw");
+        for bad in ["../../session", "a/b", "a?b", ""] {
+            let err = client
+                .download_blob_range("a", bad, "u", &pw, None, 1024)
+                .await
+                .expect_err("must reject non-RFC-8620 blobId characters");
+            assert!(matches!(err, super::BlobFetchError::InvalidBlobId));
+        }
+    }
+
+    #[tokio::test]
+    async fn download_blob_range_classifies_not_found_as_invalid_attachment() {
+        let base = spawn_stub_jmap_server().await;
+        let client = JmapClient::new(&base).unwrap();
+        let pw = SecretString::from("pw");
+        let err = client
+            .download_blob_range("a", "missing", "u", &pw, None, 1024)
+            .await
+            .expect_err("404 must classify as NotFound (ItemOperations status 15)");
+        assert!(matches!(err, super::BlobFetchError::NotFound(_)));
+    }
+
+    #[tokio::test]
+    async fn download_blob_range_classifies_forbidden_as_access_denied() {
+        let base = spawn_stub_jmap_server().await;
+        let client = JmapClient::new(&base).unwrap();
+        let pw = SecretString::from("pw");
+        let err = client
+            .download_blob_range("a", "denied", "u", &pw, None, 1024)
+            .await
+            .expect_err("403 must classify as AccessDenied (ItemOperations status 16)");
+        assert!(matches!(err, super::BlobFetchError::AccessDenied(_)));
+    }
+
+    #[tokio::test]
+    async fn download_blob_range_single_byte_window() {
+        let base = spawn_stub_jmap_server().await;
+        let client = JmapClient::new(&base).unwrap();
+        let pw = SecretString::from("pw");
+        // "m-n" with m == n names exactly one byte.
+        let fetch = client
+            .download_blob_range("a", "exact-1000", "u", &pw, Some(7..8), 1024)
+            .await
+            .expect("single-byte window must succeed");
+        assert_eq!(fetch.data.len(), 1);
+        assert_eq!(fetch.window, (7, 8));
+        assert!(fetch.complete);
     }
 }

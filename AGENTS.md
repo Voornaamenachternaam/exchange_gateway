@@ -98,6 +98,34 @@ EAS specs v20250520 (16.1); older EAS compat NOT needed.
 - Status codes: Sync invalid key → 3 (re-prime SyncKey 0), FolderSync 9,
   GetItemEstimate 4; ItemOperations Fetch: 2/3/6/14/16/164 per [MS-ASCMD] §2.2.3.177.8.
 
+## ItemOperations/Fetch (§12 work, delivered)
+- **Response Fetch child shape** ([MS-ASCMD] §2.2.3.67.1): response `<Fetch>`
+  has NO `<Store>` echo; `Status` leads, then the address elements the request
+  used — `<AirSyncBase:FileReference>`, or `<AirSync:CollectionId>`+
+  `<AirSync:ServerId>`, or `<AirSync:CollectionId>`+`<Search:LongId>` — then
+  `<AirSync:Class>` (§2.2.3.27.3: airsync namespace, NOT page 20) and
+  `<Properties>`. eas.rs ItemOperations response templates must declare
+  xmlns:AirSync="AirSync:" and xmlns:Search="Search:". Bare `<Class>`/
+  `<CollectionId>`/`<ServerId>` inside an ItemOperations-rooted (code page 20)
+  document resolve to NO [MS-ASWBXML] token → WBXML encode failure → 500; this
+  was a live bug for every as_wbxml item fetch until §12.
+- `Range` request parse: inclusive `m-n` → half-open window; response echoes the
+  AUTHORITATIVE window in `<Range>m-n</Range>` (only when the request had a
+  Range) + `<Total>` (whole-item size). Statuses per §2.2.3.177.8: 9/2/8/11/10/
+  15/16/3/6/14/17 (17 = window clamped at EOF = partial success).
+- Multipart ([MS-ASHTTP] §2.2.1.1.2.5 `MS-ASAcceptMultiPart: T`):
+  `multipart_item_operations_response` builds §2.2.1.10.1.1 layout (PartsCount
+  u32 LE + PartMetaData{Offset,Length} + parts; part 0 = WBXML, parts 1.. =
+  raw bytes). `<Part>n</Part>` replaces attachment `Data` (direct Properties
+  child) and the email body's `AirSyncBase:Data` (direct AirSyncBase:Body
+  child, per the §4.10.5.2 decoded example).
+- `JmapClient::download_blob_range` (jmap.rs): streaming windowed blob fetch
+  with typed `BlobFetchError` (InvalidBlobId/NotFound/AccessDenied/Server/
+  TooLarge/RangeTooLarge/RangeStartsPastEof), Content-Length short-circuit,
+  mid-stream budget abort. `calendar_attachment_outcome` (eas.rs) mirrors it
+  for gateway-managed calendar attachments. Budget = `max_attachment_bytes`
+  (default 5 MiB, floor 1024).
+
 ## Session notes
 - AUDIT.md §10 (EAS Sync wire-exactness) is COMPLETE and its section now
   documents the delivered behavior — keep it accurate when touching Sync.
@@ -108,13 +136,46 @@ EAS specs v20250520 (16.1); older EAS compat NOT needed.
   completed + spec-grounded; §3 example byte-exact both directions; decode
   fail-closed per §2.1.3; encode fails on PI/DOCTYPE, encodes CDATA. Suite:
   901 tests green, clippy 0, release build warning-free.
+- AUDIT.md §12 (ItemOperations/Fetch attachment correctness) is COMPLETE:
+  Range byte-range fetch (both JMAP-blob and gateway-managed calendar
+  stores), full §2.2.3.177.8 status table, MS-ASAcceptMultiPart multipart
+  delivery, memory-bounded base64 (push_base64) + streaming budget abort,
+  §2.2.3.67.1 response-Fetch shape fix (Store echo removed, Status first,
+  AirSync-namespace Class/CollectionId/ServerId, Search:LongId echo), and two
+  dead attachment.rs renderers removed. Suite: 928 tests green
+  (lib 892 + fixtures 22 + snapshots 11 + jmap_calendar_deploy 2 + doc 1),
+  clippy 0 warnings, release build warning-free.
 - PR #1969 bot-review triage COMPLETE (commit resolving 31 inline findings:
   28 fixed, 3 refuted with [MS-ASWBXML]/[MS-ASCMD] evidence — HasAttachments
   has no code-page-2 token; per-Fetch `<Options>` parsing is depth-agnostic;
   MIMETruncation can't apply since Type 4 is unreachable). 10 issue comments
   were non-actionable (billing-blocked bots, CI acks, summaries).
-- Next likely audit items: §12 ItemOperations attachment ranges, §13
-  MeetingResponse/iMIP integrity, §14 timezone blob fidelity.
+- PR #1980 bot-review triage COMPLETE (all 13 comments audited: 10
+  non-actionable bots/acks; 3 substantive CodeRabbit findings, all concurred
+  with and fixed in commit 0657fb4 on eas-itemoperations-fetch-conformance):
+  (1) CWE-770 cumulative per-request content budget in the ItemOperations
+  loop — `max_attachment_bytes` now caps the SUM across Fetches (attachment
+  windows both modes + multipart email body parts), overflowing Fetch gets
+  Item-scoped status 11, remaining Fetches still execute in request order,
+  single-Fetch behavior unchanged (per-fetch cap already guarantees it; the
+  email-body arm needs the explicit `served > 0` guard since negotiated
+  bodies have no per-fetch cap); (2) jmap.rs streamed-total bug — the
+  `if total_size.is_none()` in-loop update froze the total at the FIRST
+  chunk's end for no-Content-Length responses (wrong `<Total>`); fixed by
+  carrying the declared total in `stop_after` and deriving the EOF total via
+  `content_length.unwrap_or(position)`; (3) jmap.rs streamed past-EOF range —
+  without Content-Length the EOF branch built an INVERTED window (garbage
+  `<Range>500-299</Range>`, u64 underflow on empty bodies); fixed by
+  rejecting `r.start >= position` with `RangeStartsPastEof` (status 8, same
+  semantics as the Content-Length precheck). 3 new tests pin all three:
+  `handle_item_operations_attachment_cumulative_budget`,
+  `download_blob_range_reports_total_for_multichunk_stream`,
+  `download_blob_range_rejects_range_past_eof_without_content_length`.
+  Suite after fixes: 931 green (lib 895 + fixtures 22 + snapshots 11 +
+  jmap_calendar_deploy 2 + doc 1), clippy 0, fmt clean on touched files,
+  release warning-free. No comment replies (resolve via code/push only).
+- Next likely audit items: §13 MeetingResponse/iMIP integrity, §14
+  timezone blob fidelity, §15 Tasks/Notes backend story.
 - Toolchain note: rustup components clippy/rustfmt must be installed in a
   fresh container (`rustup component add clippy rustfmt`); project edition is
   2024 (rustfmt needs `--edition 2024` for let-chains). `cargo fmt --check`
