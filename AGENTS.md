@@ -150,6 +150,30 @@ EAS specs v20250520 (16.1); older EAS compat NOT needed.
   has no code-page-2 token; per-Fetch `<Options>` parsing is depth-agnostic;
   MIMETruncation can't apply since Type 4 is unreachable). 10 issue comments
   were non-actionable (billing-blocked bots, CI acks, summaries).
+- PR #1980 bot-review triage COMPLETE (all 13 comments audited: 10
+  non-actionable bots/acks; 3 substantive CodeRabbit findings, all concurred
+  with and fixed in commit 0657fb4 on eas-itemoperations-fetch-conformance):
+  (1) CWE-770 cumulative per-request content budget in the ItemOperations
+  loop — `max_attachment_bytes` now caps the SUM across Fetches (attachment
+  windows both modes + multipart email body parts), overflowing Fetch gets
+  Item-scoped status 11, remaining Fetches still execute in request order,
+  single-Fetch behavior unchanged (per-fetch cap already guarantees it; the
+  email-body arm needs the explicit `served > 0` guard since negotiated
+  bodies have no per-fetch cap); (2) jmap.rs streamed-total bug — the
+  `if total_size.is_none()` in-loop update froze the total at the FIRST
+  chunk's end for no-Content-Length responses (wrong `<Total>`); fixed by
+  carrying the declared total in `stop_after` and deriving the EOF total via
+  `content_length.unwrap_or(position)`; (3) jmap.rs streamed past-EOF range —
+  without Content-Length the EOF branch built an INVERTED window (garbage
+  `<Range>500-299</Range>`, u64 underflow on empty bodies); fixed by
+  rejecting `r.start >= position` with `RangeStartsPastEof` (status 8, same
+  semantics as the Content-Length precheck). 3 new tests pin all three:
+  `handle_item_operations_attachment_cumulative_budget`,
+  `download_blob_range_reports_total_for_multichunk_stream`,
+  `download_blob_range_rejects_range_past_eof_without_content_length`.
+  Suite after fixes: 931 green (lib 895 + fixtures 22 + snapshots 11 +
+  jmap_calendar_deploy 2 + doc 1), clippy 0, fmt clean on touched files,
+  release warning-free. No comment replies (resolve via code/push only).
 - Next likely audit items: §13 MeetingResponse/iMIP integrity, §14
   timezone blob fidelity, §15 Tasks/Notes backend story.
 - Toolchain note: rustup components clippy/rustfmt must be installed in a
