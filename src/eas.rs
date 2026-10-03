@@ -29,6 +29,7 @@ use quick_xml::events::Event;
 use roxmltree::Document;
 use secrecy::{ExposeSecret, SecretString};
 use std::collections::HashMap;
+use std::fmt::Write as FmtWrite;
 use std::num::NonZeroUsize;
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use std::sync::{Arc, LazyLock};
@@ -214,6 +215,11 @@ struct ItemOperationsFetch {
     server_id: Option<String>,
     long_id: Option<String>,
     file_reference: Option<String>,
+    /// The raw `<Range>` value from this Fetch's `<Options>` block
+    /// ([MS-ASCMD] §2.2.3.143.2): "m-n", zero-indexed inclusive bounds.
+    /// Kept raw here; `parse_item_operations_byte_range` validates it and
+    /// maps malformed values onto status 8.
+    byte_range: Option<String>,
     /// The `<Options>` block inside this Fetch
     /// ([MS-ASCMD] §2.2.3.125.4), carrying airsyncbase:BodyPreference /
     /// BodyPartPreference ([MS-ASAIRS] §2.2.2.12, §2.2.2.3) and
@@ -637,9 +643,14 @@ fn extract_all_tag_blocks(xml: &str, tag: &[u8]) -> Vec<String> {
     let mut blocks = Vec::new();
     let bytes = xml.as_bytes();
     let mut pos = 0;
-    while let Some(rel) = bytes[pos..].windows(open.len()).position(|w| w == open.as_slice()) {
+    while let Some(rel) = bytes[pos..]
+        .windows(open.len())
+        .position(|w| w == open.as_slice())
+    {
         let start = pos + rel + open.len();
-        if let Some(rel_end) = bytes[start..].windows(close.len()).position(|w| w == close.as_slice())
+        if let Some(rel_end) = bytes[start..]
+            .windows(close.len())
+            .position(|w| w == close.as_slice())
         {
             blocks.push(String::from_utf8_lossy(&bytes[start..start + rel_end]).into_owned());
             pos = start + rel_end + close.len();
@@ -912,10 +923,8 @@ fn parse_sync_collections(xml: &str) -> Vec<SyncCollection> {
                         // and the collection-level control elements
                         // (<ConversationMode>, <DeletesAsMoves>) from the raw
                         // Collection XML; they live at Collection scope.
-                        let parsed =
-                            crate::eas_sync_options::parse_collection_options(&coll.xml);
-                        coll.conversation_mode =
-                            parsed.controls.conversation_mode.unwrap_or(false);
+                        let parsed = crate::eas_sync_options::parse_collection_options(&coll.xml);
+                        coll.conversation_mode = parsed.controls.conversation_mode.unwrap_or(false);
                         coll.options = if parsed.options.explicitly_set {
                             Some(parsed.options)
                         } else {
@@ -1041,6 +1050,8 @@ fn parse_item_operations_fetches(xml: &str) -> Vec<ItemOperationsFetch> {
                         Some(b"CollectionId") => fetch.collection_id = Some(text),
                         Some(b"ServerId") => fetch.server_id = Some(text),
                         Some(b"LongId") => fetch.long_id = Some(text),
+                        Some(b"FileReference") => fetch.file_reference = Some(text),
+                        Some(b"Range") => fetch.byte_range = Some(text),
                         _ => {}
                     }
                 }
@@ -1053,6 +1064,8 @@ fn parse_item_operations_fetches(xml: &str) -> Vec<ItemOperationsFetch> {
                         Some(b"CollectionId") => fetch.collection_id = Some(text),
                         Some(b"ServerId") => fetch.server_id = Some(text),
                         Some(b"LongId") => fetch.long_id = Some(text),
+                        Some(b"FileReference") => fetch.file_reference = Some(text),
+                        Some(b"Range") => fetch.byte_range = Some(text),
                         _ => {}
                     }
                 }
@@ -2222,11 +2235,7 @@ async fn handle_ping(
 /// match (the `/` precedes the name in a close tag).
 fn oof_audience_from_oof_messages(
     oof_inner: &str,
-) -> (
-    Option<String>,
-    Option<String>,
-    crate::oof::ExternalAudience,
-) {
+) -> (Option<String>, Option<String>, crate::oof::ExternalAudience) {
     let mut internal_reply = extract_first_tag_text(oof_inner, b"InternalReply");
     let mut external_reply = extract_first_tag_text(oof_inner, b"ExternalReply");
     let mut has_known = false;
@@ -2415,11 +2424,7 @@ async fn handle_settings(
                         duration,
                         oof_message("AppliesToInternal", settings.enabled, &internal_reply),
                         if external_known {
-                            oof_message(
-                                "AppliesToExternalKnown",
-                                settings.enabled,
-                                &external_reply,
-                            )
+                            oof_message("AppliesToExternalKnown", settings.enabled, &external_reply)
                         } else {
                             String::new()
                         },
@@ -2547,30 +2552,198 @@ async fn handle_get_item_estimate(
     xml_or_wbxml_response(wbxml, as_wbxml, &xml, request_id)
 }
 
-/// Fetch an email attachment's raw bytes from the user's JMAP account.
-/// Returns `(base64_body, content_type, unencoded_size)` for the
-/// ItemOperations-namespace `Data`/`Total` and `AirSyncBase:ContentType`
-/// elements of the Fetch response (MS-ASCMD 2.2.3.39.2 / 2.2.3.184.2).
+/// Parse an ItemOperations byte-range value ([MS-ASCMD] §2.2.3.143.2):
+/// "a string value in the format \"m-n\", where m is less than or equal to
+/// n … The byte range is zero-indexed". Returns the half-open `[m, n+1)`
+/// window, or `None` when the value is malformed (m > n, unparsable) —
+/// the caller answers with status 8 ("The byte-range is invalid or too
+/// large").
+fn parse_item_operations_byte_range(raw: &str) -> Option<std::ops::Range<u64>> {
+    let (m, n) = raw.split_once('-')?;
+    let m: u64 = m.trim().parse().ok()?;
+    let n: u64 = n.trim().parse().ok()?;
+    if m > n {
+        return None;
+    }
+    // n is the inclusive last byte; overflow-safe n+1. A range whose end is
+    // u64::MAX cannot name a real byte, so treat it as malformed rather
+    // than wrapping to 0.
+    Some(m..n.checked_add(1)?)
+}
+
+/// Append `bytes` base64-encoded to `out` in fixed-size chunks
+/// ([MS-ASDTYPE] §2.3 byte content: "a base64 encoding of the binary
+/// document" — [MS-ASCMD] §2.2.3.39.2) without materializing a second
+/// full-size copy of the content: the previous
+/// `BASE64.encode(&bytes)` step allocated the entire encoded body as a
+/// temporary before it was pushed into the response string.
+fn push_base64(out: &mut String, bytes: &[u8]) {
+    const CHUNK: usize = 3 * 1024;
+    let mut scratch = String::with_capacity(4 * 1024);
+    for piece in bytes.chunks(CHUNK) {
+        scratch.clear();
+        BASE64.encode_string(piece, &mut scratch);
+        out.push_str(&scratch);
+    }
+}
+
+/// One ItemOperations Fetch outcome: either a per-Fetch status
+/// ([MS-ASCMD] §2.2.3.177.8) or the attachment bytes the response carries.
 ///
-/// EAS email attachment `FileReference`s carry the JMAP blobId. The download
-/// uses `download_blob_capped`, which validates the blobId against the
-/// RFC 8620 `Id` character set and streams the body with the byte cap
-/// enforced mid-transfer (an oversized blob is aborted rather than buffered
-/// whole). The credentials are the requesting user's own, so a blobId from
-/// another mailbox simply fails at Stalwart with 403/404.
+/// `AttachmentFetchOutcome` holds the *raw* (unencoded) bytes for the
+/// requested window plus the metadata the response `Properties` needs:
+/// `AirSyncBase:ContentType`, `Total` ([MS-ASCMD] §2.2.3.184.2) and the
+/// authoritative `Range` ([MS-ASCMD] §2.2.3.143.2). Base64 (inline
+/// delivery) or part indexing (multipart delivery, §2.2.1.10.1) is applied
+/// by the renderer.
+#[derive(Debug)]
+struct AttachmentFetchOutcome {
+    /// Window bytes (already sliced when the request carried a Range).
+    data: Vec<u8>,
+    content_type: String,
+    /// Whole-item size in bytes; `Total` is omitted from the response when
+    /// the backend does not report it ([MS-ASCMD] §2.2.3.184.2, 0...1).
+    total_size: Option<u64>,
+    /// The authoritative half-open `[start, end)` window `data` covers.
+    window: (u64, u64),
+    /// Whether the window was served in full; `false` → Status 17
+    /// ("Partial success; a Fetch … operation completed partially").
+    complete: bool,
+}
+
+/// Fetch an email attachment's bytes from the user's JMAP account, honoring
+/// the request's byte-range ([MS-ASCMD] §2.2.3.143.2).
+///
+/// EAS email attachment `FileReference`s carry the JMAP blobId. The
+/// credentials are the requesting user's own, so a blobId from another
+/// mailbox simply fails at Stalwart with 403/404 — classified by
+/// [`crate::jmap::BlobFetchError`] into the ItemOperations statuses below.
+///
+/// Returns the Fetch-scoped [MS-ASCMD] §2.2.3.177.8 status on error:
+/// 3 (server error), 8 (byte-range invalid or too large), 11 (requested
+/// data size too large), 15 (attachment or attachment ID is invalid) or
+/// 16 (access to the resource is denied).
 async fn handle_email_attachment_fetch(
     jmap: &Arc<JmapClient>,
     username: &str,
     password: &SecretString,
     blob_id: &str,
+    byte_range: Option<std::ops::Range<u64>>,
     max_bytes: usize,
-) -> anyhow::Result<(String, String, usize)> {
-    let account_id = jmap.get_account_id(username, password).await?;
-    let (bytes, content_type) = jmap
-        .download_blob_capped(&account_id, blob_id, username, password, max_bytes)
-        .await?;
-    let total_size = bytes.len();
-    Ok((BASE64.encode(&bytes), content_type, total_size))
+) -> Result<AttachmentFetchOutcome, u16> {
+    let account_id = jmap
+        .get_account_id(username, password)
+        .await
+        .map_err(|_| 3u16)?;
+    let fetch = jmap
+        .download_blob_range(
+            &account_id,
+            blob_id,
+            username,
+            password,
+            byte_range,
+            max_bytes,
+        )
+        .await
+        .map_err(|e| {
+            use crate::jmap::BlobFetchError as E;
+            tracing::error!(
+                file_reference = %blob_id,
+                error = %e,
+                "ItemOperations JMAP attachment fetch failed"
+            );
+            match e {
+                E::InvalidBlobId | E::NotFound(_) => 15u16,
+                E::AccessDenied(_) => 16,
+                E::TooLarge { .. } => 11,
+                E::RangeTooLarge { .. } | E::RangeStartsPastEof { .. } => 8,
+                E::Server(_) => 3,
+            }
+        })?;
+    if fetch.data.is_empty() && fetch.window == (0, 0) {
+        // [MS-ASCMD] §2.2.3.94.1 status 10: "The file is empty." A served
+        // window is (0,0) only when the item itself holds no bytes; a
+        // short ranged window of a non-empty file is complete=false → 17.
+        return Err(10);
+    }
+    Ok(AttachmentFetchOutcome {
+        data: fetch.data,
+        content_type: fetch.content_type,
+        total_size: fetch.total_size,
+        window: fetch.window,
+        complete: fetch.complete,
+    })
+}
+
+/// Slice a gateway-managed (calendar) attachment's stored content into an
+/// [`AttachmentFetchOutcome`] for the requested byte window
+/// ([MS-ASCMD] §2.2.3.143.2), applying the same window semantics the JMAP
+/// path enforces.
+///
+/// Returns the Fetch-scoped [MS-ASCMD] §2.2.3.177.8 status on error:
+/// - 15: the stored content is not valid base64 — the attachment or
+///   attachment ID is invalid ([MS-ASDTYPE] §2.3 byte content).
+/// - 11: no Range was requested and the whole item exceeds the budget
+///   ("The requested data size is too large").
+/// - 8: the Range starts at/after the end of the content, or the window
+///   exceeds the budget ("The byte-range is invalid or too large").
+fn calendar_attachment_outcome(
+    attachment: &crate::attachment::FileAttachment,
+    byte_range: Option<std::ops::Range<u64>>,
+    max_bytes: usize,
+) -> Result<AttachmentFetchOutcome, u16> {
+    let content = BASE64
+        .decode(attachment.content_base64.trim())
+        .map_err(|e| {
+            tracing::error!(
+                attachment_id = %attachment.id,
+                error = %e,
+                "Stored calendar attachment content is not valid base64"
+            );
+            // [MS-ASCMD] §2.2.3.177.8 status 15: "Attachment fetch provider -
+            // Attachment or attachment ID is invalid."
+            15u16
+        })?;
+    let total = content.len() as u64;
+    if total == 0 && byte_range.is_none() {
+        // [MS-ASCMD] §2.2.3.94.1 status 10: "The file is empty."
+        return Err(10);
+    }
+    let (window, complete) = if let Some(range) = byte_range {
+        if range.start >= total {
+            // [MS-ASCMD] §2.2.3.177.8 status 8: "The byte-range is invalid
+            // or too large" — no byte of the range exists in the item.
+            return Err(8);
+        }
+        if range.end - range.start > max_bytes as u64 {
+            return Err(8);
+        }
+        // The window clamps at EOF when it reaches past the content;
+        // the response reports the authoritative shortened window and
+        // status 17 ("Partial success").
+        let end = range.end.min(total);
+        ((range.start, end), end >= range.end)
+    } else {
+        if total > max_bytes as u64 {
+            // [MS-ASCMD] §2.2.3.177.8 status 11: "The requested data
+            // size is too large" — the client can retry with explicit
+            // windowed ranges.
+            return Err(11);
+        }
+        ((0, total), true)
+    };
+    let data = content[window.0 as usize..window.1 as usize].to_vec();
+    Ok(AttachmentFetchOutcome {
+        data,
+        content_type: if attachment.content_type.is_empty() {
+            "application/octet-stream".to_string()
+        } else {
+            attachment.content_type.clone()
+        },
+        total_size: Some(total),
+        window,
+        complete,
+    })
 }
 
 /// Fetch one email item for ItemOperations, rendering `<Properties>` per
@@ -2635,9 +2808,7 @@ async fn handle_email_item_fetch(
     let mut properties = String::new();
     if body_pref_requested || part_pref.is_none() {
         properties.push_str(&crate::email::render_negotiated_eas_body(
-            &email,
-            options,
-            true,
+            &email, options, true,
         ));
     }
     if let Some(pref) = &part_pref {
@@ -2672,6 +2843,190 @@ async fn item_operations_sticky_options(
         .unwrap_or_default()
 }
 
+/// Per-Fetch error response ([MS-ASCMD] §2.2.3.177.8). Per the
+/// §2.2.3.67.1 response-Fetch child table, `Status` leads and the
+/// address elements the request used are echoed after it; the response
+/// Fetch carries no `Store` child.
+fn item_operations_fetch_error_xml(address_xml: &str, status: u16) -> String {
+    format!("<Fetch><Status>{}</Status>{}</Fetch>", status, address_xml)
+}
+
+/// Render the `<Properties>` element of a successful attachment Fetch
+/// ([MS-ASCMD] §2.2.3.139.2): `AirSyncBase:ContentType`
+/// ([MS-ASAIRS] §2.2.2.18.2), the whole-item size in `Total`
+/// ([MS-ASCMD] §2.2.3.184.2), the authoritative byte window in `Range`
+/// ([MS-ASCMD] §2.2.3.143.2 — emitted only when the request carried a
+/// Range; the §4.10.4.4 whole-attachment example has no Range), and the
+/// content itself: base64 in `Data` for inline delivery ([MS-ASCMD]
+/// §2.2.3.39.2: "The content of the Data element is a base64 encoding of
+/// the binary document, attachment, or body data") or a `Part` index for
+/// multipart delivery (§2.2.3.130: for a mailbox attachment "the Part
+/// element is a child of the Properties element").
+fn render_attachment_properties(
+    outcome: &AttachmentFetchOutcome,
+    range_requested: bool,
+    part_index: Option<u32>,
+) -> String {
+    let mut xml = String::with_capacity(512 + (outcome.data.len() / 3) * 4);
+    xml.push_str("<Properties>");
+    let _ = write!(
+        xml,
+        "<AirSyncBase:ContentType>{}</AirSyncBase:ContentType>",
+        xml_escape(&outcome.content_type)
+    );
+    if let Some(total) = outcome.total_size {
+        let _ = write!(xml, "<Total>{}</Total>", total);
+    }
+    if range_requested {
+        // Inclusive last byte per the "m-n" wire format.
+        let _ = write!(
+            xml,
+            "<Range>{}-{}</Range>",
+            outcome.window.0,
+            outcome.window.1 - 1
+        );
+    }
+    match part_index {
+        Some(index) => {
+            let _ = write!(xml, "<Part>{}</Part>", index);
+        }
+        None => {
+            xml.push_str("<Data>");
+            push_base64(&mut xml, &outcome.data);
+            xml.push_str("</Data>");
+        }
+    }
+    xml.push_str("</Properties>");
+    xml
+}
+
+/// Move the fetched email body's `AirSyncBase:Data` content out of the
+/// rendered XML so it can travel as a raw binary part of a multipart
+/// ItemOperations response ([MS-ASCMD] §2.2.1.10.1, §2.2.3.130: the Part
+/// element "replaces the Data element … as a child of the
+/// airsyncbase:Body element").
+///
+/// Returns the XML with the Body's `Data` replaced by `<Part>n</Part>`
+/// plus the unescaped body content for the binary part. `None` means the
+/// properties carry no inline body Data (withheld or empty), in which case
+/// they are emitted unchanged.
+fn extract_body_for_multipart(properties: &str, part_index: u32) -> Option<(String, String)> {
+    const OPEN: &str = "<AirSyncBase:Body>";
+    const DATA_OPEN: &str = "<AirSyncBase:Data>";
+    const DATA_CLOSE: &str = "</AirSyncBase:Data>";
+    let body_start = properties.find(OPEN)? + OPEN.len();
+    let data_open = properties[body_start..].find(DATA_OPEN)? + body_start;
+    let data_close = properties[data_open..].find(DATA_CLOSE)? + data_open;
+    let escaped = &properties[data_open + DATA_OPEN.len()..data_close];
+    // The renderer emitted XML-escaped character data ([MS-ASDTYPE] §2.3);
+    // the binary part carries the raw characters ([MS-ASCMD] §4.10.5.2).
+    let mut raw = String::with_capacity(escaped.len());
+    let mut chars = escaped.char_indices();
+    while let Some((i, c)) = chars.next() {
+        if c != '&' {
+            raw.push(c);
+            continue;
+        }
+        let rest = &escaped[i + 1..];
+        let semi = rest.find(';')?;
+        let replacement = crate::util::resolve_xml_reference_strict(&rest[..semi])?;
+        raw.push_str(&replacement);
+        for _ in 0..semi + 1 {
+            chars.next();
+        }
+    }
+    let mut out =
+        String::with_capacity(properties.len() + 16 - (data_close - data_open - DATA_OPEN.len()));
+    out.push_str(&properties[..data_open]);
+    let _ = write!(out, "<Part>{}</Part>", part_index);
+    out.push_str(&properties[data_close + DATA_CLOSE.len()..]);
+    Some((out, raw))
+}
+
+/// Assemble a multipart ItemOperations response body per [MS-ASCMD]
+/// §2.2.1.10.1.1: `PartsCount` (4 bytes, little-endian), one `PartMetaData`
+/// (§2.2.1.10.1.1.1: `Offset` + `Length`, 4 bytes each, little-endian) per
+/// part, then the parts themselves — part 0 is the WBXML, subsequent parts
+/// the raw content ([MS-ASCMD] §2.2.1.10.1: "a multipart structure with the
+/// WBXML being the first part, and the requested data populating the
+/// subsequent parts"). Offsets count from the first byte of the
+/// `MultiPartResponse` structure.
+fn multipart_item_operations_response(
+    wbxml: &Wbxml,
+    xml: &str,
+    content_parts: Vec<Vec<u8>>,
+    request_id: &str,
+) -> Response {
+    let wbxml_part = match wbxml.encode(xml) {
+        Ok(b) => b,
+        Err(e) => {
+            tracing::error!(
+                request_id = %request_id,
+                error = %e,
+                "WBXML encode failed for multipart ItemOperations response"
+            );
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                [(header::CONTENT_TYPE.as_str(), "text/plain; charset=utf-8")],
+                format!("WBXML Encode Err: {}", e).into_bytes(),
+            )
+                .into_response();
+        }
+    };
+    let mut parts = Vec::with_capacity(content_parts.len() + 1);
+    parts.push(wbxml_part);
+    parts.extend(content_parts);
+    let metadata_len = 4 + 8 * parts.len();
+    let total_len = metadata_len + parts.iter().map(|p| p.len()).sum::<usize>();
+    let Ok(total_len) = u32::try_from(total_len) else {
+        tracing::error!(
+            request_id = %request_id,
+            total_len,
+            "Multipart ItemOperations response exceeds the 4-byte PartMetaData offset space"
+        );
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            [(header::CONTENT_TYPE.as_str(), "text/plain; charset=utf-8")],
+            "Multipart response too large".to_string().into_bytes(),
+        )
+            .into_response();
+    };
+    let mut body = Vec::with_capacity(total_len as usize);
+    body.extend_from_slice(&(parts.len() as u32).to_le_bytes());
+    let mut offset = metadata_len as u32;
+    for part in &parts {
+        body.extend_from_slice(&offset.to_le_bytes());
+        body.extend_from_slice(&(part.len() as u32).to_le_bytes());
+        offset += part.len() as u32;
+    }
+    for part in parts {
+        body.extend_from_slice(&part);
+    }
+    let mut r = (
+        StatusCode::OK,
+        [(
+            header::CONTENT_TYPE.as_str(),
+            "application/vnd.ms-sync.multipart",
+        )],
+        body,
+    )
+        .into_response();
+    inject_common_headers(&mut r, request_id);
+    r
+}
+
+/// Whether the request asked for multipart content delivery via the
+/// `MS-ASAcceptMultiPart` header ([MS-ASHTTP] §2.2.1.1.2.5): "'T' (TRUE)
+/// … the client is requesting that the server return content in multipart
+/// format. If the header is not present, or is present and set to 'F', the
+/// client is requesting that the server return content in inline format."
+fn multipart_requested(headers: &HeaderMap) -> bool {
+    headers
+        .get("MS-ASAcceptMultiPart")
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.trim().eq_ignore_ascii_case("T"))
+}
+
 #[allow(clippy::too_many_arguments)] // irreducible EAS request params
 async fn handle_item_operations(
     state: &Arc<AppState>,
@@ -2682,6 +3037,7 @@ async fn handle_item_operations(
     as_wbxml: bool,
     request_id: &str,
     device_id: &str,
+    multipart: bool,
 ) -> Response {
     let fetches = parse_item_operations_fetches(xml);
     if fetches.is_empty() {
@@ -2695,6 +3051,9 @@ async fn handle_item_operations(
     };
     let owner_lower = crate::util::normalize_email(username);
     let mut responses = String::new();
+    // Binary parts of the multipart response ([MS-ASCMD] §2.2.1.10.1);
+    // part n+1 holds the content the WBXML's <Part>n</Part> references.
+    let mut content_parts: Vec<Vec<u8>> = Vec::new();
     for fetch in fetches {
         let store = if fetch.store.is_empty() {
             "Mailbox".to_string()
@@ -2702,6 +3061,39 @@ async fn handle_item_operations(
             fetch.store
         };
         let collection_id = fetch.collection_id.unwrap_or_else(|| "1".to_string());
+        // Address echo for the response Fetch per the §2.2.3.67.1 child
+        // table: airsyncbase:FileReference, or airsync:CollectionId with
+        // airsync:ServerId, or airsync:CollectionId with search:LongId —
+        // whichever form the request addressed the Fetch with.
+        let address_xml = if let Some(fr) = fetch.file_reference.as_deref() {
+            format!(
+                "<AirSyncBase:FileReference>{}</AirSyncBase:FileReference>",
+                xml_escape(fr)
+            )
+        } else if let Some(sid) = fetch.server_id.as_deref() {
+            format!(
+                "<AirSync:CollectionId>{}</AirSync:CollectionId><AirSync:ServerId>{}</AirSync:ServerId>",
+                xml_escape(&collection_id),
+                xml_escape(sid)
+            )
+        } else if let Some(lid) = fetch.long_id.as_deref() {
+            format!(
+                "<AirSync:CollectionId>{}</AirSync:CollectionId><Search:LongId>{}</Search:LongId>",
+                xml_escape(&collection_id),
+                xml_escape(lid)
+            )
+        } else {
+            String::new()
+        };
+
+        // [MS-ASCMD] §2.2.3.178.2: the only valid Store values are
+        // "Mailbox" and "Document Library"; this gateway has no document
+        // library backend, so anything but Mailbox is answered with
+        // §2.2.3.177.8 status 9 ("The store is unknown or unsupported").
+        if !store.eq_ignore_ascii_case("Mailbox") {
+            responses.push_str(&item_operations_fetch_error_xml(&address_xml, 9));
+            continue;
+        }
 
         // [MS-ASCMD] §2.2.3.125.6: a Fetch without its own <Options> reuses
         // the sticky block the previous Sync request established for this
@@ -2716,133 +3108,151 @@ async fn handle_item_operations(
         .await;
 
         if let Some(file_ref) = fetch.file_reference.as_deref() {
-            match state
-                .attachment_manager
-                .get_attachment(&owner_lower, file_ref)
-                .await
+            // [MS-ASCMD] §2.2.3.143.2: "If the airsyncbase:FileReference
+            // element is present in the request, then the Range element is
+            // the only valid child element of the Options element." Any
+            // other option is rejected per §2.2.3.125.3 with status 2
+            // ("If the client specifies an option that is invalid for the
+            // parent element, the server returns a Status element value
+            // of 2").
+            if let Some(options) = &fetch.options
+                && options.is_meaningful()
             {
-                Ok(Some(attachment)) => {
-                    let parent_id = &attachment.parent_item_server_id;
-                    let item_owner = match state.storage.get_item_owner(parent_id).await {
-                        Ok(Some(o)) => o,
-                        Ok(None) => {
-                            responses.push_str(&format!(
-                        "<Fetch><Store>{}</Store><FileReference>{}</FileReference><Status>8</Status></Fetch>",
-                        xml_escape(&store),
-                        xml_escape(file_ref)
-                    ));
-                            continue;
-                        }
-                        Err(e) => {
-                            tracing::error!(error = %e, "Failed to get item owner");
-                            responses.push_str(&format!(
-                        "<Fetch><Store>{}</Store><FileReference>{}</FileReference><Status>8</Status></Fetch>",
-                        xml_escape(&store),
-                        xml_escape(file_ref)
-                    ));
-                            continue;
-                        }
-                    };
-                    let calendar_folder_id = crate::ews_folders::folder_id_for(
-                        &item_owner,
-                        crate::ews_folders::DistinguishedFolder::Calendar,
-                    );
-                    let enforcement = PermissionEnforcement::new(&state.storage);
-                    let perm_ctx = PermissionContext::new(
-                        username.to_string(),
-                        item_owner.clone(),
-                        calendar_folder_id,
-                    );
-                    match enforcement.can_read_item(&perm_ctx).await {
-                        Ok(true) => {}
-                        Ok(false) => {
-                            responses.push_str(&format!(
-                                "<Fetch><Store>{}</Store><FileReference>{}</FileReference><Status>4</Status></Fetch>",
-                                xml_escape(&store),
-                                xml_escape(file_ref)
-                            ));
-                            continue;
-                        }
-                        Err(_) => {
-                            responses.push_str(&format!(
-                                "<Fetch><Store>{}</Store><FileReference>{}</FileReference><Status>8</Status></Fetch>",
-                                xml_escape(&store),
-                                xml_escape(file_ref)
-                            ));
-                            continue;
-                        }
-                    }
-                    responses.push_str(&format!(
-                        "<Fetch><Store>{}</Store><FileReference>{}</FileReference><Class>Calendar</Class><Status>1</Status><Properties>{}</Properties></Fetch>",
-                        xml_escape(&store),
-                        xml_escape(file_ref),
-                        crate::attachment::render_eas_attachment_content_xml(&attachment)
-                    ));
-                }
-                Ok(None) => {
-                    // Not a gateway-managed (calendar) attachment: EAS email
-                    // attachment FileReferences carry the JMAP blobId, so fetch
-                    // the bytes from the user's own JMAP account. The download
-                    // is streamed with a hard byte cap so an oversized blob is
-                    // aborted mid-transfer instead of being buffered whole.
-                    let jmap = state.jmap_client.clone();
-                    if !state.cfg.email_enabled || jmap.is_none() {
-                        responses.push_str(&format!(
-                            "<Fetch><Store>{}</Store><FileReference>{}</FileReference><Status>8</Status></Fetch>",
-                            xml_escape(&store),
-                            xml_escape(file_ref)
-                        ));
+                responses.push_str(&item_operations_fetch_error_xml(&address_xml, 2));
+                continue;
+            }
+            // A present-but-malformed Range is a byte-range violation:
+            // status 8 ("The byte-range is invalid or too large").
+            let byte_range = match fetch.byte_range.as_deref() {
+                Some(raw) => match parse_item_operations_byte_range(raw) {
+                    Some(r) => Some(r),
+                    None => {
+                        tracing::debug!(range = %raw, "ItemOperations: malformed Range value");
+                        responses.push_str(&item_operations_fetch_error_xml(&address_xml, 8));
                         continue;
                     }
-                    let jmap = jmap.expect("checked above");
-                    match handle_email_attachment_fetch(
-                        &jmap,
-                        username,
-                        &password,
-                        file_ref,
-                        state.cfg.max_attachment_bytes(),
-                    )
+                },
+                None => None,
+            };
+            let range_requested = byte_range.is_some();
+            let max_bytes = state.cfg.max_attachment_bytes();
+
+            // The attachment bytes come from one of two stores, selected by
+            // the FileReference itself: gateway-managed calendar attachments
+            // live in the gateway's SQLite store, everything else is a JMAP
+            // blobId fetched from the user's own account. Both funnel into
+            // the same window slicing and the same response renderer; only
+            // the byte source and the failure classification differ.
+            let outcome: Result<(AttachmentFetchOutcome, bool), u16> = async {
+                match state
+                    .attachment_manager
+                    .get_attachment(&owner_lower, file_ref)
                     .await
-                    {
-                        Ok((base64_content, content_type, total_size)) => {
-                            // MS-ASCMD 2.2.3.39.2: an ItemOperations Fetch
-                            // response carries attachment bytes as base64 in
-                            // the ItemOperations-namespace `Data` element,
-                            // with `Total` giving the unencoded size.
-                            responses.push_str(&format!(
-                                "<Fetch><Store>{}</Store><FileReference>{}</FileReference><Class>Email</Class><Status>1</Status><Properties><AirSyncBase:ContentType>{}</AirSyncBase:ContentType><Total>{}</Total><Data>{}</Data></Properties></Fetch>",
-                                xml_escape(&store),
-                                xml_escape(file_ref),
-                                xml_escape(&content_type),
-                                total_size,
-                                base64_content
-                            ));
+                {
+                    Ok(Some(attachment)) => {
+                        // Gateway-managed (calendar) attachment: enforce the
+                        // parent item's read permission first. Without an
+                        // owner row the access cannot be established, so the
+                        // request is denied ([MS-ASCMD] §2.2.3.177.8 status
+                        // 16, "Access to the resource is denied").
+                        let item_owner = match state
+                            .storage
+                            .get_item_owner(&attachment.parent_item_server_id)
+                            .await
+                        {
+                            Ok(Some(o)) => o,
+                            Ok(None) => return Err(16),
+                            Err(e) => {
+                                tracing::error!(error = %e, "Failed to get item owner");
+                                return Err(3);
+                            }
+                        };
+                        let calendar_folder_id = crate::ews_folders::folder_id_for(
+                            &item_owner,
+                            crate::ews_folders::DistinguishedFolder::Calendar,
+                        );
+                        let enforcement = PermissionEnforcement::new(&state.storage);
+                        let perm_ctx = PermissionContext::new(
+                            username.to_string(),
+                            item_owner.clone(),
+                            calendar_folder_id,
+                        );
+                        match enforcement.can_read_item(&perm_ctx).await {
+                            Ok(true) => {}
+                            Ok(false) => return Err(16),
+                            Err(e) => {
+                                tracing::error!(error = %e, "Permission check failed");
+                                return Err(3);
+                            }
                         }
-                        Err(e) => {
-                            tracing::error!(
-                                "ItemOperations JMAP attachment fetch error for {}: {}",
-                                file_ref,
-                                e
-                            );
-                            responses.push_str(&format!(
-                                "<Fetch><Store>{}</Store><FileReference>{}</FileReference><Status>8</Status></Fetch>",
-                                xml_escape(&store),
-                                xml_escape(file_ref)
-                            ));
-                        }
+                        calendar_attachment_outcome(&attachment, byte_range, max_bytes)
+                            .map(|outcome| (outcome, true))
+                    }
+                    Ok(None) => {
+                        // Not a gateway-managed attachment: EAS email
+                        // attachment FileReferences carry the JMAP blobId, so
+                        // fetch the bytes from the user's own JMAP account.
+                        let Some(jmap) = state
+                            .jmap_client
+                            .clone()
+                            .filter(|_| state.cfg.email_enabled)
+                        else {
+                            // The email backend is unreachable from this
+                            // deployment: a server-side failure.
+                            return Err(3);
+                        };
+                        handle_email_attachment_fetch(
+                            &jmap, username, &password, file_ref, byte_range, max_bytes,
+                        )
+                        .await
+                        .map(|outcome| (outcome, false))
+                    }
+                    Err(e) => {
+                        tracing::error!(
+                            "ItemOperations attachment fetch error for {}: {}",
+                            file_ref,
+                            e
+                        );
+                        // The attachment store itself failed: a server-side
+                        // failure, not a missing attachment.
+                        Err(3)
                     }
                 }
-                Err(e) => {
-                    tracing::error!(
-                        "ItemOperations attachment fetch error for {}: {}",
-                        file_ref,
-                        e
-                    );
+            }
+            .await;
+
+            match outcome {
+                Ok((mut outcome, is_calendar)) => {
+                    // [MS-ASCMD] §2.2.3.177.8: 17 = "Partial success; a
+                    // Fetch … operation completed partially" — the served
+                    // window hit EOF before covering the requested range.
+                    let status = if outcome.complete { 1 } else { 17 };
+                    let part_index = if multipart {
+                        // The raw bytes move into the binary part; the WBXML
+                        // references them by index via <Part>.
+                        content_parts.push(std::mem::take(&mut outcome.data));
+                        Some(content_parts.len() as u32)
+                    } else {
+                        None
+                    };
+                    let properties =
+                        render_attachment_properties(&outcome, range_requested, part_index);
+                    // The §4.10.4.4 whole-attachment example carries no
+                    // airsync:Class; the gateway keeps announcing Calendar
+                    // ([MS-ASCMD] §2.2.3.27.3) for its own managed
+                    // attachments so clients can tell the two stores apart.
+                    let class_xml = if is_calendar {
+                        "<AirSync:Class>Calendar</AirSync:Class>"
+                    } else {
+                        ""
+                    };
                     responses.push_str(&format!(
-                        "<Fetch><Store>{}</Store><FileReference>{}</FileReference><Status>8</Status></Fetch>",
-                        xml_escape(&store),
-                        xml_escape(file_ref)
+                        "<Fetch><Status>{}</Status>{}{}{}</Fetch>",
+                        status, address_xml, class_xml, properties
                     ));
+                }
+                Err(status) => {
+                    responses.push_str(&item_operations_fetch_error_xml(&address_xml, status));
                 }
             }
             continue;
@@ -2852,10 +3262,7 @@ async fn handle_item_operations(
             // [MS-ASCMD] §2.2.3.177.8: 2 = "Protocol error - protocol
             // violation/XML validation error" — a Fetch with neither
             // ServerId nor LongId nor FileReference violates the schema.
-            responses.push_str(&format!(
-                "<Fetch><Store>{}</Store><Status>2</Status></Fetch>",
-                xml_escape(&store)
-            ));
+            responses.push_str(&item_operations_fetch_error_xml(&address_xml, 2));
             continue;
         };
 
@@ -2874,22 +3281,28 @@ async fn handle_item_operations(
             {
                 Ok(props) => props,
                 Err(status) => {
-                    responses.push_str(&format!(
-                        "<Fetch><Store>{}</Store><CollectionId>{}</CollectionId><ServerId>{}</ServerId><Status>{}</Status></Fetch>",
-                        xml_escape(&store),
-                        xml_escape(&collection_id),
-                        xml_escape(&server_id),
-                        status
-                    ));
+                    responses.push_str(&item_operations_fetch_error_xml(&address_xml, status));
                     continue;
                 }
             };
-            responses.push_str(&format!(
-                "<Fetch><Store>{}</Store><CollectionId>{}</CollectionId><ServerId>{}</ServerId><Class>Email</Class><Status>1</Status><Properties>{}</Properties></Fetch>",
-                xml_escape(&store),
-                xml_escape(&collection_id),
-                xml_escape(&server_id),
+            // In multipart mode the negotiated body travels as a raw
+            // binary part referenced by <Part> ([MS-ASCMD] §2.2.1.10.1,
+            // §2.2.3.130); without inline body data the properties stay
+            // as rendered.
+            let properties = if multipart {
+                match extract_body_for_multipart(&properties, content_parts.len() as u32 + 1) {
+                    Some((xml_without_data, raw_body)) => {
+                        content_parts.push(raw_body.into_bytes());
+                        xml_without_data
+                    }
+                    None => properties,
+                }
+            } else {
                 properties
+            };
+            responses.push_str(&format!(
+                "<Fetch><Status>1</Status>{}<AirSync:Class>Email</AirSync:Class><Properties>{}</Properties></Fetch>",
+                address_xml, properties
             ));
             continue;
         }
@@ -2897,23 +3310,13 @@ async fn handle_item_operations(
         match state.storage.get_item_owner(&server_id).await {
             Ok(None) => {
                 // [MS-ASCMD] §2.2.3.177.8: 6 = "The object was not found".
-                responses.push_str(&format!(
-            "<Fetch><Store>{}</Store><CollectionId>{}</CollectionId><ServerId>{}</ServerId><Status>6</Status></Fetch>",
-            xml_escape(&store),
-            xml_escape(&collection_id),
-            xml_escape(&server_id)
-        ));
+                responses.push_str(&item_operations_fetch_error_xml(&address_xml, 6));
                 continue;
             }
             Err(e) => {
                 tracing::error!("Failed to lookup item owner for {}: {}", server_id, e);
                 // [MS-ASCMD] §2.2.3.177.8: 3 = "Server error".
-                responses.push_str(&format!(
-            "<Fetch><Store>{}</Store><CollectionId>{}</CollectionId><ServerId>{}</ServerId><Status>3</Status></Fetch>",
-            xml_escape(&store),
-            xml_escape(&collection_id),
-            xml_escape(&server_id)
-        ));
+                responses.push_str(&item_operations_fetch_error_xml(&address_xml, 3));
                 continue;
             }
             _ => {}
@@ -2934,22 +3337,12 @@ async fn handle_item_operations(
             Ok(false) => {
                 // [MS-ASCMD] §2.2.3.177.8: 16 = "Access to the resource is
                 // denied" (4 is the document-library URI code).
-                responses.push_str(&format!(
-                    "<Fetch><Store>{}</Store><CollectionId>{}</CollectionId><ServerId>{}</ServerId><Status>16</Status></Fetch>",
-                    xml_escape(&store),
-                    xml_escape(&collection_id),
-                    xml_escape(&server_id)
-                ));
+                responses.push_str(&item_operations_fetch_error_xml(&address_xml, 16));
                 continue;
             }
             Err(e) => {
                 tracing::error!("Permission check failed for item {}: {}", server_id, e);
-                responses.push_str(&format!(
-                    "<Fetch><Store>{}</Store><CollectionId>{}</CollectionId><ServerId>{}</ServerId><Status>3</Status></Fetch>",
-                    xml_escape(&store),
-                    xml_escape(&collection_id),
-                    xml_escape(&server_id)
-                ));
+                responses.push_str(&item_operations_fetch_error_xml(&address_xml, 3));
                 continue;
             }
         }
@@ -2962,12 +3355,7 @@ async fn handle_item_operations(
             Ok(Some(row)) => row,
             _ => {
                 // [MS-ASCMD] §2.2.3.177.8: 6 = "The object was not found".
-                responses.push_str(&format!(
-                    "<Fetch><Store>{}</Store><CollectionId>{}</CollectionId><ServerId>{}</ServerId><Status>6</Status></Fetch>",
-                    xml_escape(&store),
-                    xml_escape(&collection_id),
-                    xml_escape(&server_id)
-                ));
+                responses.push_str(&item_operations_fetch_error_xml(&address_xml, 6));
                 continue;
             }
         };
@@ -3009,12 +3397,7 @@ async fn handle_item_operations(
             );
             let Ok(Ok((ics, etag))) = timeout(CALDAV_TIMEOUT, get_future).await else {
                 // [MS-ASCMD] §2.2.3.177.8: 3 = "Server error".
-                responses.push_str(&format!(
-                    "<Fetch><Store>{}</Store><CollectionId>{}</CollectionId><ServerId>{}</ServerId><Status>3</Status></Fetch>",
-                    xml_escape(&store),
-                    xml_escape(&collection_id),
-                    xml_escape(&server_id)
-                ));
+                responses.push_str(&item_operations_fetch_error_xml(&address_xml, 3));
                 continue;
             };
             (ics, etag)
@@ -3022,15 +3405,11 @@ async fn handle_item_operations(
         let Some(item) = parse_ics_event(&ics) else {
             // [MS-ASCMD] §2.2.3.177.8: 14 = "Mailbox fetch
             // provider - the item failed conversion".
-            responses.push_str(&format!(
-                "<Fetch><Store>{}</Store><CollectionId>{}</CollectionId><ServerId>{}</ServerId><Status>14</Status></Fetch>",
-                xml_escape(&store),
-                xml_escape(&collection_id),
-                xml_escape(&server_id)
-            ));
+            responses.push_str(&item_operations_fetch_error_xml(&address_xml, 14));
             continue;
         };
-        let mut app_data = sync::render_calendar_app_data_with_options(&item, &resolved_fetch_options);
+        let mut app_data =
+            sync::render_calendar_app_data_with_options(&item, &resolved_fetch_options);
         if let Ok(att_list) = state
             .attachment_manager
             .get_attachments_for_item(&owner_lower, &server_id)
@@ -3041,18 +3420,24 @@ async fn handle_item_operations(
             app_data.push_str(&crate::attachment::render_eas_attachments_xml(&summaries));
         }
         responses.push_str(&format!(
-            "<Fetch><Store>{}</Store><CollectionId>{}</CollectionId><ServerId>{}</ServerId><Class>Calendar</Class><Status>1</Status><Properties>{}</Properties></Fetch>",
-            xml_escape(&store),
-            xml_escape(&collection_id),
-            xml_escape(&server_id),
-            app_data
+            "<Fetch><Status>1</Status>{}<AirSync:Class>Calendar</AirSync:Class><Properties>{}</Properties></Fetch>",
+            address_xml, app_data
         ));
     }
     let response = format!(
-        r#"<?xml version="1.0" encoding="utf-8"?><ItemOperations xmlns="ItemOperations:" xmlns:Calendar="Calendar:" xmlns:AirSyncBase="AirSyncBase:"><Status>1</Status><Response>{}</Response></ItemOperations>"#,
+        r#"<?xml version="1.0" encoding="utf-8"?><ItemOperations xmlns="ItemOperations:" xmlns:AirSync="AirSync:" xmlns:Search="Search:" xmlns:Calendar="Calendar:" xmlns:AirSyncBase="AirSyncBase:"><Status>1</Status><Response>{}</Response></ItemOperations>"#,
         responses
     );
-    xml_or_wbxml_response(wbxml, as_wbxml, &response, request_id)
+    // [MS-ASHTTP] §2.2.1.1.2.5: a request carrying
+    // `MS-ASAcceptMultiPart: T` gets the WBXML as part 0 and every fetched
+    // binary payload as a raw part, instead of base64-inflated inline
+    // content; without the header the response stays inline
+    // ([MS-ASCMD] §2.2.1.10.1).
+    if multipart {
+        multipart_item_operations_response(wbxml, &response, content_parts, request_id)
+    } else {
+        xml_or_wbxml_response(wbxml, as_wbxml, &response, request_id)
+    }
 }
 
 /// Handle EAS MoveItems command.
@@ -5238,10 +5623,7 @@ async fn accumulate_email_changes(
 ///
 /// Fetches the current JMAP Email and renders the same `<Add>`/`<Change>`
 /// body the direct delta path produces. Destroyed emails need no fetch.
-async fn render_pending_email_op(
-    ctx: &EmailSyncCtx<'_>,
-    op: &PendingEmailOp,
-) -> String {
+async fn render_pending_email_op(ctx: &EmailSyncCtx<'_>, op: &PendingEmailOp) -> String {
     let EmailSyncCtx {
         jmap,
         account_id,
@@ -5807,9 +6189,7 @@ async fn handle_email_delta_sync(ctx: &EmailSyncCtx<'_>) -> anyhow::Result<Strin
 
         let mut commands_xml = String::new();
         for op in deliver {
-            commands_xml.push_str(
-                &render_pending_email_op(ctx, op).await,
-            );
+            commands_xml.push_str(&render_pending_email_op(ctx, op).await);
         }
 
         if !leftover.is_empty() {
@@ -5945,9 +6325,7 @@ async fn handle_email_delta_sync(ctx: &EmailSyncCtx<'_>) -> anyhow::Result<Strin
 
     let mut commands_xml = String::new();
     for op in deliver {
-        commands_xml.push_str(
-            &render_pending_email_op(ctx, op).await,
-        );
+        commands_xml.push_str(&render_pending_email_op(ctx, op).await);
     }
 
     if !leftover.is_empty() {
@@ -6182,6 +6560,7 @@ pub async fn handle(
                 wants_wbxml,
                 &request_id,
                 &device_id,
+                multipart_requested(&headers),
             )
             .await
         }
@@ -8516,23 +8895,608 @@ mod tests {
         // sticky block ([MS-ASCMD] §2.2.3.125.4).
         opts.body_preferences[0].truncation_size = Some(99);
         opts.body_preferences[0].all_or_none = None;
-        let resolved = item_operations_sticky_options(&state, user, collection_id, device, Some(opts))
-            .await;
+        let resolved =
+            item_operations_sticky_options(&state, user, collection_id, device, Some(opts)).await;
         assert_eq!(resolved.body_preferences[0].truncation_size, Some(99));
 
         // A different device never sees another device's sticky block.
-        let resolved = item_operations_sticky_options(
-            &state,
-            user,
-            collection_id,
-            "other-device",
-            None,
-        )
-        .await;
+        let resolved =
+            item_operations_sticky_options(&state, user, collection_id, "other-device", None).await;
         assert!(
             resolved.body_preferences.is_empty(),
             "sticky options are device-scoped: {:?}",
             resolved.body_preferences
+        );
+    }
+
+    /// [MS-ASCMD] §2.2.3.143.2: the Range value is "m-n", zero-indexed,
+    /// m ≤ n. Everything else is malformed and maps to status 8.
+    #[test]
+    fn parse_item_operations_byte_range_matrix() {
+        assert_eq!(parse_item_operations_byte_range("0-9"), Some(0..10));
+        assert_eq!(parse_item_operations_byte_range("5-5"), Some(5..6));
+        assert_eq!(parse_item_operations_byte_range("3 - 9"), Some(3..10));
+        assert_eq!(
+            parse_item_operations_byte_range("0-18446744073709551614"),
+            Some(0..18446744073709551615)
+        );
+        for bad in [
+            "",
+            "9-0",
+            "abc",
+            "5",
+            "-5",
+            "5-",
+            "a-9",
+            "9-a",
+            "1-2-3",
+            "0-18446744073709551615",
+        ] {
+            assert!(
+                parse_item_operations_byte_range(bad).is_none(),
+                "Range {bad:?} must be rejected as malformed"
+            );
+        }
+    }
+
+    /// A Fetch's `<Options><Range>` travels on the ItemOperations code page
+    /// (the WBXML root namespace), so the streaming parser must capture it
+    /// from both the plain-XML and the WBXML-decoded forms.
+    #[test]
+    fn parse_item_operations_fetches_extracts_range() {
+        let xml = concat!(
+            r#"<?xml version="1.0" encoding="utf-8"?>"#,
+            r#"<ItemOperations xmlns="ItemOperations:" xmlns:AirSyncBase="AirSyncBase:">"#,
+            r#"<Fetch><Store>Mailbox</Store>"#,
+            r#"<AirSyncBase:FileReference>blob-123</AirSyncBase:FileReference>"#,
+            r#"<Options><Range>0-1023</Range></Options>"#,
+            r#"</Fetch>"#,
+            r#"</ItemOperations>"#,
+        );
+        let fetches = parse_item_operations_fetches(xml);
+        assert_eq!(fetches.len(), 1);
+        assert_eq!(fetches[0].store, "Mailbox");
+        assert_eq!(
+            fetches[0].file_reference.as_deref(),
+            Some("blob-123"),
+            "AirSyncBase-prefixed FileReference is still captured by local name"
+        );
+        assert_eq!(fetches[0].byte_range.as_deref(), Some("0-1023"));
+
+        // WBXML round-trip: what a client sends on the wire decodes to the
+        // same parse (root page 20 keeps Range unqualified).
+        let wbxml = Wbxml::new();
+        let encoded = wbxml.encode(xml).expect("request must encode");
+        let decoded = wbxml.decode(&encoded).expect("request must decode");
+        let fetches_rt = parse_item_operations_fetches(&decoded);
+        assert_eq!(fetches_rt.len(), 1);
+        assert_eq!(fetches_rt[0].byte_range.as_deref(), Some("0-1023"));
+        assert_eq!(fetches_rt[0].file_reference.as_deref(), Some("blob-123"));
+    }
+
+    /// Chunked base64 must byte-match a single-shot encode for every size,
+    /// including non-multiples of the chunk and of 3.
+    #[test]
+    fn push_base64_matches_single_shot_encode() {
+        for len in [0usize, 1, 2, 3, 3071, 3072, 3073, 6144, 9215, 9216, 12_347] {
+            let bytes: Vec<u8> = (0..len).map(|i| (i % 251) as u8).collect();
+            let mut chunked = String::new();
+            push_base64(&mut chunked, &bytes);
+            assert_eq!(
+                chunked,
+                BASE64.encode(&bytes),
+                "chunked encode must equal single-shot at len {len}"
+            );
+        }
+    }
+
+    /// The attachment `Properties` shape per [MS-ASCMD] §2.2.3.139.2 and the
+    /// §4.10.4.4 example: ContentType + Total (+ Range when requested) with
+    /// inline base64 `Data`, or `<Part>` for multipart delivery.
+    #[test]
+    fn render_attachment_properties_shapes() {
+        let outcome = AttachmentFetchOutcome {
+            data: b"hello".to_vec(),
+            content_type: "application/pdf".to_string(),
+            total_size: Some(5),
+            window: (0, 5),
+            complete: true,
+        };
+        let inline = render_attachment_properties(&outcome, false, None);
+        assert_eq!(
+            inline,
+            "<Properties>\
+             <AirSyncBase:ContentType>application/pdf</AirSyncBase:ContentType>\
+             <Total>5</Total>\
+             <Data>aGVsbG8=</Data>\
+             </Properties>"
+        );
+        assert!(
+            !inline.contains("<Range>"),
+            "no Range in the request → none echoed"
+        );
+
+        // Ranged fetch: authoritative window echoes as inclusive "m-n".
+        let ranged = render_attachment_properties(&outcome, true, None);
+        assert!(ranged.contains("<Range>0-4</Range>"), "got: {ranged}");
+
+        // Multipart: no inline Data, only the part index
+        // ([MS-ASCMD] §2.2.3.130).
+        let part = render_attachment_properties(&outcome, false, Some(1));
+        assert!(part.contains("<Part>1</Part>"));
+        assert!(!part.contains("<Data>"));
+
+        // Unknown total ([MS-ASCMD] §2.2.3.184.2, 0...1): Total omitted.
+        let unknown_total = AttachmentFetchOutcome {
+            total_size: None,
+            ..outcome
+        };
+        let no_total = render_attachment_properties(&unknown_total, false, None);
+        assert!(!no_total.contains("<Total>"), "got: {no_total}");
+    }
+
+    /// The MultiPartResponse binary layout per [MS-ASCMD] §2.2.1.10.1.1:
+    /// PartsCount + per-part Offset/Length metadata (little-endian u32,
+    /// offsets from the first byte of the structure), then the parts —
+    /// WBXML first, raw content after.
+    #[tokio::test]
+    async fn multipart_item_operations_response_binary_layout() {
+        let xml = concat!(
+            r#"<?xml version="1.0" encoding="utf-8"?>"#,
+            r#"<ItemOperations xmlns="ItemOperations:" xmlns:AirSyncBase="AirSyncBase:">"#,
+            r#"<Status>1</Status><Response><Fetch><Status>1</Status>"#,
+            r#"<Properties><Part>1</Part></Properties></Fetch></Response>"#,
+            r#"</ItemOperations>"#,
+        );
+        let content = b"raw attachment bytes".to_vec();
+        let wbxml = Wbxml::new();
+        let response = multipart_item_operations_response(
+            &wbxml,
+            xml,
+            vec![content.clone()],
+            "req-multipart-test",
+        );
+        assert_eq!(response.status(), 200);
+        assert_eq!(
+            response
+                .headers()
+                .get("content-type")
+                .and_then(|v| v.to_str().ok()),
+            Some("application/vnd.ms-sync.multipart")
+        );
+        let body = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+            .await
+            .expect("body must be collectable");
+        assert!(body.len() > 4 + 8 * 2, "body must hold header + parts");
+
+        let parts_count = u32::from_le_bytes([body[0], body[1], body[2], body[3]]);
+        assert_eq!(parts_count, 2, "WBXML part + one content part");
+        let meta0_off = u32::from_le_bytes(body[4..8].try_into().unwrap()) as usize;
+        let meta0_len = u32::from_le_bytes(body[8..12].try_into().unwrap()) as usize;
+        let meta1_off = u32::from_le_bytes(body[12..16].try_into().unwrap()) as usize;
+        let meta1_len = u32::from_le_bytes(body[16..20].try_into().unwrap()) as usize;
+        assert_eq!(meta0_off, 20, "first part starts after all metadata");
+        assert_eq!(meta1_off, meta0_off + meta0_len, "parts are contiguous");
+        assert_eq!(meta1_len, content.len());
+
+        // Part 0 is the WBXML and decodes back to the same document.
+        let wbxml_part = &body[meta0_off..meta0_off + meta0_len];
+        let decoded = wbxml.decode(wbxml_part).expect("part 0 must be WBXML");
+        assert!(decoded.contains("<Part>1</Part>"), "got: {decoded}");
+        // Part 1 carries the raw, unencoded content bytes.
+        assert_eq!(&body[meta1_off..meta1_off + meta1_len], content.as_slice());
+    }
+
+    /// [MS-ASCMD] §2.2.3.130: in a multipart response the Part element
+    /// replaces the Body's Data element; the binary part carries the
+    /// *unescaped* body characters.
+    #[test]
+    fn extract_body_for_multipart_moves_data_to_part() {
+        let properties = concat!(
+            "<AirSyncBase:Body><AirSyncBase:Type>2</AirSyncBase:Type>",
+            "<AirSyncBase:EstimatedDataSize>17</AirSyncBase:EstimatedDataSize>",
+            "<AirSyncBase:Data><p>Hi &amp; bye</p></AirSyncBase:Data>",
+            "</AirSyncBase:Body>",
+        );
+        let (xml, raw) = extract_body_for_multipart(properties, 1)
+            .expect("inline body Data must be extractable");
+        assert_eq!(raw, "<p>Hi & bye</p>", "XML character data is unescaped");
+        // [MS-ASCMD] §4.10.5.2: the Part element replaces the Body's Data
+        // element, sitting directly under airsyncbase:Body.
+        assert!(
+            xml.contains(
+                "<AirSyncBase:EstimatedDataSize>17</AirSyncBase:EstimatedDataSize><Part>1</Part></AirSyncBase:Body>"
+            ),
+            "got: {xml}"
+        );
+        assert!(
+            !xml.contains("AirSyncBase:Data") && !xml.contains("Hi"),
+            "the body characters must not remain inline: {xml}"
+        );
+
+        // No inline body Data → properties pass through untouched.
+        assert_eq!(
+            extract_body_for_multipart(
+                "<AirSyncBase:Body><AirSyncBase:Type>2</AirSyncBase:Type></AirSyncBase:Body>",
+                1
+            ),
+            None
+        );
+    }
+
+    /// `MS-ASAcceptMultiPart` parsing per [MS-ASHTTP] §2.2.1.1.2.5: only the
+    /// literal "T" (case-insensitive, whitespace-tolerant) requests
+    /// multipart; absent/F values mean inline.
+    #[test]
+    fn multipart_header_parsing() {
+        let mut headers = HeaderMap::new();
+        assert!(!multipart_requested(&headers), "absent header → inline");
+        for value in ["F", "f", "false", "0", ""] {
+            headers.insert(
+                "MS-ASAcceptMultiPart",
+                HeaderValue::from_str(value).unwrap(),
+            );
+            assert!(
+                !multipart_requested(&headers),
+                "{value:?} must not request multipart"
+            );
+        }
+        for value in ["T", "t", " T "] {
+            headers.insert(
+                "MS-ASAcceptMultiPart",
+                HeaderValue::from_str(value).unwrap(),
+            );
+            assert!(
+                multipart_requested(&headers),
+                "{value:?} must request multipart"
+            );
+        }
+    }
+
+    fn calendar_attachment(
+        content_base64: &str,
+        content_type: &str,
+    ) -> crate::attachment::FileAttachment {
+        crate::attachment::FileAttachment {
+            id: "calatt-1".to_string(),
+            parent_item_server_id: "EWS-evt-1".to_string(),
+            owner: "owner@example.com".to_string(),
+            name: "notes.txt".to_string(),
+            content_type: content_type.to_string(),
+            content_size: 0,
+            content_base64: content_base64.to_string(),
+            is_inline: false,
+            content_id: None,
+            content_location: None,
+            last_modified_time: None,
+        }
+    }
+
+    /// Window slicing over gateway-managed (calendar) attachments,
+    /// including the clamped-window (status 17), past-EOF (8),
+    /// oversized-window (8) and whole-item-over-budget (11) paths.
+    #[test]
+    fn calendar_attachment_outcome_window_matrix() {
+        let payload = (0..1000u32).map(|i| (i % 256) as u8).collect::<Vec<u8>>();
+        let b64 = BASE64.encode(&payload);
+        let att = calendar_attachment(&b64, "application/octet-stream");
+
+        // Whole item.
+        let whole = calendar_attachment_outcome(&att, None, 4096).expect("whole item");
+        assert_eq!(whole.data, payload);
+        assert_eq!(whole.window, (0, 1000));
+        assert_eq!(whole.total_size, Some(1000));
+        assert!(whole.complete);
+
+        // Window fully inside the content.
+        let win = calendar_attachment_outcome(&att, Some(100..300), 4096).expect("window");
+        assert_eq!(win.data, payload[100..300].to_vec());
+        assert_eq!(win.window, (100, 300));
+        assert!(win.complete);
+
+        // Window clamped at EOF → status 17 payload (complete=false). The
+        // declared span stays within the byte budget so the clamp, not the
+        // budget check, is what shortens it.
+        let clamped =
+            calendar_attachment_outcome(&att, Some(900..2000), 4096).expect("clamped window");
+        assert_eq!(clamped.data, payload[900..].to_vec());
+        assert_eq!(clamped.window, (900, 1000));
+        assert!(!clamped.complete, "short window signals status 17");
+
+        // Errors.
+        assert_eq!(
+            calendar_attachment_outcome(&att, Some(1000..1500), 4096).unwrap_err(),
+            8,
+            "range starting at EOF → status 8"
+        );
+        assert_eq!(
+            calendar_attachment_outcome(&att, Some(0..5000), 4096).unwrap_err(),
+            8,
+            "window over the budget → status 8"
+        );
+        assert_eq!(
+            calendar_attachment_outcome(&att, Some(900..5000), 4096).unwrap_err(),
+            8,
+            "declared span past the budget → status 8"
+        );
+        assert_eq!(
+            calendar_attachment_outcome(&att, None, 999).unwrap_err(),
+            11,
+            "whole item over the budget → status 11"
+        );
+        let corrupt = calendar_attachment("not!!valid!!base64!!", "application/octet-stream");
+        assert_eq!(
+            calendar_attachment_outcome(&corrupt, None, 4096).unwrap_err(),
+            15,
+            "undecodable stored content → status 15"
+        );
+
+        // Empty content, no range → the file is empty; a range over it → 8.
+        let empty = calendar_attachment("", "text/plain");
+        assert_eq!(
+            calendar_attachment_outcome(&empty, None, 4096).unwrap_err(),
+            10
+        );
+        assert_eq!(
+            calendar_attachment_outcome(&empty, Some(0..1), 4096).unwrap_err(),
+            8
+        );
+    }
+
+    /// End-to-end ItemOperations attachment Fetch against the gateway's own
+    /// calendar-attachment store: [MS-ASCMD] §4.10.4.4-shaped response with
+    /// Content-Type/Total/Data, the ranged variant with Range + status
+    /// 17 when the window runs past EOF, and the multipart variant where
+    /// the bytes travel as a raw binary part referenced by `<Part>`.
+    #[tokio::test]
+    async fn handle_item_operations_calendar_attachment_fetch() {
+        let state = test_sync_state().await;
+        let owner = "calowner@example.com";
+        let payload = (0..300u32).map(|i| (i % 256) as u8).collect::<Vec<u8>>();
+        state
+            .storage
+            .upsert_item_map(
+                owner,
+                "cal-href",
+                "res-href",
+                "EWS-evt-1",
+                "uid-1",
+                "etag-1",
+            )
+            .await
+            .expect("seed parent item");
+        let created = state
+            .attachment_manager
+            .create_file_attachment(&crate::attachment::CreateAttachmentParams {
+                owner,
+                parent_item_server_id: "EWS-evt-1",
+                name: "data.bin",
+                content_type: "application/octet-stream",
+                content_base64: &BASE64.encode(&payload),
+                is_inline: false,
+                content_id: None,
+                content_location: None,
+            })
+            .await
+            .expect("seed attachment");
+        let attachment_id = created.id.clone();
+
+        let wbxml = Wbxml::new();
+        let request = format!(
+            r#"<?xml version="1.0" encoding="utf-8"?><ItemOperations xmlns="ItemOperations:" xmlns:AirSyncBase="AirSyncBase:"><Fetch><Store>Mailbox</Store><AirSyncBase:FileReference>{attachment_id}</AirSyncBase:FileReference></Fetch></ItemOperations>"#
+        );
+        let response = handle_item_operations(
+            &state,
+            owner,
+            SecretString::from("pw"),
+            &request,
+            &wbxml,
+            false,
+            "req-cal-att",
+            "test-device",
+            false,
+        )
+        .await;
+        let body = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+            .await
+            .expect("collect response");
+        let xml = String::from_utf8(body.to_vec()).unwrap();
+        assert!(xml.contains("<Status>1</Status>"), "got: {xml}");
+        assert!(
+            xml.contains(
+                "<AirSyncBase:ContentType>application/octet-stream</AirSyncBase:ContentType>"
+            ),
+            "got: {xml}"
+        );
+        assert!(xml.contains("<Total>300</Total>"), "got: {xml}");
+        assert!(
+            xml.contains(&format!("<Data>{}</Data>", BASE64.encode(&payload))),
+            "got: {xml}"
+        );
+        assert!(
+            !xml.contains("<Range>"),
+            "unranged fetch echoes no Range: {xml}"
+        );
+
+        // Ranged fetch past EOF: the authoritative short window and
+        // status 17 ("Partial success").
+        let request = format!(
+            r#"<?xml version="1.0" encoding="utf-8"?><ItemOperations xmlns="ItemOperations:" xmlns:AirSyncBase="AirSyncBase:"><Fetch><Store>Mailbox</Store><AirSyncBase:FileReference>{attachment_id}</AirSyncBase:FileReference><Options><Range>200-400</Range></Options></Fetch></ItemOperations>"#
+        );
+        let response = handle_item_operations(
+            &state,
+            owner,
+            SecretString::from("pw"),
+            &request,
+            &wbxml,
+            false,
+            "req-cal-att-range",
+            "test-device",
+            false,
+        )
+        .await;
+        let body = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+            .await
+            .expect("collect response");
+        let xml = String::from_utf8(body.to_vec()).unwrap();
+        assert!(xml.contains("<Status>17</Status>"), "got: {xml}");
+        assert!(xml.contains("<Range>200-299</Range>"), "got: {xml}");
+        assert!(xml.contains("<Total>300</Total>"), "got: {xml}");
+        assert!(
+            xml.contains(&format!("<Data>{}</Data>", BASE64.encode(&payload[200..]))),
+            "got: {xml}"
+        );
+
+        // The WBXML-decoded form of a ranged request parses identically
+        // (Range lives on the root ItemOperations code page).
+        let encoded = wbxml.encode(&request).expect("encode request");
+        let decoded = wbxml.decode(&encoded).expect("decode request");
+        assert!(decoded.contains("<Range>200-400</Range>"), "got: {decoded}");
+
+        // Multipart ([MS-ASHTTP] §2.2.1.1.2.5): the WBXML part references
+        // the raw bytes via <Part>1</Part>, and part 1 carries the bytes.
+        let request = format!(
+            r#"<?xml version="1.0" encoding="utf-8"?><ItemOperations xmlns="ItemOperations:" xmlns:AirSyncBase="AirSyncBase:"><Fetch><Store>Mailbox</Store><AirSyncBase:FileReference>{attachment_id}</AirSyncBase:FileReference></Fetch></ItemOperations>"#
+        );
+        let response = handle_item_operations(
+            &state,
+            owner,
+            SecretString::from("pw"),
+            &request,
+            &wbxml,
+            true,
+            "req-cal-att-mp",
+            "test-device",
+            true,
+        )
+        .await;
+        assert_eq!(
+            response
+                .headers()
+                .get("content-type")
+                .and_then(|v| v.to_str().ok()),
+            Some("application/vnd.ms-sync.multipart")
+        );
+        let body = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+            .await
+            .expect("collect response");
+        let parts_count = u32::from_le_bytes([body[0], body[1], body[2], body[3]]);
+        assert_eq!(parts_count, 2, "WBXML part + one content part");
+        let meta1_off = u32::from_le_bytes(body[12..16].try_into().unwrap()) as usize;
+        let meta1_len = u32::from_le_bytes(body[16..20].try_into().unwrap()) as usize;
+        assert_eq!(meta1_len, payload.len());
+        assert_eq!(
+            &body[meta1_off..meta1_off + meta1_len],
+            payload.as_slice(),
+            "part 1 carries the raw attachment bytes"
+        );
+        let meta0_off = u32::from_le_bytes(body[4..8].try_into().unwrap()) as usize;
+        let meta0_len = u32::from_le_bytes(body[8..12].try_into().unwrap()) as usize;
+        let decoded = wbxml
+            .decode(&body[meta0_off..meta0_off + meta0_len])
+            .expect("part 0 is the WBXML response");
+        assert!(decoded.contains("<Part>1</Part>"), "got: {decoded}");
+        assert!(
+            !decoded.contains(&BASE64.encode(&payload)),
+            "the payload must not travel inline in multipart mode: {decoded}"
+        );
+        assert!(decoded.contains("<Total>300</Total>"), "got: {decoded}");
+    }
+
+    /// Status-code mapping of the attachment Fetch paths per
+    /// [MS-ASCMD] §2.2.3.177.8: unknown store → 9; FileReference with a
+    /// non-Range Options child → 2; malformed Range → 8; unroutable email
+    /// backend → 3.
+    #[tokio::test]
+    async fn handle_item_operations_attachment_status_mapping() {
+        let state = test_sync_state().await;
+        let owner = "statusmap@example.com";
+
+        let make = |body: &str| {
+            format!(
+                r#"<?xml version="1.0" encoding="utf-8"?><ItemOperations xmlns="ItemOperations:" xmlns:AirSyncBase="AirSyncBase:">{body}</ItemOperations>"#
+            )
+        };
+        async fn run(state: &Arc<crate::models::AppState>, owner: &str, request: &str) -> String {
+            let response = handle_item_operations(
+                state,
+                owner,
+                SecretString::from("pw"),
+                request,
+                &Wbxml::new(),
+                false,
+                "req-status-map",
+                "test-device",
+                false,
+            )
+            .await;
+            let body = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+                .await
+                .expect("collect response");
+            String::from_utf8(body.to_vec()).unwrap()
+        }
+
+        // [MS-ASCMD] §2.2.3.178.2: only Mailbox (and the unsupported
+        // Document Library) are valid stores.
+        let xml = run(
+            &state,
+            owner,
+            &make(
+                r#"<Fetch><Store>DocumentLibrary</Store><AirSyncBase:FileReference>x</AirSyncBase:FileReference></Fetch>"#,
+            ),
+        )
+        .await;
+        assert!(
+            xml.contains("<Status>9</Status>"),
+            "unknown store → 9: {xml}"
+        );
+
+        // §2.2.3.143.2: with a FileReference, Range is the only legal
+        // Options child.
+        let xml = run(
+            &state,
+            owner,
+            &make(
+                r#"<Fetch><Store>Mailbox</Store><AirSyncBase:FileReference>x</AirSyncBase:FileReference><Options><AirSyncBase:BodyPreference><AirSyncBase:Type>1</AirSyncBase:Type></AirSyncBase:BodyPreference></Options></Fetch>"#,
+            ),
+        )
+        .await;
+        assert!(
+            xml.contains("<Status>2</Status>"),
+            "invalid option → 2: {xml}"
+        );
+
+        // Malformed Range.
+        let xml = run(
+            &state,
+            owner,
+            &make(
+                r#"<Fetch><Store>Mailbox</Store><AirSyncBase:FileReference>x</AirSyncBase:FileReference><Options><Range>9-0</Range></Options></Fetch>"#,
+            ),
+        )
+        .await;
+        assert!(
+            xml.contains("<Status>8</Status>"),
+            "malformed range → 8: {xml}"
+        );
+
+        // A FileReference that is neither gateway-managed nor backed by a
+        // reachable email backend: server error, not "attachment missing".
+        let xml = run(
+            &state,
+            owner,
+            &make(
+                r#"<Fetch><Store>Mailbox</Store><AirSyncBase:FileReference>nosuchblob</AirSyncBase:FileReference></Fetch>"#,
+            ),
+        )
+        .await;
+        assert!(
+            xml.contains("<Status>3</Status>"),
+            "email backend disabled → 3: {xml}"
+        );
+        assert!(
+            xml.contains("<AirSyncBase:FileReference>nosuchblob</AirSyncBase:FileReference>"),
+            "the failing Fetch is identified by its FileReference: {xml}"
         );
     }
 
@@ -8582,15 +9546,18 @@ mod tests {
         let oof_inner = decoded
             .find("<Oof>")
             .map(|start| start + "<Oof>".len())
-            .and_then(|start| decoded[start..].find("</Oof>").map(|end| &decoded[start..start + end]))
+            .and_then(|start| {
+                decoded[start..]
+                    .find("</Oof>")
+                    .map(|end| &decoded[start..start + end])
+            })
             .expect("decoded request must carry an Oof block");
         assert!(
             oof_inner.contains("<AppliesToInternal></AppliesToInternal>"),
             "decoder must render valueless tags as Start+End pairs, got: {oof_inner}"
         );
 
-        let (internal_reply, external_reply, audience) =
-            oof_audience_from_oof_messages(oof_inner);
+        let (internal_reply, external_reply, audience) = oof_audience_from_oof_messages(oof_inner);
         assert_eq!(internal_reply.as_deref(), Some("I am away (internal)"));
         assert_eq!(
             external_reply.as_deref(),
@@ -8608,7 +9575,11 @@ mod tests {
         let oof_inner = decoded
             .find("<Oof>")
             .map(|start| start + "<Oof>".len())
-            .and_then(|start| decoded[start..].find("</Oof>").map(|end| &decoded[start..start + end]))
+            .and_then(|start| {
+                decoded[start..]
+                    .find("</Oof>")
+                    .map(|end| &decoded[start..start + end])
+            })
             .expect("Oof block");
         let (_, external_reply, audience) = oof_audience_from_oof_messages(oof_inner);
         assert_eq!(external_reply.as_deref(), Some("away known"));
