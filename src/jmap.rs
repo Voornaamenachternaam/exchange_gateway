@@ -1192,14 +1192,15 @@ impl JmapClient {
 
         // The transfer needs to continue past the window's last byte only
         // while the total size is still unknown; with `Content-Length`
-        // present the stream is cut as soon as the window is complete.
+        // present the stream is cut as soon as the window is complete. The
+        // declared length travels with the stop position so the early return
+        // names the authoritative total without re-reading headers.
         let stop_after = match (&range, content_length) {
-            (Some(r), Some(_)) => Some(r.end),
+            (Some(r), Some(total)) => Some((r.end, total)),
             _ => None,
         };
 
         let mut data: Vec<u8> = Vec::with_capacity(usize::try_from(window_len).unwrap_or(0));
-        let mut total_size = content_length;
         let mut position: u64 = 0;
         let mut stream = resp.bytes_stream();
         while let Some(chunk) = futures_util::StreamExt::next(&mut stream).await {
@@ -1230,10 +1231,7 @@ impl JmapClient {
                 }
             }
             position = chunk_end;
-            if total_size.is_none() {
-                total_size = Some(position);
-            }
-            if let Some(stop) = stop_after
+            if let Some((stop, total)) = stop_after
                 && position >= stop
             {
                 // The window is fully covered and the total is known from
@@ -1245,17 +1243,30 @@ impl JmapClient {
                 return Ok(BlobRangeFetch {
                     data,
                     content_type,
-                    total_size,
+                    total_size: Some(total),
                     window: (start, end),
                     complete: true,
                 });
             }
         }
-        // EOF: the whole body has been seen, so the total is exact. A
-        // windowed request that hit EOF before covering its full span served
-        // fewer bytes than requested ([MS-ASCMD] §2.2.3.177.8 status 17:
-        // "Partial success").
-        let total_size = total_size.unwrap_or(position);
+        // EOF: the whole body has been seen, so the total is exact — the
+        // declared Content-Length when the server sent one, otherwise the
+        // bytes actually received. A windowed request that hit EOF before
+        // covering its full span served fewer bytes than requested
+        // ([MS-ASCMD] §2.2.3.177.8 status 17: "Partial success").
+        let total_size = content_length.unwrap_or(position);
+        if let Some(r) = &range
+            && r.start >= position
+        {
+            // The stream ended before the window's first byte, so no byte of
+            // the window exists — the same semantics the Content-Length
+            // precheck applies ([MS-ASCMD] §2.2.3.177.8 status 8: "The
+            // byte-range is invalid or too large"). Without this, a streamed
+            // body would build an inverted (start > end) window that renders
+            // as a nonsensical Range and underflows the inclusive-end
+            // conversion.
+            return Err(BlobFetchError::RangeStartsPastEof { total: position });
+        }
         let (window, complete) = match &range {
             Some(r) => ((r.start, position.min(r.end)), position >= r.end),
             None => ((0, position), true),
@@ -6016,6 +6027,60 @@ mod tests {
         assert!(matches!(
             err,
             super::BlobFetchError::RangeStartsPastEof { total: 100 }
+        ));
+    }
+
+    #[tokio::test]
+    async fn download_blob_range_reports_total_for_multichunk_stream() {
+        let base = spawn_stub_jmap_server().await;
+        let client = JmapClient::new(&base).unwrap();
+        let pw = SecretString::from("pw");
+        // No Content-Length: the total is only known at EOF, and the 200 KiB
+        // body arrives as four stream chunks. The reported Total must be the
+        // whole item's size, not the first chunk's end — a client planning
+        // follow-up windows from <Total> would otherwise under-fetch.
+        let fetch = client
+            .download_blob_range("a", "chunked-200000", "u", &pw, None, 262_144)
+            .await
+            .expect("multi-chunk whole-item download must succeed");
+        assert_eq!(fetch.data.len(), 200_000);
+        assert_eq!(fetch.total_size, Some(200_000));
+        assert_eq!(fetch.window, (0, 200_000));
+        assert!(fetch.complete);
+
+        let fetch = client
+            .download_blob_range(
+                "a",
+                "chunked-200000",
+                "u",
+                &pw,
+                Some(150_000..150_100),
+                262_144,
+            )
+            .await
+            .expect("windowed multi-chunk download must succeed");
+        assert_eq!(fetch.data.len(), 100);
+        assert_eq!(fetch.window, (150_000, 150_100));
+        assert_eq!(fetch.total_size, Some(200_000));
+        assert!(fetch.complete);
+    }
+
+    #[tokio::test]
+    async fn download_blob_range_rejects_range_past_eof_without_content_length() {
+        let base = spawn_stub_jmap_server().await;
+        let client = JmapClient::new(&base).unwrap();
+        let pw = SecretString::from("pw");
+        // Streamed body, no Content-Length: EOF is the first moment the
+        // range's invalidity is provable, and the error must carry the bytes
+        // actually observed — not an inverted window that would render as a
+        // nonsensical <Range> or underflow the inclusive-end conversion.
+        let err = client
+            .download_blob_range("a", "chunked-300", "u", &pw, Some(500..600), 1024)
+            .await
+            .expect_err("a streamed range starting past EOF has no bytes");
+        assert!(matches!(
+            err,
+            super::BlobFetchError::RangeStartsPastEof { total: 300 }
         ));
     }
 

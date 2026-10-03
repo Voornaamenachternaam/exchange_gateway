@@ -3054,6 +3054,18 @@ async fn handle_item_operations(
     // Binary parts of the multipart response ([MS-ASCMD] §2.2.1.10.1);
     // part n+1 holds the content the WBXML's <Part>n</Part> references.
     let mut content_parts: Vec<Vec<u8>> = Vec::new();
+    // The same configured attachment budget caps both a single Fetch and
+    // the cumulative content bytes one ItemOperations response may carry
+    // ([MS-ASCMD] §2.2.3.67: "Multiple fetch operations can be included
+    // within one ItemOperations request", so the per-request total needs a
+    // bound of its own — the request-body limit only bounds the Fetch
+    // *addresses*, not the attachment data each one materializes). A Fetch
+    // that would overflow the remainder is answered per
+    // [MS-ASCMD] §2.2.3.177.8 status 11 ("The requested data size is too
+    // large", Item scope) while the remaining Fetches still execute in
+    // request order.
+    let attachment_budget = state.cfg.max_attachment_bytes();
+    let mut served_content_bytes: usize = 0;
     for fetch in fetches {
         let store = if fetch.store.is_empty() {
             "Mailbox".to_string()
@@ -3135,7 +3147,7 @@ async fn handle_item_operations(
                 None => None,
             };
             let range_requested = byte_range.is_some();
-            let max_bytes = state.cfg.max_attachment_bytes();
+            let max_bytes = attachment_budget;
 
             // The attachment bytes come from one of two stores, selected by
             // the FileReference itself: gateway-managed calendar attachments
@@ -3223,6 +3235,23 @@ async fn handle_item_operations(
 
             match outcome {
                 Ok((mut outcome, is_calendar)) => {
+                    // The cumulative per-request budget: a single Fetch is
+                    // already capped at `attachment_budget` by the outcome
+                    // itself, so this only trips once earlier Fetches of the
+                    // same request have consumed the remainder — exactly the
+                    // status 11 case ("The requested data size is too large",
+                    // Item scope, [MS-ASCMD] §2.2.3.177.8).
+                    if served_content_bytes.saturating_add(outcome.data.len()) > attachment_budget {
+                        tracing::debug!(
+                            served_bytes = served_content_bytes,
+                            fetch_bytes = outcome.data.len(),
+                            budget = attachment_budget,
+                            "ItemOperations: per-request attachment budget exhausted"
+                        );
+                        responses.push_str(&item_operations_fetch_error_xml(&address_xml, 11));
+                        continue;
+                    }
+                    served_content_bytes += outcome.data.len();
                     // [MS-ASCMD] §2.2.3.177.8: 17 = "Partial success; a
                     // Fetch … operation completed partially" — the served
                     // window hit EOF before covering the requested range.
@@ -3288,10 +3317,29 @@ async fn handle_item_operations(
             // In multipart mode the negotiated body travels as a raw
             // binary part referenced by <Part> ([MS-ASCMD] §2.2.1.10.1,
             // §2.2.3.130); without inline body data the properties stay
-            // as rendered.
+            // as rendered. The part bytes count against the same
+            // per-request budget as attachment windows; a body that would
+            // overflow the remainder is answered with status 11 instead
+            // ([MS-ASCMD] §2.2.3.177.8, Item scope). The first Fetch of a
+            // request is never rejected here: its own negotiated
+            // preferences ([MS-ASCMD] §2.2.3.125.4) govern its size.
             let properties = if multipart {
                 match extract_body_for_multipart(&properties, content_parts.len() as u32 + 1) {
                     Some((xml_without_data, raw_body)) => {
+                        if served_content_bytes > 0
+                            && served_content_bytes.saturating_add(raw_body.len())
+                                > attachment_budget
+                        {
+                            tracing::debug!(
+                                served_bytes = served_content_bytes,
+                                body_bytes = raw_body.len(),
+                                budget = attachment_budget,
+                                "ItemOperations: per-request content budget exhausted"
+                            );
+                            responses.push_str(&item_operations_fetch_error_xml(&address_xml, 11));
+                            continue;
+                        }
+                        served_content_bytes += raw_body.len();
                         content_parts.push(raw_body.into_bytes());
                         xml_without_data
                     }
@@ -9401,6 +9449,176 @@ mod tests {
             "the payload must not travel inline in multipart mode: {decoded}"
         );
         assert!(decoded.contains("<Total>300</Total>"), "got: {decoded}");
+    }
+
+    /// Seed a gateway-managed file attachment and return its id.
+    async fn seed_file_attachment(
+        state: &AppState,
+        owner: &str,
+        parent_item_server_id: &str,
+        name: &str,
+        len: usize,
+    ) -> String {
+        let payload = vec![0x42u8; len];
+        let b64 = BASE64.encode(&payload);
+        let created = state
+            .attachment_manager
+            .create_file_attachment(&crate::attachment::CreateAttachmentParams {
+                owner,
+                parent_item_server_id,
+                name,
+                content_type: "application/octet-stream",
+                content_base64: &b64,
+                is_inline: false,
+                content_id: None,
+                content_location: None,
+            })
+            .await
+            .expect("seed attachment");
+        created.id
+    }
+
+    /// The configured attachment budget caps not only each single Fetch but
+    /// the cumulative content one ItemOperations response carries
+    /// ([MS-ASCMD] §2.2.3.67 allows "multiple fetch operations … within one
+    /// ItemOperations request", and the request-body limit bounds only the
+    /// Fetch addresses, not the data each materializes). A Fetch that would
+    /// overflow the remainder is answered with [MS-ASCMD] §2.2.3.177.8
+    /// status 11 ("The requested data size is too large", Item scope), the
+    /// Fetches still execute in request order, and a single-Fetch request
+    /// keeps succeeding — the budget is per request, and one Fetch can never
+    /// trip it on its own.
+    #[tokio::test]
+    async fn handle_item_operations_attachment_cumulative_budget() {
+        let storage = crate::storage::Storage::new("sqlite::memory:")
+            .await
+            .expect("in-memory storage");
+        storage.init_schema().await.expect("schema init");
+        let cfg = crate::config::Config {
+            jmap_base: "http://127.0.0.1:1".to_string(),
+            email_enabled: false,
+            mail_domain: "example.com".to_string(),
+            hmac_secret: SecretString::from("a".repeat(32)),
+            max_attachment_bytes: 1024,
+            ..Default::default()
+        };
+        let state = Arc::new(AppState::new(cfg, Arc::new(storage)));
+        let owner = "budget@example.com";
+        state
+            .storage
+            .upsert_item_map(
+                owner,
+                "cal-href",
+                "res-href",
+                "EWS-evt-1",
+                "uid-1",
+                "etag-1",
+            )
+            .await
+            .expect("seed parent item");
+        let id_a = seed_file_attachment(&state, owner, "EWS-evt-1", "a.bin", 700).await;
+        let id_b = seed_file_attachment(&state, owner, "EWS-evt-1", "b.bin", 700).await;
+
+        async fn run(
+            state: &Arc<AppState>,
+            owner: &str,
+            fetch_bodies: &[String],
+            multipart: bool,
+            as_wbxml: bool,
+        ) -> axum::body::Bytes {
+            let request = format!(
+                r#"<?xml version="1.0" encoding="utf-8"?><ItemOperations xmlns="ItemOperations:" xmlns:AirSyncBase="AirSyncBase:">{}</ItemOperations>"#,
+                fetch_bodies.join("")
+            );
+            let response = handle_item_operations(
+                state,
+                owner,
+                SecretString::from("pw"),
+                &request,
+                &Wbxml::new(),
+                as_wbxml,
+                "req-budget",
+                "test-device",
+                multipart,
+            )
+            .await;
+            axum::body::to_bytes(response.into_body(), 1024 * 1024)
+                .await
+                .expect("collect response")
+        }
+        let fetch_xml = |id: &str| {
+            format!(
+                r#"<Fetch><Store>Mailbox</Store><AirSyncBase:FileReference>{id}</AirSyncBase:FileReference></Fetch>"#
+            )
+        };
+
+        // Three Fetches whose combined content (2100 bytes) exceeds the
+        // 1024-byte budget: the first is served, the rest are answered with
+        // status 11 — each identified by its own FileReference, in request
+        // order, without aborting the command.
+        let body = run(
+            &state,
+            owner,
+            &[fetch_xml(&id_a), fetch_xml(&id_a), fetch_xml(&id_b)],
+            false,
+            false,
+        )
+        .await;
+        let xml = String::from_utf8(body.to_vec()).unwrap();
+        let a_block = format!(
+            "<Fetch><Status>1</Status><AirSyncBase:FileReference>{id_a}</AirSyncBase:FileReference><AirSync:Class>Calendar</AirSync:Class><Properties><AirSyncBase:ContentType>application/octet-stream</AirSyncBase:ContentType><Total>700</Total><Data>{}</Data></Properties></Fetch>",
+            BASE64.encode([0x42u8; 700])
+        );
+        assert!(xml.contains(&a_block), "first Fetch is served: {xml}");
+        assert!(
+            xml.contains(&format!(
+                "<Fetch><Status>11</Status><AirSyncBase:FileReference>{id_a}</AirSyncBase:FileReference></Fetch>"
+            )),
+            "second Fetch overflows the remainder: {xml}"
+        );
+        assert!(
+            xml.contains(&format!(
+                "<Fetch><Status>11</Status><AirSyncBase:FileReference>{id_b}</AirSyncBase:FileReference></Fetch>"
+            )),
+            "a different attachment counts against the same budget: {xml}"
+        );
+
+        // A single-Fetch request of the very same attachment still succeeds:
+        // the budget is per request and one Fetch alone never trips it.
+        let body = run(&state, owner, &[fetch_xml(&id_b)], false, false).await;
+        let xml = String::from_utf8(body.to_vec()).unwrap();
+        assert!(
+            xml.contains(&format!(
+                "<Fetch><Status>1</Status><AirSyncBase:FileReference>{id_b}</AirSyncBase:FileReference>"
+            )),
+            "single Fetch is not budget-limited: {xml}"
+        );
+
+        // Multipart: the overflowing Fetch pushes no binary part, so the
+        // parts metadata stays consistent with the <Part> references the
+        // WBXML actually emits.
+        let body = run(
+            &state,
+            owner,
+            &[fetch_xml(&id_a), fetch_xml(&id_a)],
+            true,
+            true,
+        )
+        .await;
+        let parts_count = u32::from_le_bytes([body[0], body[1], body[2], body[3]]);
+        assert_eq!(parts_count, 2, "WBXML part + exactly one content part");
+        let meta0_off = u32::from_le_bytes(body[4..8].try_into().unwrap()) as usize;
+        let meta0_len = u32::from_le_bytes(body[8..12].try_into().unwrap()) as usize;
+        let decoded = Wbxml::new()
+            .decode(&body[meta0_off..meta0_off + meta0_len])
+            .expect("part 0 is the WBXML response");
+        assert!(decoded.contains("<Part>1</Part>"), "got: {decoded}");
+        assert!(
+            decoded.contains(&format!(
+                "<Fetch><Status>11</Status><AirSyncBase:FileReference>{id_a}</AirSyncBase:FileReference></Fetch>"
+            )),
+            "second Fetch is budget-rejected: {decoded}"
+        );
     }
 
     /// Status-code mapping of the attachment Fetch paths per
