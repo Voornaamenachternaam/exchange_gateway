@@ -1258,6 +1258,9 @@ static NAME_TO_TAG: phf::Map<&'static str, [u8; 2]> = phf::phf_map! {
     "Find:Picture" => [25u8, 0x22u8],
 };
 
+/// Map a namespace URI (the `xmlns`/`xmlns:*` value) to its [MS-ASWBXML]
+/// code page. Code pages ARE namespaces: page 0 is AirSync, 1 Contacts, …
+/// Returns `None` for any URI this profile does not support.
 fn namespace_to_code_page(ns: &str) -> Option<u8> {
     match ns {
         "AirSync:" => Some(0),
@@ -1301,6 +1304,12 @@ fn namespace_uri_to_code_page(uri: &str) -> Option<u8> {
     })
 }
 
+/// Resolve an element name to its (code page, token) pair for encoding.
+/// A qualified name ("Contacts:NickName") is authoritative and resolves
+/// exactly, independent of the ambient namespace hint; an unqualified name
+/// resolves against the hinted code page when one is given, else by its
+/// unique local name across all pages. Returns `None` when the name is not
+/// a [MS-ASWBXML] token at all (the caller turns that into an error).
 fn find_encode_tag(qualified_or_local: &str, override_cp: Option<u8>) -> Option<(u8, u8)> {
     // A qualified name ("Contacts:NickName") is authoritative: resolve it
     // exactly, independent of the ambient namespace hint. This lets legacy
@@ -1341,6 +1350,11 @@ fn find_encode_tag(qualified_or_local: &str, override_cp: Option<u8>) -> Option<
     None
 }
 
+/// WBXML codec for the [MS-ASWBXML] v20250520 profile: the only wire format
+/// Exchange ActiveSync clients speak. `decode` turns a WBXML request body
+/// into the in-memory XML this gateway's handlers parse; `encode` turns a
+/// response template back into WBXML bytes. Both directions are fail-closed
+/// per [MS-ASWBXML] §2.1.3 (see `decode`/`encode` for the exact contracts).
 pub struct Wbxml;
 
 impl Default for Wbxml {
@@ -1354,6 +1368,8 @@ impl Wbxml {
         Wbxml
     }
 
+    /// Read a multi-byte unsigned integer ([WBXML1.2] §8.1.2.1): 7 bits of
+    /// payload per byte, high bit set on every byte but the last.
     fn read_mb_uint(bytes: &[u8], pos: &mut usize) -> Result<u32> {
         let mut result: u32 = 0;
         let mut count = 0;
@@ -1375,6 +1391,8 @@ impl Wbxml {
         Ok(result)
     }
 
+    /// Read an inline string token's payload: raw bytes up to (not
+    /// including) the terminating NUL, which is consumed as UTF-8.
     fn read_inline_str(bytes: &[u8], pos: &mut usize) -> Result<String> {
         let start = *pos;
         while *pos < bytes.len() && bytes[*pos] != 0 {
@@ -1388,6 +1406,21 @@ impl Wbxml {
         Ok(s)
     }
 
+    /// Decode a WBXML body into this gateway's in-memory XML form.
+    ///
+    /// Fail-closed per [MS-ASWBXML] §2.1.3: the algorithm uses no string
+    /// tables, entities, processing instructions, or attribute encoding, so
+    /// the corresponding [WBXML1.2] global tokens and tag tokens carrying
+    /// the attribute bit are errors, as are unknown (code page, token)
+    /// pairs, data outside the single root element, and truncated or
+    /// header-only bodies. Two tokens are accepted leniently despite not
+    /// being produced by Exchange: `ENTITY` (0x02), a legal WBXML character
+    /// reference, and `STR_T` (0x83), which can only index the (always
+    /// empty in this profile) string table. A body already starting with
+    /// `<` is passed through unchanged (the callers' plain-XML escape
+    /// hatch). The decoded document's root code page is its default
+    /// namespace: root-page tags expand unqualified, SWITCH_PAGE-reached
+    /// tags keep their `Prefix:` form.
     pub fn decode(&self, bytes: &[u8]) -> Result<String> {
         if bytes.is_empty() {
             return Err(anyhow!("Empty WBXML payload"));
@@ -1420,13 +1453,17 @@ impl Wbxml {
         let mut output = String::from("<?xml version=\"1.0\" encoding=\"utf-8\"?>\n");
 
         while pos < bytes.len() {
-            // A WBXML document has exactly one root element; anything after it
-            // closes is a malformed body, not a sibling to silently parse.
+            // A WBXML document's body is exactly one element; character data
+            // outside it — after the root closes, or before the root opens —
+            // is malformed, not content to silently parse.
             if seen_root && xml_stack.is_empty() {
                 return Err(anyhow!("WBXML data after root element"));
             }
             let token = bytes[pos];
             pos += 1;
+            if !seen_root && matches!(token, STR_I | STR_T | ENTITY | OPAQUE) {
+                return Err(anyhow!("WBXML data before root element"));
+            }
 
             match token {
                 SWITCH_PAGE => {
@@ -1481,7 +1518,9 @@ impl Wbxml {
                 // encoding. The corresponding [WBXML1.2] global tokens
                 // (EXT_I_0/1/2, PI, LITERAL_C, EXT_T_0/1/2, LITERAL_A,
                 // EXT_0/1/2, LITERAL_AC) and tag tokens carrying the
-                // attribute bit are rejected instead of being guessed at.
+                // attribute bit are rejected instead of being guessed at;
+                // ENTITY (0x02) and STR_T (0x83) are accepted leniently
+                // (see the method doc) though Exchange never emits them.
                 0x40..=0x44 => {
                     return Err(anyhow!(
                         "WBXML token 0x{:02x} (EXT_I/PI/LITERAL_C) is not used by [MS-ASWBXML] \u{a7}2.1.3",
@@ -1550,19 +1589,34 @@ impl Wbxml {
         if !seen_root {
             return Err(anyhow!("WBXML document has no root element"));
         }
-        if let Some(tag) = xml_stack.last() {
+        if let Some(outermost) = xml_stack.first() {
             if xml_stack.len() > 1 {
                 return Err(anyhow!(
-                    "Truncated WBXML: {} unclosed elements, outermost <{tag}>",
+                    "Truncated WBXML: {} unclosed elements, outermost <{outermost}>",
                     xml_stack.len()
                 ));
             }
-            return Err(anyhow!("Truncated WBXML: unclosed element <{tag}>"));
+            return Err(anyhow!("Truncated WBXML: unclosed element <{outermost}>"));
         }
 
         Ok(output)
     }
 
+    /// Encode the in-memory XML form into WBXML bytes.
+    ///
+    /// Fail-closed symmetrically with `decode`: processing instructions and
+    /// DOCTYPE cannot be represented and are errors; an element's only
+    /// representable attributes are namespace declarations (any other
+    /// attribute, a malformed or duplicated attribute, or a declared
+    /// namespace URI that maps to no [MS-ASWBXML] code page is an error,
+    /// never silently dropped); character data outside the document
+    /// element is an error. Character content is aggregated per element —
+    /// split Text/CData/entity-reference segments encode as one STR_I, or
+    /// one OPAQUE carrying the raw bytes for byte-array-typed elements
+    /// ([MS-ASDTYPE] §2.7.1). An undeclared prefix that names a canonical
+    /// [MS-ASWBXML] namespace still resolves to its own code page so
+    /// decode output re-encodes without re-declaration; unqualified
+    /// descendants fall back to the root's code page.
     pub fn encode(&self, xml: &str) -> Result<Vec<u8>> {
         let mut buf: Vec<u8> = vec![0x03, 0x01, 0x6A, 0x00];
         let mut current_code_page = 0u8;
@@ -1576,6 +1630,13 @@ impl Wbxml {
         // Parallel stack: whether each open element carries a byte-array value
         // that must be OPAQUE-encoded ([MS-ASDTYPE] §2.7.1).
         let mut byte_array_stack: Vec<bool> = Vec::new();
+        // Character content of the current element, accumulated across
+        // quick-xml's Text/CData/GeneralRef events and flushed as a single
+        // WBXML token when the element boundary is reached: a byte-array
+        // element's base64 can arrive split (CDATA + text, entity refs),
+        // and per-event encoding would emit one OPAQUE or STR_I per
+        // segment instead of one token per element.
+        let mut pending_text = String::new();
 
         let mut reader = quick_xml::Reader::from_str(xml);
         reader.config_mut().trim_text(true);
@@ -1584,24 +1645,10 @@ impl Wbxml {
         loop {
             match reader.read_event_into(&mut event_buf) {
                 Ok(quick_xml::events::Event::Start(ref e)) => {
+                    write_pending_content(&mut buf, &byte_array_stack, &mut pending_text)?;
                     let at_root = ns_stack.is_empty();
-                    let mut new_prefixes: std::collections::HashMap<String, Option<u8>> =
-                        std::collections::HashMap::new();
-                    for attr in e.attributes().flatten() {
-                        let key_bytes = attr.key.as_ref();
-                        if key_bytes.starts_with("xmlns:") && key_bytes.len() > 6 {
-                            let prefix = key_bytes[6..].to_string();
-                            if let Ok(val) =
-                                attr.normalized_value(quick_xml::XmlVersion::Implicit1_0)
-                            {
-                                let cp = namespace_uri_to_code_page(val.as_ref());
-                                new_prefixes.insert(prefix, cp);
-                            }
-                        }
-                    }
+                    let (new_prefixes, ns_cp) = encode_namespace_attributes(e)?;
                     prefix_ns_stack.push(new_prefixes);
-
-                    let ns_cp = extract_xmlns_cp(e);
                     ns_stack.push(ns_cp);
 
                     let qname = e.name();
@@ -1609,16 +1656,15 @@ impl Wbxml {
                     let (local_name, effective_cp) = if let Some(pos) = full_name.find(':') {
                         let prefix = &full_name[..pos];
                         let local = &full_name[pos + 1..];
-                        let prefix_cp = prefix_ns_stack
-                            .iter()
-                            .rev()
-                            .find_map(|map| map.get(prefix).copied().flatten())
+                        let prefix_cp = match resolve_prefix_binding(prefix, &prefix_ns_stack)? {
+                            Some(cp) => Some(cp),
                             // An undeclared prefix that names a [MS-ASWBXML]
                             // namespace (the canonical prefixes this codec's
                             // own decode output uses, e.g. "AirSyncBase")
                             // resolves to that code page, so a decoded
                             // document re-encodes without re-declaration.
-                            .or_else(|| namespace_uri_to_code_page(prefix));
+                            None => namespace_uri_to_code_page(prefix),
+                        };
                         (
                             local,
                             prefix_cp
@@ -1653,36 +1699,21 @@ impl Wbxml {
                     )?;
                 }
                 Ok(quick_xml::events::Event::Empty(ref e)) => {
-                    let mut new_prefixes: std::collections::HashMap<String, Option<u8>> =
-                        std::collections::HashMap::new();
-                    for attr in e.attributes().flatten() {
-                        let key_bytes = attr.key.as_ref();
-                        if key_bytes.starts_with("xmlns:") && key_bytes.len() > 6 {
-                            let prefix = key_bytes[6..].to_string();
-                            if let Ok(val) =
-                                attr.normalized_value(quick_xml::XmlVersion::Implicit1_0)
-                            {
-                                let cp = namespace_uri_to_code_page(val.as_ref());
-                                new_prefixes.insert(prefix, cp);
-                            }
-                        }
-                    }
+                    write_pending_content(&mut buf, &byte_array_stack, &mut pending_text)?;
+                    let (new_prefixes, ns_cp) = encode_namespace_attributes(e)?;
                     prefix_ns_stack.push(new_prefixes);
-
-                    let ns_cp = extract_xmlns_cp(e);
 
                     let qname = e.name();
                     let full_name = qname.as_ref();
                     let (local_name, effective_cp) = if let Some(pos) = full_name.find(':') {
                         let prefix = &full_name[..pos];
                         let local = &full_name[pos + 1..];
-                        let prefix_cp = prefix_ns_stack
-                            .iter()
-                            .rev()
-                            .find_map(|map| map.get(prefix).copied().flatten())
+                        let prefix_cp = match resolve_prefix_binding(prefix, &prefix_ns_stack)? {
+                            Some(cp) => Some(cp),
                             // Undeclared canonical prefixes resolve to their
                             // own code page (see the Start arm note).
-                            .or_else(|| namespace_uri_to_code_page(prefix));
+                            None => namespace_uri_to_code_page(prefix),
+                        };
                         (
                             local,
                             prefix_cp
@@ -1709,10 +1740,12 @@ impl Wbxml {
                     prefix_ns_stack.pop();
                 }
                 Ok(quick_xml::events::Event::Text(ref e)) => {
-                    let txt = e.to_string();
-                    if !txt.is_empty() {
-                        write_element_content(&mut buf, &byte_array_stack, &txt)?;
+                    if ns_stack.is_empty() && !e.is_empty() {
+                        return Err(anyhow!(
+                            "XML encode error: character data outside the document element"
+                        ));
                     }
+                    pending_text.push_str(e.as_ref());
                 }
                 Ok(quick_xml::events::Event::GeneralRef(ref r)) => {
                     let text = resolve_xml_reference_strict(r.as_ref()).ok_or_else(|| {
@@ -1721,16 +1754,24 @@ impl Wbxml {
                             r.as_ref()
                         )
                     })?;
-                    if !text.is_empty() {
-                        write_element_content(&mut buf, &byte_array_stack, &text)?;
+                    if ns_stack.is_empty() {
+                        return Err(anyhow!(
+                            "XML encode error: character data outside the document element"
+                        ));
                     }
+                    pending_text.push_str(&text);
                 }
                 Ok(quick_xml::events::Event::CData(ref c)) => {
                     // CDATA carries the same character content as a text
                     // node, only unescaped in source form.
                     let content = String::from_utf8(c.as_ref().as_bytes().to_vec())
                         .map_err(|e| anyhow!("XML encode error: invalid CDATA UTF-8: {e}"))?;
-                    write_element_content(&mut buf, &byte_array_stack, &content)?;
+                    if ns_stack.is_empty() && !content.is_empty() {
+                        return Err(anyhow!(
+                            "XML encode error: character data outside the document element"
+                        ));
+                    }
+                    pending_text.push_str(&content);
                 }
                 // WBXML has no representation for processing instructions or
                 // a DTD; silently dropping them would lose document meaning.
@@ -1747,6 +1788,9 @@ impl Wbxml {
                     ));
                 }
                 Ok(quick_xml::events::Event::End(_)) => {
+                    // The pending content belongs to the element being
+                    // closed, so flush before popping its byte-array flag.
+                    write_pending_content(&mut buf, &byte_array_stack, &mut pending_text)?;
                     ns_stack.pop();
                     prefix_ns_stack.pop();
                     byte_array_stack.pop();
@@ -1762,6 +1806,10 @@ impl Wbxml {
         Ok(buf)
     }
 
+    /// Emit one element's open tag: resolve the name to its (code page,
+    /// token) pair — with a page switch first when the element lives on
+    /// another page — and set the content bit ([WBXML1.2] §8.1) when the
+    /// element has a matching End token to come. Unknown names are errors.
     fn encode_open_tag(
         &self,
         buf: &mut Vec<u8>,
@@ -1784,15 +1832,80 @@ impl Wbxml {
     }
 }
 
-fn extract_xmlns_cp<'a>(e: &quick_xml::events::BytesStart<'a>) -> Option<u8> {
-    for attr in e.attributes().flatten() {
-        if attr.key.as_ref() == "xmlns"
-            && let Ok(val) = attr.normalized_value(quick_xml::XmlVersion::Implicit1_0)
-        {
-            return namespace_uri_to_code_page(val.as_ref());
+/// Namespace-declaration map: prefix -> its code page, `None` when the
+/// declared URI is not a [MS-ASWBXML] namespace (an error when used).
+type PrefixBindings = std::collections::HashMap<String, Option<u8>>;
+
+/// Collect the namespace bindings an element's attributes declare.
+///
+/// [MS-ASWBXML] §2.1.3 defines no attribute encoding, so an element's only
+/// representable attributes are its namespace declarations; every other
+/// attribute, a malformed attribute, or a duplicated attribute name is a
+/// hard error rather than silent data loss on the wire. Namespace URIs
+/// that map to no [MS-ASWBXML] code page are also hard errors — an
+/// explicitly declared-but-unsupported namespace must not be silently
+/// re-encoded under a different page. Returns the `xmlns:*` prefix
+/// bindings (innermost scope) and the default-namespace code page.
+fn encode_namespace_attributes(
+    e: &quick_xml::events::BytesStart<'_>,
+) -> Result<(PrefixBindings, Option<u8>)> {
+    let mut prefixes: PrefixBindings = std::collections::HashMap::new();
+    let mut default_cp: Option<u8> = None;
+    let mut seen_keys: Vec<String> = Vec::new();
+    for attr in e.attributes() {
+        let attr = attr.map_err(|err| anyhow!("XML encode error: malformed attribute: {err}"))?;
+        let key = attr.key.as_ref().to_string();
+        if seen_keys.contains(&key) {
+            return Err(anyhow!("XML encode error: duplicate attribute '{key}'"));
+        }
+        seen_keys.push(key.clone());
+        let value = attr
+            .normalized_value(quick_xml::XmlVersion::Implicit1_0)
+            .map_err(|err| anyhow!("XML encode error: invalid namespace value '{key}': {err}"))?;
+        if key == "xmlns" {
+            // The default namespace applies to this element immediately,
+            // so an unrecognized URI is unrepresentable right here.
+            default_cp = Some(namespace_uri_to_code_page(value.as_ref()).ok_or_else(|| {
+                anyhow!(
+                    "XML encode error: default namespace URI '{}' is not a [MS-ASWBXML] namespace",
+                    value
+                )
+            })?);
+        } else if key.starts_with("xmlns:") && key.len() > "xmlns:".len() {
+            let prefix = key["xmlns:".len()..].to_string();
+            prefixes.insert(prefix, namespace_uri_to_code_page(value.as_ref()));
+        } else {
+            return Err(anyhow!(
+                "XML encode error: attribute '{key}' cannot be represented in WBXML: [MS-ASWBXML] \u{a7}2.1.3 defines no attribute encoding"
+            ));
         }
     }
-    None
+    Ok((prefixes, default_cp))
+}
+
+/// Resolve a prefix that is in scope for an element to its code page.
+///
+/// The innermost declaration wins (XML scoping). `Ok(Some(cp))` when the
+/// binding names a known namespace; `Ok(None)` when the prefix is genuinely
+/// undeclared (the canonical-prefix fallback in the caller applies); and
+/// `Err` when the prefix is explicitly bound to a namespace URI this codec
+/// does not support — an unrepresentable binding must never be silently
+/// overridden by the canonical-prefix or ambient-page fallbacks.
+fn resolve_prefix_binding(
+    prefix: &str,
+    prefix_ns_stack: &[std::collections::HashMap<String, Option<u8>>],
+) -> Result<Option<u8>> {
+    match prefix_ns_stack
+        .iter()
+        .rev()
+        .find_map(|map| map.get(prefix).copied())
+    {
+        Some(Some(cp)) => Ok(Some(cp)),
+        Some(None) => Err(anyhow!(
+            "XML encode error: prefix '{prefix}' is declared with a namespace URI that is not a [MS-ASWBXML] namespace"
+        )),
+        None => Ok(None),
+    }
 }
 
 /// Byte-array-typed elements whose content MUST be transmitted as WBXML
@@ -1841,6 +1954,24 @@ fn is_byte_array_element(code_page: u8, token: u8) -> bool {
     )
 }
 
+/// Flush the character content accumulated for the current element as one
+/// WBXML token. Content must be aggregated before encoding: a byte-array
+/// element's base64 text can legally arrive split across Text, CData, and
+/// entity-reference events ([MS-ASDTYPE] §2.7.1), and per-event encoding
+/// would emit a separate OPAQUE — or STR_I — per segment, corrupting the
+/// wire instead of transmitting one value.
+fn write_pending_content(
+    buf: &mut Vec<u8>,
+    byte_array_stack: &[bool],
+    pending: &mut String,
+) -> Result<()> {
+    if pending.is_empty() {
+        return Ok(());
+    }
+    let text = std::mem::take(pending);
+    write_element_content(buf, byte_array_stack, &text)
+}
+
 /// Write one element's character content. Byte-array elements carry base64
 /// text in the XML representation, which is decoded and emitted as OPAQUE
 /// data with raw bytes ([MS-ASDTYPE] §2.7.1); every other element uses an
@@ -1853,8 +1984,11 @@ fn write_element_content(buf: &mut Vec<u8>, byte_array_stack: &[bool], text: &st
         buf.push(0x00);
         return Ok(());
     }
+    // xsd:base64Binary tolerates whitespace anywhere in the value, so
+    // pretty-printed or split segments must not break the decode.
+    let compact: String = text.chars().filter(|c| !c.is_ascii_whitespace()).collect();
     let raw = base64::engine::general_purpose::STANDARD
-        .decode(text.trim())
+        .decode(compact.as_str())
         .map_err(|e| anyhow!("WBXML encode: invalid base64 in byte-array element: {e}"))?;
     buf.push(OPAQUE);
     write_mb_uint(buf, raw.len() as u64);
@@ -2735,5 +2869,304 @@ mod tests {
             "<Collections></Collections></Sync>"
         );
         assert!(Wbxml::new().encode(with_doctype).is_err());
+    }
+
+    /// [WBXML1.2] §5.3: the document body is exactly one element, so
+    /// character-data tokens (STR_I, STR_T, ENTITY, OPAQUE) before the
+    /// root opens are as malformed as data after it closes — they must be
+    /// rejected, not emitted as text outside the document element.
+    #[test]
+    fn decode_rejects_data_before_root_element() {
+        // STR_I before the root.
+        let str_i_first = [
+            0x03, 0x01, 0x6A, 0x00, 0x03, b'j', b'u', b'n', b'k', 0x00, 0x05,
+        ];
+        let err = Wbxml::new()
+            .decode(&str_i_first)
+            .expect_err("data before the root must be rejected");
+        assert!(err.to_string().contains("before root"), "{err}");
+
+        // OPAQUE before the root.
+        let opaque_first = [0x03, 0x01, 0x6A, 0x00, 0xC3, 0x01, 0xFF, 0x05];
+        let err = Wbxml::new()
+            .decode(&opaque_first)
+            .expect_err("OPAQUE before the root must be rejected");
+        assert!(err.to_string().contains("before root"), "{err}");
+
+        // ENTITY before the root.
+        let entity_first = [0x03, 0x01, 0x6A, 0x00, 0x02, 0x26, 0x05];
+        let err = Wbxml::new()
+            .decode(&entity_first)
+            .expect_err("ENTITY before the root must be rejected");
+        assert!(err.to_string().contains("before root"), "{err}");
+
+        // A SWITCH_PAGE before the root stays legal: a document may root
+        // on any code page (the ResolveRecipients fixtures do exactly
+        // this with page 10).
+        let switch_then_root = [0x03, 0x01, 0x6A, 0x00, 0x00, 0x0A, 0x46, 0x01];
+        let decoded = Wbxml::new()
+            .decode(&switch_then_root)
+            .expect("leading SWITCH_PAGE must stay legal");
+        assert!(decoded.contains("<Response"), "{decoded}");
+    }
+
+    /// The truncation error must name the OUTERMOST unclosed element —
+    /// `xml_stack.first()`, not `.last()` (the innermost) — or a truncated
+    /// `Sync > Collections > Collection` body would misleadingly report
+    /// "outermost <Collection>".
+    #[test]
+    fn decode_truncation_error_names_outermost_element() {
+        // Sync (0x05|0x40=0x45) > Collections (0x06|0x40=0x46) > Collection
+        // (0x05|0x40=0x45) on code page 0, never closed.
+        let truncated = [0x03, 0x01, 0x6A, 0x00, 0x45, 0x46, 0x45];
+        let err = Wbxml::new()
+            .decode(&truncated)
+            .expect_err("truncated document");
+        let msg = err.to_string();
+        assert!(msg.contains("3 unclosed elements"), "{msg}");
+        assert!(msg.contains("outermost <Sync>"), "{msg}");
+        assert!(!msg.contains("<Collection>"), "{msg}");
+
+        // Single unclosed element: the root itself.
+        let one = [0x03, 0x01, 0x6A, 0x00, 0x45];
+        let err = Wbxml::new().decode(&one).expect_err("truncated root");
+        assert!(err.to_string().contains("unclosed element <Sync>"), "{err}");
+    }
+
+    /// A prefix explicitly declared with an unsupported namespace URI is a
+    /// caller error: it must be rejected, never silently re-encoded under
+    /// the canonical-prefix or ambient-page fallback (`xmlns:AirSyncBase=
+    /// "Unknown"` with `<AirSyncBase:Body>` used to encode as AirSyncBase).
+    #[test]
+    fn encode_rejects_declared_unknown_namespace_bindings() {
+        let unknown_prefix_binding = concat!(
+            r#"<Sync xmlns="AirSync:" xmlns:AirSyncBase="Unknown">"#,
+            "<Collections><AirSyncBase:Body>3</AirSyncBase:Body></Collections></Sync>"
+        );
+        let err = Wbxml::new()
+            .encode(unknown_prefix_binding)
+            .expect_err("a declared-but-unknown prefix URI must be rejected");
+        assert!(err.to_string().contains("prefix 'AirSyncBase'"), "{err}");
+
+        // The default namespace has the same rule: an explicitly
+        // declared, unrecognized URI is unrepresentable.
+        let unknown_default = concat!(
+            r#"<Sync xmlns="Unknown">"#,
+            "<Collections></Collections></Sync>"
+        );
+        let err = Wbxml::new()
+            .encode(unknown_default)
+            .expect_err("a declared-but-unknown default namespace must be rejected");
+        assert!(
+            err.to_string().contains("default namespace URI 'Unknown'"),
+            "{err}"
+        );
+
+        // An unused declaration to an unknown URI is harmless XML scoping
+        // noise and must stay encodable.
+        let unused_unknown = concat!(
+            r#"<Sync xmlns="AirSync:" xmlns:Unused="Unknown">"#,
+            "<Collections></Collections></Sync>"
+        );
+        assert!(
+            Wbxml::new().encode(unused_unknown).is_ok(),
+            "an unused unknown-URI declaration must not error"
+        );
+
+        // The undeclared canonical-prefix fallback is unaffected.
+        let canonical_fallback = concat!(
+            r#"<Sync xmlns="AirSync:">"#,
+            "<Collections><AirSyncBase:Body>3</AirSyncBase:Body></Collections></Sync>"
+        );
+        assert!(Wbxml::new().encode(canonical_fallback).is_ok());
+    }
+
+    /// [MS-ASWBXML] §2.1.3 defines no attribute encoding, so any attribute
+    /// other than a namespace declaration is a hard error on encode, not
+    /// silent data loss (`<Sync version="1">` used to drop the attribute).
+    #[test]
+    fn encode_rejects_non_namespace_attributes() {
+        let versioned = concat!(
+            r#"<Sync xmlns="AirSync:" version="1">"#,
+            "<Collections></Collections></Sync>"
+        );
+        let err = Wbxml::new()
+            .encode(versioned)
+            .expect_err("non-xmlns attributes cannot be represented");
+        assert!(err.to_string().contains("version"), "{err}");
+
+        let on_empty = r#"<Sync xmlns="AirSync:" version="1"/>"#;
+        let err = Wbxml::new()
+            .encode(on_empty)
+            .expect_err("attributes on empty elements are rejected too");
+        assert!(err.to_string().contains("version"), "{err}");
+
+        // XML well-formedness: duplicate attribute names in one tag.
+        let duplicated = concat!(
+            r#"<Sync xmlns="AirSync:" xmlns:AirSyncBase="AirSyncBase:" "#,
+            r#"xmlns:AirSyncBase="AirSyncBase:">"#,
+            "<Collections></Collections></Sync>"
+        );
+        let err = Wbxml::new()
+            .encode(duplicated)
+            .expect_err("duplicate attribute names must be rejected");
+        assert!(err.to_string().contains("duplicate"), "{err}");
+
+        // Malformed attribute syntax is an error, never silently skipped.
+        let malformed = concat!(
+            r#"<Sync xmlns="AirSync:" broken="unclosed>"#,
+            "<Collections></Collections></Sync>"
+        );
+        assert!(
+            Wbxml::new().encode(malformed).is_err(),
+            "malformed attribute syntax must be rejected"
+        );
+    }
+
+    /// Character content must be aggregated per element before encoding:
+    /// a byte-array element's base64 can arrive split across Text, CData,
+    /// and entity-reference events ([MS-ASDTYPE] §2.7.1), and per-event
+    /// encoding would emit one OPAQUE (or STR_I) per segment — corrupting
+    /// the wire — instead of one token carrying the whole value.
+    #[test]
+    fn split_element_content_encodes_as_single_wbxml_token() {
+        // AirSyncBase:Content is byte-array typed: base64 "QUJD" (=> "ABC")
+        // split across a CDATA section and a text node must become exactly
+        // one OPAQUE with the three raw bytes, not two partial blobs.
+        let split_byte_array = concat!(
+            r#"<ItemOperations xmlns="ItemOperations:" xmlns:AirSyncBase="AirSyncBase:">"#,
+            "<Response><Fetch><AirSyncBase:Body>",
+            "<AirSyncBase:Type>1</AirSyncBase:Type>",
+            "<AirSyncBase:Content><![CDATA[QUJ]]>D</AirSyncBase:Content>",
+            "</AirSyncBase:Body></Fetch></Response></ItemOperations>"
+        );
+        let encoded = Wbxml::new()
+            .encode(split_byte_array)
+            .expect("split byte-array content must encode");
+        // One OPAQUE, length 3, bytes 'A','B','C' — and no second OPAQUE.
+        // Tokens per the [MS-ASWBXML] tables: page 20 ItemOperations 0x05,
+        // Response 0x0E, Fetch 0x06; page 17 AirSyncBase Body 0x0A,
+        // Type 0x06, Content 0x1F (the byte-array entry).
+        assert_eq!(
+            encoded,
+            vec![
+                0x03,
+                0x01,
+                0x6A,
+                0x00, // header
+                0x00,
+                0x14,
+                0x45,        // SWITCH_PAGE 20, ItemOperations|content
+                0x0E | 0x40, // Response|content
+                0x06 | 0x40, // Fetch|content
+                0x00,
+                0x11,
+                0x0A | 0x40, // SWITCH_PAGE 17, AirSyncBase Body|content
+                0x06 | 0x40, // AirSyncBase Type|content
+                0x03,
+                b'1',
+                0x00,
+                0x01,        // STR_I "1", END Type
+                0x1F | 0x40, // AirSyncBase Content|content
+                0xC3,
+                0x03,
+                b'A',
+                b'B',
+                b'C', // OPAQUE len 3, raw bytes
+                0x01,
+                0x01,
+                0x01,
+                0x01,
+                0x01, // END x5: Content, Body, Fetch, Response, ItemOperations
+            ],
+            "split content must be one OPAQUE: {encoded:02x?}"
+        );
+
+        // Round-trip stability of the aggregated span.
+        let decoded = Wbxml::new()
+            .decode(&encoded)
+            .expect("decode the encoded form");
+        assert!(decoded.contains("QUJD"), "{decoded}");
+        assert_eq!(
+            Wbxml::new().encode(&decoded).expect("re-encode"),
+            encoded,
+            "decode output must re-encode byte-identically"
+        );
+
+        // xsd:base64Binary tolerates whitespace, so a pretty-printed or
+        // line-wrapped value must not break the raw-byte decode.
+        let pretty_printed = concat!(
+            r#"<ItemOperations xmlns="ItemOperations:" xmlns:AirSyncBase="AirSyncBase:">"#,
+            "<Response><Fetch><AirSyncBase:Body>",
+            "<AirSyncBase:Type>1</AirSyncBase:Type>",
+            "<AirSyncBase:Content> QUJD\nRA== </AirSyncBase:Content>",
+            "</AirSyncBase:Body></Fetch></Response></ItemOperations>"
+        );
+        let encoded = Wbxml::new()
+            .encode(pretty_printed)
+            .expect("whitespace inside base64 must be tolerated");
+        assert!(
+            encoded.ends_with(&[
+                0xC3, 0x04, b'A', b'B', b'C', b'D', 0x01, 0x01, 0x01, 0x01, 0x01
+            ]),
+            "expected one OPAQUE with raw bytes ABCD: {encoded:02x?}"
+        );
+
+        // A string element split by an entity reference encodes as ONE
+        // STR_I carrying the whole value: quick-xml emits Text("A "),
+        // GeneralRef("amp"), Text(" B") for the source, and the
+        // aggregation joins them into a single token.
+        let split_string = concat!(
+            r#"<Sync xmlns="AirSync:">"#,
+            "<Collections><Collection><SyncKey>A &amp; B</SyncKey></Collection></Collections></Sync>"
+        );
+        let encoded = Wbxml::new()
+            .encode(split_string)
+            .expect("entity-ref-split string content must encode");
+        // The reader trims each text segment (trim_text(true) is what lets
+        // pretty-printed templates encode without spurious STR_I tokens),
+        // so the aggregated value is "A&B" — in exactly ONE STR_I, which is
+        // the invariant under test.
+        assert!(
+            encoded
+                .windows(5)
+                .any(|w| w == [0x03, b'A', b'&', b'B', 0x00]),
+            "one STR_I must carry the aggregated text: {encoded:02x?}"
+        );
+        assert!(
+            encoded[4..].iter().filter(|&&b| b == 0x03).count() == 1,
+            "must be a single STR_I token for the whole value: {encoded:02x?}"
+        );
+    }
+
+    /// The encode-side mirror of the decode rule: character data outside
+    /// the document element is malformed, not a sibling token to emit.
+    #[test]
+    fn encode_rejects_character_data_outside_document_element() {
+        let before_root = "junk<Sync xmlns=\"AirSync:\"></Sync>";
+        let err = Wbxml::new()
+            .encode(before_root)
+            .expect_err("text before the root must be rejected");
+        assert!(
+            err.to_string().contains("outside the document element"),
+            "{err}"
+        );
+
+        let after_root = "<Sync xmlns=\"AirSync:\"></Sync>trailing";
+        let err = Wbxml::new()
+            .encode(after_root)
+            .expect_err("text after the root must be rejected");
+        assert!(
+            err.to_string().contains("outside the document element"),
+            "{err}"
+        );
+
+        // XML comments and declarations are metadata events, not text;
+        // dropping them stays the correct (and previous) behavior.
+        let comment_after_root = "<Sync xmlns=\"AirSync:\"><Status>1</Status></Sync><!-- note -->";
+        assert!(
+            Wbxml::new().encode(comment_after_root).is_ok(),
+            "comments outside the root are metadata and must stay encodable"
+        );
     }
 }

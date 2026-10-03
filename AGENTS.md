@@ -9,7 +9,7 @@ Specs: `exchange_protocols/` (v20250520 .txt docs). Toolchain: Rust 1.98.1.
 EAS specs v20250520 (16.1); older EAS compat NOT needed.
 
 ## Build / test
-- `cargo test` — lib (844+) + integration suites (protocol_fixtures 22, snapshots 11, jmap_calendar_deploy 2, doc 1). All must pass.
+- `cargo test` — lib (871) + integration suites (protocol_fixtures 22, snapshots 11, jmap_calendar_deploy 2, doc 1). All must pass.
 - `cargo clippy --all-targets` — must be 0 warnings. `#[allow(clippy::too_many_arguments)]` is the accepted escape for irreducible request params (email.rs, jmap.rs, eas.rs handle_email_sync).
 - `cargo build --release` — ~5min, must be warning-free.
 - Precedence for gaps: existing deps → new quality deps → Rust 1.98 std → custom code.
@@ -53,6 +53,20 @@ EAS specs v20250520 (16.1); older EAS compat NOT needed.
   encodes CDATA content (previously dropped). Conformance suite also includes
   the full-table diff vs [MS-ASWBXML].txt (608/608 both directions,
   NAME_TO_TAG exact inverse) and the pinned 29-token non-16.1 legacy inventory.
+- **WBXML encode fail-closed + content aggregation (§11, delivered)**: an
+  element's only encodable attributes are namespace declarations — any other
+  attribute, malformed/duplicate attributes, and a *used* namespace (prefix or
+  default) bound to an unknown URI are hard errors (previously silently
+  dropped / hash-fallback); character data outside the document element is
+  rejected before and after the root. Element content is aggregated across
+  quick-xml's Text/CData/GeneralRef events into exactly ONE token per element
+  (STR_I, or one OPAQUE for byte-array elements with interior whitespace
+  stripped from the base64, xsd:base64Binary semantics) — encoding per event
+  emitted one token per segment and corrupted split byte-array values.
+  Pinned by `encode_rejects_non_namespace_attributes`,
+  `encode_rejects_declared_unknown_namespace_bindings`,
+  `encode_rejects_character_data_outside_document_element`,
+  `split_element_content_encodes_as_single_wbxml_token`.
 - EAS request/response XML parsing uses quick-xml LOCAL names (prefix-agnostic);
   string helpers (`extract_all_tag_blocks`, `extract_first_tag_text`,
   `extract_all_tag_text`) match literal unqualified tag names — safe because
