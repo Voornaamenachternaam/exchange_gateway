@@ -543,3 +543,27 @@ CREATE TABLE IF NOT EXISTS smime_cert (
 );
 
 CREATE INDEX IF NOT EXISTS idx_smime_cert_email ON smime_cert(email);
+
+-- Per-(owner, uid, instance) record of the attendee's last delivered iTIP
+-- response. This is the duplicate-RSVP idempotence key ([MS-ASCMD] §2.2.1.11 /
+-- RFC 5546 §3.6.2): a client retry that repeats the same decision for the
+-- same meeting instance must not re-deliver a second REPLY email to the
+-- organizer, while a genuinely changed decision (accept → decline) must.
+-- `instance_key` is "" for a whole-series response, or the RFC 5545 UTC
+-- RECURRENCE-ID string for a single-instance response.
+CREATE TABLE IF NOT EXISTS meeting_rsvp (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner TEXT NOT NULL,
+    uid TEXT NOT NULL,
+    instance_key TEXT NOT NULL DEFAULT '',
+    decision INTEGER NOT NULL,
+    message_id TEXT,
+    calendar_server_id TEXT,
+    responded_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(owner, uid, instance_key)
+);
+
+CREATE INDEX IF NOT EXISTS idx_meeting_rsvp_owner ON meeting_rsvp(owner);
+
+INSERT OR IGNORE INTO schema_version (version, description)
+VALUES (9, 'v9: meeting_rsvp idempotence table for MeetingResponse/iMIP integrity');

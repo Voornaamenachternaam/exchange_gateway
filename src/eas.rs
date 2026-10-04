@@ -2267,6 +2267,178 @@ fn oof_audience_from_oof_messages(
     (internal_reply, external_reply, external_audience)
 }
 
+/// Handle the EAS `MeetingResponse` command ([MS-ASCMD] §2.2.1.11).
+///
+/// The request carries 1..N `<Request>` blocks ([MS-ASCMD] §6.25); each is
+/// processed independently and answered by one `<Result>` in request order
+/// ([MS-ASCMD] §6.26). Per-request failures (invalid item, nonexistent
+/// instance, organizer self-response, …) get their own
+/// [MS-ASCMD] §2.2.3.177.9 status without aborting the remaining requests.
+async fn handle_meeting_response(
+    state: &Arc<AppState>,
+    username: &str,
+    password: &SecretString,
+    xml: &str,
+    wbxml: &Wbxml,
+    as_wbxml: bool,
+    request_id: &str,
+) -> Response {
+    use crate::meeting::message::{MeetingMessageGenerator, MeetingResponseResult};
+    use crate::meeting::rsvp::{self, RsvpRequest, RsvpSource};
+    use crate::meeting::response::ResponseDecision;
+
+    // §6.25: at least one <Request> is required. A request with none is
+    // malformed — the command cannot produce a spec-shaped response.
+    let request_blocks = extract_all_tag_blocks(xml, b"Request");
+    if request_blocks.is_empty() {
+        return bad_request_response(request_id, "MeetingResponse requires a Request element");
+    }
+
+    let generator = MeetingMessageGenerator::new();
+    let mut results: Vec<MeetingResponseResult> = Vec::with_capacity(request_blocks.len());
+
+    for block in &request_blocks {
+        // Address element ([MS-ASCMD] §2.2.3.151 / §2.2.3.98.2): exactly one
+        // of RequestId / search:LongId. `RequestId MUST NOT be present … if
+        // the search:LongId element is present`.
+        let request_id_el = extract_first_tag_text(block, b"RequestId");
+        let long_id = extract_first_tag_text(block, b"LongId");
+        let address = match (&request_id_el, &long_id) {
+            (Some(rid), None) => Some(rid.clone()),
+            (None, Some(lid)) => Some(lid.clone()),
+            (Some(_), Some(_)) | (None, None) => None,
+        };
+
+        // UserResponse ([MS-ASCMD] §2.2.3.194) is required and restricted to
+        // 1 (accept) / 2 (tentative) / 3 (decline).
+        let user_response = extract_first_tag_text(block, b"UserResponse")
+            .and_then(|v| v.trim().parse::<u8>().ok());
+        let decision = match user_response {
+            Some(1) => Some(ResponseDecision::Accept),
+            Some(2) => Some(ResponseDecision::Tentative),
+            Some(3) => Some(ResponseDecision::Decline),
+            _ => None,
+        };
+
+        // InstanceId ([MS-ASCMD] §2.2.3.92.1): dateTime value naming the
+        // occurrence. Schema-valid but unparseable → status 104; keep the raw
+        // wire string for the response echo.
+        let instance_wire = extract_first_tag_text(block, b"InstanceId");
+        let instance_id = instance_wire.as_deref().and_then(parse_datetime);
+        if instance_wire.is_some() && instance_id.is_none() {
+            results.push(MeetingResponseResult {
+                request_id: request_id_el.clone(),
+                status: rsvp::STATUS_INSTANCE_MALFORMED,
+                calendar_id: None,
+                instance_id: instance_wire.clone(),
+            });
+            continue;
+        }
+
+        // SendResponse ([MS-ASCMD] §2.2.3.163): present ⇒ email the organizer;
+        // absent ⇒ no email. Optional children: airsyncbase:Body (reply text)
+        // and ProposedStartTime/ProposedEndTime ([MS-ASCMD] §2.2.3.141 /
+        // §2.2.3.140 — Compact DateTime, and each requires the other).
+        let send_response = extract_all_tag_blocks(block, b"SendResponse").into_iter().next();
+        let send_reply = send_response.is_some();
+        let reply_body_text = send_response
+            .as_deref()
+            .and_then(|inner| extract_first_tag_text(inner, b"Data"));
+        let proposed_start = send_response
+            .as_deref()
+            .and_then(|inner| extract_first_tag_text(inner, b"ProposedStartTime"))
+            .and_then(|v| parse_datetime(&v));
+        let proposed_end = send_response
+            .as_deref()
+            .and_then(|inner| extract_first_tag_text(inner, b"ProposedEndTime"))
+            .and_then(|v| parse_datetime(&v));
+
+        let invalid = |results: &mut Vec<MeetingResponseResult>,
+                       request_id_el: &Option<String>,
+                       instance_wire: &Option<String>| {
+            results.push(MeetingResponseResult {
+                request_id: request_id_el.clone(),
+                status: rsvp::STATUS_INVALID_ITEM,
+                calendar_id: None,
+                instance_id: instance_wire.clone(),
+            });
+        };
+
+        if address.is_none() || decision.is_none() {
+            invalid(&mut results, &request_id_el, &instance_wire);
+            continue;
+        }
+        // §2.2.3.140/§2.2.3.141: the proposed-time pair is all-or-nothing.
+        if proposed_start.is_some() != proposed_end.is_some() {
+            invalid(&mut results, &request_id_el, &instance_wire);
+            continue;
+        }
+
+        let address = address.expect("checked above");
+        let decision = decision.expect("checked above");
+
+        // Resolve the addressed item. `em-` prefixed ids are JMAP emails
+        // (meeting-request messages); anything else is looked up in the
+        // calendar item map.
+        let source = if let Some(jmap_email_id) =
+            crate::email::jmap_id_from_email_server_id(&address)
+        {
+            RsvpSource::Email {
+                jmap_email_id: jmap_email_id.to_string(),
+            }
+        } else {
+            let known_calendar_item = state
+                .storage
+                .get_ews_item_by_server_id(username, &address)
+                .await
+                .ok()
+                .flatten()
+                .is_some();
+            if known_calendar_item {
+                RsvpSource::CalendarItem {
+                    server_id: address.clone(),
+                }
+            } else {
+                // [MS-ASCMD] §2.2.3.177.9: "referencing an item other than a
+                // meeting request, email, or calendar item".
+                invalid(&mut results, &request_id_el, &instance_wire);
+                continue;
+            }
+        };
+
+        let req = RsvpRequest {
+            decision,
+            instance_id,
+            send_reply,
+            reply_body_text,
+            proposed_start,
+            proposed_end,
+        };
+
+        let outcome = match rsvp::apply_rsvp(state, username, password, &source, &req).await {
+            Ok(outcome) => outcome,
+            Err(failure) => rsvp::RsvpOutcome::failure(&failure),
+        };
+
+        // [MS-ASCMD] §2.2.3.18: CalendarId is returned "if the meeting
+        // request was not declined" — never for a decline.
+        let calendar_id = match decision {
+            ResponseDecision::Decline => None,
+            _ => outcome.calendar_server_id.clone(),
+        };
+
+        results.push(MeetingResponseResult {
+            request_id: request_id_el.clone(),
+            status: outcome.status,
+            calendar_id,
+            instance_id: instance_wire.clone(),
+        });
+    }
+
+    let payload = generator.generate_eas_meeting_response(&results);
+    xml_or_wbxml_response(wbxml, as_wbxml, &payload, request_id)
+}
+
 async fn handle_settings(
     state: &Arc<AppState>,
     username: &str,
@@ -6625,52 +6797,8 @@ pub async fn handle(
             .await
         }
         "MeetingResponse" => {
-            if let Some(req_id) = extract_first_tag_text(&xml, b"RequestId") {
-                let user_response = extract_first_tag_text(&xml, b"UserResponse")
-                    .and_then(|v| v.parse::<u8>().ok())
-                    .unwrap_or(0);
-                let instance_id = extract_first_tag_text(&xml, b"InstanceId")
-                    .as_deref()
-                    .and_then(parse_datetime);
-                let send_response = xml.contains("<SendResponse") || xml.contains(":SendResponse");
-                if let Err(e) = sync::apply_meeting_response(&sync::MeetingResponseArgs {
-                    state: state.clone(),
-                    owner: &username,
-                    username: &username,
-                    password: password.expose_secret(),
-                    request_id: &req_id,
-                    user_response,
-                    instance_id,
-                    send_response,
-                })
+            handle_meeting_response(&state, &username, &password, &xml, &wbxml, wants_wbxml, &request_id)
                 .await
-                {
-                    tracing::error!(
-                        "request_id={} failed applying MeetingResponse: {}",
-                        request_id,
-                        e
-                    );
-                    let err_xml = r#"<?xml version="1.0" encoding="utf-8"?><MeetingResponse xmlns="MeetingResponse:"><Result><Status>6</Status></Result></MeetingResponse>"#;
-                    return xml_or_wbxml_response(&wbxml, wants_wbxml, err_xml, &request_id);
-                }
-                let instance_xml = if let Some(iid) = instance_id {
-                    format!(
-                        "<InstanceId>{}</InstanceId>",
-                        iid.format("%Y-%m-%dT%H:%M:%SZ")
-                    )
-                } else {
-                    String::new()
-                };
-                let payload = format!(
-                    r#"<?xml version="1.0" encoding="utf-8"?><MeetingResponse xmlns="MeetingResponse:"><Result><RequestId>{}</RequestId><CalendarId>{}</CalendarId><Status>1</Status>{}</Result></MeetingResponse>"#,
-                    xml_escape(&req_id),
-                    xml_escape(&req_id),
-                    instance_xml
-                );
-                xml_or_wbxml_response(&wbxml, wants_wbxml, &payload, &request_id)
-            } else {
-                bad_request_response(&request_id, "MeetingResponse requires RequestId")
-            }
         }
         "ResolveRecipients" => {
             handle_resolve_recipients(
@@ -9815,5 +9943,168 @@ mod tests {
         assert_eq!(internal_reply, None);
         assert_eq!(external_reply, None);
         assert_eq!(audience, ExternalAudience::All);
+    }
+
+    /// [MS-ASCMD] §2.2.1.11 / §6.25: a MeetingResponse with no `<Request>`
+    /// child cannot produce a spec-shaped Result and is rejected with 400.
+    #[tokio::test]
+    async fn meeting_response_without_request_element_is_bad_request() {
+        let state = test_sync_state().await;
+        let response = handle_meeting_response(
+            &state,
+            "user@example.com",
+            &SecretString::from("pw"),
+            r#"<?xml version="1.0" encoding="utf-8"?><MeetingResponse xmlns="MeetingResponse:"></MeetingResponse>"#,
+            &Wbxml::new(),
+            false,
+            "rid",
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    fn make_meeting_response(body: &str) -> String {
+        format!(
+            r#"<?xml version="1.0" encoding="utf-8"?><MeetingResponse xmlns="MeetingResponse:">{body}</MeetingResponse>"#
+        )
+    }
+
+    async fn run_meeting_response(state: &Arc<crate::models::AppState>, xml: &str) -> String {
+        let response = handle_meeting_response(
+            state,
+            "user@example.com",
+            &SecretString::from("pw"),
+            xml,
+            &Wbxml::new(),
+            false,
+            "rid",
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        response_text(response).await
+    }
+
+    /// [MS-ASCMD] §2.2.3.92.1: an InstanceId that passes schema validation
+    /// but is not a valid dateTime yields Status 104 — the raw wire value is
+    /// echoed back untouched.
+    #[tokio::test]
+    async fn meeting_response_malformed_instance_id_yields_104() {
+        let state = test_sync_state().await;
+        let xml = make_meeting_response(
+            r#"<Request><UserResponse>1</UserResponse><RequestId>em-abc</RequestId><InstanceId>not-a-date</InstanceId></Request>"#,
+        );
+        let body = run_meeting_response(&state, &xml).await;
+        assert!(
+            body.contains("<Status>104</Status>"),
+            "expected status 104, body: {body}"
+        );
+        assert!(
+            body.contains("<RequestId>em-abc</RequestId>"),
+            "body: {body}"
+        );
+        assert!(
+            body.contains("<InstanceId>not-a-date</InstanceId>"),
+            "body: {body}"
+        );
+    }
+
+    /// [MS-ASCMD] §2.2.3.151 / §2.2.3.98.2 / §2.2.3.194: an address must be
+    /// exactly one of RequestId / search:LongId, and UserResponse must be
+    /// 1/2/3 — each violation is Status 2 per §2.2.3.177.9.
+    #[tokio::test]
+    async fn meeting_response_address_and_user_response_validation() {
+        let state = test_sync_state().await;
+        let xml = make_meeting_response(
+            &[
+                r#"<Request><UserResponse>1</UserResponse><RequestId>em-a</RequestId><LongId>em-b</LongId></Request>"#,
+                r#"<Request><UserResponse>1</UserResponse></Request>"#,
+                r#"<Request><UserResponse>7</UserResponse><RequestId>em-c</RequestId></Request>"#,
+            ]
+            .concat(),
+        );
+        let body = run_meeting_response(&state, &xml).await;
+        assert_eq!(body.matches("<Result>").count(), 3, "body: {body}");
+        assert_eq!(body.matches("<Status>2</Status>").count(), 3, "body: {body}");
+    }
+
+    /// [MS-ASCMD] §2.2.3.140/§2.2.3.141: ProposedStartTime and ProposedEndTime
+    /// are an all-or-nothing pair — one without the other is Status 2.
+    #[tokio::test]
+    async fn meeting_response_lone_proposed_time_is_invalid() {
+        let state = test_sync_state().await;
+        let xml = make_meeting_response(
+            r#"<Request><UserResponse>2</UserResponse><RequestId>em-a</RequestId><SendResponse><ProposedStartTime>2026-07-10T09:00:00.000Z</ProposedStartTime></SendResponse></Request>"#,
+        );
+        let body = run_meeting_response(&state, &xml).await;
+        assert!(
+            body.contains("<Status>2</Status>"),
+            "expected status 2, body: {body}"
+        );
+    }
+
+    /// [MS-ASCMD] §2.2.3.177.9 Status 2: the request references an item
+    /// other than a meeting request, email, or calendar item — an unknown
+    /// calendar address never touches the backend.
+    #[tokio::test]
+    async fn meeting_response_unknown_calendar_address_is_invalid_item() {
+        let state = test_sync_state().await;
+        let xml = make_meeting_response(
+            r#"<Request><UserResponse>1</UserResponse><RequestId>cal-does-not-exist</RequestId></Request>"#,
+        );
+        let body = run_meeting_response(&state, &xml).await;
+        assert!(
+            body.contains("<Status>2</Status>"),
+            "expected status 2, body: {body}"
+        );
+    }
+
+    /// [MS-ASCMD] §2.2.3.177.9 Status 3: a server/backend failure resolving
+    /// the addressed item. The test JMAP endpoint is unroutable, so an em-
+    /// address deterministically fails with a server error, not Status 2.
+    #[tokio::test]
+    async fn meeting_response_unresolvable_email_address_is_server_error() {
+        let state = test_sync_state().await;
+        let xml = make_meeting_response(
+            r#"<Request><UserResponse>1</UserResponse><RequestId>em-unreachable</RequestId></Request>"#,
+        );
+        let body = run_meeting_response(&state, &xml).await;
+        assert!(
+            body.contains("<Status>3</Status>"),
+            "expected status 3, body: {body}"
+        );
+    }
+
+    /// [MS-ASWBXML] code page 8: the rendered response must survive a full
+    /// WBXML round-trip through the actual binary response path (as_wbxml)
+    /// — the deployed clients receive this form.
+    #[tokio::test]
+    async fn meeting_response_handler_roundtrips_through_wbxml() {
+        let state = test_sync_state().await;
+        let xml = make_meeting_response(
+            r#"<Request><UserResponse>1</UserResponse><RequestId>cal-does-not-exist</RequestId><InstanceId>2026-07-10T09:00:00.000Z</InstanceId></Request>"#,
+        );
+        let response = handle_meeting_response(
+            &state,
+            "user@example.com",
+            &SecretString::from("pw"),
+            &xml,
+            &Wbxml::new(),
+            true,
+            "rid",
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("wbxml body");
+        let decoded = Wbxml::new()
+            .decode(&bytes)
+            .expect("MeetingResponse WBXML response must decode");
+        assert!(decoded.contains("<MeetingResponse"), "{decoded}");
+        assert!(decoded.contains("<Status>2</Status>"), "{decoded}");
+        assert!(
+            decoded.contains("<InstanceId>2026-07-10T09:00:00.000Z</InstanceId>"),
+            "{decoded}"
+        );
     }
 }

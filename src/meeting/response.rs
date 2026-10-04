@@ -90,7 +90,7 @@ pub fn parse_meeting_request(ics: &str) -> Option<MeetingInvitation> {
 
 /// Parse the SEQUENCE property straight from the raw ICS text. Returns 0 when
 /// absent (RFC 5545 §3.8.7.4 default).
-fn parse_sequence_from_ics(ics: &str) -> u32 {
+pub fn parse_sequence_from_ics(ics: &str) -> u32 {
     for line in ics.lines() {
         let line = line.trim();
         // A SEQUENCE property line looks like `SEQUENCE:2` (possibly with
@@ -106,11 +106,16 @@ fn parse_sequence_from_ics(ics: &str) -> u32 {
 }
 
 /// Build the iTIP REPLY iCalendar (METHOD:REPLY) for the given decision.
+///
+/// `recurrence_id` scopes the reply to one instance of a recurring series
+/// (RFC 5546 §3.6.2: the REPLY then carries RECURRENCE-ID naming the
+/// original start of that instance); `None` responds to the whole series.
 pub fn build_reply_ics(
     inv: &MeetingInvitation,
     decision: ResponseDecision,
     responder_email: &str,
     responder_name: Option<&str>,
+    recurrence_id: Option<chrono::DateTime<chrono::Utc>>,
 ) -> String {
     let msg = MeetingMessage::new_response(&crate::meeting::message::ResponseParams {
         uid: &inv.uid,
@@ -122,6 +127,7 @@ pub fn build_reply_ics(
         sequence: inv.sequence,
         responder_email,
         responder_name,
+        recurrence_id,
     });
     let generator = MeetingMessageGenerator::new();
     generator.generate_ical(&msg)
@@ -166,7 +172,7 @@ pub async fn submit_meeting_response(
             owner_username.to_string()
         });
 
-    let ics = build_reply_ics(inv, decision, &responder_email, None);
+    let ics = build_reply_ics(inv, decision, &responder_email, None, None);
     let text = build_reply_text(inv, decision, None);
     let subject = format!(
         "{}: {}",
@@ -190,6 +196,7 @@ pub async fn submit_meeting_response(
                 text_body: Some(&text),
                 username: owner_username,
                 password,
+                method: None,
             })
             .await?;
         tracing::info!(
@@ -210,6 +217,7 @@ pub async fn submit_meeting_response(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::TimeZone;
 
     fn sample_request() -> String {
         [
@@ -269,6 +277,7 @@ mod tests {
             ResponseDecision::Accept,
             "bob@example.com",
             Some("Bob"),
+            None,
         );
         assert!(ics.contains("METHOD:REPLY"), "missing METHOD:REPLY: {ics}");
         assert!(ics.contains("UID:event-123@example.com"), "{}", ics);
@@ -276,6 +285,10 @@ mod tests {
         assert!(ics.contains("ORGANIZER"), "{ics}");
         assert!(ics.contains("mailto:bob@example.com"), "{ics}");
         assert!(ics.contains("PARTSTAT=ACCEPTED"), "{ics}");
+        // RFC 5546 §3.6.2: the REPLY echoes the REQUEST's SEQUENCE.
+        assert!(ics.contains("SEQUENCE:2"), "{ics}");
+        // Whole-series reply: no RECURRENCE-ID.
+        assert!(!ics.contains("RECURRENCE-ID"), "{ics}");
         // Must NOT include the organizer as the attendee (the original bug).
         let responder_block = ics
             .split("ATTENDEE")
@@ -288,9 +301,29 @@ mod tests {
     }
 
     #[test]
+    fn reply_ics_for_instance_carries_recurrence_id() {
+        let inv = parse_meeting_request(&sample_request()).unwrap();
+        let recurrence_id = chrono::Utc
+            .with_ymd_and_hms(2026, 7, 10, 9, 0, 0)
+            .unwrap();
+        let ics = build_reply_ics(
+            &inv,
+            ResponseDecision::Tentative,
+            "bob@example.com",
+            None,
+            Some(recurrence_id),
+        );
+        assert!(ics.contains("METHOD:REPLY"), "{ics}");
+        // RFC 5546 §3.6.2: instance-scoped REPLY names the original instance
+        // start as RECURRENCE-ID, in the UTC form matching the UTC DTSTART.
+        assert!(ics.contains("RECURRENCE-ID:20260710T090000Z"), "{ics}");
+        assert!(ics.contains("PARTSTAT=TENTATIVE"), "{ics}");
+    }
+
+    #[test]
     fn reply_ics_decline_uses_declined_partstat() {
         let inv = parse_meeting_request(&sample_request()).unwrap();
-        let ics = build_reply_ics(&inv, ResponseDecision::Decline, "bob@example.com", None);
+        let ics = build_reply_ics(&inv, ResponseDecision::Decline, "bob@example.com", None, None);
         assert!(ics.contains("METHOD:REPLY"));
         assert!(ics.contains("PARTSTAT=DECLINED"), "{ics}");
     }

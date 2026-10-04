@@ -260,6 +260,30 @@ impl SafeDebug for MeetingResponseRow {
     }
 }
 
+// Row struct for meeting_rsvp queries - safe for logging (no sensitive data)
+#[derive(FromRow)]
+pub struct MeetingRsvpRow {
+    pub uid: String,
+    pub instance_key: String,
+    pub decision: i32,
+    pub message_id: Option<String>,
+    pub calendar_server_id: Option<String>,
+    pub responded_at: String,
+}
+
+impl SafeDebug for MeetingRsvpRow {
+    fn safe_debug(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("MeetingRsvpRow")
+            .field("uid", &self.uid)
+            .field("instance_key", &self.instance_key)
+            .field("decision", &self.decision)
+            .field("message_id", &self.message_id)
+            .field("calendar_server_id", &self.calendar_server_id)
+            .field("responded_at", &self.responded_at)
+            .finish()
+    }
+}
+
 // Row struct for meeting_state queries - subject/location/organizer_email redacted as PII
 #[derive(FromRow)]
 pub struct MeetingStateRow {
@@ -1424,6 +1448,61 @@ impl Storage {
         )
         .bind(owner)
         .bind(request_id)
+        .fetch_optional(self.pool.as_ref())
+        .await
+        .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))
+    }
+
+    /// Record the attendee's delivered iTIP response for one (uid, instance).
+    ///
+    /// This is the duplicate-RSVP idempotence store: `instance_key` is empty
+    /// for a whole-series response and the UTC RECURRENCE-ID string for a
+    /// single-instance response. See `sqlite_schema.sql` (`meeting_rsvp`).
+    pub async fn upsert_meeting_rsvp(
+        &self,
+        owner: &str,
+        uid: &str,
+        instance_key: &str,
+        decision: i32,
+        message_id: Option<&str>,
+        calendar_server_id: Option<&str>,
+    ) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO meeting_rsvp (owner, uid, instance_key, decision, message_id, calendar_server_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT(owner, uid, instance_key) DO UPDATE SET
+                decision = ?4,
+                message_id = ?5,
+                calendar_server_id = ?6,
+                responded_at = CURRENT_TIMESTAMP",
+        )
+        .bind(owner)
+        .bind(uid)
+        .bind(instance_key)
+        .bind(decision)
+        .bind(message_id)
+        .bind(calendar_server_id)
+        .execute(self.pool.as_ref())
+        .await
+        .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+        Ok(())
+    }
+
+    /// Read the attendee's last delivered iTIP response for one (uid,
+    /// instance), if any.
+    pub async fn get_meeting_rsvp(
+        &self,
+        owner: &str,
+        uid: &str,
+        instance_key: &str,
+    ) -> Result<Option<MeetingRsvpRow>> {
+        sqlx::query_as::<_, MeetingRsvpRow>(
+            "SELECT uid, instance_key, decision, message_id, calendar_server_id, responded_at
+             FROM meeting_rsvp WHERE owner = ?1 AND uid = ?2 AND instance_key = ?3",
+        )
+        .bind(owner)
+        .bind(uid)
+        .bind(instance_key)
         .fetch_optional(self.pool.as_ref())
         .await
         .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))
@@ -2977,5 +3056,72 @@ mod tests {
         }
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// [MS-ASCMD] §2.2.1.11 duplicate-RSVP idempotence substrate: the store
+    /// keys on (owner, uid, instance_key) so a whole-series response and
+    /// per-instance responses for the same meeting coexist, a repeated
+    /// decision reads back equal, and a changed decision overwrites.
+    #[tokio::test]
+    async fn meeting_rsvp_store_keys_uid_and_instance_and_owner() {
+        let storage = mem_storage().await;
+        let owner = "attendee@example.com";
+        let uid = "evt-1234";
+
+        // Whole-series accept.
+        storage
+            .upsert_meeting_rsvp(owner, uid, "", 1, Some("<m1@example.com>"), Some("cal-1"))
+            .await
+            .expect("series upsert");
+
+        // Same meeting, one instance declined — a separate key.
+        storage
+            .upsert_meeting_rsvp(
+                owner,
+                uid,
+                "20260710T090000Z",
+                3,
+                Some("<m2@example.com>"),
+                None,
+            )
+            .await
+            .expect("instance upsert");
+
+        let series = storage
+            .get_meeting_rsvp(owner, uid, "")
+            .await
+            .expect("series read")
+            .expect("series row");
+        assert_eq!(series.decision, 1);
+        assert_eq!(series.message_id.as_deref(), Some("<m1@example.com>"));
+        assert_eq!(series.calendar_server_id.as_deref(), Some("cal-1"));
+
+        let instance = storage
+            .get_meeting_rsvp(owner, uid, "20260710T090000Z")
+            .await
+            .expect("instance read")
+            .expect("instance row");
+        assert_eq!(instance.decision, 3, "instance key is independent");
+        assert_eq!(instance.message_id.as_deref(), Some("<m2@example.com>"));
+
+        // A changed decision overwrites the stored row for that key.
+        storage
+            .upsert_meeting_rsvp(owner, uid, "", 2, Some("<m3@example.com>"), Some("cal-1"))
+            .await
+            .expect("decision change");
+        let changed = storage
+            .get_meeting_rsvp(owner, uid, "")
+            .await
+            .expect("changed read")
+            .expect("changed row");
+        assert_eq!(changed.decision, 2);
+        assert_eq!(changed.message_id.as_deref(), Some("<m3@example.com>"));
+
+        // Owner scoping: another user's RSVP never leaks across accounts.
+        let other = storage
+            .get_meeting_rsvp("other@example.com", uid, "")
+            .await
+            .expect("other read");
+        assert!(other.is_none(), "no cross-account RSVP leak");
     }
 }
