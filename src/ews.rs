@@ -572,6 +572,55 @@ fn extract_first_tag_text(xml: &str, tag: &[u8]) -> Option<String> {
     extract_tag_texts(xml, tag).into_iter().next()
 }
 
+/// The raw XML of the first element whose local name is `tag`, from its
+/// opening tag through the matching close tag (nesting-aware: same-name
+/// children are included, not treated as terminators). `None` when absent.
+///
+/// `extract_tag_texts` alone cannot pick one element when the same local
+/// name nests at several levels — a SOAP envelope's `<s:Body>` contains a
+/// response object's `<t:Body>`, and the text scan would return the envelope
+/// content. Handlers that need a value owned by one specific object slice
+/// out its block first, then extract within it.
+fn extract_first_tag_block(xml: &str, tag: &[u8]) -> Option<String> {
+    let mut reader = Reader::from_str(xml);
+    let mut buf = Vec::new();
+    let mut depth = 0i64;
+    let mut block_start = 0usize;
+    let mut found = false;
+    loop {
+        // `buffer_position` reports the end of the last read event, so the
+        // position captured before a read is that event's start offset.
+        let before = reader.buffer_position() as usize;
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(e)) => {
+                if !found && e.name().local_name().as_ref().as_bytes() == tag {
+                    found = true;
+                    block_start = before;
+                }
+                if found {
+                    depth += 1;
+                }
+            }
+            Ok(Event::End(_)) if found => {
+                depth -= 1;
+                if depth == 0 {
+                    return xml
+                        .get(block_start..reader.buffer_position() as usize)
+                        .map(str::to_string);
+                }
+            }
+            Ok(Event::Empty(e)) if !found && e.name().local_name().as_ref().as_bytes() == tag => {
+                return xml
+                    .get(before..reader.buffer_position() as usize)
+                    .map(str::to_string);
+            }
+            Ok(Event::Eof) | Err(_) => return None,
+            _ => {}
+        }
+        buf.clear();
+    }
+}
+
 fn extract_tag_texts(xml: &str, tag: &[u8]) -> Vec<String> {
     let mut reader = Reader::from_str(xml);
     reader.config_mut().trim_text(true);
@@ -3772,15 +3821,30 @@ async fn handle_meeting_response_object(
 
     // The response object can carry a reply Body plus a new-time proposal
     // via ProposedStart/ProposedEnd ([MS-OXWSMTGS] §2.2.4.16
-    // MeetingRegistrationResponseObjectType — xs:dateTime values). The
-    // local-name based tag helpers tolerate the `t:` SOAP prefix, and in a
-    // CreateItem carrying one response object these elements only occur
-    // inside that object.
-    let reply_body_text = extract_first_tag_text(body, b"Body");
-    let proposed_start = extract_first_tag_text(body, b"ProposedStart")
+    // MeetingRegistrationResponseObjectType — xs:dateTime values). All of
+    // them are read from the response object's own XML block: the local-name
+    // scan would otherwise match the SOAP envelope's `s:Body` (or any other
+    // Body-named element) and leak envelope text into the email.
+    let response_object_tag: &[u8] = match decision {
+        ResponseDecision::Accept => b"AcceptItem",
+        ResponseDecision::Tentative => b"TentativelyAcceptItem",
+        ResponseDecision::Decline => b"DeclineItem",
+    };
+    let response_object = extract_first_tag_block(body, response_object_tag);
+    let reply_body_text = response_object.as_deref().and_then(|object_xml| {
+        extract_first_tag_text(object_xml, b"Body").filter(|t| !t.trim().is_empty())
+    });
+    // Both proposed times are needed for the new-time proposal to be
+    // delivered ([MS-OXWSMTGS] §2.2.4.16 pairs them); the COUNTER send in
+    // the RSVP pipeline requires both.
+    let proposed_start = response_object
+        .as_deref()
+        .and_then(|object_xml| extract_first_tag_text(object_xml, b"ProposedStart"))
         .and_then(|v| chrono::DateTime::parse_from_rfc3339(&v).ok())
         .map(|dt| dt.with_timezone(&Utc));
-    let proposed_end = extract_first_tag_text(body, b"ProposedEnd")
+    let proposed_end = response_object
+        .as_deref()
+        .and_then(|object_xml| extract_first_tag_text(object_xml, b"ProposedEnd"))
         .and_then(|v| chrono::DateTime::parse_from_rfc3339(&v).ok())
         .map(|dt| dt.with_timezone(&Utc));
 
@@ -11243,5 +11307,128 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::FORBIDDEN);
         let text = response_body(resp).await;
         assert!(text.contains("Email operations are not enabled"), "{text}");
+    }
+
+    /// The reply Body of a meeting response object is read from the response
+    /// object's own XML block. In a full SOAP request the envelope's
+    /// `<s:Body>` shares the `Body` local name, so the unscoped text scan
+    /// swallows the envelope: when the object carries no `t:Body`, every
+    /// stray text node in the envelope becomes the "reply body" of the email.
+    #[test]
+    fn meeting_reply_body_is_scoped_to_the_response_object() {
+        // The attendee typed a reply — scoped extraction finds it.
+        let soap_with_reply = concat!(
+            r#"<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope">"#,
+            r#"<s:Header><t:RequestServerVersion Version="Exchange2013"/></s:Header>"#,
+            r#"<s:Body><m:CreateItem xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages">"#,
+            r#"<m:Items><t:AcceptItem xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types">"#,
+            r#"<t:ReferenceItemId Id="em-1" ChangeKey="ck"/>"#,
+            r#"<t:Body BodyType="Text">Will be there!</t:Body>"#,
+            r#"</t:AcceptItem></m:Items></m:CreateItem></s:Body></s:Envelope>"#,
+        );
+        let block = extract_first_tag_block(soap_with_reply, b"AcceptItem").expect("block");
+        assert!(block.starts_with("<t:AcceptItem"));
+        assert!(block.ends_with("</t:AcceptItem>"));
+        assert_eq!(
+            extract_first_tag_text(&block, b"Body").as_deref(),
+            Some("Will be there!")
+        );
+
+        // No reply Body typed: the unscoped scan still "finds" a Body — the
+        // envelope's s:Body, aggregating its textual content (here the
+        // proposal timestamps) into a bogus reply text. The scoped scan
+        // correctly yields None, so the pipeline renders its default text.
+        let soap_without_reply = concat!(
+            r#"<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope">"#,
+            r#"<s:Body><m:CreateItem>"#,
+            r#"<m:Items><t:TentativelyAcceptItem>"#,
+            r#"<t:ReferenceItemId Id="em-1" ChangeKey="ck"/>"#,
+            r#"<t:ProposedStart>2026-07-10T12:00:00Z</t:ProposedStart>"#,
+            r#"<t:ProposedEnd>2026-07-10T13:00:00Z</t:ProposedEnd>"#,
+            r#"</t:TentativelyAcceptItem></m:Items></m:CreateItem></s:Body></s:Envelope>"#,
+        );
+        let leaked =
+            extract_first_tag_text(soap_without_reply, b"Body").expect("unscoped matches s:Body");
+        assert!(
+            leaked.contains("2026-07-10T12:00:00Z"),
+            "unscoped scan leaks envelope text: {leaked}"
+        );
+        let block = extract_first_tag_block(soap_without_reply, b"TentativelyAcceptItem")
+            .expect("tentative block");
+        assert_eq!(
+            extract_first_tag_text(&block, b"Body").filter(|t| !t.trim().is_empty()),
+            None,
+            "scoped scan must not treat the envelope as the reply Body"
+        );
+    }
+
+    /// Without a reply Body (or with a whitespace-only one) the handler passes
+    /// `None` and the RSVP pipeline renders its default reply text — a blank
+    /// `t:Body` element must never surface as an empty email body.
+    #[test]
+    fn meeting_reply_body_absent_or_blank_yields_none() {
+        let soap_without_body = concat!(
+            r#"<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope"><s:Body>"#,
+            r#"<m:CreateItem><m:Items><t:AcceptItem>"#,
+            r#"<t:ReferenceItemId Id="em-1" ChangeKey="ck"/>"#,
+            r#"</t:AcceptItem></m:Items></m:CreateItem></s:Body></s:Envelope>"#,
+        );
+        let none_block = extract_first_tag_block(soap_without_body, b"AcceptItem").expect("block");
+        assert_eq!(
+            extract_first_tag_text(&none_block, b"Body").filter(|t| !t.trim().is_empty()),
+            None
+        );
+
+        let soap_blank_body = concat!(
+            r#"<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope"><s:Body>"#,
+            r#"<m:CreateItem><m:Items><t:AcceptItem>"#,
+            r#"<t:ReferenceItemId Id="em-1" ChangeKey="ck"/>"#,
+            r#"<t:Body BodyType="Text">   </t:Body>"#,
+            r#"</t:AcceptItem></m:Items></m:CreateItem></s:Body></s:Envelope>"#,
+        );
+        let blank_block = extract_first_tag_block(soap_blank_body, b"AcceptItem").expect("block");
+        assert_eq!(
+            extract_first_tag_text(&blank_block, b"Body").filter(|t| !t.trim().is_empty()),
+            None
+        );
+    }
+
+    /// The response-object block extraction is nesting-aware: a same-name
+    /// descendant is content, not a terminator, and the TentativelyAcceptItem
+    /// decision picks its own tag — the `AcceptItem` local name must not
+    /// match it.
+    #[test]
+    fn extract_first_tag_block_matches_local_names_nesting_aware() {
+        let xml = concat!(
+            r#"<m:CreateItem><m:Items><t:TentativelyAcceptItem>"#,
+            r#"<t:ReferenceItemId Id="em-1" ChangeKey="ck"/>"#,
+            r#"<t:Body BodyType="Text">Maybe</t:Body>"#,
+            r#"</t:TentativelyAcceptItem></m:Items></m:CreateItem>"#,
+        );
+        let block =
+            extract_first_tag_block(xml, b"TentativelyAcceptItem").expect("tentative block");
+        assert_eq!(
+            extract_first_tag_text(&block, b"Body").as_deref(),
+            Some("Maybe")
+        );
+        // The shorter response-object name must not match the longer one.
+        assert!(extract_first_tag_block(xml, b"AcceptItem").is_none());
+
+        // Nesting: an element with a same-named child spans both.
+        let nested = "<a:Body>outer <a:Body>inner</a:Body> tail</a:Body>";
+        let block = extract_first_tag_block(nested, b"Body").expect("nested block");
+        assert_eq!(block, nested);
+        assert!(extract_first_tag_block(nested, b"Nothing").is_none());
+
+        // Self-closing match: the block is the empty element itself.
+        let self_closed = "<m:Items><t:AcceptItem/></m:Items>";
+        assert_eq!(
+            extract_first_tag_block(self_closed, b"AcceptItem").as_deref(),
+            Some("<t:AcceptItem/>")
+        );
+
+        // Unterminated document: no block, not a panic.
+        let unterminated = "<m:Items><t:AcceptItem><t:Body>x</t:Body>";
+        assert!(extract_first_tag_block(unterminated, b"AcceptItem").is_none());
     }
 }

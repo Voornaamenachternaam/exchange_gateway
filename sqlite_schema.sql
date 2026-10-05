@@ -550,13 +550,18 @@ CREATE INDEX IF NOT EXISTS idx_smime_cert_email ON smime_cert(email);
 -- same meeting instance must not re-deliver a second REPLY email to the
 -- organizer, while a genuinely changed decision (accept → decline) must.
 -- `instance_key` is "" for a whole-series response, or the RFC 5545 UTC
--- RECURRENCE-ID string for a single-instance response.
+-- RECURRENCE-ID string for a single-instance response. `sequence` stores the
+-- REQUEST's iCalendar SEQUENCE that the recorded REPLY answered (RFC 5546
+-- §3.2.1.4): an organizer reschedule raises SEQUENCE, and the attendee's
+-- response to the new revision is a distinct delivery even when the decision
+-- is unchanged.
 CREATE TABLE IF NOT EXISTS meeting_rsvp (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     owner TEXT NOT NULL,
     uid TEXT NOT NULL,
     instance_key TEXT NOT NULL DEFAULT '',
     decision INTEGER NOT NULL,
+    sequence INTEGER NOT NULL DEFAULT 0,
     message_id TEXT,
     calendar_server_id TEXT,
     responded_at DATETIME DEFAULT CURRENT_TIMESTAMP,

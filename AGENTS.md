@@ -145,6 +145,45 @@ EAS specs v20250520 (16.1); older EAS compat NOT needed.
   dead attachment.rs renderers removed. Suite: 928 tests green
   (lib 892 + fixtures 22 + snapshots 11 + jmap_calendar_deploy 2 + doc 1),
   clippy 0 warnings, release build warning-free.
+- AUDIT.md §13 (MeetingResponse/iMIP integrity) is COMPLETE and its section
+  documents the delivered behavior. One RSVP pipeline (meeting/rsvp.rs
+  `apply_rsvp`) serves both front doors (EAS MeetingResponse [MS-ASCMD]
+  §2.2.1.11 via eas.rs, EWS AcceptItem/TentativelyAcceptItem/DeclineItem via
+  ews.rs `handle_meeting_response_object`): organizer self-response rejected
+  pre-side-effect (status 2 / ErrorCalendarIsOrganizer*), instance scoping
+  per §2.2.3.92.1 (series master vs exception, RECURRENCE-ID REPLY with the
+  instance's own times), attendee copy PARTSTAT/ResponseType/X-MS-APPOINTMENT-
+  REPLY-TIME write-through with SCHEDULE-AGENT=CLIENT pinning, SMTP delivery
+  with the user's own identity, duplicate-RSVP idempotence via the
+  `meeting_rsvp` store (schema v9).
+- §13 code-review triage COMPLETE (5 substantive findings, all fixed):
+  (1) idempotence is revision-aware — the stored row carries the REQUEST
+  SEQUENCE it answered; `is_duplicate_rsvp` suppresses only an exact
+  (decision, SEQUENCE) repeat, so an organizer reschedule (SEQUENCE bump,
+  RFC 5546 §3.2.1.4) re-delivers the same decision; (2) REPLY and COUNTER are
+  split SMTP senders (`ItipSendCtx` Copy-context + (ctx, invitation, req)
+  signatures) with per-method addressing and a shared `reply_window` helper
+  for instance times; the COUNTER is never recorded so a failed COUNTER
+  retry re-proposes without a second REPLY; (3) recurrence expansion is
+  DST-aware — the event's TZID (chrono-tz) anchors the wall clock (weekly
+  09:00 Europe/Berlin → 08:00Z winter, 07:00Z summer; the summer instant is
+  accepted), unparseable timezones fail OPEN, and the rrule-iterator scan
+  terminates at the first occurrence past the target (rrule's `before()`
+  does NOT apply to direct iteration — verified in the 0.14.0 source);
+  (4) organizer-bound patching (Sourcery tampering concern) — the stored
+  copy is re-read before patching and only patched when its organizer
+  matches the REQUEST's (`same_meeting_organizer`, normalized: mailto:
+  stripped, case-insensitive), so UID collisions/forged REQUESTs can't
+  clobber unrelated events and the decision lands on the copy as it exists
+  now; (5) EWS response-object XML is extracted nesting-aware
+  (`extract_first_tag_block` in ews.rs) — reply Body and ProposedStart/End
+  are read from the AcceptItem/TentativelyAcceptItem/DeclineItem block; the
+  old whole-envelope scan matched the SOAP `s:Body` and leaked envelope text
+  into the reply email. Storage: `MeetingRsvpRecord<'a>` params struct
+  (MeetingStateParams convention) replaces the 8-arg upsert. Suite after
+  fixes: 974 green (lib 938 + fixtures 22 + snapshots 11 +
+  jmap_calendar_deploy 2 + doc 1), clippy 0, fmt clean on touched files
+  (storage.rs, rsvp.rs, ews.rs), release warning-free.
 - PR #1969 bot-review triage COMPLETE (commit resolving 31 inline findings:
   28 fixed, 3 refuted with [MS-ASWBXML]/[MS-ASCMD] evidence — HasAttachments
   has no code-page-2 token; per-Fetch `<Options>` parsing is depth-agnostic;

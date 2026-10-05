@@ -26,19 +26,29 @@
 //      X-MS-APPOINTMENT-REPLY-TIME per [MS-ASCAL] §2.2.2.19), creating it
 //      from the REQUEST when it does not exist yet (accept/tentative only —
 //      Exchange does not calendar-book declined meetings), writing through
-//      JMAP Calendar or CalDAV per the configured backend. All attendee
-//      SCHEDULE-AGENTs are pinned to CLIENT (RFC 6638 §7.1) so Stalwart's
-//      own scheduler never re-emits an iTIP copy of our reply from the
-//      attendee's copy.
+//      JMAP Calendar or CalDAV per the configured backend. An existing
+//      UID-mapped copy is only patched after re-reading it and confirming
+//      its organizer matches the REQUEST's — meeting identity is
+//      (organizer, UID), so a UID collision (or a forged REQUEST) must
+//      never overwrite an unrelated stored event, and a decision lands on
+//      the copy as it exists NOW (organizer reschedules sync in through
+//      the normal calendar paths). All attendee SCHEDULE-AGENTs are pinned
+//      to CLIENT (RFC 6638 §7.1) so Stalwart's own scheduler never
+//      re-emits an iTIP copy of our reply from the attendee's copy.
 //   5. Deliver the iTIP REPLY to the organizer over SMTP (RFC 5546 §3.2.10 /
 //      RFC 6047) — with RECURRENCE-ID and the instance's own times when
 //      instance-scoped (RFC 5546 §3.6.2) — plus an iTIP COUNTER
 //      (RFC 5546 §3.6.7) when the client proposed a new time
-//      ([MS-ASCMD] §2.2.3.140/§2.2.3.141). Duplicate responses (same
-//      decision for the same (uid, instance)) are idempotent: the stored
+//      ([MS-ASCMD] §2.2.3.140/§2.2.3.141). The REPLY is recorded the
+//      moment it is delivered; the COUNTER is never recorded, so a retry
+//      after a failed COUNTER re-proposes without re-sending the REPLY.
+//      Duplicate responses (same decision for the same (uid, instance)
+//      answering the same REQUEST revision) are idempotent: the stored
 //      RSVP ([MS-ASCMD] §2.2.1.11 disambiguation table, "User responds to a
 //      meeting request for which a response was already sent") suppresses
-//      the second REPLY email; a changed decision is delivered and recorded.
+//      the second REPLY email; a changed decision — or the same decision
+//      for a rescheduled REQUEST whose SEQUENCE moved (RFC 5546 §3.2.1.4
+//      revision semantics) — is delivered and recorded.
 //
 // Statuses returned follow [MS-ASCMD] §2.2.3.177.9 exactly: 1 success, 2 for
 // invalid-item conditions (malformed/unresolvable address, organizer
@@ -49,7 +59,7 @@
 use crate::calendar::{CalendarItem, mark_scheduling_client_side, parse_ics_event, render_ics};
 use crate::email::extract_meeting_request_ics;
 use crate::models::AppState;
-use crate::storage::EwsItemRow;
+use crate::storage::{EwsItemRow, MeetingRsvpRow};
 use crate::util::{normalize_email, user_primary_email};
 use anyhow::{Result, anyhow};
 use chrono::{DateTime, Utc};
@@ -273,7 +283,7 @@ async fn resolve_calendar_invitation(
     password: &SecretString,
     server_id: &str,
 ) -> std::result::Result<ResolvedInvitation, ResolveFailure> {
-    let row = state
+    let mut row = state
         .storage
         .get_ews_item_by_server_id(username, server_id)
         .await
@@ -283,9 +293,39 @@ async fn resolve_calendar_invitation(
         })?
         .ok_or(ResolveFailure::NotFound)?;
 
-    // Read the event from whichever backend owns it. JMAP rows keep the
-    // event id in the href; CalDAV rows store a direct href.
-    let (ics, etag) = if row.resource_href.starts_with("jmap://") {
+    let (ics, etag) = read_calendar_row_ics(state, username, password, &row).await?;
+
+    let Some(item) = parse_ics_event(&ics) else {
+        tracing::warn!(target: "meeting", server_id = %server_id, "RSVP: calendar item iCalendar unparseable");
+        return Err(ResolveFailure::InvalidItem);
+    };
+    if item.organizer_email.as_deref().is_none_or(|e| e.is_empty()) {
+        // No organizer → a plain appointment, not a meeting.
+        return Err(ResolveFailure::InvalidItem);
+    }
+
+    if row.etag.is_none() || row.etag.as_deref() == Some("") {
+        row.etag = etag;
+    }
+
+    Ok(ResolvedInvitation {
+        item,
+        sequence: crate::meeting::response::parse_sequence_from_ics(&ics),
+        from_email: false,
+        calendar_row: Some(row),
+    })
+}
+
+/// Read the current iCalendar of a mapped calendar row from whichever
+/// backend owns it. JMAP rows keep the event id in the href; CalDAV rows
+/// store a direct href. Returns `(ics, etag)`.
+async fn read_calendar_row_ics(
+    state: &Arc<AppState>,
+    username: &str,
+    password: &SecretString,
+    row: &EwsItemRow,
+) -> std::result::Result<(String, Option<String>), ResolveFailure> {
+    if row.resource_href.starts_with("jmap://") {
         let Some(jmap) = state.jmap_client.as_ref().cloned() else {
             return Err(ResolveFailure::ServerError);
         };
@@ -303,7 +343,7 @@ async fn resolve_calendar_invitation(
                 tracing::warn!(target: "meeting", error = %e, "RSVP: JMAP calendar event read failed");
                 ResolveFailure::ServerError
             })?;
-        (ics, Some(returned_etag))
+        Ok((ics, Some(returned_etag)))
     } else {
         let caldav = crate::caldav::CaldavClient::new(&state.cfg).map_err(|e| {
             tracing::error!(target: "meeting", error = %e, "RSVP: CalDAV client init failed");
@@ -316,29 +356,8 @@ async fn resolve_calendar_invitation(
                 tracing::warn!(target: "meeting", error = %e, "RSVP: CalDAV event read failed");
                 ResolveFailure::ServerError
             })?;
-        (ics, returned_etag)
-    };
-
-    let Some(item) = parse_ics_event(&ics) else {
-        tracing::warn!(target: "meeting", server_id = %server_id, "RSVP: calendar item iCalendar unparseable");
-        return Err(ResolveFailure::InvalidItem);
-    };
-    if item.organizer_email.as_deref().is_none_or(|e| e.is_empty()) {
-        // No organizer → a plain appointment, not a meeting.
-        return Err(ResolveFailure::InvalidItem);
+        Ok((ics, returned_etag))
     }
-
-    let mut row = row;
-    if row.etag.is_none() || row.etag.as_deref() == Some("") {
-        row.etag = etag;
-    }
-
-    Ok(ResolvedInvitation {
-        item,
-        sequence: crate::meeting::response::parse_sequence_from_ics(&ics),
-        from_email: false,
-        calendar_row: Some(row),
-    })
 }
 
 /// Apply one RSVP end-to-end. Returns the outcome, or a resolution failure
@@ -428,7 +447,7 @@ pub async fn apply_rsvp(
         .get_meeting_rsvp(username, &invitation.item.uid, &instance_key)
         .await
     {
-        Ok(Some(row)) => row.decision == decision_code(req.decision),
+        Ok(Some(row)) => is_duplicate_rsvp(&row, decision_code(req.decision), invitation.sequence),
         Ok(None) => false,
         Err(e) => {
             tracing::warn!(target: "meeting", error = %e, "RSVP: idempotence read failed");
@@ -458,19 +477,48 @@ pub async fn apply_rsvp(
             }
         };
 
-    // iTIP delivery. Skipped when the client did not ask for an email
-    // ([MS-ASCMD] §2.2.3.163), when the same decision was already delivered
-    // (duplicate → idempotent no-op email-wise), or when the organizer was
-    // the responder (suppressed above).
+    // iTIP delivery. The REPLY is skipped when the client did not ask for an
+    // email ([MS-ASCMD] §2.2.3.163) or when this exact (decision, SEQUENCE)
+    // revision was already delivered (duplicate → idempotent no-op). The
+    // COUNTER — a new-time proposal — is delivered whenever the request
+    // carries one, independent of the duplicate state: it is not recorded in
+    // the idempotence store, so a retry after a failed COUNTER re-proposes
+    // without re-sending the already-delivered REPLY.
+    let ctx = ItipSendCtx {
+        state,
+        username,
+        password,
+        responder_email: &user_email,
+    };
     let mut reply_message_id = None;
     let mut counter_message_id = None;
-    let mut delivered = false;
     if req.send_reply && !duplicate {
-        match deliver_itip(state, username, password, &invitation, req, &user_email).await {
-            Ok((reply_id, counter_id)) => {
-                reply_message_id = reply_id;
-                counter_message_id = counter_id;
-                delivered = true;
+        match send_itip_reply(&ctx, &invitation, req).await {
+            Ok(message_id) => {
+                reply_message_id = Some(message_id);
+                // Record immediately after the successful REPLY send — not
+                // after the COUNTER. A failed COUNTER must not discard the
+                // fact that the organizer already received this decision: the
+                // status-3 retry then re-delivers only the COUNTER, never a
+                // second REPLY.
+                if let Err(e) = state
+                    .storage
+                    .upsert_meeting_rsvp(&crate::storage::MeetingRsvpRecord {
+                        owner: username,
+                        uid: &invitation.item.uid,
+                        instance_key: &instance_key,
+                        decision: decision_code(req.decision),
+                        sequence: i64::from(invitation.sequence),
+                        message_id: reply_message_id.as_deref(),
+                        calendar_server_id: calendar_server_id.as_deref(),
+                    })
+                    .await
+                {
+                    // At-least-once semantics: an unrecorded delivery may
+                    // repeat on retry. A duplicate REPLY is benign iTIP-wise
+                    // (organizers fold repeats by PARTSTAT); a lost one is not.
+                    tracing::warn!(target: "meeting", error = %e, "RSVP: idempotence record write failed");
+                }
             }
             Err(e) => {
                 // The organizer must learn the decision; a failed delivery is
@@ -481,7 +529,7 @@ pub async fn apply_rsvp(
                     target: "meeting",
                     error = %e,
                     uid = %invitation.item.uid,
-                    "RSVP: iTIP delivery failed; client should retry (status 3)"
+                    "RSVP: iTIP REPLY delivery failed; client should retry (status 3)"
                 );
                 return Ok(RsvpOutcome {
                     status: STATUS_SERVER_ERROR,
@@ -499,25 +547,28 @@ pub async fn apply_rsvp(
         );
     }
 
-    // Record the delivered RSVP after a successful send (so a failed send is
-    // retried rather than treated as delivered).
-    if req.send_reply
-        && delivered
-        && let Err(e) = state
-            .storage
-            .upsert_meeting_rsvp(
-                username,
-                &invitation.item.uid,
-                &instance_key,
-                decision_code(req.decision),
-                reply_message_id
-                    .as_deref()
-                    .or(counter_message_id.as_deref()),
-                calendar_server_id.as_deref(),
-            )
-            .await
-    {
-        tracing::warn!(target: "meeting", error = %e, "RSVP: idempotence record write failed");
+    if req.send_reply && req.proposed_start.is_some() && req.proposed_end.is_some() {
+        match send_itip_counter(&ctx, &invitation, req).await {
+            Ok(message_id) => counter_message_id = Some(message_id),
+            Err(e) => {
+                // The REPLY (if one was needed) is already recorded; this
+                // failure reports as status 3 so the client retries, and the
+                // retry re-delivers only the COUNTER.
+                tracing::warn!(
+                    target: "meeting",
+                    error = %e,
+                    uid = %invitation.item.uid,
+                    "RSVP: iTIP COUNTER delivery failed; client should retry (status 3)"
+                );
+                return Ok(RsvpOutcome {
+                    status: STATUS_SERVER_ERROR,
+                    calendar_server_id,
+                    reply_message_id,
+                    duplicate,
+                    ..RsvpOutcome::failure(&ResolveFailure::ServerError)
+                });
+            }
+        }
     }
 
     Ok(RsvpOutcome {
@@ -532,28 +583,34 @@ pub async fn apply_rsvp(
     })
 }
 
-/// Deliver the iTIP REPLY (and COUNTER when countering) to the organizer.
-async fn deliver_itip(
-    state: &Arc<AppState>,
-    username: &str,
-    password: &SecretString,
-    invitation: &ResolvedInvitation,
-    req: &RsvpRequest,
-    responder_email: &str,
-) -> Result<(Option<String>, Option<String>)> {
-    let Some(smtp) = state.smtp_client.as_ref() else {
-        return Err(anyhow!(
-            "SMTP client not configured; cannot deliver iTIP reply (JMAP EmailSubmission does not support text/calendar MIME)"
-        ));
-    };
+/// A recorded REPLY suppresses a new REPLY only when the decision and the
+/// answered REQUEST revision both repeat: the stored row carries the iCalendar
+/// SEQUENCE the delivered REPLY answered (RFC 5546 §3.2.1.4), so an organizer
+/// reschedule (SEQUENCE bump) is a distinct delivery even when the attendee
+/// presses the same button again.
+fn is_duplicate_rsvp(row: &MeetingRsvpRow, decision: i32, sequence: u32) -> bool {
+    row.decision == decision && row.sequence == i64::from(sequence)
+}
 
-    let item = &invitation.item;
-    let organizer_email = item.organizer_email.clone().unwrap_or_default();
+/// Borrowed context for one iTIP send — the `SyncCtx` convention applied to
+/// the two SMTP senders so their signatures stay at (ctx, invitation, req).
+#[derive(Clone, Copy)]
+struct ItipSendCtx<'a> {
+    state: &'a Arc<AppState>,
+    username: &'a str,
+    password: &'a SecretString,
+    responder_email: &'a str,
+}
 
-    // The REPLY's VEVENT times: the instance's own times when
-    // instance-scoped (RFC 5546 §3.6.2 REPLY with RECURRENCE-ID refers to the
-    // occurrence, not the series master).
-    let (reply_start, reply_end) = match req.instance_id {
+/// The VEVENT times an iTIP message about this response refers to: the
+/// instance's own times when instance-scoped (RFC 5546 §3.6.2 REPLY with
+/// RECURRENCE-ID refers to the occurrence, not the series master), the
+/// master's times for a whole-series response.
+fn reply_window(
+    item: &CalendarItem,
+    instance_id: Option<DateTime<Utc>>,
+) -> (DateTime<Utc>, DateTime<Utc>) {
+    match instance_id {
         None => (item.start, item.end),
         Some(instance_id) => {
             let exception = find_matching_exception(item, instance_id);
@@ -564,7 +621,31 @@ async fn deliver_itip(
                 .unwrap_or_else(|| start + duration);
             (start, end)
         }
+    }
+}
+
+/// Deliver the iTIP REPLY to the organizer ([MS-ASCMD] §2.2.3.163 email
+/// requested; RFC 5546 §3.6.2). Returns the SMTP message id.
+async fn send_itip_reply(
+    ctx: &ItipSendCtx<'_>,
+    invitation: &ResolvedInvitation,
+    req: &RsvpRequest,
+) -> Result<String> {
+    let ItipSendCtx {
+        state,
+        username,
+        password,
+        responder_email,
+    } = *ctx;
+    let Some(smtp) = state.smtp_client.as_ref() else {
+        return Err(anyhow!(
+            "SMTP client not configured; cannot deliver iTIP reply (JMAP EmailSubmission does not support text/calendar MIME)"
+        ));
     };
+
+    let item = &invitation.item;
+    let organizer_email = item.organizer_email.clone().unwrap_or_default();
+    let (reply_start, reply_end) = reply_window(item, req.instance_id);
 
     let ics = crate::meeting::response::build_reply_ics(
         &crate::meeting::response::MeetingInvitation {
@@ -626,63 +707,103 @@ async fn deliver_itip(
         message_id = %result.message_id,
         "Delivered iTIP REPLY to organizer"
     );
-    let reply_id = Some(result.message_id);
+    Ok(result.message_id)
+}
 
-    // New-time proposal → a separate iTIP COUNTER (RFC 5546 §3.6.7). The
-    // REPLY already carried the decision; the COUNTER carries the proposed
-    // times, mirroring how Outlook's "Propose New Time" delivers both.
-    let counter_id = if let (Some(start), Some(end)) = (req.proposed_start, req.proposed_end) {
-        let msg = crate::meeting::message::MeetingMessage::new_counter(
-            &crate::meeting::message::CounterParams {
-                uid: item.uid.clone(),
-                organizer_email,
-                subject: item.subject.clone(),
-                original_start: reply_start,
-                original_end: reply_end,
-                proposed_start: start,
-                proposed_end: end,
-                sequence: invitation.sequence,
-                recurrence_id: req.instance_id,
-                responder_email: responder_email.to_string(),
-                responder_name: None,
-            },
-        );
-        let generator = crate::meeting::message::MeetingMessageGenerator::new();
-        let counter_ics = generator.generate_ical(&msg);
-        let result = smtp
-            .send_imip(&crate::smtp::SendImipParams {
-                from: responder_email,
-                to: vec![item.organizer_email.clone().unwrap_or_default()],
-                subject: &format!("New Time Proposed: {}", item.subject),
-                ics: &counter_ics,
-                text_body: Some(&format!(
-                    "Proposed new time for \"{subject}\":\r\nStart: {start}\r\nEnd:   {end}\r\n",
-                    subject = item.subject,
-                    start = start.format("%Y-%m-%d %H:%M:%SZ"),
-                    end = end.format("%Y-%m-%d %H:%M:%SZ"),
-                )),
-                username,
-                password,
-                method: Some("COUNTER"),
-            })
-            .await?;
-        tracing::info!(
-            target: "meeting",
-            uid = %item.uid,
-            message_id = %result.message_id,
-            "Delivered iTIP COUNTER to organizer"
-        );
-        Some(result.message_id)
-    } else {
-        None
+/// Deliver a new-time proposal as a separate iTIP COUNTER (RFC 5546 §3.6.7).
+/// The REPLY already carried the decision; the COUNTER carries the proposed
+/// times, mirroring how Outlook's "Propose New Time" delivers both. Returns
+/// the SMTP message id.
+async fn send_itip_counter(
+    ctx: &ItipSendCtx<'_>,
+    invitation: &ResolvedInvitation,
+    req: &RsvpRequest,
+) -> Result<String> {
+    let ItipSendCtx {
+        state,
+        username,
+        password,
+        responder_email,
+    } = *ctx;
+    let Some(smtp) = state.smtp_client.as_ref() else {
+        return Err(anyhow!(
+            "SMTP client not configured; cannot deliver iTIP counter (JMAP EmailSubmission does not support text/calendar MIME)"
+        ));
     };
 
-    Ok((reply_id, counter_id))
+    let item = &invitation.item;
+    // The proposal pair is validated all-or-nothing at dispatch; a half pair
+    // reaching this sender is a programming error, not a user condition.
+    let (Some(proposed_start), Some(proposed_end)) = (req.proposed_start, req.proposed_end) else {
+        return Err(anyhow!(
+            "iTIP COUNTER requested without a complete time pair"
+        ));
+    };
+    let (reply_start, reply_end) = reply_window(item, req.instance_id);
+    let msg = crate::meeting::message::MeetingMessage::new_counter(
+        &crate::meeting::message::CounterParams {
+            uid: item.uid.clone(),
+            organizer_email: item.organizer_email.clone().unwrap_or_default(),
+            subject: item.subject.clone(),
+            original_start: reply_start,
+            original_end: reply_end,
+            proposed_start,
+            proposed_end,
+            sequence: invitation.sequence,
+            recurrence_id: req.instance_id,
+            responder_email: responder_email.to_string(),
+            responder_name: None,
+        },
+    );
+    let generator = crate::meeting::message::MeetingMessageGenerator::new();
+    let counter_ics = generator.generate_ical(&msg);
+    let result = smtp
+        .send_imip(&crate::smtp::SendImipParams {
+            from: responder_email,
+            to: vec![item.organizer_email.clone().unwrap_or_default()],
+            subject: &format!("New Time Proposed: {}", item.subject),
+            ics: &counter_ics,
+            text_body: Some(&format!(
+                "Proposed new time for \"{subject}\":\r\nStart: {start}\r\nEnd:   {end}\r\n",
+                subject = item.subject,
+                start = proposed_start.format("%Y-%m-%d %H:%M:%SZ"),
+                end = proposed_end.format("%Y-%m-%d %H:%M:%SZ"),
+            )),
+            username,
+            password,
+            method: Some("COUNTER"),
+        })
+        .await?;
+    tracing::info!(
+        target: "meeting",
+        uid = %item.uid,
+        message_id = %result.message_id,
+        "Delivered iTIP COUNTER to organizer"
+    );
+    Ok(result.message_id)
 }
 
 /// Patch (or create) the local attendee calendar copy. Returns the calendar
 /// server id of the copy for `<CalendarId>`, or `None` for declines with no
 /// existing copy (Exchange does not book declined meetings).
+///
+/// An existing UID-mapped copy is only ever *patched*, and only after the
+/// stored event is re-read and its organizer confirmed to be the same
+/// meeting the REQUEST belongs to. Two hard reasons:
+///
+/// - **Identity**: a meeting is (organizer, UID), not the UID alone. A
+///   forged REQUEST can carry any UID, so answering to it must never
+///   overwrite an unrelated calendar item — least of all one the responding
+///   user organizes ([MS-OXOCAL] identity; RFC 5546 §3.6.2 REPLY semantics).
+/// - **Currency**: the REQUEST email may be older than the stored copy
+///   (organizer reschedules sync in through the normal calendar paths).
+///   The decision is recorded on the copy as it exists now — its
+///   organizer-owned fields (times, roster, exceptions) survive untouched.
+///
+/// When the stored event cannot be read, parsed, or attributed to the same
+/// organizer, the row is left alone and the response books a separate copy
+/// of the meeting the REQUEST actually describes: a duplicate calendar item
+/// is recoverable, a clobbered one is not.
 async fn update_local_attendee_copy(
     state: &Arc<AppState>,
     username: &str,
@@ -691,7 +812,47 @@ async fn update_local_attendee_copy(
     req: &RsvpRequest,
     user_email: &str,
 ) -> Result<Option<String>> {
-    let mut item = invitation.item.clone();
+    // The stored item the copy-update patches. Calendar sources resolved
+    // from the row itself; email sources re-read the UID-mapped row and
+    // verify the organizer match before anything is written.
+    let (row, mut item) = match &invitation.calendar_row {
+        Some(row) if invitation.from_email => {
+            let (ics, _etag) = read_calendar_row_ics(state, username, password, row)
+                .await
+                .map_err(|e| {
+                    anyhow!(
+                        "stored attendee copy unreadable (uid {}): {:?}",
+                        invitation.item.uid,
+                        e
+                    )
+                })?;
+            let stored = parse_ics_event(&ics).ok_or_else(|| {
+                anyhow!(
+                    "stored attendee copy unparseable (uid {})",
+                    invitation.item.uid
+                )
+            })?;
+            if !same_meeting_organizer(&stored, &invitation.item) {
+                // UID collision across different organizers: the stored item
+                // belongs to another meeting and must not be touched. The
+                // response proceeds against the REQUEST's own meeting only.
+                tracing::warn!(
+                    target: "meeting",
+                    uid = %invitation.item.uid,
+                    server_id = %row.server_id,
+                    "RSVP: UID-mapped item belongs to a different organizer; leaving it untouched"
+                );
+                return book_attendee_copy(state, username, password, invitation, req, user_email)
+                    .await;
+            }
+            (row, stored)
+        }
+        Some(row) => (row, invitation.item.clone()),
+        None => {
+            return book_attendee_copy(state, username, password, invitation, req, user_email)
+                .await;
+        }
+    };
 
     match req.instance_id {
         None => patch_series_response(&mut item, user_email, req.decision),
@@ -705,25 +866,61 @@ async fn update_local_attendee_copy(
     // message — the gateway already delivered the iTIP REPLY over SMTP.
     mark_scheduling_client_side(&mut item);
 
-    // Declined + no existing copy: don't create one (Exchange semantics).
-    if invitation.calendar_row.is_none()
-        && matches!(
-            req.decision,
-            crate::meeting::response::ResponseDecision::Decline
-        )
-    {
+    write_existing_copy(state, username, password, row, &item).await?;
+    Ok(Some(row.server_id.clone()))
+}
+
+/// Create a fresh attendee copy when no UID-mapped (or organizer-verified)
+/// stored copy exists. Declines book nothing (Exchange semantics).
+async fn book_attendee_copy(
+    state: &Arc<AppState>,
+    username: &str,
+    password: &SecretString,
+    invitation: &ResolvedInvitation,
+    req: &RsvpRequest,
+    user_email: &str,
+) -> Result<Option<String>> {
+    let mut item = invitation.item.clone();
+
+    // Declined + no existing copy: don't create one.
+    if matches!(
+        req.decision,
+        crate::meeting::response::ResponseDecision::Decline
+    ) {
         return Ok(None);
     }
 
-    match &invitation.calendar_row {
-        Some(row) => {
-            write_existing_copy(state, username, password, row, &item).await?;
-            Ok(Some(row.server_id.clone()))
+    match req.instance_id {
+        None => patch_series_response(&mut item, user_email, req.decision),
+        Some(instance_id) => {
+            patch_instance_response(&mut item, user_email, req.decision, instance_id)
         }
-        None => {
-            let server_id = create_attendee_copy(state, username, password, &item).await?;
-            Ok(Some(server_id))
+    }
+
+    // Pin scheduling to the client (RFC 6638 §7.1): the attendee copy on
+    // Stalwart must not trigger a second, server-generated scheduling
+    // message — the gateway already delivered the iTIP REPLY over SMTP.
+    mark_scheduling_client_side(&mut item);
+
+    let server_id = create_attendee_copy(state, username, password, &item).await?;
+    Ok(Some(server_id))
+}
+
+/// The same meeting, or two different ones sharing a UID? Meeting identity
+/// is (organizer, UID) ([MS-OXOCAL]); only a REQUEST from the stored copy's
+/// own organizer may update it.
+fn same_meeting_organizer(stored: &CalendarItem, request: &CalendarItem) -> bool {
+    match (
+        stored.organizer_email.as_deref().filter(|e| !e.is_empty()),
+        request.organizer_email.as_deref().filter(|e| !e.is_empty()),
+    ) {
+        (Some(stored_org), Some(request_org)) => {
+            normalize_email(stored_org) == normalize_email(request_org)
         }
+        // Either side without an organizer cannot be attributed; resolution
+        // already rejects organizer-less requests, and a stored copy without
+        // an organizer is not a meeting copy to defend.
+        _ => false,
     }
 }
 
@@ -1022,15 +1219,26 @@ fn instance_exists(item: &CalendarItem, instance_id: DateTime<Utc>) -> bool {
         return false;
     };
     // `None` (rule uninterpretable) fails open: cannot disprove the instance.
-    expand_occurrences(rrule_str, item.start, instance_id).unwrap_or(true)
+    expand_occurrences(rrule_str, item.start, item.timezone.as_deref(), instance_id).unwrap_or(true)
 }
 
 /// Expand `rrule` from `dtstart` and report whether `target` is one of the
 /// occurrences. Returns `None` when the rule cannot be interpreted (unknown
-/// grammar, unbuildable rule) — callers treat that as "cannot disprove".
+/// grammar, unbuildable rule, or a declared timezone the expansion cannot
+/// honor) — callers treat that as "cannot disprove".
+///
+/// A recurring event's wall-clock time is fixed in its own timezone
+/// (RFC 5545 §3.8.5.3 DTSTART/RRULE interplay): a weekly 09:00
+/// Europe/Berlin series starts one UTC hour earlier after the spring DST
+/// transition. Expanding in UTC would pin the UTC time year-round and reject
+/// every summer occurrence, so the rule is expanded in the event's own zone
+/// whenever `timezone` parses as an IANA name. A declared zone that does
+/// not parse also fails open — expanding in the wrong zone would reject
+/// valid instances, the very failure this guards against.
 fn expand_occurrences(
     rrule_str: &str,
     dtstart: DateTime<Utc>,
+    timezone: Option<&str>,
     target: DateTime<Utc>,
 ) -> Option<bool> {
     use rrule::{RRule, Tz};
@@ -1041,15 +1249,32 @@ fn expand_occurrences(
         .strip_prefix("RRULE:")
         .unwrap_or(rrule_str.trim());
     let rule = RRule::from_str(rule_text).ok()?;
-    let dtstart_tz = dtstart.with_timezone(&Tz::UTC);
-    // Bound the search just past the target so the iterator can terminate;
-    // a hard occurrence cap guards pathological rules.
-    let horizon = target.with_timezone(&Tz::UTC) + chrono::Duration::days(1);
-    let set = rule.build(dtstart_tz).ok()?.before(horizon);
+    let tz = match timezone {
+        None => Tz::UTC,
+        Some(name) => match name.parse::<chrono_tz::Tz>() {
+            // The event's zone drives the expansion; the UTC instants of the
+            // generated occurrences shift across DST changes.
+            Ok(zone) => Tz::from(zone),
+            // Uninterpretable zone: expanding in UTC would judge the instance
+            // in a zone the event does not live in — cannot disprove.
+            Err(_) => return None,
+        },
+    };
+    let dtstart_tz = dtstart.with_timezone(&tz);
+    let set = rule.build(dtstart_tz).ok()?;
+    // The iterator yields occurrences in chronological order starting at
+    // DTSTART, so the scan can stop at the first occurrence past the target.
+    // (RRuleSet::before() only applies to the `all()` collection APIs, not
+    // to direct iteration.) The cap guards pathological rules whose expansion
+    // never reaches the target.
     const OCCURRENCE_CAP: usize = 4096;
     for (i, occurrence) in set.into_iter().enumerate() {
-        if occurrence.with_timezone(&Utc) == target {
+        let occurrence = occurrence.with_timezone(&Utc);
+        if occurrence == target {
             return Some(true);
+        }
+        if occurrence > target {
+            return Some(false);
         }
         if i >= OCCURRENCE_CAP {
             return None;
@@ -1343,6 +1568,171 @@ mod tests {
             ..Default::default()
         };
         assert!(!instance_exists(&item, iid));
+    }
+
+    /// RFC 5545 §3.8.5.3: a recurring event's wall clock is fixed in its own
+    /// timezone, so the UTC instants of the occurrences shift across a DST
+    /// transition. A weekly 09:00 Europe/Berlin series starting in winter
+    /// (08:00Z) recurs at 07:00Z in summer — expanding the rule in UTC would
+    /// reject the summer occurrence ([MS-ASCmd] §2.2.3.177.9 status 2 instead
+    /// of recording the response).
+    #[test]
+    fn expand_occurrences_honors_dst_transitions_in_event_timezone() {
+        use chrono::TimeZone;
+        let dtstart = chrono_tz::Tz::Europe__Berlin
+            .with_ymd_and_hms(2026, 1, 5, 9, 0, 0)
+            .unwrap() // Monday 09:00 Berlin = 08:00Z (winter, CET)
+            .with_timezone(&Utc);
+        let winter = Utc.with_ymd_and_hms(2026, 1, 12, 8, 0, 0).unwrap();
+        // Same wall clock after the 2026-03-29 spring transition: CEST → 07:00Z.
+        let summer = Utc.with_ymd_and_hms(2026, 7, 6, 7, 0, 0).unwrap();
+        // The naive UTC-pinned wall clock in summer: NOT an occurrence.
+        let utc_pinned = Utc.with_ymd_and_hms(2026, 7, 6, 8, 0, 0).unwrap();
+
+        for (label, target, expect) in [
+            ("winter occurrence", winter, Some(true)),
+            ("summer occurrence across DST", summer, Some(true)),
+            ("utc-pinned summer instant", utc_pinned, Some(false)),
+        ] {
+            assert_eq!(
+                expand_occurrences(
+                    "FREQ=WEEKLY;COUNT=40",
+                    dtstart,
+                    Some("Europe/Berlin"),
+                    target
+                ),
+                expect,
+                "{label}"
+            );
+        }
+    }
+
+    /// `instance_exists` threads the event's timezone into the expansion: the
+    /// summer occurrence of a zoned series is real, not a status-146/2
+    /// rejection.
+    #[test]
+    fn instance_exists_accepts_dst_shifted_occurrence() {
+        use chrono::TimeZone;
+        let start = chrono_tz::Tz::Europe__Berlin
+            .with_ymd_and_hms(2026, 1, 5, 9, 0, 0)
+            .unwrap()
+            .with_timezone(&Utc);
+        let item = CalendarItem {
+            uid: "u1".into(),
+            start,
+            rrule: Some("FREQ=WEEKLY;COUNT=40".into()),
+            timezone: Some("Europe/Berlin".into()),
+            ..Default::default()
+        };
+        let summer = Utc.with_ymd_and_hms(2026, 7, 6, 7, 0, 0).unwrap();
+        assert!(instance_exists(&item, summer));
+    }
+
+    /// A declared timezone the expansion cannot interpret must fail open —
+    /// judging the instance in a foreign zone (or UTC) would reject valid
+    /// instances, the exact failure class this guards against.
+    #[test]
+    fn expand_occurrences_fails_open_on_unparseable_timezone() {
+        use chrono::TimeZone;
+        let dtstart = Utc.with_ymd_and_hms(2026, 1, 5, 10, 0, 0).unwrap();
+        let target = Utc.with_ymd_and_hms(2026, 2, 2, 10, 0, 0).unwrap();
+        assert_eq!(
+            expand_occurrences(
+                "FREQ=WEEKLY;COUNT=10",
+                dtstart,
+                Some("W. Europe Standard Time"),
+                target
+            ),
+            None
+        );
+        // The caller converts `None` to "cannot disprove".
+        let item = CalendarItem {
+            uid: "u1".into(),
+            start: dtstart,
+            rrule: Some("FREQ=WEEKLY;COUNT=10".into()),
+            timezone: Some("W. Europe Standard Time".into()),
+            ..Default::default()
+        };
+        assert!(instance_exists(&item, target));
+    }
+
+    /// A UTC-defined event (no TZID) keeps fixed UTC instants — unchanged
+    /// behavior from before the zoned expansion.
+    #[test]
+    fn expand_occurrences_utc_event_stays_utc() {
+        use chrono::TimeZone;
+        let dtstart = Utc.with_ymd_and_hms(2026, 1, 5, 10, 0, 0).unwrap();
+        let valid = Utc.with_ymd_and_hms(2026, 1, 12, 10, 0, 0).unwrap();
+        let invalid = Utc.with_ymd_and_hms(2026, 1, 12, 11, 0, 0).unwrap();
+        assert_eq!(
+            expand_occurrences("FREQ=WEEKLY;COUNT=10", dtstart, None, valid),
+            Some(true)
+        );
+        assert_eq!(
+            expand_occurrences("FREQ=WEEKLY;COUNT=10", dtstart, None, invalid),
+            Some(false)
+        );
+    }
+
+    /// [MS-ASCMD] §2.2.1.11 idempotence with revision awareness: a repeated
+    /// (decision, SEQUENCE) is a duplicate; an organizer reschedule raises
+    /// SEQUENCE (RFC 5546 §3.2.1.4) and the same decision is a NEW delivery;
+    /// a changed decision on the same revision is new too.
+    #[test]
+    fn is_duplicate_rsvp_requires_decision_and_sequence_match() {
+        let row = crate::storage::MeetingRsvpRow {
+            uid: "evt-1".into(),
+            instance_key: String::new(),
+            decision: 1,
+            sequence: 0,
+            message_id: Some("<m@example.com>".into()),
+            calendar_server_id: None,
+            responded_at: "2026-10-01 00:00:00".into(),
+        };
+        assert!(is_duplicate_rsvp(&row, 1, 0), "exact retry is a duplicate");
+        assert!(
+            !is_duplicate_rsvp(&row, 1, 1),
+            "reschedule (SEQUENCE bump) is a new delivery"
+        );
+        assert!(
+            !is_duplicate_rsvp(&row, 2, 0),
+            "changed decision is a new delivery"
+        );
+        assert!(!is_duplicate_rsvp(&row, 3, 7), "both changed");
+    }
+
+    /// Meeting identity is (organizer, UID) — the UID-mapped copy is only
+    /// patchable by a REQUEST from the same meeting's organizer; anything
+    /// else (a UID collision with a forged or unrelated request) must never
+    /// reach `write_existing_copy`.
+    #[test]
+    fn same_meeting_organizer_compares_normalized_identity() {
+        let stored = CalendarItem {
+            uid: "u1".into(),
+            organizer_email: Some("mailto:Organizer@Example.com".into()),
+            ..Default::default()
+        };
+        let request = CalendarItem {
+            uid: "u1".into(),
+            organizer_email: Some("organizer@example.com".into()),
+            ..Default::default()
+        };
+        assert!(same_meeting_organizer(&stored, &request));
+
+        let other_organizer = CalendarItem {
+            uid: "u1".into(),
+            organizer_email: Some("mallory@example.net".into()),
+            ..Default::default()
+        };
+        assert!(!same_meeting_organizer(&stored, &other_organizer));
+
+        let organizerless = CalendarItem {
+            uid: "u1".into(),
+            organizer_email: None,
+            ..Default::default()
+        };
+        assert!(!same_meeting_organizer(&stored, &organizerless));
+        assert!(!same_meeting_organizer(&organizerless, &request));
     }
 
     #[test]
