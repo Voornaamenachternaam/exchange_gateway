@@ -260,6 +260,48 @@ impl SafeDebug for MeetingResponseRow {
     }
 }
 
+// Row struct for meeting_rsvp queries - safe for logging (no sensitive data)
+#[derive(FromRow)]
+pub struct MeetingRsvpRow {
+    pub uid: String,
+    pub instance_key: String,
+    pub decision: i32,
+    pub sequence: i64,
+    pub message_id: Option<String>,
+    pub calendar_server_id: Option<String>,
+    pub responded_at: String,
+}
+
+/// Parameters for recording one delivered iTIP REPLY in the duplicate-RSVP
+/// idempotence store ([MS-ASCMD] §2.2.1.11) — the `MeetingStateParams`
+/// borrow convention applied to the meeting_rsvp upsert.
+#[derive(Debug)]
+pub struct MeetingRsvpRecord<'a> {
+    pub owner: &'a str,
+    pub uid: &'a str,
+    /// "" for a whole-series response, the UTC RECURRENCE-ID otherwise.
+    pub instance_key: &'a str,
+    pub decision: i32,
+    /// The REQUEST SEQUENCE the delivered REPLY answered (RFC 5546 §3.2.1.4).
+    pub sequence: i64,
+    pub message_id: Option<&'a str>,
+    pub calendar_server_id: Option<&'a str>,
+}
+
+impl SafeDebug for MeetingRsvpRow {
+    fn safe_debug(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("MeetingRsvpRow")
+            .field("uid", &self.uid)
+            .field("instance_key", &self.instance_key)
+            .field("decision", &self.decision)
+            .field("sequence", &self.sequence)
+            .field("message_id", &self.message_id)
+            .field("calendar_server_id", &self.calendar_server_id)
+            .field("responded_at", &self.responded_at)
+            .finish()
+    }
+}
+
 // Row struct for meeting_state queries - subject/location/organizer_email redacted as PII
 #[derive(FromRow)]
 pub struct MeetingStateRow {
@@ -444,6 +486,23 @@ impl Storage {
             .execute(self.pool.as_ref())
             .await
             .map_err(|e| GatewayError::Storage(format!("Migration error: {}", e)))?;
+        }
+        // Same probe for the `sequence` column of `meeting_rsvp`: databases
+        // created between the v9 table's introduction and the SEQUENCE-aware
+        // idempotence key need the column added — the recorded REPLY answers a
+        // specific REQUEST revision (RFC 5546 §3.2.1.4).
+        let rsvp_columns = sqlx::query("PRAGMA table_info(meeting_rsvp)")
+            .fetch_all(self.pool.as_ref())
+            .await
+            .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))?;
+        let has_sequence = rsvp_columns
+            .iter()
+            .any(|c| c.get::<String, _>("name") == "sequence");
+        if !has_sequence {
+            sqlx::query("ALTER TABLE meeting_rsvp ADD COLUMN sequence INTEGER NOT NULL DEFAULT 0")
+                .execute(self.pool.as_ref())
+                .await
+                .map_err(|e| GatewayError::Storage(format!("Migration error: {}", e)))?;
         }
         Ok(())
     }
@@ -1424,6 +1483,55 @@ impl Storage {
         )
         .bind(owner)
         .bind(request_id)
+        .fetch_optional(self.pool.as_ref())
+        .await
+        .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))
+    }
+
+    /// Record the attendee's delivered iTIP response for one (uid, instance).
+    ///
+    /// This is the duplicate-RSVP idempotence store: `instance_key` is empty
+    /// for a whole-series response and the UTC RECURRENCE-ID string for a
+    /// single-instance response. See `sqlite_schema.sql` (`meeting_rsvp`).
+    pub async fn upsert_meeting_rsvp(&self, record: &MeetingRsvpRecord<'_>) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO meeting_rsvp (owner, uid, instance_key, decision, sequence, message_id, calendar_server_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+             ON CONFLICT(owner, uid, instance_key) DO UPDATE SET
+                decision = ?4,
+                sequence = ?5,
+                message_id = ?6,
+                calendar_server_id = ?7,
+                responded_at = CURRENT_TIMESTAMP",
+        )
+        .bind(record.owner)
+        .bind(record.uid)
+        .bind(record.instance_key)
+        .bind(record.decision)
+        .bind(record.sequence)
+        .bind(record.message_id)
+        .bind(record.calendar_server_id)
+        .execute(self.pool.as_ref())
+        .await
+        .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+        Ok(())
+    }
+
+    /// Read the attendee's last delivered iTIP response for one (uid,
+    /// instance), if any.
+    pub async fn get_meeting_rsvp(
+        &self,
+        owner: &str,
+        uid: &str,
+        instance_key: &str,
+    ) -> Result<Option<MeetingRsvpRow>> {
+        sqlx::query_as::<_, MeetingRsvpRow>(
+            "SELECT uid, instance_key, decision, sequence, message_id, calendar_server_id, responded_at
+             FROM meeting_rsvp WHERE owner = ?1 AND uid = ?2 AND instance_key = ?3",
+        )
+        .bind(owner)
+        .bind(uid)
+        .bind(instance_key)
         .fetch_optional(self.pool.as_ref())
         .await
         .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))
@@ -2977,5 +3085,197 @@ mod tests {
         }
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// [MS-ASCMD] §2.2.1.11 duplicate-RSVP idempotence substrate: the store
+    /// keys on (owner, uid, instance_key) so a whole-series response and
+    /// per-instance responses for the same meeting coexist, a repeated
+    /// decision reads back equal, and a changed decision overwrites. The
+    /// recorded row also carries the REQUEST SEQUENCE the REPLY answered
+    /// (RFC 5546 §3.2.1.4): a reschedule bumps the revision, so the
+    /// (decision, sequence) pair — not the decision alone — is the
+    /// duplicate-detection key.
+    #[tokio::test]
+    async fn meeting_rsvp_store_keys_uid_and_instance_and_owner() {
+        let storage = mem_storage().await;
+        let owner = "attendee@example.com";
+        let uid = "evt-1234";
+
+        // Whole-series accept at SEQUENCE 0.
+        storage
+            .upsert_meeting_rsvp(&MeetingRsvpRecord {
+                owner,
+                uid,
+                instance_key: "",
+                decision: 1,
+                sequence: 0,
+                message_id: Some("<m1@example.com>"),
+                calendar_server_id: Some("cal-1"),
+            })
+            .await
+            .expect("series upsert");
+
+        // Same meeting, one instance declined — a separate key.
+        storage
+            .upsert_meeting_rsvp(&MeetingRsvpRecord {
+                owner,
+                uid,
+                instance_key: "20260710T090000Z",
+                decision: 3,
+                sequence: 0,
+                message_id: Some("<m2@example.com>"),
+                calendar_server_id: None,
+            })
+            .await
+            .expect("instance upsert");
+
+        let series = storage
+            .get_meeting_rsvp(owner, uid, "")
+            .await
+            .expect("series read")
+            .expect("series row");
+        assert_eq!(series.decision, 1);
+        assert_eq!(series.sequence, 0);
+        assert_eq!(series.message_id.as_deref(), Some("<m1@example.com>"));
+        assert_eq!(series.calendar_server_id.as_deref(), Some("cal-1"));
+
+        let instance = storage
+            .get_meeting_rsvp(owner, uid, "20260710T090000Z")
+            .await
+            .expect("instance read")
+            .expect("instance row");
+        assert_eq!(instance.decision, 3, "instance key is independent");
+        assert_eq!(instance.message_id.as_deref(), Some("<m2@example.com>"));
+
+        // A changed decision overwrites the stored row for that key.
+        storage
+            .upsert_meeting_rsvp(&MeetingRsvpRecord {
+                owner,
+                uid,
+                instance_key: "",
+                decision: 2,
+                sequence: 0,
+                message_id: Some("<m3@example.com>"),
+                calendar_server_id: Some("cal-1"),
+            })
+            .await
+            .expect("decision change");
+        let changed = storage
+            .get_meeting_rsvp(owner, uid, "")
+            .await
+            .expect("changed read")
+            .expect("changed row");
+        assert_eq!(changed.decision, 2);
+        assert_eq!(changed.message_id.as_deref(), Some("<m3@example.com>"));
+
+        // An organizer reschedule (RFC 5546 §3.2.1.4) raises SEQUENCE: the
+        // attendee's unchanged-decision reply to the new revision must
+        // overwrite the row, not be swallowed by an equal-decision check.
+        storage
+            .upsert_meeting_rsvp(&MeetingRsvpRecord {
+                owner,
+                uid,
+                instance_key: "",
+                decision: 2,
+                sequence: 1,
+                message_id: Some("<m4@example.com>"),
+                calendar_server_id: Some("cal-1"),
+            })
+            .await
+            .expect("sequence bump");
+        let rescheduled = storage
+            .get_meeting_rsvp(owner, uid, "")
+            .await
+            .expect("rescheduled read")
+            .expect("rescheduled row");
+        assert_eq!(rescheduled.decision, 2);
+        assert_eq!(rescheduled.sequence, 1, "sequence follows the revision");
+        assert_eq!(rescheduled.message_id.as_deref(), Some("<m4@example.com>"));
+
+        // Owner scoping: another user's RSVP never leaks across accounts.
+        let other = storage
+            .get_meeting_rsvp("other@example.com", uid, "")
+            .await
+            .expect("other read");
+        assert!(other.is_none(), "no cross-account RSVP leak");
+    }
+
+    /// Databases created before the `sequence` column existed (v9 table
+    /// created by an earlier build of this same PR's table) must be migrated
+    /// in place: `init_schema` probes and ALTERs rather than assuming the
+    /// CREATE TABLE from the current schema file ran.
+    #[tokio::test]
+    async fn meeting_rsvp_sequence_column_migrates_in_place() {
+        let storage = mem_storage().await;
+        // Simulate the pre-column table shape.
+        sqlx::query("DROP TABLE meeting_rsvp")
+            .execute(storage.pool.as_ref())
+            .await
+            .expect("drop");
+        sqlx::query(
+            "CREATE TABLE meeting_rsvp (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                owner TEXT NOT NULL,
+                uid TEXT NOT NULL,
+                instance_key TEXT NOT NULL DEFAULT '',
+                decision INTEGER NOT NULL,
+                message_id TEXT,
+                calendar_server_id TEXT,
+                responded_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(owner, uid, instance_key)
+            )",
+        )
+        .execute(storage.pool.as_ref())
+        .await
+        .expect("legacy table");
+
+        // A legacy row records a delivered RSVP with no sequence.
+        sqlx::query("INSERT INTO meeting_rsvp (owner, uid, instance_key, decision, message_id) VALUES ('attendee@example.com', 'evt-9', '', 1, '<m@example.com>')")
+            .execute(storage.pool.as_ref())
+            .await
+            .expect("legacy row");
+
+        storage.init_schema().await.expect("migration");
+
+        let columns = sqlx::query("PRAGMA table_info(meeting_rsvp)")
+            .fetch_all(storage.pool.as_ref())
+            .await
+            .expect("probe");
+        assert!(
+            columns
+                .iter()
+                .any(|c| c.get::<String, _>("name") == "sequence"),
+            "sequence column added"
+        );
+
+        // The legacy row survives with the default sequence.
+        let legacy = storage
+            .get_meeting_rsvp("attendee@example.com", "evt-9", "")
+            .await
+            .expect("legacy read")
+            .expect("legacy row");
+        assert_eq!(legacy.decision, 1);
+        assert_eq!(legacy.sequence, 0);
+
+        // And the store keeps working through the migrated table.
+        storage
+            .upsert_meeting_rsvp(&MeetingRsvpRecord {
+                owner: "attendee@example.com",
+                uid: "evt-9",
+                instance_key: "",
+                decision: 2,
+                sequence: 3,
+                message_id: Some("<new@example.com>"),
+                calendar_server_id: None,
+            })
+            .await
+            .expect("post-migration upsert");
+        let updated = storage
+            .get_meeting_rsvp("attendee@example.com", "evt-9", "")
+            .await
+            .expect("post-migration read")
+            .expect("post-migration row");
+        assert_eq!(updated.decision, 2);
+        assert_eq!(updated.sequence, 3);
     }
 }

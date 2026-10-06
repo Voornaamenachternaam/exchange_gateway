@@ -572,6 +572,55 @@ fn extract_first_tag_text(xml: &str, tag: &[u8]) -> Option<String> {
     extract_tag_texts(xml, tag).into_iter().next()
 }
 
+/// The raw XML of the first element whose local name is `tag`, from its
+/// opening tag through the matching close tag (nesting-aware: same-name
+/// children are included, not treated as terminators). `None` when absent.
+///
+/// `extract_tag_texts` alone cannot pick one element when the same local
+/// name nests at several levels — a SOAP envelope's `<s:Body>` contains a
+/// response object's `<t:Body>`, and the text scan would return the envelope
+/// content. Handlers that need a value owned by one specific object slice
+/// out its block first, then extract within it.
+fn extract_first_tag_block(xml: &str, tag: &[u8]) -> Option<String> {
+    let mut reader = Reader::from_str(xml);
+    let mut buf = Vec::new();
+    let mut depth = 0i64;
+    let mut block_start = 0usize;
+    let mut found = false;
+    loop {
+        // `buffer_position` reports the end of the last read event, so the
+        // position captured before a read is that event's start offset.
+        let before = reader.buffer_position() as usize;
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(e)) => {
+                if !found && e.name().local_name().as_ref().as_bytes() == tag {
+                    found = true;
+                    block_start = before;
+                }
+                if found {
+                    depth += 1;
+                }
+            }
+            Ok(Event::End(_)) if found => {
+                depth -= 1;
+                if depth == 0 {
+                    return xml
+                        .get(block_start..reader.buffer_position() as usize)
+                        .map(str::to_string);
+                }
+            }
+            Ok(Event::Empty(e)) if !found && e.name().local_name().as_ref().as_bytes() == tag => {
+                return xml
+                    .get(before..reader.buffer_position() as usize)
+                    .map(str::to_string);
+            }
+            Ok(Event::Eof) | Err(_) => return None,
+            _ => {}
+        }
+        buf.clear();
+    }
+}
+
 fn extract_tag_texts(xml: &str, tag: &[u8]) -> Vec<String> {
     let mut reader = Reader::from_str(xml);
     reader.config_mut().trim_text(true);
@@ -3694,31 +3743,35 @@ async fn handle_get_email_item(
 }
 
 /// C4: Handle EWS AcceptItem/DeclineItem/TentativelyAcceptItem response
-/// objects (MS-OXWSMTGSRC). Outlook sends these inside a `CreateItem` whose
+/// objects (MS-OXWSMTGS). Outlook sends these inside a `CreateItem` whose
 /// `Items` contains one of the three response types referencing the meeting
 /// request's `ItemId` via `ReferenceItemId`.
 ///
 /// Flow:
 /// 1. Detect the decision (Accept / Tentative / Decline).
 /// 2. Resolve `ReferenceItemId` (the meeting-request email) to a JMAP email.
-/// 3. Download the email raw MIME blob, extract its `METHOD:REQUEST` iCalendar.
-/// 4. Build an iTIP REPLY and send it to the meeting organizer via SMTP (C4).
-/// 5. Each EAS-style local-calendar PARTSTAT patch is handled by the EAS sync
-///    path; on EWS the calendar copy lives on the same mailbox, so we also
-///    update the local attendee's PARTSTAT on any matching calendar event via
-///    CalDAV (keeping the local roster consistent with the reply we sent).
+/// 3. Route through the shared idempotent RSVP pipeline
+///    (`meeting::rsvp::apply_rsvp`): organizer self-response suppression,
+///    duplicate-RSVP idempotence, local attendee-copy PARTSTAT update, and
+///    iTIP REPLY / COUNTER delivery to the organizer over SMTP (RFC 6047).
+/// 4. Build a CreateItemResponse echoing a new ItemId for the response
+///    object (Outlook expects a created item for the meeting-response
+///    message class).
 async fn handle_meeting_response_object(
     state: &Arc<AppState>,
     auth: &AuthContext,
     body: &str,
 ) -> Response {
+    use crate::meeting::response::ResponseDecision;
+    use crate::meeting::rsvp::{self, ResolveFailure, RsvpRequest, RsvpSource};
+
     // Step 1: detect which response object was sent.
     let decision = if body.contains("<t:AcceptItem") {
-        crate::meeting::ResponseDecision::Accept
+        ResponseDecision::Accept
     } else if body.contains("<t:TentativelyAcceptItem") {
-        crate::meeting::ResponseDecision::Tentative
+        ResponseDecision::Tentative
     } else if body.contains("<t:DeclineItem") {
-        crate::meeting::ResponseDecision::Decline
+        ResponseDecision::Decline
     } else {
         return operation_error_response(
             &EwsAction::CreateItem,
@@ -3747,163 +3800,163 @@ async fn handle_meeting_response_object(
         );
     }
 
-    let Some(jmap) = state.jmap_client.as_ref().cloned() else {
+    if state.jmap_client.is_none() {
         return operation_error_response(
             &EwsAction::CreateItem,
             "ErrorInvalidRequest",
             "JMAP not configured for meeting requests",
             StatusCode::FORBIDDEN,
         );
-    };
+    }
 
     let password_secret = SecretString::from(auth.password.expose_secret());
 
-    // Step 3: resolve the reference id to a JMAP email and download its raw MIME.
+    // Resolve the reference id to a JMAP email id. The gateway's `em-`
+    // prefixed server ids and bare JMAP ids both identify the meeting-request
+    // email.
     let jmap_id = match crate::email::jmap_id_from_email_server_id(&reference_id) {
         Some(id) => id.to_string(),
-        None => {
-            // Accept bare JMAP ids; otherwise the reference isn't an email item.
-            reference_id
-                .strip_prefix("em-")
-                .map(|s| s.to_string())
-                .filter(|s| !s.is_empty())
-                .unwrap_or_else(|| reference_id.clone())
-        }
+        None => reference_id.clone(),
     };
 
-    let account_id = match jmap.get_account_id(&auth.username, &password_secret).await {
-        Ok(id) => id,
-        Err(e) => {
-            tracing::error!(error = %e, "CreateItem meeting-response: failed to get JMAP account ID");
-            return operation_error_response(
-                &EwsAction::CreateItem,
-                "ErrorInternalServerError",
-                "Failed to get email account",
-                StatusCode::INTERNAL_SERVER_ERROR,
-            );
-        }
+    // The response object can carry a reply Body plus a new-time proposal
+    // via ProposedStart/ProposedEnd ([MS-OXWSMTGS] §2.2.4.16
+    // MeetingRegistrationResponseObjectType — xs:dateTime values). All of
+    // them are read from the response object's own XML block: the local-name
+    // scan would otherwise match the SOAP envelope's `s:Body` (or any other
+    // Body-named element) and leak envelope text into the email.
+    let response_object_tag: &[u8] = match decision {
+        ResponseDecision::Accept => b"AcceptItem",
+        ResponseDecision::Tentative => b"TentativelyAcceptItem",
+        ResponseDecision::Decline => b"DeclineItem",
+    };
+    let response_object = extract_first_tag_block(body, response_object_tag);
+    let reply_body_text = response_object.as_deref().and_then(|object_xml| {
+        extract_first_tag_text(object_xml, b"Body").filter(|t| !t.trim().is_empty())
+    });
+    // Both proposed times are needed for the new-time proposal to be
+    // delivered ([MS-OXWSMTGS] §2.2.4.16 pairs them); the COUNTER send in
+    // the RSVP pipeline requires both.
+    let proposed_start = response_object
+        .as_deref()
+        .and_then(|object_xml| extract_first_tag_text(object_xml, b"ProposedStart"))
+        .and_then(|v| chrono::DateTime::parse_from_rfc3339(&v).ok())
+        .map(|dt| dt.with_timezone(&Utc));
+    let proposed_end = response_object
+        .as_deref()
+        .and_then(|object_xml| extract_first_tag_text(object_xml, b"ProposedEnd"))
+        .and_then(|v| chrono::DateTime::parse_from_rfc3339(&v).ok())
+        .map(|dt| dt.with_timezone(&Utc));
+
+    let req = RsvpRequest {
+        decision,
+        // EWS response objects address the series as a whole; Outlook scopes
+        // per-instance responses on its own calendar item, not through this
+        // operation.
+        instance_id: None,
+        send_reply: true,
+        reply_body_text,
+        proposed_start,
+        proposed_end,
     };
 
-    // Only the raw MIME blob (`blobId`) is consumed here — body values
-    // are not needed for the meeting-request download.
-    let email = match jmap
-        .get_email(&account_id, &jmap_id, &auth.username, &auth.password, false)
-        .await
-    {
-        Ok(Some(e)) => e,
-        Ok(None) | Err(_) => {
+    // Step 3: the shared RSVP pipeline — idempotent duplicate suppression,
+    // organizer self-response guard, local attendee-copy PARTSTAT update, and
+    // iTIP delivery to the organizer.
+    let source = RsvpSource::Email {
+        jmap_email_id: jmap_id,
+    };
+    let outcome =
+        match rsvp::apply_rsvp(state, &auth.username, &password_secret, &source, &req).await {
+            Ok(outcome) => outcome,
+            Err(failure) => {
+                return match failure {
+                    ResolveFailure::NotFound => operation_error_response(
+                        &EwsAction::CreateItem,
+                        "ErrorItemNotFound",
+                        "Referenced meeting request email not found",
+                        StatusCode::OK,
+                    ),
+                    ResolveFailure::InvalidItem => operation_error_response(
+                        &EwsAction::CreateItem,
+                        "ErrorInvalidRequest",
+                        "Referenced item is not a meeting request",
+                        StatusCode::OK,
+                    ),
+                    ResolveFailure::ServerError => operation_error_response(
+                        &EwsAction::CreateItem,
+                        "ErrorInternalServerError",
+                        "Failed to resolve the meeting request",
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                    ),
+                };
+            }
+        };
+
+    if outcome.status != crate::meeting::STATUS_SUCCESS {
+        if outcome.self_notify_suppressed {
+            // [MS-OXWSCDATA]: "the meeting organizer cannot accept / decline /
+            // tentatively accept the meeting. Only attendees can respond to
+            // meeting requests."
+            let code = match decision {
+                ResponseDecision::Accept => "ErrorCalendarIsOrganizerForAccept",
+                ResponseDecision::Decline => "ErrorCalendarIsOrganizerForDecline",
+                ResponseDecision::Tentative => "ErrorCalendarIsOrganizerForTentative",
+            };
             return operation_error_response(
                 &EwsAction::CreateItem,
-                "ErrorItemNotFound",
-                "Referenced meeting request email not found",
+                code,
+                "The meeting organizer cannot respond to their own meeting request",
                 StatusCode::OK,
             );
         }
-    };
-
-    let Some(blob_id) = email.blob_id.as_ref().filter(|b| !b.is_empty()) else {
-        return operation_error_response(
-            &EwsAction::CreateItem,
-            "ErrorItemNotFound",
-            "Meeting request email has no downloadable blob",
-            StatusCode::OK,
-        );
-    };
-
-    let raw_mime = match jmap
-        .download_blob(&account_id, blob_id, &auth.username, &password_secret)
-        .await
-    {
-        Ok(bytes) => bytes,
-        Err(e) => {
-            tracing::error!(error = %e, "CreateItem meeting-response: blob download failed");
-            return operation_error_response(
+        return match outcome.status {
+            crate::meeting::STATUS_SERVER_ERROR => operation_error_response(
                 &EwsAction::CreateItem,
                 "ErrorInternalServerError",
-                "Failed to download meeting request",
+                "Meeting response could not be delivered; retry the operation",
                 StatusCode::INTERNAL_SERVER_ERROR,
-            );
-        }
-    };
-
-    // S/MIME certificates in externally received messages are deliberately
-    // NOT harvested into the GAL: verifying signer-to-identity binding
-    // requires CMS signature verification plus a trusted certificate chain,
-    // which MIME traffic here does not establish. Only operator-seeded
-    // certificates and the authenticated sender's own outbound certificates
-    // enter the GAL store (see smime.rs harvest_and_store call sites).
-
-    let Some(ics) = crate::email::extract_meeting_request_ics(&raw_mime) else {
-        return operation_error_response(
-            &EwsAction::CreateItem,
-            "ErrorInvalidRequest",
-            "Meeting request email contains no METHOD:REQUEST iCalendar",
-            StatusCode::OK,
-        );
-    };
-
-    let Some(invitation) = crate::meeting::parse_meeting_request(&ics) else {
-        return operation_error_response(
-            &EwsAction::CreateItem,
-            "ErrorInvalidRequest",
-            "Failed to parse meeting request iCalendar",
-            StatusCode::OK,
-        );
-    };
-
-    // Step 4: deliver the iTIP REPLY to the organizer via SMTP.
-    match crate::meeting::submit_meeting_response(
-        state,
-        &invitation,
-        decision,
-        &auth.username,
-        &password_secret,
-    )
-    .await
-    {
-        Ok(message_id) => {
-            tracing::info!(
-                target: "ews",
-                uid = %invitation.uid,
-                decision = ?decision,
-                message_id = %message_id,
-                "Sent iTIP reply for meeting-response object"
-            );
-        }
-        Err(e) => {
-            // SMTP/JMAP submission unavailable. Log but still report success to
-            // Outlook: the local calendar has the reply recorded (EWS clients
-            // treat Accept/Decline as authoritative on the local calendar) and
-            // re-trying delivery is the gateway's responsibility, not the
-            // client's. We surface the failure in logs rather than blocking UI.
-            tracing::warn!(
-                error = %e,
-                uid = %invitation.uid,
-                decision = ?decision,
-                "Could not deliver iTIP reply; meeting response recorded locally only"
-            );
-        }
+            ),
+            _ => operation_error_response(
+                &EwsAction::CreateItem,
+                "ErrorInvalidRequest",
+                "The meeting response could not be applied to the referenced item",
+                StatusCode::OK,
+            ),
+        };
     }
 
-    // Outlook manages the local calendar copy itself via subsequent
-    // CreateItem / SyncFolderItems calls on the Calendar folder (which the
-    // gateway already handles over CalDAV). The gateway's C4 responsibility
-    // for AcceptItem / DeclineItem / TentativelyAcceptItem is the iTIP
-    // delivery to the organizer, performed above. The meeting-response message
-    // object Outlook expects in the Inbox is synthesised below.
+    if let Some(mid) = outcome.reply_message_id.as_deref() {
+        tracing::info!(
+            target: "ews",
+            message_id = %mid,
+            decision = ?decision,
+            "Sent iTIP reply for meeting-response object"
+        );
+    }
+    if let Some(mid) = outcome.counter_message_id.as_deref() {
+        tracing::info!(
+            target: "ews",
+            message_id = %mid,
+            decision = ?decision,
+            "Sent iTIP counter proposal for meeting-response object"
+        );
+    }
 
-    // Build a CreateItemResponse echoing a new ItemId for the response object
-    // (Outlook expects a created item for the meeting-response message class).
+    // Step 4: build a CreateItemResponse echoing a new ItemId for the
+    // response object (Outlook expects a created item for the
+    // meeting-response message class).
+    let uid_for_id = outcome.calendar_server_id.as_deref().unwrap_or("meeting");
     let new_id = format!(
         "mr-{}-{}",
-        invitation.uid,
+        uid_for_id,
         chrono::Utc::now().timestamp_millis()
     );
     let change_key = new_id.clone();
     let message_class = match decision {
-        crate::meeting::ResponseDecision::Accept => "IPM.Schedule.Meeting.Resp.Pos",
-        crate::meeting::ResponseDecision::Decline => "IPM.Schedule.Meeting.Resp.Neg",
-        crate::meeting::ResponseDecision::Tentative => "IPM.Schedule.Meeting.Resp.Tent",
+        ResponseDecision::Accept => "IPM.Schedule.Meeting.Resp.Pos",
+        ResponseDecision::Decline => "IPM.Schedule.Meeting.Resp.Neg",
+        ResponseDecision::Tentative => "IPM.Schedule.Meeting.Resp.Tent",
     };
     let item_xml = format!(
         r#"<t:CalendarItem><t:ItemId Id="{id}" ChangeKey="{ck}"/><t:ItemClass>{cls}</t:ItemClass></t:CalendarItem>"#,
@@ -11157,5 +11210,225 @@ mod tests {
                 .is_ok(),
             "a public address should be accepted"
         );
+    }
+
+    /// In-memory AppState with email enabled and JMAP pointed at an
+    /// unroutable loopback endpoint — enough to pass the meeting-response
+    /// gates and drive the RSVP pipeline deterministically into a backend
+    /// failure.
+    async fn meeting_test_state() -> Arc<crate::models::AppState> {
+        let storage = crate::storage::Storage::new("sqlite::memory:")
+            .await
+            .expect("in-memory storage");
+        storage.init_schema().await.expect("schema init");
+        let cfg = crate::config::Config {
+            jmap_base: "http://127.0.0.1:1".to_string(),
+            email_enabled: true,
+            mail_domain: "example.com".to_string(),
+            hmac_secret: SecretString::from("a".repeat(32)),
+            ..Default::default()
+        };
+        Arc::new(crate::models::AppState::new(cfg, Arc::new(storage)))
+    }
+
+    fn meeting_auth() -> AuthContext {
+        AuthContext {
+            username: "user@example.com".to_string(),
+            password: SecretString::from("pw"),
+        }
+    }
+
+    async fn response_body(resp: Response) -> String {
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .expect("response body");
+        String::from_utf8_lossy(&body).into_owned()
+    }
+
+    /// A CreateItem whose Items carry an object that is none of the three
+    /// meeting-response types is rejected up front with 400.
+    #[tokio::test]
+    async fn meeting_response_object_unrecognized_is_rejected() {
+        let state = meeting_test_state().await;
+        let body = r#"<m:CreateItem><m:Items><t:FooItem/></t:Items></m:CreateItem>"#;
+        let resp = handle_meeting_response_object(&state, &meeting_auth(), body).await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let text = response_body(resp).await;
+        assert!(text.contains("ErrorInvalidRequest"), "{text}");
+    }
+
+    /// [MS-OXWSMTGS]: the response object must reference the meeting-request
+    /// message; a missing ReferenceItemId is a schema violation.
+    #[tokio::test]
+    async fn meeting_response_object_requires_reference_item_id() {
+        let state = meeting_test_state().await;
+        let body = r#"<m:CreateItem><m:Items><t:AcceptItem/></t:Items></m:CreateItem>"#;
+        let resp = handle_meeting_response_object(&state, &meeting_auth(), body).await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let text = response_body(resp).await;
+        assert!(text.contains("ErrorSchemaValidation"), "{text}");
+    }
+
+    /// The full pipeline must be wired: AcceptItem with a reference id
+    /// resolves through JMAP, fails against the unroutable backend, and maps
+    /// ResolveFailure::ServerError to ErrorInternalServerError — not a panic,
+    /// a bare 500 body, or a success response.
+    #[tokio::test]
+    async fn meeting_response_object_backend_failure_maps_to_internal_error() {
+        let state = meeting_test_state().await;
+        let body = r#"<m:CreateItem><m:Items><t:AcceptItem><t:ReferenceItemId Id="em-anything" ChangeKey="ck"/></t:AcceptItem></t:Items></m:CreateItem>"#;
+        let resp = handle_meeting_response_object(&state, &meeting_auth(), body).await;
+        assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let text = response_body(resp).await;
+        assert!(text.contains("ErrorInternalServerError"), "{text}");
+        // EWS error semantics: a ResponseClass="Error" ResponseMessage in a
+        // well-formed SOAP envelope (not a bare text body).
+        assert!(text.contains(r#"ResponseClass="Error""#), "{text}");
+    }
+
+    /// With email disabled the meeting-response objects fail fast with a
+    /// Forbidden gate — no pipeline access at all.
+    #[tokio::test]
+    async fn meeting_response_object_requires_email_enabled() {
+        let storage = crate::storage::Storage::new("sqlite::memory:")
+            .await
+            .expect("in-memory storage");
+        storage.init_schema().await.expect("schema init");
+        let cfg = crate::config::Config {
+            email_enabled: false,
+            jmap_base: "http://127.0.0.1:1".to_string(),
+            mail_domain: "example.com".to_string(),
+            hmac_secret: SecretString::from("a".repeat(32)),
+            ..Default::default()
+        };
+        let state = Arc::new(crate::models::AppState::new(cfg, Arc::new(storage)));
+        let body = r#"<m:CreateItem><m:Items><t:AcceptItem><t:ReferenceItemId Id="em-anything" ChangeKey="ck"/></t:AcceptItem></t:Items></m:CreateItem>"#;
+        let resp = handle_meeting_response_object(&state, &meeting_auth(), body).await;
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+        let text = response_body(resp).await;
+        assert!(text.contains("Email operations are not enabled"), "{text}");
+    }
+
+    /// The reply Body of a meeting response object is read from the response
+    /// object's own XML block. In a full SOAP request the envelope's
+    /// `<s:Body>` shares the `Body` local name, so the unscoped text scan
+    /// swallows the envelope: when the object carries no `t:Body`, every
+    /// stray text node in the envelope becomes the "reply body" of the email.
+    #[test]
+    fn meeting_reply_body_is_scoped_to_the_response_object() {
+        // The attendee typed a reply — scoped extraction finds it.
+        let soap_with_reply = concat!(
+            r#"<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope">"#,
+            r#"<s:Header><t:RequestServerVersion Version="Exchange2013"/></s:Header>"#,
+            r#"<s:Body><m:CreateItem xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages">"#,
+            r#"<m:Items><t:AcceptItem xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types">"#,
+            r#"<t:ReferenceItemId Id="em-1" ChangeKey="ck"/>"#,
+            r#"<t:Body BodyType="Text">Will be there!</t:Body>"#,
+            r#"</t:AcceptItem></m:Items></m:CreateItem></s:Body></s:Envelope>"#,
+        );
+        let block = extract_first_tag_block(soap_with_reply, b"AcceptItem").expect("block");
+        assert!(block.starts_with("<t:AcceptItem"));
+        assert!(block.ends_with("</t:AcceptItem>"));
+        assert_eq!(
+            extract_first_tag_text(&block, b"Body").as_deref(),
+            Some("Will be there!")
+        );
+
+        // No reply Body typed: the unscoped scan still "finds" a Body — the
+        // envelope's s:Body, aggregating its textual content (here the
+        // proposal timestamps) into a bogus reply text. The scoped scan
+        // correctly yields None, so the pipeline renders its default text.
+        let soap_without_reply = concat!(
+            r#"<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope">"#,
+            r#"<s:Body><m:CreateItem>"#,
+            r#"<m:Items><t:TentativelyAcceptItem>"#,
+            r#"<t:ReferenceItemId Id="em-1" ChangeKey="ck"/>"#,
+            r#"<t:ProposedStart>2026-07-10T12:00:00Z</t:ProposedStart>"#,
+            r#"<t:ProposedEnd>2026-07-10T13:00:00Z</t:ProposedEnd>"#,
+            r#"</t:TentativelyAcceptItem></m:Items></m:CreateItem></s:Body></s:Envelope>"#,
+        );
+        let leaked =
+            extract_first_tag_text(soap_without_reply, b"Body").expect("unscoped matches s:Body");
+        assert!(
+            leaked.contains("2026-07-10T12:00:00Z"),
+            "unscoped scan leaks envelope text: {leaked}"
+        );
+        let block = extract_first_tag_block(soap_without_reply, b"TentativelyAcceptItem")
+            .expect("tentative block");
+        assert_eq!(
+            extract_first_tag_text(&block, b"Body").filter(|t| !t.trim().is_empty()),
+            None,
+            "scoped scan must not treat the envelope as the reply Body"
+        );
+    }
+
+    /// Without a reply Body (or with a whitespace-only one) the handler passes
+    /// `None` and the RSVP pipeline renders its default reply text — a blank
+    /// `t:Body` element must never surface as an empty email body.
+    #[test]
+    fn meeting_reply_body_absent_or_blank_yields_none() {
+        let soap_without_body = concat!(
+            r#"<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope"><s:Body>"#,
+            r#"<m:CreateItem><m:Items><t:AcceptItem>"#,
+            r#"<t:ReferenceItemId Id="em-1" ChangeKey="ck"/>"#,
+            r#"</t:AcceptItem></m:Items></m:CreateItem></s:Body></s:Envelope>"#,
+        );
+        let none_block = extract_first_tag_block(soap_without_body, b"AcceptItem").expect("block");
+        assert_eq!(
+            extract_first_tag_text(&none_block, b"Body").filter(|t| !t.trim().is_empty()),
+            None
+        );
+
+        let soap_blank_body = concat!(
+            r#"<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope"><s:Body>"#,
+            r#"<m:CreateItem><m:Items><t:AcceptItem>"#,
+            r#"<t:ReferenceItemId Id="em-1" ChangeKey="ck"/>"#,
+            r#"<t:Body BodyType="Text">   </t:Body>"#,
+            r#"</t:AcceptItem></m:Items></m:CreateItem></s:Body></s:Envelope>"#,
+        );
+        let blank_block = extract_first_tag_block(soap_blank_body, b"AcceptItem").expect("block");
+        assert_eq!(
+            extract_first_tag_text(&blank_block, b"Body").filter(|t| !t.trim().is_empty()),
+            None
+        );
+    }
+
+    /// The response-object block extraction is nesting-aware: a same-name
+    /// descendant is content, not a terminator, and the TentativelyAcceptItem
+    /// decision picks its own tag — the `AcceptItem` local name must not
+    /// match it.
+    #[test]
+    fn extract_first_tag_block_matches_local_names_nesting_aware() {
+        let xml = concat!(
+            r#"<m:CreateItem><m:Items><t:TentativelyAcceptItem>"#,
+            r#"<t:ReferenceItemId Id="em-1" ChangeKey="ck"/>"#,
+            r#"<t:Body BodyType="Text">Maybe</t:Body>"#,
+            r#"</t:TentativelyAcceptItem></m:Items></m:CreateItem>"#,
+        );
+        let block =
+            extract_first_tag_block(xml, b"TentativelyAcceptItem").expect("tentative block");
+        assert_eq!(
+            extract_first_tag_text(&block, b"Body").as_deref(),
+            Some("Maybe")
+        );
+        // The shorter response-object name must not match the longer one.
+        assert!(extract_first_tag_block(xml, b"AcceptItem").is_none());
+
+        // Nesting: an element with a same-named child spans both.
+        let nested = "<a:Body>outer <a:Body>inner</a:Body> tail</a:Body>";
+        let block = extract_first_tag_block(nested, b"Body").expect("nested block");
+        assert_eq!(block, nested);
+        assert!(extract_first_tag_block(nested, b"Nothing").is_none());
+
+        // Self-closing match: the block is the empty element itself.
+        let self_closed = "<m:Items><t:AcceptItem/></m:Items>";
+        assert_eq!(
+            extract_first_tag_block(self_closed, b"AcceptItem").as_deref(),
+            Some("<t:AcceptItem/>")
+        );
+
+        // Unterminated document: no block, not a panic.
+        let unterminated = "<m:Items><t:AcceptItem><t:Body>x</t:Body>";
+        assert!(extract_first_tag_block(unterminated, b"AcceptItem").is_none());
     }
 }

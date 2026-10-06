@@ -145,6 +145,45 @@ EAS specs v20250520 (16.1); older EAS compat NOT needed.
   dead attachment.rs renderers removed. Suite: 928 tests green
   (lib 892 + fixtures 22 + snapshots 11 + jmap_calendar_deploy 2 + doc 1),
   clippy 0 warnings, release build warning-free.
+- AUDIT.md §13 (MeetingResponse/iMIP integrity) is COMPLETE and its section
+  documents the delivered behavior. One RSVP pipeline (meeting/rsvp.rs
+  `apply_rsvp`) serves both front doors (EAS MeetingResponse [MS-ASCMD]
+  §2.2.1.11 via eas.rs, EWS AcceptItem/TentativelyAcceptItem/DeclineItem via
+  ews.rs `handle_meeting_response_object`): organizer self-response rejected
+  pre-side-effect (status 2 / ErrorCalendarIsOrganizer*), instance scoping
+  per §2.2.3.92.1 (series master vs exception, RECURRENCE-ID REPLY with the
+  instance's own times), attendee copy PARTSTAT/ResponseType/X-MS-APPOINTMENT-
+  REPLY-TIME write-through with SCHEDULE-AGENT=CLIENT pinning, SMTP delivery
+  with the user's own identity, duplicate-RSVP idempotence via the
+  `meeting_rsvp` store (schema v9).
+- §13 code-review triage COMPLETE (5 substantive findings, all fixed):
+  (1) idempotence is revision-aware — the stored row carries the REQUEST
+  SEQUENCE it answered; `is_duplicate_rsvp` suppresses only an exact
+  (decision, SEQUENCE) repeat, so an organizer reschedule (SEQUENCE bump,
+  RFC 5546 §3.2.1.4) re-delivers the same decision; (2) REPLY and COUNTER are
+  split SMTP senders (`ItipSendCtx` Copy-context + (ctx, invitation, req)
+  signatures) with per-method addressing and a shared `reply_window` helper
+  for instance times; the COUNTER is never recorded so a failed COUNTER
+  retry re-proposes without a second REPLY; (3) recurrence expansion is
+  DST-aware — the event's TZID (chrono-tz) anchors the wall clock (weekly
+  09:00 Europe/Berlin → 08:00Z winter, 07:00Z summer; the summer instant is
+  accepted), unparseable timezones fail OPEN, and the rrule-iterator scan
+  terminates at the first occurrence past the target (rrule's `before()`
+  does NOT apply to direct iteration — verified in the 0.14.0 source);
+  (4) organizer-bound patching (Sourcery tampering concern) — the stored
+  copy is re-read before patching and only patched when its organizer
+  matches the REQUEST's (`same_meeting_organizer`, normalized: mailto:
+  stripped, case-insensitive), so UID collisions/forged REQUESTs can't
+  clobber unrelated events and the decision lands on the copy as it exists
+  now; (5) EWS response-object XML is extracted nesting-aware
+  (`extract_first_tag_block` in ews.rs) — reply Body and ProposedStart/End
+  are read from the AcceptItem/TentativelyAcceptItem/DeclineItem block; the
+  old whole-envelope scan matched the SOAP `s:Body` and leaked envelope text
+  into the reply email. Storage: `MeetingRsvpRecord<'a>` params struct
+  (MeetingStateParams convention) replaces the 8-arg upsert. Suite after
+  fixes: 974 green (lib 938 + fixtures 22 + snapshots 11 +
+  jmap_calendar_deploy 2 + doc 1), clippy 0, fmt clean on touched files
+  (storage.rs, rsvp.rs, ews.rs), release warning-free.
 - PR #1969 bot-review triage COMPLETE (commit resolving 31 inline findings:
   28 fixed, 3 refuted with [MS-ASWBXML]/[MS-ASCMD] evidence — HasAttachments
   has no code-page-2 token; per-Fetch `<Options>` parsing is depth-agnostic;
@@ -181,3 +220,47 @@ EAS specs v20250520 (16.1); older EAS compat NOT needed.
   2024 (rustfmt needs `--edition 2024` for let-chains). `cargo fmt --check`
   flags eas.rs in the committed tree (pre-existing §10 merge state) — fmt is
   NOT a repo gate; only fmt files you touch.
+
+## §13 MeetingResponse/iMIP integrity (DELIVERED)
+- One shared pipeline `meeting::rsvp::apply_rsvp` backs both doors: EAS
+  `MeetingResponse` (eas.rs `handle_meeting_response`, 7 params incl.
+  `&Wbxml` receiver pattern `Wbxml::new()` in tests) and EWS
+  `AcceptItem`/`TentativelyAcceptItem`/`DeclineItem` (ews.rs
+  `handle_meeting_response_object`, reached from the CreateItem dispatch by
+  `body.contains("<t:AcceptItem")` etc.).
+- Order of guards in apply_rsvp: lone-proposed-time → 2; resolve (Email→JMAP
+  blob+`extract_meeting_request_ics` requires METHOD:REQUEST + organizer,
+  CalendarItem→item_map row then JMAP `jmap://` href or CalDAV read);
+  InstanceId-on-email → 2; no-RRULE-with-InstanceId → 146; organizer
+  self-response → 2 (+`self_notify_suppressed`, EWS maps to
+  ErrorCalendarIsOrganizer{Accept,Decline,Tentative}); instance existence →
+  2; duplicate read; local copy update (failure → 3, fatal); iTIP delivery
+  (send failed → 3, retry safe); RSVP recorded only AFTER successful send.
+- Key helpers: `instance_key_for` (None→"" series, Some(dt)→
+  `%Y%m%dT%H%M%SZ`), `instance_exists` (pre-start/EXDATE/deleted-exception
+  rejection, `rrule` crate expansion, fail-open `unwrap_or(true)` on
+  uninterpretable rules), `patch_instance_response` (exception created when
+  absent with `start=Some(instance_id)`, roster inherited from master;
+  master roster NEVER rewritten by instance responses),
+  `apply_attendee_decision` (case-insensitive normalize_email match;
+  unknown responder appended with SCHEDULE-AGENT CLIENT),
+  `mark_scheduling_client_side` (RFC 6638 §7.1 pin on ALL attendees).
+- Declines never create a copy (Exchange semantics) → `CalendarId` only for
+  accept/tentative. COUNTER only when BOTH proposed times present; delivered
+  as a second send_imip with `method: Some("COUNTER")`.
+- Response WBXML: code page 8 (MeetingResponse root). eas.rs handler tests
+  drive `handle_meeting_response` with `&Wbxml::new()` and
+  `&SecretString::from(...)` (handler takes refs!). extract_first_tag_text is
+  quick-xml LOCAL-name based, so `b"Data"` matches `<AirSyncBase:Data>`.
+- EWS error mapping: NotFound→ErrorItemNotFound (200), InvalidItem→
+  ErrorInvalidRequest (200), ServerError→ErrorInternalServerError (500),
+  all as ResponseClass="Error" ResponseMessages (EWS does NOT use soap:Fault
+  for operation errors).
+- New tests this item: 7 eas.rs handler tests (incl. full as_wbxml round-trip
+  decode of a real response), 4 ews.rs handler tests (needs meeting_test_state
+  harness: `Config{jmap_base: "http://127.0.0.1:1", email_enabled: true,
+  hmac_secret: 32×'a', ..Default}`, AppState::new(cfg, Arc(storage)) — jmap
+  client is auto-created when email_enabled && jmap_base set), 1 storage.rs
+  idempotence-store test. Suite: 964 green (928 lib + 22 fixtures + 11
+  snapshots + 2 jmap_calendar_deploy + 1 doc), clippy 0, fmt clean on
+  rsvp.rs/message.rs/ews.rs/storage.rs (eas.rs pre-existing exception).

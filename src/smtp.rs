@@ -63,6 +63,10 @@ pub struct SendImipParams<'a> {
     pub text_body: Option<&'a str>,
     pub username: &'a str,
     pub password: &'a SecretString,
+    /// iTIP method carried by the `text/calendar` MIME parts (RFC 6047 §2:
+    /// the Content-Type `method` parameter MUST match the iCalendar
+    /// `METHOD` property). `None` keeps the historical default of `REPLY`.
+    pub method: Option<&'a str>,
 }
 
 impl SmtpClient {
@@ -284,6 +288,9 @@ impl SmtpClient {
     /// `METHOD:REPLY` produced by [`crate::meeting::MeetingMessageGenerator`].
     /// Optional `text_body` is sent as an alternative `text/plain` part so
     /// mail clients without calendar support still render a readable reply.
+    /// `params.method` selects the iTIP method carried by the MIME
+    /// Content-Type (RFC 6047 §2: it MUST match the iCalendar `METHOD`);
+    /// `None` defaults to `REPLY`.
     pub async fn send_imip(&self, params: &SendImipParams<'_>) -> anyhow::Result<SendResult> {
         let from = params.from;
         let to = &params.to;
@@ -292,6 +299,7 @@ impl SmtpClient {
         let text_body = params.text_body;
         let username = params.username;
         let password = params.password;
+        let method = imip_calendar_content_type(params.method);
         if to.is_empty() {
             return Err(anyhow::anyhow!("iMIP reply has no recipients (organizer)"));
         }
@@ -308,12 +316,10 @@ impl SmtpClient {
             .date_now()
             .header(lettre::message::header::ContentDisposition::inline())
             // RFC 6047 §3.2: iMIP messages MUST set MIME-Version and a
-            // Content-Type of text/calendar; method=REPLY.
+            // Content-Type of text/calendar matching the iCalendar METHOD.
             .header(
-                lettre::message::header::ContentType::parse(
-                    "text/calendar; method=REPLY; charset=utf-8",
-                )
-                .map_err(|e| anyhow::anyhow!("Invalid iMIP content-type: {}", e))?,
+                lettre::message::header::ContentType::parse(&method)
+                    .map_err(|e| anyhow::anyhow!("Invalid iMIP content-type: {}", e))?,
             );
 
         for recipient in to {
@@ -325,10 +331,8 @@ impl SmtpClient {
 
         let calendar_part = SinglePart::builder()
             .header(
-                lettre::message::header::ContentType::parse(
-                    "text/calendar; method=REPLY; charset=utf-8",
-                )
-                .map_err(|e| anyhow::anyhow!("Invalid iMIP part content-type: {}", e))?,
+                lettre::message::header::ContentType::parse(&method)
+                    .map_err(|e| anyhow::anyhow!("Invalid iMIP part content-type: {}", e))?,
             )
             .header(lettre::message::header::ContentDisposition::inline())
             .body(ics.to_string());
@@ -513,6 +517,22 @@ impl SmtpClient {
         }
     }
 }
+/// Build the iMIP `text/calendar` Content-Type for a given iTIP method.
+///
+/// RFC 6047 §2: the Content-Type `method` parameter MUST match the iCalendar
+/// `METHOD` property of the body. The gateway only emits REPLY (§3.2.10
+/// scheduling responses) and COUNTER (§3.2.11 counter-proposals); anything
+/// other than `COUNTER` falls back to the historical `REPLY` default so a
+/// misparameterized call can never produce a Content-Type that disagrees
+/// with the REPLY bodies the rest of the pipeline builds.
+fn imip_calendar_content_type(method: Option<&str>) -> String {
+    let method = match method {
+        Some("COUNTER") => "COUNTER",
+        _ => "REPLY",
+    };
+    format!("text/calendar; method={method}; charset=utf-8")
+}
+
 /// Build the `winmail.dat` TNEF blob the iMIP reply attaches (audit §2f.3).
 /// The blob carries the reply subject/body plus a `PidTagTnefCorrelationKey`
 /// named property set to the iCalendar UID, so a recipient Exchange/Outlook
