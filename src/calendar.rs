@@ -4,7 +4,7 @@ use crate::ical_parser;
 use crate::util::nfc;
 use crate::util::resolve_xml_reference;
 use anyhow::{Result, anyhow};
-use chrono::{NaiveDate, NaiveDateTime, TimeZone, Utc};
+use chrono::{NaiveDate, NaiveDateTime, Offset, TimeZone, Utc};
 use chrono_tz::Tz;
 use derive_more::Debug;
 use itertools::Itertools;
@@ -436,6 +436,27 @@ impl EasRecurrence {
     }
 }
 
+/// True when the value is an offset-less (`xs:dateTime` naive) date-time: it
+/// carries neither a `Z` suffix nor a `±hh:mm` suffix, so the caller must
+/// localise it in the request's timezone rather than reading it as UTC.
+pub(crate) fn datetime_is_naive(val: &str) -> bool {
+    let val = val.trim();
+    !val.ends_with('Z') && !val.ends_with('z') && !naive_has_offset(val)
+}
+
+/// True when the value carries an explicit `±hh:mm`/`±hhmm` UTC offset.
+fn naive_has_offset(val: &str) -> bool {
+    let Some(pos) = val.rfind(['+', '-']) else {
+        return false;
+    };
+    // Only a sign in the TIME part (after the 10th char) is an offset; a sign
+    // in a date part would be malformed input anyway.
+    pos >= 10
+        && val[pos + 1..]
+            .trim_start_matches(|c: char| c.is_ascii_digit())
+            .starts_with(':')
+}
+
 pub fn parse_datetime(val: &str) -> Option<chrono::DateTime<Utc>> {
     let val = val.trim();
     if val.ends_with('Z') {
@@ -473,6 +494,26 @@ pub fn parse_datetime(val: &str) -> Option<chrono::DateTime<Utc>> {
                     .map(|dt| Utc.from_utc_datetime(&dt))
             })
     }
+}
+
+/// Parse an EWS `xs:dateTime` in the request's timezone when the value is
+/// naive (no `Z`, no offset). Outlook's EWS stack serialises item start/end
+/// without an offset and sets the `t:TimeZoneContext` SOAP header (or
+/// `t:StartTimeZoneId`) instead; reading such values as UTC shifts every
+/// event by the zone's UTC offset — the §14 offset-drift failure. Values that
+/// already carry an offset (or no `zone`) parse exactly as `parse_datetime`.
+pub(crate) fn parse_datetime_in_zone(val: &str, zone: Option<Tz>) -> Option<chrono::DateTime<Utc>> {
+    let Some(zone) = zone else {
+        return parse_datetime(val);
+    };
+    let val = val.trim();
+    if !datetime_is_naive(val) || !val.contains('T') {
+        return parse_datetime(val);
+    }
+    let naive = NaiveDateTime::parse_from_str(val, "%Y%m%dT%H%M%S")
+        .or_else(|_| NaiveDateTime::parse_from_str(val, "%Y-%m-%dT%H:%M:%S"))
+        .ok()?;
+    localize_gap_tolerant(naive, zone)
 }
 
 fn unescape_ical_text(input: &str) -> String {
@@ -556,6 +597,70 @@ fn parse_tzid_from_key(key: &str) -> Option<String> {
     parse_ical_param(key, "TZID")
 }
 
+/// Resolve an iCalendar `TZID` parameter value to a zone the gateway can
+/// interpret `DTSTART`/`DTEND`/`RECURRENCE-ID`/`EXDATE` values against, in
+/// this order:
+///
+/// 1. the id is already an IANA id (the canonical case for Stalwart and this
+///    gateway's own `render_ics` emission);
+/// 2. the id is a Windows registry id or display name (`"W. Europe Standard
+///    Time"`, `"(UTC+01:00) Amsterdam, Berlin, ..."`) — Exchange-authored
+///    iCalendar carries these;
+/// 3. the authoritative `VTIMEZONE` component in the same file identifies the
+///    zone structurally by its transition rules, so even a fully custom
+///    `TZID` string (e.g. `"(GMT-08.00) Pacific Time (US & Canada)/Tijuana"`,
+///    the form [MS-ASCMD] documents) resolves to the right IANA zone;
+/// 4. only with no `VTIMEZONE` left to consult, a `(GMT±hh:mm)`-style offset
+///    id — a lossy fixed-offset degradation that must never preempt the
+///    DST-preserving structural match (a `"(GMT-08.00) Pacific ..."` TZID
+///    that collapses to `Etc/GMT+8` silently shifts every summer event by an
+///    hour).
+///
+/// Without this, an unresolvable `TZID` falls back to naive-UTC parsing of the
+/// datetime and every such event drifts by its UTC offset — the exact
+/// "round-trips Stalwart CalDAV without offset drift" failure §14 calls out.
+fn resolve_ical_tzid(tzid: &str, vtimezone: Option<&str>) -> Option<String> {
+    let trimmed = tzid.trim().trim_matches('"');
+    if trimmed.is_empty() {
+        return None;
+    }
+    if trimmed.parse::<Tz>().is_ok() {
+        return Some(trimmed.to_string());
+    }
+    if let Some(iana) = crate::timezone::windows_named_timezone_to_iana(trimmed)
+        && iana.parse::<Tz>().is_ok()
+    {
+        return Some(iana);
+    }
+    if let Some(block) = vtimezone
+        && let Some(iana) = crate::timezone::match_vtimezone_to_iana(block)
+    {
+        return Some(iana);
+    }
+    crate::timezone::utc_offset_name_to_iana(trimmed)
+}
+
+/// Map a wall-clock datetime in `tz` to its UTC instant, gap-tolerant: an
+/// ambiguous (fold) time takes the earlier mapping; a non-existent (gap)
+/// time maps with the offset in force just before the transition — the
+/// policy RFC 5545/RFC 7265 recommend and the same instant Outlook produces.
+/// chrono's `LocalResult` yields `None` for gaps and `Ambiguous` for folds,
+/// so the gap case probes the previous day for the pre-transition offset.
+fn localize_gap_tolerant(naive: NaiveDateTime, tz: Tz) -> Option<chrono::DateTime<Utc>> {
+    match naive.and_local_timezone(tz) {
+        chrono::LocalResult::Single(dt) => Some(dt.with_timezone(&Utc)),
+        chrono::LocalResult::Ambiguous(earliest, _) => Some(earliest.with_timezone(&Utc)),
+        chrono::LocalResult::None => {
+            let before = (naive - chrono::Duration::hours(12))
+                .and_local_timezone(tz)
+                .single()?;
+            let offset = before.offset().fix();
+            let utc = naive - chrono::Duration::seconds(offset.local_minus_utc() as i64);
+            Some(chrono::DateTime::<Utc>::from_naive_utc_and_offset(utc, Utc))
+        }
+    }
+}
+
 fn parse_datetime_with_tzid(val: &str, tzid: Option<&str>) -> Option<chrono::DateTime<Utc>> {
     if let Some(tzid) = tzid
         && !val.ends_with('Z')
@@ -563,23 +668,15 @@ fn parse_datetime_with_tzid(val: &str, tzid: Option<&str>) -> Option<chrono::Dat
     {
         if let Ok(local) = NaiveDateTime::parse_from_str(val, "%Y%m%dT%H%M%S")
             && let Ok(tz) = tzid.parse::<Tz>()
+            && let Some(dt) = localize_gap_tolerant(local, tz)
         {
-            if let Some(dt) = tz.from_local_datetime(&local).single() {
-                return Some(dt.with_timezone(&Utc));
-            }
-            if let Some(dt) = tz.from_local_datetime(&local).earliest() {
-                return Some(dt.with_timezone(&Utc));
-            }
+            return Some(dt);
         }
         if let Ok(local) = NaiveDateTime::parse_from_str(val, "%Y-%m-%dT%H:%M:%S")
             && let Ok(tz) = tzid.parse::<Tz>()
+            && let Some(dt) = localize_gap_tolerant(local, tz)
         {
-            if let Some(dt) = tz.from_local_datetime(&local).single() {
-                return Some(dt.with_timezone(&Utc));
-            }
-            if let Some(dt) = tz.from_local_datetime(&local).earliest() {
-                return Some(dt.with_timezone(&Utc));
-            }
+            return Some(dt);
         }
     }
     parse_datetime(val)
@@ -589,9 +686,16 @@ fn parse_duration_minutes(trigger: &str) -> Option<i32> {
     ical_parser::parse_ical_duration_minutes(trigger).ok()
 }
 
-fn parse_event_lines(lines: &[String]) -> CalendarEventFields {
+fn parse_event_lines(
+    lines: &[String],
+    tz_resolver: &mut dyn FnMut(&str) -> Option<String>,
+) -> CalendarEventFields {
     let mut fields = CalendarEventFields::default();
     let mut in_valarm = false;
+    // Resolved IANA id for the first TZID the event's date-time properties
+    // reference (DTSTART wins, then DTEND/RECURRENCE-ID, mirroring the
+    // first-write-wins order the fields struct already implements).
+    let mut resolved_zone: Option<String> = None;
 
     for line in lines {
         if line == "BEGIN:VALARM" {
@@ -617,6 +721,17 @@ fn parse_event_lines(lines: &[String]) -> CalendarEventFields {
             continue;
         }
 
+        // Resolve a `TZID` parameter once per distinct spelling; the raw id is
+        // kept for `fields.timezone` so an unresolvable id never overwrites a
+        // resolvable one.
+        let mut zone_for = |raw: Option<String>, resolved: &mut Option<String>| -> Option<String> {
+            let raw = raw?;
+            if resolved.is_none() {
+                *resolved = tz_resolver(&raw);
+            }
+            resolved.clone()
+        };
+
         match key {
             k if k.starts_with("SUMMARY") => fields.subject = Some(unescape_ical_text(value)),
             k if k.starts_with("DESCRIPTION") => {
@@ -627,7 +742,8 @@ fn parse_event_lines(lines: &[String]) -> CalendarEventFields {
             k if k.starts_with("DTSTAMP") => fields.dtstamp = parse_datetime(value),
             k if k.starts_with("DTSTART") => {
                 let tzid = parse_tzid_from_key(k);
-                fields.start = parse_datetime_with_tzid(value, tzid.as_deref());
+                let zone = zone_for(tzid.clone(), &mut resolved_zone);
+                fields.start = parse_datetime_with_tzid(value, zone.as_deref());
                 if fields.timezone.is_none() {
                     fields.timezone = tzid;
                 }
@@ -637,14 +753,16 @@ fn parse_event_lines(lines: &[String]) -> CalendarEventFields {
             }
             k if k.starts_with("DTEND") => {
                 let tzid = parse_tzid_from_key(k);
-                fields.end = parse_datetime_with_tzid(value, tzid.as_deref());
+                let zone = zone_for(tzid.clone(), &mut resolved_zone);
+                fields.end = parse_datetime_with_tzid(value, zone.as_deref());
                 if fields.timezone.is_none() {
                     fields.timezone = tzid;
                 }
             }
             k if k.starts_with("RECURRENCE-ID") => {
                 let tzid = parse_tzid_from_key(k);
-                fields.recurrence_id = parse_datetime_with_tzid(value, tzid.as_deref());
+                let zone = zone_for(tzid.clone(), &mut resolved_zone);
+                fields.recurrence_id = parse_datetime_with_tzid(value, zone.as_deref());
                 if fields.timezone.is_none() {
                     fields.timezone = tzid;
                 }
@@ -654,10 +772,10 @@ fn parse_event_lines(lines: &[String]) -> CalendarEventFields {
             }
             k if k.starts_with("RRULE") => fields.rrule = Some(value.to_string()),
             k if k.starts_with("EXDATE") => {
+                let tzid = parse_tzid_from_key(k);
+                let zone = zone_for(tzid, &mut resolved_zone);
                 for ex in value.split(',') {
-                    if let Some(dt) =
-                        parse_datetime_with_tzid(ex, parse_tzid_from_key(k).as_deref())
-                    {
+                    if let Some(dt) = parse_datetime_with_tzid(ex, zone.as_deref()) {
                         fields.exdates.push(dt);
                     }
                 }
@@ -756,8 +874,23 @@ pub fn parse_ics_event(ics: &str) -> Option<CalendarItem> {
     let mut derived_deleted = Vec::new();
     let mut pending_exceptions = Vec::new();
 
+    // TZID resolution memo for this file: a raw `TZID` parameter spelling maps
+    // to the IANA id the gateway interprets date-times against (see
+    // `resolve_ical_tzid`). Memoized because a recurring event repeats the
+    // same `TZID` on DTSTART, DTEND, EXDATE and every RECURRENCE-ID.
+    let mut tzid_memo: std::collections::HashMap<String, Option<String>> =
+        std::collections::HashMap::new();
+    let mut resolve = |tzid: &str| -> Option<String> {
+        if let Some(hit) = tzid_memo.get(tzid) {
+            return hit.clone();
+        }
+        let resolved = resolve_ical_tzid(tzid, timezone_blob.as_deref());
+        tzid_memo.insert(tzid.to_string(), resolved.clone());
+        resolved
+    };
+
     for block in split_ical_blocks(ics) {
-        let fields = parse_event_lines(&block);
+        let mut fields = parse_event_lines(&block, &mut resolve);
         if let Some(recurrence_id) = fields.recurrence_id {
             let exception = CalendarException {
                 deleted: fields.deleted,
@@ -786,6 +919,17 @@ pub fn parse_ics_event(ics: &str) -> Option<CalendarItem> {
         }
 
         let uid = fields.uid.unwrap_or_else(|| Uuid::new_v4().to_string());
+        // Store the RESOLVED IANA id, not the raw TZID spelling, so every
+        // downstream consumer (render_ics DTSTART;TZID, EAS `Calendar:Timezone`
+        // blob synthesis, recurrence expansion) interprets the event in the
+        // zone the `VTIMEZONE`/TZID actually denotes. The authoritative
+        // `VTIMEZONE` block itself is preserved verbatim in `timezone_blob`
+        // for byte-faithful re-emission to CalDAV.
+        if let Some(raw) = fields.timezone.as_deref()
+            && let Some(resolved) = resolve(raw)
+        {
+            fields.timezone = Some(resolved);
+        }
         let mut item = CalendarItem {
             uid,
             subject: fields.subject.unwrap_or_default(),
@@ -1882,6 +2026,25 @@ fn extract_ews_field_doc(doc: &Document, tag: &[u8]) -> Option<String> {
         .find_map(|n| n.text().map(|s| s.to_string()))
 }
 
+/// Extract the request-wide timezone from the SOAP `t:TimeZoneContext` header
+/// ([MS-OXWSCORE] §2.2.1.12): a `t:TimeZoneDefinition` child whose `Id`
+/// attribute (or element text, for the gateway's own legacy emits) carries the
+/// Windows timezone id Outlook serialises naive `xs:dateTime` values
+/// against. Searched document-wide because the header rides in the SOAP
+/// envelope, outside the operation element the per-item zone readers see.
+fn extract_ews_timezone_context(doc: &Document) -> Option<String> {
+    doc.descendants()
+        .filter(|n| n.is_element() && n.tag_name().name() == "TimeZoneContext")
+        .flat_map(|ctx| ctx.descendants())
+        .find(|n| n.is_element() && n.tag_name().name() == "TimeZoneDefinition")
+        .and_then(|def| {
+            def.attribute("Id")
+                .map(|s| s.to_string())
+                .or_else(|| def.text().map(|s| s.to_string()))
+                .filter(|s| !s.trim().is_empty())
+        })
+}
+
 /// Extract a timezone identifier from a `t:StartTimeZone`/`t:EndTimeZone`/
 /// `t:MeetingTimeZone` element. The canonical EWS wire form carries the id in
 /// an attribute — `Id` (StartTimeZone/EndTimeZone) or `TimeZoneName`
@@ -1891,6 +2054,12 @@ fn extract_ews_field_doc(doc: &Document, tag: &[u8]) -> Option<String> {
 /// legacy emit and the `<Value>` child of a `TimeZoneDefinition`), then fall
 /// back to the attribute so a real Outlook `GetItem`/`CreateItem` echo
 /// (`<t:StartTimeZone Id="Pacific Standard Time"/>`) round-trips.
+///
+/// The newer `t:StartTimeZoneId`/`t:EndTimeZoneId` elements ([MS-OXWSMTGS]
+/// §2.2.2.41/§2.2.2.13) carry the timezone id as plain element TEXT with no
+/// attributes — `extract_ews_field_doc` handles those directly, which is why
+/// `parse_ews_calendar_item` reads them as ordinary text fields rather than
+/// through this helper.
 fn extract_ews_timezone_field_doc(doc: &Document, tag: &[u8]) -> Option<String> {
     let tag_str = std::str::from_utf8(tag).ok()?;
     let tz_attr = if tag_str == "MeetingTimeZone" {
@@ -2172,15 +2341,30 @@ pub fn normalize_timezone_to_iana(raw: &str) -> String {
 pub fn parse_ews_calendar_item(xml: &str) -> Result<CalendarItem> {
     let doc = Document::parse(xml).map_err(|e| anyhow!("failed to parse EWS XML: {e}"))?;
 
+    // The request's timezone: `t:StartTimeZone`/`t:StartTimeZoneId`/
+    // `t:MeetingTimeZone`/`t:EndTimeZone`/`t:EndTimeZoneId` on the item, or
+    // the SOAP `t:TimeZoneContext` header ([MS-OXWSCORE] §2.2.1.12) Outlook
+    // sends alongside naive (offset-less) `t:Start`/`t:End` values. The
+    // header is the LAST fallback: element-level zones override the
+    // request-wide context.
+    let timezone_raw = extract_ews_timezone_field_doc(&doc, b"StartTimeZone")
+        .or_else(|| extract_ews_field_doc(&doc, b"StartTimeZoneId"))
+        .or_else(|| extract_ews_timezone_field_doc(&doc, b"MeetingTimeZone"))
+        .or_else(|| extract_ews_timezone_field_doc(&doc, b"EndTimeZone"))
+        .or_else(|| extract_ews_field_doc(&doc, b"EndTimeZoneId"))
+        .or_else(|| extract_ews_timezone_context(&doc));
+    let timezone = timezone_raw.as_deref().map(normalize_timezone_to_iana);
+    let tz: Option<Tz> = timezone.as_deref().and_then(|id| id.parse().ok());
+
     let subject =
         extract_ews_field_doc(&doc, b"Subject").unwrap_or_else(|| "(no subject)".to_string());
     let start = extract_ews_field_doc(&doc, b"Start")
         .or_else(|| extract_ews_field_doc(&doc, b"StartTime"))
-        .and_then(|v| parse_datetime(&v))
+        .and_then(|v| parse_datetime_in_zone(&v, tz))
         .ok_or_else(|| anyhow!("missing Start/StartTime"))?;
     let end = extract_ews_field_doc(&doc, b"End")
         .or_else(|| extract_ews_field_doc(&doc, b"EndTime"))
-        .and_then(|v| parse_datetime(&v))
+        .and_then(|v| parse_datetime_in_zone(&v, tz))
         .ok_or_else(|| anyhow!("missing End/EndTime"))?;
     let uid = extract_ews_field_doc(&doc, b"UID")
         .or_else(|| extract_ews_field_doc(&doc, b"ClientUid"))
@@ -2231,11 +2415,7 @@ pub fn parse_ews_calendar_item(xml: &str) -> Result<CalendarItem> {
         end,
         all_day,
         dtstamp: Some(Utc::now()),
-        timezone: extract_ews_timezone_field_doc(&doc, b"StartTimeZone")
-            .or_else(|| extract_ews_timezone_field_doc(&doc, b"MeetingTimeZone"))
-            .or_else(|| extract_ews_timezone_field_doc(&doc, b"EndTimeZone"))
-            .as_deref()
-            .map(normalize_timezone_to_iana),
+        timezone,
         timezone_blob: extract_ews_timezone_field_doc(&doc, b"MeetingTimeZone"),
         rrule,
         exdates: Vec::new(),
@@ -2262,6 +2442,260 @@ pub fn parse_ews_calendar_item(xml: &str) -> Result<CalendarItem> {
 mod scheduling_tests {
     use super::*;
     use chrono::Utc;
+
+    #[test]
+    fn resolve_ical_tzid_iana_id_passes_through() {
+        assert_eq!(
+            resolve_ical_tzid("Europe/Berlin", None).as_deref(),
+            Some("Europe/Berlin")
+        );
+    }
+
+    #[test]
+    fn resolve_ical_tzid_windows_registry_name_resolves() {
+        // Exchange-authored iCalendar TZIDs are Windows registry ids.
+        assert_eq!(
+            resolve_ical_tzid("W. Europe Standard Time", None).as_deref(),
+            Some("Europe/Berlin")
+        );
+        assert_eq!(
+            resolve_ical_tzid("Pacific Standard Time", None).as_deref(),
+            Some("America/Los_Angeles")
+        );
+    }
+
+    #[test]
+    fn resolve_ical_tzid_windows_display_name_resolves() {
+        // The "(UTC+01:00) Amsterdam, Berlin, Bern, Rome, Stockholm, Vienna"
+        // display-name TZID form Exchange 2007-era iCalendar carries.
+        assert_eq!(
+            resolve_ical_tzid(
+                "(UTC+01:00) Amsterdam, Berlin, Bern, Rome, Stockholm, Vienna",
+                None
+            )
+            .as_deref(),
+            Some("Europe/Berlin")
+        );
+        assert_eq!(
+            resolve_ical_tzid("(UTC-08:00) Pacific Time (US & Canada)", None).as_deref(),
+            Some("America/Los_Angeles")
+        );
+    }
+
+    #[test]
+    fn resolve_ical_tzid_custom_tzid_resolves_via_vtimezone_structure() {
+        // The [MS-ASCMD]-documented custom TZID with an authoritative
+        // VTIMEZONE: only the component's rules identify the zone.
+        let vtimezone = "BEGIN:VTIMEZONE\r\n\
+             TZID:(GMT-08.00) Pacific Time (US & Canada)/Tijuana\r\n\
+             BEGIN:STANDARD\r\n\
+             DTSTART:16010101T020000\r\n\
+             TZOFFSETFROM:-0700\r\n\
+             TZOFFSETTO:-0800\r\n\
+             RRULE:FREQ=YEARLY;BYDAY=1SU;BYMONTH=11\r\n\
+             END:STANDARD\r\n\
+             BEGIN:DAYLIGHT\r\n\
+             DTSTART:16010101T020000\r\n\
+             TZOFFSETFROM:-0800\r\n\
+             TZOFFSETTO:-0700\r\n\
+             RRULE:FREQ=YEARLY;BYDAY=2SU;BYMONTH=3\r\n\
+             END:DAYLIGHT\r\n\
+             END:VTIMEZONE\r\n";
+        assert_eq!(
+            resolve_ical_tzid(
+                "(GMT-08.00) Pacific Time (US & Canada)/Tijuana",
+                Some(vtimezone)
+            )
+            .as_deref(),
+            Some("America/Los_Angeles")
+        );
+    }
+
+    #[test]
+    fn parse_ics_resolves_windows_tzid_and_keeps_local_time() {
+        // §14 wire proof: an Exchange-authored VEVENT whose TZID is a Windows
+        // registry id and whose DTSTART is wall-clock must land on the exact
+        // UTC instant — 09:00 Berlin summer time == 07:00 UTC (CEST +02:00),
+        // not 09:00 UTC (the old naive fallback).
+        let ics = "BEGIN:VCALENDAR\r\n\
+             PRODID:-//Exchange//EN\r\n\
+             BEGIN:VEVENT\r\n\
+             UID:tzid-test@example.com\r\n\
+             DTSTART;TZID=W. Europe Standard Time:20250701T090000\r\n\
+             DTEND;TZID=W. Europe Standard Time:20250701T100000\r\n\
+             SUMMARY:TZID resolution test\r\n\
+             END:VEVENT\r\n\
+             END:VCALENDAR\r\n";
+        let ev = parse_ics_event(ics).expect("parses");
+        assert_eq!(ev.start, parse_datetime("20250701T070000Z").unwrap());
+        assert_eq!(ev.end, parse_datetime("20250701T080000Z").unwrap());
+        assert_eq!(
+            ev.timezone.as_deref(),
+            Some("Europe/Berlin"),
+            "the item must carry the RESOLVED IANA id, not the raw TZID"
+        );
+    }
+
+    #[test]
+    fn parse_ics_resolves_custom_tzid_via_vtimezone() {
+        // Same instant-keeping guarantee for a fully custom TZID that only
+        // its VTIMEZONE block identifies.
+        let ics = "BEGIN:VCALENDAR\r\n\
+             PRODID:-//Exchange//EN\r\n\
+             BEGIN:VTIMEZONE\r\n\
+             TZID:(GMT-08.00) Pacific Time (US & Canada)/Tijuana\r\n\
+             BEGIN:STANDARD\r\n\
+             DTSTART:16010101T020000\r\n\
+             TZOFFSETFROM:-0700\r\n\
+             TZOFFSETTO:-0800\r\n\
+             RRULE:FREQ=YEARLY;BYDAY=1SU;BYMONTH=11\r\n\
+             END:STANDARD\r\n\
+             BEGIN:DAYLIGHT\r\n\
+             DTSTART:16010101T020000\r\n\
+             TZOFFSETFROM:-0800\r\n\
+             TZOFFSETTO:-0700\r\n\
+             RRULE:FREQ=YEARLY;BYDAY=2SU;BYMONTH=3\r\n\
+             END:DAYLIGHT\r\n\
+             END:VTIMEZONE\r\n\
+             BEGIN:VEVENT\r\n\
+             UID:tzid-vtimezone-test@example.com\r\n\
+             DTSTART;TZID=(GMT-08.00) Pacific Time (US & Canada)/Tijuana:20250701T090000\r\n\
+             DTEND;TZID=(GMT-08.00) Pacific Time (US & Canada)/Tijuana:20250701T100000\r\n\
+             SUMMARY:VTIMEZONE resolution test\r\n\
+             END:VEVENT\r\n\
+             END:VCALENDAR\r\n";
+        let ev = parse_ics_event(ics).expect("parses");
+        assert_eq!(ev.start, parse_datetime("20250701T160000Z").unwrap());
+        assert_eq!(ev.end, parse_datetime("20250701T170000Z").unwrap());
+    }
+
+    #[test]
+    fn parse_ews_calendar_item_localises_naive_datetime_via_starttimezone() {
+        // Outlook's EWS CreateItem/UpdateItem carries offset-less
+        // xs:dateTime values plus the Windows zone on the item
+        // ([MS-OXWSMTGS] `StartTimeZone`). Without localisation every such
+        // event drifts by the zone offset; with it, 09:00 Pacific Daylight
+        // Time is exactly 16:00 UTC.
+        let xml = r#"<t:CalendarItem xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types">
+  <t:Subject>Naive Pacific event</t:Subject>
+  <t:Start>2025-07-01T09:00:00</t:Start>
+  <t:End>2025-07-01T10:00:00</t:End>
+  <t:StartTimeZone Id="Pacific Standard Time" Name="(UTC-08:00) Pacific Time (US &amp; Canada)"/>
+</t:CalendarItem>"#;
+        let item = parse_ews_calendar_item(xml).expect("parses");
+        assert_eq!(
+            item.start,
+            parse_datetime("2025-07-01T16:00:00Z").unwrap_or_else(Utc::now)
+        );
+        assert_eq!(
+            item.timezone.as_deref(),
+            Some("America/Los_Angeles"),
+            "item timezone must be the RESOLVED IANA id"
+        );
+    }
+
+    #[test]
+    fn parse_ews_calendar_item_localises_naive_datetime_via_time_zone_context() {
+        // The SOAP `TimeZoneContext` header ([MS-OXWSCORE] §2.2.1.12) rides
+        // in the envelope; the item itself carries only naive datetimes.
+        let xml = r#"<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
+  <s:Header>
+    <t:TimeZoneContext xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types">
+      <t:TimeZoneDefinition Id="W. Europe Standard Time" Name="(UTC+01:00) Amsterdam, Berlin, Bern, Rome, Stockholm, Vienna"/>
+    </t:TimeZoneContext>
+  </s:Header>
+  <s:Body>
+    <m:CreateItem xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages">
+      <m:Items>
+        <t:CalendarItem xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types">
+          <t:Subject>Naive Berlin event</t:Subject>
+          <t:Start>2025-07-01T09:00:00</t:Start>
+          <t:End>2025-07-01T10:00:00</t:End>
+        </t:CalendarItem>
+      </m:Items>
+    </m:CreateItem>
+  </s:Body>
+</s:Envelope>"#;
+        let item = parse_ews_calendar_item(xml).expect("parses");
+        // 09:00 CEST (UTC+2) == 07:00 UTC.
+        assert_eq!(item.start, parse_datetime("2025-07-01T07:00:00Z").unwrap());
+        assert_eq!(item.end, parse_datetime("2025-07-01T08:00:00Z").unwrap());
+        assert_eq!(item.timezone.as_deref(), Some("Europe/Berlin"));
+    }
+
+    #[test]
+    fn parse_ews_calendar_item_starttimezoneid_element_form() {
+        // The `t:StartTimeZoneId`/`t:EndTimeZoneId` element form carries the
+        // zone id as element text ([MS-OXWSMTGS] §2.2.2.41).
+        let xml = r#"<t:CalendarItem xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types">
+  <t:Subject>Element-form zone</t:Subject>
+  <t:Start>2025-01-15T09:00:00</t:Start>
+  <t:End>2025-01-15T10:00:00</t:End>
+  <t:StartTimeZoneId>Eastern Standard Time</t:StartTimeZoneId>
+</t:CalendarItem>"#;
+        let item = parse_ews_calendar_item(xml).expect("parses");
+        // 09:00 EST (UTC-5) == 14:00 UTC — the January instant proves the
+        // STANDARD offset applies, not a DST one.
+        assert_eq!(item.start, parse_datetime("2025-01-15T14:00:00Z").unwrap());
+        assert_eq!(item.timezone.as_deref(), Some("America/New_York"));
+    }
+
+    #[test]
+    fn parse_ews_calendar_item_explicit_utc_value_ignores_zone() {
+        // A value that already carries `Z` (or an explicit offset) must be
+        // read as-is; the request zone never shifts an explicit instant.
+        let xml = r#"<t:CalendarItem xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types">
+  <t:Subject>Explicit UTC</t:Subject>
+  <t:Start>2025-07-01T09:00:00Z</t:Start>
+  <t:End>2025-07-01T10:00:00Z</t:End>
+  <t:StartTimeZoneId>Pacific Standard Time</t:StartTimeZoneId>
+</t:CalendarItem>"#;
+        let item = parse_ews_calendar_item(xml).expect("parses");
+        assert_eq!(item.start, parse_datetime("2025-07-01T09:00:00Z").unwrap());
+    }
+
+    #[test]
+    fn parse_ews_calendar_item_element_zone_overrides_header_context() {
+        // Element-level zones beat the request-wide TimeZoneContext header.
+        let xml = r#"<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
+  <s:Header>
+    <t:TimeZoneContext xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types">
+      <t:TimeZoneDefinition Id="W. Europe Standard Time"/>
+    </t:TimeZoneContext>
+  </s:Header>
+  <s:Body>
+    <m:CreateItem xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages">
+      <m:Items>
+        <t:CalendarItem xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types">
+          <t:Subject>Zone override</t:Subject>
+          <t:Start>2025-07-01T09:00:00</t:Start>
+          <t:End>2025-07-01T10:00:00</t:End>
+          <t:StartTimeZoneId>Pacific Standard Time</t:StartTimeZoneId>
+        </t:CalendarItem>
+      </m:Items>
+    </m:CreateItem>
+  </s:Body>
+</s:Envelope>"#;
+        let item = parse_ews_calendar_item(xml).expect("parses");
+        // 09:00 PDT (UTC-7) == 16:00 UTC — Pacific wins over Berlin context.
+        assert_eq!(item.start, parse_datetime("2025-07-01T16:00:00Z").unwrap());
+        assert_eq!(item.timezone.as_deref(), Some("America/Los_Angeles"));
+    }
+
+    #[test]
+    fn parse_ews_calendar_item_dst_gap_instant_is_earliest_mapping() {
+        // 02:30 on the US spring-forward gap does not exist; the parser must
+        // take the earliest valid mapping (03:30 EDT => 07:30 UTC), the same
+        // gap-tolerant policy the iCalendar path uses — never fail the item.
+        let xml = r#"<t:CalendarItem xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types">
+  <t:Subject>Gap event</t:Subject>
+  <t:Start>2025-03-09T02:30:00</t:Start>
+  <t:End>2025-03-09T03:30:00</t:End>
+  <t:StartTimeZoneId>Eastern Standard Time</t:StartTimeZoneId>
+</t:CalendarItem>"#;
+        let item = parse_ews_calendar_item(xml).expect("parses");
+        assert_eq!(item.start, parse_datetime("2025-03-09T07:30:00Z").unwrap());
+    }
 
     fn sample_event_with_attendee() -> CalendarItem {
         CalendarItem {

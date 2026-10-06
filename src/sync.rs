@@ -915,7 +915,7 @@ fn render_calendar_body_xml(
     description: &str,
     options: &crate::eas_sync_options::EasSyncCollectionOptions,
 ) -> String {
-    use crate::eas_sync_options::{negotiate_body, truncate_utf8_bytes, NativeBodyType};
+    use crate::eas_sync_options::{NativeBodyType, negotiate_body, truncate_utf8_bytes};
 
     let negotiated = negotiate_body(options, NativeBodyType::PlainText, description.len());
     let mut body_type = match negotiated.body_type {
@@ -1885,6 +1885,62 @@ mod tests {
         assert_eq!(bias, 300, "Eastern standard bias = +300");
     }
 
+    /// §14 wire-level proof: the rendered `<Calendar:Timezone>` base64 blob
+    /// is the authoritative zone carrier for EAS, so it must round-trip —
+    /// decode back to the SAME IANA id the item stores, and carry the full
+    /// DST rules, not just a bias: a January and a July wall clock evaluated
+    /// through the blob must reproduce `chrono_tz`'s ground-truth offsets
+    /// (which differ by the DST delta for DST zones).
+    #[test]
+    fn eas_calendar_timezone_blob_round_trips_zone_and_dst() {
+        use chrono::NaiveDate;
+        use chrono::Offset;
+        use chrono_tz::Tz;
+
+        for zone in [
+            "America/Los_Angeles",
+            "America/New_York",
+            "Europe/Berlin",
+            "Australia/Sydney",
+            "Asia/Kolkata",
+        ] {
+            let tz: Tz = zone.parse().expect("valid IANA id");
+            let item = CalendarItem {
+                uid: format!("eas-tz-{zone}"),
+                subject: "TZ round trip".to_string(),
+                start: chrono::Utc.with_ymd_and_hms(2025, 1, 15, 12, 0, 0).unwrap(),
+                end: chrono::Utc.with_ymd_and_hms(2025, 1, 15, 13, 0, 0).unwrap(),
+                all_day: false,
+                timezone: Some(zone.to_string()),
+                ..Default::default()
+            };
+            let xml = render_calendar_app_data(&item);
+            let blob_b64 = extract_element_text(&xml, "Calendar:Timezone")
+                .unwrap_or_else(|| panic!("{zone}: no Timezone blob rendered:\n{xml}"));
+            let iana = crate::timezone::eas_timezone_blob_to_iana(&blob_b64)
+                .unwrap_or_else(|| panic!("{zone}: blob decodes to no IANA id"));
+            assert_eq!(iana, zone, "{zone}: blob round-trip mismatch");
+
+            let blob = crate::timezone::decode_eas_timezone_blob(&blob_b64)
+                .unwrap_or_else(|| panic!("{zone}: blob does not decode"));
+            for (month, day) in [(1, 15), (7, 15)] {
+                let naive = NaiveDate::from_ymd_opt(2025, month, day)
+                    .and_then(|d| d.and_hms_opt(12, 0, 0))
+                    .expect("sample date");
+                let blob_minutes = crate::timezone::tzi_offset_minutes_at(&blob, naive);
+                let chrono_minutes = naive
+                    .and_local_timezone(tz)
+                    .earliest()
+                    .map(|dt| dt.offset().fix().local_minus_utc() / 60)
+                    .unwrap_or_else(|| panic!("{zone}: {naive} has no chrono mapping"));
+                assert_eq!(
+                    blob_minutes, chrono_minutes,
+                    "{zone}: {month:02}-{day:02} blob/chrono offset drift"
+                );
+            }
+        }
+    }
+
     /// A UTC event (no stored zone) omits the <Calendar:Timezone> blob
     /// entirely — EAS clients treat a UTC event's times as absolute
     /// instants, and the blob's all-zero transitions read as a failure to
@@ -1988,8 +2044,7 @@ mod tests {
         // the Type 2 preference (100 <= 120); plain_to_minimal_html grows it
         // past 120, so the re-negotiation skips it.
         let description = "d".repeat(100);
-        let converted_len =
-            crate::email::plain_to_minimal_html(&description).len();
+        let converted_len = crate::email::plain_to_minimal_html(&description).len();
         assert!(
             converted_len > 120,
             "fixture must convert past the all-or-none limit: {converted_len}"
@@ -2007,7 +2062,10 @@ mod tests {
             ..Default::default()
         };
         let xml = render_calendar_body_xml(&item.description, &options);
-        assert!(xml.contains("<AirSyncBase:Type>1</AirSyncBase:Type>"), "the withheld announcement must carry the native type:\n{xml}");
+        assert!(
+            xml.contains("<AirSyncBase:Type>1</AirSyncBase:Type>"),
+            "the withheld announcement must carry the native type:\n{xml}"
+        );
         assert!(
             !xml.contains("<AirSyncBase:Data>"),
             "AllOrNone must withhold the Data of a converted body that grew past the limit:\n{xml}"

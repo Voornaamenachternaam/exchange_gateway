@@ -356,7 +356,7 @@ pub async fn handle(
         EwsAction::GetUserOofSettings => handle_get_user_oof_settings(&state, &auth, &body).await,
         EwsAction::SetUserOofSettings => handle_set_user_oof_settings(&state, &auth, &body).await,
         EwsAction::GetServiceConfiguration => handle_get_service_configuration(&state).await,
-        EwsAction::GetServerTimeZones => handle_get_server_time_zones().await,
+        EwsAction::GetServerTimeZones => handle_get_server_time_zones(&body).await,
         EwsAction::GetFolderInfo => handle_get_folder_info().await,
         EwsAction::GetMailTips => handle_get_mail_tips(&state, &auth, &body).await,
         EwsAction::FindPeople => handle_find_people(&state, &auth, &body).await,
@@ -1407,6 +1407,13 @@ fn render_ews_calendar_item_xml_with_shape(
         // convert back; fall back to the raw value if unmappable.
         let win = crate::timezone::iana_to_windows_timezone_name(v).unwrap_or_else(|| v.clone());
         let win_esc = xml_escape(&win);
+        // The `Name` attribute carries the Windows DISPLAY description
+        // ("(UTC-08:00) Pacific Time (US & Canada)") — the same string
+        // GetServerTimeZones serves and Exchange itself writes, which
+        // Outlook renders in the timezone picker.
+        let display =
+            crate::timezone::iana_to_windows_display_description(v).unwrap_or_else(|| win.clone());
+        let display_esc = xml_escape(&display);
         // Canonical EWS serialisation: `Id`/`Name` are *attributes* of
         // `TimeZoneDefinitionType` (per the Exchange Web Services schema and the
         // EWS Managed API `WriteAttributesToXml`), emitted as
@@ -1416,11 +1423,11 @@ fn render_ews_calendar_item_xml_with_shape(
         // `extract_ews_timezone_field_doc` reads back via the `Id` attribute.
         xml.push_str(&format!(
             "<t:StartTimeZone Id=\"{}\" Name=\"{}\"/>",
-            win_esc, win_esc
+            win_esc, display_esc
         ));
         xml.push_str(&format!(
             "<t:EndTimeZone Id=\"{}\" Name=\"{}\"/>",
-            win_esc, win_esc
+            win_esc, display_esc
         ));
         // <t:MeetingTimeZone> (MS-OXWSCORE §2.2.6, deprecated in favour of
         // StartTimeZone/EndTimeZone but still parsed by Outlook for back-compat)
@@ -8150,7 +8157,25 @@ async fn handle_get_service_configuration(state: &Arc<AppState>) -> Response {
     soap_ok(inner)
 }
 
-async fn handle_get_server_time_zones() -> Response {
+async fn handle_get_server_time_zones(body: &str) -> Response {
+    // [MS-OXWSGTZ] §3.1.4.1.3.3: `ReturnFullTimeZoneData` (optional, default
+    // "complete information is returned") selects between the full
+    // Periods/TransitionsGroups/Transitions definition and the bare
+    // Id/Name attributes; an optional `t:Ids` list restricts the response to
+    // the requested identifiers — unrecognized ids are silently skipped, not
+    // errors.
+    let full = !get_server_time_zones_wants_names_only(body);
+    let requested = get_server_time_zones_requested_ids(body);
+    let definitions = match requested {
+        None => {
+            if full {
+                &*TIMEZONE_DEFINITIONS_FULL
+            } else {
+                &*TIMEZONE_DEFINITIONS_NAMES
+            }
+        }
+        Some(ids) => &render_timezone_definitions_for_ids(&ids, full),
+    };
     let inner = format!(
         r#"<m:GetServerTimeZonesResponse xmlns:m="{}" xmlns:t="{}">
 <m:ResponseMessages>
@@ -8160,115 +8185,157 @@ async fn handle_get_server_time_zones() -> Response {
 </m:GetServerTimeZonesResponseMessage>
 </m:ResponseMessages>
 </m:GetServerTimeZonesResponse>"#,
-        EWS_MSG_NS, EWS_TYPE_NS, *TIMEZONE_DEFINITIONS
+        EWS_MSG_NS, EWS_TYPE_NS, definitions
     );
     soap_ok(inner)
 }
 
-static TIMEZONE_DEFINITIONS: LazyLock<String> = LazyLock::new(render_timezone_definitions);
+/// True when the request's `GetServerTimeZones` element carries
+/// `ReturnFullTimeZoneData="false"` (names/ids only).
+fn get_server_time_zones_wants_names_only(body: &str) -> bool {
+    body.contains("ReturnFullTimeZoneData=\"false\"")
+        || body.contains("ReturnFullTimeZoneData='false'")
+}
 
-fn render_timezone_definitions() -> String {
+/// The `t:Ids`/`t:Id` list of a GetServerTimeZones request, in request order
+/// ([MS-OXWSGTZ] §3.1.4.1.3.3). `None` when the request carries no `Ids`
+/// element (all zones requested).
+fn get_server_time_zones_requested_ids(body: &str) -> Option<Vec<String>> {
+    let doc = roxmltree::Document::parse(body).ok()?;
+    let ids = doc
+        .descendants()
+        .filter(|n| n.is_element() && n.tag_name().name() == "Ids")
+        .flat_map(|ids| ids.descendants())
+        .filter(|n| n.is_element() && n.tag_name().name() == "Id")
+        .filter_map(|n| n.text().map(|s| s.to_string()))
+        .collect::<Vec<_>>();
+    (!ids.is_empty()).then_some(ids)
+}
+
+static TIMEZONE_DEFINITIONS_FULL: LazyLock<String> =
+    LazyLock::new(|| render_timezone_definitions(true));
+static TIMEZONE_DEFINITIONS_NAMES: LazyLock<String> =
+    LazyLock::new(|| render_timezone_definitions(false));
+
+/// Render the full set of `t:TimeZoneDefinition` elements the gateway serves,
+/// one per `windows-timezones` variant ([MS-OXWSGTZ] §2.2.4.12). `full`
+/// selects between the complete definition (Periods + TransitionsGroups +
+/// Transitions, the shape of the spec's §4 example) and the bare
+/// Id/Name attribute form a `ReturnFullTimeZoneData="false"` request gets.
+fn render_timezone_definitions(full: bool) -> String {
     use strum::IntoEnumIterator;
     use windows_timezones::WindowsTimezone;
 
-    let zones: Vec<&'static str> = vec![
-        "UTC",
-        "GMT Standard Time",
-        "Central Europe Standard Time",
-        "W. Europe Standard Time",
-        "E. Europe Standard Time",
-        "Pacific Standard Time",
-        "Mountain Standard Time",
-        "Central Standard Time",
-        "Eastern Standard Time",
-        "US Eastern Standard Time",
-        "US Mountain Standard Time",
-        "Pacific SA Standard Time",
-        "Atlantic Standard Time",
-        "SA Pacific Standard Time",
-        "Greenland Standard Time",
-        "Azores Standard Time",
-        "Cape Verde Standard Time",
-        "Morocco Standard Time",
-        "W. Central Africa Standard Time",
-        "Jordan Standard Time",
-        "Middle East Standard Time",
-        "Egypt Standard Time",
-        "Syria Standard Time",
-        "E. Africa Standard Time",
-        "Arabic Standard Time",
-        "Arab Standard Time",
-        "Russian Standard Time",
-        "Kaliningrad Standard Time",
-        "Turkey Standard Time",
-        "Israel Standard Time",
-        "Iran Standard Time",
-        "Afghanistan Standard Time",
-        "Pakistan Standard Time",
-        "India Standard Time",
-        "Sri Lanka Standard Time",
-        "Nepal Standard Time",
-        "Central Asia Standard Time",
-        "North Asia Standard Time",
-        "SE Asia Standard Time",
-        "North Asia East Standard Time",
-        "China Standard Time",
-        "Korea Standard Time",
-        "Tokyo Standard Time",
-        "West Pacific Standard Time",
-        "AUS Central Standard Time",
-        "AUS Eastern Standard Time",
-        "Tasmania Standard Time",
-        "New Zealand Standard Time",
-    ];
-
-    let mut result = String::with_capacity(zones.len() * 400);
-    for name in &zones {
-        if !WindowsTimezone::iter().any(|v| v.name() == *name) {
-            continue;
-        }
-        let iana = crate::timezone::windows_timezone_name_to_tz(name);
-        let (bias, std_date_xml, dst_date_xml) = if let Some(tz) = iana {
-            let iana_str = tz.name();
-            match crate::timezone::iana_to_windows_params(iana_str) {
-                Some((
-                    bias,
-                    _std_name,
-                    _dst_name,
-                    std_blob,
-                    dst_blob,
-                    _std_bias_val,
-                    dst_bias_val,
-                )) => {
-                    let std_xml = tz_blob_to_std_time_xml(&std_blob);
-                    let dst_xml = tz_blob_to_daylight_time_xml(&dst_blob, dst_bias_val);
-                    (bias, std_xml, dst_xml)
-                }
-                None => (0, String::new(), String::new()),
-            }
-        } else {
-            (0, String::new(), String::new())
-        };
-        let std_name = name.replace("Standard Time", "Standard");
-        result.push_str(&format!(
-            r#"<t:TimeZoneDefinition Id="{}" Name="{}"><t:Bias>{}</t:Bias>{}{}</t:TimeZoneDefinition>"#,
-            xml_escape(name),
-            xml_escape(&std_name),
-            bias,
-            std_date_xml,
-            dst_date_xml,
-        ));
+    let mut result = String::with_capacity(WindowsTimezone::iter().count() * 480);
+    for variant in WindowsTimezone::iter() {
+        render_one_timezone_definition(&mut result, variant, full);
     }
     result
 }
-fn tz_blob_to_std_time_xml(blob: &[u8; 16]) -> String {
-    if blob.iter().all(|&b| b == 0) {
-        return r#"<t:StandardTime><t:Bias>0</t:Bias></t:StandardTime>"#.to_string();
+
+/// The `t:Ids`-filtered variant: only the requested ids, in request order;
+/// unrecognized ids are silently dropped ([MS-OXWSGTZ] §3.1.4.1.3.3: "the
+/// server does not return any information for the unrecognized identifier
+/// and does not report an error").
+fn render_timezone_definitions_for_ids(ids: &[String], full: bool) -> String {
+    use strum::IntoEnumIterator;
+    use windows_timezones::WindowsTimezone;
+
+    let mut result = String::with_capacity(ids.len() * 480);
+    for id in ids {
+        let Some(variant) =
+            WindowsTimezone::iter().find(|v| v.name().eq_ignore_ascii_case(id.trim()))
+        else {
+            continue;
+        };
+        render_one_timezone_definition(&mut result, variant, full);
     }
-    let month = blob[2] as u32;
-    let day_order = blob[6] as u32;
-    let hour = blob[8] as u32;
-    let day_of_week = match blob[4] {
+    result
+}
+
+fn render_one_timezone_definition(
+    out: &mut String,
+    variant: windows_timezones::WindowsTimezone,
+    full: bool,
+) {
+    let id = variant.name();
+    // The Windows display name ("(UTC-09:00) Alaska") is the `Name` Exchange
+    // itself serves — Outlook renders it directly in the timezone picker.
+    let name = variant.description();
+    out.push_str(&format!(
+        r#"<t:TimeZoneDefinition Id="{}" Name="{}">"#,
+        xml_escape(id),
+        xml_escape(name)
+    ));
+    if !full {
+        out.push_str("</t:TimeZoneDefinition>");
+        return;
+    }
+
+    // Full definition: derive the Period/TransitionsGroup/Transitions shape
+    // from the same sampled TZI parameters the EAS blob and VTIMEZONE
+    // synthesis use, so every transport describes identical boundaries.
+    let Some(params) = crate::timezone::iana_to_windows_params(variant.tzdb_id()) else {
+        // No derivable rules (fixed Etc-style zone): attribute-only is the
+        // schema-valid minimal TimeZoneDefinition.
+        out.push_str("</t:TimeZoneDefinition>");
+        return;
+    };
+    let (bias, _std_name, _dst_name, std_blob, dst_blob, _std_bias, _dst_bias) = params;
+    let std_rule = crate::timezone::tzi_rule_from_blob(&std_blob);
+    let dst_rule = crate::timezone::tzi_rule_from_blob(&dst_blob);
+    let std_period_id = format!("trule:Microsoft/Registry/{id}/Standard");
+    let dst_period_id = format!("trule:Microsoft/Registry/{id}/Daylight");
+    let has_dst = !dst_rule.is_zeroed();
+
+    out.push_str("<t:Periods>");
+    out.push_str(&format!(
+        r#"<t:Period Bias="{}" Name="Standard" Id="{}"/>"#,
+        windows_bias_duration(bias),
+        xml_escape(&std_period_id)
+    ));
+    if has_dst {
+        out.push_str(&format!(
+            r#"<t:Period Bias="{}" Name="Daylight" Id="{}"/>"#,
+            windows_bias_duration(bias + _dst_bias),
+            xml_escape(&dst_period_id)
+        ));
+    }
+    out.push_str("</t:Periods><t:TransitionsGroups><t:TransitionsGroup Id=\"0\">");
+    if has_dst {
+        out.push_str(&recurring_day_transition_xml(&dst_period_id, dst_rule));
+        out.push_str(&recurring_day_transition_xml(&std_period_id, std_rule));
+    } else {
+        out.push_str(&format!(
+            r#"<t:Transition><t:To Kind="Period">{}</t:To></t:Transition>"#,
+            xml_escape(&std_period_id)
+        ));
+    }
+    out.push_str("</t:TransitionsGroup></t:TransitionsGroups><t:Transitions>");
+    out.push_str(r#"<t:Transition><t:To Kind="Group">0</t:To></t:Transition>"#);
+    out.push_str("</t:Transitions></t:TimeZoneDefinition>");
+}
+
+/// Encode a Windows bias (minutes, positive = west of UTC) as the `xs:duration`
+/// `t:Period/@Bias` value, matching the [MS-OXWSGTZ] §4 example's sign
+/// convention (Alaska standard, UTC-9, is `Bias="PT9H"`).
+fn windows_bias_duration(bias: i32) -> String {
+    let sign = if bias < 0 { "-" } else { "" };
+    let abs = bias.unsigned_abs();
+    let hours = abs / 60;
+    let minutes = abs % 60;
+    if minutes == 0 {
+        format!("{sign}PT{hours}H")
+    } else {
+        format!("{sign}PT{hours}H{minutes}M")
+    }
+}
+
+/// `t:RecurringDayTransition` XML for one annual transition rule. The
+/// `TimeOffset` is the transition's wall-clock time in the phase being left
+/// ([MS-OXWSGTZ] §2.2.4.10), i.e. the same hour the TZI `SYSTEMTIME` carries.
+fn recurring_day_transition_xml(period_id: &str, rule: crate::timezone::TziSystemTime) -> String {
+    let weekday = match rule.day_of_week {
         0 => "Sunday",
         1 => "Monday",
         2 => "Tuesday",
@@ -8278,38 +8345,22 @@ fn tz_blob_to_std_time_xml(blob: &[u8; 16]) -> String {
         6 => "Saturday",
         _ => "Sunday",
     };
-    format!(
-        r#"<t:StandardTime><t:Bias>0</t:Bias><t:Time>{:02}:00:00</t:Time><t:DayOrder>{}</t:DayOrder><t:Month>{}</t:Month><t:DayOfWeek>{}</t:DayOfWeek></t:StandardTime>"#,
-        hour, day_order, month, day_of_week
-    )
-}
-
-fn tz_blob_to_daylight_time_xml(blob: &[u8; 16], dst_bias: i32) -> String {
-    if blob.iter().all(|&b| b == 0) && dst_bias == 0 {
-        return String::new();
-    }
-    let month = blob[2] as u32;
-    let day_order = blob[6] as u32;
-    let hour = blob[8] as u32;
-    let day_of_week = match blob[4] {
-        0 => "Sunday",
-        1 => "Monday",
-        2 => "Tuesday",
-        3 => "Wednesday",
-        4 => "Thursday",
-        5 => "Friday",
-        6 => "Saturday",
-        _ => "Sunday",
-    };
-    if month == 0 {
-        return String::new();
+    // TZI `wDay` 5 selects the LAST occurrence of the weekday; the EWS
+    // `Occurrence` element spells that as -1.
+    let occurrence = if rule.day == 5 { -1 } else { rule.day as i32 };
+    let mut offset = format!("PT{}H", rule.hour);
+    if rule.minute != 0 {
+        offset.push_str(&format!("{}M", rule.minute));
     }
     format!(
-        r#"<t:DaylightTime><t:Bias>{}</t:Bias><t:Time>{:02}:00:00</t:Time><t:DayOrder>{}</t:DayOrder><t:Month>{}</t:Month><t:DayOfWeek>{}</t:DayOfWeek></t:DaylightTime>"#,
-        dst_bias, hour, day_order, month, day_of_week
+        r#"<t:RecurringDayTransition><t:To Kind="Period">{}</t:To><t:TimeOffset>{}</t:TimeOffset><t:Month>{}</t:Month><t:DayOfWeek>{}</t:DayOfWeek><t:Occurrence>{}</t:Occurrence></t:RecurringDayTransition>"#,
+        xml_escape(period_id),
+        offset,
+        rule.month,
+        weekday,
+        occurrence
     )
 }
-
 async fn handle_get_folder_info() -> Response {
     let inner = format!(
         r#"<m:GetFolderInfoResponse xmlns:m="{}" xmlns:t="{}">
@@ -11243,6 +11294,307 @@ mod tests {
             .await
             .expect("response body");
         String::from_utf8_lossy(&body).into_owned()
+    }
+    // ---- EWS calendar item timezone render↔parse round-trip (§14) ----
+
+    /// §14 both-directions proof at the EWS wire level: rendering a stored
+    /// IANA zone emits `<t:StartTimeZone Id="…" Name="…"/>` where Id is the
+    /// Windows registry id, Name is the SAME variant's display description
+    /// (Exchange's own attribute form — Id and Name are always a matched
+    /// pair, never two independently-resolved zones), and parsing that
+    /// fragment back resolves to the SAME IANA id with the instant preserved.
+    /// Berlin/Amsterdam relative-DST zones are §14's named breakage point and
+    /// are covered explicitly.
+    #[test]
+    fn ews_calendar_item_timezone_renders_and_parses_back_to_same_iana() {
+        use chrono::TimeZone as _;
+
+        let amp = "\u{26}";
+        for zone in ["America/Los_Angeles", "Europe/Berlin", "Europe/Amsterdam"] {
+            let item = crate::calendar::CalendarItem {
+                uid: format!("ews-tz-{zone}"),
+                subject: "TZ round trip".to_string(),
+                start: chrono::Utc.with_ymd_and_hms(2025, 7, 1, 16, 0, 0).unwrap(),
+                end: chrono::Utc.with_ymd_and_hms(2025, 7, 1, 17, 0, 0).unwrap(),
+                all_day: false,
+                timezone: Some(zone.to_string()),
+                ..Default::default()
+            };
+            let xml = render_ews_calendar_item_xml_with_shape(
+                &format!("id-{zone}"),
+                "ck",
+                &item,
+                ItemShape::AllProperties,
+                false,
+                None,
+            );
+
+            let win = crate::timezone::iana_to_windows_timezone_name(zone)
+                .unwrap_or_else(|| panic!("{zone}: no Windows id"));
+            let display = crate::timezone::iana_to_windows_display_description(zone)
+                .unwrap_or_else(|| panic!("{zone}: no Windows display description"));
+            let id_attr = format!(
+                r#"<t:StartTimeZone Id="{}" Name="{}"/>"#,
+                xml_escape(&win),
+                xml_escape(&display)
+            );
+            assert!(
+                xml.contains(&id_attr),
+                "{zone}: StartTimeZone must pair Id with the same variant's description:\n{xml}"
+            );
+            assert!(
+                xml.contains(&format!(r#"<t:MeetingTimeZone TimeZoneName="{win}"/>"#)),
+                "{zone}: MeetingTimeZone carries the Windows registry id:\n{xml}"
+            );
+
+            // Name escaping: the US/Canada description's ampersand must be
+            // XML-escaped on the wire.
+            if display.contains(amp) {
+                let esc = format!(r#"Name="{}""#, display.replace(amp, "\u{26}amp;"));
+                assert!(
+                    xml.contains(&esc),
+                    "{zone}: description ampersand must be escaped:\n{xml}"
+                );
+                assert!(
+                    !xml.contains(&format!(r#"Name="{display}""#)),
+                    "{zone}: raw ampersand leaked into an attribute:\n{xml}"
+                );
+            }
+
+            // Parse the rendered fragment back: same zone, same instant. The
+            // fragment travels inside the EWS envelope (whose root declares
+            // xmlns:t), so declare it for the standalone parse.
+            let wrapped = format!(
+                "<m:Items xmlns:m=\"http://schemas.microsoft.com/exchange/services/2006/messages\" xmlns:t=\"http://schemas.microsoft.com/exchange/services/2006/types\">{xml}</m:Items>"
+            );
+            let round = crate::calendar::parse_ews_calendar_item(&wrapped)
+                .unwrap_or_else(|e| panic!("{zone}: re-parse failed: {e}"));
+            // Windows zones are coarser than IANA ids (Amsterdam and Berlin
+            // share "W. Europe Standard Time"), so the reverse resolution is
+            // the canonical representative of the Windows zone — assert the
+            // round-trip lands exactly there.
+            let expected = crate::timezone::windows_timezone_name_to_iana(&win)
+                .unwrap_or_else(|| panic!("{zone}: Windows id {win} resolves to no IANA id"));
+            assert_eq!(
+                round.timezone.as_deref(),
+                Some(expected.as_str()),
+                "{zone}: StartTimeZone round-trip mismatch:\n{xml}"
+            );
+            assert_eq!(round.start, item.start, "{zone}: start instant drifted");
+            assert_eq!(round.end, item.end, "{zone}: end instant drifted");
+            // §14 no-offset-drift guarantee: the original zone and the
+            // round-tripped zone must prescribe identical offsets across the
+            // year (DST windows included), so recurring-expansion and naive
+            // re-localization are indistinguishable between the two.
+            let orig_tz: chrono_tz::Tz = zone.parse().expect("valid IANA");
+            let round_tz: chrono_tz::Tz = expected.parse().expect("valid IANA");
+            for m in [1u32, 4, 7, 10] {
+                let ndt = chrono::NaiveDate::from_ymd_opt(2025, m, 15)
+                    .and_then(|d| d.and_hms_opt(12, 0, 0))
+                    .expect("sample date");
+                use chrono::Offset as _;
+                let o = |tz: chrono_tz::Tz| {
+                    ndt.and_local_timezone(tz)
+                        .earliest()
+                        .map(|dt| dt.offset().fix().local_minus_utc())
+                };
+                assert_eq!(
+                    o(orig_tz),
+                    o(round_tz),
+                    "{zone} vs {expected}: offset drift in month {m}"
+                );
+            }
+        }
+    }
+
+    /// Pins the exact human-readable display description for one zone so a
+    /// `windows-timezones` description change (or a ladder regression that
+    /// resolves a different variant) is caught: Outlook renders this string
+    /// in its timezone picker.
+    #[test]
+    fn ews_calendar_item_starttimezone_name_is_windows_display_description() {
+        use chrono::TimeZone as _;
+
+        let item = crate::calendar::CalendarItem {
+            uid: "ews-tz-pacific".to_string(),
+            subject: "Pacific".to_string(),
+            start: chrono::Utc.with_ymd_and_hms(2025, 1, 15, 12, 0, 0).unwrap(),
+            end: chrono::Utc.with_ymd_and_hms(2025, 1, 15, 13, 0, 0).unwrap(),
+            timezone: Some("America/Los_Angeles".to_string()),
+            ..Default::default()
+        };
+        let xml = render_ews_calendar_item_xml_with_shape(
+            "id",
+            "ck",
+            &item,
+            ItemShape::AllProperties,
+            false,
+            None,
+        );
+        assert!(
+            xml.contains(
+                "<t:StartTimeZone Id=\"Pacific Standard Time\" Name=\"(UTC-08:00) Pacific Time (US \u{26}amp; Canada)\"/>"
+            ),
+            "StartTimeZone must carry Exchange's own Id+description pair:\n{xml}"
+        );
+        assert!(
+            xml.contains(
+                "<t:EndTimeZone Id=\"Pacific Standard Time\" Name=\"(UTC-08:00) Pacific Time (US \u{26}amp; Canada)\"/>"
+            ),
+            "EndTimeZone must carry the same pair:\n{xml}"
+        );
+    }
+
+    // ---- GetServerTimeZones ([MS-OXWSGTZ] §3.1.4.1.3.3) ----
+
+    #[tokio::test]
+    async fn get_server_time_zones_full_includes_pacific_definition_with_dst() {
+        let resp = handle_get_server_time_zones("<m:GetServerTimeZones/>").await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let text = response_body(resp).await;
+        assert!(text.contains("<m:GetServerTimeZonesResponseMessage ResponseClass=\"Success\">"));
+        assert!(text.contains("<m:ResponseCode>NoError</m:ResponseCode>"));
+        assert!(text.contains("<m:TimeZoneDefinitions>"));
+        let pacific = text
+            .split("<t:TimeZoneDefinition ")
+            .find(|chunk| chunk.starts_with("Id=\"Pacific Standard Time\""))
+            .expect("Pacific Standard Time definition present");
+        // Standard period bias is PT8H ([MS-OXWSGTZ] §4 sign convention:
+        // UTC-9 Alaska is PT9H, so UTC-8 Pacific is PT8H).
+        assert!(
+            pacific.contains(r#"<t:Period Bias="PT8H" Name="Standard""#),
+            "Pacific standard period must be PT8H:\n{pacific}"
+        );
+        assert!(
+            pacific.contains(r#"<t:Period Bias="PT7H" Name="Daylight""#),
+            "Pacific daylight period must be PT7H:\n{pacific}"
+        );
+        assert!(
+            pacific.contains("<t:Month>3</t:Month><t:DayOfWeek>Sunday</t:DayOfWeek><t:Occurrence>2</t:Occurrence>"),
+            "US DST starts the 2nd Sunday of March:\n{pacific}"
+        );
+        assert!(
+            pacific.contains("<t:Month>11</t:Month><t:DayOfWeek>Sunday</t:DayOfWeek><t:Occurrence>1</t:Occurrence>"),
+            "US DST ends the 1st Sunday of November:\n{pacific}"
+        );
+        assert!(
+            pacific.contains(r#"<t:TransitionsGroup Id="0">"#),
+            "definition must carry a transitions group"
+        );
+        assert!(
+            pacific.contains("<t:Transition><t:To Kind=\"Group\">0</t:To></t:Transition>"),
+            "the group must be referenced from the transitions list"
+        );
+    }
+
+    #[tokio::test]
+    async fn get_server_time_zones_names_only_omits_periods() {
+        let resp = handle_get_server_time_zones(
+            r#"<m:GetServerTimeZones ReturnFullTimeZoneData="false"/>"#,
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let text = response_body(resp).await;
+        assert!(
+            !text.contains("<t:Periods>"),
+            "names-only responses must not carry Periods:\n{text}"
+        );
+        assert!(
+            !text.contains("<t:TransitionsGroups>"),
+            "names-only responses must not carry TransitionsGroups:\n{text}"
+        );
+        assert!(
+            text.contains(r#"<t:TimeZoneDefinition Id="Pacific Standard Time" Name="(UTC-08:00) Pacific Time (US &amp; Canada)"></t:TimeZoneDefinition>"#),
+            "names-only entries are attribute-only elements:\n{text}"
+        );
+    }
+
+    #[tokio::test]
+    async fn get_server_time_zones_requested_ids_filter_in_order() {
+        let resp = handle_get_server_time_zones(
+            r#"<m:GetServerTimeZones xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages" xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types"><m:Ids>
+                 <t:Id>W. Europe Standard Time</t:Id>
+                 <t:Id>Pacific Standard Time</t:Id>
+               </m:Ids></m:GetServerTimeZones>"#,
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let text = response_body(resp).await;
+        let west = text.find(r#"Id="W. Europe Standard Time""#);
+        let pacific = text.find(r#"Id="Pacific Standard Time""#);
+        assert!(west.is_some(), "W. Europe definition missing:\n{text}");
+        assert!(pacific.is_some(), "Pacific definition missing:\n{text}");
+        assert!(
+            west.unwrap() < pacific.unwrap(),
+            "definitions must follow request order"
+        );
+        // Exactly the two requested ids.
+        let count = text.matches("<t:TimeZoneDefinition ").count();
+        assert_eq!(count, 2, "only the requested ids may appear:\n{text}");
+    }
+
+    #[tokio::test]
+    async fn get_server_time_zones_unknown_id_is_silently_dropped() {
+        let resp = handle_get_server_time_zones(
+            r#"<m:GetServerTimeZones xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages" xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types"><m:Ids>
+                 <t:Id>No Such Time Zone</t:Id>
+                 <t:Id>Pacific Standard Time</t:Id>
+               </m:Ids></m:GetServerTimeZones>"#,
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let text = response_body(resp).await;
+        assert!(
+            text.contains(r#"<m:ResponseCode>NoError</m:ResponseCode>"#),
+            "unrecognized ids are skipped, not errors:\n{text}"
+        );
+        let count = text.matches("<t:TimeZoneDefinition ").count();
+        assert_eq!(count, 1, "only the recognized id appears:\n{text}");
+    }
+
+    #[tokio::test]
+    async fn get_server_time_zones_serves_every_windows_zone() {
+        use strum::IntoEnumIterator;
+        use windows_timezones::WindowsTimezone;
+
+        let resp = handle_get_server_time_zones("<m:GetServerTimeZones/>").await;
+        let text = response_body(resp).await;
+        let served = text.matches("<t:TimeZoneDefinition ").count();
+        let total = WindowsTimezone::iter().count();
+        assert_eq!(
+            served, total,
+            "every Windows zone must be served (expected {total}, served {served})"
+        );
+        // Every served definition is well-formed: the names-only set must
+        // still render one element per zone with an Id and a Name.
+        for variant in WindowsTimezone::iter() {
+            assert!(
+                text.contains(&format!(r#"Id="{}""#, variant.name())),
+                "missing definition for {}",
+                variant.name()
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn get_server_time_zones_definition_matches_eas_blob_for_same_zone() {
+        // Cross-transport §14 proof: the EWS TimeZoneDefinition's periods
+        // and the EAS TZI blob describe the SAME zone boundaries — Pacific
+        // standard PT8H / daylight PT7H, DST 2nd-Sunday March 02:00,
+        // standard 1st-Sunday November 02:00.
+        let blob = crate::timezone::iana_to_eas_timezone_blob("America/Los_Angeles")
+            .expect("Pacific blob");
+        let decoded = crate::timezone::decode_eas_timezone_blob(&blob).expect("decodes");
+        assert_eq!(decoded.bias, 480);
+        assert_eq!(decoded.daylight_bias, -60);
+        let resp = handle_get_server_time_zones(
+            r#"<m:GetServerTimeZones xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages" xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types"><m:Ids><t:Id>Pacific Standard Time</t:Id></m:Ids></m:GetServerTimeZones>"#,
+        )
+        .await;
+        let text = response_body(resp).await;
+        assert!(text.contains(r#"<t:Period Bias="PT8H" Name="Standard""#));
+        assert!(text.contains(r#"<t:Period Bias="PT7H" Name="Daylight""#));
+        assert!(text.contains("<t:TimeOffset>PT2H</t:TimeOffset>"));
     }
 
     /// A CreateItem whose Items carry an object that is none of the three

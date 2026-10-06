@@ -213,8 +213,33 @@ EAS specs v20250520 (16.1); older EAS compat NOT needed.
   Suite after fixes: 931 green (lib 895 + fixtures 22 + snapshots 11 +
   jmap_calendar_deploy 2 + doc 1), clippy 0, fmt clean on touched files,
   release warning-free. No comment replies (resolve via code/push only).
-- Next likely audit items: §13 MeetingResponse/iMIP integrity, §14
-  timezone blob fidelity, §15 Tasks/Notes backend story.
+- §14 Timezone fidelity both directions is COMPLETE and its AUDIT.md section
+  documents the delivered behavior. Design rule: `timezone.rs::zone_transitions`
+  (chrono-tz sampling) is the SINGLE authoritative zone source — it feeds the
+  EAS Calendar:Timezone TZI blob, the EWS StartTimeZone/EndTimeZone ids, and
+  the synthesised VTIMEZONE. Delivered: 139-zone blob↔IANA→blob round-trip +
+  chrono-tz no-offset-drift matrix; name→IANA tiers (registry id → display
+  description → fixed-offset LAST; substring heuristic guards short UTC*/GMT*
+  tokens); VTIMEZONE STRUCTURAL matching in resolve_ical_tzid (custom TZIDs
+  resolve via their block's transitions, EU last-Sunday rules match exactly);
+  gap/fold-tolerant naive localization (fold→earlier, gap→pre-transition offset)
+  shared by iCalendar and EWS naive values, explicit Z always wins;
+  EWS render pairs Id+Name from ONE variant (`windows_variant_for_iana` +
+  `iana_to_windows_display_description` — Name is the "(UTC±hh:mm) …" display
+  description, never the registry id twice); GetServerTimeZones full matrix
+  ([MS-OXWSGTZ] §3.1.4.1.3.3): every variant served, names-only attribute
+  form, Ids filter in request order, unknown ids dropped silently.
+  Round-trip semantics: Windows zones are COARSER than IANA —
+  Europe/Amsterdam renders W. Europe Standard Time and re-parses to
+  Europe/Berlin (canonical representative), offset-identical at every
+  quarterly sample; instants always preserved. Tests: 9 new (timezone 2,
+  calendar 3, sync 1 EAS blob render round-trip, ews 2 render round-trip +
+  1 GetServerTimeZones names-only/Ids fixed). Suite: 973 lib + 22 fixtures +
+  11 snapshots + 2 deploy + 1 doc, clippy 0, fmt clean on touched files
+  (calendar/timezone/sync/ews — eas.rs:2284 remains the pre-existing §10
+  exception), release warning-free.
+- Next likely audit items: §15 Tasks/Notes backend story, §16 stale-watermark
+  resync, §17 auth negative-cache TTL.
 - Toolchain note: rustup components clippy/rustfmt must be installed in a
   fresh container (`rustup component add clippy rustfmt`); project edition is
   2024 (rustfmt needs `--edition 2024` for let-chains). `cargo fmt --check`
