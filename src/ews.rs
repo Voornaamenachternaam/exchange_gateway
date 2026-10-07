@@ -1404,15 +1404,16 @@ fn render_ews_calendar_item_xml_with_shape(
     if let Some(v) = &item.timezone {
         // Outlook expects a Windows timezone id in StartTimeZone/EndTimeZone (per
         // [MS-OXWSCDATA] t:TimeZoneDefinitionType). Our stored value is IANA, so
-        // convert back; fall back to the raw value if unmappable.
-        let win = crate::timezone::iana_to_windows_timezone_name(v).unwrap_or_else(|| v.clone());
+        // convert back; fall back to the raw value if unmappable. The Id/Name
+        // pair comes from ONE variant lookup so the registry id and the
+        // display description always describe the same Windows zone.
+        let (win, display) = crate::timezone::iana_to_windows_timezone_pair(v)
+            .unwrap_or_else(|| (v.clone(), v.clone()));
         let win_esc = xml_escape(&win);
-        // The `Name` attribute carries the Windows DISPLAY description
-        // ("(UTC-08:00) Pacific Time (US & Canada)") — the same string
-        // GetServerTimeZones serves and Exchange itself writes, which
-        // Outlook renders in the timezone picker.
-        let display =
-            crate::timezone::iana_to_windows_display_description(v).unwrap_or_else(|| win.clone());
+        // `Name` carries the Windows DISPLAY description ("(UTC-08:00)
+        // Pacific Time (US & Canada)") — the same string GetServerTimeZones
+        // serves and Exchange itself writes, which Outlook renders in the
+        // timezone picker.
         let display_esc = xml_escape(&display);
         // Canonical EWS serialisation: `Id`/`Name` are *attributes* of
         // `TimeZoneDefinitionType` (per the Exchange Web Services schema and the
@@ -6474,8 +6475,13 @@ async fn handle_update_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
 
     // Apply changes from the UpdateItem request to new_item
     let field_changes = parse_item_changes(body);
+    // The request's timezone (`t:TimeZoneContext` header or item-level zone
+    // elements inside the update payloads) for naive `Start`/`End` values —
+    // without it an offset-less update is read as UTC and the meeting lands
+    // at the wrong instant (§14 offset drift).
+    let update_zone = crate::calendar::ews_update_request_zone(body);
     if !field_changes.is_empty() {
-        apply_field_changes(&mut new_item, &field_changes);
+        apply_field_changes(&mut new_item, &field_changes, update_zone);
     } else {
         // Legacy field extraction (same as original)
         if let Some(v) =
@@ -6483,13 +6489,13 @@ async fn handle_update_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
         {
             new_item.subject = v;
         }
-        if let Some(v) =
-            extract_ews_field(body, b"Start").and_then(|v| crate::calendar::parse_datetime(&v))
+        if let Some(v) = extract_ews_field(body, b"Start")
+            .and_then(|v| crate::calendar::parse_datetime_in_zone(&v, update_zone))
         {
             new_item.start = v;
         }
-        if let Some(v) =
-            extract_ews_field(body, b"End").and_then(|v| crate::calendar::parse_datetime(&v))
+        if let Some(v) = extract_ews_field(body, b"End")
+            .and_then(|v| crate::calendar::parse_datetime_in_zone(&v, update_zone))
         {
             new_item.end = v;
         }
@@ -8191,10 +8197,38 @@ async fn handle_get_server_time_zones(body: &str) -> Response {
 }
 
 /// True when the request's `GetServerTimeZones` element carries
-/// `ReturnFullTimeZoneData="false"` (names/ids only).
+/// `ReturnFullTimeZoneData="false"` (names/ids only). The attribute is an
+/// `xs:boolean` ([MS-OXWSGTZ] §3.1.4.1.3.3), whose lexical false forms are
+/// `false` and `0` — parsed as a real XML attribute so whitespace around the
+/// `=`, either quote style, and entity-encoded values all behave; absence of
+/// the attribute means full data (the spec's default). Bodies that are not
+/// namespace-resolvable XML (roxmltree rejects undeclared prefixes) keep the
+/// lenient literal scan — recognizing the same two lexical false forms in
+/// both quote styles — rather than guessing full data from a parse failure.
 fn get_server_time_zones_wants_names_only(body: &str) -> bool {
-    body.contains("ReturnFullTimeZoneData=\"false\"")
-        || body.contains("ReturnFullTimeZoneData='false'")
+    if let Ok(doc) = roxmltree::Document::parse(body) {
+        return doc
+            .descendants()
+            .filter(|n| n.is_element() && n.tag_name().name() == "GetServerTimeZones")
+            .any(|node| {
+                node.attributes().any(|attr| {
+                    attr.name() == "ReturnFullTimeZoneData" && is_xs_boolean_false(attr.value())
+                })
+            });
+    }
+    ["\"", "'"]
+        .iter()
+        .any(|q| body.contains(&format!("ReturnFullTimeZoneData={q}false{q}")))
+        || ["\"", "'"]
+            .iter()
+            .any(|q| body.contains(&format!("ReturnFullTimeZoneData={q}0{q}")))
+}
+
+/// The `xs:boolean` lexical false forms ([XMLSCHEMA2] §3.2.2.2): `false` and
+/// `0`, after whitespace collapse. Matching the value space exactly — not
+/// case-insensitively — keeps invalid spellings on the full-data default.
+fn is_xs_boolean_false(value: &str) -> bool {
+    matches!(value.trim(), "false" | "0")
 }
 
 /// The `t:Ids`/`t:Id` list of a GetServerTimeZones request, in request order
@@ -11329,10 +11363,8 @@ mod tests {
                 None,
             );
 
-            let win = crate::timezone::iana_to_windows_timezone_name(zone)
-                .unwrap_or_else(|| panic!("{zone}: no Windows id"));
-            let display = crate::timezone::iana_to_windows_display_description(zone)
-                .unwrap_or_else(|| panic!("{zone}: no Windows display description"));
+            let (win, display) = crate::timezone::iana_to_windows_timezone_pair(zone)
+                .unwrap_or_else(|| panic!("{zone}: no Windows Id/Name pair"));
             let id_attr = format!(
                 r#"<t:StartTimeZone Id="{}" Name="{}"/>"#,
                 xml_escape(&win),
@@ -11507,6 +11539,58 @@ mod tests {
             text.contains(r#"<t:TimeZoneDefinition Id="Pacific Standard Time" Name="(UTC-08:00) Pacific Time (US &amp; Canada)"></t:TimeZoneDefinition>"#),
             "names-only entries are attribute-only elements:\n{text}"
         );
+    }
+
+    #[tokio::test]
+    async fn get_server_time_zones_names_only_accepts_every_xs_boolean_false_form() {
+        // `ReturnFullTimeZoneData` is an xs:boolean ([MS-OXWSGTZ]
+        // §3.1.4.1.3.3), whose lexical false forms are `false` and `0`. The
+        // attribute is parsed as a real XML attribute (Outlook always sends
+        // namespace-declared SOAP), so whitespace-padded values, single
+        // quotes, and either lexical form all select the names-only shape;
+        // a request with no attribute (or a value that is not a valid false
+        // spelling, like `FALSE` or `no`) serves FULL data, the spec's
+        // default.
+        for body in [
+            r#"<m:GetServerTimeZones xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages" ReturnFullTimeZoneData="false"/>"#,
+            r#"<m:GetServerTimeZones xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages" ReturnFullTimeZoneData='false'/>"#,
+            r#"<m:GetServerTimeZones xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages" ReturnFullTimeZoneData="0"/>"#,
+            r#"<m:GetServerTimeZones xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages" ReturnFullTimeZoneData="  false  "/>"#,
+            concat!(
+                r#"<m:GetServerTimeZones xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages""#,
+                r#" xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types" ReturnFullTimeZoneData="false">"#,
+                r#"<m:Ids><t:Id>Alaskan Standard Time</t:Id></m:Ids>"#,
+                r#"</m:GetServerTimeZones>"#
+            ),
+        ] {
+            assert!(
+                get_server_time_zones_wants_names_only(body),
+                "{body}: helper must see names-only"
+            );
+            let resp = handle_get_server_time_zones(body).await;
+            assert_eq!(resp.status(), StatusCode::OK);
+            let text = response_body(resp).await;
+            assert!(
+                !text.contains("<t:Periods>"),
+                "{body}: every xs:boolean false spelling must select names-only:\n{text}"
+            );
+        }
+
+        for body in [
+            r#"<m:GetServerTimeZones xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages" ReturnFullTimeZoneData="true"/>"#,
+            r#"<m:GetServerTimeZones xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages" ReturnFullTimeZoneData="1"/>"#,
+            r#"<m:GetServerTimeZones xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages" ReturnFullTimeZoneData="FALSE"/>"#,
+            r#"<m:GetServerTimeZones xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages" ReturnFullTimeZoneData="no"/>"#,
+            r#"<m:GetServerTimeZones xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages"/>"#,
+        ] {
+            let resp = handle_get_server_time_zones(body).await;
+            assert_eq!(resp.status(), StatusCode::OK);
+            let text = response_body(resp).await;
+            assert!(
+                text.contains("<t:Periods>"),
+                "{body}: only valid false spellings select names-only; everything else is full data:\n{text}"
+            );
+        }
     }
 
     #[tokio::test]

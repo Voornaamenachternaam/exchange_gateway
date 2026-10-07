@@ -85,9 +85,7 @@ pub fn parse_collection_options(collection_xml: &str) -> ParsedCollectionOptions
                 let local = local_name(e.name().as_ref());
                 if local == "Options" {
                     options_seen = true;
-                } else if path.last().is_some_and(|p| p == "Options")
-                    && local == "BodyPreference"
-                {
+                } else if path.last().is_some_and(|p| p == "Options") && local == "BodyPreference" {
                     // A BodyPreference that is a direct child of Options
                     // opens its own preference slot; the child elements that
                     // follow fill it in request order.
@@ -461,7 +459,8 @@ pub fn negotiate_body(
 
     // Pass 1: exact native-format match, honoring AllOrNone.
     for pref in preferences {
-        if pref.body_type == native.wire_value() && !skipped_by_all_or_none(pref, native_size_bytes) {
+        if pref.body_type == native.wire_value() && !skipped_by_all_or_none(pref, native_size_bytes)
+        {
             return NegotiatedBody {
                 body_type: pref.body_type,
                 truncation_size: pref.truncation_size,
@@ -500,7 +499,11 @@ pub fn negotiate_body(
     let withheld = skipped_by_all_or_none(first, native_size_bytes);
     NegotiatedBody {
         body_type: native.wire_value(),
-        truncation_size: if withheld { None } else { first.truncation_size },
+        truncation_size: if withheld {
+            None
+        } else {
+            first.truncation_size
+        },
         preview: first.preview,
         data_withheld: withheld,
     }
@@ -1048,7 +1051,10 @@ mod tests {
             }]
         );
         assert_eq!(
-            parsed.options.body_part_preference.map(|p| p.truncation_size),
+            parsed
+                .options
+                .body_part_preference
+                .map(|p| p.truncation_size),
             Some(Some(4096))
         );
     }
@@ -1095,8 +1101,10 @@ mod tests {
                 body_preferences: vec![pref(2)],
                 ..Default::default()
             };
-            let resolved =
-                EasSyncCollectionOptions::resolve_sticky(Some(stored), Some(parsed.options.clone()));
+            let resolved = EasSyncCollectionOptions::resolve_sticky(
+                Some(stored),
+                Some(parsed.options.clone()),
+            );
             assert_eq!(resolved, Some(parsed.options), "xml={xml}");
             assert!(
                 resolved.unwrap().body_preferences.is_empty(),
@@ -1107,7 +1115,10 @@ mod tests {
 
     #[test]
     fn effective_mime_support_defaults_to_zero() {
-        assert_eq!(EasSyncCollectionOptions::default().effective_mime_support(), 0);
+        assert_eq!(
+            EasSyncCollectionOptions::default().effective_mime_support(),
+            0
+        );
         let opts = EasSyncCollectionOptions {
             mime_support: Some(2),
             ..Default::default()

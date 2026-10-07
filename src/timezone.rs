@@ -76,7 +76,7 @@ fn find_windows_timezone(name: &str) -> Option<WindowsTimezone> {
         .max_by_key(|variant| variant.name().len())
 }
 
-/// Registry-id and display-name resolution WITHOUT the `(GMT┬▒hh:mm)`-style
+/// Registry-id and display-name resolution WITHOUT the `(GMT±hh:mm)`-style
 /// fixed-offset fallback: a real named zone carries the DST rules, while the
 /// offset-string heuristic is only correct for genuinely fixed-offset
 /// inputs. Keeping the fallback out of this tier lets callers consult an
@@ -106,7 +106,7 @@ fn windows_name_to_iana(name: &str) -> Option<String> {
         return Some(iana);
     }
     // A named Windows zone wins over a fixed-offset id: a real zone carries
-    // the DST rules, while the `(GMT┬▒hh:mm)`-style fallback is only correct
+    // the DST rules, while the `(GMT±hh:mm)`-style fallback is only correct
     // for genuinely fixed-offset inputs. Resolving the name first keeps a
     // "(UTC-08:00) Pacific Time (US & Canada)"-style name from collapsing to
     // `Etc/GMT+8` and silently dropping Pacific DST.
@@ -134,7 +134,7 @@ fn canonical_iana_id(tzdb_id: &'static str) -> &'static str {
 }
 
 /// A decoded Windows `SYSTEMTIME` transition record from a `TZI` blob
-/// ([MS-DTYP] ┬¦2.3.13). `year == 0` marks the *rule-based* form
+/// ([MS-DTYP] §2.3.13). `year == 0` marks the *rule-based* form
 /// (month/weekday/week-of-month/hour); a non-zero year marks a fixed-date
 /// transition, which the matcher normalises back to the rule form.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -175,7 +175,7 @@ impl TziSystemTime {
     }
 }
 
-/// The fully decoded [MS-ASDTYPE] ┬¦2.7.6 `TimeZone` structure (the base64
+/// The fully decoded [MS-ASDTYPE] §2.7.6 `TimeZone` structure (the base64
 /// payload of an EAS `Calendar:Timezone` element): the UTC bias, the standard
 /// and daylight display names, and both `SYSTEMTIME` transition records with
 /// their bias deltas. `TzParams` is the *encoding* counterpart of this type.
@@ -190,7 +190,7 @@ pub struct EasTimezoneBlob {
     pub daylight_bias: i32,
 }
 
-/// Decode a base64 EAS `Timezone` blob ([MS-ASDTYPE] ┬¦2.7.6) into its full
+/// Decode a base64 EAS `Timezone` blob ([MS-ASDTYPE] §2.7.6) into its full
 /// `TZI` structure. Returns `None` for anything that is not a well-formed
 /// 172-byte `TimeZone` structure.
 pub fn decode_eas_timezone_blob(b64: &str) -> Option<EasTimezoneBlob> {
@@ -220,8 +220,8 @@ pub fn decode_eas_timezone_blob(b64: &str) -> Option<EasTimezoneBlob> {
 
 /// Normalise a `SYSTEMTIME` transition record to the rule-based form Windows
 /// `TZI` comparisons use: a fixed-date record (`wYear != 0`) is converted to
-/// its equivalent (month, weekday, week-of-month, hour) rule so legacy blobs ŌĆö
-/// some Android OEM EAS stacks emit fixed-year records ŌĆö compare equal to
+/// its equivalent (month, weekday, week-of-month, hour) rule so legacy blobs —
+/// some Android OEM EAS stacks emit fixed-year records — compare equal to
 /// rule-form candidates. All-zero records stay all-zero (no transition).
 fn normalise_tzi_rule(record: TziSystemTime) -> TziSystemTime {
     if record.is_rule() || record.is_zeroed() {
@@ -289,7 +289,7 @@ static TZI_CANDIDATES: LazyLock<Vec<TziCandidate>> = LazyLock::new(|| {
 ///    (the name is the client's authoritative identity; rules may reflect a
 ///    different transition era, e.g. pre-2007 US rules under a modern name);
 /// 3. offset-level match `(bias, dst bias)` with differing rules;
-/// 4. nothing ŌĆö the caller degrades to a fixed-offset zone.
+/// 4. nothing — the caller degrades to a fixed-offset zone.
 fn match_tzi_to_iana(
     bias: i32,
     standard_date: TziSystemTime,
@@ -396,7 +396,7 @@ pub fn eas_timezone_blob_to_iana(b64: &str) -> Option<String> {
 
     // A DST-observing blob whose rules matched no known zone (e.g. an exotic
     // or historic rule set) still resolves through its embedded names before
-    // degrading to a fixed offset ŌĆö the names carry the zone identity even
+    // degrading to a fixed offset — the names carry the zone identity even
     // when the transition rules do not correspond to any current zone.
     if let Some(iana) = prefer {
         return Some(iana);
@@ -425,7 +425,7 @@ pub fn windows_timezone_name_to_tz(name: &str) -> Option<Tz> {
 ///
 /// Outlook EWS `StartTimeZone`/`MeetingTimeZone` and EAS `TimezoneName` carry
 /// Windows timezone names; Stalwart and the icalendar crate require IANA names.
-/// Resolution order: registry id ŌåÆ Windows display name ŌåÆ `(GMT┬▒hh:mm)`-style
+/// Resolution order: registry id → Windows display name → `(GMT±hh:mm)`-style
 /// fixed-offset id, so a named zone's DST rules never lose to the offset
 /// string heuristic. Returns `None` for unrecognised names so callers can
 /// fall back to UTC.
@@ -433,14 +433,14 @@ pub fn windows_timezone_name_to_iana(name: &str) -> Option<String> {
     windows_name_to_iana(name)
 }
 
-/// Registry-id/display-name resolution only ŌĆö for callers that consult a
+/// Registry-id/display-name resolution only — for callers that consult a
 /// `VTIMEZONE` (or other authoritative structure) before ever accepting the
 /// lossy fixed-offset degradation.
 pub fn windows_named_timezone_to_iana(name: &str) -> Option<String> {
     windows_named_zone_to_iana(name)
 }
 
-/// The `(GMT┬▒hh:mm)`/`(UTC┬▒hh:mm)`-style fixed-offset id LAST-resort tier,
+/// The `(GMT±hh:mm)`/`(UTC±hh:mm)`-style fixed-offset id LAST-resort tier,
 /// for callers that have exhausted named and structural resolution.
 pub fn utc_offset_name_to_iana(name: &str) -> Option<String> {
     parse_utc_offset_name(name)
@@ -496,8 +496,8 @@ pub type TzParams = (i32, String, String, [u8; 16], [u8; 16], i32, i32);
 /// Windows `TZI` SYSTEMTIME layout (16 bytes, little-endian WORDs):
 /// wYear(2) wMonth(2) wDayOfWeek(2) wDay(2) wHour(2) wMinute(2) wSecond(2) wMs(2).
 /// A `wYear` of 0 marks a *rule-based* transition parametrised by
-/// (month, weekday, week-of-month, hour): `wDay` Ōłł 1..=4 = the nth weekday,
-/// 5 = the last weekday of the month; `wDayOfWeek` Ōłł 0..=6 = Sunday..Saturday.
+/// (month, weekday, week-of-month, hour): `wDay` ∈ 1..=4 = the nth weekday,
+/// 5 = the last weekday of the month; `wDayOfWeek` ∈ 0..=6 = Sunday..Saturday.
 fn systemtime_rule(month: u16, weekday: u16, week: u16, hour: u16) -> [u8; 16] {
     let mut b = [0u8; 16];
     // wYear = 0 (rule-based, not a fixed year)
@@ -525,7 +525,7 @@ fn local_offset_minutes(tz: Tz, ndt: chrono::NaiveDateTime) -> Option<i32> {
 /// hour does not exist as a local time) and folds (fall-back, where it repeats).
 /// The Windows `TZI` `DaylightDate`/`StandardDate` `wHour` is documented as the
 /// instant the offset changes, expressed in the **outgoing** phase's wall
-/// clock ŌĆö i.e. the naive hour at which the offset stops being `from`. For a
+/// clock — i.e. the naive hour at which the offset stops being `from`. For a
 /// spring-forward gap that hour is the (non-existent) gap start (e.g. 02:00
 /// Eastern, 01:00 GMT); for a fall-back fold it is the first naive hour that
 /// is exclusively in the new phase. The result is the literal naive boundary
@@ -538,7 +538,7 @@ fn transition_hour(tz: Tz, date: chrono::NaiveDate, from: i32, _to: i32) -> Opti
     while hour < 24 {
         let ndt = date.and_hms_opt(hour.into(), 0, 0)?;
         let cur = local_offset_minutes(tz, ndt);
-        // A flip is detected when the offset leaves `from` ŌĆö either by becoming
+        // A flip is detected when the offset leaves `from` — either by becoming
         // the new offset, or by dropping into a gap (None) right after an
         // `from` hour (spring-forward).
         if prev == Some(from) && cur != Some(from) {
@@ -646,7 +646,7 @@ fn month_days(year: i32, month: u32) -> u32 {
 /// Zones that by definition never observe DST, kept as a fast path so the
 /// synthesised blob carries a clean zeroed SYSTEMTIME (matching a no-DST
 /// Windows TZI) without a needless year-long scan. Restricted to the
-/// genuinely-fixed IANA categories ŌĆö `UTC`, `Etc/*`, and `GMT` ŌĆö so any zone
+/// genuinely-fixed IANA categories — `UTC`, `Etc/*`, and `GMT` — so any zone
 /// that *might* observe DST (Africa/Cairo resumed DST in 2023; many "currently
 /// fixed" regional zones have a DST history under different rules) is computed
 /// from its actual sampled offsets by `zone_transitions` instead of being
@@ -660,14 +660,14 @@ fn fixed_offset_zone(iana: &str) -> bool {
 /// canonical form of the deprecated `Asia/Calcutta` that the `windows-timezones`
 /// `TryFrom<Tz>` mapping is keyed on). Falls back to iterating all Windows
 /// timezones and matching the candidate whose `tzdb_id()` resolves to the
-/// *same* zone as the input ŌĆö comparing resolved local offsets at four
+/// *same* zone as the input — comparing resolved local offsets at four
 /// representative instants (one per season) rather than the raw `Tz` enum
 /// discriminant, because `chrono_tz` exposes aliased ids (Asia/Kolkata vs
 /// Asia/Calcutta) as *distinct* enum variants that nonetheless resolve to
 /// identical offsets.
 ///
 /// The legacy tzdb spelling the `windows-timezones` crate is keyed on for the
-/// ids [`canonical_iana_id`] modernises ŌĆö the inverse mapping, used when
+/// ids [`canonical_iana_id`] modernises — the inverse mapping, used when
 /// resolving an IANA id back to its Windows zone so a canonical spelling
 /// still finds the crate's entry deterministically instead of falling to
 /// offset-sampling ambiguity.
@@ -732,13 +732,31 @@ pub fn iana_to_windows_display_description(iana: &str) -> Option<String> {
     windows_variant_for_iana(iana, tz).map(|v| v.description().to_string())
 }
 
+/// The matched `(registry Id, display-description Name)` pair for an IANA id,
+/// both derived from ONE `windows_variant_for_iana` result — EWS serves the
+/// two as the `Id`/`Name` attributes of a `t:TimeZoneDefinitionType`
+/// (`StartTimeZone`/`EndTimeZone`), and the pair must never splice a name
+/// from a different variant than the id. The UTC-class zones collapse to the
+/// canonical `"UTC"` registry id (the same special case the `TZI` parameter
+/// path applies) while the description still comes from that one variant
+/// lookup.
+pub fn iana_to_windows_timezone_pair(iana: &str) -> Option<(String, String)> {
+    let tz: Tz = iana.parse().ok()?;
+    let variant = windows_variant_for_iana(iana, tz)?;
+    let id = match iana {
+        "UTC" | "Etc/UTC" | "Etc/GMT" | "GMT" => "UTC".to_string(),
+        _ => variant.name().to_string(),
+    };
+    Some((id, variant.description().to_string()))
+}
+
 /// Resolved DST transition metadata for an IANA zone, derived by sampling the
 /// zone's actual local offsets across a reference year with `chrono_tz`. This
 /// is the single authoritative source for the Windows `TZI` blob AND the
 /// synthesised iCalendar `VTIMEZONE` block, so the EAS/EWS rendering and the
 /// CalDAV `render_ics` emission agree byte-for-byte on the same transition
 /// boundaries (the audit gap: the per-event `StartTimeZone`/`EndTimeZone` was
-/// built from a Windows-TZŌåÆbase64 mapping that did not preserve the
+/// built from a Windows-TZ→base64 mapping that did not preserve the
 /// authoritative TZID/RRULE UNTIL boundaries CalDAV round-trips).
 struct ZoneTransitions {
     standard_offset: i32,
@@ -803,7 +821,7 @@ fn zone_transitions(iana: &str, tz: Tz) -> ZoneTransitions {
 /// that carries a Windows time-zone name but no authoritative CalDAV
 /// `VTIMEZONE` still round-trips with a byte-for-byte-correct zone definition.
 /// The `TZID` is the IANA id (canonical), matching what `render_ics` emits on
-/// `DTSTART;TZID=ŌĆ”`; the `STANDARD`/`DAYLIGHT` subcomponents carry the
+/// `DTSTART;TZID=…`; the `STANDARD`/`DAYLIGHT` subcomponents carry the
 /// `TZOFFSETFROM`/`TZOFFSETTO`/`DTSTART`/`RRULE` derived from the same sampled
 /// transition rules as the Windows `TZI` blob (so a client re-editing the
 /// event on either transport sees identical boundaries).
@@ -891,7 +909,7 @@ fn weekday_name(wday: u16) -> &'static str {
 }
 
 /// Resolve the `DTSTART` for a `VTIMEZONE` subcomponent from a Windows `TZI`
-/// SYSTEMTIME rule. Per RFC 5545 ┬¦3.6.5 the `STANDARD`/`DAYLIGHT` `DTSTART` is
+/// SYSTEMTIME rule. Per RFC 5545 §3.6.5 the `STANDARD`/`DAYLIGHT` `DTSTART` is
 /// the transition's **local** wall-clock time (the instant the offset becomes
 /// effective, expressed in that offset's own clock), anchored at the customary
 /// epoch year `1970` and emitted as a naive date-time with **no** trailing `Z`
@@ -960,8 +978,8 @@ fn vtimezone_rrule(rule: [u8; 16]) -> String {
 /// binary, and the reference year is a constant), so the (potentially
 /// expensive) full-year offset scan + the `WindowsTimezone::iter()` offset
 /// comparison need only run once per id per process. This is the per-item
-/// render path's hot loop ŌĆö a calendar folder of N events triggered N year
-/// scans before the cache ŌĆö so the memo converts N scans into one. The map is
+/// render path's hot loop — a calendar folder of N events triggered N year
+/// scans before the cache — so the memo converts N scans into one. The map is
 /// keyed by the raw input string (canonicalisation happens after the lookup)
 /// so distinct spellings (e.g. `UTC` vs `Etc/UTC`) each get their own entry
 /// rather than aliasing surprises; the values are small and bounded by the
@@ -1012,15 +1030,15 @@ fn compute_iana_to_windows_params(iana: &str) -> Option<TzParams> {
     Some((bias, win_name, dst_name, std_date, dst_date, 0, dst_bias))
 }
 
-/// Parse a `TZI` `SYSTEMTIME` transition record ([MS-DTYP] ┬¦2.3.13) from its
-/// 16-byte little-endian wire form ŌĆö the encoding counterpart of
+/// Parse a `TZI` `SYSTEMTIME` transition record ([MS-DTYP] §2.3.13) from its
+/// 16-byte little-endian wire form — the encoding counterpart of
 /// [`TziSystemTime::from_le_bytes`], for consumers holding a raw blob slice
 /// (e.g. the EWS `TimeZoneDefinition` renderer working off `TzParams`).
 pub fn tzi_rule_from_blob(blob: &[u8; 16]) -> TziSystemTime {
     TziSystemTime::from_le_bytes(*blob)
 }
 
-/// Evaluate a Windows `TZI` rule ([MS-DTYP] ┬¦2.3.13 `SYSTEMTIME` semantics)
+/// Evaluate a Windows `TZI` rule ([MS-DTYP] §2.3.13 `SYSTEMTIME` semantics)
 /// and return the day-of-month of the transition it denotes in `year`.
 /// `wDay` 1..=4 selects the nth weekday of the month; 5 selects the last;
 /// a non-zero `wYear` pins the exact date.
@@ -1348,13 +1366,13 @@ mod tests {
 
     #[test]
     fn iana_to_windows_santiago_southern_hemisphere_dst() {
-        // America/Santiago observes DST SepŌåÆApr (southern hemisphere). The old
+        // America/Santiago observes DST Sep→Apr (southern hemisphere). The old
         // hardcoded approximation mis-encoded this as EU (Mar dst / Oct std),
         // i.e. the *reversed* hemisphere. The chrono_tz derivation must place
         // the DST-start month in September/October and the std-resume month in
         // April, with a -04 standard bias / -03 daylight (standard + 60).
-        // Chile's autumn resume falls at midnight local (00:00) ŌĆö a SYSTEMTIME
-        // wHour of 0 ŌĆö which the old `.clamp(1, 23)` erroneously shifted to 01:00;
+        // Chile's autumn resume falls at midnight local (00:00) — a SYSTEMTIME
+        // wHour of 0 — which the old `.clamp(1, 23)` erroneously shifted to 01:00;
         // this regression-asserts the boundary survives at 0 (gap #1 / C7 fix).
         let (bias, _, _, std_date, dst_date, _, dst_bias) =
             iana_to_windows_params("America/Santiago").expect("Santiago tz params");
@@ -1370,7 +1388,7 @@ mod tests {
             dst.0
         );
         assert_eq!(std.0, 4, "Santiago standard resumes in April");
-        // The autumn (std-resume) hour is 00:00 ŌĆö verify the midnight boundary
+        // The autumn (std-resume) hour is 00:00 — verify the midnight boundary
         // survives the encoder rather than being clamped to 1.
         assert_eq!(
             std.3, 0,
@@ -1385,7 +1403,7 @@ mod tests {
     #[test]
     fn render_vtimezone_block_us_eastern_is_local_naive_no_z() {
         // The synthesised VTIMEZONE must use *local* wall-clock DTSTART values
-        // (RFC 5545 ┬¦3.6.5: a UTC-suffixed DTSTART is forbidden inside a
+        // (RFC 5545 §3.6.5: a UTC-suffixed DTSTART is forbidden inside a
         // VTIMEZONE subcomponent) anchored at the epoch year, with the STANDARD
         // and DAYLIGHT transitions emitted in the right order. This is a direct
         // regression guard for the C13 fix (no trailing `Z`, no offset math).
@@ -1511,9 +1529,9 @@ mod tests {
         );
     }
 
-    /// The 172-byte `TimeZone` structure of [MS-ASDTYPE] ┬¦2.7.6, built from a
-    /// decoded field set ŌĆö the inverse of `decode_eas_timezone_blob` and the
-    /// exact wire form the [MS-ASCAL] ┬¦2.2.2.44 examples carry.
+    /// The 172-byte `TimeZone` structure of [MS-ASDTYPE] §2.7.6, built from a
+    /// decoded field set — the inverse of `decode_eas_timezone_blob` and the
+    /// exact wire form the [MS-ASCAL] §2.2.2.44 examples carry.
     fn build_tzi_blob(
         bias: i32,
         std_name: &str,
@@ -1579,7 +1597,7 @@ mod tests {
 
     #[test]
     fn eas_timezone_blob_decodes_full_structure() {
-        // The [MS-ASDTYPE] ┬¦2.7.6 decode must surface every field, not just the
+        // The [MS-ASDTYPE] §2.7.6 decode must surface every field, not just the
         // bias: names, both transition records and both bias deltas.
         let blob = build_tzi_blob(
             480,
@@ -1620,10 +1638,10 @@ mod tests {
 
     #[test]
     fn eas_blob_with_display_names_decodes_by_dst_rules_not_fixed_offset() {
-        // [MS-ASDTYPE] ┬¦3.6.6's example `TimeZone` blob carries Windows
+        // [MS-ASDTYPE] §3.6.6's example `TimeZone` blob carries Windows
         // DISPLAY names ("(GMT-08:00) Pacific Time (US & C" in the legacy
         // spelling) rather than registry ids. The name is unresolvable, so
-        // the old decode degraded to `Etc/GMT+8` ŌĆö a fixed UTC-8 zone that
+        // the old decode degraded to `Etc/GMT+8` — a fixed UTC-8 zone that
         // silently drops Pacific DST and shifts every summer event by an
         // hour. The structural matcher must instead read the blob's own
         // (bias, DST rules, DST bias) and resolve America/Los_Angeles.
@@ -1646,14 +1664,14 @@ mod tests {
     fn eas_blob_with_display_names_europe_resolves_dst_zone() {
         // The classic Berlin/Amsterdam breakage: a "(GMT+01:00) Amsterdam,
         // Berlin, Bern, Rome, Stockholm, Vienna"-style blob must resolve to
-        // a REAL EU DST zone ŌĆö NOT to fixed Etc/GMT-1, which silently drops
+        // a REAL EU DST zone — NOT to fixed Etc/GMT-1, which silently drops
         // DST and shifts every summer event by an hour. The Windows registry
         // has several structurally identical +01:00/+02:00 EU zones
-        // (W. Europe / Romance / Central Europe ŌĆ”), so without a resolvable
+        // (W. Europe / Romance / Central Europe …), so without a resolvable
         // name hint the exact spelling is an equivalence-class pick; the
         // guaranteed properties are (1) not a fixed Etc zone, and (2) rules
         // byte-identical to the blob's EU rules (last Sunday March 02:00 /
-        // last Sunday October 03:00, ┬▒60 DST delta).
+        // last Sunday October 03:00, ±60 DST delta).
         let blob = build_tzi_blob(
             -60,
             "(GMT+01:00) Amsterdam, Berlin, Bern, Rome, Stockholm, Vienna",
@@ -1736,7 +1754,7 @@ mod tests {
     #[test]
     fn half_hour_dst_zone_encodes_dst_bias() {
         // Australia/Lord_Howe shifts only +30 minutes for DST
-        // (+10:30/+11:00). The blob must carry DaylightBias=-30 ŌĆö the old
+        // (+10:30/+11:00). The blob must carry DaylightBias=-30 — the old
         // `standard+60` assumption produced -60 and moved every Lord Howe
         // summer event by half an hour.
         let (bias, _, _, std_date, dst_date, _, dst_bias) =
@@ -1749,9 +1767,9 @@ mod tests {
 
     #[test]
     fn every_windows_timezone_blob_round_trips_to_same_iana() {
-        // The ┬¦14 proof test: EVERY Windows timezone id the clients can emit
+        // The §14 proof test: EVERY Windows timezone id the clients can emit
         // maps to an IANA zone, the zone synthesizes a 172-byte TZI blob,
-        // and decoding that blob resolves back to the SAME IANA zone ŌĆö
+        // and decoding that blob resolves back to the SAME IANA zone —
         // names and DST rules agreeing end to end.
         use strum::IntoEnumIterator;
         use windows_timezones::WindowsTimezone;
@@ -1789,9 +1807,9 @@ mod tests {
 
     #[test]
     fn tzi_blob_offsets_match_chrono_tz_ground_truth() {
-        // The no-offset-drift proof: for a representative spread of zones ŌĆö
+        // The no-offset-drift proof: for a representative spread of zones —
         // northern/southern DST, half-hour DST delta, half-hour standard
-        // offset, no-DST ŌĆö the offset the Windows TZI blob prescribes must
+        // offset, no-DST — the offset the Windows TZI blob prescribes must
         // equal the offset chrono_tz (the tzdb ground truth) reports, at
         // wall-clock samples across BOTH the standard and the daylight
         // phases of the reference year.
@@ -1820,7 +1838,7 @@ mod tests {
                 failures.push(format!("{iana}: blob did not decode"));
                 continue;
             };
-            // Sample the 1st and 15th of every month at 09:00 and 21:00 ŌĆö
+            // Sample the 1st and 15th of every month at 09:00 and 21:00 —
             // 48 samples spanning both daily halves and both DST phases.
             for (month, day) in (1..=12u32).flat_map(|m| [(m, 1u32), (m, 15u32)]) {
                 for hour in [9u32, 21u32] {
@@ -1894,7 +1912,7 @@ mod tests {
              END:DAYLIGHT\r\n\
              END:VTIMEZONE\r\n";
         let matched = match_vtimezone_to_iana(block).expect("resolvable");
-        // The structurally identical W. Europe / Central Europe zones ŌĆö the
+        // The structurally identical W. Europe / Central Europe zones — the
         // matcher must land on a zone whose rules ARE the EU rules (verified
         // via its own synthesized params), not any +01:00 zone.
         let (_, std_rule, dst_rule, dst_bias) = expected_tzi(&matched);
@@ -1966,7 +1984,7 @@ mod tests {
     #[test]
     fn tzi_offset_evaluator_southern_hemisphere_wrapping_window() {
         // Southern-hemisphere DST wraps the new year: Sydney is in DST for
-        // JanŌĆōApr and OctŌĆōDec. The evaluator's window logic must keep both
+        // Jan–Apr and Oct–Dec. The evaluator's window logic must keep both
         // legs at +11:00.
         let blob = build_tzi_blob(
             -600,
@@ -1983,5 +2001,39 @@ mod tests {
         assert_eq!(tzi_offset_minutes_at(&blob, at("2025-01-15T09:00:00")), 660);
         assert_eq!(tzi_offset_minutes_at(&blob, at("2025-06-15T09:00:00")), 600);
         assert_eq!(tzi_offset_minutes_at(&blob, at("2025-12-15T09:00:00")), 660);
+    }
+
+    #[test]
+    fn iana_to_windows_timezone_pair_is_a_matched_variant_pair() {
+        // EWS renders `t:StartTimeZone Id="…" Name="…"` — the registry id and
+        // the display description must come from the SAME Windows zone, never
+        // two independently-resolved lookups. Cross-check the pair against
+        // the crate's own variant for the same zone, and the UTC-class
+        // collapse onto the canonical "UTC" registry id.
+        let (id, name) =
+            iana_to_windows_timezone_pair("America/Los_Angeles").expect("LA pair resolves");
+        assert_eq!(id, "Pacific Standard Time");
+        assert_eq!(
+            name,
+            iana_to_windows_display_description("America/Los_Angeles")
+                .expect("description resolves"),
+            "pair Name must equal the variant's display description"
+        );
+        assert_ne!(id, name, "id and Name are distinct attribute roles");
+
+        for utc_class in ["UTC", "Etc/UTC", "Etc/GMT", "GMT"] {
+            let (id, _) = iana_to_windows_timezone_pair(utc_class)
+                .unwrap_or_else(|| panic!("{utc_class}: pair must resolve"));
+            assert_eq!(
+                id, "UTC",
+                "{utc_class}: UTC-class zones share one registry id"
+            );
+        }
+
+        assert_eq!(
+            iana_to_windows_timezone_pair("Not/A_Real_Zone"),
+            None,
+            "unresolvable zone yields no pair"
+        );
     }
 }

@@ -644,42 +644,86 @@ fn resolve_ical_tzid(tzid: &str, vtimezone: Option<&str>) -> Option<String> {
 /// ambiguous (fold) time takes the earlier mapping; a non-existent (gap)
 /// time maps with the offset in force just before the transition — the
 /// policy RFC 5545/RFC 7265 recommend and the same instant Outlook produces.
-/// chrono's `LocalResult` yields `None` for gaps and `Ambiguous` for folds,
-/// so the gap case probes the previous day for the pre-transition offset.
+/// chrono's `LocalResult` yields `None` for gaps and `Ambiguous` for folds.
+///
+/// The pre-transition offset is recovered by probing backward in 12-hour
+/// steps. A single fixed probe is not enough: date-line transitions skip a
+/// whole civil day (Pacific/Apia dropped 2011-12-30 when it moved from
+/// UTC-10 to UTC+14), so a naive time more than 12 hours into a >12h gap
+/// still lands inside the gap at the first probe. 48 hours of probing covers
+/// every known skipped-day transition; each probe must itself resolve
+/// unambiguously so the recovered offset really is the pre-transition one.
 fn localize_gap_tolerant(naive: NaiveDateTime, tz: Tz) -> Option<chrono::DateTime<Utc>> {
     match naive.and_local_timezone(tz) {
         chrono::LocalResult::Single(dt) => Some(dt.with_timezone(&Utc)),
         chrono::LocalResult::Ambiguous(earliest, _) => Some(earliest.with_timezone(&Utc)),
         chrono::LocalResult::None => {
-            let before = (naive - chrono::Duration::hours(12))
-                .and_local_timezone(tz)
-                .single()?;
-            let offset = before.offset().fix();
+            let offset = (1..=4i64)
+                .map(|step| naive - chrono::Duration::hours(12 * step))
+                .find_map(|probe| {
+                    probe
+                        .and_local_timezone(tz)
+                        .single()
+                        .map(|dt| dt.offset().fix())
+                })?;
             let utc = naive - chrono::Duration::seconds(offset.local_minus_utc() as i64);
             Some(chrono::DateTime::<Utc>::from_naive_utc_and_offset(utc, Utc))
         }
     }
 }
 
+/// Parse an iCalendar date-time against a timezone id. A naive value (no `Z`,
+/// no offset) is localized in `tzid` — gap-tolerant, fold-takes-earliest —
+/// via `localize_gap_tolerant`. Values with an explicit `Z`/offset and DATE
+/// values carry their own meaning and parse as `parse_datetime` does.
+///
+/// A `tzid` that fails to resolve to a chrono-tz zone leaves a naive value
+/// with NO honest instant: returning `None` (rather than a silent UTC guess
+/// that drifts by the zone's offset) is the fail-closed choice.
 fn parse_datetime_with_tzid(val: &str, tzid: Option<&str>) -> Option<chrono::DateTime<Utc>> {
-    if let Some(tzid) = tzid
-        && !val.ends_with('Z')
-        && val.contains('T')
-    {
-        if let Ok(local) = NaiveDateTime::parse_from_str(val, "%Y%m%dT%H%M%S")
-            && let Ok(tz) = tzid.parse::<Tz>()
-            && let Some(dt) = localize_gap_tolerant(local, tz)
-        {
-            return Some(dt);
-        }
-        if let Ok(local) = NaiveDateTime::parse_from_str(val, "%Y-%m-%dT%H:%M:%S")
-            && let Ok(tz) = tzid.parse::<Tz>()
-            && let Some(dt) = localize_gap_tolerant(local, tz)
-        {
-            return Some(dt);
-        }
+    let Some(tzid) = tzid else {
+        return parse_datetime(val);
+    };
+    if !val.contains('T') || !datetime_is_naive(val) {
+        return parse_datetime(val);
     }
-    parse_datetime(val)
+    let naive = NaiveDateTime::parse_from_str(val, "%Y%m%dT%H%M%S")
+        .or_else(|_| NaiveDateTime::parse_from_str(val, "%Y-%m-%dT%H:%M:%S"))
+        .ok()?;
+    localize_gap_tolerant(naive, tzid.parse::<Tz>().ok()?)
+}
+
+/// Resolve a single date-time property's own `TZID` parameter through the
+/// per-file memoized resolver. Each property is resolved independently —
+/// RFC 5545 §3.8.2.2/§3.8.5.3 allow a different `TZID` per property (e.g. a
+/// `DTSTART;TZID=A` paired with a `DTEND;TZID=B` flight-style event), so the
+/// zone for one property must never be reused for another.
+fn resolve_property_zone(
+    tzid: Option<String>,
+    tz_resolver: &mut dyn FnMut(&str) -> Option<String>,
+) -> Option<String> {
+    tzid.as_deref().and_then(tz_resolver)
+}
+
+/// Parse an iCalendar date-time value against its property's resolved zone.
+///
+/// `zone` is the IANA id the property's `TZID` resolved to; `supplied` records
+/// whether the property carried a `TZID` parameter at all. When the property
+/// DID carry a `TZID` that failed to resolve (`supplied && zone.is_none()`),
+/// a naive date-time is uninterpretable — the honest answer is no instant,
+/// not a silent UTC guess that shifts the event by the zone's offset (the
+/// §14 offset-drift failure). DATE values and explicit-offset/UTC values
+/// stay readable in every case: a DATE is zone-agnostic and an explicit
+/// offset carries its own instant.
+fn parse_datetime_with_tzid_failing_unresolved(
+    val: &str,
+    supplied: bool,
+    zone: Option<String>,
+) -> Option<chrono::DateTime<Utc>> {
+    if supplied && zone.is_none() && datetime_is_naive(val) && val.contains('T') {
+        return None;
+    }
+    parse_datetime_with_tzid(val, zone.as_deref())
 }
 
 fn parse_duration_minutes(trigger: &str) -> Option<i32> {
@@ -692,10 +736,6 @@ fn parse_event_lines(
 ) -> CalendarEventFields {
     let mut fields = CalendarEventFields::default();
     let mut in_valarm = false;
-    // Resolved IANA id for the first TZID the event's date-time properties
-    // reference (DTSTART wins, then DTEND/RECURRENCE-ID, mirroring the
-    // first-write-wins order the fields struct already implements).
-    let mut resolved_zone: Option<String> = None;
 
     for line in lines {
         if line == "BEGIN:VALARM" {
@@ -721,17 +761,6 @@ fn parse_event_lines(
             continue;
         }
 
-        // Resolve a `TZID` parameter once per distinct spelling; the raw id is
-        // kept for `fields.timezone` so an unresolvable id never overwrites a
-        // resolvable one.
-        let mut zone_for = |raw: Option<String>, resolved: &mut Option<String>| -> Option<String> {
-            let raw = raw?;
-            if resolved.is_none() {
-                *resolved = tz_resolver(&raw);
-            }
-            resolved.clone()
-        };
-
         match key {
             k if k.starts_with("SUMMARY") => fields.subject = Some(unescape_ical_text(value)),
             k if k.starts_with("DESCRIPTION") => {
@@ -742,8 +771,9 @@ fn parse_event_lines(
             k if k.starts_with("DTSTAMP") => fields.dtstamp = parse_datetime(value),
             k if k.starts_with("DTSTART") => {
                 let tzid = parse_tzid_from_key(k);
-                let zone = zone_for(tzid.clone(), &mut resolved_zone);
-                fields.start = parse_datetime_with_tzid(value, zone.as_deref());
+                let supplied = tzid.is_some();
+                let zone = resolve_property_zone(tzid.clone(), tz_resolver);
+                fields.start = parse_datetime_with_tzid_failing_unresolved(value, supplied, zone);
                 if fields.timezone.is_none() {
                     fields.timezone = tzid;
                 }
@@ -753,16 +783,19 @@ fn parse_event_lines(
             }
             k if k.starts_with("DTEND") => {
                 let tzid = parse_tzid_from_key(k);
-                let zone = zone_for(tzid.clone(), &mut resolved_zone);
-                fields.end = parse_datetime_with_tzid(value, zone.as_deref());
+                let supplied = tzid.is_some();
+                let zone = resolve_property_zone(tzid.clone(), tz_resolver);
+                fields.end = parse_datetime_with_tzid_failing_unresolved(value, supplied, zone);
                 if fields.timezone.is_none() {
                     fields.timezone = tzid;
                 }
             }
             k if k.starts_with("RECURRENCE-ID") => {
                 let tzid = parse_tzid_from_key(k);
-                let zone = zone_for(tzid.clone(), &mut resolved_zone);
-                fields.recurrence_id = parse_datetime_with_tzid(value, zone.as_deref());
+                let supplied = tzid.is_some();
+                let zone = resolve_property_zone(tzid.clone(), tz_resolver);
+                fields.recurrence_id =
+                    parse_datetime_with_tzid_failing_unresolved(value, supplied, zone);
                 if fields.timezone.is_none() {
                     fields.timezone = tzid;
                 }
@@ -773,9 +806,12 @@ fn parse_event_lines(
             k if k.starts_with("RRULE") => fields.rrule = Some(value.to_string()),
             k if k.starts_with("EXDATE") => {
                 let tzid = parse_tzid_from_key(k);
-                let zone = zone_for(tzid, &mut resolved_zone);
+                let supplied = tzid.is_some();
+                let zone = resolve_property_zone(tzid, tz_resolver);
                 for ex in value.split(',') {
-                    if let Some(dt) = parse_datetime_with_tzid(ex, zone.as_deref()) {
+                    if let Some(dt) =
+                        parse_datetime_with_tzid_failing_unresolved(ex, supplied, zone.clone())
+                    {
                         fields.exdates.push(dt);
                     }
                 }
@@ -2091,6 +2127,29 @@ pub(crate) fn extract_ews_timezone_field(xml: &str, tag: &[u8]) -> Option<String
     extract_ews_timezone_field_doc(&doc, tag)
 }
 
+/// Resolve the timezone an EWS `UpdateItem` request intends its naive
+/// (offset-less) `Start`/`End` values to be read against, applying the SAME
+/// precedence `parse_ews_calendar_item` uses for items: item-level zone
+/// elements first (`t:StartTimeZone`/`t:StartTimeZoneId`/`t:MeetingTimeZone`/
+/// `t:EndTimeZone`/`t:EndTimeZoneId` — in an update these arrive inside the
+/// `SetItemField` payloads), then the request-wide SOAP `t:TimeZoneContext`
+/// header ([MS-OXWSCORE] §2.2.1.12) Outlook sends alongside naive values.
+/// `None` when the request carries no zone at all — a naive value then reads
+/// as UTC, which remains the only defensible reading. Values that carry an
+/// explicit `Z`/offset are unaffected by the resolved zone.
+pub(crate) fn ews_update_request_zone(body: &str) -> Option<Tz> {
+    let raw = extract_ews_timezone_field(body, b"StartTimeZone")
+        .or_else(|| extract_ews_field(body, b"StartTimeZoneId"))
+        .or_else(|| extract_ews_timezone_field(body, b"MeetingTimeZone"))
+        .or_else(|| extract_ews_timezone_field(body, b"EndTimeZone"))
+        .or_else(|| extract_ews_field(body, b"EndTimeZoneId"))
+        .or_else(|| {
+            let doc = Document::parse(body).ok()?;
+            extract_ews_timezone_context(&doc)
+        })?;
+    normalize_timezone_to_iana(&raw).parse().ok()
+}
+
 fn extract_ews_fields_doc(doc: &Document, tag: &[u8]) -> Vec<String> {
     let tag_str = std::str::from_utf8(tag).ok().unwrap_or_default();
     doc.descendants()
@@ -2098,15 +2157,131 @@ fn extract_ews_fields_doc(doc: &Document, tag: &[u8]) -> Vec<String> {
         .filter_map(|n| n.text().map(|s| s.to_string()))
         .collect()
 }
+/// Prefix-agnostic fallback extractor for XML fragments whose namespace
+/// prefixes are declared on ancestors OUTSIDE the fragment — e.g. the
+/// `SetItemField` payloads `parse_item_changes` collects: they carry `t:`
+/// names but the `xmlns:t` declaration lives on the SOAP envelope.
+/// `roxmltree::Document::parse` rejects undeclared prefixes, so the strict
+/// path returns `None` for exactly the fragments UpdateItem field
+/// application lives on. The scan matches LOCAL names (the same
+/// prefix-agnostic convention as the EAS request readers) and returns the
+/// first matching element's direct text.
+fn extract_ews_field_lenient(xml: &str, tag: &[u8]) -> Option<String> {
+    let mut reader = Reader::from_str(xml);
+    // No trimming: the strict path (`roxmltree::Node::text`) returns raw
+    // text, and trimming would also eat the spaces around entity refs
+    // ("Lunch & learn" would collapse to "Lunch&learn").
+    reader.config_mut().trim_text(false);
+    let mut buf = Vec::new();
+    let mut depth = 0usize;
+    let mut out: Option<String> = None;
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(e)) => {
+                let local = local_name_str(e.name().as_ref());
+                if depth == 0 {
+                    if local.as_bytes() == tag {
+                        depth = 1;
+                    }
+                } else {
+                    depth += 1;
+                }
+            }
+            Ok(Event::Text(t)) => {
+                if depth == 1 {
+                    out.get_or_insert_with(String::new).push_str(t.as_ref());
+                }
+            }
+            Ok(Event::GeneralRef(r)) => {
+                if depth == 1 {
+                    out.get_or_insert_with(String::new)
+                        .push_str(&resolve_xml_reference(r.as_ref()));
+                }
+            }
+            Ok(Event::End(_)) => {
+                if depth > 0 {
+                    depth -= 1;
+                    if depth == 0 && out.is_some() {
+                        break;
+                    }
+                }
+            }
+            Ok(Event::Eof) | Err(_) => break,
+            _ => {}
+        }
+        buf.clear();
+    }
+    out
+}
+
+/// Plural form of [`extract_ews_field_lenient`]: every matching element's
+/// direct text, in document order.
+fn extract_ews_fields_lenient(xml: &str, tag: &[u8]) -> Vec<String> {
+    let mut reader = Reader::from_str(xml);
+    reader.config_mut().trim_text(false);
+    let mut buf = Vec::new();
+    let mut depth = 0usize;
+    let mut out = Vec::new();
+    let mut current: Option<usize> = None;
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(e)) => {
+                let local = local_name_str(e.name().as_ref());
+                if depth == 0 {
+                    if local.as_bytes() == tag {
+                        depth = 1;
+                        out.push(String::new());
+                        current = Some(out.len() - 1);
+                    }
+                } else {
+                    depth += 1;
+                }
+            }
+            Ok(Event::Text(t)) => {
+                if depth == 1
+                    && let Some(i) = current
+                {
+                    out[i].push_str(t.as_ref());
+                }
+            }
+            Ok(Event::GeneralRef(r)) => {
+                if depth == 1
+                    && let Some(i) = current
+                {
+                    out[i].push_str(&resolve_xml_reference(r.as_ref()));
+                }
+            }
+            Ok(Event::End(_)) => {
+                if depth > 0 {
+                    depth -= 1;
+                    if depth == 0 {
+                        current = None;
+                    }
+                }
+            }
+            Ok(Event::Eof) | Err(_) => break,
+            _ => {}
+        }
+        buf.clear();
+    }
+    out
+}
+
+fn local_name_str(name: &str) -> String {
+    name.rsplit(':').next().unwrap_or(name).to_string()
+}
+
 pub fn extract_ews_field(xml: &str, tag: &[u8]) -> Option<String> {
-    let doc = Document::parse(xml).ok()?;
-    extract_ews_field_doc(&doc, tag)
+    match Document::parse(xml) {
+        Ok(doc) => extract_ews_field_doc(&doc, tag),
+        Err(_) => extract_ews_field_lenient(xml, tag),
+    }
 }
 
 pub fn extract_ews_fields(xml: &str, tag: &[u8]) -> Vec<String> {
     let doc = match Document::parse(xml) {
         Ok(d) => d,
-        Err(_) => return Vec::new(),
+        Err(_) => return extract_ews_fields_lenient(xml, tag),
     };
     extract_ews_fields_doc(&doc, tag)
 }
@@ -2356,15 +2531,29 @@ pub fn parse_ews_calendar_item(xml: &str) -> Result<CalendarItem> {
     let timezone = timezone_raw.as_deref().map(normalize_timezone_to_iana);
     let tz: Option<Tz> = timezone.as_deref().and_then(|id| id.parse().ok());
 
+    // A timezone the request SUPPLIED but that failed to resolve leaves naive
+    // (offset-less) Start/End values with no honest instant — error instead of
+    // silently reading them as UTC, which shifts the event by the zone's
+    // offset (the §14 offset-drift failure). Values that carry their own
+    // `Z`/offset are unaffected, and so is a request that supplied no zone
+    // at all (UTC stays the only defensible reading there).
+    let zone_supplied_unresolved = timezone_raw.is_some() && tz.is_none();
+    let parse_start_end = |v: String| -> Option<chrono::DateTime<Utc>> {
+        if zone_supplied_unresolved && datetime_is_naive(&v) && v.contains('T') {
+            return None;
+        }
+        parse_datetime_in_zone(&v, tz)
+    };
+
     let subject =
         extract_ews_field_doc(&doc, b"Subject").unwrap_or_else(|| "(no subject)".to_string());
     let start = extract_ews_field_doc(&doc, b"Start")
         .or_else(|| extract_ews_field_doc(&doc, b"StartTime"))
-        .and_then(|v| parse_datetime_in_zone(&v, tz))
+        .and_then(parse_start_end)
         .ok_or_else(|| anyhow!("missing Start/StartTime"))?;
     let end = extract_ews_field_doc(&doc, b"End")
         .or_else(|| extract_ews_field_doc(&doc, b"EndTime"))
-        .and_then(|v| parse_datetime_in_zone(&v, tz))
+        .and_then(parse_start_end)
         .ok_or_else(|| anyhow!("missing End/EndTime"))?;
     let uid = extract_ews_field_doc(&doc, b"UID")
         .or_else(|| extract_ews_field_doc(&doc, b"ClientUid"))
@@ -2570,6 +2759,61 @@ mod scheduling_tests {
     }
 
     #[test]
+    fn parse_ics_event_localizes_each_property_in_its_own_tzid() {
+        // RFC 5545 §3.8.2.2/§3.8.5.3: every date-time property carries its
+        // own TZID — a `DTSTART;TZID=A` may pair with `DTEND;TZID=B`. The
+        // parser must resolve EACH property's zone independently, never
+        // reuse the first property's zone for the rest (the latch bug this
+        // regression pins: DTEND used to inherit DTSTART's zone).
+        let ics = "BEGIN:VCALENDAR\r\n\
+             PRODID:-//Exchange//EN\r\n\
+             BEGIN:VEVENT\r\n\
+             UID:per-property-tzid@example.com\r\n\
+             DTSTART;TZID=America/Los_Angeles:20250701T090000\r\n\
+             DTEND;TZID=Europe/Berlin:20250701T180000\r\n\
+             SUMMARY:Per-property TZID\r\n\
+             END:VEVENT\r\n\
+             END:VCALENDAR\r\n";
+        let ev = parse_ics_event(ics).expect("parses");
+        assert_eq!(
+            ev.start,
+            parse_datetime("20250701T160000Z").unwrap(),
+            "DTSTART must localize in America/Los_Angeles"
+        );
+        assert_eq!(
+            ev.end,
+            parse_datetime("20250701T160000Z").unwrap(),
+            "DTEND must localize in Europe/Berlin (18:00 CEST), not LA"
+        );
+    }
+
+    #[test]
+    fn parse_ics_event_unknown_tzid_naive_value_has_no_instant() {
+        // A TZID the resolver cannot identify leaves a NAIVE value with no
+        // honest instant: fail closed (no event) rather than silently reading
+        // it as UTC, which would drift the meeting by the unknown zone's
+        // offset. A UTC-qualified value still parses — it needs no zone.
+        let ics = "BEGIN:VCALENDAR\r\n\
+             PRODID:-//Exchange//EN\r\n\
+             BEGIN:VEVENT\r\n\
+             UID:unknown-tzid@example.com\r\n\
+             DTSTART;TZID=Custom/Unknown_Zone:20250701T090000\r\n\
+             DTEND;TZID=Custom/Unknown_Zone:20250701T100000\r\n\
+             SUMMARY:Unresolvable zone\r\n\
+             END:VEVENT\r\n\
+             END:VCALENDAR\r\n";
+        assert!(
+            parse_ics_event(ics).is_none(),
+            "naive value with a supplied-but-unresolved TZID must fail closed"
+        );
+
+        let ics_utc = ics.replace("20250701T090000", "20250701T090000Z");
+        let ics_utc = ics_utc.replace("20250701T100000", "20250701T100000Z");
+        let ev = parse_ics_event(&ics_utc).expect("explicit Z needs no resolvable zone");
+        assert_eq!(ev.start, parse_datetime("20250701T090000Z").unwrap());
+    }
+
+    #[test]
     fn parse_ews_calendar_item_localises_naive_datetime_via_starttimezone() {
         // Outlook's EWS CreateItem/UpdateItem carries offset-less
         // xs:dateTime values plus the Windows zone on the item
@@ -2591,6 +2835,167 @@ mod scheduling_tests {
             item.timezone.as_deref(),
             Some("America/Los_Angeles"),
             "item timezone must be the RESOLVED IANA id"
+        );
+    }
+
+    #[test]
+    fn extract_ews_field_reads_fragments_with_ancestor_declared_prefixes() {
+        // `parse_item_changes` collects `SetItemField` payload fragments whose
+        // `t:` prefixes are declared on the SOAP envelope, NOT inside the
+        // fragment. `roxmltree::Document::parse` rejects undeclared prefixes,
+        // so the strict walk returned nothing for exactly these fragments —
+        // and every UpdateItem field change was silently dropped. The
+        // prefix-agnostic fallback must read them, including entity-encoded
+        // text, while declared documents keep the exact doc-walk behavior.
+        let fragment = r#"<t:CalendarItem><t:Subject>Lunch &amp; learn</t:Subject><t:Start>2025-01-15T09:00:00</t:Start></t:CalendarItem>"#;
+        assert_eq!(
+            extract_ews_field(fragment, b"Start"),
+            Some("2025-01-15T09:00:00".to_string()),
+            "prefixed fragment with ancestor-declared namespace must extract"
+        );
+        assert_eq!(
+            extract_ews_field(fragment, b"Subject"),
+            Some("Lunch & learn".to_string()),
+            "entity references must resolve to text"
+        );
+        assert_eq!(extract_ews_field(fragment, b"Missing"), None);
+
+        // A nested same-name child IS the first document-order match, so the
+        // lenient path must agree with the strict walk (which also finds it).
+        let nested = r#"<t:CalendarItem><t:Body><t:Start>x</t:Start></t:Body><t:Start>real</t:Start></t:CalendarItem>"#;
+        let declared_nested = Document::parse(
+            r#"<r xmlns:t="urn:x"><t:CalendarItem><t:Body><t:Start>x</t:Start></t:Body><t:Start>real</t:Start></t:CalendarItem></r>"#,
+        )
+        .unwrap();
+        assert_eq!(
+            extract_ews_field(nested, b"Start"),
+            extract_ews_field_doc(&declared_nested, b"Start"),
+            "lenient fragment extraction must agree with the strict doc walk"
+        );
+        assert_eq!(extract_ews_field(nested, b"Start"), Some("x".to_string()));
+
+        let declared = r#"<t:CalendarItem xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types"><t:Categories><t:String>Work</t:String><t:String>Focus</t:String></t:Categories></t:CalendarItem>"#;
+        assert_eq!(
+            extract_ews_fields(declared, b"String"),
+            vec!["Work".to_string(), "Focus".to_string()]
+        );
+        assert_eq!(
+            extract_ews_fields(fragment, b"String"),
+            Vec::<String>::new(),
+            "no matches yields an empty vec, not an error"
+        );
+    }
+
+    #[test]
+    fn parse_ews_calendar_item_supplied_but_unresolved_zone_rejects_naive_values() {
+        // A zone the request SUPPLIED but that fails to resolve leaves a
+        // naive (offset-less) Start/End with no honest instant: error rather
+        // than silently reading them as UTC, which drifts the meeting by the
+        // zone's offset (§14 offset-drift failure). Explicit-`Z` values and
+        // requests with NO zone at all keep parsing.
+        let xml = r#"<t:CalendarItem xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types">
+  <t:Subject>Bogus zone</t:Subject>
+  <t:Start>2025-07-01T09:00:00</t:Start>
+  <t:End>2025-07-01T10:00:00</t:End>
+  <t:StartTimeZone Id="Bogus/No_Such_Zone" Name="(UTC) Nowhere"/>
+</t:CalendarItem>"#;
+        let err = parse_ews_calendar_item(xml).expect_err("must fail closed");
+        assert!(
+            err.to_string().contains("Start/StartTime"),
+            "error must point at the uninterpretable value: {err}"
+        );
+
+        let utc_xml = r#"<t:CalendarItem xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types">
+  <t:Subject>Bogus zone, explicit Z</t:Subject>
+  <t:Start>2025-07-01T09:00:00Z</t:Start>
+  <t:End>2025-07-01T10:00:00Z</t:End>
+  <t:StartTimeZone Id="Bogus/No_Such_Zone" Name="(UTC) Nowhere"/>
+</t:CalendarItem>"#;
+        let item = parse_ews_calendar_item(utc_xml).expect("explicit Z carries its own instant");
+        assert_eq!(item.start, parse_datetime("2025-07-01T09:00:00Z").unwrap());
+
+        let no_zone_xml = r#"<t:CalendarItem xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types">
+  <t:Subject>No zone at all</t:Subject>
+  <t:Start>2025-07-01T09:00:00</t:Start>
+  <t:End>2025-07-01T10:00:00</t:End>
+</t:CalendarItem>"#;
+        let item = parse_ews_calendar_item(no_zone_xml).expect("no zone supplied → UTC");
+        assert_eq!(item.start, parse_datetime("2025-07-01T09:00:00Z").unwrap());
+    }
+
+    #[test]
+    fn localize_gap_tolerant_maps_gap_with_pre_transition_offset() {
+        // A normal 1h spring-forward gap: Europe/Berlin 2025-03-30 02:30
+        // does not exist; the pre-transition offset (+01:00) maps it to
+        // 01:30 UTC (RFC 5545/7265 gap policy).
+        let naive = NaiveDateTime::parse_from_str("2025-03-30T02:30:00", "%Y-%m-%dT%H:%M:%S")
+            .expect("naive");
+        let dt = localize_gap_tolerant(naive, "Europe/Berlin".parse().expect("tz"))
+            .expect("gap is tolerated");
+        assert_eq!(dt, parse_datetime("2025-03-30T01:30:00Z").unwrap());
+
+        // An ambiguous fall-back time takes the earlier mapping.
+        let fold = NaiveDateTime::parse_from_str("2025-10-26T02:30:00", "%Y-%m-%dT%H:%M:%S")
+            .expect("naive");
+        let dt = localize_gap_tolerant(fold, "Europe/Berlin".parse().expect("tz"))
+            .expect("fold is tolerated");
+        assert_eq!(dt, parse_datetime("2025-10-26T00:30:00Z").unwrap());
+    }
+
+    #[test]
+    fn localize_gap_tolerant_survives_date_line_day_skip() {
+        // Pacific/Apia skipped all of 2011-12-30 when it jumped UTC-10 →
+        // UTC+14: a 24h gap, so a single 12h backward probe still lands
+        // inside the gap. The ladder must keep probing until it leaves the
+        // transition window and recover the pre-transition offset (-10:00):
+        // naive 12:00 wall clock → 22:00 UTC that day.
+        let naive = NaiveDateTime::parse_from_str("2011-12-30T12:00:00", "%Y-%m-%dT%H:%M:%S")
+            .expect("naive");
+        let dt = localize_gap_tolerant(naive, "Pacific/Apia".parse().expect("tz"))
+            .expect(">12h gap must resolve via the probe ladder");
+        assert_eq!(dt, parse_datetime("2011-12-30T22:00:00Z").unwrap());
+    }
+
+    #[test]
+    fn ews_update_request_zone_resolves_header_and_item_zones() {
+        // UpdateItem requests carry the zone either as the SOAP
+        // `t:TimeZoneContext` header ([MS-OXWSCORE] §2.2.1.12) or as zone
+        // elements inside the SetItemField payloads; element-level zones
+        // win over the request-wide header, mirroring
+        // `parse_ews_calendar_item`.
+        let header_only = r#"<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"
+  xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types"
+  xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages">
+  <soap:Header>
+    <t:TimeZoneContext><t:TimeZoneDefinition Id="Pacific Standard Time"/></t:TimeZoneContext>
+  </soap:Header>
+  <soap:Body>
+    <m:UpdateItem><m:ItemChanges><t:ItemChange/></m:ItemChanges></m:UpdateItem>
+  </soap:Body>
+</soap:Envelope>"#;
+        let tz = ews_update_request_zone(header_only).expect("header zone resolves");
+        assert_eq!(tz, "America/Los_Angeles".parse::<Tz>().unwrap());
+
+        let item_level = r#"<m:UpdateItem xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages"
+  xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types">
+  <m:ItemChanges>
+    <t:ItemChange>
+      <t:Updates>
+        <t:SetItemField><t:FieldURI FieldURI="calendar:StartTimeZone"/>
+          <t:CalendarItem><t:StartTimeZone Id="W. Europe Standard Time"/></t:CalendarItem>
+        </t:SetItemField>
+      </t:Updates>
+    </t:ItemChange>
+  </m:ItemChanges>
+</m:UpdateItem>"#;
+        let tz = ews_update_request_zone(item_level).expect("payload zone resolves");
+        assert_eq!(tz, "Europe/Berlin".parse::<Tz>().unwrap());
+
+        let bare = r#"<m:UpdateItem xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages"></m:UpdateItem>"#;
+        assert_eq!(
+            ews_update_request_zone(bare),
+            None,
+            "no zone supplied → None"
         );
     }
 

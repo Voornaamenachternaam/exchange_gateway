@@ -1,8 +1,10 @@
 // src/ews_update.rs
 use crate::calendar::{
-    CalendarItem, extract_ews_field, extract_ews_fields, parse_ews_attendees, parse_ews_recurrence,
+    CalendarItem, extract_ews_field, extract_ews_fields, parse_datetime_in_zone,
+    parse_ews_attendees, parse_ews_recurrence,
 };
 use crate::util::{nfc, xml_escape, xml_escape_text};
+use chrono_tz::Tz;
 use quick_xml::Reader;
 use quick_xml::XmlVersion;
 use quick_xml::events::{BytesEnd, BytesStart, Event};
@@ -310,7 +312,12 @@ pub fn parse_item_changes(body: &str) -> Vec<EwsFieldChange> {
     results
 }
 
-pub fn apply_field_changes(item: &mut CalendarItem, changes: &[EwsFieldChange]) {
+/// Apply parsed `SetItemField`/`AppendToItemField`/`DeleteItemField` changes
+/// to a calendar item. `zone` is the request's resolved timezone
+/// ([`crate::calendar::ews_update_request_zone`]): naive `calendar:start`/
+/// `calendar:end` values are localized in it, while values with an explicit
+/// `Z`/offset keep their own instant regardless.
+pub fn apply_field_changes(item: &mut CalendarItem, changes: &[EwsFieldChange], zone: Option<Tz>) {
     for change in changes {
         let uri = change.field_uri.to_ascii_lowercase();
         let payload = &change.payload_xml;
@@ -388,7 +395,7 @@ pub fn apply_field_changes(item: &mut CalendarItem, changes: &[EwsFieldChange]) 
                 _ => {
                     if let Some(v) =
                         first_ews_field(payload, &[b"Start".as_ref(), b"Value".as_ref()])
-                            .and_then(|s| crate::calendar::parse_datetime(&s))
+                            .and_then(|s| parse_datetime_in_zone(&s, zone))
                     {
                         item.start = v;
                     }
@@ -398,7 +405,7 @@ pub fn apply_field_changes(item: &mut CalendarItem, changes: &[EwsFieldChange]) 
                 ChangeVerb::Delete => {}
                 _ => {
                     if let Some(v) = first_ews_field(payload, &[b"End".as_ref(), b"Value".as_ref()])
-                        .and_then(|s| crate::calendar::parse_datetime(&s))
+                        .and_then(|s| parse_datetime_in_zone(&s, zone))
                     {
                         item.end = v;
                     }
@@ -587,5 +594,81 @@ pub fn apply_field_changes(item: &mut CalendarItem, changes: &[EwsFieldChange]) 
                 tracing::debug!(field_uri = %change.field_uri, "Unrecognized FieldURI in UpdateItem; ignoring");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn base_item() -> CalendarItem {
+        CalendarItem {
+            uid: "update-tz@example.com".to_string(),
+            subject: "Before update".to_string(),
+            start: crate::calendar::parse_datetime("2025-01-15T12:00:00Z").unwrap(),
+            end: crate::calendar::parse_datetime("2025-01-15T13:00:00Z").unwrap(),
+            ..Default::default()
+        }
+    }
+
+    /// `calendar:start`/`calendar:end` values are offset-less xs:dateTime when
+    /// Outlook writes them with a request-wide `TimeZoneContext`; the update
+    /// must localize them in the request's zone, not read them as UTC (the
+    /// §14 offset-drift failure).
+    #[test]
+    fn apply_field_changes_localizes_naive_start_end_in_request_zone() {
+        let body = concat!(
+            r#"<m:UpdateItem xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages""#,
+            r#" xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types">"#,
+            r#"<m:ItemChanges><t:ItemChange><t:Updates>"#,
+            r#"<t:SetItemField><t:FieldURI FieldURI="calendar:Start"/>"#,
+            r#"<t:CalendarItem><t:Start>2025-01-15T09:00:00</t:Start></t:CalendarItem>"#,
+            r#"</t:SetItemField>"#,
+            r#"<t:SetItemField><t:FieldURI FieldURI="calendar:End"/>"#,
+            r#"<t:CalendarItem><t:End>2025-01-15T10:00:00</t:End></t:CalendarItem>"#,
+            r#"</t:SetItemField>"#,
+            r#"</t:Updates></t:ItemChange></m:ItemChanges></m:UpdateItem>"#
+        );
+
+        let changes = parse_item_changes(body);
+        assert_eq!(changes.len(), 2, "both SetItemField changes parse");
+
+        // 09:00/10:00 wall clock in Berlin (CET, +01:00 in January).
+        let zone = Some("Europe/Berlin".parse::<Tz>().unwrap());
+        let mut item = base_item();
+        apply_field_changes(&mut item, &changes, zone);
+        assert_eq!(
+            item.start,
+            crate::calendar::parse_datetime("2025-01-15T08:00:00Z").unwrap(),
+            "naive Start must localize in the request zone"
+        );
+        assert_eq!(
+            item.end,
+            crate::calendar::parse_datetime("2025-01-15T09:00:00Z").unwrap()
+        );
+
+        // No request zone: a naive value reads as UTC.
+        let mut item = base_item();
+        apply_field_changes(&mut item, &changes, None);
+        assert_eq!(
+            item.start,
+            crate::calendar::parse_datetime("2025-01-15T09:00:00Z").unwrap()
+        );
+        assert_eq!(
+            item.end,
+            crate::calendar::parse_datetime("2025-01-15T10:00:00Z").unwrap()
+        );
+
+        // An explicit-`Z` value keeps its own instant regardless of the zone.
+        let body_z = body
+            .replace("09:00:00<", "09:00:00Z<")
+            .replace("10:00:00<", "10:00:00Z<");
+        let changes_z = parse_item_changes(&body_z);
+        let mut item = base_item();
+        apply_field_changes(&mut item, &changes_z, zone);
+        assert_eq!(
+            item.start,
+            crate::calendar::parse_datetime("2025-01-15T09:00:00Z").unwrap()
+        );
     }
 }

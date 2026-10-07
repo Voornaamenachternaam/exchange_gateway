@@ -21,15 +21,15 @@
 // - SmartForward (MS-ASCMD §2.2.1.19)
 // - Email Sync class (MS-ASEMAIL)
 
-use base64::Engine;
 use crate::eas_sync_options::{
-    EasBodyPartPreference, EasSyncCollectionOptions, NativeBodyType, negotiate_body, preview_text,
-    truncate_utf8_bytes, html_to_plain_text,
+    EasBodyPartPreference, EasSyncCollectionOptions, NativeBodyType, html_to_plain_text,
+    negotiate_body, preview_text, truncate_utf8_bytes,
 };
 use crate::jmap::JmapEmail;
 use crate::models::AppState;
 use crate::util::xml_escape;
 use anyhow::anyhow;
+use base64::Engine;
 use secrecy::SecretString;
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -750,10 +750,7 @@ pub(crate) fn render_negotiated_eas_body(
 ///
 /// Child order per [MS-ASAIRS] §2.2.2.10.2: Status, Type, EstimatedDataSize,
 /// Truncated, Data, Preview.
-pub(crate) fn render_eas_body_part(
-    email: &JmapEmail,
-    pref: &EasBodyPartPreference,
-) -> String {
+pub(crate) fn render_eas_body_part(email: &JmapEmail, pref: &EasBodyPartPreference) -> String {
     let sources = email_body_sources(email);
     // The message part MUST be HTML ([MS-ASCON] §3.2.5.7).
     let part_html: String = match sources.html {
@@ -763,7 +760,9 @@ pub(crate) fn render_eas_body_part(
     let message_part = extract_html_message_part(&part_html);
     let estimated = message_part.len();
     let withheld = pref.all_or_none == Some(true)
-        && pref.truncation_size.is_some_and(|limit| estimated > limit as usize);
+        && pref
+            .truncation_size
+            .is_some_and(|limit| estimated > limit as usize);
     let (data, truncated) = match (withheld, pref.truncation_size) {
         // [MS-ASAIRS] §2.2.2.3.1 (AllOrNone) via §2.2.2.37 Status 176: the
         // part is too large for the client's all-or-none limit, so the part
@@ -821,15 +820,20 @@ struct BodySources<'a> {
 
 fn email_body_sources(email: &JmapEmail) -> BodySources<'_> {
     let mut out = BodySources::default();
-    let resolve = |parts: Option<&Vec<crate::jmap::JmapBodyPart>>| -> Option<(&str, Option<u64>, bool)> {
-        let first = parts?.first()?;
-        let entry = if first.part_id.is_empty() {
-            values_from(email).values().next()
-        } else {
-            values_from(email).get(&first.part_id)
-        }?;
-        Some((entry.value.as_str(), first.size, entry.is_truncated.unwrap_or(false)))
-    };
+    let resolve =
+        |parts: Option<&Vec<crate::jmap::JmapBodyPart>>| -> Option<(&str, Option<u64>, bool)> {
+            let first = parts?.first()?;
+            let entry = if first.part_id.is_empty() {
+                values_from(email).values().next()
+            } else {
+                values_from(email).get(&first.part_id)
+            }?;
+            Some((
+                entry.value.as_str(),
+                first.size,
+                entry.is_truncated.unwrap_or(false),
+            ))
+        };
     if let Some((html, size, truncated)) = resolve(email.html_body.as_ref()) {
         out.html = Some(html);
         out.html_true_size = size;
@@ -854,9 +858,12 @@ fn email_body_sources(email: &JmapEmail) -> BodySources<'_> {
     out
 }
 
-fn values_from(email: &JmapEmail) -> &std::collections::HashMap<String, crate::jmap::JmapBodyValue> {
-    static EMPTY: std::sync::LazyLock<std::collections::HashMap<String, crate::jmap::JmapBodyValue>> =
-        std::sync::LazyLock::new(std::collections::HashMap::new);
+fn values_from(
+    email: &JmapEmail,
+) -> &std::collections::HashMap<String, crate::jmap::JmapBodyValue> {
+    static EMPTY: std::sync::LazyLock<
+        std::collections::HashMap<String, crate::jmap::JmapBodyValue>,
+    > = std::sync::LazyLock::new(std::collections::HashMap::new);
     email.body_values.as_ref().unwrap_or(&EMPTY)
 }
 
@@ -929,12 +936,7 @@ fn conversation_thread_guid(email: &JmapEmail) -> [u8; 16] {
             .references
             .as_ref()
             .and_then(|r| r.first().cloned())
-            .or_else(|| {
-                email
-                    .in_reply_to
-                    .as_ref()
-                    .and_then(|r| r.first().cloned())
-            })
+            .or_else(|| email.in_reply_to.as_ref().and_then(|r| r.first().cloned()))
             .or_else(|| email.message_id.clone());
         if let Some(id) = lineage
             && !id.is_empty()
@@ -954,15 +956,14 @@ fn conversation_thread_guid(email: &JmapEmail) -> [u8; 16] {
 /// [MS-DTYP] §2.3.1) for the email's effective date.
 fn email_filetime(email: &JmapEmail) -> u64 {
     let date = compute_email_date_received(email).unwrap_or_default();
-    let parsed: Option<chrono::DateTime<chrono::Utc>> =
-        chrono::DateTime::parse_from_rfc3339(date)
-            .ok()
-            .map(|dt| dt.with_timezone(&chrono::Utc))
-            .or_else(|| {
-                chrono::NaiveDateTime::parse_from_str(date, "%Y-%m-%dT%H:%M:%SZ")
-                    .ok()
-                    .map(|naive| naive.and_utc())
-            });
+    let parsed: Option<chrono::DateTime<chrono::Utc>> = chrono::DateTime::parse_from_rfc3339(date)
+        .ok()
+        .map(|dt| dt.with_timezone(&chrono::Utc))
+        .or_else(|| {
+            chrono::NaiveDateTime::parse_from_str(date, "%Y-%m-%dT%H:%M:%SZ")
+                .ok()
+                .map(|naive| naive.and_utc())
+        });
     match parsed {
         Some(dt) => {
             let unix_nanos = dt.timestamp_nanos_opt().unwrap_or(0).max(0) as u64;

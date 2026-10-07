@@ -388,7 +388,14 @@ impl JmapEmailPushMonitor {
         // so monitor traffic stays metadata-sized.
         let emails = self
             .jmap
-            .get_emails(account_id, &lookup, None, &self.username, &self.password, false)
+            .get_emails(
+                account_id,
+                &lookup,
+                None,
+                &self.username,
+                &self.password,
+                false,
+            )
             .await
             .unwrap_or_default();
         let mut emails = emails.into_iter();
