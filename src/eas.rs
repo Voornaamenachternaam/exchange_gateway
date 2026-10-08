@@ -2284,8 +2284,8 @@ async fn handle_meeting_response(
     request_id: &str,
 ) -> Response {
     use crate::meeting::message::{MeetingMessageGenerator, MeetingResponseResult};
-    use crate::meeting::rsvp::{self, RsvpRequest, RsvpSource};
     use crate::meeting::response::ResponseDecision;
+    use crate::meeting::rsvp::{self, RsvpRequest, RsvpSource};
 
     // §6.25: at least one <Request> is required. A request with none is
     // malformed — the command cannot produce a spec-shaped response.
@@ -2339,7 +2339,9 @@ async fn handle_meeting_response(
         // absent ⇒ no email. Optional children: airsyncbase:Body (reply text)
         // and ProposedStartTime/ProposedEndTime ([MS-ASCMD] §2.2.3.141 /
         // §2.2.3.140 — Compact DateTime, and each requires the other).
-        let send_response = extract_all_tag_blocks(block, b"SendResponse").into_iter().next();
+        let send_response = extract_all_tag_blocks(block, b"SendResponse")
+            .into_iter()
+            .next();
         let send_reply = send_response.is_some();
         let reply_body_text = send_response
             .as_deref()
@@ -2380,31 +2382,30 @@ async fn handle_meeting_response(
         // Resolve the addressed item. `em-` prefixed ids are JMAP emails
         // (meeting-request messages); anything else is looked up in the
         // calendar item map.
-        let source = if let Some(jmap_email_id) =
-            crate::email::jmap_id_from_email_server_id(&address)
-        {
-            RsvpSource::Email {
-                jmap_email_id: jmap_email_id.to_string(),
-            }
-        } else {
-            let known_calendar_item = state
-                .storage
-                .get_ews_item_by_server_id(username, &address)
-                .await
-                .ok()
-                .flatten()
-                .is_some();
-            if known_calendar_item {
-                RsvpSource::CalendarItem {
-                    server_id: address.clone(),
+        let source =
+            if let Some(jmap_email_id) = crate::email::jmap_id_from_email_server_id(&address) {
+                RsvpSource::Email {
+                    jmap_email_id: jmap_email_id.to_string(),
                 }
             } else {
-                // [MS-ASCMD] §2.2.3.177.9: "referencing an item other than a
-                // meeting request, email, or calendar item".
-                invalid(&mut results, &request_id_el, &instance_wire);
-                continue;
-            }
-        };
+                let known_calendar_item = state
+                    .storage
+                    .get_ews_item_by_server_id(username, &address)
+                    .await
+                    .ok()
+                    .flatten()
+                    .is_some();
+                if known_calendar_item {
+                    RsvpSource::CalendarItem {
+                        server_id: address.clone(),
+                    }
+                } else {
+                    // [MS-ASCMD] §2.2.3.177.9: "referencing an item other than a
+                    // meeting request, email, or calendar item".
+                    invalid(&mut results, &request_id_el, &instance_wire);
+                    continue;
+                }
+            };
 
         let req = RsvpRequest {
             decision,
@@ -6797,8 +6798,16 @@ pub async fn handle(
             .await
         }
         "MeetingResponse" => {
-            handle_meeting_response(&state, &username, &password, &xml, &wbxml, wants_wbxml, &request_id)
-                .await
+            handle_meeting_response(
+                &state,
+                &username,
+                &password,
+                &xml,
+                &wbxml,
+                wants_wbxml,
+                &request_id,
+            )
+            .await
         }
         "ResolveRecipients" => {
             handle_resolve_recipients(
@@ -10024,7 +10033,11 @@ mod tests {
         );
         let body = run_meeting_response(&state, &xml).await;
         assert_eq!(body.matches("<Result>").count(), 3, "body: {body}");
-        assert_eq!(body.matches("<Status>2</Status>").count(), 3, "body: {body}");
+        assert_eq!(
+            body.matches("<Status>2</Status>").count(),
+            3,
+            "body: {body}"
+        );
     }
 
     /// [MS-ASCMD] §2.2.3.140/§2.2.3.141: ProposedStartTime and ProposedEndTime

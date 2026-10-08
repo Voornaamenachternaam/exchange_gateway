@@ -213,8 +213,60 @@ EAS specs v20250520 (16.1); older EAS compat NOT needed.
   Suite after fixes: 931 green (lib 895 + fixtures 22 + snapshots 11 +
   jmap_calendar_deploy 2 + doc 1), clippy 0, fmt clean on touched files,
   release warning-free. No comment replies (resolve via code/push only).
-- Next likely audit items: §13 MeetingResponse/iMIP integrity, §14
-  timezone blob fidelity, §15 Tasks/Notes backend story.
+- §14 Timezone fidelity both directions is COMPLETE and its AUDIT.md section
+  documents the delivered behavior. Design rule: `timezone.rs::zone_transitions`
+  (chrono-tz sampling) is the SINGLE authoritative zone source — it feeds the
+  EAS Calendar:Timezone TZI blob, the EWS StartTimeZone/EndTimeZone ids, and
+  the synthesised VTIMEZONE. Delivered: 139-zone blob↔IANA→blob round-trip +
+  chrono-tz no-offset-drift matrix; name→IANA tiers (registry id → display
+  description → fixed-offset LAST; substring heuristic guards short UTC*/GMT*
+  tokens); VTIMEZONE STRUCTURAL matching in resolve_ical_tzid (custom TZIDs
+  resolve via their block's transitions, EU last-Sunday rules match exactly);
+  gap/fold-tolerant naive localization (fold→earlier, gap→pre-transition offset)
+  shared by iCalendar and EWS naive values, explicit Z always wins;
+  EWS render pairs Id+Name from ONE variant (`windows_variant_for_iana` +
+  `iana_to_windows_display_description` — Name is the "(UTC±hh:mm) …" display
+  description, never the registry id twice); GetServerTimeZones full matrix
+  ([MS-OXWSGTZ] §3.1.4.1.3.3): every variant served, names-only attribute
+  form, Ids filter in request order, unknown ids dropped silently.
+  Round-trip semantics: Windows zones are COARSER than IANA —
+  Europe/Amsterdam renders W. Europe Standard Time and re-parses to
+  Europe/Berlin (canonical representative), offset-identical at every
+  quarterly sample; instants always preserved. Tests: 9 new (timezone 2,
+  calendar 3, sync 1 EAS blob render round-trip, ews 2 render round-trip +
+  1 GetServerTimeZones names-only/Ids fixed). Suite: 973 lib + 22 fixtures +
+  11 snapshots + 2 deploy + 1 doc, clippy 0, fmt clean on touched files
+  (calendar/timezone/sync/ews — eas.rs:2284 remains the pre-existing §10
+  exception), release warning-free.
+- PR #1985 (§14) review triage COMPLETE (commits 080d7a3 + 7ac61dc, all
+  threads replied): 6 inline findings + 1 Zenable outside-diff finding.
+  Fixed: (1) fail-closed unknown-zone naive values — parse half
+  (`parse_datetime_with_tzid` → None) AND UpdateItem half: `EwsRequestZone`
+  tri-state (Absent/Resolved/Unresolved) from `ews_update_request_zone`
+  (calendar.rs); `Unresolved` + naive Start/End →
+  `EwsUpdateError::TimezoneUnresolved` → ErrorInvalidRequest (200), no field
+  applied; both `handle_update_item` branches share
+  `parse_request_zone_datetime` (ews_update.rs, pub(crate)); Absent keeps
+  Exchange's UTC default, explicit-offset values keep their instant in every
+  state. (2) xs:boolean names-only parsing (`is_xs_boolean_false`: false|0
+  after trim; roxmltree attribute + lenient literal fallback). (3) gap probe
+  ladder 12h→48h (Pacific/Apia 24h date-line skip test). (4) per-property
+  TZID via `resolve_property_zone` (flight-style DTSTART;TZID=A +
+  DTEND;TZID=B; first-wins `resolved_zone` state removed). (5) EWS Id/Name
+  pair from ONE variant (`iana_to_windows_timezone_pair`, both render sites,
+  raw-value fallback). Refuted: timezone.rs "mojibake" — bytes are clean
+  UTF-8 (E2 80 94 em-dash etc.); the artifact is the review tool decoding
+  UTF-8 as cp437. Zone-change extraction fix riding along (7ac61dc): both
+  Outlook wire shapes — `<t:StartTimeZone Id="…"/>` ATTRIBUTE form (incl.
+  quick-xml Event::Empty for self-closing tags; unescape via
+  `normalized_value(XmlVersion::Implicit1_0)`, NOT resolve_xml_reference
+  which takes a GeneralRef entity NAME) and `<t:StartTimeZoneId>` element
+  form — previously both silently dropped the timezone change.
+  Suite after: 986 lib + 22 fixtures + 11 snapshots + 2 deploy + 1 doc,
+  clippy 0, fmt clean on touched files, release warning-free.
+
+- Next likely audit items: §15 Tasks/Notes backend story, §16 stale-watermark
+  resync, §17 auth negative-cache TTL.
 - Toolchain note: rustup components clippy/rustfmt must be installed in a
   fresh container (`rustup component add clippy rustfmt`); project edition is
   2024 (rustfmt needs `--edition 2024` for let-chains). `cargo fmt --check`

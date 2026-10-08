@@ -303,9 +303,7 @@ mod tests {
     #[test]
     fn reply_ics_for_instance_carries_recurrence_id() {
         let inv = parse_meeting_request(&sample_request()).unwrap();
-        let recurrence_id = chrono::Utc
-            .with_ymd_and_hms(2026, 7, 10, 9, 0, 0)
-            .unwrap();
+        let recurrence_id = chrono::Utc.with_ymd_and_hms(2026, 7, 10, 9, 0, 0).unwrap();
         let ics = build_reply_ics(
             &inv,
             ResponseDecision::Tentative,
@@ -323,7 +321,13 @@ mod tests {
     #[test]
     fn reply_ics_decline_uses_declined_partstat() {
         let inv = parse_meeting_request(&sample_request()).unwrap();
-        let ics = build_reply_ics(&inv, ResponseDecision::Decline, "bob@example.com", None, None);
+        let ics = build_reply_ics(
+            &inv,
+            ResponseDecision::Decline,
+            "bob@example.com",
+            None,
+            None,
+        );
         assert!(ics.contains("METHOD:REPLY"));
         assert!(ics.contains("PARTSTAT=DECLINED"), "{ics}");
     }
