@@ -1,13 +1,44 @@
 // src/ews_update.rs
 use crate::calendar::{
-    CalendarItem, extract_ews_field, extract_ews_fields, parse_datetime_in_zone,
+    CalendarItem, EwsRequestZone, extract_ews_field, extract_ews_fields,
+    extract_ews_timezone_field, normalize_timezone_to_iana, parse_datetime_in_zone,
     parse_ews_attendees, parse_ews_recurrence,
 };
 use crate::util::{nfc, xml_escape, xml_escape_text};
-use chrono_tz::Tz;
 use quick_xml::Reader;
 use quick_xml::XmlVersion;
 use quick_xml::events::{BytesEnd, BytesStart, Event};
+
+/// Why an `UpdateItem` change set could not be applied.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EwsUpdateError {
+    /// The request supplied a timezone id that resolves to no known zone,
+    /// and the change set carries a naive (offset-less) `Start`/`End`
+    /// value: no honest instant exists for it, so the update fails closed
+    /// instead of silently drifting the meeting by the zone's offset.
+    TimezoneUnresolved,
+}
+
+/// Parse a `calendar:start`/`calendar:end` `Value` against the request's
+/// tri-state zone. `Absent` reads naive values as UTC; `Resolved` localizes
+/// them in the zone; `Unresolved` rejects a NAIVE value outright
+/// (`Err(EwsUpdateError::TimezoneUnresolved)`) while explicit-offset
+/// values stay readable everywhere.
+pub(crate) fn parse_request_zone_datetime(
+    val: &str,
+    zone: EwsRequestZone,
+) -> Result<Option<chrono::DateTime<chrono::Utc>>, EwsUpdateError> {
+    match zone {
+        EwsRequestZone::Absent => Ok(parse_datetime_in_zone(val, None)),
+        EwsRequestZone::Resolved(tz) => Ok(parse_datetime_in_zone(val, Some(tz))),
+        EwsRequestZone::Unresolved => {
+            if crate::calendar::datetime_is_naive(val) && val.contains('T') {
+                return Err(EwsUpdateError::TimezoneUnresolved);
+            }
+            Ok(parse_datetime_in_zone(val, None))
+        }
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EwsFieldChange {
@@ -316,8 +347,16 @@ pub fn parse_item_changes(body: &str) -> Vec<EwsFieldChange> {
 /// to a calendar item. `zone` is the request's resolved timezone
 /// ([`crate::calendar::ews_update_request_zone`]): naive `calendar:start`/
 /// `calendar:end` values are localized in it, while values with an explicit
-/// `Z`/offset keep their own instant regardless.
-pub fn apply_field_changes(item: &mut CalendarItem, changes: &[EwsFieldChange], zone: Option<Tz>) {
+/// `Z`/offset keep their own instant regardless. A zone the request SUPPLIED
+/// but that does not resolve makes a naive `Start`/`End` value
+/// uninterpretable — the call fails with
+/// [`EwsUpdateError::TimezoneUnresolved`] (no field is applied) rather than
+/// silently reading the value as UTC.
+pub fn apply_field_changes(
+    item: &mut CalendarItem,
+    changes: &[EwsFieldChange],
+    zone: EwsRequestZone,
+) -> Result<(), EwsUpdateError> {
     for change in changes {
         let uri = change.field_uri.to_ascii_lowercase();
         let payload = &change.payload_xml;
@@ -393,21 +432,27 @@ pub fn apply_field_changes(item: &mut CalendarItem, changes: &[EwsFieldChange], 
             "calendar:start" => match verb {
                 ChangeVerb::Delete => {}
                 _ => {
-                    if let Some(v) =
+                    if let Some(s) =
                         first_ews_field(payload, &[b"Start".as_ref(), b"Value".as_ref()])
-                            .and_then(|s| parse_datetime_in_zone(&s, zone))
                     {
-                        item.start = v;
+                        match parse_request_zone_datetime(&s, zone) {
+                            Ok(Some(v)) => item.start = v,
+                            Ok(None) => {}
+                            Err(e) => return Err(e),
+                        }
                     }
                 }
             },
             "calendar:end" => match verb {
                 ChangeVerb::Delete => {}
                 _ => {
-                    if let Some(v) = first_ews_field(payload, &[b"End".as_ref(), b"Value".as_ref()])
-                        .and_then(|s| parse_datetime_in_zone(&s, zone))
+                    if let Some(s) = first_ews_field(payload, &[b"End".as_ref(), b"Value".as_ref()])
                     {
-                        item.end = v;
+                        match parse_request_zone_datetime(&s, zone) {
+                            Ok(Some(v)) => item.end = v,
+                            Ok(None) => {}
+                            Err(e) => return Err(e),
+                        }
                     }
                 }
             },
@@ -519,29 +564,36 @@ pub fn apply_field_changes(item: &mut CalendarItem, changes: &[EwsFieldChange], 
             "calendar:starttimezone" | "calendar:starttimezoneid" => match verb {
                 ChangeVerb::Delete => item.timezone = None,
                 _ => {
-                    if let Some(v) =
-                        first_ews_field(payload, &[b"StartTimeZone".as_ref(), b"Value".as_ref()])
+                    // Both Outlook wire shapes: the `t:StartTimeZoneId` element
+                    // (zone id as element TEXT, [MS-OXWSMTGS] §2.2.2.41) and
+                    // the `t:StartTimeZone` element (zone id in the `Id`
+                    // ATTRIBUTE, [MS-OXWSCDATA] §2.2.4.18). A text-only
+                    // local-name lookup finds NEITHER, silently dropping the
+                    // event's timezone change.
+                    if let Some(raw) = extract_ews_field(payload, b"StartTimeZoneId")
+                        .or_else(|| extract_ews_timezone_field(payload, b"StartTimeZone"))
                     {
-                        item.timezone = Some(v);
+                        item.timezone = Some(normalize_timezone_to_iana(&raw));
                     }
                 }
             },
             "calendar:endtimezone" | "calendar:endtimezoneid" => {
                 if verb != ChangeVerb::Delete
-                    && let Some(v) =
-                        first_ews_field(payload, &[b"EndTimeZone".as_ref(), b"Value".as_ref()])
                     && item.timezone.is_none()
+                    && let Some(raw) = extract_ews_field(payload, b"EndTimeZoneId")
+                        .or_else(|| extract_ews_timezone_field(payload, b"EndTimeZone"))
                 {
-                    item.timezone = Some(v);
+                    item.timezone = Some(normalize_timezone_to_iana(&raw));
                 }
             }
             "calendar:meetingtimezone" => match verb {
                 ChangeVerb::Delete => item.timezone_blob = None,
                 _ => {
-                    if let Some(v) =
-                        first_ews_field(payload, &[b"MeetingTimeZone".as_ref(), b"Value".as_ref()])
-                    {
-                        item.timezone_blob = Some(v);
+                    // `t:MeetingTimeZone` carries the id in its `TimeZoneName`
+                    // attribute ([MS-OXWSCDATA] §2.2.4.11).
+                    if let Some(raw) = extract_ews_timezone_field(payload, b"MeetingTimeZone") {
+                        item.timezone_blob = Some(raw.clone());
+                        item.timezone = Some(normalize_timezone_to_iana(&raw));
                     }
                 }
             },
@@ -595,6 +647,7 @@ pub fn apply_field_changes(item: &mut CalendarItem, changes: &[EwsFieldChange], 
             }
         }
     }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -634,9 +687,9 @@ mod tests {
         assert_eq!(changes.len(), 2, "both SetItemField changes parse");
 
         // 09:00/10:00 wall clock in Berlin (CET, +01:00 in January).
-        let zone = Some("Europe/Berlin".parse::<Tz>().unwrap());
+        let zone = EwsRequestZone::Resolved("Europe/Berlin".parse::<chrono_tz::Tz>().unwrap());
         let mut item = base_item();
-        apply_field_changes(&mut item, &changes, zone);
+        apply_field_changes(&mut item, &changes, zone).unwrap();
         assert_eq!(
             item.start,
             crate::calendar::parse_datetime("2025-01-15T08:00:00Z").unwrap(),
@@ -647,9 +700,9 @@ mod tests {
             crate::calendar::parse_datetime("2025-01-15T09:00:00Z").unwrap()
         );
 
-        // No request zone: a naive value reads as UTC.
+        // No request zone at all: a naive value reads as UTC.
         let mut item = base_item();
-        apply_field_changes(&mut item, &changes, None);
+        apply_field_changes(&mut item, &changes, EwsRequestZone::Absent).unwrap();
         assert_eq!(
             item.start,
             crate::calendar::parse_datetime("2025-01-15T09:00:00Z").unwrap()
@@ -665,10 +718,149 @@ mod tests {
             .replace("10:00:00<", "10:00:00Z<");
         let changes_z = parse_item_changes(&body_z);
         let mut item = base_item();
-        apply_field_changes(&mut item, &changes_z, zone);
+        apply_field_changes(&mut item, &changes_z, zone).unwrap();
         assert_eq!(
             item.start,
             crate::calendar::parse_datetime("2025-01-15T09:00:00Z").unwrap()
+        );
+    }
+
+    /// A zone the request SUPPLIED but that resolves to nothing leaves a naive
+    /// `Start`/`End` with no honest instant: the change set must fail closed
+    /// (and leave the item untouched) instead of silently reading UTC.
+    #[test]
+    fn apply_field_changes_fails_closed_on_supplied_but_unresolved_zone() {
+        let body = concat!(
+            r#"<m:UpdateItem xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages""#,
+            r#" xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types">"#,
+            r#"<m:ItemChanges><t:ItemChange><t:Updates>"#,
+            r#"<t:SetItemField><t:FieldURI FieldURI="calendar:Start"/>"#,
+            r#"<t:CalendarItem><t:Start>2025-01-15T09:00:00</t:Start></t:CalendarItem>"#,
+            r#"</t:SetItemField>"#,
+            r#"</t:Updates></t:ItemChange></m:ItemChanges></m:UpdateItem>"#
+        );
+
+        assert_eq!(
+            crate::calendar::ews_update_request_zone(body),
+            EwsRequestZone::Absent,
+            "no zone in the request at all"
+        );
+
+        // Unresolvable zone id supplied via the SOAP TimeZoneContext header.
+        let body_ctx = concat!(
+            r#"<m:UpdateItem xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages""#,
+            r#" xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types">"#,
+            r#"<m:TimeZoneContext><t:TimeZoneDefinition Id="Mars/Standard Time"/></m:TimeZoneContext>"#,
+            r#"<m:ItemChanges><t:ItemChange><t:Updates>"#,
+            r#"<t:SetItemField><t:FieldURI FieldURI="calendar:Start"/>"#,
+            r#"<t:CalendarItem><t:Start>2025-01-15T09:00:00</t:Start></t:CalendarItem>"#,
+            r#"</t:SetItemField>"#,
+            r#"</t:Updates></t:ItemChange></m:ItemChanges></m:UpdateItem>"#
+        );
+        assert_eq!(
+            crate::calendar::ews_update_request_zone(body_ctx),
+            EwsRequestZone::Unresolved,
+            "supplied-but-unknown zone id must surface as Unresolved"
+        );
+
+        let changes = parse_item_changes(body_ctx);
+        assert_eq!(changes.len(), 1);
+        let mut item = base_item();
+        assert_eq!(
+            apply_field_changes(&mut item, &changes, EwsRequestZone::Unresolved),
+            Err(EwsUpdateError::TimezoneUnresolved),
+            "a naive Start against a supplied-but-unresolved zone must fail closed"
+        );
+        assert_eq!(
+            item.start,
+            crate::calendar::parse_datetime("2025-01-15T12:00:00Z").unwrap(),
+            "the rejected change must not have been applied"
+        );
+
+        // An explicit-offset value stays readable even with an unresolved zone.
+        let body_z = body_ctx.replace("09:00:00<", "09:00:00Z<");
+        let changes_z = parse_item_changes(&body_z);
+        let mut item = base_item();
+        apply_field_changes(&mut item, &changes_z, EwsRequestZone::Unresolved).unwrap();
+        assert_eq!(
+            item.start,
+            crate::calendar::parse_datetime("2025-01-15T09:00:00Z").unwrap()
+        );
+    }
+
+    /// Outlook sends timezone changes as `SetItemField`s in BOTH shapes: the
+    /// `t:StartTimeZoneId` element (id as text) and the `t:StartTimeZone`
+    /// element (id in the `Id` attribute). Both must land on `item.timezone`
+    /// (IANA-normalized, the same form `parse_ews_calendar_item` stores).
+    #[test]
+    fn apply_field_changes_sets_timezone_from_both_starttimezone_shapes() {
+        let body_id_element = concat!(
+            r#"<m:UpdateItem xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages""#,
+            r#" xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types">"#,
+            r#"<m:ItemChanges><t:ItemChange><t:Updates>"#,
+            r#"<t:SetItemField><t:FieldURI FieldURI="calendar:StartTimeZoneId"/>"#,
+            r#"<t:CalendarItem><t:StartTimeZoneId>W. Europe Standard Time</t:StartTimeZoneId></t:CalendarItem>"#,
+            r#"</t:SetItemField>"#,
+            r#"</t:Updates></t:ItemChange></m:ItemChanges></m:UpdateItem>"#
+        );
+        let changes = parse_item_changes(body_id_element);
+        assert_eq!(changes.len(), 1);
+        let mut item = base_item();
+        apply_field_changes(&mut item, &changes, EwsRequestZone::Absent).unwrap();
+        assert_eq!(
+            item.timezone.as_deref(),
+            Some("Europe/Berlin"),
+            "StartTimeZoneId element text must set the normalized IANA zone"
+        );
+
+        let body_id_attribute = concat!(
+            r#"<m:UpdateItem xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages""#,
+            r#" xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types">"#,
+            r#"<m:ItemChanges><t:ItemChange><t:Updates>"#,
+            r#"<t:SetItemField><t:FieldURI FieldURI="calendar:StartTimeZone"/>"#,
+            r#"<t:CalendarItem><t:StartTimeZone Id="Pacific Standard Time" Name="(UTC-08:00) Pacific Time (US &amp; Canada)"/></t:CalendarItem>"#,
+            r#"</t:SetItemField>"#,
+            r#"</t:Updates></t:ItemChange></m:ItemChanges></m:UpdateItem>"#
+        );
+        let changes = parse_item_changes(body_id_attribute);
+        assert_eq!(changes.len(), 1);
+        let mut item = base_item();
+        apply_field_changes(&mut item, &changes, EwsRequestZone::Absent).unwrap();
+        assert_eq!(
+            item.timezone.as_deref(),
+            Some("America/Los_Angeles"),
+            "StartTimeZone Id attribute must set the normalized IANA zone"
+        );
+    }
+
+    /// The legacy `t:MeetingTimeZone` shape carries the id in its
+    /// `TimeZoneName` attribute; it must reach BOTH the stored raw name
+    /// (`timezone_blob`, the legacy blob field) and the normalized
+    /// `timezone` — the same split `parse_ews_calendar_item` produces.
+    #[test]
+    fn apply_field_changes_sets_timezone_from_meetingtimezone_attribute() {
+        let body = concat!(
+            r#"<m:UpdateItem xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages""#,
+            r#" xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types">"#,
+            r#"<m:ItemChanges><t:ItemChange><t:Updates>"#,
+            r#"<t:SetItemField><t:FieldURI FieldURI="calendar:MeetingTimeZone"/>"#,
+            r#"<t:CalendarItem><t:MeetingTimeZone TimeZoneName="W. Europe Standard Time"/></t:CalendarItem>"#,
+            r#"</t:SetItemField>"#,
+            r#"</t:Updates></t:ItemChange></m:ItemChanges></m:UpdateItem>"#
+        );
+        let changes = parse_item_changes(body);
+        assert_eq!(changes.len(), 1);
+        let mut item = base_item();
+        apply_field_changes(&mut item, &changes, EwsRequestZone::Absent).unwrap();
+        assert_eq!(
+            item.timezone_blob.as_deref(),
+            Some("W. Europe Standard Time"),
+            "MeetingTimeZone keeps the raw Windows name for the legacy blob"
+        );
+        assert_eq!(
+            item.timezone.as_deref(),
+            Some("Europe/Berlin"),
+            "MeetingTimeZone also sets the normalized IANA zone"
         );
     }
 }

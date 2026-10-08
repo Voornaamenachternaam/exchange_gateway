@@ -6478,10 +6478,20 @@ async fn handle_update_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
     // The request's timezone (`t:TimeZoneContext` header or item-level zone
     // elements inside the update payloads) for naive `Start`/`End` values —
     // without it an offset-less update is read as UTC and the meeting lands
-    // at the wrong instant (§14 offset drift).
+    // at the wrong instant (§14 offset drift). A SUPPLIED zone that does not
+    // resolve fails the update closed rather than guessing UTC.
     let update_zone = crate::calendar::ews_update_request_zone(body);
     if !field_changes.is_empty() {
-        apply_field_changes(&mut new_item, &field_changes, update_zone);
+        if let Err(crate::ews_update::EwsUpdateError::TimezoneUnresolved) =
+            apply_field_changes(&mut new_item, &field_changes, update_zone)
+        {
+            return operation_error_response(
+                &EwsAction::UpdateItem,
+                "ErrorInvalidRequest",
+                "UpdateItem supplied a timezone the gateway cannot resolve for its offset-less Start/End values",
+                StatusCode::OK,
+            );
+        }
     } else {
         // Legacy field extraction (same as original)
         if let Some(v) =
@@ -6489,15 +6499,32 @@ async fn handle_update_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
         {
             new_item.subject = v;
         }
-        if let Some(v) = extract_ews_field(body, b"Start")
-            .and_then(|v| crate::calendar::parse_datetime_in_zone(&v, update_zone))
-        {
-            new_item.start = v;
-        }
-        if let Some(v) = extract_ews_field(body, b"End")
-            .and_then(|v| crate::calendar::parse_datetime_in_zone(&v, update_zone))
-        {
-            new_item.end = v;
+        for (tag, target) in [
+            (b"Start".as_ref(), b"StartTime".as_ref()),
+            (b"End".as_ref(), b"EndTime".as_ref()),
+        ] {
+            let Some(v) = extract_ews_field(body, tag).or_else(|| extract_ews_field(body, target))
+            else {
+                continue;
+            };
+            match crate::ews_update::parse_request_zone_datetime(&v, update_zone) {
+                Ok(Some(dt)) => {
+                    if tag == b"Start" {
+                        new_item.start = dt;
+                    } else {
+                        new_item.end = dt;
+                    }
+                }
+                Ok(None) => {}
+                Err(crate::ews_update::EwsUpdateError::TimezoneUnresolved) => {
+                    return operation_error_response(
+                        &EwsAction::UpdateItem,
+                        "ErrorInvalidRequest",
+                        "UpdateItem supplied a timezone the gateway cannot resolve for its offset-less Start/End values",
+                        StatusCode::OK,
+                    );
+                }
+            }
         }
         if let Some(v) = extract_ews_field(body, b"Location") {
             new_item.location = v;

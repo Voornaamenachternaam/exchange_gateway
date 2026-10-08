@@ -10,6 +10,7 @@ use derive_more::Debug;
 use itertools::Itertools;
 use phf::phf_map;
 use quick_xml::Reader;
+use quick_xml::XmlVersion;
 use quick_xml::events::Event;
 use roxmltree::Document;
 use rrule::{Frequency, NWeekday, RRule, Tz as RruleTz, Weekday};
@@ -2123,8 +2124,77 @@ fn extract_ews_timezone_field_doc(doc: &Document, tag: &[u8]) -> Option<String> 
 }
 
 pub(crate) fn extract_ews_timezone_field(xml: &str, tag: &[u8]) -> Option<String> {
-    let doc = Document::parse(xml).ok()?;
-    extract_ews_timezone_field_doc(&doc, tag)
+    match Document::parse(xml) {
+        Ok(doc) => extract_ews_timezone_field_doc(&doc, tag),
+        // `SetItemField` payload fragments carry prefixes whose `xmlns`
+        // declarations live on the SOAP envelope ancestor, so the strict
+        // parser rejects them outright; scan leniently instead (same
+        // precedence: element text / `Value` child / `Id` attribute).
+        Err(_) => extract_ews_timezone_field_lenient(xml, tag),
+    }
+}
+
+/// Lenient [`extract_ews_timezone_field`] for namespace-undeclared
+/// fragments, with the strict walk's precedence: the first matching
+/// element's direct text (bare id), then an inline `Value` child's text,
+/// then the `Id`/`TimeZoneName` attribute. Attribute values unescape the
+/// standard entity set.
+fn extract_ews_timezone_field_lenient(xml: &str, tag: &[u8]) -> Option<String> {
+    let tag_str = std::str::from_utf8(tag).ok()?;
+    let attr_name = if tag == b"MeetingTimeZone" {
+        "TimeZoneName"
+    } else {
+        "Id"
+    };
+    if let Some(t) = extract_ews_field_lenient(xml, tag).filter(|t| !t.trim().is_empty()) {
+        return Some(t);
+    }
+    if let Some(t) = extract_ews_field_lenient(xml, b"Value").filter(|t| !t.trim().is_empty()) {
+        return Some(t);
+    }
+    let mut reader = Reader::from_str(xml);
+    let mut buf = Vec::new();
+    loop {
+        match reader.read_event_into(&mut buf) {
+            // `<t:StartTimeZone Id="..."/>` is self-closing on the wire:
+            // quick-xml reports it as Empty, not Start.
+            Ok(event @ (Event::Start(_) | Event::Empty(_))) => {
+                let e = match event {
+                    Event::Start(e) | Event::Empty(e) => e,
+                    _ => unreachable!(),
+                };
+                if local_name_str(e.name().as_ref()) == tag_str {
+                    for attr in e.attributes().flatten() {
+                        if attr.key.local_name().as_ref() == attr_name
+                            && let Ok(v) = attr.normalized_value(XmlVersion::Implicit1_0)
+                        {
+                            return Some(v.to_string());
+                        }
+                    }
+                }
+            }
+            Ok(Event::Eof) => return None,
+            Ok(_) => {}
+            Err(_) => return None,
+        }
+    }
+}
+
+/// The timezone an EWS `UpdateItem` request resolved to — a TRI-state,
+/// because the two failure halves need different answers: `Absent` (the
+/// request carries no zone at all) leaves a naive value readable as UTC —
+/// the only defensible reading — while `Unresolved` (the request SUPPLIED
+/// a zone id that maps to no zone the gateway knows) leaves a naive value
+/// with no honest instant and must fail closed instead of silently
+/// drifting by the zone's offset (the §14 offset-drift failure).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EwsRequestZone {
+    /// No zone anywhere in the request: naive values read as UTC.
+    Absent,
+    /// The supplied zone id resolved to a chrono-tz zone.
+    Resolved(Tz),
+    /// A zone id was supplied but does not resolve.
+    Unresolved,
 }
 
 /// Resolve the timezone an EWS `UpdateItem` request intends its naive
@@ -2134,10 +2204,12 @@ pub(crate) fn extract_ews_timezone_field(xml: &str, tag: &[u8]) -> Option<String
 /// `t:EndTimeZone`/`t:EndTimeZoneId` — in an update these arrive inside the
 /// `SetItemField` payloads), then the request-wide SOAP `t:TimeZoneContext`
 /// header ([MS-OXWSCORE] §2.2.1.12) Outlook sends alongside naive values.
-/// `None` when the request carries no zone at all — a naive value then reads
-/// as UTC, which remains the only defensible reading. Values that carry an
-/// explicit `Z`/offset are unaffected by the resolved zone.
-pub(crate) fn ews_update_request_zone(body: &str) -> Option<Tz> {
+/// `EwsRequestZone::Absent` when the request carries no zone at all — a naive
+/// value then reads as UTC, which remains the only defensible reading — and
+/// `EwsRequestZone::Unresolved` when a zone WAS supplied but maps to no known
+/// zone, so a naive value fails closed instead of drifting. Values that carry
+/// an explicit `Z`/offset are unaffected by the resolved zone.
+pub(crate) fn ews_update_request_zone(body: &str) -> EwsRequestZone {
     let raw = extract_ews_timezone_field(body, b"StartTimeZone")
         .or_else(|| extract_ews_field(body, b"StartTimeZoneId"))
         .or_else(|| extract_ews_timezone_field(body, b"MeetingTimeZone"))
@@ -2146,8 +2218,14 @@ pub(crate) fn ews_update_request_zone(body: &str) -> Option<Tz> {
         .or_else(|| {
             let doc = Document::parse(body).ok()?;
             extract_ews_timezone_context(&doc)
-        })?;
-    normalize_timezone_to_iana(&raw).parse().ok()
+        });
+    match raw {
+        None => EwsRequestZone::Absent,
+        Some(raw) => match normalize_timezone_to_iana(&raw).parse::<Tz>() {
+            Ok(tz) => EwsRequestZone::Resolved(tz),
+            Err(_) => EwsRequestZone::Unresolved,
+        },
+    }
 }
 
 fn extract_ews_fields_doc(doc: &Document, tag: &[u8]) -> Vec<String> {
@@ -2973,7 +3051,10 @@ mod scheduling_tests {
     <m:UpdateItem><m:ItemChanges><t:ItemChange/></m:ItemChanges></m:UpdateItem>
   </soap:Body>
 </soap:Envelope>"#;
-        let tz = ews_update_request_zone(header_only).expect("header zone resolves");
+        let tz = match ews_update_request_zone(header_only) {
+            EwsRequestZone::Resolved(tz) => tz,
+            other => panic!("header zone must resolve, got {other:?}"),
+        };
         assert_eq!(tz, "America/Los_Angeles".parse::<Tz>().unwrap());
 
         let item_level = r#"<m:UpdateItem xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages"
@@ -2988,14 +3069,35 @@ mod scheduling_tests {
     </t:ItemChange>
   </m:ItemChanges>
 </m:UpdateItem>"#;
-        let tz = ews_update_request_zone(item_level).expect("payload zone resolves");
+        let tz = match ews_update_request_zone(item_level) {
+            EwsRequestZone::Resolved(tz) => tz,
+            other => panic!("payload zone must resolve, got {other:?}"),
+        };
         assert_eq!(tz, "Europe/Berlin".parse::<Tz>().unwrap());
 
         let bare = r#"<m:UpdateItem xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages"></m:UpdateItem>"#;
         assert_eq!(
             ews_update_request_zone(bare),
-            None,
-            "no zone supplied → None"
+            EwsRequestZone::Absent,
+            "no zone supplied → Absent (naive values read as UTC)"
+        );
+
+        // A zone the request SUPPLIED but that maps to no known zone must
+        // surface as `Unresolved` — the caller then fails a naive Start/End
+        // closed instead of silently reading UTC.
+        let unknown = r#"<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"
+  xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types">
+  <soap:Header>
+    <t:TimeZoneContext><t:TimeZoneDefinition Id="Mars/Standard Time"/></t:TimeZoneContext>
+  </soap:Header>
+  <soap:Body>
+    <m:UpdateItem xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages"/>
+  </soap:Body>
+</soap:Envelope>"#;
+        assert_eq!(
+            ews_update_request_zone(unknown),
+            EwsRequestZone::Unresolved,
+            "supplied-but-unknown zone id → Unresolved"
         );
     }
 
