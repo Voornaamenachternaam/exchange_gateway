@@ -96,7 +96,7 @@ impl SafeDebug for ContactRow {
 }
 
 // Row struct for task_map queries - safe for logging (body may contain note text)
-#[derive(FromRow)]
+#[derive(FromRow, Clone)]
 pub struct TaskRow {
     pub id: i64,
     pub owner: String,
@@ -114,6 +114,9 @@ pub struct TaskRow {
     pub reminder_time: Option<String>,
     pub categories: Option<String>,
     pub body: Option<String>,
+    pub caldav_href: Option<String>,
+    pub etag: Option<String>,
+    pub uid: Option<String>,
     pub updated_at: Option<String>,
 }
 
@@ -132,7 +135,7 @@ impl SafeDebug for TaskRow {
 }
 
 // Row struct for note_map queries - safe for logging (body may contain note text)
-#[derive(FromRow)]
+#[derive(FromRow, Clone)]
 pub struct NoteRow {
     pub id: i64,
     pub owner: String,
@@ -142,6 +145,9 @@ pub struct NoteRow {
     pub body: Option<String>,
     pub categories: Option<String>,
     pub last_modified_date: Option<String>,
+    pub caldav_href: Option<String>,
+    pub etag: Option<String>,
+    pub uid: Option<String>,
     pub updated_at: Option<String>,
 }
 
@@ -503,6 +509,33 @@ impl Storage {
                 .execute(self.pool.as_ref())
                 .await
                 .map_err(|e| GatewayError::Storage(format!("Migration error: {}", e)))?;
+        }
+        // Same probe for the backend-sync columns of `task_map` and `note_map`:
+        // databases created before Tasks/Notes were synced to Stalwart CalDAV
+        // (VTODO/VJOURNAL) carry rows without a backend identity; the columns
+        // let the first reconcile push them into the backend and afterwards
+        // track the authoritative resource (href + ETag + UID).
+        for table in ["task_map", "note_map"] {
+            let columns = sqlx::query(&format!("PRAGMA table_info({table})"))
+                .fetch_all(self.pool.as_ref())
+                .await
+                .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))?;
+            let names: Vec<String> = columns
+                .iter()
+                .map(|c| c.get::<String, _>("name"))
+                .collect();
+            for (column, ddl) in [
+                ("caldav_href", format!("ALTER TABLE {table} ADD COLUMN caldav_href TEXT")),
+                ("etag", format!("ALTER TABLE {table} ADD COLUMN etag TEXT")),
+                ("uid", format!("ALTER TABLE {table} ADD COLUMN uid TEXT")),
+            ] {
+                if !names.iter().any(|n| n == column) {
+                    sqlx::query(&ddl)
+                        .execute(self.pool.as_ref())
+                        .await
+                        .map_err(|e| GatewayError::Storage(format!("Migration error: {}", e)))?;
+                }
+            }
         }
         Ok(())
     }
@@ -1206,7 +1239,7 @@ impl Storage {
                 sqlx::query_as::<_, TaskRow>(
                     "SELECT id, owner, server_id, subject, importance, sensitivity, start_date, due_date, \
                      utc_start_date, utc_due_date, complete, date_completed, reminder_set, reminder_time, \
-                     categories, body, updated_at FROM task_map \
+                     categories, body, caldav_href, etag, uid, updated_at FROM task_map \
                      WHERE owner = ?1 AND server_id > ?2 ORDER BY server_id ASC LIMIT ?3",
                 )
                 .bind(owner)
@@ -1220,7 +1253,7 @@ impl Storage {
                 sqlx::query_as::<_, TaskRow>(
                     "SELECT id, owner, server_id, subject, importance, sensitivity, start_date, due_date, \
                      utc_start_date, utc_due_date, complete, date_completed, reminder_set, reminder_time, \
-                     categories, body, updated_at FROM task_map \
+                     categories, body, caldav_href, etag, uid, updated_at FROM task_map \
                      WHERE owner = ?1 ORDER BY server_id ASC LIMIT ?2",
                 )
                 .bind(owner)
@@ -1248,7 +1281,8 @@ impl Storage {
         match after_server_id {
             Some(after) => {
                 sqlx::query_as::<_, NoteRow>(
-                    "SELECT id, owner, server_id, subject, message_class, body, categories, last_modified_date, updated_at \
+                    "SELECT id, owner, server_id, subject, message_class, body, categories, last_modified_date, \
+                     caldav_href, etag, uid, updated_at \
                      FROM note_map WHERE owner = ?1 AND server_id > ?2 ORDER BY server_id ASC LIMIT ?3",
                 )
                 .bind(owner)
@@ -1260,7 +1294,8 @@ impl Storage {
             }
             None => {
                 sqlx::query_as::<_, NoteRow>(
-                    "SELECT id, owner, server_id, subject, message_class, body, categories, last_modified_date, updated_at \
+                    "SELECT id, owner, server_id, subject, message_class, body, categories, last_modified_date, \
+                     caldav_href, etag, uid, updated_at \
                      FROM note_map WHERE owner = ?1 ORDER BY server_id ASC LIMIT ?2",
                 )
                 .bind(owner)
@@ -2143,14 +2178,15 @@ impl Storage {
             .map_err(|e| GatewayError::Storage(format!("Transaction error: {}", e)))?;
 
         sqlx::query(
-            "INSERT INTO task_map (owner, server_id, subject, importance, sensitivity, start_date, due_date, utc_start_date, utc_due_date, complete, date_completed, reminder_set, reminder_time, categories, body) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15) \
+            "INSERT INTO task_map (owner, server_id, subject, importance, sensitivity, start_date, due_date, utc_start_date, utc_due_date, complete, date_completed, reminder_set, reminder_time, categories, body, caldav_href, etag, uid) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18) \
              ON CONFLICT(owner, server_id) DO UPDATE SET \
              subject = excluded.subject, importance = excluded.importance, sensitivity = excluded.sensitivity, \
              start_date = excluded.start_date, due_date = excluded.due_date, utc_start_date = excluded.utc_start_date, \
              utc_due_date = excluded.utc_due_date, complete = excluded.complete, date_completed = excluded.date_completed, \
              reminder_set = excluded.reminder_set, reminder_time = excluded.reminder_time, categories = excluded.categories, \
-             body = excluded.body, updated_at = CURRENT_TIMESTAMP"
+             body = excluded.body, caldav_href = excluded.caldav_href, etag = excluded.etag, uid = excluded.uid, \
+             updated_at = CURRENT_TIMESTAMP"
         )
         .bind(owner)
         .bind(server_id)
@@ -2167,6 +2203,9 @@ impl Storage {
         .bind(fields.reminder_time)
         .bind(fields.categories)
         .bind(fields.body)
+        .bind(fields.caldav_href)
+        .bind(fields.etag)
+        .bind(fields.uid)
         .execute(&mut *tx)
         .await
         .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
@@ -2224,7 +2263,7 @@ impl Storage {
     /// Fetch a single task by server_id.
     pub async fn get_task(&self, owner: &str, server_id: &str) -> Result<Option<TaskRow>> {
         let row = sqlx::query_as::<_, TaskRow>(
-            "SELECT id, owner, server_id, subject, importance, sensitivity, start_date, due_date, utc_start_date, utc_due_date, complete, date_completed, reminder_set, reminder_time, categories, body, updated_at FROM task_map WHERE owner = ?1 AND server_id = ?2"
+            "SELECT id, owner, server_id, subject, importance, sensitivity, start_date, due_date, utc_start_date, utc_due_date, complete, date_completed, reminder_set, reminder_time, categories, body, caldav_href, etag, uid, updated_at FROM task_map WHERE owner = ?1 AND server_id = ?2"
         )
         .bind(owner)
         .bind(server_id)
@@ -2237,13 +2276,42 @@ impl Storage {
     /// Get all tasks for an owner.
     pub async fn get_all_tasks_for_owner(&self, owner: &str) -> Result<Vec<TaskRow>> {
         let rows = sqlx::query_as::<_, TaskRow>(
-            "SELECT id, owner, server_id, subject, importance, sensitivity, start_date, due_date, utc_start_date, utc_due_date, complete, date_completed, reminder_set, reminder_time, categories, body, updated_at FROM task_map WHERE owner = ?1 ORDER BY server_id ASC"
+            "SELECT id, owner, server_id, subject, importance, sensitivity, start_date, due_date, utc_start_date, utc_due_date, complete, date_completed, reminder_set, reminder_time, categories, body, caldav_href, etag, uid, updated_at FROM task_map WHERE owner = ?1 ORDER BY server_id ASC"
         )
         .bind(owner)
         .fetch_all(self.pool.as_ref())
         .await
         .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))?;
         Ok(rows)
+    }
+
+    /// Update only the backend identity (caldav_href, etag, uid) of a task.
+    ///
+    /// This is mirror bookkeeping after the backing VTODO was created, moved,
+    /// or rewritten server-side: the EAS-visible content projection did not
+    /// change, so — unlike `upsert_task` — no change-journal event is written
+    /// and clients are not told about a mutation they already have.
+    pub async fn set_task_backend_ref(
+        &self,
+        owner: &str,
+        server_id: &str,
+        caldav_href: &str,
+        etag: Option<&str>,
+        uid: Option<&str>,
+    ) -> Result<()> {
+        sqlx::query(
+            "UPDATE task_map SET caldav_href = ?3, etag = ?4, uid = COALESCE(?5, uid), updated_at = CURRENT_TIMESTAMP \
+             WHERE owner = ?1 AND server_id = ?2",
+        )
+        .bind(owner)
+        .bind(server_id)
+        .bind(caldav_href)
+        .bind(etag)
+        .bind(uid)
+        .execute(self.pool.as_ref())
+        .await
+        .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+        Ok(())
     }
 
     /// Upsert a gateway-local note and record a change-journal event.
@@ -2258,11 +2326,12 @@ impl Storage {
             .map_err(|e| GatewayError::Storage(format!("Transaction error: {}", e)))?;
 
         sqlx::query(
-            "INSERT INTO note_map (owner, server_id, subject, message_class, body, categories, last_modified_date) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) \
+            "INSERT INTO note_map (owner, server_id, subject, message_class, body, categories, last_modified_date, caldav_href, etag, uid) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10) \
              ON CONFLICT(owner, server_id) DO UPDATE SET \
              subject = excluded.subject, message_class = excluded.message_class, body = excluded.body, \
              categories = excluded.categories, last_modified_date = excluded.last_modified_date, \
+             caldav_href = excluded.caldav_href, etag = excluded.etag, uid = excluded.uid, \
              updated_at = CURRENT_TIMESTAMP"
         )
         .bind(owner)
@@ -2272,6 +2341,9 @@ impl Storage {
         .bind(fields.body)
         .bind(fields.categories)
         .bind(fields.last_modified_date)
+        .bind(fields.caldav_href)
+        .bind(fields.etag)
+        .bind(fields.uid)
         .execute(&mut *tx)
         .await
         .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
@@ -2328,7 +2400,7 @@ impl Storage {
     /// Fetch a single note by server_id.
     pub async fn get_note(&self, owner: &str, server_id: &str) -> Result<Option<NoteRow>> {
         let row = sqlx::query_as::<_, NoteRow>(
-            "SELECT id, owner, server_id, subject, message_class, body, categories, last_modified_date, updated_at FROM note_map WHERE owner = ?1 AND server_id = ?2"
+            "SELECT id, owner, server_id, subject, message_class, body, categories, last_modified_date, caldav_href, etag, uid, updated_at FROM note_map WHERE owner = ?1 AND server_id = ?2"
         )
         .bind(owner)
         .bind(server_id)
@@ -2341,13 +2413,40 @@ impl Storage {
     /// Get all notes for an owner.
     pub async fn get_all_notes_for_owner(&self, owner: &str) -> Result<Vec<NoteRow>> {
         let rows = sqlx::query_as::<_, NoteRow>(
-            "SELECT id, owner, server_id, subject, message_class, body, categories, last_modified_date, updated_at FROM note_map WHERE owner = ?1 ORDER BY server_id ASC"
+            "SELECT id, owner, server_id, subject, message_class, body, categories, last_modified_date, caldav_href, etag, uid, updated_at FROM note_map WHERE owner = ?1 ORDER BY server_id ASC"
         )
         .bind(owner)
         .fetch_all(self.pool.as_ref())
         .await
         .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))?;
         Ok(rows)
+    }
+
+    /// Update only the backend identity (caldav_href, etag, uid) of a note.
+    ///
+    /// Mirror bookkeeping, not an EAS-visible mutation: no journal event is
+    /// written (see `set_task_backend_ref`).
+    pub async fn set_note_backend_ref(
+        &self,
+        owner: &str,
+        server_id: &str,
+        caldav_href: &str,
+        etag: Option<&str>,
+        uid: Option<&str>,
+    ) -> Result<()> {
+        sqlx::query(
+            "UPDATE note_map SET caldav_href = ?3, etag = ?4, uid = COALESCE(?5, uid), updated_at = CURRENT_TIMESTAMP \
+             WHERE owner = ?1 AND server_id = ?2",
+        )
+        .bind(owner)
+        .bind(server_id)
+        .bind(caldav_href)
+        .bind(etag)
+        .bind(uid)
+        .execute(self.pool.as_ref())
+        .await
+        .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+        Ok(())
     }
 
     /// Fetch the gateway-local photo for `owner` (normalized SMTP address).
@@ -2444,7 +2543,8 @@ pub struct SmimeCertRow {
     pub not_after_unix: i64,
 }
 
-/// Column values for a gateway-local task upsert.
+/// Column values for a task upsert (parsed EAS/MS-ASTASK projection of a
+/// VTODO plus its backend identity).
 #[derive(Default)]
 pub struct TaskFields<'a> {
     pub subject: Option<&'a str>,
@@ -2460,9 +2560,16 @@ pub struct TaskFields<'a> {
     pub reminder_time: Option<&'a str>,
     pub categories: Option<&'a str>,
     pub body: Option<&'a str>,
+    /// CalDAV resource path of the backing VTODO (None until first pushed).
+    pub caldav_href: Option<&'a str>,
+    /// Server-issued ETag of the last observed VTODO revision.
+    pub etag: Option<&'a str>,
+    /// iCalendar UID of the backing VTODO.
+    pub uid: Option<&'a str>,
 }
 
-/// Column values for a gateway-local note upsert.
+/// Column values for a note upsert (parsed EAS/MS-ASNOTE projection of a
+/// VJOURNAL plus its backend identity).
 #[derive(Default)]
 pub struct NoteFields<'a> {
     pub subject: Option<&'a str>,
@@ -2470,6 +2577,12 @@ pub struct NoteFields<'a> {
     pub body: Option<&'a str>,
     pub categories: Option<&'a str>,
     pub last_modified_date: Option<&'a str>,
+    /// CalDAV resource path of the backing VJOURNAL (None until first pushed).
+    pub caldav_href: Option<&'a str>,
+    /// Server-issued ETag of the last observed VJOURNAL revision.
+    pub etag: Option<&'a str>,
+    /// iCalendar UID of the backing VJOURNAL.
+    pub uid: Option<&'a str>,
 }
 
 /// Row for a persisted EWS UserConfiguration object (MS-OXWSUSRCFG).
