@@ -446,9 +446,15 @@ CREATE INDEX IF NOT EXISTS idx_contact_map_owner ON contact_map(owner);
 CREATE INDEX IF NOT EXISTS idx_contact_map_href ON contact_map(owner, carddav_href);
 
 
--- Tasks: gateway-local store for EAS Tasks (no upstream Stalwart backing store).
--- Column set maps to the MS-ASTASK schema (Subject, Importance, StartDate,
--- DueDate, UtcStartDate, UtcDueDate, Complete, ReminderSet, Categories, Body).
+-- Tasks: mirror cache for EAS Tasks. Stalwart is the system of record: each
+-- task is a CalDAV VTODO (RFC 5545 §3.6.2) in the user's Tasks collection
+-- (/{cal}/{user}/Tasks/), created or patched through the gateway's write-through
+-- path and reconciled back on every Tasks Sync. The MS-ASTASK column set is a
+-- parsed projection of the VTODO for EAS rendering; `caldav_href` + `etag` are
+-- the backend identity (resource path + server-issued ETag), and `uid` keeps
+-- the iCalendar identity so an item recreated under a different href keeps its
+-- EAS ServerId. Rows without `caldav_href` are pre-migration gateway-local
+-- records waiting for their first reconcile push.
 CREATE TABLE IF NOT EXISTS task_map (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     owner TEXT NOT NULL,
@@ -466,16 +472,21 @@ CREATE TABLE IF NOT EXISTS task_map (
     reminder_time TEXT,
     categories TEXT,
     body TEXT,
+    caldav_href TEXT,
+    etag TEXT,
+    uid TEXT,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(owner, server_id)
 );
 
 CREATE INDEX IF NOT EXISTS idx_task_map_owner ON task_map(owner);
+CREATE INDEX IF NOT EXISTS idx_task_map_href ON task_map(owner, caldav_href);
+CREATE INDEX IF NOT EXISTS idx_task_map_uid ON task_map(owner, uid);
 
 
--- Notes: gateway-local store for EAS Notes (no upstream Stalwart backing store).
--- Column set maps to the MS-ASNOTE schema (Subject, MessageClass, Body,
--- LastModifiedDate, Categories).
+-- Notes: mirror cache for EAS Notes. Stalwart is the system of record: each
+-- note is a CalDAV VJOURNAL (RFC 5545 §3.6.3) in the user's Notes collection
+-- (/{cal}/{user}/Notes/), written through and reconciled exactly like tasks.
 CREATE TABLE IF NOT EXISTS note_map (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     owner TEXT NOT NULL,
@@ -485,11 +496,16 @@ CREATE TABLE IF NOT EXISTS note_map (
     body TEXT,
     categories TEXT,
     last_modified_date TEXT,
+    caldav_href TEXT,
+    etag TEXT,
+    uid TEXT,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(owner, server_id)
 );
 
 CREATE INDEX IF NOT EXISTS idx_note_map_owner ON note_map(owner);
+CREATE INDEX IF NOT EXISTS idx_note_map_href ON note_map(owner, caldav_href);
+CREATE INDEX IF NOT EXISTS idx_note_map_uid ON note_map(owner, uid);
 -- Gateway-local user photo store (MS-OXWSPHOTO / EWS GetUserPhoto). Stalwart
 -- has no native avatar/photo object, so recipient photos are stored locally as
 -- an opaque binary blob keyed by the owning mailbox's normalized SMTP address.

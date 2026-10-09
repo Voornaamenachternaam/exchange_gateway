@@ -2017,11 +2017,65 @@ async fn handle_ping(
         }
     }
 
+    // §15: Tasks/Notes are Stalwart-backed (CalDAV VTODO/VJOURNAL), but the
+    // reconcile that imports backend edits runs in Sync — so a Ping waiting
+    // between Syncs would sleep through a Stalwart-side edit. Each tick probes
+    // the backend's etag inventory (one getetag-only REPORT per collection)
+    // and, when it no longer matches the mirror, runs the same reconcile the
+    // Sync path uses; its journal writes then flow into the per-folder
+    // journal check in the SAME pass, so the Ping answers Status 2 within one
+    // tick of the backend change. A failed probe or reconcile (backend down,
+    // or the user never synced Tasks so the collection 404s) disables the
+    // backend probe for the REST of this Ping — journal detection keeps
+    // working — so a dead backend is never re-hit every 15 seconds.
+    let ping_tasks = folders
+        .iter()
+        .any(|f| matches!(ping_folder_kind(f), Some(PingFolderKind::Tasks)));
+    let ping_notes = folders
+        .iter()
+        .any(|f| matches!(ping_folder_kind(f), Some(PingFolderKind::Notes)));
+    let mut backend_probe_disabled = false;
+
     let deadline = Instant::now() + StdDuration::from_secs(effective_heartbeat);
     while Instant::now() < deadline {
         if supersede_token.is_cancelled() {
             // This Ping was superseded by a newer one for the same device.
             return ping_superseded_response(wbxml, as_wbxml, request_id);
+        }
+        if !backend_probe_disabled
+            && !state.cfg.caldav_base.is_empty()
+            && (ping_tasks || ping_notes)
+        {
+            let password = password.expose_secret();
+            match crate::tasks::backend_inventory_changed(
+                state, owner, password, ping_tasks, ping_notes,
+            )
+            .await
+            {
+                Ok(true) => {
+                    let mut reconciled = true;
+                    if ping_tasks
+                        && let Err(e) = crate::tasks::reconcile_tasks(state, owner, password).await
+                    {
+                        tracing::warn!(error = %e, "Ping Tasks reconcile failed");
+                        reconciled = false;
+                    }
+                    if ping_notes
+                        && let Err(e) = crate::tasks::reconcile_notes(state, owner, password).await
+                    {
+                        tracing::warn!(error = %e, "Ping Notes reconcile failed");
+                        reconciled = false;
+                    }
+                    if !reconciled {
+                        backend_probe_disabled = true;
+                    }
+                }
+                Ok(false) => {}
+                Err(e) => {
+                    tracing::debug!(error = %e, "Ping backend inventory probe failed");
+                    backend_probe_disabled = true;
+                }
+            }
         }
         let mut changed_folders = Vec::new();
         for folder in &folders {
@@ -5110,6 +5164,7 @@ async fn handle_sync_collections(ctx: &SyncCtx<'_>, collections: &[SyncCollectio
             handle_local_content_sync(&LocalContentSyncCtx {
                 state,
                 username,
+                password: password.expose_secret(),
                 collection_id,
                 state_collection_id: &state_collection_id,
                 incoming_key,
@@ -5122,6 +5177,7 @@ async fn handle_sync_collections(ctx: &SyncCtx<'_>, collections: &[SyncCollectio
             handle_local_content_sync(&LocalContentSyncCtx {
                 state,
                 username,
+                password: password.expose_secret(),
                 collection_id,
                 state_collection_id: &state_collection_id,
                 incoming_key,
@@ -5211,6 +5267,7 @@ impl LocalContentKind {
 struct LocalContentSyncCtx<'a> {
     state: &'a Arc<AppState>,
     username: &'a str,
+    password: &'a str,
     collection_id: &'a str,
     state_collection_id: &'a str,
     incoming_key: &'a str,
@@ -5234,6 +5291,7 @@ async fn handle_local_content_sync(ctx: &LocalContentSyncCtx<'_>) -> String {
     let LocalContentSyncCtx {
         state,
         username,
+        password,
         collection_id,
         state_collection_id,
         incoming_key,
@@ -5266,7 +5324,7 @@ async fn handle_local_content_sync(ctx: &LocalContentSyncCtx<'_>) -> String {
                 }
             };
             if !mutations.is_empty() {
-                match crate::tasks::apply_task_mutations(state, username, &mutations).await {
+                match crate::tasks::apply_task_mutations(state, username, password, &mutations).await {
                     Ok(results) => {
                         mutation_responses = crate::tasks::render_mutation_responses(&results);
                     }
@@ -5308,7 +5366,7 @@ async fn handle_local_content_sync(ctx: &LocalContentSyncCtx<'_>) -> String {
                 }
             };
             if !mutations.is_empty() {
-                match crate::tasks::apply_note_mutations(state, username, &mutations).await {
+                match crate::tasks::apply_note_mutations(state, username, password, &mutations).await {
                     Ok(results) => {
                         mutation_responses = crate::tasks::render_mutation_responses(&results);
                     }
@@ -5329,6 +5387,25 @@ async fn handle_local_content_sync(ctx: &LocalContentSyncCtx<'_>) -> String {
                     }
                 }
             }
+        }
+    }
+
+    // Reconcile the mirror against the Stalwart CalDAV collection BEFORE the
+    // change-journal is read, so backend edits (from any CalDAV client) land
+    // in this response and the delivered watermark covers them. Reconcile
+    // failures degrade to the mirror's current state — the collection still
+    // syncs, just without this round's remote deltas.
+    if !state.cfg.caldav_base.is_empty() {
+        let reconciled = match kind {
+            LocalContentKind::Tasks => {
+                crate::tasks::reconcile_tasks(state, username, password).await
+            }
+            LocalContentKind::Notes => {
+                crate::tasks::reconcile_notes(state, username, password).await
+            }
+        };
+        if let Err(e) = reconciled {
+            tracing::warn!(class = class, error = %e, "{} CalDAV reconcile failed", class);
         }
     }
 
@@ -7500,6 +7577,159 @@ mod tests {
         );
     }
 
+    /// A Ping holding a Tasks folder with an unreachable CalDAV backend must
+    /// probe once, disable, and still serve journal-based detection: the Ping
+    /// ends at the heartbeat cap with Status 1, and a client-side journal
+    /// change (seeded task) fires Status 2 for the Tasks folder.
+    #[tokio::test]
+    async fn test_ping_tasks_folder_survives_backend_outage_and_fires_on_local_change() {
+        let storage = crate::storage::Storage::new("sqlite::memory:")
+            .await
+            .expect("in-memory storage");
+        storage.init_schema().await.expect("schema init");
+        let cfg = crate::config::Config {
+            jmap_base: "http://127.0.0.1:1".to_string(),
+            caldav_base: "http://127.0.0.1:1".to_string(),
+            email_enabled: false,
+            mail_domain: "example.com".to_string(),
+            hmac_secret: SecretString::from("a".repeat(32)),
+            max_ping_heartbeat_secs: Some(2),
+            ..Default::default()
+        };
+        let state = Arc::new(crate::models::AppState::new(cfg, Arc::new(storage)));
+
+        let password = SecretString::from("pw");
+        let wbxml = Wbxml::new();
+
+        // Phase 1: no journal activity at all — the ping must end cleanly at
+        // the cap (probe failed -> disabled -> journal detection runs alone).
+        let xml = ping_xml(
+            600,
+            r#"<Folder><Id>7</Id><Class>Tasks</Class></Folder>"#,
+        );
+        let req = EasRequest {
+            command: "Ping".to_string(),
+            device_id: Some("probe-device".to_string()),
+            via_cloudflare: false,
+            ..Default::default()
+        };
+        let started = Instant::now();
+        let resp = timeout(
+            StdDuration::from_secs(10),
+            handle_ping(
+                &state,
+                &PingInvocation {
+                    owner: "probe-user@example.com",
+                    password: &password,
+                    req: &req,
+                    xml: &xml,
+                    request_id: "req-ping-probe-1",
+                },
+                &wbxml,
+                false,
+            ),
+        )
+        .await
+        .expect("Ping must not hang on an unreachable backend");
+        let text = response_text(resp).await;
+        assert!(
+            text.contains("<Status>1</Status>"),
+            "outage Ping must end with Status 1, got: {text}"
+        );
+        assert!(
+            started.elapsed() < StdDuration::from_secs(10),
+            "Ping must stop at the cap, not wait the 600s heartbeat"
+        );
+
+        // Phase 2: journal detection must survive the probe failure. Complete
+        // one Tasks Sync for this device (persists the journal watermark past
+        // the seed), journal a NEW task, then ping: the first pass must fire
+        // Status 2 naming the Tasks folder — the probe disable must have
+        // silenced only the backend poll, not the journal check.
+        let owner = "probe-user@example.com";
+        let device = "probe-device";
+        let state_coll = scoped_collection_id(crate::tasks::TASKS_COLLECTION_ID, device);
+        state
+            .storage
+            .upsert_task(
+                owner,
+                "seed-1",
+                &crate::storage::TaskFields {
+                    subject: Some("Probe seed"),
+                    ..Default::default()
+                },
+            )
+            .await
+            .expect("seed task");
+        let coll = tasks_collection("0", Some(50));
+        let xml = handle_local_content_sync(&LocalContentSyncCtx {
+            state: &state,
+            username: owner,
+            password: "",
+            collection_id: crate::tasks::TASKS_COLLECTION_ID,
+            state_collection_id: &state_coll,
+            incoming_key: "0",
+            coll: &coll,
+            kind: LocalContentKind::Tasks,
+            global_budget: None,
+        })
+        .await;
+        assert!(
+            xml.contains("<Status>1</Status>"),
+            "seed sync must succeed: {xml}"
+        );
+        // A journal change the ping must see on its first pass.
+        state
+            .storage
+            .upsert_task(
+                owner,
+                "seed-2",
+                &crate::storage::TaskFields {
+                    subject: Some("Probe seed 2"),
+                    ..Default::default()
+                },
+            )
+            .await
+            .expect("second seed task");
+
+        let xml = ping_xml(
+            600,
+            r#"<Folder><Id>7</Id><Class>Tasks</Class></Folder>"#,
+        );
+        let req = EasRequest {
+            command: "Ping".to_string(),
+            device_id: Some("probe-device".to_string()),
+            via_cloudflare: false,
+            ..Default::default()
+        };
+        let resp = timeout(
+            StdDuration::from_secs(15),
+            handle_ping(
+                &state,
+                &PingInvocation {
+                    owner,
+                    password: &password,
+                    req: &req,
+                    xml: &xml,
+                    request_id: "req-ping-probe-2",
+                },
+                &wbxml,
+                false,
+            ),
+        )
+        .await
+        .expect("Ping must not hang on an unreachable backend");
+        let text = response_text(resp).await;
+        assert!(
+            text.contains("<Status>2</Status>"),
+            "journal change must fire Status 2 despite backend outage, got: {text}"
+        );
+        assert!(
+            text.contains("<Folder>7</Folder>"),
+            "the Tasks folder must be named, got: {text}"
+        );
+    }
+
     #[tokio::test]
     async fn test_ping_cache_entry_expires_after_ttl() {
         let owner = "ttl-user@example.com";
@@ -8119,6 +8349,57 @@ mod tests {
         coll_xml[start..end].to_string()
     }
 
+    /// Same shape as `test_sync_state` but with the CalDAV backend
+    /// configured at an unroutable address, so the Tasks/Notes reconcile
+    /// path exercises its outage behavior (warn and serve the mirror).
+    async fn backend_outage_sync_state() -> Arc<AppState> {
+        let storage = crate::storage::Storage::new("sqlite::memory:")
+            .await
+            .expect("in-memory storage");
+        storage.init_schema().await.expect("schema init");
+        let cfg = crate::config::Config {
+            jmap_base: "http://127.0.0.1:1".to_string(),
+            caldav_base: "http://127.0.0.1:1".to_string(),
+            email_enabled: false,
+            mail_domain: "example.com".to_string(),
+            hmac_secret: SecretString::from("a".repeat(32)),
+            ..Default::default()
+        };
+        Arc::new(AppState::new(cfg, Arc::new(storage)))
+    }
+
+    /// A Tasks Sync must survive a CalDAV backend outage: the reconcile is
+    /// skipped with a warning and the response still delivers the mirror
+    /// state, so an outage degrades to the pre-§15 behavior instead of
+    /// failing the collection.
+    #[tokio::test]
+    async fn test_local_content_sync_survives_backend_outage() {
+        let state = backend_outage_sync_state().await;
+        let user = "outage-user@example.com";
+        let device = "test-device";
+        let state_coll = scoped_collection_id(crate::tasks::TASKS_COLLECTION_ID, device);
+        seed_tasks(&state, user, 2).await;
+
+        let coll = tasks_collection("0", Some(50));
+        let xml = handle_local_content_sync(&LocalContentSyncCtx {
+            state: &state,
+            username: user,
+            password: "",
+            collection_id: crate::tasks::TASKS_COLLECTION_ID,
+            state_collection_id: &state_coll,
+            incoming_key: "0",
+            coll: &coll,
+            kind: LocalContentKind::Tasks,
+            global_budget: None,
+        })
+        .await;
+        assert!(
+            xml.contains("<Status>1</Status>"),
+            "collection must stay healthy during a backend outage: {xml}"
+        );
+        assert_eq!(xml.matches("<Add>").count(), 2, "mirror state served: {xml}");
+    }
+
     /// In-memory AppState with JMAP pointed at unroutable loopback, for
     /// exercising the gateway-local Tasks/Notes sync paths.
     async fn test_sync_state() -> Arc<AppState> {
@@ -8158,6 +8439,9 @@ mod tests {
                         reminder_time: None,
                         categories: None,
                         body: Some("seed"),
+                        caldav_href: None,
+                        etag: None,
+                        uid: None,
                     },
                 )
                 .await
@@ -8393,6 +8677,7 @@ mod tests {
         let xml = handle_local_content_sync(&LocalContentSyncCtx {
             state: &state,
             username: user,
+            password: "",
             collection_id: crate::tasks::TASKS_COLLECTION_ID,
             state_collection_id: &state_coll,
             incoming_key: "0",
@@ -8415,6 +8700,7 @@ mod tests {
         let xml = handle_local_content_sync(&LocalContentSyncCtx {
             state: &state,
             username: user,
+            password: "",
             collection_id: crate::tasks::TASKS_COLLECTION_ID,
             state_collection_id: &state_coll,
             incoming_key: &key1,
@@ -8437,6 +8723,7 @@ mod tests {
         let xml = handle_local_content_sync(&LocalContentSyncCtx {
             state: &state,
             username: user,
+            password: "",
             collection_id: crate::tasks::TASKS_COLLECTION_ID,
             state_collection_id: &state_coll,
             incoming_key: &key2,
@@ -8458,6 +8745,7 @@ mod tests {
         let xml = handle_local_content_sync(&LocalContentSyncCtx {
             state: &state,
             username: user,
+            password: "",
             collection_id: crate::tasks::TASKS_COLLECTION_ID,
             state_collection_id: &state_coll,
             incoming_key: &key3,
@@ -8491,6 +8779,7 @@ mod tests {
         let xml = handle_local_content_sync(&LocalContentSyncCtx {
             state: &state,
             username: user,
+            password: "",
             collection_id: crate::tasks::TASKS_COLLECTION_ID,
             state_collection_id: &state_coll,
             incoming_key: "0",
@@ -8524,6 +8813,9 @@ mod tests {
                 &crate::storage::TaskFields {
                     subject: Some("Task 2 MODIFIED MID-SYNC"),
                     importance: Some(1),
+                    caldav_href: None,
+                    etag: None,
+                    uid: None,
                     ..Default::default()
                 },
             )
@@ -8537,6 +8829,9 @@ mod tests {
                 &crate::storage::TaskFields {
                     subject: Some("Created mid-sync"),
                     importance: Some(1),
+                    caldav_href: None,
+                    etag: None,
+                    uid: None,
                     ..Default::default()
                 },
             )
@@ -8550,6 +8845,7 @@ mod tests {
         let xml = handle_local_content_sync(&LocalContentSyncCtx {
             state: &state,
             username: user,
+            password: "",
             collection_id: crate::tasks::TASKS_COLLECTION_ID,
             state_collection_id: &state_coll,
             incoming_key: &key1,
@@ -8583,6 +8879,7 @@ mod tests {
         let xml = handle_local_content_sync(&LocalContentSyncCtx {
             state: &state,
             username: user,
+            password: "",
             collection_id: crate::tasks::TASKS_COLLECTION_ID,
             state_collection_id: &state_coll,
             incoming_key: &key2,
@@ -8614,6 +8911,7 @@ mod tests {
         let xml = handle_local_content_sync(&LocalContentSyncCtx {
             state: &state,
             username: user,
+            password: "",
             collection_id: crate::tasks::TASKS_COLLECTION_ID,
             state_collection_id: &state_coll,
             incoming_key: &key3,
@@ -8659,6 +8957,7 @@ mod tests {
         let xml = handle_local_content_sync(&LocalContentSyncCtx {
             state: &state,
             username: user,
+            password: "",
             collection_id: crate::tasks::TASKS_COLLECTION_ID,
             state_collection_id: &state_coll,
             incoming_key: "0",
@@ -8683,6 +8982,7 @@ mod tests {
         let xml = handle_local_content_sync(&LocalContentSyncCtx {
             state: &state,
             username: user,
+            password: "",
             collection_id: crate::tasks::TASKS_COLLECTION_ID,
             state_collection_id: &state_coll,
             incoming_key: "0",
@@ -8713,6 +9013,7 @@ mod tests {
         let xml = handle_local_content_sync(&LocalContentSyncCtx {
             state: &state,
             username: user,
+            password: "",
             collection_id: crate::tasks::TASKS_COLLECTION_ID,
             state_collection_id: &state_coll,
             incoming_key: &key,
@@ -8741,6 +9042,7 @@ mod tests {
         let xml = handle_local_content_sync(&LocalContentSyncCtx {
             state: &state,
             username: user,
+            password: "",
             collection_id: crate::tasks::TASKS_COLLECTION_ID,
             state_collection_id: &state_coll,
             incoming_key: "0",
@@ -8773,7 +9075,10 @@ mod tests {
                     reminder_time: None,
                     categories: None,
                     body: None,
-                },
+                                        caldav_href: None,
+                        etag: None,
+                        uid: None,
+                    },
             )
             .await
             .expect("journal upsert");
@@ -8787,6 +9092,7 @@ mod tests {
         let xml = handle_local_content_sync(&LocalContentSyncCtx {
             state: &state,
             username: user,
+            password: "",
             collection_id: crate::tasks::TASKS_COLLECTION_ID,
             state_collection_id: &state_coll,
             incoming_key: &key,
@@ -8821,6 +9127,7 @@ mod tests {
         let xml = handle_local_content_sync(&LocalContentSyncCtx {
             state: &state,
             username: user,
+            password: "",
             collection_id: crate::tasks::TASKS_COLLECTION_ID,
             state_collection_id: &state_coll,
             incoming_key: "0",
@@ -8836,6 +9143,7 @@ mod tests {
         let xml = handle_local_content_sync(&LocalContentSyncCtx {
             state: &state,
             username: user,
+            password: "",
             collection_id: crate::tasks::TASKS_COLLECTION_ID,
             state_collection_id: &state_coll,
             incoming_key: "bogus-key",
@@ -8863,6 +9171,7 @@ mod tests {
         let xml = handle_local_content_sync(&LocalContentSyncCtx {
             state: &state,
             username: user,
+            password: "",
             collection_id: crate::tasks::TASKS_COLLECTION_ID,
             state_collection_id: &state_coll,
             incoming_key: "0",
@@ -8880,6 +9189,7 @@ mod tests {
         let xml = handle_local_content_sync(&LocalContentSyncCtx {
             state: &state,
             username: user,
+            password: "",
             collection_id: crate::tasks::TASKS_COLLECTION_ID,
             state_collection_id: &state_coll,
             incoming_key: &key,
@@ -8907,6 +9217,9 @@ mod tests {
                 &crate::storage::TaskFields {
                     subject: Some("Changed before ack"),
                     importance: Some(1),
+                    caldav_href: None,
+                    etag: None,
+                    uid: None,
                     ..Default::default()
                 },
             )
@@ -8917,6 +9230,7 @@ mod tests {
         let xml = handle_local_content_sync(&LocalContentSyncCtx {
             state: &state,
             username: user,
+            password: "",
             collection_id: crate::tasks::TASKS_COLLECTION_ID,
             state_collection_id: &state_coll,
             incoming_key: &key2,
@@ -8937,6 +9251,7 @@ mod tests {
         let xml = handle_local_content_sync(&LocalContentSyncCtx {
             state: &state,
             username: user,
+            password: "",
             collection_id: crate::tasks::TASKS_COLLECTION_ID,
             state_collection_id: &state_coll,
             incoming_key: &key3,

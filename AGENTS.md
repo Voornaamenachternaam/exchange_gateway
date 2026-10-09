@@ -265,7 +265,63 @@ EAS specs v20250520 (16.1); older EAS compat NOT needed.
   Suite after: 986 lib + 22 fixtures + 11 snapshots + 2 deploy + 1 doc,
   clippy 0, fmt clean on touched files, release warning-free.
 
-- Next likely audit items: §15 Tasks/Notes backend story, §16 stale-watermark
+- §15 Tasks/Notes CalDAV backend mirroring is COMPLETE and its AUDIT.md
+  section documents the delivered behavior. Design: Stalwart is the system
+  of record — EAS Tasks bridge to VTODO (RFC 5545 §3.6.2), Notes to
+  VJOURNAL (§3.6.3), in per-user collections /{cal}/{user}/Tasks/ and
+  /{cal}/{user}/Notes/ (MKCALENDAR-ensured). task_map/note_map are a
+  mirror/journal cache with caldav_href/etag/uid (PRAGMA-probed ALTER TABLE
+  migration for pre-§15 DBs; owner-scoped href/uid indexes;
+  set_*_backend_ref bookkeeping writes NO journal event).
+  Write-through in apply_task_mutation/apply_note_mutation (tasks.rs, take
+  password; routed by backend Some/None + backend_configured): Add PUTs the
+  VTODO/VJOURNAL first (ServerId = iCalendar UID, URL-safe filename or uuid)
+  and mirrors only after success; Change re-reads the authoritative object,
+  patch_component_ics rewrites ONLY the mapped property lines (foreign
+  RRULE/ATTENDEE/URL/X-* survive verbatim; DTSTAMP bumped; VALARM rewritten
+  as a unit; COMPLETED→NEEDS-ACTION reset on un-complete) and PUTs back with
+  If-Match; mirrored Delete deletes the backing resource first. Configured-
+  but-unreachable backend FAILS CLOSED (status 6, mirror untouched — no
+  divergence, no resurrect/duplicate on reconcile); legacy no-href rows stay
+  local and are pushed by reconcile. Reconcile runs on every Tasks/Notes
+  Sync (eas.rs handle_local_content_sync, AFTER mutations, BEFORE the
+  journal read; gated on !caldav_base.is_empty()): calendar-query REPORT
+  (comp-filter, no time-range) imports new/changed (journal upsert), adopts
+  moved hrefs by UID (keeps EAS ServerId), tombstones rows whose href
+  vanished (remote delete → client-visible Remove), and pushes never-pushed
+  rows. Reconcile failure DEGRADES to serving the mirror (warn + Status 1).
+  PING backend wake (also §15, delivered): each Ping tick probes the CalDAV
+  etag inventory (query_calendar_etags — getetag-only REPORT, no
+  calendar-data, no MKCALENDAR) via tasks::backend_inventory_changed +
+  inventory_differs (missing etag on either side = NO signal, not a diff —
+  prevents a probe/reconcile loop on servers that omit getetag); on
+  divergence the Ping runs the SAME reconcile (journals → the per-folder
+  journal check in the SAME pass fires Status 2 within one tick). Probe or
+  reconcile failure sets backend_probe_disabled for the REST of that Ping
+  (journal detection unaffected) — a dead backend is never re-hit per tick
+  and the Ping degrades to clean Status 1 at the heartbeat.
+  Wire fidelity: X-SGW-* carry the exact EAS wire date strings while
+  DTSTART/DUE carry absolute instants; Importance↔PRIORITY 9/5/1 bands;
+  Sensitivity↔CLASS with X-PERSONAL; RFC 5545 §3.3.11 escaping both ways;
+  75-octet UTF-8-safe folding; REPORT parser canonicalizes hrefs to the same
+  path-only form put_event returns. Tests: 18 new tasks.rs (VTODO/VJOURNAL
+  round-trips, foreign-property preservation, completed→reset, matrices,
+  datetime conversions, escaping, folding, filenames, fail-closed routing
+  matrix, legacy-row delete, unconfigured local mode) + 1 eas.rs outage
+  resilience test (Sync Status 1 + mirror served with backend down) + Ping
+  probe tests (inventory_diff matrix incl. missing-etag semantics ×1,
+  backend_inventory_changed fail-closed ×2, eas.rs
+  test_ping_tasks_folder_survives_backend_outage_and_fires_on_local_change
+  — Phase 1: outage Ping ends Status 1 at the cap; Phase 2: journal change
+  after a Sync-set watermark still fires Status 2 naming the Tasks folder).
+  NOTE the Ping test pattern: mid-heartbeat writes are MISSED because the
+  tick equals the remaining heartbeat (one journal pass per short-heartbeat
+  Ping) — to test journal wake deterministically, Sync first (persists the
+  watermark), journal the change, THEN ping: the first pass fires.
+  Suite: 1009 lib + 22 fixtures + 11 snapshots + 2 deploy + 1 doc, clippy 0,
+  fmt clean on touched files (tasks.rs, caldav.rs — eas.rs untouched by fmt
+  per the §10 exception), release warning-free.
+- Next likely audit items: §16 stale-watermark
   resync, §17 auth negative-cache TTL.
 - Toolchain note: rustup components clippy/rustfmt must be installed in a
   fresh container (`rustup component add clippy rustfmt`); project edition is
