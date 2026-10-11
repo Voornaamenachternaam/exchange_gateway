@@ -480,8 +480,10 @@ CREATE TABLE IF NOT EXISTS task_map (
 );
 
 CREATE INDEX IF NOT EXISTS idx_task_map_owner ON task_map(owner);
-CREATE INDEX IF NOT EXISTS idx_task_map_href ON task_map(owner, caldav_href);
-CREATE INDEX IF NOT EXISTS idx_task_map_uid ON task_map(owner, uid);
+-- NOTE: the owner-scoped indexes on `caldav_href`/`uid` are created by
+-- Storage::init_schema AFTER the PRAGMA-probed ALTER TABLEs add those columns
+-- to pre-existing databases; declaring them here would abort schema execution
+-- (no such column) before that migration could run.
 
 
 -- Notes: mirror cache for EAS Notes. Stalwart is the system of record: each
@@ -504,8 +506,8 @@ CREATE TABLE IF NOT EXISTS note_map (
 );
 
 CREATE INDEX IF NOT EXISTS idx_note_map_owner ON note_map(owner);
-CREATE INDEX IF NOT EXISTS idx_note_map_href ON note_map(owner, caldav_href);
-CREATE INDEX IF NOT EXISTS idx_note_map_uid ON note_map(owner, uid);
+-- The href/uid indexes are created by Storage::init_schema after the
+-- PRAGMA-probed column migration (see the task_map note above).
 -- Gateway-local user photo store (MS-OXWSPHOTO / EWS GetUserPhoto). Stalwart
 -- has no native avatar/photo object, so recipient photos are stored locally as
 -- an opaque binary blob keyed by the owning mailbox's normalized SMTP address.

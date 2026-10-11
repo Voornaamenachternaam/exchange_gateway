@@ -323,6 +323,41 @@ EAS specs v20250520 (16.1); older EAS compat NOT needed.
   per the §10 exception), release warning-free.
 - Next likely audit items: §16 stale-watermark
   resync, §17 auth negative-cache TTL.
+- PR #1989 (§15) review triage COMPLETE: cubic 10 issues + CodeRabbit 3 +
+  LlamaPReview 3 substantive, all fixed. Highlights: (1) P0 pre-§15 DB
+  migration — the four `idx_{task,note}_map_{href,uid}` indexes are created in
+  `init_schema` AFTER the PRAGMA-probed ALTERs (declaring them in
+  sqlite_schema.sql aborted schema execution with "no such column" before the
+  migration could run); migration test
+  `init_schema_migrates_pre_backend_task_note_columns` opens a true pre-§15
+  shape and asserts re-init idempotence + surviving legacy rows + indexes.
+  (2) `calendar-query` REPORT now REQUIRES 207 (a 2xx-with-no-body parsed as an
+  empty inventory would tombstone the whole mirror). (3) `ensure_calendar_collection`
+  MKCALENDARs `/Tasks/` (trailing slash, same URI as tasks/notes_collection_href).
+  (4) `parse_calendar_query_items` is fail-closed `Result` and decodes XML
+  GeneralRefs inside `<href>` (`a&amp;b.ics`); malformed body → reconcile fails
+  closed (serves mirror) instead of tombstoning from a truncated list.
+  (5) `resolve_resource_url` treats a leading-`/` href as an absolute path on
+  the same host (RFC 3986 §4.2) instead of re-joining it under the collection —
+  fixes the EAS Change PUT doubling the path (`<collection>/dav/cal/u/Tasks/x.ics`);
+  bare leaf filenames still join, absolute URLs pass through. (6) `fold_ical_document`
+  no longer `trim_end()`s segments (RFC 5545 §3.1 unfolding restores only
+  CRLF+space) — trailing-space values survive the round trip. (7) Ping probe
+  per-class failure tracking (`BackendProbe{tasks,notes}_{changed,failed}`) so a
+  404 Tasks collection never masks Notes, and the whole probe + each reconcile
+  is bounded by the remaining heartbeat via `tokio::select!` on the supersede
+  token (supersession cancels in-flight backend work). (8) Add retries
+  idempotent by ClientId: the `(ClientId→ServerId)` record is written the
+  instant the CalDAV PUT succeeds — BEFORE the mirror upsert — so a mirror
+  failure still leaves a replayable identity and the retry does not PUT a
+  second resource under a fresh ServerId; the next reconcile adopts the
+  orphaned resource by UID (`used_server_ids.insert(uid)`). (9) VTODO
+  un-complete preserves a foreign non-COMPLETED STATUS (IN-PROCESS) instead of
+  dropping it. (10) AUDIT.md §15 claims narrowed to match code (indexes after
+  migration, per-class probe disable, foreign STATUS preserved, missing etag
+  suppresses only same-href comparison). Suite: 1017 lib + 22 fixtures + 11
+  snapshots + 2 deploy + 1 doc, clippy 0, fmt clean on ALL touched files
+  (eas.rs now fully rustfmt'd too), no comment replies (resolve via code/push).
 - Toolchain note: rustup components clippy/rustfmt must be installed in a
   fresh container (`rustup component add clippy rustfmt`); project edition is
   2024 (rustfmt needs `--edition 2024` for let-chains). `cargo fmt --check`

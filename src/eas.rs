@@ -2024,17 +2024,23 @@ async fn handle_ping(
     // and, when it no longer matches the mirror, runs the same reconcile the
     // Sync path uses; its journal writes then flow into the per-folder
     // journal check in the SAME pass, so the Ping answers Status 2 within one
-    // tick of the backend change. A failed probe or reconcile (backend down,
-    // or the user never synced Tasks so the collection 404s) disables the
-    // backend probe for the REST of this Ping — journal detection keeps
-    // working — so a dead backend is never re-hit every 15 seconds.
+    // tick of the backend change. A probe or reconcile failure disables the
+    // probe for its OWN class only (backend down, or the user never synced
+    // Tasks so that collection 404s) — journal detection keeps working, and an
+    // unavailable Tasks collection never masks a populated Notes collection —
+    // so a dead backend is never re-hit every 15 seconds.
     let ping_tasks = folders
         .iter()
         .any(|f| matches!(ping_folder_kind(f), Some(PingFolderKind::Tasks)));
     let ping_notes = folders
         .iter()
         .any(|f| matches!(ping_folder_kind(f), Some(PingFolderKind::Notes)));
-    let mut backend_probe_disabled = false;
+    // Probes are disabled per class: a Tasks collection that 404s (never
+    // synced, never created) must not stop Notes probing, and vice versa.
+    // `probes_disabled` is the hard off-switch for construction failures.
+    let mut probes_disabled = false;
+    let mut tasks_probe_disabled = false;
+    let mut notes_probe_disabled = false;
 
     let deadline = Instant::now() + StdDuration::from_secs(effective_heartbeat);
     while Instant::now() < deadline {
@@ -2042,38 +2048,100 @@ async fn handle_ping(
             // This Ping was superseded by a newer one for the same device.
             return ping_superseded_response(wbxml, as_wbxml, request_id);
         }
-        if !backend_probe_disabled
-            && !state.cfg.caldav_base.is_empty()
-            && (ping_tasks || ping_notes)
-        {
+        let probe_tasks = ping_tasks && !tasks_probe_disabled;
+        let probe_notes = ping_notes && !notes_probe_disabled;
+        if !probes_disabled && !state.cfg.caldav_base.is_empty() && (probe_tasks || probe_notes) {
             let password = password.expose_secret();
-            match crate::tasks::backend_inventory_changed(
-                state, owner, password, ping_tasks, ping_notes,
-            )
-            .await
-            {
-                Ok(true) => {
-                    let mut reconciled = true;
-                    if ping_tasks
-                        && let Err(e) = crate::tasks::reconcile_tasks(state, owner, password).await
-                    {
-                        tracing::warn!(error = %e, "Ping Tasks reconcile failed");
-                        reconciled = false;
+            // Bound the whole probe by the time left in this Ping and by
+            // supersession: two collections of REPORTs must never push the
+            // response past the heartbeat deadline (a single request already
+            // has its own 30s client timeout, but the SUM could still
+            // overshoot), and a newer Ping for the same device must be able to
+            // cancel the in-flight backend work promptly.
+            let probe_budget = deadline.saturating_duration_since(Instant::now());
+            let probe_outcome = tokio::select! {
+                biased;
+                _ = supersede_token.cancelled() => {
+                    return ping_superseded_response(wbxml, as_wbxml, request_id);
+                }
+                r = timeout(
+                    probe_budget,
+                    crate::tasks::backend_inventory_changed(
+                        state, owner, password, probe_tasks, probe_notes,
+                    ),
+                ) => r,
+            };
+            match probe_outcome {
+                Ok(Ok(probe)) => {
+                    // A probe failure disables only its own class; a reconcile
+                    // failure disables only the class whose reconcile failed.
+                    // Each reconcile is bounded by whatever remains of the
+                    // heartbeat and by supersession.
+                    if probe.tasks_failed {
+                        tasks_probe_disabled = true;
                     }
-                    if ping_notes
-                        && let Err(e) = crate::tasks::reconcile_notes(state, owner, password).await
-                    {
-                        tracing::warn!(error = %e, "Ping Notes reconcile failed");
-                        reconciled = false;
+                    if probe.notes_failed {
+                        notes_probe_disabled = true;
                     }
-                    if !reconciled {
-                        backend_probe_disabled = true;
+                    if probe.tasks_changed {
+                        let budget = deadline.saturating_duration_since(Instant::now());
+                        let outcome = tokio::select! {
+                            biased;
+                            _ = supersede_token.cancelled() => {
+                                return ping_superseded_response(wbxml, as_wbxml, request_id);
+                            }
+                            r = timeout(
+                                budget,
+                                crate::tasks::reconcile_tasks(state, owner, password),
+                            ) => r,
+                        };
+                        match outcome {
+                            Ok(Err(e)) => {
+                                tracing::warn!(error = %e, "Ping Tasks reconcile failed");
+                                tasks_probe_disabled = true;
+                            }
+                            Err(_) => {
+                                tracing::debug!("Ping Tasks reconcile exceeded heartbeat budget");
+                                tasks_probe_disabled = true;
+                            }
+                            Ok(Ok(())) => {}
+                        }
+                    }
+                    if probe.notes_changed {
+                        let budget = deadline.saturating_duration_since(Instant::now());
+                        let outcome = tokio::select! {
+                            biased;
+                            _ = supersede_token.cancelled() => {
+                                return ping_superseded_response(wbxml, as_wbxml, request_id);
+                            }
+                            r = timeout(
+                                budget,
+                                crate::tasks::reconcile_notes(state, owner, password),
+                            ) => r,
+                        };
+                        match outcome {
+                            Ok(Err(e)) => {
+                                tracing::warn!(error = %e, "Ping Notes reconcile failed");
+                                notes_probe_disabled = true;
+                            }
+                            Err(_) => {
+                                tracing::debug!("Ping Notes reconcile exceeded heartbeat budget");
+                                notes_probe_disabled = true;
+                            }
+                            Ok(Ok(())) => {}
+                        }
                     }
                 }
-                Ok(false) => {}
-                Err(e) => {
+                Ok(Err(e)) => {
                     tracing::debug!(error = %e, "Ping backend inventory probe failed");
-                    backend_probe_disabled = true;
+                    probes_disabled = true;
+                }
+                Err(_) => {
+                    tracing::debug!("Ping backend inventory probe exceeded the heartbeat budget");
+                    // Out of time: answer Status 1 cleanly rather than run the
+                    // journal scan against a stale deadline.
+                    let xml = r#"<?xml version="1.0" encoding="utf-8"?><Ping xmlns="Ping:"><Status>1</Status></Ping>"#;
+                    return xml_or_wbxml_response(wbxml, as_wbxml, xml, request_id);
                 }
             }
         }
@@ -5324,7 +5392,15 @@ async fn handle_local_content_sync(ctx: &LocalContentSyncCtx<'_>) -> String {
                 }
             };
             if !mutations.is_empty() {
-                match crate::tasks::apply_task_mutations(state, username, password, &mutations).await {
+                match crate::tasks::apply_task_mutations(
+                    state,
+                    username,
+                    password,
+                    collection_id,
+                    &mutations,
+                )
+                .await
+                {
                     Ok(results) => {
                         mutation_responses = crate::tasks::render_mutation_responses(&results);
                     }
@@ -5366,7 +5442,15 @@ async fn handle_local_content_sync(ctx: &LocalContentSyncCtx<'_>) -> String {
                 }
             };
             if !mutations.is_empty() {
-                match crate::tasks::apply_note_mutations(state, username, password, &mutations).await {
+                match crate::tasks::apply_note_mutations(
+                    state,
+                    username,
+                    password,
+                    collection_id,
+                    &mutations,
+                )
+                .await
+                {
                     Ok(results) => {
                         mutation_responses = crate::tasks::render_mutation_responses(&results);
                     }
@@ -5393,19 +5477,30 @@ async fn handle_local_content_sync(ctx: &LocalContentSyncCtx<'_>) -> String {
     // Reconcile the mirror against the Stalwart CalDAV collection BEFORE the
     // change-journal is read, so backend edits (from any CalDAV client) land
     // in this response and the delivered watermark covers them. Reconcile
-    // failures degrade to the mirror's current state — the collection still
-    // syncs, just without this round's remote deltas.
+    // failures and timeout expiry degrade to the mirror's current state — the
+    // collection still syncs, just without this round's remote deltas. The
+    // aggregate timeout matters because a reconcile issues one HTTP request
+    // per row sequentially; the per-request 30s timeout alone would let N
+    // hung requests stall Sync for minutes, well past any client patience.
     if !state.cfg.caldav_base.is_empty() {
-        let reconciled = match kind {
-            LocalContentKind::Tasks => {
-                crate::tasks::reconcile_tasks(state, username, password).await
-            }
-            LocalContentKind::Notes => {
-                crate::tasks::reconcile_notes(state, username, password).await
+        let reconcile_fut = async {
+            match kind {
+                LocalContentKind::Tasks => {
+                    crate::tasks::reconcile_tasks(state, username, password).await
+                }
+                LocalContentKind::Notes => {
+                    crate::tasks::reconcile_notes(state, username, password).await
+                }
             }
         };
-        if let Err(e) = reconciled {
-            tracing::warn!(class = class, error = %e, "{} CalDAV reconcile failed", class);
+        match timeout(CALDAV_TIMEOUT, reconcile_fut).await {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => {
+                tracing::warn!(class = class, error = %e, "{} CalDAV reconcile failed", class);
+            }
+            Err(_) => {
+                tracing::warn!(class = class, "{} CalDAV reconcile exceeded budget", class);
+            }
         }
     }
 
@@ -7603,10 +7698,7 @@ mod tests {
 
         // Phase 1: no journal activity at all — the ping must end cleanly at
         // the cap (probe failed -> disabled -> journal detection runs alone).
-        let xml = ping_xml(
-            600,
-            r#"<Folder><Id>7</Id><Class>Tasks</Class></Folder>"#,
-        );
+        let xml = ping_xml(600, r#"<Folder><Id>7</Id><Class>Tasks</Class></Folder>"#);
         let req = EasRequest {
             command: "Ping".to_string(),
             device_id: Some("probe-device".to_string()),
@@ -7692,10 +7784,7 @@ mod tests {
             .await
             .expect("second seed task");
 
-        let xml = ping_xml(
-            600,
-            r#"<Folder><Id>7</Id><Class>Tasks</Class></Folder>"#,
-        );
+        let xml = ping_xml(600, r#"<Folder><Id>7</Id><Class>Tasks</Class></Folder>"#);
         let req = EasRequest {
             command: "Ping".to_string(),
             device_id: Some("probe-device".to_string()),
@@ -8397,7 +8486,11 @@ mod tests {
             xml.contains("<Status>1</Status>"),
             "collection must stay healthy during a backend outage: {xml}"
         );
-        assert_eq!(xml.matches("<Add>").count(), 2, "mirror state served: {xml}");
+        assert_eq!(
+            xml.matches("<Add>").count(),
+            2,
+            "mirror state served: {xml}"
+        );
     }
 
     /// In-memory AppState with JMAP pointed at unroutable loopback, for
@@ -9075,10 +9168,10 @@ mod tests {
                     reminder_time: None,
                     categories: None,
                     body: None,
-                                        caldav_href: None,
-                        etag: None,
-                        uid: None,
-                    },
+                    caldav_href: None,
+                    etag: None,
+                    uid: None,
+                },
             )
             .await
             .expect("journal upsert");

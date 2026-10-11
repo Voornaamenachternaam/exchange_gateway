@@ -520,12 +520,12 @@ impl Storage {
                 .fetch_all(self.pool.as_ref())
                 .await
                 .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))?;
-            let names: Vec<String> = columns
-                .iter()
-                .map(|c| c.get::<String, _>("name"))
-                .collect();
+            let names: Vec<String> = columns.iter().map(|c| c.get::<String, _>("name")).collect();
             for (column, ddl) in [
-                ("caldav_href", format!("ALTER TABLE {table} ADD COLUMN caldav_href TEXT")),
+                (
+                    "caldav_href",
+                    format!("ALTER TABLE {table} ADD COLUMN caldav_href TEXT"),
+                ),
                 ("etag", format!("ALTER TABLE {table} ADD COLUMN etag TEXT")),
                 ("uid", format!("ALTER TABLE {table} ADD COLUMN uid TEXT")),
             ] {
@@ -536,6 +536,30 @@ impl Storage {
                         .map_err(|e| GatewayError::Storage(format!("Migration error: {}", e)))?;
                 }
             }
+        }
+        // The href/uid indexes are created HERE, not in sqlite_schema.sql:
+        // `CREATE INDEX` resolves its columns at execution, so on a pre-§15
+        // database (whose task_map/note_map lacked caldav_href/uid) the schema
+        // script would abort with "no such column" before the ALTERs above
+        // could add them. After the migration the columns always exist, so
+        // IF NOT EXISTS keeps this idempotent for fresh and migrated databases.
+        for (index, table) in [
+            ("idx_task_map_href", "task_map"),
+            ("idx_task_map_uid", "task_map"),
+            ("idx_note_map_href", "note_map"),
+            ("idx_note_map_uid", "note_map"),
+        ] {
+            let column = if index.ends_with("_href") {
+                "caldav_href"
+            } else {
+                "uid"
+            };
+            sqlx::query(&format!(
+                "CREATE INDEX IF NOT EXISTS {index} ON {table}(owner, {column})"
+            ))
+            .execute(self.pool.as_ref())
+            .await
+            .map_err(|e| GatewayError::Storage(format!("Migration error: {}", e)))?;
         }
         Ok(())
     }
@@ -3134,6 +3158,119 @@ mod tests {
                 .expect("watermark after migration"),
             Some(7)
         );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn init_schema_migrates_pre_backend_task_note_columns() {
+        let dir = std::env::temp_dir().join(format!(
+            "gateway-storage-tasknote-migrate-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let db = dir.join("gateway.db");
+        let url = format!("sqlite://{}?mode=rwc", db.display());
+
+        // Pre-create task_map/note_map in their true pre-§15 shape (the DDL as
+        // it stood before this PR): every projected column present, but no
+        // caldav_href/etag/uid. The href/uid indexes must NOT be declared as
+        // top-level CREATE INDEX statements in the schema file, or schema
+        // execution would abort with "no such column" here before the ALTERs.
+        {
+            let pool = sqlx::SqlitePool::connect(&url).await.expect("raw pool");
+            sqlx::query(
+                "CREATE TABLE task_map (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    owner TEXT NOT NULL,
+                    server_id TEXT NOT NULL,
+                    subject TEXT,
+                    importance INTEGER,
+                    sensitivity INTEGER,
+                    start_date TEXT,
+                    due_date TEXT,
+                    utc_start_date TEXT,
+                    utc_due_date TEXT,
+                    complete INTEGER NOT NULL DEFAULT 0,
+                    date_completed TEXT,
+                    reminder_set INTEGER NOT NULL DEFAULT 0,
+                    reminder_time TEXT,
+                    categories TEXT,
+                    body TEXT,
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(owner, server_id)
+                )",
+            )
+            .execute(&pool)
+            .await
+            .expect("legacy task_map");
+            sqlx::query(
+                "CREATE TABLE note_map (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    owner TEXT NOT NULL,
+                    server_id TEXT NOT NULL,
+                    subject TEXT,
+                    message_class TEXT,
+                    body TEXT,
+                    categories TEXT,
+                    last_modified_date TEXT,
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(owner, server_id)
+                )",
+            )
+            .execute(&pool)
+            .await
+            .expect("legacy note_map");
+            for table in ["task_map", "note_map"] {
+                sqlx::query(&format!(
+                    "INSERT INTO {table} (owner, server_id, subject) VALUES ('o', 's-1', 'legacy')"
+                ))
+                .execute(&pool)
+                .await
+                .expect("legacy row");
+            }
+            pool.close().await;
+        }
+
+        let storage = Storage::new(&url).await.expect("open db");
+        storage.init_schema().await.expect("schema init migrates");
+        // Running init twice must be safe (columns now present).
+        storage.init_schema().await.expect("re-init idempotent");
+
+        // The three backend-identity columns now exist and the legacy row
+        // survives with NULL identity (pushed by the first reconcile).
+        let task = storage
+            .get_task("o", "s-1")
+            .await
+            .expect("task read")
+            .expect("legacy task survives");
+        assert!(task.caldav_href.is_none());
+        assert!(task.etag.is_none());
+        assert!(task.uid.is_none());
+        let note = storage
+            .get_note("o", "s-1")
+            .await
+            .expect("note read")
+            .expect("legacy note survives");
+        assert!(note.caldav_href.is_none());
+
+        // The href/uid indexes exist on both tables.
+        for table in ["task_map", "note_map"] {
+            let indexes: Vec<String> = sqlx::query(&format!("PRAGMA index_list({table})"))
+                .fetch_all(storage.pool.as_ref())
+                .await
+                .expect("index list")
+                .iter()
+                .map(|row| row.get::<String, _>("name"))
+                .collect();
+            assert!(
+                indexes.iter().any(|n| n == &format!("idx_{table}_href")),
+                "{table} must have the href index: {indexes:?}"
+            );
+            assert!(
+                indexes.iter().any(|n| n == &format!("idx_{table}_uid")),
+                "{table} must have the uid index: {indexes:?}"
+            );
+        }
         std::fs::remove_dir_all(&dir).ok();
     }
 

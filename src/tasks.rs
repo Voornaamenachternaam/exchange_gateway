@@ -524,6 +524,7 @@ pub async fn apply_task_mutations(
     state: &AppState,
     username: &str,
     password: &str,
+    collection_id: &str,
     mutations: &[TaskMutation],
 ) -> Result<Vec<MutationResult>> {
     let backend_configured = !state.cfg.caldav_base.is_empty();
@@ -545,6 +546,7 @@ pub async fn apply_task_mutations(
                 state,
                 username,
                 password,
+                collection_id,
                 backend.as_ref(),
                 backend_configured,
                 m,
@@ -560,6 +562,7 @@ pub async fn apply_note_mutations(
     state: &AppState,
     username: &str,
     password: &str,
+    collection_id: &str,
     mutations: &[NoteMutation],
 ) -> Result<Vec<MutationResult>> {
     let backend_configured = !state.cfg.caldav_base.is_empty();
@@ -581,6 +584,7 @@ pub async fn apply_note_mutations(
                 state,
                 username,
                 password,
+                collection_id,
                 backend.as_ref(),
                 backend_configured,
                 m,
@@ -589,6 +593,52 @@ pub async fn apply_note_mutations(
         );
     }
     Ok(results)
+}
+
+/// Replay a previously recorded Add response for a ClientId, so an EAS client
+/// retrying the same `<Add>` (same ClientId) after a lost response does NOT
+/// create a second backend object. Records are written only on success
+/// (status 1), so a prior failure is re-attempted rather than cached as a
+/// permanent error. Mirrors the Calendar path's idempotency (sync.rs).
+async fn replay_add_if_cached(
+    state: &AppState,
+    username: &str,
+    collection_id: &str,
+    kind: MutationKind,
+    client_id: Option<&str>,
+) -> Option<MutationResult> {
+    let cid = client_id?;
+    if let Ok(Some((server_id, status))) = state
+        .storage
+        .get_client_sync_command(username, collection_id, cid)
+        .await
+        && status == "1"
+        && let Some(server_id) = server_id
+    {
+        return Some(MutationResult {
+            server_id,
+            status: "1",
+            kind,
+            client_id: client_id.map(str::to_string),
+        });
+    }
+    None
+}
+
+/// Record a successful Add's (ClientId → ServerId) mapping for replay.
+async fn record_add_success(
+    state: &AppState,
+    username: &str,
+    collection_id: &str,
+    client_id: Option<&str>,
+    server_id: &str,
+) {
+    if let Some(cid) = client_id {
+        let _ = state
+            .storage
+            .put_client_sync_command(username, collection_id, cid, Some(server_id), "1")
+            .await;
+    }
 }
 
 /// Handle one parsed task mutation.
@@ -605,6 +655,7 @@ async fn apply_task_mutation(
     state: &AppState,
     username: &str,
     password: &str,
+    collection_id: &str,
     backend: Option<&TaskBackendStore>,
     backend_configured: bool,
     m: &TaskMutation,
@@ -615,6 +666,21 @@ async fn apply_task_mutation(
         kind: m.kind,
         client_id: m.client_id.clone(),
     };
+    // Idempotent Add retry: an EAS client re-sends the same ClientId when it
+    // did not see our response; replay instead of double-creating. Written only
+    // on success, so a prior failure is re-attempted rather than cached.
+    if m.kind == MutationKind::Add
+        && let Some(replayed) = replay_add_if_cached(
+            state,
+            username,
+            collection_id,
+            MutationKind::Add,
+            m.client_id.as_deref(),
+        )
+        .await
+    {
+        return replayed;
+    }
     match m.kind {
         MutationKind::Delete => {
             if m.server_id.is_empty() {
@@ -703,6 +769,22 @@ async fn apply_task_mutation(
                     .await
                 {
                     Ok((href, etag)) => {
+                        // Record the backend identity the moment the PUT
+                        // succeeds, BEFORE the mirror upsert: a mirror failure
+                        // would otherwise return status 6 with no idempotency
+                        // record, and the client's retry would PUT a second
+                        // resource under a fresh ServerId. With the record in
+                        // place the retry replays this ServerId (same resource
+                        // filename), and the next reconcile imports the
+                        // backend object into the mirror.
+                        record_add_success(
+                            state,
+                            username,
+                            collection_id,
+                            m.client_id.as_deref(),
+                            &server_id,
+                        )
+                        .await;
                         let fields = TaskFields {
                             caldav_href: Some(href.as_str()),
                             etag: Some(etag.as_str()),
@@ -739,7 +821,17 @@ async fn apply_task_mutation(
                     .upsert_task(username, &server_id, &fields)
                     .await
                 {
-                    Ok(()) => result_for("1"),
+                    Ok(()) => {
+                        record_add_success(
+                            state,
+                            username,
+                            collection_id,
+                            m.client_id.as_deref(),
+                            &server_id,
+                        )
+                        .await;
+                        result_for("1")
+                    }
                     Err(e) => {
                         tracing::warn!(error = %e, "Failed to upsert task");
                         result_for("6")
@@ -778,17 +870,26 @@ async fn apply_task_mutation(
                     {
                         Ok(None) => make("8"),
                         Ok(Some((ics, _))) => {
-                            let patched = patch_component_ics(
+                            // The "previous status" for the un-complete decision
+                            // is read from the object we just fetched (the only
+                            // authoritative copy: a mirror row can lag the live
+                            // backend, so its stored ETag alone is not enough).
+                            // A patch failure means the backend object is
+                            // malformed/unparseable; fail closed rather than
+                            // overwrite it and clobber foreign properties.
+                            let patched = match patch_component_ics(
                                 &ics,
                                 "VTODO",
                                 VTODO_MAPPED,
                                 &mirror.vtodo_lines(Some(&ics)),
                                 existing.uid.as_deref(),
-                            )
-                            .unwrap_or_else(|e| {
-                                tracing::warn!(error = %e, "VTODO patch failed; rewriting whole object");
-                                build_vtodo(mirror.uid.as_deref().unwrap_or(&m.server_id), &mirror)
-                            });
+                            ) {
+                                Ok(p) => p,
+                                Err(e) => {
+                                    tracing::warn!(error = %e, "VTODO patch failed; failing closed");
+                                    return make("6");
+                                }
+                            };
                             match b
                                 .caldav
                                 .put_event(
@@ -869,6 +970,7 @@ async fn apply_note_mutation(
     state: &AppState,
     username: &str,
     password: &str,
+    collection_id: &str,
     backend: Option<&TaskBackendStore>,
     backend_configured: bool,
     m: &NoteMutation,
@@ -879,6 +981,19 @@ async fn apply_note_mutation(
         kind: m.kind,
         client_id: m.client_id.clone(),
     };
+    // Idempotent Add retry (see apply_task_mutation).
+    if m.kind == MutationKind::Add
+        && let Some(replayed) = replay_add_if_cached(
+            state,
+            username,
+            collection_id,
+            MutationKind::Add,
+            m.client_id.as_deref(),
+        )
+        .await
+    {
+        return replayed;
+    }
     match m.kind {
         MutationKind::Delete => {
             if m.server_id.is_empty() {
@@ -965,6 +1080,17 @@ async fn apply_note_mutation(
                     .await
                 {
                     Ok((href, etag)) => {
+                        // See the task Add arm: record the identity right after
+                        // the successful PUT so a mirror failure still leaves a
+                        // retry-replayable idempotency record.
+                        record_add_success(
+                            state,
+                            username,
+                            collection_id,
+                            m.client_id.as_deref(),
+                            &server_id,
+                        )
+                        .await;
                         let fields = NoteFields {
                             caldav_href: Some(href.as_str()),
                             etag: Some(etag.as_str()),
@@ -999,7 +1125,17 @@ async fn apply_note_mutation(
                     .upsert_note(username, &server_id, &fields)
                     .await
                 {
-                    Ok(()) => result_for("1"),
+                    Ok(()) => {
+                        record_add_success(
+                            state,
+                            username,
+                            collection_id,
+                            m.client_id.as_deref(),
+                            &server_id,
+                        )
+                        .await;
+                        result_for("1")
+                    }
                     Err(e) => {
                         tracing::warn!(error = %e, "Failed to upsert note");
                         result_for("6")
@@ -1299,9 +1435,16 @@ impl TaskMirror {
             .and_then(|ics| parse_component_block_ics("VTODO", ics))
             .as_deref()
             .and_then(status_of_component)
-            && old == "COMPLETED"
         {
-            lines.push("STATUS:NEEDS-ACTION".to_string());
+            // `Complete=0` is EAS's only "not done" projection, so re-emit the
+            // authoritative status: a stored COMPLETED resets to NEEDS-ACTION
+            // (RFC 5545 §3.8.1.11), while a foreign status such as IN-PROCESS is
+            // preserved rather than silently dropped by a gateway Change.
+            if old == "COMPLETED" {
+                lines.push("STATUS:NEEDS-ACTION".to_string());
+            } else {
+                lines.push(format!("STATUS:{old}"));
+            }
         }
         // The wire-exact EAS date strings travel in X-SGW-* properties and the
         // absolute instant in DTSTART/DUE, so a gateway round-trip preserves
@@ -1688,10 +1831,13 @@ fn fold_ical_document(lines: &[String]) -> String {
         for ch in line.chars() {
             let ch_octets = ch.len_utf8();
             // First segment may reach 75 octets; continuations spend one
-            // octet on the leading space.
+            // octet on the leading space. A folded segment keeps its content
+            // verbatim (no trim) so values ending in a space survive the
+            // fold→unfold round-trip (RFC 5545 §3.1 unfolding restores only
+            // the CRLF + single space, not stripped whitespace).
             let budget = if first { 75 } else { 74 };
             if octets + ch_octets > budget {
-                out.push_str(current_line.trim_end());
+                out.push_str(&current_line);
                 out.push_str("\r\n ");
                 current_line.clear();
                 octets = 0;
@@ -1700,7 +1846,7 @@ fn fold_ical_document(lines: &[String]) -> String {
             current_line.push(ch);
             octets += ch_octets;
         }
-        out.push_str(current_line.trim_end());
+        out.push_str(&current_line);
         out.push_str("\r\n");
     }
     out
@@ -1963,6 +2109,8 @@ fn inventory_differs(
         .iter()
         .filter_map(|(h, e)| e.as_deref().map(|e| (h.as_str(), e)))
         .collect();
+    // A missing remote etag suppresses only this same-href etag comparison;
+    // href additions/removals were already handled by the set check above.
     remote.iter().any(|(h, e)| match e.as_deref() {
         Some(e) => mirror_etags
             .get(h.as_str())
@@ -1971,77 +2119,108 @@ fn inventory_differs(
     })
 }
 
+/// Per-class outcome of one Ping backend probe. Failures are tracked
+/// independently so an unavailable Tasks collection (e.g. the user never
+/// synced Tasks, so it was never MKCALENDAR-created and REPORTs 404) cannot
+/// mask changes in a populated Notes collection, and vice versa.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct BackendProbe {
+    pub tasks_changed: bool,
+    pub notes_changed: bool,
+    pub tasks_failed: bool,
+    pub notes_failed: bool,
+}
+
 /// Cheap backend change detection for a Ping waiting on Tasks/Notes folders
 /// between Syncs: one etag-only REPORT per collection ([MS-ASCMD] Ping has no
 /// backend push channel; CalDAV has neither — polling is the only door) and a
-/// set comparison against the mirror rows. When the inventories differ, the
+/// set comparison against the mirror rows. When an inventory differs, the
 /// caller runs the same reconcile the Sync path uses, which journals the
 /// imports so the Ping's journal-based detection reports the folder.
 ///
 /// No MKCALENDAR here: a user who never synced Tasks has no collection, the
-/// REPORT 404s, and the caller disables probing for the rest of that Ping.
+/// REPORT 404s, and that class's probe is marked failed for the rest of the
+/// Ping while the other class keeps probing. `Err` is reserved for a CalDAV
+/// client-construction failure (e.g. no `caldav_base`), which disables probing
+/// entirely.
 pub async fn backend_inventory_changed(
     state: &AppState,
     username: &str,
     password: &str,
     tasks: bool,
     notes: bool,
-) -> Result<bool> {
+) -> Result<BackendProbe> {
     let caldav = crate::caldav::CaldavClient::new(&state.cfg)?;
-    let mut changed = false;
+    let mut probe = BackendProbe::default();
     if tasks {
-        let remote = caldav
+        match caldav
             .query_calendar_etags(
                 &caldav.tasks_collection_href(username),
                 "VTODO",
                 username,
                 password,
             )
-            .await?;
-        let mirror: Vec<(String, Option<String>)> = state
-            .storage
-            .get_all_tasks_for_owner(username)
-            .await?
-            .iter()
-            .filter_map(|row| {
-                row.caldav_href
-                    .as_ref()
-                    .map(|href| (href.clone(), row.etag.clone()))
-            })
-            .collect();
-        let remote: Vec<(String, Option<String>)> = remote
-            .iter()
-            .map(|i| (i.href.clone(), i.etag.clone()))
-            .collect();
-        changed |= inventory_differs(&mirror, &remote);
+            .await
+        {
+            Ok(remote) => {
+                let mirror: Vec<(String, Option<String>)> = state
+                    .storage
+                    .get_all_tasks_for_owner(username)
+                    .await?
+                    .iter()
+                    .filter_map(|row| {
+                        row.caldav_href
+                            .as_ref()
+                            .map(|href| (href.clone(), row.etag.clone()))
+                    })
+                    .collect();
+                let remote: Vec<(String, Option<String>)> = remote
+                    .iter()
+                    .map(|i| (i.href.clone(), i.etag.clone()))
+                    .collect();
+                probe.tasks_changed = inventory_differs(&mirror, &remote);
+            }
+            Err(e) => {
+                tracing::debug!(error = %e, "Ping Tasks inventory probe failed");
+                probe.tasks_failed = true;
+            }
+        }
     }
-    if notes && !changed {
-        let remote = caldav
+    if notes {
+        match caldav
             .query_calendar_etags(
                 &caldav.notes_collection_href(username),
                 "VJOURNAL",
                 username,
                 password,
             )
-            .await?;
-        let mirror: Vec<(String, Option<String>)> = state
-            .storage
-            .get_all_notes_for_owner(username)
-            .await?
-            .iter()
-            .filter_map(|row| {
-                row.caldav_href
-                    .as_ref()
-                    .map(|href| (href.clone(), row.etag.clone()))
-            })
-            .collect();
-        let remote: Vec<(String, Option<String>)> = remote
-            .iter()
-            .map(|i| (i.href.clone(), i.etag.clone()))
-            .collect();
-        changed |= inventory_differs(&mirror, &remote);
+            .await
+        {
+            Ok(remote) => {
+                let mirror: Vec<(String, Option<String>)> = state
+                    .storage
+                    .get_all_notes_for_owner(username)
+                    .await?
+                    .iter()
+                    .filter_map(|row| {
+                        row.caldav_href
+                            .as_ref()
+                            .map(|href| (href.clone(), row.etag.clone()))
+                    })
+                    .collect();
+                let remote: Vec<(String, Option<String>)> = remote
+                    .iter()
+                    .map(|i| (i.href.clone(), i.etag.clone()))
+                    .collect();
+                probe.notes_changed = inventory_differs(&mirror, &remote);
+            }
+            Err(e) => {
+                tracing::debug!(error = %e, "Ping Notes inventory probe failed");
+                probe.notes_failed = true;
+            }
+        }
     }
-    Ok(changed)
+    Ok(probe)
 }
 
 /// Pull every VTODO of the user's Tasks collection and converge the mirror
@@ -2055,7 +2234,7 @@ pub async fn reconcile_tasks(state: &AppState, username: &str, password: &str) -
         .caldav
         .query_calendar_components(&store.collection, "VTODO", username, password)
         .await?;
-    let items = crate::caldav::parse_calendar_query_items(&body, &store.collection);
+    let items = crate::caldav::parse_calendar_query_items(&body, &store.collection)?;
 
     let rows = state.storage.get_all_tasks_for_owner(username).await?;
     let mut by_href: HashMap<String, TaskRow> = HashMap::new();
@@ -2236,7 +2415,7 @@ pub async fn reconcile_notes(state: &AppState, username: &str, password: &str) -
         .caldav
         .query_calendar_components(&store.collection, "VJOURNAL", username, password)
         .await?;
-    let items = crate::caldav::parse_calendar_query_items(&body, &store.collection);
+    let items = crate::caldav::parse_calendar_query_items(&body, &store.collection)?;
 
     let rows = state.storage.get_all_notes_for_owner(username).await?;
     let mut by_href: HashMap<String, NoteRow> = HashMap::new();
@@ -2676,6 +2855,30 @@ mod tests {
     }
 
     #[test]
+    fn vtodo_uncomplete_preserves_foreign_status() {
+        // A foreign non-COMPLETED status (e.g. IN-PROCESS) must survive an
+        // EAS Change that reports the task as not complete, rather than being
+        // dropped because EAS has no projection for it.
+        let ics = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VTODO\r\nUID:keep-uid\r\nDTSTAMP:20250101T000000Z\r\nSUMMARY:Old\r\nSTATUS:IN-PROCESS\r\nEND:VTODO\r\nEND:VCALENDAR\r\n";
+        let mirror = TaskMirror {
+            subject: Some("New".to_string()),
+            complete: 0,
+            uid: Some("keep-uid".to_string()),
+            ..Default::default()
+        };
+        let patched = patch_component_ics(
+            ics,
+            "VTODO",
+            VTODO_MAPPED,
+            &mirror.vtodo_lines(Some(ics)),
+            Some("keep-uid"),
+        )
+        .expect("patch");
+        assert!(patched.contains("STATUS:IN-PROCESS"));
+        assert!(!patched.contains("STATUS:NEEDS-ACTION"));
+    }
+
+    #[test]
     fn patch_vtodo_preserves_foreign_properties() {
         let ics = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//foreign//EN\r\nBEGIN:VTODO\r\nUID:keep-uid\r\nDTSTAMP:20250101T000000Z\r\nSUMMARY:Old subject\r\nDUE;TZID=Europe/Berlin:20260904T170000\r\nRRULE:FREQ=WEEKLY;BYDAY=MO\r\nATTENDEE;CN=Alice:mailto:alice@example.com\r\nURL:https://example.com/info\r\nX-COMPANY-CODE:ABC-123\r\nBEGIN:VALARM\r\nACTION:DISPLAY\r\nTRIGGER;VALUE=DATE-TIME:20260903T080000Z\r\nEND:VALARM\r\nEND:VTODO\r\nEND:VCALENDAR\r\n";
         let mirror = TaskMirror {
@@ -2825,6 +3028,25 @@ mod tests {
         assert_eq!(unfolded_lines(&doc), vec![long]);
     }
 
+    #[test]
+    fn folding_preserves_trailing_whitespace() {
+        // A value ending in a space (or with a space exactly at a fold
+        // boundary) must survive the fold→unfold round-trip: RFC 5545 §3.1
+        // unfolding only removes CRLF + one space, never content whitespace.
+        for value in [
+            "SUMMARY:ends with space ".to_string(),
+            format!("DESCRIPTION:{} ", "y".repeat(74)),
+            format!("DESCRIPTION:{} ", "y".repeat(80)),
+        ] {
+            let doc = fold_ical_document(std::slice::from_ref(&value));
+            assert_eq!(
+                unfolded_lines(&doc),
+                vec![value.clone()],
+                "trailing whitespace lost for {value:?}"
+            );
+        }
+    }
+
     async fn backend_down_state() -> Arc<crate::models::AppState> {
         let storage = crate::storage::Storage::new("sqlite::memory:")
             .await
@@ -2903,9 +3125,15 @@ mod tests {
     #[tokio::test]
     async fn task_add_fails_closed_when_backend_unreachable() {
         let state = backend_down_state().await;
-        let results = apply_task_mutations(&state, "u@example.com", "pw", &[add_task_mutation()])
-            .await
-            .expect("apply");
+        let results = apply_task_mutations(
+            &state,
+            "u@example.com",
+            "pw",
+            "7::dev",
+            &[add_task_mutation()],
+        )
+        .await
+        .expect("apply");
         assert_eq!(
             results[0].status, "6",
             "unreachable backend must fail closed"
@@ -2929,6 +3157,7 @@ mod tests {
             &state,
             "u@example.com",
             "pw",
+            "7::dev",
             &[change_task_mutation("task-x")],
         )
         .await
@@ -2951,6 +3180,7 @@ mod tests {
             &state,
             "u@example.com",
             "pw",
+            "7::dev",
             &[delete_task_mutation("task-x")],
         )
         .await
@@ -2988,6 +3218,7 @@ mod tests {
             &state,
             "u@example.com",
             "pw",
+            "7::dev",
             &[delete_task_mutation("task-local")],
         )
         .await
@@ -3004,9 +3235,15 @@ mod tests {
     #[tokio::test]
     async fn task_mutation_local_when_backend_not_configured() {
         let state = backend_off_state().await;
-        let results = apply_task_mutations(&state, "u@example.com", "pw", &[add_task_mutation()])
-            .await
-            .expect("apply");
+        let results = apply_task_mutations(
+            &state,
+            "u@example.com",
+            "pw",
+            "7::dev",
+            &[add_task_mutation()],
+        )
+        .await
+        .expect("apply");
         assert_eq!(results[0].status, "1");
         let row = state
             .storage
@@ -3016,6 +3253,75 @@ mod tests {
             .expect("local add stored");
         assert_eq!(row.subject.as_deref(), Some("Write-through me"));
         assert!(row.caldav_href.is_none());
+    }
+
+    #[tokio::test]
+    async fn task_add_retry_same_client_id_is_idempotent() {
+        // An EAS client that did not see our response re-sends the same
+        // ClientId; the second Add must replay the first ServerId instead of
+        // creating a second task.
+        let state = backend_off_state().await;
+        let first = apply_task_mutations(
+            &state,
+            "u@example.com",
+            "pw",
+            "7::dev",
+            &[add_task_mutation()],
+        )
+        .await
+        .expect("first apply");
+        assert_eq!(first[0].status, "1");
+        let server_id = first[0].server_id.clone();
+
+        let retry = apply_task_mutations(
+            &state,
+            "u@example.com",
+            "pw",
+            "7::dev",
+            &[add_task_mutation()],
+        )
+        .await
+        .expect("retry apply");
+        assert_eq!(retry[0].status, "1");
+        assert_eq!(
+            retry[0].server_id, server_id,
+            "retry must replay the recorded ServerId"
+        );
+
+        let all = state
+            .storage
+            .get_all_tasks_for_owner("u@example.com")
+            .await
+            .expect("list");
+        assert_eq!(all.len(), 1, "retry must not create a second task");
+    }
+
+    #[tokio::test]
+    async fn failed_task_add_is_not_cached_so_retry_reattempts() {
+        // A failed Add must not be recorded as a permanent result: with the
+        // backend reachable again, the same ClientId Add must go through rather
+        // than replay a cached error. Nothing is written on failure, so the
+        // retry finds no cached command and re-attempts.
+        let state = backend_down_state().await;
+        let failed = apply_task_mutations(
+            &state,
+            "u@example.com",
+            "pw",
+            "7::dev",
+            &[add_task_mutation()],
+        )
+        .await
+        .expect("apply");
+        assert_eq!(failed[0].status, "6");
+        assert_eq!(
+            state
+                .storage
+                .get_client_sync_command("u@example.com", "7::dev", "c1")
+                .await
+                .expect("read"),
+            None,
+            "a failed Add must not be cached, so a retry re-attempts it"
+        );
     }
 
     fn add_note_mutation() -> NoteMutation {
@@ -3059,9 +3365,15 @@ mod tests {
     #[tokio::test]
     async fn note_add_fails_closed_when_backend_unreachable() {
         let state = backend_down_state().await;
-        let results = apply_note_mutations(&state, "u@example.com", "pw", &[add_note_mutation()])
-            .await
-            .expect("apply");
+        let results = apply_note_mutations(
+            &state,
+            "u@example.com",
+            "pw",
+            "10::dev",
+            &[add_note_mutation()],
+        )
+        .await
+        .expect("apply");
         assert_eq!(results[0].status, "6");
         let row = state
             .storage
@@ -3079,6 +3391,7 @@ mod tests {
             &state,
             "u@example.com",
             "pw",
+            "10::dev",
             &[delete_note_mutation("note-x")],
         )
         .await
@@ -3095,9 +3408,15 @@ mod tests {
     #[tokio::test]
     async fn note_mutation_local_when_backend_not_configured() {
         let state = backend_off_state().await;
-        let results = apply_note_mutations(&state, "u@example.com", "pw", &[add_note_mutation()])
-            .await
-            .expect("apply");
+        let results = apply_note_mutations(
+            &state,
+            "u@example.com",
+            "pw",
+            "10::dev",
+            &[add_note_mutation()],
+        )
+        .await
+        .expect("apply");
         assert_eq!(results[0].status, "1");
         let row = state
             .storage
@@ -3159,24 +3478,35 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn backend_inventory_probe_fails_closed_when_unreachable() {
+    async fn backend_inventory_probe_marks_unreachable_class_failed() {
         let state = backend_down_state().await;
-        let err =
+        let probe =
             crate::tasks::backend_inventory_changed(&state, "u@example.com", "pw", true, false)
                 .await
-                .expect_err("unreachable backend must be an Err so the Ping probe disables");
-        assert!(err.to_string().contains("error"));
+                .expect("client construction succeeds; per-class failure is reported in the probe");
+        assert!(
+            probe.tasks_failed,
+            "unreachable Tasks collection must be marked failed"
+        );
+        assert!(!probe.tasks_changed);
+        // The class is reported independently, so the caller can keep probing
+        // the OTHER class while disabling only this one.
+        assert!(!probe.notes_failed);
     }
 
     #[tokio::test]
     async fn backend_inventory_probe_not_configured() {
-        // caldav_base empty: CaldavClient::new fails -> Err -> caller disables.
+        // caldav_base empty: the Ping caller guards on it, but if reached the
+        // probe must fail closed per class rather than fabricate a change.
         let state = backend_off_state().await;
-        assert!(
+        let probe =
             crate::tasks::backend_inventory_changed(&state, "u@example.com", "pw", true, true)
                 .await
-                .is_err()
-        );
+                .expect("client construction succeeds even with an empty base");
+        assert!(probe.tasks_failed);
+        assert!(probe.notes_failed);
+        assert!(!probe.tasks_changed);
+        assert!(!probe.notes_changed);
     }
 
     #[test]

@@ -220,7 +220,11 @@ impl CaldavClient {
         displayname: &str,
     ) -> Result<()> {
         let home = format!("{}/cal/{}/", self.base.trim_end_matches('/'), username);
-        let url = format!("{}{}", home, collection_name);
+        // Trailing slash so MKCALENDAR targets the same collection URI that
+        // tasks/notes_collection_href and the follow-up REPORTs/mutations use;
+        // without it the collection was created at `/Tasks` but every later
+        // request hit `/Tasks/`.
+        let url = format!("{}{}/", home, collection_name.trim_end_matches('/'));
         let comp_set = components
             .iter()
             .map(|c| format!("<C:comp name=\"{}\"/>", c))
@@ -328,7 +332,8 @@ impl CaldavClient {
         let body = self
             .report_calendar_query(collection_href, &report, username, password)
             .await?;
-        Ok(parse_calendar_query_items(&body, collection_href))
+        parse_calendar_query_items(&body, collection_href)
+            .map_err(|e| anyhow!("calendar-query parse failed: {}", e))
     }
 
     /// Issue one calendar-query REPORT and translate the failure modes both
@@ -356,10 +361,14 @@ impl CaldavClient {
                 collection_href
             ));
         }
-        if status != reqwest::StatusCode::MULTI_STATUS && !status.is_success() {
+        // RFC 4791 §7.8: a calendar-query REPORT MUST answer 207 Multi-Status.
+        // Accepting any other 2xx (e.g. a 200 with an empty body) would parse
+        // as an empty inventory, which reconcile misread as "every mirror row
+        // was deleted remotely" and tombstone the whole collection.
+        if status != reqwest::StatusCode::MULTI_STATUS {
             let body_preview = resp.text().await.unwrap_or_default();
             return Err(anyhow!(
-                "calendar-query REPORT on {} returned {}: {}",
+                "calendar-query REPORT on {} returned {} (expected 207 Multi-Status): {}",
                 collection_href,
                 status,
                 if body_preview.len() > 300 {
@@ -700,7 +709,7 @@ impl CaldavClient {
                 "CalDAV PUT returned 412 Precondition Failed; refreshing etag and retrying unconditionally"
             );
             if let Some(refreshed_etag) = self
-                .get_etag(resource_href.unwrap_or(&target), username, password)
+                .get_etag(&target, username, password)
                 .await
                 .ok()
                 .flatten()
@@ -834,12 +843,18 @@ impl CaldavClient {
         resource_href: Option<&str>,
     ) -> Result<String> {
         if let Some(resource_href) = resource_href {
-            // Join the resource_href to the collection base URL
-            let collection_url = self.absolute_url(collection_href)?;
-            let base = reqwest::Url::parse(&collection_url)?;
-            // Remove leading slash from resource_href to avoid replacing entire path
-            let clean_href = resource_href.trim_start_matches('/');
-            return Ok(base.join(clean_href)?.to_string());
+            // A leading '/' means a path on the SAME host (RFC 3986 §4.2),
+            // which is how CalDAV reports every href — `get_calendar_resource`
+            // and `get_etag` already treat it as absolute via `absolute_url`.
+            // Only a bare/collection-relative filename may be joined under the
+            // collection, so joining a stored `/dav/cal/u/Tasks/x.ics` does not
+            // double the path into the collection.
+            if resource_href.starts_with('/') || resource_href.contains("://") {
+                return self.absolute_url(resource_href);
+            }
+            let collection = self.absolute_url(collection_href)?;
+            let base = reqwest::Url::parse(&collection)?;
+            return Ok(base.join(resource_href)?.to_string());
         }
         // No resource specified: generate a new .ics file in the collection
         let collection = self.absolute_url(collection_href)?;
@@ -1080,7 +1095,15 @@ pub struct CalendarQueryItem {
 /// query) is returned, matching `relative_href`'s canonicalization. Both the
 /// `D:`-prefixed and unprefixed forms of `getetag`/`calendar-data` are read —
 /// Stalwart always emits prefixes, but a conformant server may not.
-pub fn parse_calendar_query_items(xml_body: &str, collection_href: &str) -> Vec<CalendarQueryItem> {
+///
+/// A malformed body is a hard error: the reconcile paths treat the result as
+/// the authoritative backend inventory and tombstone any mirror row whose href
+/// is absent, so a silently truncated parse (e.g. an unescaped `&` in
+/// `calendar-data`) must fail the whole call rather than delete valid rows.
+pub fn parse_calendar_query_items(
+    xml_body: &str,
+    collection_href: &str,
+) -> Result<Vec<CalendarQueryItem>> {
     let collection_url = reqwest::Url::parse(collection_href).ok();
     let mut reader = quick_xml::Reader::from_str(xml_body);
     reader.config_mut().trim_text(false);
@@ -1091,6 +1114,7 @@ pub fn parse_calendar_query_items(xml_body: &str, collection_href: &str) -> Vec<
     let mut in_prop = false;
     let mut in_getetag = false;
     let mut in_caldata = false;
+    let mut in_href = false;
     let mut href = String::new();
     let mut etag: Option<String> = None;
     let mut ics: Option<String> = None;
@@ -1120,6 +1144,7 @@ pub fn parse_calendar_query_items(xml_body: &str, collection_href: &str) -> Vec<
                             text.clear();
                         }
                         "href" if depth == 1 && !in_prop => {
+                            in_href = true;
                             text.clear();
                         }
                         _ => {}
@@ -1169,7 +1194,8 @@ pub fn parse_calendar_query_items(xml_body: &str, collection_href: &str) -> Vec<
                         }
                         text.clear();
                     }
-                    "href" if depth == 1 && !in_prop => {
+                    "href" if depth == 1 && !in_prop && in_href => {
+                        in_href = false;
                         href = text.trim().to_string();
                         text.clear();
                     }
@@ -1177,14 +1203,16 @@ pub fn parse_calendar_query_items(xml_body: &str, collection_href: &str) -> Vec<
                 }
             }
             Ok(quick_xml::events::Event::Text(ref t)) => {
-                if in_getetag || in_caldata || (depth == 1 && !in_prop && href.is_empty()) {
+                if in_getetag || in_caldata || in_href {
                     text.push_str(t.as_ref());
                 }
             }
             Ok(quick_xml::events::Event::GeneralRef(ref r)) => {
-                // calendar-data may legally contain character references.
+                // Character references may appear in hrefs as well as in
+                // calendar-data (e.g. `/Tasks/a&amp;b.ics`), so decode them
+                // wherever we are collecting text.
                 let decoded = crate::util::resolve_xml_reference(r.as_ref());
-                if in_getetag || in_caldata {
+                if in_getetag || in_caldata || in_href {
                     text.push_str(&decoded);
                 }
             }
@@ -1193,12 +1221,19 @@ pub fn parse_calendar_query_items(xml_body: &str, collection_href: &str) -> Vec<
                     text.push_str(c.as_ref());
                 }
             }
-            Ok(quick_xml::events::Event::Eof) | Err(_) => break,
+            Ok(quick_xml::events::Event::Eof) => break,
+            Err(e) => {
+                return Err(anyhow::anyhow!(
+                    "malformed calendar-query multistatus for {}: {}",
+                    collection_href,
+                    e
+                ));
+            }
             _ => {}
         }
         buf.clear();
     }
-    items
+    Ok(items)
 }
 #[cfg(test)]
 mod tests {
@@ -1391,5 +1426,73 @@ mod tests {
             CaldavClient::format_etag_for_if_match("W/\"1419368738\""),
             expected_weak
         );
+    }
+
+    #[test]
+    fn parse_calendar_query_decodes_href_xml_references() {
+        // A literal `&` in a resource name arrives XML-escaped; the parser
+        // must decode it wherever it collects text, or the href no longer
+        // matches the mirror's caldav_href and reconcile tombstones the row.
+        let body = r#"<?xml version="1.0" encoding="utf-8"?>
+<D:multistatus xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav">
+  <D:response>
+    <D:href>/cal/u/Tasks/a&amp;b.ics</D:href>
+    <D:propstat>
+      <D:prop>
+        <D:getetag>"e1"</D:getetag>
+        <C:calendar-data>BEGIN:VCALENDAR
+BEGIN:VTODO
+UID:a&amp;b
+END:VTODO
+END:VCALENDAR
+</C:calendar-data>
+      </D:prop>
+      <D:status>HTTP/1.1 200 OK</D:status>
+    </D:propstat>
+  </D:response>
+</D:multistatus>"#;
+        let items =
+            parse_calendar_query_items(body, "http://dav.example.com/cal/u/Tasks/").expect("parse");
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].href, "/cal/u/Tasks/a&b.ics");
+        assert_eq!(items[0].etag.as_deref(), Some("e1"));
+        assert!(items[0].ics.as_deref().unwrap().contains("UID:a&b"));
+    }
+
+    #[test]
+    fn parse_calendar_query_is_fail_closed_on_malformed_body() {
+        // An unescaped `&` is not well-formed XML: the parser must error so a
+        // truncated inventory is never mistaken for "the server deleted
+        // everything" (which would tombstone the whole mirror).
+        let body = "<D:multistatus><D:response><D:href>/cal/u/Tasks/a&b.ics</D:href>\
+                    </D:response></D:multistatus>";
+        assert!(parse_calendar_query_items(body, "http://dav.example.com/cal/u/Tasks/").is_err());
+    }
+
+    #[test]
+    fn resolve_resource_url_treats_leading_slash_href_as_absolute_path() {
+        // CalDAV reports hrefs as absolute paths (`/dav/cal/u/Tasks/x.ics`).
+        // Those must resolve to the same host+path, NOT be re-joined under the
+        // collection (which would double the path and PUT a stray resource).
+        let client = CaldavClient::new_from_base("http://dav.example.com/dav").expect("client");
+        let resolved = client
+            .resolve_resource_url("/dav/cal/u/Tasks/", Some("/dav/cal/u/Tasks/x.ics"))
+            .expect("resolve");
+        assert_eq!(resolved, "http://dav.example.com/dav/cal/u/Tasks/x.ics");
+
+        // A bare collection-relative filename still joins under the collection.
+        let joined = client
+            .resolve_resource_url("/dav/cal/u/Tasks/", Some("x.ics"))
+            .expect("resolve");
+        assert_eq!(joined, "http://dav.example.com/dav/cal/u/Tasks/x.ics");
+
+        // An absolute URL passes through unchanged.
+        let absolute = client
+            .resolve_resource_url(
+                "/dav/cal/u/Tasks/",
+                Some("http://other.example.com/cal/y.ics"),
+            )
+            .expect("resolve");
+        assert_eq!(absolute, "http://other.example.com/cal/y.ics");
     }
 }
