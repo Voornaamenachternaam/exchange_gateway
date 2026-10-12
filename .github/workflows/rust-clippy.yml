@@ -18,7 +18,7 @@ jobs:
 
     steps:
       - name: Checkout code (no credentials)
-        uses: actions/checkout@v6.0.1
+        uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
@@ -55,7 +55,7 @@ jobs:
 
       - name: Create or update Pull Request with fixes
         if: steps.clippy_fix.outputs.changes == 'true'
-        uses: peter-evans/create-pull-request@v8.1.0
+        uses: peter-evans/create-pull-request@v8.1.1
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           branch: clippy-fixes-${{ github.run_id }}
