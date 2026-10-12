@@ -137,12 +137,13 @@ with a 401, which makes Outlook *prompt the user for a password*.
 Delivered behavior:
 
 - **401 vs 5xx split**: `JmapClient::check_credentials` and
-  `CaldavClient::check_credentials` return a tri-state `CredentialCheck`
-  (`Valid` / `Invalid` on an authoritative 401 / `BackendError(_)` on any other
-  status or a transport failure; a CalDAV `403` is treated as a non-auth
-  failure, since it means the request was authenticated but forbidden, not that
-  the password was wrong). `AuthVerifier::verify_backend` collapses these into
-  an `AuthOutcome`.
+  `CaldavClient::check_credentials` return a tri-state `CredentialCheck`.
+  `JmapClient` reports `Valid` / `Invalid` (on the session endpoint's `401` or
+  `403`) / `BackendError(_)` on any other status or a transport failure. A
+  CalDAV `403` is deliberately *not* `Invalid`: a PROPFIND on a calendar home
+  can be forbidden for an account whose password is valid, so it is a non-auth
+  `BackendError`, reserved for `401`. `AuthVerifier::verify_backend` collapses
+  these into an `AuthOutcome`.
 - **No CalDAV fallback storm**: a JMAP *backend error* returns
   `BackendUnavailable` immediately and does **not** consult CalDAV. CalDAV is
   consulted only after JMAP *authoritatively rejects* the credentials, purely
