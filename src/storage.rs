@@ -872,6 +872,44 @@ impl Storage {
         .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))
     }
 
+    /// Live item_map rows in stable `server_id` ASC order, strictly after
+    /// `after_server_id` (keyset pagination over the live snapshot).
+    ///
+    /// Used to re-prime a client whose journal window was pruned: the journal
+    /// below the floor is gone, so the live set must be enumerated directly
+    /// from `item_map` rather than reconstructed from journal rows. `limit`
+    /// bounds the fetch so a page does not load the whole set.
+    pub async fn list_changes_after_server_id(
+        &self,
+        owner: &str,
+        after_server_id: Option<&str>,
+        limit: u64,
+    ) -> Result<Vec<EwsItemRow>> {
+        match after_server_id {
+            Some(after) => sqlx::query_as::<_, EwsItemRow>(
+                "SELECT server_id, caldav_href, resource_href, uid, etag, updated_at \
+                     FROM item_map WHERE owner = ?1 AND server_id > ?2 \
+                     ORDER BY server_id ASC LIMIT ?3",
+            )
+            .bind(owner)
+            .bind(after)
+            .bind(limit as i64)
+            .fetch_all(self.pool.as_ref())
+            .await
+            .map_err(|e| GatewayError::Storage(format!("Query error: {}", e))),
+            None => sqlx::query_as::<_, EwsItemRow>(
+                "SELECT server_id, caldav_href, resource_href, uid, etag, updated_at \
+                     FROM item_map WHERE owner = ?1 \
+                     ORDER BY server_id ASC LIMIT ?2",
+            )
+            .bind(owner)
+            .bind(limit as i64)
+            .fetch_all(self.pool.as_ref())
+            .await
+            .map_err(|e| GatewayError::Storage(format!("Query error: {}", e))),
+        }
+    }
+
     /// Lowest journal watermark any device of `owner` could still ask from.
     /// Both watermark stores count: `token` values shaped `seq:<n>` and the
     /// `journal_seq` column populated by non-email sync completions (their
@@ -992,10 +1030,20 @@ impl Storage {
         let Some(floor) = self.min_seq_watermark(owner).await? else {
             return Ok(0);
         };
+        // The DELETE and the floor upsert MUST be one atomic unit: if the
+        // delete committed but the floor upsert did not (process stop, storage
+        // error, or a concurrent sync reading between them), `pruned_through`
+        // would still report the old floor while the rows at/below the new one
+        // are gone — stale resumes would then silently miss changes. Commit
+        // only after the floor is recorded (SQLite is single-writer, so a
+        // read outside the transaction sees either both or neither).
+        let mut tx = sqlx::Acquire::begin(self.pool.as_ref())
+            .await
+            .map_err(|e| GatewayError::Storage(format!("Transaction error: {}", e)))?;
         let res = sqlx::query("DELETE FROM change_journal WHERE owner = ?1 AND id <= ?2")
             .bind(owner)
             .bind(floor)
-            .execute(self.pool.as_ref())
+            .execute(&mut *tx)
             .await
             .map_err(|e| GatewayError::Storage(format!("Delete error: {}", e)))?;
         if floor > 0 {
@@ -1009,10 +1057,13 @@ impl Storage {
             )
             .bind(owner)
             .bind(floor)
-            .execute(self.pool.as_ref())
+            .execute(&mut *tx)
             .await
             .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
         }
+        tx.commit()
+            .await
+            .map_err(|e| GatewayError::Storage(format!("Commit error: {}", e)))?;
         Ok(res.rows_affected())
     }
 
@@ -1277,6 +1328,38 @@ impl Storage {
         .await
         .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))?;
         Ok(row.map(|r| (r.get(0), r.get(1))))
+    }
+
+    /// Drop the gateway-local (Tasks/Notes) initial-sync keyset cursor IFF it
+    /// still holds `expected_last_key` and `expected_base_seq`.
+    ///
+    /// The stale-watermark guard clears a cursor to abandon an in-flight
+    /// windowed prime, but the guard reads the cursor before deciding and the
+    /// clear happens after — a concurrent `SyncKey 0` prime can persist a
+    /// fresh cursor in between. Deleting unconditionally would then erase that
+    /// new cursor, and the prime's `MoreAvailable` continuation would fall into
+    /// delta sync and skip the items not yet sent. Matching the observed
+    /// values makes the clear a compare-and-set: a changed cursor (a different
+    /// prime or a new window position) is left intact.
+    pub async fn clear_local_sync_cursor_if(
+        &self,
+        owner: &str,
+        collection_id: &str,
+        expected_last_key: &str,
+        expected_base_seq: i64,
+    ) -> Result<()> {
+        sqlx::query(
+            "DELETE FROM local_sync_cursor WHERE owner = ?1 AND collection_id = ?2 \
+             AND last_key = ?3 AND base_seq = ?4",
+        )
+        .bind(owner)
+        .bind(collection_id)
+        .bind(expected_last_key)
+        .bind(expected_base_seq)
+        .execute(self.pool.as_ref())
+        .await
+        .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+        Ok(())
     }
 
     /// Drop the gateway-local (Tasks/Notes) initial-sync keyset cursor once
@@ -3023,20 +3106,36 @@ mod tests {
                 .expect("stale check")
         );
 
-        // A later, lower floor (a fresh device syncing from 0) must not erase
-        // the recorded high-water mark.
+        // A later, LOWER-but-positive floor (a fresh device syncing from a low
+        // position) must not erase the recorded high-water mark. A `seq:0`
+        // watermark would make the second prune's floor 0 and never exercise
+        // the `MAX` conflict update, so use a positive value strictly below 3.
         storage
-            .set_sync_key(owner, "2::fresh", "k2", Some("seq:0"))
+            .set_sync_key(owner, "2::fresh", "k2", Some("seq:1"))
             .await
             .expect("fresh watermark");
-        storage
-            .prune_change_journal(owner)
-            .await
-            .expect("prune again");
+        // Rows at id <= 1 were already removed by the first prune, so this one
+        // deletes nothing new; the floor upsert still runs and must not lower
+        // the recorded high-water mark.
+        assert_eq!(
+            storage
+                .prune_change_journal(owner)
+                .await
+                .expect("prune again"),
+            0,
+            "the second prune has no new rows to remove"
+        );
         assert_eq!(
             storage.pruned_through(owner).await.expect("floor"),
             3,
-            "the recorded floor is monotonic"
+            "the recorded floor is monotonic under a lower positive floor"
+        );
+        assert!(
+            storage
+                .journal_window_stale(owner, 1)
+                .await
+                .expect("stale check"),
+            "seq 1 is still below the retained floor of 3"
         );
     }
 
@@ -3090,6 +3189,103 @@ mod tests {
             .expect("watermark");
         assert_eq!(storage.prune_change_journal(owner).await.expect("prune"), 2);
         assert_eq!(journal_len(&storage, owner).await, 2);
+    }
+
+    /// §16: the conditional cursor clear only removes the exact cursor it was
+    /// asked to abandon; a cursor advanced (or replaced by a new prime) in the
+    /// meantime is left intact, so a concurrent prime's continuation window is
+    /// never dropped by a stale-watermark guard.
+    #[tokio::test]
+    async fn clear_local_sync_cursor_if_is_compare_and_set() {
+        let storage = mem_storage().await;
+        let owner = "cas-cursor@example.com";
+        let coll = "3::dev";
+        storage
+            .set_local_sync_cursor(owner, coll, "task-010", 7)
+            .await
+            .expect("persist cursor");
+
+        // A mismatch (stale observed key) leaves the cursor untouched.
+        storage
+            .clear_local_sync_cursor_if(owner, coll, "task-005", 7)
+            .await
+            .expect("conditional clear");
+        assert_eq!(
+            storage
+                .get_local_sync_cursor(owner, coll)
+                .await
+                .expect("read"),
+            Some(("task-010".to_string(), 7)),
+            "a stale expected key must not clear a newer cursor"
+        );
+        // A mismatch on base_seq also leaves it intact.
+        storage
+            .clear_local_sync_cursor_if(owner, coll, "task-010", 6)
+            .await
+            .expect("conditional clear");
+        assert!(
+            storage
+                .get_local_sync_cursor(owner, coll)
+                .await
+                .expect("read")
+                .is_some(),
+            "a stale expected base_seq must not clear the cursor"
+        );
+        // An exact match clears it.
+        storage
+            .clear_local_sync_cursor_if(owner, coll, "task-010", 7)
+            .await
+            .expect("conditional clear");
+        assert!(
+            storage
+                .get_local_sync_cursor(owner, coll)
+                .await
+                .expect("read")
+                .is_none(),
+            "an exact match must clear the cursor"
+        );
+    }
+
+    /// §16: the keyset enumeration used to re-prime a pruned client lists live
+    /// `item_map` rows in server_id order, strictly after the cursor, bounded
+    /// by the limit.
+    #[tokio::test]
+    async fn list_changes_after_server_id_paginates_live_set() {
+        let storage = mem_storage().await;
+        let owner = "keyset@example.com";
+        for id in ["a", "b", "c", "d"] {
+            storage
+                .upsert_item_map(
+                    owner,
+                    &format!("http://cal/{id}"),
+                    "calendar/",
+                    id,
+                    &format!("uid-{id}"),
+                    "e",
+                )
+                .await
+                .expect("upsert");
+        }
+        let all = storage
+            .list_changes_after_server_id(owner, None, 10)
+            .await
+            .expect("list");
+        let ids: Vec<&str> = all.iter().map(|r| r.server_id.as_str()).collect();
+        assert_eq!(ids, ["a", "b", "c", "d"], "server_id ASC order");
+
+        let page = storage
+            .list_changes_after_server_id(owner, Some("b"), 10)
+            .await
+            .expect("list");
+        let ids: Vec<&str> = page.iter().map(|r| r.server_id.as_str()).collect();
+        assert_eq!(ids, ["c", "d"], "strictly after the cursor");
+
+        let limited = storage
+            .list_changes_after_server_id(owner, None, 2)
+            .await
+            .expect("list");
+        let ids: Vec<&str> = limited.iter().map(|r| r.server_id.as_str()).collect();
+        assert_eq!(ids, ["a", "b"], "bounded by the limit");
     }
 
     #[tokio::test]

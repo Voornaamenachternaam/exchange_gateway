@@ -324,30 +324,44 @@ EAS specs v20250520 (16.1); older EAS compat NOT needed.
 - §16 Watermark pruning vs. long-offline devices is COMPLETE and its AUDIT.md
   section documents the delivered behavior. Design: `prune_change_journal`
   records the deleted floor per owner in `journal_prune_state` (schema v10,
-  monotonic MAX upsert), exposed by `pruned_through(owner)`; `journal_window_stale(owner, since)`
+  monotonic MAX upsert) in the SAME transaction as the DELETE (a committed
+  delete with an uncommitted floor would let stale resumes silently miss rows),
+  exposed by `pruned_through(owner)`; `journal_window_stale(owner, since)`
   = `since < pruned_through` (a resumer from `since` needs every row `id > since`;
-  pruning removed every row `id <= floor`; intact iff `since >= floor`). Forced
-  resync at the EAS Sync front doors: `handle_local_content_sync` (Tasks/Notes)
-  computes the exact resume position (continuation cursor `base_seq`, else the
-  `seq:` token, else 0 — the SAME default the delta branches use for an
-  unreadable token) and returns Sync status 3 + SyncKey 0 (+ clears any
-  in-flight window cursor) when stale; `incoming_key == "0"` is never rejected.
-  Delivery half: the Ping per-folder check treats a stale watermark as a change
-  (`stale || <normal>`) so a long-offline device is woken within a tick and its
-  follow-up Sync re-primes. GetItemEstimate reports status 4 for a stale window;
-  EWS SyncFolderItems returns ErrorInvalidSyncStateData for a CLIENT-SUPPLIED
-  cursor below the floor (only client-supplied — rejecting the gateway's own
-  persisted cursor would spin an unrecoverable re-prime loop). The calendar
+  pruning removed every row `id <= floor`; intact iff `since >= floor`). EVERY
+  stale check is fail-closed (`unwrap_or(true)`). Forced resync at the EAS Sync
+  front doors: `handle_local_content_sync` (Tasks/Notes) computes the exact
+  resume position (continuation cursor `base_seq`, else the `seq:` token, else
+  0 — the SAME default the delta branches use for an unreadable token) and,
+  running BEFORE client mutations are parsed, returns Sync status 3 + SyncKey 0
+  (+ conditionally clears the in-flight window cursor via the CAS
+  `clear_local_sync_cursor_if`, matching the scanned `(last_key, base_seq)` so a
+  concurrent `SyncKey 0` prime's cursor is never dropped) when stale;
+  `incoming_key == "0"` is never rejected. Delivery half: the Ping per-folder
+  check treats a stale watermark as a change (`stale || <normal>`) so a
+  long-offline device is woken within a tick and its follow-up Sync re-primes.
+  GetItemEstimate reports status 4 for a stale window; EWS SyncFolderItems
+  returns ErrorInvalidSyncStateData for a CLIENT-SUPPLIED cursor below the
+  floor, but a stale GATEWAY-PERSISTED cursor (`ews_sync_state` is outside the
+  floor scan, which reads only `seq:`/`journal_seq` in `sync_state`) is NOT
+  rejected — rejecting it would spin an unrecoverable re-prime loop — it is
+  instead treated as a full SNAPSHOT PRIME that keyset-enumerates the live
+  `item_map` (`list_changes_after_server_id`, `server_id` ASC, MaxChangesReturned
+  bound) rather than walking the journal; the baseline head is frozen in
+  `local_sync_cursor.base_seq` across pages so a mid-prime change is delivered by
+  the first delta after the prime completes, a null SyncState mid-prime restarts
+  the snapshot, and a supplied cursor continues its keyset window. The calendar
   `perform_sync` needs NO guard: its delta is the backend-snapshot diff vs
   `item_map` (etag), never the client watermark, and its token is often an
   opaque JMAP `query_state` that would make a naive guard fire forever
-  (documented in place of a guard). Tests: storage.rs 2 (floor/stale boundary +
-  monotonicity, watermark-less prune fabricates no floor); eas.rs 4 (forced
-  Status 3 + clean re-prime, healthy delta NOT forced, Ping stale-wake,
-  GetItemEstimate status 4); ews.rs 1 (pruned-cursor rejection, null SyncState
-  not rejected). Suite: 1060 green (lib 1024 + fixtures 22 + snapshots 11 +
-  deploy 2 + doc 1), clippy 0, fmt clean on ALL touched files (eas.rs included
-  — HEAD's eas.rs was already fmt-clean), release warning-free.
+  (documented in place of a guard). Tests: storage.rs 4 (floor/stale boundary +
+  monotonicity, watermark-less prune fabricates no floor, CAS cursor clear,
+  keyset live-set enumeration); eas.rs 5 (forced Status 3 + clean re-prime,
+  stale-key WITH mutations applies nothing + no `<Responses>`, healthy delta NOT
+  forced, Ping stale-wake, GetItemEstimate status 4); ews.rs 1 (client-supplied
+  pruned-cursor rejection, null SyncState not rejected, stale persisted cursor
+  re-primes). Suite: 1027 lib + 22 fixtures + 11 snapshots + 2 deploy + 1 doc =
+  1063 green, clippy 0, fmt clean on ALL touched files, release warning-free.
 - Next likely audit items: §17 auth negative-cache TTL.
 - PR #1989 (§15) review triage COMPLETE: cubic 10 issues + CodeRabbit 3 +
   LlamaPReview 3 substantive, all fixed. Highlights: (1) P0 pre-§15 DB

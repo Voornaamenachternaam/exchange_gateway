@@ -2182,11 +2182,15 @@ async fn handle_ping(
             // follow-up Sync force a full resync (status 3). This is the
             // delivery half of the stale-watermark contract — without it a
             // long-offline device would sleep through its own re-prime.
+            //
+            // Fail CLOSED: a floor-lookup error is treated as stale so the
+            // device is woken and re-primes; assuming "not stale" would let
+            // it sleep indefinitely over a window that may have been erased.
             let stale = state
                 .storage
                 .journal_window_stale(owner, since)
                 .await
-                .unwrap_or(false);
+                .unwrap_or(true);
 
             let changed = stale
                 || match kind {
@@ -2846,12 +2850,16 @@ async fn handle_get_item_estimate(
     // would then resume from a re-keyed gap. Report the invalid-key status
     // (GetItemEstimate uses 4, [MS-ASCMD] §2.2.3.177.8) so the client
     // re-primes with SyncKey 0.
+    //
+    // Fail CLOSED: if the floor lookup itself errors, treat the window as
+    // stale and force a re-prime rather than assuming it is intact (a
+    // transient storage error must never let a client resume across a gap).
     if incoming != "0"
         && state
             .storage
             .journal_window_stale(owner, since)
             .await
-            .unwrap_or(false)
+            .unwrap_or(true)
     {
         let xml = format!(
             r#"<?xml version="1.0" encoding="utf-8"?><GetItemEstimate xmlns="GetItemEstimate:"><Response><Status>4</Status><Collection><CollectionId>{}</CollectionId><Estimate>0</Estimate></Collection></Response></GetItemEstimate>"#,
@@ -5398,6 +5406,107 @@ async fn handle_local_content_sync(ctx: &LocalContentSyncCtx<'_>) -> String {
         global_budget,
     } = *ctx;
     let class = kind.class_name();
+
+    // A non-zero incoming key must match the last key issued for this
+    // collection, otherwise the client must re-prime with SyncKey 0
+    // (MS-ASCMD Status 3). This runs BEFORE any mutation is applied: a
+    // rejected request must have no side effects it cannot acknowledge.
+    if incoming_key != "0" {
+        let valid = match state
+            .storage
+            .get_sync_key(username, state_collection_id)
+            .await
+        {
+            Ok(Some((stored, _))) => stored == incoming_key,
+            _ => false,
+        };
+        if !valid {
+            return format!(
+                "<Collection><Class>{}</Class><SyncKey>0</SyncKey><CollectionId>{}</CollectionId><Status>3</Status></Collection>",
+                class,
+                xml_escape(collection_id)
+            );
+        }
+    }
+
+    // A windowed initial sync may still be in progress: its keyset cursor
+    // (highest delivered server_id) makes this Sync resume the live set
+    // instead of restarting it.
+    let pending_cursor = state
+        .storage
+        .get_local_sync_cursor(username, state_collection_id)
+        .await
+        .unwrap_or(None);
+
+    // §16 stale-watermark guard: the client is resuming from a journal
+    // position that pruning has already erased part of (a device offline
+    // longer than the pruning safety window, or one whose watermark the
+    // floor scan could not observe). The delta it asks for cannot be
+    // reconstructed, so force a clean full resync (Sync status 3) instead of
+    // silently resuming across a re-keyed gap. A continuation window is
+    // anchored to its cursor's `base_seq`; a delta to the stored `seq:`
+    // token. `incoming_key == "0"` is itself a full resync and never stale.
+    //
+    // This MUST precede mutation application: otherwise a stale-key request
+    // that also carries Add/Change/Delete commands would apply them and then
+    // return Status 3 with no `<Responses>` acknowledgement, leaving the
+    // client unable to reconcile the applied changes.
+    if incoming_key != "0" {
+        // Mirror exactly what the delta/continuation branches will resume from:
+        // a continuation window's cursor `base_seq`, else the stored `seq:`
+        // token (an unreadable token resumes from 0 — a full journal replay,
+        // which pruning may have made impossible).
+        let resume_seq = match pending_cursor.as_ref() {
+            Some((_, cursor_base)) => *cursor_base,
+            None => state
+                .storage
+                .get_sync_key(username, state_collection_id)
+                .await
+                .ok()
+                .flatten()
+                .and_then(|(_, token)| token)
+                .and_then(|t| t.strip_prefix("seq:").and_then(|n| n.parse::<i64>().ok()))
+                .unwrap_or(0),
+        };
+        // Fail CLOSED: a floor-lookup error is treated as stale so the client
+        // re-primes; assuming "not stale" could let it resume across a gap.
+        if state
+            .storage
+            .journal_window_stale(username, resume_seq)
+            .await
+            .unwrap_or(true)
+        {
+            tracing::info!(
+                collection_id = %collection_id,
+                class = class,
+                resume_seq,
+                "Stale {} watermark below the pruned journal floor; forcing full resync",
+                class
+            );
+            // Conditionally abandon the in-flight window cursor: only clear
+            // the exact cursor we scanned, so a cursor persisted by a
+            // concurrent SyncKey 0 prime is never erased.
+            if let Some((last_key, cursor_base)) = pending_cursor.as_ref()
+                && let Err(e) = state
+                    .storage
+                    .clear_local_sync_cursor_if(
+                        username,
+                        state_collection_id,
+                        last_key,
+                        *cursor_base,
+                    )
+                    .await
+            {
+                tracing::warn!(error = %e, "Failed to clear stale {} sync cursor", class);
+            }
+            return format!(
+                "<Collection><Class>{}</Class><SyncKey>0</SyncKey><CollectionId>{}</CollectionId><Status>3</Status></Collection>",
+                class,
+                xml_escape(collection_id)
+            );
+        }
+    }
+
     // Parse and apply client mutations (Add/Change/Delete). A malformed command
     // body is a protocol error (Status 4) rather than silently truncating the set.
     let mut mutation_responses = String::new();
@@ -5534,26 +5643,6 @@ async fn handle_local_content_sync(ctx: &LocalContentSyncCtx<'_>) -> String {
         }
     }
 
-    // A non-zero incoming key must match the last key issued for this collection,
-    // otherwise the client must re-prime with SyncKey 0 (MS-ASCMD Status 3).
-    if incoming_key != "0" {
-        let valid = match state
-            .storage
-            .get_sync_key(username, state_collection_id)
-            .await
-        {
-            Ok(Some((stored, _))) => stored == incoming_key,
-            _ => false,
-        };
-        if !valid {
-            return format!(
-                "<Collection><Class>{}</Class><SyncKey>0</SyncKey><CollectionId>{}</CollectionId><Status>3</Status></Collection>",
-                class,
-                xml_escape(collection_id)
-            );
-        }
-    }
-
     let latest_seq = state.storage.get_latest_change_seq().await.unwrap_or(0);
     let new_sync_key = Uuid::new_v4().simple().to_string();
 
@@ -5602,65 +5691,6 @@ async fn handle_local_content_sync(ctx: &LocalContentSyncCtx<'_>) -> String {
     // remaining global WindowSize budget (§2.2.3.199 "repurposed to also
     // impose a global limit on the number of changes that are returned").
     let window = effective_sync_window(coll.window_size, global_budget).max(1);
-
-    // A windowed initial sync may still be in progress: its keyset cursor
-    // (highest delivered server_id) makes this Sync resume the live set
-    // instead of restarting it.
-    let pending_cursor = state
-        .storage
-        .get_local_sync_cursor(username, state_collection_id)
-        .await
-        .unwrap_or(None);
-
-    // §16 stale-watermark guard: the client is resuming from a journal
-    // position that pruning has already erased part of (a device offline
-    // longer than the pruning safety window, or one whose watermark the
-    // floor scan could not observe). The delta it asks for cannot be
-    // reconstructed, so force a clean full resync (Sync status 3) instead of
-    // silently resuming across a re-keyed gap. A continuation window is
-    // anchored to its cursor's `base_seq`; a delta to the stored `seq:`
-    // token. `incoming_key == "0"` is itself a full resync and never stale.
-    if incoming_key != "0" {
-        // Mirror exactly what the delta/continuation branches will resume from:
-        // a continuation window's cursor `base_seq`, else the stored `seq:`
-        // token (an unreadable token resumes from 0 — a full journal replay,
-        // which pruning may have made impossible).
-        let resume_seq = match pending_cursor.as_ref() {
-            Some((_, cursor_base)) => *cursor_base,
-            None => state
-                .storage
-                .get_sync_key(username, state_collection_id)
-                .await
-                .ok()
-                .flatten()
-                .and_then(|(_, token)| token)
-                .and_then(|t| t.strip_prefix("seq:").and_then(|n| n.parse::<i64>().ok()))
-                .unwrap_or(0),
-        };
-        if state
-            .storage
-            .journal_window_stale(username, resume_seq)
-            .await
-            .unwrap_or(false)
-        {
-            tracing::info!(
-                collection_id = %collection_id,
-                class = class,
-                resume_seq,
-                "Stale {} watermark below the pruned journal floor; forcing full resync",
-                class
-            );
-            let _ = state
-                .storage
-                .clear_local_sync_cursor(username, state_collection_id)
-                .await;
-            return format!(
-                "<Collection><Class>{}</Class><SyncKey>0</SyncKey><CollectionId>{}</CollectionId><Status>3</Status></Collection>",
-                class,
-                xml_escape(collection_id)
-            );
-        }
-    }
 
     let mut commands_xml = String::new();
     let mut more_available = false;
@@ -9550,6 +9580,88 @@ mod tests {
         .await;
         assert!(xml.contains("<Status>1</Status>"), "re-prime: {xml}");
         assert_eq!(xml.matches("<Add>").count(), 5, "re-prime full set: {xml}");
+    }
+
+    /// §16: a stale-key Sync that also carries client mutations must be rejected
+    /// BEFORE those mutations are applied — otherwise the client would never
+    /// receive their `<Responses>` acknowledgement and could not reconcile the
+    /// side effects it triggered. The guard runs before mutation parsing.
+    #[tokio::test]
+    async fn test_local_content_sync_stale_key_with_mutations_applies_nothing() {
+        let state = test_sync_state().await;
+        let user = "stale-mut-user@example.com";
+        let device = "test-device";
+        let state_coll = scoped_collection_id(crate::tasks::TASKS_COLLECTION_ID, device);
+        seed_tasks(&state, user, 3).await;
+
+        // Make the collection's window stale: a second device's watermark lets
+        // the pruner floor the journal above this device's token.
+        let head = state.storage.get_latest_change_seq().await.unwrap_or(0);
+        assert!(head > 0, "seeding must have journaled changes");
+        state
+            .storage
+            .set_sync_key(
+                user,
+                &state_coll,
+                "stale-key",
+                Some("opaque-provider-state"),
+            )
+            .await
+            .expect("store opaque watermark");
+        state
+            .storage
+            .set_sync_key(user, "9::other", "k", Some("seq:9999"))
+            .await
+            .expect("higher watermark");
+        state
+            .storage
+            .prune_change_journal(user)
+            .await
+            .expect("prune");
+        assert!(
+            state
+                .storage
+                .journal_window_stale(user, 0)
+                .await
+                .expect("stale check"),
+            "the pruned floor must exceed the device's effective watermark"
+        );
+
+        // A stale-key Sync carrying an Add mutation must not persist the task.
+        let mut coll = tasks_collection("stale-key", None);
+        coll.xml = r#"<Collection><Class>Tasks</Class><Add><ServerId></ServerId><ApplicationData><Subject>Should not persist</Subject></ApplicationData></Add></Collection>"#.to_string();
+        let xml = handle_local_content_sync(&LocalContentSyncCtx {
+            state: &state,
+            username: user,
+            password: "",
+            collection_id: crate::tasks::TASKS_COLLECTION_ID,
+            state_collection_id: &state_coll,
+            incoming_key: "stale-key",
+            coll: &coll,
+            kind: LocalContentKind::Tasks,
+            global_budget: None,
+        })
+        .await;
+        assert!(
+            xml.contains("<Status>3</Status>"),
+            "stale key must force a resync: {xml}"
+        );
+        assert_eq!(
+            xml.matches("<Responses>").count(),
+            0,
+            "a rejected stale-key request must carry no mutation acknowledgements: {xml}"
+        );
+        let tasks = state
+            .storage
+            .list_tasks_after(user, None, 100)
+            .await
+            .expect("list tasks");
+        assert!(
+            tasks
+                .iter()
+                .all(|t| t.subject.as_deref() != Some("Should not persist")),
+            "the mutation must not have been applied"
+        );
     }
 
     /// §16: a healthy delta sync — its watermark at or above the pruned floor —
