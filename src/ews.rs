@@ -4596,6 +4596,12 @@ async fn handle_sync_folder_items(
         );
     }
     let requested_state = extract_first_tag_text(body, b"SyncState");
+    // Whether the client actually supplied a cursor (vs. priming): captured
+    // before `requested_state` is consumed below. A null/empty/"0" request is
+    // a fresh prime and must never be rejected as stale.
+    let client_supplied_cursor = requested_state
+        .as_deref()
+        .is_some_and(|s| !s.is_empty() && s != "0");
     let effective_state = if requested_state.as_deref().unwrap_or("0").is_empty() {
         match state.storage.get_ews_sync_state(owner, &folder_id).await {
             Ok(v) => v,
@@ -4623,6 +4629,34 @@ async fn handle_sync_folder_items(
             );
         }
     };
+    // §16 stale-watermark guard: a cursor below the pruned journal floor has
+    // had part of the window it needs removed, so the incremental delta cannot
+    // be reconstructed. Return ErrorInvalidSyncStateData (the EWS analogue of
+    // EAS Sync status 3) so the client re-primes with a null SyncState.
+    //
+    // Only a client-SUPPLIED cursor is rejected: a null request means the
+    // client is already re-priming, and rejecting the gateway's own persisted
+    // cursor would spin a re-prime loop that can never recover.
+    if client_supplied_cursor
+        && state
+            .storage
+            .journal_window_stale(owner, since)
+            .await
+            .unwrap_or(false)
+    {
+        tracing::info!(
+            owner = %owner,
+            folder_id = %folder_id,
+            since,
+            "Stale EWS SyncState below the pruned journal floor; forcing full resync"
+        );
+        return operation_error_response(
+            &EwsAction::SyncFolderItems,
+            "ErrorInvalidSyncStateData",
+            "SyncState is stale; the requested change window was pruned, resync from a null SyncState",
+            StatusCode::OK,
+        );
+    }
     let latest_seq = state.storage.get_latest_change_seq().await.unwrap_or(0);
     let upper_bound = if requested_upper_bound > since {
         requested_upper_bound.min(latest_seq)
@@ -11355,6 +11389,63 @@ mod tests {
             .await
             .expect("response body");
         String::from_utf8_lossy(&body).into_owned()
+    }
+
+    /// §16: an EWS SyncState cursor below the pruned journal floor has had
+    /// part of its window deleted and must be rejected with
+    /// ErrorInvalidSyncStateData so the client re-primes, rather than resume
+    /// across a re-keyed gap.
+    #[tokio::test]
+    async fn sync_folder_items_rejects_pruned_sync_state() {
+        let state = meeting_test_state().await;
+        let owner = owner_from_username("user@example.com");
+
+        // Journal a couple of rows so pruning has something to floor on.
+        for i in 0..3 {
+            state
+                .storage
+                .upsert_item_map(
+                    owner,
+                    &format!("http://cal/{i}"),
+                    "calendar/",
+                    &format!("cal-{i}"),
+                    &format!("uid-{i}"),
+                    "e",
+                )
+                .await
+                .expect("journal upsert");
+        }
+        // A device watermark lets the pruner remove everything up to id 3.
+        state
+            .storage
+            .set_sync_key(owner, "1::dev", "k", Some("seq:3"))
+            .await
+            .expect("watermark");
+        assert_eq!(state.storage.prune_change_journal(owner).await.unwrap(), 3);
+
+        // A cursor from below the floor is stale.
+        let stale_state = encode_sync_state_cursor(1, 1);
+        let body = format!(
+            r#"<m:SyncFolderItems><m:ItemShape/><m:SyncFolderId><t:DistinguishedFolderId Id="calendar"/></m:SyncFolderId><m:SyncState>{}</m:SyncState><m:MaxChangesReturned>100</m:MaxChangesReturned></m:SyncFolderItems>"#,
+            stale_state
+        );
+        let resp = handle_sync_folder_items(&state, &meeting_auth(), &body).await;
+        let text = response_body(resp).await;
+        assert!(
+            text.contains("ErrorInvalidSyncStateData"),
+            "a pruned SyncState must force a re-prime: {text}"
+        );
+
+        // A null SyncState (fresh prime) is not rejected as stale — it is
+        // allowed to proceed to the backend read (which fails only because the
+        // test's JMAP/CalDAV endpoint is unreachable, not because of pruning).
+        let body = r#"<m:SyncFolderItems><m:ItemShape/><m:SyncFolderId><t:DistinguishedFolderId Id="calendar"/></m:SyncFolderId><m:SyncState></m:SyncState><m:MaxChangesReturned>100</m:MaxChangesReturned></m:SyncFolderItems>"#;
+        let resp = handle_sync_folder_items(&state, &meeting_auth(), body).await;
+        let text = response_body(resp).await;
+        assert!(
+            !text.contains("ErrorInvalidSyncStateData"),
+            "a null SyncState must not be rejected as stale: {text}"
+        );
     }
     // ---- EWS calendar item timezone render↔parse round-trip (§14) ----
 

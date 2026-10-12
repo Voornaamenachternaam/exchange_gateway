@@ -948,6 +948,33 @@ impl Storage {
         self.set_journal_watermark(owner, collection_id, head).await
     }
 
+    /// The highest change-journal id whose rows have been pruned for `owner`.
+    ///
+    /// `0` means nothing has been pruned yet (every journal id is still
+    /// replayable). Anything at or below the returned value is gone for good.
+    pub async fn pruned_through(&self, owner: &str) -> Result<i64> {
+        let row = sqlx::query("SELECT pruned_through FROM journal_prune_state WHERE owner = ?1")
+            .bind(owner)
+            .fetch_optional(self.pool.as_ref())
+            .await
+            .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))?;
+        Ok(row.map(|r| r.get::<i64, _>(0)).unwrap_or(0))
+    }
+
+    /// Whether a sync resuming from journal position `since` can no longer
+    /// reconstruct its delta because pruning already removed part of the
+    /// window it needs.
+    ///
+    /// A device resuming from `since` requires every row with `id > since`;
+    /// pruning removed every row with `id <= pruned_through`. The window is
+    /// therefore intact exactly when `since >= pruned_through`. A stale
+    /// watermark (a device offline longer than the pruning safety window, or
+    /// one whose watermark the floor scan could not observe) must be told to
+    /// re-prime rather than silently resume across a re-keyed gap.
+    pub async fn journal_window_stale(&self, owner: &str, since: i64) -> Result<bool> {
+        Ok(since < self.pruned_through(owner).await?)
+    }
+
     /// Delete change-journal rows no device of `owner` can ever request again.
     ///
     /// Every `id > watermark` lookup a device will ever issue starts from a
@@ -957,6 +984,10 @@ impl Storage {
     /// delta-sync window out from under a device. Rows are kept whenever no
     /// seq watermark exists for the owner (nothing synced yet — full replay
     /// must remain possible after a container restart).
+    ///
+    /// The deleted floor is recorded in `journal_prune_state` so a later sync
+    /// resuming below it is detected as stale and forced to re-prime instead
+    /// of silently missing the pruned delta (`journal_window_stale`).
     pub async fn prune_change_journal(&self, owner: &str) -> Result<u64> {
         let Some(floor) = self.min_seq_watermark(owner).await? else {
             return Ok(0);
@@ -967,6 +998,21 @@ impl Storage {
             .execute(self.pool.as_ref())
             .await
             .map_err(|e| GatewayError::Storage(format!("Delete error: {}", e)))?;
+        if floor > 0 {
+            // Advance the recorded floor monotonically: a later, lower floor
+            // (e.g. a fresh device syncing from 0) must not erase the fact
+            // that rows at the old floor were already removed.
+            sqlx::query(
+                "INSERT INTO journal_prune_state (owner, pruned_through) VALUES (?1, ?2) \
+                 ON CONFLICT(owner) DO UPDATE SET \
+                 pruned_through = MAX(pruned_through, ?2), updated_at = CURRENT_TIMESTAMP",
+            )
+            .bind(owner)
+            .bind(floor)
+            .execute(self.pool.as_ref())
+            .await
+            .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+        }
         Ok(res.rows_affected())
     }
 
@@ -2902,6 +2948,116 @@ mod tests {
                 .await
                 .expect("watermark query"),
             Some(9)
+        );
+    }
+
+    /// §16: pruning records the deleted floor per owner, and a sync resuming
+    /// from below it is detected as stale (its delta window is gone). A
+    /// watermark at exactly the floor is intact; the recorded floor only ever
+    /// advances.
+    #[tokio::test]
+    async fn prune_records_floor_and_detects_stale_windows() {
+        let storage = mem_storage().await;
+        let owner = "stale-wm@example.com";
+        for i in 0..5 {
+            storage
+                .upsert_item_map(
+                    owner,
+                    &format!("http://cal/{i}"),
+                    "calendar/",
+                    &format!("cal-{i}"),
+                    &format!("uid-{i}"),
+                    "e",
+                )
+                .await
+                .expect("journal upsert");
+        }
+
+        // Nothing pruned yet: every position is replayable.
+        assert_eq!(storage.pruned_through(owner).await.expect("floor"), 0);
+        assert!(
+            !storage
+                .journal_window_stale(owner, 0)
+                .await
+                .expect("stale check")
+        );
+
+        // Oldest device syncs at seq 3; everything at/below it is pruned.
+        storage
+            .set_sync_key(owner, "1::dev", "key", Some("seq:3"))
+            .await
+            .expect("watermark");
+        assert_eq!(storage.prune_change_journal(owner).await.expect("prune"), 3);
+        assert_eq!(
+            storage.pruned_through(owner).await.expect("floor"),
+            3,
+            "the deleted floor is recorded"
+        );
+
+        // A watermark below the floor can no longer reconstruct its delta.
+        assert!(
+            storage
+                .journal_window_stale(owner, 0)
+                .await
+                .expect("stale check"),
+            "seq 0 is below the pruned floor"
+        );
+        assert!(
+            storage
+                .journal_window_stale(owner, 2)
+                .await
+                .expect("stale check"),
+            "seq 2 is below the pruned floor"
+        );
+        // Exactly at the floor the window is intact (rows > floor remain).
+        assert!(
+            !storage
+                .journal_window_stale(owner, 3)
+                .await
+                .expect("stale check")
+        );
+        assert!(
+            !storage
+                .journal_window_stale(owner, 9)
+                .await
+                .expect("stale check")
+        );
+
+        // A later, lower floor (a fresh device syncing from 0) must not erase
+        // the recorded high-water mark.
+        storage
+            .set_sync_key(owner, "2::fresh", "k2", Some("seq:0"))
+            .await
+            .expect("fresh watermark");
+        storage
+            .prune_change_journal(owner)
+            .await
+            .expect("prune again");
+        assert_eq!(
+            storage.pruned_through(owner).await.expect("floor"),
+            3,
+            "the recorded floor is monotonic"
+        );
+    }
+
+    /// §16: pruning that cannot run (no watermark) must not fabricate a floor;
+    /// the full journal stays replayable and no window is reported stale.
+    #[tokio::test]
+    async fn prune_without_watermark_leaves_floor_unset() {
+        let storage = mem_storage().await;
+        let owner = "no-wm@example.com";
+        storage
+            .upsert_item_map(owner, "http://cal/1", "calendar/", "cal-1", "uid-1", "e1")
+            .await
+            .expect("journal upsert");
+        assert_eq!(storage.prune_change_journal(owner).await.expect("prune"), 0);
+        assert_eq!(storage.pruned_through(owner).await.expect("floor"), 0);
+        assert!(
+            !storage
+                .journal_window_stale(owner, 0)
+                .await
+                .expect("stale check"),
+            "nothing pruned => nothing stale"
         );
     }
 

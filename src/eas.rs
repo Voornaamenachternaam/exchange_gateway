@@ -2177,41 +2177,53 @@ async fn handle_ping(
                 .flatten()
                 .unwrap_or_else(|| journal_baselines.get(&folder.id).copied().unwrap_or(0));
 
-            let changed = match kind {
-                // Tasks and Notes are gateway-local stores journaled with a
-                // distinct resource_href tag ("task" / "note"), so we can scope
-                // change detection precisely to those folders.
-                PingFolderKind::Tasks => state
-                    .storage
-                    .list_journal_since_seq(owner, since)
-                    .await
-                    .unwrap_or_default()
-                    .iter()
-                    .any(|r| matches!(r.resource_href.as_deref(), Some("task"))),
-                PingFolderKind::Notes => state
-                    .storage
-                    .list_journal_since_seq(owner, since)
-                    .await
-                    .unwrap_or_default()
-                    .iter()
-                    .any(|r| matches!(r.resource_href.as_deref(), Some("note"))),
-                // Calendar and Contacts changes flow through item_map and the
-                // shared change journal (op='upsert') plus delete tombstones.
-                PingFolderKind::Calendar | PingFolderKind::Contacts => {
-                    let changed = state
+            // §16: a watermark below the pruned journal floor can no longer
+            // reconstruct its delta, so Ping must wake the folder and let the
+            // follow-up Sync force a full resync (status 3). This is the
+            // delivery half of the stale-watermark contract — without it a
+            // long-offline device would sleep through its own re-prime.
+            let stale = state
+                .storage
+                .journal_window_stale(owner, since)
+                .await
+                .unwrap_or(false);
+
+            let changed = stale
+                || match kind {
+                    // Tasks and Notes are gateway-local stores journaled with a
+                    // distinct resource_href tag ("task" / "note"), so we can scope
+                    // change detection precisely to those folders.
+                    PingFolderKind::Tasks => state
                         .storage
-                        .list_changes_since_seq(owner, since, 1000)
+                        .list_journal_since_seq(owner, since)
                         .await
-                        .unwrap_or_default();
-                    let deleted = state
+                        .unwrap_or_default()
+                        .iter()
+                        .any(|r| matches!(r.resource_href.as_deref(), Some("task"))),
+                    PingFolderKind::Notes => state
                         .storage
-                        .list_deleted_since_seq(owner, since)
+                        .list_journal_since_seq(owner, since)
                         .await
-                        .unwrap_or_default();
-                    !changed.is_empty() || !deleted.is_empty()
-                }
-                PingFolderKind::Email => unreachable!("email folders excluded above"),
-            };
+                        .unwrap_or_default()
+                        .iter()
+                        .any(|r| matches!(r.resource_href.as_deref(), Some("note"))),
+                    // Calendar and Contacts changes flow through item_map and the
+                    // shared change journal (op='upsert') plus delete tombstones.
+                    PingFolderKind::Calendar | PingFolderKind::Contacts => {
+                        let changed = state
+                            .storage
+                            .list_changes_since_seq(owner, since, 1000)
+                            .await
+                            .unwrap_or_default();
+                        let deleted = state
+                            .storage
+                            .list_deleted_since_seq(owner, since)
+                            .await
+                            .unwrap_or_default();
+                        !changed.is_empty() || !deleted.is_empty()
+                    }
+                    PingFolderKind::Email => unreachable!("email folders excluded above"),
+                };
 
             if changed {
                 changed_folders.push(folder.id.as_str());
@@ -2829,6 +2841,24 @@ async fn handle_get_item_estimate(
             .flatten()
             .unwrap_or(0)
     };
+    // §16: a stale watermark (pruning erased part of the delta it needs)
+    // cannot be estimated against — the count would be wrong and the client
+    // would then resume from a re-keyed gap. Report the invalid-key status
+    // (GetItemEstimate uses 4, [MS-ASCMD] §2.2.3.177.8) so the client
+    // re-primes with SyncKey 0.
+    if incoming != "0"
+        && state
+            .storage
+            .journal_window_stale(owner, since)
+            .await
+            .unwrap_or(false)
+    {
+        let xml = format!(
+            r#"<?xml version="1.0" encoding="utf-8"?><GetItemEstimate xmlns="GetItemEstimate:"><Response><Status>4</Status><Collection><CollectionId>{}</CollectionId><Estimate>0</Estimate></Collection></Response></GetItemEstimate>"#,
+            visible_collection_id
+        );
+        return xml_or_wbxml_response(wbxml, as_wbxml, &xml, request_id);
+    }
     let changed = state
         .storage
         .list_changes_since_seq(owner, since, 1000)
@@ -5581,6 +5611,56 @@ async fn handle_local_content_sync(ctx: &LocalContentSyncCtx<'_>) -> String {
         .get_local_sync_cursor(username, state_collection_id)
         .await
         .unwrap_or(None);
+
+    // §16 stale-watermark guard: the client is resuming from a journal
+    // position that pruning has already erased part of (a device offline
+    // longer than the pruning safety window, or one whose watermark the
+    // floor scan could not observe). The delta it asks for cannot be
+    // reconstructed, so force a clean full resync (Sync status 3) instead of
+    // silently resuming across a re-keyed gap. A continuation window is
+    // anchored to its cursor's `base_seq`; a delta to the stored `seq:`
+    // token. `incoming_key == "0"` is itself a full resync and never stale.
+    if incoming_key != "0" {
+        // Mirror exactly what the delta/continuation branches will resume from:
+        // a continuation window's cursor `base_seq`, else the stored `seq:`
+        // token (an unreadable token resumes from 0 — a full journal replay,
+        // which pruning may have made impossible).
+        let resume_seq = match pending_cursor.as_ref() {
+            Some((_, cursor_base)) => *cursor_base,
+            None => state
+                .storage
+                .get_sync_key(username, state_collection_id)
+                .await
+                .ok()
+                .flatten()
+                .and_then(|(_, token)| token)
+                .and_then(|t| t.strip_prefix("seq:").and_then(|n| n.parse::<i64>().ok()))
+                .unwrap_or(0),
+        };
+        if state
+            .storage
+            .journal_window_stale(username, resume_seq)
+            .await
+            .unwrap_or(false)
+        {
+            tracing::info!(
+                collection_id = %collection_id,
+                class = class,
+                resume_seq,
+                "Stale {} watermark below the pruned journal floor; forcing full resync",
+                class
+            );
+            let _ = state
+                .storage
+                .clear_local_sync_cursor(username, state_collection_id)
+                .await;
+            return format!(
+                "<Collection><Class>{}</Class><SyncKey>0</SyncKey><CollectionId>{}</CollectionId><Status>3</Status></Collection>",
+                class,
+                xml_escape(collection_id)
+            );
+        }
+    }
 
     let mut commands_xml = String::new();
     let mut more_available = false;
@@ -8423,6 +8503,121 @@ mod tests {
         assert!(!PING_IN_FLIGHT.contains_key("delta-user@example.com:delta-device"));
     }
 
+    /// §16: a Ping holding a folder whose watermark is below the pruned journal
+    /// floor must wake immediately (Status 2) so the client's follow-up Sync
+    /// can force the full resync. Without this delivery half a long-offline
+    /// device would sleep through its own re-prime.
+    #[tokio::test]
+    async fn test_ping_stale_watermark_wakes_folder_immediately() {
+        let state = test_ping_state().await;
+        let owner = "stale-ping@example.com";
+
+        // Journal history + a device whose watermark the floor scan cannot read
+        // (a provider-state token, as a calendar collection's JMAP
+        // `query_state` is) sitting below a floor produced by another device's
+        // higher, readable watermark.
+        state
+            .storage
+            .upsert_item_map(owner, "http://cal/1", "calendar/", "cal-1", "uid-1", "e1")
+            .await
+            .expect("journal upsert");
+        state
+            .storage
+            .set_sync_key(owner, "1::stale-device", "k", Some("opaque-provider-state"))
+            .await
+            .expect("stale watermark");
+        state
+            .storage
+            .set_sync_key(owner, "1::other", "k2", Some("seq:50"))
+            .await
+            .expect("higher watermark");
+        assert!(state.storage.prune_change_journal(owner).await.unwrap() > 0);
+        assert!(
+            state
+                .storage
+                .journal_window_stale(owner, 0)
+                .await
+                .expect("stale check"),
+            "precondition: the device watermark is below the floor"
+        );
+
+        let password = SecretString::from("pw");
+        let req = EasRequest {
+            command: "Ping".to_string(),
+            device_id: Some("stale-device".to_string()),
+            ..Default::default()
+        };
+        let xml = ping_xml(60, r#"<Folder><Id>1</Id><Class>Calendar</Class></Folder>"#);
+        let resp = timeout(
+            StdDuration::from_secs(5),
+            handle_ping(
+                &state,
+                &PingInvocation {
+                    owner,
+                    password: &password,
+                    req: &req,
+                    xml: &xml,
+                    request_id: "req-stale",
+                },
+                &Wbxml::new(),
+                false,
+            ),
+        )
+        .await
+        .expect("a stale watermark must wake the Ping at once, not sleep");
+        let text = response_text(resp).await;
+        assert!(
+            text.contains("<Status>2</Status>") && text.contains("<Folder>1</Folder>"),
+            "stale watermark must report the folder, got: {text}"
+        );
+    }
+
+    /// §16: GetItemEstimate against a stale watermark reports the invalid-key
+    /// status (4) rather than a wrong count the client would resume from.
+    #[tokio::test]
+    async fn test_get_item_estimate_stale_watermark_reports_invalid_key() {
+        let state = test_ping_state().await;
+        let owner = "stale-estimate@example.com";
+
+        state
+            .storage
+            .upsert_item_map(owner, "http://cal/1", "calendar/", "cal-1", "uid-1", "e1")
+            .await
+            .expect("journal upsert");
+        state
+            .storage
+            .set_sync_key(
+                owner,
+                "1::est-device",
+                "keystored",
+                Some("opaque-provider-state"),
+            )
+            .await
+            .expect("stale watermark");
+        state
+            .storage
+            .set_sync_key(owner, "1::other", "k2", Some("seq:50"))
+            .await
+            .expect("higher watermark");
+        assert!(state.storage.prune_change_journal(owner).await.unwrap() > 0);
+
+        let req = EasRequest {
+            command: "GetItemEstimate".to_string(),
+            sync_key: Some("keystored".to_string()),
+            collection_id: Some("1".to_string()),
+            device_id: Some("est-device".to_string()),
+            ..Default::default()
+        };
+        let resp =
+            handle_get_item_estimate(&state, owner, &req, &Wbxml::new(), false, "req-stale-est")
+                .await;
+        let text = response_text(resp).await;
+        assert!(
+            text.contains("<Status>4</Status>"),
+            "a stale watermark must report the invalid-key status, got: {text}"
+        );
+    }
+
     // ===================== Sync WindowSize (MS-ASCMD §2.2.3.199) ===========
 
     /// Extract the first `<SyncKey>` value from a rendered collection XML.
@@ -9250,6 +9445,196 @@ mod tests {
             "stale key must answer Status 3: {xml}"
         );
         assert!(xml.contains("<SyncKey>0</SyncKey>"), "Status 3: {xml}");
+    }
+
+    /// §16: a device resuming from a `seq:` watermark below the pruned journal
+    /// floor can no longer reconstruct its delta. The SyncKey still matches
+    /// (the device is not lying about its identity), but the stored window is
+    /// gone — the collection must answer Status 3 with SyncKey 0 so the client
+    /// does a clean full resync instead of silently accepting a re-keyed gap.
+    ///
+    /// The staleness is produced through the real storage path: the device's
+    /// watermark is a provider-state token (opaque to the floor scan, as a
+    /// calendar collection's JMAP `query_state` is), so another device's
+    /// higher watermark lets pruning advance past it.
+    #[tokio::test]
+    async fn test_local_content_sync_stale_watermark_forces_status_3() {
+        let state = test_sync_state().await;
+        let user = "stale-wm-user@example.com";
+        let device = "test-device";
+        let state_coll = scoped_collection_id(crate::tasks::TASKS_COLLECTION_ID, device);
+        seed_tasks(&state, user, 5).await;
+
+        // The device primes and consumes the journal up to the current head,
+        // but its token is a provider state the floor scan cannot read.
+        let head = state.storage.get_latest_change_seq().await.unwrap_or(0);
+        state
+            .storage
+            .set_sync_key(
+                user,
+                &state_coll,
+                "stale-key",
+                Some("opaque-provider-state"),
+            )
+            .await
+            .expect("store opaque watermark");
+        state
+            .storage
+            .set_journal_watermark(user, &state_coll, head)
+            .await
+            .expect("store column watermark");
+        assert!(head > 0, "seeding must have journaled changes");
+
+        // A second device whose watermark the scan can read at a high position
+        // lets the pruner floor the journal above this device's token.
+        state
+            .storage
+            .set_sync_key(user, "7::other-device", "other-key", Some("seq:999"))
+            .await
+            .expect("store higher watermark");
+        state
+            .storage
+            .prune_change_journal(user)
+            .await
+            .expect("prune");
+        assert!(
+            state
+                .storage
+                .journal_window_stale(user, 0)
+                .await
+                .expect("stale check"),
+            "the pruned floor must exceed the device's effective watermark"
+        );
+
+        // The key still matches, but the window is stale: Status 3, SyncKey 0.
+        let coll = tasks_collection("stale-key", None);
+        let xml = handle_local_content_sync(&LocalContentSyncCtx {
+            state: &state,
+            username: user,
+            password: "",
+            collection_id: crate::tasks::TASKS_COLLECTION_ID,
+            state_collection_id: &state_coll,
+            incoming_key: "stale-key",
+            coll: &coll,
+            kind: LocalContentKind::Tasks,
+            global_budget: None,
+        })
+        .await;
+        assert!(
+            xml.contains("<Status>3</Status>"),
+            "stale watermark must force a full resync: {xml}"
+        );
+        assert!(
+            xml.contains("<SyncKey>0</SyncKey>"),
+            "Status 3 must carry SyncKey 0: {xml}"
+        );
+        assert_eq!(
+            xml.matches("<Add>").count(),
+            0,
+            "no delta may be delivered across the gap: {xml}"
+        );
+
+        // Re-priming with SyncKey 0 delivers the full live set cleanly.
+        let coll = tasks_collection("0", None);
+        let xml = handle_local_content_sync(&LocalContentSyncCtx {
+            state: &state,
+            username: user,
+            password: "",
+            collection_id: crate::tasks::TASKS_COLLECTION_ID,
+            state_collection_id: &state_coll,
+            incoming_key: "0",
+            coll: &coll,
+            kind: LocalContentKind::Tasks,
+            global_budget: None,
+        })
+        .await;
+        assert!(xml.contains("<Status>1</Status>"), "re-prime: {xml}");
+        assert_eq!(xml.matches("<Add>").count(), 5, "re-prime full set: {xml}");
+    }
+
+    /// §16: a healthy delta sync — its watermark at or above the pruned floor —
+    /// must NOT be forced to resync. Guards against the guard over-firing.
+    #[tokio::test]
+    async fn test_local_content_sync_watermark_at_pruned_floor_still_deltas() {
+        let state = test_sync_state().await;
+        let user = "floor-ok-user@example.com";
+        let device = "test-device";
+        let state_coll = scoped_collection_id(crate::tasks::TASKS_COLLECTION_ID, device);
+        seed_tasks(&state, user, 2).await;
+
+        // Initial sync consumes the journal and stores a readable `seq:` token.
+        let coll = tasks_collection("0", None);
+        let xml = handle_local_content_sync(&LocalContentSyncCtx {
+            state: &state,
+            username: user,
+            password: "",
+            collection_id: crate::tasks::TASKS_COLLECTION_ID,
+            state_collection_id: &state_coll,
+            incoming_key: "0",
+            coll: &coll,
+            kind: LocalContentKind::Tasks,
+            global_budget: None,
+        })
+        .await;
+        assert!(xml.contains("<Status>1</Status>"), "initial: {xml}");
+        let key = first_sync_key(&xml);
+        let floor = state.storage.get_latest_change_seq().await.unwrap_or(0);
+        // A third device with a high watermark lets pruning run up to this
+        // device's own watermark (the minimum), never above it.
+        state
+            .storage
+            .set_sync_key(user, "7::other", "k", Some(&format!("seq:{floor}")))
+            .await
+            .expect("other watermark");
+        state
+            .storage
+            .prune_change_journal(user)
+            .await
+            .expect("prune");
+        assert!(
+            !state
+                .storage
+                .journal_window_stale(user, floor)
+                .await
+                .expect("stale check"),
+            "a watermark at the floor is intact"
+        );
+
+        // A change after the floor is delivered as a normal delta (Status 1).
+        state
+            .storage
+            .upsert_task(
+                user,
+                "task-new",
+                &crate::storage::TaskFields {
+                    subject: Some("After prune"),
+                    importance: Some(1),
+                    ..Default::default()
+                },
+            )
+            .await
+            .expect("post-prune change");
+        let coll = tasks_collection(&key, None);
+        let xml = handle_local_content_sync(&LocalContentSyncCtx {
+            state: &state,
+            username: user,
+            password: "",
+            collection_id: crate::tasks::TASKS_COLLECTION_ID,
+            state_collection_id: &state_coll,
+            incoming_key: &key,
+            coll: &coll,
+            kind: LocalContentKind::Tasks,
+            global_budget: None,
+        })
+        .await;
+        assert!(
+            xml.contains("<Status>1</Status>"),
+            "healthy delta must not be forced to resync: {xml}"
+        );
+        assert!(
+            xml.contains("task-new"),
+            "the post-prune change must be delivered: {xml}"
+        );
     }
 
     #[tokio::test]

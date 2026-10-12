@@ -59,6 +59,17 @@ CREATE TABLE IF NOT EXISTS change_journal (
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
+-- High-water mark of change_journal pruning, per owner. Every journal id at or
+-- below `pruned_through` has been deleted and can never be replayed, so a sync
+-- whose stored watermark is below it can no longer reconstruct its delta and
+-- MUST be told to re-prime (EAS Sync status 3) instead of silently resuming
+-- from a re-keyed gap. See `Storage::prune_change_journal`.
+CREATE TABLE IF NOT EXISTS journal_prune_state (
+    owner TEXT PRIMARY KEY,
+    pruned_through INTEGER NOT NULL DEFAULT 0,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE TABLE IF NOT EXISTS client_sync_command (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     owner TEXT NOT NULL,
@@ -590,3 +601,6 @@ CREATE INDEX IF NOT EXISTS idx_meeting_rsvp_owner ON meeting_rsvp(owner);
 
 INSERT OR IGNORE INTO schema_version (version, description)
 VALUES (9, 'v9: meeting_rsvp idempotence table for MeetingResponse/iMIP integrity');
+
+INSERT OR IGNORE INTO schema_version (version, description)
+VALUES (10, 'v10: journal_prune_state tracks the pruned-through journal id per owner for stale-watermark forced resync');

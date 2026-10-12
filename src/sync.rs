@@ -1298,6 +1298,12 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
         }
     }
 
+    // The calendar delta is derived from the backend snapshot diffed against
+    // `item_map` (etag comparison), never from the client's stored watermark —
+    // so §16 journal pruning cannot cut a window out from under a calendar
+    // client, and no stale-watermark guard applies here (the stored token is
+    // frequently an opaque JMAP `query_state`, which would make a naive guard
+    // fire forever).
     let _since = if params.incoming_sync_key == "0" {
         0
     } else {
