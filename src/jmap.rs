@@ -3552,7 +3552,18 @@ impl JmapClient {
         };
         let status = resp.status();
         if status.is_success() {
-            CredentialCheck::Valid
+            // A bare 2xx is not proof of valid credentials: a 204, a proxy's
+            // HTML 200, or any other non-JMAP responder can return one without
+            // ever having authenticated anyone. Require the body to be a real
+            // RFC 8621 §2 JMAP session object; a parse failure is a backend
+            // error (retryable), never a cached positive.
+            match resp.json::<JmapSession>().await {
+                Ok(_) => CredentialCheck::Valid,
+                Err(e) => CredentialCheck::BackendError(format!(
+                    "JMAP session response was not a valid session object: {}",
+                    e
+                )),
+            }
         } else if status == reqwest::StatusCode::UNAUTHORIZED
             || status == reqwest::StatusCode::FORBIDDEN
         {
@@ -6298,6 +6309,69 @@ mod tests {
                 "{backend_error} must classify as BackendError (not cached, no password prompt)"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn check_credentials_rejects_non_session_2xx_body() {
+        use axum::response::Response;
+        use axum::routing::get;
+
+        // Any 2xx that is not a JMAP session object (here an HTML 200, as a
+        // proxy or login portal might return) must not authenticate anyone.
+        let handler = || async {
+            Response::builder()
+                .status(200)
+                .header("content-type", "text/html")
+                .body(axum::body::Body::from("<html>sign in</html>"))
+                .unwrap()
+        };
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let base = format!("http://127.0.0.1:{port}");
+        let app = axum::Router::new().route("/session", get(handler));
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let client = JmapClient::new(&base).unwrap();
+        let pw = SecretString::from("pw");
+        assert!(
+            matches!(
+                client.check_credentials("u", &pw).await,
+                CredentialCheck::BackendError(_)
+            ),
+            "a non-session 2xx body must be a BackendError, not Valid"
+        );
+    }
+
+    #[tokio::test]
+    async fn check_credentials_rejects_empty_204() {
+        use axum::response::Response;
+        use axum::routing::get;
+
+        let handler = || async {
+            Response::builder()
+                .status(204)
+                .body(axum::body::Body::empty())
+                .unwrap()
+        };
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let base = format!("http://127.0.0.1:{port}");
+        let app = axum::Router::new().route("/session", get(handler));
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let client = JmapClient::new(&base).unwrap();
+        let pw = SecretString::from("pw");
+        assert!(
+            matches!(
+                client.check_credentials("u", &pw).await,
+                CredentialCheck::BackendError(_)
+            ),
+            "a 204 with no session body must be a BackendError, not Valid"
+        );
     }
 
     #[tokio::test]

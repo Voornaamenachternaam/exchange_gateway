@@ -5,6 +5,9 @@ use crate::jmap::JmapClient;
 use moka::Expiry;
 use moka::sync::Cache;
 use secrecy::SecretString;
+use std::sync::Arc;
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 use tracing::{debug, trace, warn};
 
@@ -108,6 +111,19 @@ pub struct AuthVerifier {
     jmap_base: String,
     /// Configured negative-cache lifetime; zero disables negative caching.
     negative_ttl: Duration,
+    /// Monotonic ticket source: every verification takes a ticket *before*
+    /// probing the backend, so tickets order concurrent verifications by the
+    /// instant they started rather than by the instant they finished.
+    ticket: Arc<AtomicU64>,
+    /// Highest ticket already committed to the cache, per user. A finishing
+    /// verification whose ticket is below this value lost a race to a newer
+    /// request and must not repopulate the cache. Bounded (TTL + capacity) so a
+    /// long-running process cannot accumulate per-user entries without limit.
+    committed_generation: Cache<String, u64>,
+    /// Serializes the check-then-commit step of [`AuthVerifier::commit_result`]
+    /// so two verifications cannot both observe "no newer commit" and then both
+    /// write. Held only across pure in-memory cache edits (no `.await`).
+    commit_lock: Arc<Mutex<()>>,
 }
 
 impl AuthVerifier {
@@ -115,7 +131,7 @@ impl AuthVerifier {
         // Positive results keep the operator-configured TTL (floor 30s).
         let positive = Duration::from_secs(cfg.auth_cache_ttl_secs.max(30));
         // Negative results use a short, separately-configured TTL. The jitter
-        // is a quarter of that TTL, added on top per key.
+        // is 25% of that base TTL, added on top per key.
         let negative = Duration::from_secs(cfg.auth_cache_negative_ttl_secs);
         let negative_jitter = Duration::from_millis((negative.as_millis() / 4) as u64);
         let max_entries = cfg.auth_cache_max_entries.max(1);
@@ -132,6 +148,12 @@ impl AuthVerifier {
             caldav_base: cfg.caldav_base.clone(),
             jmap_base: cfg.jmap_base.clone(),
             negative_ttl: negative,
+            ticket: Arc::new(AtomicU64::new(0)),
+            committed_generation: Cache::builder()
+                .max_capacity(max_entries as u64)
+                .time_to_live(Duration::from_secs(3600))
+                .build(),
+            commit_lock: Arc::new(Mutex::new(())),
         }
     }
 
@@ -153,6 +175,13 @@ impl AuthVerifier {
     /// other cached credential for the same username, so a changed Stalwart
     /// password stops working at the gateway as soon as the new password is
     /// first used rather than lingering for the positive TTL.
+    ///
+    /// Concurrent verifications for the same user are ordered by the instant
+    /// they *started* (their ticket), not the instant they finished: a slower
+    /// request that began before a newer one can never repopulate the cache
+    /// after the newer request's result has been committed. This closes the
+    /// window in which an in-flight check of an old password could insert a
+    /// fresh positive entry after a new-password login had already evicted it.
     pub async fn verify_outcome(&self, username: &str, password: &str) -> AuthOutcome {
         if username.is_empty() || password.is_empty() {
             debug!(
@@ -182,20 +211,31 @@ impl AuthVerifier {
             "Cache miss - verifying credentials"
         );
 
+        let ticket = self.ticket.fetch_add(1, Ordering::SeqCst);
+
         let outcome = self.verify_backend(username, password).await;
 
         match outcome {
             AuthOutcome::Verified => {
-                // Drop any other cached credential for this user (e.g. a
-                // previous password cached valid, or a stale negative) so a
-                // password change takes effect on the next login.
-                self.invalidate_other_passwords_for_user(username, &cache_key);
-                self.cache.insert(cache_key, Cached::Valid);
-                debug!(
-                    target: "auth",
-                    username = %username,
-                    "Authentication result cached (valid)"
-                );
+                // Commit only if no newer verification for this user has
+                // already been committed; otherwise this stale positive could
+                // resurrect an old password that a newer login evicted.
+                if self.commit_result(username, ticket, || {
+                    self.invalidate_other_passwords_for_user(username, &cache_key);
+                    self.cache.insert(cache_key, Cached::Valid);
+                }) {
+                    debug!(
+                        target: "auth",
+                        username = %username,
+                        "Authentication result cached (valid)"
+                    );
+                } else {
+                    debug!(
+                        target: "auth",
+                        username = %username,
+                        "Skipped caching a superseded valid result"
+                    );
+                }
             }
             AuthOutcome::InvalidCredentials => {
                 if self.negative_ttl.is_zero() {
@@ -204,19 +244,29 @@ impl AuthVerifier {
                         username = %username,
                         "Negative caching disabled; rejection not cached"
                     );
-                } else {
+                } else if self.commit_result(username, ticket, || {
                     self.cache.insert(cache_key, Cached::Invalid);
+                }) {
                     debug!(
                         target: "auth",
                         username = %username,
                         negative_ttl_secs = self.negative_ttl.as_secs(),
                         "Authentication result cached (invalid)"
                     );
+                } else {
+                    debug!(
+                        target: "auth",
+                        username = %username,
+                        "Skipped caching a superseded invalid result"
+                    );
                 }
             }
             AuthOutcome::BackendUnavailable => {
                 // Never cache: a transient backend failure must not become a
-                // sticky rejection that outlives the outage.
+                // sticky rejection that outlives the outage. The ordering slot
+                // is still advanced so a still-running older probe cannot later
+                // commit a stale result.
+                self.record_committed_generation(username, ticket);
                 warn!(
                     target: "auth",
                     username = %username,
@@ -225,6 +275,45 @@ impl AuthVerifier {
             }
         }
         outcome
+    }
+
+    /// Run `apply` and commit `ticket` as this user's newest finished
+    /// verification, but only if no newer verification has already committed.
+    /// Returns `false` when a newer verification won the race, in which case
+    /// the result must be discarded (the newer one owns the cache state).
+    fn commit_result<F: FnOnce()>(&self, username: &str, ticket: u64, apply: F) -> bool {
+        // Serialize the whole check-and-apply under a per-verifier mutex. The
+        // `apply` bodies are pure in-memory cache edits with no `.await`, so
+        // this is a short, uncontended critical section.
+        let _guard = self.commit_lock.lock().unwrap_or_else(|e| e.into_inner());
+        if self
+            .committed_generation
+            .get(username)
+            .is_some_and(|g| g > ticket)
+        {
+            return false;
+        }
+        apply();
+        self.record_committed_generation_locked(username, ticket);
+        true
+    }
+
+    /// Record `ticket` as the newest committed generation for `username`,
+    /// without the commit mutex (for the non-caching backend-outage path).
+    fn record_committed_generation(&self, username: &str, ticket: u64) {
+        let _guard = self.commit_lock.lock().unwrap_or_else(|e| e.into_inner());
+        self.record_committed_generation_locked(username, ticket);
+    }
+
+    fn record_committed_generation_locked(&self, username: &str, ticket: u64) {
+        if self
+            .committed_generation
+            .get(username)
+            .is_none_or(|g| g < ticket)
+        {
+            self.committed_generation
+                .insert(username.to_string(), ticket);
+        }
     }
 
     /// Drop every cached credential (positive or negative) for `username`.
@@ -414,7 +503,7 @@ mod tests {
     use super::*;
     use crate::config::Config;
     use std::sync::Arc;
-    use std::sync::atomic::{AtomicU16, AtomicU32, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, Ordering};
 
     /// A stub backend that serves JMAP `GET /session` with a mutable status
     /// and CalDAV `PROPFIND` with a mutable status, counting each request.
@@ -424,6 +513,12 @@ mod tests {
         jmap_hits: Arc<AtomicU32>,
         caldav_status: Arc<AtomicU16>,
         caldav_hits: Arc<AtomicU32>,
+        /// When armed, the JMAP `/session` handler blocks until `jmap_gate`
+        /// is notified. Lets a test hold one in-flight verification open while
+        /// a newer request for the same user completes, proving the ordering
+        /// guard.
+        jmap_hold: Arc<AtomicBool>,
+        jmap_gate: Arc<tokio::sync::Notify>,
     }
 
     impl BackendStub {
@@ -435,6 +530,8 @@ mod tests {
             struct Ctl {
                 status: Arc<AtomicU16>,
                 hits: Arc<AtomicU32>,
+                hold: Option<Arc<AtomicBool>>,
+                gate: Option<Arc<tokio::sync::Notify>>,
             }
 
             async fn handler(
@@ -442,6 +539,11 @@ mod tests {
                 _method: axum::http::Method,
             ) -> Response {
                 ctl.hits.fetch_add(1, Ordering::SeqCst);
+                if let (Some(hold), Some(gate)) = (&ctl.hold, &ctl.gate)
+                    && hold.load(Ordering::SeqCst)
+                {
+                    gate.notified().await;
+                }
                 let status = ctl.status.load(Ordering::SeqCst);
                 Response::builder()
                     .status(status)
@@ -467,6 +569,8 @@ mod tests {
             let jmap_hits = Arc::new(AtomicU32::new(0));
             let caldav_status = Arc::new(AtomicU16::new(200));
             let caldav_hits = Arc::new(AtomicU32::new(0));
+            let jmap_hold = Arc::new(AtomicBool::new(false));
+            let jmap_gate = Arc::new(tokio::sync::Notify::new());
 
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
             let port = listener.local_addr().unwrap().port();
@@ -475,10 +579,14 @@ mod tests {
             let jctl = Ctl {
                 status: jmap_status.clone(),
                 hits: jmap_hits.clone(),
+                hold: Some(jmap_hold.clone()),
+                gate: Some(jmap_gate.clone()),
             };
             let cctl = Ctl {
                 status: caldav_status.clone(),
                 hits: caldav_hits.clone(),
+                hold: None,
+                gate: None,
             };
             let app = axum::Router::new()
                 .route("/session", get(handler).layer(axum::Extension(jctl)))
@@ -493,6 +601,8 @@ mod tests {
                 jmap_hits,
                 caldav_status,
                 caldav_hits,
+                jmap_hold,
+                jmap_gate,
             }
         }
 
@@ -837,5 +947,61 @@ mod tests {
             2,
             "the negative entry must expire and re-probe"
         );
+    }
+
+    /// A slower in-flight verification of an OLD password that *started*
+    /// before a newer login must not repopulate the cache after the newer
+    /// login has committed and evicted it.
+    #[tokio::test]
+    async fn slow_older_verification_cannot_repopulate_cache_after_newer_login() {
+        let stub = BackendStub::spawn().await;
+        let verifier = Arc::new(AuthVerifier::new(&stub.cfg_jmap_only(30)));
+
+        // The FIRST (older) request blocks in the backend.
+        stub.jmap_hold.store(true, Ordering::SeqCst);
+        let old = {
+            let verifier = Arc::clone(&verifier);
+            tokio::spawn(async move { verifier.verify_outcome("u", "old-pw").await })
+        };
+        // Wait until it is actually in flight (its probe has started).
+        while stub.jmap_hits.load(Ordering::SeqCst) == 0 {
+            tokio::task::yield_now().await;
+        }
+
+        // The SECOND (newer) request starts after, but completes first.
+        stub.jmap_hold.store(false, Ordering::SeqCst);
+        let new = verifier.verify_outcome("u", "new-pw").await;
+        assert_eq!(new, AuthOutcome::Verified);
+
+        // Let the older request finish; it resumed AFTER the newer committed.
+        // `notify_one` stores a permit if the waiter has not yet registered, so
+        // this cannot be lost to a scheduling window.
+        stub.jmap_gate.notify_one();
+        let old_result = old.await.unwrap();
+        assert_eq!(old_result, AuthOutcome::Verified);
+
+        // The stale positive for the old password must NOT have been
+        // re-inserted (the newer login evicted it), so the old password
+        // re-probes and is rejected once the backend is set to reject.
+        stub.jmap_status.store(401, Ordering::SeqCst);
+        let old_hits_before = stub.jmap_hits.load(Ordering::SeqCst);
+        assert_eq!(
+            verifier.verify_outcome("u", "old-pw").await,
+            AuthOutcome::InvalidCredentials,
+            "the superseded old-password result must not be cached"
+        );
+        assert_eq!(
+            stub.jmap_hits.load(Ordering::SeqCst),
+            old_hits_before + 1,
+            "old password must re-probe, proving nothing was cached for it"
+        );
+
+        // The newer, winning password is still cached (no extra probe).
+        let hits = stub.jmap_hits.load(Ordering::SeqCst);
+        assert_eq!(
+            verifier.verify_outcome("u", "new-pw").await,
+            AuthOutcome::Verified
+        );
+        assert_eq!(stub.jmap_hits.load(Ordering::SeqCst), hits);
     }
 }

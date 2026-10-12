@@ -384,8 +384,8 @@ curl -v https://calendar.example.com/autodiscover/autodiscover.xml
 | `GATEWAY_DATABASE_PATH` | SQLite path | No | `/var/lib/exchange-gateway/gateway.db` |
 | `GATEWAY_MAX_ATTACHMENT_BYTES` | Max attachment size | No | `5242880` |
 | `GATEWAY_ROOM_BOOKING_ENABLED` | Enable room booking | No | `true` |
-| `GATEWAY_AUTH_CACHE_TTL_SECS` | Positive auth cache TTL (seconds) | No | `300` |
-| `GATEWAY_AUTH_CACHE_NEGATIVE_TTL_SECS` | Negative auth cache TTL (seconds); `0` disables negative caching | No | `30` |
+| `GATEWAY_AUTH_CACHE_TTL_SECS` | Positive auth cache TTL (seconds; minimum `30`) | No | `300` |
+| `GATEWAY_AUTH_CACHE_NEGATIVE_TTL_SECS` | Negative auth cache TTL base (seconds; up to 25% deterministic jitter is added, so the effective lifetime is `base`..`base`+25%); `0` disables negative caching | No | `30` |
 | `GATEWAY_AUTH_CACHE_MAX_ENTRIES` | Auth cache max entries | No | `10000` |
 | `GATEWAY_ALLOW_INSECURE_HTTP` | Permit plain HTTP to the backend (JMAP) | No | `false` |
 

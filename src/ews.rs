@@ -1855,12 +1855,24 @@ pub(crate) fn soap_ok(inner: String) -> Response {
     ews_response(StatusCode::OK, xml)
 }
 
+/// SOAP 1.1 fault for a non-success EWS response.
+///
+/// The `<faultcode>` is derived from the HTTP status: `s:Server` for a 5xx
+/// (the request was well-formed but the gateway/backend failed) and `s:Client`
+/// otherwise (the request itself was wrong). SOAP 1.1 reserves `s:Client` for
+/// request-caused faults, and some stacks treat `s:Client` faults as
+/// permanent/non-retryable, so a transient outage must not be reported as one.
 fn soap_fault(code: &str, message: &str, status: StatusCode) -> Response {
+    let fault_code = if status.is_server_error() {
+        "s:Server"
+    } else {
+        "s:Client"
+    };
     let xml = format!(
         r#"<?xml version="1.0" encoding="utf-8"?>
 <s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
   <s:Header>{svi}</s:Header>
-  <s:Body><s:Fault><faultcode>s:Client</faultcode><faultstring>{}</faultstring><detail><m:ResponseCode xmlns:m="{}">{}</m:ResponseCode></detail></s:Fault></s:Body>
+  <s:Body><s:Fault><faultcode>{fault_code}</faultcode><faultstring>{}</faultstring><detail><m:ResponseCode xmlns:m="{}">{}</m:ResponseCode></detail></s:Fault></s:Body>
 </s:Envelope>"#,
         xml_escape(message),
         EWS_MSG_NS,
@@ -1876,7 +1888,8 @@ fn soap_fault(code: &str, message: &str, status: StatusCode) -> Response {
 /// EWS clients retry a transient server error; they treat 401 as a bad
 /// password and prompt the user. `ErrorServerBusy` is the closest EWS code for
 /// "try again shortly" ([MS-OXWSCDATA] §2.2.1.1) and, unlike a plain success
-/// envelope, is unambiguously an error.
+/// envelope, is unambiguously an error. The 503 makes [`soap_fault`] emit an
+/// `s:Server` faultcode, so the failure reads as server-side and retryable.
 fn ews_backend_unavailable() -> Response {
     soap_fault(
         "ErrorServerBusy",
@@ -12160,9 +12173,34 @@ mod tests {
         assert!(extract_first_tag_block(unterminated, b"AcceptItem").is_none());
     }
 
-    /// A backend outage on the EWS front door must answer a retryable 503
-    /// SOAP fault, never 401 (which makes Outlook re-prompt for a password)
-    /// — AUDIT.md §17.
+    /// The SOAP faultcode is derived from the HTTP status: server-side for a
+    /// 5xx, client-side for a 4xx error.
+    #[tokio::test]
+    async fn soap_fault_derives_faultcode_from_status() {
+        // 5xx is server-side; everything else is the client's request.
+        let server = soap_fault(
+            "ErrorInternalServerError",
+            "boom",
+            StatusCode::INTERNAL_SERVER_ERROR,
+        );
+        let body = axum::body::to_bytes(server.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert!(
+            String::from_utf8_lossy(&body).contains("<faultcode>s:Server</faultcode>"),
+            "a 5xx fault must be s:Server"
+        );
+
+        let client = soap_fault("ErrorInvalidRequest", "bad", StatusCode::BAD_REQUEST);
+        let body = axum::body::to_bytes(client.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert!(
+            String::from_utf8_lossy(&body).contains("<faultcode>s:Client</faultcode>"),
+            "a 4xx fault must remain s:Client"
+        );
+    }
+
     #[tokio::test]
     async fn handle_returns_retryable_fault_when_auth_backend_is_down() {
         let state = meeting_test_state().await;
@@ -12198,6 +12236,10 @@ mod tests {
         assert!(
             text.contains("ErrorServerBusy"),
             "the fault must be a retryable EWS code, got: {text}"
+        );
+        assert!(
+            text.contains("<faultcode>s:Server</faultcode>"),
+            "a backend outage is server-side and must not be an s:Client fault, got: {text}"
         );
     }
 
