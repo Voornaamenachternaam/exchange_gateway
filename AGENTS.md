@@ -402,10 +402,22 @@ EAS specs v20250520 (16.1); older EAS compat NOT needed.
   log) and documented in .env.example, docker-compose.yml, CLOUDFLARED_SETUP.md.
   Tests: 6 new in src/auth.rs (breaker opens/skips, breaker resets, zero-cap
   disables, concurrent same-credential burst = 1 probe, rate cap spacing,
-  invalidate purges shared client cache) + 3 in src/jmap.rs (`probe_auth`
-  positive TTL, negative + eviction, backend-error-not-cached) + 2 config env
-  tests + EWS Retry-After assertion. Suite: 1074 lib + 2 + 22 + 11 + 1 doc =
-  1110 green, clippy 0, rustfmt clean on touched files, release warning-free.
+  invalidate purges shared client cache) + 5 in src/jmap.rs (`probe_auth`
+  positive TTL, negative + eviction, backend-error-not-cached, capacity bound,
+  injected positive TTL governs expiry) + 3 in src/models.rs (shared client
+  present whenever `jmap_base` set even with `email_enabled=false`, email
+  accessors stay gated, absent without `jmap_base`) + 2 config env
+  tests + EWS Retry-After assertion. Suite: 1079 lib + 2 + 22 + 11 + 1 doc =
+  1115 green, clippy 0, rustfmt clean on touched files, release warning-free.
+  PR #1996 review triage (Phase 2): `JmapClient::probe_auth`'s session-auth
+  cache is now a capacity-bounded moka cache whose positive/negative TTLs are
+  injected by `AppState` from `GATEWAY_AUTH_CACHE_TTL_SECS` /
+  `..._NEGATIVE_TTL_SECS` / `..._MAX_ENTRIES` (new constructor
+  `JmapClient::with_session_auth`), so it can never outlive or grow past the
+  verifier cache contract; `AppState::new` builds the shared JMAP auth client
+  whenever `jmap_base` is set regardless of `email_enabled` while keeping the
+  email accessors gated; the per-user (not global) breaker/rate-cap scope is
+  documented in code as a deliberate correctness trade-off.
 - Next likely audit items: §19 SQLite concurrency (WAL/busy_timeout + load test).
 - §17 Auth negative-caching and cache-invalidation is COMPLETE and its AUDIT.md
   section documents the delivered behavior. Design: `AuthVerifier` now returns

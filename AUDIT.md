@@ -220,18 +220,28 @@ Delivered behavior:
 
 - **Short-lived shared session-auth cache** (`JmapClient::probe_auth`,
   src/jmap.rs): credential probes are cached per `username:SHA-256(password)`
-  (never the password itself) with a positive TTL of 300s and a negative TTL
-  of 30s. Positive/negative results are served without touching Stalwart;
-  `BackendError` (a 5xx / transport failure) is **never** cached, so a
-  recovered backend is observed by the very next request. A successful probe
+  (never the password itself) with a positive TTL derived from the verifier's
+  `GATEWAY_AUTH_CACHE_TTL_SECS` and a negative TTL from
+  `GATEWAY_AUTH_CACHE_NEGATIVE_TTL_SECS`. Positive/negative results are served
+  without touching Stalwart; `BackendError` (a 5xx / transport failure) is
+  **never** cached, so a recovered backend is observed by the very next
+  request. The cache is a capacity-bounded moka cache
+  (`GATEWAY_AUTH_CACHE_MAX_ENTRIES`) whose per-entry TTL is injected by
+  `AppState`, so the client cache can never outlive the verifier cache that
+  governs the documented TTL contract, and it cannot grow without bound across
+  a username scan. A successful probe
   evicts every *other* cached credential for the same user, so a password
   changed directly on Stalwart takes effect on first use.
 - **Shared client topology**: `AppState::new` now constructs the JMAP client
   *before* the `AuthVerifier` and passes it in
   (`AuthVerifier::new_from_topology`), so the verifier's probes reuse the
   app-wide HTTP connection pool and the one session-auth cache instead of
-  building a throwaway client per probe. Standalone constructions
-  (`AuthVerifier::new`, tests) keep a throwaway probe client.
+  building a throwaway client per probe. The shared client is built whenever
+  `jmap_base` is set, **regardless of `email_enabled`** (an operator can turn
+  off the email feature while still authenticating users against Stalwart); the
+  email accessors (`jmap_client`, `can_read_email`, `email_available`) still
+  honor `email_enabled`, so folder sync feature-gating is unchanged. Standalone
+  constructions (`AuthVerifier::new`, tests) keep a throwaway probe client.
 - **Cold-start warm path** (src/main.rs `warm_backend_session`): at startup the
   administrator JMAP session is fetched and cached (and the connection pool
   primed) before the server listens, so the first authenticated request does
@@ -286,11 +296,15 @@ Tests: 6 in src/auth.rs (breaker opens at the threshold and skips the backend,
 breaker resets on an authoritative answer, a zero backoff cap disables the
 breaker, a concurrent same-credential burst costs one probe, the per-user rate
 cap spaces sequential cold probes, and the shared client's session-auth cache
-backs a verifier-cache-invalidated probe); 3 in src/jmap.rs (`probe_auth`
+backs a verifier-cache-invalidated probe); 5 in src/jmap.rs (`probe_auth`
 positive TTL expiry, negative caching + eviction on login, backend error never
-cached across recovery); 2 config env tests (overrides apply, invalid values
-fall back); and a `Retry-After` assertion on the EWS outage front-door test.
-Suite: 1074 lib + 2 + 22 + 11 + 1 doc = 1110 green, clippy 0, rustfmt clean on
+cached across recovery, capacity bound enforced, injected positive TTL governs
+expiry rather than a hard-coded 300s); 3 in src/models.rs (shared client present
+whenever `jmap_base` is set — including with `email_enabled=false` — while the
+email accessors stay gated; absent without `jmap_base`); 2 config env tests
+(overrides apply, invalid values fall back); and a `Retry-After` assertion on the
+EWS outage front-door test.
+Suite: 1079 lib + 2 + 22 + 11 + 1 doc = 1115 green, clippy 0, rustfmt clean on
 touched files, release warning-free.
 
 ### 19. SQLite concurrency

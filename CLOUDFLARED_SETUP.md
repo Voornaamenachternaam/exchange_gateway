@@ -392,9 +392,9 @@ curl -v https://calendar.example.com/autodiscover/autodiscover.xml
 | `GATEWAY_ROOM_BOOKING_ENABLED` | Enable room booking | No | `true` |
 | `GATEWAY_AUTH_CACHE_TTL_SECS` | Positive auth cache TTL (seconds; minimum `30`) | No | `300` |
 | `GATEWAY_AUTH_CACHE_NEGATIVE_TTL_SECS` | Negative auth cache TTL base (seconds; up to 25% deterministic jitter is added, so the effective lifetime is `base`..`base`+25%); `0` disables negative caching | No | `30` |
-| `GATEWAY_AUTH_CACHE_MAX_ENTRIES` | Auth cache max entries | No | `10000` |
-| `GATEWAY_AUTH_PROBE_MIN_INTERVAL_MS` | Minimum spacing between consecutive cold backend credential probes for one user (ms); bounds the per-request Basic-auth probe | No | `1000` |
-| `GATEWAY_AUTH_BACKEND_FAILURE_THRESHOLD` | Consecutive backend-auth failures that open a user's circuit breaker | No | `5` |
+| `GATEWAY_AUTH_CACHE_MAX_ENTRIES` | Auth cache max entries (also bounds the shared JMAP session-auth cache) | No | `10000` |
+| `GATEWAY_AUTH_PROBE_MIN_INTERVAL_MS` | Minimum spacing between consecutive cold backend credential probes for one user (ms); bounds the per-request Basic-auth probe. Per-user, not global | No | `1000` |
+| `GATEWAY_AUTH_BACKEND_FAILURE_THRESHOLD` | Consecutive backend-auth failures that open a user's circuit breaker (per-user, not global) | No | `5` |
 | `GATEWAY_AUTH_BACKEND_MAX_BACKOFF_SECS` | Cap on the circuit breaker's exponential backoff (seconds); `0` disables the breaker | No | `60` |
 | `GATEWAY_ALLOW_INSECURE_HTTP` | Permit plain HTTP to the backend (JMAP) | No | `false` |
 

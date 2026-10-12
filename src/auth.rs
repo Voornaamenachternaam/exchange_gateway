@@ -173,6 +173,15 @@ impl AuthVerifier {
         Self::from_parts(cfg, jmap_client)
     }
 
+    /// The shared JMAP client used for credential probes, if one was injected.
+    /// Exposed crate-wide so `AppState` wiring can be asserted in tests
+    /// (AUDIT.md §18: the shared client must exist whenever JMAP auth is in use,
+    /// regardless of whether the email feature is enabled).
+    #[cfg(test)]
+    pub(crate) fn shared_jmap_client(&self) -> Option<&Arc<JmapClient>> {
+        self.jmap_client.as_ref()
+    }
+
     fn from_parts(cfg: &Config, jmap_client: Option<Arc<JmapClient>>) -> Self {
         // Positive results keep the operator-configured TTL (floor 30s).
         let positive = Duration::from_secs(cfg.auth_cache_ttl_secs.max(30));
@@ -433,6 +442,20 @@ impl AuthVerifier {
     /// 3. **Per-user probe rate cap** — even sequential cold probes are spaced
     ///    by at least `probe_interval`, so a flood of requests for a user whose
     ///    credential cache is continuously missing cannot pin the backend.
+    ///
+    /// The breaker and the rate cap are deliberately **per user**, not global.
+    /// A global breaker (or a global rate gate) would be simpler, but a Stalwart
+    /// outage is a *backend-wide* condition while a credential is a *per-user*
+    /// one; coupling them would let one user's repeatedly-failing credential
+    /// refuse a concurrently-succeeding user's valid login, which is a
+    /// correctness regression (a legitimate client would be told "backend
+    /// unavailable" even though the backend is up and its password is correct).
+    /// Trade-off accepted: during a genuine backend outage the aggregate probe
+    /// count is `users × failure_threshold` before each circuit opens, bounded
+    /// by the concurrent-request ceiling and the in-flight dedup; the
+    /// `auth_backend_unavailable_total` / `auth_circuit_open_total` counters give
+    /// operators the signal to size `failure_threshold`/`backoff` for their user
+    /// population (see AUDIT.md §18).
     ///
     /// Backend *responses* (including a fast rejection) are never gated by the
     /// rate cap: once a probe has run its result is cached, and the rate cap

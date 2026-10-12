@@ -77,24 +77,49 @@ impl AppState {
         // share it: credential probes then reuse the client's session-auth cache
         // and connection pool instead of building a throwaway client per probe
         // (AUDIT.md §18).
-        let jmap_client = if cfg.email_enabled && !cfg.jmap_base.is_empty() {
-            match JmapClient::new(&cfg.jmap_base) {
+        //
+        // The verifier authenticates through JMAP whenever `jmap_base` is set,
+        // regardless of `email_enabled` (an operator can disable the email
+        // feature while still authenticating users against Stalwart). Build the
+        // shared client whenever `jmap_base` is configured; expose it as the
+        // email client only when email is enabled so `can_read_email()` and the
+        // FolderSync email-folder gate keep their configured semantics.
+        //
+        // The client's credential-probe cache TTLs are derived from the
+        // auth-cache knobs so it can never extend the documented
+        // `GATEWAY_AUTH_CACHE_TTL_SECS` contract, and its capacity is bounded by
+        // `GATEWAY_AUTH_CACHE_MAX_ENTRIES` (AUDIT.md §18).
+        let auth_jmap_client = if cfg.jmap_base.is_empty() {
+            None
+        } else {
+            let positive_ttl = Duration::from_secs(cfg.auth_cache_ttl_secs.max(30));
+            let negative_ttl = Duration::from_secs(cfg.auth_cache_negative_ttl_secs);
+            let max_entries = cfg.auth_cache_max_entries.max(1) as u64;
+            match JmapClient::with_session_auth(
+                &cfg.jmap_base,
+                positive_ttl,
+                negative_ttl,
+                max_entries,
+            ) {
                 Ok(c) => Some(Arc::new(c)),
                 Err(e) => {
                     tracing::warn!(
                         target: "models",
                         jmap_base = %cfg.jmap_base,
                         error = %e,
-                        "Failed to create JMAP client; email sync will be unavailable"
+                        "Failed to create JMAP client; email sync and JMAP auth will be unavailable"
                     );
                     None
                 }
             }
+        };
+        let jmap_client = if cfg.email_enabled {
+            auth_jmap_client.clone()
         } else {
             None
         };
 
-        let auth_verifier = Arc::new(AuthVerifier::new_from_topology(&cfg, jmap_client.clone()));
+        let auth_verifier = Arc::new(AuthVerifier::new_from_topology(&cfg, auth_jmap_client));
 
         // The directory service (GAL / ResolveNames / OAB / NSPI) reads the
         // Stalwart directory over JMAP (`urn:stalwart:jmap` `x:Account/*` /
@@ -372,5 +397,80 @@ impl RequestContext {
     pub fn with_protocol_version(mut self, version: impl Into<String>) -> Self {
         self.protocol_version = Some(version.into());
         self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use secrecy::SecretString;
+
+    async fn state_for(cfg: Config) -> Arc<AppState> {
+        let storage = crate::storage::Storage::new("sqlite::memory:")
+            .await
+            .expect("in-memory storage");
+        storage.init_schema().await.expect("schema init");
+        Arc::new(AppState::new(cfg, Arc::new(storage)))
+    }
+
+    /// AUDIT.md §18: when `jmap_base` is set the verifier must authenticate
+    /// through a *shared* JMAP client even if the email feature is disabled, so
+    /// credential probes reuse one connection pool and one session-auth cache
+    /// instead of building a throwaway client per probe. The email accessor
+    /// must still honor `email_enabled`.
+    #[tokio::test]
+    async fn auth_verifier_shares_jmap_client_when_email_disabled() {
+        let cfg = Config {
+            jmap_base: "http://127.0.0.1:1".to_string(),
+            email_enabled: false,
+            mail_domain: "example.com".to_string(),
+            hmac_secret: SecretString::from("a".repeat(32)),
+            ..Default::default()
+        };
+        let state = state_for(cfg).await;
+        assert!(
+            state.auth_verifier.shared_jmap_client().is_some(),
+            "verifier must share a JMAP client whenever jmap_base is set"
+        );
+        assert!(
+            state.jmap_client.is_none(),
+            "email accessor must stay None while email is disabled"
+        );
+        assert!(!state.can_read_email());
+        assert!(!state.email_available());
+    }
+
+    /// With email enabled the shared client is additionally exposed as the
+    /// email client, preserving the pre-§18 behavior.
+    #[tokio::test]
+    async fn auth_verifier_shares_jmap_client_when_email_enabled() {
+        let cfg = Config {
+            jmap_base: "http://127.0.0.1:1".to_string(),
+            email_enabled: true,
+            mail_domain: "example.com".to_string(),
+            hmac_secret: SecretString::from("a".repeat(32)),
+            ..Default::default()
+        };
+        let state = state_for(cfg).await;
+        assert!(state.auth_verifier.shared_jmap_client().is_some());
+        assert!(state.jmap_client.is_some());
+        assert!(state.can_read_email());
+    }
+
+    /// No `jmap_base` means no JMAP auth and no email client, regardless of the
+    /// email flag.
+    #[tokio::test]
+    async fn no_shared_client_without_jmap_base() {
+        let cfg = Config {
+            jmap_base: String::new(),
+            email_enabled: true,
+            mail_domain: "example.com".to_string(),
+            hmac_secret: SecretString::from("a".repeat(32)),
+            ..Default::default()
+        };
+        let state = state_for(cfg).await;
+        assert!(state.auth_verifier.shared_jmap_client().is_none());
+        assert!(state.jmap_client.is_none());
+        assert!(!state.can_read_email());
     }
 }
