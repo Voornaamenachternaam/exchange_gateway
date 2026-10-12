@@ -1,4 +1,5 @@
 // src/caldav.rs
+use crate::auth::CredentialCheck;
 use crate::config::Config;
 use crate::util::xml_escape_text;
 use anyhow::{Result, anyhow};
@@ -57,6 +58,13 @@ impl CaldavClient {
     }
 
     pub async fn verify_credentials(&self, username: &str, password: &str) -> bool {
+        self.check_credentials(username, password).await == CredentialCheck::Valid
+    }
+
+    /// Verify credentials via a `PROPFIND` on the user's calendar home,
+    /// preserving the authoritative-401 vs backend-error distinction
+    /// (AUDIT.md §17).
+    pub async fn check_credentials(&self, username: &str, password: &str) -> CredentialCheck {
         let home_url = format!("{}/cal/{}/", self.base.trim_end_matches('/'), username);
         let propfind_body = r#"<?xml version="1.0" encoding="utf-8"?>
 <D:propfind xmlns:D="DAV:">
@@ -75,8 +83,19 @@ impl CaldavClient {
             .send()
             .await
         {
-            Ok(r) => r.status().is_success() || r.status().as_u16() == 207,
-            Err(_) => false,
+            Ok(r) => {
+                let status = r.status();
+                if status.is_success() || status.as_u16() == 207 {
+                    CredentialCheck::Valid
+                } else if status == reqwest::StatusCode::UNAUTHORIZED
+                    || status == reqwest::StatusCode::FORBIDDEN
+                {
+                    CredentialCheck::Invalid
+                } else {
+                    CredentialCheck::BackendError(format!("CalDAV PROPFIND returned {}", status))
+                }
+            }
+            Err(e) => CredentialCheck::BackendError(format!("CalDAV request failed: {}", e)),
         }
     }
 

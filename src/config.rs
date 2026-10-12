@@ -6,6 +6,7 @@ use std::fs;
 
 const DEFAULT_MAX_ATTACHMENT_BYTES: usize = 5 * 1024 * 1024;
 const DEFAULT_AUTH_CACHE_TTL_SECS: u64 = 300;
+const DEFAULT_AUTH_CACHE_NEGATIVE_TTL_SECS: u64 = 30;
 const DEFAULT_AUTH_CACHE_MAX_ENTRIES: usize = 10000;
 const DEFAULT_SMTP_PORT: u16 = 465;
 const DEFAULT_IMAP_PORT: u16 = 993;
@@ -19,6 +20,7 @@ const ENV_MAIL_DOMAIN: &str = "GATEWAY_MAIL_DOMAIN";
 const ENV_MAX_ATTACHMENT_BYTES: &str = "GATEWAY_MAX_ATTACHMENT_BYTES";
 const ENV_ROOM_BOOKING_ENABLED: &str = "GATEWAY_ROOM_BOOKING_ENABLED";
 const ENV_AUTH_CACHE_TTL_SECS: &str = "GATEWAY_AUTH_CACHE_TTL_SECS";
+const ENV_AUTH_CACHE_NEGATIVE_TTL_SECS: &str = "GATEWAY_AUTH_CACHE_NEGATIVE_TTL_SECS";
 const ENV_AUTH_CACHE_MAX_ENTRIES: &str = "GATEWAY_AUTH_CACHE_MAX_ENTRIES";
 const ENV_SMTP_HOST: &str = "GATEWAY_SMTP_HOST";
 const ENV_SMTP_PORT: &str = "GATEWAY_SMTP_PORT";
@@ -95,6 +97,8 @@ pub struct Config {
     pub room_booking_enabled: bool,
     #[serde(default = "default_auth_cache_ttl_secs")]
     pub auth_cache_ttl_secs: u64,
+    #[serde(default = "default_auth_cache_negative_ttl_secs")]
+    pub auth_cache_negative_ttl_secs: u64,
     #[serde(default = "default_auth_cache_max_entries")]
     pub auth_cache_max_entries: usize,
     // Email configuration — SMTP submission via Stalwart
@@ -307,6 +311,10 @@ fn default_auth_cache_ttl_secs() -> u64 {
     DEFAULT_AUTH_CACHE_TTL_SECS
 }
 
+fn default_auth_cache_negative_ttl_secs() -> u64 {
+    DEFAULT_AUTH_CACHE_NEGATIVE_TTL_SECS
+}
+
 fn default_auth_cache_max_entries() -> usize {
     DEFAULT_AUTH_CACHE_MAX_ENTRIES
 }
@@ -467,6 +475,7 @@ impl Config {
             database_path = redact_path(&cfg.database_path),
             max_attachment_bytes = cfg.max_attachment_bytes,
             auth_cache_ttl_secs = cfg.auth_cache_ttl_secs,
+            auth_cache_negative_ttl_secs = cfg.auth_cache_negative_ttl_secs,
             auth_cache_max_entries = cfg.auth_cache_max_entries,
             "Configuration validated successfully"
         );
@@ -707,6 +716,28 @@ fn apply_environment_overrides(cfg: &mut Config) {
                 tracing::warn!(
                     "Invalid value for {}: '{}', using default",
                     ENV_AUTH_CACHE_TTL_SECS,
+                    val
+                );
+            }
+        }
+    }
+
+    if let Some(val) = env::var(ENV_AUTH_CACHE_NEGATIVE_TTL_SECS)
+        .ok()
+        .filter(|v| !v.is_empty())
+    {
+        match val.parse::<u64>() {
+            Ok(parsed) => {
+                tracing::debug!(
+                    "Applying {} from environment",
+                    ENV_AUTH_CACHE_NEGATIVE_TTL_SECS
+                );
+                cfg.auth_cache_negative_ttl_secs = parsed;
+            }
+            Err(_) => {
+                tracing::warn!(
+                    "Invalid value for {}: '{}', using default",
+                    ENV_AUTH_CACHE_NEGATIVE_TTL_SECS,
                     val
                 );
             }
@@ -1140,6 +1171,7 @@ impl Default for Config {
             max_body_bytes: 4 * 1024 * 1024,
             room_booking_enabled: true,
             auth_cache_ttl_secs: DEFAULT_AUTH_CACHE_TTL_SECS,
+            auth_cache_negative_ttl_secs: DEFAULT_AUTH_CACHE_NEGATIVE_TTL_SECS,
             auth_cache_max_entries: DEFAULT_AUTH_CACHE_MAX_ENTRIES,
             smtp_host: String::new(),
             smtp_port: DEFAULT_SMTP_PORT,
@@ -1552,6 +1584,36 @@ mod tests {
             ..Default::default()
         };
         assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn test_auth_cache_negative_ttl_env_override_applies() {
+        with_var(ENV_AUTH_CACHE_NEGATIVE_TTL_SECS, Some("45"), || {
+            let mut cfg = Config::default();
+            apply_environment_overrides(&mut cfg);
+            assert_eq!(cfg.auth_cache_negative_ttl_secs, 45);
+        });
+    }
+
+    #[test]
+    fn test_auth_cache_negative_ttl_invalid_env_falls_back_to_default() {
+        with_var(
+            ENV_AUTH_CACHE_NEGATIVE_TTL_SECS,
+            Some("not-a-number"),
+            || {
+                let mut cfg = Config::default();
+                apply_environment_overrides(&mut cfg);
+                assert_eq!(
+                    cfg.auth_cache_negative_ttl_secs,
+                    DEFAULT_AUTH_CACHE_NEGATIVE_TTL_SECS
+                );
+            },
+        );
+    }
+
+    #[test]
+    fn test_auth_cache_negative_ttl_default_is_thirty() {
+        assert_eq!(Config::default().auth_cache_negative_ttl_secs, 30);
     }
 
     #[test]

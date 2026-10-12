@@ -363,6 +363,43 @@ EAS specs v20250520 (16.1); older EAS compat NOT needed.
   re-primes). Suite: 1027 lib + 22 fixtures + 11 snapshots + 2 deploy + 1 doc =
   1063 green, clippy 0, fmt clean on ALL touched files, release warning-free.
 - Next likely audit items: §17 auth negative-cache TTL.
+- §17 Auth negative-caching and cache-invalidation is COMPLETE and its AUDIT.md
+  section documents the delivered behavior. Design: `AuthVerifier` now returns
+  a tri-state `AuthOutcome` (Verified / InvalidCredentials / BackendUnavailable)
+  instead of a bool — the whole point is that a *backend outage* must never be
+  answered with a 401 (which makes Outlook re-prompt for a password).
+  `JmapClient::check_credentials` and `CaldavClient::check_credentials` return a
+  tri-state `CredentialCheck` (Valid / Invalid on 401/403 / BackendError on any
+  other status or transport failure). KEY RULES: (1) a JMAP *backend error*
+  short-circuits to BackendUnavailable and does NOT consult CalDAV (previously
+  any JMAP error hammered CalDAV for every EAS request — the amplification this
+  item exists to kill); CalDAV is consulted ONLY after JMAP authoritatively
+  rejects, and a CalDAV backend error there cannot undo JMAP's negative. (2)
+  Only Verified/InvalidCredentials are cached; BackendUnavailable is never
+  cached, so the next request re-probes on recovery. (3) positive TTL =
+  `GATEWAY_AUTH_CACHE_TTL_SECS` (floor 30s), negative TTL = NEW
+  `GATEWAY_AUTH_CACHE_NEGATIVE_TTL_SECS` (default 30, 0 disables negatives) plus
+  a deterministic per-key SHA-256 jitter of ≤25% (`jitter_for`), so a fixed
+  password stops being locked out in seconds and concurrent negatives don't
+  expire in lockstep. (4) a successful login evicts every other cached
+  credential for the same username (`invalidate_other_passwords_for_user`), so
+  a changed Stalwart password takes effect on first use; `invalidate_user` is
+  the broader explicit form. Front doors: EAS answers a backend outage with 503
+  + `Retry-After` (status 111; `AUTH_BACKEND_RETRY_AFTER_SECS=12`,
+  `service_unavailable_response`), EWS with a 503 `ErrorServerBusy` SOAP fault
+  (`ews_backend_unavailable`); neither sends `WWW-Authenticate`. Surfaces that
+  only need yes/no (OAB/ECP/NSPI/MAPI/autodiscover-directory, main.rs) keep
+  `verify` → bool (BackendUnavailable = false). Config knob is wired in
+  config.rs (env + default + startup log) and documented in .env.example,
+  docker-compose.yml, CLOUDFLARED_SETUP.md. Tests: 18 in src/auth.rs (stub
+  backend with mutable status + hit counters: positive/negative caching,
+  negative expiry, TTL-0, backend-error-not-cached, no-CALDAV-on-5xx, CALDAV
+  arbitration, CALDAV-only paths, empty-credential rejection, password-change
+  eviction, invalidate_user scope, jitter determinism/spread) + `check_credentials`
+  classification matrix in src/jmap.rs (status stub ×401/403/5xx/transport) +
+  EAS/EWS front-door 503-vs-401 integration tests. Suite: 1054 lib + 2 + 22 +
+  11 + 1 doc = 1090 green, clippy 0, rustfmt clean on touched files
+  (auth/jmap/caldav/ews), release warning-free.
 - PR #1989 (§15) review triage COMPLETE: cubic 10 issues + CodeRabbit 3 +
   LlamaPReview 3 substantive, all fixed. Highlights: (1) P0 pre-§15 DB
   migration — the four `idx_{task,note}_map_{href,uid}` indexes are created in
