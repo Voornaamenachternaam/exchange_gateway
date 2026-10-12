@@ -202,8 +202,9 @@ concurrent start-order race), stub-server `check_credentials` classification
 tests in src/jmap.rs (incl. non-session 2xx and empty 204 rejected as backend
 errors) and src/caldav.rs (200/207 valid, 401 invalid, 403/5xx backend error),
 and front-door 503-vs-401 integration tests in src/eas.rs (incl. Status-111
-protocol-version gating for 12.1/16.1/no-version) and src/ews.rs (`s:Server`
-faultcode on the outage). Suite: 1062 lib + 2 + 22 + 11 + 1 doc = 1098 green.
+protocol-version gating for 12.1/16.1/no-version) and src/ews.rs (faultcode
+derivation from status + `s:Server` on the outage). Suite: 1063 lib + 2 + 22 +
+11 + 1 doc = 1099 green.
 
 ### 18. Auth-cache + rate-limit sizing for two clients is fine, but per-request Basic-auth probe to Stalwart is the SPOF
 Cold-cache bursts (container restart) fire JMAP session probes per request from both clients and Microsoft IPs. Add a startup warm path and circuit-breaker/backoff when Stalwart is down, returning EAS status 110/ServerError instead of 401s (a 401 makes Outlook *prompt for password* â€” catastrophic UX against a transient backend blip).

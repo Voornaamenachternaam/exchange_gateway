@@ -362,7 +362,7 @@ EAS specs v20250520 (16.1); older EAS compat NOT needed.
   pruned-cursor rejection, null SyncState not rejected, stale persisted cursor
   re-primes). Suite: 1027 lib + 22 fixtures + 11 snapshots + 2 deploy + 1 doc =
   1063 green, clippy 0, fmt clean on ALL touched files, release warning-free.
-- Next likely audit items: §17 auth negative-cache TTL.
+- Next likely audit items: §18 auth-cache warm path + rate-limit sizing.
 - §17 Auth negative-caching and cache-invalidation is COMPLETE and its AUDIT.md
   section documents the delivered behavior. Design: `AuthVerifier` now returns
   a tri-state `AuthOutcome` (Verified / InvalidCredentials / BackendUnavailable)
