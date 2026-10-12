@@ -1,4 +1,5 @@
 // src/eas.rs
+use crate::auth::AuthOutcome;
 use crate::caldav::CaldavClient;
 use crate::calendar::{parse_datetime, parse_ics_event};
 
@@ -42,6 +43,13 @@ use uuid::Uuid;
 
 const MAX_FREEBUSY_DAYS: i64 = 30;
 const MAX_BODY_SIZE: usize = 1_048_576;
+
+/// `Retry-After` advertised with the 503 returned when the authentication
+/// backend is unreachable (AUDIT.md §17). Kept short so a client whose Ping
+/// long-poll is interrupted by the outage re-attempts promptly once Stalwart
+/// recovers; the value is advisory and clients typically apply their own
+/// backoff on top.
+const AUTH_BACKEND_RETRY_AFTER_SECS: u64 = 12;
 const CALDAV_TIMEOUT: StdDuration = StdDuration::from_secs(30);
 const MAX_PING_CACHE_ENTRIES: usize = 10_000;
 /// How long a cached Ping parameter set stays usable without the device
@@ -245,7 +253,6 @@ struct EasRequest {
     collection_id: Option<String>,
     device_id: Option<String>,
     policy_key: Option<String>,
-    _protocol_version: Option<String>,
     window_size: Option<usize>,
     get_changes: bool,
     filter_type: Option<u8>,
@@ -1187,12 +1194,6 @@ fn parse_request(query: &HashMap<String, String>, xml: &str, headers: &HeaderMap
         .unwrap_or(true);
     let filter_type = extract_first_tag_text(xml, b"FilterType").and_then(|v| v.parse::<u8>().ok());
 
-    let protocol_version = headers
-        .get("MS-ASProtocolVersion")
-        .and_then(|v| v.to_str().ok())
-        .map(|s| s.to_string())
-        .or_else(|| value_from_query(query, "ProtVer"));
-
     let policy_key = headers
         .get("X-MS-PolicyKey")
         .and_then(|v| v.to_str().ok())
@@ -1208,7 +1209,6 @@ fn parse_request(query: &HashMap<String, String>, xml: &str, headers: &HeaderMap
         collection_id: extract_first_tag_text(xml, b"CollectionId"),
         device_id: value_from_query(query, "DeviceId"),
         policy_key,
-        _protocol_version: protocol_version,
         window_size,
         get_changes,
         filter_type,
@@ -1380,6 +1380,68 @@ fn bad_request_response(request_id: &str, msg: &str) -> Response {
         .into_response();
     inject_common_headers(&mut r, request_id);
     r
+}
+
+/// 503 Service Unavailable for a temporarily unreachable authentication
+/// backend (AUDIT.md §17).
+///
+/// Per [MS-ASHTTP] §3.1.5.2.3 a 503 tells the client to back off and retry,
+/// and is emphatically not the 401 that makes Outlook prompt for a password.
+/// A `Retry-After` header is included so the client's backoff is bounded.
+///
+/// The `Status` value 111 ("ServerErrorRetry") is only supported by EAS 14.0
+/// and later ([MS-ASCMD] §2.2.3.177.8); for 2.5/12.0/12.1 the protocol
+/// specifies the bare HTTP 503 with no status element. The gateway advertises
+/// 12.0/12.1 in its `OPTIONS` response, so the element is emitted only for 14.0+
+/// and omitted otherwise — the 503 itself is the retry signal for older
+/// clients. With no protocol version supplied (unusual, but possible) we fall
+/// back to the widest-compatibility form: the bare 503.
+fn service_unavailable_response(
+    request_id: &str,
+    retry_after_secs: u64,
+    protocol_version: Option<&str>,
+) -> Response {
+    let status_element = if protocol_version.is_some_and(eas_supports_server_error_retry) {
+        r#"<?xml version="1.0" encoding="utf-8"?><Status xmlns="AirSync:">111</Status>"#
+    } else {
+        ""
+    };
+    let mut r = (
+        StatusCode::SERVICE_UNAVAILABLE,
+        [(
+            header::CONTENT_TYPE.as_str(),
+            "application/xml; charset=utf-8",
+        )],
+        status_element.to_string(),
+    )
+        .into_response();
+    r.headers_mut().insert(
+        header::RETRY_AFTER,
+        HeaderValue::from_str(&retry_after_secs.to_string())
+            .unwrap_or_else(|_| HeaderValue::from_static("10")),
+    );
+    inject_common_headers(&mut r, request_id);
+    r
+}
+
+/// Whether an EAS protocol version supports the `Status` value 111
+/// ("ServerErrorRetry").
+///
+/// [MS-ASCMD] §2.2.3.177.8 marks 111 as "Supported by: 14.0, 14.1, 16.0, 16.1"
+/// and specifies that for 2.5, 12.0, and 12.1 an HTTP 503 is returned *instead
+/// of* the status value. Parsed as a major/minor tuple so 12.1 and 16.0 can
+/// never be confused by a string comparison.
+fn eas_supports_server_error_retry(version: &str) -> bool {
+    let mut parts = version.trim().split('.');
+    let major: u32 = match parts.next().and_then(|s| s.parse().ok()) {
+        Some(m) => m,
+        None => return false,
+    };
+    let minor: u32 = parts
+        .next()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or_default();
+    (major, minor) >= (14, 0)
 }
 
 fn xml_or_wbxml_response(wbxml: &Wbxml, as_wbxml: bool, xml: &str, request_id: &str) -> Response {
@@ -6927,14 +6989,39 @@ pub async fn handle(
             "Username domain canonicalized to GATEWAY_MAIL_DOMAIN"
         );
     }
-    // Verify credentials early to avoid unnecessary processing
-    if !state
+    // Verify credentials early to avoid unnecessary processing. A backend
+    // outage is answered with 503 (retry) rather than 401 (which would make
+    // the client re-prompt for a password) — AUDIT.md §17.
+    match state
         .auth_verifier
-        .verify(&username, password.expose_secret())
+        .verify_outcome(&username, password.expose_secret())
         .await
     {
-        tracing::debug!(request_id = %request_id, user = %username, "Authentication failed");
-        return unauth_response(&request_id);
+        AuthOutcome::Verified => {}
+        AuthOutcome::InvalidCredentials => {
+            tracing::debug!(request_id = %request_id, user = %username, "Authentication failed");
+            return unauth_response(&request_id);
+        }
+        AuthOutcome::BackendUnavailable => {
+            tracing::warn!(
+                request_id = %request_id,
+                user = %username,
+                "Authentication backend unavailable; returning 503"
+            );
+            // The credential gate runs before `parse_request`, so read the
+            // protocol version straight from the header/query to decide whether
+            // the (14.0+) `Status` 111 element is legal.
+            let protocol_version = headers
+                .get("MS-ASProtocolVersion")
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_string)
+                .or_else(|| value_from_query(&query, "ProtVer"));
+            return service_unavailable_response(
+                &request_id,
+                AUTH_BACKEND_RETRY_AFTER_SECS,
+                protocol_version.as_deref(),
+            );
+        }
     }
     let wbxml = Wbxml::new();
     let payload = body.to_vec();
@@ -11023,6 +11110,181 @@ mod tests {
         assert!(
             decoded.contains("<InstanceId>2026-07-10T09:00:00.000Z</InstanceId>"),
             "{decoded}"
+        );
+    }
+
+    /// In-memory AppState pointing at an unreachable loopback JMAP endpoint so
+    /// every credential probe fails as a backend outage.
+    async fn auth_outage_state() -> Arc<AppState> {
+        use crate::models::AppState;
+        let storage = crate::storage::Storage::new("sqlite::memory:")
+            .await
+            .expect("in-memory storage");
+        storage.init_schema().await.expect("schema init");
+        let cfg = crate::config::Config {
+            jmap_base: "http://127.0.0.1:1".to_string(),
+            caldav_base: String::new(),
+            email_enabled: true,
+            mail_domain: "example.com".to_string(),
+            hmac_secret: SecretString::from("a".repeat(32)),
+            ..Default::default()
+        };
+        Arc::new(AppState::new(cfg, Arc::new(storage)))
+    }
+
+    fn basic_auth_header_value(user: &str, pass: &str) -> HeaderValue {
+        let encoded = BASE64.encode(format!("{user}:{pass}"));
+        HeaderValue::from_str(&format!("Basic {encoded}")).unwrap()
+    }
+
+    /// A backend outage on the EAS front door must answer 503 + Retry-After,
+    /// never 401 (which makes Outlook re-prompt for a password) — AUDIT.md §17.
+    #[tokio::test]
+    async fn handle_returns_503_not_401_when_auth_backend_is_down() {
+        let state = auth_outage_state().await;
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::AUTHORIZATION,
+            basic_auth_header_value("user@example.com", "pw"),
+        );
+        headers.insert("x-forwarded-proto", HeaderValue::from_static("https"));
+        let body = Bytes::from_static(b"<?xml version=\"1.0\"?><FolderSync xmlns=\"AirSync:\"><SyncKey>0</SyncKey></FolderSync>");
+
+        let resp = handle(
+            State(state),
+            Method::POST,
+            Query(HashMap::new()),
+            headers,
+            body,
+        )
+        .await;
+
+        assert_eq!(
+            resp.status(),
+            StatusCode::SERVICE_UNAVAILABLE,
+            "a backend outage must be retryable, not 401"
+        );
+        assert!(resp.headers().contains_key(header::RETRY_AFTER));
+        assert!(!resp.headers().contains_key(header::WWW_AUTHENTICATE));
+    }
+
+    /// A backend outage that resolves on the next request is not sticky.
+    #[tokio::test]
+    async fn handle_backend_outage_is_not_cached() {
+        let state = auth_outage_state().await;
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::AUTHORIZATION,
+            basic_auth_header_value("user@example.com", "pw"),
+        );
+        headers.insert("x-forwarded-proto", HeaderValue::from_static("https"));
+        let body = Bytes::from_static(b"<?xml version=\"1.0\"?><FolderSync xmlns=\"AirSync:\"><SyncKey>0</SyncKey></FolderSync>");
+
+        let first = handle(
+            State(state.clone()),
+            Method::POST,
+            Query(HashMap::new()),
+            headers.clone(),
+            body.clone(),
+        )
+        .await;
+        assert_eq!(first.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let second = handle(
+            State(state),
+            Method::POST,
+            Query(HashMap::new()),
+            headers,
+            body,
+        )
+        .await;
+        assert_eq!(
+            second.status(),
+            StatusCode::SERVICE_UNAVAILABLE,
+            "the outage must not be cached into a sticky rejection"
+        );
+    }
+
+    #[test]
+    fn server_error_retry_status_gated_on_protocol_version() {
+        // 111 is only valid for 14.0+ ([MS-ASCMD] §2.2.3.177.8); 2.5/12.0/12.1
+        // must get a bare HTTP 503 with no status element.
+        assert!(!eas_supports_server_error_retry("12.0"));
+        assert!(!eas_supports_server_error_retry("12.1"));
+        assert!(!eas_supports_server_error_retry("2.5"));
+        assert!(eas_supports_server_error_retry("14.0"));
+        assert!(eas_supports_server_error_retry("14.1"));
+        assert!(eas_supports_server_error_retry("16.0"));
+        assert!(eas_supports_server_error_retry("16.1"));
+        // A bare major treats as the base version; garbage is unsupported.
+        assert!(eas_supports_server_error_retry("16"));
+        assert!(!eas_supports_server_error_retry("garbage"));
+        assert!(!eas_supports_server_error_retry(""));
+    }
+
+    async fn outage_response_for_version(version: Option<&str>) -> Response {
+        let state = auth_outage_state().await;
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::AUTHORIZATION,
+            basic_auth_header_value("user@example.com", "pw"),
+        );
+        headers.insert("x-forwarded-proto", HeaderValue::from_static("https"));
+        if let Some(v) = version {
+            headers.insert(
+                "MS-ASProtocolVersion",
+                HeaderValue::from_str(v).expect("version header"),
+            );
+        }
+        let body = Bytes::from_static(b"<?xml version=\"1.0\"?><FolderSync xmlns=\"AirSync:\"><SyncKey>0</SyncKey></FolderSync>");
+        handle(
+            State(state),
+            Method::POST,
+            Query(HashMap::new()),
+            headers,
+            body,
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn outage_omits_status_111_for_12_1() {
+        let resp = outage_response_for_version(Some("12.1")).await;
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert!(resp.headers().contains_key(header::RETRY_AFTER));
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert!(
+            body.is_empty(),
+            "12.1 must get a bare 503 (no Status 111), got {:?}",
+            String::from_utf8_lossy(&body)
+        );
+    }
+
+    #[tokio::test]
+    async fn outage_includes_status_111_for_16_1() {
+        let resp = outage_response_for_version(Some("16.1")).await;
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let text = String::from_utf8_lossy(&body);
+        assert!(
+            text.contains(">111<"),
+            "16.1 must get Status 111, got {text}"
+        );
+    }
+
+    #[tokio::test]
+    async fn outage_without_version_header_is_bare_503() {
+        let resp = outage_response_for_version(None).await;
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert!(
+            body.is_empty(),
+            "an unknown protocol version must get the widest-compat bare 503"
         );
     }
 }

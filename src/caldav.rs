@@ -1,4 +1,5 @@
 // src/caldav.rs
+use crate::auth::CredentialCheck;
 use crate::config::Config;
 use crate::util::xml_escape_text;
 use anyhow::{Result, anyhow};
@@ -57,6 +58,20 @@ impl CaldavClient {
     }
 
     pub async fn verify_credentials(&self, username: &str, password: &str) -> bool {
+        self.check_credentials(username, password).await == CredentialCheck::Valid
+    }
+
+    /// Verify credentials via a `PROPFIND` on the user's calendar home,
+    /// preserving the authoritative-401 vs backend-error distinction
+    /// (AUDIT.md §17).
+    ///
+    /// Only HTTP 401 is treated as an authoritative credential rejection. A
+    /// 403 is deliberately *not*: it means the request was authenticated but
+    /// forbidden (e.g. the account may not PROPFIND its calendar home), so
+    /// classifying it as a bad password would wrongly return and cache a 401
+    /// for a valid credential. It is a non-auth failure — retryable and never
+    /// cached — just like a 5xx.
+    pub async fn check_credentials(&self, username: &str, password: &str) -> CredentialCheck {
         let home_url = format!("{}/cal/{}/", self.base.trim_end_matches('/'), username);
         let propfind_body = r#"<?xml version="1.0" encoding="utf-8"?>
 <D:propfind xmlns:D="DAV:">
@@ -75,8 +90,17 @@ impl CaldavClient {
             .send()
             .await
         {
-            Ok(r) => r.status().is_success() || r.status().as_u16() == 207,
-            Err(_) => false,
+            Ok(r) => {
+                let status = r.status();
+                if status.is_success() || status.as_u16() == 207 {
+                    CredentialCheck::Valid
+                } else if status == reqwest::StatusCode::UNAUTHORIZED {
+                    CredentialCheck::Invalid
+                } else {
+                    CredentialCheck::BackendError(format!("CalDAV PROPFIND returned {}", status))
+                }
+            }
+            Err(e) => CredentialCheck::BackendError(format!("CalDAV request failed: {}", e)),
         }
     }
 
@@ -1494,5 +1518,71 @@ END:VCALENDAR
             )
             .expect("resolve");
         assert_eq!(absolute, "http://other.example.com/cal/y.ics");
+    }
+
+    async fn spawn_propfind_stub(status: axum::http::StatusCode) -> String {
+        use axum::response::Response;
+        use axum::routing::any;
+
+        let handler = move || async move {
+            Response::builder()
+                .status(status)
+                .body(axum::body::Body::empty())
+                .unwrap()
+        };
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let base = format!("http://127.0.0.1:{port}");
+        let app = axum::Router::new().route("/cal/{user}/", any(handler));
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        base
+    }
+
+    #[tokio::test]
+    async fn check_credentials_classification_matrix() {
+        use axum::http::StatusCode;
+
+        // 200 and 207 (Multi-Status) are both success.
+        for ok in [StatusCode::OK, StatusCode::MULTI_STATUS] {
+            let client = CaldavClient::new_from_base(&spawn_propfind_stub(ok).await).unwrap();
+            assert_eq!(
+                client.check_credentials("u", "pw").await,
+                CredentialCheck::Valid,
+                "{ok} must classify as Valid"
+            );
+        }
+
+        // 401 is the authoritative rejection.
+        let unauthorized =
+            CaldavClient::new_from_base(&spawn_propfind_stub(StatusCode::UNAUTHORIZED).await)
+                .unwrap();
+        assert_eq!(
+            unauthorized.check_credentials("u", "pw").await,
+            CredentialCheck::Invalid
+        );
+
+        // 403 means authenticated-but-forbidden: it must NOT be treated as a
+        // bad password (that would 401 a valid credential), nor cached.
+        let forbidden =
+            CaldavClient::new_from_base(&spawn_propfind_stub(StatusCode::FORBIDDEN).await).unwrap();
+        assert!(
+            matches!(
+                forbidden.check_credentials("u", "pw").await,
+                CredentialCheck::BackendError(_)
+            ),
+            "a 403 must be a non-auth BackendError, never Invalid"
+        );
+
+        // 5xx is an outage.
+        let outage = CaldavClient::new_from_base(
+            &spawn_propfind_stub(StatusCode::SERVICE_UNAVAILABLE).await,
+        )
+        .unwrap();
+        assert!(matches!(
+            outage.check_credentials("u", "pw").await,
+            CredentialCheck::BackendError(_)
+        ));
     }
 }

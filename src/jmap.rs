@@ -23,6 +23,7 @@
 // JMAP Calendar (urn:ietf:params:jmap:calendars) replaces CalDAV for
 // calendar operations when available, with CalDAV as fallback.
 
+use crate::auth::CredentialCheck;
 use anyhow::{Result, anyhow};
 use dashmap::DashMap;
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE};
@@ -3519,6 +3520,63 @@ impl JmapClient {
         Ok(())
     }
 
+    /// Probe the JMAP session to classify the credential state, preserving the
+    /// 401/403 vs 5xx/transport distinction (AUDIT.md §17).
+    ///
+    /// Unlike [`JmapClient::verify_credentials`], which collapses every failure
+    /// into an `Err`, this returns [`CredentialCheck::Invalid`] only for an
+    /// authoritative auth rejection and [`CredentialCheck::BackendError`] for a
+    /// backend outage, so the caller never turns a Stalwart hiccup into a
+    /// password prompt.
+    pub async fn check_credentials(
+        &self,
+        username: &str,
+        password: &SecretString,
+    ) -> CredentialCheck {
+        let url = format!("{}/session", self.base_url);
+        let auth = Self::basic_auth_header(username, password);
+        let resp = match self
+            .client
+            .get(&url)
+            .header(AUTHORIZATION, &auth)
+            .send()
+            .await
+        {
+            Ok(r) => r,
+            Err(e) => {
+                return CredentialCheck::BackendError(format!(
+                    "JMAP session request failed: {}",
+                    e
+                ));
+            }
+        };
+        let status = resp.status();
+        if status.is_success() {
+            // A bare 2xx is not proof of valid credentials: a 204, a proxy's
+            // HTML 200, or any other non-JMAP responder can return one without
+            // ever having authenticated anyone. Require the body to be a real
+            // RFC 8621 §2 JMAP session object; a parse failure is a backend
+            // error (retryable), never a cached positive.
+            match resp.json::<JmapSession>().await {
+                Ok(_) => CredentialCheck::Valid,
+                Err(e) => CredentialCheck::BackendError(format!(
+                    "JMAP session response was not a valid session object: {}",
+                    e
+                )),
+            }
+        } else if status == reqwest::StatusCode::UNAUTHORIZED
+            || status == reqwest::StatusCode::FORBIDDEN
+        {
+            CredentialCheck::Invalid
+        } else {
+            let body = resp.text().await.unwrap_or_default();
+            CredentialCheck::BackendError(format!(
+                "JMAP session request returned {}: {}",
+                status, body
+            ))
+        }
+    }
+
     /// Health check: verify JMAP endpoint is reachable.
     pub async fn health_check(&self) -> Result<()> {
         let url = format!("{}/session", self.base_url);
@@ -6183,5 +6241,149 @@ mod tests {
         assert_eq!(fetch.data.len(), 1);
         assert_eq!(fetch.window, (7, 8));
         assert!(fetch.complete);
+    }
+
+    /// Spawn a stub whose `/session` always returns `status` (200 serves a
+    /// valid session body). Used to exercise `check_credentials`' real
+    /// classification path.
+    async fn spawn_auth_stub_server(status: axum::http::StatusCode) -> String {
+        use axum::response::Response;
+        use axum::routing::get;
+
+        let status_slot = status;
+        let handler = move || {
+            let status = status_slot;
+            async move {
+                Response::builder()
+                    .status(status)
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from(
+                        serde_json::to_vec(&session_json("http://stub")).unwrap(),
+                    ))
+                    .unwrap()
+            }
+        };
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let base = format!("http://127.0.0.1:{port}");
+        let app = axum::Router::new().route("/session", get(handler));
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        base
+    }
+
+    #[tokio::test]
+    async fn check_credentials_classification_matrix() {
+        use axum::http::StatusCode;
+        let pw = SecretString::from("pw");
+
+        let valid = JmapClient::new(&spawn_auth_stub_server(StatusCode::OK).await).unwrap();
+        assert_eq!(
+            valid.check_credentials("u", &pw).await,
+            CredentialCheck::Valid
+        );
+
+        for rejected in [StatusCode::UNAUTHORIZED, StatusCode::FORBIDDEN] {
+            let client = JmapClient::new(&spawn_auth_stub_server(rejected).await).unwrap();
+            assert_eq!(
+                client.check_credentials("u", &pw).await,
+                CredentialCheck::Invalid,
+                "{rejected} must classify as Invalid"
+            );
+        }
+
+        for backend_error in [
+            StatusCode::INTERNAL_SERVER_ERROR,
+            StatusCode::BAD_GATEWAY,
+            StatusCode::SERVICE_UNAVAILABLE,
+            StatusCode::TOO_MANY_REQUESTS,
+        ] {
+            let client = JmapClient::new(&spawn_auth_stub_server(backend_error).await).unwrap();
+            assert!(
+                matches!(
+                    client.check_credentials("u", &pw).await,
+                    CredentialCheck::BackendError(_)
+                ),
+                "{backend_error} must classify as BackendError (not cached, no password prompt)"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn check_credentials_rejects_non_session_2xx_body() {
+        use axum::response::Response;
+        use axum::routing::get;
+
+        // Any 2xx that is not a JMAP session object (here an HTML 200, as a
+        // proxy or login portal might return) must not authenticate anyone.
+        let handler = || async {
+            Response::builder()
+                .status(200)
+                .header("content-type", "text/html")
+                .body(axum::body::Body::from("<html>sign in</html>"))
+                .unwrap()
+        };
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let base = format!("http://127.0.0.1:{port}");
+        let app = axum::Router::new().route("/session", get(handler));
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let client = JmapClient::new(&base).unwrap();
+        let pw = SecretString::from("pw");
+        assert!(
+            matches!(
+                client.check_credentials("u", &pw).await,
+                CredentialCheck::BackendError(_)
+            ),
+            "a non-session 2xx body must be a BackendError, not Valid"
+        );
+    }
+
+    #[tokio::test]
+    async fn check_credentials_rejects_empty_204() {
+        use axum::response::Response;
+        use axum::routing::get;
+
+        let handler = || async {
+            Response::builder()
+                .status(204)
+                .body(axum::body::Body::empty())
+                .unwrap()
+        };
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let base = format!("http://127.0.0.1:{port}");
+        let app = axum::Router::new().route("/session", get(handler));
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let client = JmapClient::new(&base).unwrap();
+        let pw = SecretString::from("pw");
+        assert!(
+            matches!(
+                client.check_credentials("u", &pw).await,
+                CredentialCheck::BackendError(_)
+            ),
+            "a 204 with no session body must be a BackendError, not Valid"
+        );
+    }
+
+    #[tokio::test]
+    async fn check_credentials_maps_transport_failure_to_backend_error() {
+        // Port 1 is never listening: the connection is refused.
+        let client = JmapClient::new("http://127.0.0.1:1").unwrap();
+        let pw = SecretString::from("pw");
+        let check = client.check_credentials("u", &pw).await;
+        assert!(
+            matches!(check, CredentialCheck::BackendError(_)),
+            "transport failure must be BackendError, got {:?}",
+            check
+        );
     }
 }

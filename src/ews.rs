@@ -3,6 +3,7 @@ use crate::attachment::{
     parse_create_attachment_request, parse_delete_attachment_request, parse_get_attachment_request,
     render_create_attachment_response, render_file_attachment_xml, render_get_attachment_response,
 };
+use crate::auth::AuthOutcome;
 use crate::caldav::CaldavClient;
 use crate::calendar::{
     extract_ews_field, extract_ews_fields, parse_ews_attendees, parse_ews_calendar_item,
@@ -310,14 +311,26 @@ pub async fn handle(
             "Username domain canonicalized to GATEWAY_MAIL_DOMAIN"
         );
     }
-    // Verify credentials early to avoid unnecessary processing
-    if !state
+    // Verify credentials early to avoid unnecessary processing. A backend
+    // outage maps to a retryable server error rather than a 401, so Outlook
+    // does not re-prompt for a password — AUDIT.md §17.
+    match state
         .auth_verifier
-        .verify(&auth.username, auth.password.expose_secret())
+        .verify_outcome(&auth.username, auth.password.expose_secret())
         .await
     {
-        tracing::debug!("EWS authentication failed for user: {}", auth.username);
-        return unauthorized();
+        AuthOutcome::Verified => {}
+        AuthOutcome::InvalidCredentials => {
+            tracing::debug!("EWS authentication failed for user: {}", auth.username);
+            return unauthorized();
+        }
+        AuthOutcome::BackendUnavailable => {
+            tracing::warn!(
+                "EWS authentication backend unavailable for user: {}",
+                auth.username
+            );
+            return ews_backend_unavailable();
+        }
     }
     let Some(action) = detect_action(&body) else {
         return soap_fault(
@@ -1842,12 +1855,24 @@ pub(crate) fn soap_ok(inner: String) -> Response {
     ews_response(StatusCode::OK, xml)
 }
 
+/// SOAP 1.1 fault for a non-success EWS response.
+///
+/// The `<faultcode>` is derived from the HTTP status: `s:Server` for a 5xx
+/// (the request was well-formed but the gateway/backend failed) and `s:Client`
+/// otherwise (the request itself was wrong). SOAP 1.1 reserves `s:Client` for
+/// request-caused faults, and some stacks treat `s:Client` faults as
+/// permanent/non-retryable, so a transient outage must not be reported as one.
 fn soap_fault(code: &str, message: &str, status: StatusCode) -> Response {
+    let fault_code = if status.is_server_error() {
+        "s:Server"
+    } else {
+        "s:Client"
+    };
     let xml = format!(
         r#"<?xml version="1.0" encoding="utf-8"?>
 <s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
   <s:Header>{svi}</s:Header>
-  <s:Body><s:Fault><faultcode>s:Client</faultcode><faultstring>{}</faultstring><detail><m:ResponseCode xmlns:m="{}">{}</m:ResponseCode></detail></s:Fault></s:Body>
+  <s:Body><s:Fault><faultcode>{fault_code}</faultcode><faultstring>{}</faultstring><detail><m:ResponseCode xmlns:m="{}">{}</m:ResponseCode></detail></s:Fault></s:Body>
 </s:Envelope>"#,
         xml_escape(message),
         EWS_MSG_NS,
@@ -1855,6 +1880,22 @@ fn soap_fault(code: &str, message: &str, status: StatusCode) -> Response {
         svi = version::current().render_ews_header(EWS_TYPE_NS)
     );
     ews_response(status, xml)
+}
+
+/// 503 SOAP fault returned when the authentication backend is unreachable
+/// (AUDIT.md §17).
+///
+/// EWS clients retry a transient server error; they treat 401 as a bad
+/// password and prompt the user. `ErrorServerBusy` is the closest EWS code for
+/// "try again shortly" ([MS-OXWSCDATA] §2.2.1.1) and, unlike a plain success
+/// envelope, is unambiguously an error. The 503 makes [`soap_fault`] emit an
+/// `s:Server` faultcode, so the failure reads as server-side and retryable.
+fn ews_backend_unavailable() -> Response {
+    soap_fault(
+        "ErrorServerBusy",
+        "Authentication backend temporarily unavailable; retry shortly",
+        StatusCode::SERVICE_UNAVAILABLE,
+    )
 }
 
 fn validate_requested_folder(
@@ -12130,5 +12171,119 @@ mod tests {
         // Unterminated document: no block, not a panic.
         let unterminated = "<m:Items><t:AcceptItem><t:Body>x</t:Body>";
         assert!(extract_first_tag_block(unterminated, b"AcceptItem").is_none());
+    }
+
+    /// The SOAP faultcode is derived from the HTTP status: server-side for a
+    /// 5xx, client-side for a 4xx error.
+    #[tokio::test]
+    async fn soap_fault_derives_faultcode_from_status() {
+        // 5xx is server-side; everything else is the client's request.
+        let server = soap_fault(
+            "ErrorInternalServerError",
+            "boom",
+            StatusCode::INTERNAL_SERVER_ERROR,
+        );
+        let body = axum::body::to_bytes(server.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert!(
+            String::from_utf8_lossy(&body).contains("<faultcode>s:Server</faultcode>"),
+            "a 5xx fault must be s:Server"
+        );
+
+        let client = soap_fault("ErrorInvalidRequest", "bad", StatusCode::BAD_REQUEST);
+        let body = axum::body::to_bytes(client.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert!(
+            String::from_utf8_lossy(&body).contains("<faultcode>s:Client</faultcode>"),
+            "a 4xx fault must remain s:Client"
+        );
+    }
+
+    #[tokio::test]
+    async fn handle_returns_retryable_fault_when_auth_backend_is_down() {
+        let state = meeting_test_state().await;
+        let mut headers = HeaderMap::new();
+        use base64::Engine;
+        let encoded = base64::engine::general_purpose::STANDARD.encode("user@example.com:pw");
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            axum::http::HeaderValue::from_str(&format!("Basic {encoded}")).unwrap(),
+        );
+        headers.insert(
+            "x-forwarded-proto",
+            axum::http::HeaderValue::from_static("https"),
+        );
+        let body = r#"<?xml version="1.0" encoding="utf-8"?><soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"><soap:Body><GetFolder xmlns="http://schemas.microsoft.com/exchange/services/2006/messages"><FolderShape/></GetFolder></soap:Body></soap:Envelope>"#.to_string();
+
+        let resp = handle(State(state), headers, body).await;
+        assert_eq!(
+            resp.status(),
+            StatusCode::SERVICE_UNAVAILABLE,
+            "a backend outage must be retryable, not 401"
+        );
+        assert!(
+            !resp
+                .headers()
+                .contains_key(axum::http::header::WWW_AUTHENTICATE),
+            "a backend outage must not challenge for credentials"
+        );
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .expect("fault body");
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(
+            text.contains("ErrorServerBusy"),
+            "the fault must be a retryable EWS code, got: {text}"
+        );
+        assert!(
+            text.contains("<faultcode>s:Server</faultcode>"),
+            "a backend outage is server-side and must not be an s:Client fault, got: {text}"
+        );
+    }
+
+    /// A wrong password still yields 401, distinct from a backend outage.
+    #[tokio::test]
+    async fn handle_wrong_password_is_401() {
+        // Point the JMAP backend at a stub that rejects with 401.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let app = axum::Router::new().route(
+            "/session",
+            axum::routing::get(|| async { (StatusCode::UNAUTHORIZED, "nope").into_response() }),
+        );
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let mut cfg = crate::config::Config {
+            jmap_base: format!("http://127.0.0.1:{port}"),
+            caldav_base: String::new(),
+            email_enabled: true,
+            mail_domain: "example.com".to_string(),
+            hmac_secret: SecretString::from("a".repeat(32)),
+            ..Default::default()
+        };
+        cfg.auth_cache_negative_ttl_secs = 0;
+        let storage = crate::storage::Storage::new("sqlite::memory:")
+            .await
+            .expect("in-memory storage");
+        storage.init_schema().await.expect("schema init");
+        let state = Arc::new(crate::models::AppState::new(cfg, Arc::new(storage)));
+
+        let mut headers = HeaderMap::new();
+        use base64::Engine;
+        let encoded = base64::engine::general_purpose::STANDARD.encode("user@example.com:pw");
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            axum::http::HeaderValue::from_str(&format!("Basic {encoded}")).unwrap(),
+        );
+        headers.insert(
+            "x-forwarded-proto",
+            axum::http::HeaderValue::from_static("https"),
+        );
+        let body = r#"<?xml version="1.0" encoding="utf-8"?><soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"><soap:Body><GetFolder xmlns="http://schemas.microsoft.com/exchange/services/2006/messages"><FolderShape/></GetFolder></soap:Body></soap:Envelope>"#.to_string();
+        let resp = handle(State(state), headers, body).await;
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
     }
 }

@@ -291,6 +291,7 @@ services:
       - GATEWAY_MAX_ATTACHMENT_BYTES=${GATEWAY_MAX_ATTACHMENT_BYTES:-5242880}
       - GATEWAY_ROOM_BOOKING_ENABLED=${GATEWAY_ROOM_BOOKING_ENABLED:-true}
       - GATEWAY_AUTH_CACHE_TTL_SECS=${GATEWAY_AUTH_CACHE_TTL_SECS:-300}
+      - GATEWAY_AUTH_CACHE_NEGATIVE_TTL_SECS=${GATEWAY_AUTH_CACHE_NEGATIVE_TTL_SECS:-30}
       - GATEWAY_AUTH_CACHE_MAX_ENTRIES=${GATEWAY_AUTH_CACHE_MAX_ENTRIES:-10000}
       - GATEWAY_ALLOW_INSECURE_HTTP=${GATEWAY_ALLOW_INSECURE_HTTP:-1}
     volumes:
@@ -326,6 +327,7 @@ GATEWAY_DATABASE_PATH=/var/lib/exchange-gateway/gateway.db
 GATEWAY_MAX_ATTACHMENT_BYTES=5242880
 GATEWAY_ROOM_BOOKING_ENABLED=true
 GATEWAY_AUTH_CACHE_TTL_SECS=300
+GATEWAY_AUTH_CACHE_NEGATIVE_TTL_SECS=30
 GATEWAY_AUTH_CACHE_MAX_ENTRIES=10000
 # Plain HTTP to the Stalwart backend (the JMAP URL derived from CALDAV_BASE)
 # carries credentials in cleartext. Set to 1 to permit the non-TLS
@@ -382,7 +384,8 @@ curl -v https://calendar.example.com/autodiscover/autodiscover.xml
 | `GATEWAY_DATABASE_PATH` | SQLite path | No | `/var/lib/exchange-gateway/gateway.db` |
 | `GATEWAY_MAX_ATTACHMENT_BYTES` | Max attachment size | No | `5242880` |
 | `GATEWAY_ROOM_BOOKING_ENABLED` | Enable room booking | No | `true` |
-| `GATEWAY_AUTH_CACHE_TTL_SECS` | Auth cache TTL | No | `300` |
+| `GATEWAY_AUTH_CACHE_TTL_SECS` | Positive auth cache TTL (seconds; minimum `30`) | No | `300` |
+| `GATEWAY_AUTH_CACHE_NEGATIVE_TTL_SECS` | Negative auth cache TTL base (seconds; up to 25% deterministic jitter is added, so the effective lifetime is `base`..`base`+25%); `0` disables negative caching | No | `30` |
 | `GATEWAY_AUTH_CACHE_MAX_ENTRIES` | Auth cache max entries | No | `10000` |
 | `GATEWAY_ALLOW_INSECURE_HTTP` | Permit plain HTTP to the backend (JMAP) | No | `false` |
 

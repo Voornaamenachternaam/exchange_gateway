@@ -126,8 +126,86 @@ Hourly `prune_change_journals` deletes rows at/below the lowest live watermark. 
 - **Calendar delta needs no guard**: the calendar `perform_sync` derives its delta from the backend snapshot diffed against `item_map` (etag comparison), never from the client's stored watermark, so journal pruning cannot cut a window out from under a calendar client; its stored token is frequently an opaque JMAP `query_state`, which would make a naive guard fire forever. Documented in place of a guard.
 - **Coverage**: `storage.rs` pins the recorded floor, the stale/at-floor/above-floor boundary, floor monotonicity, and that a watermark-less prune fabricates no floor (`prune_records_floor_and_detects_stale_windows`, `prune_without_watermark_leaves_floor_unset`), the atomic prune+floor transaction, the compare-and-set cursor clear (`clear_local_sync_cursor_if_is_compare_and_set`), and the keyset live-set enumeration (`list_changes_after_server_id_paginates_live_set`); `eas.rs` pins the forced Status 3 (with no delta delivered) and the clean re-prime that follows, that a stale-key Sync carrying mutations applies nothing and emits no `<Responses>`, the healthy delta that is *not* forced (guard-doesn't-over-fire), the Ping stale-wake, and the GetItemEstimate status 4; `ews.rs` pins the client-supplied pruned-cursor rejection, that a null SyncState is not rejected as stale, and that a stale *persisted* cursor re-primes rather than being rejected.
 
-### 17. Auth negative-caching and cache-invalidation
-`AuthVerifier` caches *invalid* credential results for the configured TTL (30â€“300s in moka). A user changing a Stalwart password is locked out (or locked in) for up to 5 minutes; and `verify_caldav` fallback on any JMAP *error* (not just 401) amplifies a Stalwart hiccup into CalDAV hammering for both clients Ă— many EAS requests. Tighten: distinguish 401 vs 5xx, short-cache negatives, jitter, and document the TTL knob.
+### 17. Auth negative-caching and cache-invalidation — COMPLETE
+
+`AuthVerifier` (src/auth.rs) now distinguishes three outcomes instead of
+collapsing everything to a bool: `Verified`, `InvalidCredentials` (an
+authoritative 401/403), and `BackendUnavailable` (a 5xx / transport failure).
+The distinction is what keeps a transient Stalwart hiccup from being answered
+with a 401, which makes Outlook *prompt the user for a password*.
+
+Delivered behavior:
+
+- **401 vs 5xx split**: `JmapClient::check_credentials` and
+  `CaldavClient::check_credentials` return a tri-state `CredentialCheck`.
+  `JmapClient` reports `Valid` / `Invalid` (on the session endpoint's `401` or
+  `403`) / `BackendError(_)` on any other status or a transport failure. A
+  CalDAV `403` is deliberately *not* `Invalid`: a PROPFIND on a calendar home
+  can be forbidden for an account whose password is valid, so it is a non-auth
+  `BackendError`, reserved for `401`. `AuthVerifier::verify_backend` collapses
+  these into an `AuthOutcome`.
+- **No CalDAV fallback storm**: a JMAP *backend error* returns
+  `BackendUnavailable` immediately and does **not** consult CalDAV. CalDAV is
+  consulted only after JMAP *authoritatively rejects* the credentials, purely
+  to arbitrate a deployment where CalDAV is the real arbiter; a CalDAV backend
+  error in that case cannot undo JMAP's definitive negative. (A CalDAV-only
+  deployment with no JMAP configured probes CalDAV directly, as its sole
+  arbiter.)
+- **Backend outages are never cached**: only `Verified` and
+  `InvalidCredentials` are inserted into the moka cache; `BackendUnavailable`
+  is not, so the very next request re-probes once the backend recovers. (A
+  CalDAV backend error encountered *while arbitrating a JMAP rejection* does not
+  produce a `BackendUnavailable` outcome — it leaves JMAP's negative standing —
+  but no result in that path caches a backend error either.)
+- **Short, jittered negatives**: positive results keep
+  `GATEWAY_AUTH_CACHE_TTL_SECS` (default 300s, floor 30s); negative results use
+  the new `GATEWAY_AUTH_CACHE_NEGATIVE_TTL_SECS` (default 30s) plus a
+  deterministic per-key SHA-256 jitter of up to 25% of that TTL — so a fixed
+  password stops being locked out within seconds, and concurrent negatives do
+  not all expire in lockstep. A negative TTL of 0 disables negative caching
+  entirely.
+- **Cache invalidation on password change**: a successful login evicts every
+  other cached credential for the same username, so an old password stops
+  working at the gateway the moment the new one is first used (rather than
+  lingering for the full positive TTL). `invalidate_user` is exposed for
+  explicit, broader invalidation. Ordering is race-free: concurrent
+  verifications for a user are ordered by the instant they *started* (a
+  monotonic per-request ticket) and the ticket that a user's newest committed
+  result carries is recorded (bounded, TTL + capacity), so a slower in-flight
+  check of an old password can never insert an entry after a newer login's
+  result was committed; the check-and-commit step is serialized by a mutex so
+  two finishing verifications cannot both write. A cancelled verification
+  simply never commits, so it also cannot leave state that suppresses later
+  logins.
+- **Retryable 5xx at the front doors**: the EAS handler answers a backend
+  outage with `503 Service Unavailable` + `Retry-After` (with a `Status` 111
+  body only for protocol version 14.0+, since [MS-ASCMD] §2.2.3.177.8 specifies
+  a bare HTTP 503 for 2.5/12.0/12.1), and the EWS handler with a `503`
+  `ErrorServerBusy` SOAP fault, whose faultcode is derived from status in
+  `soap_fault` (5xx→`s:Server`, 4xx→`s:Client`) — the outage must not read as
+  the non-retryable `s:Client`. Both are retryable, neither sends a
+  `WWW-Authenticate` challenge. Other surfaces that
+  only need a yes/no gate (`verify`) keep the historical `false` mapping.
+- **JMAP probe validates the session object**: a bare 2xx is not accepted as
+  proof of valid credentials — the body must parse as an RFC 8621 §2
+  `JmapSession`, else it is a `BackendError` (retryable, never cached
+  positive), so a `204` or an HTML `200` from an intermediary cannot
+  authenticate and cache a non-credential.
+- **Knob documented**: `GATEWAY_AUTH_CACHE_NEGATIVE_TTL_SECS`
+  (`auth_cache_negative_ttl_secs` in the config file) is parsed, logged at
+  startup, and defaults to 30s.
+
+Tests: 19 in src/auth.rs (positive caching, negative caching, negative
+expiry, negative-TTL-0 disabling, backend-error-not-cached, no-CALDAV-on-5xx,
+CALDAV arbitration, CALDAV-only paths, empty-credential rejection,
+password-change eviction, `invalidate_user` scope, jitter determinism/spread,
+concurrent start-order race), stub-server `check_credentials` classification
+tests in src/jmap.rs (incl. non-session 2xx and empty 204 rejected as backend
+errors) and src/caldav.rs (200/207 valid, 401 invalid, 403/5xx backend error),
+and front-door 503-vs-401 integration tests in src/eas.rs (incl. Status-111
+protocol-version gating for 12.1/16.1/no-version) and src/ews.rs (faultcode
+derivation from status + `s:Server` on the outage). Suite: 1063 lib + 2 + 22 +
+11 + 1 doc = 1099 green.
 
 ### 18. Auth-cache + rate-limit sizing for two clients is fine, but per-request Basic-auth probe to Stalwart is the SPOF
 Cold-cache bursts (container restart) fire JMAP session probes per request from both clients and Microsoft IPs. Add a startup warm path and circuit-breaker/backoff when Stalwart is down, returning EAS status 110/ServerError instead of 401s (a 401 makes Outlook *prompt for password* â€” catastrophic UX against a transient backend blip).
