@@ -691,6 +691,13 @@ async fn main() -> anyhow::Result<()> {
 
     let app_state = Arc::new(AppState::new(config.clone(), storage));
 
+    // Startup auth/session warm path (AUDIT.md §18). Pre-fetch the JMAP session
+    // for the deployed topology so the first authenticated request after a
+    // container restart does not pay a cold session round-trip, and so the
+    // shared HTTP connection pool is primed. This never fails startup: a cold
+    // backend is reported and the lazy path still warms on first request.
+    warm_backend_session(&app_state).await;
+
     // Deploy-time verification of the JMAP Calendars capability
     // (`urn:ietf:params:jmap:calendars`) against the configured Stalwart
     // backend (audit item 5). Controlled by
@@ -1073,6 +1080,46 @@ async fn metrics_handler() -> impl IntoResponse {
         metrics_text,
     )
         .into_response()
+}
+
+/// Startup warm path for the authentication/session stack (AUDIT.md §18).
+///
+/// On a cold start the shared JMAP client's session cache is empty, so the
+/// first authenticated request (a GAL lookup, an OOF call, or the first EAS/EWS
+/// request from either client) would otherwise pay a session round-trip. This
+/// pre-fetches and caches the administrator session and best-effort warms the
+/// connection pool, so the cold-cache burst that fronts EAS/EWS is not the
+/// first thing to touch Stalwart.
+///
+/// Startup is never failed by a cold backend: a failure is logged and the lazy
+/// warm path on the first request repopulates once Stalwart is reachable.
+async fn warm_backend_session(state: &Arc<AppState>) {
+    let Some(jmap) = state.jmap_client.as_ref() else {
+        return;
+    };
+    if state.cfg.admin_username.is_empty() || state.cfg.admin_password.is_empty() {
+        debug!(
+            target: "startup",
+            "No admin credentials configured; skipping JMAP session warm path"
+        );
+        return;
+    }
+    let password = secrecy::SecretString::from(state.cfg.admin_password.clone());
+    match jmap
+        .warm_session(&state.cfg.admin_username, &password)
+        .await
+    {
+        Ok(session) => info!(
+            target: "startup",
+            api_url = %session.api_url,
+            "Warmed JMAP session cache against Stalwart backend"
+        ),
+        Err(e) => warn!(
+            target: "startup",
+            error = %e,
+            "JMAP session warm path failed; the first authenticated request will warm lazily"
+        ),
+    }
 }
 
 /// Deploy-time JMAP Calendars capability verification (audit item 5).

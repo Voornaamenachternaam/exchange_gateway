@@ -41,7 +41,7 @@ use crate::version;
 use anyhow::anyhow;
 use axum::{
     extract::State,
-    http::{HeaderMap, StatusCode},
+    http::{HeaderMap, HeaderValue, StatusCode, header},
     response::{IntoResponse, Response},
 };
 use base64::Engine;
@@ -1883,19 +1883,29 @@ fn soap_fault(code: &str, message: &str, status: StatusCode) -> Response {
 }
 
 /// 503 SOAP fault returned when the authentication backend is unreachable
-/// (AUDIT.md §17).
+/// (AUDIT.md §17/§18).
 ///
 /// EWS clients retry a transient server error; they treat 401 as a bad
 /// password and prompt the user. `ErrorServerBusy` is the closest EWS code for
 /// "try again shortly" ([MS-OXWSCDATA] §2.2.1.1) and, unlike a plain success
 /// envelope, is unambiguously an error. The 503 makes [`soap_fault`] emit an
 /// `s:Server` faultcode, so the failure reads as server-side and retryable.
+///
+/// A `Retry-After` header bounds the client's backoff, mirroring the EAS 503
+/// path (`AUTH_BACKEND_RETRY_AFTER_SECS` in `eas.rs`). Without it a client may
+/// retry immediately and re-probe a down backend on every request.
 fn ews_backend_unavailable() -> Response {
-    soap_fault(
+    let mut resp = soap_fault(
         "ErrorServerBusy",
         "Authentication backend temporarily unavailable; retry shortly",
         StatusCode::SERVICE_UNAVAILABLE,
-    )
+    );
+    resp.headers_mut().insert(
+        header::RETRY_AFTER,
+        HeaderValue::from_str(&crate::eas::AUTH_BACKEND_RETRY_AFTER_SECS.to_string())
+            .unwrap_or_else(|_| HeaderValue::from_static("12")),
+    );
+    resp
 }
 
 fn validate_requested_folder(
@@ -12228,6 +12238,13 @@ mod tests {
                 .headers()
                 .contains_key(axum::http::header::WWW_AUTHENTICATE),
             "a backend outage must not challenge for credentials"
+        );
+        assert_eq!(
+            resp.headers()
+                .get(axum::http::header::RETRY_AFTER)
+                .and_then(|v| v.to_str().ok()),
+            Some("12"),
+            "a backend outage must advertise Retry-After so the client backs off"
         );
         let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
             .await

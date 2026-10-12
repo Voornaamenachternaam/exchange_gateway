@@ -362,7 +362,51 @@ EAS specs v20250520 (16.1); older EAS compat NOT needed.
   pruned-cursor rejection, null SyncState not rejected, stale persisted cursor
   re-primes). Suite: 1027 lib + 22 fixtures + 11 snapshots + 2 deploy + 1 doc =
   1063 green, clippy 0, fmt clean on ALL touched files, release warning-free.
-- Next likely audit items: §18 auth-cache warm path + rate-limit sizing.
+- §18 Auth-cache warm path + per-request Basic-auth probe SPOF is COMPLETE and
+  its AUDIT.md section documents the delivered behavior. Design: the
+  per-request Basic-auth probe to Stalwart is the SPOF fronting every EAS/EWS
+  request; it is now protected by a four-layer funnel in `auth.rs::warm_verify`
+  BEFORE the backend is touched: (1) per-user circuit breaker
+  (`auth_backend_failure_threshold` default 5, `auth_backend_max_backoff_secs`
+  default 60, `0` DISABLES the breaker — do NOT clamp the cap to ≥1) — after N
+  consecutive `BackendUnavailable` a user's circuit opens for an exponentially
+  growing capped window and probes are refused with `BackendUnavailable`
+  without contacting Stalwart; any `Verified`/`InvalidCredentials` resets it
+  (`update_breaker`); (2) in-flight dedup keyed by CREDENTIAL
+  (`username:hash(password)`), NOT user — keying by user would suppress the
+  §17 start-order race test, which needs two same-user/different-password
+  probes genuinely concurrent; a waiter that acquires the mutex re-checks the
+  credential cache under the lock; the slot is released on EVERY path
+  (`release_inflight`); (3) per-user probe rate cap
+  (`auth_probe_min_interval_ms` default 1000) spaces consecutive COLD probes
+  only — a cached outcome is never gated; the post-sleep re-check makes the cap
+  a dedup barrier, not a redundant-probe generator; (4) the probe itself goes
+  through `JmapClient::probe_auth`, whose `session_auth` DashMap caches
+  credential outcomes per `username:hash` (positive TTL 300s, negative 30s,
+  BackendError NEVER cached; a successful probe evicts the user's other
+  credentials via `invalidate_other_session_auth`). Client sharing:
+  `AppState::new` builds the JMAP client BEFORE the verifier and passes it to
+  `AuthVerifier::new_from_topology`, so probes reuse one HTTP pool + one
+  session-auth cache; `AuthVerifier::new` (tests) leaves it None and builds a
+  throwaway client per probe. CRITICAL: `AuthVerifier::invalidate_user` MUST
+  also call `client.invalidate_user_session_auth(username)` — the verifier
+  cache and the shared client cache are separate, and a stale client positive
+  would shadow the invalidation for up to 300s. `main.rs::warm_backend_session`
+  primes the admin session at startup (never fails startup). Metrics
+  (PII-free, label `backend` = jmap/caldav/none):
+  `auth_backend_unavailable_total`, `auth_circuit_open_total`. EWS
+  `ews_backend_unavailable` now also sends `Retry-After`
+  (`eas::AUTH_BACKEND_RETRY_AFTER_SECS`); EAS keeps 503 + Status 111 only for
+  ≥14.0 (audit's "status 110" is not a defined retry code; 111 is the retry
+  code — see AUDIT.md §18 note). Config knobs wired (env + default + startup
+  log) and documented in .env.example, docker-compose.yml, CLOUDFLARED_SETUP.md.
+  Tests: 6 new in src/auth.rs (breaker opens/skips, breaker resets, zero-cap
+  disables, concurrent same-credential burst = 1 probe, rate cap spacing,
+  invalidate purges shared client cache) + 3 in src/jmap.rs (`probe_auth`
+  positive TTL, negative + eviction, backend-error-not-cached) + 2 config env
+  tests + EWS Retry-After assertion. Suite: 1074 lib + 2 + 22 + 11 + 1 doc =
+  1110 green, clippy 0, rustfmt clean on touched files, release warning-free.
+- Next likely audit items: §19 SQLite concurrency (WAL/busy_timeout + load test).
 - §17 Auth negative-caching and cache-invalidation is COMPLETE and its AUDIT.md
   section documents the delivered behavior. Design: `AuthVerifier` now returns
   a tri-state `AuthOutcome` (Verified / InvalidCredentials / BackendUnavailable)

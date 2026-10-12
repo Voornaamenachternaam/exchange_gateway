@@ -72,7 +72,29 @@ impl AppState {
             max_attachment_bytes,
         ));
         let room_manager = Arc::new(RoomManager::new(storage.clone()));
-        let auth_verifier = Arc::new(AuthVerifier::new(&cfg));
+
+        // JMAP client is constructed before the AuthVerifier so the verifier can
+        // share it: credential probes then reuse the client's session-auth cache
+        // and connection pool instead of building a throwaway client per probe
+        // (AUDIT.md §18).
+        let jmap_client = if cfg.email_enabled && !cfg.jmap_base.is_empty() {
+            match JmapClient::new(&cfg.jmap_base) {
+                Ok(c) => Some(Arc::new(c)),
+                Err(e) => {
+                    tracing::warn!(
+                        target: "models",
+                        jmap_base = %cfg.jmap_base,
+                        error = %e,
+                        "Failed to create JMAP client; email sync will be unavailable"
+                    );
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
+        let auth_verifier = Arc::new(AuthVerifier::new_from_topology(&cfg, jmap_client.clone()));
 
         // The directory service (GAL / ResolveNames / OAB / NSPI) reads the
         // Stalwart directory over JMAP (`urn:stalwart:jmap` `x:Account/*` /
@@ -156,23 +178,6 @@ impl AppState {
 
         let smtp_client = if cfg.email_enabled && !cfg.smtp_host.is_empty() {
             Some(Arc::new(SmtpClient::new(&cfg.smtp_host, cfg.smtp_port)))
-        } else {
-            None
-        };
-
-        let jmap_client = if cfg.email_enabled && !cfg.jmap_base.is_empty() {
-            match JmapClient::new(&cfg.jmap_base) {
-                Ok(c) => Some(Arc::new(c)),
-                Err(e) => {
-                    tracing::warn!(
-                        target: "models",
-                        jmap_base = %cfg.jmap_base,
-                        error = %e,
-                        "Failed to create JMAP client; email sync will be unavailable"
-                    );
-                    None
-                }
-            }
         } else {
             None
         };
