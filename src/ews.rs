@@ -4596,7 +4596,15 @@ async fn handle_sync_folder_items(
         );
     }
     let requested_state = extract_first_tag_text(body, b"SyncState");
-    let effective_state = if requested_state.as_deref().unwrap_or("0").is_empty() {
+    // Whether the client actually supplied a cursor (vs. priming): captured
+    // before `requested_state` is consumed below. A null/empty/"0" request is
+    // a fresh prime and must never be rejected as stale.
+    let client_supplied_cursor = requested_state
+        .as_deref()
+        .is_some_and(|s| !s.is_empty() && s != "0");
+    let persisted_cursor = if client_supplied_cursor {
+        None
+    } else {
         match state.storage.get_ews_sync_state(owner, &folder_id).await {
             Ok(v) => v,
             Err(e) => {
@@ -4609,10 +4617,13 @@ async fn handle_sync_folder_items(
                 );
             }
         }
-    } else {
-        requested_state
     };
-    let (since, requested_upper_bound) = match parse_sync_state_marker(effective_state) {
+    let effective_state = if client_supplied_cursor {
+        requested_state
+    } else {
+        persisted_cursor
+    };
+    let (requested_since, requested_upper_bound) = match parse_sync_state_marker(effective_state) {
         Ok(v) => v,
         Err(_) => {
             return operation_error_response(
@@ -4623,22 +4634,131 @@ async fn handle_sync_folder_items(
             );
         }
     };
+    // §16 stale-watermark guard: a cursor below the pruned journal floor has
+    // had part of the window it needs removed, so the incremental delta cannot
+    // be reconstructed.
+    //
+    // Fail CLOSED: a floor-lookup error is treated as stale.
+    let stale = state
+        .storage
+        .journal_window_stale(owner, requested_since)
+        .await
+        .unwrap_or(true);
+    if stale && client_supplied_cursor {
+        // A client-SUPPLIED stale cursor: reject so the client re-primes with a
+        // null SyncState (ErrorInvalidSyncStateData is the EWS analogue of EAS
+        // Sync status 3). Rejecting a null request instead would spin an
+        // unrecoverable re-prime loop, because the gateway's own persisted
+        // cursor is what the floor scan cannot observe.
+        tracing::info!(
+            owner = %owner,
+            folder_id = %folder_id,
+            requested_since,
+            "Stale EWS SyncState below the pruned journal floor; forcing full resync"
+        );
+        return operation_error_response(
+            &EwsAction::SyncFolderItems,
+            "ErrorInvalidSyncStateData",
+            "SyncState is stale; the requested change window was pruned, resync from a null SyncState",
+            StatusCode::OK,
+        );
+    }
     let latest_seq = state.storage.get_latest_change_seq().await.unwrap_or(0);
-    let upper_bound = if requested_upper_bound > since {
-        requested_upper_bound.min(latest_seq)
+    // The keyset cursor of an in-progress prime (if any). Its presence means
+    // the last prime clipped before the whole live snapshot was delivered.
+    let prime_cursor = state
+        .storage
+        .get_local_sync_cursor(owner, &folder_id)
+        .await
+        .unwrap_or(None);
+    // A prime re-enumerates the live snapshot (keyset-paginated) rather than
+    // walking the journal. It runs for a null-SyncState request — including a
+    // stale GATEWAY-PERSISTED cursor, which is not part of the pruning floor
+    // scan (`sync_state` holds only `seq:`/`journal_seq` watermarks) and so can
+    // sit below the floor where a journal walk would silently deliver an
+    // incomplete window — and for a request that continues an unfinished
+    // prime. A healthy persisted cursor on a completed prime performs a normal
+    // incremental journal delta.
+    let is_prime = !client_supplied_cursor || prime_cursor.is_some();
+    if stale && !client_supplied_cursor {
+        tracing::info!(
+            owner = %owner,
+            folder_id = %folder_id,
+            requested_since,
+            "Stale persisted EWS cursor below the pruned journal floor; re-priming from the live snapshot"
+        );
+    }
+    // Within a prime: a null request restarts from the beginning (dropping any
+    // unfinished keyset window — the EAS Tasks/Notes `SyncKey 0` rule), while a
+    // client-supplied cursor continues the keyset window it was given. The
+    // baseline journal head is frozen at the prime's start so a change
+    // journaled mid-prime stays above it and is delivered by the first delta
+    // after the prime completes.
+    let (prime_baseline, after) = if !client_supplied_cursor {
+        if prime_cursor.is_some()
+            && let Err(e) = state
+                .storage
+                .clear_local_sync_cursor(owner, &folder_id)
+                .await
+        {
+            tracing::warn!(folder_id = %folder_id, error = %e, "Failed to reset EWS prime cursor");
+        }
+        (latest_seq, None)
     } else {
-        latest_seq
+        match prime_cursor.as_ref() {
+            Some((k, base)) => (*base, Some(k.as_str())),
+            None => (latest_seq, None),
+        }
     };
-    let journal_rows = match state.storage.list_journal_since_seq(owner, since).await {
-        Ok(v) => v,
-        Err(e) => {
-            tracing::error!(error = %e, "An internal error occurred");
-            return operation_error_response(
-                &EwsAction::SyncFolderItems,
-                "ErrorInternalServerError",
-                "An internal error occurred",
-                StatusCode::INTERNAL_SERVER_ERROR,
-            );
+    let (since, upper_bound) = if is_prime {
+        (prime_baseline, prime_baseline)
+    } else {
+        let since = requested_since;
+        let ub = if requested_upper_bound > since {
+            requested_upper_bound.min(latest_seq)
+        } else {
+            latest_seq
+        };
+        (since, ub)
+    };
+    let journal_rows: Vec<crate::storage::JournalRow> = if is_prime {
+        let limit = (max_changes as u64) + 1;
+        match state
+            .storage
+            .list_changes_after_server_id(owner, after, limit)
+            .await
+        {
+            Ok(rows) => rows
+                .into_iter()
+                .map(|r| crate::storage::JournalRow {
+                    id: 0,
+                    server_id: r.server_id,
+                    op: "upsert".to_string(),
+                    resource_href: Some(r.resource_href),
+                })
+                .collect(),
+            Err(e) => {
+                tracing::error!(error = %e, "An internal error occurred");
+                return operation_error_response(
+                    &EwsAction::SyncFolderItems,
+                    "ErrorInternalServerError",
+                    "An internal error occurred",
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                );
+            }
+        }
+    } else {
+        match state.storage.list_journal_since_seq(owner, since).await {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::error!(error = %e, "An internal error occurred");
+                return operation_error_response(
+                    &EwsAction::SyncFolderItems,
+                    "ErrorInternalServerError",
+                    "An internal error occurred",
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                );
+            }
         }
     };
     let items = match load_current_calendar_items(state, owner, auth.password.expose_secret(), None)
@@ -4674,8 +4794,11 @@ async fn handle_sync_folder_items(
     let mut emitted_ids = HashSet::new();
     let mut changes_xml = String::new();
     let mut last_returned_seq = since;
+    // Highest live server_id the prime delivered (keyset continuation point).
+    let mut last_returned_key: Option<String> = None;
     for row in visible_rows {
         last_returned_seq = row.id;
+        last_returned_key = Some(row.server_id.clone());
         if !emitted_ids.insert(row.server_id.clone()) {
             continue;
         }
@@ -4700,7 +4823,7 @@ async fn handle_sync_folder_items(
             } else {
                 Some(att_summaries.as_slice())
             };
-            let change_tag = if since == 0 { "Create" } else { "Update" };
+            let change_tag = if is_prime { "Create" } else { "Update" };
             changes_xml.push_str(&format!(
                 r#"<t:{ct}>{}</t:{ct}>"#,
                 render_ews_calendar_item_xml_with_shape(
@@ -4761,7 +4884,7 @@ async fn handle_sync_folder_items(
                     };
                     if let Some(item) = fetched {
                         let ck = changekey_for_item(&stored);
-                        let change_tag = if since == 0 { "Create" } else { "Update" };
+                        let change_tag = if is_prime { "Create" } else { "Update" };
                         let att_list = state
                             .attachment_manager
                             .get_attachments_for_item(owner, &row.server_id)
@@ -4830,16 +4953,56 @@ async fn handle_sync_folder_items(
         }
     }
     let includes_last = if has_more { "false" } else { "true" };
-    let next_seen_seq = if visible_rows.is_empty() {
-        since.max(upper_bound)
+    let (next_seen_seq, next_upper_bound) = if is_prime {
+        // Prime: cite the frozen baseline as the journal cursor. It is advanced
+        // to the head only once the whole live snapshot has been delivered, so
+        // a delta issued after a mid-prime `IncludesLastItemInRange=false` page
+        // (which a client may send before the keyset pages finish) still
+        // re-enters the prime rather than walking a partial journal window.
+        let base = prime_baseline.max(since);
+        if has_more {
+            (base, base)
+        } else {
+            (upper_bound, upper_bound)
+        }
     } else {
-        last_returned_seq
+        let seen = if visible_rows.is_empty() {
+            since.max(upper_bound)
+        } else {
+            last_returned_seq
+        };
+        let ub = if includes_last == "true" {
+            seen
+        } else {
+            upper_bound
+        };
+        (seen, ub)
     };
-    let next_upper_bound = if includes_last == "true" {
-        next_seen_seq
-    } else {
-        upper_bound
-    };
+    // The prime's keyset progress is carried in `local_sync_cursor`, mirroring
+    // the EAS Tasks/Notes windowed initial sync: persist the highest delivered
+    // live server_id with the frozen baseline, or drop the cursor once the
+    // whole snapshot fits.
+    if is_prime {
+        let cursor_result = if has_more {
+            match last_returned_key.as_deref() {
+                Some(k) => {
+                    state
+                        .storage
+                        .set_local_sync_cursor(owner, &folder_id, k, prime_baseline)
+                        .await
+                }
+                None => Ok(()),
+            }
+        } else {
+            state
+                .storage
+                .clear_local_sync_cursor(owner, &folder_id)
+                .await
+        };
+        if let Err(e) = cursor_result {
+            tracing::warn!(folder_id = %folder_id, error = %e, "Failed to update EWS prime cursor");
+        }
+    }
     let new_sync_state = encode_sync_state_cursor(next_seen_seq, next_upper_bound);
     if let Err(e) = state
         .storage
@@ -11355,6 +11518,80 @@ mod tests {
             .await
             .expect("response body");
         String::from_utf8_lossy(&body).into_owned()
+    }
+
+    /// §16: an EWS SyncState cursor below the pruned journal floor has had
+    /// part of its window deleted and must be rejected with
+    /// ErrorInvalidSyncStateData so the client re-primes, rather than resume
+    /// across a re-keyed gap.
+    #[tokio::test]
+    async fn sync_folder_items_rejects_pruned_sync_state() {
+        let state = meeting_test_state().await;
+        let owner = owner_from_username("user@example.com");
+
+        // Journal a couple of rows so pruning has something to floor on.
+        for i in 0..3 {
+            state
+                .storage
+                .upsert_item_map(
+                    owner,
+                    &format!("http://cal/{i}"),
+                    "calendar/",
+                    &format!("cal-{i}"),
+                    &format!("uid-{i}"),
+                    "e",
+                )
+                .await
+                .expect("journal upsert");
+        }
+        // A device watermark lets the pruner remove everything up to id 3.
+        state
+            .storage
+            .set_sync_key(owner, "1::dev", "k", Some("seq:3"))
+            .await
+            .expect("watermark");
+        assert_eq!(state.storage.prune_change_journal(owner).await.unwrap(), 3);
+
+        // A cursor from below the floor is stale.
+        let stale_state = encode_sync_state_cursor(1, 1);
+        let body = format!(
+            r#"<m:SyncFolderItems><m:ItemShape/><m:SyncFolderId><t:DistinguishedFolderId Id="calendar"/></m:SyncFolderId><m:SyncState>{}</m:SyncState><m:MaxChangesReturned>100</m:MaxChangesReturned></m:SyncFolderItems>"#,
+            stale_state
+        );
+        let resp = handle_sync_folder_items(&state, &meeting_auth(), &body).await;
+        let text = response_body(resp).await;
+        assert!(
+            text.contains("ErrorInvalidSyncStateData"),
+            "a pruned SyncState must force a re-prime: {text}"
+        );
+
+        // A null SyncState (fresh prime) is not rejected as stale — it is
+        // allowed to proceed to the backend read (which fails only because the
+        // test's JMAP/CalDAV endpoint is unreachable, not because of pruning).
+        let body = r#"<m:SyncFolderItems><m:ItemShape/><m:SyncFolderId><t:DistinguishedFolderId Id="calendar"/></m:SyncFolderId><m:SyncState></m:SyncState><m:MaxChangesReturned>100</m:MaxChangesReturned></m:SyncFolderItems>"#;
+        let resp = handle_sync_folder_items(&state, &meeting_auth(), body).await;
+        let text = response_body(resp).await;
+        assert!(
+            !text.contains("ErrorInvalidSyncStateData"),
+            "a null SyncState must not be rejected as stale: {text}"
+        );
+
+        // A STALE GATEWAY-PERSISTED cursor (below the pruned floor) with a null
+        // request must likewise not be rejected: `ews_sync_state` is outside the
+        // pruning floor scan, so rejecting it would spin an unrecoverable
+        // re-prime loop. The handler must instead take the snapshot-prime path.
+        let folder_id = folder_id_for_owner(owner);
+        state
+            .storage
+            .set_ews_sync_state(owner, &folder_id, &encode_sync_state_cursor(1, 1))
+            .await
+            .expect("persist stale cursor");
+        let resp = handle_sync_folder_items(&state, &meeting_auth(), body).await;
+        let text = response_body(resp).await;
+        assert!(
+            !text.contains("ErrorInvalidSyncStateData"),
+            "a stale persisted cursor must re-prime, not be rejected as stale: {text}"
+        );
     }
     // ---- EWS calendar item timezone render↔parse round-trip (§14) ----
 
