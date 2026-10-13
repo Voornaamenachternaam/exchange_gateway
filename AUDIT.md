@@ -207,8 +207,105 @@ protocol-version gating for 12.1/16.1/no-version) and src/ews.rs (faultcode
 derivation from status + `s:Server` on the outage). Suite: 1063 lib + 2 + 22 +
 11 + 1 doc = 1099 green.
 
-### 18. Auth-cache + rate-limit sizing for two clients is fine, but per-request Basic-auth probe to Stalwart is the SPOF
-Cold-cache bursts (container restart) fire JMAP session probes per request from both clients and Microsoft IPs. Add a startup warm path and circuit-breaker/backoff when Stalwart is down, returning EAS status 110/ServerError instead of 401s (a 401 makes Outlook *prompt for password* â€” catastrophic UX against a transient backend blip).
+### 18. Auth-cache + rate-limit sizing for two clients is fine, but per-request Basic-auth probe to Stalwart is the SPOF — COMPLETE
+
+The per-request Basic-auth probe to Stalwart was the single point of failure
+that fronts both Outlook clients: every EAS/EWS request authenticates, and any
+cache miss cost a JMAP `GET /session` round-trip. A container restart (cold
+cache) therefore fired a burst of probes per request from both clients plus
+Microsoft's IPs, and a Stalwart outage turned each of those into either a
+password prompt (if misclassified as 401) or an unbounded retry storm.
+
+Delivered behavior:
+
+- **Short-lived shared session-auth cache** (`JmapClient::probe_auth`,
+  src/jmap.rs): credential probes are cached per `username:SHA-256(password)`
+  (never the password itself) with a positive TTL derived from the verifier's
+  `GATEWAY_AUTH_CACHE_TTL_SECS` and a negative TTL from
+  `GATEWAY_AUTH_CACHE_NEGATIVE_TTL_SECS`. Positive/negative results are served
+  without touching Stalwart; `BackendError` (a 5xx / transport failure) is
+  **never** cached, so a recovered backend is observed by the very next
+  request. The cache is a capacity-bounded moka cache
+  (`GATEWAY_AUTH_CACHE_MAX_ENTRIES`) whose per-entry TTL is injected by
+  `AppState`, so the client cache can never outlive the verifier cache that
+  governs the documented TTL contract, and it cannot grow without bound across
+  a username scan. A successful probe
+  evicts every *other* cached credential for the same user, so a password
+  changed directly on Stalwart takes effect on first use.
+- **Shared client topology**: `AppState::new` now constructs the JMAP client
+  *before* the `AuthVerifier` and passes it in
+  (`AuthVerifier::new_from_topology`), so the verifier's probes reuse the
+  app-wide HTTP connection pool and the one session-auth cache instead of
+  building a throwaway client per probe. The shared client is built whenever
+  `jmap_base` is set, **regardless of `email_enabled`** (an operator can turn
+  off the email feature while still authenticating users against Stalwart); the
+  email accessors (`jmap_client`, `can_read_email`, `email_available`) still
+  honor `email_enabled`, so folder sync feature-gating is unchanged. Standalone
+  constructions (`AuthVerifier::new`, tests) keep a throwaway probe client.
+- **Cold-start warm path** (src/main.rs `warm_backend_session`): at startup the
+  administrator JMAP session is fetched and cached (and the connection pool
+  primed) before the server listens, so the first authenticated request does
+  not pay a cold session round-trip. It never fails startup — a cold backend is
+  logged and the lazy path warms on first request.
+- **Per-user probe rate cap** (`auth_probe_min_interval_ms`,
+  `GATEWAY_AUTH_PROBE_MIN_INTERVAL_MS`, default 1000ms): consecutive *cold*
+  backend probes for one user are spaced by at least this interval, so even a
+  flood of sequential requests for a user whose credential cache is
+  continuously missing cannot pin Stalwart. A cached outcome is never gated by
+  the cap, so steady-state traffic is unaffected.
+- **In-flight dedup** (src/auth.rs `warm_verify`): concurrent cold probes for
+  the *same credential* collapse onto a single backend round-trip. The dedup
+  key is the credential (`username:hash`), not the user, so two probes for
+  *different* passwords of the same user still run concurrently and the §17
+  start-order race guard keeps observing genuine overlap. A waiter that queues
+  behind the rate cap re-checks the credential cache before issuing its own
+  probe, so the cap acts as a dedup barrier rather than a redundant-probe
+  generator. The in-flight slot is released after every path so the map cannot
+  grow without bound.
+- **Circuit breaker / backoff** (`auth_backend_failure_threshold` default 5,
+  `auth_backend_max_backoff_secs` default 60): after N consecutive
+  `BackendUnavailable` results for a user, that user's circuit opens for an
+  exponentially growing (and capped) window. While open, probes are refused
+  with `BackendUnavailable` *without contacting Stalwart*, so a down backend is
+  not hammered by every request from both clients. Any authoritative answer
+  (`Verified`/`InvalidCredentials`) resets the streak and closes the circuit; a
+  backoff cap of `0` disables the breaker. `reset_warm_state` and
+  `invalidate_user` clear the breaker so an operator action re-enables probing.
+- **Retryable status, not 401s**: the breaker/outage path returns
+  `AuthOutcome::BackendUnavailable`, which the front doors already answer with
+  a retryable 503 — EAS `503` + `Retry-After` (with `Status` 111 only for
+  protocol ≥14.0, bare 503 for 2.5/12.0/12.1 per [MS-ASCMD] §2.2.3.177.8), and
+  EWS `503` `ErrorServerBusy` (`s:Server` faultcode) now also carrying
+  `Retry-After`. Neither sends `WWW-Authenticate`, so Outlook does not prompt
+  for a password against a transient Stalwart blip. The EWS path previously
+  omitted `Retry-After`; it now shares `AUTH_BACKEND_RETRY_AFTER_SECS` with EAS.
+- **PII-free metrics** (src/metrics.rs): `auth_backend_unavailable_total`
+  and `auth_circuit_open_total` (labelled by the arbitrating backend, jmap /
+  caldav / none — no username or device) expose the outage rate and how often
+  the breaker protected Stalwart.
+- **Knobs documented**: the three new variables are parsed, logged at startup,
+  and documented in `.env.example`, `docker-compose.yml`, and
+  `CLOUDFLARED_SETUP.md`.
+
+Note on the audit text's `EAS status 110`: only `Status` 111
+("ServerErrorRetry") is the retryable server-error code for EAS 14.0+; 110 is
+not a defined retry code for this path ([MS-ASCMD] §2.2.3.177.8), so the outage
+body carries 111 (14.0+) and the bare 503 otherwise, matching §17.
+
+Tests: 6 in src/auth.rs (breaker opens at the threshold and skips the backend,
+breaker resets on an authoritative answer, a zero backoff cap disables the
+breaker, a concurrent same-credential burst costs one probe, the per-user rate
+cap spaces sequential cold probes, and the shared client's session-auth cache
+backs a verifier-cache-invalidated probe); 5 in src/jmap.rs (`probe_auth`
+positive TTL expiry, negative caching + eviction on login, backend error never
+cached across recovery, capacity bound enforced, injected positive TTL governs
+expiry rather than a hard-coded 300s); 3 in src/models.rs (shared client present
+whenever `jmap_base` is set — including with `email_enabled=false` — while the
+email accessors stay gated; absent without `jmap_base`); 2 config env tests
+(overrides apply, invalid values fall back); and a `Retry-After` assertion on the
+EWS outage front-door test.
+Suite: 1079 lib + 2 + 22 + 11 + 1 doc = 1115 green, clippy 0, rustfmt clean on
+touched files, release warning-free.
 
 ### 19. SQLite concurrency
 Confirm `init_schema` sets WAL + `busy_timeout` and that sync-state writes from many concurrent EAS long-polls don't serialize into ping-latency spikes (Ping holds connections open; any write contention lands on the Ping path). Add a load test with N concurrent Pings + concurrent Syncs.

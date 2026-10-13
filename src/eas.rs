@@ -48,8 +48,9 @@ const MAX_BODY_SIZE: usize = 1_048_576;
 /// backend is unreachable (AUDIT.md §17). Kept short so a client whose Ping
 /// long-poll is interrupted by the outage re-attempts promptly once Stalwart
 /// recovers; the value is advisory and clients typically apply their own
-/// backoff on top.
-const AUTH_BACKEND_RETRY_AFTER_SECS: u64 = 12;
+/// backoff on top. Shared with the EWS 503 path (`ews::ews_backend_unavailable`)
+/// so both front doors advertise the same backoff.
+pub(crate) const AUTH_BACKEND_RETRY_AFTER_SECS: u64 = 12;
 const CALDAV_TIMEOUT: StdDuration = StdDuration::from_secs(30);
 const MAX_PING_CACHE_ENTRIES: usize = 10_000;
 /// How long a cached Ping parameter set stays usable without the device

@@ -293,6 +293,9 @@ services:
       - GATEWAY_AUTH_CACHE_TTL_SECS=${GATEWAY_AUTH_CACHE_TTL_SECS:-300}
       - GATEWAY_AUTH_CACHE_NEGATIVE_TTL_SECS=${GATEWAY_AUTH_CACHE_NEGATIVE_TTL_SECS:-30}
       - GATEWAY_AUTH_CACHE_MAX_ENTRIES=${GATEWAY_AUTH_CACHE_MAX_ENTRIES:-10000}
+      - GATEWAY_AUTH_PROBE_MIN_INTERVAL_MS=${GATEWAY_AUTH_PROBE_MIN_INTERVAL_MS:-1000}
+      - GATEWAY_AUTH_BACKEND_FAILURE_THRESHOLD=${GATEWAY_AUTH_BACKEND_FAILURE_THRESHOLD:-5}
+      - GATEWAY_AUTH_BACKEND_MAX_BACKOFF_SECS=${GATEWAY_AUTH_BACKEND_MAX_BACKOFF_SECS:-60}
       - GATEWAY_ALLOW_INSECURE_HTTP=${GATEWAY_ALLOW_INSECURE_HTTP:-1}
     volumes:
       - exchange-gateway-data:/var/lib/exchange-gateway
@@ -329,6 +332,9 @@ GATEWAY_ROOM_BOOKING_ENABLED=true
 GATEWAY_AUTH_CACHE_TTL_SECS=300
 GATEWAY_AUTH_CACHE_NEGATIVE_TTL_SECS=30
 GATEWAY_AUTH_CACHE_MAX_ENTRIES=10000
+GATEWAY_AUTH_PROBE_MIN_INTERVAL_MS=1000
+GATEWAY_AUTH_BACKEND_FAILURE_THRESHOLD=5
+GATEWAY_AUTH_BACKEND_MAX_BACKOFF_SECS=60
 # Plain HTTP to the Stalwart backend (the JMAP URL derived from CALDAV_BASE)
 # carries credentials in cleartext. Set to 1 to permit the non-TLS
 # http://stalwart:8080 model only when the gateway and Stalwart share a
@@ -386,7 +392,10 @@ curl -v https://calendar.example.com/autodiscover/autodiscover.xml
 | `GATEWAY_ROOM_BOOKING_ENABLED` | Enable room booking | No | `true` |
 | `GATEWAY_AUTH_CACHE_TTL_SECS` | Positive auth cache TTL (seconds; minimum `30`) | No | `300` |
 | `GATEWAY_AUTH_CACHE_NEGATIVE_TTL_SECS` | Negative auth cache TTL base (seconds; up to 25% deterministic jitter is added, so the effective lifetime is `base`..`base`+25%); `0` disables negative caching | No | `30` |
-| `GATEWAY_AUTH_CACHE_MAX_ENTRIES` | Auth cache max entries | No | `10000` |
+| `GATEWAY_AUTH_CACHE_MAX_ENTRIES` | Auth cache max entries (also bounds the shared JMAP session-auth cache) | No | `10000` |
+| `GATEWAY_AUTH_PROBE_MIN_INTERVAL_MS` | Minimum spacing between consecutive cold backend credential probes for one user (ms); bounds the per-request Basic-auth probe. Per-user, not global | No | `1000` |
+| `GATEWAY_AUTH_BACKEND_FAILURE_THRESHOLD` | Consecutive backend-auth failures that open a user's circuit breaker (per-user, not global) | No | `5` |
+| `GATEWAY_AUTH_BACKEND_MAX_BACKOFF_SECS` | Cap on the circuit breaker's exponential backoff (seconds); `0` disables the breaker | No | `60` |
 | `GATEWAY_ALLOW_INSECURE_HTTP` | Permit plain HTTP to the backend (JMAP) | No | `false` |
 
 ### Boolean Values

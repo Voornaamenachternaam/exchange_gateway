@@ -2,6 +2,7 @@
 use crate::caldav::CaldavClient;
 use crate::config::Config;
 use crate::jmap::JmapClient;
+use dashmap::DashMap;
 use moka::Expiry;
 use moka::sync::Cache;
 use secrecy::SecretString;
@@ -109,6 +110,36 @@ pub struct AuthVerifier {
     cache: Cache<String, Cached>,
     caldav_base: String,
     jmap_base: String,
+    /// Shared JMAP client (with its own session-auth cache). When present,
+    /// credential probes go through [`JmapClient::probe_auth`], which both
+    /// short-circuits the per-request Basic-auth probe and collapses the
+    /// cold-cache probe burst that fronts EAS/EWS (AUDIT.md §18). Standalone
+    /// constructions (tests) leave this `None` and build a throwaway client.
+    jmap_client: Option<Arc<JmapClient>>,
+    /// In-flight probe dedup keyed by `username:hash(password)`. Concurrent
+    /// verifications for the *same credential* await ONE backend probe instead
+    /// of fanning out N probes, so a cold-cache burst from two clients plus
+    /// Microsoft IPs costs a single round-trip per credential. Keying on the
+    /// credential (not the user) keeps two different-password probes of the
+    /// same user concurrent, so the §17 start-order race guard still sees them
+    /// overlap.
+    inflight: Arc<DashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    /// Per-username timestamp of the last *cold* backend probe. Enforces
+    /// `probe_interval` as a per-user rate cap on the SPOF (the backend auth
+    /// probe) even when requests arrive sequentially rather than concurrently.
+    probe_gate: Cache<String, Instant>,
+    /// Minimum interval between cold backend probes for one user.
+    probe_interval: Duration,
+    /// Consecutive `BackendUnavailable` results per user (the circuit-breaker
+    /// failure counter). Reset to zero on any non-outage result.
+    failure_streak: Cache<String, u32>,
+    /// Open-circuit deadline per user: while `Instant::now() < deadline`,
+    /// further cold probes are refused without contacting the backend.
+    breaker_until: Cache<String, Instant>,
+    /// Consecutive backend failures required to open the breaker.
+    failure_threshold: u32,
+    /// Exponential-backoff cap for an open breaker.
+    breaker_max_backoff: Duration,
     /// Configured negative-cache lifetime; zero disables negative caching.
     negative_ttl: Duration,
     /// Monotonic ticket source: every verification takes a ticket *before*
@@ -128,6 +159,30 @@ pub struct AuthVerifier {
 
 impl AuthVerifier {
     pub fn new(cfg: &Config) -> Self {
+        // Standalone constructor (unit tests, MAPI test harnesses): no shared
+        // JMAP client, so the probe path builds a throwaway one per call.
+        // Production uses `new_from_topology` so the client's session-auth
+        // cache and the app-wide HTTP pool are shared.
+        Self::from_parts(cfg, None)
+    }
+
+    /// Production constructor: share the application's JMAP client so the
+    /// cold-cache probe path reuses its session-auth cache and connection pool
+    /// (AUDIT.md §18).
+    pub fn new_from_topology(cfg: &Config, jmap_client: Option<Arc<JmapClient>>) -> Self {
+        Self::from_parts(cfg, jmap_client)
+    }
+
+    /// The shared JMAP client used for credential probes, if one was injected.
+    /// Exposed crate-wide so `AppState` wiring can be asserted in tests
+    /// (AUDIT.md §18: the shared client must exist whenever JMAP auth is in use,
+    /// regardless of whether the email feature is enabled).
+    #[cfg(test)]
+    pub(crate) fn shared_jmap_client(&self) -> Option<&Arc<JmapClient>> {
+        self.jmap_client.as_ref()
+    }
+
+    fn from_parts(cfg: &Config, jmap_client: Option<Arc<JmapClient>>) -> Self {
         // Positive results keep the operator-configured TTL (floor 30s).
         let positive = Duration::from_secs(cfg.auth_cache_ttl_secs.max(30));
         // Negative results use a short, separately-configured TTL. The jitter
@@ -147,6 +202,25 @@ impl AuthVerifier {
             cache,
             caldav_base: cfg.caldav_base.clone(),
             jmap_base: cfg.jmap_base.clone(),
+            jmap_client,
+            inflight: Arc::new(DashMap::new()),
+            probe_gate: Cache::builder()
+                .max_capacity(max_entries as u64)
+                .time_to_live(Duration::from_secs(3600))
+                .build(),
+            probe_interval: Duration::from_millis(cfg.auth_probe_min_interval_ms),
+            failure_streak: Cache::builder()
+                .max_capacity(max_entries as u64)
+                .time_to_live(Duration::from_secs(3600))
+                .build(),
+            breaker_until: Cache::builder()
+                .max_capacity(max_entries as u64)
+                .time_to_live(Duration::from_secs(3600))
+                .build(),
+            failure_threshold: cfg.auth_backend_failure_threshold.max(1),
+            // A zero cap is meaningful: it disables the breaker (see
+            // `update_breaker`), so do NOT clamp it up to 1.
+            breaker_max_backoff: Duration::from_secs(cfg.auth_backend_max_backoff_secs),
             negative_ttl: negative,
             ticket: Arc::new(AtomicU64::new(0)),
             committed_generation: Cache::builder()
@@ -213,7 +287,7 @@ impl AuthVerifier {
 
         let ticket = self.ticket.fetch_add(1, Ordering::SeqCst);
 
-        let outcome = self.verify_backend(username, password).await;
+        let outcome = self.warm_verify(username, password).await;
 
         match outcome {
             AuthOutcome::Verified => {
@@ -330,6 +404,14 @@ impl AuthVerifier {
                 removed += 1;
             }
         }
+        // Explicit invalidation also clears the warm-path state so a credential
+        // change or an operator reset immediately re-enables probing even if the
+        // circuit had opened during an outage, and purges the shared client's
+        // session-auth cache so a still-fresh positive there cannot shadow it.
+        self.reset_warm_state(username);
+        if let Some(client) = &self.jmap_client {
+            client.invalidate_user_session_auth(username);
+        }
         if removed > 0 {
             debug!(
                 target: "auth",
@@ -340,6 +422,190 @@ impl AuthVerifier {
         }
     }
 
+    /// Warm-path probe funnel over [`AuthVerifier::verify_backend`] (AUDIT.md §18).
+    ///
+    /// The per-request Basic-auth probe is the single point of failure for both
+    /// clients; this method protects it in three layers before the backend is
+    /// touched at all:
+    ///
+    /// 1. **Circuit breaker** — after `failure_threshold` consecutive backend
+    ///    outages the per-user circuit opens for an exponentially growing (and
+    ///    capped) backoff window. While open, probes are refused with
+    ///    `BackendUnavailable` *without contacting the backend*, so a down
+    ///    Stalwart is not hammered by every request from both clients.
+    /// 2. **In-flight dedup** — concurrent cold probes for the *same
+    ///    credential* collapse onto one backend round-trip (a cold-cache burst
+    ///    costs one probe per credential, not one per request). Keying on the
+    ///    credential rather than the user is deliberate: two probes for
+    ///    *different* passwords of the same user must still run concurrently,
+    ///    so the §17 start-order race guard keeps observing genuine overlap.
+    /// 3. **Per-user probe rate cap** — even sequential cold probes are spaced
+    ///    by at least `probe_interval`, so a flood of requests for a user whose
+    ///    credential cache is continuously missing cannot pin the backend.
+    ///
+    /// The breaker and the rate cap are deliberately **per user**, not global.
+    /// A global breaker (or a global rate gate) would be simpler, but a Stalwart
+    /// outage is a *backend-wide* condition while a credential is a *per-user*
+    /// one; coupling them would let one user's repeatedly-failing credential
+    /// refuse a concurrently-succeeding user's valid login, which is a
+    /// correctness regression (a legitimate client would be told "backend
+    /// unavailable" even though the backend is up and its password is correct).
+    /// Trade-off accepted: during a genuine backend outage the aggregate probe
+    /// count is `users × failure_threshold` before each circuit opens, bounded
+    /// by the concurrent-request ceiling and the in-flight dedup; the
+    /// `auth_backend_unavailable_total` / `auth_circuit_open_total` counters give
+    /// operators the signal to size `failure_threshold`/`backoff` for their user
+    /// population (see AUDIT.md §18).
+    ///
+    /// Backend *responses* (including a fast rejection) are never gated by the
+    /// rate cap: once a probe has run its result is cached, and the rate cap
+    /// only throttles consecutive *cold* probes. A `Valid`/`Invalid` result
+    /// resets the breaker; a `BackendUnavailable` advances it.
+    async fn warm_verify(&self, username: &str, password: &str) -> AuthOutcome {
+        // Layer 1: refuse fast while the breaker is open.
+        if let Some(until) = self.breaker_until.get(username)
+            && Instant::now() < until
+        {
+            trace!(target: "auth", username = %username, "Auth circuit open; skipping backend probe");
+            crate::metrics::app_metrics()
+                .backend
+                .record_auth_circuit_open(self.backend_label());
+            return AuthOutcome::BackendUnavailable;
+        }
+
+        let cache_key = format!("{}:{}", username, hash_password_fast(password));
+
+        // Layer 2: serialise concurrent probes for this credential.
+        let lock = self
+            .inflight
+            .entry(cache_key.clone())
+            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+            .clone();
+        let _guard = lock.lock().await;
+
+        // Between `verify_outcome`'s cache check and acquiring the lock a
+        // concurrent winner may have cached the result for this exact
+        // credential. Re-check under the lock to collapse the burst.
+        if let Some(cached) = self.cache.get(&cache_key) {
+            let outcome = match cached {
+                Cached::Valid => AuthOutcome::Verified,
+                Cached::Invalid => AuthOutcome::InvalidCredentials,
+            };
+            self.release_inflight(&cache_key, &_guard);
+            return outcome;
+        }
+
+        // Layer 3: per-user probe rate cap.
+        {
+            let now = Instant::now();
+            if let Some(last) = self.probe_gate.get(username)
+                && now.duration_since(last) < self.probe_interval
+            {
+                let wait = self.probe_interval.saturating_sub(now.duration_since(last));
+                tokio::time::sleep(wait).await;
+                // The winner we were queued behind has almost certainly
+                // committed by now; re-check so the cap acts as a dedup barrier
+                // instead of forcing a redundant probe.
+                if let Some(cached) = self.cache.get(&cache_key) {
+                    let outcome = match cached {
+                        Cached::Valid => AuthOutcome::Verified,
+                        Cached::Invalid => AuthOutcome::InvalidCredentials,
+                    };
+                    self.release_inflight(&cache_key, &_guard);
+                    return outcome;
+                }
+            }
+            self.probe_gate.insert(username.to_string(), Instant::now());
+        }
+
+        let outcome = self.verify_backend(username, password).await;
+        if outcome.is_backend_unavailable() {
+            crate::metrics::app_metrics()
+                .backend
+                .record_auth_backend_unavailable(self.backend_label());
+        }
+        self.update_breaker(username, outcome);
+        self.release_inflight(&cache_key, &_guard);
+        outcome
+    }
+
+    /// Release this credential's in-flight dedup slot so the map cannot grow
+    /// without bound. The slot is removed while the caller still holds the
+    /// guard; a waiter that already resolved the same `Arc` keeps its own
+    /// reference and, after acquiring, re-checks the credential cache (a hit
+    /// for a `Valid`/`Invalid` result), so the removal cannot let a duplicate
+    /// probe slip through for a cached outcome.
+    fn release_inflight(&self, cache_key: &str, _guard: &tokio::sync::MutexGuard<'_, ()>) {
+        self.inflight.remove(cache_key);
+    }
+
+    /// Label describing which backend arbitrates authentication, for the
+    /// PII-free outage/circuit metrics.
+    fn backend_label(&self) -> &'static str {
+        if !self.jmap_base.is_empty() {
+            "jmap"
+        } else if !self.caldav_base.is_empty() {
+            "caldav"
+        } else {
+            "none"
+        }
+    }
+
+    /// Advance or reset the per-user circuit breaker from a probe result.
+    fn update_breaker(&self, username: &str, outcome: AuthOutcome) {
+        match outcome {
+            AuthOutcome::BackendUnavailable => {
+                let streak = self
+                    .failure_streak
+                    .get(username)
+                    .unwrap_or(0)
+                    .saturating_add(1);
+                self.failure_streak.insert(username.to_string(), streak);
+                if streak >= self.failure_threshold {
+                    // Exponential backoff on the streak, capped. A test can set
+                    // the cap to zero to disable the breaker entirely.
+                    let backoff = self.breaker_max_backoff;
+                    if !backoff.is_zero() {
+                        let shift = streak.saturating_sub(self.failure_threshold).min(16);
+                        let scaled = backoff.saturating_mul(1u32 << shift);
+                        self.breaker_until
+                            .insert(username.to_string(), Instant::now() + scaled);
+                        warn!(
+                            target: "auth",
+                            username = %username,
+                            streak,
+                            backoff_secs = scaled.as_secs(),
+                            "Auth circuit opened for user after consecutive backend failures"
+                        );
+                    }
+                }
+            }
+            AuthOutcome::Verified | AuthOutcome::InvalidCredentials => {
+                // Any authoritative answer proves the backend is reachable.
+                self.failure_streak.invalidate(username);
+                self.breaker_until.invalidate(username);
+            }
+        }
+    }
+
+    /// Whether the per-user auth circuit is currently open (backend probes are
+    /// being refused without contacting Stalwart). Exposed for observability
+    /// and tests.
+    pub fn circuit_open(&self, username: &str) -> bool {
+        self.breaker_until
+            .get(username)
+            .is_some_and(|until| Instant::now() < until)
+    }
+
+    /// Drop every piece of per-user warm-path state (breaker, streak, probe
+    /// gate). Exposed so an operator action (e.g. a credential change) can
+    /// immediately re-enable probing.
+    pub fn reset_warm_state(&self, username: &str) {
+        self.failure_streak.invalidate(username);
+        self.breaker_until.invalidate(username);
+        self.probe_gate.invalidate(username);
+    }
+
     /// Probe the configured backends, collapsing their tri-state results into
     /// an [`AuthOutcome`].
     async fn verify_backend(&self, username: &str, password: &str) -> AuthOutcome {
@@ -348,11 +614,18 @@ impl AuthVerifier {
 
         if jmap_configured {
             let secret = SecretString::from(password.to_string());
-            let check = match JmapClient::new(&self.jmap_base) {
-                Ok(client) => client.check_credentials(username, &secret).await,
-                Err(e) => {
-                    CredentialCheck::BackendError(format!("Failed to create JMAP client: {}", e))
-                }
+            // Prefer the shared application JMAP client so its session-auth
+            // cache and connection pool serve every request; fall back to a
+            // throwaway client for standalone (test) constructions.
+            let check = match &self.jmap_client {
+                Some(client) => client.probe_auth(username, &secret).await,
+                None => match JmapClient::new(&self.jmap_base) {
+                    Ok(client) => client.probe_auth(username, &secret).await,
+                    Err(e) => CredentialCheck::BackendError(format!(
+                        "Failed to create JMAP client: {}",
+                        e
+                    )),
+                },
             };
             match check {
                 CredentialCheck::Valid => {
@@ -612,6 +885,9 @@ mod tests {
                 caldav_base: self.base.clone(),
                 auth_cache_negative_ttl_secs: negative_ttl_secs,
                 auth_cache_ttl_secs: 300,
+                // No inter-probe spacing so the existing timing tests stay fast
+                // and deterministic; the §18 warm-path tests set it explicitly.
+                auth_probe_min_interval_ms: 0,
                 ..Default::default()
             }
         }
@@ -622,6 +898,7 @@ mod tests {
                 caldav_base: String::new(),
                 auth_cache_negative_ttl_secs: negative_ttl_secs,
                 auth_cache_ttl_secs: 300,
+                auth_probe_min_interval_ms: 0,
                 ..Default::default()
             }
         }
@@ -1003,5 +1280,195 @@ mod tests {
             AuthOutcome::Verified
         );
         assert_eq!(stub.jmap_hits.load(Ordering::SeqCst), hits);
+    }
+
+    // ---- AUDIT.md §18: warm-path funnel (dedup / rate cap / breaker) ----
+
+    fn cfg_warm(base: &str, threshold: u32, backoff_secs: u64, interval_ms: u64) -> Config {
+        Config {
+            jmap_base: base.to_string(),
+            caldav_base: String::new(),
+            auth_cache_ttl_secs: 300,
+            auth_cache_negative_ttl_secs: 0,
+            auth_probe_min_interval_ms: interval_ms,
+            auth_backend_failure_threshold: threshold,
+            auth_backend_max_backoff_secs: backoff_secs,
+            ..Default::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn circuit_breaker_opens_after_threshold_and_skips_backend() {
+        let stub = BackendStub::spawn().await;
+        stub.jmap_status.store(500, Ordering::SeqCst);
+        let verifier = AuthVerifier::new(&cfg_warm(&stub.base, 2, 60, 0));
+
+        // Two consecutive outages reach the backend...
+        assert_eq!(
+            verifier.verify_outcome("u", "pw").await,
+            AuthOutcome::BackendUnavailable
+        );
+        assert_eq!(
+            verifier.verify_outcome("u", "pw").await,
+            AuthOutcome::BackendUnavailable
+        );
+        assert!(
+            verifier.circuit_open("u"),
+            "breaker must open at the threshold"
+        );
+        let hits = stub.jmap_hits.load(Ordering::SeqCst);
+        assert_eq!(hits, 2, "exactly the threshold reached the backend");
+
+        // ...the next request is refused WITHOUT touching the backend.
+        assert_eq!(
+            verifier.verify_outcome("u", "pw").await,
+            AuthOutcome::BackendUnavailable
+        );
+        assert_eq!(
+            stub.jmap_hits.load(Ordering::SeqCst),
+            hits,
+            "an open circuit must not probe the backend"
+        );
+    }
+
+    #[tokio::test]
+    async fn circuit_breaker_resets_on_authoritative_answer() {
+        let stub = BackendStub::spawn().await;
+        stub.jmap_status.store(503, Ordering::SeqCst);
+        let verifier = AuthVerifier::new(&cfg_warm(&stub.base, 1, 60, 0));
+
+        assert_eq!(
+            verifier.verify_outcome("u", "pw").await,
+            AuthOutcome::BackendUnavailable
+        );
+        assert!(verifier.circuit_open("u"));
+
+        // An explicit reset re-enables probing; the backend is now reachable and
+        // authoritatively rejects, which closes the circuit.
+        verifier.reset_warm_state("u");
+        assert!(!verifier.circuit_open("u"));
+        stub.jmap_status.store(401, Ordering::SeqCst);
+        assert_eq!(
+            verifier.verify_outcome("u", "pw").await,
+            AuthOutcome::InvalidCredentials
+        );
+        assert!(!verifier.circuit_open("u"), "an answer closes the circuit");
+    }
+
+    #[tokio::test]
+    async fn zero_backoff_disables_the_breaker() {
+        let stub = BackendStub::spawn().await;
+        stub.jmap_status.store(500, Ordering::SeqCst);
+        // threshold 1, backoff cap 0 → the breaker never opens.
+        let verifier = AuthVerifier::new(&cfg_warm(&stub.base, 1, 0, 0));
+
+        for _ in 0..3 {
+            assert_eq!(
+                verifier.verify_outcome("u", "pw").await,
+                AuthOutcome::BackendUnavailable
+            );
+        }
+        assert!(
+            !verifier.circuit_open("u"),
+            "a zero cap disables the breaker"
+        );
+        assert_eq!(
+            stub.jmap_hits.load(Ordering::SeqCst),
+            3,
+            "with the breaker disabled every probe still reaches the backend"
+        );
+    }
+
+    #[tokio::test]
+    async fn concurrent_same_credential_burst_probes_backend_once() {
+        let stub = BackendStub::spawn().await;
+        let verifier = Arc::new(AuthVerifier::new(&cfg_warm(&stub.base, 5, 60, 0)));
+
+        // Hold the single probe open, launch a burst, then release it.
+        stub.jmap_hold.store(true, Ordering::SeqCst);
+        let mut handles = Vec::new();
+        for _ in 0..5 {
+            let verifier = Arc::clone(&verifier);
+            handles.push(tokio::spawn(async move {
+                verifier.verify_outcome("u", "pw").await
+            }));
+        }
+        // Wait for the one probe to be in flight.
+        while stub.jmap_hits.load(Ordering::SeqCst) == 0 {
+            tokio::task::yield_now().await;
+        }
+        stub.jmap_gate.notify_waiters();
+        for h in handles {
+            assert_eq!(h.await.unwrap(), AuthOutcome::Verified);
+        }
+        assert_eq!(
+            stub.jmap_hits.load(Ordering::SeqCst),
+            1,
+            "a concurrent burst for one credential must cost a single probe"
+        );
+    }
+
+    #[tokio::test]
+    async fn per_user_rate_cap_spaces_sequential_cold_probes() {
+        let stub = BackendStub::spawn().await;
+        // Authoritative rejections, negative caching disabled, and a 200ms cap:
+        // every call is cold and must be spaced by the cap.
+        stub.jmap_status.store(401, Ordering::SeqCst);
+        let verifier = AuthVerifier::new(&cfg_warm(&stub.base, 5, 60, 200));
+
+        let start = Instant::now();
+        for _ in 0..3 {
+            assert_eq!(
+                verifier.verify_outcome("u", "pw").await,
+                AuthOutcome::InvalidCredentials
+            );
+        }
+        let elapsed = start.elapsed();
+        assert_eq!(
+            stub.jmap_hits.load(Ordering::SeqCst),
+            3,
+            "each cold probe reaches the backend exactly once"
+        );
+        assert!(
+            elapsed >= Duration::from_millis(360),
+            "the rate cap must space two 200ms waits between three probes, got {elapsed:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn shared_jmap_client_session_cache_backs_the_verifier() {
+        // The verifier consults the shared client's session-auth cache: two
+        // verifications of the same credential cost a single backend probe.
+        let stub = BackendStub::spawn().await;
+        let client = Arc::new(JmapClient::new(&stub.base).unwrap());
+        let verifier =
+            AuthVerifier::new_from_topology(&cfg_warm(&stub.base, 5, 60, 0), Some(client));
+
+        assert_eq!(
+            verifier.verify_outcome("u", "pw").await,
+            AuthOutcome::Verified
+        );
+        // Second verification is served from the verifier's own credential
+        // cache (a third call cannot be reached without a fresh verifier), so
+        // the backend is hit exactly once here.
+        assert_eq!(
+            verifier.verify_outcome("u", "pw").await,
+            AuthOutcome::Verified
+        );
+        assert_eq!(stub.jmap_hits.load(Ordering::SeqCst), 1);
+
+        // An explicit invalidation must purge BOTH the verifier cache and the
+        // shared client's session-auth cache, so the next verification really
+        // re-probes the backend instead of being shadowed by a stale positive.
+        verifier.invalidate_user("u");
+        assert_eq!(
+            verifier.verify_outcome("u", "pw").await,
+            AuthOutcome::Verified
+        );
+        assert_eq!(
+            stub.jmap_hits.load(Ordering::SeqCst),
+            2,
+            "invalidate_user must purge the shared session-auth cache too"
+        );
     }
 }

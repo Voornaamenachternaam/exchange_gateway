@@ -8,6 +8,12 @@ const DEFAULT_MAX_ATTACHMENT_BYTES: usize = 5 * 1024 * 1024;
 const DEFAULT_AUTH_CACHE_TTL_SECS: u64 = 300;
 const DEFAULT_AUTH_CACHE_NEGATIVE_TTL_SECS: u64 = 30;
 const DEFAULT_AUTH_CACHE_MAX_ENTRIES: usize = 10000;
+/// Default spacing between cold backend probes for one user.
+const DEFAULT_AUTH_PROBE_MIN_INTERVAL_MS: u64 = 1000;
+/// Default consecutive-failure count that opens the per-user circuit.
+const DEFAULT_AUTH_BACKEND_FAILURE_THRESHOLD: u32 = 5;
+/// Default circuit-breaker backoff cap (seconds).
+const DEFAULT_AUTH_BACKEND_MAX_BACKOFF_SECS: u64 = 60;
 const DEFAULT_SMTP_PORT: u16 = 465;
 const DEFAULT_IMAP_PORT: u16 = 993;
 
@@ -22,6 +28,15 @@ const ENV_ROOM_BOOKING_ENABLED: &str = "GATEWAY_ROOM_BOOKING_ENABLED";
 const ENV_AUTH_CACHE_TTL_SECS: &str = "GATEWAY_AUTH_CACHE_TTL_SECS";
 const ENV_AUTH_CACHE_NEGATIVE_TTL_SECS: &str = "GATEWAY_AUTH_CACHE_NEGATIVE_TTL_SECS";
 const ENV_AUTH_CACHE_MAX_ENTRIES: &str = "GATEWAY_AUTH_CACHE_MAX_ENTRIES";
+/// Minimum interval between consecutive *cold* backend credential probes for
+/// one user (AUDIT.md §18). Bounds the per-request Basic-auth probe, which is
+/// the SPOF, even when a user's credential cache is continuously missing.
+const ENV_AUTH_PROBE_MIN_INTERVAL_MS: &str = "GATEWAY_AUTH_PROBE_MIN_INTERVAL_MS";
+/// Consecutive backend-auth failures that open a user's circuit breaker.
+const ENV_AUTH_BACKEND_FAILURE_THRESHOLD: &str = "GATEWAY_AUTH_BACKEND_FAILURE_THRESHOLD";
+/// Cap on the circuit breaker's exponential backoff (seconds; `0` disables the
+/// breaker entirely).
+const ENV_AUTH_BACKEND_MAX_BACKOFF_SECS: &str = "GATEWAY_AUTH_BACKEND_MAX_BACKOFF_SECS";
 const ENV_SMTP_HOST: &str = "GATEWAY_SMTP_HOST";
 const ENV_SMTP_PORT: &str = "GATEWAY_SMTP_PORT";
 const ENV_IMAP_HOST: &str = "GATEWAY_IMAP_HOST";
@@ -101,6 +116,18 @@ pub struct Config {
     pub auth_cache_negative_ttl_secs: u64,
     #[serde(default = "default_auth_cache_max_entries")]
     pub auth_cache_max_entries: usize,
+    /// Minimum spacing between consecutive *cold* backend credential probes for
+    /// one user, in milliseconds. Bounds the per-request Basic-auth probe
+    /// (AUDIT.md §18).
+    #[serde(default = "default_auth_probe_min_interval_ms")]
+    pub auth_probe_min_interval_ms: u64,
+    /// Consecutive backend-auth failures that open a user's circuit breaker.
+    #[serde(default = "default_auth_backend_failure_threshold")]
+    pub auth_backend_failure_threshold: u32,
+    /// Cap on the circuit breaker's exponential backoff, in seconds. `0`
+    /// disables the breaker.
+    #[serde(default = "default_auth_backend_max_backoff_secs")]
+    pub auth_backend_max_backoff_secs: u64,
     // Email configuration — SMTP submission via Stalwart
     #[serde(default)]
     pub smtp_host: String,
@@ -319,6 +346,18 @@ fn default_auth_cache_max_entries() -> usize {
     DEFAULT_AUTH_CACHE_MAX_ENTRIES
 }
 
+fn default_auth_probe_min_interval_ms() -> u64 {
+    DEFAULT_AUTH_PROBE_MIN_INTERVAL_MS
+}
+
+fn default_auth_backend_failure_threshold() -> u32 {
+    DEFAULT_AUTH_BACKEND_FAILURE_THRESHOLD
+}
+
+fn default_auth_backend_max_backoff_secs() -> u64 {
+    DEFAULT_AUTH_BACKEND_MAX_BACKOFF_SECS
+}
+
 fn default_smtp_port() -> u16 {
     DEFAULT_SMTP_PORT
 }
@@ -477,6 +516,9 @@ impl Config {
             auth_cache_ttl_secs = cfg.auth_cache_ttl_secs,
             auth_cache_negative_ttl_secs = cfg.auth_cache_negative_ttl_secs,
             auth_cache_max_entries = cfg.auth_cache_max_entries,
+            auth_probe_min_interval_ms = cfg.auth_probe_min_interval_ms,
+            auth_backend_failure_threshold = cfg.auth_backend_failure_threshold,
+            auth_backend_max_backoff_secs = cfg.auth_backend_max_backoff_secs,
             "Configuration validated successfully"
         );
         Ok(cfg)
@@ -757,6 +799,72 @@ fn apply_environment_overrides(cfg: &mut Config) {
                 tracing::warn!(
                     "Invalid value for {}: '{}', using default",
                     ENV_AUTH_CACHE_MAX_ENTRIES,
+                    val
+                );
+            }
+        }
+    }
+
+    if let Some(val) = env::var(ENV_AUTH_PROBE_MIN_INTERVAL_MS)
+        .ok()
+        .filter(|v| !v.is_empty())
+    {
+        match val.parse::<u64>() {
+            Ok(parsed) => {
+                tracing::debug!(
+                    "Applying {} from environment",
+                    ENV_AUTH_PROBE_MIN_INTERVAL_MS
+                );
+                cfg.auth_probe_min_interval_ms = parsed;
+            }
+            Err(_) => {
+                tracing::warn!(
+                    "Invalid value for {}: '{}', using default",
+                    ENV_AUTH_PROBE_MIN_INTERVAL_MS,
+                    val
+                );
+            }
+        }
+    }
+
+    if let Some(val) = env::var(ENV_AUTH_BACKEND_FAILURE_THRESHOLD)
+        .ok()
+        .filter(|v| !v.is_empty())
+    {
+        match val.parse::<u32>() {
+            Ok(parsed) => {
+                tracing::debug!(
+                    "Applying {} from environment",
+                    ENV_AUTH_BACKEND_FAILURE_THRESHOLD
+                );
+                cfg.auth_backend_failure_threshold = parsed;
+            }
+            Err(_) => {
+                tracing::warn!(
+                    "Invalid value for {}: '{}', using default",
+                    ENV_AUTH_BACKEND_FAILURE_THRESHOLD,
+                    val
+                );
+            }
+        }
+    }
+
+    if let Some(val) = env::var(ENV_AUTH_BACKEND_MAX_BACKOFF_SECS)
+        .ok()
+        .filter(|v| !v.is_empty())
+    {
+        match val.parse::<u64>() {
+            Ok(parsed) => {
+                tracing::debug!(
+                    "Applying {} from environment",
+                    ENV_AUTH_BACKEND_MAX_BACKOFF_SECS
+                );
+                cfg.auth_backend_max_backoff_secs = parsed;
+            }
+            Err(_) => {
+                tracing::warn!(
+                    "Invalid value for {}: '{}', using default",
+                    ENV_AUTH_BACKEND_MAX_BACKOFF_SECS,
                     val
                 );
             }
@@ -1173,6 +1281,9 @@ impl Default for Config {
             auth_cache_ttl_secs: DEFAULT_AUTH_CACHE_TTL_SECS,
             auth_cache_negative_ttl_secs: DEFAULT_AUTH_CACHE_NEGATIVE_TTL_SECS,
             auth_cache_max_entries: DEFAULT_AUTH_CACHE_MAX_ENTRIES,
+            auth_probe_min_interval_ms: DEFAULT_AUTH_PROBE_MIN_INTERVAL_MS,
+            auth_backend_failure_threshold: DEFAULT_AUTH_BACKEND_FAILURE_THRESHOLD,
+            auth_backend_max_backoff_secs: DEFAULT_AUTH_BACKEND_MAX_BACKOFF_SECS,
             smtp_host: String::new(),
             smtp_port: DEFAULT_SMTP_PORT,
             imap_host: String::new(),
@@ -1225,6 +1336,35 @@ impl Config {
 mod tests {
     use super::*;
     use temp_env::with_var;
+
+    #[test]
+    fn test_auth_warm_path_env_overrides_apply() {
+        // The §18 warm-path knobs are wired from the environment.
+        with_var(ENV_AUTH_PROBE_MIN_INTERVAL_MS, Some("250"), || {
+            with_var(ENV_AUTH_BACKEND_FAILURE_THRESHOLD, Some("3"), || {
+                with_var(ENV_AUTH_BACKEND_MAX_BACKOFF_SECS, Some("90"), || {
+                    let mut cfg = Config::default();
+                    apply_environment_overrides(&mut cfg);
+                    assert_eq!(cfg.auth_probe_min_interval_ms, 250);
+                    assert_eq!(cfg.auth_backend_failure_threshold, 3);
+                    assert_eq!(cfg.auth_backend_max_backoff_secs, 90);
+                });
+            });
+        });
+    }
+
+    #[test]
+    fn test_auth_warm_path_env_rejects_invalid_values() {
+        // A non-numeric value is ignored (default retained), never panicking.
+        with_var(ENV_AUTH_PROBE_MIN_INTERVAL_MS, Some("not-a-number"), || {
+            let mut cfg = Config::default();
+            apply_environment_overrides(&mut cfg);
+            assert_eq!(
+                cfg.auth_probe_min_interval_ms,
+                DEFAULT_AUTH_PROBE_MIN_INTERVAL_MS
+            );
+        });
+    }
 
     #[test]
     fn test_default_config() {

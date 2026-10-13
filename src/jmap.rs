@@ -26,6 +26,8 @@
 use crate::auth::CredentialCheck;
 use anyhow::{Result, anyhow};
 use dashmap::DashMap;
+use moka::Expiry;
+use moka::sync::Cache;
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE};
 use secrecy::{ExposeSecret, SecretString};
 use serde::de::DeserializeOwned;
@@ -761,6 +763,22 @@ pub struct SetCalendarEventParams<'a> {
 /// while eliminating redundant HTTP GETs per method call.
 const SESSION_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(300);
 
+/// How long a *positive* JMAP credential probe is trusted before the next
+/// probe. Kept short so a password changed directly on Stalwart takes effect
+/// within this window even before the gateway's own eviction kicks in.
+const SESSION_AUTH_TTL: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// How long an *authoritatively rejected* credential probe is remembered,
+/// bounding repeated bad-password probes against Stalwart. A successful login
+/// for the same user evicts these immediately (`invalidate_other_session_auth`).
+const SESSION_AUTH_NEGATIVE_TTL: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Default capacity of the credential-probe cache when a `JmapClient` is built
+/// via [`JmapClient::new`] (the `AppState` path injects the operator's
+/// `GATEWAY_AUTH_CACHE_MAX_ENTRIES`). Bounds memory when many distinct
+/// credentials are probed (e.g. a username scan that never logs in again).
+const DEFAULT_SESSION_AUTH_MAX_ENTRIES: u64 = 10_000;
+
 /// Build the `onSuccessUpdateEmail` patch (RFC 8621 §7.5) that moves a newly
 /// submitted message out of every Drafts mailbox, into every Sent mailbox, and
 /// clears its `$draft` keyword.
@@ -799,6 +817,52 @@ pub struct JmapClient {
     client: reqwest::Client,
     /// Cached sessions keyed by username, with expiry time.
     session_cache: Arc<DashMap<String, (Instant, JmapSession)>>,
+    /// Credential-probe cache keyed by `username:sha256(password)`.
+    ///
+    /// The EAS/EWS front doors authenticate every request; without this, each
+    /// one costs a full JMAP `GET /session` round-trip (see AUDIT.md §18). A
+    /// positive entry short-circuits that probe for the configured positive
+    /// TTL; a negative entry is held for the shorter negative TTL. Backend
+    /// outages are never cached. This mirrors the higher-level
+    /// `auth::AuthVerifier` cache and, crucially, collapses the burst of
+    /// per-request probes fired on a cold start (container restart) into a
+    /// single backend round-trip.
+    ///
+    /// The TTLs and capacity are injected by the owner (`AppState`) so the
+    /// client cache can never outlive the verifier cache that governs the
+    /// documented `GATEWAY_AUTH_CACHE_TTL_SECS` contract, and so the map is
+    /// bounded (moka enforces both the per-entry TTL and `max_capacity`).
+    session_auth: Cache<String, SessionAuthEntry>,
+}
+
+/// Cached outcome of a single JMAP credential probe.
+#[derive(Clone, Copy, Debug)]
+struct SessionAuthEntry {
+    valid: bool,
+}
+
+/// Per-entry TTL for the JMAP credential-probe cache: positives live for the
+/// configured positive TTL, negatives for the shorter negative TTL. Backend
+/// errors are never inserted, so they need no lifetime.
+#[derive(Clone, Copy)]
+struct SessionAuthExpiry {
+    positive: std::time::Duration,
+    negative: std::time::Duration,
+}
+
+impl Expiry<String, SessionAuthEntry> for SessionAuthExpiry {
+    fn expire_after_create(
+        &self,
+        _key: &String,
+        value: &SessionAuthEntry,
+        _created_at: Instant,
+    ) -> Option<std::time::Duration> {
+        Some(if value.valid {
+            self.positive
+        } else {
+            self.negative
+        })
+    }
 }
 
 /// Outcome of a JMAP `Email/set` update, surfaced by
@@ -857,6 +921,28 @@ impl JmapClient {
     }
     /// Create a new JMAP client pointing at the Stalwart JMAP endpoint.
     pub fn new(base_url: &str) -> Result<Self> {
+        Self::with_session_auth(
+            base_url,
+            SESSION_AUTH_TTL,
+            SESSION_AUTH_NEGATIVE_TTL,
+            DEFAULT_SESSION_AUTH_MAX_ENTRIES,
+        )
+    }
+
+    /// Create a JMAP client whose credential-probe cache uses the given
+    /// positive/negative TTLs and capacity.
+    ///
+    /// `AppState` derives `positive_ttl` from the verifier's
+    /// `auth_cache_ttl_secs` so the client cache can never extend the
+    /// documented auth-cache contract (AUDIT.md §18), and caps the cache size
+    /// so a scan of usernames that never log in again cannot grow it without
+    /// bound.
+    pub fn with_session_auth(
+        base_url: &str,
+        positive_ttl: std::time::Duration,
+        negative_ttl: std::time::Duration,
+        max_entries: u64,
+    ) -> Result<Self> {
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(30))
             .build()
@@ -866,6 +952,13 @@ impl JmapClient {
             base_url: base_url.trim_end_matches('/').to_string(),
             client,
             session_cache: Arc::new(DashMap::new()),
+            session_auth: Cache::builder()
+                .max_capacity(max_entries.max(1))
+                .expire_after(SessionAuthExpiry {
+                    positive: positive_ttl,
+                    negative: negative_ttl,
+                })
+                .build(),
         })
     }
 
@@ -3518,6 +3611,106 @@ impl JmapClient {
     pub async fn verify_credentials(&self, username: &str, password: &SecretString) -> Result<()> {
         self.get_session(username, password).await?;
         Ok(())
+    }
+
+    /// Startup warm path (AUDIT.md §18): fetch and cache the JMAP session for
+    /// `username` so the first authenticated API call after a container restart
+    /// (directory GAL lookups, OOF, calendar capability probes) does not pay a
+    /// cold session round-trip. Also primes the shared HTTP connection pool.
+    ///
+    /// Returns the session so the caller can log/validate it. Failures are
+    /// surfaced (not swallowed) so the startup path can report a down backend.
+    pub async fn warm_session(
+        &self,
+        username: &str,
+        password: &SecretString,
+    ) -> Result<JmapSession> {
+        self.get_session(username, password).await
+    }
+
+    /// Cache key for a credential probe: the username plus a SHA-256 of the
+    /// password (never the password itself, so the map never retains a secret).
+    fn session_auth_key(username: &str, password: &SecretString) -> String {
+        use sha2::{Digest, Sha256};
+        let mut h = Sha256::new();
+        h.update(password.expose_secret().as_bytes());
+        format!("{username}:{}", const_hex::encode(h.finalize()))
+    }
+
+    /// Probe JMAP credentials, consulting a short-lived per-credential cache
+    /// so the per-request Basic-auth probe that fronts EAS/EWS does not hit
+    /// Stalwart on every request (AUDIT.md §18).
+    ///
+    /// Semantics match the higher-level `auth::AuthVerifier` cache:
+    /// * a positive result is remembered for the configured positive TTL;
+    /// * an authoritative rejection (`Invalid`) for the shorter negative TTL;
+    /// * a backend outage (`BackendError`) is **never** cached, so recovery is
+    ///   observed by the very next request.
+    ///
+    /// A successful verification evicts *all other* cached credentials for the
+    /// same username, so a changed Stalwart password takes effect on first use.
+    pub async fn probe_auth(&self, username: &str, password: &SecretString) -> CredentialCheck {
+        let key = Self::session_auth_key(username, password);
+        if let Some(entry) = self.session_auth.get(&key) {
+            return if entry.valid {
+                CredentialCheck::Valid
+            } else {
+                CredentialCheck::Invalid
+            };
+        }
+        let outcome = self.check_credentials(username, password).await;
+        match &outcome {
+            CredentialCheck::Valid => {
+                self.invalidate_other_session_auth(username, &key);
+                self.session_auth
+                    .insert(key, SessionAuthEntry { valid: true });
+            }
+            CredentialCheck::Invalid => {
+                self.session_auth
+                    .insert(key, SessionAuthEntry { valid: false });
+            }
+            CredentialCheck::BackendError(_) => {
+                // Never cache an outage: the next request must re-probe so a
+                // recovered Stalwart is observed immediately.
+            }
+        }
+        outcome
+    }
+
+    /// Evict every cached credential probe for `username` other than `keep_key`.
+    ///
+    /// Called only after a *successful* verification, so a changed password
+    /// stops working at the gateway as soon as the new one is first used rather
+    /// than lingering for the (short) negative TTL.
+    fn invalidate_other_session_auth(&self, username: &str, keep_key: &str) {
+        let prefix = format!("{username}:");
+        let stale: Vec<String> = self
+            .session_auth
+            .iter()
+            .map(|(k, _)| k.as_str().to_string())
+            .filter(|k| k.starts_with(&prefix) && k != keep_key)
+            .collect();
+        for key in stale {
+            self.session_auth.invalidate(&key);
+        }
+    }
+
+    /// Drop every cached session-auth outcome for `username` (all passwords).
+    ///
+    /// Used by `AuthVerifier::invalidate_user` so an explicit invalidation —
+    /// e.g. after a password change or an operator reset — is not shadowed by a
+    /// still-fresh positive in this cache.
+    pub fn invalidate_user_session_auth(&self, username: &str) {
+        let prefix = format!("{username}:");
+        let stale: Vec<String> = self
+            .session_auth
+            .iter()
+            .map(|(k, _)| k.as_str().to_string())
+            .filter(|k| k.starts_with(&prefix))
+            .collect();
+        for key in stale {
+            self.session_auth.invalidate(&key);
+        }
     }
 
     /// Probe the JMAP session to classify the credential state, preserving the
@@ -6272,6 +6465,243 @@ mod tests {
             axum::serve(listener, app).await.unwrap();
         });
         base
+    }
+
+    /// A stub auth server with a mutable status, a request counter, and a
+    /// mutable "accepted password" for password-sensitive scenarios, used to
+    /// prove the session-auth cache collapses probes (AUDIT.md §18). When
+    /// `accept_password` is `Some`, the handler answers 200 only for that
+    /// Basic-auth password and 401 otherwise; when `None` it answers with the
+    /// configured `status` verbatim.
+    struct CountingStub {
+        base: String,
+        status: std::sync::Arc<std::sync::atomic::AtomicU16>,
+        hits: std::sync::Arc<std::sync::atomic::AtomicU32>,
+        accept_password: std::sync::Arc<std::sync::Mutex<Option<String>>>,
+    }
+
+    impl CountingStub {
+        async fn spawn(initial: axum::http::StatusCode) -> Self {
+            use axum::response::Response;
+            use axum::routing::get;
+            use std::sync::Arc;
+            use std::sync::atomic::{AtomicU16, AtomicU32, Ordering};
+
+            #[derive(Clone)]
+            struct Ctl {
+                status: Arc<AtomicU16>,
+                hits: Arc<AtomicU32>,
+                accept_password: Arc<std::sync::Mutex<Option<String>>>,
+            }
+            async fn handler(
+                axum::Extension(ctl): axum::Extension<Ctl>,
+                headers: axum::http::HeaderMap,
+            ) -> Response {
+                use axum::http::StatusCode;
+                ctl.hits.fetch_add(1, Ordering::SeqCst);
+                let accepted = ctl.accept_password.lock().unwrap().clone();
+                let status = match accepted {
+                    Some(expected) => {
+                        if basic_auth_password(&headers).as_deref() == Some(expected.as_str()) {
+                            StatusCode::OK.as_u16()
+                        } else {
+                            StatusCode::UNAUTHORIZED.as_u16()
+                        }
+                    }
+                    None => ctl.status.load(Ordering::SeqCst),
+                };
+                Response::builder()
+                    .status(status)
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from(
+                        serde_json::to_vec(&session_json("http://stub")).unwrap(),
+                    ))
+                    .unwrap()
+            }
+
+            let status = Arc::new(AtomicU16::new(initial.as_u16()));
+            let hits = Arc::new(AtomicU32::new(0));
+            let accept_password = Arc::new(std::sync::Mutex::new(None));
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let base = format!("http://127.0.0.1:{port}");
+            let app = axum::Router::new().route(
+                "/session",
+                get(handler).layer(axum::Extension(Ctl {
+                    status: status.clone(),
+                    hits: hits.clone(),
+                    accept_password: accept_password.clone(),
+                })),
+            );
+            tokio::spawn(async move {
+                axum::serve(listener, app).await.unwrap();
+            });
+            Self {
+                base,
+                status,
+                hits,
+                accept_password,
+            }
+        }
+
+        fn hits(&self) -> u32 {
+            self.hits.load(std::sync::atomic::Ordering::SeqCst)
+        }
+    }
+
+    /// Decode the password from a Basic `Authorization` header, if present.
+    fn basic_auth_password(headers: &axum::http::HeaderMap) -> Option<String> {
+        use base64::Engine;
+        let value = headers.get(axum::http::header::AUTHORIZATION)?;
+        let encoded = value.to_str().ok()?.strip_prefix("Basic ")?;
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(encoded)
+            .ok()?;
+        let text = String::from_utf8(decoded).ok()?;
+        text.split_once(':').map(|(_, pw)| pw.to_string())
+    }
+
+    #[tokio::test]
+    async fn probe_auth_caches_positive_until_ttl() {
+        use axum::http::StatusCode;
+        let stub = CountingStub::spawn(StatusCode::OK).await;
+        // Short positive TTL so expiry is observable quickly.
+        let client = JmapClient::with_session_auth(
+            &stub.base,
+            std::time::Duration::from_millis(150),
+            std::time::Duration::from_secs(30),
+            10_000,
+        )
+        .unwrap();
+        let pw = SecretString::from("pw");
+
+        // First probe hits the backend; the next two are cache hits.
+        assert_eq!(client.probe_auth("u", &pw).await, CredentialCheck::Valid);
+        assert_eq!(client.probe_auth("u", &pw).await, CredentialCheck::Valid);
+        assert_eq!(client.probe_auth("u", &pw).await, CredentialCheck::Valid);
+        assert_eq!(stub.hits(), 1, "positive result must be cached");
+
+        // After the TTL the next probe re-hits the backend.
+        tokio::time::sleep(std::time::Duration::from_millis(220)).await;
+        assert_eq!(client.probe_auth("u", &pw).await, CredentialCheck::Valid);
+        assert_eq!(stub.hits(), 2, "an expired positive entry must re-probe");
+    }
+
+    #[tokio::test]
+    async fn probe_auth_negative_is_cached_and_evicted_on_login() {
+        use axum::http::StatusCode;
+        let stub = CountingStub::spawn(StatusCode::UNAUTHORIZED).await;
+        let client = JmapClient::with_session_auth(
+            &stub.base,
+            std::time::Duration::from_secs(300),
+            std::time::Duration::from_millis(500),
+            10_000,
+        )
+        .unwrap();
+        let pw = SecretString::from("pw");
+
+        // Two bad-password probes collapse onto one backend hit.
+        assert_eq!(client.probe_auth("u", &pw).await, CredentialCheck::Invalid);
+        assert_eq!(client.probe_auth("u", &pw).await, CredentialCheck::Invalid);
+        assert_eq!(stub.hits(), 1, "negative result must be cached");
+
+        // Only "new-pw" is accepted from here on. A successful login with it
+        // must evict every other cached credential for the user, so the stale
+        // bad-password negative stops short-circuiting the old password.
+        *stub.accept_password.lock().unwrap() = Some("new-pw".to_string());
+        assert_eq!(
+            client.probe_auth("u", &SecretString::from("new-pw")).await,
+            CredentialCheck::Valid
+        );
+        let before = stub.hits();
+        assert_eq!(
+            client.probe_auth("u", &pw).await,
+            CredentialCheck::Invalid,
+            "the stale bad-password negative must have been evicted"
+        );
+        assert!(
+            stub.hits() > before,
+            "eviction must force a fresh probe for the old password"
+        );
+    }
+
+    #[tokio::test]
+    async fn probe_auth_cache_is_capacity_bounded() {
+        use axum::http::StatusCode;
+        // Tiny capacity so the bound is observable without a large loop.
+        let stub = CountingStub::spawn(StatusCode::OK).await;
+        let client = JmapClient::with_session_auth(
+            &stub.base,
+            std::time::Duration::from_secs(300),
+            std::time::Duration::from_secs(30),
+            8,
+        )
+        .unwrap();
+
+        // Probe more distinct credentials than the cache can hold; each is a
+        // valid login with its own password (the stub accepts any password).
+        for i in 0..40 {
+            let pw = SecretString::from(format!("pw-{i}"));
+            assert_eq!(client.probe_auth("u", &pw).await, CredentialCheck::Valid);
+        }
+        // moka evicts lazily; force pending maintenance before counting.
+        client.session_auth.run_pending_tasks();
+        assert!(
+            client.session_auth.entry_count() <= 8,
+            "cache must stay within its configured capacity, got {}",
+            client.session_auth.entry_count()
+        );
+    }
+
+    #[tokio::test]
+    async fn session_auth_positive_ttl_is_injected_not_hardcoded() {
+        use axum::http::StatusCode;
+        // A very short injected positive TTL must actually govern the entry, so
+        // the client cache cannot silently extend the verifier's configured
+        // `GATEWAY_AUTH_CACHE_TTL_SECS` contract.
+        let stub = CountingStub::spawn(StatusCode::OK).await;
+        let client = JmapClient::with_session_auth(
+            &stub.base,
+            std::time::Duration::from_millis(80),
+            std::time::Duration::from_secs(30),
+            10_000,
+        )
+        .unwrap();
+        let pw = SecretString::from("pw");
+        assert_eq!(client.probe_auth("u", &pw).await, CredentialCheck::Valid);
+        // Within the injected TTL: served from cache.
+        assert_eq!(stub.hits(), 1);
+        // Past the injected TTL: re-probe (proving 300s was NOT hardcoded).
+        tokio::time::sleep(std::time::Duration::from_millis(140)).await;
+        assert_eq!(client.probe_auth("u", &pw).await, CredentialCheck::Valid);
+        assert_eq!(
+            stub.hits(),
+            2,
+            "the injected positive TTL must govern expiry, not a hardcoded 300s"
+        );
+    }
+
+    #[tokio::test]
+    async fn probe_auth_backend_error_is_never_cached() {
+        use axum::http::StatusCode;
+        let stub = CountingStub::spawn(StatusCode::SERVICE_UNAVAILABLE).await;
+        let client = JmapClient::new(&stub.base).unwrap();
+        let pw = SecretString::from("pw");
+
+        assert!(matches!(
+            client.probe_auth("u", &pw).await,
+            CredentialCheck::BackendError(_)
+        ));
+        // Recovery must be observed by the very next request: no caching of the
+        // outage means the next probe tries again and succeeds.
+        stub.status
+            .store(StatusCode::OK.as_u16(), std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(client.probe_auth("u", &pw).await, CredentialCheck::Valid);
+        assert_eq!(
+            stub.hits(),
+            2,
+            "an outage must never be cached; the next probe must hit the backend"
+        );
     }
 
     #[tokio::test]

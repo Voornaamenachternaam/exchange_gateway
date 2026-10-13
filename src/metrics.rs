@@ -174,6 +174,15 @@ impl HttpMetrics {
 pub struct BackendMetrics {
     /// Gauge for backend health status (1=healthy, 0=unhealthy).
     pub backend_health: GaugeVec,
+    /// Count of credential verifications that resolved to *backend
+    /// unavailable*, i.e. the requests answered with a retryable 503 rather
+    /// than a 401 (AUDIT.md §17/§18). Labelled by the backend that reported the
+    /// outage so a Stalwart flap is distinguishable from a CalDAV-only outage.
+    /// PII-free: no username or device label.
+    pub auth_backend_unavailable_total: CounterVec,
+    /// Count of credential probes refused *without* contacting the backend
+    /// because a user's circuit breaker was open (AUDIT.md §18).
+    pub auth_circuit_open_total: CounterVec,
 }
 
 impl BackendMetrics {
@@ -192,7 +201,43 @@ impl BackendMetrics {
         .unwrap();
         registry.register(Box::new(backend_health.clone())).unwrap();
 
-        Self { backend_health }
+        let auth_backend_unavailable_total = CounterVec::new(
+            Opts::new(
+                "auth_backend_unavailable_total",
+                "Credential verifications that failed due to an unavailable auth backend",
+            )
+            .const_labels(HashMap::from([(
+                "service".to_string(),
+                "exchange_gateway".to_string(),
+            )])),
+            &["backend"],
+        )
+        .unwrap();
+        registry
+            .register(Box::new(auth_backend_unavailable_total.clone()))
+            .unwrap();
+
+        let auth_circuit_open_total = CounterVec::new(
+            Opts::new(
+                "auth_circuit_open_total",
+                "Credential probes refused without contacting the backend (open circuit)",
+            )
+            .const_labels(HashMap::from([(
+                "service".to_string(),
+                "exchange_gateway".to_string(),
+            )])),
+            &["backend"],
+        )
+        .unwrap();
+        registry
+            .register(Box::new(auth_circuit_open_total.clone()))
+            .unwrap();
+
+        Self {
+            backend_health,
+            auth_backend_unavailable_total,
+            auth_circuit_open_total,
+        }
     }
 
     /// Set health status for a specific backend.
@@ -200,6 +245,20 @@ impl BackendMetrics {
         self.backend_health
             .with_label_values(&[backend, backend_type])
             .set(if healthy { 1.0 } else { 0.0 });
+    }
+
+    /// Report a credential verification that hit an unavailable backend.
+    pub fn record_auth_backend_unavailable(&self, backend: &str) {
+        self.auth_backend_unavailable_total
+            .with_label_values(&[backend])
+            .inc();
+    }
+
+    /// Report a credential probe refused because a circuit was open.
+    pub fn record_auth_circuit_open(&self, backend: &str) {
+        self.auth_circuit_open_total
+            .with_label_values(&[backend])
+            .inc();
     }
 }
 
