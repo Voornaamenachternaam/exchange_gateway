@@ -442,11 +442,39 @@ impl SafeDebug for SchedulingQueueRow {
 }
 
 impl Storage {
+    /// Busy timeout for writer contention. WAL mode gives readers a snapshot
+    /// that never blocks on the single writer, but concurrent writes still
+    /// serialize on the writer lock; without a busy timeout the loser of the
+    /// race fails immediately with SQLITE_BUSY instead of waiting, which is
+    /// what turns concurrent EAS long-poll sync-state writes into ping
+    /// latency spikes. 5s is far above the sub-millisecond duration of the
+    /// journal/mirror writes this gateway performs.
+    const BUSY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
     pub async fn new(database_url: &str) -> Result<Self> {
-        let pool = Pool::connect(database_url).await.map_err(|e| {
-            tracing::error!("Failed to create SQLite pool: {}", e);
-            GatewayError::Storage(e.to_string())
-        })?;
+        use sqlx::sqlite::{
+            SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous,
+        };
+        use std::str::FromStr;
+        let options = SqliteConnectOptions::from_str(database_url)
+            .map_err(|e| {
+                tracing::error!("Invalid SQLite URL: {}", e);
+                GatewayError::Storage(format!("Invalid SQLite URL: {}", e))
+            })?
+            .journal_mode(SqliteJournalMode::Wal)
+            .busy_timeout(Self::BUSY_TIMEOUT)
+            .synchronous(SqliteSynchronous::Normal) // safe under WAL; full fsync per commit is unnecessary (durability comes from the WAL checkpoints)
+            .foreign_keys(true);
+        let pool = SqlitePoolOptions::new()
+            // One writer at a time is all SQLite grants regardless of pool
+            // size; extra connections only buy parallelism for WAL readers.
+            // Match the sqlx default of 10 rather than inflating the pool.
+            .connect_with(options)
+            .await
+            .map_err(|e| {
+                tracing::error!("Failed to create SQLite pool: {}", e);
+                GatewayError::Storage(e.to_string())
+            })?;
         Ok(Self {
             pool: Arc::new(pool),
         })
@@ -3879,5 +3907,138 @@ mod tests {
             .expect("post-migration row");
         assert_eq!(updated.decision, 2);
         assert_eq!(updated.sequence, 3);
+    }
+
+    fn temp_db_url(tag: &str) -> (std::path::PathBuf, String) {
+        let dir =
+            std::env::temp_dir().join(format!("gateway-storage-{tag}-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let db = dir.join("gateway.db");
+        let url = format!("sqlite://{}?mode=rwc", db.display());
+        (dir, url)
+    }
+
+    #[tokio::test]
+    async fn new_pool_enables_wal_busy_timeout_and_foreign_keys_on_every_connection() {
+        // busy_timeout and foreign_keys are PER-CONNECTION pragmas: the
+        // sqlite_schema.sql PRAGMA lines only reach the single connection
+        // that ran the schema, so the pool must set them via connect options
+        // or later pooled connections lose the SQLITE_BUSY grace (AUDIT §19).
+        // journal_mode=WAL is file-persistent; assert it took effect too.
+        let (_dir, url) = temp_db_url("pragmas");
+        let storage = Storage::new(&url).await.expect("storage");
+        storage.init_schema().await.expect("init schema");
+
+        // Occupy every pooled connection at once so each live connection —
+        // not just the one init_schema happened to run on — is inspected.
+        let mut conns = Vec::new();
+        for _ in 0..10 {
+            conns.push(storage.pool().acquire().await.expect("acquire"));
+        }
+        for conn in &mut conns {
+            let journal_mode: String = sqlx::query_scalar("PRAGMA journal_mode")
+                .fetch_one(&mut **conn)
+                .await
+                .expect("journal_mode");
+            assert_eq!(journal_mode, "wal", "every pooled connection sees WAL");
+            let busy_timeout: i64 = sqlx::query_scalar("PRAGMA busy_timeout")
+                .fetch_one(&mut **conn)
+                .await
+                .expect("busy_timeout");
+            assert_eq!(
+                busy_timeout,
+                Storage::BUSY_TIMEOUT.as_millis() as i64,
+                "every pooled connection waits out the writer lock"
+            );
+            let foreign_keys: i64 = sqlx::query_scalar("PRAGMA foreign_keys")
+                .fetch_one(&mut **conn)
+                .await
+                .expect("foreign_keys");
+            assert_eq!(foreign_keys, 1, "foreign keys enabled per connection");
+        }
+    }
+
+    #[tokio::test]
+    async fn concurrent_sync_writes_and_ping_reads_never_fail_or_stall() {
+        // AUDIT §19 load test: N concurrent long-polled Pings each rewriting
+        // their watermark while a stream of Sync mutations journals changes.
+        // WAL + busy_timeout must keep every one of these writes and reads
+        // error-free and bounded (no SQLITE_BUSY serialization spike on the
+        // Ping path, no lost watermarks).
+        let (_dir, url) = temp_db_url("load");
+        let storage = Storage::new(&url).await.expect("storage");
+        storage.init_schema().await.expect("init schema");
+
+        const PINGERS: i64 = 16; // concurrent long-polled Ping loops
+        const SYNC_ITERS: i64 = 50; // sync mutations per folder during the poll
+        const POLL_TICKS: i64 = 40; // watermark re-reads per ping
+        let owner = "user@example.com";
+        for ping in 0..PINGERS {
+            storage
+                .set_sync_key(owner, &format!("folder-{ping}"), "0", None)
+                .await
+                .expect("prime sync key");
+        }
+
+        let start = std::time::Instant::now();
+        let mut handles = Vec::new();
+        // Ping loops: poll the watermark rewrite path exactly like the Ping
+        // per-folder journal check does on every tick.
+        for ping in 0..PINGERS {
+            let storage = storage.clone();
+            handles.push(tokio::spawn(async move {
+                let folder = format!("folder-{ping}");
+                for _ in 0..POLL_TICKS {
+                    storage
+                        .record_journal_watermark(owner, &folder)
+                        .await
+                        .expect("ping watermark write");
+                    storage
+                        .list_journal_since_seq(owner, 0)
+                        .await
+                        .expect("ping journal read");
+                }
+            }));
+        }
+        // Concurrent Sync loops: journal-appending item writes.
+        for ping in 0..PINGERS {
+            let storage = storage.clone();
+            handles.push(tokio::spawn(async move {
+                let folder = format!("folder-{ping}");
+                for i in 0..SYNC_ITERS {
+                    storage
+                        .upsert_item_map(
+                            owner,
+                            "cal/user/evt.ics",
+                            &format!("res-{ping}-{i}"),
+                            &format!("srv-{ping}-{i}"),
+                            "uid",
+                            "\"etag\"",
+                        )
+                        .await
+                        .expect("sync journal write");
+                    storage
+                        .set_sync_key(owner, &folder, &format!("key-{i}"), None)
+                        .await
+                        .expect("sync key write");
+                }
+            }));
+        }
+        for handle in handles {
+            handle.await.expect("worker panicked");
+        }
+        let elapsed = start.elapsed();
+
+        // Every journal row landed exactly once: no busy-error loss.
+        let head = storage.get_latest_change_seq().await.expect("journal head");
+        assert_eq!(head, PINGERS * SYNC_ITERS);
+        // Busy_timeout is 5s; if writers serialized into real lock waits the
+        // whole run (1600 writes + 640 reads on WAL) lands in seconds, not
+        // tens of seconds. Generous bound to stay true on loaded CI runners.
+        assert!(
+            elapsed < std::time::Duration::from_secs(30),
+            "concurrent sync-state writes serialized into ping latency spikes: {:?}",
+            elapsed
+        );
     }
 }
