@@ -450,7 +450,18 @@ impl Storage {
     /// latency spikes. 5s is far above the sub-millisecond duration of the
     /// journal/mirror writes this gateway performs.
     const BUSY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+    /// One writer at a time is all SQLite grants regardless of pool size;
+    /// extra connections only buy parallelism for WAL readers. The tests
+    /// acquire exactly this many connections, so the value is explicit
+    /// rather than inherited from the sqlx default.
+    const POOL_SIZE: u32 = 10;
 
+    /// Open the SQLite pool with the gateway's concurrency contract applied
+    /// to EVERY pooled connection: WAL journaling (readers never block on
+    /// the single writer), a 5s busy timeout (writer races wait instead of
+    /// failing SQLITE_BUSY), FULL synchronous (every commit is fsynced
+    /// before it is acknowledged, so a power loss or OS crash cannot roll
+    /// back an acknowledged write), and foreign-key enforcement.
     pub async fn new(database_url: &str) -> Result<Self> {
         use sqlx::sqlite::{
             SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous,
@@ -463,12 +474,10 @@ impl Storage {
             })?
             .journal_mode(SqliteJournalMode::Wal)
             .busy_timeout(Self::BUSY_TIMEOUT)
-            .synchronous(SqliteSynchronous::Normal) // safe under WAL; full fsync per commit is unnecessary (durability comes from the WAL checkpoints)
+            .synchronous(SqliteSynchronous::Full)
             .foreign_keys(true);
         let pool = SqlitePoolOptions::new()
-            // One writer at a time is all SQLite grants regardless of pool
-            // size; extra connections only buy parallelism for WAL readers.
-            // Match the sqlx default of 10 rather than inflating the pool.
+            .max_connections(Self::POOL_SIZE)
             .connect_with(options)
             .await
             .map_err(|e| {
@@ -3932,7 +3941,7 @@ mod tests {
         // Occupy every pooled connection at once so each live connection —
         // not just the one init_schema happened to run on — is inspected.
         let mut conns = Vec::new();
-        for _ in 0..10 {
+        for _ in 0..Storage::POOL_SIZE {
             conns.push(storage.pool().acquire().await.expect("acquire"));
         }
         for conn in &mut conns {
@@ -3960,18 +3969,23 @@ mod tests {
 
     #[tokio::test]
     async fn concurrent_sync_writes_and_ping_reads_never_fail_or_stall() {
-        // AUDIT §19 load test: N concurrent long-polled Pings each rewriting
-        // their watermark while a stream of Sync mutations journals changes.
-        // WAL + busy_timeout must keep every one of these writes and reads
-        // error-free and bounded (no SQLITE_BUSY serialization spike on the
-        // Ping path, no lost watermarks).
+        // AUDIT §19 load test, modeled on the production call sites: the
+        // Ping per-folder journal check only READS (`journal_watermark` +
+        // `list_journal_since_seq`), while the Sync delta path performs all
+        // the writes (journaled item upserts + sync-key + journal-watermark,
+        // exactly as `render_delta_collection_xml` does). WAL therefore
+        // guarantees Ping never waits on the writer lock at all; busy_timeout
+        // covers the writer-vs-writer races on the Sync path. Every read
+        // must also return CONSISTENT data — a reader that silently returned
+        // an empty journal while rows exist must fail this test.
         let (_dir, url) = temp_db_url("load");
         let storage = Storage::new(&url).await.expect("storage");
         storage.init_schema().await.expect("init schema");
 
         const PINGERS: i64 = 16; // concurrent long-polled Ping loops
+        const SYNCERS: i64 = 8; // concurrent Sync writers
         const SYNC_ITERS: i64 = 50; // sync mutations per folder during the poll
-        const POLL_TICKS: i64 = 40; // watermark re-reads per ping
+        const POLL_TICKS: i64 = 40; // journal re-reads per ping
         let owner = "user@example.com";
         for ping in 0..PINGERS {
             storage
@@ -3979,33 +3993,51 @@ mod tests {
                 .await
                 .expect("prime sync key");
         }
+        let total_rows = (SYNCERS * SYNC_ITERS) as usize;
 
         let start = std::time::Instant::now();
         let mut handles = Vec::new();
-        // Ping loops: poll the watermark rewrite path exactly like the Ping
-        // per-folder journal check does on every tick.
+        // Ping loops: the exact read mix of the production Ping tick —
+        // watermark lookup + journal list — with per-tick monotonicity
+        // asserted so a broken reader returning fewer rows than before
+        // (e.g. Ok(vec![]) despite existing rows) is caught immediately.
         for ping in 0..PINGERS {
             let storage = storage.clone();
             handles.push(tokio::spawn(async move {
                 let folder = format!("folder-{ping}");
+                let mut last_seen = 0usize;
                 for _ in 0..POLL_TICKS {
                     storage
-                        .record_journal_watermark(owner, &folder)
+                        .journal_watermark(owner, &folder)
                         .await
-                        .expect("ping watermark write");
-                    storage
+                        .expect("ping watermark read");
+                    let rows = storage
                         .list_journal_since_seq(owner, 0)
                         .await
                         .expect("ping journal read");
+                    assert!(
+                        rows.len() >= last_seen,
+                        "journal read regressed: {} rows after having seen {}",
+                        rows.len(),
+                        last_seen
+                    );
+                    last_seen = rows.len();
                 }
             }));
         }
-        // Concurrent Sync loops: journal-appending item writes.
-        for ping in 0..PINGERS {
+        // Concurrent Sync loops: journaled item writes plus the sync-key and
+        // journal-watermark writes the sync completion path performs. Each
+        // iteration yields briefly: a real Sync request takes milliseconds of
+        // backend round-trip between its writes — a lock-free busy loop
+        // exercises nothing SQLite promises to survive (single-writer
+        // fairness is not guaranteed) and confuses writer starvation with
+        // a busy-timeout failure.
+        for ping in 0..SYNCERS {
             let storage = storage.clone();
             handles.push(tokio::spawn(async move {
                 let folder = format!("folder-{ping}");
                 for i in 0..SYNC_ITERS {
+                    tokio::time::sleep(std::time::Duration::from_millis(1)).await;
                     storage
                         .upsert_item_map(
                             owner,
@@ -4021,6 +4053,10 @@ mod tests {
                         .set_sync_key(owner, &folder, &format!("key-{i}"), None)
                         .await
                         .expect("sync key write");
+                    storage
+                        .record_journal_watermark(owner, &folder)
+                        .await
+                        .expect("sync watermark write");
                 }
             }));
         }
@@ -4031,10 +4067,17 @@ mod tests {
 
         // Every journal row landed exactly once: no busy-error loss.
         let head = storage.get_latest_change_seq().await.expect("journal head");
-        assert_eq!(head, PINGERS * SYNC_ITERS);
+        assert_eq!(head, SYNCERS * SYNC_ITERS);
+        // And a complete read returns every one of them — the Ping-side read
+        // path is verified, not just the Sync-side write path.
+        let rows = storage
+            .list_journal_since_seq(owner, 0)
+            .await
+            .expect("final journal read");
+        assert_eq!(rows.len(), total_rows, "journal rows missing after load");
         // Busy_timeout is 5s; if writers serialized into real lock waits the
-        // whole run (1600 writes + 640 reads on WAL) lands in seconds, not
-        // tens of seconds. Generous bound to stay true on loaded CI runners.
+        // whole run lands in seconds, not tens of seconds. Generous bound to
+        // stay true on loaded CI runners.
         assert!(
             elapsed < std::time::Duration::from_secs(30),
             "concurrent sync-state writes serialized into ping latency spikes: {:?}",

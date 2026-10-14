@@ -423,10 +423,18 @@ EAS specs v20250520 (16.1); older EAS compat NOT needed.
   sqlite_schema.sql apply ONLY to the connection that ran the schema — they
   are per-connection; `journal_mode=WAL` is the only file-persistent one.
   `Storage::new` now builds the pool via `SqliteConnectOptions`
-  (`.journal_mode(Wal)`, `.busy_timeout(5s)`, `.synchronous(Normal)`,
-  `.foreign_keys(true)`) so every pooled connection carries the semantics.
+  (`.journal_mode(Wal)`, `.busy_timeout(5s)`, `.synchronous(Full)`,
+  `.foreign_keys(true)`, explicit `POOL_SIZE=10`) so every pooled connection
+  carries the semantics. Ping's tick loop is READ-ONLY against SQLite (the
+  watermark/key writes live on the Sync completion path,
+  `render_delta_collection_xml`), so WAL guarantees Ping never blocks on the
+  writer lock — keep it that way when editing eas.rs. Load-test lesson:
+  pacing writer loops (1ms/iter like real Sync round-trips) is required —
+  a lock-free write busy-loop starves a writer past busy_timeout (SQLite
+  grants no writer fairness).
   Tests: per-connection pragma assertion +
-  `concurrent_sync_writes_and_ping_reads_never_fail_or_stall` load test.
+  `concurrent_sync_writes_and_ping_reads_never_fail_or_stall` load test
+  (production-shaped read/write mix, read monotonicity + exact counts).
 - Next likely audit items: §20 health readiness vs liveness, §21 secrets
   hygiene, §22 surface gating.
 - §17 Auth negative-caching and cache-invalidation is COMPLETE and its AUDIT.md
