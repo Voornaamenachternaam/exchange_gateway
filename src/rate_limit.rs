@@ -81,6 +81,13 @@ fn rate_limit_key(headers: &header::HeaderMap) -> (String, &'static str) {
 }
 
 /// Middleware that applies per-client rate limiting to all requests.
+/// Health and metrics endpoints are unmetered so container tooling and
+/// scrapers are never throttled. Covers the §20 liveness/readiness split
+/// (`/health/live`, `/health/ready`) plus the `/health` readiness alias.
+fn is_unmetered_path(path: &str) -> bool {
+    path == "/health" || path == "/health/live" || path == "/health/ready" || path == "/metrics"
+}
+
 pub async fn check_rate_limit(
     State(state): State<Arc<AppState>>,
     req: Request<Body>,
@@ -88,7 +95,7 @@ pub async fn check_rate_limit(
 ) -> Result<Response, Infallible> {
     // Skip rate limiting for health and metrics endpoints
     let path = req.uri().path().to_string();
-    if path == "/health" || path == "/metrics" {
+    if is_unmetered_path(&path) {
         return Ok(next.run(req).await);
     }
 
@@ -142,6 +149,23 @@ pub async fn check_rate_limit(
 mod tests {
     use super::*;
     use axum::http::HeaderMap;
+
+    /// §20: every health/metrics path container tooling can hit must skip
+    /// rate limiting; protocol surfaces stay metered.
+    #[test]
+    fn health_paths_are_unmetered() {
+        for path in ["/health", "/health/live", "/health/ready", "/metrics"] {
+            assert!(is_unmetered_path(path), "{path} must skip rate limiting");
+        }
+        assert!(
+            !is_unmetered_path("/healthprobe"),
+            "prefix collisions must stay metered"
+        );
+        assert!(
+            !is_unmetered_path("/Microsoft-Server-ActiveSync"),
+            "protocol surface must stay metered"
+        );
+    }
 
     #[test]
     fn key_prefers_cf_connecting_ip() {

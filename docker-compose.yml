@@ -78,7 +78,10 @@ services:
     networks:
       - network1
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8134/health"]
+      # Readiness-aware: unhealthy (and restarted by autoheal tooling) when
+      # the Stalwart backend is unreachable, not just when the process dies.
+      # Process-only liveness is available at /health/live.
+      test: ["CMD", "curl", "-f", "http://localhost:8134/health/ready"]
       interval: 30s
       timeout: 5s
       retries: 3

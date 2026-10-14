@@ -435,8 +435,20 @@ EAS specs v20250520 (16.1); older EAS compat NOT needed.
   Tests: per-connection pragma assertion +
   `concurrent_sync_writes_and_ping_reads_never_fail_or_stall` load test
   (production-shaped read/write mix, read monotonicity + exact counts).
-- Next likely audit items: §20 health readiness vs liveness, §21 secrets
-  hygiene, §22 surface gating.
+- §20 Health readiness vs liveness is COMPLETE and its AUDIT.md section
+  documents the delivered behavior. Design: `/health/live` is process-only
+  (no dependency touched — never a restart reason); `/health/ready` (+ the
+  kept `/health` alias) checks SQLite + the configured Stalwart backend
+  (JMAP preferred, CalDAV fallback → 200 degraded; both down → 503). Both
+  endpoints + `/metrics` bypass rate limiting via the exact-match
+  `is_unmetered_path` in rate_limit.rs (prefix collisions stay metered).
+  The readiness JMAP probe reuses the auth verifier's shared client:
+  `AuthVerifier::shared_jmap_client` is `pub` (was `#[cfg(test)]`) —
+  pub(crate) on a LIB item is invisible to the bin crate (main.rs), which
+  is a separate crate. Dockerfile `HEALTHCHECK` and docker-compose.yml both
+  curl `/health/ready`. Tests: 5 in main.rs (bin-crate `mod tests` — cargo
+  test runs it via the bin target) + 1 in rate_limit.rs.
+- Next likely audit items: §21 secrets hygiene, §22 surface gating.
 - §17 Auth negative-caching and cache-invalidation is COMPLETE and its AUDIT.md
   section documents the delivered behavior. Design: `AuthVerifier` now returns
   a tri-state `AuthOutcome` (Verified / InvalidCredentials / BackendUnavailable)

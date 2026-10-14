@@ -756,7 +756,15 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let app = Router::new()
+        // §20: liveness/readiness split. `/health/live` answers whether the
+        // gateway PROCESS is up (router reachable, event loop responsive);
+        // `/health/ready` reports whether the gateway can actually serve
+        // clients — SQLite + the configured Stalwart backend (JMAP preferred,
+        // CalDAV fallback). `/health` is kept as the readiness alias so
+        // existing Docker tooling keeps backend-aware semantics.
         .route("/health", get(health_check))
+        .route("/health/live", get(liveness_check))
+        .route("/health/ready", get(health_check))
         .route("/metrics", get(metrics_handler))
         .route(
             "/EWS/Exchange.asmx",
@@ -928,6 +936,13 @@ async fn shutdown_signal() {
         _ = terminate => {},
     }
     tracing::info!("Shutdown signal received");
+}
+
+/// Liveness: the gateway process is up and its event loop answers requests.
+/// Deliberately touches NO dependency — a wedged or unreachable backend is a
+/// readiness failure, not a reason to restart the process (AUDIT.md §20).
+async fn liveness_check() -> Response {
+    (StatusCode::OK, "alive").into_response()
 }
 
 async fn health_check(State(state): State<Arc<AppState>>) -> Response {
@@ -1252,6 +1267,11 @@ async fn verify_calendar_capability_at_startup(state: &Arc<AppState>) {
 }
 
 async fn verify_jmap_health(state: &Arc<AppState>) -> Result<()> {
+    // Reuse the auth verifier's shared client (one HTTP pool) instead of
+    // building a throwaway client per probe (AUDIT.md §18/§20).
+    if let Some(jmap) = state.auth_verifier.shared_jmap_client() {
+        return jmap.health_check().await;
+    }
     use exchange_gateway::jmap::JmapClient;
     let jmap = JmapClient::new(&state.cfg.jmap_base)?;
     jmap.health_check().await
@@ -1308,5 +1328,71 @@ async fn verify_caldav_health(state: &Arc<AppState>) -> Result<()> {
             "CalDAV server returned unexpected status: {}",
             status
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use secrecy::SecretString;
+
+    async fn state_with_backends(jmap_base: &str, caldav_base: &str) -> Arc<AppState> {
+        let storage = Storage::new("sqlite::memory:")
+            .await
+            .expect("in-memory storage");
+        storage.init_schema().await.expect("schema init");
+        let cfg = Config {
+            jmap_base: jmap_base.to_string(),
+            caldav_base: caldav_base.to_string(),
+            email_enabled: true,
+            mail_domain: "example.com".to_string(),
+            hmac_secret: SecretString::from("a".repeat(32)),
+            ..Default::default()
+        };
+        Arc::new(AppState::new(cfg, Arc::new(storage)))
+    }
+
+    /// Liveness is process-only: it MUST answer 200 regardless of any
+    /// dependency state and must never probe the backend.
+    #[tokio::test]
+    async fn liveness_always_alive() {
+        let resp = liveness_check().await;
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    /// With no backend configured, readiness is healthy (database only).
+    #[tokio::test]
+    async fn readiness_healthy_without_backends() {
+        let state = state_with_backends("", "").await;
+        let resp = health_check(State(state)).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    /// The whole point of §20: an unreachable JMAP backend must fail the
+    /// readiness probe (503) even though the process itself is fine.
+    #[tokio::test]
+    async fn readiness_fails_when_jmap_unreachable() {
+        let state = state_with_backends("http://127.0.0.1:1", "").await;
+        let resp = health_check(State(state)).await;
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    /// JMAP down + CalDAV down -> not ready (no degraded fallback left).
+    #[tokio::test]
+    async fn readiness_fails_when_jmap_and_caldav_unreachable() {
+        let state = state_with_backends("http://127.0.0.1:1", "http://127.0.0.1:1").await;
+        let resp = health_check(State(state)).await;
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    /// §20 + §18 wiring: the readiness JMAP probe reuses the auth verifier's
+    /// shared, capacity-bounded client instead of a throwaway client per scrape.
+    #[tokio::test]
+    async fn readiness_jmap_probe_uses_shared_client() {
+        let state = state_with_backends("http://127.0.0.1:1", "").await;
+        assert!(
+            state.auth_verifier.shared_jmap_client().is_some(),
+            "shared JMAP client must exist so /health/ready reuses one pool"
+        );
     }
 }

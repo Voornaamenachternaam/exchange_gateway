@@ -63,9 +63,12 @@ USER gateway
 # Network configuration
 EXPOSE 8134
 
-# Health check with proper settings
+# Health check reflects backend readiness, not just the process:
+# /health/ready is 200 only when SQLite and the configured Stalwart backend
+# (JMAP, CalDAV fallback) are reachable; /health/live is process-only liveness
+# for orchestrators that want a separate probe.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD curl -f http://localhost:8134/health || exit 1
+    CMD curl -f http://localhost:8134/health/ready || exit 1
 
 # Entrypoint
 ENTRYPOINT ["/usr/local/bin/exchange_gateway"]
