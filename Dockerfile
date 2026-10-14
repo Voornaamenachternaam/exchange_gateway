@@ -64,9 +64,13 @@ USER gateway
 EXPOSE 8134
 
 # Health check reflects backend readiness, not just the process:
-# /health/ready is 200 only when SQLite and the configured Stalwart backend
-# (JMAP, CalDAV fallback) are reachable; /health/live is process-only liveness
-# for orchestrators that want a separate probe.
+# /health/ready is 200 only when SQLite and the configured Stalwart
+# authentication backend are reachable — JMAP is the sole arbiter when
+# configured (mirroring the request-time auth contract; CalDAV is arbiter
+# only in CalDAV-only deployments). /health/live is process-only liveness
+# for orchestrators that want a separate probe. Docker only MARKS the
+# container unhealthy here; restarting on readiness failure requires a
+# health-aware controller (see docker-compose.yml's optional autoheal block).
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD curl -f http://localhost:8134/health/ready || exit 1
 

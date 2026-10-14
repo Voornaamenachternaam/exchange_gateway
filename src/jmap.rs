@@ -833,6 +833,11 @@ pub struct JmapClient {
     /// documented `GATEWAY_AUTH_CACHE_TTL_SECS` contract, and so the map is
     /// bounded (moka enforces both the per-entry TTL and `max_capacity`).
     session_auth: Cache<String, SessionAuthEntry>,
+    /// Number of `health_check` probes handled by THIS client instance.
+    /// Observability hook letting the readiness endpoint's tests prove the
+    /// probe goes through the shared §18 client rather than a throwaway
+    /// construction (AUDIT.md §20).
+    health_probes: Arc<std::sync::atomic::AtomicU64>,
 }
 
 /// Cached outcome of a single JMAP credential probe.
@@ -959,12 +964,19 @@ impl JmapClient {
                     negative: negative_ttl,
                 })
                 .build(),
+            health_probes: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         })
     }
 
     /// Get the base URL for this JMAP client.
     pub fn base_url(&self) -> &str {
         &self.base_url
+    }
+
+    /// How many `health_check` probes this client instance has handled.
+    pub fn health_probe_count(&self) -> u64 {
+        self.health_probes
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Derive the JMAP base URL from the CalDAV base URL.
@@ -3772,6 +3784,8 @@ impl JmapClient {
 
     /// Health check: verify JMAP endpoint is reachable.
     pub async fn health_check(&self) -> Result<()> {
+        self.health_probes
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let url = format!("{}/session", self.base_url);
         let resp = self
             .client

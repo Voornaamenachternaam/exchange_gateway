@@ -969,9 +969,13 @@ async fn health_check(State(state): State<Arc<AppState>>) -> Response {
         return (StatusCode::SERVICE_UNAVAILABLE, "Database unavailable").into_response();
     }
 
-    // Optionally check JMAP and/or CalDAV backend health.
-    // JMAP is preferred (single endpoint for email + calendar).
-    // CalDAV is checked as a fallback when JMAP is not configured.
+    // Readiness mirrors the arbiter choice of AuthVerifier::verify_backend
+    // (AUDIT.md §17): when JMAP is configured it is the sole arbiter and a
+    // JMAP probe failure makes every front door answer 503 — CalDAV is NOT a
+    // fallback for a JMAP outage, so readiness must not hide behind a
+    // "degraded" CalDAV success either. CalDAV is the sole arbiter only in a
+    // CalDAV-only deployment. With no backend configured authentication can
+    // never succeed, so the gateway is not ready.
     let jmap_configured = !state.cfg.jmap_base.is_empty();
     let caldav_configured = !state.cfg.caldav_base.is_empty();
 
@@ -989,46 +993,21 @@ async fn health_check(State(state): State<Arc<AppState>>) -> Response {
                 (StatusCode::OK, "OK").into_response()
             }
             Err(e) => {
-                // JMAP failed — try CalDAV as fallback
-                if caldav_configured {
-                    match verify_caldav_health(&state).await {
-                        Ok(_) => {
-                            let elapsed_ms = start.elapsed().as_millis();
-                            warn!(
-                                target: "health",
-                                status = "degraded",
-                                jmap_error = %e,
-                                elapsed_ms = elapsed_ms,
-                                "JMAP unhealthy but CalDAV OK — degraded mode"
-                            );
-                            (StatusCode::OK, "OK (degraded: JMAP unavailable)").into_response()
-                        }
-                        Err(caldav_err) => {
-                            let elapsed_ms = start.elapsed().as_millis();
-                            warn!(
-                                target: "health",
-                                status = "unhealthy",
-                                jmap_error = %e,
-                                caldav_error = %caldav_err,
-                                elapsed_ms = elapsed_ms,
-                                "Both JMAP and CalDAV backends unavailable"
-                            );
-                            (StatusCode::SERVICE_UNAVAILABLE, "Backends unavailable")
-                                .into_response()
-                        }
-                    }
+                let elapsed_ms = start.elapsed().as_millis();
+                let body = if caldav_configured {
+                    "JMAP backend unavailable (CalDAV is not an auth fallback)"
                 } else {
-                    let elapsed_ms = start.elapsed().as_millis();
-                    warn!(
-                        target: "health",
-                        status = "unhealthy",
-                        check = "jmap",
-                        elapsed_ms = elapsed_ms,
-                        error = %e,
-                        "Health check failed - JMAP backend unavailable"
-                    );
-                    (StatusCode::SERVICE_UNAVAILABLE, "JMAP backend unavailable").into_response()
-                }
+                    "JMAP backend unavailable"
+                };
+                warn!(
+                    target: "health",
+                    status = "unhealthy",
+                    check = "jmap",
+                    elapsed_ms = elapsed_ms,
+                    error = %e,
+                    "Health check failed - JMAP backend unavailable"
+                );
+                (StatusCode::SERVICE_UNAVAILABLE, body).into_response()
             }
         }
     } else if caldav_configured {
@@ -1063,13 +1042,17 @@ async fn health_check(State(state): State<Arc<AppState>>) -> Response {
         }
     } else {
         let elapsed_ms = start.elapsed().as_millis();
-        info!(
+        warn!(
             target: "health",
-            status = "healthy",
+            status = "unhealthy",
             elapsed_ms = elapsed_ms,
-            "Health check passed (no backend configured)"
+            "Health check failed - no authentication backend configured"
         );
-        (StatusCode::OK, "OK").into_response()
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "No authentication backend configured",
+        )
+            .into_response()
     }
 }
 
@@ -1360,12 +1343,36 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::OK);
     }
 
-    /// With no backend configured, readiness is healthy (database only).
+    /// In-process stub backend answering every request 401, which both
+    /// `JmapClient::health_check` (2xx/401/403) and `verify_caldav_health`
+    /// (401) treat as "reachable".
+    async fn http_stub() -> String {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind stub");
+        let addr = listener.local_addr().expect("stub addr");
+        tokio::spawn(async move {
+            while let Ok((mut socket, _)) = listener.accept().await {
+                tokio::spawn(async move {
+                    let mut buf = [0u8; 1024];
+                    let _ = socket.read(&mut buf).await;
+                    let _ = socket
+                        .write_all(b"HTTP/1.1 401 Unauthorized\r\ncontent-length: 0\r\nconnection: close\r\n\r\n")
+                        .await;
+                });
+            }
+        });
+        format!("http://{}", addr)
+    }
+
+    /// With no backend configured, authentication can never succeed
+    /// (verify_backend reports BackendUnavailable), so readiness must fail.
     #[tokio::test]
-    async fn readiness_healthy_without_backends() {
+    async fn readiness_fails_without_backends() {
         let state = state_with_backends("", "").await;
         let resp = health_check(State(state)).await;
-        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
     }
 
     /// The whole point of §20: an unreachable JMAP backend must fail the
@@ -1377,22 +1384,60 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
     }
 
-    /// JMAP down + CalDAV down -> not ready (no degraded fallback left).
+    /// Reachable JMAP backend -> ready.
     #[tokio::test]
-    async fn readiness_fails_when_jmap_and_caldav_unreachable() {
-        let state = state_with_backends("http://127.0.0.1:1", "http://127.0.0.1:1").await;
+    async fn readiness_healthy_when_jmap_probe_answers() {
+        let jmap = http_stub().await;
+        let state = state_with_backends(&jmap, "").await;
+        let resp = health_check(State(state)).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    /// §17 alignment: when JMAP is configured it is the SOLE auth arbiter —
+    /// a JMAP outage answers every front door 503, so CalDAV answering must
+    /// NOT flip readiness to 200 "degraded".
+    #[tokio::test]
+    async fn readiness_fails_when_jmap_down_even_if_caldav_up() {
+        let caldav = http_stub().await;
+        let state = state_with_backends("http://127.0.0.1:1", &caldav).await;
         let resp = health_check(State(state)).await;
         assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
     }
 
-    /// §20 + §18 wiring: the readiness JMAP probe reuses the auth verifier's
-    /// shared, capacity-bounded client instead of a throwaway client per scrape.
+    /// A CalDAV-only deployment uses CalDAV as its sole arbiter: reachable
+    /// CalDAV -> ready, unreachable CalDAV -> 503.
+    #[tokio::test]
+    async fn readiness_follows_caldav_in_caldav_only_deployment() {
+        let caldav = http_stub().await;
+        let state = state_with_backends("", &caldav).await;
+        let resp = health_check(State(state)).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let state = state_with_backends("", "http://127.0.0.1:1").await;
+        let resp = health_check(State(state)).await;
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    /// §20 + §18 wiring: the readiness JMAP probe must go through the auth
+    /// verifier's shared, capacity-bounded client. The shared client's probe
+    /// counter makes the reuse OBSERVABLE: if verify_jmap_health ever
+    /// regresses to a throwaway client, the counter stops moving and this
+    /// test fails.
     #[tokio::test]
     async fn readiness_jmap_probe_uses_shared_client() {
         let state = state_with_backends("http://127.0.0.1:1", "").await;
-        assert!(
-            state.auth_verifier.shared_jmap_client().is_some(),
-            "shared JMAP client must exist so /health/ready reuses one pool"
+        let shared = state
+            .auth_verifier
+            .shared_jmap_client()
+            .expect("shared JMAP client must exist so /health/ready reuses one pool")
+            .clone();
+        let before = shared.health_probe_count();
+        let resp = health_check(State(state)).await;
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(
+            shared.health_probe_count(),
+            before + 1,
+            "readiness probe must be handled by the shared client"
         );
     }
 }
