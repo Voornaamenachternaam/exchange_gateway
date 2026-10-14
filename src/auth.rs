@@ -174,11 +174,12 @@ impl AuthVerifier {
     }
 
     /// The shared JMAP client used for credential probes, if one was injected.
-    /// Exposed crate-wide so `AppState` wiring can be asserted in tests
-    /// (AUDIT.md §18: the shared client must exist whenever JMAP auth is in use,
-    /// regardless of whether the email feature is enabled).
-    #[cfg(test)]
-    pub(crate) fn shared_jmap_client(&self) -> Option<&Arc<JmapClient>> {
+    /// Exposed so the readiness probe can reuse its connection pool instead of
+    /// building a throwaway client per check (AUDIT.md §20), and so `AppState`
+    /// wiring can be asserted in tests (AUDIT.md §18: the shared client must
+    /// exist whenever JMAP auth is in use, regardless of whether the email
+    /// feature is enabled).
+    pub fn shared_jmap_client(&self) -> Option<&Arc<JmapClient>> {
         self.jmap_client.as_ref()
     }
 
