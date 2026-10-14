@@ -418,7 +418,25 @@ EAS specs v20250520 (16.1); older EAS compat NOT needed.
   whenever `jmap_base` is set regardless of `email_enabled` while keeping the
   email accessors gated; the per-user (not global) breaker/rate-cap scope is
   documented in code as a deliberate correctness trade-off.
-- Next likely audit items: §19 SQLite concurrency (WAL/busy_timeout + load test).
+- §19 SQLite concurrency is COMPLETE and its AUDIT.md section documents the
+  delivered behavior. Key lesson: `PRAGMA busy_timeout`/`foreign_keys` in
+  sqlite_schema.sql apply ONLY to the connection that ran the schema — they
+  are per-connection; `journal_mode=WAL` is the only file-persistent one.
+  `Storage::new` now builds the pool via `SqliteConnectOptions`
+  (`.journal_mode(Wal)`, `.busy_timeout(5s)`, `.synchronous(Full)`,
+  `.foreign_keys(true)`, explicit `POOL_SIZE=10`) so every pooled connection
+  carries the semantics. Ping's tick loop is READ-ONLY against SQLite (the
+  watermark/key writes live on the Sync completion path,
+  `render_delta_collection_xml`), so WAL guarantees Ping never blocks on the
+  writer lock — keep it that way when editing eas.rs. Load-test lesson:
+  pacing writer loops (1ms/iter like real Sync round-trips) is required —
+  a lock-free write busy-loop starves a writer past busy_timeout (SQLite
+  grants no writer fairness).
+  Tests: per-connection pragma assertion +
+  `concurrent_sync_writes_and_ping_reads_never_fail_or_stall` load test
+  (production-shaped read/write mix, read monotonicity + exact counts).
+- Next likely audit items: §20 health readiness vs liveness, §21 secrets
+  hygiene, §22 surface gating.
 - §17 Auth negative-caching and cache-invalidation is COMPLETE and its AUDIT.md
   section documents the delivered behavior. Design: `AuthVerifier` now returns
   a tri-state `AuthOutcome` (Verified / InvalidCredentials / BackendUnavailable)
