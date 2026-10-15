@@ -1201,7 +1201,9 @@ fn render_calendar_app_data_suffix(
 }
 
 /// Legacy calendar AppData: no negotiated options, so the native plain-text
-/// body is served untruncated ([MS-ASAIRS] §2.2.2.3.2 pass 3).
+/// body is served untruncated ([MS-ASAIRS] §2.2.2.3.2 pass 3). Test-only: the
+/// production paths always render with negotiated options.
+#[cfg(test)]
 pub(crate) fn render_calendar_app_data(item: &CalendarItem) -> String {
     render_calendar_app_data_with_options(
         item,

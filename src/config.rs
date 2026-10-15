@@ -50,6 +50,7 @@ const ENV_PREFER_CALDAV_FREEBUSY: &str = "GATEWAY_PREFER_CALDAV_FREEBUSY";
 const ENV_PREFER_JMAP_CALENDAR: &str = "GATEWAY_PREFER_JMAP_CALENDAR";
 const ENV_PREFER_JMAP_CONTACTS: &str = "GATEWAY_PREFER_JMAP_CONTACTS";
 const ENV_ALLOW_INSECURE_HTTP: &str = "GATEWAY_ALLOW_INSECURE_HTTP";
+const ENV_EAS_REQUIRE_POLICY_KEY: &str = "GATEWAY_EAS_REQUIRE_POLICY_KEY";
 const ENV_ADMIN_USERNAME: &str = "GATEWAY_ADMIN_USERNAME";
 const ENV_ADMIN_PASSWORD: &str = "GATEWAY_ADMIN_PASSWORD";
 
@@ -152,7 +153,7 @@ pub struct Config {
     #[serde(default)]
     pub mail_host: String,
     // Force calendar operations to use CalDAV instead of JMAP Calendar.
-    // Stalwart v0.16.20 treats calendars as first-class JMAP objects, so this
+    // Stalwart v0.16.26 treats calendars as first-class JMAP objects, so this
     // should remain disabled (default) unless an operator explicitly opts into
     // the legacy CalDAV posture.
     #[serde(default = "default_force_caldav_calendar")]
@@ -168,7 +169,7 @@ pub struct Config {
     #[serde(default = "default_prefer_jmap_contacts")]
     pub prefer_jmap_contacts: bool,
     // Prefer CalDAV over JMAP for free/busy queries. Disabled by default on
-    // Stalwart v0.16.20, which exposes full JMAP Calendar/availability
+    // Stalwart v0.16.26, which exposes full JMAP Calendar/availability
     // (`Calendar/availability`) support; enable only for legacy compatibility.
     #[serde(default = "default_prefer_caldav_freebusy")]
     pub prefer_caldav_freebusy: bool,
@@ -216,6 +217,15 @@ pub struct Config {
     /// `GATEWAY_MAX_PING_HEARTBEAT`.
     #[serde(default)]
     pub max_ping_heartbeat_secs: Option<u64>,
+    /// Enforce the EAS Provision PolicyKey on every command other than
+    /// `Provision` ([MS-ASPROV] §4.1.1): when enabled, a request whose
+    /// `X-MS-PolicyKey` does not match the stored key is answered with HTTP 200
+    /// and global Status 142 (the "Provision required" answer). Disabled by
+    /// default: the gateway advertises an all-off, no-op policy, so refusing a
+    /// client for a stale key adds friction with no security benefit.
+    /// Configurable via `GATEWAY_EAS_REQUIRE_POLICY_KEY`.
+    #[serde(default = "default_eas_require_policy_key")]
+    pub eas_require_policy_key: bool,
     // MAPI over HTTP (MS-OXCMAPIHTTP) server surface. Enabled by default
     // because New Outlook for Windows (20251205004.10) and Outlook Android
     // connect over MAPI/HTTP rather than EWS; operators may still opt out
@@ -370,6 +380,12 @@ fn default_email_enabled() -> bool {
     true
 }
 
+fn default_eas_require_policy_key() -> bool {
+    // Permissive by default: the advertised policy is a no-op, so enforcing the
+    // key would only add client friction. See eas_require_policy_key.
+    false
+}
+
 fn default_force_caldav_calendar() -> bool {
     // Default to JMAP Calendar (the JMAP-first directive). CalDAV remains a
     // fallback behind capability detection (supports_calendar).
@@ -384,13 +400,13 @@ fn default_prefer_jmap_contacts() -> bool {
 
 fn default_prefer_jmap_calendar() -> bool {
     // Prefer JMAP Calendar over CalDAV when available.
-    // Stalwart v0.16.20 exposes full first-class JMAP Calendar support, so this
+    // Stalwart v0.16.26 exposes full first-class JMAP Calendar support, so this
     // defaults to true (honoring the JMAP-first directive).
     true
 }
 
 fn default_prefer_caldav_freebusy() -> bool {
-    // Stalwart v0.16.20 exposes JMAP Calendar/availability, so prefer JMAP for
+    // Stalwart v0.16.26 exposes JMAP Calendar/availability, so prefer JMAP for
     // free/busy instead of the legacy CalDAV posture.
     false
 }
@@ -664,6 +680,44 @@ fn get_env_with_fallback(primary: &str, fallback: Option<&str>) -> Option<String
     }
 }
 
+/// Read a secret from a `*_FILE` companion variable (Docker secrets / mounted
+/// files), trimming one trailing newline. Used only for the credential-bearing
+/// variables so an operator can keep them out of `docker-compose.yml` when the
+/// deployment contract permits a mounted secret file. A read/IO failure is
+/// logged (path only, never contents) and treated as "unset" so the plain env
+/// value, if any, still applies.
+fn read_env_file(var: &str) -> Option<String> {
+    let path = env::var(var).ok().filter(|p| !p.is_empty())?;
+    match fs::read_to_string(&path) {
+        Ok(contents) => {
+            let trimmed = contents.strip_suffix('\n').unwrap_or(&contents);
+            let trimmed = trimmed.strip_suffix('\r').unwrap_or(trimmed);
+            Some(trimmed.to_string())
+        }
+        Err(e) => {
+            tracing::warn!(
+                "Could not read secret file for {} at '{}': {}",
+                var,
+                path,
+                e
+            );
+            None
+        }
+    }
+}
+
+/// Resolve a possibly-secret environment variable, preferring a `<VAR>_FILE`
+/// mounted-secret file when present, else the inline `<VAR>` value. Returns
+/// `None` when neither is set or the resolved value is empty.
+fn get_secret_env(var: &str) -> Option<String> {
+    if let Some(val) = read_env_file(&format!("{var}_FILE"))
+        && !val.is_empty()
+    {
+        return Some(val);
+    }
+    env::var(var).ok().filter(|v| !v.is_empty())
+}
+
 fn apply_env_string(
     cfg: &mut Config,
     value: Option<String>,
@@ -705,7 +759,7 @@ fn apply_environment_overrides(cfg: &mut Config) {
         |c, v| c.database_path = v,
     );
 
-    if let Some(val) = get_env_with_fallback(ENV_HMAC_SECRET, None) {
+    if let Some(val) = get_secret_env(ENV_HMAC_SECRET) {
         tracing::debug!("Applying {} from environment", ENV_HMAC_SECRET);
         cfg.hmac_secret = SecretString::from(val);
     }
@@ -940,6 +994,13 @@ fn apply_environment_overrides(cfg: &mut Config) {
         cfg.email_enabled = matches!(lower.as_str(), "1" | "true" | "yes" | "on" | "enabled");
     }
 
+    if let Some(val) = get_env_with_fallback(ENV_EAS_REQUIRE_POLICY_KEY, None) {
+        let lower = val.to_lowercase();
+        tracing::debug!("Applying {} from environment", ENV_EAS_REQUIRE_POLICY_KEY);
+        cfg.eas_require_policy_key =
+            matches!(lower.as_str(), "1" | "true" | "yes" | "on" | "enabled");
+    }
+
     // Calendar backend selection: force_caldav_calendar and prefer_jmap_calendar
     if let Some(val) = get_env_with_fallback(ENV_FORCE_CALDAV_CALENDAR, None) {
         let lower = val.to_lowercase();
@@ -978,20 +1039,12 @@ fn apply_environment_overrides(cfg: &mut Config) {
     // Admin (directory) configuration for GAL/ResolveNames. The admin
     // credentials are used over JMAP (`urn:stalwart:jmap`); there is no REST
     // admin API base URL.
-    apply_env_string(
-        cfg,
-        get_env_with_fallback(ENV_ADMIN_USERNAME, None),
-        |c, v| {
-            c.admin_username = v;
-        },
-    );
-    apply_env_string(
-        cfg,
-        get_env_with_fallback(ENV_ADMIN_PASSWORD, None),
-        |c, v| {
-            c.admin_password = v;
-        },
-    );
+    apply_env_string(cfg, get_secret_env(ENV_ADMIN_USERNAME), |c, v| {
+        c.admin_username = v;
+    });
+    apply_env_string(cfg, get_secret_env(ENV_ADMIN_PASSWORD), |c, v| {
+        c.admin_password = v;
+    });
 
     // Rate limiting and security configuration
     if let Some(val) = get_env_with_fallback(ENV_RATE_LIMIT_ENABLED, None) {
@@ -1162,6 +1215,25 @@ fn extract_host_from_caldav(url_str: &str) -> Option<String> {
     }
 }
 
+/// Whether a configured public hostname still looks like an unedited template
+/// placeholder. Used only to emit a loud startup warning: a placeholder host
+/// makes Autodiscover advertise an unresolvable URL, but it is not a fatal
+/// configuration error (a local/dev run may legitimately use `localhost`).
+pub fn is_placeholder_host(host: &str) -> bool {
+    let h = host.trim().to_ascii_lowercase();
+    if h.is_empty() {
+        return true;
+    }
+    // `example.com` / `*.example.com` / `*.example.org` are the documented
+    // placeholder domains used throughout the compose template and runbook.
+    h == "example.com"
+        || h == "example.org"
+        || h.ends_with(".example.com")
+        || h.ends_with(".example.org")
+        || h.contains("replace")
+        || h.contains("your-")
+}
+
 fn validate_url(url: &str, field_name: &str) -> anyhow::Result<()> {
     match url::Url::parse(url) {
         Ok(parsed) => {
@@ -1302,6 +1374,7 @@ impl Default for Config {
             rate_limit_requests_per_minute: 120,
             rate_limit_max_concurrent: 1000,
             max_ping_heartbeat_secs: None,
+            eas_require_policy_key: default_eas_require_policy_key(),
             mapi_enabled: default_mapi_enabled(),
             mapi_hma_enabled: false,
             mapi_oidc_issuer: String::new(),
@@ -1363,6 +1436,22 @@ mod tests {
                 cfg.auth_probe_min_interval_ms,
                 DEFAULT_AUTH_PROBE_MIN_INTERVAL_MS
             );
+        });
+    }
+
+    #[test]
+    fn test_eas_require_policy_key_env_override() {
+        // Default is permissive; the knob flips it on.
+        assert!(!Config::default().eas_require_policy_key);
+        with_var(ENV_EAS_REQUIRE_POLICY_KEY, Some("1"), || {
+            let mut cfg = Config::default();
+            apply_environment_overrides(&mut cfg);
+            assert!(cfg.eas_require_policy_key);
+        });
+        with_var(ENV_EAS_REQUIRE_POLICY_KEY, Some("false"), || {
+            let mut cfg = Config::default();
+            apply_environment_overrides(&mut cfg);
+            assert!(!cfg.eas_require_policy_key);
         });
     }
 
@@ -1538,6 +1627,74 @@ mod tests {
         let mut cfg = Config::default();
         apply_env_string(&mut cfg, Some("test_value".to_string()), |c, v| c.bind = v);
         assert_eq!(cfg.bind, "test_value");
+    }
+
+    /// `_FILE`-based secret injection: a mounted secret file wins over the
+    /// inline env value, and one trailing newline is trimmed.
+    #[test]
+    fn test_get_secret_env_prefers_file_and_trims_newline() {
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("gw_secret_{}.txt", std::process::id()));
+        std::fs::write(&path, "from-file-secret-value\n").unwrap();
+        // get_secret_env("TEST_SECRET") consults TEST_SECRET_FILE first.
+        with_var("TEST_SECRET_FILE", Some(path.to_str().unwrap()), || {
+            with_var("TEST_SECRET", Some("inline-value"), || {
+                assert_eq!(
+                    get_secret_env("TEST_SECRET"),
+                    Some("from-file-secret-value".to_string())
+                );
+            });
+        });
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// With no `_FILE` set, the inline value is used verbatim.
+    #[test]
+    fn test_get_secret_env_falls_back_to_inline() {
+        with_var("TEST_SECRET_INLINE_ONLY", Some("inline-only"), || {
+            assert_eq!(
+                get_secret_env("TEST_SECRET_INLINE_ONLY"),
+                Some("inline-only".to_string())
+            );
+        });
+    }
+
+    /// An unreadable `_FILE` path is ignored (logged) and the inline value is
+    /// used instead, so a misconfigured mount never bricks startup.
+    #[test]
+    fn test_get_secret_env_unreadable_file_falls_back() {
+        with_var("TEST_SECRET2_FILE", Some("/nonexistent/secret"), || {
+            with_var("TEST_SECRET2", Some("fallback"), || {
+                assert_eq!(get_secret_env("TEST_SECRET2"), Some("fallback".to_string()));
+            });
+        });
+    }
+
+    #[test]
+    fn test_is_placeholder_host_flags_template_values() {
+        for h in [
+            "",
+            "example.com",
+            "autodiscover.example.com",
+            "calendar.example.org",
+            "REPLACE_WITH_HOST",
+            "your-server.example.com",
+        ] {
+            assert!(is_placeholder_host(h), "expected placeholder: {h:?}");
+        }
+    }
+
+    #[test]
+    fn test_is_placeholder_host_accepts_real_hosts() {
+        for h in [
+            "calendar.acme.nl",
+            "mail.acme.nl",
+            "localhost",
+            "127.0.0.1",
+            "example.net",
+        ] {
+            assert!(!is_placeholder_host(h), "expected real host: {h:?}");
+        }
     }
 
     #[test]

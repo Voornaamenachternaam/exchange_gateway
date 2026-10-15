@@ -6,7 +6,7 @@ use std::time::Duration;
 use tracing::warn;
 
 /// CardDAV client for contacts sync.
-/// Supports Stalwart Mailserver v0.16.10 CardDAV endpoint at /dav/{user}/contacts/.
+/// Supports Stalwart Mailserver v0.16.26 CardDAV endpoint at /dav/{user}/contacts/.
 pub struct CarddavClient {
     pub base: String,
     pub client: Client,

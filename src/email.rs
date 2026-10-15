@@ -30,6 +30,8 @@ use crate::models::AppState;
 use crate::util::xml_escape;
 use anyhow::anyhow;
 use base64::Engine;
+use quick_xml::Reader;
+use quick_xml::events::Event;
 use secrecy::SecretString;
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -1987,6 +1989,465 @@ pub fn parse_eas_sendmail(xml: &str) -> Option<EasSendMailRequest> {
     })
 }
 
+/// A client-originated Email-class Sync command ([MS-ASCMD] §2.2.3.11.2,
+/// [MS-ASEMAIL] §3.2.5.4).
+///
+/// Only the flag/read/delete families that both target clients actually send
+/// from a Sync request are modelled; an Email `<Add>` (draft upload) is
+/// handled by the ComposeMail command path, not Sync.
+#[derive(Clone, Debug)]
+pub enum EasEmailMutation {
+    /// `<Change><ServerId>..</ServerId><ApplicationData>..</ApplicationData>`.
+    /// Carries the raw ApplicationData XML; only the flag-relevant leaves are
+    /// interpreted (Read, Flag/Status/FlagType/CompleteTime, Categories).
+    Change { server_id: String, app_data: String },
+    /// `<Delete><ServerId>..</ServerId></Delete>`. `deletes_as_moves` selects
+    /// move-to-Deleted-Items (the spec default) vs. permanent destruction.
+    Delete {
+        server_id: String,
+        deletes_as_moves: bool,
+    },
+}
+
+/// The flag subset of an Email `<ApplicationData>` block ([MS-ASEMAIL]
+/// §3.2.5.4.2, §2.2.2.34).
+///
+/// Each field is `None` when the corresponding element was absent, which per
+/// the spec means "leave unchanged" (the flag block is merged, not replaced).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct EasEmailFlagPatch {
+    /// `<Email:Read>` 1 = read, 0 = unread.
+    pub read: Option<bool>,
+    /// `<Email:Flag>` container: `Some(true)` = flagged, `Some(false)` = clear.
+    pub flagged: Option<bool>,
+    /// `<Email:Status>` inside the Flag block: 1 = complete, 2 = flagged.
+    pub flag_status: Option<u8>,
+    /// `<Email:FlagType>` (e.g. "Flag for follow up").
+    pub flag_type: Option<String>,
+    /// `<Email:CompleteTime>` (ISO 8601); when present the flag is complete.
+    pub complete_time: Option<String>,
+    /// `<Email:Categories><Email:Category>` — the full replacement list.
+    pub categories: Option<Vec<String>>,
+}
+
+impl EasEmailFlagPatch {
+    /// True when no flag-relevant element was present, so the Change carries
+    /// nothing the gateway can act on and must be answered with status 6
+    /// ([MS-ASCMD] §2.2.3.177.17 "error in client/server conversion").
+    pub fn is_empty(&self) -> bool {
+        self.read.is_none()
+            && self.flagged.is_none()
+            && self.flag_status.is_none()
+            && self.complete_time.is_none()
+            && self.categories.is_none()
+    }
+}
+
+/// Parse the `<Commands>` block of an Email-class Sync request into the
+/// mutations the gateway can apply ([MS-ASCMD] §2.2.3.11.2).
+///
+/// `deletes_as_moves` is the collection-level `<DeletesAsMoves>` flag
+/// ([MS-ASCMD] §2.2.1.21.3); absent means "true" (move to Deleted Items).
+pub fn parse_eas_email_mutations(xml: &str, deletes_as_moves: bool) -> Vec<EasEmailMutation> {
+    let mut out = Vec::new();
+    // In a decoded Sync document the root code page is AirSync, so
+    // <Commands>/<Change>/<Delete>/<ServerId>/<ApplicationData> expand
+    // UNQUALIFIED while SWITCH_PAGE-reached Email leaves keep their prefix
+    // (see the WBXML decode namespace rule). Match the literal AirSync form.
+    let commands = match tag_block(xml, b"Commands") {
+        Some(c) => c,
+        None => return out,
+    };
+    for block in tag_blocks(&commands, b"Change") {
+        let server_id = tag_block(&block, b"ServerId").unwrap_or_default();
+        let app_data = tag_block(&block, b"ApplicationData").unwrap_or_default();
+        out.push(EasEmailMutation::Change {
+            server_id: server_id.trim().to_string(),
+            app_data,
+        });
+    }
+    for block in tag_blocks(&commands, b"Delete") {
+        let server_id = tag_block(&block, b"ServerId").unwrap_or_default();
+        out.push(EasEmailMutation::Delete {
+            server_id: server_id.trim().to_string(),
+            deletes_as_moves,
+        });
+    }
+    out
+}
+
+/// Return the inner content of the first literal `<tag>…</tag>` occurrence.
+fn tag_block(xml: &str, tag: &[u8]) -> Option<String> {
+    let open = format!("<{}>", String::from_utf8_lossy(tag));
+    let close = format!("</{}>", String::from_utf8_lossy(tag));
+    let start = xml.find(&open)? + open.len();
+    let end = xml[start..].find(&close)?;
+    Some(xml[start..start + end].to_string())
+}
+
+/// Return the inner content of every literal `<tag>…</tag>` occurrence.
+fn tag_blocks(xml: &str, tag: &[u8]) -> Vec<String> {
+    let open = format!("<{}>", String::from_utf8_lossy(tag));
+    let close = format!("</{}>", String::from_utf8_lossy(tag));
+    let mut blocks = Vec::new();
+    let mut pos = 0;
+    while let Some(rel) = xml[pos..].find(&open) {
+        let start = pos + rel + open.len();
+        let Some(rel_end) = xml[start..].find(&close) else {
+            break;
+        };
+        blocks.push(xml[start..start + rel_end].to_string());
+        pos = start + rel_end + close.len();
+    }
+    blocks
+}
+
+/// Extract the flag-relevant leaves from a single Change's ApplicationData
+/// block ([MS-ASEMAIL] §3.2.5.4.2).
+///
+/// Depth-aware: `Status` and `FlagType` are only read when they are inside an
+/// `<Email:Flag>` container (the Calendar class reuses `Status`/`TimeZone`
+/// with different meanings, and an unrelated `Status` must not be mistaken
+/// for the flag status).
+pub fn parse_eas_email_flag_patch(app_data: &str) -> EasEmailFlagPatch {
+    let mut reader = Reader::from_str(app_data);
+    reader.config_mut().trim_text(true);
+    let mut buf = Vec::new();
+    let mut patch = EasEmailFlagPatch::default();
+    let mut leaf = String::new();
+    let mut in_flag = false;
+    let mut in_categories = false;
+    let mut categories: Vec<String> = Vec::new();
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(e)) => {
+                let name = e.local_name();
+                let name = name.as_ref();
+                if name == "Flag" {
+                    in_flag = true;
+                } else if name == "Categories" {
+                    in_categories = true;
+                }
+                leaf.clear();
+            }
+            Ok(Event::Empty(e)) => {
+                let name = e.local_name();
+                // `<Flag/>` with no children clears the flag; an empty
+                // `<Categories/>` clears the category list.
+                match name.as_ref() {
+                    "Flag" => patch.flagged = Some(false),
+                    "Categories" => patch.categories = Some(Vec::new()),
+                    _ => {}
+                }
+            }
+            Ok(Event::Text(t)) => leaf.push_str(t.as_ref()),
+            Ok(Event::CData(t)) => leaf.push_str(t.as_ref()),
+            Ok(Event::GeneralRef(r)) => {
+                leaf.push_str(&crate::util::resolve_xml_reference(r.as_ref()))
+            }
+            Ok(Event::End(e)) => {
+                let name = e.local_name();
+                let name = name.as_ref();
+                let value = std::mem::take(&mut leaf);
+                match name {
+                    "Read" => patch.read = Some(value.trim() == "1" || value.trim() == "true"),
+                    "Status" if in_flag => {
+                        patch.flag_status = value.trim().parse::<u8>().ok();
+                        // [MS-ASEMAIL] 3.2.5.4.2: Status 0 (or an empty Flag
+                        // node) clears the flag; 1/2 set it.
+                        match patch.flag_status {
+                            Some(0) => patch.flagged = Some(false),
+                            Some(1) | Some(2) => patch.flagged = Some(true),
+                            _ => {}
+                        }
+                    }
+                    "FlagType" if in_flag => {
+                        let t = value.trim().to_string();
+                        if !t.is_empty() {
+                            patch.flag_type = Some(t);
+                        }
+                    }
+                    "CompleteTime" if in_flag => {
+                        let t = value.trim().to_string();
+                        if !t.is_empty() {
+                            patch.complete_time = Some(t);
+                        }
+                    }
+                    "Category" if in_categories => {
+                        let c = value.trim().to_string();
+                        if !c.is_empty() {
+                            categories.push(c);
+                        }
+                    }
+                    _ => {}
+                }
+                if name == "Flag" {
+                    in_flag = false;
+                } else if name == "Categories" {
+                    in_categories = false;
+                    patch.categories = Some(std::mem::take(&mut categories));
+                }
+                leaf.clear();
+            }
+            Ok(Event::Eof) | Err(_) => break,
+            _ => {}
+        }
+        buf.clear();
+    }
+    patch
+}
+
+/// Outcome of one applied Email-class Sync mutation.
+#[derive(Clone, Debug)]
+pub enum EasEmailMutationResult {
+    Change {
+        server_id: String,
+        status: &'static str,
+    },
+    Delete {
+        server_id: String,
+        status: &'static str,
+    },
+}
+
+/// Apply the Email-class Sync mutations a client uploaded ([MS-ASEMAIL]
+/// §3.2.5.4.2 flag updates, §2.2.3.42.2 Delete).
+///
+/// Flag changes map to RFC 8621 §4.5 `Email/set` keyword patches
+/// (`$seen` / `$flagged` / `$important` / categories); Deletes either move the
+/// message to the Deleted Items mailbox (`<DeletesAsMoves/>`, the spec
+/// default) or destroy it permanently. Statuses are the per-item Sync codes
+/// ([MS-ASCMD] §2.2.3.177.17): 1 success, 6 conversion error, 8 not found.
+pub async fn apply_eas_email_mutations(
+    jmap: &Arc<crate::jmap::JmapClient>,
+    account_id: &str,
+    username: &str,
+    password: &SecretString,
+    xml: &str,
+    deletes_as_moves: bool,
+) -> Vec<EasEmailMutationResult> {
+    let mutations = parse_eas_email_mutations(xml, deletes_as_moves);
+    if mutations.is_empty() {
+        return Vec::new();
+    }
+
+    // Resolve the Deleted Items mailbox lazily (only when a move-style Delete
+    // is actually present) so a flag-only Sync never pays for the lookup.
+    let mut trash_ids: Option<Vec<String>> = None;
+    let mut results = Vec::new();
+
+    for mutation in mutations {
+        match mutation {
+            EasEmailMutation::Change {
+                server_id,
+                app_data,
+            } => {
+                let status = match crate::email::jmap_id_from_email_server_id(&server_id) {
+                    Some(jmap_id) if !jmap_id.is_empty() => {
+                        apply_email_flag_change(
+                            jmap, account_id, jmap_id, &app_data, username, password,
+                        )
+                        .await
+                    }
+                    // The ServerId is not one of ours: the client changed an
+                    // item the gateway does not back with a JMAP email.
+                    _ => "8",
+                };
+                results.push(EasEmailMutationResult::Change { server_id, status });
+            }
+            EasEmailMutation::Delete {
+                server_id,
+                deletes_as_moves,
+            } => {
+                let status = match crate::email::jmap_id_from_email_server_id(&server_id) {
+                    Some(jmap_id) if !jmap_id.is_empty() => {
+                        if deletes_as_moves {
+                            if trash_ids.is_none() {
+                                trash_ids = jmap
+                                    .get_mailbox_ids_for_role(
+                                        account_id, "trash", username, password,
+                                    )
+                                    .await
+                                    .ok();
+                            }
+                            match trash_ids.as_ref().and_then(|v| v.first()) {
+                                Some(trash) => {
+                                    match jmap
+                                        .move_emails(
+                                            account_id,
+                                            &[jmap_id.to_string()],
+                                            trash,
+                                            username,
+                                            password,
+                                        )
+                                        .await
+                                    {
+                                        Ok(1) => "1",
+                                        Ok(_) => "8",
+                                        Err(e) => {
+                                            tracing::warn!(
+                                                target: "eas",
+                                                error = %e,
+                                                "Email Delete move-to-trash failed"
+                                            );
+                                            "6"
+                                        }
+                                    }
+                                }
+                                None => "6",
+                            }
+                        } else {
+                            match jmap
+                                .destroy_emails(
+                                    account_id,
+                                    &[jmap_id.to_string()],
+                                    username,
+                                    password,
+                                )
+                                .await
+                            {
+                                Ok(n) if n >= 1 => "1",
+                                Ok(_) => "8",
+                                Err(e) => {
+                                    tracing::warn!(
+                                        target: "eas",
+                                        error = %e,
+                                        "Email Delete destroy failed"
+                                    );
+                                    "6"
+                                }
+                            }
+                        }
+                    }
+                    _ => "8",
+                };
+                results.push(EasEmailMutationResult::Delete { server_id, status });
+            }
+        }
+    }
+    results
+}
+
+/// Apply one flag `<Change>` to a JMAP email; returns the per-item Sync status.
+async fn apply_email_flag_change(
+    jmap: &Arc<crate::jmap::JmapClient>,
+    account_id: &str,
+    jmap_id: &str,
+    app_data: &str,
+    username: &str,
+    password: &SecretString,
+) -> &'static str {
+    let patch = parse_eas_email_flag_patch(app_data);
+    if patch.is_empty() {
+        // [MS-ASEMAIL] §3.2.5.4.2: a Change carrying none of the required
+        // flag elements is a conversion error (status 6).
+        return "6";
+    }
+    // RFC 8621 §5.3: Email/set `update` is a map of id -> patch object.
+    let mut fields = serde_json::Map::new();
+    if let Some(read) = patch.read {
+        fields.insert(
+            "keywords/$seen".to_string(),
+            if read { json!(true) } else { json!(null) },
+        );
+    }
+    if let Some(flagged) = patch.flagged {
+        fields.insert(
+            "keywords/$flagged".to_string(),
+            if flagged { json!(true) } else { json!(null) },
+        );
+    }
+    if let Some(categories) = patch.categories {
+        // The gateway does not surface EAS categories on the read path, and
+        // JMAP defines no interoperable category property, so there is nothing
+        // to write for this family — accept it as a no-op rather than invent a
+        // non-standard keyword the backend would not read back.
+        let _ = categories;
+    }
+    if fields.is_empty() {
+        // Only a family the gateway cannot persist (categories) was present:
+        // the request was understood, there is simply nothing to write.
+        return "1";
+    }
+    let mut update = serde_json::Map::new();
+    update.insert(jmap_id.to_string(), serde_json::Value::Object(fields));
+    let update = serde_json::Value::Object(update);
+    match jmap
+        .update_email_checked(account_id, &update, username, password)
+        .await
+    {
+        Ok(outcome) if outcome.method_error.is_some() => "6",
+        Ok(outcome) if outcome.updated.iter().any(|id| id == jmap_id) => "1",
+        Ok(outcome) if outcome.not_updated.iter().any(|(id, _)| id == jmap_id) => "6",
+        Ok(_) => "6",
+        Err(e) => {
+            tracing::warn!(target: "eas", error = %e, "Email flag change failed");
+            "6"
+        }
+    }
+}
+
+/// Insert the `<Responses>` block for applied client mutations into a rendered
+/// single-collection Sync response ([MS-ASCMD] §6.46: `<Responses>` follows
+/// `<Status>` and precedes `<Commands>`).
+///
+/// The email Sync renderer has several exit paths; rather than thread the
+/// responses through every one, splice the block into the finished
+/// `<Collection>` document.
+///
+/// The anchor is the Collection-level `<Status>` — the *first* one in the
+/// document, which the renderers always emit before `<Commands>`. Anchoring on
+/// the first occurrence (rather than a later, command-scoped `<Status>`) keeps
+/// the block at the Collection level; the document is gateway-generated, so the
+/// ordering is deterministic.
+pub fn inject_collection_responses(xml: String, responses: &str) -> String {
+    if responses.is_empty() {
+        return xml;
+    }
+    let Some(pos) = xml.find("</Status>") else {
+        return xml;
+    };
+    let insert_at = pos + "</Status>".len();
+    let mut out = String::with_capacity(xml.len() + responses.len());
+    out.push_str(&xml[..insert_at]);
+    out.push_str(responses);
+    out.push_str(&xml[insert_at..]);
+    out
+}
+
+/// Render the `<Responses>` block for applied Email-class Sync mutations
+/// ([MS-ASCMD] §6.46): `<Change>` carries Class/ServerId/Status and `<Delete>`
+/// carries ServerId/Status. The client only needs responses for failed changes
+/// and deletions, but acknowledging successes too is spec-legal and keeps the
+/// client's flag state consistent.
+pub fn render_eas_email_mutation_responses(results: &[EasEmailMutationResult]) -> String {
+    if results.is_empty() {
+        return String::new();
+    }
+    let mut xml = String::with_capacity(128);
+    xml.push_str("<Responses>");
+    for result in results {
+        match result {
+            EasEmailMutationResult::Change { server_id, status } => {
+                xml.push_str(&format!(
+                    "<Change><Class>Email</Class><ServerId>{}</ServerId><Status>{}</Status></Change>",
+                    xml_escape(server_id),
+                    status
+                ));
+            }
+            EasEmailMutationResult::Delete { server_id, status } => {
+                xml.push_str(&format!(
+                    "<Delete><ServerId>{}</ServerId><Status>{}</Status></Delete>",
+                    xml_escape(server_id),
+                    status
+                ));
+            }
+        }
+    }
+    xml.push_str("</Responses>");
+    xml
+}
+
 /// EAS SendMail request structure.
 #[derive(Clone, Debug, Default)]
 pub struct EasSendMailRequest {
@@ -3239,5 +3700,455 @@ Body\r\n";
         crate::wbxml::Wbxml::new()
             .encode(&wrapped)
             .expect("ApplicationData must be WBXML-encodable without unknown tags");
+    }
+
+    #[test]
+    fn parse_email_mutations_reads_change_and_delete() {
+        let xml = r#"<Sync xmlns="AirSync:" xmlns:Email="Email:"><Collections><Collection>
+<SyncKey>1</SyncKey><CollectionId>2</CollectionId><DeletesAsMoves/>
+<Commands>
+  <Change><ServerId>2:100</ServerId><ApplicationData><Email:Read>1</Email:Read></ApplicationData></Change>
+  <Delete><ServerId>2:200</ServerId></Delete>
+</Commands>
+</Collection></Collections></Sync>"#;
+        let muts = parse_eas_email_mutations(xml, true);
+        assert_eq!(muts.len(), 2);
+        match &muts[0] {
+            EasEmailMutation::Change {
+                server_id,
+                app_data,
+            } => {
+                assert_eq!(server_id, "2:100");
+                assert!(app_data.contains("Read>1<"));
+            }
+            other => panic!("expected Change, got {other:?}"),
+        }
+        match &muts[1] {
+            EasEmailMutation::Delete {
+                server_id,
+                deletes_as_moves,
+            } => {
+                assert_eq!(server_id, "2:200");
+                assert!(*deletes_as_moves);
+            }
+            other => panic!("expected Delete, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_email_mutations_honors_hard_delete_flag() {
+        let xml = r#"<Commands><Delete><ServerId>2:9</ServerId></Delete></Commands>"#;
+        let muts = parse_eas_email_mutations(xml, false);
+        match &muts[0] {
+            EasEmailMutation::Delete {
+                deletes_as_moves, ..
+            } => assert!(!*deletes_as_moves),
+            other => panic!("expected Delete, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_email_mutations_ignores_non_command_change_tags() {
+        // A Change nested inside ApplicationData must not be read as a
+        // top-level command (the block walker is bounded by <Commands>).
+        let xml = r#"<Sync><Collections><Collection><Commands>
+          <Change><ServerId>2:1</ServerId><ApplicationData><Email:Read>1</Email:Read></ApplicationData></Change>
+        </Commands></Collection></Collections></Sync>"#;
+        let muts = parse_eas_email_mutations(xml, true);
+        assert_eq!(muts.len(), 1);
+    }
+
+    #[test]
+    fn parse_email_flag_patch_read_flag_and_complete() {
+        let app = r#"<ApplicationData><Email:Read>0</Email:Read>
+<Email:Flag><Email:Status>2</Email:Status><Email:FlagType>Follow up</Email:FlagType></Email:Flag></ApplicationData>"#;
+        let patch = parse_eas_email_flag_patch(app);
+        assert_eq!(patch.read, Some(false));
+        assert_eq!(patch.flagged, Some(true));
+        assert_eq!(patch.flag_status, Some(2));
+        assert_eq!(patch.flag_type.as_deref(), Some("Follow up"));
+        assert!(!patch.is_empty());
+    }
+
+    #[test]
+    fn parse_email_flag_patch_status_one_is_complete() {
+        let app = r#"<ApplicationData><Email:Flag><Email:Status>1</Email:Status><Email:CompleteTime>2026-01-01T00:00:00Z</Email:CompleteTime></Email:Flag></ApplicationData>"#;
+        let patch = parse_eas_email_flag_patch(app);
+        assert_eq!(patch.flagged, Some(true));
+        assert_eq!(patch.flag_status, Some(1));
+        assert_eq!(patch.complete_time.as_deref(), Some("2026-01-01T00:00:00Z"));
+    }
+
+    #[test]
+    fn parse_email_flag_patch_empty_flag_clears() {
+        let patch =
+            parse_eas_email_flag_patch(r#"<ApplicationData><Email:Flag/></ApplicationData>"#);
+        assert_eq!(patch.flagged, Some(false));
+        assert!(patch.read.is_none());
+    }
+
+    #[test]
+    fn parse_email_flag_patch_ignores_calendar_status_outside_flag() {
+        // A bare <Status> that is not inside <Flag> must not be read as a
+        // flag status (Calendar reuses the element name).
+        let app = r#"<ApplicationData><Email:Subject>x</Email:Subject><Status>1</Status></ApplicationData>"#;
+        let patch = parse_eas_email_flag_patch(app);
+        assert_eq!(patch.flag_status, None);
+        assert!(patch.is_empty());
+    }
+
+    #[test]
+    fn parse_email_flag_patch_categories() {
+        let app = r#"<ApplicationData><Email:Categories><Email:Category>Work</Email:Category><Email:Category>Urgent</Email:Category></Email:Categories></ApplicationData>"#;
+        let patch = parse_eas_email_flag_patch(app);
+        assert_eq!(
+            patch.categories,
+            Some(vec!["Work".to_string(), "Urgent".to_string()])
+        );
+    }
+
+    #[test]
+    fn render_email_mutation_responses_shape() {
+        let results = vec![
+            EasEmailMutationResult::Change {
+                server_id: "2:1".to_string(),
+                status: "1",
+            },
+            EasEmailMutationResult::Delete {
+                server_id: "2:2".to_string(),
+                status: "8",
+            },
+        ];
+        let xml = render_eas_email_mutation_responses(&results);
+        assert!(xml.starts_with("<Responses>"));
+        assert!(xml.ends_with("</Responses>"));
+        assert!(xml.contains(
+            "<Change><Class>Email</Class><ServerId>2:1</ServerId><Status>1</Status></Change>"
+        ));
+        assert!(xml.contains("<Delete><ServerId>2:2</ServerId><Status>8</Status></Delete>"));
+        // WBXML-encodable: every element lives on a declared code page.
+        let wrapped = format!(
+            r#"<Sync xmlns="AirSync:" xmlns:AirSyncBase="AirSyncBase:" xmlns:Email="Email:"><Collections><Collection><Class>Email</Class><SyncKey>1</SyncKey><CollectionId>2</CollectionId><Status>1</Status>{xml}<Commands></Commands></Collection></Collections></Sync>"#
+        );
+        crate::wbxml::Wbxml::new()
+            .encode(&wrapped)
+            .expect("mutation responses must be WBXML-encodable");
+    }
+
+    #[test]
+    fn inject_collection_responses_places_block_after_status() {
+        let response = r#"<Collection><Class>Email</Class><SyncKey>1</SyncKey><CollectionId>2</CollectionId><Status>1</Status><Commands></Commands></Collection>"#;
+        let out = inject_collection_responses(response.to_string(), "<Responses><X/></Responses>");
+        let status_end = out.find("</Status>").unwrap() + "</Status>".len();
+        assert!(out[status_end..].starts_with("<Responses>"));
+        assert!(out.contains("<Commands></Commands>"));
+        // Empty responses leave the document untouched.
+        assert_eq!(
+            inject_collection_responses(response.to_string(), ""),
+            response
+        );
+    }
+
+    /// Stub JMAP server exercising the mutation apply path end-to-end: it
+    /// answers `GET /session`, records every `Email/set` request body, and
+    /// replies per the armed `mode`.
+    async fn spawn_email_mutation_stub(
+        mode: &'static str,
+    ) -> (
+        String,
+        std::sync::Arc<tokio::sync::Mutex<Vec<serde_json::Value>>>,
+    ) {
+        use axum::response::Response;
+        use axum::routing::{get, post};
+
+        let seen: std::sync::Arc<tokio::sync::Mutex<Vec<serde_json::Value>>> =
+            std::sync::Arc::new(tokio::sync::Mutex::new(Vec::new()));
+
+        #[derive(Clone)]
+        struct Ctl {
+            base: String,
+            mode: &'static str,
+            seen: std::sync::Arc<tokio::sync::Mutex<Vec<serde_json::Value>>>,
+        }
+
+        async fn session(
+            axum::Extension(ctl): axum::Extension<Ctl>,
+        ) -> axum::Json<serde_json::Value> {
+            axum::Json(serde_json::json!({
+                "apiUrl": format!("{}/api", ctl.base),
+                "downloadUrl": format!("{}/d/{{accountId}}/{{blobId}}", ctl.base),
+                "uploadUrl": format!("{}/u/{{accountId}}", ctl.base),
+                "eventSourceUrl": format!("{}/e", ctl.base),
+                "state": "s",
+                "username": "u",
+                "accounts": {"a": {"name": "u", "isPersonal": true, "isReadOnly": false, "accountCapabilities": {}}},
+                "primaryAccounts": {"urn:ietf:params:jmap:mail": "a"},
+                "capabilities": {}
+            }))
+        }
+
+        async fn api(axum::Extension(ctl): axum::Extension<Ctl>, body: String) -> Response {
+            let req: serde_json::Value =
+                serde_json::from_str(&body).unwrap_or(serde_json::Value::Null);
+            let method = req
+                .get("methodCalls")
+                .and_then(|m| m.as_array())
+                .and_then(|a| a.first())
+                .cloned()
+                .unwrap_or(serde_json::Value::Null);
+            let name = method.get(0).and_then(|v| v.as_str()).unwrap_or("");
+            ctl.seen.lock().await.push(method.clone());
+            let call_id = method
+                .get(2)
+                .and_then(|v| v.as_str())
+                .unwrap_or("c0")
+                .to_string();
+            let (mname, args) = if name == "Mailbox/query" {
+                (
+                    "Mailbox/query",
+                    serde_json::json!({"accountId": "a", "ids": ["trash1"]}),
+                )
+            } else if name == "Email/get" {
+                let ids: Vec<String> = method
+                    .get(1)
+                    .and_then(|a| a.get("ids"))
+                    .and_then(|v| v.as_array())
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|v| v.as_str().map(str::to_string))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                let list: Vec<serde_json::Value> = ids
+                    .iter()
+                    .map(|i| serde_json::json!({"id": i, "mailboxIds": {"inbox1": true}}))
+                    .collect();
+                (
+                    "Email/get",
+                    serde_json::json!({"accountId": "a", "list": list, "notFound": []}),
+                )
+            } else if name == "Email/set" {
+                let ids: Vec<String> = method
+                    .get(1)
+                    .and_then(|a| a.get("update"))
+                    .and_then(|u| u.as_object())
+                    .map(|m| m.keys().cloned().collect())
+                    .unwrap_or_default();
+                let has_destroy = method.get(1).and_then(|a| a.get("destroy")).is_some();
+                match ctl.mode {
+                    "ok" if has_destroy => {
+                        let destroyed: Vec<String> = method
+                            .get(1)
+                            .and_then(|a| a.get("destroy"))
+                            .and_then(|v| v.as_array())
+                            .map(|a| {
+                                a.iter()
+                                    .filter_map(|v| v.as_str().map(str::to_string))
+                                    .collect()
+                            })
+                            .unwrap_or_default();
+                        (
+                            "Email/set",
+                            serde_json::json!({"accountId": "a", "destroyed": destroyed}),
+                        )
+                    }
+                    "ok" => {
+                        let updated: serde_json::Map<String, serde_json::Value> = ids
+                            .iter()
+                            .map(|i| (i.clone(), serde_json::json!(null)))
+                            .collect();
+                        (
+                            "Email/set",
+                            serde_json::json!({
+                                "accountId": "a",
+                                "updated": serde_json::Value::Object(updated)
+                            }),
+                        )
+                    }
+                    "method_error" => (
+                        "Email/set",
+                        serde_json::json!({
+                            "accountId": "a",
+                            "type": "serverFail",
+                            "description": "boom"
+                        }),
+                    ),
+                    "not_updated" => {
+                        let nu: serde_json::Map<String, serde_json::Value> = ids
+                            .iter()
+                            .map(|i| (i.clone(), serde_json::json!({"type": "notFound"})))
+                            .collect();
+                        (
+                            "Email/set",
+                            serde_json::json!({"accountId": "a", "notUpdated": nu}),
+                        )
+                    }
+                    _ => ("Email/set", serde_json::json!({"accountId": "a"})),
+                }
+            } else {
+                (name, serde_json::json!({"accountId": "a"}))
+            };
+            let resp = serde_json::json!({
+                "methodResponses": [[mname, args, call_id]],
+                "sessionState": "s"
+            });
+            Response::builder()
+                .status(200)
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(serde_json::to_vec(&resp).unwrap()))
+                .unwrap()
+        }
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let base = format!("http://127.0.0.1:{port}");
+        let ctl = Ctl {
+            base: base.clone(),
+            mode,
+            seen: seen.clone(),
+        };
+        let app = axum::Router::new()
+            .route("/session", get(session))
+            .route("/", post(api))
+            .layer(axum::Extension(ctl));
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        (base, seen)
+    }
+
+    #[tokio::test]
+    async fn apply_email_mutations_sets_seen_and_flag_keywords() {
+        let (base, seen) = spawn_email_mutation_stub("ok").await;
+        let client = std::sync::Arc::new(crate::jmap::JmapClient::new(&base).unwrap());
+        let pw = secrecy::SecretString::from("pw");
+        let xml = r#"<Commands>
+          <Change><ServerId>em-abc</ServerId><ApplicationData><Email:Read>1</Email:Read><Email:Flag><Email:Status>2</Email:Status></Email:Flag></ApplicationData></Change>
+        </Commands>"#;
+        let results = apply_eas_email_mutations(&client, "a", "u", &pw, xml, true).await;
+        assert_eq!(results.len(), 1);
+        assert!(matches!(
+            &results[0],
+            EasEmailMutationResult::Change { status: "1", .. }
+        ));
+        let calls = seen.lock().await;
+        let set = calls
+            .iter()
+            .find(|c| c.get(0).and_then(|v| v.as_str()) == Some("Email/set"))
+            .expect("Email/set must be issued");
+        let update = &set[1]["update"]["abc"];
+        assert_eq!(update["keywords/$seen"], serde_json::json!(true));
+        assert_eq!(update["keywords/$flagged"], serde_json::json!(true));
+    }
+
+    #[tokio::test]
+    async fn apply_email_mutations_clears_seen_when_read_zero() {
+        let (base, seen) = spawn_email_mutation_stub("ok").await;
+        let client = std::sync::Arc::new(crate::jmap::JmapClient::new(&base).unwrap());
+        let pw = secrecy::SecretString::from("pw");
+        let xml = r#"<Commands><Change><ServerId>em-1</ServerId><ApplicationData><Email:Read>0</Email:Read></ApplicationData></Change></Commands>"#;
+        let results = apply_eas_email_mutations(&client, "a", "u", &pw, xml, true).await;
+        assert!(matches!(
+            &results[0],
+            EasEmailMutationResult::Change { status: "1", .. }
+        ));
+        let calls = seen.lock().await;
+        let set = calls
+            .iter()
+            .find(|c| c.get(0).and_then(|v| v.as_str()) == Some("Email/set"))
+            .unwrap();
+        assert_eq!(
+            set[1]["update"]["1"]["keywords/$seen"],
+            serde_json::json!(null)
+        );
+    }
+
+    #[tokio::test]
+    async fn apply_email_mutations_reports_not_found_for_unknown_server_id() {
+        let (base, _seen) = spawn_email_mutation_stub("ok").await;
+        let client = std::sync::Arc::new(crate::jmap::JmapClient::new(&base).unwrap());
+        let pw = secrecy::SecretString::from("pw");
+        let xml = r#"<Commands><Change><ServerId>2:999</ServerId><ApplicationData><Email:Read>1</Email:Read></ApplicationData></Change></Commands>"#;
+        let results = apply_eas_email_mutations(&client, "a", "u", &pw, xml, true).await;
+        assert!(matches!(
+            &results[0],
+            EasEmailMutationResult::Change { status: "8", .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn apply_email_mutations_maps_method_error_to_conversion_error() {
+        let (base, _seen) = spawn_email_mutation_stub("method_error").await;
+        let client = std::sync::Arc::new(crate::jmap::JmapClient::new(&base).unwrap());
+        let pw = secrecy::SecretString::from("pw");
+        let xml = r#"<Commands><Change><ServerId>em-1</ServerId><ApplicationData><Email:Read>1</Email:Read></ApplicationData></Change></Commands>"#;
+        let results = apply_eas_email_mutations(&client, "a", "u", &pw, xml, true).await;
+        assert!(matches!(
+            &results[0],
+            EasEmailMutationResult::Change { status: "6", .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn apply_email_mutations_delete_moves_to_trash_by_default() {
+        let (base, seen) = spawn_email_mutation_stub("ok").await;
+        let client = std::sync::Arc::new(crate::jmap::JmapClient::new(&base).unwrap());
+        let pw = secrecy::SecretString::from("pw");
+        let xml = r#"<Commands><Delete><ServerId>em-7</ServerId></Delete></Commands>"#;
+        let results = apply_eas_email_mutations(&client, "a", "u", &pw, xml, true).await;
+        assert!(matches!(
+            &results[0],
+            EasEmailMutationResult::Delete { status: "1", .. }
+        ));
+        let calls = seen.lock().await;
+        // DeletesAsMoves => Email/set with mailboxIds pointing at trash, not a
+        // destroy.
+        let set = calls
+            .iter()
+            .find(|c| {
+                c.get(0).and_then(|v| v.as_str()) == Some("Email/set") && c[1]["update"].is_object()
+            })
+            .expect("move must issue Email/set update");
+        assert_eq!(
+            set[1]["update"]["7"]["mailboxIds/trash1"],
+            serde_json::json!(true)
+        );
+        assert_eq!(
+            set[1]["update"]["7"]["mailboxIds/inbox1"],
+            serde_json::json!(null)
+        );
+    }
+
+    #[tokio::test]
+    async fn apply_email_mutations_hard_delete_destroys() {
+        let (base, seen) = spawn_email_mutation_stub("ok").await;
+        let client = std::sync::Arc::new(crate::jmap::JmapClient::new(&base).unwrap());
+        let pw = secrecy::SecretString::from("pw");
+        let xml = r#"<Commands><Delete><ServerId>em-7</ServerId></Delete></Commands>"#;
+        let results = apply_eas_email_mutations(&client, "a", "u", &pw, xml, false).await;
+        assert!(matches!(
+            &results[0],
+            EasEmailMutationResult::Delete { status: "1", .. }
+        ));
+        let calls = seen.lock().await;
+        let set = calls
+            .iter()
+            .find(|c| c.get(0).and_then(|v| v.as_str()) == Some("Email/set"))
+            .expect("destroy must issue Email/set");
+        assert!(set[1]["destroy"].is_array());
+    }
+
+    #[tokio::test]
+    async fn apply_email_mutations_empty_when_no_commands() {
+        let (base, seen) = spawn_email_mutation_stub("ok").await;
+        let client = std::sync::Arc::new(crate::jmap::JmapClient::new(&base).unwrap());
+        let pw = secrecy::SecretString::from("pw");
+        let xml = r#"<Sync><Collections><Collection><SyncKey>1</SyncKey></Collection></Collections></Sync>"#;
+        let results = apply_eas_email_mutations(&client, "a", "u", &pw, xml, true).await;
+        assert!(results.is_empty());
+        assert!(
+            seen.lock().await.is_empty(),
+            "no JMAP call for an empty Sync"
+        );
     }
 }

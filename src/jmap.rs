@@ -5345,7 +5345,11 @@ pub fn parse_email_set_outcome(
         if method != "Email/set" {
             continue;
         }
-        if let Some(arr) = data.get("updated").and_then(|v| v.as_array()) {
+        if let Some(updated) = data.get("updated").and_then(|v| v.as_object()) {
+            // RFC 8621 §5.3: `updated` is a map of id -> (optional) null.
+            out.updated = updated.keys().cloned().collect();
+        } else if let Some(arr) = data.get("updated").and_then(|v| v.as_array()) {
+            // Defensive: a few servers echo the requested ids as an array.
             out.updated = arr
                 .iter()
                 .filter_map(|v| v.as_str().map(str::to_string))
@@ -5985,15 +5989,24 @@ mod tests {
     #[test]
     fn parse_email_set_outcome_success_records_updated() {
         // A clean Email/set reply with `updated` => fully-applied success.
+        // RFC 8621 §5.3 defines `updated` as a map of id -> null, which is what
+        // Stalwart returns; the legacy array form is still tolerated.
         let resp = vec![(
             "Email/set".to_string(),
-            json!({ "accountId": "a", "updated": ["M-1"] }),
+            json!({ "accountId": "a", "updated": { "M-1": null } }),
             "es0".to_string(),
         )];
         let o = super::parse_email_set_outcome(resp);
         assert_eq!(o.updated, vec!["M-1"]);
         assert!(o.not_updated.is_empty());
         assert!(o.method_error.is_none());
+
+        let resp_arr = vec![(
+            "Email/set".to_string(),
+            json!({ "accountId": "a", "updated": ["M-1"] }),
+            "es0".to_string(),
+        )];
+        assert_eq!(super::parse_email_set_outcome(resp_arr).updated, vec!["M-1"]);
     }
 
     #[test]
@@ -6004,7 +6017,7 @@ mod tests {
             "Email/set".to_string(),
             json!({
                 "accountId": "a",
-                "updated": [],
+                "updated": {},
                 "notUpdated": {
                     "M-2": { "type": "notFound", "description": "no such email" }
                 }
@@ -6041,7 +6054,7 @@ mod tests {
             ("error".to_string(), json!(""), "es0".to_string()),
             (
                 "Email/set".to_string(),
-                json!({ "accountId": "a", "updated": ["M-9"] }),
+                json!({ "accountId": "a", "updated": { "M-9": null } }),
                 "es0".to_string(),
             ),
         ];

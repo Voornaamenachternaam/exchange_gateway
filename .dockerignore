@@ -1,0 +1,31 @@
+# Keep the build context small and the image reproducible: only the sources
+# the Dockerfile actually COPYs are needed. Without this file the whole repo
+# (target/, .git/, the protocol specs, audit docs) is uploaded to the daemon on
+# every build.
+
+target/
+.git/
+.gitignore
+.github/
+
+# Docs / specs not needed to compile
+exchange_protocols/
+*.md
+AUDIT.md
+AUDIT2.md
+
+# Local/dev artifacts
+.env
+.env.*
+!.env.example
+docker-compose.yml
+docker-compose*.yml
+cloudflared/
+tests/
+scripts/
+
+# Editor / OS noise
+.vscode/
+.idea/
+*.swp
+.DS_Store

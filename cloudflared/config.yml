@@ -33,7 +33,11 @@
 # <YOUR-TUNNEL-UUID>, and overwriting ~/.cloudflared/config.yml from it would
 # clobber any UUID edited in earlier):
 #
-#   set -a; . ./.env; set +a; \
+#   # There is no .env file: read the two hostnames from docker-compose.yml
+#   # (they are written inline under the exchange-gateway service). Example:
+#   GATEWAY_MAIL_DOMAIN=example.com      # <- your GATEWAY_MAIL_DOMAIN
+#   GATEWAY_HOST=calendar.example.com    # <- your GATEWAY_HOST
+#   export GATEWAY_MAIL_DOMAIN GATEWAY_HOST
 #   export TUNNEL_ID=<your-tunnel-uuid>  # from the dashboard or `cloudflared tunnel list`
 #   sed -e "s|<YOUR-TUNNEL-UUID>|${TUNNEL_ID}|g" \
 #       -e "s|<GATEWAY_MAIL_DOMAIN>|${GATEWAY_MAIL_DOMAIN}|g" \

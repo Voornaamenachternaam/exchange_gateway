@@ -45,7 +45,7 @@ Cloudflare terminates TLS at the edge. The tunnel provides encrypted transport f
 4. Select **Cloudflared** as the connector
 5. Choose your account/domain
 6. Name your tunnel (e.g., `exchange-gateway`)
-7. **Copy the tunnel token** — you'll use this in your `.env` file
+7. **Copy the tunnel token** — you'll use this when starting cloudflared
 8. **Save the tunnel UUID** — you'll use this if deploying with config file
 
 ---
@@ -93,14 +93,14 @@ In the same tunnel settings (**Public Hostname** tab), add **two** (or
 #### Hostname A — EAS service hostname (`GATEWAY_HOST`)
 
 - **Subdomain/Domain**: `calendar.example.com` (the value you will set as
-  `GATEWAY_HOST` in `.env`)
+  `GATEWAY_HOST` in `docker-compose.yml`)
 - **Type**: HTTP
 - **Service**: `http://localhost:8134`
 
 #### Hostname B — Autodiscover subdomain (`autodiscover.<GATEWAY_MAIL_DOMAIN>`) — REQUIRED for Android
 
 - **Subdomain/Domain**: `autodiscover.example.com`
-  (i.e. `autodiscover.` + the exact `GATEWAY_MAIL_DOMAIN` from `.env`)
+  (i.e. `autodiscover.` + the exact `GATEWAY_MAIL_DOMAIN` from `docker-compose.yml`)
 - **Type**: HTTP
 - **Service**: `http://localhost:8134`
 
@@ -225,13 +225,13 @@ mkdir -p ~/.cloudflared
 2. Render the template into `~/.cloudflared/config.yml` (see the
    "HOSTNAME SUBSTITUTION" block at
    the top of `cloudflared/config.yml`). Use the one-liner there — it
-   substitutes the tunnel UUID and both hostnames from your `.env` plus an
+   substitutes the tunnel UUID and both hostnames from `docker-compose.yml` plus an
    exported `TUNNEL_ID` in a single `sed` pass, writing the result to
    `~/.cloudflared/config.yml` directly from the template:
    - `<YOUR-TUNNEL-UUID>` → your tunnel UUID from Step 1 (`TUNNEL_ID`)
-   - `<GATEWAY_MAIL_DOMAIN>` → the `GATEWAY_MAIL_DOMAIN` from `.env`
+   - `<GATEWAY_MAIL_DOMAIN>` → the `GATEWAY_MAIL_DOMAIN` from `docker-compose.yml`
      (drives the `autodiscover.` and root-fallback ingress entries)
-   - `<GATEWAY_HOST>` → the `GATEWAY_HOST` from `.env`
+   - `<GATEWAY_HOST>` → the `GATEWAY_HOST` from `docker-compose.yml`
    (the config file carries the two required hostnames from Step 2 plus the
    optional root-domain fallback entry — delete that ingress block if the
    bare mail domain must serve other content)
@@ -269,77 +269,70 @@ WantedBy=multi-user.target
 
 ### `docker-compose.yml`
 
+The repository's `docker-compose.yml` is the authoritative, self-contained
+deployment artifact. It is **pull-only** (no `build:`), pins the registry image,
+and carries **every** environment variable inline — there is deliberately **no
+`.env` file and no `env_file:`**. Edit the values in that file directly. The
+essential shape:
+
 ```yaml
-# docker-compose.yml
 services:
   exchange-gateway:
-    build: .
+    image: <registry>/exchange-gateway:0.1.0   # pinned registry image
     container_name: exchange-gateway
-    image: exchange-gateway:latest
     restart: unless-stopped
+    environment:
+      - TZ=Europe/Amsterdam
+      - GATEWAY_LOG_LEVEL=info
+      - GATEWAY_BIND=[::]:8134
+      - GATEWAY_CALDAV_BASE=http://stalwart:8080/dav
+      - GATEWAY_JMAP_BASE=http://stalwart:8080/jmap
+      - GATEWAY_CARDDAV_BASE=http://stalwart:8080/carddav
+      - GATEWAY_HMAC_SECRET=REPLACE_WITH_A_RANDOM_32_CHAR_MINIMUM_SECRET
+      - GATEWAY_HOST=calendar.example.com
+      - GATEWAY_MAIL_DOMAIN=example.com
+      # Keep the EAS Ping long-poll under Cloudflare's 125s Proxy Read Timeout.
+      - GATEWAY_MAX_PING_HEARTBEAT=80
+      - GATEWAY_ALLOW_INSECURE_HTTP=1
     ports:
       - 8134:8134
-    environment:
-      - GATEWAY_LOG_LEVEL=${GATEWAY_LOG_LEVEL:-info}
-      - TZ=${GATEWAY_TZ:-UTC}
-      - GATEWAY_BIND=${GATEWAY_BIND:-[::]:8134}
-      - GATEWAY_CALDAV_BASE=${GATEWAY_CALDAV_BASE}
-      - GATEWAY_HMAC_SECRET=${GATEWAY_HMAC_SECRET}
-      - GATEWAY_HOST=${GATEWAY_HOST}
-      - GATEWAY_MAIL_DOMAIN=${GATEWAY_MAIL_DOMAIN}
-      - GATEWAY_DATABASE_PATH=${GATEWAY_DATABASE_PATH:-/var/lib/exchange-gateway/gateway.db}
-      - GATEWAY_MAX_ATTACHMENT_BYTES=${GATEWAY_MAX_ATTACHMENT_BYTES:-5242880}
-      - GATEWAY_ROOM_BOOKING_ENABLED=${GATEWAY_ROOM_BOOKING_ENABLED:-true}
-      - GATEWAY_AUTH_CACHE_TTL_SECS=${GATEWAY_AUTH_CACHE_TTL_SECS:-300}
-      - GATEWAY_AUTH_CACHE_NEGATIVE_TTL_SECS=${GATEWAY_AUTH_CACHE_NEGATIVE_TTL_SECS:-30}
-      - GATEWAY_AUTH_CACHE_MAX_ENTRIES=${GATEWAY_AUTH_CACHE_MAX_ENTRIES:-10000}
-      - GATEWAY_AUTH_PROBE_MIN_INTERVAL_MS=${GATEWAY_AUTH_PROBE_MIN_INTERVAL_MS:-1000}
-      - GATEWAY_AUTH_BACKEND_FAILURE_THRESHOLD=${GATEWAY_AUTH_BACKEND_FAILURE_THRESHOLD:-5}
-      - GATEWAY_AUTH_BACKEND_MAX_BACKOFF_SECS=${GATEWAY_AUTH_BACKEND_MAX_BACKOFF_SECS:-60}
-      - GATEWAY_ALLOW_INSECURE_HTTP=${GATEWAY_ALLOW_INSECURE_HTTP:-1}
     volumes:
-      - exchange-gateway-data:/var/lib/exchange-gateway
+      - /armblock/exchange-gateway/data:/var/lib/exchange-gateway
+      - /armblock/exchange-gateway/certs:/var/lib/exchange-gateway/certs
+    networks:
+      - network1
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8134/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:8134/health/ready"]
       interval: 30s
       timeout: 5s
       retries: 3
       start_period: 10s
 
-volumes:
-  exchange-gateway-data:
-    driver: local
+networks:
+  network1:
+    name: my-bridge-network
+    external: true
 ```
 
-> **Note on Database Path:** The database will be created at `/var/lib/exchange-gateway/gateway.db` inside the container. With the named volume above, data persists across container restarts. If using a bind mount instead (e.g., `- /path/on/host:/var/lib/exchange-gateway`), ensure the host path exists and is writable by the container's `gateway` user (UID 10001).
+> **Note on Database Path:** The database will be created at `/var/lib/exchange-gateway/gateway.db` inside the container. With the bind mount above, data persists across container restarts. Ensure the host path exists and is writable by the container's `gateway` user (UID 10001).
 
-### `.env` File
+### Secrets (no `.env`)
 
-```bash
-# Exchange Gateway Configuration (Required)
-GATEWAY_CALDAV_BASE=http://stalwart:8080/dav/
-GATEWAY_HMAC_SECRET=your-32-character-minimum-secret-key-here
-GATEWAY_HOST=calendar.example.com
-GATEWAY_MAIL_DOMAIN=example.com
+Because there is no `.env` file, the credential-bearing variables
+(`GATEWAY_HMAC_SECRET`, `GATEWAY_ADMIN_USERNAME`, `GATEWAY_ADMIN_PASSWORD`) live
+inline in `docker-compose.yml`. Restrict that file's permissions
+(`chmod 600 docker-compose.yml`). As an alternative, each of those variables has
+a `<VAR>_FILE` companion that reads the value from a mounted file (Docker
+secrets), which takes precedence over the inline value:
 
-# Optional Exchange Gateway Settings
-GATEWAY_LOG_LEVEL=info
-GATEWAY_TZ=UTC
-GATEWAY_BIND=[::]:8134
-GATEWAY_DATABASE_PATH=/var/lib/exchange-gateway/gateway.db
-GATEWAY_MAX_ATTACHMENT_BYTES=5242880
-GATEWAY_ROOM_BOOKING_ENABLED=true
-GATEWAY_AUTH_CACHE_TTL_SECS=300
-GATEWAY_AUTH_CACHE_NEGATIVE_TTL_SECS=30
-GATEWAY_AUTH_CACHE_MAX_ENTRIES=10000
-GATEWAY_AUTH_PROBE_MIN_INTERVAL_MS=1000
-GATEWAY_AUTH_BACKEND_FAILURE_THRESHOLD=5
-GATEWAY_AUTH_BACKEND_MAX_BACKOFF_SECS=60
-# Plain HTTP to the Stalwart backend (the JMAP URL derived from CALDAV_BASE)
-# carries credentials in cleartext. Set to 1 to permit the non-TLS
-# http://stalwart:8080 model only when the gateway and Stalwart share a
-# trusted private network; otherwise use HTTPS (e.g. https://stalwart:8443).
-GATEWAY_ALLOW_INSECURE_HTTP=1
+```yaml
+    environment:
+      - GATEWAY_HMAC_SECRET_FILE=/run/secrets/gateway_hmac
+    secrets:
+      - gateway_hmac
+secrets:
+  gateway_hmac:
+    file: ./secrets/gateway_hmac
 ```
 
 ---
@@ -347,8 +340,8 @@ GATEWAY_ALLOW_INSECURE_HTTP=1
 ## Step 6: Start Services
 
 ```bash
-# Start the Exchange Gateway container
-docker compose up -d --build
+# Pull the pinned image and start the container (no local build)
+docker compose pull && docker compose up -d
 
 # Start/restart cloudflared tunnel
 sudo systemctl restart cloudflared
