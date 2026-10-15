@@ -660,6 +660,29 @@ async fn main() -> anyhow::Result<()> {
         config.gateway_host,
     );
 
+    // A placeholder hostname means the operator left the compose template
+    // unedited. Autodiscover would advertise a URL the clients cannot resolve,
+    // so surface it as a loud, actionable warning rather than failing startup
+    // (a dev run against localhost is legitimate).
+    if exchange_gateway::config::is_placeholder_host(&config.gateway_host) {
+        tracing::warn!(
+            gateway_host = %config.gateway_host,
+            "GATEWAY_HOST still looks like a placeholder; set it to the public \
+             EAS hostname (e.g. calendar.example.com) or Android/Outlook \
+             Autodiscover will advertise an unresolvable URL"
+        );
+    }
+
+    tracing::info!(
+        eas_require_policy_key = config.eas_require_policy_key,
+        "EAS Provision PolicyKey enforcement {}",
+        if config.eas_require_policy_key {
+            "ENABLED (stale keys answered with Status 142)"
+        } else {
+            "disabled (permissive; advertised policy is a no-op)"
+        }
+    );
+
     let storage =
         Arc::new(Storage::new(&format!("sqlite://{}?mode=rwc", config.database_path)).await?);
     storage.init_schema().await?;

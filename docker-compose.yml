@@ -1,93 +1,175 @@
-# docker-compose.yml for the Exchange Gateway, matching the Stalwart
-# Mailserver v0.16.20 compose (same host layout, TZ, and external bridge
-# network). Start the Stalwart compose first, then:
+# docker-compose.yml — Exchange Gateway for the Stalwart Mailserver backend.
 #
-#   docker compose up -d --build
+# Validated against Stalwart Mailserver v0.16.26 (JMAP Calendars capability
+# present). The Stalwart compose in use ships `stalwartlabs/stalwart:latest`;
+# PIN it to the v0.16.26 digest there too, so the gateway's startup capability
+# verification always tests the backend it was validated against.
 #
-# The gateway answers on port 8134; terminate TLS in front of it (cloudflared,
-# reverse proxy, ...) and forward with `X-Forwarded-Proto: https` set.
+# ---------------------------------------------------------------------------
+# CONFIGURATION CONTRACT
+# ---------------------------------------------------------------------------
+# This file is the SINGLE source of configuration: every environment variable
+# is written INLINE below. There is deliberately NO `.env` file and NO
+# `env_file:` — edit the values in this file directly.
+#
+# Before `docker compose up -d` you MUST edit:
+#   1. image:                  the registry reference (or build locally, see below)
+#   2. GATEWAY_HMAC_SECRET     >= 32 chars, not starting with "REPLACE_"
+#   3. GATEWAY_HOST            public EAS service hostname (e.g. calendar.example.com)
+#   4. GATEWAY_MAIL_DOMAIN     the mailbox domain users sign in with
+#   5. GATEWAY_ADMIN_USERNAME / GATEWAY_ADMIN_PASSWORD   (optional; full GAL)
+#
+# The gateway serves plain HTTP on 8134; terminate TLS in front of it
+# (cloudflared) and forward with `X-Forwarded-Proto: https`. See
+# CLOUDFLARED_SETUP.md.
+#
+# BUILDING LOCALLY (development only): replace the `image:` line with
+#   build:
+#     context: .
+#     dockerfile: Dockerfile
+#   image: exchange-gateway:local
+#
+# Start Stalwart first, then:  docker compose up -d
+# ---------------------------------------------------------------------------
 
 services:
   exchange-gateway:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    image: exchange-gateway:latest
+    # --- Registry image (production) --------------------------------------
+    # Replace <registry> with the published multi-arch image reference:
+    #   docker buildx imagetools inspect <registry>/exchange-gateway:0.1.0
+    image: <registry>/exchange-gateway:0.1.0
     container_name: exchange-gateway
     hostname: exchange-gateway
     restart: unless-stopped
-    # Enable together with the autoheal service further down:
-    # labels:
-    #   autoheal: "true"
     environment:
       - TZ=Europe/Amsterdam
-      - GATEWAY_LOG_LEVEL=${GATEWAY_LOG_LEVEL:-info}
-      - GATEWAY_BIND=${GATEWAY_BIND:-[::]:8134}
-      # Stalwart backend: the HTTP listener (port 8080) serves CalDAV/CardDAV
-      # at /dav and JMAP at /jmap; JMAP and CardDAV bases are derived from the
-      # CalDAV base when not set explicitly.
-      - GATEWAY_CALDAV_BASE=${GATEWAY_CALDAV_BASE:-http://stalwart:8080/dav}
-      - GATEWAY_JMAP_BASE=${GATEWAY_JMAP_BASE:-http://stalwart:8080/jmap}
-      # Deploy-time JMAP Calendars capability verification: off | warn
-      # (default) | enforce (refuse startup on any finding).
-      - GATEWAY_CALENDAR_CAPABILITY_CHECK=${GATEWAY_CALENDAR_CAPABILITY_CHECK:-warn}
-      - GATEWAY_CARDDAV_BASE=${GATEWAY_CARDDAV_BASE:-http://stalwart:8080/carddav}
-      # Required: >= 32 characters, no REPLACE_ prefix.
-      - GATEWAY_HMAC_SECRET=${GATEWAY_HMAC_SECRET:?Set GATEWAY_HMAC_SECRET in .env (min 32 chars)}
-      - GATEWAY_HOST=${GATEWAY_HOST:?Set GATEWAY_HOST in .env (public gateway hostname)}
-      - GATEWAY_MAIL_DOMAIN=${GATEWAY_MAIL_DOMAIN:?Set GATEWAY_MAIL_DOMAIN in .env}
-      - GATEWAY_DATABASE_PATH=${GATEWAY_DATABASE_PATH:-/var/lib/exchange-gateway/gateway.db}
-      - GATEWAY_MAX_ATTACHMENT_BYTES=${GATEWAY_MAX_ATTACHMENT_BYTES:-5242880}
-      - GATEWAY_ROOM_BOOKING_ENABLED=${GATEWAY_ROOM_BOOKING_ENABLED:-true}
-      - GATEWAY_AUTH_CACHE_TTL_SECS=${GATEWAY_AUTH_CACHE_TTL_SECS:-300}
-      - GATEWAY_AUTH_CACHE_NEGATIVE_TTL_SECS=${GATEWAY_AUTH_CACHE_NEGATIVE_TTL_SECS:-30}
-      - GATEWAY_AUTH_CACHE_MAX_ENTRIES=${GATEWAY_AUTH_CACHE_MAX_ENTRIES:-10000}
-      - GATEWAY_AUTH_PROBE_MIN_INTERVAL_MS=${GATEWAY_AUTH_PROBE_MIN_INTERVAL_MS:-1000}
-      - GATEWAY_AUTH_BACKEND_FAILURE_THRESHOLD=${GATEWAY_AUTH_BACKEND_FAILURE_THRESHOLD:-5}
-      - GATEWAY_AUTH_BACKEND_MAX_BACKOFF_SECS=${GATEWAY_AUTH_BACKEND_MAX_BACKOFF_SECS:-60}
-      # Stalwart SMTP/IMAP for mail send/receive plumbing.
-      - GATEWAY_SMTP_HOST=${GATEWAY_SMTP_HOST:-stalwart}
-      - GATEWAY_SMTP_PORT=${GATEWAY_SMTP_PORT:-465}
-      - GATEWAY_IMAP_HOST=${GATEWAY_IMAP_HOST:-stalwart}
-      - GATEWAY_IMAP_PORT=${GATEWAY_IMAP_PORT:-993}
-      - GATEWAY_MAIL_HOST=${GATEWAY_MAIL_HOST:-stalwart}
-      # Plain HTTP to Stalwart over the private bridge network only; the
-      # external surface is TLS-terminated in front of the gateway.
-      - GATEWAY_ALLOW_INSECURE_HTTP=${GATEWAY_ALLOW_INSECURE_HTTP:-1}
-      # JMAP-first calendar on Stalwart v0.16.20 (health check falls back to
-      # CalDAV automatically if the JMAP calendar capability is absent).
-      - GATEWAY_PREFER_JMAP_CALENDAR=${GATEWAY_PREFER_JMAP_CALENDAR:-1}
-      - GATEWAY_PREFER_JMAP_CONTACTS=${GATEWAY_PREFER_JMAP_CONTACTS:-1}
-      # Stalwart admin credentials for the directory/GAL (NSPI + OAB). Leave
-      # empty to fall back to the self-only minimal GAL stub.
-      - GATEWAY_ADMIN_USERNAME=${GATEWAY_ADMIN_USERNAME:-}
-      - GATEWAY_ADMIN_PASSWORD=${GATEWAY_ADMIN_PASSWORD:-}
-      - GATEWAY_MAPI_ENABLED=${GATEWAY_MAPI_ENABLED:-1}
-      # S/MIME GAL certificates (MS-ASCMD ResolveRecipients Certificate block):
-      # optional directory of PEM/DER X.509 (.pem/.der/.cer/.crt) or
-      # certs-only CMS "PKCS#7" (.p7b/.p7c) files imported at startup;
-      # leave empty to serve only harvested certificates.
-      - GATEWAY_SMIME_CERT_STORE_DIR=${GATEWAY_SMIME_CERT_STORE_DIR:-/var/lib/exchange-gateway/certs}
+
+      # --- Logging / binding ---------------------------------------------
+      - GATEWAY_LOG_LEVEL=info
+      - GATEWAY_BIND=[::]:8134
+
+      # --- Stalwart backend (private bridge network) ----------------------
+      # The HTTP listener on port 8080 serves CalDAV/CardDAV at /dav and JMAP
+      # at /jmap. JMAP and CardDAV bases are derived from the CalDAV base when
+      # not set explicitly; they are set explicitly here for clarity.
+      - GATEWAY_CALDAV_BASE=http://stalwart:8080/dav
+      - GATEWAY_JMAP_BASE=http://stalwart:8080/jmap
+      - GATEWAY_CARDDAV_BASE=http://stalwart:8080/carddav
+
+      # Deploy-time JMAP Calendars capability verification: off | warn | enforce.
+      # `warn` logs findings and falls back to CalDAV; `enforce` refuses startup.
+      - GATEWAY_CALENDAR_CAPABILITY_CHECK=warn
+
+      # --- Required identity / crypto -------------------------------------
+      # >= 32 characters, must NOT start with "REPLACE_".
+      - GATEWAY_HMAC_SECRET=REPLACE_WITH_A_RANDOM_32_CHAR_MINIMUM_SECRET
+      - GATEWAY_HOST=calendar.example.com
+      - GATEWAY_MAIL_DOMAIN=example.com
+
+      # --- Storage --------------------------------------------------------
+      - GATEWAY_DATABASE_PATH=/var/lib/exchange-gateway/gateway.db
+      - GATEWAY_MAX_ATTACHMENT_BYTES=5242880
+
+      # --- EAS Ping vs. Cloudflare edge timeout (audit P0) ----------------
+      # Cloudflare cuts an unanswered request at the 125s Proxy Read Timeout
+      # (HTTP 524). This hard cap on the effective EAS Ping hold time keeps the
+      # long-poll under the edge limit so push is not silently broken; the
+      # client simply re-issues Ping. 80s leaves headroom on both the free and
+      # paid plans. `CF-RAY` auto-detection also clamps, but setting this
+      # explicitly makes the behaviour independent of the edge headers.
+      - GATEWAY_MAX_PING_HEARTBEAT=80
+
+      # --- Rate limiting (per CF-Connecting-IP) ---------------------------
+      # Sized for several devices behind one Microsoft datacenter egress IP:
+      # Ping re-issues every ~80s per device and Sync bursts are dense. Raise
+      # these if the target clients ever see 429s.
+      - GATEWAY_RATE_LIMIT_ENABLED=1
+      - GATEWAY_RATE_LIMIT_REQUESTS_PER_MINUTE=600
+      - GATEWAY_RATE_LIMIT_MAX_CONCURRENT=2000
+
+      # --- Auth cache / circuit breaker -----------------------------------
+      - GATEWAY_AUTH_CACHE_TTL_SECS=300
+      - GATEWAY_AUTH_CACHE_NEGATIVE_TTL_SECS=30
+      - GATEWAY_AUTH_CACHE_MAX_ENTRIES=10000
+      - GATEWAY_AUTH_PROBE_MIN_INTERVAL_MS=1000
+      - GATEWAY_AUTH_BACKEND_FAILURE_THRESHOLD=5
+      - GATEWAY_AUTH_BACKEND_MAX_BACKOFF_SECS=60
+
+      # --- Mail plumbing (SMTP/IMAP on Stalwart) --------------------------
+      - GATEWAY_SMTP_HOST=stalwart
+      - GATEWAY_SMTP_PORT=465
+      - GATEWAY_IMAP_HOST=stalwart
+      - GATEWAY_IMAP_PORT=993
+      - GATEWAY_MAIL_HOST=stalwart
+
+      # Plain HTTP to Stalwart only over the private bridge network; the public
+      # surface is TLS-terminated in front of the gateway.
+      - GATEWAY_ALLOW_INSECURE_HTTP=1
+
+      # --- JMAP-first calendar/contacts -----------------------------------
+      - GATEWAY_PREFER_JMAP_CALENDAR=1
+      - GATEWAY_PREFER_JMAP_CONTACTS=1
+      - GATEWAY_PREFER_CALDAV_FREEBUSY=0
+      - GATEWAY_FORCE_CALDAV_CALENDAR=0
+      - GATEWAY_ROOM_BOOKING_ENABLED=true
+
+      # --- EAS device policy (Provision) ----------------------------------
+      # The gateway advertises an all-off, no-op policy, so PolicyKey
+      # enforcement is disabled by default (no client friction, no security
+      # benefit). Set to 1 to answer a stale/missing X-MS-PolicyKey on any
+      # non-Provision command with HTTP 200 + global Status 142, as a real
+      # Exchange does when it requires provisioning.
+      - GATEWAY_EAS_REQUIRE_POLICY_KEY=0
+
+      # --- Surface gating -------------------------------------------------
+      # Enabled to match the exhaustive-protocol requirement and the in-code
+      # defaults (mapi_enabled defaults to true). New Outlook for Windows can
+      # fall back to MAPI/HTTP for some operations, so leaving it on avoids a
+      # client-visible gap. To run a minimal attack surface, set
+      # GATEWAY_MAPI_ENABLED=0 and GATEWAY_MAPI_HMA_ENABLED=0 — a disabled MAPI
+      # route returns 404 (invisible), and Autodiscover then omits the MAPI
+      # <Protocol> block.
+      - GATEWAY_MAPI_ENABLED=1
+      - GATEWAY_MAPI_HMA_ENABLED=0
+      - GATEWAY_EMAIL_ENABLED=1
+
+      # --- Server identity advertised to clients --------------------------
+      - GATEWAY_SERVER_VERSION=15.2.2562.45
+      - GATEWAY_SERVER_EXCHANGE_VERSION=Exchange2016
+
+      # --- Stalwart admin account for the full GAL (NSPI + OAB) -----------
+      # Leave empty to fall back to the self-only minimal GAL stub. If set,
+      # these sit in cleartext in this file — restrict the file's permissions
+      # (chmod 600) or use Docker secrets (see AUDIT2.md #22).
+      - GATEWAY_ADMIN_USERNAME=
+      - GATEWAY_ADMIN_PASSWORD=
+
+      # --- S/MIME GAL certificates (optional) -----------------------------
+      # Directory of PEM/DER X.509 (.pem/.der/.cer/.crt) or certs-only CMS
+      # "PKCS#7" (.p7b/.p7c) files imported at startup. Leave empty to serve
+      # only harvested certificates.
+      - GATEWAY_SMIME_CERT_STORE_DIR=
+
     ports:
       - 8134:8134
     volumes:
       - /armblock/exchange-gateway/data:/var/lib/exchange-gateway
-      # Operator-seeded S/MIME certificate store for the GAL (PEM/DER/p7b).
-      # Populate on the host; remove this line if you only harvest from mail.
+      # Operator-seeded S/MIME certificate store for the GAL. Create the host
+      # directory (or remove this line) before first start.
       - /armblock/exchange-gateway/certs:/var/lib/exchange-gateway/certs
+    # Resolver for the gateway container. Set to the operator's DNS servers, or
+    # delete this block to inherit the Docker daemon's resolvers.
     dns:
-      - redacted
-      - redacted
+      - 1.1.1.1
+      - 8.8.8.8
     networks:
       - network1
     healthcheck:
-      # Readiness-aware: Docker marks the container UNHEALTHY when the
-      # Stalwart auth backend is unreachable, not just when the process dies.
+      # Readiness-aware: Docker marks the container UNHEALTHY when the Stalwart
+      # auth backend is unreachable, not just when the process dies.
       # `restart: unless-stopped` alone does NOT restart an unhealthy
-      # container — pair this with a health-aware controller (e.g. the
-      # optional autoheal service below) if automatic restarts are wanted.
-      # Nothing needs to poll /health: that is the readiness alias of
-      # /health/ready; process-only liveness is available at /health/live.
+      # container — pair this with a health-aware controller (the optional
+      # autoheal service below) if automatic restarts are wanted.
       test: ["CMD", "curl", "-f", "http://localhost:8134/health/ready"]
       interval: 30s
       timeout: 5s

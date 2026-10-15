@@ -23,8 +23,10 @@ RUN cargo fetch --locked
 COPY src/ ./src/
 COPY sqlite_schema.sql ./
 
-# Build the application
-RUN cargo build --release --bin exchange_gateway
+# Build the application. `--locked` pins the dependency graph to Cargo.lock so
+# the published image is byte-reproducible and a supply-chain swap in a
+# transitive crate cannot slip in between `cargo fetch` and the build.
+RUN cargo build --release --locked --bin exchange_gateway
 
 # Runtime stage - ultra-minimal and secure
 FROM debian:bookworm-slim AS runtime

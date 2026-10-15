@@ -8,9 +8,7 @@ use crate::jmap::{JmapClient, QueryCalendarEventsParams};
 use crate::models::AppState;
 use crate::permission::{PermissionContext, PermissionEnforcement};
 use crate::sync::{self, SyncOptions, filter_type_to_start};
-use crate::util::{
-    canonicalize_username, nfc, normalize_username, resolve_xml_reference, xml_escape,
-};
+use crate::util::{canonicalize_username, normalize_username, resolve_xml_reference, xml_escape};
 use crate::wbxml::Wbxml;
 use axum::extract::{Query, State};
 use axum::http::{HeaderMap, HeaderValue};
@@ -242,8 +240,6 @@ struct SearchRequest {
     query_text: Option<String>,
     range_start: usize,
     range_end: usize,
-    starts: Option<chrono::DateTime<chrono::Utc>>,
-    ends: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -282,6 +278,11 @@ struct SyncCollection {
     /// disabled ([MS-ASCON] §2.2.2.5 semantics inverted only for
     /// GetItemEstimate; for Sync an absent element means "off").
     conversation_mode: bool,
+    /// `<airsync:DeletesAsMoves>` ([MS-ASCMD] §2.2.1.21.3, direct child of
+    /// `<Collection>`): 1/absent-with-tag means a client Delete soft-deletes
+    /// the item into Deleted Items; 0 means permanent deletion. Absent element
+    /// defaults to true (spec default).
+    deletes_as_moves: bool,
     /// The parsed `<Options>` block ([MS-ASCMD] §2.2.3.125.6):
     /// FilterType, BodyPreference chain, BodyPartPreference, MIMESupport,
     /// MIMETruncation, MaxItems, Conflict, RightsManagementSupport.
@@ -307,6 +308,8 @@ impl Default for SyncCollection {
             get_changes: true,
             filter_type: None,
             conversation_mode: false,
+            // [MS-ASCMD] §2.2.1.21.3: DeletesAsMoves defaults to true.
+            deletes_as_moves: true,
             options: None,
             xml: String::new(),
         }
@@ -933,6 +936,7 @@ fn parse_sync_collections(xml: &str) -> Vec<SyncCollection> {
                         // Collection XML; they live at Collection scope.
                         let parsed = crate::eas_sync_options::parse_collection_options(&coll.xml);
                         coll.conversation_mode = parsed.controls.conversation_mode.unwrap_or(false);
+                        coll.deletes_as_moves = parsed.controls.deletes_as_moves.unwrap_or(true);
                         coll.options = if parsed.options.explicitly_set {
                             Some(parsed.options)
                         } else {
@@ -1106,22 +1110,18 @@ fn parse_item_operations_fetches(xml: &str) -> Vec<ItemOperationsFetch> {
 }
 
 fn parse_search_request(xml: &str) -> SearchRequest {
-    let range = extract_first_tag_text(xml, b"Range").unwrap_or_else(|| "0-9".to_string());
+    // [MS-ASCMD] §2.2.3.143.3: the default Range for a Mailbox Store is
+    // "0-99" (100 results); GAL defaults to the same 0-99 window.
+    let range = extract_first_tag_text(xml, b"Range").unwrap_or_else(|| "0-99".to_string());
     let (range_start, range_end) = range
         .split_once('-')
         .and_then(|(s, e)| Some((s.trim().parse().ok()?, e.trim().parse().ok()?)))
-        .unwrap_or((0, 9));
+        .unwrap_or((0, 99));
     SearchRequest {
         store_name: extract_first_tag_text(xml, b"Name").unwrap_or_else(|| "Mailbox".to_string()),
         query_text: extract_first_tag_text(xml, b"Query").map(|v| v.trim().to_string()),
         range_start,
         range_end,
-        starts: extract_first_tag_text(xml, b"Starts")
-            .as_deref()
-            .and_then(parse_datetime),
-        ends: extract_first_tag_text(xml, b"Ends")
-            .as_deref()
-            .and_then(parse_datetime),
     }
 }
 
@@ -1135,27 +1135,6 @@ fn active_user_emails(username: &str, mail_domain: &str) -> Vec<String> {
     crate::util::user_primary_email(username, mail_domain)
         .map(|e| vec![e])
         .unwrap_or_default()
-}
-
-fn matches_search(item: &crate::calendar::CalendarItem, query: Option<&str>) -> bool {
-    let Some(query) = query.map(str::trim).filter(|v| !v.is_empty()) else {
-        return true;
-    };
-    let q = query.to_ascii_lowercase();
-    [
-        item.subject.as_str(),
-        item.description.as_str(),
-        item.location.as_str(),
-        item.uid.as_str(),
-        item.organizer_name.as_deref().unwrap_or_default(),
-        item.organizer_email.as_deref().unwrap_or_default(),
-    ]
-    .iter()
-    .any(|v| v.to_ascii_lowercase().contains(&q))
-        || item
-            .attendees
-            .iter()
-            .any(|a| nfc(&a.email).to_ascii_lowercase().contains(&q))
 }
 
 type DeviceInfo = (
@@ -1516,6 +1495,27 @@ fn success_status_response(
         r#"<?xml version="1.0" encoding="utf-8"?><{root} xmlns="{ns}"><Status>{status}</Status>{extra_inner}</{root}>"#,
     );
     xml_or_wbxml_response(wbxml, as_wbxml, &xml, request_id)
+}
+
+/// Answer whether the supplied PolicyKey satisfies the optional enforcement
+/// gate ([MS-ASPROV] §4.1.1). Returns `true` (allow) when enforcement is
+/// disabled, when the command is `Provision`/`OPTIONS` (the client must be
+/// able to bootstrap and re-provision), or when the key matches the stored one.
+async fn policy_key_accepted(
+    state: &Arc<AppState>,
+    owner: &str,
+    device_id: &str,
+    command: &str,
+    supplied_key: Option<&str>,
+) -> bool {
+    if !state.cfg.eas_require_policy_key || matches!(command, "Provision" | "OPTIONS") {
+        return true;
+    }
+    let supplied = supplied_key.unwrap_or("0");
+    match state.storage.get_provision_policy(owner, device_id).await {
+        Ok(Some((stored, _))) => stored.as_bytes().ct_eq(supplied.as_bytes()).into(),
+        _ => false,
+    }
 }
 
 fn eas_provision_doc_xml() -> &'static str {
@@ -3934,7 +3934,11 @@ async fn handle_move_items(
 
         if src_msg_id.is_empty() || dst_fld_id.is_empty() {
             overall_status = 4; // ErrorInvalidIdMalformed or similar
-            responses.push_str(&format!(r#"<Status>{}</Status>"#, overall_status));
+            responses.push_str(&format!(
+                r#"<Response><SrcMsgId>{}</SrcMsgId><Status>{}</Status></Response>"#,
+                xml_escape(&src_msg_id),
+                overall_status
+            ));
             continue;
         }
 
@@ -3945,7 +3949,11 @@ async fn handle_move_items(
         if is_email {
             if !state.email_available() {
                 overall_status = 5; // ErrorInvalidRequest?
-                responses.push_str(&format!(r#"<Status>{}</Status>"#, overall_status));
+                responses.push_str(&format!(
+                    r#"<Response><SrcMsgId>{}</SrcMsgId><Status>{}</Status></Response>"#,
+                    xml_escape(&src_msg_id),
+                    overall_status
+                ));
                 continue;
             }
 
@@ -3957,7 +3965,10 @@ async fn handle_move_items(
                 "5" => "sent",
                 "6" => {
                     // Outbox not a real mailbox; special handling
-                    responses.push_str(r#"<Status>4</Status>"#);
+                    responses.push_str(&format!(
+                        r#"<Response><SrcMsgId>{}</SrcMsgId><Status>4</Status></Response>"#,
+                        xml_escape(&src_msg_id)
+                    ));
                     continue;
                 }
                 "12" => "junk",
@@ -3970,7 +3981,10 @@ async fn handle_move_items(
                         "sentitems" => "sent",
                         "junkemail" => "junk",
                         _ => {
-                            responses.push_str(r#"<Status>6</Status>"#);
+                            responses.push_str(&format!(
+                                r#"<Response><SrcMsgId>{}</SrcMsgId><Status>6</Status></Response>"#,
+                                xml_escape(&src_msg_id)
+                            ));
                             continue;
                         }
                     }
@@ -3979,7 +3993,10 @@ async fn handle_move_items(
 
             // Get JMAP client and account ID
             let Some(jmap) = state.jmap_client.as_ref() else {
-                responses.push_str(r#"<Status>8</Status>"#);
+                responses.push_str(&format!(
+                    r#"<Response><SrcMsgId>{}</SrcMsgId><Status>8</Status></Response>"#,
+                    xml_escape(&src_msg_id)
+                ));
                 continue;
             };
 
@@ -3987,7 +4004,10 @@ async fn handle_move_items(
                 Ok(id) => id,
                 Err(e) => {
                     tracing::error!(error = %e, "MoveItems: failed to get JMAP account ID");
-                    responses.push_str(r#"<Status>8</Status>"#);
+                    responses.push_str(&format!(
+                        r#"<Response><SrcMsgId>{}</SrcMsgId><Status>8</Status></Response>"#,
+                        xml_escape(&src_msg_id)
+                    ));
                     continue;
                 }
             };
@@ -4005,16 +4025,20 @@ async fn handle_move_items(
             .await
             {
                 Ok(_new_change_key) => {
-                    // Success: include SrcMsgId and DstMsgId (same server id)
+                    // Success: [MS-ASCMD] §6.28 MoveItems Response requires
+                    // <Response><SrcMsgId/><Status/><DstMsgId/></Response>.
                     responses.push_str(&format!(
-                        r#"<Move><SrcMsgId>{}</SrcMsgId><DstMsgId>{}</DstMsgId></Move>"#,
+                        r#"<Response><SrcMsgId>{}</SrcMsgId><Status>1</Status><DstMsgId>{}</DstMsgId></Response>"#,
                         xml_escape(&src_msg_id),
                         xml_escape(&src_msg_id) // DstMsgId equals moved item id
                     ));
                 }
                 Err(e) => {
                     tracing::error!(error = %e, "MoveItems email move failed");
-                    responses.push_str(r#"<Status>8</Status>"#);
+                    responses.push_str(&format!(
+                        r#"<Response><SrcMsgId>{}</SrcMsgId><Status>8</Status></Response>"#,
+                        xml_escape(&src_msg_id)
+                    ));
                 }
             }
         } else {
@@ -4025,7 +4049,10 @@ async fn handle_move_items(
             // Also source must belong to the default calendar; we can check via DB if needed.
             if dst_fld_id != "1" && !dst_fld_id.eq_ignore_ascii_case("calendar") {
                 // Unsupported destination
-                responses.push_str(r#"<Status>6</Status>"#);
+                responses.push_str(&format!(
+                    r#"<Response><SrcMsgId>{}</SrcMsgId><Status>6</Status></Response>"#,
+                    xml_escape(&src_msg_id)
+                ));
                 continue;
             }
 
@@ -4036,7 +4063,7 @@ async fn handle_move_items(
             // However, if we had multiple calendars, we would perform a CalDAV MOVE here.
             // For now, simply return success.
             responses.push_str(&format!(
-                r#"<Move><SrcMsgId>{}</SrcMsgId><DstMsgId>{}</DstMsgId></Move>"#,
+                r#"<Response><SrcMsgId>{}</SrcMsgId><Status>1</Status><DstMsgId>{}</DstMsgId></Response>"#,
                 xml_escape(&src_msg_id),
                 xml_escape(&src_msg_id)
             ));
@@ -4045,24 +4072,29 @@ async fn handle_move_items(
 
     // If no <Move> elements were processed, return error
     if responses.is_empty() {
-        overall_status = 5; // ErrorInvalidRequest
-        responses.push_str(&format!(r#"<Status>{}</Status>"#, overall_status));
+        // No <Move> element at all: [MS-ASCMD] §2.2.3.177.8 status 5
+        // (invalid request). The root <Status> below carries it; adding a
+        // second <Status> child here would duplicate the element.
+        overall_status = 5;
     }
 
-    let payload = if overall_status == 1 {
-        format!(
-            r#"<?xml version="1.0" encoding="utf-8"?><MoveItems xmlns="Move:"><Status>{}</Status>{}</MoveItems>"#,
-            overall_status, responses
-        )
-    } else {
-        // In case of errors, we can still return the fragment per element but overall might be failure
-        format!(
-            r#"<?xml version="1.0" encoding="utf-8"?><MoveItems xmlns="Move:"><Status>{}</Status>{}</MoveItems>"#,
-            overall_status, responses
-        )
-    };
+    // [MS-ASCMD] §6.28: <MoveItems> has an optional root <Status> followed by
+    // one <Response> per requested item.
+    let payload = render_move_items_response(overall_status, &responses);
 
     xml_or_wbxml_response(wbxml, as_wbxml, &payload, request_id)
+}
+
+/// Render the `<MoveItems>` response document ([MS-ASCMD] §6.28).
+///
+/// The per-item result element is `<Response>`, NOT `<Move>` — the request
+/// uses `<Move>` and the response uses `<Response>`; both live on the `Move`
+/// code page. Each `<Response>` carries `<SrcMsgId>`, `<Status>`, and (on
+/// success) `<DstMsgId>`.
+fn render_move_items_response(overall_status: u8, responses: &str) -> String {
+    format!(
+        r#"<?xml version="1.0" encoding="utf-8"?><MoveItems xmlns="Move:"><Status>{overall_status}</Status>{responses}</MoveItems>"#
+    )
 }
 
 /// Fetch free-busy information via JMAP Calendar (urn:ietf:params:jmap:calendars).
@@ -4529,104 +4561,56 @@ async fn handle_resolve_recipients(
     xml_or_wbxml_response(wbxml, as_wbxml, &response, request_id)
 }
 
-async fn load_calendar_events(
-    state: &Arc<AppState>,
-    username: &str,
-    password: &SecretString,
-    start: chrono::DateTime<chrono::Utc>,
-    end: chrono::DateTime<chrono::Utc>,
-) -> anyhow::Result<Vec<(String, String, crate::calendar::CalendarItem)>> {
-    let caldav = CaldavClient::new(&state.cfg)?;
-    let calendars = timeout(
-        CALDAV_TIMEOUT,
-        caldav.find_user_calendars(username, password.expose_secret()),
-    )
-    .await??;
-    let collection_href = calendars
-        .first()
-        .ok_or_else(|| anyhow::anyhow!("no calendars found"))?
-        .clone();
-    let events_xml = timeout(
-        CALDAV_TIMEOUT,
-        caldav.query_events(
-            &collection_href,
-            &start.format("%Y%m%dT%H%M%SZ").to_string(),
-            &end.format("%Y%m%dT%H%M%SZ").to_string(),
-            username,
-            password.expose_secret(),
-        ),
-    )
-    .await??;
-    let mut reader = Reader::from_str(&events_xml);
-    reader.config_mut().trim_text(false);
-    let mut buf = Vec::new();
-    let mut href = String::new();
-    let mut caldata_buf = String::new();
-    let mut in_cal_data = false;
-    let mut in_href = false;
-    let mut out = Vec::new();
-    loop {
-        match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(ref e)) => match e.name().local_name().as_ref() {
-                "href" => {
-                    in_href = true;
-                    href.clear();
-                }
-                "calendar-data" => {
-                    in_cal_data = true;
-                    caldata_buf.clear();
-                }
-                _ => {}
-            },
-            Ok(Event::Text(ref t)) if in_href => {
-                href.push_str(t.as_ref());
-            }
-            Ok(Event::GeneralRef(ref r)) if in_href => {
-                href.push_str(&resolve_xml_reference(r.as_ref()));
-            }
-            Ok(Event::Text(ref t)) if in_cal_data => {
-                caldata_buf.push_str(t);
-            }
-            Ok(Event::CData(ref t)) if in_cal_data => {
-                caldata_buf.push_str(t.as_ref());
-            }
-            Ok(Event::GeneralRef(ref r)) if in_cal_data => {
-                caldata_buf.push_str(&resolve_xml_reference(r.as_ref()));
-            }
-            Ok(Event::End(ref e)) => {
-                if e.name().local_name().as_ref() == "href" {
-                    in_href = false;
-                }
-                if e.name().local_name().as_ref() == "calendar-data" {
-                    in_cal_data = false;
-                }
-                if e.name().local_name().as_ref() == "response" {
-                    let ics = caldata_buf.trim();
-                    // Skip empty calendar-data (likely calendar collection root)
-                    if !href.is_empty()
-                        && !ics.is_empty()
-                        && let Some(item) = parse_ics_event(ics)
-                    {
-                        let server_id = sync::generate_server_id(state.cfg.hmac_secret(), &href);
-                        out.push((server_id, href.clone(), item));
-                    } else if !href.is_empty() && ics.is_empty() {
-                        tracing::debug!(
-                            "load_calendar_events: skipping href {} (no calendar-data element - likely calendar collection root)",
-                            href
-                        );
-                    }
-                    href.clear();
-                    caldata_buf.clear();
-                }
-            }
-            Ok(Event::Eof) => break,
-            _ => {}
-        }
-        buf.clear();
+/// Build the `<Search>` response envelope shared by every Store type.
+///
+/// [MS-ASCMD] §6.35: `<Result>` is a DIRECT child of `<Store>`, and the
+/// `<airsync:Class>` / `<airsync:CollectionId>` / `<LongId>` elements it
+/// carries live on the AirSync / Search code pages — so the response root must
+/// declare them. Emitting them unqualified inside a `Search:`-rooted document
+/// resolves them against the Search code page, where `Class`/`CollectionId`
+/// have no token at all: WBXML encoding fails and the client gets a 500.
+///
+/// `extra_ns` carries the store-specific namespace declarations (`GAL` for a
+/// GAL store).
+fn search_response_envelope(
+    store_status: &str,
+    range_xml: Option<&str>,
+    total: Option<usize>,
+    results_xml: &str,
+    extra_ns: &str,
+) -> String {
+    let mut inner = String::new();
+    if let Some(range) = range_xml {
+        let _ = write!(inner, "<Range>{}</Range>", xml_escape(range));
     }
-    Ok(out)
+    if let Some(total) = total {
+        let _ = write!(inner, "<Total>{}</Total>", total);
+    }
+    inner.push_str(results_xml);
+    format!(
+        r#"<?xml version="1.0" encoding="utf-8"?>
+<Search xmlns="Search:" xmlns:AirSync="AirSync:" xmlns:Email="Email:" xmlns:AirSyncBase="AirSyncBase:"{extra_ns}>
+  <Status>1</Status>
+  <Response>
+    <Store>
+      <Status>{}</Status>
+      {}
+    </Store>
+  </Response>
+</Search>"#,
+        xml_escape(store_status),
+        inner
+    )
 }
 
+/// Handle the EAS Search command ([MS-ASCMD] §2.2.1.16).
+///
+/// Store `Mailbox` is served from JMAP: the free-text `<Query>` is translated
+/// into an RFC 8621 §4.4.1 `Email/query` filter and the results are rendered
+/// with the same AppData renderer the Sync path uses, so a hit is directly
+/// fetchable through ItemOperations with the returned `<LongId>`.
+/// `DocumentLibrary` has no backing store in this deployment (status 11);
+/// `GAL` searches the directory via the shared GAL path.
 async fn handle_search(
     state: &Arc<AppState>,
     username: &str,
@@ -4637,68 +4621,203 @@ async fn handle_search(
     request_id: &str,
 ) -> Response {
     let req = parse_search_request(xml);
-    if !req.store_name.eq_ignore_ascii_case("Mailbox") {
-        let r = r#"<?xml version="1.0" encoding="utf-8"?><Search xmlns="Search:"><Status>1</Status><Response><Store><Status>11</Status></Store></Response></Search>"#;
-        return xml_or_wbxml_response(wbxml, as_wbxml, r, request_id);
+    if req.store_name.eq_ignore_ascii_case("GAL") {
+        return handle_gal_search(
+            state, username, &password, &req, wbxml, as_wbxml, request_id,
+        )
+        .await;
     }
-    let start = req
-        .starts
-        .unwrap_or_else(|| chrono::Utc::now() - ChronoDuration::weeks(52));
-    let end = req
-        .ends
-        .unwrap_or_else(|| chrono::Utc::now() + ChronoDuration::weeks(52));
-    let Ok(events) = load_calendar_events(state, username, &password, start, end).await else {
-        let r = r#"<?xml version="1.0" encoding="utf-8"?><Search xmlns="Search:"><Status>1</Status><Response><Store><Status>6</Status></Store></Response></Search>"#;
-        return xml_or_wbxml_response(wbxml, as_wbxml, r, request_id);
+    if !req.store_name.eq_ignore_ascii_case("Mailbox") {
+        // DocumentLibrary (and any unknown store) is not served here.
+        let r = search_response_envelope("11", None, None, "", "");
+        return xml_or_wbxml_response(wbxml, as_wbxml, &r, request_id);
+    }
+    if !state.can_read_email() {
+        let r = search_response_envelope("6", None, None, "", "");
+        return xml_or_wbxml_response(wbxml, as_wbxml, &r, request_id);
+    }
+    let Some(jmap) = state.jmap_client.as_ref() else {
+        let r = search_response_envelope("6", None, None, "", "");
+        return xml_or_wbxml_response(wbxml, as_wbxml, &r, request_id);
     };
-    let mut matches: Vec<_> = events
-        .into_iter()
-        .filter(|(_, _, item)| matches_search(item, req.query_text.as_deref()))
-        .collect();
-    matches.sort_by_key(|(_, _, item)| item.start);
-    let total = matches.len();
-    let start_idx = req.range_start.min(total);
-    let end_idx = req.range_end.min(total.saturating_sub(1));
-    let window = if total == 0 || start_idx > end_idx {
-        &[][..]
-    } else {
-        &matches[start_idx..=end_idx]
+    let account_id = match jmap.get_account_id(username, &password).await {
+        Ok(id) => id,
+        Err(e) => {
+            tracing::warn!(request_id = %request_id, error = %e, "Search: JMAP account lookup failed");
+            let r = search_response_envelope("6", None, None, "", "");
+            return xml_or_wbxml_response(wbxml, as_wbxml, &r, request_id);
+        }
     };
-    let results_xml = window
+
+    // RFC 8621 §4.4.1 filter: a bare term searches every text property;
+    // "field:value" narrows to one property (the EWS/OWA AQS grammar the
+    // EAS client uses is the same one EWS accepts, so reuse that parser).
+    let filter = req
+        .query_text
+        .as_deref()
+        .and_then(crate::ews_search::ews_aqs_to_jmap_filter)
+        .unwrap_or_else(|| serde_json::json!({}));
+
+    // [MS-ASCMD] §2.2.3.143.3: the Mailbox default range is 0-99.
+    let range_start = req.range_start;
+    let range_end = req.range_end.max(range_start);
+    let limit = (range_end - range_start + 1) as u64;
+
+    let result = match jmap
+        .query_emails(crate::jmap::QueryEmailsParams {
+            account_id: &account_id,
+            filter: Some(filter),
+            sort: None,
+            position: range_start as u64,
+            limit,
+            username,
+            password: &password,
+        })
+        .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::warn!(request_id = %request_id, error = %e, "Search: JMAP Email/query failed");
+            let r = search_response_envelope("6", None, None, "", "");
+            return xml_or_wbxml_response(wbxml, as_wbxml, &r, request_id);
+        }
+    };
+
+    let options = crate::eas_sync_options::EasSyncCollectionOptions::default();
+    let results_xml = result
+        .emails
         .iter()
-        .map(|(sid, _, item)| {
+        .map(|email| {
+            let jmap_id = email.id.as_deref().unwrap_or("unknown");
+            let server_id = crate::email::email_server_id_from_jmap_id(jmap_id);
+            let app_data = crate::email::render_jmap_email_as_eas_application_data_with_options(
+                email,
+                &server_id,
+                "2",
+                &options,
+                false,
+                false,
+            );
             format!(
-                "<Result><Class>Calendar</Class><CollectionId>1</CollectionId><LongId>{}</LongId><Properties>{}</Properties></Result>",
-                xml_escape(sid),
-                sync::render_calendar_app_data(item)
+                "<Result><AirSync:Class>Email</AirSync:Class><LongId>{}</LongId><AirSync:CollectionId>2</AirSync:CollectionId><Properties>{}</Properties></Result>",
+                xml_escape(&server_id),
+                app_data
             )
         })
         .collect::<String>();
-    let range_xml = if total == 0 {
-        "0-0/0".to_string()
+
+    // The echoed Range reflects the window actually served, clamped to the
+    // real hit count ([MS-ASCMD] §2.2.3.143.3: "the number of matching
+    // entries that are being returned").
+    let served = result.emails.len();
+    let total = result.total as usize;
+    let range_xml = if served == 0 {
+        format!("{range_start}-{range_start}")
     } else {
-        format!(
-            "{start_idx}-{}/{}",
-            start_idx + window.len().saturating_sub(1),
-            total
-        )
+        format!("{}-{}", range_start, range_start + served - 1)
     };
-    let response = format!(
-        r#"<?xml version="1.0" encoding="utf-8"?>
-<Search xmlns="Search:" xmlns:Calendar="Calendar:" xmlns:AirSyncBase="AirSyncBase:">
-  <Status>1</Status>
-  <Response>
-    <Store>
-      <Status>1</Status>
-      <Range>{}</Range>
-      <Total>{}</Total>
-      {}
-    </Store>
-  </Response>
-</Search>"#,
-        xml_escape(&range_xml),
-        total,
-        results_xml
+    let response = search_response_envelope("1", Some(&range_xml), Some(total), &results_xml, "");
+    xml_or_wbxml_response(wbxml, as_wbxml, &response, request_id)
+}
+
+/// Handle the `Store=GAL` form of the Search command ([MS-ASCMD] §4.13).
+///
+/// The GAL is the server directory, so this reuses the same
+/// `DirectoryService` lookup ResolveRecipients uses and renders the result on
+/// the Search code page with `<gal:*>` property children ([MS-ASCMD] §6.35).
+async fn handle_gal_search(
+    state: &Arc<AppState>,
+    username: &str,
+    password: &SecretString,
+    req: &SearchRequest,
+    wbxml: &Wbxml,
+    as_wbxml: bool,
+    request_id: &str,
+) -> Response {
+    let _ = (username, password);
+    let Some(directory) = state.directory.clone() else {
+        let r = search_response_envelope("8", None, None, "", "");
+        return xml_or_wbxml_response(wbxml, as_wbxml, &r, request_id);
+    };
+    let query = req.query_text.clone().unwrap_or_default();
+    let range_start = req.range_start;
+    let range_end = req.range_end.max(range_start);
+    let contacts = match tokio::task::spawn_blocking(move || {
+        directory.search_blocking(&query, Some(range_end + 1))
+    })
+    .await
+    {
+        Ok(Ok(result)) => result.contacts,
+        Ok(Err(e)) => {
+            tracing::warn!(request_id = %request_id, error = %e, "Search GAL directory lookup failed");
+            let r = search_response_envelope("6", None, None, "", "");
+            return xml_or_wbxml_response(wbxml, as_wbxml, &r, request_id);
+        }
+        Err(e) => {
+            tracing::error!(request_id = %request_id, error = %e, "Search GAL directory task failed");
+            let r = search_response_envelope("6", None, None, "", "");
+            return xml_or_wbxml_response(wbxml, as_wbxml, &r, request_id);
+        }
+    };
+    // The directory lookup is bounded by `range_end + 1`, so the number of
+    // matches is only a lower bound on the real total when the window is
+    // saturated ([MS-ASCMD] §2.2.3.184.3: <Total> is the total match count).
+    let truncated = contacts.len() > range_end;
+    let total = if truncated {
+        // Report at least the highest index served + 1.
+        range_end + 1
+    } else {
+        contacts.len()
+    };
+    let window = contacts
+        .iter()
+        .skip(range_start)
+        .take(range_end - range_start + 1);
+    let mut results_xml = String::new();
+    for contact in window {
+        let mut props = format!(
+            "<GAL:DisplayName>{}</GAL:DisplayName>",
+            xml_escape(&contact.display_name)
+        );
+        if let Some(title) = contact.title.as_deref() {
+            let _ = write!(props, "<GAL:Title>{}</GAL:Title>", xml_escape(title));
+        }
+        if let Some(office) = contact.office.as_deref() {
+            let _ = write!(props, "<GAL:Office>{}</GAL:Office>", xml_escape(office));
+        }
+        if let Some(company) = contact.company.as_deref() {
+            let _ = write!(props, "<GAL:Company>{}</GAL:Company>", xml_escape(company));
+        }
+        if let Some(phone) = contact.phone.as_deref() {
+            let _ = write!(
+                props,
+                "<GAL:Phone>{}</GAL:Phone><GAL:MobilePhone>{}</GAL:MobilePhone>",
+                xml_escape(phone),
+                xml_escape(phone)
+            );
+        }
+        let _ = write!(
+            props,
+            "<GAL:EmailAddress>{}</GAL:EmailAddress>",
+            xml_escape(&contact.email)
+        );
+        let _ = write!(
+            results_xml,
+            "<Result><Properties>{props}</Properties></Result>"
+        );
+    }
+    let served = results_xml.matches("<Result>").count();
+    let range_xml = if served == 0 {
+        format!("{range_start}-{range_start}")
+    } else {
+        format!("{}-{}", range_start, range_start + served - 1)
+    };
+    let response = search_response_envelope(
+        "1",
+        Some(&range_xml),
+        Some(total),
+        &results_xml,
+        " xmlns:GAL=\"GAL:\"",
     );
     xml_or_wbxml_response(wbxml, as_wbxml, &response, request_id)
 }
@@ -4731,7 +4850,7 @@ async fn handle_send_mail(
             // Per MS-ASCMD §2.2.1.17, Status 4 = "Mailbox server error".
             // Returning Status 1 (Success) when email is disabled would cause
             // the client to believe the email was sent — silent email loss.
-            r#"<?xml version="1.0" encoding="utf-8"?><Status xmlns="SendMail:">4</Status>"#,
+            r#"<?xml version="1.0" encoding="utf-8"?><Status xmlns="ComposeMail:">4</Status>"#,
             request_id,
         );
     }
@@ -4750,7 +4869,7 @@ async fn handle_send_mail(
         return xml_or_wbxml_response(
             wbxml,
             as_wbxml,
-            r#"<?xml version="1.0" encoding="utf-8"?><Status xmlns="SendMail:">2</Status>"#,
+            r#"<?xml version="1.0" encoding="utf-8"?><Status xmlns="ComposeMail:">2</Status>"#,
             request_id,
         );
     };
@@ -4771,7 +4890,7 @@ async fn handle_send_mail(
                 return xml_or_wbxml_response(
                     wbxml,
                     as_wbxml,
-                    r#"<?xml version="1.0" encoding="utf-8"?><Status xmlns="SendMail:">2</Status>"#,
+                    r#"<?xml version="1.0" encoding="utf-8"?><Status xmlns="ComposeMail:">2</Status>"#,
                     request_id,
                 );
             }
@@ -4820,7 +4939,7 @@ async fn handle_send_mail(
             return xml_or_wbxml_response(
                 wbxml,
                 as_wbxml,
-                r#"<?xml version="1.0" encoding="utf-8"?><Status xmlns="SendMail:">4</Status>"#,
+                r#"<?xml version="1.0" encoding="utf-8"?><Status xmlns="ComposeMail:">4</Status>"#,
                 request_id,
             );
         }
@@ -4830,7 +4949,7 @@ async fn handle_send_mail(
     xml_or_wbxml_response(
         wbxml,
         as_wbxml,
-        r#"<?xml version="1.0" encoding="utf-8"?><Status xmlns="SendMail:">1</Status>"#,
+        r#"<?xml version="1.0" encoding="utf-8"?><Status xmlns="ComposeMail:">1</Status>"#,
         request_id,
     )
 }
@@ -4972,8 +5091,37 @@ async fn handle_sync_collections(ctx: &SyncCtx<'_>, collections: &[SyncCollectio
                     || collection_id.eq_ignore_ascii_case("notes")
             });
 
+        // Email-class client mutations the gateway must apply before
+        // rendering the delta: flag/read <Change> and <Delete> ([MS-ASEMAIL]
+        // §3.2.5.4.2). Matched on the raw AirSync tags; the Email class never
+        // uses <Add> in a Sync request (drafts go through ComposeMail).
+        let has_email_mutations = coll.xml.contains("<Change>") || coll.xml.contains("<Delete>");
         let coll_xml = if is_email {
             if state.can_read_email() {
+                let email_mutation_responses = if has_email_mutations {
+                    match apply_email_client_mutations(
+                        state,
+                        username,
+                        password,
+                        collection_id,
+                        &coll.xml,
+                        coll.deletes_as_moves,
+                    )
+                    .await
+                    {
+                        Ok(resp) => resp,
+                        Err(e) => {
+                            tracing::warn!(
+                                request_id = %request_id,
+                                error = %e,
+                                "Email mutation apply failed"
+                            );
+                            String::new()
+                        }
+                    }
+                } else {
+                    String::new()
+                };
                 match handle_email_sync(
                     state,
                     username,
@@ -4987,7 +5135,10 @@ async fn handle_sync_collections(ctx: &SyncCtx<'_>, collections: &[SyncCollectio
                 )
                 .await
                 {
-                    Ok(xml_str) => xml_str,
+                    Ok(xml_str) => crate::email::inject_collection_responses(
+                        xml_str,
+                        &email_mutation_responses,
+                    ),
                     Err(e) => {
                         tracing::warn!(
                             request_id = %request_id,
@@ -6329,6 +6480,51 @@ fn route_email_sync(incoming_sync_key: &str, cursor_present: bool) -> EmailSyncR
 /// at all for third-party accounts — Microsoft documents no EAS account
 /// type and no on-premises Exchange support for it — so it never reaches
 /// this path.)
+/// Apply the Email-class client mutations carried by one `<Collection>`
+/// ([MS-ASEMAIL] 3.2.5.4.2 flag/read changes, [MS-ASCMD] 2.2.3.42.2
+/// Delete) and render their `<Responses>` block.
+///
+/// Runs before the delta is rendered so the client's own change is visible in
+/// the same round-trip, and so a client-side read/flag that the gateway would
+/// otherwise echo back as a server delta is not re-delivered. A failure here
+/// is non-fatal: the mutation responses are simply omitted and the Sync still
+/// succeeds (the next delta re-reports any change the client can retry).
+async fn apply_email_client_mutations(
+    state: &Arc<AppState>,
+    username: &str,
+    password: &SecretString,
+    collection_id: &str,
+    collection_xml: &str,
+    deletes_as_moves: bool,
+) -> anyhow::Result<String> {
+    if !state.can_read_email() {
+        return Ok(String::new());
+    }
+    let Some(jmap) = state.jmap_client.as_ref() else {
+        return Ok(String::new());
+    };
+    let account_id = jmap.get_account_id(username, password).await?;
+    let results = crate::email::apply_eas_email_mutations(
+        jmap,
+        &account_id,
+        username,
+        password,
+        collection_xml,
+        deletes_as_moves,
+    )
+    .await;
+    if results.is_empty() {
+        return Ok(String::new());
+    }
+    tracing::info!(
+        user = %username,
+        collection_id = %collection_id,
+        applied = results.len(),
+        "Applied EAS email client mutations"
+    );
+    Ok(crate::email::render_eas_email_mutation_responses(&results))
+}
+
 #[allow(clippy::too_many_arguments)] // irreducible request inputs; mirrors SyncCtx below
 async fn handle_email_sync(
     state: &Arc<AppState>,
@@ -7051,6 +7247,31 @@ pub async fn handle(
         .clone()
         .unwrap_or_else(|| "unknown-device".to_string());
 
+    // Optional PolicyKey enforcement ([MS-ASPROV] §4.1.1). Disabled by default
+    // (see eas_require_policy_key): the advertised policy is a no-op, so
+    // refusing a client for a stale key only adds friction. When enabled, any
+    // command other than `Provision`/`OPTIONS` whose `X-MS-PolicyKey` does not
+    // match the stored key is answered with HTTP 200 + global Status 142.
+    if !policy_key_accepted(
+        &state,
+        &username,
+        &device_id,
+        &req.command,
+        req.policy_key.as_deref(),
+    )
+    .await
+    {
+        return success_status_response(
+            &wbxml,
+            wants_wbxml,
+            "Provision",
+            "Provision:",
+            "142",
+            "",
+            &request_id,
+        );
+    }
+
     match req.command.as_str() {
         "FolderSync" => {
             handle_folder_sync(&state, &username, &req, &wbxml, wants_wbxml, &request_id).await
@@ -7108,6 +7329,7 @@ pub async fn handle(
                     get_changes: req.get_changes,
                     filter_type: req.filter_type,
                     conversation_mode: parsed_legacy.controls.conversation_mode.unwrap_or(false),
+                    deletes_as_moves: parsed_legacy.controls.deletes_as_moves.unwrap_or(true),
                     options: if parsed_legacy.options.explicitly_set {
                         Some(parsed_legacy.options)
                     } else {
@@ -7806,6 +8028,60 @@ mod tests {
             req.via_cloudflare,
             "CF-RAY header must flag the request as Cloudflare-proxied"
         );
+    }
+
+    #[tokio::test]
+    async fn test_policy_key_accepted_gate_matrix() {
+        use crate::models::AppState;
+        let storage = crate::storage::Storage::new("sqlite::memory:")
+            .await
+            .expect("in-memory storage");
+        storage.init_schema().await.expect("schema init");
+        let storage = Arc::new(storage);
+
+        // Enforcement OFF (default): every command is accepted regardless of key.
+        let permissive = Arc::new(AppState::new(
+            crate::config::Config {
+                jmap_base: "http://127.0.0.1:1".to_string(),
+                email_enabled: true,
+                mail_domain: "example.com".to_string(),
+                hmac_secret: SecretString::from("a".repeat(32)),
+                eas_require_policy_key: false,
+                ..Default::default()
+            },
+            storage.clone(),
+        ));
+        assert!(
+            policy_key_accepted(&permissive, "u@example.com", "d", "Sync", None).await,
+            "enforcement off must accept an absent key"
+        );
+
+        // Enforcement ON.
+        let strict = Arc::new(AppState::new(
+            crate::config::Config {
+                jmap_base: "http://127.0.0.1:1".to_string(),
+                email_enabled: true,
+                mail_domain: "example.com".to_string(),
+                hmac_secret: SecretString::from("a".repeat(32)),
+                eas_require_policy_key: true,
+                ..Default::default()
+            },
+            storage.clone(),
+        ));
+        // Bootstrap commands are always allowed so a client can re-provision.
+        assert!(policy_key_accepted(&strict, "u@example.com", "d", "Provision", None).await);
+        assert!(policy_key_accepted(&strict, "u@example.com", "d", "OPTIONS", None).await);
+        // No stored key yet -> a non-bootstrap command is refused.
+        assert!(!policy_key_accepted(&strict, "u@example.com", "d", "Sync", Some("0")).await);
+
+        storage
+            .set_provision_policy("u@example.com", "d", "abc123", "acknowledged")
+            .await
+            .expect("store policy");
+        assert!(policy_key_accepted(&strict, "u@example.com", "d", "Sync", Some("abc123")).await);
+        assert!(!policy_key_accepted(&strict, "u@example.com", "d", "Sync", Some("wrong")).await);
+        // A missing key defaults to "0", which does not match.
+        assert!(!policy_key_accepted(&strict, "u@example.com", "d", "Sync", None).await);
     }
 
     #[tokio::test]
@@ -8864,6 +9140,7 @@ mod tests {
             get_changes: true,
             filter_type: None,
             conversation_mode: false,
+            deletes_as_moves: true,
             options: None,
             xml: String::new(),
         }

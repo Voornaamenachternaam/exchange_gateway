@@ -6,6 +6,17 @@ set -euo pipefail
 : "${GATEWAY_USER:?set GATEWAY_USER}"
 : "${GATEWAY_PASS:?set GATEWAY_PASS}"
 
+# Refuse to run against a template placeholder: Autodiscover would advertise an
+# unresolvable URL and every probe below would fail for the wrong reason. The
+# gateway logs the same condition as a startup warning (is_placeholder_host).
+case "${GATEWAY_BASE_URL,,}" in
+  *example.com*|*example.org*|*replace*|*your-*)
+    echo "FAIL: GATEWAY_BASE_URL still looks like a placeholder (${GATEWAY_BASE_URL})." >&2
+    echo "      Set it to the public gateway hostname, e.g. https://calendar.acme.nl" >&2
+    exit 2
+    ;;
+esac
+
 TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TMP_DIR"' EXIT
 
@@ -76,6 +87,21 @@ request_xml() {
 
 if [[ "${base}" =~ ^https?://([^/:]+) ]]; then
   check_dns_dual_stack "${BASH_REMATCH[1]}"
+fi
+
+# Android's account wizard probes autodiscover.<mail-domain> first. Verify the
+# host actually resolves so a missing DNS record is reported here (with a clear
+# message) rather than as an opaque TLS/connection error inside the wizard.
+if [[ "${base}" =~ ^https?://([^/:]+) && "${BASH_REMATCH[1]}" == *.* ]]; then
+  host="${BASH_REMATCH[1]}"
+  domain="${host#*.}"
+  if command -v getent >/dev/null 2>&1; then
+    if getent hosts "autodiscover.${domain}" >/dev/null 2>&1; then
+      log "Autodiscover DNS record resolves: autodiscover.${domain}"
+    else
+      log "Warning: autodiscover.${domain} did not resolve; Android's Exchange-account wizard may fail."
+    fi
+  fi
 fi
 
 log "Checking ActiveSync OPTIONS"

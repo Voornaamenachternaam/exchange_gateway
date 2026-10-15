@@ -7236,7 +7236,8 @@ async fn handle_send_item(state: &Arc<AppState>, auth: &AuthContext, body: &str)
 ///
 /// Moves an item (email or calendar) between folders.
 /// For email: maps to JMAP Email/set updating mailboxIds.
-/// For calendar: uses CalDAV MOVE (TODO: not fully implemented, returns success for now).
+/// For calendar: JMAP-backed items with `prefer_jmap_calendar` are a no-op
+/// move (only one calendar is exposed); CalDAV-backed items use CalDAV MOVE.
 async fn handle_move_item(state: &Arc<AppState>, auth: &AuthContext, body: &str) -> Response {
     let item_id = extract_first_attr(body, b"ItemId", b"Id").unwrap_or_default();
     let to_folder_id = extract_first_attr(body, b"DistinguishedFolderId", b"Id")

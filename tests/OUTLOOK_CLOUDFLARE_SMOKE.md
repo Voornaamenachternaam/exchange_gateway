@@ -3,7 +3,7 @@
 
 This repository now includes a live-environment smoke script for the specific deployment shape targeted by `exchange_gateway`:
 
-- existing **Stalwart Mailserver v0.15.5** with Basic auth,
+- existing **Stalwart Mailserver v0.16.26** with Basic auth,
 - **free Cloudflare services** in front,
 - Ubuntu Server 24 LTS host,
 - `cloudflared` already present on the host,
