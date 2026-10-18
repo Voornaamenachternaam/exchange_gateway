@@ -6006,7 +6006,10 @@ mod tests {
             json!({ "accountId": "a", "updated": ["M-1"] }),
             "es0".to_string(),
         )];
-        assert_eq!(super::parse_email_set_outcome(resp_arr).updated, vec!["M-1"]);
+        assert_eq!(
+            super::parse_email_set_outcome(resp_arr).updated,
+            vec!["M-1"]
+        );
     }
 
     #[test]
