@@ -8076,9 +8076,12 @@ async fn handle_resolve_names(state: &Arc<AppState>, auth: &AuthContext, body: &
     }
 
     // Expand distribution lists: if the unresolved entry is a DL address,
-    // expand it and return each member as a separate Resolution with
-    // MailboxType=DistributionList. `expand_dl_blocking` runs in a blocking
-    // context like the directory search above.
+    // expand it and return each member as a separate Resolution. Each member
+    // is an individual mailbox/contact, so MailboxType=Mailbox per
+    // [MS-OXWSMSG] §2.2.2.4 (DistributionList is not a valid member type —
+    // it is only used when returning the DL itself unexpanded).
+    // `expand_dl_blocking` runs in a blocking context like the directory
+    // search above.
     let dir_clone = dir.clone();
     let query_clone = query.clone();
     let dl_members =
@@ -8091,7 +8094,7 @@ async fn handle_resolve_names(state: &Arc<AppState>, auth: &AuthContext, body: &
     for member in dl_members {
         total_items += 1;
         resolution_xml.push_str(&format!(
-            r#"<t:Resolution><t:Mailbox><t:Name>{}</t:Name><t:EmailAddress>{}</t:EmailAddress><t:RoutingType>SMTP</t:RoutingType><t:MailboxType>DistributionList</t:MailboxType></t:Mailbox></t:Resolution>"#,
+            r#"<t:Resolution><t:Mailbox><t:Name>{}</t:Name><t:EmailAddress>{}</t:EmailAddress><t:RoutingType>SMTP</t:RoutingType><t:MailboxType>Mailbox</t:MailboxType></t:Mailbox></t:Resolution>"#,
             xml_escape(&member.display_name),
             xml_escape(&member.email)
         ));

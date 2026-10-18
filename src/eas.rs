@@ -1190,11 +1190,17 @@ fn extract_store_options(xml: &str) -> Option<String> {
 }
 
 /// Parse the `<Range>` value out of an `<Options>` block XML string.
+///
+/// Returns `None` when no `<Range>` child is present or its text content
+/// cannot be parsed.
 fn parse_options_range(options_xml: &str) -> Option<String> {
     extract_first_tag_text(options_xml, b"Range")
 }
 
 /// Parse the `<MaxItems>` value out of an `<Options>` block XML string.
+///
+/// Returns `None` when no `<MaxItems>` child is present or its text content
+/// is not a valid non-negative integer.
 fn parse_options_max_items(options_xml: &str) -> Option<usize> {
     extract_first_tag_text(options_xml, b"MaxItems").and_then(|v| v.trim().parse::<usize>().ok())
 }
