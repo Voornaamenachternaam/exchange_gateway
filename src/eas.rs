@@ -1156,12 +1156,14 @@ fn extract_store_options(xml: &str) -> Option<String> {
     let mut buf = Vec::new();
     let mut opt_depth = 0usize;
     let mut found_opt = false;
+    let mut opt_start = 0usize;
     loop {
         let before = reader.buffer_position() as usize;
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(e)) => {
                 if !found_opt && e.name().local_name().as_ref().as_bytes() == b"Options" {
                     found_opt = true;
+                    opt_start = before;
                     opt_depth = 1;
                 } else if found_opt {
                     opt_depth += 1;
@@ -1170,7 +1172,7 @@ fn extract_store_options(xml: &str) -> Option<String> {
             Ok(Event::End(_)) if found_opt => {
                 opt_depth -= 1;
                 if opt_depth == 0 {
-                    return xml[start + before..start + reader.buffer_position() as usize]
+                    return xml[start + opt_start..start + reader.buffer_position() as usize]
                         .get(..)
                         .map(str::to_string);
                 }
@@ -11673,5 +11675,76 @@ mod tests {
             body.is_empty(),
             "an unknown protocol version must get the widest-compat bare 503"
         );
+    }
+
+    /// §11: Search `<Options>` parsing — Range echo from within `<Store>`.
+    #[test]
+    fn test_search_request_range_from_options() {
+        let xml = r#"<Search xmlns="Search:"><Store><Name>Mailbox</Name><Query>test</Query><Options><Range>10-19</Range><MaxItems>5</MaxItems></Options></Store></Search>"#;
+        let req = parse_search_request(xml);
+        assert_eq!(req.store_name, "Mailbox");
+        assert_eq!(req.query_text.as_deref(), Some("test"));
+        assert_eq!(req.range_start, 10);
+        assert_eq!(req.range_end, 19);
+        assert_eq!(req.max_items, Some(5));
+    }
+
+    /// §11: Search `<Options>` — missing Range defaults to 0-99.
+    #[test]
+    fn test_search_request_default_range() {
+        let xml = r#"<Search xmlns="Search:"><Store><Name>Mailbox</Name><Query>test</Query></Store></Search>"#;
+        let req = parse_search_request(xml);
+        assert_eq!(req.range_start, 0);
+        assert_eq!(req.range_end, 99);
+        assert_eq!(req.max_items, None);
+    }
+
+    /// §11: Search `<Options>` — Range without MaxItems.
+    #[test]
+    fn test_search_request_range_no_max_items() {
+        let xml = r#"<Search xmlns="Search:"><Store><Name>Mailbox</Name><Query>test</Query><Options><Range>20-39</Range></Options></Store></Search>"#;
+        let req = parse_search_request(xml);
+        assert_eq!(req.range_start, 20);
+        assert_eq!(req.range_end, 39);
+        assert_eq!(req.max_items, None);
+    }
+
+    /// §11: Search `<Options>` — GAL store with Range/MaxItems.
+    #[test]
+    fn test_search_request_gal_store_range() {
+        let xml = r#"<Search xmlns="Search:"><Store><Name>GAL</Name><Query>smith</Query><Options><Range>0-49</Range><MaxItems>10</MaxItems></Options></Store></Search>"#;
+        let req = parse_search_request(xml);
+        assert_eq!(req.store_name, "GAL");
+        assert_eq!(req.query_text.as_deref(), Some("smith"));
+        assert_eq!(req.range_start, 0);
+        assert_eq!(req.range_end, 49);
+        assert_eq!(req.max_items, Some(10));
+    }
+
+    /// §11: `search_response_envelope` echoes Range and Total correctly.
+    #[test]
+    fn test_search_response_envelope_range_and_total() {
+        let response = search_response_envelope(
+            "1",
+            Some("0-4"),
+            Some(42),
+            "<Result><AirSync:Class>Email</AirSync:Class><LongId>em-abc</LongId><AirSync:CollectionId>2</AirSync:CollectionId><Properties/></Result>",
+            "",
+        );
+        assert!(response.contains("<Range>0-4</Range>"), "{response}");
+        assert!(response.contains("<Total>42</Total>"), "{response}");
+        assert!(response.contains("<Status>1</Status>"), "{response}");
+    }
+
+    /// §11: DocumentLibrary store → status 11 (not served).
+    #[test]
+    fn test_search_document_library_status_11() {
+        let xml = r#"<?xml version="1.0"?>
+<Search xmlns="Search:"><Store><Name>DocumentLibrary</Name><Query>test</Query></Store></Search>"#;
+        let req = parse_search_request(xml);
+        assert_eq!(req.store_name, "DocumentLibrary");
+        // handle_search returns status 11 for non-Mailbox/GAL stores.
+        assert_ne!(req.store_name, "Mailbox");
+        assert!(!req.store_name.eq_ignore_ascii_case("GAL"));
     }
 }

@@ -8062,7 +8062,13 @@ async fn handle_resolve_names(state: &Arc<AppState>, auth: &AuthContext, body: &
         }
     };
 
-    // Build response with resolved names
+    // Build response with resolved names.
+    //
+    // EWS ResolveNames does NOT expand distribution lists ([MS-OXWSRSLNM]);
+    // the unresolved entry is resolved as-is if it matches a contact,
+    // otherwise nothing is returned for it. The directory search result
+    // already contains matching contacts; distribution list members are never
+    // inlined here.
     let mut resolution_xml = String::new();
     let mut total_items = 0;
 
@@ -8072,31 +8078,6 @@ async fn handle_resolve_names(state: &Arc<AppState>, auth: &AuthContext, body: &
             r#"<t:Resolution><t:Mailbox><t:Name>{}</t:Name><t:EmailAddress>{}</t:EmailAddress><t:RoutingType>SMTP</t:RoutingType><t:MailboxType>Mailbox</t:MailboxType></t:Mailbox></t:Resolution>"#,
             xml_escape(&contact.display_name),
             xml_escape(&contact.email)
-        ));
-    }
-
-    // Expand distribution lists: if the unresolved entry is a DL address,
-    // expand it and return each member as a separate Resolution. Each member
-    // is an individual mailbox/contact, so MailboxType=Mailbox per
-    // [MS-OXWSMSG] §2.2.2.4 (DistributionList is not a valid member type —
-    // it is only used when returning the DL itself unexpanded).
-    // `expand_dl_blocking` runs in a blocking context like the directory
-    // search above.
-    let dir_clone = dir.clone();
-    let query_clone = query.clone();
-    let dl_members =
-        match tokio::task::spawn_blocking(move || dir_clone.expand_dl_blocking(&query_clone)).await
-        {
-            Ok(Ok(members)) => members,
-            Ok(Err(_)) => Vec::new(),
-            Err(_) => Vec::new(),
-        };
-    for member in dl_members {
-        total_items += 1;
-        resolution_xml.push_str(&format!(
-            r#"<t:Resolution><t:Mailbox><t:Name>{}</t:Name><t:EmailAddress>{}</t:EmailAddress><t:RoutingType>SMTP</t:RoutingType><t:MailboxType>Mailbox</t:MailboxType></t:Mailbox></t:Resolution>"#,
-            xml_escape(&member.display_name),
-            xml_escape(&member.email)
         ));
     }
 
@@ -12325,5 +12306,167 @@ mod tests {
         let body = r#"<?xml version="1.0" encoding="utf-8"?><soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"><soap:Body><GetFolder xmlns="http://schemas.microsoft.com/exchange/services/2006/messages"><FolderShape/></GetFolder></soap:Body></soap:Envelope>"#.to_string();
         let resp = handle(State(state), headers, body).await;
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    /// §13: EWS ResolveNames must NOT expand distribution lists. A DL address
+    /// resolves as-is if it matches a contact; its members are never inlined.
+    #[tokio::test]
+    async fn resolve_names_does_not_expand_distribution_lists() {
+        let storage = crate::storage::Storage::new("sqlite::memory:")
+            .await
+            .expect("in-memory storage");
+        storage.init_schema().await.expect("schema init");
+        let cfg = crate::config::Config {
+            jmap_base: "http://127.0.0.1:1".to_string(),
+            caldav_base: String::new(),
+            email_enabled: true,
+            mail_domain: "example.com".to_string(),
+            hmac_secret: SecretString::from("a".repeat(32)),
+            ..Default::default()
+        };
+        let mut state = Arc::new(crate::models::AppState::new(cfg, Arc::new(storage)));
+        // Wire a NullDirectory so the directory lookup returns no matches at
+        // all — any DL expansion would inject extra Resolution entries that
+        // the test can detect.
+        Arc::get_mut(&mut state)
+            .unwrap()
+            .directory = Some(Arc::new(crate::directory::NullDirectory)
+                as Arc<dyn crate::directory::DirectoryLookup>);
+
+        let auth = AuthContext {
+            username: "user@example.com".to_string(),
+            password: SecretString::from("pw"),
+        };
+        // Query for a DL address — call handle_resolve_names directly (not via
+        // `handle`) so auth verification does not block the test.
+        let body = r#"<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+  <soap:Body>
+    <m:ResolveNames xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages"
+                    xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types">
+      <m:UnresolvedEntry>dl@example.com</m:UnresolvedEntry>
+      <m:SearchScope>ActiveDirectory</m:SearchScope>
+    </m:ResolveNames>
+  </soap:Body>
+</soap:Envelope>"#
+        .to_string();
+        let resp = handle_resolve_names(&state, &auth, &body).await;
+        let text = response_body(resp).await;
+        // The resolution set must be empty (no matches, no DL expansion).
+        assert!(
+            text.contains("<m:ResolutionSet TotalItemsInView=\"0\""),
+            "ResolveNames must not expand DLs, got: {text}"
+        );
+        assert!(
+            !text.contains("dl-member"),
+            "No DL member entries may appear, got: {text}"
+        );
+    }
+
+    /// §13: EWS ResolveNames returns only matching contacts, never DL members.
+    #[tokio::test]
+    async fn resolve_names_returns_contacts_only_no_dl_expansion() {
+        let storage = crate::storage::Storage::new("sqlite::memory:")
+            .await
+            .expect("in-memory storage");
+        storage.init_schema().await.expect("schema init");
+        let cfg = crate::config::Config {
+            jmap_base: "http://127.0.0.1:1".to_string(),
+            caldav_base: String::new(),
+            email_enabled: true,
+            mail_domain: "example.com".to_string(),
+            hmac_secret: SecretString::from("a".repeat(32)),
+            ..Default::default()
+        };
+        let mut state = Arc::new(crate::models::AppState::new(cfg, Arc::new(storage)));
+
+        // A directory whose search returns one contact whose address happens
+        // to also be a DL address — ResolveNames must return only that contact,
+        // never expand its (nonexistent) members.
+        struct OneContactDir;
+        impl crate::directory::DirectoryLookup for OneContactDir {
+            fn search_blocking(
+                &self,
+                _query: &str,
+                _limit: Option<usize>,
+            ) -> Result<crate::directory::SearchResult, crate::directory::DirectoryError> {
+                Ok(crate::directory::SearchResult {
+                    contacts: vec![crate::directory::Contact {
+                        display_name: "DL List".to_string(),
+                        email: "dl@example.com".to_string(),
+                        title: None,
+                        office: None,
+                        phone: None,
+                        department: None,
+                        company: None,
+                        last_modified: None,
+                    }],
+                    distribution_lists: Vec::new(),
+                    is_truncated: false,
+                    total_estimate: 1,
+                })
+            }
+            fn resolve_email_blocking(
+                &self,
+                _email: &str,
+            ) -> Result<Option<crate::directory::Contact>, crate::directory::DirectoryError> {
+                Ok(None)
+            }
+            fn expand_dl_blocking(
+                &self,
+                _email: &str,
+            ) -> Result<Vec<crate::directory::Contact>, crate::directory::DirectoryError> {
+                // This MUST NOT be called by ResolveNames. If it is, the test
+                // will still pass on content (we assert no extra entries), but
+                // the directory is set up to return members so we can detect
+                // the failure.
+                Ok(vec![crate::directory::Contact {
+                    display_name: "Member One".to_string(),
+                    email: "member-one@example.com".to_string(),
+                    title: None,
+                    office: None,
+                    phone: None,
+                    department: None,
+                    company: None,
+                    last_modified: None,
+                }])
+            }
+            fn is_available(&self) -> bool {
+                true
+            }
+        }
+        Arc::get_mut(&mut state)
+            .unwrap()
+            .directory = Some(Arc::new(OneContactDir)
+                as Arc<dyn crate::directory::DirectoryLookup>);
+
+        let auth = AuthContext {
+            username: "user@example.com".to_string(),
+            password: SecretString::from("pw"),
+        };
+        let body = r#"<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+  <soap:Body>
+    <m:ResolveNames xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages"
+                    xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types">
+      <m:UnresolvedEntry>dl@example.com</m:UnresolvedEntry>
+      <m:SearchScope>ActiveDirectory</m:SearchScope>
+    </m:ResolveNames>
+  </soap:Body>
+</soap:Envelope>"#
+        .to_string();
+        let resp = handle_resolve_names(&state, &auth, &body).await;
+        let text = response_body(resp).await;
+        // Exactly one Resolution (the contact itself), no DL member expansion.
+        assert!(
+            text.contains("<m:ResolutionSet TotalItemsInView=\"1\""),
+            "ResolveNames must return exactly one contact, got: {text}"
+        );
+        assert!(
+            text.contains("dl@example.com"),
+            "The DL address itself must appear as a mailbox, got: {text}"
+        );
+        assert!(
+            !text.contains("member-one@example.com"),
+            "DL members must not be expanded into Resolutions, got: {text}"
+        );
     }
 }
