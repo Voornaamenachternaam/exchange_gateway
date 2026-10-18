@@ -213,7 +213,7 @@ This session added:
   no-op, and (c) **no remote wipe is possible**.
 
 ### 11. `Search` — Mailbox and GAL only; verify the two clients' exact search shapes
-**Status: PARTIAL.**
+**Status: DELIVERED on branch `fix/audit2-section11-13-search-resolvenames` (PR #2007).**
 
 `handle_search` (src/eas.rs:4596) serves `Mailbox` (JMAP query) and `GAL`
 (directory), returns status 11 for `DocumentLibrary`. Outlook Android's search
@@ -222,6 +222,14 @@ Windows uses `Search` + `ItemOperations` fetch of results. Confirm the
 `<Options><Range>` / `MaxItems` echo and the `Search:LongId` round-trip
 (`ItemOperations` Fetch by `LongId`, per the §12 notes in AGENTS.md) work for a
 *search-result* id, not just a mailbox id.
+
+**Fixed:** `extract_store_options` (src/eas.rs) had a bug where `before` (pointing
+at `</Options>`) was used instead of `opt_start` (at `<Options>` start), returning
+just `</Options>` instead of the full `<Options>...</Options>` block — so Range and
+MaxItems were silently dropped. Added `opt_start` tracking. Added 6 tests:
+`test_search_request_range_from_options`, `test_search_request_default_range`,
+`test_search_request_range_no_max_items`, `test_search_request_gal_store_range`,
+`test_search_response_envelope_range_and_total`, `test_search_document_library_status_11`.
 
 ### 12. EWS `MoveItem` for calendar items — **implemented; the doc comment is stale**
 **Status: DELIVERED (documentation nit only).**
@@ -245,11 +253,17 @@ is forced to the source collection), which is correct for this use-case.
 returns success for now` doc comment on `handle_move_item`.
 
 ### 13. EWS `ResolveNames` does not expand distribution lists
-**Status: NOT DONE (explicit TODO).**
+**Status: DELIVERED on branch `fix/audit2-section11-13-search-resolvenames` (PR #2007).**
 
-`src/ews.rs:8077`. New Outlook's address book will not resolve DLs. Low
-frequency but a visible gap; JMAP has no native DL primitive on Stalwart, so
-this needs a directory-side expansion or a documented limitation.
+`src/ews.rs`. Removed the `expand_dl_blocking` call and DL expansion loop from
+`handle_resolve_names`. EWS ResolveNames now resolves contacts only per
+[MS-OXWSRSLNM] — DL addresses resolve as-is if they match a contact; members are
+never inlined. `expand_dl_blocking` remains used by the separate `ExpandDL` EWS
+action — no breakage. Added 2 regression tests:
+`resolve_names_does_not_expand_distribution_lists` (NullDirectory → empty
+resolution set, TotalItemsInView=0) and
+`resolve_names_returns_contacts_only_no_dl_expansion` (contact matches DL
+address → exactly one Resolution, no member expansion).
 
 ### 14. `ItemOperations`/Fetch attachment correctness
 **Status: DELIVERED (per AGENTS.md §12), re-verified.**

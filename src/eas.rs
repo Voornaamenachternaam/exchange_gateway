@@ -1156,12 +1156,14 @@ fn extract_store_options(xml: &str) -> Option<String> {
     let mut buf = Vec::new();
     let mut opt_depth = 0usize;
     let mut found_opt = false;
+    let mut opt_start = 0usize;
     loop {
         let before = reader.buffer_position() as usize;
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(e)) => {
                 if !found_opt && e.name().local_name().as_ref().as_bytes() == b"Options" {
                     found_opt = true;
+                    opt_start = before;
                     opt_depth = 1;
                 } else if found_opt {
                     opt_depth += 1;
@@ -1170,7 +1172,7 @@ fn extract_store_options(xml: &str) -> Option<String> {
             Ok(Event::End(_)) if found_opt => {
                 opt_depth -= 1;
                 if opt_depth == 0 {
-                    return xml[start + before..start + reader.buffer_position() as usize]
+                    return xml[start + opt_start..start + reader.buffer_position() as usize]
                         .get(..)
                         .map(str::to_string);
                 }
@@ -1208,6 +1210,13 @@ fn parse_options_max_items(options_xml: &str) -> Option<usize> {
 /// Parse search request XML into a `SearchRequest`, extracting `<Options>`
 /// (specifically `<Range>` and `<MaxItems>`) from within the `<Store>` element
 /// per [MS-ASCMD] §2.2.3.125.5 Options (Search).
+///
+/// The client-supplied `<Range>` is validated before it reaches the Search
+/// handlers: `range_end` is capped below `usize::MAX` so that `range_end + 1`
+/// (GAL lookup bound) and `range_end - range_start + 1` (window length) can
+/// never overflow, and `range_start` is clamped to `range_end` so a malformed
+/// "n-m" with `n > m` degrades to a zero-width window rather than an
+/// underflow.
 fn parse_search_request(xml: &str) -> SearchRequest {
     // [MS-ASCMD] §2.2.3.143.3: the default Range for a Mailbox Store is
     // "0-99" (100 results); GAL defaults to the same 0-99 window.
@@ -1216,8 +1225,15 @@ fn parse_search_request(xml: &str) -> SearchRequest {
     let max_items = parse_options_max_items(&options_xml);
     let (range_start, range_end) = range
         .split_once('-')
-        .and_then(|(s, e)| Some((s.trim().parse().ok()?, e.trim().parse().ok()?)))
+        .and_then(|(s, e)| {
+            Some((
+                s.trim().parse::<usize>().ok()?,
+                e.trim().parse::<usize>().ok()?,
+            ))
+        })
         .unwrap_or((0, 99));
+    let range_end = range_end.min(usize::MAX - 1);
+    let range_start = range_start.min(range_end);
     SearchRequest {
         store_name: extract_first_tag_text(xml, b"Name").unwrap_or_else(|| "Mailbox".to_string()),
         query_text: extract_first_tag_text(xml, b"Query").map(|v| v.trim().to_string()),
@@ -11672,6 +11688,136 @@ mod tests {
         assert!(
             body.is_empty(),
             "an unknown protocol version must get the widest-compat bare 503"
+        );
+    }
+
+    /// §11: Search `<Options>` parsing — Range echo from within `<Store>`.
+    #[test]
+    fn test_search_request_range_from_options() {
+        let xml = r#"<Search xmlns="Search:"><Store><Name>Mailbox</Name><Query>test</Query><Options><Range>10-19</Range><MaxItems>5</MaxItems></Options></Store></Search>"#;
+        let req = parse_search_request(xml);
+        assert_eq!(req.store_name, "Mailbox");
+        assert_eq!(req.query_text.as_deref(), Some("test"));
+        assert_eq!(req.range_start, 10);
+        assert_eq!(req.range_end, 19);
+        assert_eq!(req.max_items, Some(5));
+    }
+
+    /// §11: Search `<Options>` — missing Range defaults to 0-99.
+    #[test]
+    fn test_search_request_default_range() {
+        let xml = r#"<Search xmlns="Search:"><Store><Name>Mailbox</Name><Query>test</Query></Store></Search>"#;
+        let req = parse_search_request(xml);
+        assert_eq!(req.range_start, 0);
+        assert_eq!(req.range_end, 99);
+        assert_eq!(req.max_items, None);
+    }
+
+    /// §11: Search `<Options>` — Range without MaxItems.
+    #[test]
+    fn test_search_request_range_no_max_items() {
+        let xml = r#"<Search xmlns="Search:"><Store><Name>Mailbox</Name><Query>test</Query><Options><Range>20-39</Range></Options></Store></Search>"#;
+        let req = parse_search_request(xml);
+        assert_eq!(req.range_start, 20);
+        assert_eq!(req.range_end, 39);
+        assert_eq!(req.max_items, None);
+    }
+
+    /// §11: Search `<Options>` — GAL store with Range/MaxItems.
+    #[test]
+    fn test_search_request_gal_store_range() {
+        let xml = r#"<Search xmlns="Search:"><Store><Name>GAL</Name><Query>smith</Query><Options><Range>0-49</Range><MaxItems>10</MaxItems></Options></Store></Search>"#;
+        let req = parse_search_request(xml);
+        assert_eq!(req.store_name, "GAL");
+        assert_eq!(req.query_text.as_deref(), Some("smith"));
+        assert_eq!(req.range_start, 0);
+        assert_eq!(req.range_end, 49);
+        assert_eq!(req.max_items, Some(10));
+    }
+
+    /// §11: `search_response_envelope` echoes Range and Total correctly.
+    #[test]
+    fn test_search_response_envelope_range_and_total() {
+        let response = search_response_envelope(
+            "1",
+            Some("0-4"),
+            Some(42),
+            "<Result><AirSync:Class>Email</AirSync:Class><LongId>em-abc</LongId><AirSync:CollectionId>2</AirSync:CollectionId><Properties/></Result>",
+            "",
+        );
+        assert!(response.contains("<Range>0-4</Range>"), "{response}");
+        assert!(response.contains("<Total>42</Total>"), "{response}");
+        assert!(response.contains("<Status>1</Status>"), "{response}");
+    }
+
+    /// §11: A Range whose end is `usize::MAX` is capped so `range_end + 1`
+    /// (GAL bound) and `range_end - range_start + 1` (window length) never
+    /// overflow (§11, CodeRabbit stability review on PR #2007).
+    #[test]
+    fn test_search_request_range_end_capped_below_usize_max() {
+        let xml = r#"<Search xmlns="Search:"><Store><Name>Mailbox</Name><Query>test</Query><Options><Range>0-18446744073709551615</Range></Options></Store></Search>"#;
+        let req = parse_search_request(xml);
+        assert_eq!(req.range_end, usize::MAX - 1);
+        assert_eq!(req.range_start, 0);
+    }
+
+    /// §11: A malformed Range where start > end clamps start to end (zero-width
+    /// window) instead of underflowing.
+    #[test]
+    fn test_search_request_range_start_clamped_to_end() {
+        let xml = r#"<Search xmlns="Search:"><Store><Name>Mailbox</Name><Query>test</Query><Options><Range>50-10</Range></Options></Store></Search>"#;
+        let req = parse_search_request(xml);
+        assert_eq!(req.range_start, 10);
+        assert_eq!(req.range_end, 10);
+    }
+
+    /// §11: DocumentLibrary store → status 11 (not served).
+    #[test]
+    fn test_search_document_library_status_11() {
+        let xml = r#"<?xml version="1.0"?>
+<Search xmlns="Search:"><Store><Name>DocumentLibrary</Name><Query>test</Query></Store></Search>"#;
+        let req = parse_search_request(xml);
+        assert_eq!(req.store_name, "DocumentLibrary");
+        // handle_search returns status 11 for non-Mailbox/GAL stores.
+        assert_ne!(req.store_name, "Mailbox");
+        assert!(!req.store_name.eq_ignore_ascii_case("GAL"));
+    }
+
+    /// §11: `handle_search` exercises the DocumentLibrary path and returns
+    /// protocol status 11 ("FolderSync required") — not just a store-name
+    /// check. A DocumentLibrary store is not served even with no backend
+    /// configured.
+    #[tokio::test]
+    async fn test_search_document_library_handle_returns_status_11() {
+        use crate::models::AppState;
+        let storage = crate::storage::Storage::new("sqlite::memory:")
+            .await
+            .expect("in-memory storage");
+        storage.init_schema().await.expect("schema init");
+        let cfg = crate::config::Config {
+            jmap_base: "http://127.0.0.1:1".to_string(),
+            email_enabled: true,
+            mail_domain: "example.com".to_string(),
+            hmac_secret: SecretString::from("a".repeat(32)),
+            ..Default::default()
+        };
+        let state = Arc::new(AppState::new(cfg, Arc::new(storage)));
+        let wbxml = Wbxml::new();
+        let xml = r#"<Search xmlns="Search:"><Store><Name>DocumentLibrary</Name><Query>test</Query></Store></Search>"#;
+        let resp = handle_search(
+            &state,
+            "user@example.com",
+            SecretString::from("pw"),
+            xml,
+            &wbxml,
+            false,
+            "test-request",
+        )
+        .await;
+        let text = response_text(resp).await;
+        assert!(
+            text.contains("<Status>11</Status>"),
+            "DocumentLibrary search must return status 11, got: {text}"
         );
     }
 }
