@@ -240,6 +240,9 @@ struct SearchRequest {
     query_text: Option<String>,
     range_start: usize,
     range_end: usize,
+    /// The `<Options><MaxItems>` value parsed from the `<Store>` element
+    /// ([MS-ASCMD] §2.2.3.103 MaxItems).
+    max_items: Option<usize>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -1109,10 +1112,108 @@ fn parse_item_operations_fetches(xml: &str) -> Vec<ItemOperationsFetch> {
     fetches
 }
 
+/// Extract the `<Options>` block inner XML from a `<Store>` element in a
+/// Search command request ([MS-ASCMD] §2.2.3.125.5 Options (Search)).
+///
+/// Returns the full `<Options>...</Options>` element so callers can parse
+/// Range / MaxItems / etc. from the correct scope rather than matching the
+/// `Range` local name anywhere in the document (which could pick up an
+/// ItemOperations `<Options>` echo or a stray `Range` from another command).
+fn extract_store_options(xml: &str) -> Option<String> {
+    // Find the first <Store> element.
+    let mut reader = quick_xml::Reader::from_str(xml);
+    let mut buf = Vec::new();
+    let mut found_store = false;
+    let mut store_depth = 0usize;
+    let mut store_start = None;
+    loop {
+        let before = reader.buffer_position() as usize;
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(e)) => {
+                if !found_store && e.name().local_name().as_ref().as_bytes() == b"Store" {
+                    found_store = true;
+                    store_start = Some(before);
+                    store_depth = 1;
+                } else if found_store {
+                    store_depth += 1;
+                }
+            }
+            Ok(Event::End(_)) if found_store => {
+                store_depth -= 1;
+                if store_depth == 0 {
+                    break;
+                }
+            }
+            Ok(Event::Eof) | Err(_) => return None,
+            _ => {}
+        }
+        buf.clear();
+    }
+    let start = store_start?;
+
+    // Now scan from inside <Store> for <Options>...</Options>.
+    let mut reader = quick_xml::Reader::from_str(&xml[start..]);
+    let mut buf = Vec::new();
+    let mut opt_depth = 0usize;
+    let mut found_opt = false;
+    loop {
+        let before = reader.buffer_position() as usize;
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(e)) => {
+                if !found_opt && e.name().local_name().as_ref().as_bytes() == b"Options" {
+                    found_opt = true;
+                    opt_depth = 1;
+                } else if found_opt {
+                    opt_depth += 1;
+                }
+            }
+            Ok(Event::End(_)) if found_opt => {
+                opt_depth -= 1;
+                if opt_depth == 0 {
+                    return xml[start + before..start + reader.buffer_position() as usize]
+                        .get(..)
+                        .map(str::to_string);
+                }
+            }
+            Ok(Event::Empty(e))
+                if !found_opt && e.name().local_name().as_ref().as_bytes() == b"Options" =>
+            {
+                return xml[start + before..start + reader.buffer_position() as usize]
+                    .get(..)
+                    .map(str::to_string);
+            }
+            Ok(Event::Eof) | Err(_) => return None,
+            _ => {}
+        }
+        buf.clear();
+    }
+}
+
+/// Parse the `<Range>` value out of an `<Options>` block XML string.
+///
+/// Returns `None` when no `<Range>` child is present or its text content
+/// cannot be parsed.
+fn parse_options_range(options_xml: &str) -> Option<String> {
+    extract_first_tag_text(options_xml, b"Range")
+}
+
+/// Parse the `<MaxItems>` value out of an `<Options>` block XML string.
+///
+/// Returns `None` when no `<MaxItems>` child is present or its text content
+/// is not a valid non-negative integer.
+fn parse_options_max_items(options_xml: &str) -> Option<usize> {
+    extract_first_tag_text(options_xml, b"MaxItems").and_then(|v| v.trim().parse::<usize>().ok())
+}
+
+/// Parse search request XML into a `SearchRequest`, extracting `<Options>`
+/// (specifically `<Range>` and `<MaxItems>`) from within the `<Store>` element
+/// per [MS-ASCMD] §2.2.3.125.5 Options (Search).
 fn parse_search_request(xml: &str) -> SearchRequest {
     // [MS-ASCMD] §2.2.3.143.3: the default Range for a Mailbox Store is
     // "0-99" (100 results); GAL defaults to the same 0-99 window.
-    let range = extract_first_tag_text(xml, b"Range").unwrap_or_else(|| "0-99".to_string());
+    let options_xml = extract_store_options(xml).unwrap_or_default();
+    let range = parse_options_range(&options_xml).unwrap_or_else(|| "0-99".to_string());
+    let max_items = parse_options_max_items(&options_xml);
     let (range_start, range_end) = range
         .split_once('-')
         .and_then(|(s, e)| Some((s.trim().parse().ok()?, e.trim().parse().ok()?)))
@@ -1122,6 +1223,7 @@ fn parse_search_request(xml: &str) -> SearchRequest {
         query_text: extract_first_tag_text(xml, b"Query").map(|v| v.trim().to_string()),
         range_start,
         range_end,
+        max_items,
     }
 }
 
@@ -4661,7 +4763,14 @@ async fn handle_search(
     // [MS-ASCMD] §2.2.3.143.3: the Mailbox default range is 0-99.
     let range_start = req.range_start;
     let range_end = req.range_end.max(range_start);
-    let limit = (range_end - range_start + 1) as u64;
+    let mut limit = (range_end - range_start + 1) as u64;
+    // [MS-ASCMD] §2.2.3.103 MaxItems caps the number of items returned from a
+    // search; it further narrows the Range window when present.
+    if let Some(mi) = req.max_items
+        && mi < limit as usize
+    {
+        limit = mi as u64;
+    }
 
     let result = match jmap
         .query_emails(crate::jmap::QueryEmailsParams {
