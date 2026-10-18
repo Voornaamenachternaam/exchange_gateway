@@ -127,6 +127,17 @@ pub trait DirectoryLookup: Send + Sync {
     /// Returns None if not found.
     fn resolve_email_blocking(&self, email: &str) -> Result<Option<Contact>, DirectoryError>;
 
+    /// Look up a distribution list by address without expanding its members.
+    /// Returns `Some` when the address matches a DL itself; the caller decides
+    /// how to render it (e.g. as a non-expanding `MailboxType=DistributionList`
+    /// resolution in EWS `ResolveNames`).
+    fn resolve_distribution_list_blocking(
+        &self,
+        _email: &str,
+    ) -> Result<Option<Contact>, DirectoryError> {
+        Ok(None)
+    }
+
     /// Expand a distribution list to its members.
     fn expand_dl_blocking(&self, email: &str) -> Result<Vec<Contact>, DirectoryError>;
 
@@ -419,6 +430,125 @@ impl DirectoryLookup for JmapDirectory {
         Ok(None)
     }
 
+    fn resolve_distribution_list_blocking(
+        &self,
+        email: &str,
+    ) -> Result<Option<Contact>, DirectoryError> {
+        if !self.configured() {
+            return Err(DirectoryError::ConfigError(
+                "Directory service is not configured (admin credentials missing)".to_string(),
+            ));
+        }
+        if !email.contains('@') {
+            return Ok(None);
+        }
+
+        let lower = email.to_lowercase();
+        let rt = &self.runtime;
+        let client = self.jmap_client.clone();
+        let username = self.username.clone();
+        let password = self.password.clone();
+        let email_owned = email.to_string();
+
+        // Resolve the mailing list by its address and return the DL itself
+        // (unexpanded) as a contact. `expand_dl_blocking` is the separate
+        // operation for retrieving its members.
+        rt.block_on(async move {
+            let list_args = json!({
+                "accountId": ADMIN_ACCOUNT_SCOPE,
+                "filter": { "text": email_owned },
+            });
+            let list_resp = client
+                .api_call(
+                    client.base_url(),
+                    &["urn:ietf:params:jmap:core", JMAP_STALWART_CAPABILITY],
+                    vec![("x:MailingList/query", list_args, "q0")],
+                    &username,
+                    &password,
+                )
+                .await?;
+            if let Some(err) = jmap_method_error(&list_resp) {
+                return Err(err);
+            }
+            let list_ids: Vec<String> = if let Some((_, value, _)) = list_resp
+                .method_responses
+                .iter()
+                .find(|(name, _, _)| name == "x:MailingList/query")
+            {
+                value
+                    .get("ids")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|v| v.as_str().map(str::to_string))
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default()
+            } else {
+                Vec::new()
+            };
+            if list_ids.is_empty() {
+                return Ok(None);
+            }
+
+            let get_args = json!({
+                "accountId": ADMIN_ACCOUNT_SCOPE,
+                "ids": list_ids,
+                "properties": ["name", "emailAddress", "description"],
+            });
+            let get_resp = client
+                .api_call(
+                    client.base_url(),
+                    &["urn:ietf:params:jmap:core", JMAP_STALWART_CAPABILITY],
+                    vec![("x:MailingList/get", get_args, "g0")],
+                    &username,
+                    &password,
+                )
+                .await?;
+            if let Some(err) = jmap_method_error(&get_resp) {
+                return Err(err);
+            }
+
+            if let Some((_, value, _)) = get_resp
+                .method_responses
+                .iter()
+                .find(|(name, _, _)| name == "x:MailingList/get")
+                && let Some(list) = value.get("list").and_then(|v| v.as_array())
+            {
+                for entry in list {
+                    if !matches_list_address(entry, &lower) {
+                        continue;
+                    }
+                    let name = entry.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                    let description = entry
+                        .get("description")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    let display_name = if description.is_empty() {
+                        name.to_string()
+                    } else {
+                        description.to_string()
+                    };
+                    return Ok(Some(Contact {
+                        display_name,
+                        email: entry
+                            .get("emailAddress")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or(&email_owned)
+                            .to_string(),
+                        title: None,
+                        office: None,
+                        phone: None,
+                        department: None,
+                        company: None,
+                        last_modified: None,
+                    }));
+                }
+            }
+            Ok(None)
+        })
+    }
+
     fn expand_dl_blocking(&self, email: &str) -> Result<Vec<Contact>, DirectoryError> {
         if !self.configured() {
             return Err(DirectoryError::ConfigError(
@@ -671,6 +801,13 @@ impl DirectoryLookup for NullDirectory {
     }
 
     fn resolve_email_blocking(&self, _email: &str) -> Result<Option<Contact>, DirectoryError> {
+        Ok(None)
+    }
+
+    fn resolve_distribution_list_blocking(
+        &self,
+        _email: &str,
+    ) -> Result<Option<Contact>, DirectoryError> {
         Ok(None)
     }
 
