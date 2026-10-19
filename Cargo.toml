@@ -48,6 +48,7 @@ zeroize = { version = "^1.9.0", features = ["derive", "serde"] }
 subtle = "^2.6.1"
 pin-project-lite = "^0.2.17"
 http-body-util = "^0.1.5"
+http-body = "^1.0.0"
 mime = "^0.3.17"
 lru = "^0.18.4"
 moka = { version = "^0.12.16", features = ["sync"] }

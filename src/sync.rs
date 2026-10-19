@@ -1203,14 +1203,8 @@ fn render_calendar_app_data_suffix(
 /// Legacy calendar AppData: no negotiated options, so the native plain-text
 /// body is served untruncated ([MS-ASAIRS] §2.2.2.3.2 pass 3). Test-only: the
 /// production paths always render with negotiated options.
-#[cfg(test)]
-pub(crate) fn render_calendar_app_data(item: &CalendarItem) -> String {
-    render_calendar_app_data_with_options(
-        item,
-        &crate::eas_sync_options::EasSyncCollectionOptions::default(),
-    )
-}
-
+/// Deleted per AUDIT2.md §30 — no non-test caller remains; tests call
+/// `render_calendar_app_data_with_options` directly with default options.
 pub struct SyncOptions {
     pub window_size: usize,
     pub get_changes: bool,
@@ -1869,7 +1863,8 @@ mod tests {
     #[test]
     fn eas_calendar_never_emits_startendtimezone_only_timezone_blob() {
         let item = eastern_item();
-        let xml = render_calendar_app_data(&item);
+        let options = crate::eas_sync_options::EasSyncCollectionOptions::default();
+        let xml = render_calendar_app_data_with_options(&item, &options);
         assert!(
             !xml.contains("StartTimeZone"),
             "StartTimeZone must never be emitted (no code-page-4 token):\n{xml}"
@@ -1922,7 +1917,8 @@ mod tests {
                 timezone: Some(zone.to_string()),
                 ..Default::default()
             };
-            let xml = render_calendar_app_data(&item);
+            let options = crate::eas_sync_options::EasSyncCollectionOptions::default();
+            let xml = render_calendar_app_data_with_options(&item, &options);
             let blob_b64 = extract_element_text(&xml, "Calendar:Timezone")
                 .unwrap_or_else(|| panic!("{zone}: no Timezone blob rendered:\n{xml}"));
             let iana = crate::timezone::eas_timezone_blob_to_iana(&blob_b64)
@@ -1964,7 +1960,8 @@ mod tests {
             timezone: None,
             ..Default::default()
         };
-        let xml = render_calendar_app_data(&item);
+        let options = crate::eas_sync_options::EasSyncCollectionOptions::default();
+        let xml = render_calendar_app_data_with_options(&item, &options);
         assert!(
             !xml.contains("<Calendar:Timezone>"),
             "UTC event should not carry a Timezone blob:\n{xml}"
@@ -2022,7 +2019,8 @@ mod tests {
             "exception body must be served as a minimal HTML document (XML-escaped):\n{exception}"
         );
         // And with no preferences the native plain text is served.
-        let xml = render_calendar_app_data(&item);
+        let options = crate::eas_sync_options::EasSyncCollectionOptions::default();
+        let xml = render_calendar_app_data_with_options(&item, &options);
         let exception =
             extract_element_text(&xml, "Calendar:Exception").expect("no exception rendered");
         assert!(
@@ -2133,7 +2131,8 @@ mod tests {
                 timezone: Some(utc_id.to_string()),
                 ..Default::default()
             };
-            let xml = render_calendar_app_data(&item);
+            let options = crate::eas_sync_options::EasSyncCollectionOptions::default();
+            let xml = render_calendar_app_data_with_options(&item, &options);
             assert!(
                 !xml.contains("<Calendar:Timezone>"),
                 "explicit UTC ({utc_id}) event must omit <Calendar:Timezone>:\n{xml}"

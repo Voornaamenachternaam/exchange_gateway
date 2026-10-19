@@ -31,6 +31,30 @@ use tracing::{debug, info, warn};
 const MAX_BODY_BYTES: usize = 4 * 1024 * 1024;
 const REQUEST_TIMEOUT_SECS: u64 = 60;
 
+/// AUDIT.md §25: predicate that only compresses responses with a known
+/// content length >= `n`. Small responses (Ping Status 1/2 bodies ~100–200
+/// bytes) flush immediately without the Content-Length → chunked round-trip
+/// that `CompressionLayer` otherwise forces.
+#[derive(Clone, Copy, Debug, Default)]
+struct MinCompressionLen(usize);
+
+impl tower_http::compression::Predicate for MinCompressionLen {
+    fn should_compress<B>(&self, response: &http::Response<B>) -> bool
+    where
+        B: http_body::Body,
+    {
+        let Some(len) = response
+            .headers()
+            .get(http::header::CONTENT_LENGTH)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| s.parse::<usize>().ok())
+        else {
+            return false;
+        };
+        len >= self.0
+    }
+}
+
 /// Build the authentication advertisement the Autodiscover Outlook response
 /// renders in its EXCH/EXPR `<Protocol>` blocks. When MAPI/HTTP HMA is
 /// configured (`GATEWAY_MAPI_HMA_ENABLED` with a populated
@@ -884,7 +908,11 @@ async fn main() -> anyhow::Result<()> {
         .layer(RequestBodyTimeoutLayer::new(Duration::from_secs(
             REQUEST_TIMEOUT_SECS,
         )))
-        .layer(CompressionLayer::new())
+        // AUDIT.md §25: avoid compressing tiny responses (Ping Status 1/2
+        // bodies are ~100–200 bytes) so they flush immediately without the
+        // Content-Length → chunked round-trip that CompressionLayer forces.
+        // Only compress responses whose content length is known and >= 1024.
+        .layer(CompressionLayer::new().compress_when(MinCompressionLen(1024)))
         .layer(SetResponseHeaderLayer::overriding(
             header::X_CONTENT_TYPE_OPTIONS,
             HeaderValue::from_static("nosniff"),
