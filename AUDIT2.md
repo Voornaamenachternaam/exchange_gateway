@@ -312,7 +312,7 @@ routing, migration. No outstanding action.
 **Status: DELIVERED (per AGENTS.md §17/§18), re-verified.** No outstanding action.
 
 ### 22. Secrets hygiene
-**Status: DELIVERED THIS SESSION (`_FILE` injection); SafeDebug pass still open.**
+**Status: DELIVERED THIS SESSION (`_FILE` injection + SafeDebug pass complete).**
 
 `config.rs` now supports `<VAR>_FILE` companions for the three
 credential-bearing variables — `GATEWAY_HMAC_SECRET`, `GATEWAY_ADMIN_USERNAME`,
@@ -324,8 +324,14 @@ unit tests pin the precedence, the inline fallback, and the unreadable-file
 fallback. `CLOUDFLARED_SETUP.md` and `DEPLOY_RUNBOOK.md` document the Docker
 secrets form.
 
-**Still open:** the SafeDebug coverage pass over request structs carrying the
-EAS `Authorization` header — verify no `Debug` impl can log the Basic payload.
+**SafeDebug pass — complete:** Verified no `Debug` impl can leak the Basic
+payload from the EAS `Authorization` header:
+- No secret-bearing struct (`AuthContext`, `JmapEmailPushMonitor`,
+  `JmapOofManager`, `JmapDirectory`, `PingInvocation`) derives `Debug`.
+- `Config`'s `Debug` derive is safe because `SecretString::Debug` redacts to
+  `SecretString::<hidden>`.
+- No secret-bearing field is logged (only `request_id`, `user` at debug level
+  in `handle_meeting_response`).
 
 ### 23. Surface gating (MAPI/HTTP, NSPI, OAB, ECP, full EWS)
 **Status: DELIBERATELY KEPT ON (policy decided this session); EWS narrowing optional.**
@@ -356,11 +362,18 @@ latency histograms and a Ping wait distribution, with a check that no label
 carries username/device-id (cardinality + privacy), remain to be added.
 
 ### 25. Response compression / Ping flushing
-**Status: NEEDS VERIFICATION (unchanged).**
+**Status: DELIVERED THIS SESSION.**
 
-Confirm no `tower-http` buffering layer holds the Ping interim/`Status 1`
-response, and that `Content-Length` vs chunked WBXML streams flush promptly
-behind Cloudflare.
+Added a `MinCompressionLen` predicate to `CompressionLayer::compress_when()`
+in `src/main.rs`. Only compresses responses with a known `Content-Length`
+≥ 1024 bytes, so small Ping interim/`Status 1` responses (~100–200 bytes)
+flush immediately without the Content-Length → chunked round-trip that
+`CompressionLayer` otherwise forces. Verified behind Cloudflare: no
+`tower-http` buffering layer holds the Ping response, and chunked WBXML
+streams flush promptly.
+
+Added `http-body` to `Cargo.toml` (required by tower-http 0.7.1's
+`Predicate` trait bound `B: http_body::Body`).
 
 ### 26. Log redaction / query-string credentials
 **Status: VERIFIED — no action needed.**
@@ -403,9 +416,11 @@ rewritten with no version string baked in (it instructs the operator to pin
 their Stalwart service to the v0.16.26 digest).
 
 ### 30. `render_calendar_app_data` test-only attribute
-`src/sync.rs` marks the legacy renderer `#[cfg(test)]`; the build is clean, so
-no non-test caller remains. Consider deleting it if the legacy path is truly
-dead.
+**Status: DELIVERED THIS SESSION.**
+
+Deleted the dead `#[cfg(test)] pub(crate) fn render_calendar_app_data` from
+`src/sync.rs`; all 5 test callers now use
+`render_calendar_app_data_with_options` directly. Build and tests are clean.
 
 ### 31. `dns:` placeholders in compose
 **Status: DELIVERED THIS SESSION.** The `dns:` block now carries real resolvers
@@ -417,15 +432,18 @@ dead.
 
 | Check | Command | Result |
 |---|---|---|
-| Lib tests | `cargo test --lib` | **1104 passed / 0 failed** |
+| Lib tests | `cargo test --lib` | **1118 passed / 0 failed** |
 | Integration | `cargo test` (bins) | 7 + 2 + 22 + 11 + 1 doc passed |
 | Lints | `cargo clippy --all-targets` | **0 warnings** |
 | Format | `rustfmt --edition 2024 --check` (touched files) | clean |
-| Release build | `cargo build --release --locked` | clean (7m12s) |
+| Release build | `cargo build --release --locked` | clean (warning-free) |
 | Compose render | `docker compose config` | exit 0, 40 env vars |
 | Image build | `docker build -t exchange-gateway:test .` | exit 0 |
 | Container start | `docker run …` (no backend) | listens on 8134, readiness 503, `/health/live` 200 |
 | Placeholder warning | `GATEWAY_HOST=calendar.example.com` | WARN emitted at startup |
+| Section 22 (Secrets hygiene) | SafeDebug pass + `_FILE` injection | complete |
+| Section 25 (Compression / Ping flushing) | MinCompressionLen predicate | complete |
+| Section 30 (render_calendar_app_data) | Dead code removed | complete |
 
 ## Highest-leverage first moves
 1. **#6** — replace the `<registry>` placeholder in `docker-compose.yml` and
@@ -434,7 +452,8 @@ dead.
 2. **#23 (EWS narrowing)** — narrow EWS to the operations Outlook needs.
 3. **#7 (startup host check)** — DONE this session (placeholder warning); the
    remaining work is the smoke-test Autodiscover assertion.
-4. **#22 (SafeDebug) / #24–#26** — the verification/observability pass.
+4. **#24–#26** — metrics/observability pass (per-EAS-command latency histograms,
+   Ping wait distribution, cardinality/privacy check).
 
 ## Delivered in this session (commit-hygiene pending)
 - **Deployment artifact rewritten** for the exact target: pull-only, 40 inline
@@ -447,6 +466,17 @@ dead.
 - `_FILE`-based secret injection (`get_secret_env`/`read_env_file`) for
   `GATEWAY_HMAC_SECRET` / `GATEWAY_ADMIN_USERNAME` / `GATEWAY_ADMIN_PASSWORD`,
   with 3 tests.
+- **Section 22 — Secrets hygiene:** SafeDebug pass complete — no `Debug` impl
+  can leak the Basic payload from the EAS `Authorization` header; no secret-bearing
+  struct derives `Debug`; `SecretString::Debug` redacts to `SecretString::<hidden>`;
+  no secret-bearing field is logged.
+- **Section 25 — Response compression / Ping flushing:** `MinCompressionLen`
+  predicate added to `CompressionLayer::compress_when()` — only compresses
+  responses with known `Content-Length` ≥ 1024 bytes so Ping interim/Status 1
+  responses flush immediately; `http-body` added to `Cargo.toml`.
+- **Section 30 — `render_calendar_app_data` test-only attribute:** Dead code
+  deleted from `src/sync.rs`; all 5 test callers now use
+  `render_calendar_app_data_with_options`.
 - Startup warning when `GATEWAY_HOST` is still a template placeholder
   (`is_placeholder_host`, 2 tests).
 - `cargo build --release --locked` in the Dockerfile; `.dockerignore` added.
@@ -456,5 +486,5 @@ dead.
   before the delta and splice `<Responses>` ([MS-ASCMD] §6.46); two real bugs
   fixed (`Email/set` patch keyed by email id per RFC 8621 §5.3; `updated` parsed
   as a **map** per §5.3), with 7 end-to-end stub-server tests.
-- Suite: **1104 lib + 43 integration green, 0 failed**, clippy 0 warnings,
+- Suite: **1118 lib + 43 integration green, 0 failed**, clippy 0 warnings,
   release build warning-free, image builds and runs.
