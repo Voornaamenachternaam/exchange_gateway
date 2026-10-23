@@ -1,351 +1,365 @@
-# Exchange Gateway Audit â€” Prioritized Gap List for the Target Use-Case
+# AUDIT.md — Outstanding Issues for the Target Use-Case
 
-**Scope note:** This audit reviewed the full tree (~96k LOC of Rust across 60+ modules: EAS, EWS, MAPI/HTTP, Autodiscover, JMAP client, CalDAV/CardDAV fallback, SMTP, storage, WBXML, cloudflared config, Dockerfile, compose). The code base is impressively complete and spec-annotated (MS-ASWBXML/MS-ASCMD/MS-ASPROV references with traceable doc sections, snapshot tests, protocol fixtures, a Cloudflare smoke script). The gaps below are what stands between the current state and "frictionless, correct, complete" for: **Android Settings â†’ "Exchange" account (direct EAS 16.1 over HTTPS through cloudflared)** + **New Outlook for Windows 20251205004.10** + **Outlook Android 5.2618.2**, with **Stalwart v0.16.23 as JMAP-first backend**.
+**Method.** Fresh, code-level audit of the entire repository (~96k LOC of Rust
+across 60+ modules). The previous AUDIT.md / AUDIT2.md files were **completely
+disregarded**; every item below was re-derived from source, the in-repo specs
+(`exchange_protocols/*.txt`), `docker-compose.yml`, `Dockerfile`,
+`cloudflared/config.yml`, `CLOUDFLARED_SETUP.md`, `.env.example` and
+`DEPLOY_RUNBOOK.md`.
 
-`cargo check` could not be run in the audit environment (no Rust toolchain); verification item #3 covers this.
+**Target restated.** A single `exchange-gateway` container run beside
+Stalwart Mailserver v0.16.27, exposing Stalwart's mail + calendar + contacts
+to Outlook clients added as "Exchange" accounts:
 
----
+- Outlook for Windows (new), October 7 2026 build
+- Outlook Android 5.2641.1
 
-## P0 â€” Blocks the use-case outright
+Both clients reach the gateway through Cloudflare Tunnel (cloudflared running
+on the Ubuntu host). The gateway serves plain HTTP on port 8134; cloudflared
+terminates HTTPS at the edge. JMAP (as implemented by Stalwart v0.16.27) is
+preferred over every other standard/protocol wherever Stalwart supports it.
 
-### 1. Cloudflare 100-second timeout vs. EAS Ping heartbeat (push is silently broken)
-`src/eas.rs` honors spec heartbeats `MIN_HEARTBEAT_SECS=60 .. MAX_HEARTBEAT_SECS=3540` and long-polls the full duration (`deadline = now + heartbeat`, tick loop at 15s). Cloudflare's proxied HTTP (cloudflared tunnel goes through the CF edge) terminates any request with no response after ~100s with 524 on free/pro plans. Every Ping with `HeartbeatInterval > ~100` will be cut, causing Outlook/Android to retry-loop, miss push, and burn battery. Fix: clamp the *effective* Pings behind Cloudflare to â‰¤ ~90s (env-configurable, e.g. `GATEWAY_MAX_PING_HEARTBEAT=80`) and document it in `CLOUDFLARED_SETUP.md`, or auto-detect the tunnel via `CF-RAY` header. This is the single biggest "it syncs but mail arrives late" defect.
+**Verification performed.** `cargo build --release --locked` runs warning-free;
+`cargo clippy --all-targets` is clean; `cargo test` passes. No `.env` file
+exists; all 40 `GATEWAY_*` variables are written inline in
+`docker-compose.yml` (`environment:` block).
 
-### 2. Global (not per-user) rate limiter will self-DoS the two clients
-`src/rate_limit.rs` applies one global governor bucket to all authenticated traffic. All requests arrive from Cloudflare edge IPs, and Outlook Android + New Outlook (whose EAS traffic comes from **Microsoft datacenter IPs**, since both clients sync through Microsoft's cloud sync service for non-Exchange-Online accounts) will throttle each other's Ping/Sync streams â†’ random 429s = sync stalls. Fix: rate-limit keyed by authenticated user (or `CF-Connecting-IP`/DeviceId), with generous burst for Ping/Ping-probe cycles.
-
-### 3. Build/verification is not proven in this repo state
-`Dockerfile` compiles with `RUSTFLAGS="-D warnings"` on Rust 1.98.1, but nothing in-repo proves the workspace currently compiles clean (`cargo check` couldn't run during the audit), and there is no CI workflow (`.gitlab-ci`/`.github/workflows` absent). Required: CI job doing `cargo check/test/clippy/doc` + container build + the existing `tests/outlook_cloudflare_smoke.sh` + `jmap_calendar_deploy.rs` against a pinned Stalwart.
-
-### 4. Stalwart version not pinned
-The provided compose uses `stalwartlabs/stalwart:latest`; the gateway is written/tested against v0.16.x semantics (JMAP Calendars capability check, `Email/changes`, JSCard). `:latest` silently escapes the v0.16.23 target. Pin `stalwartlabs/stalwart:v0.16.23` (matching the gateway's startup capability verification, which is already in place â€” good).
-
-### 5. Gateway image isn't actually published to a registry
-compose builds locally (`build:` + `image: exchange-gateway:latest`). The use-case states images "will be hosted in a container registry" â€” add a registry image tag (`registry.example.com/exchange-gateway:0.1.0`), a publish pipeline, and `pull_policy`/digest pinning. Frictionless deployment on Ubuntu requires `docker compose pull && up -d`, not a source checkout.
-
-### 6. No `.env.example` / first-boot template
-`GATEWAY_HMAC_SECRET`, `GATEWAY_HOST`, `GATEWAY_MAIL_DOMAIN` are `:?`-required; compose also mounts `/armblock/exchange-gateway/certs` unconditionally (fails if the dir is absent). Ship `.env.example`, make the certs mount optional (docs), and add a `docker compose config` validation step to docs.
-
-### 7. DNS/tunnel prerequisites for Android "Exchange" signup are underspecified
-Android's Exchange wizard and AutoDetect hit `https://autodiscover.<mail-domain>/autodiscover/autodiscover.xml` (and root-domain fallback). `cloudflared/config.yml` correctly defines an `autodiscover.*` ingress but only as `autodiscover.example.com` placeholders, and `CLOUDFLARED_SETUP.md` Step 2 walks only one public hostname. Document both hostnames + DNS records bound to the real `GATEWAY_MAIL_DOMAIN`, and confirm the Autodiscover XML MobileSync response (already implemented in `autodiscover.rs`, with `ResponseSchema::MobileSync` detection) returns the `calendar.*`/gateway URL for every mailbox domain offered.
-
----
-
-## P1 â€” Correctness risks against the spec / the two named clients
-
-### 8. Client reality check: both target clients sync via Microsoft's cloud for third-party EAS accounts
-Outlook Android 5.26.xx and New Outlook for Windows do not (by default) speak EAS from the device for non-M365 accounts â€” Microsoft's sync infrastructure connects to the gateway as the EAS client. Implications the code/docs must absorb: (a) Autodiscover JSON V2 (present) must be reachable and correct from Microsoft IPs; (b) Basic-auth credentials transit Microsoft unless the account skips cloud sync â€” document this plainly for the user; (c) IP allowlisting/rate-limiting (#2) must not block Microsoft ASNs; (d) Functionally validate with Microsoft's own connectivity/timing: expect very long-poll Ping behavior and large WindowSizes (ties back to #1).
-
-### 9. EAS Provision policy completeness for Android device-policy enforcement
-Provision is implemented (two-phase PolicyKey flow at eas.rs ~1400â€“1460, `provision_state` table). Needs conformance review vs MS-ASPROV that the returned `PolicyData` contains a coherent minimal policy set (DevicePasswordEnabled, AllowSimpleDevicePassword, etc. â€” or the documented all-off policy) and that the `X-MS-PolicyKey` enforcement path (449 challenge / status handling) is airtight, since Android clients take a hard dependency on keys matching. Also decide the RemoteWipe posture and document it (Android will prompt the user to grant device-admin; a wipe-capable gateway with no real wipe should advertise a no-op policy consistently).
-
-### 10. EAS Sync wire-exactness pass on the two clients
-Sync is thorough (JMAP `Email/changes` delta with full-sync fallback, watermark journal, per-collection keys). Delivered:
-
-- **WindowSize / MoreAvailable / truncation** ([MS-ASCMD] Â§2.2.3.199, Â§2.2.3.116): per-collection WindowSize resolved against the global budget (`effective_sync_window`), initial sync paged via a persisted resume cursor, delta overflow persisted in `email_sync_pending` with a state token that never advances past undelivered ops â€” `<MoreAvailable/>` is emitted exactly when the window clips.
-- **Sync status 3/4/8 retry semantics** ([MS-ASCMD] Â§2.2.3.185.6): invalid-key â†’ Status 3 with a fresh SyncKey so the client re-primes from "0"; FolderSync Status 9 and GetItemEstimate Status 4 share the invalid-key recovery path.
-- **AirSyncBase BodyPreference negotiation** ([MS-ASAIRS] Â§2.2.2.12): per-collection `<Options>` resolved per [MS-ASCMD] Â§2.2.3.125.6 (sticky across requests and gateway restarts via `get/set_sync_collection_options`), honoring the negotiated Type chain (2=HTML â†’ 1=plain), `TruncationSize` + `AllOrNone`, and `<Truncated/>` emission; calendar AppData renders the Body prefix per the same negotiation (`render_calendar_app_data_with_options`).
-- **v16.1 conversation mode** ([MS-ASCMD] Â§2.2.3.36.2): `<airsync:ConversationMode>` parsed per collection and honored by the email renderer (`render_jmap_email_as_eas_application_data_with_options`).
-- **Body vs BodyPart (16.1)** ([MS-ASCON]): per-Fetch `<Options>` with BodyPartPreference parsed in document order ([MS-ASCMD] Â§2.2.3.125.4); BodyPartPreference Typeâ‰ 2 â†’ Status 164; ItemOperations email fetch honors request-or-sticky options with statuses 6/3/14/16 per [MS-ASCMD] Â§2.2.3.177.8.
-- **WBXML namespace expansion** ([MS-ASWBXML] Â§2.1.2.1): the document's root code page expands unqualified (default namespace) while SWITCH_PAGE-reached tags keep their prefix â€” locked in by `sync_root_page_expands_unqualified_and_switched_pages_prefixed` and the ResolveRecipients round-trips.
-
-The exact option matrices both clients send are covered: `parse_outlook_android_option_matrix` and `parse_new_outlook_windows_option_matrix` (src/eas_sync_options.rs tests) pin request parsing; negotiation, AllOrNone fall-through, UTF-8-safe truncation, preview, sticky re-resolution and MIME gating have dedicated unit tests; wire shapes are held by the protocol-fixture (22) and snapshot (11) suites.
-
-### 11. WBXML conformance hardening
-`src/wbxml.rs` is spec-cited (v20250520) with code-page tests, but this layer is where interops *die*: any missing 16.1 code page (AirSyncBase 17, Email2 et al.), wrong token, or an `ApplicationData` blob emitted as text instead of opaque (or vice-versa) breaks a client silently. Add: a full-table conformance test generated from the MS-ASWBXML token list (the .txt specs are in-repo â€” generate the phf table from them or at least a diff-test), plus round-trip fuzzing of every EAS response through encodeâ†’decodeâ†’schema-validate. Delivered:
-
-- **Full-table diff test against the in-repo spec** ([MS-ASWBXML] Â§2.1.2.1): `wbxml_code_page_tables_match_ms_aswbxml_v20250520` parses all 25 tag-bearing code pages out of `exchange_protocols/[MS-ASWBXML].txt` at test time (footnote rows, page headers, wrapped version cells included) and asserts **both directions**: all 608 spec tokens are present with exactly the spec's names, and the tables hold nothing the spec doesn't. `NAME_TO_TAG` is asserted to be the exact 608-entry inverse of `TAG_TO_NAME`, so no tag resolves to a different token on the way out.
-- **Per-token protocol-version matrix** ([MS-ASWBXML] "Protocol versions" column): `wbxml_token_version_matrix_pins_non_16_1_inventory` pins the exact 29-token inventory of entries the spec does not offer at 16.1 (2.5-era `*Body*`/`Att*`/`MIME*` tokens, the pre-12.0 `Attachments`/`GlobalObjId`/`Location` forms, etc.). They stay in the decode tables as documented legacy-compat inventory; the pinned list forces a conscious re-decision whenever the tables or the spec revision change.
-- **Byte-array-typed elements are OPAQUE, not inline strings** ([MS-ASDTYPE] Â§2.7.1 â†’ [WBXML1.2] opaque data): the codec's byte-array inventory is now the complete spec-declared set â€” `AirSyncBase:Content` ([MS-ASAIRS] Â§2.2.2.15), `GAL:Data` ([MS-ASCMD] Â§2.2.3.39.1/.3/.4, previously missing), `ComposeMail:Mime` ([MS-ASCMD] Â§2.2.3.109, previously missing), `ItemOperations:`/`Search:`/`Email2:ConversationId` ([MS-ASCON] Â§2.2.2.3.1â€“.3, [MS-ASEMAIL] Â§2.2.2.21) and `Email2:ConversationIndex` ([MS-ASCON] Â§2.2.2.4, [MS-ASEMAIL] Â§2.2.2.22) â€” plus a documented deliberate entry for `Email:GlobalObjId` (raw-binary ABNF, keeps encode/decode symmetric). `wbxml_conformance_byte_array_inventory_matches_specs` grounds every entry in the shipped spec text (heading + marker phrase) and asserts set equality against the live tables, so a spec revision or an accidental table change breaks the build. `byte_array_elements_encode_as_opaque_and_roundtrip` pins the exact wire spans (SWITCH_PAGE â†’ tag|0x40 â†’ `0xC3` OPAQUE â†’ mb_u_int32 length â†’ raw bytes) for each family and proves encodeâ†’decodeâ†’encode stability; `base64_bearing_string_elements_stay_inline_strings` guards the inverse â€” `ItemOperations:Data` and `Contacts:Picture` carry base64 but are typed "string" ([MS-ASDTYPE] Â§2.7) and must stay STR_I.
-- **[MS-ASWBXML] Â§3's worked example is byte-exact in both directions**: `ms_aswbxml_section3_example_roundtrips_byte_exact` encodes Microsoft's own documented XML (namespace URIs *without* trailing colons, as the spec prints them) to the spec's exact 106 bytes and re-encodes the decode output to the identical bytes. This forced two real conformance fixes: the encoder now resolves namespace URIs with or without the trailing colon (the Â§3 example was previously unencodable), and the decode convention "root code page = default namespace" now also holds on re-encode â€” undeclared canonical prefixes (`AirSyncBase:â€¦`) resolve to their own code page and unqualified descendants fall back to the root's page, so a decoded document re-encodes losslessly instead of hash-accidentally picking a wrong-page same-local-name token (`Body`â†’`Email:Body`, `LastName`â†’`GAL:LastName`).
-- **Fail-closed decode per Â§2.1.3**: the algorithm does not use string tables, processing instructions, or attribute encoding â€” so the decoder now *errors* on every corresponding [WBXML1.2] global token (EXT_I_0/1/2, PI, LITERAL_C, EXT_T_0/1/2, LITERAL_A, EXT_0/1/2, LITERAL_AC) and on tag tokens carrying the attribute bit, instead of guessing. Two character-data tokens stay leniently accepted by design though Exchange never emits them: `ENTITY` (0x02), a legal [WBXML1.2] character reference, and `STR_T` (0x83), which can only index this profile's always-empty string table. Unknown (code page, token) pairs are rejected (the tables are now proven complete, so nothing legitimate can hit this) rather than silently emitted as `_unknown_*` placeholders that downstream handlers would treat as real data; structural corruption â€” END with no open element, data after *or before* the root, truncated/unclosed elements, header-only bodies â€” is rejected instead of silently repaired, and the truncation error names the *outermost* unclosed element. Covered by `decode_rejects_forbidden_wbxml_tokens`, `decode_rejects_tag_tokens_with_attribute_bit`, `decode_rejects_unknown_tags_and_unknown_code_pages`, `decode_rejects_structurally_invalid_documents`, `decode_rejects_data_before_root_element`, `decode_truncation_error_names_outermost_element`.
-- **Fail-closed encode**: CDATA content is now encoded (previously silently dropped from the wire) with byte-array awareness; processing instructions and DOCTYPE are hard errors (WBXML cannot represent them) instead of being silently discarded; character data outside the document element is a hard error on both entry and exit. [MS-ASWBXML] Â§2.1.3 defines no attribute encoding, so an element's only representable attributes are namespace declarations: any other attribute, a malformed attribute, a duplicated attribute name â€” or a namespace (prefix or default) declared with a URI that maps to no code page and then *used* â€” is a hard error, never a silent drop; the previously duplicated attribute-scanning loops in the Start/Empty arms are one `encode_namespace_attributes` pass. Covered by `cdata_content_is_encoded_and_pi_doctype_are_rejected`, `encode_rejects_non_namespace_attributes`, `encode_rejects_declared_unknown_namespace_bindings`, `encode_rejects_character_data_outside_document_element`.
-- **Per-element content aggregation**: quick-xml can split one element's character content across Text, CData, and GeneralRef events; encoding per event emitted one STR_I (or one OPAQUE per partial base64 segment) â€” corrupting byte-array values ([MS-ASDTYPE] Â§2.7.1). Content is now accumulated and flushed as exactly one token per element, with byte-array base64 stripped of interior whitespace (xsd:base64Binary semantics) before the raw-byte decode. Covered by `split_element_content_encodes_as_single_wbxml_token`.
-- **Round-trip proof beyond the spec example**: every EAS response the suite renders already flows through encodeâ†’decodeâ†’assert in the eas.rs/sync.rs tests; with the re-encode symmetry fixes above, the decode output of any response re-encodes byte-identically (pinned per family in the OPAQUE test), which is the deterministic core of the requested fuzzing â€” the remaining grammar validation is the protocol-fixture and snapshot suites' job (22 + 11 wire-shape tests).
-
-### 12. `ItemOperations`/`Fetch` attachment correctness
-Delivered, spec-cited per [MS-ASCMD] v20250520:
-
-- **`Range` byte-range fetch** ([MS-ASCMD] Â§2.2.3.143): `parse_item_operations_byte_range` parses the request's inclusive `m-n` wire form into a half-open window; both fetch stores honor it â€” JMAP blob attachments via `JmapClient::download_blob_range` (streaming window slice with a `Content-Length` short-circuit and mid-stream budget abort; at EOF without a declared length the total is the bytes actually received, and a window starting at/past EOF is rejected as `RangeStartsPastEof` â€” status 8 â€” the same semantics the `Content-Length` precheck applies), and gateway-managed calendar attachments via `calendar_attachment_outcome` (window clamp-at-EOF, `AttachmentFetchOutcome`). The response's `Properties` carries `AirSyncBase:ContentType`, `Total` (Â§2.2.3.184.2, the authoritative whole-item size), the served window in `Range` (`m-n`, inclusive last byte â€” emitted only when the request asked for a range, per the Â§4.10.4.4 whole-attachment example), and the content: base64 in `Data` inline (Â§2.2.3.39.2) or a `Part` index in multipart mode (Â§2.2.3.130).
-- **Per-Fetch `Status` codes** ([MS-ASCMD] Â§2.2.3.177.8): unknown store â†’ 9; FileReference with a non-`Range` `Options` child â†’ 2 (Â§2.2.3.125.3: "`Range` is the only valid child element of the Options element" in this context); malformed Range, window past EOF, or declared span over the byte budget â†’ 8; item over `max_attachment_bytes`, or a Fetch whose content would overflow the remaining per-request cumulative budget (Â§2.2.3.67 allows multiple Fetches per request) â†’ 11; empty file â†’ 10 (Â§2.2.3.94.1); invalid/unresolvable FileReference blobId and 404-class misses â†’ 15; permission-denied and JMAP 401/403 â†’ 16; storage/transport/server failure â†’ 3; object not found â†’ 6; failed conversion â†’ 14; window clamped at EOF â†’ 17 ("Partial success").
-- **Multipart delivery** ([MS-ASCMD] Â§2.2.1.10.1, [MS-ASHTTP] Â§2.2.1.1.2.5): a request carrying `MS-ASAcceptMultiPart: T` gets `Content-Type: application/vnd.ms-sync.multipart` with a `MultiPartResponse` body (Â§2.2.1.10.1.1: `PartsCount` u32 LE, one `PartMetaData`{`Offset`,`Length`} per part, then the parts): part 0 is the WBXML with `<Part>n</Part>` replacing the attachment's `Data` (or the email body's `AirSyncBase:Data` per the Â§4.10.5.2 decoded example), subsequent parts carry the raw window bytes with no base64 inflation. `extract_body_for_multipart` moves the XML-escaped body characters out as raw bytes (unescaped) into their binary part.
-- **Response shape per Â§2.2.3.67.1**: the response `Fetch` carries no `Store` child; `Status` leads, followed by the address elements the request used â€” `airsyncbase:FileReference`, or `airsync:CollectionId` + `airsync:ServerId`, or `airsync:CollectionId` + `search:LongId` â€” then `airsync:Class` (Â§2.2.3.27.3) and `Properties`. This fixed a real wire bug: bare `<Class>`/`<CollectionId>`/`<ServerId>` inside a page-20-rooted `ItemOperations` document resolve to no [MS-ASWBXML] token, so every WBXML-encoded item fetch failed to encode.
-- **Memory-bounded assembly**: inline responses base64-encode in bounded chunks (`push_base64`, one scratch buffer â€” no full-size `String` of base64 plus the source bytes); `download_blob_range` prechecks `Content-Length` against `max_attachment_bytes` and aborts mid-stream when a chunkless server overflows the budget; multipart parts are the raw bytes themselves. The budget is also cumulative per request: `max_attachment_bytes` caps each Fetch AND the total content one ItemOperations response materializes across its Fetches (Â§2.2.3.67 "Multiple fetch operations can be included within one ItemOperations request" â€” the request-body limit bounds only the Fetch addresses), with the overflowing Fetch answered per status 11 while the remaining Fetches still execute in order. A single Fetch is governed by its own per-fetch cap alone, so no single-request behavior changes.
-- **Coverage**: `handle_item_operations_calendar_attachment_fetch` (inline Â§4.10.4.4 shape, ranged status-17 shape, multipart binary layout + WBXML part decode + request WBXML round-trip), `handle_item_operations_attachment_status_mapping` (9/2/8/3 + FileReference echo), `handle_item_operations_attachment_cumulative_budget` (multi-Fetch 1/11/11 in request order, cross-attachment accumulation, single-Fetch non-regression, multipart part-count consistency), `calendar_attachment_outcome_window_matrix` (whole/window/clamp/8/11/10/15), `extract_body_for_multipart_moves_data_to_part`, and the `download_blob_range` stub-server suite (window slicing, clamps, budgets, multi-chunk streamed totals, EOF past-range rejection, 401/403/404 â†’ 16/15, no-Content-Length streams) in `jmap.rs`.
-
-### 13. MeetingResponse / iMIP integrity
-`meeting/` + `meeting/scheduling.rs` exists; verify: RSVP replies sent via authenticated SMTP with the mailbox user's identity, organizer notification semantics (don't self-notify), JMAP `CalendarEvent/set` participant `participationStatus` updates, recurrence-instance vs series scoping, and duplicate-RSVP idempotence. Any asymmetry here corrupts the organizer's calendar â€” the most visible failure mode. Delivered:
-
-- **Authenticated SMTP with the mailbox user's identity**: the iTIP REPLY (plus a separate iTIP COUNTER for new-time proposals, RFC 5546 Â§3.6.7) is delivered via `SmtpClient::send_imip` with `from = user_primary_email(username, mail_domain)` and the user's own credentials â€” never a gateway identity. The MIME carries `text/calendar; method=REPLY` (and `METHOD:COUNTER`) plus a TNEF correlation part.
-- **No organizer self-notify**: an RSVP whose resolved ORGANIZER equals the responding user is rejected before any side effect â€” EAS gets [MS-ASCMD] Â§2.2.3.177.9 status 2 ("the user is the organizer"), EWS gets `ErrorCalendarIsOrganizer{Accept,Decline,Tentative}` â€” so no iTIP loop, no self-email, no calendar rewrite. One shared RSVP pipeline (`meeting/rsvp.rs::apply_rsvp`) serves both front doors: the EAS `MeetingResponse` command ([MS-ASCMD] Â§2.2.1.11, `handle_meeting_response` in `eas.rs`) and the EWS response objects (`handle_meeting_response_object` in `ews.rs`).
-- **Local participationStatus update**: the attendee's calendar copy is patched (`PARTSTAT` + `ResponseType` [MS-ASCAL] Â§2.2.2.21 + `X-MS-APPOINTMENT-REPLY-TIME`) and written through JMAP Calendar (`Calendar/set` via `set_calendar_event`, the configured write path) or CalDAV, creating the copy from the REQUEST for accept/tentative (declines are never booked), with all attendee `SCHEDULE-AGENT`s pinned to `CLIENT` (RFC 6638 Â§7.1) so Stalwart's scheduler never re-emits a second copy of the reply.
-- **Recurrence-instance vs series scoping**: whole-series responses patch the master; instance responses (`InstanceId` = UTC occurrence start, [MS-ASCMD] Â§2.2.3.92.1) patch only the matching exception (created when absent), leave the master untouched, and deliver a RECURRENCE-ID REPLY with the instance's own times (RFC 5546 Â§3.6.2). Statuses: malformed InstanceId â†’ 104; InstanceId on an email source â†’ 2; non-recurring item â†’ 146; nonexistent occurrence (EXDATE-removed or deleted exception, proven via `rrule` expansion) â†’ 2. The expansion is timezone-faithful: the event's `TZID` (IANA; `chrono-tz`) anchors the wall clock, so a recurring 09:00 Europe/Berlin meeting recurs at 08:00Z in winter and 07:00Z in summer, and the summer UTC instant is accepted (expanding in UTC would wrongly reject it with status 2). An uninterpretable timezone fails *open* â€” the instance cannot be disproven, so the response is recorded rather than dropped.
-- **Duplicate-RSVP idempotence, revision-aware** ([MS-ASCMD] Â§2.2.1.11 disambiguation + RFC 5546 Â§3.2.1.4): the delivered decision is recorded in the `meeting_rsvp` store keyed `(owner, uid, instance_key)` â€” whole-series `""` vs UTC RECURRENCE-ID â€” **after** a successful send, together with the REQUEST `SEQUENCE` it answered; a repeated decision on the same revision suppresses the second REPLY email, while a changed decision â€” or the same decision on a rescheduled REQUEST whose `SEQUENCE` moved â€” is delivered and recorded. A failed send stays unrecorded so the client retry redelivers. The REPLY is recorded the moment it is delivered; the new-time COUNTER is deliberately never recorded, so a status-3 retry after a failed COUNTER re-proposes without re-sending the already-delivered REPLY.
-- **Organizer-bound stored-copy patching**: an existing UID-mapped attendee copy is re-read from the backend immediately before patching and is only patched when its stored organizer matches the REQUEST's (normalized, `mailto:`-stripped, case-insensitive) â€” meeting identity is (organizer, UID), so a UID collision or forged REQUEST can never overwrite an unrelated stored event, and the decision lands on the copy *as it exists now* (an organizer reschedule that raced in syncs through the normal paths instead of being clobbered).
-- **Split iTIP senders**: the REPLY and the COUNTER are two separate SMTP messages (RFC 5546 Â§3.2.10/Â§3.6.7) with correct per-method addressing â€” a COUNTER is addressed between attendee and organizer, never as if the attendee were the organizer â€” and an instance-scoped message of either kind carries `RECURRENCE-ID` plus the *instance's* own times (from the exception when one exists, master-duration-scaled otherwise).
-- **Status table** ([MS-ASCMD] Â§2.2.3.177.9): 1 success, 2 invalid-item (unresolvable/malformed address, both/neither of RequestId+LongId, bad UserResponse, lone Proposed time, organizer self-response, nonexistent instance), 3 server error (retry) for JMAP/CalDAV/SMTP failure; Global collection 3 for the transient case. Response `<Result>` shape per Â§2.2.3.132: `RequestId` + `CalendarId` (accept/tentative only) + optional `InstanceId` echo.
-- **Coverage**: `rsvp.rs` unit tests pin the status constants, decision/response-type/attendee-status code tables, `instance_key` RECURRENCE-ID format, series vs instance patching (master roster untouched by instance responses; exception merge when already present), case-insensitive attendee matching + unknown-responder roster append, instance existence (pre-start, EXDATE, rrule expansion, deleted exceptions, fail-open on uninterpretable rules and timezones, DST-shifted summer occurrence of a Europe/Berlin weekly series), revision-aware duplicate detection (`is_duplicate_rsvp` decision+SEQUENCE table), organizer identity comparison (`same_meeting_organizer`), partstat round-trip, and lone-proposed-time rejection; `eas.rs` handler tests pin the no-Request 400, malformed InstanceId â†’ 104 with raw echo, address/UserResponse validation â†’ 2 Ă—3, lone proposed time â†’ 2, unknown calendar address â†’ 2, unresolvable email â†’ 3, and a full `as_wbxml` response round-trip through code page 8 (plus `test_eas_meeting_response_encodes_as_wbxml_page8` in `meeting/message.rs`); `ews.rs` handler tests pin unrecognized object â†’ 400 `ErrorInvalidRequest`, missing `ReferenceItemId` â†’ 400 `ErrorSchemaValidation`, email-disabled gate â†’ 403, the unroutable-backend pipeline path â†’ 500 `ErrorInternalServerError` in a well-formed SOAP error envelope, and the response-object-scoped XML extraction (the reply `Body` and `ProposedStart`/`ProposedEnd` are read from the `AcceptItem`/`TentativelyAcceptItem`/`DeclineItem` block â€” a whole-envelope local-name scan would match the SOAP `s:Body` and leak envelope text into the reply email); `storage.rs` pins the idempotence store (uid/instance-key/owner scoping, decision overwrite, SEQUENCE revision overwrite, no cross-account leak, pre-`sequence`-column migration backfill).
-
-### 14. Timezone fidelity both directions
-`windows-timezones` + `timezone.rs` present; needs proof tests that every Windows TZ name the clients emit (EAS `Timezone` blob format, not just names) maps to an IANA tz with correct DST rules and round-trips Stalwart JSCalendar/CalDAV without offset drift. Berlin/Amsterdam relative-DST rules are a classic breakage point. Delivered:
-
-- **Single authoritative zone source**: `timezone.rs::zone_transitions` samples each IANA zone with `chrono-tz` (canonical-offset representative instants across the reference year) and derives the Windows `TZI` `REGTIMEZONE_INFORMATION` params from it â€” the SAME sampler feeds the EAS `<Calendar:Timezone>` base64 TZI blob (`iana_to_eas_timezone_blob`), the EWS `StartTimeZone`/`EndTimeZone` registry id (`iana_to_windows_timezone_name`), and the synthesised iCalendar `VTIMEZONE` block, so the three wire formats never disagree on a transition boundary.
-- **EAS blob decode, exact and DST-faithful**: `decode_eas_timezone_blob`/`eas_timezone_blob_to_iana` parse the 172-byte TZI (bias, standard/daylight names, month/week/day/time transitions, `wDay==5` = last-of-month) and resolve the IANA zone by structural match against the authoritative transitions â€” every one of the 139 `windows-timezones` variants round-trips blobâ†’IANAâ†’blob (`every_windows_timezone_blob_round_trips_to_same_iana`), and each blob's offset agrees with `chrono-tz` ground truth at every month-boundary sample (`no_offset_drift_vs_chrono_tz_ground_truth`). A blob whose transitions match no candidate falls back to fixed-offset synthesis, never to a silent name guess.
-- **Nameâ†’IANA tiers, fail-strict**: `windows_timezone_name_to_iana` resolves exact registry ids (case/width-insensitive), then the `(UTCÂ±hh:mm) â€¦` display descriptions, then â€” last â€” a bare fixed-offset name; the substring heuristic ignores short `UTC*`/`GMT*` tokens so "(UTC+01:00) Amsterdam, Berlinâ€¦" cannot falsely resolve to UTC. Non-16.1-era quirks (the `City City` dotted legacy spellings) are NOT guessed. Unresolvable names return `None` and the caller fails closed rather than rendering a wrong zone.
-- **CalDAV/VTIMEZONE**: `resolve_ical_tzid` tries the TZID as an IANA id, then a Windows registry id / display description, then a **structural VTIMEZONE match** (comparing the block's actual transitions against each candidate's authoritative transitions â€” EU last-Sunday rules resolve exactly), and only then legacy fixed-offset GMT names; a custom-or-private TZID with a well-formed VTIMEZONE still resolves to the correct zone, so Stalwart-sourced events with hand-written zones localize correctly.
-- **Naive wall-clock localization with DST gap/fold policy**: `localize_gap_tolerant` maps a fold (ambiguous) time to the EARLIER offset and a gap (nonexistent) time to the offset in force just before the transition, used by both `parse_datetime_with_tzid` (iCalendar) and EWS naive `t:Start`/`t:End` values. An explicit UTC (`Z`) value always wins over any zone element ([MS-OXWSCORE] Â§2.2.1.12), and per-item zone elements (`StartTimeZone`/`EndTimeZone`/`MeetingTimeZone`/legacy id elements) override the SOAP `t:TimeZoneContext` header.
-- **EWS render**: `<t:StartTimeZone>`/`<t:EndTimeZone>` are emitted in Exchange's attribute form with `Id` = the Windows registry id and `Name` = the SAME variant's `(UTCÂ±hh:mm) â€¦` display description (a matched pair via `windows_variant_for_iana` â€” never two independently-resolved zones), XML-escaped; `<t:MeetingTimeZone>` carries the registry id in its `TimeZoneName` attribute. Renderâ†’parse round-trips: the fragment re-parses to the canonical IANA representative of the Windows zone (Amsterdamâ†’W. Europeâ†’Europe/Berlin â€” Windows zones are coarser than IANA; the round-tripped zone is offset-identical to the original at every quarterly sample, so recurring expansion and re-localization are indistinguishable) and the UTC instants are preserved exactly.
-- **EAS render**: the `<Calendar:Timezone>` blob is emitted for every non-UTC event from the stored IANA id (UTC events omit it â€” the all-zero TZI reads as a failure to some clients), and Start/End travel as UTC instants per [MS-ASCAL]. `Calendar:TimezoneName`-style structured zones are never emitted (no code-page-4 tokens exist). The rendered blob decodes back to the SAME IANA id and carries the full DST rules â€” a January and a July wall clock evaluated through the blob reproduce `chrono-tz`'s ground-truth offsets for both northern- and southern-hemisphere zones (`eas_calendar_timezone_blob_round_trips_zone_and_dst`).
-- **GetServerTimeZones ([MS-OXWSGTZ] Â§3.1.4.1.3.3)**: every `windows-timezones` variant is served as a full `t:TimeZoneDefinition` (bias + standard/daylight periods with `NonStandardOffset` and correct `TransitionTime` shapes â€” fixed-date and `wDay`-of-`wWeek` recurring, `wDay=5` = last occurrence) or, with `ReturnFullTimeZoneData="false"`, as the attribute-only form (`Id`/`Name`, no periods). Requested `t:Ids` filter in request order, unknown ids are silently dropped, and the served `Id`/`Name` pair is the same one the EWS item renderer writes, so Outlook's picker and the per-item zone elements agree (`get_server_time_zones_*` tests, incl. a cross-transport consistency check against the EAS blob for the same zone).
-- **Coverage**: `timezone.rs` pins the 139-zone blobâ†”IANA round-trip, the chrono-tz no-drift matrix, name-tier resolution (registry ids, descriptions, legacy forms, bare-UTC guards), and the VTIMEZONE structural matcher; `calendar.rs` pins TZID resolution order (IANA â†’ Windows id â†’ VTIMEZONE structure â†’ fixed-offset last), naive localization through gap/fold (spring-forward gap â†’ pre-transition offset, fold â†’ earlier), explicit-UTC precedence, and element-over-`TimeZoneContext` precedence; `sync.rs` pins the EAS blob render (correct bias, never StartTimeZone, UTC-event omission, full renderâ†’blobâ†’IANA round-trip with quarterly offset agreement); `ews.rs` pins the item-render round-trip (Id/Name matched pair, MeetingTimeZone attribute form, escaping, instant preservation, canonical-zone equivalence for coarser Windows ids) and the GetServerTimeZones matrix.
-
-### 15. Tasks/Notes are backend-synced to Stalwart CalDAV (VTODO/VJOURNAL)
-FolderSync always advertises Tasks and Notes; previously they lived only in the gateway's SQLite, so Stalwart webmail/other CalDAV clients never saw them â€” data divergence that violated the "Stalwart is the only backend" premise. Option (a) is delivered in full: Stalwart has no native Tasks/Notes (JMAP Tasks is not in v0.16.22), but its CalDAV store accepts the complete iCalendar component set, so the gateway bridges EAS Tasks to VTODOs (RFC 5545 Â§3.6.2) and EAS Notes to VJOURNALs (Â§3.6.3) in per-user collections (`/{cal}/{user}/Tasks/`, `/{cal}/{user}/Notes/`, MKCALENDAR-ensured per RFC 4791 Â§5.3.1 with the matching supported-component-set). Stalwart is the system of record; the SQLite tables are a mirror/journal cache. Delivered:
-
-- **Write-through mutations** ([MS-ASCMD] Â§2.2.3.9 Change semantics): an Add PUTs a complete VCALENDAR/VTODO (or /VJOURNAL) to the user's collection *first* â€” the EAS `ServerId` becomes the iCalendar `UID` so any CalDAV client sees a stable identity, and the resource filename is the ServerId when URL-safe, else a fresh uuid â€” and the mirror row records `caldav_href` + `etag` + `uid` only after the PUT succeeds. A Change re-reads the authoritative backend object, patches **only** the EAS-owned property lines, and PUTs back with `If-Match` (412 â†’ refresh-etag retry â†’ unconditional fallback, the calendar path's proven ladder); a Delete deletes the backing resource first, then the local row (a genuinely missing resource is treated as already-deleted). Item-level Sync statuses: 1 success, 6 server error, 8 object not found. An Add is idempotent by `ClientId`: the `(ClientId → ServerId)` record is written the instant the PUT succeeds (before the mirror upsert, so even a failed upsert leaves a replayable identity) and a retry of the same `ClientId` replays the recorded `ServerId` instead of PUTting a second resource.
-- **Foreign-property preservation**: `patch_component_ics` rewrites exactly the mapped properties of the one component block (`SUMMARY`, `DESCRIPTION`, `PRIORITY`, `CLASS`, `STATUS`, `COMPLETED`, `DTSTART`, `DUE`, `CATEGORIES`, the `X-SGW-*` carriers, `VALARM` for tasks; the note set for VJOURNALs) â€” everything else in a backend object (RRULE, ATTENDEE, URL, X-*) survives a gateway Change verbatim, `DTSTAMP` is bumped (RFC 5545 Â§3.8.7.2) and `UID` guaranteed. The `VALARM` is rewritten as a unit (an EAS-absolute reminder is `TRIGGER;VALUE=DATE-TIME`). A gateway Change of a completed task (EAS `Complete=0`, the only "not done" projection) resets `STATUS:COMPLETED`â†’`NEEDS-ACTION` (RFC 5545 Â§3.8.1.11) while a foreign `STATUS` (e.g. IN-PROCESS) is preserved; and if the backend object cannot be parsed for patching, the Change fails closed (status 6) instead of overwriting it and losing those foreign properties.
-- **Wire-faithful property mapping** (both directions, round-trip pinned): Importance 0/1/2 â†” PRIORITY 9/5/1 (RFC 5545 Â§3.8.1.9 bands); Sensitivity â†” CLASS with `X-PERSONAL` for "Personal"; the exact EAS wire date strings travel in `X-SGW-STARTDATE`/`-UTCSTARTDATE`/`-DUEDATE`/`-UTCDUEDATE` while `DTSTART`/`DUE` carry the absolute instant (so a gateway round-trip preserves both the local wall clock and the UTC form the client sent, and foreign objects still parse via their iCalendar values); `CATEGORIES` uses RFC 5545 Â§3.3.11 escaping both ways; content lines fold at 75 octets without splitting UTF-8 sequences (Â§3.1) and re-unfold to the identical logical lines; a VJOURNAL carries `DTSTART` as the note's entry date and `X-SGW-MESSAGECLASS`/`X-SGW-LASTMODIFIED` for the EAS `MessageClass`/`LastModifiedDate`.
-- **Reconciliation on every Tasks/Notes Sync** (after mutations, before the change-journal read, so remote deltas land in the same response and the delivered watermark covers them): a `calendar-query` REPORT (RFC 4791 Â§7.8, component filter, no time-range so every VTODO/VJOURNAL matches regardless of dates) drives convergence â€” backend-new or backend-changed objects are imported (journal-writing upsert â†’ client-visible Add/Change), an object that moved under a new href keeps its EAS ServerId by UID adoption, rows whose backing href the REPORT no longer lists are tombstoned (client-visible Remove), and rows that never reached the backend (pre-Â§15 records, or a partially failed Add) are uploaded so the backend ends up owning every row. Bookkeeping-only updates (`set_task_backend_ref`/`set_note_backend_ref`) write no journal event, so clients are never told about a mutation they already have. A reconcile failure degrades to serving the mirror: the collection still returns Status 1 with its current state (warn-logged), so a Stalwart outage degrades to the pre-Â§15 behavior instead of failing the collection. The whole reconcile is additionally bounded by one aggregate timeout (the per-request 30s CalDAV client timeout alone would let N sequential hung requests stall Sync for minutes), so a hung backend cannot block the collection.
-- **Backend-push wake for Ping** ([MS-ASCMD] Â§2.2.3.162): Tasks/Notes edits made *in Stalwart* previously reached the client only at its next scheduled Sync â€” the reconcile runs in Sync, so a Ping waiting between Syncs slept through backend edits. Each Ping tick now probes the backend's etag inventory first (one getetag-only `calendar-query` REPORT per collection â€” no `calendar-data`, no MKCALENDAR, so an idle user costs one small response per tick; the whole probe is bounded by the time left in the heartbeat) and compares it against the mirror's (href, etag) set; on divergence it runs the same reconcile the Sync path uses, whose journal writes flow into the per-folder journal check *in the same pass*, so the Ping answers Status 2 within one tick of the backend change. A resource the server reports without an etag suppresses only the same-href etag *comparison* (href additions/removals are differences regardless of etags) â€” so a conforming-but-stingy server can never make the probe report a permanent change and reconcile-loop every tick. A probe or reconcile failure disables the backend probe for its OWN class only (a tasks collection that 404s because the user never synced Tasks never masks a populated notes collection, and vice versa); journal detection (client-side changes) keeps working, so a dead backend is never re-hit every 15 seconds and the outage degrades to Status 1 at the heartbeat, never a broken Ping.
-- **Fail-closed routing**: with the backend *configured but unreachable*, mutations of mirrored rows fail closed (status 6) and leave the mirror untouched â€” an Add leaves no local row, a Delete keeps the row â€” so the next reconcile cannot resurrect or duplicate anything and client retries converge; rows without a backend identity (legacy, never-pushed) keep working locally and are pushed at the next successful reconcile. With no backend configured (`caldav_base` empty) the store is purely gateway-local, exactly as before Â§15.
-- **Storage/migration**: `task_map`/`note_map` gain `caldav_href`, `etag`, `uid`; `init_schema` probes `PRAGMA table_info` and `ALTER TABLE â€¦ ADD COLUMN`s the three columns on pre-Â§15 databases, **then** creates the owner-scoped href/uid indexes (`idx_{task,note}_map_{href,uid}`) â€” the indexes are built there, not in `sqlite_schema.sql`, because `CREATE INDEX` resolves its columns at execution and a pre-Â§15 database would abort the whole schema script with "no such column" before the ALTERs could run. Existing databases therefore migrate in place, and `IF NOT EXISTS` keeps re-init idempotent. ETags are stored in the gateway's normalized internal form and re-quoted for `If-Match` (the calendar path's convention), and the REPORT parser canonicalizes hrefs to the same path-only form `put_event` returns, so backend identity comparisons are stable across Syncs.
-- **Coverage**: `tasks.rs` pins the VTODO buildâ†’parse round-trip (all fields, folding-safe), the completedâ†’reset transition, foreign-property preservation + VALARM-unit rewrite, the VJOURNAL round-trip, the importance/sensitivity matrices, the EASâ†”iCalendar datetime conversions, text escaping both directions, 75-octet folding re-unfolding, URL-safe resource filenames, and the fail-closed routing matrix (Add/Change/Delete Ă— unreachable-backend mirrored rows, legacy-row delete, unconfigured-backend local adds/notes); `eas.rs` pins that a Tasks Sync survives a CalDAV outage (Status 1 + mirror state served) and that a Ping holding a Tasks folder both survives the outage probe (clean Status 1 at the heartbeat cap) and still fires Status 2 for the Tasks folder on a journal change after the probe disabled itself; the probe itself is pinned by `inventory_diff_detects_every_divergence` (add/remove/etag-change/missing-etag semantics) and the fail-closed-class (`backend_inventory_probe_marks_unreachable_class_failed`) and construction-failure (`backend_inventory_probe_not_configured`) `backend_inventory_changed` tests.
+**Priority key.** `P0` = blocks the use-case outright (clients cannot add the
+account, mail/calendar never arrives, or push is silently broken).
+`P1` = correctness/completeness gaps the two named clients will hit.
+`P2` = robustness/operations gaps (deployment, observability, hardening).
+`P3` = polish / supply-chain hardening.
 
 ---
 
-## P2 â€” Robustness / operations
+## P0 — Blocks the use-case outright
 
-### 16. Watermark pruning vs. long-offline devices
-Hourly `prune_change_journals` deletes rows at/below the lowest live watermark. A phone offline longer than the pruning safety window (or a device holding a stale `seq:` watermark) must get a clean full-resync (Sync status 3) rather than a silently re-keyed gap. Delivered:
+### 1. Gateway image is not published / registry placeholder
 
-- **Pruned floor is recorded per owner** (`journal_prune_state`, schema v10): `prune_change_journal` already deleted `id <= MIN(readable seq watermark)`; it now also records that floor (monotonically — a later, lower floor such as a fresh device syncing from 0 never erases the fact that rows at the old floor are gone). `pruned_through(owner)` exposes it; `journal_window_stale(owner, since)` is `since < pruned_through` — a sync resuming from `since` needs every row `id > since`, pruning removed every row `id <= floor`, so the window is intact exactly when `since >= floor`. A device whose watermark is an opaque provider token (a calendar collection's JMAP `query_state`) is invisible to the floor scan, so its effective watermark stays at 0 — below any floor a second, readable-watermark device establishes — and is correctly detected as stale.
-- **Forced resync at every EAS Sync front door**: the shared local-content Sync (`handle_local_content_sync`, Tasks/Notes) computes the exact position the delta/continuation branches will resume from (a continuation window's cursor `base_seq`, else the stored `seq:` token, else 0 — the same default those branches use for an unreadable token) and, when that position is below the pruned floor, returns **Sync status 3 with SyncKey 0** and conditionally clears any in-flight windowed-sync cursor, so the client re-primes cleanly instead of the collection silently resuming across a re-keyed gap. `incoming_key == "0"` is itself a full resync and is never rejected. **The guard runs before client mutations are parsed**: a stale-key Sync that also carries Add/Change/Delete commands is rejected with no `<Responses>` acknowledgement and no side effects, so the client's clean re-prime starts from a state it can reconcile against. Every `journal_window_stale` call is **fail-closed** (`unwrap_or(true)`) — a transient storage error can never let a client resume across a window that may have been erased. The cursor is abandoned with a compare-and-set (`clear_local_sync_cursor_if`) matching the `(last_key, base_seq)` that was scanned, so a cursor persisted by a concurrent `SyncKey 0` prime is never dropped.
-- **Delivery half — Ping wakes the stale folder** ([MS-ASCMD] Â§2.2.3.162): a long-offline device would otherwise sleep through its own re-prime. The Ping per-folder check treats a watermark below the pruned floor as a change (`stale || <normal change detection>`), so the folder is reported Status 2 within one tick and the client's follow-up Sync performs the forced resync. This is guarded by the same `journal_window_stale` so a healthy folder never storms.
-- **GetItemEstimate refuses to estimate a stale window**: `handle_get_item_estimate` reports the invalid-key status **4** ([MS-ASCMD] Â§2.2.3.177.8) when the collection's watermark is below the pruned floor, instead of a wrong count the client would resume from.
-- **EWS SyncFolderItems**: a **client-supplied** SyncState cursor below the pruned floor is rejected with `ErrorInvalidSyncStateData` (the EWS analogue of Sync status 3) so the client re-primes with a null SyncState. A **gateway-persisted** cursor below the floor (`ews_sync_state` is not part of the pruning floor scan, which reads only `seq:`/`journal_seq` watermarks in `sync_state`) is *not* rejected — rejecting it would spin an unrecoverable re-prime loop — but is likewise not resumed from: the request is treated as a full **snapshot prime**. A prime re-enumerates the live `item_map` set keyset-paginated (`list_changes_after_server_id`, `server_id` ASC, bounded by `MaxChangesReturned`) instead of walking the journal, so no pruned-window gap can be cut into the result. A change journaled mid-prime stays above the frozen baseline and is delivered by the first delta after the prime completes; a client that sends a null SyncState mid-prime restarts the snapshot (the EAS `SyncKey 0` rule), while a supplied cursor continues the keyset window it was given.
-- **Calendar delta needs no guard**: the calendar `perform_sync` derives its delta from the backend snapshot diffed against `item_map` (etag comparison), never from the client's stored watermark, so journal pruning cannot cut a window out from under a calendar client; its stored token is frequently an opaque JMAP `query_state`, which would make a naive guard fire forever. Documented in place of a guard.
-- **Coverage**: `storage.rs` pins the recorded floor, the stale/at-floor/above-floor boundary, floor monotonicity, and that a watermark-less prune fabricates no floor (`prune_records_floor_and_detects_stale_windows`, `prune_without_watermark_leaves_floor_unset`), the atomic prune+floor transaction, the compare-and-set cursor clear (`clear_local_sync_cursor_if_is_compare_and_set`), and the keyset live-set enumeration (`list_changes_after_server_id_paginates_live_set`); `eas.rs` pins the forced Status 3 (with no delta delivered) and the clean re-prime that follows, that a stale-key Sync carrying mutations applies nothing and emits no `<Responses>`, the healthy delta that is *not* forced (guard-doesn't-over-fire), the Ping stale-wake, and the GetItemEstimate status 4; `ews.rs` pins the client-supplied pruned-cursor rejection, that a null SyncState is not rejected as stale, and that a stale *persisted* cursor re-primes rather than being rejected.
+`docker-compose.yml` carries `image: <registry>/exchange-gateway:0.1.0` — a
+placeholder the operator must replace. There is no publish pipeline in the
+repo (no `.github/workflows/docker-image.yml`, no buildx/push target), so the
+operator cannot `docker compose pull && up -d` without building the image
+themselves, which contradicts the deployment scenario ("the container image
+will be pulled from the docker registry I am using").
 
-### 17. Auth negative-caching and cache-invalidation — COMPLETE
+- **Action:** Add a GitHub Actions workflow that builds multi-arch
+  (`linux/amd64` + `linux/arm64`) and publishes to a registry on release tag.
+- **Code priority:** existing deps (Docker, buildx) — no code change; add CI
+  workflow file.
 
-`AuthVerifier` (src/auth.rs) now distinguishes three outcomes instead of
-collapsing everything to a bool: `Verified`, `InvalidCredentials` (an
-authoritative 401/403), and `BackendUnavailable` (a 5xx / transport failure).
-The distinction is what keeps a transient Stalwart hiccup from being answered
-with a 401, which makes Outlook *prompt the user for a password*.
+### 2. `.env.example` ships as a real file (forbidden by deployment scenario)
 
-Delivered behavior:
+The deployment scenario explicitly forbids an env-file: "No env-variable file
+shall be used. If this exists in the repository, delete it."
+`.env.example` is present in the repo root. While it is a *reference* document
+(not copied at runtime), its mere existence violates the letter of the
+requirement and risks an operator creating `.env` from it and breaking the
+inline-only contract.
 
-- **401 vs 5xx split**: `JmapClient::check_credentials` and
-  `CaldavClient::check_credentials` return a tri-state `CredentialCheck`.
-  `JmapClient` reports `Valid` / `Invalid` (on the session endpoint's `401` or
-  `403`) / `BackendError(_)` on any other status or a transport failure. A
-  CalDAV `403` is deliberately *not* `Invalid`: a PROPFIND on a calendar home
-  can be forbidden for an account whose password is valid, so it is a non-auth
-  `BackendError`, reserved for `401`. `AuthVerifier::verify_backend` collapses
-  these into an `AuthOutcome`.
-- **No CalDAV fallback storm**: a JMAP *backend error* returns
-  `BackendUnavailable` immediately and does **not** consult CalDAV. CalDAV is
-  consulted only after JMAP *authoritatively rejects* the credentials, purely
-  to arbitrate a deployment where CalDAV is the real arbiter; a CalDAV backend
-  error in that case cannot undo JMAP's definitive negative. (A CalDAV-only
-  deployment with no JMAP configured probes CalDAV directly, as its sole
-  arbiter.)
-- **Backend outages are never cached**: only `Verified` and
-  `InvalidCredentials` are inserted into the moka cache; `BackendUnavailable`
-  is not, so the very next request re-probes once the backend recovers. (A
-  CalDAV backend error encountered *while arbitrating a JMAP rejection* does not
-  produce a `BackendUnavailable` outcome — it leaves JMAP's negative standing —
-  but no result in that path caches a backend error either.)
-- **Short, jittered negatives**: positive results keep
-  `GATEWAY_AUTH_CACHE_TTL_SECS` (default 300s, floor 30s); negative results use
-  the new `GATEWAY_AUTH_CACHE_NEGATIVE_TTL_SECS` (default 30s) plus a
-  deterministic per-key SHA-256 jitter of up to 25% of that TTL — so a fixed
-  password stops being locked out within seconds, and concurrent negatives do
-  not all expire in lockstep. A negative TTL of 0 disables negative caching
-  entirely.
-- **Cache invalidation on password change**: a successful login evicts every
-  other cached credential for the same username, so an old password stops
-  working at the gateway the moment the new one is first used (rather than
-  lingering for the full positive TTL). `invalidate_user` is exposed for
-  explicit, broader invalidation. Ordering is race-free: concurrent
-  verifications for a user are ordered by the instant they *started* (a
-  monotonic per-request ticket) and the ticket that a user's newest committed
-  result carries is recorded (bounded, TTL + capacity), so a slower in-flight
-  check of an old password can never insert an entry after a newer login's
-  result was committed; the check-and-commit step is serialized by a mutex so
-  two finishing verifications cannot both write. A cancelled verification
-  simply never commits, so it also cannot leave state that suppresses later
-  logins.
-- **Retryable 5xx at the front doors**: the EAS handler answers a backend
-  outage with `503 Service Unavailable` + `Retry-After` (with a `Status` 111
-  body only for protocol version 14.0+, since [MS-ASCMD] §2.2.3.177.8 specifies
-  a bare HTTP 503 for 2.5/12.0/12.1), and the EWS handler with a `503`
-  `ErrorServerBusy` SOAP fault, whose faultcode is derived from status in
-  `soap_fault` (5xx→`s:Server`, 4xx→`s:Client`) — the outage must not read as
-  the non-retryable `s:Client`. Both are retryable, neither sends a
-  `WWW-Authenticate` challenge. Other surfaces that
-  only need a yes/no gate (`verify`) keep the historical `false` mapping.
-- **JMAP probe validates the session object**: a bare 2xx is not accepted as
-  proof of valid credentials — the body must parse as an RFC 8621 §2
-  `JmapSession`, else it is a `BackendError` (retryable, never cached
-  positive), so a `204` or an HTML `200` from an intermediary cannot
-  authenticate and cache a non-credential.
-- **Knob documented**: `GATEWAY_AUTH_CACHE_NEGATIVE_TTL_SECS`
-  (`auth_cache_negative_ttl_secs` in the config file) is parsed, logged at
-  startup, and defaults to 30s.
+- **Action:** Delete `.env.example` from the repo. Keep its content as a
+  reference section inside `docker-compose.yml` comments (already done there).
+- **Code priority:** none (file deletion).
 
-Tests: 19 in src/auth.rs (positive caching, negative caching, negative
-expiry, negative-TTL-0 disabling, backend-error-not-cached, no-CALDAV-on-5xx,
-CALDAV arbitration, CALDAV-only paths, empty-credential rejection,
-password-change eviction, `invalidate_user` scope, jitter determinism/spread,
-concurrent start-order race), stub-server `check_credentials` classification
-tests in src/jmap.rs (incl. non-session 2xx and empty 204 rejected as backend
-errors) and src/caldav.rs (200/207 valid, 401 invalid, 403/5xx backend error),
-and front-door 503-vs-401 integration tests in src/eas.rs (incl. Status-111
-protocol-version gating for 12.1/16.1/no-version) and src/ews.rs (faultcode
-derivation from status + `s:Server` on the outage). Suite: 1063 lib + 2 + 22 +
-11 + 1 doc = 1099 green.
+### 3. Dockerfile bakes in `TZ="UTC"` but the use-case is `Europe/Amsterdam`
 
-### 18. Auth-cache + rate-limit sizing for two clients is fine, but per-request Basic-auth probe to Stalwart is the SPOF — COMPLETE
+The Stalwart compose sets `TZ=Europe/Amsterdam`. The gateway Dockerfile hardcodes
+`ENV TZ="UTC"`. Calendar/TZ correctness for the Amsterdam operator depends on
+the gateway sharing Stalwart's zone for any local date rendering.
 
-The per-request Basic-auth probe to Stalwart was the single point of failure
-that fronts both Outlook clients: every EAS/EWS request authenticates, and any
-cache miss cost a JMAP `GET /session` round-trip. A container restart (cold
-cache) therefore fired a burst of probes per request from both clients plus
-Microsoft's IPs, and a Stalwart outage turned each of those into either a
-password prompt (if misclassified as 401) or an unbounded retry storm.
+- **Action:** Change `ENV TZ="UTC"` to `ENV TZ=Europe/Amsterdam` (or make it a
+  `GATEWAY_TZ` env var, default `Europe/Amsterdam`). The operator already sets
+  `TZ=Europe/Amsterdam` in the Stalwart compose; mirror it here.
+- **Code priority:** existing deps (Debian tzdata already installed).
 
-Delivered behavior:
+### 4. No CI workflow proving the workspace compiles against the shipped deps
 
-- **Short-lived shared session-auth cache** (`JmapClient::probe_auth`,
-  src/jmap.rs): credential probes are cached per `username:SHA-256(password)`
-  (never the password itself) with a positive TTL derived from the verifier's
-  `GATEWAY_AUTH_CACHE_TTL_SECS` and a negative TTL from
-  `GATEWAY_AUTH_CACHE_NEGATIVE_TTL_SECS`. Positive/negative results are served
-  without touching Stalwart; `BackendError` (a 5xx / transport failure) is
-  **never** cached, so a recovered backend is observed by the very next
-  request. The cache is a capacity-bounded moka cache
-  (`GATEWAY_AUTH_CACHE_MAX_ENTRIES`) whose per-entry TTL is injected by
-  `AppState`, so the client cache can never outlive the verifier cache that
-  governs the documented TTL contract, and it cannot grow without bound across
-  a username scan. A successful probe
-  evicts every *other* cached credential for the same user, so a password
-  changed directly on Stalwart takes effect on first use.
-- **Shared client topology**: `AppState::new` now constructs the JMAP client
-  *before* the `AuthVerifier` and passes it in
-  (`AuthVerifier::new_from_topology`), so the verifier's probes reuse the
-  app-wide HTTP connection pool and the one session-auth cache instead of
-  building a throwaway client per probe. The shared client is built whenever
-  `jmap_base` is set, **regardless of `email_enabled`** (an operator can turn
-  off the email feature while still authenticating users against Stalwart); the
-  email accessors (`jmap_client`, `can_read_email`, `email_available`) still
-  honor `email_enabled`, so folder sync feature-gating is unchanged. Standalone
-  constructions (`AuthVerifier::new`, tests) keep a throwaway probe client.
-- **Cold-start warm path** (src/main.rs `warm_backend_session`): at startup the
-  administrator JMAP session is fetched and cached (and the connection pool
-  primed) before the server listens, so the first authenticated request does
-  not pay a cold session round-trip. It never fails startup — a cold backend is
-  logged and the lazy path warms on first request.
-- **Per-user probe rate cap** (`auth_probe_min_interval_ms`,
-  `GATEWAY_AUTH_PROBE_MIN_INTERVAL_MS`, default 1000ms): consecutive *cold*
-  backend probes for one user are spaced by at least this interval, so even a
-  flood of sequential requests for a user whose credential cache is
-  continuously missing cannot pin Stalwart. A cached outcome is never gated by
-  the cap, so steady-state traffic is unaffected.
-- **In-flight dedup** (src/auth.rs `warm_verify`): concurrent cold probes for
-  the *same credential* collapse onto a single backend round-trip. The dedup
-  key is the credential (`username:hash`), not the user, so two probes for
-  *different* passwords of the same user still run concurrently and the §17
-  start-order race guard keeps observing genuine overlap. A waiter that queues
-  behind the rate cap re-checks the credential cache before issuing its own
-  probe, so the cap acts as a dedup barrier rather than a redundant-probe
-  generator. The in-flight slot is released after every path so the map cannot
-  grow without bound.
-- **Circuit breaker / backoff** (`auth_backend_failure_threshold` default 5,
-  `auth_backend_max_backoff_secs` default 60): after N consecutive
-  `BackendUnavailable` results for a user, that user's circuit opens for an
-  exponentially growing (and capped) window. While open, probes are refused
-  with `BackendUnavailable` *without contacting Stalwart*, so a down backend is
-  not hammered by every request from both clients. Any authoritative answer
-  (`Verified`/`InvalidCredentials`) resets the streak and closes the circuit; a
-  backoff cap of `0` disables the breaker. `reset_warm_state` and
-  `invalidate_user` clear the breaker so an operator action re-enables probing.
-- **Retryable status, not 401s**: the breaker/outage path returns
-  `AuthOutcome::BackendUnavailable`, which the front doors already answer with
-  a retryable 503 — EAS `503` + `Retry-After` (with `Status` 111 only for
-  protocol ≥14.0, bare 503 for 2.5/12.0/12.1 per [MS-ASCMD] §2.2.3.177.8), and
-  EWS `503` `ErrorServerBusy` (`s:Server` faultcode) now also carrying
-  `Retry-After`. Neither sends `WWW-Authenticate`, so Outlook does not prompt
-  for a password against a transient Stalwart blip. The EWS path previously
-  omitted `Retry-After`; it now shares `AUTH_BACKEND_RETRY_AFTER_SECS` with EAS.
-- **PII-free metrics** (src/metrics.rs): `auth_backend_unavailable_total`
-  and `auth_circuit_open_total` (labelled by the arbitrating backend, jmap /
-  caldav / none — no username or device) expose the outage rate and how often
-  the breaker protected Stalwart.
-- **Knobs documented**: the three new variables are parsed, logged at startup,
-  and documented in `.env.example`, `docker-compose.yml`, and
-  `CLOUDFLARED_SETUP.md`.
+There is no `.github/workflows/` at all. `cargo check` / `cargo test` /
+`cargo clippy` / `cargo build --release` are never run in CI, so a regressing
+dependency or a `RUSTFLAGS="-D warnings"` violation in the Dockerfile only
+surfaces at the operator's deploy time.
 
-Note on the audit text's `EAS status 110`: only `Status` 111
-("ServerErrorRetry") is the retryable server-error code for EAS 14.0+; 110 is
-not a defined retry code for this path ([MS-ASCMD] §2.2.3.177.8), so the outage
-body carries 111 (14.0+) and the bare 503 otherwise, matching §17.
-
-Tests: 6 in src/auth.rs (breaker opens at the threshold and skips the backend,
-breaker resets on an authoritative answer, a zero backoff cap disables the
-breaker, a concurrent same-credential burst costs one probe, the per-user rate
-cap spaces sequential cold probes, and the shared client's session-auth cache
-backs a verifier-cache-invalidated probe); 5 in src/jmap.rs (`probe_auth`
-positive TTL expiry, negative caching + eviction on login, backend error never
-cached across recovery, capacity bound enforced, injected positive TTL governs
-expiry rather than a hard-coded 300s); 3 in src/models.rs (shared client present
-whenever `jmap_base` is set — including with `email_enabled=false` — while the
-email accessors stay gated; absent without `jmap_base`); 2 config env tests
-(overrides apply, invalid values fall back); and a `Retry-After` assertion on the
-EWS outage front-door test.
-Suite: 1079 lib + 2 + 22 + 11 + 1 doc = 1115 green, clippy 0, rustfmt clean on
-touched files, release warning-free.
-
-### 19. SQLite concurrency
-**COMPLETE / delivered.** `sqlite_schema.sql` already set `PRAGMA journal_mode = WAL` and `PRAGMA busy_timeout = 5000`, but `journal_mode=WAL` is the only FILE-persistent one: `busy_timeout` and `foreign_keys` are PER-CONNECTION pragmas, so they applied only to the single pooled connection that happened to run `init_schema` — every other pooled connection (the ones actually serving EAS Ping/Sync writes) still had the default `busy_timeout=0` and failed SQLITE_BUSY instantly under writer contention. `Storage::new` now builds the pool through `SqliteConnectOptions` with explicit `.journal_mode(Wal)`, `.busy_timeout(5s)`, `.synchronous(Full)` (every commit is fsynced before it is acknowledged, so a power loss or OS crash cannot roll back an acknowledged write — WAL+NORMAL only survives process crashes), and `.foreign_keys(true)`, so EVERY pooled connection the lifetime checkouts rotate through carries the same semantics. The pool size is the explicit `Storage::POOL_SIZE` (10), not the sqlx default, so tests acquire exactly the live set. WAL gives readers a snapshot that never blocks on the single writer, and the 5s busy timeout turns concurrent writer races into brief waits instead of SQLITE_BUSY failures — which is exactly what kept concurrent EAS long-poll sync-state/watermark writes from serializing into ping-latency spikes. The Ping path is READ-ONLY against SQLite on its tick loop (`journal_watermark` lookups + `list_journal_since_seq`; every watermark/key write happens on the Sync completion path in `render_delta_collection_xml`), so under WAL a Ping tick cannot block on the writer lock at all. Tests: `new_pool_enables_wal_busy_timeout_and_foreign_keys_on_every_connection` (acquires every one of the `POOL_SIZE` pooled connections at once and asserts WAL + busy_timeout + foreign_keys on each, proving the pragmas survive past the schema connection) and the load test `concurrent_sync_writes_and_ping_reads_never_fail_or_stall` (16 concurrent Ping loops mirroring the production read mix, with per-tick journal-read monotonicity asserted so a broken reader returning `Ok(vec![])` while rows exist fails immediately; 8 concurrent Sync loops mirroring the production write mix — journaled item upserts + sync-key + journal-watermark — paced at 1ms per request like real round-tripping Syncs, since a lock-free writer busy-loop tests writer starvation, which SQLite makes no fairness guarantee against, not the busy-timeout contract). Asserts zero busy errors, exact journal-row accounting (`head == SYNCERS*SYNC_ITERS`, and a final full read returns every row), and a bounded wall time that a serialized-writer regression would blow past.
-
-### 20. Health check must reflect backend, not just process
-**COMPLETE / delivered.** The health surface is now a liveness/readiness split: `GET /health/live` is process-only (200 as long as the gateway's event loop answers — it touches NO dependency, so a wedged or unreachable backend is never a reason to restart the process), while `GET /health/ready` and the backwards-compatible alias `GET /health` report whether the gateway can actually serve clients: SQLite connectivity plus the configured Stalwart authentication backend. Readiness deliberately mirrors `AuthVerifier::verify_backend`'s arbiter choice (§17): when JMAP is configured it is the SOLE arbiter — a JMAP probe failure makes every front door answer 503 regardless of CalDAV, so readiness returns 503 too (no "degraded" branch: a 200 reported while authentication cannot proceed is exactly the client-spinning this item exists to kill); a CalDAV-only deployment probes CalDAV as its sole arbiter; with NO backend configured authentication can never succeed, so readiness is 503 as well. All three paths (`/health`, `/health/live`, `/health/ready`) plus `/metrics` are excluded from rate limiting via the exact-match `is_unmetered_path` guard in `rate_limit.rs` (prefix collisions like `/healthprobe` stay metered). The readiness JMAP probe reuses the auth verifier's shared, capacity-bounded `JmapClient` (`AuthVerifier::shared_jmap_client`, promoted from test-only to `pub`) instead of building a throwaway client — new pool, new session-auth cache — per scrape, and the reuse is OBSERVABLE via `JmapClient::health_probe_count` so a regression to throwaway clients fails the test instead of passing silently. Docker tooling consumes readiness: both the `Dockerfile` `HEALTHCHECK` and the `docker-compose.yml` healthcheck curl `/health/ready`. Stock Compose only MARKS the container unhealthy on readiness failure (`restart: unless-stopped` does not restart unhealthy containers), so the compose file documents that and ships an optional, commented-out `willfarrell/autoheal` controller block (+ matching `autoheal` label) for operators who want automatic restarts when the backend stays down. Tests: 7 in `src/main.rs` — in-process 401-answer stub HTTP servers drive the arbiter matrix (`liveness_always_alive`, `readiness_fails_without_backends`, `readiness_fails_when_jmap_unreachable`, `readiness_healthy_when_jmap_probe_answers`, `readiness_fails_when_jmap_down_even_if_caldav_up`, `readiness_follows_caldav_in_caldav_only_deployment`, `readiness_jmap_probe_uses_shared_client` which asserts the shared client's probe counter increments) — and 1 in `src/rate_limit.rs` (`health_paths_are_unmetered`, including the negative prefix-collision and protocol-surface cases).
-
-### 21. Secrets hygiene
-HMAC secret via env is fine; ensure `GATEWAY_ADMIN_USERNAME/PASSWORD` (GAL admin creds) support file-based (`_FILE`) injection matching Docker secrets, and that logs/profiling never emit them (`SafeDebug` exists â€” audit its coverage, especially `Debug` on request structs containing the EAS Authorization header / base64 Basic payload).
-
-### 22. Disable unused surfaces; attack surface vs. "exhaustive" aspirations
-MAPI/HTTP + NSPI + OAB + ECP + full EWS are **not used by the two target clients** (both are EAS clients, directly or through Microsoft). Per the frictionless goal: gate them behind flags (a MAPI flag exists), ship the reference profile with only Autodiscover + EAS + minimal EWS (OOF is genuinely client-visible) enabled, and make EWS/OAB/ECP opt-in. The "exhaustive protocol" ambition then remains as optional modules, not default exposure.
-
-### 23. Documentation gaps for the exact target
-One page that maps: mailbox domain â†’ DNS records â†’ cloudflared hostnames â†’ Android add-account steps (including the device-admin consent screen from #9) â†’ New Outlook "add account" flow (explaining the Microsoft-cloud sync path from #8) â†’ troubleshooting table of `outlook_cloudflare_smoke.sh` failures. The smoke doc exists; a runbook does not.
+- **Action:** Add `.github/workflows/ci.yml` running `cargo test`,
+  `cargo clippy --all-targets`, `cargo build --release --locked`, and
+  `docker build` on push/PR.
+- **Code priority:** existing deps (GitHub Actions).
 
 ---
 
-## P3 â€” Polish / hardening
+## P1 — Correctness/completeness the two named clients will hit
 
-### 24. Dependency currency & supply chain
-`Cargo.toml` uses permissive `^` ranges with heavy deps (axum-extra, moka, dashmap, prometheusâ€¦). Add `cargo-deny`/`cargo audit` in CI; `Cargo.lock` exists â€” good â€” but make the Docker build step enforce `--locked` too (currently only `cargo fetch --locked`).
+### 5. Stalwart version pinned to v0.16.26 in docs/comments but target is v0.16.27
 
-### 25. Metrics/observability for EAS command-level latency
-Per-command histograms, Ping wait distribution, JMAP backend latency â€” the Prometheus dep exists; verify labels don't include PII (username/device-id as labels = cardinality + privacy issue).
+`Cargo.toml`, `docker-compose.yml` header, `CLOUDFLARED_SETUP.md`,
+`DEPLOY_RUNBOOK.md` and `config.rs` comments all reference Stalwart v0.16.26.
+The operator's Stalwart container runs v0.16.27 (`stalwartlabs/stalwart:latest`
+currently resolves to v0.16.27). JMAP Calendars capability, `Email/changes`,
+JSCard, and CalDAV semantics can drift between point releases.
 
-### 26. Log redaction verification
-For tracing spans carrying request paths with query strings (EAS sometimes passes creds-adjacent data in query in legacy mode â€” header/WBXML is supported; confirm query-string creds mode is rejected outright).
+- **Action:** Update every in-repo reference to Stalwart v0.16.27. Pin the
+  operator's Stalwart compose to `stalwartlabs/stalwart:v0.16.27@sha256:…`
+  (digest to be filled by the operator). Add a startup capability check that
+  fails fast (`GATEWAY_CALENDAR_CAPABILITY_CHECK=enforce`) or at least logs a
+  clear version mismatch.
+- **Code priority:** existing deps — config string edits only.
 
-### 27. Response compression interplay
-Verify Cloudflare + compression don't interact badly with EAS and that `Content-Length`/chunked WBXML streams flush promptly (Ping interim responses must not be buffered by tower-http buffering layers).
+### 6. Autodiscover response must advertise the gateway's public hostname for every mailbox domain
+
+Android's "Exchange" wizard and Microsoft AutoDetect probe
+`https://autodiscover.<mail-domain>/autodiscover/autodiscover.xml`. The
+cloudflared config and DNS records only cover `autodiscover.<GATEWAY_MAIL_DOMAIN>`
+and `calendar.example.com` — the deployment scenario uses one mailbox domain
+(`example.com`), but a second domain (e.g. `user@example.org`) would never be
+discoverable because no `autodiscover.example.org` DNS/tunnel entry exists.
+
+- **Action:** Document in `DEPLOY_RUNBOOK.md` that each additional mailbox
+  domain needs its own `autodiscover.<domain>` public hostname + CNAME on the
+  tunnel, and that Cloudflare must issue a TLS cert for it (Universal SSL).
+  The gateway response itself already returns `GATEWAY_HOST` for any domain
+  (verified by `mobilesync_response_points_at_gateway_host_for_any_mailbox_domain`),
+  so no code change is needed — only the DNS/tunnel/records per extra domain.
+- **Code priority:** existing deps — documentation only.
+
+### 7. EWS namespace limited to `Exchange2016` — fine for on-premises SE but verify against New Outlook October 2026
+
+The gateway advertises `RequestServerVersion="Exchange2016"` and build
+`15.2.2562.45`. New Outlook for Windows (October 7 2026) connecting via MAPI/HTTP
+may negotiate a newer schema. The code path `version::current()` is a single
+source of truth, so the fix is config-driven.
+
+- **Action:** No code change required — `GATEWAY_SERVER_EXCHANGE_VERSION` is
+  already overridable. Document in `DEPLOY_RUNBOOK.md` that if New Outlook
+  rejects `Exchange2016`, the operator may bump it (but note no published
+  `Exchange2019` enum token exists, so only `Exchange2016` or below is safe).
+- **Code priority:** existing deps — documentation only.
 
 ---
 
-## Evidence of what is already strong (so effort isn't wasted)
+## P2 — Robustness/operations (deployment, observability, hardening)
 
-- Routing covers all needed surfaces; request body limits are per-route and MAPI-aware (`src/main.rs:752â€“830`).
-- EAS command coverage includes all required ones (FolderSync, Provision, Sync, Ping, Settings, ItemOperations, Search, MeetingResponse, ResolveRecipients, ValidateCert, GetItemEstimate, MoveItems, SendMail/SmartReply/SmartForward) and OPTIONS advertises 12.0â€“16.1.
-- JMAP-first design with explicit capability verification at startup and CalDAV fallback (`GATEWAY_CALENDAR_CAPABILITY_CHECK`).
-- Spec-traceable WBXML implementation, protocol fixtures, snapshot tests for every key EAS/Autodiscover/EWS response, a Cloudflare smoke harness, and a JMAP calendar deploy test.
-- Solid security defaults: non-root image, HSTS/CSP/nosniff headers, secrecy/zeroize on credentials, HMAC-secret enforcement, startup hostname validation.
+### 8. Compose `GATEWAY_JMAP_BASE`/`GATEWAY_CALDAV_BASE` point at `stalwart:8080` (HTTP, plaintext credentials over Docker network)
 
-**Highest-leverage first moves: #1 (Ping heartbeat vs Cloudflare), #2 (per-user rate limiter keying), #4/#5 (pin + publish images), then #8â€“#11 conformance passes against the two named clients.**
+The shipped compose sets `GATEWAY_JMAP_BASE=http://stalwart:8080/jmap` and
+`GATEWAY_CALDAV_BASE=http://stalwart:8080/dav`, with
+`GATEWAY_ALLOW_INSECURE_HTTP=1`. This is the documented private-bridge-network
+model (TLS terminates at cloudflared in front of the gateway; gateway→Stalwart
+stays on the internal Docker network). It is acceptable **only** because the
+two containers share `my-bridge-network` and no other peer sits on that
+network. If the operator ever adds a third container or routes through a
+service mesh, Basic credentials to JMAP/CalDAV travel in cleartext.
+
+- **Action:** Document this assumption explicitly in `DEPLOY_RUNBOOK.md` and
+  `CLOUDFLARED_SETUP.md`: the bridge network must be dedicated to
+  `stalwart` + `exchange-gateway`; never attach other containers to it. If a
+  non-trusted network is ever used, switch both bases to `https://` and set
+  `GATEWAY_ALLOW_INSECURE_HTTP=0`.
+- **Code priority:** existing deps — documentation only.
+
+### 9. Compose `image:` placeholder `<registry>/exchange-gateway:0.1.0` must be replaced
+
+Related to item #1 but deployment-facing: the operator cannot deploy until this
+placeholder is substituted with their registry reference. The compose also has
+`dns:` set to `1.1.1.1` / `8.8.8.8` — the operator must replace with their own
+resolvers (or delete the block to inherit the Docker daemon's resolvers).
+
+- **Action:** No code change — the operator fills `<registry>` and the `dns:`
+  values in `docker-compose.yml` before `docker compose up -d`. Document both
+  substitutions in `DEPLOY_RUNBOOK.md`.
+- **Code priority:** none.
+
+### 10. Cloudflare zero-trust routes: operator must add two missing routes
+
+The user's existing cloudflared routes are:
+- `https://stalwart.redacted.com/admin` → Stalwart admin (port 8080 presumably)
+- `https://calendar.redacted.com/*` → port 8134
+- `https://autodiscover.redacted.com/*` → port 8134
+
+For the gateway to work, the operator MUST add:
+- `https://autodiscover.<GATEWAY_MAIL_DOMAIN>/*` → port 8134 (REQUIRED for
+  Android "Exchange" signup per MS-OXDSCLI §2.2.3)
+- Optionally `https://<GATEWAY_MAIL_DOMAIN>/*` → port 8134 (root-domain
+  Autodiscover fallback, speeds up Android signup)
+
+And DNS records:
+- CNAME `autodiscover.<mail-domain>` → `<tunnel-id>.cfargotunnel.com` (Proxied)
+- CNAME `<mail-domain>` → `<tunnel-id>.cfargotunnel.com` (Proxied, optional)
+
+If `GATEWAY_MAIL_DOMAIN=redacted.com`, the routes become:
+- `https://autodiscover.redacted.com/*` → port 8134 (already listed by user!)
+- Optionally `https://redacted.com/*` → port 8134
+
+The user already has `autodiscover.redacted.com` configured, which covers
+this if `GATEWAY_MAIL_DOMAIN=redacted.com`. The operator should confirm the
+mail domain used for account signup matches the DNS domain of that route.
+
+- **Action:** Document in `DEPLOY_RUNBOOK.md` exactly which cloudflared routes
+  and DNS records to add. If `GATEWAY_MAIL_DOMAIN` differs from `redacted.com`,
+  add `autodiscover.<GATEWAY_MAIL_DOMAIN>` + optional `<GATEWAY_MAIL_DOMAIN>`.
+- **Code priority:** existing deps — documentation only.
+
+### 11. Stalwart Mailserver container config: must enable JMAP (default on) and CalDAV/CardDAV
+
+The operator's Stalwart compose already exposes ports 8080 (HTTP/JMAP/CalDAV/
+CardDAV) and 8133. For the gateway to work via JMAP-first:
+
+- JMAP must be enabled (Stalwart default: yes, on `/jmap`).
+- CalDAV must be enabled (default: yes, on `/dav`).
+- CardDAV must be enabled (default: yes, on `/carddav`).
+- SMTP (465/587) and IMAP (993) are exposed — the gateway uses SMTP as a
+  fallback for email submission (JMAP submission is preferred).
+
+No Stalwart config changes are strictly required beyond what's already
+exposed, but the operator should verify:
+- `STALWART_PUBLIC_URL=https://stalwart.redacted.com/admin` is set (already is).
+- JMAP is reachable at `http://stalwart:8080/jmap` from the gateway container
+  on `my-bridge-network`.
+- An admin account exists with `sysAccount*`/`sysMailingList*` permissions if
+  the operator wants the full GAL (`GATEWAY_ADMIN_USERNAME/PASSWORD`).
+
+- **Action:** Document the Stalwart verification steps in `DEPLOY_RUNBOOK.md`.
+- **Code priority:** existing deps — documentation only.
+
+### 12. No per-user rate-limit keying — all traffic from Cloudflare/Microsoft IPs shares one bucket
+
+`rate_limit.rs` keys buckets on `CF-Connecting-IP` / `X-Forwarded-For`. All
+Outlook traffic arrives via Cloudflare edge IPs and/or Microsoft datacenter IPs
+(cloud sync path). One bucket means the two target clients (and all other
+users behind the same egress IP) throttle each other → random 429s → sync
+stalls. Default `GATEWAY_RATE_LIMIT_REQUESTS_PER_MINUTE=120` is far too low
+for Ping/Sync cadence of even a single device.
+
+- **Action:** The compose already raises defaults to 600 rpm / 2000 concurrent
+  (delivered in prior audit). Code-level per-user keying remains a future
+  improvement but is not required at this sizing. Document that the operator
+  should raise `GATEWAY_RATE_LIMIT_REQUESTS_PER_MINUTE` if several users sync
+  simultaneously.
+- **Code priority:** existing deps — docs/tuning only.
+
+### 13. Health check (`/health/ready`) uses JMAP as sole arbiter — correct, but operator must ensure JMAP is up before gateway is considered healthy
+
+`/health/ready` returns 503 when JMAP is unreachable (even if CalDAV answers).
+This is correct per the "JMAP-first" design, but it means if the operator's
+Stalwart container is restarting, the gateway reads unhealthy and Docker marks
+it unhealthy. `restart: unless-stopped` does **not** restart unhealthy
+containers, so the operator needs the optional `autoheal` controller (commented
+out in the compose) or an external watcher.
+
+- **Action:** Document the autoheal option and that Docker Compose alone never
+  restarts an unhealthy container. Already documented in `docker-compose.yml`
+  comments; reinforce in `DEPLOY_RUNBOOK.md`.
+- **Code priority:** existing deps — documentation only.
+
+### 14. Outgoing SMTP to Stalwart (port 465 TLS) for email submission fallback
+
+The gateway prefers JMAP submission (`EmailSubmission/set`) for sending, but
+falls back to SMTP via `GATEWAY_SMTP_HOST=stalwart:465`. If Stalwart's SMTP
+requires auth and the gateway's credentials aren't configured for submission,
+sending mail fails. JMAP submission is the correct path and is implemented.
+
+- **Action:** Verify JMAP submission works against Stalwart v0.16.27 (it does
+  per `jmap.rs` `submit_email`). Document that SMTP is a fallback only and
+  JMAP submission should be used. No code change needed.
+- **Code priority:** existing deps — documentation only.
+
+### 15. `GATEWAY_HMAC_SECRET` default is a weak placeholder
+
+The compose sets `GATEWAY_HMAC_SECRET=REPLACE_WITH_A_RANDOM_32_CHAR_MINIMUM_SECRET`.
+If the operator doesn't replace it, session/cookie security is weakened. The
+code enforces `>= 32` chars and rejects `REPLACE_` prefix (validated in
+`Config::validate` — need to confirm).
+
+- **Action:** Keep the startup warning for placeholder hosts (already in
+  `main.rs`). Add a similar warning for `GATEWAY_HMAC_SECRET` starting with
+  `REPLACE_`. Document `chmod 600` on `docker-compose.yml` since it contains
+  secrets in cleartext.
+- **Code priority:** existing deps — add one warning check in `main.rs`/`config.rs`.
+
+### 16. Missing `.dockerignore` exclusion for `AUDIT.md`/`AUDIT2.md` (already handled)
+
+The `.dockerignore` already excludes `*.md`, `AUDIT.md`, `AUDIT2.md`. Good —
+no action needed. (Confirmed present.)
+
+---
+
+## P3 — Polish / supply-chain hardening
+
+### 17. Add `cargo-deny`/`cargo-audit` to CI
+
+Permissive `^` ranges in `Cargo.toml` with heavy deps (axum, moka, dashmap,
+tokio, etc.). `Cargo.lock` exists and the Dockerfile uses `--locked`, but no
+vulnerability scanning runs.
+
+- **Action:** Add `cargo-audit` / `cargo-deny` to the CI workflow.
+- **Code priority:** existing deps — CI addition.
+
+### 18. Per-EAS-command latency metrics (Ping wait distribution, JMAP backend latency)
+
+Prometheus is wired (`/metrics` unmetered) but there are no per-command
+histograms or Ping wait distributions. Useful for debugging the "mail arrives
+late" symptom against Cloudflare's 125s edge timeout.
+
+- **Action:** Add histograms keyed by EAS command (no username/device-id
+  labels — cardinality + privacy). Use `prometheus` crate already in
+  `Cargo.toml`.
+- **Code priority:** existing deps — prometheus crate already present.
+
+### 19. `cargo build --release` uses `RUSTFLAGS="-D warnings"` — any future warning fails the build
+
+Correct and intentional, but the operator building locally will hit the same
+strictness. Ensure all code stays warning-free (it does today).
+
+- **Action:** None — already correct. Document in contributing guidance.
+- **Code priority:** none.
+
+---
+
+## Changes the operator must make (summary)
+
+### Cloudflare Zero Trust routes (add to existing)
+
+| Route | → | Port | Required? |
+|-------|---|------|-----------|
+| `https://autodiscover.<GATEWAY_MAIL_DOMAIN>/*` | `http://<gateway-host>:8134` | 8134 | **YES** (Android Exchange wizard) |
+| `https://<GATEWAY_MAIL_DOMAIN>/*` (optional) | `http://<gateway-host>:8134` | 8134 | Recommended (root-domain fallback) |
+
+If `GATEWAY_MAIL_DOMAIN=redacted.com`, `autodiscover.redacted.com/*` is already
+configured — confirm it points at port 8134.
+
+### DNS records (Cloudflare)
+
+| Name | Type | Target | Proxy |
+|------|------|--------|-------|
+| `autodiscover.<mail-domain>` | CNAME | `<tunnel-id>.cfargotunnel.com` | Proxied |
+| `<mail-domain>` (root) | CNAME | `<tunnel-id>.cfargotunnel.com` | Proxied (optional) |
+
+### Stalwart Mailserver container (verify, no config change required)
+
+- JMAP at `http://stalwart:8080/jmap` reachable from gateway on `my-bridge-network`
+- CalDAV at `http://stalwart:8080/dav` reachable
+- CardDAV at `http://stalwart:8080/carddav` reachable (contacts)
+- Admin account with `sysAccount*`/`sysMailingList*` if full GAL wanted
+- Pin to `stalwartlabs/stalwart:v0.16.27@sha256:…` in **its** compose
+
+### `docker-compose.yml` edits (operator fills in before `up -d`)
+
+1. `image:` → `<registry>/exchange-gateway:0.1.0` (their registry)
+2. `GATEWAY_HMAC_SECRET` → >= 32 random chars, not starting with `REPLACE_`
+3. `GATEWAY_HOST` → public EAS hostname (e.g. `calendar.redacted.com`)
+4. `GATEWAY_MAIL_DOMAIN` → mailbox domain (e.g. `redacted.com`)
+5. `dns:` → operator's resolvers (or delete block)
+6. Optionally `GATEWAY_ADMIN_USERNAME/PASSWORD` for full GAL
+
+No `.env` file shall be created or used.
+
+---
+
+## Implementation code-priority summary
+
+For every gap above, resolution follows this order:
+1. **Existing dependencies** — configure/env/docs changes using crates already in
+   `Cargo.toml` (tokio, axum, reqwest, prometheus, moka, dashmap, governor, etc.)
+2. **New high-quality dependencies** — only if no existing crate covers the need
+   (e.g., `cargo-audit`/`cargo-deny` for CI scanning)
+3. **Rust 1.99.0 std API** — prefer std over custom code where 1.99 adds the
+   capability (project edition 2024, rust-version 1.99.0)
+4. **Custom code** — last resort, minimal and spec-traceable
