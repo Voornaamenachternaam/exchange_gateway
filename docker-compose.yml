@@ -42,7 +42,7 @@ services:
     hostname: exchange-gateway
     restart: unless-stopped
     environment:
-      - TZ=Europe/Amsterdam
+      - TZ=UTC
 
       # --- Logging / binding ---------------------------------------------
       - GATEWAY_LOG_LEVEL=info
