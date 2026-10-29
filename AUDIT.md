@@ -311,6 +311,25 @@ strictness. Ensure all code stays warning-free (it does today).
 - **Action:** None — already correct. Document in contributing guidance.
 - **Code priority:** none.
 
+### 20. Build broken: `cms@0.2.3` depends on `der@0.7.10`/`x509-cert@0.2.5`, conflicting with direct `der@0.8.3`/`x509-cert@0.3.0`
+
+All 9 compile errors lived in `src/smime.rs` — trait bound mismatches on
+`SignedData::from_der`/`ContentInfo::from_der` (mixed `der` versions), private
+field access on `tbs_certificate` (x509-cert 0.3.0 made it a method), and
+`CertificateInner` type mismatches (mixed x509-cert versions).
+
+Fixed in commit `aa1e349` (branch `fix/cms-upgrade-smime-build`, PR #2022):
+
+- `Cargo.toml`: upgraded `cms` from `^0.2.3` to `{ version = "^0.3.0-rc.0",
+  default-features = false }`, aligning on `der@0.8.x` / `x509-cert@0.3.x`.
+- `src/smime.rs`: updated for x509-cert 0.3.0 API —
+  `tbs_certificate()` method call, `tbs.extensions()`,
+  `tbs.subject().iter()`, `atv.value.value()` instead of `atv.value.as_bytes()`.
+
+- **Verification:** `cargo build --release` warning-free;
+  `cargo clippy --all-targets` 0 warnings; `cargo test` passes.
+- **Code priority:** none (dependency upgrade + API migration).
+
 ---
 
 ## Changes the operator must make (summary)

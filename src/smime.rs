@@ -52,7 +52,8 @@ pub struct SmimeCertificate {
 
 fn cert_email_addresses(cert: &x509_cert::Certificate) -> Vec<String> {
     let mut emails = Vec::new();
-    if let Some(extensions) = cert.tbs_certificate.extensions.as_ref() {
+    let tbs = cert.tbs_certificate();
+    if let Some(extensions) = tbs.extensions() {
         for ext in extensions.iter() {
             if ext.extn_id != OID_SUBJECT_ALT_NAME {
                 continue;
@@ -68,20 +69,18 @@ fn cert_email_addresses(cert: &x509_cert::Certificate) -> Vec<String> {
         }
     }
     // Legacy pkcs-9 emailAddress subject RDN.
-    for rdn in cert.tbs_certificate.subject.0.iter() {
-        for atv in rdn.0.iter() {
-            if atv.oid != OID_EMAIL_ADDRESS {
-                continue;
-            }
-            if let Ok(s) = Ia5String::from_der(atv.value.value()) {
-                emails.push(s.to_string());
-            } else if let Ok(s) = Utf8StringRef::from_der(atv.value.value()) {
-                emails.push(s.as_str().to_string());
-            } else if let Ok(s) = PrintableString::from_der(atv.value.value()) {
-                emails.push(s.to_string());
-            } else if let Ok(s) = TeletexString::from_der(atv.value.value()) {
-                emails.push(s.to_string());
-            }
+    for atv in tbs.subject().iter() {
+        if atv.oid != OID_EMAIL_ADDRESS {
+            continue;
+        }
+        if let Ok(s) = Ia5String::from_der(atv.value.value()) {
+            emails.push(s.to_string());
+        } else if let Ok(s) = Utf8StringRef::from_der(atv.value.value()) {
+            emails.push(s.as_str().to_string());
+        } else if let Ok(s) = PrintableString::from_der(atv.value.value()) {
+            emails.push(s.to_string());
+        } else if let Ok(s) = TeletexString::from_der(atv.value.value()) {
+            emails.push(s.to_string());
         }
     }
     emails.retain(|e| email_address::EmailAddress::is_valid(e));
@@ -97,9 +96,10 @@ fn time_to_unix(t: &x509_cert::time::Time) -> i64 {
 fn collect_signed_data_certs(sd: &SignedData, out: &mut Vec<(x509_cert::Certificate, Vec<u8>)>) {
     if let Some(cert_set) = sd.certificates.as_ref() {
         for choice in cert_set.0.iter() {
-            if let CertificateChoices::Certificate(cert) = choice
-                && let Ok(der_bytes) = der::Encode::to_der(cert)
-            {
+            if let CertificateChoices::Certificate(cert) = choice {
+                let Ok(der_bytes) = der::Encode::to_der(cert) else {
+                    continue;
+                };
                 out.push((cert.clone(), der_bytes));
             }
         }
@@ -208,9 +208,10 @@ fn build_records(
         if emails.is_empty() {
             continue;
         }
+        let tbs = cert.tbs_certificate();
         let sha256 = const_hex::encode(sha2::Sha256::digest(&der_bytes));
-        let nb = time_to_unix(&cert.tbs_certificate.validity.not_before);
-        let na = time_to_unix(&cert.tbs_certificate.validity.not_after);
+        let nb = time_to_unix(&tbs.validity().not_before);
+        let na = time_to_unix(&tbs.validity().not_after);
         for email in emails {
             if seen.insert((email.clone(), sha256.clone())) {
                 records.push(SmimeCertificate {

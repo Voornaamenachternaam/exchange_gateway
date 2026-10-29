@@ -82,7 +82,7 @@ governor = "^0.10.4"
 mail-parser = "^0.11.9"
 lzxd = "^0.2.7"
 compressed-rtf = "^1.0.1"
-cms = "^0.2.3"
+cms = { version = "^0.3.0-rc.0", default-features = false }
 x509-cert = "^0.3.0"
 der = "^0.8.3"
 
