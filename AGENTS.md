@@ -2,7 +2,7 @@
 
 ## Project
 Rust gateway (~96k LOC) translating Microsoft Exchange/Outlook protocols (EAS via
-WBXML, EWS, MAPI/HTTP, Autodiscover, SMTP) to a Stalwart Mailserver v0.16.22
+WBXML, EWS, MAPI/HTTP, Autodiscover, SMTP) to a Stalwart Mailserver v1.0.1
 backend (JMAP-first, CalDAV fallback for calendar). Target clients ONLY:
 New Outlook for Windows (20251205004.10), Outlook Android (5.2634.2).
 Specs: `exchange_protocols/` (v20250520 .txt docs). Toolchain: Rust 1.99.1.
@@ -12,7 +12,7 @@ EAS specs v20250520 (16.1); older EAS compat NOT needed.
 - `cargo test` — lib (871) + integration suites (protocol_fixtures 22, snapshots 11, jmap_calendar_deploy 2, doc 1). All must pass.
 - `cargo clippy --all-targets` — must be 0 warnings. `#[allow(clippy::too_many_arguments)]` is the accepted escape for irreducible request params (email.rs, jmap.rs, eas.rs handle_email_sync).
 - `cargo build --release` — ~5min, must be warning-free.
-- Precedence for gaps: existing deps → new quality deps → Rust 1.98 std → custom code.
+- Precedence for gaps: existing deps → new quality deps → Rust 1.99.1 std → custom code.
 
 ## Hard-won conventions
 - **WBXML decode namespace rule (src/wbxml.rs)**: a document's ROOT code page
