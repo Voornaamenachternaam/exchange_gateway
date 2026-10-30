@@ -3,7 +3,7 @@
 This is the single page that maps the target use-case onto concrete steps:
 mailbox domain → DNS → cloudflared → Android "Exchange" account → New Outlook
 for Windows. It assumes the gateway image is already published to a registry
-and Stalwart Mailserver v0.16.26 is running.
+and Stalwart Mailserver v1.0.1 is running.
 
 > Configuration lives **inline in `docker-compose.yml`**. There is no `.env`
 > file. See `CLOUDFLARED_SETUP.md` for the tunnel details and `.env.example`
@@ -16,13 +16,13 @@ and Stalwart Mailserver v0.16.26 is running.
 | Item | Value |
 |---|---|
 | Gateway image | `<registry>/exchange-gateway:0.1.0` (multi-arch: amd64 + arm64) |
-| Stalwart | `stalwartlabs/stalwart` pinned to the **v0.16.26** digest |
+| Stalwart | `stalwartlabs/stalwart` pinned to the **v1.0.1** digest |
 | Docker network | `my-bridge-network` (external) — shared by Stalwart and the gateway |
 | Public EAS host | `calendar.example.com` → `GATEWAY_HOST` |
 | Mail domain | `example.com` → `GATEWAY_MAIL_DOMAIN` |
 | Tunnel | cloudflared on the Ubuntu host, TLS terminated at Cloudflare |
 
-Pin Stalwart in **its** compose (`image: stalwartlabs/stalwart:v0.16.26@sha256:…`)
+Pin Stalwart in **its** compose (`image: stalwartlabs/stalwart:v1.0.1@sha256:…`)
 — `:latest` will silently drift past the version the gateway was validated
 against.
 
