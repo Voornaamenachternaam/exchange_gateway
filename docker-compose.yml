@@ -1,37 +1,3 @@
-# docker-compose.yml — Exchange Gateway for the Stalwart Mailserver backend.
-#
-# Validated against Stalwart Mailserver v0.16.26 (JMAP Calendars capability
-# present). The Stalwart compose in use ships `stalwartlabs/stalwart:latest`;
-# PIN it to the v0.16.26 digest there too, so the gateway's startup capability
-# verification always tests the backend it was validated against.
-#
-# ---------------------------------------------------------------------------
-# CONFIGURATION CONTRACT
-# ---------------------------------------------------------------------------
-# This file is the SINGLE source of configuration: every environment variable
-# is written INLINE below. There is deliberately NO `.env` file and NO
-# `env_file:` — edit the values in this file directly.
-#
-# Before `docker compose up -d` you MUST edit:
-#   1. image:                  the registry reference (or build locally, see below)
-#   2. GATEWAY_HMAC_SECRET     >= 32 chars, not starting with "REPLACE_"
-#   3. GATEWAY_HOST            public EAS service hostname (e.g. calendar.example.com)
-#   4. GATEWAY_MAIL_DOMAIN     the mailbox domain users sign in with
-#   5. GATEWAY_ADMIN_USERNAME / GATEWAY_ADMIN_PASSWORD   (optional; full GAL)
-#
-# The gateway serves plain HTTP on 8134; terminate TLS in front of it
-# (cloudflared) and forward with `X-Forwarded-Proto: https`. See
-# CLOUDFLARED_SETUP.md.
-#
-# BUILDING LOCALLY (development only): replace the `image:` line with
-#   build:
-#     context: .
-#     dockerfile: Dockerfile
-#   image: exchange-gateway:local
-#
-# Start Stalwart first, then:  docker compose up -d
-# ---------------------------------------------------------------------------
-
 services:
   exchange-gateway:
     # --- Registry image (production) --------------------------------------
