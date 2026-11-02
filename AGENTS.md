@@ -399,7 +399,7 @@ EAS specs v20250520 (16.1); older EAS compat NOT needed.
   (`eas::AUTH_BACKEND_RETRY_AFTER_SECS`); EAS keeps 503 + Status 111 only for
   ≥14.0 (audit's "status 110" is not a defined retry code; 111 is the retry
   code — see AUDIT.md §18 note). Config knobs wired (env + default + startup
-  log) and documented in .env.example, docker-compose.yml, CLOUDFLARED_SETUP.md.
+  log) and documented in docker-compose.yml, CLOUDFLARED_SETUP.md.
   Tests: 6 new in src/auth.rs (breaker opens/skips, breaker resets, zero-cap
   disables, concurrent same-credential burst = 1 probe, rate cap spacing,
   invalidate purges shared client cache) + 5 in src/jmap.rs (`probe_auth`
@@ -457,6 +457,36 @@ EAS specs v20250520 (16.1); older EAS compat NOT needed.
   HTTP servers drive the arbiter matrix; bin-crate `mod tests` runs via
   cargo's bin target) + 1 in rate_limit.rs.
 - Next likely audit items: §21 secrets hygiene, §22 surface gating.
+- AUDIT3.MD (independent Stalwart-vs-gateway audit, live-probed against a real
+  Stalwart instance) found THREE P0 contract mismatches that prior in-repo
+  audits missed — all are Stalwart wire-contract errors, not logic errors:
+  (1) JMAP `CalendarEvent/get`'s `iCalendar` is a **JSCalendar OBJECT**
+  (`{"name":"vevent","convertedProperties":{...}}`), NOT an ICS string — any
+  event with `convertedProperties`/`properties` returns a dict, and
+  `JmapCalendarEvent.i_calendar: Option<String>` (jmap.rs:706) makes
+  `serde_json::from_value::<Vec<_>>` fail for the WHOLE list → `.ok()
+  .unwrap_or_default()` yields ZERO events. Kills every JMAP calendar read
+  (EAS Sync, EWS Find/Get, free/busy, MAPI). Confirmed by live probe (8/17
+  events return a dict) and a Rust 1.99.1 repro ("invalid type: map, expected
+  a string"). (2) JMAP `CalendarEvent/set` with an ICS `iCalendar` string is
+  ACCEPTED but the payload is DISCARDED (empty event stored) — the code's own
+  WARNING documents this; the guard (`probe_write_paths`→`ics_round_trip_ok`)
+  only runs with GATEWAY_ADMIN_USERNAME/PASSWORD set, which the compose ships
+  EMPTY, and `jmap_calendar_write_enabled` defaults TRUE → lossy writes live.
+  (3) Stalwart CardDAV lives at `/dav/card/{user}/`, but
+  `CarddavClient::addressbook_home` (carddav.rs:68) appends `/carddav/{user}/`
+  → every CardDAV op 404s; EWS contacts are CardDAV-ONLY (Find/Create/Update/
+  Delete in ews.rs) even though JMAP `ContactCard` works. Also P1: explicit
+  `Email/get` ids are capped at 500 (`maxObjectsInGet`, back-refs exempt);
+  `CalendarEvent/changes` `hasMoreChanges` ignored in sync.rs; `@etag` is NOT
+  a supported JMAP property on Stalwart (etags empty). Compose fixes applied:
+  `GATEWAY_MAIL_HOST` must be the public MX host (was `stalwart`, leaked into
+  Autodiscover IMAP/SMTP blocks); volume path aligned to
+  `/armblock/exchange-gateway-data`; missing log/MAPI env vars documented;
+  `.env.example` DELETED (repo contract is compose-inline only). NOTE
+  `GATEWAY_CALDAV_USER`/`GATEWAY_CALDAV_PASSWORD` are PHANTOM — referenced
+  only in a caldav.rs:44 warning, never read; `GATEWAY_RULE_PROVIDER` is a
+  Rust const, not env.
 - §17 Auth negative-caching and cache-invalidation is COMPLETE and its AUDIT.md
   section documents the delivered behavior. Design: `AuthVerifier` now returns
   a tri-state `AuthOutcome` (Verified / InvalidCredentials / BackendUnavailable)
@@ -503,7 +533,7 @@ EAS specs v20250520 (16.1); older EAS compat NOT needed.
   `WWW-Authenticate`. Surfaces that
   only need yes/no (OAB/ECP/NSPI/MAPI/autodiscover-directory, main.rs) keep
   `verify` → bool (BackendUnavailable = false). Config knob is wired in
-  config.rs (env + default + startup log) and documented in .env.example,
+  config.rs (env + default + startup log) and documented in docker-compose.yml,
   docker-compose.yml, CLOUDFLARED_SETUP.md. Tests: 18 in src/auth.rs (stub
   backend with mutable status + hit counters: positive/negative caching,
   negative expiry, TTL-0, backend-error-not-cached, no-CALDAV-on-5xx, CALDAV
