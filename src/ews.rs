@@ -1601,8 +1601,8 @@ async fn fetch_freebusy_jmap(
         .await?;
 
     for event in &result.events {
-        if let Some(ref ics) = event.i_calendar
-            && let Some(item) = parse_ics_event(ics)
+        if let Some(ics) = event.to_ics()
+            && let Some(item) = parse_ics_event(&ics)
         {
             let sd = match item.busy_status.unwrap_or(2) {
                 0 => '0',

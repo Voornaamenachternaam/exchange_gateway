@@ -653,7 +653,7 @@ pub struct JmapCalendar {
 /// Represents a calendar event in JSCalendar format.
 /// The `iCalendar` property is requested for gateway compatibility —
 /// the gateway needs ICS data to render EWS/EAS calendar items.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct JmapCalendarEvent {
     pub id: Option<String>,
@@ -699,16 +699,104 @@ pub struct JmapCalendarEvent {
     pub created: Option<String>,
     #[serde(default)]
     pub updated: Option<String>,
-    /// The iCalendar representation of this event.
-    /// Requested via CalendarEvent/get with `properties: ["iCalendar"]`.
-    /// Stalwart returns the original iCalendar data in this property.
+    /// The raw JSCalendar `iCalendar` property, requested via
+    /// `CalendarEvent/get` with `properties: ["iCalendar"]`. Stalwart does
+    /// NOT return an ICS string here — it returns the JSCalendar object for
+    /// the source component (`{"convertedProperties":…,"name":"vevent"}`).
+    /// It is retained as a [`Value`]; use [`Self::to_ics`] for iCalendar.
+    #[serde(rename = "iCalendar")]
     #[serde(default)]
-    pub i_calendar: Option<String>,
+    pub i_calendar: Option<Value>,
+    /// The complete raw `CalendarEvent/get` object this event was parsed from.
+    /// The JSCalendar data needed to rebuild iCalendar is spread across the
+    /// whole object (standard properties plus the `iCalendar` fragment), so
+    /// the raw object is retained and converted on demand by
+    /// [`Self::to_ics`]. Populated by the JMAP client; `None` for
+    /// hand-constructed instances.
+    #[serde(skip)]
+    pub raw: Option<Value>,
     /// The ETag of the event (from the JMAP response). Used for concurrency
     /// and change tracking, replacing CalDAV's ETag handling.
     #[serde(rename = "@etag")]
     #[serde(default)]
     pub etag: Option<String>,
+}
+
+impl JmapCalendarEvent {
+    /// iCalendar (ICS) for this event, reconstructed from the JSCalendar
+    /// object Stalwart returned.
+    ///
+    /// Stalwart's `iCalendar` property is a JSCalendar object, not an ICS
+    /// string, so this reassembles the whole event object and converts it
+    /// with `calcard` (the library Stalwart itself uses). Returns `None` when
+    /// no event data was fetched or the conversion yields no component.
+    pub fn to_ics(&self) -> Option<String> {
+        self.raw
+            .as_ref()
+            .and_then(crate::jscalendar::jscalendar_event_to_ics)
+    }
+}
+
+/// JSCalendar properties the gateway requests from `CalendarEvent/get` so a
+/// faithful iCalendar document can be reconstructed from the response.
+///
+/// Stalwart's `iCalendar` property holds only the converted-property mapping
+/// (`{"convertedProperties":…,"name":"vevent"}`), NOT the event data, so every
+/// standard property that maps to an iCalendar line must be requested
+/// explicitly. The names are the JSCalendar (RFC 8984) spellings Stalwart
+/// accepts; a name it does not recognize is silently dropped, which would lose
+/// data — e.g. the JSCalendar spelling is `showWithoutTime`, not `isAllDay`,
+/// and `duration` (with a `dtend` mapping in `convertedProperties`), not `end`.
+const CALENDAR_EVENT_PROPERTIES: &[&str] = &[
+    "uid",
+    "title",
+    "description",
+    "start",
+    "duration",
+    "timeZone",
+    "showWithoutTime",
+    "locations",
+    "keywords",
+    "status",
+    "privacy",
+    "freeBusyStatus",
+    "priority",
+    "sequence",
+    "created",
+    "updated",
+    "recurrenceRule",
+    "recurrenceOverrides",
+    "organizerCalendarAddress",
+    "participants",
+    "alerts",
+    "links",
+    "iCalendar",
+    "@etag",
+];
+
+/// Parse the `list` array of a `CalendarEvent/get` response into events,
+/// retaining each raw object so iCalendar can be reconstructed on demand.
+///
+/// Parsing is per element: a single object that fails to deserialize is
+/// skipped (and logged) instead of discarding the whole list — the previous
+/// whole-list `from_value` turned one unexpected element into zero events.
+fn parse_calendar_event_list(data: &Value) -> Vec<JmapCalendarEvent> {
+    let Some(list) = data.get("list").and_then(|v| v.as_array()) else {
+        return Vec::new();
+    };
+    let mut events = Vec::with_capacity(list.len());
+    for item in list {
+        match serde_json::from_value::<JmapCalendarEvent>(item.clone()) {
+            Ok(mut event) => {
+                event.raw = Some(item.clone());
+                events.push(event);
+            }
+            Err(e) => {
+                warn!(target: "jmap", error = %e, "skipping unparseable CalendarEvent object");
+            }
+        }
+    }
+    events
 }
 
 /// Result of a Calendar/get call.
@@ -4560,14 +4648,7 @@ impl JmapClient {
                         "name": "CalendarEvent/query",
                         "path": "/ids",
                     },
-                    "properties": [
-                        "id", "uid", "title", "start", "end", "duration",
-                        "location", "participants", "alerts", "calendarIds",
-                        "isAllDay", "recurrenceRules", "recurrenceOverrides",
-                        "excluded", "sequence", "priority", "privacy",
-                        "status", "timeZone", "created", "updated",
-                        "iCalendar", "@etag"
-                    ],
+                    "properties": CALENDAR_EVENT_PROPERTIES,
                 }),
                 "eg0",
             ),
@@ -4597,10 +4678,7 @@ impl JmapClient {
                     .to_string();
             }
             if method == "CalendarEvent/get" {
-                events = data
-                    .get("list")
-                    .and_then(|v| serde_json::from_value(v.clone()).ok())
-                    .unwrap_or_default();
+                events = parse_calendar_event_list(&data);
             }
         }
 
@@ -4633,9 +4711,7 @@ impl JmapClient {
             json!({
                 "accountId": account_id,
                 "ids": [event_id],
-                "properties": [
-                    "id", "uid", "title", "iCalendar"
-                ],
+                "properties": CALENDAR_EVENT_PROPERTIES,
             }),
             "eg0",
         )];
@@ -4652,24 +4728,11 @@ impl JmapClient {
 
         for (method, data, _) in response.method_responses {
             if method == "CalendarEvent/get"
-                && let Some(list) = data.get("list").and_then(|v| v.as_array())
-                && let Some(event) = list.first()
+                && let Some(event) = parse_calendar_event_list(&data).into_iter().next()
             {
-                let ics = event
-                    .get("iCalendar")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                let id = event
-                    .get("id")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                let etag = event
-                    .get("@etag")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
+                let ics = event.to_ics().unwrap_or_default();
+                let id = event.id.unwrap_or_default();
+                let etag = event.etag.unwrap_or_default();
                 return Ok((ics, id, etag));
             }
             if method == "CalendarEvent/get"
@@ -4706,7 +4769,7 @@ impl JmapClient {
             json!({
                 "accountId": account_id,
                 "ids": event_ids,
-                "properties": ["id", "uid", "iCalendar", "@etag"],
+                "properties": CALENDAR_EVENT_PROPERTIES,
             }),
             "eg0",
         )];
@@ -4721,26 +4784,13 @@ impl JmapClient {
             .await?;
         let mut map = HashMap::new();
         for (method, data, _) in response.method_responses {
-            if method == "CalendarEvent/get"
-                && let Some(list) = data.get("list").and_then(|v| v.as_array())
-            {
-                for event in list {
-                    let id = event
-                        .get("id")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string();
-                    let ics = event
-                        .get("iCalendar")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string();
-                    let etag = event
-                        .get("@etag")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string();
-                    if !id.is_empty() {
+            if method == "CalendarEvent/get" {
+                for event in parse_calendar_event_list(&data) {
+                    if let Some(id) = event.id.clone()
+                        && !id.is_empty()
+                    {
+                        let ics = event.to_ics().unwrap_or_default();
+                        let etag = event.etag.clone().unwrap_or_default();
                         map.insert(id, (ics, etag));
                     }
                 }
@@ -5518,6 +5568,89 @@ mod tests {
         assert!(event.title.is_none());
         assert!(event.i_calendar.is_none());
         assert!(event.calendar_ids.is_none());
+    }
+
+    #[test]
+    fn test_parse_calendar_event_list_skips_unparseable_element() {
+        // Stalwart returns `iCalendar` as a JSCalendar object. The old
+        // whole-list `from_value` failed on the first such element and
+        // yielded ZERO events; per-element parsing must keep the rest.
+        let data = json!({
+            "list": [
+                {
+                    "id": "e1",
+                    "uid": "u1",
+                    "title": "Good",
+                    "start": "2026-01-05T09:00:00",
+                    "timeZone": "Etc/UTC",
+                    "duration": "PT1H",
+                    "iCalendar": {"convertedProperties": {}, "name": "vevent"}
+                },
+                {
+                    // Not an object: cannot deserialize into an event.
+                    "id": 12345
+                },
+                {
+                    "id": "e3",
+                    "uid": "u3",
+                    "title": "Also Good",
+                    "start": "2026-01-06T09:00:00",
+                    "timeZone": "Etc/UTC",
+                    "duration": "PT1H",
+                    "iCalendar": {"name": "vevent"}
+                }
+            ]
+        });
+        let events = parse_calendar_event_list(&data);
+        assert_eq!(events.len(), 2, "one bad element must not drop the list");
+        assert_eq!(events[0].id.as_deref(), Some("e1"));
+        assert_eq!(events[1].id.as_deref(), Some("e3"));
+        // Each parsed event retains its raw object for iCalendar rebuild.
+        assert!(events[0].raw.is_some());
+        assert!(events[1].raw.is_some());
+    }
+
+    #[test]
+    fn test_calendar_event_to_ics_reconstructs_from_stalwart_object() {
+        let event_json = json!({
+            "id": "e1",
+            "uid": "u-1",
+            "title": "Team Sync",
+            "start": "2026-01-05T09:00:00",
+            "timeZone": "Europe/Berlin",
+            "duration": "PT1H",
+            "iCalendar": {
+                "convertedProperties": { "duration": { "name": "dtend" } },
+                "name": "vevent"
+            }
+        });
+        let mut event: JmapCalendarEvent = serde_json::from_value(event_json.clone()).unwrap();
+        // `raw` is populated by the client; mirror that here.
+        event.raw = Some(event_json);
+        let ics = event.to_ics().expect("reconstructed ICS");
+        assert!(ics.contains("BEGIN:VEVENT"), "{ics}");
+        assert!(ics.contains("UID:u-1"), "{ics}");
+        assert!(ics.contains("SUMMARY:Team Sync"), "{ics}");
+        assert!(
+            ics.contains("DTSTART;TZID=Europe/Berlin:20260105T090000"),
+            "{ics}"
+        );
+        assert!(
+            ics.contains("DTEND;TZID=Europe/Berlin:20260105T100000"),
+            "{ics}"
+        );
+        // The JSCalendar object must never leak through as an ICS string.
+        assert!(!ics.contains("convertedProperties"), "{ics}");
+    }
+
+    #[test]
+    fn test_calendar_event_to_ics_none_without_raw() {
+        let event = JmapCalendarEvent {
+            id: Some("e1".to_string()),
+            i_calendar: Some(json!({"name": "vevent"})),
+            ..Default::default()
+        };
+        assert!(event.to_ics().is_none());
     }
 
     #[test]

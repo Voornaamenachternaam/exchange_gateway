@@ -1400,8 +1400,8 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
                         {
                             Ok(result) => {
                                 for event in &result.events {
-                                    if let Some(ref ics) = event.i_calendar
-                                        && let Some(item) = parse_ics_event(ics)
+                                    if let Some(ics) = event.to_ics()
+                                        && let Some(item) = parse_ics_event(&ics)
                                     {
                                         let href = format!(
                                             "jmap://calendar/{}/{}",
