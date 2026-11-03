@@ -6,8 +6,8 @@ for Windows. It assumes the gateway image is already published to a registry
 and Stalwart Mailserver v1.0.1 is running.
 
 > Configuration lives **inline in `docker-compose.yml`**. There is no `.env`
-> file. See `CLOUDFLARED_SETUP.md` for the tunnel details and `.env.example`
-> for the meaning of every variable.
+> file. See `CLOUDFLARED_SETUP.md` for the tunnel details; the meaning of every
+> variable is documented inline in `docker-compose.yml`.
 
 ---
 

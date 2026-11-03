@@ -12,7 +12,16 @@ services:
 
       # --- Logging / binding ---------------------------------------------
       - GATEWAY_LOG_LEVEL=info
+      # GATEWAY_LOG_FORMAT=text        # text | json (json is handy under Portainer/journalctl)
+      # GATEWAY_LOG_JSON=1             # shorthand for GATEWAY_LOG_FORMAT=json
+      # GATEWAY_LOG_NO_TIMESTAMPS=0    # 1 drops timestamps (for an external log shipper)
+      # GATEWAY_LOG_THREADS=1          # 0 hides the thread id column
+      # GATEWAY_LOG_TARGET=1           # 0 hides the module target column
       - GATEWAY_BIND=[::]:8134
+      # Optional: path to a TOML config file. The container image ships none;
+      # a missing file is tolerated and env vars are used (the deployment
+      # contract is compose-only, so leave this unset unless you mount one).
+      # - GATEWAY_CONFIG=/etc/exchange-gateway/config.toml
 
       # --- Stalwart backend (private bridge network) ----------------------
       # The HTTP listener on port 8080 serves CalDAV/CardDAV at /dav and JMAP
@@ -20,6 +29,10 @@ services:
       # not set explicitly; they are set explicitly here for clarity.
       - GATEWAY_CALDAV_BASE=http://stalwart:8080/dav
       - GATEWAY_JMAP_BASE=http://stalwart:8080/jmap
+      # NOTE (AUDIT3.MD #3): Stalwart serves CardDAV under /dav/card/{user}/,
+      # but the gateway currently appends "/carddav/{user}/" to this base, so
+      # EWS contacts 404. This cannot be corrected by the base value alone —
+      # it needs a code fix (or routing EWS contacts through JMAP).
       - GATEWAY_CARDDAV_BASE=http://stalwart:8080/carddav
 
       # Deploy-time JMAP Calendars capability verification: off | warn | enforce.
@@ -62,11 +75,18 @@ services:
       - GATEWAY_AUTH_BACKEND_MAX_BACKOFF_SECS=60
 
       # --- Mail plumbing (SMTP/IMAP on Stalwart) --------------------------
+      # *_HOST/*_PORT are the backend the gateway talks to over the bridge
+      # network; keep them on the Docker service name.
       - GATEWAY_SMTP_HOST=stalwart
       - GATEWAY_SMTP_PORT=465
       - GATEWAY_IMAP_HOST=stalwart
       - GATEWAY_IMAP_PORT=993
-      - GATEWAY_MAIL_HOST=stalwart
+      # GATEWAY_MAIL_HOST is ADVERTISED to clients inside Autodiscover's
+      # IMAP/SMTP <Protocol> blocks. It must be a PUBLICLY RESOLVABLE name
+      # (the MX host, e.g. mail.<your-domain>), NOT the internal container
+      # name — otherwise an IMAP/SMTP-capable client is pointed at an
+      # unreachable host. See AUDIT3.MD finding #8.
+      - GATEWAY_MAIL_HOST=mail.example.com
 
       # Plain HTTP to Stalwart only over the private bridge network; the public
       # surface is TLS-terminated in front of the gateway.
@@ -98,6 +118,13 @@ services:
       - GATEWAY_MAPI_ENABLED=1
       - GATEWAY_MAPI_HMA_ENABLED=0
       - GATEWAY_EMAIL_ENABLED=1
+      # MAPI tuning (defaults shown). The OIDC/org values are optional and are
+      # only consulted when MAPI is enabled.
+      # - GATEWAY_MAPI_CONTENTS_PAGE_SIZE=256
+      # - GATEWAY_MAPI_MAX_CONTENTS_ROWS=100000
+      # - GATEWAY_MAPI_ORG=
+      # - GATEWAY_MAPI_OIDC_ISSUER=
+      # - GATEWAY_MAPI_OIDC_AUDIENCE=
 
       # --- Server identity advertised to clients --------------------------
       - GATEWAY_SERVER_VERSION=15.2.2562.45
@@ -119,10 +146,12 @@ services:
     ports:
       - 8134:8134
     volumes:
-      - /armblock/exchange-gateway/data:/var/lib/exchange-gateway
-      # Operator-seeded S/MIME certificate store for the GAL. Create the host
-      # directory (or remove this line) before first start.
-      - /armblock/exchange-gateway/certs:/var/lib/exchange-gateway/certs
+      # Host path the operator creates (per the deployment scenario):
+      #   /armblock/exchange-gateway-data  (must be writable by UID 10001)
+      - /armblock/exchange-gateway-data:/var/lib/exchange-gateway
+      # OPTIONAL operator-seeded S/MIME certificate store for the GAL. Create
+      # the host directory (or remove this line) before first start.
+      # - /armblock/exchange-gateway-certs:/var/lib/exchange-gateway/certs
     # Resolver for the gateway container. Set to the operator's DNS servers, or
     # delete this block to inherit the Docker daemon's resolvers.
     dns:
