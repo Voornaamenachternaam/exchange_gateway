@@ -69,10 +69,7 @@ phf = { version = "^0.14.0", features = ["macros"] }
 icalendar = { version = "^0.17.17", features = ["parser", "chrono-tz"] }
 email_address = "0.2.9"
 iso8601-duration = "^0.2.0"
-# Stalwart's own iCalendar/JSCalendar conversion library. Used to convert the
-# JSCalendar object Stalwart returns in the JMAP `iCalendar` property into a
-# faithful iCalendar document (it is the exact library that produces it).
-calcard = "0.3.14"
+calcard = "^0.3.14"
 roxmltree = "^0.21.2"
 itertools = "^0.15.0"
 hex = "^0.4.3"
