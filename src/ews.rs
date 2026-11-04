@@ -7816,7 +7816,9 @@ async fn handle_copy_item(state: &Arc<AppState>, auth: &AuthContext, body: &str)
                 }
             };
 
-            // Create new event via CalendarEvent/set
+            // Create new event via CalendarEvent/set. A `PayloadDiscarded`
+            // failure disables the JMAP write path for the process so the
+            // CopyItem surfaces an error rather than creating an empty event.
             let (event_id, _uid, etag) = match jmap
                 .set_calendar_event(SetCalendarEventParams {
                     account_id: &account_id,
@@ -7830,6 +7832,9 @@ async fn handle_copy_item(state: &Arc<AppState>, auth: &AuthContext, body: &str)
             {
                 Ok(res) => res,
                 Err(e) => {
+                    if e.is_payload_discarded() {
+                        state.disable_jmap_calendar_writes();
+                    }
                     tracing::error!(error = %e, "CopyItem: JMAP create event failed");
                     return operation_error_response(
                         &EwsAction::CopyItem,
@@ -10297,8 +10302,11 @@ async fn try_jmap_create_calendar(
     // Render iCalendar data from the EWS calendar item
     let ics = render_ics(item);
 
-    // Call CalendarEvent/set (create)
-    let (event_id, uid, etag): (String, String, String) = jmap
+    // Call CalendarEvent/set (create). A `PayloadDiscarded` failure means the
+    // backend accepted the write but stored an empty event — permanently
+    // disable the JMAP calendar write path so all subsequent create/update
+    // traffic falls back to CalDAV instead of silently losing data.
+    let (event_id, uid, etag): (String, String, String) = match jmap
         .set_calendar_event(SetCalendarEventParams {
             account_id: &account_id,
             calendar_id: Some(calendar_id),
@@ -10307,7 +10315,21 @@ async fn try_jmap_create_calendar(
             username: owner,
             password,
         })
-        .await?;
+        .await
+    {
+        Ok(v) => v,
+        Err(e) => {
+            if e.is_payload_discarded() {
+                state.disable_jmap_calendar_writes();
+                tracing::error!(
+                    target: "ews",
+                    error = %e,
+                    "JMAP calendar create stored an empty event; disabling JMAP calendar writes for this process"
+                );
+            }
+            return Err(anyhow!("{}", e));
+        }
+    };
 
     // Construct the server_id and resource_href consistent with JMAP integration
     let server_id = generate_server_id(
@@ -10498,8 +10520,9 @@ async fn try_jmap_update_calendar(
     // Render iCalendar
     let ics = render_ics(new_item);
 
-    // set_calendar_event with event_id for update
-    let (updated_event_id, uid, etag): (String, String, String) = jmap
+    // set_calendar_event with event_id for update. As with create, a
+    // `PayloadDiscarded` failure disables the JMAP write path for the process.
+    let (updated_event_id, uid, etag): (String, String, String) = match jmap
         .set_calendar_event(SetCalendarEventParams {
             account_id: &account_id,
             calendar_id: None, // Not needed for update; we pass event_id
@@ -10508,7 +10531,21 @@ async fn try_jmap_update_calendar(
             username: owner,
             password,
         })
-        .await?;
+        .await
+    {
+        Ok(v) => v,
+        Err(e) => {
+            if e.is_payload_discarded() {
+                state.disable_jmap_calendar_writes();
+                tracing::error!(
+                    target: "ews",
+                    error = %e,
+                    "JMAP calendar update stored an empty event; disabling JMAP calendar writes for this process"
+                );
+            }
+            return Err(anyhow!("{}", e));
+        }
+    };
 
     // The returned event_id should match the input; if empty, use the input
     let final_event_id = if updated_event_id.is_empty() {

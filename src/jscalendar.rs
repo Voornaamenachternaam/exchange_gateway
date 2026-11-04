@@ -67,6 +67,139 @@ pub fn jscalendar_event_to_ics(event: &Value) -> Option<String> {
     rendered.contains("BEGIN:VEVENT").then_some(rendered)
 }
 
+/// Convert an iCalendar (ICS) document into the JSCalendar `Event` object that
+/// Stalwart's `CalendarEvent/set` expects as its write payload.
+///
+/// Stalwart v1.0.x **silently discards** a raw `iCalendar` string supplied to
+/// `CalendarEvent/set`: the create is accepted, the event is stored, and every
+/// content property (title/start/duration/…) is dropped. The write therefore
+/// has to be expressed as structured JSCalendar properties, which is exactly
+/// what `calcard` — the library Stalwart itself uses — produces from the same
+/// ICS the gateway renders. This runs the ICS → JSCalendar half of the
+/// round-trip that [`jscalendar_event_to_ics`] reverses, so the payload the
+/// gateway writes is the same shape Stalwart reads back.
+///
+/// Returns `None` when the ICS cannot be parsed or yields no event entry.
+pub fn ics_to_jscalendar_event(ics: &str) -> Option<Value> {
+    let parsed = calcard::icalendar::ICalendar::parse(ics).ok()?;
+    let group = parsed.into_jscalendar::<String, String>();
+    let json = serde_json::to_value(group.into_inner()).ok()?;
+    let entry = json.get("entries")?.as_array()?.first()?.clone();
+    entry.is_object().then_some(entry)
+}
+
+/// JMAP `CalendarEvent` properties the gateway must never send in a write
+/// payload: they are server-managed or immutable. `method`, `isOrigin` and
+/// `baseEventId` are rejected outright by Stalwart with
+/// `invalidProperties`/`This property is immutable`, while `id`,
+/// `calendarIds`, `@etag`, `created`, `updated`, `sequence` and `isDraft`
+/// are assigned by the server (sending a stale `sequence`/`updated` would
+/// fight the server's own bookkeeping).
+const SERVER_MANAGED_WRITE_PROPERTIES: &[&str] = &[
+    "id",
+    "baseEventId",
+    "calendarIds",
+    "isDraft",
+    "isOrigin",
+    "method",
+    "created",
+    "updated",
+    "sequence",
+    "@etag",
+];
+
+/// Optional `CalendarEvent` properties that a *replacement* update must clear
+/// when the new event no longer carries them. Stalwart's `CalendarEvent/set`
+/// update is a **partial patch** (verified live against v1.0.3): a property
+/// absent from the patch keeps its previous value. The gateway renders a
+/// complete event from ICS, so any property the fresh event does not set must
+/// be explicitly nulled or stale content (a removed description, a dropped
+/// attendee roster, a cancelled RRULE) would survive the update.
+const CLEARABLE_ON_UPDATE_PROPERTIES: &[&str] = &[
+    "description",
+    "locations",
+    "keywords",
+    "status",
+    "privacy",
+    "freeBusyStatus",
+    "priority",
+    "recurrenceRule",
+    "recurrenceOverrides",
+    "participants",
+    "organizerCalendarAddress",
+    "alerts",
+    "links",
+    "virtualLocations",
+    "color",
+    "showWithoutTime",
+    "timeZone",
+];
+
+/// Build the JSCalendar payload for a `CalendarEvent/set` create or update
+/// from the `Event` object produced by [`ics_to_jscalendar_event`].
+///
+/// For an update (`for_update = true`) every [`CLEARABLE_ON_UPDATE_PROPERTIES`]
+/// entry the new event does not set is inserted as an explicit `null`, turning
+/// Stalwart's partial patch into a faithful replacement of the event's content.
+pub fn jscalendar_write_payload(entry: &Value, for_update: bool) -> Value {
+    let mut obj = entry.as_object().cloned().unwrap_or_default();
+    for key in SERVER_MANAGED_WRITE_PROPERTIES {
+        obj.remove(*key);
+    }
+    obj.entry("@type")
+        .or_insert_with(|| Value::String("Event".to_string()));
+    if for_update {
+        for key in CLEARABLE_ON_UPDATE_PROPERTIES {
+            obj.entry((*key).to_string()).or_insert(Value::Null);
+        }
+    }
+    Value::Object(obj)
+}
+
+/// Verify that a `CalendarEvent/get` read-back carries the content the gateway
+/// just wrote. Used to fail the write path closed: if the backend accepted the
+/// `CalendarEvent/set` but did not apply the payload, the caller must surface
+/// an error so create/update traffic falls back to CalDAV instead of silently
+/// losing the event.
+///
+/// The title is the content marker (the gateway's ICS always renders one);
+/// when the event has no title the `start` presence is checked instead. The
+/// comparison is deliberately tolerant of benign whitespace normalisation —
+/// the failure being detected is the backend storing an *empty* event, not a
+/// cosmetic difference.
+pub fn verify_write_round_trip(read_back: &Value, entry: &Value) -> Result<(), String> {
+    let expected_title = entry
+        .get("title")
+        .and_then(|v| v.as_str())
+        .filter(|t| !t.trim().is_empty());
+    if let Some(expected) = expected_title {
+        let got = read_back
+            .get("title")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        if got.trim().is_empty() {
+            return Err(format!(
+                "CalendarEvent/set payload was not applied (expected title {:?}, read back an empty event); \
+                 the backend discarded the event content",
+                expected
+            ));
+        }
+        if got.trim() != expected.trim() {
+            return Err(format!(
+                "CalendarEvent/set payload was not applied (expected title {:?}, read back {:?})",
+                expected, got
+            ));
+        }
+    } else if entry.get("start").is_some() && read_back.get("start").is_none() {
+        return Err(
+            "CalendarEvent/set payload was not applied (start missing on read-back); \
+             the backend discarded the event content"
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
 /// Prepare a JSCalendar event object for `calcard`'s exporter.
 fn sanitize_event(obj: &Map<String, Value>) -> Map<String, Value> {
     let mut out = obj.clone();
@@ -326,5 +459,144 @@ mod tests {
         // 14:00 Europe/Berlin (CET, UTC+1) on 2026-03-02 == 13:00Z.
         assert_eq!(item.start.timestamp(), 1_772_456_400);
         assert_eq!(item.end.timestamp(), 1_772_456_400 + 45 * 60);
+    }
+
+    #[test]
+    fn ics_to_jscalendar_round_trips_event_content() {
+        // The write half: ICS → JSCalendar Event object. This is what
+        // `set_calendar_event` posts to Stalwart instead of a raw ICS string
+        // (a raw `iCalendar` payload is silently discarded by Stalwart).
+        let ics = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//exchange_gateway//EN\r\n\
+                   BEGIN:VEVENT\r\nUID:rt-1\r\nDTSTAMP:20260301T000000Z\r\n\
+                   DTSTART;TZID=Europe/Berlin:20260302T090000\r\n\
+                   DTEND;TZID=Europe/Berlin:20260302T100000\r\nSUMMARY:Round Trip\r\n\
+                   DESCRIPTION:Body text\r\nLOCATION:Room A\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+        let entry = ics_to_jscalendar_event(ics).expect("converted");
+        assert_eq!(
+            entry.get("title").and_then(|v| v.as_str()),
+            Some("Round Trip")
+        );
+        assert_eq!(
+            entry.get("description").and_then(|v| v.as_str()),
+            Some("Body text")
+        );
+        assert!(
+            entry.get("start").is_some(),
+            "start must be present: {entry}"
+        );
+        // Round-tripping back to ICS via the read half must preserve the data.
+        let back = jscalendar_event_to_ics(&entry).expect("back to ics");
+        assert!(back.contains("SUMMARY:Round Trip"), "{back}");
+        assert!(
+            back.contains("DTSTART;TZID=Europe/Berlin:20260302T090000"),
+            "{back}"
+        );
+    }
+
+    #[test]
+    fn write_payload_strips_server_managed_properties() {
+        // The converted entry carries calcard bookkeeping (`method`) and, on
+        // an update, server-owned fields; none may be sent to Stalwart.
+        let entry = json!({
+            "@type": "Event",
+            "uid": "u",
+            "title": "T",
+            "start": "2026-03-02T09:00:00",
+            "timeZone": "Etc/UTC",
+            "duration": "PT1H",
+            "method": "request",
+            "id": "server-id",
+            "calendarIds": { "c": true },
+            "created": "2026-01-01T00:00:00Z",
+            "updated": "2026-01-01T00:00:00Z",
+            "sequence": 4,
+            "@etag": "abc",
+            "isDraft": false,
+            "isOrigin": true,
+            "baseEventId": "base"
+        });
+        let create = jscalendar_write_payload(&entry, false);
+        for key in [
+            "method",
+            "id",
+            "calendarIds",
+            "created",
+            "updated",
+            "sequence",
+            "@etag",
+            "isDraft",
+            "isOrigin",
+            "baseEventId",
+        ] {
+            assert!(create.get(key).is_none(), "create payload leaked {key}");
+        }
+        assert_eq!(create.get("title").and_then(|v| v.as_str()), Some("T"));
+        assert_eq!(create.get("@type").and_then(|v| v.as_str()), Some("Event"));
+    }
+
+    #[test]
+    fn update_payload_nulls_absent_optional_properties() {
+        // Stalwart's CalendarEvent/set update is a partial patch: any optional
+        // property the fresh event does not carry must be explicitly nulled so
+        // stale content (a removed description, dropped attendees, a cancelled
+        // RRULE) does not survive the update.
+        let entry = json!({
+            "@type": "Event",
+            "uid": "u",
+            "title": "Only title",
+            "start": "2026-03-02T09:00:00",
+            "timeZone": "Etc/UTC",
+            "duration": "PT1H"
+        });
+        let update = jscalendar_write_payload(&entry, true);
+        for key in [
+            "description",
+            "locations",
+            "recurrenceRule",
+            "participants",
+            "status",
+            "privacy",
+        ] {
+            assert_eq!(
+                update.get(key),
+                Some(&Value::Null),
+                "update payload must null absent {key}"
+            );
+        }
+        // A property the event DOES carry is not overwritten with null.
+        assert_eq!(
+            update.get("title").and_then(|v| v.as_str()),
+            Some("Only title")
+        );
+        // Create payloads must NOT null anything (no prior state to clear).
+        let create = jscalendar_write_payload(&entry, false);
+        assert!(create.get("description").is_none());
+    }
+
+    #[test]
+    fn verify_write_round_trip_detects_discarded_payload() {
+        let entry = json!({ "title": "Kept", "start": "2026-03-02T09:00:00" });
+        // Content applied → Ok.
+        assert!(
+            verify_write_round_trip(
+                &json!({ "title": "Kept", "start": "2026-03-02T09:00:00" }),
+                &entry
+            )
+            .is_ok()
+        );
+        // Backend stored an empty event → Err naming the discard.
+        let err = verify_write_round_trip(&json!({ "id": "x" }), &entry).unwrap_err();
+        assert!(err.contains("not applied"), "{err}");
+        // Whitespace normalisation is tolerated (benign).
+        assert!(verify_write_round_trip(&json!({ "title": "  Kept  " }), &entry).is_ok());
+    }
+
+    #[test]
+    fn verify_write_round_trip_without_title_checks_start() {
+        let entry = json!({ "start": "2026-03-02T09:00:00" });
+        assert!(
+            verify_write_round_trip(&json!({ "start": "2026-03-02T09:00:00" }), &entry).is_ok()
+        );
+        assert!(verify_write_round_trip(&json!({ "id": "x" }), &entry).is_err());
     }
 }

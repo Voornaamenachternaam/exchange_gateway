@@ -212,6 +212,79 @@ own round-trip and fall back to CalDAV on a mismatch. At minimum, default
 `ics_round_trip_ok` is observed, and make the "admin creds missing" skip an
 explicit, loud deployment error rather than a warning.
 
+#### Delivered (this change)
+
+The fix follows the audit's own recommendation — the write path validates its
+own round-trip and falls back to CalDAV on a mismatch — rather than depending on
+the operator filling in admin credentials. It also fixes the guard so it is
+correct in the shipped compose.
+
+1. **The write payload is no longer a raw ICS string.** `set_calendar_event`
+   (`src/jmap.rs`) now converts the rendered ICS to structured JSCalendar
+   properties before calling `CalendarEvent/set`. The conversion is
+   `ics_to_jscalendar_event` (new, `src/jscalendar.rs`): it parses the ICS with
+   `calcard` — the same library Stalwart uses — and emits the `Event` object,
+   so the payload the gateway writes is exactly the shape the server reads
+   back. A raw `iCalendar` payload is what Stalwart silently discards; a
+   structured payload is what survives.
+2. **`jscalendar_write_payload` (new)** strips the server-managed/immutable
+   properties (`id`, `calendarIds`, `created`, `updated`, `sequence`, `@etag`,
+   `isDraft`, `isOrigin`, `baseEventId`, `method` — the last three are rejected
+   outright with `invalidProperties`/immutable) and, for an **update**,
+   explicitly nulls every optional property the fresh event does not set
+   (`description`, `locations`, `participants`, `recurrenceRule`, …). Stalwart's
+   `CalendarEvent/set` update is a **partial patch** (verified live against
+   v1.0.3): a property absent from the patch keeps its old value, so a
+   replacement update must clear stale content or a removed description / dropped
+   attendee roster / cancelled RRULE would survive the edit.
+3. **Every create/update verifies its own read-back.** `set_calendar_event`
+   issues `CalendarEvent/set` and a `CalendarEvent/get` (create via
+   `#ids`/`resultOf`, update by explicit id) in the same JMAP request and
+   compares the stored event against the payload (`verify_write_round_trip`,
+   new). On a mismatch it fails with the typed
+   `CalendarWriteError::PayloadDiscarded`; a **create** additionally destroys
+   the contentless orphan it just made (best-effort) so a retry or the CalDAV
+   fallback does not leave a duplicate behind. This is the self-validation the
+   audit asked for, and it works regardless of whether the deploy check ran.
+4. **The runtime gate is now fail-closed at the point of use, not only at
+   startup.** On `PayloadDiscarded` the caller disables the JMAP calendar write
+   path for the process (`AppState::disable_jmap_calendar_writes`) so all
+   subsequent create/update traffic takes the CalDAV branch. Wired at every
+   JMAP calendar write site: EWS `CreateItem` (`try_jmap_create_calendar`),
+   `UpdateItem` (`try_jmap_update_calendar`), `CopyItem`, and the RSVP pipeline
+   (`meeting/rsvp.rs` `create_copy_via_jmap` / `write_existing_copy`).
+5. **The deploy probe exercises the real write path.**
+   `probe_write_paths` (`src/jmap.rs`) no longer writes a raw `iCalendar`
+   payload it expects to fail — it converts the probe ICS with
+   `ics_to_jscalendar_event` + `jscalendar_write_payload` (the exact helpers
+   `set_calendar_event` uses) and asserts the content round-trips. `ics_round_trip_ok`
+   now means "the gateway's actual create path persists content", which is the
+   signal that matters.
+6. **The guard is no longer dead in the shipped compose.** The admin-creds
+   skip in `verify_calendar_capability_at_startup` (`src/main.rs`) is now an
+   explicit message stating that the runtime read-back guard still protects
+   writes (and, in `enforce` mode, still a fatal error). The compose comment
+   for `GATEWAY_CALENDAR_CAPABILITY_CHECK` documents the same. Because of
+   item 3, an empty admin account can no longer cause silent calendar data
+   loss — the first lossy write fails closed and falls back to CalDAV.
+7. **Capability-object gaps are warnings, not failures.** The live target
+   (Stalwart v1.0.3) advertises `urn:ietf:params:jmap:calendars` as an empty
+   object `{}` while calendar reads and writes work correctly. The deploy
+   report's `is_healthy` therefore keys off the functional probes, and the six
+   absent §1.5.1 metadata fields are recorded in a new non-fatal `warnings`
+   list (a field present with the wrong *type* is still a fatal issue). This
+   removes a false-negative that would otherwise have failed a working
+   deployment.
+
+Tests: `src/jscalendar.rs` 5 new unit tests (ICS→JSCalendar round-trip content,
+server-managed-property stripping, update null-clearing vs create no-clearing,
+read-back discard detection, start-only fallback) + `src/jmap.rs` capability
+tests updated for the warnings/healthy semantics (empty capability object is
+healthy with 6 warnings; wrong *types* remain fatal) + `tests/jmap_calendar_deploy.rs`
+new end-to-end `gateway_set_calendar_event_round_trips_content` (drives the
+gateway's own create **and** update, then reads back through
+`get_calendar_event` and asserts subject/description/location persisted).
+
 ### 3. CardDAV base path is wrong — EWS contacts (the New-Outlook-for-Windows contact surface) are dead
 
 `CarddavClient::addressbook_home` (`src/carddav.rs:67`) builds
@@ -552,7 +625,7 @@ to EWS. This is a client-friction item, not a data-loss item.
 | # | Sev | Area | Defect | Fix ladder |
 |---|-----|------|--------|-----------|
 | 1 | P0 | Calendar read | `iCalendar` is a JSCalendar object; `Option<String>` decode fails the whole list → 0 events everywhere | **DELIVERED** — calcard dep + whole-object ICS reconstruction + per-element parse |
-| 2 | P0 | Calendar write | JMAP create discards payload; guard skipped when admin creds empty (compose ships empty) and defaults to writes-enabled | dep 1 + fail-closed default |
+| 2 | P0 | Calendar write | JMAP create discards payload; guard skipped when admin creds empty (compose ships empty) and defaults to writes-enabled | **DELIVERED** — structured JSCalendar write + per-write read-back verification + fail-closed runtime gate (works without admin creds) |
 | 3 | P0 | Contacts (EWS) | CardDAV base `/carddav/{u}/` 404s; correct path is `/dav/card/{u}/`; EWS contacts are CardDAV-only | dep 1 + route EWS contacts via JMAP |
 | 4 | P1 | Mail/push | Explicit `Email/get` ids >500 → `requestTooLarge`; `jmap_push` union is unbounded | dep 1 (chunking) |
 | 5 | P1 | Calendar delta | `CalendarEvent/changes` `hasMoreChanges` ignored → dropped changes | dep 1 (drain loop) |
@@ -579,4 +652,7 @@ mail-path limits in P1 #4 being the main residual risk once the calendar is
 repaired.
 
 *(P0 #1 — JMAP calendar reads — is now fixed; see the Delivered note in that
-section. #2 and #3 remain open.)*
+section. P0 #2 — JMAP calendar writes — is now fixed as well: the write is a
+structured JSCalendar payload with per-write read-back verification, and a
+lossy backend is caught and disabled at the point of use even when the
+deploy-time admin-creds check is skipped. P0 #3 remains open.)*
