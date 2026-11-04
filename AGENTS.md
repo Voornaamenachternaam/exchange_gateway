@@ -487,6 +487,56 @@ EAS specs v20250520 (16.1); older EAS compat NOT needed.
   `GATEWAY_CALDAV_USER`/`GATEWAY_CALDAV_PASSWORD` are PHANTOM — referenced
   only in a caldav.rs:44 warning, never read; `GATEWAY_RULE_PROVIDER` is a
   Rust const, not env.
+- AUDIT3.MD §1 (JMAP calendar reads always zero events) is COMPLETE and its
+  section documents the delivered behavior. Root cause: Stalwart's
+  `CalendarEvent/get` `iCalendar` property is a JSCalendar OBJECT
+  (`{"convertedProperties":…,"name":"vevent"}`), not an ICS string; the old
+  `JmapCalendarEvent.i_calendar: Option<String>` made `from_value::<Vec<_>>`
+  fail for the WHOLE list → `.ok().unwrap_or_default()` = zero events.
+  Delivered: new dep `calcard = "0.3.14"` (Stalwart's own iCalendar⇄JSCalendar
+  lib, Apache-2.0 OR MIT); new module `src/jscalendar.rs`
+  (`jscalendar_event_to_ics`) wraps the whole event object as a JSCalendar
+  `Group` and converts via calcard — the `iCalendar` fragment alone carries
+  only the converted-property MAP, NOT the data, so the whole object must be
+  reassembled; JMAP-only properties (`id`/`calendarIds`/`isDraft`/…) are
+  stripped or calcard emits `JSPROP;JSPTR=…` junk; participants without a
+  `calendarAddress` CANNOT become ATTENDEEs (calcard's exporter asserts in
+  debug builds) and are instead pinned to a `PARTICIPANT` component so their
+  name/properties survive — the ICS parser (`calendar.rs::parse_event_lines`)
+  now skips ALL nested sub-component properties by depth, so a PARTICIPANT's
+  `SUMMARY` can never overwrite the event's subject (verified bug, fixed).
+  `i_calendar` is now `Option<Value>` + a `raw: Option<Value>` field +
+  `to_ics()`; a manual `Deserialize` impl retains `raw` on the public serde
+  path; `parse_calendar_event_list` decodes PER ELEMENT (skip+log a bad
+  one, never drop the list) and returns the skip count, which
+  `query_calendar_events` surfaces as `CalendarEventListResult.unparseable`.
+  `CALENDAR_EVENT_PROPERTIES` fixes the requested
+  names: `showWithoutTime` (NOT `isAllDay`), `duration` (NOT `end`),
+  `locations` (NOT `location`), `recurrenceRule` (NOT `recurrenceRules`) —
+  invalid names are silently dropped by Stalwart. All consumers
+  (sync initial+delta, ews free/busy+Find/Get, eas free/busy,
+  get_calendar_event(s)) call `event.to_ics()`, and conversion/deserialize
+  failures PROPAGATE (getters → Err so CalDAV fallback runs; sync delta/initial
+  declines to advance the state token, else the skipped event is lost on the
+  next delta). Calendar deltas no longer tombstone unchanged events: a
+  `CalendarEvent/changes` result is PARTIAL, so `calendar_event_deleted`
+  (`sync.rs`) removes a stored event only when the delta is a full snapshot
+  (initial sync / CalDAV fallback) or the id is explicitly in `destroyed`.
+  Tests: 8 in src/jscalendar.rs
+  (incl. an end-to-end `to_ics`→`parse_ics_event` chain test asserting UID/
+  subject/description/location/RRULE/DTSTART+DTEND instants, and
+  addressless-participant preservation asserting NO subject leakage) + 7 in
+  src/jmap.rs (per-element skip + count, `to_ics()` reconstruction,
+  `None` without raw, raw retention, single/batch conversion-failure
+  propagation, `query_calendar_events` unparseable count) + 1 in src/sync.rs
+  (tombstone decision matrix) + 1 in src/calendar.rs (nested sub-component
+  properties ignored). Suite:
+  1137 lib + 7 + 2 + 22 + 11 + 1 doc, clippy 0 (`-D warnings`), rustfmt clean
+  on all touched files, release build warning-free.
+  LESSON: the `iCalendar` fragment is NOT the event — it is a
+  converted-property map; a faithful ICS needs the full requested property
+  list AND the whole-object reassembly. calcard folds at 75 octets (unfold
+  before asserting on long lines) and appends `;JSID=<id>` to LOCATION lines.
 - §17 Auth negative-caching and cache-invalidation is COMPLETE and its AUDIT.md
   section documents the delivered behavior. Design: `AuthVerifier` now returns
   a tri-state `AuthOutcome` (Verified / InvalidCredentials / BackendUnavailable)

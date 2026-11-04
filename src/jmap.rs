@@ -653,7 +653,7 @@ pub struct JmapCalendar {
 /// Represents a calendar event in JSCalendar format.
 /// The `iCalendar` property is requested for gateway compatibility —
 /// the gateway needs ICS data to render EWS/EAS calendar items.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct JmapCalendarEvent {
     pub id: Option<String>,
@@ -699,16 +699,212 @@ pub struct JmapCalendarEvent {
     pub created: Option<String>,
     #[serde(default)]
     pub updated: Option<String>,
-    /// The iCalendar representation of this event.
-    /// Requested via CalendarEvent/get with `properties: ["iCalendar"]`.
-    /// Stalwart returns the original iCalendar data in this property.
+    /// The raw JSCalendar `iCalendar` property, requested via
+    /// `CalendarEvent/get` with `properties: ["iCalendar"]`. Stalwart does
+    /// NOT return an ICS string here — it returns the JSCalendar object for
+    /// the source component (`{"convertedProperties":…,"name":"vevent"}`).
+    /// It is retained as a [`Value`]; use [`Self::to_ics`] for iCalendar.
+    #[serde(rename = "iCalendar")]
     #[serde(default)]
-    pub i_calendar: Option<String>,
+    pub i_calendar: Option<Value>,
+    /// The complete raw `CalendarEvent/get` object this event was parsed from.
+    /// The JSCalendar data needed to rebuild iCalendar is spread across the
+    /// whole object (standard properties plus the `iCalendar` fragment), so
+    /// the raw object is retained and converted on demand by
+    /// [`Self::to_ics`]. Populated by the JMAP client; `None` for
+    /// hand-constructed instances.
+    #[serde(skip)]
+    pub raw: Option<Value>,
     /// The ETag of the event (from the JMAP response). Used for concurrency
     /// and change tracking, replacing CalDAV's ETag handling.
     #[serde(rename = "@etag")]
     #[serde(default)]
     pub etag: Option<String>,
+}
+
+impl JmapCalendarEvent {
+    /// iCalendar (ICS) for this event, reconstructed from the JSCalendar
+    /// object Stalwart returned.
+    ///
+    /// Stalwart's `iCalendar` property is a JSCalendar object, not an ICS
+    /// string, so this reassembles the whole event object and converts it
+    /// with `calcard` (the library Stalwart itself uses). Returns `None` when
+    /// no event data was fetched or the conversion yields no component.
+    pub fn to_ics(&self) -> Option<String> {
+        let ics = self
+            .raw
+            .as_ref()
+            .and_then(crate::jscalendar::jscalendar_event_to_ics);
+        if ics.is_none() && self.raw.is_some() {
+            warn!(
+                target: "jmap",
+                event_id = self.id.as_deref().unwrap_or(""),
+                "CalendarEvent could not be converted to iCalendar; event skipped"
+            );
+        }
+        ics
+    }
+}
+
+/// Deserialization mirror of [`JmapCalendarEvent`] that exists solely so the
+/// whole server object can be retained in [`JmapCalendarEvent::raw`] on the
+/// public serde path. `raw` is `#[serde(skip)]` on the public struct, so a
+/// directly deserialized event would otherwise lose the JSCalendar data
+/// `to_ics` needs. Kept in lockstep with the public struct's field list.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct JmapCalendarEventShadow {
+    id: Option<String>,
+    #[serde(default)]
+    uid: Option<String>,
+    #[serde(default)]
+    title: Option<String>,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    start: Option<Value>,
+    #[serde(default)]
+    end: Option<Value>,
+    #[serde(default)]
+    duration: Option<String>,
+    #[serde(default)]
+    location: Option<Value>,
+    #[serde(default)]
+    participants: Option<Value>,
+    #[serde(default)]
+    alerts: Option<Value>,
+    #[serde(default)]
+    calendar_ids: Option<HashMap<String, bool>>,
+    #[serde(default)]
+    is_all_day: Option<bool>,
+    #[serde(default)]
+    recurrence_rules: Option<Vec<Value>>,
+    #[serde(default)]
+    recurrence_overrides: Option<Value>,
+    #[serde(default)]
+    excluded: Option<Value>,
+    #[serde(default)]
+    sequence: Option<u64>,
+    #[serde(default)]
+    priority: Option<u64>,
+    #[serde(default)]
+    privacy: Option<String>,
+    #[serde(default)]
+    status: Option<String>,
+    #[serde(default)]
+    time_zone: Option<String>,
+    #[serde(default)]
+    created: Option<String>,
+    #[serde(default)]
+    updated: Option<String>,
+    #[serde(rename = "iCalendar")]
+    #[serde(default)]
+    i_calendar: Option<Value>,
+    #[serde(rename = "@etag")]
+    #[serde(default)]
+    etag: Option<String>,
+}
+
+impl<'de> Deserialize<'de> for JmapCalendarEvent {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let raw = Value::deserialize(deserializer)?;
+        let shadow = serde_json::from_value::<JmapCalendarEventShadow>(raw.clone())
+            .map_err(serde::de::Error::custom)?;
+        Ok(JmapCalendarEvent {
+            id: shadow.id,
+            uid: shadow.uid,
+            title: shadow.title,
+            description: shadow.description,
+            start: shadow.start,
+            end: shadow.end,
+            duration: shadow.duration,
+            location: shadow.location,
+            participants: shadow.participants,
+            alerts: shadow.alerts,
+            calendar_ids: shadow.calendar_ids,
+            is_all_day: shadow.is_all_day,
+            recurrence_rules: shadow.recurrence_rules,
+            recurrence_overrides: shadow.recurrence_overrides,
+            excluded: shadow.excluded,
+            sequence: shadow.sequence,
+            priority: shadow.priority,
+            privacy: shadow.privacy,
+            status: shadow.status,
+            time_zone: shadow.time_zone,
+            created: shadow.created,
+            updated: shadow.updated,
+            i_calendar: shadow.i_calendar,
+            raw: Some(raw),
+            etag: shadow.etag,
+        })
+    }
+}
+
+/// JSCalendar properties the gateway requests from `CalendarEvent/get` so a
+/// faithful iCalendar document can be reconstructed from the response.
+///
+/// Stalwart's `iCalendar` property holds only the converted-property mapping
+/// (`{"convertedProperties":…,"name":"vevent"}`), NOT the event data, so every
+/// standard property that maps to an iCalendar line must be requested
+/// explicitly. The names are the JSCalendar (RFC 8984) spellings Stalwart
+/// accepts; a name it does not recognize is silently dropped, which would lose
+/// data — e.g. the JSCalendar spelling is `showWithoutTime`, not `isAllDay`,
+/// and `duration` (with a `dtend` mapping in `convertedProperties`), not `end`.
+const CALENDAR_EVENT_PROPERTIES: &[&str] = &[
+    "uid",
+    "title",
+    "description",
+    "start",
+    "duration",
+    "timeZone",
+    "showWithoutTime",
+    "locations",
+    "keywords",
+    "status",
+    "privacy",
+    "freeBusyStatus",
+    "priority",
+    "sequence",
+    "created",
+    "updated",
+    "recurrenceRule",
+    "recurrenceOverrides",
+    "organizerCalendarAddress",
+    "participants",
+    "alerts",
+    "links",
+    "iCalendar",
+    "@etag",
+];
+
+/// Parse the `list` array of a `CalendarEvent/get` response into events,
+/// retaining each raw object so iCalendar can be reconstructed on demand.
+///
+/// Returns the parsed events and the number of objects that failed to
+/// deserialize. Parsing is per element: a single object that fails to
+/// deserialize is skipped (and logged) instead of discarding the whole list —
+/// the previous whole-list `from_value` turned one unexpected element into zero
+/// events. The skip count lets callers avoid advancing sync state past an event
+/// they could not process.
+fn parse_calendar_event_list(data: &Value) -> (Vec<JmapCalendarEvent>, usize) {
+    let Some(list) = data.get("list").and_then(|v| v.as_array()) else {
+        return (Vec::new(), 0);
+    };
+    let mut events = Vec::with_capacity(list.len());
+    let mut unparseable = 0usize;
+    for item in list {
+        match serde_json::from_value::<JmapCalendarEvent>(item.clone()) {
+            Ok(event) => events.push(event),
+            Err(e) => {
+                unparseable += 1;
+                warn!(target: "jmap", error = %e, "skipping unparseable CalendarEvent object");
+            }
+        }
+    }
+    (events, unparseable)
 }
 
 /// Result of a Calendar/get call.
@@ -724,6 +920,10 @@ pub struct CalendarEventListResult {
     pub events: Vec<JmapCalendarEvent>,
     pub total: u64,
     pub query_state: String,
+    /// Number of `CalendarEvent/get` objects that failed to deserialize and
+    /// were skipped. Callers must not advance sync state while this is non-zero,
+    /// or the skipped event would be lost on the next delta.
+    pub unparseable: usize,
 }
 
 /// Result of a CalendarEvent/changes call.
@@ -4560,14 +4760,7 @@ impl JmapClient {
                         "name": "CalendarEvent/query",
                         "path": "/ids",
                     },
-                    "properties": [
-                        "id", "uid", "title", "start", "end", "duration",
-                        "location", "participants", "alerts", "calendarIds",
-                        "isAllDay", "recurrenceRules", "recurrenceOverrides",
-                        "excluded", "sequence", "priority", "privacy",
-                        "status", "timeZone", "created", "updated",
-                        "iCalendar", "@etag"
-                    ],
+                    "properties": CALENDAR_EVENT_PROPERTIES,
                 }),
                 "eg0",
             ),
@@ -4586,6 +4779,7 @@ impl JmapClient {
         let mut events = Vec::new();
         let mut total: u64 = 0;
         let mut query_state = String::new();
+        let mut unparseable = 0usize;
 
         for (method, data, _) in response.method_responses {
             if method == "CalendarEvent/query" {
@@ -4597,10 +4791,9 @@ impl JmapClient {
                     .to_string();
             }
             if method == "CalendarEvent/get" {
-                events = data
-                    .get("list")
-                    .and_then(|v| serde_json::from_value(v.clone()).ok())
-                    .unwrap_or_default();
+                let (parsed, skipped) = parse_calendar_event_list(&data);
+                events = parsed;
+                unparseable = skipped;
             }
         }
 
@@ -4608,6 +4801,7 @@ impl JmapClient {
             events,
             total,
             query_state,
+            unparseable,
         })
     }
 
@@ -4633,9 +4827,7 @@ impl JmapClient {
             json!({
                 "accountId": account_id,
                 "ids": [event_id],
-                "properties": [
-                    "id", "uid", "title", "iCalendar"
-                ],
+                "properties": CALENDAR_EVENT_PROPERTIES,
             }),
             "eg0",
         )];
@@ -4651,26 +4843,25 @@ impl JmapClient {
             .await?;
 
         for (method, data, _) in response.method_responses {
-            if method == "CalendarEvent/get"
-                && let Some(list) = data.get("list").and_then(|v| v.as_array())
-                && let Some(event) = list.first()
-            {
-                let ics = event
-                    .get("iCalendar")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                let id = event
-                    .get("id")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                let etag = event
-                    .get("@etag")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                return Ok((ics, id, etag));
+            if method == "CalendarEvent/get" {
+                let (mut events, unparseable) = parse_calendar_event_list(&data);
+                if unparseable > 0 {
+                    return Err(anyhow!(
+                        "CalendarEvent/get returned an unparseable event object for ID {}",
+                        event_id
+                    ));
+                }
+                if let Some(event) = events.pop() {
+                    let ics = event.to_ics().ok_or_else(|| {
+                        anyhow!(
+                            "failed to convert JMAP calendar event {} to iCalendar",
+                            event.id.as_deref().unwrap_or(event_id)
+                        )
+                    })?;
+                    let id = event.id.unwrap_or_default();
+                    let etag = event.etag.unwrap_or_default();
+                    return Ok((ics, id, etag));
+                }
             }
             if method == "CalendarEvent/get"
                 && let Some(not_found) = data.get("notFound")
@@ -4706,7 +4897,7 @@ impl JmapClient {
             json!({
                 "accountId": account_id,
                 "ids": event_ids,
-                "properties": ["id", "uid", "iCalendar", "@etag"],
+                "properties": CALENDAR_EVENT_PROPERTIES,
             }),
             "eg0",
         )];
@@ -4721,26 +4912,21 @@ impl JmapClient {
             .await?;
         let mut map = HashMap::new();
         for (method, data, _) in response.method_responses {
-            if method == "CalendarEvent/get"
-                && let Some(list) = data.get("list").and_then(|v| v.as_array())
-            {
-                for event in list {
-                    let id = event
-                        .get("id")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string();
-                    let ics = event
-                        .get("iCalendar")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string();
-                    let etag = event
-                        .get("@etag")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string();
-                    if !id.is_empty() {
+            if method == "CalendarEvent/get" {
+                let (events, unparseable) = parse_calendar_event_list(&data);
+                if unparseable > 0 {
+                    return Err(anyhow!(
+                        "CalendarEvent/get returned {unparseable} unparseable event object(s)"
+                    ));
+                }
+                for event in events {
+                    if let Some(id) = event.id.clone()
+                        && !id.is_empty()
+                    {
+                        let ics = event.to_ics().ok_or_else(|| {
+                            anyhow!("failed to convert CalendarEvent {id} to iCalendar")
+                        })?;
+                        let etag = event.etag.clone().unwrap_or_default();
                         map.insert(id, (ics, etag));
                     }
                 }
@@ -5518,6 +5704,90 @@ mod tests {
         assert!(event.title.is_none());
         assert!(event.i_calendar.is_none());
         assert!(event.calendar_ids.is_none());
+    }
+
+    #[test]
+    fn test_parse_calendar_event_list_skips_unparseable_element() {
+        // Stalwart returns `iCalendar` as a JSCalendar object. The old
+        // whole-list `from_value` failed on the first such element and
+        // yielded ZERO events; per-element parsing must keep the rest.
+        let data = json!({
+            "list": [
+                {
+                    "id": "e1",
+                    "uid": "u1",
+                    "title": "Good",
+                    "start": "2026-01-05T09:00:00",
+                    "timeZone": "Etc/UTC",
+                    "duration": "PT1H",
+                    "iCalendar": {"convertedProperties": {}, "name": "vevent"}
+                },
+                {
+                    // Not an object: cannot deserialize into an event.
+                    "id": 12345
+                },
+                {
+                    "id": "e3",
+                    "uid": "u3",
+                    "title": "Also Good",
+                    "start": "2026-01-06T09:00:00",
+                    "timeZone": "Etc/UTC",
+                    "duration": "PT1H",
+                    "iCalendar": {"name": "vevent"}
+                }
+            ]
+        });
+        let (events, unparseable) = parse_calendar_event_list(&data);
+        assert_eq!(events.len(), 2, "one bad element must not drop the list");
+        assert_eq!(unparseable, 1, "the skipped element must be counted");
+        assert_eq!(events[0].id.as_deref(), Some("e1"));
+        assert_eq!(events[1].id.as_deref(), Some("e3"));
+        // Each parsed event retains its raw object for iCalendar rebuild.
+        assert!(events[0].raw.is_some());
+        assert!(events[1].raw.is_some());
+    }
+
+    #[test]
+    fn test_calendar_event_to_ics_reconstructs_from_stalwart_object() {
+        let event_json = json!({
+            "id": "e1",
+            "uid": "u-1",
+            "title": "Team Sync",
+            "start": "2026-01-05T09:00:00",
+            "timeZone": "Europe/Berlin",
+            "duration": "PT1H",
+            "iCalendar": {
+                "convertedProperties": { "duration": { "name": "dtend" } },
+                "name": "vevent"
+            }
+        });
+        let mut event: JmapCalendarEvent = serde_json::from_value(event_json.clone()).unwrap();
+        // `raw` is populated by the client; mirror that here.
+        event.raw = Some(event_json);
+        let ics = event.to_ics().expect("reconstructed ICS");
+        assert!(ics.contains("BEGIN:VEVENT"), "{ics}");
+        assert!(ics.contains("UID:u-1"), "{ics}");
+        assert!(ics.contains("SUMMARY:Team Sync"), "{ics}");
+        assert!(
+            ics.contains("DTSTART;TZID=Europe/Berlin:20260105T090000"),
+            "{ics}"
+        );
+        assert!(
+            ics.contains("DTEND;TZID=Europe/Berlin:20260105T100000"),
+            "{ics}"
+        );
+        // The JSCalendar object must never leak through as an ICS string.
+        assert!(!ics.contains("convertedProperties"), "{ics}");
+    }
+
+    #[test]
+    fn test_calendar_event_to_ics_none_without_raw() {
+        let event = JmapCalendarEvent {
+            id: Some("e1".to_string()),
+            i_calendar: Some(json!({"name": "vevent"})),
+            ..Default::default()
+        };
+        assert!(event.to_ics().is_none());
     }
 
     #[test]
@@ -6845,5 +7115,141 @@ mod tests {
             "transport failure must be BackendError, got {:?}",
             check
         );
+    }
+
+    #[test]
+    fn public_deserialize_retains_raw_so_to_ics_works() {
+        // The public serde path must retain the whole object in `raw`, or a
+        // directly deserialized event loses the JSCalendar data `to_ics` needs.
+        let event_json = json!({
+            "id": "e1",
+            "uid": "u-1",
+            "title": "Team Sync",
+            "start": "2026-01-05T09:00:00",
+            "timeZone": "Europe/Berlin",
+            "duration": "PT1H",
+            "iCalendar": { "convertedProperties": { "duration": { "name": "dtend" } }, "name": "vevent" }
+        });
+        let event: JmapCalendarEvent = serde_json::from_value(event_json).unwrap();
+        assert!(event.raw.is_some(), "raw must be captured on deserialize");
+        let ics = event.to_ics().expect("ICS from deserialized event");
+        assert!(ics.contains("SUMMARY:Team Sync"), "{ics}");
+        assert!(ics.contains("UID:u-1"), "{ics}");
+    }
+
+    /// Spawn a stub JMAP server that serves `/session` and answers every API
+    /// call (`POST /`) with `api_response`.
+    async fn spawn_stub_jmap_api_server(api_response: Value) -> String {
+        use axum::routing::{get, post};
+
+        async fn session(axum::Extension(base): axum::Extension<String>) -> axum::Json<Value> {
+            axum::Json(session_json(&base))
+        }
+        async fn api(axum::Extension(response): axum::Extension<Value>) -> axum::Json<Value> {
+            axum::Json(response)
+        }
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let base = format!("http://127.0.0.1:{port}");
+        let app = axum::Router::new()
+            .route("/session", get(session))
+            .route("/", post(api))
+            .layer(axum::Extension(api_response))
+            .layer(axum::Extension(base.clone()));
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        base
+    }
+
+    #[tokio::test]
+    async fn query_calendar_events_counts_unparseable_objects() {
+        let response = json!({
+            "methodResponses": [
+                ["CalendarEvent/query", { "ids": ["e1", "e2"], "total": 2, "queryState": "s1" }, "eq0"],
+                ["CalendarEvent/get", { "list": [
+                    { "id": "e1", "uid": "u1", "title": "Good", "start": "2026-01-05T09:00:00", "timeZone": "Etc/UTC", "duration": "PT1H", "iCalendar": {"name":"vevent"} },
+                    { "id": 12345 }
+                ] }, "eg0"]
+            ]
+        });
+        let base = spawn_stub_jmap_api_server(response).await;
+        let client = JmapClient::new(&base).unwrap();
+        let pw = SecretString::from("pw");
+        let result = client
+            .query_calendar_events(QueryCalendarEventsParams {
+                account_id: "acct",
+                calendar_id: None,
+                start: "2026-01-01T00:00:00Z",
+                end: "2026-12-31T00:00:00Z",
+                limit: 100,
+                username: "u",
+                password: &pw,
+            })
+            .await
+            .expect("query result");
+        assert_eq!(result.events.len(), 1);
+        assert_eq!(result.unparseable, 1, "skip count must reach the caller");
+    }
+
+    #[tokio::test]
+    async fn get_calendar_event_errors_when_conversion_fails() {
+        // An event the server returns with no event data at all cannot be
+        // converted; the single-event getter must surface that as an error so
+        // callers activate their CalDAV fallback, not an empty success.
+        let response = json!({
+            "methodResponses": [
+                ["CalendarEvent/get", { "list": [ { "id": "e1" } ] }, "eg0"]
+            ]
+        });
+        let base = spawn_stub_jmap_api_server(response).await;
+        let client = JmapClient::new(&base).unwrap();
+        let pw = SecretString::from("pw");
+        let result = client.get_calendar_event("acct", "e1", "u", &pw).await;
+        assert!(result.is_err(), "unconvertible event must be Err");
+    }
+
+    #[tokio::test]
+    async fn get_calendar_events_errors_when_conversion_fails() {
+        let response = json!({
+            "methodResponses": [
+                ["CalendarEvent/get", { "list": [ { "id": "e1" } ] }, "eg0"]
+            ]
+        });
+        let base = spawn_stub_jmap_api_server(response).await;
+        let client = JmapClient::new(&base).unwrap();
+        let pw = SecretString::from("pw");
+        let ids = vec!["e1".to_string()];
+        let result = client.get_calendar_events("acct", &ids, "u", &pw).await;
+        assert!(result.is_err(), "unconvertible batch event must be Err");
+    }
+
+    #[tokio::test]
+    async fn get_calendar_event_reconstructs_ics_from_stalwart_object() {
+        // End-to-end over the wire: Stalwart's object form must produce ICS.
+        let response = json!({
+            "methodResponses": [
+                ["CalendarEvent/get", { "list": [ {
+                    "id": "e1",
+                    "uid": "u-1",
+                    "title": "Team Sync",
+                    "start": "2026-01-05T09:00:00",
+                    "timeZone": "Etc/UTC",
+                    "duration": "PT1H",
+                    "iCalendar": { "convertedProperties": { "duration": { "name": "dtend" } }, "name": "vevent" }
+                } ] }, "eg0"]
+            ]
+        });
+        let base = spawn_stub_jmap_api_server(response).await;
+        let client = JmapClient::new(&base).unwrap();
+        let pw = SecretString::from("pw");
+        let (ics, id, _etag) = client
+            .get_calendar_event("acct", "e1", "u", &pw)
+            .await
+            .expect("ICS reconstructed");
+        assert_eq!(id, "e1");
+        assert!(ics.contains("SUMMARY:Team Sync"), "{ics}");
+        assert!(ics.contains("BEGIN:VEVENT"), "{ics}");
     }
 }

@@ -24,6 +24,9 @@ requested fix-priority ladder (existing deps → new high-quality deps → Rust
 
 ### 1. JMAP calendar **reads** always return zero events — `iCalendar` is an object, the gateway deserializes it as a `String`
 
+> **STATUS: DELIVERED.** Fixed as described below; see the *Delivered* note at
+> the end of this section.
+
 `JmapCalendarEvent::i_calendar` is declared `Option<String>`
 (`src/jmap.rs:706`):
 
@@ -95,6 +98,76 @@ first step is to change the field type and stop discarding the whole list on a
 single-element decode error (deserialize per-element, skipping bad ones).
 Either way the current `Option<String>` contract is provably wrong and must
 change.
+
+#### Delivered (this change)
+
+The fix is the ladder 1→4 route, verified empirically against Stalwart's own
+JSCalendar producer (`calcard` 1.0.2, the version bundled with Stalwart v1.0.x)
+over a 25-shape event corpus (simple, attendees, organizer, RRULE with
+COUNT/UNTIL/BYDAY, EXDATE, moved `RECURRENCE-ID` override, all-day single and
+multi-day, DURATION-only, CATEGORIES/CLASS/STATUS/TRANSP, VALARM, TZID,
+custom VTIMEZONE, X-MS-* properties, cancellation, sequence/priority):
+
+1. **New dependency (ladder 2): `calcard` 0.3.14** (`Apache-2.0 OR MIT`) —
+   Stalwart's own iCalendar ⇄ JSCalendar conversion library. It is the exact
+   library that produces the JSCalendar the gateway receives, so converting
+   back is faithful rather than approximate.
+2. **New module `src/jscalendar.rs`** — `jscalendar_event_to_ics` accepts
+   either a literal ICS string (returned verbatim) or a JSCalendar object,
+   strips the JMAP-only properties (`id`, `calendarIds`, `isDraft`, …) that
+   have no iCalendar counterpart, wraps the object as a JSCalendar `Group`
+   (calcard's parser only accepts a Group/VCALENDAR root), and converts with
+   `calcard`. The `iCalendar` fragment carries only the converted-property
+   mapping (`{"convertedProperties":…,"name":"vevent"}`) — **not** the event
+   data — so the whole event object is reassembled, which is why the fix is
+   not a one-line type change. A participant with no `calendarAddress` cannot
+   become an `ATTENDEE`; instead of dropping it, it is pinned to a
+   `PARTICIPANT` component (RFC 8984 §4.4.6 permits addressless participants)
+   so its name and remaining properties survive the reconstruction — see
+   `sanitize_event` in `src/jscalendar.rs`. calcard's exporter asserts on such
+   a participant in debug builds, which is why the fragment is injected.
+   The ICS parser (`parse_event_lines` in `src/calendar.rs`) skips nested
+   sub-component properties, so a `PARTICIPANT`'s `SUMMARY` can never overwrite
+   the event's own subject.
+3. **`JmapCalendarEvent::i_calendar` is now `Option<Value>`** and the raw
+   `CalendarEvent/get` object is retained in a new `raw: Option<Value>` field;
+   `JmapCalendarEvent::to_ics()` reconstructs the ICS on demand. A manual
+   `Deserialize` impl retains `raw` on the public serde path too, so an event
+   deserialized outside the client parser still converts.
+4. **Per-element deserialization** (`parse_calendar_event_list`): a single
+   element that fails to decode is skipped and logged instead of failing the
+   whole list — the exact failure mode the audit reproduced.
+5. **The requested property list is corrected** (`CALENDAR_EVENT_PROPERTIES`).
+   The old list used names Stalwart does not recognize — `isAllDay` (the
+   JSCalendar name is `showWithoutTime`), `end` (the name is `duration`, with
+   the `dtend` mapping carried in `convertedProperties`), `location` (the name
+   is `locations`), `recurrenceRules` (the name is `recurrenceRule`). Invalid
+   names are silently dropped by the server, so a faithful reconstruction
+   requires the exact RFC 8984 spellings.
+6. **All consumers** (`sync.rs` initial + delta, `ews.rs` free/busy + Find/Get,
+   `eas.rs` free/busy, `get_calendar_event`/`get_calendar_events`) now call
+   `event.to_ics()` instead of reading `i_calendar` as a string. Conversion and
+   deserialization failures are **propagated** rather than swallowed: the
+   single and batch getters return `Err` (so their CalDAV fallback runs), and
+   the sync delta/initial paths decline to advance the stored state token when
+   an event could not be turned into an item — otherwise the skipped event would
+   be lost forever on the next delta.
+7. **Calendar deltas no longer tombstone unchanged events.** A
+   `CalendarEvent/changes` result is a partial change set; a stored event absent
+   from it is unchanged, not deleted. Only a full snapshot (initial sync, or the
+   CalDAV fallback) treats an omission as a deletion, and within a delta only an
+   explicitly `destroyed` id is removed (`calendar_event_deleted` in
+   `src/sync.rs`).
+
+Tests: `src/jscalendar.rs` 8 unit tests (verbatim string passthrough, full
+object reconstruction, RRULE/EXDATE/moved-override, all-day dates,
+VALARM + X-property preservation from the fragment, addressless-participant
+preservation without subject leakage, `@etag` stripping, non-event rejection) +
+`src/jmap.rs` 7 tests (per-element skip + skip count, `to_ics()` reconstruction,
+`to_ics()` `None` without raw data, raw retention on public deserialize,
+conversion-failure propagation for the single and batch getters, unparseable
+count from `query_calendar_events`) + `src/sync.rs` 1 test (tombstone decision)
++ `src/calendar.rs` 1 test (nested sub-component properties ignored).
 
 ### 2. JMAP calendar **writes** silently discard the event payload (and the guard that should catch this is disabled in the shipped compose)
 
@@ -478,7 +551,7 @@ to EWS. This is a client-friction item, not a data-loss item.
 
 | # | Sev | Area | Defect | Fix ladder |
 |---|-----|------|--------|-----------|
-| 1 | P0 | Calendar read | `iCalendar` is a JSCalendar object; `Option<String>` decode fails the whole list → 0 events everywhere | serde_json (dep 1) + in-repo ICS conversion |
+| 1 | P0 | Calendar read | `iCalendar` is a JSCalendar object; `Option<String>` decode fails the whole list → 0 events everywhere | **DELIVERED** — calcard dep + whole-object ICS reconstruction + per-element parse |
 | 2 | P0 | Calendar write | JMAP create discards payload; guard skipped when admin creds empty (compose ships empty) and defaults to writes-enabled | dep 1 + fail-closed default |
 | 3 | P0 | Contacts (EWS) | CardDAV base `/carddav/{u}/` 404s; correct path is `/dav/card/{u}/`; EWS contacts are CardDAV-only | dep 1 + route EWS contacts via JMAP |
 | 4 | P1 | Mail/push | Explicit `Email/get` ids >500 → `requestTooLarge`; `jmap_push` union is unbounded | dep 1 (chunking) |
@@ -504,3 +577,6 @@ for Windows and Outlook Android) is **not** met today. Email sync, Autodiscover
 shape, OOF/Sieve, and the SMTP send path are substantially sound, with the
 mail-path limits in P1 #4 being the main residual risk once the calendar is
 repaired.
+
+*(P0 #1 — JMAP calendar reads — is now fixed; see the Delivered note in that
+section. #2 and #3 remain open.)*

@@ -1226,6 +1226,22 @@ impl Default for SyncOptions {
     }
 }
 
+/// Whether a stored calendar event absent from the current JMAP response should
+/// be tombstoned (deleted).
+///
+/// A `CalendarEvent/changes` delta is a PARTIAL change set: an event missing
+/// from it is merely unchanged and must survive. Only a full snapshot (initial
+/// sync, or the CalDAV fallback) is authoritative enough to treat an omission
+/// as a deletion, and within a delta only an explicitly `destroyed` id is
+/// removed.
+fn calendar_event_deleted(
+    delta_partial: bool,
+    destroyed_server_ids: &HashSet<String>,
+    server_id: &str,
+) -> bool {
+    !delta_partial || destroyed_server_ids.contains(server_id)
+}
+
 pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
     let storage = &params.state.storage;
     let window_size = params.opts.window_size.clamp(1, MAX_WINDOW_SIZE);
@@ -1355,6 +1371,12 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
     let mut events = Vec::new();
     let mut jmap_failed = false;
     let mut token_to_store: Option<String> = None;
+    // True when `events` is a partial JMAP delta (CalendarEvent/changes) rather
+    // than a complete view of the calendar. Stored events absent from a partial
+    // delta are merely unchanged and must NOT be tombstoned.
+    let mut calendar_delta_partial = false;
+    // Server IDs the delta explicitly reported as destroyed.
+    let mut jmap_destroyed_server_ids: HashSet<String> = HashSet::new();
 
     if params.state.cfg.prefer_jmap_calendar {
         if let Some(jmap) = &params.state.jmap_client {
@@ -1399,25 +1421,44 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
                             .await
                         {
                             Ok(result) => {
+                                let mut conversion_failed = false;
                                 for event in &result.events {
-                                    if let Some(ref ics) = event.i_calendar
-                                        && let Some(item) = parse_ics_event(ics)
-                                    {
-                                        let href = format!(
-                                            "jmap://calendar/{}/{}",
-                                            account_id,
-                                            event.id.as_deref().unwrap_or("")
-                                        );
-                                        let etag = event.id.as_deref().unwrap_or("").to_string(); // Use JMAP ID as etag
-                                        events.push(EventItem {
-                                            href,
-                                            etag,
-                                            ics: ics.clone(),
-                                            item,
-                                        });
+                                    match event.to_ics().and_then(|ics| {
+                                        parse_ics_event(&ics).map(|item| (ics, item))
+                                    }) {
+                                        Some((ics, item)) => {
+                                            let href = format!(
+                                                "jmap://calendar/{}/{}",
+                                                account_id,
+                                                event.id.as_deref().unwrap_or("")
+                                            );
+                                            let etag =
+                                                event.id.as_deref().unwrap_or("").to_string(); // Use JMAP ID as etag
+                                            events.push(EventItem {
+                                                href,
+                                                etag,
+                                                ics: ics.clone(),
+                                                item,
+                                            });
+                                        }
+                                        None => {
+                                            conversion_failed = true;
+                                            tracing::warn!(
+                                                target: "sync",
+                                                event_id = event.id.as_deref().unwrap_or(""),
+                                                "JMAP calendar event could not be converted or parsed; not advancing sync state"
+                                            );
+                                        }
                                     }
                                 }
-                                token_to_store = Some(result.query_state.clone());
+                                if conversion_failed || result.unparseable > 0 {
+                                    // Do not store a state token that would
+                                    // skip the unprocessed event on the next
+                                    // delta; re-query the full set instead.
+                                    jmap_failed = true;
+                                } else {
+                                    token_to_store = Some(result.query_state.clone());
+                                }
                             }
                             Err(e) => {
                                 tracing::debug!(target: "sync", error = %e, "JMAP Calendar query failed, falling back to CalDAV");
@@ -1456,6 +1497,17 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
                                         .chain(changes.updated.iter())
                                         .cloned()
                                         .collect();
+                                    // A delta is a PARTIAL change set: events
+                                    // absent from it are unchanged, not gone.
+                                    calendar_delta_partial = true;
+                                    for id in &changes.destroyed {
+                                        let href = format!("jmap://calendar/{}/{}", account_id, id);
+                                        jmap_destroyed_server_ids.insert(generate_server_id(
+                                            params.state.cfg.hmac_secret(),
+                                            &href,
+                                        ));
+                                    }
+                                    let mut conversion_failed = false;
                                     if !all_ids.is_empty() {
                                         match jmap
                                             .get_calendar_events(
@@ -1468,18 +1520,32 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
                                         {
                                             Ok(event_map) => {
                                                 for id in all_ids {
-                                                    if let Some((ics, etag)) = event_map.get(&id)
-                                                        && let Some(item) = parse_ics_event(ics)
-                                                    {
-                                                        events.push(EventItem {
-                                                            href: format!(
-                                                                "jmap://calendar/{}/{}",
-                                                                account_id, id
-                                                            ),
-                                                            etag: etag.clone(),
-                                                            ics: ics.clone(),
-                                                            item,
-                                                        });
+                                                    match event_map.get(&id).and_then(
+                                                        |(ics, etag)| {
+                                                            parse_ics_event(ics).map(|item| {
+                                                                (ics.clone(), etag.clone(), item)
+                                                            })
+                                                        },
+                                                    ) {
+                                                        Some((ics, etag, item)) => {
+                                                            events.push(EventItem {
+                                                                href: format!(
+                                                                    "jmap://calendar/{}/{}",
+                                                                    account_id, id
+                                                                ),
+                                                                etag,
+                                                                ics,
+                                                                item,
+                                                            });
+                                                        }
+                                                        None => {
+                                                            conversion_failed = true;
+                                                            tracing::warn!(
+                                                                target: "sync",
+                                                                event_id = %id,
+                                                                "changed JMAP calendar event could not be fetched/converted/parsed; not advancing sync state"
+                                                            );
+                                                        }
                                                     }
                                                 }
                                             }
@@ -1488,6 +1554,13 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
                                                 jmap_failed = true;
                                             }
                                         }
+                                    }
+                                    if !jmap_failed && conversion_failed {
+                                        // The delta named events we could not
+                                        // turn into items; storing its state
+                                        // would skip them forever. Re-read via
+                                        // CalDAV instead.
+                                        jmap_failed = true;
                                     }
                                     if !jmap_failed {
                                         token_to_store = Some(changes.new_state.clone());
@@ -1515,6 +1588,10 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
     // CalDAV requests and potential stale/duplicate data.
     if jmap_failed {
         events.clear();
+        // The CalDAV fallback returns a complete snapshot of the collection, so
+        // it is authoritative: a stored event it omits is genuinely deleted.
+        calendar_delta_partial = false;
+        jmap_destroyed_server_ids.clear();
         let caldav = CaldavClient::new(&params.state.cfg)?;
         let calendars = caldav
             .find_user_calendars(params.username, params.password)
@@ -1688,7 +1765,20 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
     }
 
     for server_id in existing_map.keys() {
-        if !seen_ids.contains(server_id) {
+        if seen_ids.contains(server_id) {
+            continue;
+        }
+        // A JMAP delta (CalendarEvent/changes) is a PARTIAL change set: a
+        // stored event absent from it is merely unchanged and must survive.
+        // Only an event the delta explicitly reported as destroyed is removed
+        // here. A full snapshot (initial sync or the CalDAV fallback) is
+        // authoritative, so any stored event it omits is a deletion.
+        let deleted = calendar_event_deleted(
+            calendar_delta_partial,
+            &jmap_destroyed_server_ids,
+            server_id,
+        );
+        if deleted {
             let _ = storage.add_delete_tombstone(params.owner, server_id).await;
             let _ = storage
                 .delete_item_by_server_id(params.owner, server_id)
@@ -1837,6 +1927,20 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
 mod tests {
     use super::*;
     use chrono::TimeZone;
+
+    #[test]
+    fn tombstone_only_when_snapshot_or_explicitly_destroyed() {
+        // Full snapshot (initial sync or CalDAV fallback): an omitted stored
+        // event is genuinely deleted.
+        assert!(calendar_event_deleted(false, &HashSet::new(), "sid-1"));
+        // Partial delta: an event merely absent from the change set survives.
+        assert!(!calendar_event_deleted(true, &HashSet::new(), "sid-1"));
+        // Partial delta: an explicitly destroyed event is removed.
+        let mut destroyed = HashSet::new();
+        destroyed.insert("sid-2".to_string());
+        assert!(calendar_event_deleted(true, &destroyed, "sid-2"));
+        assert!(!calendar_event_deleted(true, &destroyed, "sid-3"));
+    }
 
     fn eastern_item() -> CalendarItem {
         CalendarItem {
