@@ -737,30 +737,46 @@ fn parse_event_lines(
 ) -> CalendarEventFields {
     let mut fields = CalendarEventFields::default();
     let mut in_valarm = false;
+    // Depth of nested sub-components (VALARM, PARTICIPANT, …). Their
+    // properties must not be read as if they belonged to the VEVENT: e.g. a
+    // PARTICIPANT's SUMMARY would otherwise overwrite the event's subject.
+    let mut nested_depth = 0usize;
 
     for line in lines {
         if line == "BEGIN:VALARM" {
             in_valarm = true;
+            nested_depth += 1;
             continue;
         }
         if line == "END:VALARM" {
             in_valarm = false;
+            nested_depth = nested_depth.saturating_sub(1);
             continue;
         }
         if matches!(line.as_str(), "BEGIN:VEVENT" | "END:VEVENT") {
+            continue;
+        }
+        if line.starts_with("BEGIN:") {
+            nested_depth += 1;
+            continue;
+        }
+        if line.starts_with("END:") {
+            nested_depth = nested_depth.saturating_sub(1);
+            continue;
+        }
+        if nested_depth > 0 {
+            if in_valarm
+                && let Some((key, value)) = line.split_once(':')
+                && key.starts_with("TRIGGER")
+            {
+                fields.reminder = parse_duration_minutes(value);
+            }
             continue;
         }
 
         let Some((key, value)) = line.split_once(':') else {
             continue;
         };
-
-        if in_valarm {
-            if key.starts_with("TRIGGER") {
-                fields.reminder = parse_duration_minutes(value);
-            }
-            continue;
-        }
 
         match key {
             k if k.starts_with("SUMMARY") => fields.subject = Some(unescape_ical_text(value)),
@@ -2709,6 +2725,18 @@ pub fn parse_ews_calendar_item(xml: &str) -> Result<CalendarItem> {
 mod scheduling_tests {
     use super::*;
     use chrono::Utc;
+
+    #[test]
+    fn parse_ics_event_ignores_nested_component_properties() {
+        // A PARTICIPANT (or any nested sub-component) must not contribute its
+        // SUMMARY/DESCRIPTION/etc. to the event's own fields.
+        let ics = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nUID:u\r\nDTSTART:20260105T090000Z\r\nDTEND:20260105T100000Z\r\nSUMMARY:Real Subject\r\nDESCRIPTION:real desc\r\nBEGIN:PARTICIPANT\r\nSUMMARY:Ghost Name\r\nDESCRIPTION:ghost desc\r\nEND:PARTICIPANT\r\nATTENDEE;CN=Alice:mailto:alice@example.com\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+        let item = parse_ics_event(ics).expect("parsed event");
+        assert_eq!(item.subject, "Real Subject");
+        assert_eq!(item.description, "real desc");
+        assert_eq!(item.attendees.len(), 1);
+        assert_eq!(item.attendees[0].email, "alice@example.com");
+    }
 
     #[test]
     fn resolve_ical_tzid_iana_id_passes_through() {

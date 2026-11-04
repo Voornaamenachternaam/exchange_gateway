@@ -37,6 +37,9 @@ const JMAP_ONLY_PROPERTIES: &[&str] = &[
     "useDefaultAlerts",
     "utcStart",
     "utcEnd",
+    // Requested from Stalwart and retained on `JmapCalendarEvent::etag` for
+    // concurrency tracking; it has no iCalendar counterpart.
+    "@etag",
 ];
 
 /// Convert a JSCalendar event (a whole `CalendarEvent/get` object, or the
@@ -75,16 +78,26 @@ fn sanitize_event(obj: &Map<String, Value>) -> Map<String, Value> {
     out.entry("@type")
         .or_insert_with(|| Value::String("Event".to_string()));
     // `calcard`'s exporter asserts (in debug builds) that every participant
-    // either becomes an ATTENDEE/ORGANIZER entry or a PARTICIPANT component.
-    // A participant with no `calendarAddress` and no convertible parameter
-    // satisfies neither, so it is dropped rather than risking a panic inside
-    // a request handler. Stalwart always sets `calendarAddress`.
+    // becomes either an ATTENDEE/ORGANIZER property or a PARTICIPANT
+    // component. A participant with a `calendarAddress` becomes an ATTENDEE;
+    // one without has neither, which trips the assertion (verified against
+    // calcard 0.3.14, export/convert.rs:671) and would panic the request.
+    // RFC 8984 §4.4.6 permits an addressless participant (e.g. a resource
+    // booked by name), so rather than dropping it the participant is pinned to
+    // a PARTICIPANT component by supplying the converted-component fragment
+    // `calcard` keys on (`{"name":"participant"}`); calcard then preserves the
+    // participant's name and remaining properties in the ICS instead of
+    // panicking.
     if let Some(Value::Object(participants)) = out.get_mut("participants") {
-        participants.retain(|_, participant| {
-            participant
-                .get("calendarAddress")
-                .is_some_and(|v| !v.is_null())
-        });
+        for participant in participants.values_mut() {
+            let Some(obj) = participant.as_object_mut() else {
+                continue;
+            };
+            let addressless = !obj.get("calendarAddress").is_some_and(|v| !v.is_null());
+            if addressless && !obj.contains_key("iCalendar") {
+                obj.insert("iCalendar".to_string(), json!({ "name": "participant" }));
+            }
+        }
     }
     out
 }
@@ -217,9 +230,10 @@ mod tests {
     }
 
     #[test]
-    fn drops_participants_without_calendar_address() {
+    fn preserves_addressless_participant_without_panicking() {
         // A participant with no `calendarAddress` trips calcard's exporter
-        // assertion in debug builds; it must be dropped, not panic.
+        // assertion in debug builds; it must be preserved as a PARTICIPANT
+        // component, not dropped and not panic.
         let event = json!({
             "@type": "Event",
             "uid": "p-1",
@@ -227,6 +241,7 @@ mod tests {
             "start": "2026-01-05T09:00:00",
             "timeZone": "Etc/UTC",
             "duration": "PT1H",
+            "iCalendar": { "convertedProperties": { "duration": { "name": "dtend" } }, "name": "vevent" },
             "participants": {
                 "ghost": { "@type": "Participant", "name": "No Address" },
                 "real": {
@@ -240,8 +255,37 @@ mod tests {
         });
         let ics = to_ics(event);
         let unfolded = ical_parser::unfold_ical_content(&ics);
+        // The addressless participant's details survive as a component.
+        assert!(unfolded.contains("BEGIN:PARTICIPANT"), "{ics}");
+        assert!(unfolded.contains("SUMMARY:No Address"), "{ics}");
+        // The addressed participant still becomes an ATTENDEE.
         assert!(unfolded.contains("mailto:alice@example.com"), "{ics}");
-        assert!(!unfolded.contains("No Address"), "{ics}");
+        // The nested PARTICIPANT block must not leak into the event's own
+        // fields: its SUMMARY must not overwrite the event subject.
+        let item = crate::calendar::parse_ics_event(&ics).expect("parsed event");
+        assert_eq!(item.subject, "P", "participant SUMMARY leaked into subject");
+        assert_eq!(item.attendees.len(), 1);
+    }
+
+    #[test]
+    fn strips_etag_from_reconstructed_ics() {
+        // `@etag` is requested from Stalwart and kept on the event for
+        // concurrency tracking; it must never leak into the ICS as a
+        // `JSPROP;JSPTR=@etag` line.
+        let event = json!({
+            "@type": "Event",
+            "uid": "e-1",
+            "title": "E",
+            "start": "2026-01-05T09:00:00",
+            "timeZone": "Etc/UTC",
+            "duration": "PT1H",
+            "@etag": "W/\"abc123\"",
+            "iCalendar": { "name": "vevent" }
+        });
+        let ics = to_ics(event);
+        assert!(!ics.contains("@etag"), "{ics}");
+        assert!(!ics.contains("JSPROP"), "{ics}");
+        assert!(!ics.contains("abc123"), "{ics}");
     }
 
     #[test]

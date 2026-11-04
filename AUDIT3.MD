@@ -120,12 +120,20 @@ custom VTIMEZONE, X-MS-* properties, cancellation, sequence/priority):
    `calcard`. The `iCalendar` fragment carries only the converted-property
    mapping (`{"convertedProperties":…,"name":"vevent"}`) — **not** the event
    data — so the whole event object is reassembled, which is why the fix is
-   not a one-line type change. A participant with no `calendarAddress` is
-   dropped before conversion (calcard's exporter asserts on it in debug
-   builds).
+   not a one-line type change. A participant with no `calendarAddress` cannot
+   become an `ATTENDEE`; instead of dropping it, it is pinned to a
+   `PARTICIPANT` component (RFC 8984 §4.4.6 permits addressless participants)
+   so its name and remaining properties survive the reconstruction — see
+   `sanitize_event` in `src/jscalendar.rs`. calcard's exporter asserts on such
+   a participant in debug builds, which is why the fragment is injected.
+   The ICS parser (`parse_event_lines` in `src/calendar.rs`) skips nested
+   sub-component properties, so a `PARTICIPANT`'s `SUMMARY` can never overwrite
+   the event's own subject.
 3. **`JmapCalendarEvent::i_calendar` is now `Option<Value>`** and the raw
    `CalendarEvent/get` object is retained in a new `raw: Option<Value>` field;
-   `JmapCalendarEvent::to_ics()` reconstructs the ICS on demand.
+   `JmapCalendarEvent::to_ics()` reconstructs the ICS on demand. A manual
+   `Deserialize` impl retains `raw` on the public serde path too, so an event
+   deserialized outside the client parser still converts.
 4. **Per-element deserialization** (`parse_calendar_event_list`): a single
    element that fails to decode is skipped and logged instead of failing the
    whole list — the exact failure mode the audit reproduced.
@@ -138,13 +146,28 @@ custom VTIMEZONE, X-MS-* properties, cancellation, sequence/priority):
    requires the exact RFC 8984 spellings.
 6. **All consumers** (`sync.rs` initial + delta, `ews.rs` free/busy + Find/Get,
    `eas.rs` free/busy, `get_calendar_event`/`get_calendar_events`) now call
-   `event.to_ics()` instead of reading `i_calendar` as a string.
+   `event.to_ics()` instead of reading `i_calendar` as a string. Conversion and
+   deserialization failures are **propagated** rather than swallowed: the
+   single and batch getters return `Err` (so their CalDAV fallback runs), and
+   the sync delta/initial paths decline to advance the stored state token when
+   an event could not be turned into an item — otherwise the skipped event would
+   be lost forever on the next delta.
+7. **Calendar deltas no longer tombstone unchanged events.** A
+   `CalendarEvent/changes` result is a partial change set; a stored event absent
+   from it is unchanged, not deleted. Only a full snapshot (initial sync, or the
+   CalDAV fallback) treats an omission as a deletion, and within a delta only an
+   explicitly `destroyed` id is removed (`calendar_event_deleted` in
+   `src/sync.rs`).
 
-Tests: `src/jscalendar.rs` 7 unit tests (verbatim string passthrough, full
+Tests: `src/jscalendar.rs` 8 unit tests (verbatim string passthrough, full
 object reconstruction, RRULE/EXDATE/moved-override, all-day dates,
-VALARM + X-property preservation from the fragment, participant-without-
-address drop, non-event rejection) + 3 `src/jmap.rs` tests (per-element skip,
-`to_ics()` reconstruction, `to_ics()` `None` without raw data).
+VALARM + X-property preservation from the fragment, addressless-participant
+preservation without subject leakage, `@etag` stripping, non-event rejection) +
+`src/jmap.rs` 7 tests (per-element skip + skip count, `to_ics()` reconstruction,
+`to_ics()` `None` without raw data, raw retention on public deserialize,
+conversion-failure propagation for the single and batch getters, unparseable
+count from `query_calendar_events`) + `src/sync.rs` 1 test (tombstone decision)
++ `src/calendar.rs` 1 test (nested sub-component properties ignored).
 
 ### 2. JMAP calendar **writes** silently discard the event payload (and the guard that should catch this is disabled in the shipped compose)
 
