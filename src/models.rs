@@ -363,11 +363,12 @@ impl AppState {
         self.jmap_client.is_some()
     }
 
-    /// Returns true if contacts can be synced via CardDAV. Contacts are the only
-    /// content class that depends on an upstream backend (CardDAV); Tasks and Notes
-    /// are gateway-local and therefore always available.
+    /// Returns true if contacts can be synced. JMAP Contacts (RFC 9610) is the
+    /// primary backend; CardDAV is the fallback, so either client being
+    /// configured is sufficient. Tasks and Notes are gateway-local and
+    /// therefore always available.
     pub fn can_read_contacts(&self) -> bool {
-        self.carddav_client.is_some()
+        self.jmap_client.is_some() || self.carddav_client.is_some()
     }
 }
 

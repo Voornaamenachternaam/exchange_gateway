@@ -306,6 +306,9 @@ positive here would break calendar writes for every real invitation).
 
 ### 3. CardDAV base path is wrong — EWS contacts (the New-Outlook-for-Windows contact surface) are dead
 
+> **STATUS: DELIVERED.** Fixed as described below; see the *Delivered* note at
+> the end of this section.
+
 `CarddavClient::addressbook_home` (`src/carddav.rs:67`) builds
 `{base}/carddav/{username}/`, and the config derives `carddav_base` from
 `caldav_base` by `"/dav/" → "/carddav/"` (`src/config.rs:981`, and again at
@@ -338,6 +341,78 @@ Fix (ladder 1→4): correct the default path (`/dav/card/{user}/`), and — give
 the JMAP-first mandate — route the EWS contact handlers through the working JMAP
 `ContactCard` API (already implemented for EAS in `contacts.rs`
 `apply_contacts_mutations`, `sync_contacts`) instead of CardDAV.
+
+**Delivered.**
+
+The CardDAV base path is corrected, and the EWS/MAPI contact surface is now
+JMAP-first with CardDAV as the fallback.
+
+*Path correction.* `CarddavClient::derive_base_from_caldav` is the single pure
+derivation used by the config loader (both the file-load and the environment
+paths) and by `CarddavClient::from_caldav_base`: it splits the URL into
+origin + path (so a host named `dav…` is never mistaken for the DAV root),
+drops any collection sub-path after `/dav`, and appends `/card`
+(`…/dav` → `…/dav/card`, `…/dav/cal` → `…/dav/card`, `…/dav/` → `…/dav/card`).
+`addressbook_home` now appends `/{user}/` to that root, matching Stalwart's
+`/dav/card/{user}/` home. The compose and `CLOUDFLARED_SETUP.md` values are
+`http://stalwart:8080/dav/card`.
+
+*Three additional root causes found while validating the EWS contact path* (all
+pre-existing and independently fatal — correcting the base alone would not have
+made contacts work):
+
+1. `Storage::upsert_contact` conflicted on `(owner, carddav_href)`, but
+   `contact_map`'s unique constraint is `UNIQUE(owner, server_id)`. SQLite
+   rejects a conflict target that matches no unique constraint, so **every**
+   `upsert_contact` in `handle_find_contacts_item` errored and the contact was
+   skipped — `FindItem` always returned zero contacts regardless of the base
+   path. The upsert now targets `(owner, server_id)`, and in one transaction
+   first deletes any stale row for the same href with a different ServerId, so a
+   moved/re-keyed resource leaves exactly one mapping (an audit of every other
+   `ON CONFLICT` in `storage.rs` against the schema found no further
+   mismatches).
+2. The EWS Get/Update/Delete dispatchers routed a `contact-`-prefixed ServerId
+   through the "not in the calendar item map → JMAP email" fallbacks before the
+   contact check, so every contact read/update/delete was misrouted to the email
+   handler. The contact check now runs first in all three (`handle_get_item`,
+   `handle_update_item`, `handle_delete_item`).
+3. `SyncFolderItems` had no Contacts branch, so a Contacts sync fell through to
+   the **calendar** path and returned calendar items. `handle_sync_folder_items`
+   now routes `DistinguishedFolder::Contacts` to a new
+   `handle_sync_contacts_folder_items`, a full-snapshot sync keyed on the
+   `(server_id, change_key)` pairs carried in an opaque base64 `SyncState`
+   (`contact:` + sorted `id:ck` lines): an unchanged set yields no changes, an
+   edit yields an `Update`, a new contact a `Create`, and a vanished contact a
+   `Delete`. The returned state reflects exactly what was delivered, so a
+   truncated page re-delivers the remainder on the next call.
+
+*JMAP-first routing.* New `JmapClient::get_contact_card` (RFC 9610 §4
+`ContactCard/get` by id) plus the existing `list_contact_cards`,
+`create_contact_card`, `update_contact_card`, `destroy_contact_card`,
+`supports_contacts`, `get_contacts_account_id` and `get_default_address_book_id`
+back the EWS contact handlers: `handle_find_contacts_item`,
+`handle_get_contact_item`, `handle_create_contact_item`,
+`handle_update_contact_item` and `handle_delete_contact_item` now try JMAP
+(`urn:ietf:params:jmap:contacts`) when `GATEWAY_PREFER_JMAP_CONTACTS` is set and
+the capability is advertised, and fall back to CardDAV otherwise (a new
+`create_contact_carddav` helper mirrors the JMAP create). Shared helpers
+`collect_jmap_contacts` / `get_contact_vcard_jmap` in `contacts.rs` are used by
+both EAS and EWS, and `mapi/handler.rs::fetch_contact_rows` enumerates the
+addressbook JMAP-first. `AppState::can_read_contacts` is true when either
+client is configured. The EWS contact ChangeKey is content-derived when the
+backend omits an ETag (Stalwart's JMAP does not expose `@etag`), so it is stable
+across `FindItem` calls instead of churning on a timestamp.
+
+Tests: `src/carddav.rs` 6 (derivation matrix incl. host-containing-`dav`,
+`from_caldav_base`, `addressbook_home`), `src/contacts.rs` 4 integration tests
+against an in-process stub JMAP contacts server (list → `jmap://contacts/…`
+hrefs + vCards, single-card get incl. `notFound`, create/update/delete DB
+round-trip, partial-Change merge that preserves untouched classes),
+`src/ews.rs` 6 handler tests (FindItem→GetItem over JMAP, full
+Create→Get→Update→Delete lifecycle through the real dispatchers, a
+delete-misrouting regression, Contacts `SyncFolderItems` prime/unchanged/add/
+remove, edit detection, and the SyncState encode/decode round-trip), plus the
+existing EAS contact suites.
 
 ---
 
@@ -645,7 +720,7 @@ to EWS. This is a client-friction item, not a data-loss item.
 |---|-----|------|--------|-----------|
 | 1 | P0 | Calendar read | `iCalendar` is a JSCalendar object; `Option<String>` decode fails the whole list → 0 events everywhere | **DELIVERED** — calcard dep + whole-object ICS reconstruction + per-element parse |
 | 2 | P0 | Calendar write | JMAP create discards payload; guard skipped when admin creds empty (compose ships empty) and defaults to writes-enabled | **DELIVERED** — structured JSCalendar write + per-write read-back verification + fail-closed runtime gate (works without admin creds) |
-| 3 | P0 | Contacts (EWS) | CardDAV base `/carddav/{u}/` 404s; correct path is `/dav/card/{u}/`; EWS contacts are CardDAV-only | dep 1 + route EWS contacts via JMAP |
+| 3 | P0 | Contacts (EWS) | CardDAV base `/carddav/{u}/` 404s; correct path is `/dav/card/{u}/`; EWS contacts are CardDAV-only | **DELIVERED** — `/dav/card` base + JMAP-first EWS/MAPI contacts (also fixed the `upsert_contact` conflict-target and Get/Update/Delete misrouting) |
 | 4 | P1 | Mail/push | Explicit `Email/get` ids >500 → `requestTooLarge`; `jmap_push` union is unbounded | dep 1 (chunking) |
 | 5 | P1 | Calendar delta | `CalendarEvent/changes` `hasMoreChanges` ignored → dropped changes | dep 1 (drain loop) |
 | 6 | P1 | Calendar etag | `@etag` unsupported by Stalwart; etags empty/inconsistent | dep 1 (changes API / sha2) |
@@ -674,4 +749,8 @@ repaired.
 section. P0 #2 — JMAP calendar writes — is now fixed as well: the write is a
 structured JSCalendar payload with per-write read-back verification, and a
 lossy backend is caught and disabled at the point of use even when the
-deploy-time admin-creds check is skipped. P0 #3 remains open.)*
+deploy-time admin-creds check is skipped. P0 #3 — EWS contacts — is now fixed
+too: the CardDAV base is `/dav/card`, the EWS/MAPI contact surface is JMAP-first
+with CardDAV fallback, and two further latent defects on that path (the
+`upsert_contact` conflict target and the Get/Update/Delete misrouting to the
+email handler) are repaired; see the Delivered note in that section.)*

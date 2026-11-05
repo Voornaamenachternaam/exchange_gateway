@@ -537,6 +537,43 @@ EAS specs v20250520 (16.1); older EAS compat NOT needed.
   converted-property map; a faithful ICS needs the full requested property
   list AND the whole-object reassembly. calcard folds at 75 octets (unfold
   before asserting on long lines) and appends `;JSID=<id>` to LOCATION lines.
+- AUDIT3.MD §3 (CardDAV base path wrong → EWS contacts dead) is COMPLETE and
+  its section documents the delivered behavior. THREE defects, not one:
+  (1) `CarddavClient` built `{base}/carddav/{user}/` while Stalwart serves
+  CardDAV at `/dav/card/{user}/` — `addressbook_home` now appends just
+  `/{user}/` and the base is `…/dav/card`; config derives it via the new pure
+  `CarddavClient::derive_base_from_caldav` (PATH-aware: `/dav` → `/dav/card`,
+  `/dav/cal` → `/dav/card`, a host literally named `dav…` is never matched);
+  compose + CLOUDFLARED_SETUP.md updated to `GATEWAY_CARDDAV_BASE=
+  http://stalwart:8080/dav/card`.
+  (2) `upsert_contact` conflicted on `(owner, carddav_href)` but the schema's
+  unique constraint is `UNIQUE(owner, server_id)` — every contact upsert
+  errored, so contacts always returned 0; now `ON CONFLICT(owner, server_id)`
+  in a transaction that first drops a stale href row when the deterministic
+  ServerId changed (href move / id-scheme change), so exactly one row points
+  at each href.
+  (3) the EWS Get/Update/Delete dispatchers fell through to the "not in
+  calendar item map → JMAP email" path before the `contact-` check, misrouting
+  every contact read/update/delete to the email handler; the contact check now
+  runs first, and `SyncFolderItems` gained a Contacts branch (it previously
+  fell through to the CALENDAR path and returned calendar items) —
+  `handle_sync_contacts_folder_items` is a full-snapshot sync keyed on the
+  `(server_id, change_key)` pairs carried in an opaque base64 `SyncState`
+  (`contact:` + sorted `id:ck` lines): unchanged set = no changes, edit =
+  Update, new = Create, vanished = Delete; the returned state reflects exactly
+  what was delivered so a truncated page re-delivers the remainder next call.
+  JMAP-first contacts everywhere (RFC 9610 `ContactCard/get`/`set` via new
+  `JmapClient::get_contact_card` + shared `contacts::{list_contacts_jmap,
+  get_contact_vcard_jmap, create_contact_jmap, update_contact_jmap,
+  jmap_contacts_available}`), CardDAV as fallback; `AppState::can_read_contacts`
+  now true when EITHER client is configured. Contact ServerId is
+  `contact-{sha256(href)}` (stable across FindItem calls); ChangeKey prefers
+  the backend ETag and falls back to `sha256(vcard)` since Stalwart's JMAP
+  exposes no `@etag`. Tests: 3 carddav derivation + 4 contacts stub-JMAP
+  integration + 6 ews handlers (incl. SyncFolderItems prime/unchanged/add/
+  remove, edit detection, SyncState round-trip). Suite: 1163 lib + 7 + 5 + 22
+  + 11 + 1 doc = 1209 green, clippy 0 (`-D warnings`), rustfmt clean on all
+  touched files, release build warning-free.
 - §17 Auth negative-caching and cache-invalidation is COMPLETE and its AUDIT.md
   section documents the delivered behavior. Design: `AuthVerifier` now returns
   a tri-state `AuthOutcome` (Verified / InvalidCredentials / BackendUnavailable)

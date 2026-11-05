@@ -5427,6 +5427,60 @@ impl JmapClient {
         ))
     }
 
+    /// Get a single contact card by id via `ContactCard/get` (RFC 9610 §4).
+    ///
+    /// Returns the raw JSCard document when the id exists, `None` when the
+    /// server reports it as not found.
+    pub async fn get_contact_card(
+        &self,
+        username: &str,
+        password: &SecretString,
+        id: &str,
+    ) -> Result<Option<Value>> {
+        let session = self.get_session(username, password).await?;
+        let api_url = &session.api_url;
+        let account_id = session
+            .primary_accounts
+            .get(JMAP_CONTACTS_CAPABILITY)
+            .ok_or_else(|| anyhow!("No primary contacts account found in JMAP session"))?;
+
+        let method_calls = vec![(
+            "ContactCard/get",
+            json!({ "accountId": account_id, "ids": [id] }),
+            "cg0",
+        )];
+
+        let response = self
+            .api_call(
+                api_url,
+                &["urn:ietf:params:jmap:core", JMAP_CONTACTS_CAPABILITY],
+                method_calls,
+                username,
+                password,
+            )
+            .await?;
+
+        for (method, data, _) in response.method_responses {
+            if method == "ContactCard/get" {
+                if let Some(not_found) = data.get("notFound").and_then(|v| v.as_array())
+                    && not_found.iter().any(|v| v.as_str() == Some(id))
+                {
+                    return Ok(None);
+                }
+                let list = data
+                    .get("list")
+                    .and_then(|v| v.as_array())
+                    .cloned()
+                    .unwrap_or_default();
+                return Ok(list.into_iter().next());
+            }
+        }
+
+        Err(anyhow!(
+            "Unexpected JMAP response structure for ContactCard/get"
+        ))
+    }
+
     /// Create a new contact card via ContactCard/set.
     ///
     /// `card` is the JSCard JSON (with `addressBookIds` set by the caller).

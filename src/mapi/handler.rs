@@ -1020,7 +1020,7 @@ async fn execute_one_rop(
                             fetch_calendar_rows(cfg, username, pw, &parent_backend).await
                         }
                         FolderKind::Contacts => {
-                            fetch_contact_rows(cfg, username, pw, &parent_backend).await
+                            fetch_contact_rows(cfg, jmap, username, pw, &parent_backend).await
                         }
                         _ => {
                             if let Some(jc) = jmap {
@@ -6565,12 +6565,12 @@ async fn materialize_handle_properties(
                 })
                 .unwrap_or_else(|| store::typed_null_cells(tags))
         }
-        (HandleShape::Message, Some(_jc), Some(pw))
+        (HandleShape::Message, Some(jc), Some(pw))
             if kind == FolderKind::Contacts && !backend_id.is_empty() =>
         {
             let target = u64::from_str_radix(&backend_id, 16)
                 .unwrap_or_else(|_| store::folder_id_from_backend(&backend_id));
-            fetch_contact_rows(cfg, username, pw, store::CONTACTS_BACKEND_ID)
+            fetch_contact_rows(cfg, Some(jc), username, pw, store::CONTACTS_BACKEND_ID)
                 .await
                 .into_iter()
                 .find_map(|r| {
@@ -6902,16 +6902,49 @@ async fn fetch_calendar_rows(
     parse_calendar_multistatus(&raw)
 }
 
-/// Enumerate CardDAV vCards in the user's addressbook as `TableRow`s
-/// carrying the raw vCard text for lazy `IPM.Contact` cell materialisation.
+/// Enumerate contacts in the user's addressbook as `TableRow`s carrying the
+/// raw vCard text for lazy `IPM.Contact` cell materialisation.
+///
+/// JMAP Contacts (RFC 9610) is the primary backend; CardDAV is the fallback.
 async fn fetch_contact_rows(
     cfg: &Config,
+    jmap: Option<&crate::jmap::JmapClient>,
     username: &str,
     password: &secrecy::SecretString,
     mailbox_id: &str,
 ) -> Vec<crate::mapi::session::TableRow> {
     let _ = mailbox_id; // contacts uses the per-user addressbook home, not the
     // synthetic Contacts folder id.
+
+    // JMAP-first: prefer ContactCard/get when the capability is advertised.
+    if cfg.prefer_jmap_contacts
+        && let Some(jmap) = jmap
+        && jmap.supports_contacts(username, password).await
+    {
+        match crate::contacts::list_contacts_jmap(jmap, username, password.expose_secret()).await {
+            Ok(contacts) => {
+                return contacts
+                    .into_iter()
+                    .map(|c| {
+                        let source: std::sync::Arc<dyn std::any::Any + Send + Sync> =
+                            std::sync::Arc::new(c.vcard);
+                        crate::mapi::session::TableRow {
+                            row_id: store::message_id_from_jmap(&c.href),
+                            cells: Vec::new(),
+                            source: Some(source),
+                        }
+                    })
+                    .collect();
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "mapi contacts contents: JMAP list_contacts failed, falling back to CardDAV: {}",
+                    e
+                );
+            }
+        }
+    }
+
     if cfg.carddav_base.is_empty() && cfg.caldav_base.is_empty() {
         tracing::debug!("mapi contacts contents: no carddav_base configured");
         return Vec::new();

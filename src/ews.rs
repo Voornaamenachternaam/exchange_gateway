@@ -2739,7 +2739,82 @@ async fn handle_find_email_item(
     }
 }
 
-/// Handle EWS FindItem for Contacts using CardDAV.
+/// Fetch every contact in the user's addressbook: JMAP Contacts (RFC 9610)
+/// first when preferred and advertised, CardDAV as the fallback. A JMAP
+/// capability miss or read error degrades to CardDAV. On total failure the
+/// returned `Response` is the EWS error to send.
+async fn fetch_all_contacts(
+    state: &Arc<AppState>,
+    auth: &AuthContext,
+) -> Result<Vec<crate::carddav::Contact>, Box<Response>> {
+    if state.cfg.prefer_jmap_contacts
+        && let Some(jmap) = state.jmap_client.as_ref()
+        && crate::contacts::jmap_contacts_available(
+            state,
+            &auth.username,
+            auth.password.expose_secret(),
+        )
+        .await
+    {
+        match crate::contacts::list_contacts_jmap(
+            jmap,
+            &auth.username,
+            auth.password.expose_secret(),
+        )
+        .await
+        {
+            Ok(list) => return Ok(list),
+            Err(e) => {
+                tracing::warn!(error = %e, "JMAP contacts list failed; falling back to CardDAV");
+            }
+        }
+    }
+
+    let carddav = match state.carddav_client.as_ref() {
+        Some(c) => c,
+        None => {
+            return Err(Box::new(operation_error_response(
+                &EwsAction::FindItem,
+                "ErrorInternalServerError",
+                "Contacts backend not configured",
+                StatusCode::INTERNAL_SERVER_ERROR,
+            )));
+        }
+    };
+    match carddav
+        .list_contacts(&auth.username, auth.password.expose_secret(), None)
+        .await
+    {
+        Ok((list, _)) => Ok(list),
+        Err(e) => {
+            tracing::error!(error = %e, "CardDAV list_contacts failed");
+            Err(Box::new(operation_error_response(
+                &EwsAction::FindItem,
+                "ErrorInternalServerError",
+                "Failed to fetch contacts",
+                StatusCode::INTERNAL_SERVER_ERROR,
+            )))
+        }
+    }
+}
+
+/// Derive the stable EWS ServerId and content-derived ChangeKey for a contact.
+/// The ServerId is a deterministic hash of the backend href (so it is stable
+/// across `FindItem` calls); the ChangeKey prefers the backend ETag and falls
+/// back to a hash of the vCard content when the backend omits one (Stalwart's
+/// JMAP does not expose `@etag`).
+fn contact_ids(contact: &crate::carddav::Contact) -> (String, String) {
+    let server_id = format!("contact-{}", sha256_hash(&contact.href));
+    let change_key = match contact.etag.as_deref() {
+        Some(etag) if !etag.is_empty() => format!("{}-{}", server_id, etag),
+        _ => format!("{}-{}", server_id, sha256_hash(&contact.vcard)),
+    };
+    (server_id, change_key)
+}
+
+/// Handle EWS FindItem for Contacts. JMAP Contacts (RFC 9610) is the primary
+/// backend; CardDAV is the fallback (AUDIT3.MD #3: CardDAV base path and the
+/// JMAP-first mandate).
 async fn handle_find_contacts_item(
     state: &Arc<AppState>,
     auth: &AuthContext,
@@ -2750,40 +2825,16 @@ async fn handle_find_contacts_item(
     let offset = extract_int(body, b"Offset", 0);
     let shape = requested_item_shape(body);
 
-    // Ensure CardDAV client is configured
-    let carddav = match state.carddav_client.as_ref() {
-        Some(c) => c,
-        None => {
-            return operation_error_response(
-                &EwsAction::FindItem,
-                "ErrorInternalServerError",
-                "CardDAV client not configured",
-                StatusCode::INTERNAL_SERVER_ERROR,
-            );
-        }
+    let contacts = match fetch_all_contacts(state, auth).await {
+        Ok(list) => list,
+        Err(resp) => return *resp,
     };
 
-    // Fetch all contacts from CardDAV
-    let (carddav_contacts, _) = match carddav
-        .list_contacts(&auth.username, auth.password.expose_secret(), None)
-        .await
-    {
-        Ok(res) => res,
-        Err(e) => {
-            tracing::error!(error = %e, "CardDAV list_contacts failed");
-            return operation_error_response(
-                &EwsAction::FindItem,
-                "ErrorInternalServerError",
-                "Failed to fetch contacts",
-                StatusCode::INTERNAL_SERVER_ERROR,
-            );
-        }
-    };
-
-    // Map server IDs from DB, but for FindItem we can use CardDAV href to derive stable IDs.
-    // We'll generate a server_id like "contact-{index}" but ensure consistency across calls.
-    let total_items = carddav_contacts.len();
-    let paged_contacts = carddav_contacts
+    // Map server IDs from DB, but for FindItem we can use the backend href to
+    // derive stable IDs. We'll generate a server_id like "contact-{hash}" but
+    // ensure consistency across calls.
+    let total_items = contacts.len();
+    let paged_contacts = contacts
         .into_iter()
         .skip(offset)
         .take(max)
@@ -2792,20 +2843,7 @@ async fn handle_find_contacts_item(
     let mut items_xml = String::new();
     let mut actual_count = 0;
     for contact in paged_contacts.iter() {
-        // Use a deterministic server_id based on href to avoid churn
-        let server_id = format!("contact-{}", sha256_hash(&contact.href));
-
-        // Generate ChangeKey: include etag and a timestamp component to indicate changes.
-        // Per RFC 7252, ChangeKey should change when content changes.
-        // We'll use: format!("{}-{}", server_id, current timestamp in seconds)
-        // For stability, we'll use the contact's etag if available, else a timestamp.
-        let change_key = if let Some(ref etag) = contact.etag {
-            // Use a compound key: server_id + etag (etag changes when vcard changes)
-            format!("{}-{}", server_id, etag)
-        } else {
-            // No etag from server; use timestamp to indicate potential future changes
-            format!("{}-{}", server_id, chrono::Utc::now().timestamp())
-        };
+        let (server_id, change_key) = contact_ids(contact);
 
         // Register/update this contact mapping in the database to support subsequent GetItem/UpdateItem/DeleteItem
         if let Err(e) = state
@@ -2890,17 +2928,7 @@ async fn handle_get_contact_item(
         );
     }
 
-    let carddav = match state.carddav_client.as_ref() {
-        Some(c) => c,
-        None => {
-            return operation_error_response(
-                &EwsAction::GetItem,
-                "ErrorInternalServerError",
-                "CardDAV client not configured",
-                StatusCode::INTERNAL_SERVER_ERROR,
-            );
-        }
-    };
+    let carddav = state.carddav_client.as_ref();
 
     let shape = requested_item_shape(body);
     let mut items_xml = String::new();
@@ -2917,20 +2945,41 @@ async fn handle_get_contact_item(
         };
 
         if let Some(row) = db_contact {
-            // Fetch latest vCard from CardDAV using href (or use stored vCard if fetch fails)
-            let vcard_str = match carddav
-                .client
-                .get(format!(
-                    "{}{}",
-                    carddav.addressbook_home(&auth.username),
-                    row.carddav_href
-                ))
-                .basic_auth(&auth.username, Some(auth.password.expose_secret()))
-                .send()
-                .await
-            {
-                Ok(resp) if resp.status().is_success() => resp.text().await.ok(),
-                _ => row.vcard.clone(),
+            // Fetch the latest vCard from the backend the row lives on (JMAP
+            // Contacts or CardDAV), falling back to the stored copy when the
+            // live read fails.
+            let vcard_str = if row.carddav_href.starts_with("jmap://") {
+                match state.jmap_client.as_ref() {
+                    Some(jmap) => match crate::contacts::get_contact_vcard_jmap(
+                        jmap,
+                        &auth.username,
+                        auth.password.expose_secret(),
+                        &row.carddav_href,
+                    )
+                    .await
+                    {
+                        Ok(Some(v)) => Some(v),
+                        _ => row.vcard.clone(),
+                    },
+                    None => row.vcard.clone(),
+                }
+            } else if let Some(carddav) = carddav {
+                match carddav
+                    .client
+                    .get(format!(
+                        "{}{}",
+                        carddav.addressbook_home(&auth.username),
+                        row.carddav_href
+                    ))
+                    .basic_auth(&auth.username, Some(auth.password.expose_secret()))
+                    .send()
+                    .await
+                {
+                    Ok(resp) if resp.status().is_success() => resp.text().await.ok(),
+                    _ => row.vcard.clone(),
+                }
+            } else {
+                row.vcard.clone()
             };
 
             let vcard = vcard_str
@@ -2938,7 +2987,16 @@ async fn handle_get_contact_item(
                 .and_then(|s| parse_vcard_from_data(s).ok())
                 .unwrap_or_else(Vcard::default);
 
-            let change_key = row.etag.clone().unwrap_or_else(|| server_id.clone());
+            // Match the ChangeKey derivation used by FindItem so a client that
+            // round-trips an ItemId from FindItem sees a stable key.
+            let change_key = match row.etag.as_deref() {
+                Some(etag) if !etag.is_empty() => format!("{}-{}", row.server_id, etag),
+                _ => format!(
+                    "{}-{}",
+                    row.server_id,
+                    sha256_hash(vcard_str.as_deref().unwrap_or(""))
+                ),
+            };
             let contact_xml = render_ews_contact(&row.server_id, &change_key, &vcard, shape);
             items_xml.push_str(&contact_xml);
         } else {
@@ -3035,24 +3093,13 @@ fn sha256_hash(s: &str) -> String {
     hex::encode(&digest[..16])
 }
 
-/// Handle EWS CreateItem for Contacts using CardDAV.
+/// Handle EWS CreateItem for Contacts. JMAP Contacts (RFC 9610) is the
+/// primary backend; CardDAV is the fallback.
 async fn handle_create_contact_item(
     state: &Arc<AppState>,
     auth: &AuthContext,
     body: &str,
 ) -> Response {
-    let carddav = match state.carddav_client.as_ref() {
-        Some(c) => c,
-        None => {
-            return operation_error_response(
-                &EwsAction::CreateItem,
-                "ErrorInternalServerError",
-                "CardDAV not configured",
-                StatusCode::INTERNAL_SERVER_ERROR,
-            );
-        }
-    };
-
     // Parse the <t:Contact> element from request
     let doc = match roxmltree::Document::parse(body) {
         Ok(d) => d,
@@ -3122,39 +3169,50 @@ async fn handle_create_contact_item(
         }
     };
 
-    // Create contact via CardDAV client method
-    let (href, etag) = match carddav
-        .create_contact(&auth.username, auth.password.expose_secret(), &vcard_str)
-        .await
-    {
-        Ok(res) => res,
-        Err(e) => {
-            tracing::error!(error = %e, "CardDAV create_contact failed");
-            return operation_error_response(
-                &EwsAction::CreateItem,
-                "ErrorInternalServerError",
-                "Failed to create contact on CardDAV",
-                StatusCode::INTERNAL_SERVER_ERROR,
-            );
-        }
-    };
-
-    // Store in contact_map
-    let server_id = format!("contact-{}", uuid::Uuid::new_v4().simple());
-    if let Err(e) = state
-        .storage
-        .insert_contact(
+    // Create the contact: JMAP Contacts first, CardDAV fallback.
+    let jmap_contacts = state.cfg.prefer_jmap_contacts
+        && crate::contacts::jmap_contacts_available(
+            state,
             &auth.username,
-            &href,
-            &server_id,
-            Some(etag.as_str()),
-            Some(vcard_str.as_str()),
+            auth.password.expose_secret(),
+        )
+        .await;
+
+    let (server_id, etag): (String, String) = if jmap_contacts {
+        match crate::contacts::create_contact_jmap(
+            state,
+            &auth.username,
+            auth.password.expose_secret(),
+            &vcard_str,
         )
         .await
-    {
-        tracing::error!(error = %e, "Failed to store contact in DB");
-        // Continue anyway; we have the contact on server.
-    }
+        {
+            Ok((sid, stored)) => {
+                let etag = state
+                    .storage
+                    .get_contact(&auth.username, &sid)
+                    .await
+                    .ok()
+                    .flatten()
+                    .and_then(|r| r.etag)
+                    .unwrap_or_else(|| sid.clone());
+                let _ = stored;
+                (sid, etag)
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "JMAP create contact failed; falling back to CardDAV");
+                match create_contact_carddav(state, auth, &vcard_str).await {
+                    Ok(v) => v,
+                    Err(resp) => return *resp,
+                }
+            }
+        }
+    } else {
+        match create_contact_carddav(state, auth, &vcard_str).await {
+            Ok(v) => v,
+            Err(resp) => return *resp,
+        }
+    };
 
     // Return ItemId with ChangeKey = etag if non-empty, else server_id
     let change_key = if etag.is_empty() {
@@ -3178,24 +3236,66 @@ async fn handle_create_contact_item(
     soap_ok(response_xml)
 }
 
-/// Handle EWS UpdateItem for Contacts using CardDAV.
+/// Create a contact via CardDAV, storing the mapping. Returns
+/// `(server_id, etag)`; on failure returns the error `Response` to send.
+async fn create_contact_carddav(
+    state: &Arc<AppState>,
+    auth: &AuthContext,
+    vcard_str: &str,
+) -> Result<(String, String), Box<Response>> {
+    let carddav = match state.carddav_client.as_ref() {
+        Some(c) => c,
+        None => {
+            return Err(Box::new(operation_error_response(
+                &EwsAction::CreateItem,
+                "ErrorInternalServerError",
+                "Contacts backend not configured",
+                StatusCode::INTERNAL_SERVER_ERROR,
+            )));
+        }
+    };
+
+    let (href, etag) = match carddav
+        .create_contact(&auth.username, auth.password.expose_secret(), vcard_str)
+        .await
+    {
+        Ok(res) => res,
+        Err(e) => {
+            tracing::error!(error = %e, "CardDAV create_contact failed");
+            return Err(Box::new(operation_error_response(
+                &EwsAction::CreateItem,
+                "ErrorInternalServerError",
+                "Failed to create contact on CardDAV",
+                StatusCode::INTERNAL_SERVER_ERROR,
+            )));
+        }
+    };
+
+    let server_id = format!("contact-{}", uuid::Uuid::new_v4().simple());
+    if let Err(e) = state
+        .storage
+        .insert_contact(
+            &auth.username,
+            &href,
+            &server_id,
+            Some(etag.as_str()),
+            Some(vcard_str),
+        )
+        .await
+    {
+        tracing::error!(error = %e, "Failed to store contact in DB");
+        // Continue anyway; we have the contact on server.
+    }
+    Ok((server_id, etag))
+}
+
+/// Handle EWS UpdateItem for Contacts. JMAP Contacts (RFC 9610) is the
+/// primary backend; CardDAV is the fallback.
 async fn handle_update_contact_item(
     state: &Arc<AppState>,
     auth: &AuthContext,
     body: &str,
 ) -> Response {
-    let carddav = match state.carddav_client.as_ref() {
-        Some(c) => c,
-        None => {
-            return operation_error_response(
-                &EwsAction::UpdateItem,
-                "ErrorInternalServerError",
-                "CardDAV not configured",
-                StatusCode::INTERNAL_SERVER_ERROR,
-            );
-        }
-    };
-
     // Extract ItemId/@Id
     let item_id = extract_first_attr(body, b"ItemId", b"Id");
     if item_id.as_deref().map(|s| s.is_empty()).unwrap_or(true) {
@@ -3247,40 +3347,39 @@ async fn handle_update_contact_item(
         }
     };
 
-    // Load existing vCard (from DB or fetch fresh)
-    let vcard_str: String = match state
-        .storage
-        .get_contact(&auth.username, item_id.as_deref().unwrap_or_default())
-        .await
-    {
-        Ok(Some(c)) => c.vcard.clone().unwrap_or_default(),
-        _ => {
-            // Try fetching from CardDAV
-            let url = format!(
-                "{}{}",
-                carddav.addressbook_home(&auth.username),
-                db_contact.carddav_href
-            );
-            let resp = match carddav
-                .client
-                .get(&url)
-                .basic_auth(&auth.username, Some(auth.password.expose_secret()))
-                .send()
-                .await
+    // Load existing vCard: prefer the live backend copy, falling back to the
+    // stored copy when the live read fails.
+    let vcard_str: String = if db_contact.carddav_href.starts_with("jmap://") {
+        match state.jmap_client.as_ref() {
+            Some(jmap) => match crate::contacts::get_contact_vcard_jmap(
+                jmap,
+                &auth.username,
+                auth.password.expose_secret(),
+                &db_contact.carddav_href,
+            )
+            .await
             {
-                Ok(r) => r,
-                Err(_) => {
-                    return operation_error_response(
-                        &EwsAction::UpdateItem,
-                        "ErrorInternalServerError",
-                        "Failed to fetch existing contact",
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                    );
-                }
-            };
-            if resp.status().is_success() {
-                resp.text().await.ok().unwrap_or_default()
-            } else {
+                Ok(Some(v)) => v,
+                _ => db_contact.vcard.clone().unwrap_or_default(),
+            },
+            None => db_contact.vcard.clone().unwrap_or_default(),
+        }
+    } else if let Some(carddav) = state.carddav_client.as_ref() {
+        // Try fetching from CardDAV
+        let url = format!(
+            "{}{}",
+            carddav.addressbook_home(&auth.username),
+            db_contact.carddav_href
+        );
+        let resp = match carddav
+            .client
+            .get(&url)
+            .basic_auth(&auth.username, Some(auth.password.expose_secret()))
+            .send()
+            .await
+        {
+            Ok(r) => r,
+            Err(_) => {
                 return operation_error_response(
                     &EwsAction::UpdateItem,
                     "ErrorInternalServerError",
@@ -3288,7 +3387,19 @@ async fn handle_update_contact_item(
                     StatusCode::INTERNAL_SERVER_ERROR,
                 );
             }
+        };
+        if resp.status().is_success() {
+            resp.text().await.ok().unwrap_or_default()
+        } else {
+            return operation_error_response(
+                &EwsAction::UpdateItem,
+                "ErrorInternalServerError",
+                "Failed to fetch existing contact",
+                StatusCode::INTERNAL_SERVER_ERROR,
+            );
         }
+    } else {
+        db_contact.vcard.clone().unwrap_or_default()
     };
 
     // Parse into mutable vCard using vcard::parser? The vcard crate may not provide mutable builder.
@@ -3403,74 +3514,113 @@ async fn handle_update_contact_item(
     // Serialize updated vCard
     let updated_vcard_str = old_vcard.to_string();
 
-    // PUT to CardDAV with If-Match header (use stored etag if available)
-    let url = format!(
-        "{}{}",
-        carddav.addressbook_home(&auth.username),
-        db_contact.carddav_href
-    );
-    let mut request = carddav
-        .client
-        .put(&url)
-        .basic_auth(&auth.username, Some(auth.password.expose_secret()))
-        .header("Content-Type", "text/vcard; charset=utf-8")
-        .body(updated_vcard_str.clone());
+    // Write through the backend the contact lives on: JMAP Contacts first
+    // (href `jmap://…`), CardDAV otherwise. An EWS UpdateItem is a full
+    // replace, so no EAS field-class merge set is passed.
+    let new_etag: Option<String> = if db_contact.carddav_href.starts_with("jmap://") {
+        match crate::contacts::update_contact_jmap(
+            state,
+            &auth.username,
+            auth.password.expose_secret(),
+            item_id.as_deref().unwrap_or_default(),
+            &updated_vcard_str,
+            &HashSet::new(),
+        )
+        .await
+        {
+            Ok((etag, _stored)) => etag,
+            Err(e) => {
+                tracing::error!(error = %e, "JMAP update contact failed");
+                return operation_error_response(
+                    &EwsAction::UpdateItem,
+                    "ErrorInternalServerError",
+                    "Failed to update contact",
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                );
+            }
+        }
+    } else {
+        let carddav = match state.carddav_client.as_ref() {
+            Some(c) => c,
+            None => {
+                return operation_error_response(
+                    &EwsAction::UpdateItem,
+                    "ErrorInternalServerError",
+                    "Contacts backend not configured",
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                );
+            }
+        };
+        // PUT to CardDAV with If-Match header (use stored etag if available)
+        let url = format!(
+            "{}{}",
+            carddav.addressbook_home(&auth.username),
+            db_contact.carddav_href
+        );
+        let mut request = carddav
+            .client
+            .put(&url)
+            .basic_auth(&auth.username, Some(auth.password.expose_secret()))
+            .header("Content-Type", "text/vcard; charset=utf-8")
+            .body(updated_vcard_str.clone());
 
-    if let Some(ref etag) = db_contact.etag {
-        request = request.header("If-Match", format!("\"{}\"", etag));
-    }
+        if let Some(ref etag) = db_contact.etag {
+            request = request.header("If-Match", format!("\"{}\"", etag));
+        }
 
-    let response = match request.send().await {
-        Ok(resp) => resp,
-        Err(e) => {
-            tracing::error!(error = %e, "CardDAV PUT failed");
+        let response = match request.send().await {
+            Ok(resp) => resp,
+            Err(e) => {
+                tracing::error!(error = %e, "CardDAV PUT failed");
+                return operation_error_response(
+                    &EwsAction::UpdateItem,
+                    "ErrorInternalServerError",
+                    "Failed to update contact on CardDAV",
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                );
+            }
+        };
+
+        if !response.status().is_success() {
+            let status = response.status();
+            if status == StatusCode::PRECONDITION_FAILED {
+                return operation_error_response(
+                    &EwsAction::UpdateItem,
+                    "ErrorInvalidChangeKey",
+                    "ChangeKey mismatch",
+                    StatusCode::OK,
+                );
+            }
+            tracing::error!(status = %status, "CardDAV update failed");
             return operation_error_response(
                 &EwsAction::UpdateItem,
                 "ErrorInternalServerError",
-                "Failed to update contact on CardDAV",
+                "CardDAV update contact failed",
                 StatusCode::INTERNAL_SERVER_ERROR,
             );
         }
+
+        let etag = response
+            .headers()
+            .get("ETag")
+            .and_then(|h| h.to_str().ok())
+            .map(|s| s.trim_matches('"').to_string());
+
+        if let Err(e) = state
+            .storage
+            .update_contact(
+                &auth.username,
+                item_id.as_deref().unwrap_or_default(),
+                etag.as_deref(),
+                Some(updated_vcard_str.as_str()),
+            )
+            .await
+        {
+            tracing::error!(error = %e, "Failed to update contact in DB");
+        }
+        etag
     };
 
-    if !response.status().is_success() {
-        let status = response.status();
-        if status == StatusCode::PRECONDITION_FAILED {
-            return operation_error_response(
-                &EwsAction::UpdateItem,
-                "ErrorInvalidChangeKey",
-                "ChangeKey mismatch",
-                StatusCode::OK,
-            );
-        }
-        tracing::error!(status = %status, "CardDAV update failed");
-        return operation_error_response(
-            &EwsAction::UpdateItem,
-            "ErrorInternalServerError",
-            "CardDAV update contact failed",
-            StatusCode::INTERNAL_SERVER_ERROR,
-        );
-    }
-
-    // Update DB etag if needed
-    let new_etag = response
-        .headers()
-        .get("ETag")
-        .and_then(|h| h.to_str().ok())
-        .map(|s| s.trim_matches('"').to_string());
-
-    if let Err(e) = state
-        .storage
-        .update_contact(
-            &auth.username,
-            item_id.as_deref().unwrap_or_default(),
-            new_etag.as_deref(),
-            Some(updated_vcard_str.as_str()),
-        )
-        .await
-    {
-        tracing::error!(error = %e, "Failed to update contact in DB");
-    }
     publish_event(
         state,
         NotificationEvent::ItemModified {
@@ -3488,24 +3638,13 @@ async fn handle_update_contact_item(
     soap_ok(response_xml)
 }
 
-/// Handle EWS DeleteItem for Contacts using CardDAV.
+/// Handle EWS DeleteItem for Contacts. JMAP Contacts (RFC 9610) is the
+/// primary backend; CardDAV is the fallback.
 async fn handle_delete_contact_item(
     state: &Arc<AppState>,
     auth: &AuthContext,
     body: &str,
 ) -> Response {
-    let carddav = match state.carddav_client.as_ref() {
-        Some(c) => c,
-        None => {
-            return operation_error_response(
-                &EwsAction::DeleteItem,
-                "ErrorInternalServerError",
-                "CardDAV not configured",
-                StatusCode::INTERNAL_SERVER_ERROR,
-            );
-        }
-    };
-
     // Extract ItemId/@Id
     let item_id = extract_first_attr(body, b"ItemId", b"Id");
     if item_id.as_deref().map(|s| s.is_empty()).unwrap_or(true) {
@@ -3538,6 +3677,52 @@ async fn handle_delete_contact_item(
                 &EwsAction::DeleteItem,
                 "ErrorInternalServerError",
                 "Database error",
+                StatusCode::INTERNAL_SERVER_ERROR,
+            );
+        }
+    };
+
+    // Delete through the backend the contact lives on: JMAP Contacts first
+    // (href `jmap://…`), CardDAV otherwise.
+    if db_contact.carddav_href.starts_with("jmap://") {
+        if let Err(e) = crate::contacts::delete_contact_jmap(
+            state,
+            &auth.username,
+            auth.password.expose_secret(),
+            item_id.as_deref().unwrap_or_default(),
+        )
+        .await
+        {
+            tracing::error!(error = %e, "JMAP delete contact failed");
+            return operation_error_response(
+                &EwsAction::DeleteItem,
+                "ErrorInternalServerError",
+                "Failed to delete contact",
+                StatusCode::INTERNAL_SERVER_ERROR,
+            );
+        }
+        publish_event(
+            state,
+            NotificationEvent::ItemDeleted {
+                owner: auth.username.clone(),
+                folder_id: folder_id_for(&auth.username, DistinguishedFolder::Contacts),
+                item_id: item_id.clone().unwrap_or_default(),
+            },
+        );
+        let response_xml = format!(
+            r#"<m:DeleteItemResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:DeleteItemResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode></m:DeleteItemResponseMessage></m:ResponseMessages></m:DeleteItemResponse>"#,
+            EWS_MSG_NS, EWS_TYPE_NS
+        );
+        return soap_ok(response_xml);
+    }
+
+    let carddav = match state.carddav_client.as_ref() {
+        Some(c) => c,
+        None => {
+            return operation_error_response(
+                &EwsAction::DeleteItem,
+                "ErrorInternalServerError",
+                "Contacts backend not configured",
                 StatusCode::INTERNAL_SERVER_ERROR,
             );
         }
@@ -4060,6 +4245,16 @@ async fn handle_get_item(state: &Arc<AppState>, auth: &AuthContext, body: &str) 
         }
     };
 
+    // Contacts are gateway-mapped items keyed by a `contact-` ServerId and are
+    // not present in the calendar item map; resolve them before the
+    // "not in calendar DB → email" fallbacks below, which would otherwise
+    // misroute every contact read to JMAP email.
+    if item_id.starts_with("contact-")
+        && (state.carddav_client.is_some() || state.jmap_client.is_some())
+    {
+        return handle_get_contact_item(state, auth, body).await;
+    }
+
     // Fast path: if the item ID has the email prefix, route directly to JMAP
     if crate::email::is_email_server_id(&item_id) && state.email_available() {
         return handle_get_email_item(state, auth, &item_id).await;
@@ -4073,12 +4268,6 @@ async fn handle_get_item(state: &Arc<AppState>, auth: &AuthContext, body: &str) 
     // If explicitly requesting email type, route to JMAP
     if is_email_request && state.cfg.email_enabled && state.jmap_client.is_some() {
         return handle_get_email_item(state, auth, &item_id).await;
-    }
-
-    // Check if item is a contact: server_id prefix "contact-" (as we generate in FindItem)
-    // Use simple prefix check; more robust would be to look up in contact_map.
-    if item_id.starts_with("contact-") && state.carddav_client.is_some() {
-        return handle_get_contact_item(state, auth, body).await;
     }
 
     let item_owner = match item_owner {
@@ -4614,6 +4803,195 @@ async fn handle_sync_email_folder_items(
     soap_ok(response)
 }
 
+/// One contact in an EWS contacts sync snapshot.
+struct ContactSyncEntry {
+    server_id: String,
+    change_key: String,
+    href: String,
+    etag: Option<String>,
+    vcard: String,
+}
+
+/// Handle EWS SyncFolderItems for the Contacts folder.
+///
+/// Contacts live in the backend addressbook (JMAP Contacts or CardDAV), not in
+/// the calendar `item_map`, so this is a full-snapshot sync keyed on the contact
+/// set's `(server_id, change_key)` pairs: when the set is unchanged the client
+/// receives no changes; when it changes the altered contacts are re-sent as
+/// `Update` (present before) or `Create` (new) and any contact present in the
+/// previous snapshot but gone now is sent as a `Delete`. The SyncState is an
+/// opaque base64 blob carrying those pairs, so it needs no server-side session.
+async fn handle_sync_contacts_folder_items(
+    state: &Arc<AppState>,
+    auth: &AuthContext,
+    body: &str,
+) -> Response {
+    let owner = owner_from_username(&auth.username);
+    let folder_id = folder_id_for(owner, DistinguishedFolder::Contacts);
+    let max_changes = extract_int(body, b"MaxChangesReturned", 100);
+    if max_changes == 0 || max_changes > 512 {
+        return operation_error_response(
+            &EwsAction::SyncFolderItems,
+            "ErrorInvalidPagingMaxRows",
+            "MaxChangesReturned must be between 1 and 512",
+            StatusCode::OK,
+        );
+    }
+    let shape = requested_item_shape(body);
+
+    let requested_state = extract_first_tag_text(body, b"SyncState");
+    let previous: HashMap<String, String> = requested_state
+        .as_deref()
+        .filter(|s| !s.is_empty() && *s != "0")
+        .and_then(decode_contact_sync_state)
+        .map(|pairs| pairs.into_iter().collect())
+        .unwrap_or_default();
+
+    let contacts = match fetch_all_contacts(state, auth).await {
+        Ok(list) => list,
+        Err(resp) => return *resp,
+    };
+
+    let current: Vec<ContactSyncEntry> = contacts
+        .iter()
+        .map(|contact| {
+            let (server_id, change_key) = contact_ids(contact);
+            ContactSyncEntry {
+                server_id,
+                change_key,
+                href: contact.href.clone(),
+                etag: contact.etag.clone(),
+                vcard: contact.vcard.clone(),
+            }
+        })
+        .collect();
+    let current_ids: HashSet<&str> = current.iter().map(|c| c.server_id.as_str()).collect();
+
+    let mut changes_xml = String::new();
+    let mut emitted = 0usize;
+    let mut truncated = false;
+    // The state handed back to the client describes exactly the contacts it has
+    // now been told about: emitted creates/updates plus the contacts it already
+    // knew about. A contact the page could not fit keeps its previous entry (or
+    // stays absent), so the next call re-delivers it instead of losing it.
+    let mut next_state: Vec<(String, String)> = Vec::new();
+    for entry in current.iter() {
+        // Always map the contact so a later Get/Update/Delete resolves it.
+        if let Err(e) = state
+            .storage
+            .upsert_contact(
+                owner,
+                &entry.href,
+                &entry.server_id,
+                entry.etag.as_deref(),
+                Some(&entry.vcard),
+            )
+            .await
+        {
+            tracing::warn!(server_id = %entry.server_id, error = %e, "SyncFolderItems: failed to upsert contact mapping");
+        }
+
+        let prior_change_key = previous.get(&entry.server_id);
+        if prior_change_key == Some(&entry.change_key) {
+            next_state.push((entry.server_id.clone(), entry.change_key.clone()));
+            continue;
+        }
+        if emitted >= max_changes {
+            truncated = true;
+            if let Some(ck) = prior_change_key {
+                next_state.push((entry.server_id.clone(), ck.clone()));
+            }
+            continue;
+        }
+        let vcard_parsed = parse_vcard_from_data(&entry.vcard).unwrap_or_else(|_| Vcard::default());
+        let tag = if prior_change_key.is_some() {
+            "Update"
+        } else {
+            "Create"
+        };
+        changes_xml.push_str(&format!(
+            "<t:{tag}>{}</t:{tag}>",
+            render_ews_contact(&entry.server_id, &entry.change_key, &vcard_parsed, shape)
+        ));
+        next_state.push((entry.server_id.clone(), entry.change_key.clone()));
+        emitted += 1;
+    }
+
+    // Contacts present in the previous snapshot but absent now are deletions.
+    for (id, ck) in previous.iter() {
+        if current_ids.contains(id.as_str()) {
+            continue;
+        }
+        if emitted >= max_changes {
+            truncated = true;
+            next_state.push((id.clone(), ck.clone()));
+            continue;
+        }
+        changes_xml.push_str(&format!(
+            r#"<t:Delete><t:ItemId Id="{}" /></t:Delete>"#,
+            xml_escape(id)
+        ));
+        if let Err(e) = state.storage.delete_contact(owner, id).await {
+            tracing::warn!(server_id = %id, error = %e, "Failed to remove deleted contact mapping");
+        }
+        emitted += 1;
+    }
+
+    let includes_last = if truncated { "false" } else { "true" };
+    let new_sync_state = encode_contact_sync_state(&next_state);
+    if let Err(e) = state
+        .storage
+        .set_ews_sync_state(owner, &folder_id, &new_sync_state)
+        .await
+    {
+        tracing::warn!(folder_id = %folder_id, error = %e, "Failed to persist contacts sync state");
+    }
+
+    let response = format!(
+        r#"<m:SyncFolderItemsResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:SyncFolderItemsResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:SyncState>{}</m:SyncState><m:IncludesLastItemInRange>{}</m:IncludesLastItemInRange><m:Changes>{}</m:Changes></m:SyncFolderItemsResponseMessage></m:ResponseMessages></m:SyncFolderItemsResponse>"#,
+        EWS_MSG_NS,
+        EWS_TYPE_NS,
+        xml_escape(&new_sync_state),
+        includes_last,
+        changes_xml
+    );
+    soap_ok(response)
+}
+
+/// Encode a contact snapshot as the opaque EWS `SyncState`: base64 of
+/// `contact:` followed by the `server_id:change_key` lines (sorted so the value
+/// is independent of backend enumeration order). The pairs are carried inline so
+/// the state is self-contained and needs no server-side session.
+fn encode_contact_sync_state(current: &[(String, String)]) -> String {
+    let mut lines: Vec<String> = current
+        .iter()
+        .map(|(id, ck)| format!("{id}:{ck}"))
+        .collect();
+    lines.sort();
+    STANDARD.encode(format!("contact:{}", lines.join("\n")))
+}
+
+/// Decode a contact `SyncState` back into its `(server_id, change_key)` pairs.
+/// Returns `None` for a malformed or foreign cursor, which the caller treats as
+/// a fresh prime.
+fn decode_contact_sync_state(state: &str) -> Option<Vec<(String, String)>> {
+    let raw = STANDARD.decode(state).ok()?;
+    let decoded = String::from_utf8(raw).ok()?;
+    let rest = decoded.strip_prefix("contact:")?;
+    let mut pairs = Vec::new();
+    for part in rest.split('\n') {
+        if part.is_empty() {
+            continue;
+        }
+        let (id, ck) = part.split_once(':')?;
+        if id.is_empty() {
+            return None;
+        }
+        pairs.push((id.to_string(), ck.to_string()));
+    }
+    Some(pairs)
+}
+
 async fn handle_sync_folder_items(
     state: &Arc<AppState>,
     auth: &AuthContext,
@@ -4633,6 +5011,13 @@ async fn handle_sync_folder_items(
     // Route email folders to JMAP-based sync
     if distinguished.is_email() && state.email_available() {
         return handle_sync_email_folder_items(state, auth, body, &distinguished).await;
+    }
+
+    // Route the Contacts folder to the contact backend (JMAP/CardDAV). Without
+    // this the request would fall through to the calendar path and return
+    // calendar items for a Contacts sync (AUDIT3.MD #3).
+    if matches!(distinguished, DistinguishedFolder::Contacts) {
+        return handle_sync_contacts_folder_items(state, auth, body).await;
     }
 
     let max_changes = extract_int(body, b"MaxChangesReturned", 100);
@@ -6558,6 +6943,16 @@ async fn handle_update_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
     let owner = owner_from_username(&auth.username);
     let item_id = extract_first_attr(body, b"ItemId", b"Id").unwrap_or_default();
 
+    // Contacts are gateway-mapped items keyed by a `contact-` ServerId and are
+    // not present in the calendar item map; resolve them before the
+    // "not in calendar DB → email" fallback below, which would otherwise
+    // misroute every contact update to JMAP email.
+    if item_id.starts_with("contact-")
+        && (state.carddav_client.is_some() || state.jmap_client.is_some())
+    {
+        return handle_update_contact_item(state, auth, body).await;
+    }
+
     // Fast path: if the item ID has the email prefix, route directly to email update
     if crate::email::is_email_server_id(&item_id) && state.email_available() {
         return handle_update_email_item(state, auth, &item_id, body).await;
@@ -6580,11 +6975,6 @@ async fn handle_update_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
         if !is_calendar_item {
             return handle_update_email_item(state, auth, &item_id, body).await;
         }
-    }
-
-    // Check if it's a contact (server_id prefix "contact-")
-    if item_id.starts_with("contact-") && state.carddav_client.is_some() {
-        return handle_update_contact_item(state, auth, body).await;
     }
 
     let calendar_folder_id = folder_id_for(owner, DistinguishedFolder::Calendar);
@@ -7001,6 +7391,16 @@ async fn handle_delete_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
     let owner = owner_from_username(&auth.username);
     let item_id = extract_first_attr(body, b"ItemId", b"Id").unwrap_or_default();
 
+    // Contacts are gateway-mapped items keyed by a `contact-` ServerId and are
+    // not present in the calendar item map; resolve them before the
+    // "not in calendar DB → email" fallback below, which would otherwise
+    // misroute every contact delete to JMAP email.
+    if item_id.starts_with("contact-")
+        && (state.carddav_client.is_some() || state.jmap_client.is_some())
+    {
+        return handle_delete_contact_item(state, auth, body).await;
+    }
+
     // Check if this is an email item (by em- prefix or by looking up the item)
     let is_email = crate::email::is_email_server_id(&item_id)
         || state
@@ -7015,11 +7415,6 @@ async fn handle_delete_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
 
     if is_email && state.email_available() {
         return handle_delete_email_item(state, auth, &item_id).await;
-    }
-
-    // Check if it's a contact (server_id prefix "contact-")
-    if item_id.starts_with("contact-") && state.carddav_client.is_some() {
-        return handle_delete_contact_item(state, auth, body).await;
     }
 
     let calendar_folder_id = folder_id_for(owner, DistinguishedFolder::Calendar);
@@ -12651,6 +13046,424 @@ mod tests {
         assert!(
             !text.contains("member-one@example.com"),
             "DL members must not be expanded into Resolutions, got: {text}"
+        );
+    }
+
+    // ---- AUDIT3.MD #3: EWS contact surface over JMAP Contacts ---------------
+
+    /// Drive `handle_find_item` for the Contacts folder against the JMAP
+    /// Contacts stub, then feed the returned ItemId into `handle_get_item`.
+    #[tokio::test]
+    async fn find_and_get_contacts_via_jmap() {
+        let (base, _store) =
+            crate::contacts::contact_test_support::spawn_stub_contacts_server(vec![
+                crate::contacts::contact_test_support::seed_card(),
+            ])
+            .await;
+        let state = crate::contacts::contact_test_support::state_for(&base).await;
+        let auth = AuthContext {
+            username: "user@example.com".to_string(),
+            password: SecretString::from("pw"),
+        };
+
+        let find_body = r#"<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+  <soap:Body>
+    <m:FindItem xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages"
+                xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types">
+      <m:ItemShape><t:BaseShape>Default</t:BaseShape></m:ItemShape>
+      <m:ParentFolderIds>
+        <t:DistinguishedFolderId Id="contacts"/>
+      </m:ParentFolderIds>
+    </m:FindItem>
+  </soap:Body>
+</soap:Envelope>"#
+            .to_string();
+        let find_text = response_body(handle_find_item(&state, &auth, &find_body).await).await;
+        assert!(
+            find_text.contains("<t:DisplayName>Jane Doe</t:DisplayName>"),
+            "FindItem must surface the JMAP contact, got: {find_text}"
+        );
+        let item_id = find_text
+            .split("<t:ItemId Id=\"")
+            .nth(1)
+            .and_then(|s| s.split('"').next())
+            .expect("FindItem returned a contact ItemId")
+            .to_string();
+        assert!(
+            item_id.starts_with("contact-"),
+            "contact ItemId must carry the contact- prefix, got {item_id}"
+        );
+
+        // The contact must now resolve through the GetItem dispatch — a contact
+        // id is absent from the calendar map, so a misordered handler would
+        // misroute this to JMAP email and fail.
+        let get_body = format!(
+            r#"<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+  <soap:Body>
+    <m:GetItem xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages"
+               xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types">
+      <m:ItemShape><t:BaseShape>Default</t:BaseShape></m:ItemShape>
+      <m:ItemIds><t:ItemId Id="{item_id}"/></m:ItemIds>
+    </m:GetItem>
+  </soap:Body>
+</soap:Envelope>"#
+        );
+        let get_text = response_body(handle_get_item(&state, &auth, &get_body).await).await;
+        assert!(
+            get_text.contains("<t:Contact>") && get_text.contains("Jane Doe"),
+            "GetItem must return the contact, got: {get_text}"
+        );
+        assert!(
+            get_text.contains("jane@example.com"),
+            "GetItem must return the contact email, got: {get_text}"
+        );
+    }
+
+    /// A full contact lifecycle through the real EWS dispatch handlers:
+    /// CreateItem → GetItem → UpdateItem → DeleteItem.
+    #[tokio::test]
+    async fn contact_lifecycle_via_jmap_ews_handlers() {
+        let (base, _store) =
+            crate::contacts::contact_test_support::spawn_stub_contacts_server(Vec::new()).await;
+        let state = crate::contacts::contact_test_support::state_for(&base).await;
+        let auth = AuthContext {
+            username: "user@example.com".to_string(),
+            password: SecretString::from("pw"),
+        };
+
+        let create_body = r#"<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+  <soap:Body>
+    <m:CreateItem xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages"
+                  xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types">
+      <m:SavedItemFolderId><t:DistinguishedFolderId Id="contacts"/></m:SavedItemFolderId>
+      <m:Items>
+        <t:Contact>
+          <t:DisplayName>John Smith</t:DisplayName>
+          <t:EmailAddresses><t:Entry Key="EmailAddress1">john@example.com</t:Entry></t:EmailAddresses>
+        </t:Contact>
+      </m:Items>
+    </m:CreateItem>
+  </soap:Body>
+</soap:Envelope>"#
+            .to_string();
+        let create_text =
+            response_body(handle_create_item(&state, &auth, &create_body).await).await;
+        let item_id = create_text
+            .split("<t:ItemId Id=\"")
+            .nth(1)
+            .and_then(|s| s.split('"').next())
+            .unwrap_or_else(|| panic!("CreateItem returned no ItemId, got: {create_text}"))
+            .to_string();
+        assert!(
+            item_id.starts_with("contact-"),
+            "created contact must get a contact- ServerId, got {item_id}"
+        );
+
+        // The row must be mapped to a JMAP href so subsequent ops target JMAP.
+        let row = state
+            .storage
+            .get_contact("user@example.com", &item_id)
+            .await
+            .expect("db")
+            .expect("contact row");
+        assert!(
+            row.carddav_href.starts_with("jmap://contacts/"),
+            "contact must be mapped to the JMAP backend, got {}",
+            row.carddav_href
+        );
+
+        // Update via the real dispatch: a changed DisplayName must round-trip.
+        let update_body = format!(
+            r#"<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+  <soap:Body>
+    <m:UpdateItem xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages"
+                  xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types">
+      <m:ItemChanges>
+        <t:ItemChange>
+          <t:ItemId Id="{item_id}"/>
+          <t:Updates>
+            <t:SetItemField>
+              <t:Contact><t:DisplayName>Johnny Smith</t:DisplayName></t:Contact>
+            </t:SetItemField>
+          </t:Updates>
+        </t:ItemChange>
+      </m:ItemChanges>
+    </m:UpdateItem>
+  </soap:Body>
+</soap:Envelope>"#
+        );
+        let update_text =
+            response_body(handle_update_item(&state, &auth, &update_body).await).await;
+        assert!(
+            !update_text.contains("ResponseClass=\"Error\""),
+            "UpdateItem must succeed, got: {update_text}"
+        );
+
+        let get_body = format!(
+            r#"<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+  <soap:Body>
+    <m:GetItem xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages"
+               xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types">
+      <m:ItemShape><t:BaseShape>Default</t:BaseShape></m:ItemShape>
+      <m:ItemIds><t:ItemId Id="{item_id}"/></m:ItemIds>
+    </m:GetItem>
+  </soap:Body>
+</soap:Envelope>"#
+        );
+        let get_text = response_body(handle_get_item(&state, &auth, &get_body).await).await;
+        assert!(
+            get_text.contains("Johnny Smith"),
+            "UpdateItem change must be readable, got: {get_text}"
+        );
+
+        // Delete via the real dispatch.
+        let delete_body = format!(
+            r#"<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+  <soap:Body>
+    <m:DeleteItem xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages"
+                  xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types">
+      <m:ItemIds><t:ItemId Id="{item_id}"/></m:ItemIds>
+    </m:DeleteItem>
+  </soap:Body>
+</soap:Envelope>"#
+        );
+        let delete_text =
+            response_body(handle_delete_item(&state, &auth, &delete_body).await).await;
+        assert!(
+            !delete_text.contains("ResponseClass=\"Error\""),
+            "DeleteItem must succeed, got: {delete_text}"
+        );
+        assert!(
+            state
+                .storage
+                .get_contact("user@example.com", &item_id)
+                .await
+                .expect("db")
+                .is_none(),
+            "the contact mapping row must be removed"
+        );
+    }
+
+    // ---- AUDIT3.MD #3: EWS contacts SyncFolderItems -------------------------
+
+    fn sync_contacts_request(sync_state: Option<&str>) -> String {
+        let state_xml = match sync_state {
+            Some(s) => format!("<m:SyncState>{s}</m:SyncState>"),
+            None => String::new(),
+        };
+        format!(
+            r#"<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+  <soap:Body>
+    <m:SyncFolderItems xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages"
+                       xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types">
+      <m:SyncFolderId><t:DistinguishedFolderId Id="contacts"/></m:SyncFolderId>
+      {state_xml}
+      <m:MaxChangesReturned>512</m:MaxChangesReturned>
+    </m:SyncFolderItems>
+  </soap:Body>
+</soap:Envelope>"#
+        )
+    }
+
+    fn extract_contact_sync_state(text: &str) -> String {
+        text.split("<m:SyncState>")
+            .nth(1)
+            .and_then(|s| s.split("</m:SyncState>").next())
+            .expect("SyncState present")
+            .to_string()
+    }
+
+    /// The Contacts folder must be served by the contact backend, not fall
+    /// through to the calendar path, and a re-sync of an unchanged set must
+    /// report no changes.
+    #[tokio::test]
+    async fn sync_contacts_folder_primes_then_reports_delta() {
+        let (base, store) =
+            crate::contacts::contact_test_support::spawn_stub_contacts_server(vec![
+                crate::contacts::contact_test_support::seed_card(),
+            ])
+            .await;
+        let state = crate::contacts::contact_test_support::state_for(&base).await;
+        let auth = AuthContext {
+            username: "user@example.com".to_string(),
+            password: SecretString::from("pw"),
+        };
+
+        // Prime: one contact, delivered as Create.
+        let prime = response_body(
+            handle_sync_folder_items(&state, &auth, &sync_contacts_request(None)).await,
+        )
+        .await;
+        assert!(
+            prime.contains("<t:Create>") && prime.contains("Jane Doe"),
+            "prime must Create the contact, got: {prime}"
+        );
+        assert!(
+            !prime.contains("<t:CalendarItem>") && !prime.contains("<t:Update>"),
+            "a contacts sync must not emit calendar items, got: {prime}"
+        );
+        assert!(prime.contains("<m:IncludesLastItemInRange>true</m:IncludesLastItemInRange>"));
+        let state_token = extract_contact_sync_state(&prime);
+
+        // Re-sync the unchanged set: no changes.
+        let resync = response_body(
+            handle_sync_folder_items(&state, &auth, &sync_contacts_request(Some(&state_token)))
+                .await,
+        )
+        .await;
+        assert!(
+            !resync.contains("<t:Create>")
+                && !resync.contains("<t:Update>")
+                && !resync.contains("<t:Delete>"),
+            "an unchanged contact set must yield no changes, got: {resync}"
+        );
+        assert!(resync.contains("<m:IncludesLastItemInRange>true</m:IncludesLastItemInRange>"));
+
+        // Add a second contact: only the new one is delivered.
+        store.lock().unwrap().insert(
+            "c2".to_string(),
+            serde_json::json!({
+                "id": "c2",
+                "uid": "uid-2",
+                "fullName": "John Smith",
+                "emails": { "e1": { "address": "john@example.com" } }
+            }),
+        );
+        let delta = response_body(
+            handle_sync_folder_items(&state, &auth, &sync_contacts_request(Some(&state_token)))
+                .await,
+        )
+        .await;
+        assert!(
+            delta.contains("<t:Create>") && delta.contains("John Smith"),
+            "the added contact must be Created, got: {delta}"
+        );
+        assert!(
+            !delta.contains("Jane Doe"),
+            "an unchanged contact must not be re-sent, got: {delta}"
+        );
+        let state_token = extract_contact_sync_state(&delta);
+
+        // Remove the first contact: it is delivered as Delete.
+        store.lock().unwrap().remove("c1");
+        let deleted = response_body(
+            handle_sync_folder_items(&state, &auth, &sync_contacts_request(Some(&state_token)))
+                .await,
+        )
+        .await;
+        assert!(
+            deleted.contains("<t:Delete>") && !deleted.contains("Jane Doe"),
+            "the removed contact must be Deleted, got: {deleted}"
+        );
+        assert!(
+            !deleted.contains("John Smith"),
+            "the unchanged contact must not be re-sent, got: {deleted}"
+        );
+    }
+
+    /// A contact edit changes its ChangeKey, so a re-sync delivers an Update
+    /// for the changed contact only.
+    #[tokio::test]
+    async fn sync_contacts_folder_detects_edit() {
+        let (base, store) =
+            crate::contacts::contact_test_support::spawn_stub_contacts_server(vec![
+                crate::contacts::contact_test_support::seed_card(),
+            ])
+            .await;
+        let state = crate::contacts::contact_test_support::state_for(&base).await;
+        let auth = AuthContext {
+            username: "user@example.com".to_string(),
+            password: SecretString::from("pw"),
+        };
+
+        let prime = response_body(
+            handle_sync_folder_items(&state, &auth, &sync_contacts_request(None)).await,
+        )
+        .await;
+        let state_token = extract_contact_sync_state(&prime);
+
+        // Edit the contact's full name in the backend store.
+        {
+            let mut guard = store.lock().unwrap();
+            let card = guard.get_mut("c1").unwrap();
+            card["fullName"] = serde_json::json!("Jane R. Doe");
+        }
+        let delta = response_body(
+            handle_sync_folder_items(&state, &auth, &sync_contacts_request(Some(&state_token)))
+                .await,
+        )
+        .await;
+        assert!(
+            delta.contains("<t:Update>") && delta.contains("Jane R. Doe"),
+            "the edited contact must be Updated, got: {delta}"
+        );
+    }
+
+    /// The contacts SyncState round-trips through encode/decode and a foreign
+    /// cursor is treated as a fresh prime rather than an error.
+    #[test]
+    fn contact_sync_state_roundtrips_and_rejects_foreign() {
+        let entries = vec![
+            ("contact-a".to_string(), "ck-1".to_string()),
+            ("contact-b".to_string(), "ck-2".to_string()),
+        ];
+        let encoded = encode_contact_sync_state(&entries);
+        let decoded = decode_contact_sync_state(&encoded).expect("decodes");
+        assert_eq!(decoded.len(), 2);
+        assert!(decoded.contains(&("contact-a".to_string(), "ck-1".to_string())));
+        assert!(decoded.contains(&("contact-b".to_string(), "ck-2".to_string())));
+
+        // A calendar/email cursor or garbage is not a contact cursor.
+        assert!(decode_contact_sync_state("not-base64!!!").is_none());
+        let calendar = encode_sync_state_cursor(5, 5);
+        assert!(decode_contact_sync_state(&calendar).is_none());
+    }
+
+    /// A contact delete must not be misrouted to JMAP email: the delete
+    /// dispatch computes `is_email` from a missing calendar row, so the contact
+    /// check has to run first.
+    #[tokio::test]
+    async fn contact_delete_is_not_misrouted_to_email() {
+        let (base, _store) =
+            crate::contacts::contact_test_support::spawn_stub_contacts_server(Vec::new()).await;
+        let state = crate::contacts::contact_test_support::state_for(&base).await;
+        state
+            .storage
+            .upsert_contact(
+                "user@example.com",
+                "jmap://contacts/c9",
+                "contact-deadbeef",
+                Some("e"),
+                Some("BEGIN:VCARD\r\nVERSION:3.0\r\nFN:Zed\r\nEND:VCARD\r\n"),
+            )
+            .await
+            .expect("seed contact");
+
+        let auth = AuthContext {
+            username: "user@example.com".to_string(),
+            password: SecretString::from("pw"),
+        };
+        let delete_body = r#"<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+  <soap:Body>
+    <m:DeleteItem xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages"
+                  xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types">
+      <m:ItemIds><t:ItemId Id="contact-deadbeef"/></m:ItemIds>
+    </m:DeleteItem>
+  </soap:Body>
+</soap:Envelope>"#
+            .to_string();
+        let text = response_body(handle_delete_item(&state, &auth, &delete_body).await).await;
+        assert!(
+            !text.contains("ErrorItemNotFound") && !text.contains("ResponseClass=\"Error\""),
+            "a contact delete must be handled by the contact path, got: {text}"
+        );
+        assert!(
+            state
+                .storage
+                .get_contact("user@example.com", "contact-deadbeef")
+                .await
+                .expect("db")
+                .is_none()
         );
     }
 }

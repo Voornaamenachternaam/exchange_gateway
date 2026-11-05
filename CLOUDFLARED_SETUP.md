@@ -287,7 +287,7 @@ services:
       - GATEWAY_BIND=[::]:8134
       - GATEWAY_CALDAV_BASE=http://stalwart:8080/dav
       - GATEWAY_JMAP_BASE=http://stalwart:8080/jmap
-      - GATEWAY_CARDDAV_BASE=http://stalwart:8080/carddav
+      - GATEWAY_CARDDAV_BASE=http://stalwart:8080/dav/card
       - GATEWAY_HMAC_SECRET=REPLACE_WITH_A_RANDOM_32_CHAR_MINIMUM_SECRET
       - GATEWAY_HOST=calendar.example.com
       - GATEWAY_MAIL_DOMAIN=example.com

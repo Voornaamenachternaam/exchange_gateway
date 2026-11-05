@@ -1235,6 +1235,21 @@ async fn collect_jmap_contacts(
         .jmap_client
         .as_ref()
         .ok_or_else(|| anyhow!("JMAP client not configured"))?;
+    list_contacts_jmap(jmap, username, password).await
+}
+
+/// List all contacts from the JMAP Contacts backend as `CarddavContact`
+/// values, downloading photo blobs so rendering stays self-contained.
+///
+/// This is the single JMAP contact read path shared by EAS Sync, the EWS
+/// contact handlers and the MAPI contacts contents table. Callers must have
+/// verified `JmapClient::supports_contacts` first (or be prepared for an
+/// `Err` when the capability is absent).
+pub async fn list_contacts_jmap(
+    jmap: &crate::jmap::JmapClient,
+    username: &str,
+    password: &str,
+) -> anyhow::Result<Vec<CarddavContact>> {
     let secret = secrecy::SecretString::from(password.to_string());
     let account_id = jmap.get_contacts_account_id(username, &secret).await?;
     let (cards, state_token) = jmap.list_contact_cards(username, &secret).await?;
@@ -1273,6 +1288,236 @@ async fn collect_jmap_contacts(
     // parity for now (Stalwart does not return partial ranges for contacts).
     let _ = state_token;
     Ok(out)
+}
+
+/// Fetch a single JMAP contact's vCard by its `jmap://contacts/{id}` href.
+/// Returns `None` when the contact no longer exists on the server.
+pub async fn get_contact_vcard_jmap(
+    jmap: &crate::jmap::JmapClient,
+    username: &str,
+    password: &str,
+    href: &str,
+) -> anyhow::Result<Option<String>> {
+    let id = href
+        .strip_prefix("jmap://contacts/")
+        .ok_or_else(|| anyhow!("not a JMAP contact href: {}", href))?;
+    let secret = secrecy::SecretString::from(password.to_string());
+    match jmap.get_contact_card(username, &secret, id).await? {
+        Some(card) => Ok(Some(jscard_to_vcard(&card, id).to_string())),
+        None => Ok(None),
+    }
+}
+
+/// Whether the configured JMAP client advertises the RFC 9610 contacts
+/// capability for `username`, i.e. the JMAP contact read path is usable.
+/// Returns `false` when no client is configured or the probe fails.
+pub async fn jmap_contacts_available(
+    state: &crate::models::AppState,
+    username: &str,
+    password: &str,
+) -> bool {
+    match state.jmap_client.as_ref() {
+        Some(jmap) => {
+            let secret = secrecy::SecretString::from(password.to_string());
+            jmap.supports_contacts(username, &secret).await
+        }
+        None => false,
+    }
+}
+
+/// Create a contact through the JMAP `ContactCard/set` path, uploading any
+/// inline photo blob first. Returns `(server_id, stored_vcard_without_photo)`
+/// and persists the `contact_map` row (href `jmap://contacts/{id}`).
+///
+/// This is the shared JMAP create path for the EWS and MAPI contact surfaces
+/// (EAS uses `apply_contacts_mutations`).
+pub async fn create_contact_jmap(
+    state: &crate::models::AppState,
+    username: &str,
+    password: &str,
+    vcard_str: &str,
+) -> anyhow::Result<(String, String)> {
+    let secret = secrecy::SecretString::from(password.to_string());
+    let jmap = state
+        .jmap_client
+        .as_ref()
+        .ok_or_else(|| anyhow!("JMAP client not configured"))?;
+    let v =
+        vcard::parse_vcard_from_data(vcard_str).context("create_contact_jmap: unparsable vCard")?;
+
+    let photo_blob = if let Some(p) = v.photo().map(str::to_string) {
+        match decode_photo_data(&p) {
+            Some((bytes, _mime)) => {
+                let account = jmap.get_contacts_account_id(username, &secret).await?;
+                Some(
+                    jmap.upload_blob(&account, &bytes, Some("photo"), username, &secret)
+                        .await?,
+                )
+            }
+            None => None,
+        }
+    } else {
+        None
+    };
+
+    let uid = Uuid::new_v4().simple().to_string();
+    let mut card = vcard_to_jscard(&v, &uid, photo_blob.as_deref());
+    let book = jmap.get_default_address_book_id(username, &secret).await?;
+    card["addressBookIds"] = serde_json::json!({ book: true });
+
+    let (id, etag) = jmap.create_contact_card(username, &secret, &card).await?;
+    let href = format!("jmap://contacts/{id}");
+    let stored = v.with_photo_cleared();
+    let server_id = format!("contact-{}", Uuid::new_v4().simple());
+    if let Err(e) = state
+        .storage
+        .insert_contact(username, &href, &server_id, etag.as_deref(), Some(&stored))
+        .await
+    {
+        tracing::warn!(error = %e, "Failed to store contact in DB after JMAP create");
+    }
+    Ok((server_id, stored))
+}
+
+/// Update a contact through the JMAP `ContactCard/set` path (partial EAS-style
+/// merge onto the live server copy, with explicit null-outs for removed
+/// properties). `present` lists the EAS field classes the client sent; an
+/// empty set means "full replace" (EWS UpdateItem).
+///
+/// Returns `(etag, stored_vcard_without_photo)`.
+pub async fn update_contact_jmap(
+    state: &crate::models::AppState,
+    username: &str,
+    password: &str,
+    server_id: &str,
+    new_vcard: &str,
+    present: &HashSet<String>,
+) -> anyhow::Result<(Option<String>, String)> {
+    let secret = secrecy::SecretString::from(password.to_string());
+    let jmap = state
+        .jmap_client
+        .as_ref()
+        .ok_or_else(|| anyhow!("JMAP client not configured"))?;
+
+    let db_contact = state
+        .storage
+        .get_contact(username, server_id)
+        .await?
+        .ok_or_else(|| anyhow!("Unknown contact {}", server_id))?;
+    let id = db_contact
+        .carddav_href
+        .strip_prefix("jmap://contacts/")
+        .ok_or_else(|| anyhow!("Change on non-JMAP contact {}", db_contact.carddav_href))?
+        .to_string();
+
+    // Pull existing state and merge (Change is partial in EAS).
+    let (cards, _) = jmap.list_contact_cards(username, &secret).await?;
+    let found = cards
+        .iter()
+        .find(|c| c.id == id)
+        .ok_or_else(|| anyhow!("JMAP contact {} not found", id))?;
+    let old_v = jscard_to_vcard(&found.card, &id);
+    let new_v = vcard::parse_vcard_from_data(new_vcard).context("update: unparsable vCard")?;
+    let merged = if present.is_empty() {
+        new_v
+    } else {
+        merge_vcards(&old_v, &new_v, present)
+    };
+
+    // Photo handling: if the client supplied a photo, upload it; otherwise
+    // keep the existing blob reference.
+    let photo_blob = if present.is_empty() || present.contains(K_PHOTO) {
+        match merged.photo().and_then(decode_photo_data) {
+            Some((bytes, _mime)) => {
+                let account = jmap.get_contacts_account_id(username, &secret).await?;
+                Some(
+                    jmap.upload_blob(&account, &bytes, Some("photo"), username, &secret)
+                        .await?,
+                )
+            }
+            None => None,
+        }
+    } else {
+        photo_blob_id(&found.card)
+    };
+
+    // Merge into a full replacement update with null-outs for removed keys.
+    let mut card = vcard_to_jscard(&merged, &id, photo_blob.as_deref());
+    let existing_obj = found.card.as_object().cloned().unwrap_or_default();
+    // Preserve server-side bookkeeping fields.
+    if let Some(ab) = existing_obj.get("addressBookIds") {
+        card["addressBookIds"] = ab.clone();
+    }
+    if let Some(uid_v) = existing_obj.get("uid").cloned() {
+        card["uid"] = uid_v;
+    }
+    if let Some(kind) = existing_obj.get("kind").cloned() {
+        card["kind"] = kind;
+    }
+    for key in [
+        "name",
+        "fullName",
+        "emails",
+        "phones",
+        "addresses",
+        "organizations",
+        "titles",
+        "note",
+        "anniversaries",
+        "nicknames",
+        "media",
+        "onlineServices",
+        "personalInfo",
+        "keywords",
+        "keyboardText",
+    ] {
+        if card.get(key).is_none() && existing_obj.get(key).is_some() {
+            card[key] = serde_json::Value::Null;
+        }
+    }
+
+    let etag = jmap
+        .update_contact_card(username, &secret, &id, &card)
+        .await?;
+    let stored = merged.with_photo_cleared();
+    if let Err(e) = state
+        .storage
+        .update_contact(username, server_id, etag.as_deref(), Some(&stored))
+        .await
+    {
+        tracing::warn!(error = %e, "Failed to update contact in DB after JMAP update");
+    }
+    Ok((etag, stored))
+}
+
+/// Delete a contact through the JMAP `ContactCard/set` path and remove the
+/// `contact_map` row.
+pub async fn delete_contact_jmap(
+    state: &crate::models::AppState,
+    username: &str,
+    password: &str,
+    server_id: &str,
+) -> anyhow::Result<()> {
+    let secret = secrecy::SecretString::from(password.to_string());
+    let jmap = state
+        .jmap_client
+        .as_ref()
+        .ok_or_else(|| anyhow!("JMAP client not configured"))?;
+    let db_contact = state
+        .storage
+        .get_contact(username, server_id)
+        .await?
+        .ok_or_else(|| anyhow!("Unknown contact {}", server_id))?;
+    let id = db_contact
+        .carddav_href
+        .strip_prefix("jmap://contacts/")
+        .ok_or_else(|| anyhow!("Delete on non-JMAP contact {}", db_contact.carddav_href))?;
+
+    jmap.destroy_contact_card(username, &secret, id).await?;
+    if let Err(e) = state.storage.delete_contact(username, server_id).await {
+        tracing::warn!(error = %e, "Failed to delete contact from DB after JMAP delete");
+    }
+    Ok(())
 }
 
 // --------------------------------------------------------------------------
@@ -1364,47 +1609,10 @@ async fn apply_mutation_jmap(
     password: &str,
     mutation: &ContactsMutation,
 ) -> anyhow::Result<ContactsMutationResult> {
-    let secret = secrecy::SecretString::from(password.to_string());
-    let jmap = state
-        .jmap_client
-        .as_ref()
-        .ok_or_else(|| anyhow!("JMAP client not configured"))?;
-
     match mutation {
         ContactsMutation::Add { vcard, .. } => {
-            let v = vcard::parse_vcard_from_data(vcard).context("Add: unparsable vCard")?;
-            // Upload photo blob (if inline) before creating the card.
-            let photo_blob = if let Some(p) = v.photo().map(str::to_string) {
-                match decode_photo_data(&p) {
-                    Some((bytes, mime)) => {
-                        let account = jmap.get_contacts_account_id(username, &secret).await?;
-                        let blob = jmap
-                            .upload_blob(&account, &bytes, Some("photo"), username, &secret)
-                            .await?;
-                        Some((blob, mime))
-                    }
-                    None => None,
-                }
-            } else {
-                None
-            };
-
-            let uid = Uuid::new_v4().simple().to_string();
-            let mut card = vcard_to_jscard(&v, &uid, photo_blob.as_ref().map(|(b, _)| b.as_str()));
-            let book = jmap.get_default_address_book_id(username, &secret).await?;
-            card["addressBookIds"] = serde_json::json!({ book: true });
-
-            let (id, etag) = jmap.create_contact_card(username, &secret, &card).await?;
-            let href = format!("jmap://contacts/{id}");
-            let stored = v.with_photo_cleared();
-            let server_id = format!("contact-{}", Uuid::new_v4().simple());
-            if let Err(e) = state
-                .storage
-                .insert_contact(username, &href, &server_id, etag.as_deref(), Some(&stored))
-                .await
-            {
-                tracing::warn!(error = %e, "Failed to store contact in DB after JMAP Add");
-            }
+            let (server_id, _stored) =
+                create_contact_jmap(state, username, password, vcard).await?;
             Ok(ContactsMutationResult {
                 server_id,
                 status: "1",
@@ -1416,90 +1624,7 @@ async fn apply_mutation_jmap(
             vcard,
             present,
         } => {
-            let db_contact = state
-                .storage
-                .get_contact(username, sid)
-                .await?
-                .ok_or_else(|| anyhow!("Unknown contact {}", sid))?;
-
-            let id = db_contact
-                .carddav_href
-                .strip_prefix("jmap://contacts/")
-                .ok_or_else(|| anyhow!("Change on non-JMAP contact {}", db_contact.carddav_href))?;
-
-            // Pull existing state and merge (Change is partial in EAS).
-            let (cards, _) = jmap.list_contact_cards(username, &secret).await?;
-            let found = cards
-                .iter()
-                .find(|c| c.id == id)
-                .ok_or_else(|| anyhow!("JMAP contact {} not found", id))?;
-            let old_v = jscard_to_vcard(&found.card, id);
-            let new_v = vcard::parse_vcard_from_data(vcard).context("Change: unparsable vCard")?;
-            let merged = merge_vcards(&old_v, &new_v, present);
-
-            // Photo handling: if the client supplied a photo in the Change,
-            // upload it; otherwise keep the existing blob reference.
-            let photo_blob = if present.contains(K_PHOTO) {
-                match merged.photo().and_then(decode_photo_data) {
-                    Some((bytes, _mime)) => {
-                        let account = jmap.get_contacts_account_id(username, &secret).await?;
-                        Some(
-                            jmap.upload_blob(&account, &bytes, Some("photo"), username, &secret)
-                                .await?,
-                        )
-                    }
-                    None => None,
-                }
-            } else {
-                photo_blob_id(&found.card)
-            };
-
-            // Merge into a full replacement update with null-outs for removed keys.
-            let mut card = vcard_to_jscard(&merged, id, photo_blob.as_deref());
-            let existing_obj = found.card.as_object().cloned().unwrap_or_default();
-            // Preserve server-side bookkeeping fields.
-            if let Some(ab) = existing_obj.get("addressBookIds") {
-                card["addressBookIds"] = ab.clone();
-            }
-            if let Some(uid_v) = existing_obj.get("uid").cloned() {
-                card["uid"] = uid_v;
-            }
-            if let Some(kind) = existing_obj.get("kind").cloned() {
-                card["kind"] = kind;
-            }
-            for key in [
-                "name",
-                "fullName",
-                "emails",
-                "phones",
-                "addresses",
-                "organizations",
-                "titles",
-                "note",
-                "anniversaries",
-                "nicknames",
-                "media",
-                "onlineServices",
-                "personalInfo",
-                "keywords",
-                "keyboardText",
-            ] {
-                if card.get(key).is_none() && existing_obj.get(key).is_some() {
-                    card[key] = serde_json::Value::Null;
-                }
-            }
-
-            let etag = jmap
-                .update_contact_card(username, &secret, id, &card)
-                .await?;
-            if let Err(e) = state
-                .storage
-                .update_contact(username, sid, etag.as_deref(), Some(&merged.to_string()))
-                .await
-            {
-                tracing::warn!(error = %e, "Failed to update contact in DB after JMAP Change");
-            }
-
+            update_contact_jmap(state, username, password, sid, vcard, present).await?;
             Ok(ContactsMutationResult {
                 server_id: sid.clone(),
                 status: "1",
@@ -1507,20 +1632,7 @@ async fn apply_mutation_jmap(
             })
         }
         ContactsMutation::Delete { server_id: sid } => {
-            let db_contact = state
-                .storage
-                .get_contact(username, sid)
-                .await?
-                .ok_or_else(|| anyhow!("Unknown contact {}", sid))?;
-            let id = db_contact
-                .carddav_href
-                .strip_prefix("jmap://contacts/")
-                .ok_or_else(|| anyhow!("Delete on non-JMAP contact {}", db_contact.carddav_href))?;
-
-            jmap.destroy_contact_card(username, &secret, id).await?;
-            if let Err(e) = state.storage.delete_contact(username, sid).await {
-                tracing::warn!(error = %e, "Failed to delete contact from DB after JMAP Delete");
-            }
+            delete_contact_jmap(state, username, password, sid).await?;
             Ok(ContactsMutationResult {
                 server_id: sid.clone(),
                 status: "1",
@@ -1968,5 +2080,319 @@ mod tests {
         let v = vcard::parse_vcard_from_data(vcard).unwrap();
         assert_eq!(v.note(), Some("updated"));
         assert!(present.contains(K_NOTE));
+    }
+}
+
+/// End-to-end tests for the shared JMAP Contacts (RFC 9610) read/write helpers
+/// against an in-process stub JMAP server, covering the EWS/MAPI contact path
+/// fixed by AUDIT3.MD #3.
+#[cfg(test)]
+pub(crate) mod contact_test_support {
+    use super::*;
+    use std::collections::HashMap;
+    use std::sync::{Arc, Mutex};
+
+    pub(crate) type Store = Arc<Mutex<HashMap<String, serde_json::Value>>>;
+
+    fn session_json(base: &str) -> serde_json::Value {
+        serde_json::json!({
+            "apiUrl": format!("{base}/api"),
+            "downloadUrl": format!("{base}/download/{{accountId}}/{{blobId}}"),
+            "uploadUrl": format!("{base}/upload/{{accountId}}"),
+            "eventSourceUrl": format!("{base}/eventsource"),
+            "state": "s",
+            "username": "u",
+            "accounts": {},
+            "primaryAccounts": { crate::jmap::JMAP_CONTACTS_CAPABILITY: "acct" },
+            "capabilities": { crate::jmap::JMAP_CONTACTS_CAPABILITY: {} }
+        })
+    }
+
+    async fn session(
+        axum::Extension(base): axum::Extension<String>,
+    ) -> axum::Json<serde_json::Value> {
+        axum::Json(session_json(&base))
+    }
+
+    async fn api(
+        axum::extract::State(store): axum::extract::State<Store>,
+        axum::Json(req): axum::Json<serde_json::Value>,
+    ) -> axum::Json<serde_json::Value> {
+        let calls = req
+            .get("methodCalls")
+            .and_then(|c| c.as_array())
+            .cloned()
+            .unwrap_or_default();
+        let mut responses = Vec::new();
+        for call in calls {
+            let name = call.get(0).and_then(|v| v.as_str()).unwrap_or("");
+            let args = call.get(1).cloned().unwrap_or(serde_json::Value::Null);
+            let id = call.get(2).and_then(|v| v.as_str()).unwrap_or("x");
+            let result = match name {
+                "ContactCard/get" => {
+                    let list: Vec<serde_json::Value> = {
+                        let store = store.lock().unwrap();
+                        let mut v: Vec<_> = store.values().cloned().collect();
+                        v.sort_by_key(|c| {
+                            c.get("id")
+                                .and_then(|i| i.as_str())
+                                .unwrap_or("")
+                                .to_string()
+                        });
+                        v
+                    };
+                    match args.get("ids").and_then(|v| v.as_array()) {
+                        Some(ids) => {
+                            let mut found = Vec::new();
+                            let mut not_found = Vec::new();
+                            for want in ids.iter().filter_map(|v| v.as_str()) {
+                                match list
+                                    .iter()
+                                    .find(|c| c.get("id").and_then(|i| i.as_str()) == Some(want))
+                                {
+                                    Some(c) => found.push(c.clone()),
+                                    None => {
+                                        not_found.push(serde_json::Value::String(want.to_string()))
+                                    }
+                                }
+                            }
+                            serde_json::json!({ "accountId": "acct", "state": "s", "list": found, "notFound": not_found })
+                        }
+                        None => {
+                            serde_json::json!({ "accountId": "acct", "state": "s", "list": list })
+                        }
+                    }
+                }
+                "AddressBook/get" => serde_json::json!({
+                    "accountId": "acct",
+                    "state": "s",
+                    "list": [ { "id": "book1", "isDefault": true } ],
+                    "notFound": []
+                }),
+                "ContactCard/set" => {
+                    let mut store = store.lock().unwrap();
+                    if let Some(create) = args.get("create").and_then(|c| c.as_object()) {
+                        let mut created = serde_json::Map::new();
+                        for (cid, card) in create.clone() {
+                            let new_id = format!("c{}", store.len() + 1);
+                            let mut card = card;
+                            card["id"] = serde_json::Value::String(new_id.clone());
+                            store.insert(new_id.clone(), card);
+                            created.insert(
+                                cid,
+                                serde_json::json!({ "id": new_id, "@etag": format!("\"{new_id}-etag\"") }),
+                            );
+                        }
+                        serde_json::json!({ "accountId": "acct", "created": created, "updated": {}, "destroyed": [] })
+                    } else if let Some(update) = args.get("update").and_then(|u| u.as_object()) {
+                        let mut updated = serde_json::Map::new();
+                        for (uid, patch) in update.clone() {
+                            if let Some(existing) = store.get_mut(&uid) {
+                                if let Some(obj) = patch.as_object() {
+                                    for (k, v) in obj {
+                                        if v.is_null() {
+                                            existing.as_object_mut().map(|m| m.remove(k));
+                                        } else {
+                                            existing[k] = v.clone();
+                                        }
+                                    }
+                                }
+                                updated.insert(
+                                    uid.clone(),
+                                    serde_json::json!({ "@etag": format!("\"{uid}-etag2\"") }),
+                                );
+                            }
+                        }
+                        serde_json::json!({ "accountId": "acct", "updated": updated, "created": {}, "destroyed": [] })
+                    } else if let Some(destroy) = args.get("destroy").and_then(|d| d.as_array()) {
+                        let mut destroyed = Vec::new();
+                        for d in destroy {
+                            if let Some(did) = d.as_str() {
+                                store.remove(did);
+                                destroyed.push(serde_json::Value::String(did.to_string()));
+                            }
+                        }
+                        serde_json::json!({ "accountId": "acct", "destroyed": destroyed, "created": {}, "updated": {} })
+                    } else {
+                        serde_json::json!({ "accountId": "acct" })
+                    }
+                }
+                _ => serde_json::json!({}),
+            };
+            responses.push(serde_json::json!([name, result, id]));
+        }
+        axum::Json(serde_json::json!({ "methodResponses": responses, "sessionState": "s" }))
+    }
+
+    /// Spawn a stub JMAP contacts server backed by an in-memory card store and
+    /// return its base URL plus the shared store handle.
+    pub(crate) async fn spawn_stub_contacts_server(
+        seed: Vec<serde_json::Value>,
+    ) -> (String, Store) {
+        let mut map = HashMap::new();
+        for card in seed {
+            if let Some(id) = card.get("id").and_then(|v| v.as_str()) {
+                map.insert(id.to_string(), card);
+            }
+        }
+        let store: Store = Arc::new(Mutex::new(map));
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let base = format!("http://127.0.0.1:{port}");
+        let app = axum::Router::new()
+            .route("/session", axum::routing::get(session))
+            .route("/", axum::routing::post(api))
+            .with_state(store.clone())
+            .layer(axum::Extension(base.clone()));
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        (base, store)
+    }
+
+    pub(crate) async fn state_for(base: &str) -> Arc<crate::models::AppState> {
+        let storage = crate::storage::Storage::new("sqlite::memory:")
+            .await
+            .expect("in-memory storage");
+        storage.init_schema().await.expect("schema init");
+        let cfg = crate::config::Config {
+            jmap_base: base.to_string(),
+            email_enabled: true,
+            mail_domain: "example.com".to_string(),
+            hmac_secret: secrecy::SecretString::from("a".repeat(32)),
+            prefer_jmap_contacts: true,
+            ..Default::default()
+        };
+        Arc::new(crate::models::AppState::new(cfg, Arc::new(storage)))
+    }
+
+    pub(crate) fn seed_card() -> serde_json::Value {
+        serde_json::json!({
+            "id": "c1",
+            "uid": "uid-1",
+            "fullName": "Jane Doe",
+            "name": { "components": [
+                { "kind": "given", "value": "Jane" },
+                { "kind": "surname", "value": "Doe" }
+            ]},
+            "emails": { "e1": { "address": "jane@example.com" } }
+        })
+    }
+
+    #[tokio::test]
+    async fn list_contacts_jmap_returns_jmap_hrefs_and_vcards() {
+        let (base, _store) = spawn_stub_contacts_server(vec![seed_card()]).await;
+        let state = state_for(&base).await;
+        let client = state.jmap_client.as_ref().unwrap();
+
+        assert!(
+            jmap_contacts_available(&state, "u", "pw").await,
+            "stub advertises the contacts capability"
+        );
+
+        let contacts = list_contacts_jmap(client, "u", "pw").await.expect("list");
+        assert_eq!(contacts.len(), 1);
+        assert_eq!(contacts[0].href, "jmap://contacts/c1");
+        assert!(contacts[0].vcard.contains("Jane Doe"));
+        assert!(contacts[0].vcard.contains("jane@example.com"));
+    }
+
+    #[tokio::test]
+    async fn get_contact_vcard_jmap_roundtrips_and_reports_missing() {
+        let (base, _store) = spawn_stub_contacts_server(vec![seed_card()]).await;
+        let state = state_for(&base).await;
+        let client = state.jmap_client.as_ref().unwrap();
+
+        let v = get_contact_vcard_jmap(client, "u", "pw", "jmap://contacts/c1")
+            .await
+            .expect("get")
+            .expect("present");
+        assert!(v.contains("jane@example.com"));
+
+        let missing = get_contact_vcard_jmap(client, "u", "pw", "jmap://contacts/nope")
+            .await
+            .expect("get missing");
+        assert!(missing.is_none());
+
+        assert!(
+            get_contact_vcard_jmap(client, "u", "pw", "not-a-jmap-href")
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn create_update_delete_contact_jmap_persist_roundtrip() {
+        let (base, _store) = spawn_stub_contacts_server(Vec::new()).await;
+        let state = state_for(&base).await;
+
+        let vcard_in = "BEGIN:VCARD\r\nVERSION:3.0\r\nFN:Jane Doe\r\nN:Doe;Jane;;;\r\nEMAIL:jane@example.com\r\nEND:VCARD\r\n";
+        let (server_id, _stored) = create_contact_jmap(&state, "u", "pw", vcard_in)
+            .await
+            .expect("create");
+        assert!(server_id.starts_with("contact-"));
+
+        let row = state
+            .storage
+            .get_contact("u", &server_id)
+            .await
+            .expect("db")
+            .expect("row present");
+        assert!(row.carddav_href.starts_with("jmap://contacts/"));
+
+        // Update: full replace (empty present set) with a new email.
+        let vcard_up = "BEGIN:VCARD\r\nVERSION:3.0\r\nFN:Jane Roe\r\nN:Roe;Jane;;;\r\nEMAIL:jane.roe@example.com\r\nEND:VCARD\r\n";
+        let (etag, stored) =
+            update_contact_jmap(&state, "u", "pw", &server_id, vcard_up, &HashSet::new())
+                .await
+                .expect("update");
+        assert!(etag.is_some());
+        assert!(stored.contains("jane.roe@example.com"));
+
+        // Delete removes the row.
+        delete_contact_jmap(&state, "u", "pw", &server_id)
+            .await
+            .expect("delete");
+        assert!(
+            state
+                .storage
+                .get_contact("u", &server_id)
+                .await
+                .expect("db")
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn update_contact_jmap_merges_partial_change() {
+        let (base, _store) = spawn_stub_contacts_server(vec![seed_card()]).await;
+        let state = state_for(&base).await;
+
+        // Seed the mapping row pointing at the stub's card c1.
+        state
+            .storage
+            .insert_contact(
+                "u",
+                "jmap://contacts/c1",
+                "contact-x",
+                Some("etag"),
+                Some("BEGIN:VCARD\r\nVERSION:3.0\r\nFN:Jane Doe\r\nEND:VCARD\r\n"),
+            )
+            .await
+            .expect("insert");
+
+        // Partial Change touching only the name class; the email must survive.
+        let vcard_patch = "BEGIN:VCARD\r\nVERSION:3.0\r\nN:Smith;Jane;;;\r\nEND:VCARD\r\n";
+        let present: HashSet<String> = [K_NAME.to_string()].into_iter().collect();
+        let (_etag, stored) =
+            update_contact_jmap(&state, "u", "pw", "contact-x", vcard_patch, &present)
+                .await
+                .expect("update");
+        assert!(stored.contains("Smith"), "name class applied: {stored}");
+        assert!(
+            stored.contains("jane@example.com"),
+            "untouched email class preserved: {stored}"
+        );
     }
 }
