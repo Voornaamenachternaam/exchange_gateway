@@ -59,10 +59,7 @@ async fn verify_calendar_capability_against_real_stalwart() {
     // MUST flag it (issue + not healthy).
     if !report.ics_round_trip_ok {
         assert!(
-            report
-                .issues
-                .iter()
-                .any(|i| i.contains("not applied") || i.contains("iCalendar")),
+            report.issues.iter().any(|i| i.starts_with("write probe:")),
             "write round-trip failure not flagged in issues: {:?}",
             report.issues
         );
@@ -390,6 +387,195 @@ async fn gateway_set_calendar_event_round_trips_content() {
     assert_eq!(item.location, "Room Two", "location: {back_ics}");
 
     // Cleanup.
+    client
+        .destroy_calendar_events(&account, std::slice::from_ref(&event_id), &user, &pass)
+        .await
+        .expect("destroy");
+}
+
+/// Stalwart's `CalendarEvent/set` update is a partial patch: a property absent
+/// from the payload keeps its previous value. `jscalendar_write_payload`
+/// therefore nulls every clearable property the replacement ICS omits. This
+/// proves the null-patch is accepted live and that removed content actually
+/// disappears — otherwise a deleted description/location/attendee would survive
+/// an edit (the exact stale-data hazard of the partial-patch semantics).
+#[tokio::test]
+async fn gateway_update_clears_omitted_content() {
+    use exchange_gateway::jmap::SetCalendarEventParams;
+
+    let Some((base, user, pass)) = env_config() else {
+        eprintln!("STALWART_JMAP_URL/STALWART_USER/STALWART_PASS not set; skipping");
+        return;
+    };
+    let client = JmapClient::new(&base).expect("JmapClient::new");
+    let account = client
+        .get_account_id(&user, &pass)
+        .await
+        .expect("account id");
+    let calendars = client
+        .query_calendars(&user, &pass)
+        .await
+        .expect("query_calendars");
+    let calendar_id = calendars
+        .calendars
+        .first()
+        .and_then(|c| c.id.clone())
+        .expect("no calendar available");
+
+    let uid = format!("gw-clear-check-{}", uuid::Uuid::new_v4());
+    let rich = format!(
+        "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//exchange_gateway//deploy-check//EN\r\n\
+         BEGIN:VEVENT\r\nUID:{uid}\r\nDTSTAMP:20260301T000000Z\r\n\
+         DTSTART:20260401T090000Z\r\nDTEND:20260401T100000Z\r\n\
+         SUMMARY:Keep me\r\nDESCRIPTION:to be removed\r\nLOCATION:Room Gone\r\n\
+         ATTENDEE;CN=Alice;PARTSTAT=ACCEPTED:mailto:alice@example.com\r\n\
+         CATEGORIES:Work\r\n\
+         END:VEVENT\r\nEND:VCALENDAR\r\n"
+    );
+    let (event_id, _, _) = client
+        .set_calendar_event(SetCalendarEventParams {
+            account_id: &account,
+            calendar_id: Some(&calendar_id),
+            event_id: None,
+            ics: &rich,
+            username: &user,
+            password: &pass,
+        })
+        .await
+        .expect("rich create");
+
+    // Replace with a minimal event: description/location/attendee/categories
+    // are all omitted and must be cleared by the null-patch.
+    let minimal = format!(
+        "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//exchange_gateway//deploy-check//EN\r\n\
+         BEGIN:VEVENT\r\nUID:{uid}\r\nDTSTAMP:20260301T000000Z\r\n\
+         DTSTART:20260401T090000Z\r\nDTEND:20260401T100000Z\r\n\
+         SUMMARY:Keep me\r\n\
+         END:VEVENT\r\nEND:VCALENDAR\r\n"
+    );
+    client
+        .set_calendar_event(SetCalendarEventParams {
+            account_id: &account,
+            calendar_id: None,
+            event_id: Some(&event_id),
+            ics: &minimal,
+            username: &user,
+            password: &pass,
+        })
+        .await
+        .expect("clearing update must be accepted");
+
+    let (back_ics, _, _) = client
+        .get_calendar_event(&account, &event_id, &user, &pass)
+        .await
+        .expect("get_calendar_event");
+    let item = exchange_gateway::calendar::parse_ics_event(&back_ics).expect("parse read-back");
+    assert_eq!(item.subject, "Keep me", "{back_ics}");
+    assert!(
+        item.description.is_empty(),
+        "removed description survived the update: {back_ics}"
+    );
+    assert!(
+        item.location.is_empty(),
+        "removed location survived the update: {back_ics}"
+    );
+    assert!(
+        item.attendees.is_empty(),
+        "removed attendee survived the update: {back_ics}"
+    );
+
+    client
+        .destroy_calendar_events(&account, std::slice::from_ref(&event_id), &user, &pass)
+        .await
+        .expect("destroy");
+}
+
+/// The read-back verification now compares every written content field, not
+/// just the title. A false positive here would break calendar writes for
+/// recurring/attendee/alarm events, so this drives a full-featured event
+/// through the real `set_calendar_event` (which runs the verification
+/// internally) and asserts it succeeds.
+#[tokio::test]
+async fn gateway_set_calendar_event_verifies_rich_content() {
+    use exchange_gateway::jmap::SetCalendarEventParams;
+
+    let Some((base, user, pass)) = env_config() else {
+        eprintln!("STALWART_JMAP_URL/STALWART_USER/STALWART_PASS not set; skipping");
+        return;
+    };
+    let client = JmapClient::new(&base).expect("JmapClient::new");
+    let account = client
+        .get_account_id(&user, &pass)
+        .await
+        .expect("account id");
+    let calendars = client
+        .query_calendars(&user, &pass)
+        .await
+        .expect("query_calendars");
+    let calendar_id = calendars
+        .calendars
+        .first()
+        .and_then(|c| c.id.clone())
+        .expect("no calendar available");
+
+    let uid = format!("gw-rich-check-{}", uuid::Uuid::new_v4());
+    let ics = format!(
+        "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//exchange_gateway//deploy-check//EN\r\n\
+         BEGIN:VEVENT\r\nUID:{uid}\r\nDTSTAMP:20260301T000000Z\r\n\
+         DTSTART;TZID=Europe/Berlin:20260401T090000\r\nDTEND;TZID=Europe/Berlin:20260401T100000\r\n\
+         SUMMARY:Rich event\r\nDESCRIPTION:rich body\r\nLOCATION:Room Rich\r\n\
+         RRULE:FREQ=WEEKLY;COUNT=4\r\nEXDATE;TZID=Europe/Berlin:20260408T090000\r\n\
+         ORGANIZER;CN=Org:mailto:org@example.com\r\n\
+         ATTENDEE;CN=Alice;PARTSTAT=ACCEPTED:mailto:alice@example.com\r\n\
+         CATEGORIES:Work\r\nPRIORITY:5\r\nCLASS:PUBLIC\r\nTRANSP:OPAQUE\r\nSTATUS:CONFIRMED\r\n\
+         BEGIN:VALARM\r\nACTION:DISPLAY\r\nTRIGGER:-PT15M\r\nDESCRIPTION:reminder\r\nEND:VALARM\r\n\
+         END:VEVENT\r\nEND:VCALENDAR\r\n"
+    );
+
+    let (event_id, _, _) = client
+        .set_calendar_event(SetCalendarEventParams {
+            account_id: &account,
+            calendar_id: Some(&calendar_id),
+            event_id: None,
+            ics: &ics,
+            username: &user,
+            password: &pass,
+        })
+        .await
+        .expect("rich event create must pass the full read-back verification");
+
+    // Update the same rich event: the verification runs on the update path too
+    // (which additionally nulls the clearable properties the replacement ICS
+    // omits), and must not produce a false positive.
+    let ics2 = ics
+        .replace("SUMMARY:Rich event", "SUMMARY:Rich updated")
+        .replace("LOCATION:Room Rich", "LOCATION:Room Richer");
+    let (updated_id, _, _) = client
+        .set_calendar_event(SetCalendarEventParams {
+            account_id: &account,
+            calendar_id: None,
+            event_id: Some(&event_id),
+            ics: &ics2,
+            username: &user,
+            password: &pass,
+        })
+        .await
+        .expect("rich event update must pass the full read-back verification");
+    assert_eq!(updated_id, event_id, "update changed the event id");
+
+    // The content the verification checked must also survive the gateway's own
+    // reader end-to-end.
+    let (back_ics, _, _) = client
+        .get_calendar_event(&account, &event_id, &user, &pass)
+        .await
+        .expect("get_calendar_event");
+    let item = exchange_gateway::calendar::parse_ics_event(&back_ics).expect("parse read-back");
+    assert_eq!(item.subject, "Rich updated", "{back_ics}");
+    assert_eq!(item.description, "rich body", "{back_ics}");
+    assert_eq!(item.location, "Room Richer", "{back_ics}");
+    assert!(item.rrule.is_some(), "RRULE lost: {back_ics}");
+    assert_eq!(item.attendees.len(), 1, "attendee lost: {back_ics}");
+
     client
         .destroy_calendar_events(&account, std::slice::from_ref(&event_id), &user, &pass)
         .await

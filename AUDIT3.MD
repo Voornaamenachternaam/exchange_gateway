@@ -241,17 +241,28 @@ correct in the shipped compose.
    issues `CalendarEvent/set` and a `CalendarEvent/get` (create via
    `#ids`/`resultOf`, update by explicit id) in the same JMAP request and
    compares the stored event against the payload (`verify_write_round_trip`,
-   new). On a mismatch it fails with the typed
-   `CalendarWriteError::PayloadDiscarded`; a **create** additionally destroys
-   the contentless orphan it just made (best-effort) so a retry or the CalDAV
-   fallback does not leave a duplicate behind. This is the self-validation the
-   audit asked for, and it works regardless of whether the deploy check ran.
+   new). The comparison covers **every written content field** (description,
+   locations, recurrence, participants, alarms, …), not just the title, with
+   tolerance for the benign normalisations a JSCalendar backend may apply
+   (object key order, surrounding whitespace, a dropped nested `@type`). The
+   failure is typed: `Discarded` (the read-back has no content marker — the
+   only proof of a lossy write path) versus `Mismatch` (the marker survived but
+   another written field did not — **not** proof of a lossy path, so it must not
+   disable JMAP writes). On either failure the write surfaces an error and the
+   created event is destroyed (best-effort) so the CalDAV fallback — which PUTs
+   a fresh `{uuid}.ics` — cannot surface a duplicate. This is the
+   self-validation the audit asked for, and it works regardless of whether the
+   deploy check ran. The verification error text names only the failing property
+   and failure class, never event content (titles/descriptions are user data and
+   must not reach logs or deploy reports).
 4. **The runtime gate is now fail-closed at the point of use, not only at
-   startup.** On `PayloadDiscarded` the caller disables the JMAP calendar write
-   path for the process (`AppState::disable_jmap_calendar_writes`) so all
-   subsequent create/update traffic takes the CalDAV branch. Wired at every
-   JMAP calendar write site: EWS `CreateItem` (`try_jmap_create_calendar`),
-   `UpdateItem` (`try_jmap_update_calendar`), `CopyItem`, and the RSVP pipeline
+   startup.** On `Discarded` the caller disables the JMAP calendar write path
+   for the process (`AppState::disable_jmap_calendar_writes`) so all subsequent
+   create/update traffic takes the CalDAV branch. A `Mismatch` does **not**
+   disable the path (it would let one unenumerable backend normalisation
+   permanently downgrade a working deployment). Wired at every JMAP calendar
+   write site: EWS `CreateItem` (`try_jmap_create_calendar`), `UpdateItem`
+   (`try_jmap_update_calendar`), `CopyItem`, and the RSVP pipeline
    (`meeting/rsvp.rs` `create_copy_via_jmap` / `write_existing_copy`).
 5. **The deploy probe exercises the real write path.**
    `probe_write_paths` (`src/jmap.rs`) no longer writes a raw `iCalendar`
@@ -276,14 +287,22 @@ correct in the shipped compose.
    removes a false-negative that would otherwise have failed a working
    deployment.
 
-Tests: `src/jscalendar.rs` 5 new unit tests (ICS→JSCalendar round-trip content,
-server-managed-property stripping, update null-clearing vs create no-clearing,
-read-back discard detection, start-only fallback) + `src/jmap.rs` capability
-tests updated for the warnings/healthy semantics (empty capability object is
-healthy with 6 warnings; wrong *types* remain fatal) + `tests/jmap_calendar_deploy.rs`
-new end-to-end `gateway_set_calendar_event_round_trips_content` (drives the
-gateway's own create **and** update, then reads back through
-`get_calendar_event` and asserts subject/description/location persisted).
+Tests: `src/jscalendar.rs` 8 unit tests (ICS→JSCalendar round-trip content,
+server-managed-property stripping, update null-clearing vs create no-clearing —
+now including `useDefaultAlerts`/`relatedTo`, read-back discard detection,
+start-only fallback, `Discarded`-vs-`Mismatch` classification, all-written-fields
+comparison with normalisation tolerance, and the no-content-leak guarantee) +
+`src/jmap.rs` capability tests updated for the warnings/healthy semantics (empty
+capability object is healthy with 6 warnings; wrong *types* remain fatal) plus 3
+new `set_calendar_event` classification tests driven over a recording stub
+(create `Discarded` disables + destroys, create `Mismatch` does not disable but
+still destroys, update `Discarded` vs `Mismatch`) + `tests/jmap_calendar_deploy.rs`
+end-to-end `gateway_set_calendar_event_round_trips_content` (drives the gateway's
+own create **and** update, then reads back through `get_calendar_event` and
+asserts subject/description/location persisted) and
+`gateway_set_calendar_event_verifies_rich_content` (recurrence + attendee + alarm
+event must pass the full-field verification on both create and update — a false
+positive here would break calendar writes for every real invitation).
 
 ### 3. CardDAV base path is wrong — EWS contacts (the New-Outlook-for-Windows contact surface) are dead
 

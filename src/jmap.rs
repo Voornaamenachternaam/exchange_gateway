@@ -991,14 +991,19 @@ pub struct SetCalendarEventParams<'a> {
 /// The [`CalendarWriteError::PayloadDiscarded`] variant is distinct so callers
 /// can recognise the "the backend accepted the write but stored an empty
 /// event" failure and permanently disable the JMAP calendar write path for the
-/// process (a build that discards the payload will do so for every write).
+/// process (a build that discards the payload will do so for every write). A
+/// read-back that keeps the content marker but alters another written field is
+/// reported as [`CalendarWriteError::Other`] instead — see
+/// [`crate::jscalendar::WriteVerificationFailure`].
 #[derive(Debug, thiserror::Error)]
 pub enum CalendarWriteError {
-    /// The server accepted `CalendarEvent/set` but the read-back did not carry
-    /// the written content — the write path is lossy on this backend.
+    /// The server accepted `CalendarEvent/set` but the read-back carried no
+    /// content marker (title, or start for a titleless event) — the write path
+    /// is lossy on this backend.
     #[error("backend discarded the calendar event payload: {0}")]
     PayloadDiscarded(String),
-    /// Any other failure (transport, session, malformed response, …).
+    /// Any other failure (transport, session, malformed response, a read-back
+    /// content mismatch, …).
     #[error(transparent)]
     Other(#[from] anyhow::Error),
 }
@@ -4412,13 +4417,19 @@ impl JmapClient {
                     {
                         Some(ev) => match crate::jscalendar::verify_write_round_trip(&ev, &entry) {
                             Ok(()) => report.ics_round_trip_ok = true,
-                            Err(e) => report.issues.push(format!(
-                                "write probe: CalendarEvent/set accepted the structured \
-                                     payload but the event content was not applied ({}); a \
-                                     server build with this behaviour silently loses all \
-                                     gateway-created event data",
-                                e
-                            )),
+                            Err(e) => {
+                                let detail = if e.is_discarded() {
+                                    "the backend discarded the event payload"
+                                } else {
+                                    "the backend stored the event but altered its content"
+                                };
+                                report.issues.push(format!(
+                                    "write probe: CalendarEvent/set accepted the structured \
+                                     payload but {detail} ({}); a server build with this \
+                                     behaviour silently loses gateway-created event data",
+                                    e
+                                ));
+                            }
                         },
                         None => report
                             .issues
@@ -5088,8 +5099,13 @@ impl JmapClient {
                     "CalendarEvent/set update could not be verified: read-back returned no event"
                 ))
             })?;
-            crate::jscalendar::verify_write_round_trip(&read_back, &entry)
-                .map_err(CalendarWriteError::PayloadDiscarded)?;
+            crate::jscalendar::verify_write_round_trip(&read_back, &entry).map_err(|e| {
+                if e.is_discarded() {
+                    CalendarWriteError::PayloadDiscarded(e.to_string())
+                } else {
+                    CalendarWriteError::Other(anyhow!("{e}"))
+                }
+            })?;
 
             let uid = entry
                 .get("uid")
@@ -5185,9 +5201,11 @@ impl JmapClient {
                 }
             };
             if let Err(e) = crate::jscalendar::verify_write_round_trip(&read_back, &entry) {
-                // The backend stored an empty event; remove the orphan so a
-                // retry (or the CalDAV fallback) does not leave a contentless
-                // duplicate behind. Best-effort: the write is already failing.
+                // Whatever the class, the created event must be removed before
+                // the caller falls back to CalDAV: the fallback PUTs a fresh
+                // `{uuid}.ics` resource, so leaving the JMAP event behind would
+                // surface a duplicate to the client. Best-effort cleanup — the
+                // write is already failing.
                 let _ = self
                     .destroy_calendar_events(
                         params.account_id,
@@ -5196,7 +5214,14 @@ impl JmapClient {
                         params.password,
                     )
                     .await;
-                return Err(CalendarWriteError::PayloadDiscarded(e));
+                if e.is_discarded() {
+                    return Err(CalendarWriteError::PayloadDiscarded(e.to_string()));
+                }
+                // A content-field mismatch is not proof of a lossy write path
+                // (a backend may normalise a value the gateway cannot
+                // enumerate), so it must not disable JMAP writes — but the
+                // event is still removed and the failure surfaced.
+                return Err(CalendarWriteError::Other(anyhow!("{e}")));
             }
 
             let uid = entry
@@ -7384,5 +7409,197 @@ mod tests {
         assert_eq!(id, "e1");
         assert!(ics.contains("SUMMARY:Team Sync"), "{ics}");
         assert!(ics.contains("BEGIN:VEVENT"), "{ics}");
+    }
+
+    /// Spawn a stub JMAP server that returns `responses[i]` for the i-th
+    /// `POST /` call and records every request body, so a test can assert the
+    /// exact sequence of `CalendarEvent/set` calls the write path made.
+    type RecordingState = (
+        std::sync::Arc<std::sync::Mutex<Vec<Value>>>,
+        std::sync::Arc<std::sync::Mutex<Vec<Value>>>,
+    );
+
+    async fn spawn_recording_stub(
+        responses: Vec<Value>,
+    ) -> (String, std::sync::Arc<std::sync::Mutex<Vec<Value>>>) {
+        use axum::routing::{get, post};
+        use std::sync::{Arc, Mutex};
+
+        async fn session(axum::Extension(base): axum::Extension<String>) -> axum::Json<Value> {
+            axum::Json(session_json(&base))
+        }
+        async fn api(
+            axum::Extension(state): axum::Extension<RecordingState>,
+            axum::Json(body): axum::Json<Value>,
+        ) -> axum::Json<Value> {
+            let (responses, recorded) = &state;
+            let idx = {
+                let mut rec = recorded.lock().unwrap();
+                let i = rec.len();
+                rec.push(body);
+                i
+            };
+            let responses = responses.lock().unwrap();
+            axum::Json(
+                responses
+                    .get(idx)
+                    .or_else(|| responses.last())
+                    .cloned()
+                    .unwrap_or_else(|| json!({ "methodResponses": [] })),
+            )
+        }
+
+        let responses = Arc::new(Mutex::new(responses));
+        let recorded = Arc::new(Mutex::new(Vec::new()));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let base = format!("http://127.0.0.1:{port}");
+        let app = axum::Router::new()
+            .route("/session", get(session))
+            .route("/", post(api))
+            .layer(axum::Extension((responses, recorded.clone())))
+            .layer(axum::Extension(base.clone()));
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        (base, recorded)
+    }
+
+    fn ics_with_description() -> String {
+        "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//x//EN\r\nBEGIN:VEVENT\r\nUID:u1\r\n\
+         DTSTAMP:20260301T000000Z\r\nDTSTART:20260401T090000Z\r\nDTEND:20260401T100000Z\r\n\
+         SUMMARY:Kept\r\nDESCRIPTION:body\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
+            .to_string()
+    }
+
+    /// A read-back whose title is empty proves the backend discarded the
+    /// payload: the error must be `PayloadDiscarded` and the orphaned create
+    /// must be destroyed (a second `CalendarEvent/set` carrying `destroy`).
+    #[tokio::test]
+    async fn set_calendar_event_create_discarded_payload_disables_and_destroys() {
+        let set_and_get = json!({ "methodResponses": [
+            ["CalendarEvent/set", { "created": { "e0": { "id": "e1" } } }, "es0"],
+            ["CalendarEvent/get", { "list": [ { "id": "e1" } ] }, "eg0"]
+        ]});
+        let destroy = json!({ "methodResponses": [
+            ["CalendarEvent/set", { "destroyed": ["e1"] }, "es1"]
+        ]});
+        let (base, recorded) = spawn_recording_stub(vec![set_and_get, destroy]).await;
+        let client = JmapClient::new(&base).unwrap();
+        let pw = SecretString::from("pw");
+        let err = client
+            .set_calendar_event(SetCalendarEventParams {
+                account_id: "acct",
+                calendar_id: Some("cal"),
+                event_id: None,
+                ics: &ics_with_description(),
+                username: "u",
+                password: &pw,
+            })
+            .await
+            .unwrap_err();
+        assert!(err.is_payload_discarded(), "{err:?}");
+        let rec = recorded.lock().unwrap();
+        assert_eq!(rec.len(), 2, "discarded create must issue a cleanup call");
+        assert!(
+            rec[1].to_string().contains("destroy"),
+            "cleanup must destroy the orphan: {}",
+            rec[1]
+        );
+    }
+
+    /// A read-back that keeps the title but drops the description is a content
+    /// MISMATCH, not a discarded payload: the error must NOT be
+    /// `PayloadDiscarded` (so JMAP writes stay enabled), but the orphaned
+    /// create must still be destroyed so the CalDAV fallback cannot duplicate
+    /// it.
+    #[tokio::test]
+    async fn set_calendar_event_create_mismatch_is_not_payload_discarded() {
+        let set_and_get = json!({ "methodResponses": [
+            ["CalendarEvent/set", { "created": { "e0": { "id": "e1" } } }, "es0"],
+            ["CalendarEvent/get", { "list": [ {
+                "id": "e1",
+                "uid": "u1",
+                "title": "Kept",
+                "start": "2026-04-01T09:00:00",
+                "timeZone": "Etc/UTC",
+                "duration": "PT1H"
+            } ] }, "eg0"]
+        ]});
+        let destroy = json!({ "methodResponses": [
+            ["CalendarEvent/set", { "destroyed": ["e1"] }, "es1"]
+        ]});
+        let (base, recorded) = spawn_recording_stub(vec![set_and_get, destroy]).await;
+        let client = JmapClient::new(&base).unwrap();
+        let pw = SecretString::from("pw");
+        let err = client
+            .set_calendar_event(SetCalendarEventParams {
+                account_id: "acct",
+                calendar_id: Some("cal"),
+                event_id: None,
+                ics: &ics_with_description(),
+                username: "u",
+                password: &pw,
+            })
+            .await
+            .unwrap_err();
+        assert!(
+            !err.is_payload_discarded(),
+            "a content mismatch must not disable the JMAP write path: {err:?}"
+        );
+        let rec = recorded.lock().unwrap();
+        assert_eq!(
+            rec.len(),
+            2,
+            "a mismatch must still destroy the orphan to avoid a duplicate"
+        );
+        assert!(rec[1].to_string().contains("destroy"), "{}", rec[1]);
+    }
+
+    /// The same distinction on the update path: an empty read-back is
+    /// `PayloadDiscarded`, a partial read-back is not.
+    #[tokio::test]
+    async fn set_calendar_event_update_classifies_discard_vs_mismatch() {
+        let discarded = json!({ "methodResponses": [
+            ["CalendarEvent/set", { "updated": { "e1": {} } }, "es0"],
+            ["CalendarEvent/get", { "list": [ { "id": "e1" } ] }, "eg0"]
+        ]});
+        let (base, _rec) = spawn_recording_stub(vec![discarded]).await;
+        let client = JmapClient::new(&base).unwrap();
+        let pw = SecretString::from("pw");
+        let err = client
+            .set_calendar_event(SetCalendarEventParams {
+                account_id: "acct",
+                calendar_id: None,
+                event_id: Some("e1"),
+                ics: &ics_with_description(),
+                username: "u",
+                password: &pw,
+            })
+            .await
+            .unwrap_err();
+        assert!(err.is_payload_discarded(), "{err:?}");
+
+        let partial = json!({ "methodResponses": [
+            ["CalendarEvent/set", { "updated": { "e1": {} } }, "es0"],
+            ["CalendarEvent/get", { "list": [ {
+                "id": "e1", "uid": "u1", "title": "Kept",
+                "start": "2026-04-01T09:00:00", "timeZone": "Etc/UTC", "duration": "PT1H"
+            } ] }, "eg0"]
+        ]});
+        let (base, _rec) = spawn_recording_stub(vec![partial]).await;
+        let client = JmapClient::new(&base).unwrap();
+        let err = client
+            .set_calendar_event(SetCalendarEventParams {
+                account_id: "acct",
+                calendar_id: None,
+                event_id: Some("e1"),
+                ics: &ics_with_description(),
+                username: "u",
+                password: &pw,
+            })
+            .await
+            .unwrap_err();
+        assert!(!err.is_payload_discarded(), "{err:?}");
     }
 }
