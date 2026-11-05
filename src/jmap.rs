@@ -43,6 +43,41 @@ use tracing::{debug, trace, warn};
 /// size used across the gateway's JMAP callers.
 pub const DEFAULT_EMAIL_CHANGES_MAX: u32 = 500;
 
+/// JMAP core capability URN (RFC 8620 §2). The session advertises the
+/// server's request limits (`maxObjectsInGet`, `maxObjectsInSet`,
+/// `maxSizeRequest`, …) under this key.
+pub const JMAP_CORE_CAPABILITY: &str = "urn:ietf:params:jmap:core";
+
+/// Fallback for the session's `maxObjectsInGet` when the server omits it.
+/// RFC 8620 §2 requires the value, but a conforming client must not assume it
+/// is present; 500 matches the value Stalwart v1.0.x advertises, so an
+/// absent capability degrades to the same behaviour as a present one.
+pub const DEFAULT_MAX_OBJECTS_IN_GET: usize = 500;
+
+/// Split an id list into consecutive slices of at most `max` ids.
+///
+/// `max` is clamped to at least 1 so a server advertising `0` (or a caller
+/// passing `0`) yields single-id slices instead of spinning on an empty chunk
+/// forever.
+pub fn chunk_ids(ids: &[String], max: usize) -> Vec<&[String]> {
+    ids.chunks(max.max(1)).collect()
+}
+
+/// The server-advertised `maxObjectsInGet` for this session (RFC 8620 §2).
+///
+/// Falls back to [`DEFAULT_MAX_OBJECTS_IN_GET`] when the core capability is
+/// missing or omits the value. A server that advertises `0` is treated as
+/// advertising 1 (the value is a maximum, and 0 would be unsatisfiable).
+pub fn session_max_objects_in_get(session: &JmapSession) -> usize {
+    session
+        .capabilities
+        .get(JMAP_CORE_CAPABILITY)
+        .and_then(|c| c.get("maxObjectsInGet"))
+        .and_then(|v| v.as_u64())
+        .map(|n| (n.max(1)) as usize)
+        .unwrap_or(DEFAULT_MAX_OBJECTS_IN_GET)
+}
+
 /// Helper: deserialize a field that may be either a single object, an array, or null.
 /// This accommodates servers that sometimes return a single object instead of an array
 /// for address fields (from, to, cc, bcc, replyTo). Returns `None` for null, `Some(vec)` otherwise.
@@ -2097,49 +2132,68 @@ impl JmapClient {
         password: &SecretString,
         fetch_bodies: bool,
     ) -> Result<Vec<JmapEmail>> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
         let session = self.get_session(username, password).await?;
         let api_url = &session.api_url;
 
         let props = properties.unwrap_or_else(|| json!(Self::mail_properties()));
 
-        let mut arguments = json!({
-            "accountId": account_id,
-            "ids": ids,
-            "properties": props,
-            "bodyProperties": ["partId", "blobId", "size", "type", "charset", "value"],
-        });
-        if fetch_bodies {
-            // RFC 8621 §4.4.1: without these arguments the server returns
-            // no body values at all — delta Sync and ItemOperations, which
-            // fetch through this method rather than query_emails, would
-            // render empty bodies. Both flags mirror query_emails so
-            // Type 1 (plain) and Type 2 (HTML) bodies resolve natively.
-            arguments["fetchTextBodyValues"] = json!(true);
-            arguments["fetchHTMLBodyValues"] = json!(true);
-        }
-        let method_calls = vec![("Email/get", arguments, "g0")];
+        // RFC 8620 §2: `Email/get` with an explicit `ids` array is bounded by
+        // the session's `maxObjectsInGet`. An id list over the cap is rejected
+        // whole with `requestTooLarge`, so it must be split into conforming
+        // batches. Callers such as the push monitor accumulate an unbounded
+        // union of changed ids, which routinely exceeds the cap on a busy
+        // mailbox.
+        let max = session_max_objects_in_get(&session);
 
-        let response = self
-            .api_call(
-                api_url,
-                &["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:mail"],
-                method_calls,
-                username,
-                password,
-            )
-            .await?;
+        let mut emails = Vec::with_capacity(ids.len());
+        for chunk in chunk_ids(ids, max) {
+            let mut arguments = json!({
+                "accountId": account_id,
+                "ids": chunk,
+                "properties": props,
+                "bodyProperties": ["partId", "blobId", "size", "type", "charset", "value"],
+            });
+            if fetch_bodies {
+                // RFC 8621 §4.4.1: without these arguments the server returns
+                // no body values at all — delta Sync and ItemOperations, which
+                // fetch through this method rather than query_emails, would
+                // render empty bodies. Both flags mirror query_emails so
+                // Type 1 (plain) and Type 2 (HTML) bodies resolve natively.
+                arguments["fetchTextBodyValues"] = json!(true);
+                arguments["fetchHTMLBodyValues"] = json!(true);
+            }
+            let method_calls = vec![("Email/get", arguments, "g0")];
 
-        for (method, data, _) in response.method_responses {
-            if method == "Email/get" {
-                let list: Vec<JmapEmail> = data
-                    .get("list")
-                    .and_then(|v| serde_json::from_value(v.clone()).ok())
-                    .unwrap_or_default();
-                return Ok(list);
+            let response = self
+                .api_call(
+                    api_url,
+                    &["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:mail"],
+                    method_calls,
+                    username,
+                    password,
+                )
+                .await?;
+
+            let mut found = false;
+            for (method, data, _) in response.method_responses {
+                if method == "Email/get" {
+                    found = true;
+                    let list: Vec<JmapEmail> = data
+                        .get("list")
+                        .and_then(|v| serde_json::from_value(v.clone()).ok())
+                        .unwrap_or_default();
+                    emails.extend(list);
+                }
+            }
+            if !found {
+                return Err(anyhow!("Unexpected JMAP response structure for Email/get"));
             }
         }
 
-        Err(anyhow!("Unexpected JMAP response structure for Email/get"))
+        Ok(emails)
     }
 
     /// Get a single email by ID. `fetch_bodies` selects the RFC 8621 §4.4.1
@@ -2711,44 +2765,50 @@ impl JmapClient {
         }
         // We need the current mailboxIds for each id to construct the patch
         // (RFC 8621 update merges; to *move* we must clear the old ids).
-        let ids_args: Vec<Value> = email_ids.iter().map(|i| json!(i)).collect();
         let session = self.get_session(username, password).await?;
         let api_url = &session.api_url;
-        let get_calls = vec![(
-            "Email/get",
-            json!({
-                "accountId": account_id,
-                "ids": ids_args,
-                "properties": ["id", "mailboxIds"],
-            }),
-            "g0",
-        )];
-        let resp = self
-            .api_call(
-                api_url,
-                &["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:mail"],
-                get_calls,
-                username,
-                password,
-            )
-            .await?;
+        // The explicit `ids` array is bounded by the session's
+        // `maxObjectsInGet` (RFC 8620 §2); an over-cap list is rejected whole
+        // with `requestTooLarge`, so it must be read in conforming batches.
+        let max = session_max_objects_in_get(&session);
         let mut current: std::collections::HashMap<String, Vec<String>> =
             std::collections::HashMap::new();
-        for (method, data, _) in &resp.method_responses {
-            if method == "Email/get"
-                && let Some(list) = data.get("list").and_then(|v| v.as_array())
-            {
-                for e in list {
-                    let e_id = e.get("id").and_then(|v| v.as_str()).unwrap_or("");
-                    if e_id.is_empty() {
-                        continue;
+        for chunk in chunk_ids(email_ids, max) {
+            let ids_args: Vec<Value> = chunk.iter().map(|i| json!(i)).collect();
+            let get_calls = vec![(
+                "Email/get",
+                json!({
+                    "accountId": account_id,
+                    "ids": ids_args,
+                    "properties": ["id", "mailboxIds"],
+                }),
+                "g0",
+            )];
+            let resp = self
+                .api_call(
+                    api_url,
+                    &["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:mail"],
+                    get_calls,
+                    username,
+                    password,
+                )
+                .await?;
+            for (method, data, _) in &resp.method_responses {
+                if method == "Email/get"
+                    && let Some(list) = data.get("list").and_then(|v| v.as_array())
+                {
+                    for e in list {
+                        let e_id = e.get("id").and_then(|v| v.as_str()).unwrap_or("");
+                        if e_id.is_empty() {
+                            continue;
+                        }
+                        let mids = e
+                            .get("mailboxIds")
+                            .and_then(|v| v.as_object())
+                            .map(|o| o.keys().cloned().collect())
+                            .unwrap_or_default();
+                        current.insert(e_id.to_string(), mids);
                     }
-                    let mids = e
-                        .get("mailboxIds")
-                        .and_then(|v| v.as_object())
-                        .map(|o| o.keys().cloned().collect())
-                        .unwrap_or_default();
-                    current.insert(e_id.to_string(), mids);
                 }
             }
         }
@@ -4958,6 +5018,11 @@ impl JmapClient {
 
     /// Batch fetch multiple calendar events by IDs via CalendarEvent/get.
     /// Returns a HashMap mapping event ID to (ics, etag).
+    ///
+    /// The explicit `ids` array is chunked at the session's `maxObjectsInGet`
+    /// (RFC 8620 §2): Stalwart rejects an over-cap explicit id list whole with
+    /// `requestTooLarge`, so a large delta (the sync path unions every
+    /// created+updated id) must be fetched in conforming batches.
     pub async fn get_calendar_events(
         &self,
         account_id: &str,
@@ -4970,44 +5035,60 @@ impl JmapClient {
         }
         let session = self.get_session(username, password).await?;
         let api_url = &session.api_url;
-        let method_calls = vec![(
-            "CalendarEvent/get",
-            json!({
-                "accountId": account_id,
-                "ids": event_ids,
-                "properties": CALENDAR_EVENT_PROPERTIES,
-            }),
-            "eg0",
-        )];
-        let response = self
-            .api_call(
-                api_url,
-                &["urn:ietf:params:jmap:core", JMAP_CAL_CAPABILITY],
-                method_calls,
-                username,
-                password,
-            )
-            .await?;
+        let max = session_max_objects_in_get(&session);
         let mut map = HashMap::new();
-        for (method, data, _) in response.method_responses {
-            if method == "CalendarEvent/get" {
-                let (events, unparseable) = parse_calendar_event_list(&data);
-                if unparseable > 0 {
-                    return Err(anyhow!(
-                        "CalendarEvent/get returned {unparseable} unparseable event object(s)"
-                    ));
-                }
-                for event in events {
-                    if let Some(id) = event.id.clone()
-                        && !id.is_empty()
-                    {
-                        let ics = event.to_ics().ok_or_else(|| {
-                            anyhow!("failed to convert CalendarEvent {id} to iCalendar")
-                        })?;
-                        let etag = event.etag.clone().unwrap_or_default();
-                        map.insert(id, (ics, etag));
+        for chunk in chunk_ids(event_ids, max) {
+            let method_calls = vec![(
+                "CalendarEvent/get",
+                json!({
+                    "accountId": account_id,
+                    "ids": chunk,
+                    "properties": CALENDAR_EVENT_PROPERTIES,
+                }),
+                "eg0",
+            )];
+            let response = self
+                .api_call(
+                    api_url,
+                    &["urn:ietf:params:jmap:core", JMAP_CAL_CAPABILITY],
+                    method_calls,
+                    username,
+                    password,
+                )
+                .await?;
+            // A method-level error response (RFC 8620 §3.6.2) is named
+            // "error", not "CalendarEvent/get", so it never enters the branch
+            // below. Without this guard a failed chunk would be skipped and the
+            // method would return an incomplete map as `Ok`, making the EWS and
+            // sync callers omit events instead of activating their CalDAV
+            // fallback. Mirror the per-chunk check `get_emails` performs.
+            let mut found = false;
+            for (method, data, _) in response.method_responses {
+                if method == "CalendarEvent/get" {
+                    found = true;
+                    let (events, unparseable) = parse_calendar_event_list(&data);
+                    if unparseable > 0 {
+                        return Err(anyhow!(
+                            "CalendarEvent/get returned {unparseable} unparseable event object(s)"
+                        ));
+                    }
+                    for event in events {
+                        if let Some(id) = event.id.clone()
+                            && !id.is_empty()
+                        {
+                            let ics = event.to_ics().ok_or_else(|| {
+                                anyhow!("failed to convert CalendarEvent {id} to iCalendar")
+                            })?;
+                            let etag = event.etag.clone().unwrap_or_default();
+                            map.insert(id, (ics, etag));
+                        }
                     }
                 }
+            }
+            if !found {
+                return Err(anyhow!(
+                    "Unexpected JMAP response structure for CalendarEvent/get"
+                ));
             }
         }
         Ok(map)
@@ -7672,5 +7753,362 @@ mod tests {
             .await
             .unwrap_err();
         assert!(!err.is_payload_discarded(), "{err:?}");
+    }
+
+    #[test]
+    fn chunk_ids_splits_into_conforming_batches() {
+        let ids: Vec<String> = (0..5).map(|i| format!("id{i}")).collect();
+        let chunks = chunk_ids(&ids, 2);
+        assert_eq!(chunks.len(), 3);
+        assert_eq!(chunks[0], &ids[0..2]);
+        assert_eq!(chunks[1], &ids[2..4]);
+        assert_eq!(chunks[2], &ids[4..5]);
+    }
+
+    #[test]
+    fn chunk_ids_exact_multiple_has_no_empty_tail() {
+        let ids: Vec<String> = (0..4).map(|i| format!("id{i}")).collect();
+        let chunks = chunk_ids(&ids, 2);
+        assert_eq!(chunks.len(), 2);
+        assert_eq!(chunks[0].len(), 2);
+        assert_eq!(chunks[1].len(), 2);
+    }
+
+    #[test]
+    fn chunk_ids_cap_at_or_above_len_is_one_chunk() {
+        let ids: Vec<String> = (0..3).map(|i| format!("id{i}")).collect();
+        assert_eq!(chunk_ids(&ids, 3).len(), 1);
+        assert_eq!(chunk_ids(&ids, 500).len(), 1);
+        // An empty id list yields no chunk at all (callers short-circuit, but
+        // the helper must not fabricate a request for zero ids).
+        assert!(chunk_ids(&[], 500).is_empty());
+    }
+
+    #[test]
+    fn chunk_ids_zero_cap_is_clamped_to_one() {
+        // A server advertising `0` must not make the helper spin: clamp to 1.
+        let ids: Vec<String> = (0..3).map(|i| format!("id{i}")).collect();
+        let chunks = chunk_ids(&ids, 0);
+        assert_eq!(chunks.len(), 3);
+        assert!(chunks.iter().all(|c| c.len() == 1));
+    }
+
+    #[test]
+    fn session_max_objects_in_get_reads_advertised_cap() {
+        let mut session: JmapSession =
+            serde_json::from_value(session_json("http://x")).expect("session");
+        assert_eq!(
+            session_max_objects_in_get(&session),
+            DEFAULT_MAX_OBJECTS_IN_GET,
+            "absent core capability falls back to the default"
+        );
+        session.capabilities.insert(
+            JMAP_CORE_CAPABILITY.to_string(),
+            json!({ "maxObjectsInGet": 250 }),
+        );
+        assert_eq!(session_max_objects_in_get(&session), 250);
+        session.capabilities.insert(
+            JMAP_CORE_CAPABILITY.to_string(),
+            json!({ "maxObjectsInGet": 0 }),
+        );
+        assert_eq!(
+            session_max_objects_in_get(&session),
+            1,
+            "an advertised zero is treated as one"
+        );
+        session.capabilities.insert(
+            JMAP_CORE_CAPABILITY.to_string(),
+            json!({ "maxSizeRequest": 1000 }),
+        );
+        assert_eq!(
+            session_max_objects_in_get(&session),
+            DEFAULT_MAX_OBJECTS_IN_GET,
+            "a core capability without the value falls back to the default"
+        );
+    }
+
+    /// State shared with the capped stub server: the session base URL, the
+    /// advertised `maxObjectsInGet`, the recorded request bodies, and any ids
+    /// whose containing chunk must be answered with a method-level error.
+    #[derive(Clone)]
+    struct CappedStubState {
+        base: String,
+        max: usize,
+        recorded: std::sync::Arc<std::sync::Mutex<Vec<Value>>>,
+        error_ids: Vec<String>,
+    }
+
+    /// Stub JMAP server that enforces `maxObjectsInGet` on the explicit-`ids`
+    /// `.../get` methods exactly as Stalwart does: an over-cap id array is
+    /// answered with the RFC 8620 §3.6.2 `requestTooLarge` error and no data.
+    /// A client that does not chunk therefore cannot retrieve the objects.
+    /// Records every request body so the test can assert batch sizes.
+    async fn spawn_capped_get_stub(
+        max_objects_in_get: usize,
+    ) -> (String, std::sync::Arc<std::sync::Mutex<Vec<Value>>>) {
+        spawn_capped_get_stub_with_errors(max_objects_in_get, Vec::new()).await
+    }
+
+    /// As [`spawn_capped_get_stub`], but any request whose `ids` array contains
+    /// one of `error_ids` is answered with a method-level `serverFail` error
+    /// (RFC 8620 §3.6.2) instead of a `list`. Used to prove that a *later*
+    /// chunk failing after earlier chunks succeeded surfaces as `Err`.
+    async fn spawn_capped_get_stub_with_errors(
+        max_objects_in_get: usize,
+        error_ids: Vec<String>,
+    ) -> (String, std::sync::Arc<std::sync::Mutex<Vec<Value>>>) {
+        use axum::routing::{get, post};
+        use std::sync::{Arc, Mutex};
+
+        async fn session(
+            axum::Extension(state): axum::Extension<CappedStubState>,
+        ) -> axum::Json<Value> {
+            let mut s = session_json(&state.base);
+            s["capabilities"] = json!({
+                JMAP_CORE_CAPABILITY: { "maxObjectsInGet": state.max },
+            });
+            axum::Json(s)
+        }
+        async fn api(
+            axum::Extension(state): axum::Extension<CappedStubState>,
+            axum::Json(body): axum::Json<Value>,
+        ) -> axum::Json<Value> {
+            let max = state.max;
+            state.recorded.lock().unwrap().push(body.clone());
+            let calls = body
+                .get("methodCalls")
+                .and_then(|c| c.as_array())
+                .cloned()
+                .unwrap_or_default();
+            let mut responses = Vec::new();
+            for call in calls {
+                let name = call.get(0).and_then(|v| v.as_str()).unwrap_or("");
+                let args = call.get(1).cloned().unwrap_or(Value::Null);
+                let id = call.get(2).and_then(|v| v.as_str()).unwrap_or("x");
+                let ids: Vec<&str> = args
+                    .get("ids")
+                    .and_then(|v| v.as_array())
+                    .map(|a| a.iter().filter_map(|v| v.as_str()).collect())
+                    .unwrap_or_default();
+                if ids.iter().any(|i| state.error_ids.iter().any(|e| e == i)) {
+                    responses.push(json!([
+                        "error",
+                        { "type": "serverFail", "description": "injected failure" },
+                        id
+                    ]));
+                    continue;
+                }
+                if ids.len() > max {
+                    responses.push(json!([
+                        "error",
+                        { "type": "requestTooLarge", "description": "too many ids" },
+                        id
+                    ]));
+                    continue;
+                }
+                let list: Vec<Value> = ids
+                    .iter()
+                    .map(|id| match name {
+                        "CalendarEvent/get" => json!({
+                            "id": id,
+                            "uid": format!("uid-{id}"),
+                            "title": "Event",
+                            "start": "2026-01-05T09:00:00",
+                            "timeZone": "Etc/UTC",
+                            "duration": "PT1H",
+                            "iCalendar": { "name": "vevent" }
+                        }),
+                        _ => json!({ "id": id, "mailboxIds": { "inbox": true } }),
+                    })
+                    .collect();
+                if name == "Email/set" {
+                    let updated: serde_json::Map<String, Value> = args
+                        .get("update")
+                        .and_then(|v| v.as_object())
+                        .map(|o| o.keys().map(|k| (k.clone(), Value::Null)).collect())
+                        .unwrap_or_default();
+                    responses.push(json!([name, { "accountId": "acct", "updated": updated }, id]));
+                } else {
+                    responses.push(json!([
+                        name,
+                        { "accountId": "acct", "state": "s", "list": list, "notFound": [] },
+                        id
+                    ]));
+                }
+            }
+            axum::Json(json!({ "methodResponses": responses }))
+        }
+
+        let recorded = Arc::new(Mutex::new(Vec::new()));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let base = format!("http://127.0.0.1:{port}");
+        let app = axum::Router::new()
+            .route("/session", get(session))
+            .route("/", post(api))
+            .layer(axum::Extension(CappedStubState {
+                base: base.clone(),
+                max: max_objects_in_get,
+                recorded: recorded.clone(),
+                error_ids,
+            }))
+            .layer(axum::Extension(base.clone()));
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        (base, recorded)
+    }
+
+    /// Every `ids` array in a recorded request for `method` must respect the
+    /// cap, and the number of such requests must equal `expected_requests`.
+    fn assert_ids_batches(
+        recorded: &[Value],
+        method: &str,
+        cap: usize,
+        expected_requests: usize,
+    ) -> usize {
+        let mut seen = 0;
+        for body in recorded {
+            let calls = body
+                .get("methodCalls")
+                .and_then(|c| c.as_array())
+                .cloned()
+                .unwrap_or_default();
+            for call in calls {
+                if call.get(0).and_then(|v| v.as_str()) != Some(method) {
+                    continue;
+                }
+                let n = call
+                    .get(1)
+                    .and_then(|a| a.get("ids"))
+                    .and_then(|v| v.as_array())
+                    .map(|a| a.len())
+                    .unwrap_or(0);
+                assert!(
+                    n <= cap,
+                    "request for {method} sent {n} ids, over the {cap} cap"
+                );
+                seen += 1;
+            }
+        }
+        assert_eq!(
+            seen, expected_requests,
+            "{method} must be issued once per conforming batch"
+        );
+        seen
+    }
+
+    #[tokio::test]
+    async fn get_emails_chunks_over_max_objects_in_get() {
+        // Cap of 2 with 5 ids: an unchunked request would be rejected whole.
+        let (base, recorded) = spawn_capped_get_stub(2).await;
+        let client = JmapClient::new(&base).unwrap();
+        let pw = SecretString::from("pw");
+        let ids: Vec<String> = (0..5).map(|i| format!("m{i}")).collect();
+        let emails = client
+            .get_emails("acct", &ids, None, "u", &pw, false)
+            .await
+            .expect("chunked get must succeed");
+        assert_eq!(emails.len(), 5, "every id must be delivered");
+        let rec = recorded.lock().unwrap().clone();
+        assert_ids_batches(&rec, "Email/get", 2, 3);
+    }
+
+    #[tokio::test]
+    async fn get_emails_single_request_when_under_cap() {
+        let (base, recorded) = spawn_capped_get_stub(500).await;
+        let client = JmapClient::new(&base).unwrap();
+        let pw = SecretString::from("pw");
+        let ids: Vec<String> = (0..5).map(|i| format!("m{i}")).collect();
+        let emails = client
+            .get_emails("acct", &ids, None, "u", &pw, false)
+            .await
+            .expect("under-cap get must succeed");
+        assert_eq!(emails.len(), 5);
+        let rec = recorded.lock().unwrap().clone();
+        assert_ids_batches(&rec, "Email/get", 500, 1);
+    }
+
+    #[tokio::test]
+    async fn get_emails_empty_ids_makes_no_request() {
+        let (base, recorded) = spawn_capped_get_stub(2).await;
+        let client = JmapClient::new(&base).unwrap();
+        let pw = SecretString::from("pw");
+        let emails = client
+            .get_emails("acct", &[], None, "u", &pw, false)
+            .await
+            .expect("empty id list is a no-op");
+        assert!(emails.is_empty());
+        assert!(
+            recorded.lock().unwrap().is_empty(),
+            "an empty id list must not issue a JMAP request"
+        );
+    }
+
+    #[tokio::test]
+    async fn get_calendar_events_chunks_over_max_objects_in_get() {
+        let (base, recorded) = spawn_capped_get_stub(2).await;
+        let client = JmapClient::new(&base).unwrap();
+        let pw = SecretString::from("pw");
+        let ids: Vec<String> = (0..5).map(|i| format!("e{i}")).collect();
+        let map = client
+            .get_calendar_events("acct", &ids, "u", &pw)
+            .await
+            .expect("chunked calendar get must succeed");
+        assert_eq!(map.len(), 5, "every event must be delivered");
+        for id in &ids {
+            assert!(map.contains_key(id), "missing event {id}");
+        }
+        let rec = recorded.lock().unwrap().clone();
+        assert_ids_batches(&rec, "CalendarEvent/get", 2, 3);
+    }
+
+    #[tokio::test]
+    async fn get_calendar_events_errors_on_method_error_chunk() {
+        // A chunk answered with a method-level error must fail the whole call,
+        // not silently drop those events into an incomplete `Ok` map (which
+        // would make the EWS/sync callers skip events instead of falling back
+        // to CalDAV). Cap 2 with 5 ids → 3 chunks; the 3rd chunk carries `e4`.
+        let (base, _recorded) = spawn_capped_get_stub_with_errors(2, vec!["e4".to_string()]).await;
+        let client = JmapClient::new(&base).unwrap();
+        let pw = SecretString::from("pw");
+        let ids: Vec<String> = (0..5).map(|i| format!("e{i}")).collect();
+        let result = client.get_calendar_events("acct", &ids, "u", &pw).await;
+        assert!(
+            result.is_err(),
+            "a method-level error on any chunk must surface as Err"
+        );
+    }
+
+    #[tokio::test]
+    async fn get_emails_errors_on_method_error_chunk() {
+        // The push monitor relies on this: a later failing chunk must be an
+        // error (so it does not advance the change state), never an empty Ok.
+        let (base, _recorded) = spawn_capped_get_stub_with_errors(2, vec!["m4".to_string()]).await;
+        let client = JmapClient::new(&base).unwrap();
+        let pw = SecretString::from("pw");
+        let ids: Vec<String> = (0..5).map(|i| format!("m{i}")).collect();
+        let result = client.get_emails("acct", &ids, None, "u", &pw, false).await;
+        assert!(
+            result.is_err(),
+            "a method-level error on any chunk must surface as Err"
+        );
+    }
+
+    #[tokio::test]
+    async fn move_emails_chunks_over_max_objects_in_get() {
+        // move_emails reads current mailboxIds with an explicit id list, so it
+        // is subject to the same cap as any other Email/get.
+        let (base, recorded) = spawn_capped_get_stub(2).await;
+        let client = JmapClient::new(&base).unwrap();
+        let pw = SecretString::from("pw");
+        let ids: Vec<String> = (0..5).map(|i| format!("m{i}")).collect();
+        let moved = client
+            .move_emails("acct", &ids, "archive", "u", &pw)
+            .await
+            .expect("chunked move must succeed");
+        assert_eq!(moved, 5, "every email must be moved");
+        let rec = recorded.lock().unwrap().clone();
+        assert_ids_batches(&rec, "Email/get", 2, 3);
     }
 }

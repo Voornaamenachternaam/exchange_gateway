@@ -299,42 +299,55 @@ impl JmapDirectory {
 
     /// Perform a JMAP `x:Account/get` for the given ids and return the raw
     /// account `list` objects.
+    ///
+    /// The explicit `ids` array is chunked at the server's `maxObjectsInGet`
+    /// (RFC 8620 §2). The GAL/OAB/NSPI paths enumerate the whole directory
+    /// (`MAX_ACCOUNTS` ids), which exceeds any single-request cap, so an
+    /// unchunked read would be rejected whole with `requestTooLarge`.
     fn get_accounts(&self, ids: &[String]) -> Result<Vec<Value>, DirectoryError> {
-        let args = json!({
-            "accountId": ADMIN_ACCOUNT_SCOPE,
-            "ids": ids,
-            "properties": ["name", "emailAddress", "description", "type"],
-        });
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
         let rt = &self.runtime;
         let client = self.jmap_client.clone();
         let username = self.username.clone();
         let password = self.password.clone();
         rt.block_on(async move {
-            let resp = client
-                .api_call(
-                    client.base_url(),
-                    &["urn:ietf:params:jmap:core", JMAP_STALWART_CAPABILITY],
-                    vec![("x:Account/get", args, "g0")],
-                    &username,
-                    &password,
-                )
-                .await?;
-            if let Some(err) = jmap_method_error(&resp) {
-                return Err(err);
+            let mut list = Vec::new();
+            let session = client.get_session(&username, &password).await?;
+            let max = crate::jmap::session_max_objects_in_get(&session);
+            for chunk in crate::jmap::chunk_ids(ids, max) {
+                let args = json!({
+                    "accountId": ADMIN_ACCOUNT_SCOPE,
+                    "ids": chunk,
+                    "properties": ["name", "emailAddress", "description", "type"],
+                });
+                let resp = client
+                    .api_call(
+                        client.base_url(),
+                        &["urn:ietf:params:jmap:core", JMAP_STALWART_CAPABILITY],
+                        vec![("x:Account/get", args, "g0")],
+                        &username,
+                        &password,
+                    )
+                    .await?;
+                if let Some(err) = jmap_method_error(&resp) {
+                    return Err(err);
+                }
+                if let Some((_, value, _)) = resp
+                    .method_responses
+                    .iter()
+                    .find(|(name, _, _)| name == "x:Account/get")
+                {
+                    list.extend(
+                        value
+                            .get("list")
+                            .and_then(|v| v.as_array())
+                            .cloned()
+                            .unwrap_or_default(),
+                    );
+                }
             }
-            let list = if let Some((_, value, _)) = resp
-                .method_responses
-                .iter()
-                .find(|(name, _, _)| name == "x:Account/get")
-            {
-                value
-                    .get("list")
-                    .and_then(|v| v.as_array())
-                    .cloned()
-                    .unwrap_or_default()
-            } else {
-                Vec::new()
-            };
             Ok(list)
         })
     }
@@ -491,58 +504,65 @@ impl DirectoryLookup for JmapDirectory {
                 return Ok(None);
             }
 
-            let get_args = json!({
-                "accountId": ADMIN_ACCOUNT_SCOPE,
-                "ids": list_ids,
-                "properties": ["name", "emailAddress", "description"],
-            });
-            let get_resp = client
-                .api_call(
-                    client.base_url(),
-                    &["urn:ietf:params:jmap:core", JMAP_STALWART_CAPABILITY],
-                    vec![("x:MailingList/get", get_args, "g0")],
-                    &username,
-                    &password,
-                )
-                .await?;
-            if let Some(err) = jmap_method_error(&get_resp) {
-                return Err(err);
-            }
+            // The explicit `ids` array is chunked at the session's
+            // `maxObjectsInGet` (RFC 8620 §2) so a large list-id set is not
+            // rejected whole.
+            let session = client.get_session(&username, &password).await?;
+            let max = crate::jmap::session_max_objects_in_get(&session);
+            for chunk in crate::jmap::chunk_ids(&list_ids, max) {
+                let get_args = json!({
+                    "accountId": ADMIN_ACCOUNT_SCOPE,
+                    "ids": chunk,
+                    "properties": ["name", "emailAddress", "description"],
+                });
+                let get_resp = client
+                    .api_call(
+                        client.base_url(),
+                        &["urn:ietf:params:jmap:core", JMAP_STALWART_CAPABILITY],
+                        vec![("x:MailingList/get", get_args, "g0")],
+                        &username,
+                        &password,
+                    )
+                    .await?;
+                if let Some(err) = jmap_method_error(&get_resp) {
+                    return Err(err);
+                }
 
-            if let Some((_, value, _)) = get_resp
-                .method_responses
-                .iter()
-                .find(|(name, _, _)| name == "x:MailingList/get")
-                && let Some(list) = value.get("list").and_then(|v| v.as_array())
-            {
-                for entry in list {
-                    if !matches_list_address(entry, &lower) {
-                        continue;
-                    }
-                    let name = entry.get("name").and_then(|v| v.as_str()).unwrap_or("");
-                    let description = entry
-                        .get("description")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("");
-                    let display_name = if description.is_empty() {
-                        name.to_string()
-                    } else {
-                        description.to_string()
-                    };
-                    return Ok(Some(Contact {
-                        display_name,
-                        email: entry
-                            .get("emailAddress")
+                if let Some((_, value, _)) = get_resp
+                    .method_responses
+                    .iter()
+                    .find(|(name, _, _)| name == "x:MailingList/get")
+                    && let Some(list) = value.get("list").and_then(|v| v.as_array())
+                {
+                    for entry in list {
+                        if !matches_list_address(entry, &lower) {
+                            continue;
+                        }
+                        let name = entry.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                        let description = entry
+                            .get("description")
                             .and_then(|v| v.as_str())
-                            .unwrap_or(&email_owned)
-                            .to_string(),
-                        title: None,
-                        office: None,
-                        phone: None,
-                        department: None,
-                        company: None,
-                        last_modified: None,
-                    }));
+                            .unwrap_or("");
+                        let display_name = if description.is_empty() {
+                            name.to_string()
+                        } else {
+                            description.to_string()
+                        };
+                        return Ok(Some(Contact {
+                            display_name,
+                            email: entry
+                                .get("emailAddress")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or(&email_owned)
+                                .to_string(),
+                            title: None,
+                            office: None,
+                            phone: None,
+                            department: None,
+                            company: None,
+                            last_modified: None,
+                        }));
+                    }
                 }
             }
             Ok(None)
@@ -605,40 +625,52 @@ impl DirectoryLookup for JmapDirectory {
                 return Ok(Vec::new());
             }
 
-            let get_args = json!({
-                "accountId": ADMIN_ACCOUNT_SCOPE,
-                "ids": list_ids,
-                "properties": ["name", "emailAddress", "description", "recipients"],
-            });
-            let get_resp = client
-                .api_call(
-                    client.base_url(),
-                    &["urn:ietf:params:jmap:core", JMAP_STALWART_CAPABILITY],
-                    vec![("x:MailingList/get", get_args, "g0")],
-                    &username,
-                    &password,
-                )
-                .await?;
-            if let Some(err) = jmap_method_error(&get_resp) {
-                return Err(err);
-            }
-
             let mut members = Vec::new();
-            if let Some((_, value, _)) = get_resp
-                .method_responses
-                .iter()
-                .find(|(name, _, _)| name == "x:MailingList/get")
-                && let Some(list) = value.get("list").and_then(|v| v.as_array())
-            {
-                for entry in list {
-                    // Only the mailing list whose address exactly matches the
-                    // requested address is expanded. A missing/empty
-                    // `emailAddress` never matches (so an unrelated list cannot
-                    // be expanded for any requested address).
-                    if !matches_list_address(entry, &lower) {
-                        continue;
+            // The explicit `ids` array is chunked at the session's
+            // `maxObjectsInGet` (RFC 8620 §2) so a large list-id set is not
+            // rejected whole.
+            let session = client.get_session(&username, &password).await?;
+            let max = crate::jmap::session_max_objects_in_get(&session);
+            for chunk in crate::jmap::chunk_ids(&list_ids, max) {
+                let get_args = json!({
+                    "accountId": ADMIN_ACCOUNT_SCOPE,
+                    "ids": chunk,
+                    "properties": ["name", "emailAddress", "description", "recipients"],
+                });
+                let get_resp = client
+                    .api_call(
+                        client.base_url(),
+                        &["urn:ietf:params:jmap:core", JMAP_STALWART_CAPABILITY],
+                        vec![("x:MailingList/get", get_args, "g0")],
+                        &username,
+                        &password,
+                    )
+                    .await?;
+                if let Some(err) = jmap_method_error(&get_resp) {
+                    return Err(err);
+                }
+
+                let mut matched = false;
+                if let Some((_, value, _)) = get_resp
+                    .method_responses
+                    .iter()
+                    .find(|(name, _, _)| name == "x:MailingList/get")
+                    && let Some(list) = value.get("list").and_then(|v| v.as_array())
+                {
+                    for entry in list {
+                        // Only the mailing list whose address exactly matches the
+                        // requested address is expanded. A missing/empty
+                        // `emailAddress` never matches (so an unrelated list cannot
+                        // be expanded for any requested address).
+                        if !matches_list_address(entry, &lower) {
+                            continue;
+                        }
+                        members = expand_recipients(entry);
+                        matched = true;
+                        break;
                     }
-                    members = expand_recipients(entry);
+                }
+                if matched {
                     break;
                 }
             }
@@ -978,5 +1010,128 @@ mod tests {
         assert!(!dir.is_available());
         let dir = create_directory(Some("http://stalwart:8080/jmap"), None, None);
         assert!(!dir.is_available());
+    }
+
+    /// `x:Account/get` ids are chunked at the session's advertised
+    /// `maxObjectsInGet` (here 300, deliberately not the 500 constant), so a
+    /// whole-directory GAL read (up to `MAX_ACCOUNTS` ids) is issued in
+    /// conforming batches rather than rejected whole by `maxObjectsInGet`.
+    #[test]
+    fn search_chunks_account_get_over_max_objects_in_get() {
+        use std::sync::{Arc, Mutex};
+
+        /// Advertised cap used by the stub: not `DEFAULT_MAX_OBJECTS_IN_GET`,
+        /// so the test fails unless the chunk size is read from the session.
+        const STUB_MAX: usize = 300;
+
+        async fn session(axum::Extension(base): axum::Extension<String>) -> axum::Json<Value> {
+            axum::Json(serde_json::json!({
+                "apiUrl": base,
+                "downloadUrl": format!("{base}/download/{{accountId}}/{{blobId}}"),
+                "uploadUrl": format!("{base}/upload/{{accountId}}"),
+                "eventSourceUrl": format!("{base}/eventsource"),
+                "state": "s",
+                "username": "u",
+                "accounts": {},
+                "primaryAccounts": {},
+                "capabilities": {
+                    crate::jmap::JMAP_CORE_CAPABILITY: {
+                        "maxObjectsInGet": STUB_MAX
+                    }
+                }
+            }))
+        }
+        async fn api(
+            axum::Extension(recorded): axum::Extension<Arc<Mutex<Vec<usize>>>>,
+            axum::Json(body): axum::Json<Value>,
+        ) -> axum::Json<Value> {
+            let calls = body
+                .get("methodCalls")
+                .and_then(|c| c.as_array())
+                .cloned()
+                .unwrap_or_default();
+            let mut responses = Vec::new();
+            for call in calls {
+                let name = call.get(0).and_then(|v| v.as_str()).unwrap_or("");
+                let args = call.get(1).cloned().unwrap_or(Value::Null);
+                let id = call.get(2).and_then(|v| v.as_str()).unwrap_or("x");
+                if name == "x:Account/query" {
+                    // The whole (bounded) directory: 1200 accounts.
+                    let ids: Vec<Value> = (0..1200).map(|i| json!(format!("a{i}"))).collect();
+                    responses.push(json!([name, { "ids": ids, "total": 1200 }, id]));
+                    continue;
+                }
+                let ids: Vec<String> = args
+                    .get("ids")
+                    .and_then(|v| v.as_array())
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|v| v.as_str().map(str::to_string))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                if name == "x:Account/get" {
+                    recorded.lock().unwrap().push(ids.len());
+                    // Enforce the advertised cap exactly as Stalwart does: an
+                    // over-cap explicit-id get is rejected whole, so an
+                    // unchunked (or wrongly-chunked) read cannot succeed.
+                    if ids.len() > STUB_MAX {
+                        responses.push(json!([
+                            "error",
+                            { "type": "requestTooLarge", "description": "too many ids" },
+                            id
+                        ]));
+                        continue;
+                    }
+                }
+                let list: Vec<Value> = ids
+                    .iter()
+                    .map(|i| {
+                        json!({
+                            "id": i,
+                            "type": "User",
+                            "name": i,
+                            "emailAddress": format!("{i}@example.com"),
+                            "description": i,
+                        })
+                    })
+                    .collect();
+                responses.push(json!([name, { "list": list }, id]));
+            }
+            axum::Json(json!({ "methodResponses": responses }))
+        }
+
+        let recorded: Arc<Mutex<Vec<usize>>> = Arc::new(Mutex::new(Vec::new()));
+        // A dedicated runtime hosts the stub server; `search_blocking` drives
+        // its own runtime internally, so the test itself stays synchronous.
+        let server_rt = tokio::runtime::Runtime::new().unwrap();
+        let base = server_rt.block_on(async {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let base = format!("http://127.0.0.1:{port}");
+            let app = axum::Router::new()
+                .route("/session", axum::routing::get(session))
+                .route("/", axum::routing::post(api))
+                .layer(axum::Extension(recorded.clone()))
+                .layer(axum::Extension(base.clone()));
+            tokio::spawn(async move {
+                axum::serve(listener, app).await.unwrap();
+            });
+            base
+        });
+
+        let dir = JmapDirectory::create(&base, Some("admin"), Some("pw")).unwrap();
+        let result = dir.search_blocking("*", None).expect("directory search");
+        assert_eq!(
+            result.contacts.len(),
+            1200,
+            "every account must be delivered"
+        );
+        let batches = recorded.lock().unwrap().clone();
+        assert_eq!(
+            batches,
+            vec![300, 300, 300, 300],
+            "batches must respect the session-advertised cap, not the 500 constant"
+        );
     }
 }
