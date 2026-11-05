@@ -457,6 +457,9 @@ FindItem on a JMAP outage is a retryable `ErrorServerBusy`).
 
 ### 4. `Email/get` with an explicit id list is capped at `maxObjectsInGet = 500`; the gateway never chunks
 
+> **STATUS: DELIVERED.** Fixed as described below; see the *Delivered* note at
+> the end of this section.
+
 The JMAP session advertises `maxObjectsInGet: 500`. Live proof:
 
 ```
@@ -488,6 +491,61 @@ The gateway builds id lists without any 500-chunking in at least three hot paths
 
 Fix (ladder 1→4): chunk every explicit `ids` array at 500 (existing dep
 `serde_json` + a small helper), or always fetch via a `#ids` back-reference.
+
+#### Delivered (this change)
+
+Ladder 1→4 (existing deps + a small helper). No new dependency.
+
+1. **Two helpers in `src/jmap.rs`** (alongside the existing
+   `DEFAULT_EMAIL_CHANGES_MAX`):
+   - `chunk_ids(ids, max)` — splits an id slice into consecutive slices of at
+     most `max` ids, clamping `max` to ≥1 so an advertised `0` yields single-id
+     slices instead of looping forever. Empty input yields no chunk.
+   - `session_max_objects_in_get(session)` — reads the advertised
+     `maxObjectsInGet` from the session's `urn:ietf:params:jmap:core`
+     capability (new `JMAP_CORE_CAPABILITY` const), falling back to
+     `DEFAULT_MAX_OBJECTS_IN_GET = 500` when the capability or the value is
+     absent, and treating an advertised `0` as `1`. The cap is therefore
+     *derived from the server*, not hard-coded, so a server advertising a
+     different limit is honoured.
+2. **Every explicit-`ids` JMAP `.../get` is chunked at that cap.** The audit
+   named three hot paths; the fix covers them and every other explicit-id get
+   the gateway issues:
+   - `get_emails` (`Email/get`) — the push-monitor lookup union
+     (`jmap_push.rs`) and the EAS/EWS/MAPI batch callers. Also short-circuits an
+     empty id list to no request. Responses from every chunk are concatenated,
+     preserving the caller-visible list semantics.
+   - `get_calendar_events` (`CalendarEvent/get`) — the sync delta and EWS batch
+     paths that pass an explicit `ids: event_ids` array (the back-referenced
+     `query_calendar_events` path was already safe and is unchanged).
+   - `move_emails` (`Email/get` for the current `mailboxIds`) — the read that
+     precedes the `Email/set` move patch.
+   - `directory.rs` `get_accounts` (`x:Account/get`) — the GAL/OAB/NSPI path
+     enumerates the whole directory (`MAX_ACCOUNTS` ids), which exceeds any
+     single-request cap; batches are merged into one list.
+   - `directory.rs` `resolve_distribution_list_blocking` / `expand_dl_blocking`
+     (`x:MailingList/get`) — chunked; expansion stops at the first batch that
+     contains the matching list.
+3. **The `Email/set` `update`/`create`/`destroy` maps are deliberately *not*
+   chunked**: they are bounded by the same id list the caller already passes,
+   and a `set`-side cap (`maxObjectsInSet`) is not implicated by this finding.
+   Chunking a `set` would also break its all-or-nothing per-request semantics
+   (e.g. the move patch is keyed by id in a single request). The `get` side is
+   where the cap bites.
+
+Tests: `src/jmap.rs` — 5 unit tests (`chunk_ids` even split, exact multiple has
+no empty tail, cap ≥ len is one chunk, zero cap clamps to one, and
+`session_max_objects_in_get` over the advertised/absent/zero/other-key cases) +
+5 integration tests against a stub JMAP server that **enforces** the cap the way
+Stalwart does (an over-cap explicit-`ids` get returns the RFC 8620 §3.6.2
+`requestTooLarge` error, so an unchunked client retrieves nothing):
+`get_emails_chunks_over_max_objects_in_get` (cap 2, 5 ids → 3 conforming
+requests, all 5 returned), `get_emails_single_request_when_under_cap`,
+`get_emails_empty_ids_makes_no_request`,
+`get_calendar_events_chunks_over_max_objects_in_get`, and
+`move_emails_chunks_over_max_objects_in_get`. `src/directory.rs` — 1 integration
+test (`search_chunks_account_get_over_max_objects_in_get`: a 1200-account
+directory is fetched as 500 + 500 + 200).
 
 ### 5. `CalendarEvent/changes` `hasMoreChanges` is ignored — calendar delta truncates at 500 changes
 
