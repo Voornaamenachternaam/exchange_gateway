@@ -2994,37 +2994,8 @@ async fn handle_get_contact_item(
     let mut items_xml = String::new();
 
     for server_id in item_ids {
-        // The server_id in our system maps to contact_map.server_id.
-        let db_contact = match state.storage.get_contact(&auth.username, &server_id).await {
-            Ok(Some(row)) => Some(row),
-            Ok(None) => None,
-            Err(e) => {
-                tracing::error!(error = %e, ?server_id, "DB error fetching contact");
-                None
-            }
-        };
-
-        if let Some(row) = db_contact {
-            let vcard_str = fetch_contact_vcard(state, auth, &row).await;
-            let vcard = vcard_str
-                .as_ref()
-                .and_then(|s| parse_vcard_from_data(s).ok())
-                .unwrap_or_else(Vcard::default);
-
-            // Match the ChangeKey derivation used by FindItem so a client that
-            // round-trips an ItemId from FindItem sees a stable key.
-            let change_key = crate::contacts::contact_change_key(
-                &row.server_id,
-                row.etag.as_deref(),
-                vcard_str.as_deref().unwrap_or(""),
-            );
-            let contact_xml = render_ews_contact(&row.server_id, &change_key, &vcard, shape);
+        if let Some(contact_xml) = contact_get_item_xml(state, auth, &server_id, shape).await {
             items_xml.push_str(&contact_xml);
-        } else {
-            // Contact not found: return error for this item (per EWS, we can still succeed overall)
-            // For simplicity, we skip missing items and return an empty response.
-            // Production implementation would return <MessageXml> with error status.
-            tracing::warn!(?server_id, "Contact not found for GetItem");
         }
     }
 
@@ -3042,6 +3013,47 @@ async fn handle_get_contact_item(
         EWS_MSG_NS, EWS_TYPE_NS, items_xml
     );
     soap_ok(response)
+}
+
+/// Render one `<t:Contact>` for GetItem from the mapping row for `server_id`,
+/// or `None` when the contact is unknown or its lookup failed.
+async fn contact_get_item_xml(
+    state: &Arc<AppState>,
+    auth: &AuthContext,
+    server_id: &str,
+    shape: ItemShape,
+) -> Option<String> {
+    let row = match state.storage.get_contact(&auth.username, server_id).await {
+        Ok(Some(row)) => row,
+        Ok(None) => {
+            tracing::warn!(?server_id, "Contact not found for GetItem");
+            return None;
+        }
+        Err(e) => {
+            tracing::error!(error = %e, ?server_id, "DB error fetching contact");
+            return None;
+        }
+    };
+
+    let vcard_str = fetch_contact_vcard(state, auth, &row).await;
+    let vcard = vcard_str
+        .as_ref()
+        .and_then(|s| parse_vcard_from_data(s).ok())
+        .unwrap_or_else(Vcard::default);
+
+    // Match the ChangeKey derivation used by FindItem so a client that
+    // round-trips an ItemId from FindItem sees a stable key.
+    let change_key = crate::contacts::contact_change_key(
+        &row.server_id,
+        row.etag.as_deref(),
+        vcard_str.as_deref().unwrap_or(""),
+    );
+    Some(render_ews_contact(
+        &row.server_id,
+        &change_key,
+        &vcard,
+        shape,
+    ))
 }
 
 /// Render a vCard as an EWS Contact element.
