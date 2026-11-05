@@ -314,7 +314,9 @@ impl JmapDirectory {
         let password = self.password.clone();
         rt.block_on(async move {
             let mut list = Vec::new();
-            for chunk in crate::jmap::chunk_ids(ids, crate::jmap::DEFAULT_MAX_OBJECTS_IN_GET) {
+            let session = client.get_session(&username, &password).await?;
+            let max = crate::jmap::session_max_objects_in_get(&session);
+            for chunk in crate::jmap::chunk_ids(ids, max) {
                 let args = json!({
                     "accountId": ADMIN_ACCOUNT_SCOPE,
                     "ids": chunk,
@@ -502,10 +504,12 @@ impl DirectoryLookup for JmapDirectory {
                 return Ok(None);
             }
 
-            // The explicit `ids` array is chunked at `maxObjectsInGet`
-            // (RFC 8620 §2) so a large list-id set is not rejected whole.
-            for chunk in crate::jmap::chunk_ids(&list_ids, crate::jmap::DEFAULT_MAX_OBJECTS_IN_GET)
-            {
+            // The explicit `ids` array is chunked at the session's
+            // `maxObjectsInGet` (RFC 8620 §2) so a large list-id set is not
+            // rejected whole.
+            let session = client.get_session(&username, &password).await?;
+            let max = crate::jmap::session_max_objects_in_get(&session);
+            for chunk in crate::jmap::chunk_ids(&list_ids, max) {
                 let get_args = json!({
                     "accountId": ADMIN_ACCOUNT_SCOPE,
                     "ids": chunk,
@@ -622,10 +626,12 @@ impl DirectoryLookup for JmapDirectory {
             }
 
             let mut members = Vec::new();
-            // The explicit `ids` array is chunked at `maxObjectsInGet`
-            // (RFC 8620 §2) so a large list-id set is not rejected whole.
-            for chunk in crate::jmap::chunk_ids(&list_ids, crate::jmap::DEFAULT_MAX_OBJECTS_IN_GET)
-            {
+            // The explicit `ids` array is chunked at the session's
+            // `maxObjectsInGet` (RFC 8620 §2) so a large list-id set is not
+            // rejected whole.
+            let session = client.get_session(&username, &password).await?;
+            let max = crate::jmap::session_max_objects_in_get(&session);
+            for chunk in crate::jmap::chunk_ids(&list_ids, max) {
                 let get_args = json!({
                     "accountId": ADMIN_ACCOUNT_SCOPE,
                     "ids": chunk,
@@ -1006,12 +1012,17 @@ mod tests {
         assert!(!dir.is_available());
     }
 
-    /// `x:Account/get` ids are chunked at `DEFAULT_MAX_OBJECTS_IN_GET`, so a
+    /// `x:Account/get` ids are chunked at the session's advertised
+    /// `maxObjectsInGet` (here 300, deliberately not the 500 constant), so a
     /// whole-directory GAL read (up to `MAX_ACCOUNTS` ids) is issued in
     /// conforming batches rather than rejected whole by `maxObjectsInGet`.
     #[test]
     fn search_chunks_account_get_over_max_objects_in_get() {
         use std::sync::{Arc, Mutex};
+
+        /// Advertised cap used by the stub: not `DEFAULT_MAX_OBJECTS_IN_GET`,
+        /// so the test fails unless the chunk size is read from the session.
+        const STUB_MAX: usize = 300;
 
         async fn session(axum::Extension(base): axum::Extension<String>) -> axum::Json<Value> {
             axum::Json(serde_json::json!({
@@ -1025,7 +1036,7 @@ mod tests {
                 "primaryAccounts": {},
                 "capabilities": {
                     crate::jmap::JMAP_CORE_CAPABILITY: {
-                        "maxObjectsInGet": crate::jmap::DEFAULT_MAX_OBJECTS_IN_GET
+                        "maxObjectsInGet": STUB_MAX
                     }
                 }
             }))
@@ -1061,6 +1072,17 @@ mod tests {
                     .unwrap_or_default();
                 if name == "x:Account/get" {
                     recorded.lock().unwrap().push(ids.len());
+                    // Enforce the advertised cap exactly as Stalwart does: an
+                    // over-cap explicit-id get is rejected whole, so an
+                    // unchunked (or wrongly-chunked) read cannot succeed.
+                    if ids.len() > STUB_MAX {
+                        responses.push(json!([
+                            "error",
+                            { "type": "requestTooLarge", "description": "too many ids" },
+                            id
+                        ]));
+                        continue;
+                    }
                 }
                 let list: Vec<Value> = ids
                     .iter()
@@ -1106,6 +1128,10 @@ mod tests {
             "every account must be delivered"
         );
         let batches = recorded.lock().unwrap().clone();
-        assert_eq!(batches, vec![500, 500, 200], "batches must respect the cap");
+        assert_eq!(
+            batches,
+            vec![300, 300, 300, 300],
+            "batches must respect the session-advertised cap, not the 500 constant"
+        );
     }
 }

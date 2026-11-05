@@ -379,14 +379,20 @@ impl JmapEmailPushMonitor {
                 break;
             }
         }
-        *current_state = since;
-
         let mut lookup = Vec::with_capacity(created.len() + updated.len());
         lookup.extend(created.iter().cloned());
         lookup.extend(updated.iter().cloned());
         // publish_for reads only `mailboxIds` — body values are not fetched
         // so monitor traffic stays metadata-sized.
-        let emails = self
+        //
+        // Fetch BEFORE advancing `current_state`. `get_emails` is chunked at
+        // the session's `maxObjectsInGet`, so a later chunk can fail after
+        // earlier ones succeeded and the whole call then returns `Err`.
+        // Advancing the state first (and treating the error as an empty result)
+        // would resume the next `Email/changes` after these ids, losing every
+        // created/updated notification permanently. Leaving the state untouched
+        // re-drains the same change set on the next event.
+        let emails = match self
             .jmap
             .get_emails(
                 account_id,
@@ -397,7 +403,21 @@ impl JmapEmailPushMonitor {
                 false,
             )
             .await
-            .unwrap_or_default();
+        {
+            Ok(emails) => emails,
+            Err(e) => {
+                tracing::warn!(
+                    target: "jmap_push",
+                    error = %e,
+                    "Email/get failed on push event; not advancing state so the change set is retried"
+                );
+                return;
+            }
+        };
+
+        // Every changed email is fetched, so it is now safe to advance the
+        // state. The advanced token becomes each notification's change key.
+        *current_state = since;
         let mut emails = emails.into_iter();
         for email_id in created {
             let email = emails.next();
@@ -525,6 +545,148 @@ impl Default for PushMonitorRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::{Value, json};
+
+    /// Stub JMAP backend for `handle_frame`: serves a session and answers
+    /// `Email/changes` (one created id `e1`, `s1` → `s2`) plus `Email/get`.
+    /// When `email_get_fails` is set, `Email/get` is answered with a
+    /// method-level `serverFail` error, which makes `get_emails` return `Err`
+    /// after the change set has already been drained.
+    async fn spawn_push_stub(email_get_fails: bool) -> String {
+        use axum::routing::{get, post};
+
+        async fn session(axum::Extension(base): axum::Extension<String>) -> axum::Json<Value> {
+            axum::Json(json!({
+                "apiUrl": base,
+                "downloadUrl": format!("{base}/download/{{accountId}}/{{blobId}}"),
+                "uploadUrl": format!("{base}/upload/{{accountId}}"),
+                "eventSourceUrl": format!("{base}/eventsource"),
+                "state": "s",
+                "username": "u",
+                "accounts": {},
+                "primaryAccounts": {},
+                "capabilities": {}
+            }))
+        }
+        async fn api(
+            axum::Extension(email_get_fails): axum::Extension<bool>,
+            axum::Json(body): axum::Json<Value>,
+        ) -> axum::Json<Value> {
+            let calls = body
+                .get("methodCalls")
+                .and_then(|c| c.as_array())
+                .cloned()
+                .unwrap_or_default();
+            let mut responses = Vec::new();
+            for call in calls {
+                let name = call.get(0).and_then(|v| v.as_str()).unwrap_or("");
+                let id = call.get(2).and_then(|v| v.as_str()).unwrap_or("x");
+                match name {
+                    "Email/changes" => responses.push(json!([
+                        "Email/changes",
+                        {
+                            "accountId": "acc1",
+                            "oldState": "s1",
+                            "newState": "s2",
+                            "created": ["e1"],
+                            "updated": [],
+                            "destroyed": [],
+                            "hasMoreChanges": false
+                        },
+                        id
+                    ])),
+                    "Email/get" => {
+                        if email_get_fails {
+                            responses.push(json!([
+                                "error",
+                                { "type": "serverFail", "description": "boom" },
+                                id
+                            ]));
+                        } else {
+                            responses.push(json!([
+                                "Email/get",
+                                {
+                                    "accountId": "acc1",
+                                    "state": "s2",
+                                    "list": [ { "id": "e1", "mailboxIds": { "inbox": true } } ],
+                                    "notFound": []
+                                },
+                                id
+                            ]));
+                        }
+                    }
+                    _ => responses.push(json!(["error", { "type": "unknownMethod" }, id])),
+                }
+            }
+            axum::Json(json!({ "methodResponses": responses }))
+        }
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let base = format!("http://127.0.0.1:{port}");
+        let app = axum::Router::new()
+            .route("/session", get(session))
+            .route("/", post(api))
+            .layer(axum::Extension(email_get_fails))
+            .layer(axum::Extension(base.clone()));
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        base
+    }
+
+    fn email_state_frame() -> SseEvent {
+        SseEvent {
+            event: Some("state".to_string()),
+            data: Some(r#"{"@type":"StateChange","changed":{"acc1":{"Email":"s2"}}}"#.to_string()),
+        }
+    }
+
+    #[tokio::test]
+    async fn handle_frame_does_not_advance_state_or_publish_when_get_emails_fails() {
+        // A failing Email/get must leave `current_state` untouched and publish
+        // nothing: advancing the state would resume the next Email/changes
+        // after these ids and lose the notifications forever.
+        let base = spawn_push_stub(true).await;
+        let jmap = Arc::new(JmapClient::new(&base).unwrap());
+        let manager = Arc::new(SubscriptionManager::new());
+        let mut rx = manager.subscribe_raw();
+        let monitor =
+            JmapEmailPushMonitor::new(jmap, "u".into(), SecretString::from("pw"), manager.clone());
+
+        let mut state = "s1".to_string();
+        monitor
+            .handle_frame("acc1", &mut state, &email_state_frame())
+            .await;
+
+        assert_eq!(state, "s1", "state must not advance when Email/get fails");
+        assert!(
+            rx.try_recv().is_err(),
+            "no notification may be published when Email/get fails"
+        );
+    }
+
+    #[tokio::test]
+    async fn handle_frame_advances_state_and_publishes_on_success() {
+        let base = spawn_push_stub(false).await;
+        let jmap = Arc::new(JmapClient::new(&base).unwrap());
+        let manager = Arc::new(SubscriptionManager::new());
+        let mut rx = manager.subscribe_raw();
+        let monitor =
+            JmapEmailPushMonitor::new(jmap, "u".into(), SecretString::from("pw"), manager.clone());
+
+        let mut state = "s1".to_string();
+        monitor
+            .handle_frame("acc1", &mut state, &email_state_frame())
+            .await;
+
+        assert_eq!(state, "s2", "state advances only after a successful fetch");
+        let event = rx.try_recv().expect("a notification for the created email");
+        match event {
+            NotificationEvent::NewMail { item_id, .. } => assert_eq!(item_id, "e1"),
+            other => panic!("expected NewMail, got {other:?}"),
+        }
+    }
 
     #[test]
     fn parse_sse_frames_splits_frames_and_joins_data_lines() {

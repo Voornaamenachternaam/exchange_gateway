@@ -5056,8 +5056,16 @@ impl JmapClient {
                     password,
                 )
                 .await?;
+            // A method-level error response (RFC 8620 §3.6.2) is named
+            // "error", not "CalendarEvent/get", so it never enters the branch
+            // below. Without this guard a failed chunk would be skipped and the
+            // method would return an incomplete map as `Ok`, making the EWS and
+            // sync callers omit events instead of activating their CalDAV
+            // fallback. Mirror the per-chunk check `get_emails` performs.
+            let mut found = false;
             for (method, data, _) in response.method_responses {
                 if method == "CalendarEvent/get" {
+                    found = true;
                     let (events, unparseable) = parse_calendar_event_list(&data);
                     if unparseable > 0 {
                         return Err(anyhow!(
@@ -5076,6 +5084,11 @@ impl JmapClient {
                         }
                     }
                 }
+            }
+            if !found {
+                return Err(anyhow!(
+                    "Unexpected JMAP response structure for CalendarEvent/get"
+                ));
             }
         }
         Ok(map)
@@ -7815,12 +7828,14 @@ mod tests {
     }
 
     /// State shared with the capped stub server: the session base URL, the
-    /// advertised `maxObjectsInGet`, and the recorded request bodies.
+    /// advertised `maxObjectsInGet`, the recorded request bodies, and any ids
+    /// whose containing chunk must be answered with a method-level error.
     #[derive(Clone)]
     struct CappedStubState {
         base: String,
         max: usize,
         recorded: std::sync::Arc<std::sync::Mutex<Vec<Value>>>,
+        error_ids: Vec<String>,
     }
 
     /// Stub JMAP server that enforces `maxObjectsInGet` on the explicit-`ids`
@@ -7830,6 +7845,17 @@ mod tests {
     /// Records every request body so the test can assert batch sizes.
     async fn spawn_capped_get_stub(
         max_objects_in_get: usize,
+    ) -> (String, std::sync::Arc<std::sync::Mutex<Vec<Value>>>) {
+        spawn_capped_get_stub_with_errors(max_objects_in_get, Vec::new()).await
+    }
+
+    /// As [`spawn_capped_get_stub`], but any request whose `ids` array contains
+    /// one of `error_ids` is answered with a method-level `serverFail` error
+    /// (RFC 8620 §3.6.2) instead of a `list`. Used to prove that a *later*
+    /// chunk failing after earlier chunks succeeded surfaces as `Err`.
+    async fn spawn_capped_get_stub_with_errors(
+        max_objects_in_get: usize,
+        error_ids: Vec<String>,
     ) -> (String, std::sync::Arc<std::sync::Mutex<Vec<Value>>>) {
         use axum::routing::{get, post};
         use std::sync::{Arc, Mutex};
@@ -7864,6 +7890,14 @@ mod tests {
                     .and_then(|v| v.as_array())
                     .map(|a| a.iter().filter_map(|v| v.as_str()).collect())
                     .unwrap_or_default();
+                if ids.iter().any(|i| state.error_ids.iter().any(|e| e == i)) {
+                    responses.push(json!([
+                        "error",
+                        { "type": "serverFail", "description": "injected failure" },
+                        id
+                    ]));
+                    continue;
+                }
                 if ids.len() > max {
                     responses.push(json!([
                         "error",
@@ -7916,6 +7950,7 @@ mod tests {
                 base: base.clone(),
                 max: max_objects_in_get,
                 recorded: recorded.clone(),
+                error_ids,
             }))
             .layer(axum::Extension(base.clone()));
         tokio::spawn(async move {
@@ -8026,6 +8061,38 @@ mod tests {
         }
         let rec = recorded.lock().unwrap().clone();
         assert_ids_batches(&rec, "CalendarEvent/get", 2, 3);
+    }
+
+    #[tokio::test]
+    async fn get_calendar_events_errors_on_method_error_chunk() {
+        // A chunk answered with a method-level error must fail the whole call,
+        // not silently drop those events into an incomplete `Ok` map (which
+        // would make the EWS/sync callers skip events instead of falling back
+        // to CalDAV). Cap 2 with 5 ids → 3 chunks; the 3rd chunk carries `e4`.
+        let (base, _recorded) = spawn_capped_get_stub_with_errors(2, vec!["e4".to_string()]).await;
+        let client = JmapClient::new(&base).unwrap();
+        let pw = SecretString::from("pw");
+        let ids: Vec<String> = (0..5).map(|i| format!("e{i}")).collect();
+        let result = client.get_calendar_events("acct", &ids, "u", &pw).await;
+        assert!(
+            result.is_err(),
+            "a method-level error on any chunk must surface as Err"
+        );
+    }
+
+    #[tokio::test]
+    async fn get_emails_errors_on_method_error_chunk() {
+        // The push monitor relies on this: a later failing chunk must be an
+        // error (so it does not advance the change state), never an empty Ok.
+        let (base, _recorded) = spawn_capped_get_stub_with_errors(2, vec!["m4".to_string()]).await;
+        let client = JmapClient::new(&base).unwrap();
+        let pw = SecretString::from("pw");
+        let ids: Vec<String> = (0..5).map(|i| format!("m{i}")).collect();
+        let result = client.get_emails("acct", &ids, None, "u", &pw, false).await;
+        assert!(
+            result.is_err(),
+            "a method-level error on any chunk must surface as Err"
+        );
     }
 
     #[tokio::test]

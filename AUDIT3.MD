@@ -543,9 +543,16 @@ Stalwart does (an over-cap explicit-`ids` get returns the RFC 8620 §3.6.2
 requests, all 5 returned), `get_emails_single_request_when_under_cap`,
 `get_emails_empty_ids_makes_no_request`,
 `get_calendar_events_chunks_over_max_objects_in_get`, and
-`move_emails_chunks_over_max_objects_in_get`. `src/directory.rs` — 1 integration
-test (`search_chunks_account_get_over_max_objects_in_get`: a 1200-account
-directory is fetched as 500 + 500 + 200).
+`move_emails_chunks_over_max_objects_in_get`, plus
+`get_calendar_events_errors_on_method_error_chunk` /
+`get_emails_errors_on_method_error_chunk` (a method-level error on any chunk
+surfaces as `Err`, never an incomplete `Ok` — PR #2034 review). `src/directory.rs`
+— 1 integration test (`search_chunks_account_get_over_max_objects_in_get`: a
+1200-account directory is fetched as 300 + 300 + 300 + 300 at the
+**session-advertised** cap of 300, deliberately not the 500 constant, and the
+stub rejects an over-cap request the way Stalwart does). `src/jmap_push.rs` — 2
+tests proving `handle_frame` neither advances the push state nor publishes when
+`get_emails` fails, and advances+publishes only on success (PR #2034 review).
 
 ### 5. `CalendarEvent/changes` `hasMoreChanges` is ignored — calendar delta truncates at 500 changes
 
