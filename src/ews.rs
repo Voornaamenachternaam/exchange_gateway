@@ -49,7 +49,6 @@ use base64::engine::general_purpose::STANDARD;
 use bytes::Bytes;
 use chrono::{Datelike, Utc};
 use const_hex;
-use hex;
 use itertools::Itertools;
 use quick_xml::Reader;
 use quick_xml::XmlVersion;
@@ -2740,41 +2739,65 @@ async fn handle_find_email_item(
 }
 
 /// Fetch every contact in the user's addressbook: JMAP Contacts (RFC 9610)
-/// first when preferred and advertised, CardDAV as the fallback. A JMAP
-/// capability miss or read error degrades to CardDAV. On total failure the
-/// returned `Response` is the EWS error to send.
+/// first when preferred and advertised, CardDAV as the fallback. A genuine
+/// capability miss degrades to CardDAV, but a JMAP backend OUTAGE is returned
+/// as the retryable EWS error `action` would send — publishing a CardDAV
+/// snapshot would change the client-visible contact identity. On total failure
+/// the returned `Response` is the EWS error to send.
 async fn fetch_all_contacts(
     state: &Arc<AppState>,
     auth: &AuthContext,
+    action: &EwsAction,
 ) -> Result<Vec<crate::carddav::Contact>, Box<Response>> {
-    if state.cfg.prefer_jmap_contacts
-        && let Some(jmap) = state.jmap_client.as_ref()
-        && crate::contacts::jmap_contacts_available(
-            state,
-            &auth.username,
-            auth.password.expose_secret(),
-        )
-        .await
+    match crate::contacts::jmap_contacts_backend(
+        state,
+        &auth.username,
+        auth.password.expose_secret(),
+    )
+    .await
     {
-        match crate::contacts::list_contacts_jmap(
-            jmap,
-            &auth.username,
-            auth.password.expose_secret(),
-        )
-        .await
-        {
-            Ok(list) => return Ok(list),
-            Err(e) => {
-                tracing::warn!(error = %e, "JMAP contacts list failed; falling back to CardDAV");
+        crate::contacts::ContactsBackend::Jmap => {
+            let jmap = state
+                .jmap_client
+                .as_ref()
+                .expect("Jmap backend selected without a client");
+            match crate::contacts::list_contacts_jmap(
+                jmap,
+                &auth.username,
+                auth.password.expose_secret(),
+            )
+            .await
+            {
+                Ok(list) => return Ok(list),
+                // JMAP was selected: a transient read failure must be retried,
+                // not replaced by a CardDAV snapshot with different ServerIds.
+                Err(e) => {
+                    tracing::warn!(error = %e, "JMAP contacts list failed; returning retryable error");
+                    return Err(Box::new(operation_error_response(
+                        action,
+                        "ErrorServerBusy",
+                        "Contacts backend temporarily unavailable; retry shortly",
+                        StatusCode::SERVICE_UNAVAILABLE,
+                    )));
+                }
             }
         }
+        crate::contacts::ContactsBackend::BackendUnavailable => {
+            return Err(Box::new(operation_error_response(
+                action,
+                "ErrorServerBusy",
+                "Contacts backend temporarily unavailable; retry shortly",
+                StatusCode::SERVICE_UNAVAILABLE,
+            )));
+        }
+        crate::contacts::ContactsBackend::Carddav => {}
     }
 
     let carddav = match state.carddav_client.as_ref() {
         Some(c) => c,
         None => {
             return Err(Box::new(operation_error_response(
-                &EwsAction::FindItem,
+                action,
                 "ErrorInternalServerError",
                 "Contacts backend not configured",
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -2789,7 +2812,7 @@ async fn fetch_all_contacts(
         Err(e) => {
             tracing::error!(error = %e, "CardDAV list_contacts failed");
             Err(Box::new(operation_error_response(
-                &EwsAction::FindItem,
+                action,
                 "ErrorInternalServerError",
                 "Failed to fetch contacts",
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -2799,17 +2822,56 @@ async fn fetch_all_contacts(
 }
 
 /// Derive the stable EWS ServerId and content-derived ChangeKey for a contact.
-/// The ServerId is a deterministic hash of the backend href (so it is stable
-/// across `FindItem` calls); the ChangeKey prefers the backend ETag and falls
-/// back to a hash of the vCard content when the backend omits one (Stalwart's
-/// JMAP does not expose `@etag`).
+/// Delegates to the shared contact-identity helpers so every producer (create,
+/// re-list, sync) agrees on the same id and change key.
 fn contact_ids(contact: &crate::carddav::Contact) -> (String, String) {
-    let server_id = format!("contact-{}", sha256_hash(&contact.href));
-    let change_key = match contact.etag.as_deref() {
-        Some(etag) if !etag.is_empty() => format!("{}-{}", server_id, etag),
-        _ => format!("{}-{}", server_id, sha256_hash(&contact.vcard)),
-    };
+    let server_id = crate::contacts::contact_server_id(&contact.href);
+    let change_key =
+        crate::contacts::contact_change_key(&server_id, contact.etag.as_deref(), &contact.vcard);
     (server_id, change_key)
+}
+
+/// Fetch a contact's latest vCard from the backend its `contact_map` row lives
+/// on (JMAP Contacts or CardDAV), falling back to the stored copy when the live
+/// read fails or the backend is not configured.
+async fn fetch_contact_vcard(
+    state: &Arc<AppState>,
+    auth: &AuthContext,
+    row: &crate::storage::ContactRow,
+) -> Option<String> {
+    if row.carddav_href.starts_with("jmap://") {
+        return match state.jmap_client.as_ref() {
+            Some(jmap) => match crate::contacts::get_contact_vcard_jmap(
+                jmap,
+                &auth.username,
+                auth.password.expose_secret(),
+                &row.carddav_href,
+            )
+            .await
+            {
+                Ok(Some(v)) => Some(v),
+                _ => row.vcard.clone(),
+            },
+            None => row.vcard.clone(),
+        };
+    }
+    let Some(carddav) = state.carddav_client.as_ref() else {
+        return row.vcard.clone();
+    };
+    match carddav
+        .client
+        .get(format!(
+            "{}{}",
+            carddav.addressbook_home(&auth.username),
+            row.carddav_href
+        ))
+        .basic_auth(&auth.username, Some(auth.password.expose_secret()))
+        .send()
+        .await
+    {
+        Ok(resp) if resp.status().is_success() => resp.text().await.ok(),
+        _ => row.vcard.clone(),
+    }
 }
 
 /// Handle EWS FindItem for Contacts. JMAP Contacts (RFC 9610) is the primary
@@ -2825,7 +2887,7 @@ async fn handle_find_contacts_item(
     let offset = extract_int(body, b"Offset", 0);
     let shape = requested_item_shape(body);
 
-    let contacts = match fetch_all_contacts(state, auth).await {
+    let contacts = match fetch_all_contacts(state, auth, &EwsAction::FindItem).await {
         Ok(list) => list,
         Err(resp) => return *resp,
     };
@@ -2928,8 +2990,6 @@ async fn handle_get_contact_item(
         );
     }
 
-    let carddav = state.carddav_client.as_ref();
-
     let shape = requested_item_shape(body);
     let mut items_xml = String::new();
 
@@ -2945,43 +3005,7 @@ async fn handle_get_contact_item(
         };
 
         if let Some(row) = db_contact {
-            // Fetch the latest vCard from the backend the row lives on (JMAP
-            // Contacts or CardDAV), falling back to the stored copy when the
-            // live read fails.
-            let vcard_str = if row.carddav_href.starts_with("jmap://") {
-                match state.jmap_client.as_ref() {
-                    Some(jmap) => match crate::contacts::get_contact_vcard_jmap(
-                        jmap,
-                        &auth.username,
-                        auth.password.expose_secret(),
-                        &row.carddav_href,
-                    )
-                    .await
-                    {
-                        Ok(Some(v)) => Some(v),
-                        _ => row.vcard.clone(),
-                    },
-                    None => row.vcard.clone(),
-                }
-            } else if let Some(carddav) = carddav {
-                match carddav
-                    .client
-                    .get(format!(
-                        "{}{}",
-                        carddav.addressbook_home(&auth.username),
-                        row.carddav_href
-                    ))
-                    .basic_auth(&auth.username, Some(auth.password.expose_secret()))
-                    .send()
-                    .await
-                {
-                    Ok(resp) if resp.status().is_success() => resp.text().await.ok(),
-                    _ => row.vcard.clone(),
-                }
-            } else {
-                row.vcard.clone()
-            };
-
+            let vcard_str = fetch_contact_vcard(state, auth, &row).await;
             let vcard = vcard_str
                 .as_ref()
                 .and_then(|s| parse_vcard_from_data(s).ok())
@@ -2989,14 +3013,11 @@ async fn handle_get_contact_item(
 
             // Match the ChangeKey derivation used by FindItem so a client that
             // round-trips an ItemId from FindItem sees a stable key.
-            let change_key = match row.etag.as_deref() {
-                Some(etag) if !etag.is_empty() => format!("{}-{}", row.server_id, etag),
-                _ => format!(
-                    "{}-{}",
-                    row.server_id,
-                    sha256_hash(vcard_str.as_deref().unwrap_or(""))
-                ),
-            };
+            let change_key = crate::contacts::contact_change_key(
+                &row.server_id,
+                row.etag.as_deref(),
+                vcard_str.as_deref().unwrap_or(""),
+            );
             let contact_xml = render_ews_contact(&row.server_id, &change_key, &vcard, shape);
             items_xml.push_str(&contact_xml);
         } else {
@@ -3084,13 +3105,47 @@ fn render_ews_contact(
     xml
 }
 
-/// Simple SHA256 hash used to generate stable IDs from CardDAV hrefs.
-fn sha256_hash(s: &str) -> String {
-    let digest = Sha256::digest(s.as_bytes());
-    // Take first 16 bytes for a reasonably short but unique identifier.
-    // Using hex encoding (lowercase) as per MS-OXWSCORE §2.2.4.25 for ChangeKey,
-    // but this is not a true ChangeKey; it's just a stable identifier.
-    hex::encode(&digest[..16])
+/// Fields parsed from an EWS CreateItem `<t:Contact>` element.
+struct CreateContactFields {
+    display_name: Option<String>,
+    email: Option<String>,
+    phone: Option<String>,
+    organization: Option<String>,
+    title: Option<String>,
+}
+
+/// Extract the contact fields the create path maps into a vCard.
+fn parse_create_contact_fields(doc: &roxmltree::Document<'_>) -> CreateContactFields {
+    let mut fields = CreateContactFields {
+        display_name: None,
+        email: None,
+        phone: None,
+        organization: None,
+        title: None,
+    };
+    for node in doc.descendants() {
+        match node.tag_name().name() {
+            "DisplayName" => fields.display_name = node.text().map(str::to_string),
+            "EmailAddresses" => {
+                fields.email = entry_text(node, "EmailAddress1");
+            }
+            "PhoneNumbers" => {
+                fields.phone = entry_text(node, "Phone");
+            }
+            "CompanyName" => fields.organization = node.text().map(str::to_string),
+            "JobTitle" => fields.title = node.text().map(str::to_string),
+            _ => {}
+        }
+    }
+    fields
+}
+
+/// The text of the `<Entry Key="{key}">` child of `parent`, if present.
+fn entry_text(parent: roxmltree::Node<'_, '_>, key: &str) -> Option<String> {
+    parent
+        .children()
+        .find(|e| e.has_tag_name("Entry") && e.attribute("Key") == Some(key))
+        .and_then(|e| e.text().map(str::to_string))
 }
 
 /// Handle EWS CreateItem for Contacts. JMAP Contacts (RFC 9610) is the
@@ -3115,47 +3170,17 @@ async fn handle_create_contact_item(
     };
 
     // Extract contact fields
-    let mut display_name = None;
-    let mut email = None;
-    let mut phone = None;
-    let mut organization = None;
-    let mut title = None;
-
-    for node in doc.descendants() {
-        match node.tag_name().name() {
-            "DisplayName" => display_name = node.text().map(str::to_string),
-            "EmailAddresses" => {
-                // Look for <t:Entry Key="EmailAddress1">value</t:Entry>
-                for entry in node.children() {
-                    if entry.has_tag_name("Entry")
-                        && entry.attribute("Key") == Some("EmailAddress1")
-                    {
-                        email = entry.text().map(str::to_string);
-                    }
-                }
-            }
-            "PhoneNumbers" => {
-                for entry in node.children() {
-                    if entry.has_tag_name("Entry") && entry.attribute("Key") == Some("Phone") {
-                        phone = entry.text().map(str::to_string);
-                    }
-                }
-            }
-            "CompanyName" => organization = node.text().map(str::to_string),
-            "JobTitle" => title = node.text().map(str::to_string),
-            _ => {}
-        }
-    }
+    let fields = parse_create_contact_fields(&doc);
 
     // Build vCard
     let uid = uuid::Uuid::new_v4().to_string();
     let vcard_str = match crate::vcard::build_vcard(
         &uid,
-        display_name.as_deref().unwrap_or(""),
-        email.as_deref(),
-        phone.as_deref(),
-        organization.as_deref(),
-        title.as_deref(),
+        fields.display_name.as_deref().unwrap_or(""),
+        fields.email.as_deref(),
+        fields.phone.as_deref(),
+        fields.organization.as_deref(),
+        fields.title.as_deref(),
     ) {
         Ok(v) => v,
         Err(e) => {
@@ -3169,56 +3194,13 @@ async fn handle_create_contact_item(
         }
     };
 
-    // Create the contact: JMAP Contacts first, CardDAV fallback.
-    let jmap_contacts = state.cfg.prefer_jmap_contacts
-        && crate::contacts::jmap_contacts_available(
-            state,
-            &auth.username,
-            auth.password.expose_secret(),
-        )
-        .await;
-
-    let (server_id, etag): (String, String) = if jmap_contacts {
-        match crate::contacts::create_contact_jmap(
-            state,
-            &auth.username,
-            auth.password.expose_secret(),
-            &vcard_str,
-        )
-        .await
-        {
-            Ok((sid, stored)) => {
-                let etag = state
-                    .storage
-                    .get_contact(&auth.username, &sid)
-                    .await
-                    .ok()
-                    .flatten()
-                    .and_then(|r| r.etag)
-                    .unwrap_or_else(|| sid.clone());
-                let _ = stored;
-                (sid, etag)
-            }
-            Err(e) => {
-                tracing::warn!(error = %e, "JMAP create contact failed; falling back to CardDAV");
-                match create_contact_carddav(state, auth, &vcard_str).await {
-                    Ok(v) => v,
-                    Err(resp) => return *resp,
-                }
-            }
-        }
-    } else {
-        match create_contact_carddav(state, auth, &vcard_str).await {
-            Ok(v) => v,
-            Err(resp) => return *resp,
-        }
-    };
-
-    // Return ItemId with ChangeKey = etag if non-empty, else server_id
-    let change_key = if etag.is_empty() {
-        server_id.clone()
-    } else {
-        etag
+    // Create the contact: JMAP Contacts first (RFC 9610), CardDAV fallback on a
+    // genuine capability miss. A JMAP backend outage is returned as a retryable
+    // error rather than creating the contact under a CardDAV identity a later
+    // JMAP-backed read would not recognise.
+    let (server_id, change_key) = match create_contact_item_backend(state, auth, &vcard_str).await {
+        Ok(v) => v,
+        Err(resp) => return *resp,
     };
     publish_event(
         state,
@@ -3234,6 +3216,74 @@ async fn handle_create_contact_item(
         EWS_MSG_NS, EWS_TYPE_NS, server_id, change_key
     );
     soap_ok(response_xml)
+}
+
+/// Create a contact on the selected backend and return `(server_id,
+/// change_key)`, where the change key matches the one FindItem, GetItem and
+/// SyncFolderItems will report for the same unchanged contact.
+async fn create_contact_item_backend(
+    state: &Arc<AppState>,
+    auth: &AuthContext,
+    vcard_str: &str,
+) -> Result<(String, String), Box<Response>> {
+    match crate::contacts::jmap_contacts_backend(
+        state,
+        &auth.username,
+        auth.password.expose_secret(),
+    )
+    .await
+    {
+        crate::contacts::ContactsBackend::Jmap => {
+            match crate::contacts::create_contact_jmap(
+                state,
+                &auth.username,
+                auth.password.expose_secret(),
+                vcard_str,
+            )
+            .await
+            {
+                Ok((sid, stored)) => {
+                    let etag = state
+                        .storage
+                        .get_contact(&auth.username, &sid)
+                        .await
+                        .ok()
+                        .flatten()
+                        .and_then(|r| r.etag);
+                    let change_key =
+                        crate::contacts::contact_change_key(&sid, etag.as_deref(), &stored);
+                    Ok((sid, change_key))
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "JMAP create contact failed; returning retryable error");
+                    Err(Box::new(operation_error_response(
+                        &EwsAction::CreateItem,
+                        "ErrorServerBusy",
+                        "Contacts backend temporarily unavailable; retry shortly",
+                        StatusCode::SERVICE_UNAVAILABLE,
+                    )))
+                }
+            }
+        }
+        crate::contacts::ContactsBackend::BackendUnavailable => {
+            Err(Box::new(operation_error_response(
+                &EwsAction::CreateItem,
+                "ErrorServerBusy",
+                "Contacts backend temporarily unavailable; retry shortly",
+                StatusCode::SERVICE_UNAVAILABLE,
+            )))
+        }
+        crate::contacts::ContactsBackend::Carddav => {
+            match create_contact_carddav(state, auth, vcard_str).await {
+                Ok((sid, etag)) => {
+                    let etag_opt = (!etag.is_empty()).then_some(etag.as_str());
+                    let change_key = crate::contacts::contact_change_key(&sid, etag_opt, vcard_str);
+                    Ok((sid, change_key))
+                }
+                Err(resp) => Err(resp),
+            }
+        }
+    }
 }
 
 /// Create a contact via CardDAV, storing the mapping. Returns
@@ -3271,7 +3321,7 @@ async fn create_contact_carddav(
         }
     };
 
-    let server_id = format!("contact-{}", uuid::Uuid::new_v4().simple());
+    let server_id = crate::contacts::contact_server_id(&href);
     if let Err(e) = state
         .storage
         .insert_contact(
@@ -4847,7 +4897,7 @@ async fn handle_sync_contacts_folder_items(
         .map(|pairs| pairs.into_iter().collect())
         .unwrap_or_default();
 
-    let contacts = match fetch_all_contacts(state, auth).await {
+    let contacts = match fetch_all_contacts(state, auth, &EwsAction::SyncFolderItems).await {
         Ok(list) => list,
         Err(resp) => return *resp,
     };
@@ -13241,6 +13291,146 @@ mod tests {
                 .expect("db")
                 .is_none(),
             "the contact mapping row must be removed"
+        );
+    }
+
+    /// A CreateItem response's ChangeKey must equal the ChangeKey FindItem and
+    /// GetItem report for the same unchanged contact, and the created ServerId
+    /// must survive re-listing (href-derived, not a create-time uuid).
+    #[tokio::test]
+    async fn create_contact_change_key_matches_read_paths() {
+        let (base, _store) =
+            crate::contacts::contact_test_support::spawn_stub_contacts_server(Vec::new()).await;
+        let state = crate::contacts::contact_test_support::state_for(&base).await;
+        let auth = AuthContext {
+            username: "user@example.com".to_string(),
+            password: SecretString::from("pw"),
+        };
+
+        let create_body = r#"<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+  <soap:Body>
+    <m:CreateItem xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages"
+                  xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types">
+      <m:SavedItemFolderId><t:DistinguishedFolderId Id="contacts"/></m:SavedItemFolderId>
+      <m:Items>
+        <t:Contact>
+          <t:DisplayName>Pat Doe</t:DisplayName>
+          <t:EmailAddresses><t:Entry Key="EmailAddress1">pat@example.com</t:Entry></t:EmailAddresses>
+        </t:Contact>
+      </m:Items>
+    </m:CreateItem>
+  </soap:Body>
+</soap:Envelope>"#
+            .to_string();
+        let create_text =
+            response_body(handle_create_item(&state, &auth, &create_body).await).await;
+        let item_id = create_text
+            .split("<t:ItemId Id=\"")
+            .nth(1)
+            .and_then(|s| s.split('"').next())
+            .expect("CreateItem ItemId")
+            .to_string();
+        let create_key = create_text
+            .split("ChangeKey=\"")
+            .nth(1)
+            .and_then(|s| s.split('"').next())
+            .expect("CreateItem ChangeKey")
+            .to_string();
+
+        // FindItem over the same folder must report the same id + change key.
+        let find_body = r#"<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+  <soap:Body>
+    <m:FindItem xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages"
+                xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types">
+      <m:ItemShape><t:BaseShape>Default</t:BaseShape></m:ItemShape>
+      <m:ParentFolderIds>
+        <t:DistinguishedFolderId Id="contacts"/>
+      </m:ParentFolderIds>
+    </m:FindItem>
+  </soap:Body>
+</soap:Envelope>"#
+            .to_string();
+        let find_text = response_body(handle_find_item(&state, &auth, &find_body).await).await;
+        assert!(
+            find_text.contains(&format!("<t:ItemId Id=\"{item_id}\"")),
+            "FindItem must re-list the created id {item_id}, got: {find_text}"
+        );
+        let find_key = find_text
+            .split("<t:ItemId Id=\"")
+            .nth(1)
+            .and_then(|s| s.split("ChangeKey=\"").nth(1))
+            .and_then(|s| s.split('"').next())
+            .expect("FindItem ChangeKey")
+            .to_string();
+        assert_eq!(
+            create_key, find_key,
+            "CreateItem ChangeKey must match FindItem for an unchanged contact"
+        );
+
+        // GetItem must agree too.
+        let get_body = format!(
+            r#"<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+  <soap:Body>
+    <m:GetItem xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages"
+               xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types">
+      <m:ItemShape><t:BaseShape>Default</t:BaseShape></m:ItemShape>
+      <m:ItemIds><t:ItemId Id="{item_id}"/></m:ItemIds>
+    </m:GetItem>
+  </soap:Body>
+</soap:Envelope>"#
+        );
+        let get_text = response_body(handle_get_item(&state, &auth, &get_body).await).await;
+        let get_key = get_text
+            .split("ChangeKey=\"")
+            .nth(1)
+            .and_then(|s| s.split('"').next())
+            .expect("GetItem ChangeKey")
+            .to_string();
+        assert_eq!(
+            create_key, get_key,
+            "CreateItem ChangeKey must match GetItem for an unchanged contact"
+        );
+    }
+
+    /// When JMAP Contacts is preferred and advertised but unreachable, the
+    /// contacts read paths must fail retryably rather than fall back to
+    /// CardDAV (which would change the client-visible contact identity).
+    #[tokio::test]
+    async fn contacts_find_item_fails_retryably_on_jmap_outage() {
+        let cfg = crate::config::Config {
+            jmap_base: "http://127.0.0.1:1".to_string(),
+            email_enabled: true,
+            mail_domain: "example.com".to_string(),
+            hmac_secret: SecretString::from("a".repeat(32)),
+            prefer_jmap_contacts: true,
+            ..Default::default()
+        };
+        let storage = crate::storage::Storage::new("sqlite::memory:")
+            .await
+            .expect("storage");
+        storage.init_schema().await.expect("schema");
+        let state = Arc::new(crate::models::AppState::new(cfg, Arc::new(storage)));
+        let auth = AuthContext {
+            username: "user@example.com".to_string(),
+            password: SecretString::from("pw"),
+        };
+
+        let find_body = r#"<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+  <soap:Body>
+    <m:FindItem xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages"
+                xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types">
+      <m:ItemShape><t:BaseShape>Default</t:BaseShape></m:ItemShape>
+      <m:ParentFolderIds>
+        <t:DistinguishedFolderId Id="contacts"/>
+      </m:ParentFolderIds>
+    </m:FindItem>
+  </soap:Body>
+</soap:Envelope>"#
+            .to_string();
+        let find_text = response_body(handle_find_item(&state, &auth, &find_body).await).await;
+        assert!(
+            find_text.contains("ErrorServerBusy"),
+            "a JMAP outage must be a retryable error, got: {find_text}"
         );
     }
 

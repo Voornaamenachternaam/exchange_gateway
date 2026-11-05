@@ -574,6 +574,24 @@ EAS specs v20250520 (16.1); older EAS compat NOT needed.
   remove, edit detection, SyncState round-trip). Suite: 1163 lib + 7 + 5 + 22
   + 11 + 1 doc = 1209 green, clippy 0 (`-D warnings`), rustfmt clean on all
   touched files, release build warning-free.
+  PR #2033 review hardening (4 findings, all fixed + tested): (a) ONE ServerId
+  derivation — `contact_ids` hashed the href but the JMAP/CardDAV create and
+  EAS diff-add paths minted `contact-{uuid}`, which the stale-href delete then
+  dropped on the first re-list; every producer now uses
+  `contacts::contact_server_id`. (b) NO identity churn on backend fallback —
+  `fetch_all_contacts` now uses the tri-state `ContactsBackend`
+  (`jmap_contacts_backend` + `JmapClient::contacts_capability`, which
+  distinguishes a genuine capability miss from a probe ERROR) and returns the
+  retryable `ErrorServerBusy` (503) on a JMAP outage instead of publishing a
+  CardDAV snapshot whose href-derived ids would Delete+Create the whole set;
+  EAS contacts Sync likewise returns status 6. (c) canonical ChangeKey —
+  CreateItem now returns `contacts::contact_change_key` like
+  Find/Get/SyncFolderItems, and the JMAP create reads the card back and stores
+  the SAME etag the read path reports (`jmap_contact_etag` native-or-hash), so
+  one unchanged contact has one stable ChangeKey. (d) `update_contact_jmap`
+  uses `JmapClient::get_contact_card` (single-id) instead of listing + scanning
+  every card. Suite after: 1172 lib + 7 + 5 + 22 + 11 + 1 = 1218 green,
+  clippy 0, rustfmt clean on touched files, release warning-free.
 - §17 Auth negative-caching and cache-invalidation is COMPLETE and its AUDIT.md
   section documents the delivered behavior. Design: `AuthVerifier` now returns
   a tri-state `AuthOutcome` (Verified / InvalidCredentials / BackendUnavailable)

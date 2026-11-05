@@ -5291,12 +5291,29 @@ impl JmapClient {
         Ok(())
     }
 
+    /// Check whether the JMAP server supports contacts (RFC 9610), reporting a
+    /// backend outage distinctly from a genuine capability miss.
+    ///
+    /// Returns `Ok(true)` when the session advertises the contacts capability,
+    /// `Ok(false)` when the server answered but does not advertise it, and
+    /// `Err` when the session could not be fetched. Contact read paths must
+    /// treat the error case as a transient backend failure (retryable) rather
+    /// than silently switching backends, which would churn the client-visible
+    /// contact identity.
+    pub async fn contacts_capability(
+        &self,
+        username: &str,
+        password: &SecretString,
+    ) -> Result<bool> {
+        let session = self.get_session(username, password).await?;
+        Ok(session.capabilities.contains_key(JMAP_CONTACTS_CAPABILITY))
+    }
+
     /// Check whether the JMAP server supports contacts (RFC 9610).
     pub async fn supports_contacts(&self, username: &str, password: &SecretString) -> bool {
-        match self.get_session(username, password).await {
-            Ok(session) => session.capabilities.contains_key(JMAP_CONTACTS_CAPABILITY),
-            Err(_) => false,
-        }
+        self.contacts_capability(username, password)
+            .await
+            .unwrap_or(false)
     }
 
     /// Get the primary contacts account id from the JMAP session.

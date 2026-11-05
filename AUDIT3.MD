@@ -414,6 +414,43 @@ delete-misrouting regression, Contacts `SyncFolderItems` prime/unchanged/add/
 remove, edit detection, and the SyncState encode/decode round-trip), plus the
 existing EAS contact suites.
 
+*Post-review hardening (PR #2033 review).* Four further defects in the same
+surface, all fixed and covered by tests:
+
+1. **One ServerId derivation.** `contact_ids` hashed the backend href, but the
+   JMAP create, CardDAV create and EAS diff-add paths minted `contact-{uuid}`.
+   `upsert_contact`'s stale-href delete then dropped the uuid mapping the first
+   time the contact was re-listed, so a client-held ItemId stopped resolving.
+   Every producer now derives the id from the final href via
+   `contacts::contact_server_id` (`contact-{sha256(href)[..16]}`); the EAS
+   diff-add, JMAP create, CardDAV create (`create_contact_carddav`) and the EAS
+   `apply_mutation_carddav` Add path all use it.
+2. **No identity churn on backend fallback.** `fetch_all_contacts` published a
+   CardDAV snapshot whenever JMAP was *selected* but its capability probe or
+   list failed; because the ids are href-derived, that switched every contact's
+   ServerId and `SyncFolderItems` emitted Delete+Create for the whole set. The
+   backend decision is now the tri-state `contacts::ContactsBackend`
+   (`jmap_contacts_backend`, backed by `JmapClient::contacts_capability`, which
+   distinguishes a genuine capability miss from a probe error): a JMAP outage on
+   FindItem/SyncFolderItems/CreateItem/UpdateItem returns the retryable EWS
+   `ErrorServerBusy` (503) and the EAS contacts Sync returns status 6, instead
+   of falling back. CardDAV is used only on a real capability miss.
+3. **Canonical ChangeKey from CreateItem.** CreateItem returned the raw ETag
+   while FindItem/GetItem/SyncFolderItems returned `{server_id}-{etag}` or
+   `{server_id}-{hash(vcard)}`. All four now share
+   `contacts::contact_change_key`, and the JMAP create stores the *same* etag
+   the read path reports (it reads the card back and applies the identical
+   native-or-content-hash rule via `jmap_contact_etag`), so an unchanged contact
+   presents one stable ChangeKey end to end.
+4. **Single-card JMAP update.** `update_contact_jmap` listed every card and
+   scanned for one id; it now uses `JmapClient::get_contact_card`.
+
+Tests: `src/contacts.rs` 6 (identity/href derivation + ChangeKey form matrix,
+etag rule, backend tri-state selection incl. probe-error → `BackendUnavailable`,
+JMAP-outage Sync errors instead of falling back, create→list etag/ChangeKey
+consistency), `src/ews.rs` 2 (CreateItem ChangeKey equals FindItem and GetItem;
+FindItem on a JMAP outage is a retryable `ErrorServerBusy`).
+
 ---
 
 ## P1 — Mail-path and JMAP-limit defects that will surface under real load

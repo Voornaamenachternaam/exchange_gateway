@@ -1031,6 +1031,100 @@ fn track_appdata_text(out: &mut String, stack: &[String], text: &str) {
 }
 
 // --------------------------------------------------------------------------
+// Contact identity (single source of truth)
+// --------------------------------------------------------------------------
+
+/// Deterministic EWS `ServerId` for a contact, derived from its backend href.
+///
+/// EVERY contact-id producer must use this (creation, re-listing, sync deltas):
+/// `upsert_contact` drops a stale mapping for the same href when the ServerId
+/// changes, so a create-time random id would be invalidated the first time the
+/// contact is re-listed and the client's id would stop resolving.
+pub fn contact_server_id(href: &str) -> String {
+    format!("contact-{}", contact_hash(href))
+}
+
+/// Short stable hash (first 16 bytes, lowercase hex) used for contact identity
+/// and content-derived ChangeKeys.
+pub fn contact_hash(s: &str) -> String {
+    use sha2::Digest as _;
+    let digest = sha2::Sha256::digest(s.as_bytes());
+    hex::encode(&digest[..16])
+}
+
+/// Content-derived contact ChangeKey: `{server_id}-{etag}` when the backend
+/// exposes an ETag, else `{server_id}-{hash(vcard)}`. This is the ONE form the
+/// gateway emits from FindItem, GetItem, CreateItem and SyncFolderItems, so an
+/// unchanged contact always presents the same ChangeKey to the client.
+pub fn contact_change_key(server_id: &str, etag: Option<&str>, vcard: &str) -> String {
+    match etag {
+        Some(e) if !e.is_empty() => format!("{}-{}", server_id, e),
+        _ => format!("{}-{}", server_id, contact_hash(vcard)),
+    }
+}
+
+/// The ETag value the contact read path (`list_contacts_jmap`) reports for a
+/// JMAP card: the server's native `@etag` when present, else a content hash of
+/// the card document. Create/update paths read the card back and persist this
+/// same value so a later list yields an identical ChangeKey.
+pub fn jmap_contact_etag(card: &serde_json::Value, native: Option<&str>) -> Option<String> {
+    native.map(str::to_string).or_else(|| {
+        use sha2::Digest as _;
+        let hash = sha2::Sha256::digest(serde_json::to_vec(card).unwrap_or_default());
+        Some(hex::encode(&hash[..16]))
+    })
+}
+
+/// The native `@etag` carried by a JMAP card object, quotes trimmed, matching
+/// how `JmapClient::list_contact_cards` extracts it.
+fn native_card_etag(card: &serde_json::Value) -> Option<String> {
+    card.get("@etag")
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim_matches('"').to_string())
+}
+
+/// Which backend a contact read/write path must use.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContactsBackend {
+    /// JMAP Contacts (RFC 9610) is configured, preferred, and advertised.
+    Jmap,
+    /// No usable JMAP Contacts; use CardDAV.
+    Carddav,
+    /// JMAP Contacts is configured and preferred but the capability probe hit a
+    /// backend error. Falling back to CardDAV here would change the
+    /// client-visible contact identity, so callers must return a retryable
+    /// error instead.
+    BackendUnavailable,
+}
+
+/// Decide the contact backend, distinguishing a genuine capability miss (safe
+/// to fall back to CardDAV) from a backend outage (must be retried).
+pub async fn jmap_contacts_backend(
+    state: &crate::models::AppState,
+    username: &str,
+    password: &str,
+) -> ContactsBackend {
+    if !state.cfg.prefer_jmap_contacts {
+        return ContactsBackend::Carddav;
+    }
+    let Some(jmap) = state.jmap_client.as_ref() else {
+        return ContactsBackend::Carddav;
+    };
+    let secret = secrecy::SecretString::from(password.to_string());
+    match jmap.contacts_capability(username, &secret).await {
+        Ok(true) => ContactsBackend::Jmap,
+        Ok(false) => ContactsBackend::Carddav,
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                "JMAP contacts capability probe failed; not falling back to CardDAV"
+            );
+            ContactsBackend::BackendUnavailable
+        }
+    }
+}
+
+// --------------------------------------------------------------------------
 // Backend-agnostic sync diff
 // --------------------------------------------------------------------------
 
@@ -1085,7 +1179,7 @@ async fn diff_contacts(
                 changes.push((db_row.server_id.clone(), c.clone()));
             }
         } else {
-            let new_server_id = format!("contact-{}", Uuid::new_v4().simple());
+            let new_server_id = contact_server_id(&c.href);
             adds.push((new_server_id, c.clone()));
         }
     }
@@ -1203,23 +1297,18 @@ pub async fn sync_contacts(
     device_id: &str,
     window: Option<usize>,
 ) -> anyhow::Result<ContactsSyncResult> {
-    if state.cfg.prefer_jmap_contacts
-        && let Some(jmap) = state.jmap_client.as_ref()
-    {
-        let secret = secrecy::SecretString::from(password.to_string());
-        if jmap.supports_contacts(username, &secret).await {
-            match collect_jmap_contacts(state, username, password).await {
-                Ok(cards) => {
-                    return diff_contacts(state, username, device_id, &cards, window).await;
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        error = %e,
-                        "JMAP contact sync failed; falling back to CardDAV"
-                    );
-                }
-            }
+    match jmap_contacts_backend(state, username, password).await {
+        ContactsBackend::Jmap => match collect_jmap_contacts(state, username, password).await {
+            Ok(cards) => return diff_contacts(state, username, device_id, &cards, window).await,
+            // JMAP was selected: a transient read failure must surface as a
+            // retryable error, not a CardDAV snapshot whose href-derived
+            // ServerIds would churn the client's contact identity.
+            Err(e) => anyhow::bail!("JMAP contact sync failed: {e}"),
+        },
+        ContactsBackend::BackendUnavailable => {
+            anyhow::bail!("contacts backend temporarily unavailable")
         }
+        ContactsBackend::Carddav => {}
     }
     sync_contacts_carddav(state, username, password, device_id, window).await
 }
@@ -1273,11 +1362,7 @@ pub async fn list_contacts_jmap(
                 }
             }
         }
-        use sha2::Digest as _;
-        let etag = card.etag.or_else(|| {
-            let hash = sha2::Sha256::digest(serde_json::to_vec(&card.card).unwrap_or_default());
-            Some(hex::encode(&hash[..16]))
-        });
+        let etag = jmap_contact_etag(&card.card, card.etag.as_deref());
         out.push(CarddavContact {
             href: format!("jmap://contacts/{}", card.id),
             etag,
@@ -1367,11 +1452,25 @@ pub async fn create_contact_jmap(
 
     let (id, etag) = jmap.create_contact_card(username, &secret, &card).await?;
     let href = format!("jmap://contacts/{id}");
+    // Persist the same ETag the read path (`list_contacts_jmap`) reports for
+    // this card, so a later list yields an identical ChangeKey.
+    let stored_etag = match jmap.get_contact_card(username, &secret, &id).await {
+        Ok(Some(stored_card)) => {
+            jmap_contact_etag(&stored_card, native_card_etag(&stored_card).as_deref())
+        }
+        _ => jmap_contact_etag(&card, etag.as_deref()),
+    };
     let stored = v.with_photo_cleared();
-    let server_id = format!("contact-{}", Uuid::new_v4().simple());
+    let server_id = contact_server_id(&href);
     if let Err(e) = state
         .storage
-        .insert_contact(username, &href, &server_id, etag.as_deref(), Some(&stored))
+        .insert_contact(
+            username,
+            &href,
+            &server_id,
+            stored_etag.as_deref(),
+            Some(&stored),
+        )
         .await
     {
         tracing::warn!(error = %e, "Failed to store contact in DB after JMAP create");
@@ -1411,12 +1510,11 @@ pub async fn update_contact_jmap(
         .to_string();
 
     // Pull existing state and merge (Change is partial in EAS).
-    let (cards, _) = jmap.list_contact_cards(username, &secret).await?;
-    let found = cards
-        .iter()
-        .find(|c| c.id == id)
+    let existing_card = jmap
+        .get_contact_card(username, &secret, &id)
+        .await?
         .ok_or_else(|| anyhow!("JMAP contact {} not found", id))?;
-    let old_v = jscard_to_vcard(&found.card, &id);
+    let old_v = jscard_to_vcard(&existing_card, &id);
     let new_v = vcard::parse_vcard_from_data(new_vcard).context("update: unparsable vCard")?;
     let merged = if present.is_empty() {
         new_v
@@ -1438,12 +1536,12 @@ pub async fn update_contact_jmap(
             None => None,
         }
     } else {
-        photo_blob_id(&found.card)
+        photo_blob_id(&existing_card)
     };
 
     // Merge into a full replacement update with null-outs for removed keys.
     let mut card = vcard_to_jscard(&merged, &id, photo_blob.as_deref());
-    let existing_obj = found.card.as_object().cloned().unwrap_or_default();
+    let existing_obj = existing_card.as_object().cloned().unwrap_or_default();
     // Preserve server-side bookkeeping fields.
     if let Some(ab) = existing_obj.get("addressBookIds") {
         card["addressBookIds"] = ab.clone();
@@ -1556,14 +1654,15 @@ pub async fn apply_contacts_mutations(
 
     // JMAP-first: use it whenever the configured client is present and the
     // server advertises the contacts capability. CardDAV is the fallback.
-    let jmap_available = state.cfg.prefer_jmap_contacts
-        && match state.jmap_client.as_ref() {
-            Some(jmap) => {
-                let secret = secrecy::SecretString::from(password.to_string());
-                jmap.supports_contacts(username, &secret).await
-            }
-            None => false,
-        };
+    let jmap_available = match jmap_contacts_backend(state, username, password).await {
+        ContactsBackend::Jmap => true,
+        ContactsBackend::Carddav => false,
+        // Probe failed: do NOT write to CardDAV, which would create the contact
+        // under a different identity than a later JMAP-backed read reports.
+        ContactsBackend::BackendUnavailable => {
+            return Ok(mutations.iter().map(|m| mutation_failure(m, "6")).collect());
+        }
+    };
 
     for mutation in mutations {
         let result = if jmap_available {
@@ -1687,7 +1786,7 @@ async fn apply_mutation_carddav(
                 .get("ETag")
                 .and_then(|h| h.to_str().ok())
                 .map(|s| s.trim_matches('"').to_string());
-            let server_id = format!("contact-{}", Uuid::new_v4().simple());
+            let server_id = contact_server_id(&location);
             if let Err(e) = state
                 .storage
                 .insert_contact(
@@ -2129,99 +2228,123 @@ pub(crate) mod contact_test_support {
             let args = call.get(1).cloned().unwrap_or(serde_json::Value::Null);
             let id = call.get(2).and_then(|v| v.as_str()).unwrap_or("x");
             let result = match name {
-                "ContactCard/get" => {
-                    let list: Vec<serde_json::Value> = {
-                        let store = store.lock().unwrap();
-                        let mut v: Vec<_> = store.values().cloned().collect();
-                        v.sort_by_key(|c| {
-                            c.get("id")
-                                .and_then(|i| i.as_str())
-                                .unwrap_or("")
-                                .to_string()
-                        });
-                        v
-                    };
-                    match args.get("ids").and_then(|v| v.as_array()) {
-                        Some(ids) => {
-                            let mut found = Vec::new();
-                            let mut not_found = Vec::new();
-                            for want in ids.iter().filter_map(|v| v.as_str()) {
-                                match list
-                                    .iter()
-                                    .find(|c| c.get("id").and_then(|i| i.as_str()) == Some(want))
-                                {
-                                    Some(c) => found.push(c.clone()),
-                                    None => {
-                                        not_found.push(serde_json::Value::String(want.to_string()))
-                                    }
-                                }
-                            }
-                            serde_json::json!({ "accountId": "acct", "state": "s", "list": found, "notFound": not_found })
-                        }
-                        None => {
-                            serde_json::json!({ "accountId": "acct", "state": "s", "list": list })
-                        }
-                    }
-                }
+                "ContactCard/get" => stub_contact_card_get(&store, &args),
                 "AddressBook/get" => serde_json::json!({
                     "accountId": "acct",
                     "state": "s",
                     "list": [ { "id": "book1", "isDefault": true } ],
                     "notFound": []
                 }),
-                "ContactCard/set" => {
-                    let mut store = store.lock().unwrap();
-                    if let Some(create) = args.get("create").and_then(|c| c.as_object()) {
-                        let mut created = serde_json::Map::new();
-                        for (cid, card) in create.clone() {
-                            let new_id = format!("c{}", store.len() + 1);
-                            let mut card = card;
-                            card["id"] = serde_json::Value::String(new_id.clone());
-                            store.insert(new_id.clone(), card);
-                            created.insert(
-                                cid,
-                                serde_json::json!({ "id": new_id, "@etag": format!("\"{new_id}-etag\"") }),
-                            );
-                        }
-                        serde_json::json!({ "accountId": "acct", "created": created, "updated": {}, "destroyed": [] })
-                    } else if let Some(update) = args.get("update").and_then(|u| u.as_object()) {
-                        let mut updated = serde_json::Map::new();
-                        for (uid, patch) in update.clone() {
-                            if let Some(existing) = store.get_mut(&uid) {
-                                if let Some(obj) = patch.as_object() {
-                                    for (k, v) in obj {
-                                        if v.is_null() {
-                                            existing.as_object_mut().map(|m| m.remove(k));
-                                        } else {
-                                            existing[k] = v.clone();
-                                        }
-                                    }
-                                }
-                                updated.insert(
-                                    uid.clone(),
-                                    serde_json::json!({ "@etag": format!("\"{uid}-etag2\"") }),
-                                );
-                            }
-                        }
-                        serde_json::json!({ "accountId": "acct", "updated": updated, "created": {}, "destroyed": [] })
-                    } else if let Some(destroy) = args.get("destroy").and_then(|d| d.as_array()) {
-                        let mut destroyed = Vec::new();
-                        for d in destroy {
-                            if let Some(did) = d.as_str() {
-                                store.remove(did);
-                                destroyed.push(serde_json::Value::String(did.to_string()));
-                            }
-                        }
-                        serde_json::json!({ "accountId": "acct", "destroyed": destroyed, "created": {}, "updated": {} })
-                    } else {
-                        serde_json::json!({ "accountId": "acct" })
-                    }
-                }
+                "ContactCard/set" => stub_contact_card_set(&store, &args),
                 _ => serde_json::json!({}),
             };
             responses.push(serde_json::json!([name, result, id]));
         }
         axum::Json(serde_json::json!({ "methodResponses": responses, "sessionState": "s" }))
+    }
+
+    /// All stored cards, sorted by id so responses are deterministic.
+    fn stub_sorted_cards(store: &Store) -> Vec<serde_json::Value> {
+        let store = store.lock().unwrap();
+        let mut v: Vec<_> = store.values().cloned().collect();
+        v.sort_by_key(|c| {
+            c.get("id")
+                .and_then(|i| i.as_str())
+                .unwrap_or("")
+                .to_string()
+        });
+        v
+    }
+
+    fn stub_contact_card_get(store: &Store, args: &serde_json::Value) -> serde_json::Value {
+        let list = stub_sorted_cards(store);
+        match args.get("ids").and_then(|v| v.as_array()) {
+            Some(ids) => {
+                let mut found = Vec::new();
+                let mut not_found = Vec::new();
+                for want in ids.iter().filter_map(|v| v.as_str()) {
+                    match list
+                        .iter()
+                        .find(|c| c.get("id").and_then(|i| i.as_str()) == Some(want))
+                    {
+                        Some(c) => found.push(c.clone()),
+                        None => not_found.push(serde_json::Value::String(want.to_string())),
+                    }
+                }
+                serde_json::json!({ "accountId": "acct", "state": "s", "list": found, "notFound": not_found })
+            }
+            None => serde_json::json!({ "accountId": "acct", "state": "s", "list": list }),
+        }
+    }
+
+    fn stub_contact_card_set(store: &Store, args: &serde_json::Value) -> serde_json::Value {
+        if let Some(create) = args.get("create").and_then(|c| c.as_object()) {
+            return stub_card_create(store, create);
+        }
+        if let Some(update) = args.get("update").and_then(|u| u.as_object()) {
+            return stub_card_update(store, update);
+        }
+        if let Some(destroy) = args.get("destroy").and_then(|d| d.as_array()) {
+            return stub_card_destroy(store, destroy);
+        }
+        serde_json::json!({ "accountId": "acct" })
+    }
+
+    fn stub_card_create(
+        store: &Store,
+        create: &serde_json::Map<String, serde_json::Value>,
+    ) -> serde_json::Value {
+        let mut store = store.lock().unwrap();
+        let mut created = serde_json::Map::new();
+        for (cid, card) in create.clone() {
+            let new_id = format!("c{}", store.len() + 1);
+            let mut card = card;
+            card["id"] = serde_json::Value::String(new_id.clone());
+            store.insert(new_id.clone(), card);
+            created.insert(
+                cid,
+                serde_json::json!({ "id": new_id, "@etag": format!("\"{new_id}-etag\"") }),
+            );
+        }
+        serde_json::json!({ "accountId": "acct", "created": created, "updated": {}, "destroyed": [] })
+    }
+
+    fn stub_card_update(
+        store: &Store,
+        update: &serde_json::Map<String, serde_json::Value>,
+    ) -> serde_json::Value {
+        let mut store = store.lock().unwrap();
+        let mut updated = serde_json::Map::new();
+        for (uid, patch) in update.clone() {
+            if let Some(existing) = store.get_mut(&uid) {
+                if let Some(obj) = patch.as_object() {
+                    for (k, v) in obj {
+                        if v.is_null() {
+                            existing.as_object_mut().map(|m| m.remove(k));
+                        } else {
+                            existing[k] = v.clone();
+                        }
+                    }
+                }
+                updated.insert(
+                    uid.clone(),
+                    serde_json::json!({ "@etag": format!("\"{uid}-etag2\"") }),
+                );
+            }
+        }
+        serde_json::json!({ "accountId": "acct", "updated": updated, "created": {}, "destroyed": [] })
+    }
+
+    fn stub_card_destroy(store: &Store, destroy: &[serde_json::Value]) -> serde_json::Value {
+        let mut store = store.lock().unwrap();
+        let mut destroyed = Vec::new();
+        for d in destroy {
+            if let Some(did) = d.as_str() {
+                store.remove(did);
+                destroyed.push(serde_json::Value::String(did.to_string()));
+            }
+        }
+        serde_json::json!({ "accountId": "acct", "destroyed": destroyed, "created": {}, "updated": {} })
     }
 
     /// Spawn a stub JMAP contacts server backed by an in-memory card store and
@@ -2394,5 +2517,152 @@ pub(crate) mod contact_test_support {
             stored.contains("jane@example.com"),
             "untouched email class preserved: {stored}"
         );
+    }
+
+    // ---- Contact identity + backend selection ------------------------------
+
+    #[test]
+    fn contact_identity_is_href_based_and_change_key_is_canonical() {
+        let href = "jmap://contacts/c1";
+        let sid = contact_server_id(href);
+        assert!(sid.starts_with("contact-"));
+        assert_eq!(
+            sid,
+            contact_server_id(href),
+            "ServerId must be deterministic"
+        );
+        assert_ne!(
+            sid,
+            contact_server_id("jmap://contacts/c2"),
+            "distinct hrefs must map to distinct ServerIds"
+        );
+
+        assert_eq!(
+            contact_change_key(&sid, Some("abc"), "X"),
+            format!("{sid}-abc")
+        );
+        let content_key = contact_change_key(&sid, None, "BEGIN:VCARD");
+        assert_eq!(
+            content_key,
+            format!("{sid}-{}", contact_hash("BEGIN:VCARD"))
+        );
+        // An empty ETag behaves like an absent one.
+        assert_eq!(
+            contact_change_key(&sid, Some(""), "BEGIN:VCARD"),
+            content_key
+        );
+    }
+
+    #[test]
+    fn jmap_contact_etag_prefers_native_then_hashes_content() {
+        let card = serde_json::json!({"id":"c1","fullName":"Jane"});
+        assert_eq!(
+            jmap_contact_etag(&card, Some("native")),
+            Some("native".to_string())
+        );
+        let hashed = jmap_contact_etag(&card, None).expect("content hash");
+        let bytes = String::from_utf8(serde_json::to_vec(&card).unwrap()).unwrap();
+        assert_eq!(hashed, contact_hash(&bytes));
+        assert_eq!(
+            Some(hashed),
+            jmap_contact_etag(&card, None),
+            "deterministic"
+        );
+    }
+
+    /// Build an `AppState` with a custom config, for backend-selection tests.
+    async fn state_with_config(cfg: crate::config::Config) -> Arc<crate::models::AppState> {
+        let storage = crate::storage::Storage::new("sqlite::memory:")
+            .await
+            .expect("in-memory storage");
+        storage.init_schema().await.expect("schema init");
+        Arc::new(crate::models::AppState::new(cfg, Arc::new(storage)))
+    }
+
+    fn contacts_cfg(jmap_base: &str, prefer: bool) -> crate::config::Config {
+        crate::config::Config {
+            jmap_base: jmap_base.to_string(),
+            email_enabled: true,
+            mail_domain: "example.com".to_string(),
+            hmac_secret: secrecy::SecretString::from("a".repeat(32)),
+            prefer_jmap_contacts: prefer,
+            ..Default::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn jmap_contacts_backend_selects_jmap_for_advertised_capability() {
+        let (base, _store) = spawn_stub_contacts_server(vec![seed_card()]).await;
+        let state = state_with_config(contacts_cfg(&base, true)).await;
+        assert_eq!(
+            jmap_contacts_backend(&state, "u", "pw").await,
+            ContactsBackend::Jmap
+        );
+    }
+
+    #[tokio::test]
+    async fn jmap_contacts_backend_degrades_to_carddav_when_disabled() {
+        let (base, _store) = spawn_stub_contacts_server(vec![seed_card()]).await;
+        let state = state_with_config(contacts_cfg(&base, false)).await;
+        assert_eq!(
+            jmap_contacts_backend(&state, "u", "pw").await,
+            ContactsBackend::Carddav
+        );
+    }
+
+    #[tokio::test]
+    async fn jmap_contacts_backend_reports_unavailable_on_probe_error() {
+        // A dead endpoint makes the capability probe fail; the backend must NOT
+        // be reported as Carddav, which would silently change contact ids.
+        let state = state_with_config(contacts_cfg("http://127.0.0.1:1", true)).await;
+        assert_eq!(
+            jmap_contacts_backend(&state, "u", "pw").await,
+            ContactsBackend::BackendUnavailable
+        );
+    }
+
+    #[tokio::test]
+    async fn sync_contacts_errors_instead_of_falling_back_on_jmap_outage() {
+        // JMAP selected but unreachable: sync must surface an error (EAS status
+        // 6), never publish a CardDAV snapshot with different ServerIds.
+        let state = state_with_config(contacts_cfg("http://127.0.0.1:1", true)).await;
+        let result = sync_contacts(&state, "u", "pw", None, "dev1", None).await;
+        assert!(
+            result.is_err(),
+            "a JMAP outage must not silently fall back to CardDAV"
+        );
+    }
+
+    #[tokio::test]
+    async fn create_contact_jmap_stores_href_id_and_list_consistent_etag() {
+        let (base, _store) = spawn_stub_contacts_server(Vec::new()).await;
+        let state = state_for(&base).await;
+        let vcard = "BEGIN:VCARD\r\nVERSION:3.0\r\nFN:Jane Doe\r\nN:Doe;Jane;;;\r\nEMAIL:jane@example.com\r\nEND:VCARD\r\n";
+        let (server_id, _stored) = create_contact_jmap(&state, "u", "pw", vcard)
+            .await
+            .expect("create");
+        let row = state
+            .storage
+            .get_contact("u", &server_id)
+            .await
+            .expect("db")
+            .expect("row present");
+
+        // ServerId is the href-derived id, not a random uuid.
+        assert_eq!(server_id, contact_server_id(&row.carddav_href));
+
+        // The stored ETag must equal the one the read path reports, so
+        // re-listing the contact does not change its ChangeKey.
+        let client = state.jmap_client.as_ref().unwrap();
+        let listed = list_contacts_jmap(client, "u", "pw").await.expect("list");
+        let card = listed
+            .iter()
+            .find(|c| c.href == row.carddav_href)
+            .expect("contact listed");
+        assert_eq!(card.etag, row.etag, "stored etag must equal listed etag");
+
+        let ck_create = contact_change_key(&server_id, row.etag.as_deref(), "");
+        let ck_list = contact_change_key(&server_id, card.etag.as_deref(), &card.vcard);
+        assert_eq!(ck_create, ck_list, "ChangeKey stable across create→list");
     }
 }
