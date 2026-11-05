@@ -6,7 +6,11 @@ use std::time::Duration;
 use tracing::warn;
 
 /// CardDAV client for contacts sync.
-/// Supports Stalwart Mailserver v0.16.26 CardDAV endpoint at /dav/{user}/contacts/.
+///
+/// Stalwart Mailserver serves CardDAV under `/dav/card/{user}/` (the
+/// addressbook home set), so `base` is the CardDAV root
+/// (`http://host:port/dav/card`) and [`Self::addressbook_home`] appends the
+/// per-user segment.
 pub struct CarddavClient {
     pub base: String,
     pub client: Client,
@@ -29,17 +33,76 @@ impl CarddavClient {
     }
 
     /// Derive CardDAV base from CalDAV base if not explicitly configured.
-    /// Default: replace "/dav/" with "/carddav/" in caldav_base.
+    /// Stalwart serves CardDAV under `/dav/card` next to CalDAV's `/dav/cal`,
+    /// so a CalDAV base of `http://host:port/dav` (or `.../dav/`) maps to
+    /// `http://host:port/dav/card`. Any other shape keeps its path and gains
+    /// a `/card` segment.
     pub fn from_caldav_base(caldav_base: &str) -> Self {
-        let base = caldav_base
-            .replace("/dav/", "/carddav/")
-            .trim_end_matches('/')
-            .to_string();
+        let base = Self::derive_base_from_caldav(caldav_base);
         let client = Client::builder()
             .timeout(Duration::from_secs(30))
             .build()
             .expect("Failed to build CardDAV client");
         Self { base, client }
+    }
+
+    /// Pure derivation of the CardDAV base from a CalDAV base, used by both
+    /// the config loader and [`Self::from_caldav_base`].
+    ///
+    /// Stalwart serves CalDAV at `{root}/dav/cal/{user}/` and CardDAV at
+    /// `{root}/dav/card/{user}/`, so the CardDAV base is the CalDAV base with
+    /// any calendar sub-path dropped and `/card` appended
+    /// (`http://host/dav` → `http://host/dav/card`,
+    /// `http://host/dav/cal` → `http://host/dav/card`).
+    ///
+    /// The match runs against the URL *path* only, so a host or port that
+    /// contains `dav` (e.g. `https://dav.example.com/…`) is never mistaken for
+    /// the DAV root.
+    pub fn derive_base_from_caldav(caldav_base: &str) -> String {
+        let trimmed = caldav_base.trim_end_matches('/');
+        if trimmed.is_empty() {
+            return String::new();
+        }
+        let (origin, path) = Self::split_origin_and_path(trimmed);
+        let path = path.trim_end_matches('/');
+        // A `/dav` segment is the DAV root; anything after it (e.g. `/cal`) is a
+        // collection sub-path that must be dropped.
+        let new_path = match path.rfind("/dav") {
+            Some(idx)
+                if path[idx + "/dav".len()..].is_empty()
+                    || path[idx + "/dav".len()..].starts_with('/') =>
+            {
+                format!("{}/card", &path[..idx + "/dav".len()])
+            }
+            _ => format!("{path}/card"),
+        };
+        format!("{origin}{new_path}")
+    }
+
+    /// Split a URL-ish string into its origin (`scheme://host[:port]`) and its
+    /// path. Falls back to a scheme-relative split when the value is not a
+    /// parseable absolute URL.
+    fn split_origin_and_path(value: &str) -> (String, String) {
+        if let Ok(url) = reqwest::Url::parse(value) {
+            let origin = match url.port() {
+                Some(port) => format!(
+                    "{}://{}:{}",
+                    url.scheme(),
+                    url.host_str().unwrap_or(""),
+                    port
+                ),
+                None => format!("{}://{}", url.scheme(), url.host_str().unwrap_or("")),
+            };
+            return (origin, url.path().to_string());
+        }
+        let scheme_end = value.find("://").map(|i| i + 3).unwrap_or(0);
+        match value[scheme_end..].find('/') {
+            Some(rel) => {
+                let split = scheme_end + rel;
+                (value[..split].to_string(), value[split..].to_string())
+            }
+            None => (value.to_string(), String::new()),
+        }
     }
 
     /// Sanitize base URL by removing embedded credentials.
@@ -62,10 +125,11 @@ impl CarddavClient {
         }
     }
 
-    /// Build the addressbook home set URL for a given user.
-    /// Typically: {base}/carddav/{username}/
+    /// Build the addressbook home set URL for a given user:
+    /// `{base}/{username}/` where `base` is the CardDAV root
+    /// (`…/dav/card`), matching Stalwart's `/dav/card/{user}/` home.
     pub fn addressbook_home(&self, username: &str) -> String {
-        format!("{}/carddav/{}/", self.base.trim_end_matches('/'), username)
+        format!("{}/{}/", self.base.trim_end_matches('/'), username)
     }
 
     /// Verify credentials by performing a PROPFIND on the addressbook home.
@@ -482,9 +546,60 @@ mod tests {
 
     #[test]
     fn test_sanitize_base_url_removes_creds() {
-        let input = "http://user:pass@example.com/carddav/";
+        let input = "http://user:pass@example.com/dav/card/";
         let out = CarddavClient::sanitize_base_url(input);
         assert!(!out.contains("@"));
         assert!(out.starts_with("http://example.com/"));
+    }
+
+    #[test]
+    fn derive_base_from_caldav_maps_dav_root_to_dav_card() {
+        assert_eq!(
+            CarddavClient::derive_base_from_caldav("http://stalwart:8080/dav"),
+            "http://stalwart:8080/dav/card"
+        );
+        assert_eq!(
+            CarddavClient::derive_base_from_caldav("http://stalwart:8080/dav/"),
+            "http://stalwart:8080/dav/card"
+        );
+    }
+
+    #[test]
+    fn derive_base_from_caldav_strips_calendar_subpath() {
+        assert_eq!(
+            CarddavClient::derive_base_from_caldav("http://stalwart:8080/dav/cal"),
+            "http://stalwart:8080/dav/card"
+        );
+    }
+
+    #[test]
+    fn derive_base_from_caldav_ignores_host_containing_dav() {
+        // A host literally named `dav…` must not be mistaken for the DAV root.
+        assert_eq!(
+            CarddavClient::derive_base_from_caldav("https://dav.example.com/caldav"),
+            "https://dav.example.com/caldav/card"
+        );
+        assert_eq!(
+            CarddavClient::derive_base_from_caldav("https://dav.example.com/dav"),
+            "https://dav.example.com/dav/card"
+        );
+    }
+
+    #[test]
+    fn from_caldav_base_sets_dav_card_root() {
+        let client = CarddavClient::from_caldav_base("http://stalwart:8080/dav/");
+        assert_eq!(client.base, "http://stalwart:8080/dav/card");
+    }
+
+    #[test]
+    fn addressbook_home_matches_stalwart_layout() {
+        let client = CarddavClient {
+            base: "http://stalwart:8080/dav/card".to_string(),
+            client: Client::new(),
+        };
+        assert_eq!(
+            client.addressbook_home("testuser@redacted.com"),
+            "http://stalwart:8080/dav/card/testuser@redacted.com/"
+        );
     }
 }

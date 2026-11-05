@@ -2235,9 +2235,10 @@ impl Storage {
         Ok(())
     }
 
-    /// Upsert a contact: insert or update based on owner+carddav_href uniqueness.
-    /// If a contact with the same owner and href exists, update its server_id, etag, vcard.
-    /// Otherwise insert a new mapping.
+    /// Upsert a contact mapping keyed by `owner` + `server_id` (the table's
+    /// `UNIQUE(owner, server_id)` constraint). The `server_id` is derived
+    /// deterministically from the backend href, so re-listing a contact updates
+    /// its row in place instead of failing or duplicating.
     pub async fn upsert_contact(
         &self,
         owner: &str,
@@ -2246,23 +2247,43 @@ impl Storage {
         etag: Option<&str>,
         vcard: Option<&str>,
     ) -> Result<()> {
-        // Use INSERT ... ON CONFLICT to atomically upsert, avoiding race conditions
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| GatewayError::Storage(format!("Transaction error: {}", e)))?;
+        // A backend resource is identified by its href. If the deterministic
+        // ServerId derived from it changed (the resource moved, or the backend
+        // id scheme changed), drop the stale mapping so exactly one row points
+        // at the href and the old ServerId stops resolving.
+        sqlx::query(
+            "DELETE FROM contact_map WHERE owner = ?1 AND carddav_href = ?2 AND server_id <> ?3",
+        )
+        .bind(owner)
+        .bind(carddav_href)
+        .bind(server_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
         sqlx::query(
             "INSERT INTO contact_map (owner, carddav_href, server_id, etag, vcard) VALUES (?1, ?2, ?3, ?4, ?5) \
-             ON CONFLICT(owner, carddav_href) DO UPDATE SET \
-             server_id = excluded.server_id, \
+             ON CONFLICT(owner, server_id) DO UPDATE SET \
+             carddav_href = excluded.carddav_href, \
              etag = excluded.etag, \
              vcard = excluded.vcard, \
-             updated_at = CURRENT_TIMESTAMP"
+             updated_at = CURRENT_TIMESTAMP",
         )
         .bind(owner)
         .bind(carddav_href)
         .bind(server_id)
         .bind(etag)
         .bind(vcard)
-        .execute(self.pool.as_ref())
+        .execute(&mut *tx)
         .await
         .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+        tx.commit()
+            .await
+            .map_err(|e| GatewayError::Storage(format!("Transaction error: {}", e)))?;
         Ok(())
     }
 

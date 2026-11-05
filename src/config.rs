@@ -142,7 +142,7 @@ pub struct Config {
     // JMAP base URL for email read/sync via Stalwart
     #[serde(default)]
     pub jmap_base: String,
-    // CardDAV base URL for contacts (typically /carddav)
+    // CardDAV base URL for contacts (typically /dav/card)
     #[serde(default)]
     pub carddav_base: String,
     // Master switch for email functionality
@@ -502,9 +502,9 @@ impl Config {
         cfg.validate()?;
 
         // Auto-derive carddav_base from caldav_base if CardDAV not explicitly set.
-        // Stalwart serves CardDAV at the same host: replace /dav with /carddav.
+        // Stalwart serves CardDAV at the same host under /dav/card/{user}/.
         if cfg.carddav_base.is_empty() && !cfg.caldav_base.is_empty() {
-            let derived = cfg.caldav_base.replace("/dav", "/carddav");
+            let derived = crate::carddav::CarddavClient::derive_base_from_caldav(&cfg.caldav_base);
             tracing::info!(
                 target: "config",
                 caldav_base = %cfg.caldav_base,
@@ -978,7 +978,7 @@ fn apply_environment_overrides(cfg: &mut Config) {
 
     // Auto-derive CardDAV base from CalDAV base if not explicitly set
     if cfg.carddav_base.is_empty() && !cfg.caldav_base.is_empty() {
-        let derived = cfg.caldav_base.replace("/dav/", "/carddav/");
+        let derived = crate::carddav::CarddavClient::derive_base_from_caldav(&cfg.caldav_base);
         tracing::info!(
             target: "config",
             caldav_base = cfg.caldav_base,

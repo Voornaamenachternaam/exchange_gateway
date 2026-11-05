@@ -24,16 +24,16 @@ services:
       # - GATEWAY_CONFIG=/etc/exchange-gateway/config.toml
 
       # --- Stalwart backend (private bridge network) ----------------------
-      # The HTTP listener on port 8080 serves CalDAV/CardDAV at /dav and JMAP
-      # at /jmap. JMAP and CardDAV bases are derived from the CalDAV base when
-      # not set explicitly; they are set explicitly here for clarity.
+      # The HTTP listener on port 8080 serves CalDAV at /dav/cal, CardDAV at
+      # /dav/card and JMAP at /jmap. The CardDAV base is derived from the
+      # CalDAV base when not set explicitly (…/dav → …/dav/card); it is set
+      # explicitly here for clarity. Contacts use JMAP (RFC 9610) first, with
+      # CardDAV as the fallback.
       - GATEWAY_CALDAV_BASE=http://stalwart:8080/dav
       - GATEWAY_JMAP_BASE=http://stalwart:8080/jmap
-      # NOTE (AUDIT3.MD #3): Stalwart serves CardDAV under /dav/card/{user}/,
-      # but the gateway currently appends "/carddav/{user}/" to this base, so
-      # EWS contacts 404. This cannot be corrected by the base value alone —
-      # it needs a code fix (or routing EWS contacts through JMAP).
-      - GATEWAY_CARDDAV_BASE=http://stalwart:8080/carddav
+      # CardDAV root (Stalwart serves the addressbook home at
+      # /dav/card/{user}/). The gateway appends "/{user}/".
+      - GATEWAY_CARDDAV_BASE=http://stalwart:8080/dav/card
 
       # Deploy-time JMAP Calendars capability verification: off | warn | enforce.
       # `warn` logs findings and falls back to CalDAV; `enforce` refuses startup.

@@ -5291,12 +5291,29 @@ impl JmapClient {
         Ok(())
     }
 
+    /// Check whether the JMAP server supports contacts (RFC 9610), reporting a
+    /// backend outage distinctly from a genuine capability miss.
+    ///
+    /// Returns `Ok(true)` when the session advertises the contacts capability,
+    /// `Ok(false)` when the server answered but does not advertise it, and
+    /// `Err` when the session could not be fetched. Contact read paths must
+    /// treat the error case as a transient backend failure (retryable) rather
+    /// than silently switching backends, which would churn the client-visible
+    /// contact identity.
+    pub async fn contacts_capability(
+        &self,
+        username: &str,
+        password: &SecretString,
+    ) -> Result<bool> {
+        let session = self.get_session(username, password).await?;
+        Ok(session.capabilities.contains_key(JMAP_CONTACTS_CAPABILITY))
+    }
+
     /// Check whether the JMAP server supports contacts (RFC 9610).
     pub async fn supports_contacts(&self, username: &str, password: &SecretString) -> bool {
-        match self.get_session(username, password).await {
-            Ok(session) => session.capabilities.contains_key(JMAP_CONTACTS_CAPABILITY),
-            Err(_) => false,
-        }
+        self.contacts_capability(username, password)
+            .await
+            .unwrap_or(false)
     }
 
     /// Get the primary contacts account id from the JMAP session.
@@ -5419,6 +5436,60 @@ impl JmapClient {
                     });
                 }
                 return Ok((cards, state));
+            }
+        }
+
+        Err(anyhow!(
+            "Unexpected JMAP response structure for ContactCard/get"
+        ))
+    }
+
+    /// Get a single contact card by id via `ContactCard/get` (RFC 9610 §4).
+    ///
+    /// Returns the raw JSCard document when the id exists, `None` when the
+    /// server reports it as not found.
+    pub async fn get_contact_card(
+        &self,
+        username: &str,
+        password: &SecretString,
+        id: &str,
+    ) -> Result<Option<Value>> {
+        let session = self.get_session(username, password).await?;
+        let api_url = &session.api_url;
+        let account_id = session
+            .primary_accounts
+            .get(JMAP_CONTACTS_CAPABILITY)
+            .ok_or_else(|| anyhow!("No primary contacts account found in JMAP session"))?;
+
+        let method_calls = vec![(
+            "ContactCard/get",
+            json!({ "accountId": account_id, "ids": [id] }),
+            "cg0",
+        )];
+
+        let response = self
+            .api_call(
+                api_url,
+                &["urn:ietf:params:jmap:core", JMAP_CONTACTS_CAPABILITY],
+                method_calls,
+                username,
+                password,
+            )
+            .await?;
+
+        for (method, data, _) in response.method_responses {
+            if method == "ContactCard/get" {
+                if let Some(not_found) = data.get("notFound").and_then(|v| v.as_array())
+                    && not_found.iter().any(|v| v.as_str() == Some(id))
+                {
+                    return Ok(None);
+                }
+                let list = data
+                    .get("list")
+                    .and_then(|v| v.as_array())
+                    .cloned()
+                    .unwrap_or_default();
+                return Ok(list.into_iter().next());
             }
         }
 
