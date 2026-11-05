@@ -1218,7 +1218,10 @@ async fn verify_calendar_capability_at_startup(state: &Arc<AppState>) {
         return;
     }
     if state.cfg.admin_username.is_empty() || state.cfg.admin_password.is_empty() {
-        let msg = "GATEWAY_ADMIN_USERNAME/GATEWAY_ADMIN_PASSWORD not set; skipping deploy-time JMAP calendars capability check";
+        let msg = "GATEWAY_ADMIN_USERNAME/GATEWAY_ADMIN_PASSWORD not set; skipping the deploy-time JMAP calendars capability check. \
+                   JMAP calendar WRITES remain protected at runtime: every create/update reads its own result back and, if the \
+                   backend stored an empty event, the write fails closed, JMAP calendar writes are disabled for the process, and \
+                   the request falls back to CalDAV. Set the admin credentials to run the full check at startup.";
         if enforce {
             tracing::error!(target: "startup", "{}", msg);
             std::process::exit(1);
@@ -1247,17 +1250,30 @@ async fn verify_calendar_capability_at_startup(state: &Arc<AppState>) {
     {
         Ok(report) => {
             if report.is_healthy() {
-                info!(
-                    target: "startup",
-                    account_id = ?report.account_id,
-                    may_create_calendar = ?report.may_create_calendar,
-                    max_participants_per_event = ?report.max_participants_per_event,
-                    max_calendars_per_event = ?report.max_calendars_per_event,
-                    min_date_time = ?report.min_date_time,
-                    max_date_time = ?report.max_date_time,
-                    max_expanded_query_duration = ?report.max_expanded_query_duration,
-                    "JMAP calendars capability verified against Stalwart backend"
-                );
+                if report.warnings.is_empty() {
+                    info!(
+                        target: "startup",
+                        account_id = ?report.account_id,
+                        may_create_calendar = ?report.may_create_calendar,
+                        max_participants_per_event = ?report.max_participants_per_event,
+                        max_calendars_per_event = ?report.max_calendars_per_event,
+                        min_date_time = ?report.min_date_time,
+                        max_date_time = ?report.max_date_time,
+                        max_expanded_query_duration = ?report.max_expanded_query_duration,
+                        "JMAP calendars capability verified against Stalwart backend"
+                    );
+                } else {
+                    // The functional probes passed; the backend simply does
+                    // not advertise every §1.5.1 metadata field (Stalwart
+                    // v1.0.x advertises `{}`). This is not a failure.
+                    info!(
+                        target: "startup",
+                        account_id = ?report.account_id,
+                        warnings = ?report.warnings,
+                        "JMAP calendars capability verified against Stalwart backend \
+                         (capability metadata gaps are informational only)"
+                    );
+                }
             } else {
                 let msg = format!(
                     "JMAP calendars capability check found issues: capability_present={} calendar_get_ok={} calendar_event_query_ok={} structured_recurrence_ok={} ics_round_trip_ok={} issues={:?}",

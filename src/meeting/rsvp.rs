@@ -1000,29 +1000,32 @@ fn apply_attendee_decision(
 }
 
 /// Create the attendee's copy on JMAP Calendar. Returns
-/// `(account_id, event_id, etag)` or `None` on any failure (the caller falls
-/// back to CalDAV).
+/// `(account_id, event_id, etag)` or a [`CalendarWriteError`] the caller maps
+/// onto the CalDAV fallback (disabling the JMAP write path when the backend
+/// discarded the payload).
 async fn create_copy_via_jmap(
     jmap: &crate::jmap::JmapClient,
     username: &str,
     password: &SecretString,
     ics: &str,
-) -> Option<(String, String, String)> {
-    let account_id = jmap.get_account_id(username, password).await.ok()?;
-    let calendars = jmap.query_calendars(username, password).await.ok()?;
-    let calendar = calendars.calendars.first().filter(|c| c.id.is_some())?;
-    let (event_id, _uid, etag) = jmap
-        .set_calendar_event(crate::jmap::SetCalendarEventParams {
-            account_id: &account_id,
-            ics,
-            event_id: None,
-            calendar_id: calendar.id.as_deref(),
-            username,
-            password,
-        })
-        .await
-        .ok()?;
-    Some((account_id, event_id, etag))
+) -> Result<(String, String, String), crate::jmap::CalendarWriteError> {
+    let account_id = jmap.get_account_id(username, password).await?;
+    let calendars = jmap.query_calendars(username, password).await?;
+    let calendar = calendars
+        .calendars
+        .first()
+        .filter(|c| c.id.is_some())
+        .ok_or_else(|| anyhow!("no JMAP calendar available for attendee copy"))?;
+    jmap.set_calendar_event(crate::jmap::SetCalendarEventParams {
+        account_id: &account_id,
+        ics,
+        event_id: None,
+        calendar_id: calendar.id.as_deref(),
+        username,
+        password,
+    })
+    .await
+    .map(|(event_id, _uid, etag)| (account_id, event_id, etag))
 }
 
 /// Write the patched item through the backend the copy lives on (JMAP update
@@ -1047,7 +1050,7 @@ async fn write_existing_copy(
             ));
         };
         let account_id = jmap.get_account_id(username, password).await?;
-        let (_id, _uid, etag) = jmap
+        let (_id, _uid, etag) = match jmap
             .set_calendar_event(crate::jmap::SetCalendarEventParams {
                 account_id: &account_id,
                 ics: &ics,
@@ -1056,7 +1059,21 @@ async fn write_existing_copy(
                 username,
                 password,
             })
-            .await?;
+            .await
+        {
+            Ok(v) => v,
+            Err(e) => {
+                if e.is_payload_discarded() {
+                    state.disable_jmap_calendar_writes();
+                    tracing::error!(
+                        target: "meeting",
+                        error = %e,
+                        "RSVP: JMAP calendar update stored an empty event; disabling JMAP calendar writes for this process"
+                    );
+                }
+                return Err(anyhow!("{}", e));
+            }
+        };
         state
             .storage
             .upsert_item_map(
@@ -1115,22 +1132,32 @@ async fn create_attendee_copy(
         && let Some(jmap) = state.jmap_client.as_ref().cloned()
         && jmap.supports_calendar(username, password).await
     {
-        if let Some((account_id, event_id, etag)) =
-            create_copy_via_jmap(&jmap, username, password, &ics).await
-        {
-            let server_id = crate::sync::generate_server_id(
-                state.cfg.hmac_secret(),
-                &format!("jmap:{}:{}", account_id, event_id),
-            );
-            let resource_href = format!("jmap://calendar/{}/{}", account_id, event_id);
-            state
-                .storage
-                .upsert_item_map(username, "", &resource_href, &server_id, &item.uid, &etag)
-                .await?;
-            return Ok(server_id);
+        match create_copy_via_jmap(&jmap, username, password, &ics).await {
+            Ok((account_id, event_id, etag)) => {
+                let server_id = crate::sync::generate_server_id(
+                    state.cfg.hmac_secret(),
+                    &format!("jmap:{}:{}", account_id, event_id),
+                );
+                let resource_href = format!("jmap://calendar/{}/{}", account_id, event_id);
+                state
+                    .storage
+                    .upsert_item_map(username, "", &resource_href, &server_id, &item.uid, &etag)
+                    .await?;
+                return Ok(server_id);
+            }
+            Err(e) => {
+                if e.is_payload_discarded() {
+                    state.disable_jmap_calendar_writes();
+                    tracing::error!(
+                        target: "meeting",
+                        error = %e,
+                        "RSVP: JMAP attendee-copy create stored an empty event; disabling JMAP calendar writes for this process"
+                    );
+                }
+                // JMAP create failed → fall through to CalDAV.
+                tracing::warn!(target: "meeting", error = %e, "RSVP: JMAP attendee-copy create failed; falling back to CalDAV");
+            }
         }
-        // JMAP create failed → fall through to CalDAV.
-        tracing::warn!(target: "meeting", "RSVP: JMAP attendee-copy create failed; falling back to CalDAV");
     }
 
     // CalDAV fallback / primary.

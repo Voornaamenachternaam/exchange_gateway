@@ -489,9 +489,11 @@ pub struct CalendarCapabilityReport {
     pub calendar_get_ok: bool,
     /// `CalendarEvent/query` against the primary account succeeded.
     pub calendar_event_query_ok: bool,
-    /// The write probe succeeded: an event created via `CalendarEvent/set`
-    /// with an `iCalendar` payload came back with its content applied. This
-    /// is the write path the gateway currently uses for created events.
+    /// The write probe succeeded: an ICS document converted to structured
+    /// JSCalendar properties (via `ics_to_jscalendar_event` +
+    /// `jscalendar_write_payload`, the exact helpers `set_calendar_event`
+    /// uses) came back with its content applied. This is the write path the
+    /// gateway uses for created events.
     pub ics_round_trip_ok: bool,
     /// The write probe succeeded for a structured event with
     /// `recurrenceRule` + `recurrenceOverrides` (an excluded occurrence),
@@ -499,33 +501,36 @@ pub struct CalendarCapabilityReport {
     pub structured_recurrence_ok: bool,
     /// All problems found, for deploy-time diagnostics. Empty when healthy.
     pub issues: Vec<String>,
+    /// Informational gaps in the advertised capability object that do NOT
+    /// affect gateway operation. draft-ietf-jmap-calendars §1.5.1 declares the
+    /// `maxCalendarsPerEvent`/`maxParticipantsPerEvent`/`minDateTime`/
+    /// `maxDateTime`/`maxExpandedQueryDuration`/`mayCreateCalendar` fields as
+    /// required, but a backend that omits them still functions — Stalwart
+    /// v1.0.x advertises `urn:ietf:params:jmap:calendars` as `{}` and works
+    /// correctly. These are surfaced for operators without failing the check.
+    pub warnings: Vec<String>,
 }
 
 impl CalendarCapabilityReport {
-    /// The verification passed with no issues at all and every required
-    /// draft-ietf-jmap-calendars §1.5.1 capability field was advertised.
-    /// (The two nullable `max*PerEvent` limits may legitimately be `null`
-    /// ("no limit"), so absence of a value there is not unhealthy; their
-    /// *absence* is caught by `extract_capability_details` recording an
-    /// issue, which already fails this predicate.)
+    /// The verification passed with no functional issues. The capability
+    /// object's optional/absent metadata fields are reported in `warnings`,
+    /// not `issues` (see the `warnings` field docs).
     pub fn is_healthy(&self) -> bool {
         self.capability_present
             && self.calendar_get_ok
             && self.calendar_event_query_ok
             && self.structured_recurrence_ok
             && self.ics_round_trip_ok
-            && self.min_date_time.is_some()
-            && self.max_date_time.is_some()
-            && self.max_expanded_query_duration.is_some()
-            && self.may_create_calendar.is_some()
             && self.issues.is_empty()
     }
 
-    /// Extract draft-ietf-jmap-calendars §1.5.1 capability fields. Every
-    /// field is REQUIRED by the spec, so an absent field records an issue;
-    /// a field advertised with the wrong type records an issue as well.
-    /// `maxCalendarsPerEvent`/`maxParticipantsPerEvent` may explicitly be
-    /// `null` ("no limit") — that is accepted and stored as `None`.
+    /// Extract draft-ietf-jmap-calendars §1.5.1 capability fields. The fields
+    /// are declared required by the spec, but a backend may omit them and
+    /// still work (Stalwart v1.0.x advertises `{}`); an absent field is
+    /// therefore recorded as a non-fatal WARNING, while a field advertised
+    /// with the wrong TYPE is a fatal issue. `maxCalendarsPerEvent`/
+    /// `maxParticipantsPerEvent` may explicitly be `null` ("no limit") — that
+    /// is accepted and stored as `None`.
     fn extract_capability_details(&mut self, details: &Value) {
         self.capability_details = Some(details.clone());
         let Some(obj) = details.as_object() else {
@@ -535,55 +540,63 @@ impl CalendarCapabilityReport {
             ));
             return;
         };
-        let take_u64 = |key: &str, issues: &mut Vec<String>| -> Option<u64> {
-            match obj.get(key) {
-                None => {
-                    issues.push(format!(
-                        "calendars capability is missing required §1.5.1 field {}",
+        let take_u64 =
+            |key: &str, issues: &mut Vec<String>, warnings: &mut Vec<String>| -> Option<u64> {
+                match obj.get(key) {
+                    None => {
+                        warnings.push(format!(
+                        "calendars capability does not advertise the §1.5.1 field {}; the server \
+                         treats it as unset (no limit), which is safe",
                         key
                     ));
-                    None
+                        None
+                    }
+                    Some(v) if v.is_null() => None,
+                    Some(v) => match v.as_u64() {
+                        Some(n) => Some(n),
+                        None => {
+                            issues.push(format!(
+                                "capability field {} is not an unsigned integer or null: {}",
+                                key, v
+                            ));
+                            None
+                        }
+                    },
                 }
-                Some(v) if v.is_null() => None,
-                Some(v) => match v.as_u64() {
-                    Some(n) => Some(n),
+            };
+        let take_string =
+            |key: &str, issues: &mut Vec<String>, warnings: &mut Vec<String>| -> Option<String> {
+                match obj.get(key) {
                     None => {
-                        issues.push(format!(
-                            "capability field {} is not an unsigned integer or null: {}",
-                            key, v
+                        warnings.push(format!(
+                            "calendars capability does not advertise the §1.5.1 field {}; the \
+                             gateway does not require it",
+                            key
                         ));
                         None
                     }
-                },
-            }
-        };
-        let take_string = |key: &str, issues: &mut Vec<String>| -> Option<String> {
-            match obj.get(key) {
-                None => {
-                    issues.push(format!(
-                        "calendars capability is missing required §1.5.1 field {}",
-                        key
-                    ));
-                    None
+                    Some(v) => match v.as_str() {
+                        Some(s) => Some(s.to_string()),
+                        None => {
+                            issues.push(format!("capability field {} is not a string: {}", key, v));
+                            None
+                        }
+                    },
                 }
-                Some(v) => match v.as_str() {
-                    Some(s) => Some(s.to_string()),
-                    None => {
-                        issues.push(format!("capability field {} is not a string: {}", key, v));
-                        None
-                    }
-                },
-            }
-        };
+            };
         let mut issues = std::mem::take(&mut self.issues);
-        self.max_calendars_per_event = take_u64("maxCalendarsPerEvent", &mut issues);
-        self.max_participants_per_event = take_u64("maxParticipantsPerEvent", &mut issues);
-        self.min_date_time = take_string("minDateTime", &mut issues);
-        self.max_date_time = take_string("maxDateTime", &mut issues);
-        self.max_expanded_query_duration = take_string("maxExpandedQueryDuration", &mut issues);
+        let mut warnings = std::mem::take(&mut self.warnings);
+        self.max_calendars_per_event = take_u64("maxCalendarsPerEvent", &mut issues, &mut warnings);
+        self.max_participants_per_event =
+            take_u64("maxParticipantsPerEvent", &mut issues, &mut warnings);
+        self.min_date_time = take_string("minDateTime", &mut issues, &mut warnings);
+        self.max_date_time = take_string("maxDateTime", &mut issues, &mut warnings);
+        self.max_expanded_query_duration =
+            take_string("maxExpandedQueryDuration", &mut issues, &mut warnings);
         match obj.get("mayCreateCalendar") {
-            None => issues.push(
-                "calendars capability is missing required §1.5.1 field mayCreateCalendar"
+            None => warnings.push(
+                "calendars capability does not advertise the §1.5.1 field mayCreateCalendar; \
+                 assuming calendar creation is permitted"
                     .to_string(),
             ),
             Some(v) => match v.as_bool() {
@@ -601,6 +614,7 @@ impl CalendarCapabilityReport {
             );
         }
         self.issues = issues;
+        self.warnings = warnings;
     }
 }
 
@@ -907,6 +921,21 @@ fn parse_calendar_event_list(data: &Value) -> (Vec<JmapCalendarEvent>, usize) {
     (events, unparseable)
 }
 
+/// First event object from a `CalendarEvent/get` response carried in a batch
+/// of JMAP method responses. Used by the write path to read back the event it
+/// just created/updated (in the same request, via a `resultOf`/explicit-id
+/// `CalendarEvent/get`) and verify the payload was applied.
+fn first_calendar_event(response: &JmapResponse) -> Option<Value> {
+    response
+        .method_responses
+        .iter()
+        .find(|(m, _, _)| m == "CalendarEvent/get")
+        .and_then(|(_, data, _)| data.get("list"))
+        .and_then(|list| list.as_array())
+        .and_then(|list| list.first())
+        .cloned()
+}
+
 /// Result of a Calendar/get call.
 #[derive(Clone, Debug)]
 pub struct CalendarListResult {
@@ -955,6 +984,36 @@ pub struct SetCalendarEventParams<'a> {
     pub calendar_id: Option<&'a str>,
     pub username: &'a str,
     pub password: &'a SecretString,
+}
+
+/// Error returned by [`JmapClient::set_calendar_event`].
+///
+/// The [`CalendarWriteError::PayloadDiscarded`] variant is distinct so callers
+/// can recognise the "the backend accepted the write but stored an empty
+/// event" failure and permanently disable the JMAP calendar write path for the
+/// process (a build that discards the payload will do so for every write). A
+/// read-back that keeps the content marker but alters another written field is
+/// reported as [`CalendarWriteError::Other`] instead — see
+/// [`crate::jscalendar::WriteVerificationFailure`].
+#[derive(Debug, thiserror::Error)]
+pub enum CalendarWriteError {
+    /// The server accepted `CalendarEvent/set` but the read-back carried no
+    /// content marker (title, or start for a titleless event) — the write path
+    /// is lossy on this backend.
+    #[error("backend discarded the calendar event payload: {0}")]
+    PayloadDiscarded(String),
+    /// Any other failure (transport, session, malformed response, a read-back
+    /// content mismatch, …).
+    #[error(transparent)]
+    Other(#[from] anyhow::Error),
+}
+
+impl CalendarWriteError {
+    /// Whether this failure proves the backend's JMAP calendar write path is
+    /// lossy (a reason to fall back to CalDAV for the process lifetime).
+    pub fn is_payload_discarded(&self) -> bool {
+        matches!(self, CalendarWriteError::PayloadDiscarded(_))
+    }
 }
 
 /// Duration for which a cached JMAP session is considered valid.
@@ -4165,14 +4224,17 @@ impl JmapClient {
             }
         }
 
-        // Write probes. Verified live against stalwartlabs/stalwart:v0.16.22:
+        // Write probes. Verified live against stalwartlabs/stalwart:v0.16.22
+        // and v1.0.3:
         //  - RFC-form `recurrenceRules` arrays are REJECTED with
         //    `invalidProperties`; the implementation speaks the older-draft
         //    form `recurrenceRule` (single object) + `recurrenceOverrides`.
-        //  - An `iCalendar` payload in `CalendarEvent/set` (the path used by
-        //    `set_calendar_event`) is silently DISCARDED — the created event
-        //    carries no content. Both behaviours are fatal to gateway event
-        //    creation and must be detected at deploy time, so probe both.
+        //  - An event written with a raw `iCalendar` payload comes back with
+        //    NO content (title/start/duration dropped), which is why
+        //    `set_calendar_event` converts the ICS to structured JSCalendar
+        //    properties (`ics_to_jscalendar_event`) before writing. Both
+        //    behaviours are fatal to gateway event creation and must be
+        //    detected at deploy time, so probe both.
         self.probe_write_paths(&session, &account_id, username, password, &mut report)
             .await;
 
@@ -4181,8 +4243,10 @@ impl JmapClient {
 
     /// Probe the two write paths the gateway can use to create events:
     /// structured JSCalendar properties (with a recurrence + an excluded
-    /// occurrence) and raw `iCalendar` payloads. Detects silent server-side
-    /// loss of either.
+    /// occurrence) and the ICS→structured conversion the gateway actually
+    /// writes (`ics_to_jscalendar_event` + `jscalendar_write_payload`). The
+    /// first catches a build that rejects the structured form; the second
+    /// catches a build that silently drops event content.
     async fn probe_write_paths(
         &self,
         session: &JmapSession,
@@ -4323,7 +4387,12 @@ impl JmapClient {
             }
         }
 
-        // --- Probe 2: raw `iCalendar` payload (the gateway's current path).
+        // --- Probe 2: the gateway's actual create path — an ICS document
+        // converted to structured JSCalendar properties via the same helper
+        // `set_calendar_event` uses (`ics_to_jscalendar_event` +
+        // `jscalendar_write_payload`). This is what must round-trip: a raw
+        // `iCalendar` payload is discarded by Stalwart, which is precisely why
+        // the gateway converts before writing.
         let ics_uid = format!("gateway-cal-probe-ics-{}", uuid::Uuid::new_v4());
         let ics = format!(
             "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//exchange-gateway//deploy-check//EN\r\n\
@@ -4332,42 +4401,51 @@ impl JmapClient {
              SUMMARY:{ics_uid}\r\nRRULE:FREQ=WEEKLY\r\nEXDATE;TZID=Europe/Berlin:20260309T090000\r\n\
              END:VEVENT\r\nEND:VCALENDAR\r\n"
         );
-        let id2 = self
-            .probe_create(
-                session,
-                account_id,
-                username,
-                password,
-                json!({
-                    "calendarIds": { calendar_id: true },
-                    "uid": ics_uid,
-                    "iCalendar": ics,
-                }),
-                report,
-            )
-            .await;
-        if let Some(id2) = id2.as_deref() {
-            match self
-                .probe_get(session, account_id, username, password, id2)
-                .await
-            {
-                Some(ev) => {
-                    if ev.get("title").and_then(|v| v.as_str()) == Some(ics_uid.as_str()) {
-                        report.ics_round_trip_ok = true;
-                    } else {
-                        report.issues.push(format!(
-                            "write probe: CalendarEvent/set accepted the iCalendar payload \
-                             but the event content was not applied (got {}); a server build \
-                             with this behaviour silently loses all gateway-created event data",
-                            ev
-                        ));
+        let id2 = match crate::jscalendar::ics_to_jscalendar_event(&ics) {
+            Some(entry) => {
+                let mut payload = crate::jscalendar::jscalendar_write_payload(&entry, false);
+                if let Some(obj) = payload.as_object_mut() {
+                    obj.insert("calendarIds".to_string(), json!({ (calendar_id): true }));
+                }
+                let id2 = self
+                    .probe_create(session, account_id, username, password, payload, report)
+                    .await;
+                if let Some(id2) = id2.as_deref() {
+                    match self
+                        .probe_get(session, account_id, username, password, id2)
+                        .await
+                    {
+                        Some(ev) => match crate::jscalendar::verify_write_round_trip(&ev, &entry) {
+                            Ok(()) => report.ics_round_trip_ok = true,
+                            Err(e) => {
+                                let detail = if e.is_discarded() {
+                                    "the backend discarded the event payload"
+                                } else {
+                                    "the backend stored the event but altered its content"
+                                };
+                                report.issues.push(format!(
+                                    "write probe: CalendarEvent/set accepted the structured \
+                                     payload but {detail} ({}); a server build with this \
+                                     behaviour silently loses gateway-created event data",
+                                    e
+                                ));
+                            }
+                        },
+                        None => report
+                            .issues
+                            .push("write probe: iCalendar event missing on read-back".to_string()),
                     }
                 }
-                None => report
-                    .issues
-                    .push("write probe: iCalendar event missing on read-back".to_string()),
+                id2
             }
-        }
+            None => {
+                report.issues.push(
+                    "write probe: could not convert the probe ICS into a JSCalendar payload"
+                        .to_string(),
+                );
+                None
+            }
+        };
 
         // Cleanup. Destroy the probe events first (Calendar/set refuses to
         // destroy a non-empty calendar), then the probe calendar itself. Both
@@ -4939,40 +5017,59 @@ impl JmapClient {
     /// (draft-ietf-jmap-calendars §5.9).
     ///
     /// Replaces CalDAV `put_event` (PUT).
-    /// Creates events by posting the raw ICS in CalendarEvent/set via the
-    /// "iCalendar" property. WARNING: verified live against
-    /// stalwartlabs/stalwart:v0.16.22 — that build accepts the create but
-    /// silently discards the ICS content, and does not support
-    /// CalendarEvent/import. The deploy-time verification
-    /// (`verify_calendar_capability_deploy`, `ics_round_trip_ok`) detects
-    /// this and refuses "healthy" so the failure is loud instead of silent.
+    ///
+    /// The write payload is the **structured JSCalendar** event produced from
+    /// the rendered iCalendar by `crate::jscalendar::ics_to_jscalendar_event`,
+    /// NOT the raw ICS string in the `iCalendar` property. Stalwart v1.0.x
+    /// accepts a raw-`iCalendar` create but silently discards its content
+    /// (verified live: the stored event carries no title/start/duration), so
+    /// the ICS is converted to the property form Stalwart actually persists.
+    /// Updates send the full replacement property set, with every optional
+    /// property the new event does not carry explicitly nulled, because
+    /// `CalendarEvent/set` update is a partial patch on Stalwart.
+    ///
+    /// The write is **fail-closed**: the created/updated event is read back in
+    /// the same request and its content is compared with what was sent. If the
+    /// backend did not apply the payload, an error is returned so the caller
+    /// falls back to CalDAV instead of reporting success over a lost event.
     ///
     /// For creates (event_id is None), the event is placed in the
     /// specified calendar_id.
-    /// For updates (event_id is Some), the existing event is patched.
+    /// For updates (event_id is Some), the existing event is replaced.
     ///
     /// Returns (jmap_event_id, uid, etag) on success.
     pub async fn set_calendar_event(
         &self,
         params: SetCalendarEventParams<'_>,
-    ) -> Result<(String, String, String)> {
+    ) -> std::result::Result<(String, String, String), CalendarWriteError> {
         let session = self.get_session(params.username, params.password).await?;
         let api_url = &session.api_url;
 
+        let entry = crate::jscalendar::ics_to_jscalendar_event(params.ics).ok_or_else(|| {
+            anyhow!("failed to convert rendered iCalendar into a JSCalendar event payload")
+        })?;
+
         if let Some(existing_id) = params.event_id {
-            // Update existing event — use /set update with the new ICS
-            let method_calls = vec![(
-                "CalendarEvent/set",
-                json!({
-                    "accountId": params.account_id,
-                    "update": {
-                        (existing_id): {
-                            "iCalendar": params.ics,
-                        },
-                    },
-                }),
-                "es0",
-            )];
+            let payload = crate::jscalendar::jscalendar_write_payload(&entry, true);
+            let method_calls = vec![
+                (
+                    "CalendarEvent/set",
+                    json!({
+                        "accountId": params.account_id,
+                        "update": { (existing_id): payload },
+                    }),
+                    "es0",
+                ),
+                (
+                    "CalendarEvent/get",
+                    json!({
+                        "accountId": params.account_id,
+                        "ids": [existing_id],
+                        "properties": CALENDAR_EVENT_PROPERTIES,
+                    }),
+                    "eg0",
+                ),
+            ];
 
             let response = self
                 .api_call(
@@ -4984,53 +5081,75 @@ impl JmapClient {
                 )
                 .await?;
 
-            for (method, data, _) in &response.method_responses {
-                if method == "CalendarEvent/set" {
-                    if let Some(not_updated) = data.get("notUpdated")
-                        && !not_updated.is_null()
-                        && not_updated.as_object().is_none_or(|o| !o.is_empty())
-                    {
-                        return Err(anyhow!("CalendarEvent/set update failed: {}", not_updated));
-                    }
-                    if let Some(updated) = data.get("updated")
-                        && let Some(obj) = updated.get(existing_id)
-                    {
-                        let id = existing_id.to_string();
-                        let uid = obj
-                            .get("uid")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("")
-                            .to_string();
-                        let etag = obj
-                            .get("@etag")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("")
-                            .to_string();
-                        return Ok((id, uid, etag));
-                    }
-                }
+            let set_args = response
+                .method_responses
+                .iter()
+                .find(|(m, _, _)| m == "CalendarEvent/set")
+                .map(|(_, a, _)| a)
+                .ok_or_else(|| anyhow!("CalendarEvent/set returned no response"))?;
+            if let Some(not_updated) = set_args.get("notUpdated")
+                && !not_updated.is_null()
+                && not_updated.as_object().is_none_or(|o| !o.is_empty())
+            {
+                return Err(anyhow!("CalendarEvent/set update failed: {}", not_updated).into());
             }
 
-            Ok((existing_id.to_string(), String::new(), String::new()))
+            let read_back = first_calendar_event(&response).ok_or_else(|| {
+                CalendarWriteError::Other(anyhow!(
+                    "CalendarEvent/set update could not be verified: read-back returned no event"
+                ))
+            })?;
+            crate::jscalendar::verify_write_round_trip(&read_back, &entry).map_err(|e| {
+                if e.is_discarded() {
+                    CalendarWriteError::PayloadDiscarded(e.to_string())
+                } else {
+                    CalendarWriteError::Other(anyhow!("{e}"))
+                }
+            })?;
+
+            let uid = entry
+                .get("uid")
+                .and_then(|v| v.as_str())
+                .or_else(|| read_back.get("uid").and_then(|v| v.as_str()))
+                .unwrap_or("")
+                .to_string();
+            let etag = read_back
+                .get("@etag")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            Ok((existing_id.to_string(), uid, etag))
         } else {
-            // Create new event
             let Some(calendar_id) = params.calendar_id else {
-                return Err(anyhow!("calendar_id required for create"));
+                return Err(anyhow!("calendar_id required for create").into());
             };
-            let create_obj = json!({
-                "iCalendar": params.ics,
-                "calendarIds": { (calendar_id): true },
-            });
-            let method_calls = vec![(
-                "CalendarEvent/set",
-                json!({
-                    "accountId": params.account_id,
-                    "create": {
-                        "e0": create_obj,
-                    },
-                }),
-                "es0",
-            )];
+            let mut payload = crate::jscalendar::jscalendar_write_payload(&entry, false);
+            if let Some(obj) = payload.as_object_mut() {
+                obj.insert("calendarIds".to_string(), json!({ (calendar_id): true }));
+            }
+            let method_calls = vec![
+                (
+                    "CalendarEvent/set",
+                    json!({
+                        "accountId": params.account_id,
+                        "create": { "e0": payload },
+                    }),
+                    "es0",
+                ),
+                (
+                    "CalendarEvent/get",
+                    json!({
+                        "accountId": params.account_id,
+                        "#ids": {
+                            "resultOf": "es0",
+                            "name": "CalendarEvent/set",
+                            "path": "/created/e0/id",
+                        },
+                        "properties": CALENDAR_EVENT_PROPERTIES,
+                    }),
+                    "eg0",
+                ),
+            ];
 
             let response = self
                 .api_call(
@@ -5042,40 +5161,81 @@ impl JmapClient {
                 )
                 .await?;
 
-            for (method, data, _) in &response.method_responses {
-                if method == "CalendarEvent/set" {
-                    if let Some(not_created) = data.get("notCreated")
-                        && !not_created.is_null()
-                        && not_created.as_object().is_none_or(|o| !o.is_empty())
-                    {
-                        return Err(anyhow!("CalendarEvent/set create failed: {}", not_created));
-                    }
-                    if let Some(created) = data.get("created")
-                        && let Some(e0) = created.get("e0")
-                    {
-                        let id = e0
-                            .get("id")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("")
-                            .to_string();
-                        let uid = e0
-                            .get("uid")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("")
-                            .to_string();
-                        let etag = e0
-                            .get("@etag")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("")
-                            .to_string();
-                        return Ok((id, uid, etag));
-                    }
+            let set_args = response
+                .method_responses
+                .iter()
+                .find(|(m, _, _)| m == "CalendarEvent/set")
+                .map(|(_, a, _)| a)
+                .ok_or_else(|| anyhow!("CalendarEvent/set returned no response"))?;
+            if let Some(not_created) = set_args.get("notCreated")
+                && !not_created.is_null()
+                && not_created.as_object().is_none_or(|o| !o.is_empty())
+            {
+                return Err(anyhow!("CalendarEvent/set create failed: {}", not_created).into());
+            }
+            let id = set_args
+                .get("created")
+                .and_then(|c| c.get("e0"))
+                .and_then(|e| e.get("id"))
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| anyhow!("CalendarEvent/set create returned no created event"))?
+                .to_string();
+
+            let read_back = match first_calendar_event(&response) {
+                Some(ev) => ev,
+                None => {
+                    // The create was accepted but the read-back is missing;
+                    // remove the (contentless) orphan so a retry or the CalDAV
+                    // fallback does not leave a duplicate behind.
+                    let _ = self
+                        .destroy_calendar_events(
+                            params.account_id,
+                            std::slice::from_ref(&id),
+                            params.username,
+                            params.password,
+                        )
+                        .await;
+                    return Err(CalendarWriteError::Other(anyhow!(
+                        "CalendarEvent/set create could not be verified: read-back returned no event"
+                    )));
                 }
+            };
+            if let Err(e) = crate::jscalendar::verify_write_round_trip(&read_back, &entry) {
+                // Whatever the class, the created event must be removed before
+                // the caller falls back to CalDAV: the fallback PUTs a fresh
+                // `{uuid}.ics` resource, so leaving the JMAP event behind would
+                // surface a duplicate to the client. Best-effort cleanup — the
+                // write is already failing.
+                let _ = self
+                    .destroy_calendar_events(
+                        params.account_id,
+                        std::slice::from_ref(&id),
+                        params.username,
+                        params.password,
+                    )
+                    .await;
+                if e.is_discarded() {
+                    return Err(CalendarWriteError::PayloadDiscarded(e.to_string()));
+                }
+                // A content-field mismatch is not proof of a lossy write path
+                // (a backend may normalise a value the gateway cannot
+                // enumerate), so it must not disable JMAP writes — but the
+                // event is still removed and the failure surfaced.
+                return Err(CalendarWriteError::Other(anyhow!("{e}")));
             }
 
-            Err(anyhow!(
-                "CalendarEvent/set create returned no created event"
-            ))
+            let uid = entry
+                .get("uid")
+                .and_then(|v| v.as_str())
+                .or_else(|| read_back.get("uid").and_then(|v| v.as_str()))
+                .unwrap_or("")
+                .to_string();
+            let etag = read_back
+                .get("@etag")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            Ok((id, uid, etag))
         }
     }
 
@@ -5905,9 +6065,9 @@ mod tests {
         });
         let mut report = CalendarCapabilityReport::default();
         report.extract_capability_details(&details);
-        // Three wrong-type fields plus the three absent required fields
-        // (maxDateTime, maxExpandedQueryDuration, maxParticipantsPerEvent).
-        assert_eq!(report.issues.len(), 6);
+        // Only the three wrong-TYPE fields are fatal issues; the absent
+        // metadata fields are non-fatal warnings (Stalwart advertises `{}`).
+        assert_eq!(report.issues.len(), 3);
         assert!(
             report
                 .issues
@@ -5926,30 +6086,28 @@ mod tests {
                 .iter()
                 .any(|i| i.contains("mayCreateCalendar") && !i.contains("missing"))
         );
+        // The three absent fields are warnings, not issues.
+        assert_eq!(report.warnings.len(), 3);
+        assert!(report.warnings.iter().any(|i| i.contains("maxDateTime")));
         assert!(
             report
-                .issues
+                .warnings
                 .iter()
-                .any(|i| i.contains("maxDateTime") && i.contains("missing"))
+                .any(|i| i.contains("maxExpandedQueryDuration"))
         );
         assert!(
             report
-                .issues
+                .warnings
                 .iter()
-                .any(|i| i.contains("maxExpandedQueryDuration") && i.contains("missing"))
-        );
-        assert!(
-            report
-                .issues
-                .iter()
-                .any(|i| i.contains("maxParticipantsPerEvent") && i.contains("missing"))
+                .any(|i| i.contains("maxParticipantsPerEvent"))
         );
     }
 
     #[test]
-    fn test_calendar_capability_report_flags_missing_required_fields() {
-        // An empty capability object must not be accepted as healthy even
-        // though nothing in it has the wrong type.
+    fn test_calendar_capability_report_empty_object_is_healthy_with_warnings() {
+        // Stalwart v1.0.x advertises `urn:ietf:params:jmap:calendars` as `{}`
+        // and works correctly; an empty capability object must not fail the
+        // functional health check — the gaps are surfaced as warnings.
         let mut report = CalendarCapabilityReport {
             capability_present: true,
             calendar_get_ok: true,
@@ -5959,9 +6117,9 @@ mod tests {
             ..Default::default()
         };
         report.extract_capability_details(&json!({}));
-        assert_eq!(report.issues.len(), 6);
-        assert!(report.issues.iter().all(|i| i.contains("missing required")));
-        assert!(!report.is_healthy());
+        assert!(report.issues.is_empty(), "issues: {:?}", report.issues);
+        assert_eq!(report.warnings.len(), 6);
+        assert!(report.is_healthy());
     }
 
     #[test]
@@ -6009,9 +6167,9 @@ mod tests {
         report.structured_recurrence_ok = true;
         assert!(!report.is_healthy());
         report.ics_round_trip_ok = true;
-        // Probes alone are not enough: the required §1.5.1 capability fields
-        // must also have been advertised.
-        assert!(!report.is_healthy());
+        // The functional probes are what determine health: an empty capability
+        // object (Stalwart v1.0.x) is healthy as long as the probes pass.
+        assert!(report.is_healthy());
         report.extract_capability_details(&json!({
             "maxCalendarsPerEvent": 1,
             "minDateTime": "0000-01-01T00:00:00Z",
@@ -7251,5 +7409,197 @@ mod tests {
         assert_eq!(id, "e1");
         assert!(ics.contains("SUMMARY:Team Sync"), "{ics}");
         assert!(ics.contains("BEGIN:VEVENT"), "{ics}");
+    }
+
+    /// Spawn a stub JMAP server that returns `responses[i]` for the i-th
+    /// `POST /` call and records every request body, so a test can assert the
+    /// exact sequence of `CalendarEvent/set` calls the write path made.
+    type RecordingState = (
+        std::sync::Arc<std::sync::Mutex<Vec<Value>>>,
+        std::sync::Arc<std::sync::Mutex<Vec<Value>>>,
+    );
+
+    async fn spawn_recording_stub(
+        responses: Vec<Value>,
+    ) -> (String, std::sync::Arc<std::sync::Mutex<Vec<Value>>>) {
+        use axum::routing::{get, post};
+        use std::sync::{Arc, Mutex};
+
+        async fn session(axum::Extension(base): axum::Extension<String>) -> axum::Json<Value> {
+            axum::Json(session_json(&base))
+        }
+        async fn api(
+            axum::Extension(state): axum::Extension<RecordingState>,
+            axum::Json(body): axum::Json<Value>,
+        ) -> axum::Json<Value> {
+            let (responses, recorded) = &state;
+            let idx = {
+                let mut rec = recorded.lock().unwrap();
+                let i = rec.len();
+                rec.push(body);
+                i
+            };
+            let responses = responses.lock().unwrap();
+            axum::Json(
+                responses
+                    .get(idx)
+                    .or_else(|| responses.last())
+                    .cloned()
+                    .unwrap_or_else(|| json!({ "methodResponses": [] })),
+            )
+        }
+
+        let responses = Arc::new(Mutex::new(responses));
+        let recorded = Arc::new(Mutex::new(Vec::new()));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let base = format!("http://127.0.0.1:{port}");
+        let app = axum::Router::new()
+            .route("/session", get(session))
+            .route("/", post(api))
+            .layer(axum::Extension((responses, recorded.clone())))
+            .layer(axum::Extension(base.clone()));
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        (base, recorded)
+    }
+
+    fn ics_with_description() -> String {
+        "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//x//EN\r\nBEGIN:VEVENT\r\nUID:u1\r\n\
+         DTSTAMP:20260301T000000Z\r\nDTSTART:20260401T090000Z\r\nDTEND:20260401T100000Z\r\n\
+         SUMMARY:Kept\r\nDESCRIPTION:body\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
+            .to_string()
+    }
+
+    /// A read-back whose title is empty proves the backend discarded the
+    /// payload: the error must be `PayloadDiscarded` and the orphaned create
+    /// must be destroyed (a second `CalendarEvent/set` carrying `destroy`).
+    #[tokio::test]
+    async fn set_calendar_event_create_discarded_payload_disables_and_destroys() {
+        let set_and_get = json!({ "methodResponses": [
+            ["CalendarEvent/set", { "created": { "e0": { "id": "e1" } } }, "es0"],
+            ["CalendarEvent/get", { "list": [ { "id": "e1" } ] }, "eg0"]
+        ]});
+        let destroy = json!({ "methodResponses": [
+            ["CalendarEvent/set", { "destroyed": ["e1"] }, "es1"]
+        ]});
+        let (base, recorded) = spawn_recording_stub(vec![set_and_get, destroy]).await;
+        let client = JmapClient::new(&base).unwrap();
+        let pw = SecretString::from("pw");
+        let err = client
+            .set_calendar_event(SetCalendarEventParams {
+                account_id: "acct",
+                calendar_id: Some("cal"),
+                event_id: None,
+                ics: &ics_with_description(),
+                username: "u",
+                password: &pw,
+            })
+            .await
+            .unwrap_err();
+        assert!(err.is_payload_discarded(), "{err:?}");
+        let rec = recorded.lock().unwrap();
+        assert_eq!(rec.len(), 2, "discarded create must issue a cleanup call");
+        assert!(
+            rec[1].to_string().contains("destroy"),
+            "cleanup must destroy the orphan: {}",
+            rec[1]
+        );
+    }
+
+    /// A read-back that keeps the title but drops the description is a content
+    /// MISMATCH, not a discarded payload: the error must NOT be
+    /// `PayloadDiscarded` (so JMAP writes stay enabled), but the orphaned
+    /// create must still be destroyed so the CalDAV fallback cannot duplicate
+    /// it.
+    #[tokio::test]
+    async fn set_calendar_event_create_mismatch_is_not_payload_discarded() {
+        let set_and_get = json!({ "methodResponses": [
+            ["CalendarEvent/set", { "created": { "e0": { "id": "e1" } } }, "es0"],
+            ["CalendarEvent/get", { "list": [ {
+                "id": "e1",
+                "uid": "u1",
+                "title": "Kept",
+                "start": "2026-04-01T09:00:00",
+                "timeZone": "Etc/UTC",
+                "duration": "PT1H"
+            } ] }, "eg0"]
+        ]});
+        let destroy = json!({ "methodResponses": [
+            ["CalendarEvent/set", { "destroyed": ["e1"] }, "es1"]
+        ]});
+        let (base, recorded) = spawn_recording_stub(vec![set_and_get, destroy]).await;
+        let client = JmapClient::new(&base).unwrap();
+        let pw = SecretString::from("pw");
+        let err = client
+            .set_calendar_event(SetCalendarEventParams {
+                account_id: "acct",
+                calendar_id: Some("cal"),
+                event_id: None,
+                ics: &ics_with_description(),
+                username: "u",
+                password: &pw,
+            })
+            .await
+            .unwrap_err();
+        assert!(
+            !err.is_payload_discarded(),
+            "a content mismatch must not disable the JMAP write path: {err:?}"
+        );
+        let rec = recorded.lock().unwrap();
+        assert_eq!(
+            rec.len(),
+            2,
+            "a mismatch must still destroy the orphan to avoid a duplicate"
+        );
+        assert!(rec[1].to_string().contains("destroy"), "{}", rec[1]);
+    }
+
+    /// The same distinction on the update path: an empty read-back is
+    /// `PayloadDiscarded`, a partial read-back is not.
+    #[tokio::test]
+    async fn set_calendar_event_update_classifies_discard_vs_mismatch() {
+        let discarded = json!({ "methodResponses": [
+            ["CalendarEvent/set", { "updated": { "e1": {} } }, "es0"],
+            ["CalendarEvent/get", { "list": [ { "id": "e1" } ] }, "eg0"]
+        ]});
+        let (base, _rec) = spawn_recording_stub(vec![discarded]).await;
+        let client = JmapClient::new(&base).unwrap();
+        let pw = SecretString::from("pw");
+        let err = client
+            .set_calendar_event(SetCalendarEventParams {
+                account_id: "acct",
+                calendar_id: None,
+                event_id: Some("e1"),
+                ics: &ics_with_description(),
+                username: "u",
+                password: &pw,
+            })
+            .await
+            .unwrap_err();
+        assert!(err.is_payload_discarded(), "{err:?}");
+
+        let partial = json!({ "methodResponses": [
+            ["CalendarEvent/set", { "updated": { "e1": {} } }, "es0"],
+            ["CalendarEvent/get", { "list": [ {
+                "id": "e1", "uid": "u1", "title": "Kept",
+                "start": "2026-04-01T09:00:00", "timeZone": "Etc/UTC", "duration": "PT1H"
+            } ] }, "eg0"]
+        ]});
+        let (base, _rec) = spawn_recording_stub(vec![partial]).await;
+        let client = JmapClient::new(&base).unwrap();
+        let err = client
+            .set_calendar_event(SetCalendarEventParams {
+                account_id: "acct",
+                calendar_id: None,
+                event_id: Some("e1"),
+                ics: &ics_with_description(),
+                username: "u",
+                password: &pw,
+            })
+            .await
+            .unwrap_err();
+        assert!(!err.is_payload_discarded(), "{err:?}");
     }
 }

@@ -37,6 +37,14 @@ services:
 
       # Deploy-time JMAP Calendars capability verification: off | warn | enforce.
       # `warn` logs findings and falls back to CalDAV; `enforce` refuses startup.
+      #
+      # This check needs GATEWAY_ADMIN_USERNAME/PASSWORD below; when they are
+      # empty it is skipped with a warning. That is safe: JMAP calendar writes
+      # are ALSO protected at runtime — every create/update reads its own result
+      # back and, if the backend stored an empty event, the write fails closed,
+      # JMAP calendar writes are disabled for the process, and the request falls
+      # back to CalDAV. So an empty admin account cannot cause silent calendar
+      # data loss. Set the admin credentials to run the full startup check.
       - GATEWAY_CALENDAR_CAPABILITY_CHECK=warn
 
       # --- Required identity / crypto -------------------------------------

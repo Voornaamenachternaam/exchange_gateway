@@ -131,7 +131,7 @@ webmail shows up (push via Ping) within ~one heartbeat.
 | Mail arrives late / battery drain | Ping cut by Cloudflare (HTTP 524) | ensure `GATEWAY_MAX_PING_HEARTBEAT=80`; look for 524 in `docker compose logs` |
 | Random 429s, sync stalls | rate limiter too small for one egress IP | raise `GATEWAY_RATE_LIMIT_REQUESTS_PER_MINUTE` |
 | 503 with `Retry-After` | Stalwart backend unreachable | `docker compose ps`, `curl http://stalwart:8080/jmap/.well-known/jmap` from the gateway net |
-| Calendar events lost on create | JMAP calendar write discarded by backend | check `GATEWAY_CALENDAR_CAPABILITY_CHECK` findings in the startup log |
+| Calendar events lost on create | JMAP calendar write discarded by backend | the write path self-verifies and auto-disables JMAP writes on a discard; look for "stored an empty event; disabling JMAP calendar writes" in the log, then confirm `GATEWAY_CALENDAR_CAPABILITY_CHECK` findings in the startup log |
 | `health/ready` flapping | readiness mirrors the JMAP arbiter | pin Stalwart version; verify JMAP up |
 | Outlook re-prompts for password | backend outage answered as 401 (must not happen) | confirm the gateway returns 503, not 401, during a Stalwart outage |
 

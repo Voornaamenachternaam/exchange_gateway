@@ -67,6 +67,261 @@ pub fn jscalendar_event_to_ics(event: &Value) -> Option<String> {
     rendered.contains("BEGIN:VEVENT").then_some(rendered)
 }
 
+/// Convert an iCalendar (ICS) document into the JSCalendar `Event` object that
+/// Stalwart's `CalendarEvent/set` expects as its write payload.
+///
+/// Stalwart v1.0.x **silently discards** a raw `iCalendar` string supplied to
+/// `CalendarEvent/set`: the create is accepted, the event is stored, and every
+/// content property (title/start/duration/…) is dropped. The write therefore
+/// has to be expressed as structured JSCalendar properties, which is exactly
+/// what `calcard` — the library Stalwart itself uses — produces from the same
+/// ICS the gateway renders. This runs the ICS → JSCalendar half of the
+/// round-trip that [`jscalendar_event_to_ics`] reverses, so the payload the
+/// gateway writes is the same shape Stalwart reads back.
+///
+/// Returns `None` when the ICS cannot be parsed or yields no event entry.
+pub fn ics_to_jscalendar_event(ics: &str) -> Option<Value> {
+    let parsed = calcard::icalendar::ICalendar::parse(ics).ok()?;
+    let group = parsed.into_jscalendar::<String, String>();
+    let json = serde_json::to_value(group.into_inner()).ok()?;
+    let entry = json.get("entries")?.as_array()?.first()?.clone();
+    entry.is_object().then_some(entry)
+}
+
+/// JMAP `CalendarEvent` properties the gateway must never send in a write
+/// payload: they are server-managed or immutable. `method`, `isOrigin` and
+/// `baseEventId` are rejected outright by Stalwart with
+/// `invalidProperties`/`This property is immutable`, while `id`,
+/// `calendarIds`, `@etag`, `created`, `updated`, `sequence` and `isDraft`
+/// are assigned by the server (sending a stale `sequence`/`updated` would
+/// fight the server's own bookkeeping).
+const SERVER_MANAGED_WRITE_PROPERTIES: &[&str] = &[
+    "id",
+    "baseEventId",
+    "calendarIds",
+    "isDraft",
+    "isOrigin",
+    "method",
+    "created",
+    "updated",
+    "sequence",
+    "@etag",
+];
+
+/// Optional `CalendarEvent` properties that a *replacement* update must clear
+/// when the new event no longer carries them. Stalwart's `CalendarEvent/set`
+/// update is a **partial patch** (verified live against v1.0.3): a property
+/// absent from the patch keeps its previous value. The gateway renders a
+/// complete event from ICS, so any property the fresh event does not set must
+/// be explicitly nulled or stale content (a removed description, a dropped
+/// attendee roster, a cancelled RRULE) would survive the update.
+const CLEARABLE_ON_UPDATE_PROPERTIES: &[&str] = &[
+    "description",
+    "locations",
+    "keywords",
+    "status",
+    "privacy",
+    "freeBusyStatus",
+    "priority",
+    "recurrenceRule",
+    "recurrenceOverrides",
+    "participants",
+    "organizerCalendarAddress",
+    "alerts",
+    "useDefaultAlerts",
+    "relatedTo",
+    "links",
+    "virtualLocations",
+    "color",
+    "showWithoutTime",
+    "timeZone",
+];
+
+/// Build the JSCalendar payload for a `CalendarEvent/set` create or update
+/// from the `Event` object produced by [`ics_to_jscalendar_event`].
+///
+/// For an update (`for_update = true`) every [`CLEARABLE_ON_UPDATE_PROPERTIES`]
+/// entry the new event does not set is inserted as an explicit `null`, turning
+/// Stalwart's partial patch into a faithful replacement of the event's content.
+pub fn jscalendar_write_payload(entry: &Value, for_update: bool) -> Value {
+    let mut obj = entry.as_object().cloned().unwrap_or_default();
+    for key in SERVER_MANAGED_WRITE_PROPERTIES {
+        obj.remove(*key);
+    }
+    obj.entry("@type")
+        .or_insert_with(|| Value::String("Event".to_string()));
+    if for_update {
+        for key in CLEARABLE_ON_UPDATE_PROPERTIES {
+            obj.entry((*key).to_string()).or_insert(Value::Null);
+        }
+    }
+    Value::Object(obj)
+}
+
+/// Content-bearing JSCalendar properties whose written value must survive the
+/// `CalendarEvent/set` read-back. `title` is deliberately absent: it is the
+/// content marker, handled separately (see [`verify_write_round_trip`]). Only
+/// properties the event actually carries are checked, so a field the gateway
+/// does not write is never required on the read-back.
+const VERIFIED_CONTENT_PROPERTIES: &[&str] = &[
+    "description",
+    "locations",
+    "keywords",
+    "status",
+    "privacy",
+    "freeBusyStatus",
+    "priority",
+    "recurrenceRule",
+    "recurrenceOverrides",
+    "participants",
+    "organizerCalendarAddress",
+    "alerts",
+    "links",
+    "virtualLocations",
+    "color",
+    "showWithoutTime",
+    "timeZone",
+    "start",
+    "duration",
+];
+
+/// Why a `CalendarEvent/set` read-back failed verification.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WriteVerificationFailure {
+    /// The backend accepted the write but stored an *empty* event — the
+    /// content marker (`title`, or `start` when the event has no title) is
+    /// missing. This is the only condition that proves the JMAP calendar
+    /// write path is lossy on this backend.
+    Discarded,
+    /// The content marker survived but another written content field did not
+    /// match the read-back. This is NOT proof of a lossy write path (a backend
+    /// may legitimately normalise a value the gateway cannot enumerate), so
+    /// callers must not disable JMAP writes for it.
+    Mismatch,
+}
+
+/// A failed `CalendarEvent/set` read-back verification.
+///
+/// The [`Display`](std::fmt::Display) text names the failing property and the
+/// failure class only — never the event's title/description/etc. Event content
+/// is user data and must not reach logs or deploy reports (the error is logged
+/// by the EWS/RSVP call sites and embedded in the deploy probe's issue text).
+#[derive(Debug, Clone, thiserror::Error)]
+#[error("{message}")]
+pub struct WriteVerificationError {
+    kind: WriteVerificationFailure,
+    message: String,
+}
+
+impl WriteVerificationError {
+    /// The failure class, for callers that branch on it.
+    pub fn kind(&self) -> WriteVerificationFailure {
+        self.kind
+    }
+
+    /// Whether this failure proves the backend discarded the event payload.
+    pub fn is_discarded(&self) -> bool {
+        self.kind == WriteVerificationFailure::Discarded
+    }
+
+    fn discarded(reason: &str) -> Self {
+        Self {
+            kind: WriteVerificationFailure::Discarded,
+            message: format!(
+                "CalendarEvent/set payload was not applied ({reason}); the backend discarded the event content"
+            ),
+        }
+    }
+
+    fn mismatch(property: &str) -> Self {
+        Self {
+            kind: WriteVerificationFailure::Mismatch,
+            message: format!(
+                "CalendarEvent/set read-back does not match the written event (property: {property})"
+            ),
+        }
+    }
+}
+
+/// Verify that a `CalendarEvent/get` read-back carries the content the gateway
+/// just wrote. Used to fail the write path closed: if the backend accepted the
+/// `CalendarEvent/set` but did not apply the payload, the caller must surface
+/// an error so create/update traffic falls back to CalDAV instead of silently
+/// losing the event.
+///
+/// Two failures are distinguished (see [`WriteVerificationFailure`]):
+/// - `Discarded` — the content marker is missing from the read-back. Only this
+///   proves the write path is lossy.
+/// - `Mismatch` — a written content field does not match the read-back. Never
+///   disables JMAP writes.
+///
+/// Every content field the event carries ([`VERIFIED_CONTENT_PROPERTIES`]) is
+/// compared, not just the marker, so a read-back that keeps the title but
+/// drops the description/locations/attendees is still caught. The comparison
+/// tolerates the benign normalisations a JSCalendar backend may apply: object
+/// key order (`serde_json` objects compare as maps), surrounding whitespace on
+/// strings, and an omitted `@type` on nested objects.
+pub fn verify_write_round_trip(
+    read_back: &Value,
+    entry: &Value,
+) -> Result<(), WriteVerificationError> {
+    // Content marker: the title, or `start` when the event has no title.
+    let expected_title = entry
+        .get("title")
+        .and_then(Value::as_str)
+        .filter(|t| !t.trim().is_empty());
+    if let Some(expected) = expected_title {
+        let got = read_back.get("title").and_then(Value::as_str).unwrap_or("");
+        if got.trim().is_empty() {
+            return Err(WriteVerificationError::discarded(
+                "the read-back event has no title",
+            ));
+        }
+        if got.trim() != expected.trim() {
+            return Err(WriteVerificationError::mismatch("title"));
+        }
+    } else if entry.get("start").is_some() && read_back.get("start").is_none() {
+        return Err(WriteVerificationError::discarded(
+            "the read-back event has no start",
+        ));
+    }
+
+    for key in VERIFIED_CONTENT_PROPERTIES {
+        let Some(expected) = entry.get(*key).filter(|v| !v.is_null()) else {
+            continue;
+        };
+        match read_back.get(*key) {
+            Some(actual) if values_equivalent(expected, actual) => {}
+            _ => return Err(WriteVerificationError::mismatch(key)),
+        }
+    }
+    Ok(())
+}
+
+/// Compare a written JSCalendar value with its read-back, tolerating the
+/// normalisations a backend may apply. Object key order is irrelevant because
+/// `serde_json::Value` objects are maps; a nested `@type` may be dropped by the
+/// server (Stalwart drops it from `relatedTo` values); and string values are
+/// compared with surrounding whitespace stripped.
+fn values_equivalent(expected: &Value, actual: &Value) -> bool {
+    match (expected, actual) {
+        (Value::String(a), Value::String(b)) => a.trim() == b.trim(),
+        (Value::Object(a), Value::Object(b)) => {
+            let mut a = a.clone();
+            let mut b = b.clone();
+            a.remove("@type");
+            b.remove("@type");
+            a.len() == b.len()
+                && a.iter()
+                    .all(|(k, av)| b.get(k).is_some_and(|bv| values_equivalent(av, bv)))
+        }
+        (Value::Array(a), Value::Array(b)) => {
+            a.len() == b.len() && a.iter().zip(b).all(|(x, y)| values_equivalent(x, y))
+        }
+        _ => expected == actual,
+    }
+}
+
 /// Prepare a JSCalendar event object for `calcard`'s exporter.
 fn sanitize_event(obj: &Map<String, Value>) -> Map<String, Value> {
     let mut out = obj.clone();
@@ -326,5 +581,214 @@ mod tests {
         // 14:00 Europe/Berlin (CET, UTC+1) on 2026-03-02 == 13:00Z.
         assert_eq!(item.start.timestamp(), 1_772_456_400);
         assert_eq!(item.end.timestamp(), 1_772_456_400 + 45 * 60);
+    }
+
+    #[test]
+    fn ics_to_jscalendar_round_trips_event_content() {
+        // The write half: ICS → JSCalendar Event object. This is what
+        // `set_calendar_event` posts to Stalwart instead of a raw ICS string
+        // (a raw `iCalendar` payload is silently discarded by Stalwart).
+        let ics = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//exchange_gateway//EN\r\n\
+                   BEGIN:VEVENT\r\nUID:rt-1\r\nDTSTAMP:20260301T000000Z\r\n\
+                   DTSTART;TZID=Europe/Berlin:20260302T090000\r\n\
+                   DTEND;TZID=Europe/Berlin:20260302T100000\r\nSUMMARY:Round Trip\r\n\
+                   DESCRIPTION:Body text\r\nLOCATION:Room A\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+        let entry = ics_to_jscalendar_event(ics).expect("converted");
+        assert_eq!(
+            entry.get("title").and_then(|v| v.as_str()),
+            Some("Round Trip")
+        );
+        assert_eq!(
+            entry.get("description").and_then(|v| v.as_str()),
+            Some("Body text")
+        );
+        assert!(
+            entry.get("start").is_some(),
+            "start must be present: {entry}"
+        );
+        // Round-tripping back to ICS via the read half must preserve the data.
+        let back = jscalendar_event_to_ics(&entry).expect("back to ics");
+        assert!(back.contains("SUMMARY:Round Trip"), "{back}");
+        assert!(
+            back.contains("DTSTART;TZID=Europe/Berlin:20260302T090000"),
+            "{back}"
+        );
+    }
+
+    #[test]
+    fn write_payload_strips_server_managed_properties() {
+        // The converted entry carries calcard bookkeeping (`method`) and, on
+        // an update, server-owned fields; none may be sent to Stalwart.
+        let entry = json!({
+            "@type": "Event",
+            "uid": "u",
+            "title": "T",
+            "start": "2026-03-02T09:00:00",
+            "timeZone": "Etc/UTC",
+            "duration": "PT1H",
+            "method": "request",
+            "id": "server-id",
+            "calendarIds": { "c": true },
+            "created": "2026-01-01T00:00:00Z",
+            "updated": "2026-01-01T00:00:00Z",
+            "sequence": 4,
+            "@etag": "abc",
+            "isDraft": false,
+            "isOrigin": true,
+            "baseEventId": "base"
+        });
+        let create = jscalendar_write_payload(&entry, false);
+        for key in [
+            "method",
+            "id",
+            "calendarIds",
+            "created",
+            "updated",
+            "sequence",
+            "@etag",
+            "isDraft",
+            "isOrigin",
+            "baseEventId",
+        ] {
+            assert!(create.get(key).is_none(), "create payload leaked {key}");
+        }
+        assert_eq!(create.get("title").and_then(|v| v.as_str()), Some("T"));
+        assert_eq!(create.get("@type").and_then(|v| v.as_str()), Some("Event"));
+    }
+
+    #[test]
+    fn update_payload_nulls_absent_optional_properties() {
+        // Stalwart's CalendarEvent/set update is a partial patch: any optional
+        // property the fresh event does not carry must be explicitly nulled so
+        // stale content (a removed description, dropped attendees, a cancelled
+        // RRULE) does not survive the update.
+        let entry = json!({
+            "@type": "Event",
+            "uid": "u",
+            "title": "Only title",
+            "start": "2026-03-02T09:00:00",
+            "timeZone": "Etc/UTC",
+            "duration": "PT1H"
+        });
+        let update = jscalendar_write_payload(&entry, true);
+        for key in [
+            "description",
+            "locations",
+            "recurrenceRule",
+            "participants",
+            "status",
+            "privacy",
+            "useDefaultAlerts",
+            "relatedTo",
+        ] {
+            assert_eq!(
+                update.get(key),
+                Some(&Value::Null),
+                "update payload must null absent {key}"
+            );
+        }
+        // A property the event DOES carry is not overwritten with null.
+        assert_eq!(
+            update.get("title").and_then(|v| v.as_str()),
+            Some("Only title")
+        );
+        // Create payloads must NOT null anything (no prior state to clear).
+        let create = jscalendar_write_payload(&entry, false);
+        assert!(create.get("description").is_none());
+    }
+
+    #[test]
+    fn verify_write_round_trip_detects_discarded_payload() {
+        let entry = json!({ "title": "Kept", "start": "2026-03-02T09:00:00" });
+        // Content applied → Ok.
+        assert!(
+            verify_write_round_trip(
+                &json!({ "title": "Kept", "start": "2026-03-02T09:00:00" }),
+                &entry
+            )
+            .is_ok()
+        );
+        // Backend stored an empty event → Discarded.
+        let err = verify_write_round_trip(&json!({ "id": "x" }), &entry).unwrap_err();
+        assert!(err.is_discarded(), "{err:?}");
+        assert_eq!(err.kind(), WriteVerificationFailure::Discarded);
+        // Whitespace normalisation is tolerated (benign).
+        assert!(
+            verify_write_round_trip(
+                &json!({ "title": "  Kept  ", "start": "2026-03-02T09:00:00" }),
+                &entry
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn verify_write_round_trip_without_title_checks_start() {
+        let entry = json!({ "start": "2026-03-02T09:00:00" });
+        assert!(
+            verify_write_round_trip(&json!({ "start": "2026-03-02T09:00:00" }), &entry).is_ok()
+        );
+        let err = verify_write_round_trip(&json!({ "id": "x" }), &entry).unwrap_err();
+        assert!(err.is_discarded(), "{err:?}");
+    }
+
+    #[test]
+    fn verify_write_round_trip_classifies_title_mismatch_as_mismatch() {
+        // A non-empty but different title is NOT proof of a discarded payload.
+        let entry = json!({ "title": "Original" });
+        let err =
+            verify_write_round_trip(&json!({ "title": "Something else" }), &entry).unwrap_err();
+        assert_eq!(err.kind(), WriteVerificationFailure::Mismatch);
+        assert!(!err.is_discarded());
+        // The error must not leak the event title into logs/reports.
+        let text = err.to_string();
+        assert!(!text.contains("Original"), "{text}");
+        assert!(!text.contains("Something else"), "{text}");
+        assert!(text.contains("title"), "{text}");
+    }
+
+    #[test]
+    fn verify_write_round_trip_checks_all_written_content_fields() {
+        // Title survives but the description is dropped: a read-back that only
+        // keeps the title must still fail.
+        let entry = json!({
+            "title": "Kept",
+            "start": "2026-03-02T09:00:00",
+            "description": "the body",
+            "locations": { "l1": { "@type": "Location", "name": "Room One" } },
+            "recurrenceRule": { "frequency": "weekly", "count": 3 },
+        });
+        let dropped = json!({ "title": "Kept", "start": "2026-03-02T09:00:00" });
+        let err = verify_write_round_trip(&dropped, &entry).unwrap_err();
+        assert_eq!(err.kind(), WriteVerificationFailure::Mismatch);
+        assert!(!err.to_string().contains("the body"), "{err}");
+
+        // A full, equivalent read-back passes — object key order, a nested
+        // `@type` the server dropped, and whitespace are all tolerated.
+        let applied = json!({
+            "start": "2026-03-02T09:00:00",
+            "title": "Kept",
+            "description": "  the body  ",
+            "locations": { "l1": { "name": "Room One" } },
+            "recurrenceRule": { "count": 3, "frequency": "weekly" },
+        });
+        assert!(verify_write_round_trip(&applied, &entry).is_ok());
+    }
+
+    #[test]
+    fn verify_write_round_trip_reports_first_failing_property() {
+        let entry = json!({
+            "title": "T",
+            "start": "2026-03-02T09:00:00",
+            "description": "d",
+            "color": "#FF0000",
+        });
+        // description present, color missing → the color property is named.
+        let err = verify_write_round_trip(
+            &json!({ "title": "T", "start": "2026-03-02T09:00:00", "description": "d" }),
+            &entry,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("color"), "{err}");
     }
 }
