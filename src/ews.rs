@@ -1593,6 +1593,7 @@ async fn fetch_freebusy_jmap(
             // CalendarEvent/query filter deserializer (not basic ISO 8601)
             start: &start.format("%Y-%m-%dT%H:%M:%SZ").to_string(),
             end: &end.format("%Y-%m-%dT%H:%M:%SZ").to_string(),
+            position: 0,
             limit: 1000,
             username: mailbox,
             password: &secret_password,
@@ -2050,6 +2051,7 @@ async fn load_current_calendar_items(
             calendar_id: None,
             start: &start.format("%Y-%m-%dT%H:%M:%SZ").to_string(),
             end: &end.format("%Y-%m-%dT%H:%M:%SZ").to_string(),
+            position: 0,
             limit: 10000, // large enough to capture all events in window
             username: owner,
             password: &password_secret,

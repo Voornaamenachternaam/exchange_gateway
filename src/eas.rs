@@ -4257,6 +4257,7 @@ async fn fetch_freebusy_jmap_eas(
             // CalendarEvent/query filter deserializer (not basic ISO 8601)
             start: &start.format("%Y-%m-%dT%H:%M:%SZ").to_string(),
             end: &end.format("%Y-%m-%dT%H:%M:%SZ").to_string(),
+            position: 0,
             limit: 1000,
             username: mailbox,
             password,

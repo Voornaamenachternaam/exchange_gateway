@@ -63,6 +63,60 @@ pub fn chunk_ids(ids: &[String], max: usize) -> Vec<&[String]> {
     ids.chunks(max.max(1)).collect()
 }
 
+/// SHA-256 (first 16 bytes, lowercase hex) over an event's JSCalendar object.
+///
+/// Stalwart v1.0.x does not expose a JMAP `@etag` for `CalendarEvent`, so the
+/// gateway derives a stable, content-addressed token instead: two reads of an
+/// unchanged event yield the same value and any content change yields a new
+/// one. The value is computed over the object's canonical
+/// [`serde_json::to_string`] form, which is deterministic for `serde_json`'s
+/// default `BTreeMap`-backed `Value::Object` (sorted keys). The JMAP `id` is
+/// never included, so a re-created event with identical content keeps the same
+/// token. `server_etag`, when the server *does* expose one, wins.
+///
+/// Used for both the change signal (a `CalendarEvent/changes` delta already
+/// names its changed ids, so this only guards the initial snapshot diff) and
+/// the EWS `ChangeKey`.
+pub fn calendar_event_etag(event: &Value, server_etag: Option<&str>) -> String {
+    if let Some(e) = server_etag.map(str::trim).filter(|s| !s.is_empty()) {
+        return e.trim_matches('"').to_string();
+    }
+    use sha2::Digest as _;
+    let bytes = serde_json::to_vec(event).unwrap_or_default();
+    let digest = sha2::Sha256::digest(&bytes);
+    const_hex::encode(&digest[..16])
+}
+
+/// `maxChanges` requested per `CalendarEvent/changes` page while draining a
+/// change chain. Large enough to drain a realistic backlog in one or two
+/// round-trips, small enough that a page is a bounded response.
+const CALENDAR_CHANGES_PAGE_SIZE: u32 = 500;
+
+/// Upper bound on ids accumulated across a `CalendarEvent/changes` drain, so a
+/// pathological backend cannot loop forever. Anything past this bound stays
+/// behind the intermediate `newState` and is drained by the next Sync's
+/// follow-up delta (the intermediate state is persisted with
+/// `has_more_changes = true` and the EAS response signals `<MoreAvailable/>`),
+/// so nothing is lost.
+const MAX_CALENDAR_CHANGE_ACCUMULATION: usize = 5000;
+
+/// Upper bound on the number of `CalendarEvent/changes` pages drained in one
+/// call, independent of the id count (a page may legitimately report
+/// `hasMoreChanges` with few ids). Mirrors the accumulation bound's intent.
+const MAX_CALENDAR_CHANGE_PAGES: usize = 100;
+
+/// Remove duplicates from an id list, preserving first-seen order.
+fn dedupe_ids(ids: Vec<String>) -> Vec<String> {
+    let mut seen = std::collections::HashSet::with_capacity(ids.len());
+    let mut out = Vec::with_capacity(ids.len());
+    for id in ids {
+        if seen.insert(id.clone()) {
+            out.push(id);
+        }
+    }
+    out
+}
+
 /// The server-advertised `maxObjectsInGet` for this session (RFC 8620 §2).
 ///
 /// Falls back to [`DEFAULT_MAX_OBJECTS_IN_GET`] when the core capability is
@@ -984,11 +1038,26 @@ pub struct CalendarEventListResult {
     pub events: Vec<JmapCalendarEvent>,
     pub total: u64,
     pub query_state: String,
+    /// The `CalendarEvent/get` data-type `state` (draft-ietf-jmap-calendars
+    /// §5.7 / RFC 8620 §5.1), captured from the same request. This is the
+    /// token `CalendarEvent/changes` accepts as `sinceState`, so it — not the
+    /// `CalendarEvent/query` `query_state` — is what the sync path persists
+    /// after an initial prime. Empty when the server omitted it.
+    pub state: String,
     /// Number of `CalendarEvent/get` objects that failed to deserialize and
     /// were skipped. Callers must not advance sync state while this is non-zero,
     /// or the skipped event would be lost on the next delta.
     pub unparseable: usize,
 }
+
+/// A `CalendarEvent/changes` call that the server could not service
+/// (RFC 8620 §5.2): the supplied `sinceState` is no longer usable — either
+/// the server answered with the `cannotCalculateChanges` error, or it returned
+/// no `newState`. The caller must re-prime from a full
+/// `CalendarEvent/query` rather than persist a state that would skip changes.
+#[derive(Debug, Clone, thiserror::Error)]
+#[error("CalendarEvent/changes cannot calculate changes: {0}")]
+pub struct CannotCalculateChanges(pub String);
 
 /// Result of a CalendarEvent/changes call.
 #[derive(Clone, Debug)]
@@ -1006,6 +1075,11 @@ pub struct QueryCalendarEventsParams<'a> {
     pub calendar_id: Option<&'a str>,
     pub start: &'a str,
     pub end: &'a str,
+    /// RFC 8620 §5.1 `position`: zero-based offset into the sorted result
+    /// set. Non-zero positions page through a result set larger than one
+    /// `limit`-sized page; the prime path loops on it until every id is
+    /// fetched so a truncated snapshot never advances the delta state.
+    pub position: u64,
     pub limit: u64,
     pub username: &'a str,
     pub password: &'a SecretString,
@@ -2321,12 +2395,20 @@ impl JmapClient {
     /// (draft-ietf-jmap-calendars §5.13).
     ///
     /// Returns created, updated, destroyed event IDs and the new state token.
+    ///
+    /// `max_changes` bounds the server's `maxChanges` property so callers that
+    /// drain a long change chain can page through it; `None` keeps the
+    /// historical default of 500. When the server answers with the RFC 8620
+    /// §5.2 `cannotCalculateChanges` error (or returns no `newState`), the
+    /// error downcasts to [`CannotCalculateChanges`] so the caller re-primes
+    /// from a full query instead of persisting an unusable state.
     pub async fn changes_calendar_events(
         &self,
         account_id: &str,
         old_state: &str,
         username: &str,
         password: &SecretString,
+        max_changes: Option<u32>,
     ) -> Result<CalendarChangesResult> {
         let session = self.get_session(username, password).await?;
         let api_url = &session.api_url;
@@ -2336,7 +2418,7 @@ impl JmapClient {
             json!({
                 "accountId": account_id,
                 "sinceState": old_state,
-                "maxChanges": 500,
+                "maxChanges": max_changes.unwrap_or(500),
             }),
             "cc0",
         )];
@@ -2352,6 +2434,21 @@ impl JmapClient {
             .await?;
 
         for (method, data, _) in response.method_responses {
+            if method == "error" {
+                let err_type = data
+                    .get("type")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown");
+                if err_type == "cannotCalculateChanges" {
+                    return Err(anyhow::Error::new(CannotCalculateChanges(format!(
+                        "sinceState {old_state:?} rejected"
+                    ))));
+                }
+                return Err(anyhow!(
+                    "CalendarEvent/changes returned method error: {}",
+                    data
+                ));
+            }
             if method == "CalendarEvent/changes" {
                 let old_state = data
                     .get("oldState")
@@ -2391,11 +2488,13 @@ impl JmapClient {
                     "Calendar changes synced"
                 );
 
-                if has_more {
-                    warn!(
-                        target: "jmap",
-                        "CalendarEvent/changes returned hasMoreChanges=true; sync may be incomplete. Consider increasing maxChanges or handling pagination."
-                    );
+                // A `newState` is mandatory (RFC 8620 §5.2). Its absence means
+                // the token the caller would store is unusable, so treat it the
+                // same as `cannotCalculateChanges` and force a re-prime.
+                if new_state.is_empty() {
+                    return Err(anyhow::Error::new(CannotCalculateChanges(format!(
+                        "sinceState {old_state:?} produced no newState"
+                    ))));
                 }
 
                 return Ok(CalendarChangesResult {
@@ -2411,6 +2510,81 @@ impl JmapClient {
         Err(anyhow!(
             "Unexpected JMAP response structure for CalendarEvent/changes"
         ))
+    }
+
+    /// Drain a `CalendarEvent/changes` chain while the server reports
+    /// `hasMoreChanges` (RFC 8620 §5.2), exactly as the email path's
+    /// `accumulate_email_changes` does.
+    ///
+    /// Returns the union of created/updated/destroyed ids across every page
+    /// plus the final `newState` — the ONLY token safe to persist, because a
+    /// stored intermediate `newState` would make the next delta start after the
+    /// undrained pages and silently skip those events. Ids are de-duplicated
+    /// while preserving first-seen order; an id that appears in both `created`
+    /// and `updated` across pages keeps its earliest classification, and any id
+    /// that is destroyed wins (a later create followed by a destroy is a net
+    /// deletion).
+    ///
+    /// The id cap ([`MAX_CALENDAR_CHANGE_ACCUMULATION`]) and the page cap
+    /// ([`MAX_CALENDAR_CHANGE_PAGES`]) bound a pathological backend. If
+    /// either bound is hit while the server still reports
+    /// `hasMoreChanges`, the result preserves that flag (and the
+    /// intermediate `newState`) so the sync caller can persist the
+    /// intermediate token and signal `<MoreAvailable/>`: the delivered
+    /// accumulated changes are consumed, and the next delta resumes from the
+    /// intermediate state to drain the remainder.
+    pub async fn accumulate_calendar_changes(
+        &self,
+        account_id: &str,
+        old_state: &str,
+        username: &str,
+        password: &SecretString,
+    ) -> Result<CalendarEventChangesResult> {
+        let mut created: Vec<String> = Vec::new();
+        let mut updated: Vec<String> = Vec::new();
+        let mut destroyed: Vec<String> = Vec::new();
+        let mut since = old_state.to_string();
+        let mut pages = 0usize;
+        let more = loop {
+            let batch = self
+                .changes_calendar_events(
+                    account_id,
+                    &since,
+                    username,
+                    password,
+                    Some(CALENDAR_CHANGES_PAGE_SIZE),
+                )
+                .await?;
+            created.extend(batch.created);
+            updated.extend(batch.updated);
+            destroyed.extend(batch.destroyed);
+            since = batch.new_state;
+            pages += 1;
+            if !batch.has_more_changes
+                || created.len() + updated.len() + destroyed.len()
+                    >= MAX_CALENDAR_CHANGE_ACCUMULATION
+                || pages >= MAX_CALENDAR_CHANGE_PAGES
+            {
+                break batch.has_more_changes;
+            }
+        };
+        // A destroyed id wins over created/updated: across chained pages an id
+        // can be created on one page and destroyed on a later one, and the net
+        // effect for the client is a deletion.
+        let destroyed = dedupe_ids(destroyed);
+        let destroyed_set: std::collections::HashSet<&str> =
+            destroyed.iter().map(String::as_str).collect();
+        let mut created = dedupe_ids(created);
+        created.retain(|id| !destroyed_set.contains(id.as_str()));
+        let mut updated = dedupe_ids(updated);
+        updated.retain(|id| !destroyed_set.contains(id.as_str()));
+        Ok(CalendarEventChangesResult {
+            created,
+            updated,
+            destroyed,
+            new_state: since,
+            has_more_changes: more,
+        })
     }
 
     /// Update email properties via JMAP Email/set (RFC 8621 §4.5).
@@ -4884,6 +5058,7 @@ impl JmapClient {
                     "accountId": params.account_id,
                     "filter": filter,
                     "sort": [{ "property": "start", "isAscending": true }],
+                    "position": params.position,
                     "limit": params.limit,
                     "calculateTotal": true,
                 }),
@@ -4917,6 +5092,7 @@ impl JmapClient {
         let mut events = Vec::new();
         let mut total: u64 = 0;
         let mut query_state = String::new();
+        let mut state = String::new();
         let mut unparseable = 0usize;
 
         for (method, data, _) in response.method_responses {
@@ -4929,6 +5105,11 @@ impl JmapClient {
                     .to_string();
             }
             if method == "CalendarEvent/get" {
+                state = data
+                    .get("state")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
                 let (parsed, skipped) = parse_calendar_event_list(&data);
                 events = parsed;
                 unparseable = skipped;
@@ -4939,6 +5120,7 @@ impl JmapClient {
             events,
             total,
             query_state,
+            state,
             unparseable,
         })
     }
@@ -4997,7 +5179,10 @@ impl JmapClient {
                         )
                     })?;
                     let id = event.id.unwrap_or_default();
-                    let etag = event.etag.unwrap_or_default();
+                    let etag = match event.raw.as_ref() {
+                        Some(raw) => calendar_event_etag(raw, event.etag.as_deref()),
+                        None => event.etag.clone().unwrap_or_default(),
+                    };
                     return Ok((ics, id, etag));
                 }
             }
@@ -5079,7 +5264,10 @@ impl JmapClient {
                             let ics = event.to_ics().ok_or_else(|| {
                                 anyhow!("failed to convert CalendarEvent {id} to iCalendar")
                             })?;
-                            let etag = event.etag.clone().unwrap_or_default();
+                            let etag = match event.raw.as_ref() {
+                                Some(raw) => calendar_event_etag(raw, event.etag.as_deref()),
+                                None => event.etag.clone().unwrap_or_default(),
+                            };
                             map.insert(id, (ics, etag));
                         }
                     }
@@ -5194,11 +5382,8 @@ impl JmapClient {
                 .or_else(|| read_back.get("uid").and_then(|v| v.as_str()))
                 .unwrap_or("")
                 .to_string();
-            let etag = read_back
-                .get("@etag")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
+            let etag =
+                calendar_event_etag(&read_back, read_back.get("@etag").and_then(|v| v.as_str()));
             Ok((existing_id.to_string(), uid, etag))
         } else {
             let Some(calendar_id) = params.calendar_id else {
@@ -5311,11 +5496,8 @@ impl JmapClient {
                 .or_else(|| read_back.get("uid").and_then(|v| v.as_str()))
                 .unwrap_or("")
                 .to_string();
-            let etag = read_back
-                .get("@etag")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
+            let etag =
+                calendar_event_etag(&read_back, read_back.get("@etag").and_then(|v| v.as_str()));
             Ok((id, uid, etag))
         }
     }
@@ -7493,6 +7675,7 @@ mod tests {
                 calendar_id: None,
                 start: "2026-01-01T00:00:00Z",
                 end: "2026-12-31T00:00:00Z",
+                position: 0,
                 limit: 100,
                 username: "u",
                 password: &pw,
@@ -8110,5 +8293,183 @@ mod tests {
         assert_eq!(moved, 5, "every email must be moved");
         let rec = recorded.lock().unwrap().clone();
         assert_ids_batches(&rec, "Email/get", 2, 3);
+    }
+
+    /// `calendar_event_etag` is content-addressed: identical content yields the
+    /// same token regardless of key order, a content change yields a new one,
+    /// and a server-provided `@etag` wins over the hash (finding #6).
+    #[test]
+    fn calendar_event_etag_is_stable_and_content_addressed() {
+        let a = json!({ "title": "X", "start": "2026-01-05T09:00:00", "duration": "PT1H" });
+        // Same content, different key insertion order: serde_json::Value::Object
+        // is BTreeMap-backed, so the canonical form (and thus the hash) matches.
+        let b = json!({ "duration": "PT1H", "start": "2026-01-05T09:00:00", "title": "X" });
+        let ea = calendar_event_etag(&a, None);
+        assert_eq!(ea, calendar_event_etag(&b, None), "order-insensitive");
+        assert_eq!(ea.len(), 32, "first 16 bytes as hex");
+
+        let changed = json!({ "title": "Y", "start": "2026-01-05T09:00:00", "duration": "PT1H" });
+        assert_ne!(ea, calendar_event_etag(&changed, None), "content change");
+
+        // A server-provided etag wins, with surrounding quotes trimmed.
+        assert_eq!(calendar_event_etag(&a, Some("\"abc\"")), "abc");
+        // An empty/whitespace server etag falls back to the hash.
+        assert_eq!(calendar_event_etag(&a, Some("  ")), ea);
+    }
+
+    /// Draining `CalendarEvent/changes` follows `hasMoreChanges` until the
+    /// final page and returns the FINAL `newState` (finding #5). Storing an
+    /// intermediate state would make the next delta skip the undrained pages.
+    #[tokio::test]
+    async fn accumulate_calendar_changes_drains_has_more_changes() {
+        let page1 = json!({ "methodResponses": [
+            ["CalendarEvent/changes", {
+                "accountId": "acct", "oldState": "s0", "newState": "s1",
+                "hasMoreChanges": true,
+                "created": ["a", "b"], "updated": [], "destroyed": []
+            }, "cc0"]
+        ]});
+        let page2 = json!({ "methodResponses": [
+            ["CalendarEvent/changes", {
+                "accountId": "acct", "oldState": "s1", "newState": "s2",
+                "hasMoreChanges": false,
+                "created": ["c"], "updated": ["d"], "destroyed": ["e"]
+            }, "cc0"]
+        ]});
+        let (base, recorded) = spawn_recording_stub(vec![page1, page2]).await;
+        let client = JmapClient::new(&base).unwrap();
+        let pw = SecretString::from("pw");
+        let changes = client
+            .accumulate_calendar_changes("acct", "s0", "u", &pw)
+            .await
+            .expect("drain must succeed");
+        assert_eq!(changes.created, vec!["a", "b", "c"]);
+        assert_eq!(changes.updated, vec!["d"]);
+        assert_eq!(changes.destroyed, vec!["e"]);
+        assert_eq!(
+            changes.new_state, "s2",
+            "final state, never an intermediate"
+        );
+        assert!(!changes.has_more_changes);
+        let rec = recorded.lock().unwrap().clone();
+        assert_eq!(rec.len(), 2, "both pages drained");
+        assert!(
+            rec[0].to_string().contains("\"maxChanges\":500"),
+            "pages are bounded by maxChanges: {}",
+            rec[0]
+        );
+    }
+
+    /// An id created on one page and destroyed on a later one nets to a
+    /// deletion, and duplicate ids collapse to a single occurrence.
+    #[tokio::test]
+    async fn accumulate_calendar_changes_destroyed_wins_and_dedupes() {
+        let page1 = json!({ "methodResponses": [
+            ["CalendarEvent/changes", {
+                "accountId": "acct", "oldState": "s0", "newState": "s1",
+                "hasMoreChanges": true,
+                "created": ["a", "a", "b"], "updated": [], "destroyed": []
+            }, "cc0"]
+        ]});
+        let page2 = json!({ "methodResponses": [
+            ["CalendarEvent/changes", {
+                "accountId": "acct", "oldState": "s1", "newState": "s2",
+                "hasMoreChanges": false,
+                "created": [], "updated": ["b"], "destroyed": ["b"]
+            }, "cc0"]
+        ]});
+        let (base, _rec) = spawn_recording_stub(vec![page1, page2]).await;
+        let client = JmapClient::new(&base).unwrap();
+        let pw = SecretString::from("pw");
+        let changes = client
+            .accumulate_calendar_changes("acct", "s0", "u", &pw)
+            .await
+            .expect("drain must succeed");
+        // `a` was created twice → one occurrence. `b` was created then updated
+        // then destroyed → it is a deletion only.
+        assert_eq!(changes.created, vec!["a"]);
+        assert!(changes.updated.is_empty(), "b is a deletion, not an update");
+        assert_eq!(changes.destroyed, vec!["b"]);
+        assert_eq!(changes.new_state, "s2");
+    }
+
+    /// A `cannotCalculateChanges` method error surfaces as a typed error so the
+    /// sync path can re-prime from a full query instead of falling back to
+    /// CalDAV (finding #7).
+    #[tokio::test]
+    async fn accumulate_calendar_changes_surfaces_cannot_calculate_changes() {
+        let err_page = json!({ "methodResponses": [
+            ["error", { "type": "cannotCalculateChanges", "description": "too old" }, "cc0"]
+        ]});
+        let (base, _rec) = spawn_recording_stub(vec![err_page]).await;
+        let client = JmapClient::new(&base).unwrap();
+        let pw = SecretString::from("pw");
+        let err = client
+            .accumulate_calendar_changes("acct", "stale", "u", &pw)
+            .await
+            .expect_err("cannotCalculateChanges must surface as Err");
+        assert!(
+            err.downcast_ref::<CannotCalculateChanges>().is_some(),
+            "must be typed CannotCalculateChanges: {err:?}"
+        );
+    }
+
+    /// A `CalendarEvent/changes` response with no `newState` is unusable: the
+    /// token the caller would store is empty, so it is treated as
+    /// `cannotCalculateChanges` to force a re-prime rather than persisting a
+    /// token that skips changes (finding #7).
+    #[tokio::test]
+    async fn accumulate_calendar_changes_missing_new_state_is_cannot_calculate() {
+        let no_state = json!({ "methodResponses": [
+            ["CalendarEvent/changes", {
+                "accountId": "acct", "oldState": "s0",
+                "created": ["a"], "updated": [], "destroyed": []
+            }, "cc0"]
+        ]});
+        let (base, _rec) = spawn_recording_stub(vec![no_state]).await;
+        let client = JmapClient::new(&base).unwrap();
+        let pw = SecretString::from("pw");
+        let err = client
+            .accumulate_calendar_changes("acct", "s0", "u", &pw)
+            .await
+            .expect_err("missing newState must surface as Err");
+        assert!(
+            err.downcast_ref::<CannotCalculateChanges>().is_some(),
+            "must be typed CannotCalculateChanges: {err:?}"
+        );
+    }
+
+    /// The initial prime captures the `CalendarEvent/get` data-type `state` —
+    /// the token `CalendarEvent/changes` accepts — rather than the query's
+    /// `queryState` (finding #7).
+    #[tokio::test]
+    async fn query_calendar_events_captures_get_state() {
+        let response = json!({
+            "methodResponses": [
+                ["CalendarEvent/query", { "ids": ["e1"], "total": 1, "queryState": "query-7" }, "eq0"],
+                ["CalendarEvent/get", { "state": "get-9", "list": [
+                    { "id": "e1", "uid": "u1", "title": "Good", "start": "2026-01-05T09:00:00",
+                      "timeZone": "Etc/UTC", "duration": "PT1H", "iCalendar": {"name":"vevent"} }
+                ] }, "eg0"]
+            ]
+        });
+        let base = spawn_stub_jmap_api_server(response).await;
+        let client = JmapClient::new(&base).unwrap();
+        let pw = SecretString::from("pw");
+        let result = client
+            .query_calendar_events(QueryCalendarEventsParams {
+                account_id: "acct",
+                calendar_id: None,
+                start: "2026-01-01T00:00:00Z",
+                end: "2027-01-01T00:00:00Z",
+                position: 0,
+                limit: 100,
+                username: "u",
+                password: &pw,
+            })
+            .await
+            .expect("query must succeed");
+        assert_eq!(result.state, "get-9", "the data-type state, not queryState");
+        assert_eq!(result.query_state, "query-7");
     }
 }

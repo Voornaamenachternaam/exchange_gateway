@@ -4,7 +4,6 @@ use crate::calendar::{
     Attendee, CalendarException, CalendarItem, EasSyncMutation, parse_datetime,
     parse_eas_sync_mutations, parse_ics_event, render_ics,
 };
-use crate::jmap::QueryCalendarEventsParams;
 use crate::models::AppState;
 use crate::util::{resolve_xml_reference, xml_escape};
 use anyhow::{Result, anyhow};
@@ -1242,6 +1241,108 @@ fn calendar_event_deleted(
     !delta_partial || destroyed_server_ids.contains(server_id)
 }
 
+/// Sync-state token stored while a snapshot prime is still being delivered
+/// in clipped windows: `prime-cursor:<last-delivered-href>`. The href
+/// ordering matches the deterministic `events.sort_by(href)` delivery order,
+/// so the continuation can resume strictly after the delivered prefix and —
+/// crucially — force-deliver the remainder even when a shared `item_map`
+/// row already exists (another device's completed prime may have populated
+/// the map with events this device never saw). A JMAP delta token never
+/// takes this shape, so `previous_state` is a prime continuation only when
+/// it resolves under this prefix and the SyncKey matches (checked by the
+/// caller before the prime/delta dispatch).
+fn prime_cursor_token(last_href: &str) -> String {
+    format!("prime-cursor:{last_href}")
+}
+
+fn prime_cursor_from_token(token: Option<&str>) -> Option<String> {
+    token
+        .and_then(|t| t.strip_prefix("prime-cursor:"))
+        .filter(|h| !h.is_empty())
+        .map(str::to_string)
+}
+
+/// Fetch the complete calendar snapshot for the wide prime window by paging
+/// `CalendarEvent/query` with `position` until every reported id has been
+/// seen. The page size is deliberately small (100) so a backend that caps
+/// query results per page is drained incrementally rather than truncated.
+/// The loop terminates when the accumulated distinct-id count reaches the
+/// first page's `total`, when a page returns no event, or when a page
+/// contributes zero NEW ids (the backend stopped making progress and the
+/// caller-visible snapshot is incomplete — surfaced via `total > len`). The
+/// delta `state`/`query_state` and the merged `total` are taken from the
+/// FIRST page: they describe the snapshot as of the initial query and must
+/// not drift across pages.
+const PRIME_QUERY_PAGE_SIZE: u64 = 100;
+
+async fn query_all_calendar_events(
+    jmap: &crate::jmap::JmapClient,
+    account_id: &str,
+    start: &str,
+    end: &str,
+    username: &str,
+    password: &SecretString,
+) -> Result<crate::jmap::CalendarEventListResult> {
+    let first = jmap
+        .query_calendar_events(crate::jmap::QueryCalendarEventsParams {
+            account_id,
+            calendar_id: None,
+            start,
+            end,
+            position: 0,
+            limit: PRIME_QUERY_PAGE_SIZE,
+            username,
+            password,
+        })
+        .await?;
+    let total = first.total;
+    let mut events = first.events;
+    let mut seen: HashSet<String> = events.iter().filter_map(|e| e.id.clone()).collect();
+    // Page while more ids remain behind the accumulated distinct set.
+    loop {
+        if (events.len() as u64) >= total {
+            break;
+        }
+        let page = jmap
+            .query_calendar_events(crate::jmap::QueryCalendarEventsParams {
+                account_id,
+                calendar_id: None,
+                start,
+                end,
+                position: events.len() as u64,
+                limit: PRIME_QUERY_PAGE_SIZE,
+                username,
+                password,
+            })
+            .await?;
+        if page.events.is_empty() {
+            break;
+        }
+        let new_ids: Vec<_> = page
+            .events
+            .into_iter()
+            .filter(|e| e.id.as_ref().is_some_and(|id| seen.insert(id.clone())))
+            .collect();
+        if new_ids.is_empty() {
+            // The backend stopped making progress: surface an incomplete
+            // snapshot (`total > len`) so the caller never persists a
+            // state that would skip the unseen events.
+            break;
+        }
+        events.extend(new_ids);
+        if (events.len() as u64) >= total {
+            break;
+        }
+    }
+    Ok(crate::jmap::CalendarEventListResult {
+        events,
+        total,
+        query_state: first.query_state,
+        state: first.state,
+        unparseable: first.unparseable,
+    })
+}
+
 pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
     let storage = &params.state.storage;
     let window_size = params.opts.window_size.clamp(1, MAX_WINDOW_SIZE);
@@ -1377,6 +1478,17 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
     let mut calendar_delta_partial = false;
     // Server IDs the delta explicitly reported as destroyed.
     let mut jmap_destroyed_server_ids: HashSet<String> = HashSet::new();
+    // True when the JMAP drain stopped at its accumulation/page cap with
+    // `hasMoreChanges` still set: the response must signal
+    // `<MoreAvailable/>` even when it fits the EAS window, and the
+    // intermediate state is persisted so the next delta drains the rest.
+    let mut drain_has_more = false;
+    // Delivery cursor for an in-progress snapshot prime: `Some(href)` when
+    // `previous_state` carries a `prime-cursor:` token (per-device, since
+    // `state_collection_id` is device-scoped). A prime continuation resumes
+    // after this href and force-delivers the remainder.
+    let prime_cursor: Option<String> =
+        prime_cursor_from_token(previous_state.as_ref().and_then(|(_, t)| t.as_deref()));
 
     if params.state.cfg.prefer_jmap_calendar {
         if let Some(jmap) = &params.state.jmap_client {
@@ -1398,8 +1510,143 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
                     }
                 };
                 if !jmap_failed {
-                    if params.incoming_sync_key == "0" {
-                        // Initial full sync with wide time window
+                    // Resume token for a `CalendarEvent/changes` delta. `None`
+                    // means "prime from a full snapshot": either SyncKey 0, a
+                    // delta the server refused with `cannotCalculateChanges`
+                    // (finding #7), or an in-progress windowed prime carrying a
+                    // `prime-cursor:` token — the prime below then re-issues the
+                    // query resuming past the cursor and stores the resulting
+                    // state once the live set is fully delivered.
+                    let resume: Option<String> =
+                        if params.incoming_sync_key == "0" || prime_cursor.is_some() {
+                            None
+                        } else {
+                            previous_state
+                                .as_ref()
+                                .and_then(|(_, token)| token.as_deref())
+                                .filter(|s| !s.is_empty())
+                                .map(str::to_string)
+                        };
+                    let mut done = false;
+
+                    if let Some(old_state_str) = resume.as_deref() {
+                        // Delta sync: drain the whole `CalendarEvent/changes`
+                        // chain (finding #5) so the stored token is the final
+                        // `newState`, never an intermediate one whose remaining
+                        // pages would be skipped.
+                        match jmap
+                            .accumulate_calendar_changes(
+                                &account_id,
+                                old_state_str,
+                                params.username,
+                                &password_secret,
+                            )
+                            .await
+                        {
+                            Ok(changes) => {
+                                let mut all_ids: Vec<String> = changes
+                                    .created
+                                    .iter()
+                                    .chain(changes.updated.iter())
+                                    .cloned()
+                                    .collect();
+                                // An id can appear as created on one page and
+                                // updated on another; fetch each once.
+                                {
+                                    let mut seen = HashSet::with_capacity(all_ids.len());
+                                    all_ids.retain(|id| seen.insert(id.clone()));
+                                }
+                                // A delta is a PARTIAL change set: events
+                                // absent from it are unchanged, not gone.
+                                calendar_delta_partial = true;
+                                for id in &changes.destroyed {
+                                    let href = format!("jmap://calendar/{}/{}", account_id, id);
+                                    jmap_destroyed_server_ids.insert(generate_server_id(
+                                        params.state.cfg.hmac_secret(),
+                                        &href,
+                                    ));
+                                }
+                                let mut conversion_failed = false;
+                                if !all_ids.is_empty() {
+                                    match jmap
+                                        .get_calendar_events(
+                                            &account_id,
+                                            &all_ids,
+                                            params.username,
+                                            &password_secret,
+                                        )
+                                        .await
+                                    {
+                                        Ok(event_map) => {
+                                            for id in all_ids {
+                                                match event_map.get(&id).and_then(|(ics, etag)| {
+                                                    parse_ics_event(ics).map(|item| {
+                                                        (ics.clone(), etag.clone(), item)
+                                                    })
+                                                }) {
+                                                    Some((ics, etag, item)) => {
+                                                        events.push(EventItem {
+                                                            href: format!(
+                                                                "jmap://calendar/{}/{}",
+                                                                account_id, id
+                                                            ),
+                                                            etag,
+                                                            ics,
+                                                            item,
+                                                        });
+                                                    }
+                                                    None => {
+                                                        conversion_failed = true;
+                                                        tracing::warn!(
+                                                            target: "sync",
+                                                            event_id = %id,
+                                                            "changed JMAP calendar event could not be fetched/converted/parsed; not advancing sync state"
+                                                        );
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        Err(e) => {
+                                            tracing::debug!(target: "sync", error = %e, "Failed to fetch changed calendar events from JMAP, falling back to CalDAV");
+                                            jmap_failed = true;
+                                        }
+                                    }
+                                }
+                                if !jmap_failed && conversion_failed {
+                                    // The delta named events we could not turn
+                                    // into items; storing its state would skip
+                                    // them forever. Re-read via CalDAV instead.
+                                    jmap_failed = true;
+                                }
+                                if !jmap_failed {
+                                    drain_has_more = changes.has_more_changes;
+                                    token_to_store = Some(changes.new_state);
+                                    done = true;
+                                }
+                            }
+                            Err(e) => {
+                                if e.downcast_ref::<crate::jmap::CannotCalculateChanges>()
+                                    .is_some()
+                                {
+                                    // The server no longer has the state we
+                                    // stored; fall through to a full re-prime
+                                    // rather than erroring out to CalDAV.
+                                    tracing::warn!(
+                                        target: "sync",
+                                        error = %e,
+                                        "JMAP CalendarEvent/changes cannot calculate changes; re-priming from a full query"
+                                    );
+                                } else {
+                                    tracing::debug!(target: "sync", error = %e, "JMAP Calendar changes failed, falling back to CalDAV");
+                                    jmap_failed = true;
+                                }
+                            }
+                        }
+                    }
+
+                    if !jmap_failed && !done {
+                        // Initial full sync (or re-prime after
+                        // `cannotCalculateChanges`) with a wide time window.
                         let start = params
                             .opts
                             .filter_start
@@ -1408,17 +1655,15 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
                         let end = (Utc::now() + Duration::weeks(104))
                             .format("%Y-%m-%dT%H:%M:%SZ")
                             .to_string();
-                        match jmap
-                            .query_calendar_events(QueryCalendarEventsParams {
-                                account_id: &account_id,
-                                calendar_id: None,
-                                start: &start,
-                                end: &end,
-                                limit: 1000,
-                                username: params.username,
-                                password: &password_secret,
-                            })
-                            .await
+                        match query_all_calendar_events(
+                            jmap,
+                            &account_id,
+                            &start,
+                            &end,
+                            params.username,
+                            &password_secret,
+                        )
+                        .await
                         {
                             Ok(result) => {
                                 let mut conversion_failed = false;
@@ -1432,8 +1677,19 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
                                                 account_id,
                                                 event.id.as_deref().unwrap_or("")
                                             );
-                                            let etag =
-                                                event.id.as_deref().unwrap_or("").to_string(); // Use JMAP ID as etag
+                                            // A stable content-addressed token:
+                                            // Stalwart exposes no `@etag` for
+                                            // calendar events (finding #6), so
+                                            // the server value wins when present
+                                            // and a SHA-256 of the event object
+                                            // is used otherwise.
+                                            let etag = match event.raw.as_ref() {
+                                                Some(raw) => crate::jmap::calendar_event_etag(
+                                                    raw,
+                                                    event.etag.as_deref(),
+                                                ),
+                                                None => event.etag.clone().unwrap_or_default(),
+                                            };
                                             events.push(EventItem {
                                                 href,
                                                 etag,
@@ -1456,123 +1712,43 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
                                     // skip the unprocessed event on the next
                                     // delta; re-query the full set instead.
                                     jmap_failed = true;
+                                } else if result.total > result.events.len() as u64 {
+                                    // `query_all_calendar_events` paged by
+                                    // `position` until the snapshot was
+                                    // exhausted, so `total > len` here means
+                                    // the pages stopped making progress (a
+                                    // new id never appeared) — an incomplete
+                                    // snapshot. Never store its state: the
+                                    // next Sync re-primes from the start, and
+                                    // the partial mark keeps the tombstone
+                                    // sweep from deleting unseen events.
+                                    tracing::warn!(
+                                        target: "sync",
+                                        total = result.total,
+                                        fetched = result.events.len(),
+                                        "JMAP calendar prime snapshot incomplete; re-priming next Sync"
+                                    );
+                                    calendar_delta_partial = true;
                                 } else {
-                                    token_to_store = Some(result.query_state.clone());
+                                    // Store the `CalendarEvent/get` data-type
+                                    // `state`, which is what
+                                    // `CalendarEvent/changes` accepts as
+                                    // `sinceState` (finding #7). The query's
+                                    // `queryState` is a different state space
+                                    // and is only a fallback when the server
+                                    // omitted the data-type state.
+                                    let token = if result.state.is_empty() {
+                                        result.query_state.clone()
+                                    } else {
+                                        result.state.clone()
+                                    };
+                                    token_to_store = Some(token);
                                 }
                             }
                             Err(e) => {
                                 tracing::debug!(target: "sync", error = %e, "JMAP Calendar query failed, falling back to CalDAV");
                                 jmap_failed = true;
                             }
-                        }
-                    } else {
-                        // Delta sync using CalendarEvent/changes
-                        let old_state = match previous_state
-                            .as_ref()
-                            .and_then(|(_, token)| token.as_deref())
-                        {
-                            Some(s) if !s.is_empty() => Some(s),
-                            _ => {
-                                tracing::warn!(
-                                    "No JMAP state token for calendar delta sync, falling back to CalDAV"
-                                );
-                                jmap_failed = true;
-                                None
-                            }
-                        };
-                        if let Some(old_state_str) = old_state {
-                            match jmap
-                                .changes_calendar_events(
-                                    &account_id,
-                                    old_state_str,
-                                    params.username,
-                                    &password_secret,
-                                )
-                                .await
-                            {
-                                Ok(changes) => {
-                                    let all_ids: Vec<String> = changes
-                                        .created
-                                        .iter()
-                                        .chain(changes.updated.iter())
-                                        .cloned()
-                                        .collect();
-                                    // A delta is a PARTIAL change set: events
-                                    // absent from it are unchanged, not gone.
-                                    calendar_delta_partial = true;
-                                    for id in &changes.destroyed {
-                                        let href = format!("jmap://calendar/{}/{}", account_id, id);
-                                        jmap_destroyed_server_ids.insert(generate_server_id(
-                                            params.state.cfg.hmac_secret(),
-                                            &href,
-                                        ));
-                                    }
-                                    let mut conversion_failed = false;
-                                    if !all_ids.is_empty() {
-                                        match jmap
-                                            .get_calendar_events(
-                                                &account_id,
-                                                &all_ids,
-                                                params.username,
-                                                &password_secret,
-                                            )
-                                            .await
-                                        {
-                                            Ok(event_map) => {
-                                                for id in all_ids {
-                                                    match event_map.get(&id).and_then(
-                                                        |(ics, etag)| {
-                                                            parse_ics_event(ics).map(|item| {
-                                                                (ics.clone(), etag.clone(), item)
-                                                            })
-                                                        },
-                                                    ) {
-                                                        Some((ics, etag, item)) => {
-                                                            events.push(EventItem {
-                                                                href: format!(
-                                                                    "jmap://calendar/{}/{}",
-                                                                    account_id, id
-                                                                ),
-                                                                etag,
-                                                                ics,
-                                                                item,
-                                                            });
-                                                        }
-                                                        None => {
-                                                            conversion_failed = true;
-                                                            tracing::warn!(
-                                                                target: "sync",
-                                                                event_id = %id,
-                                                                "changed JMAP calendar event could not be fetched/converted/parsed; not advancing sync state"
-                                                            );
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                            Err(e) => {
-                                                tracing::debug!(target: "sync", error = %e, "Failed to fetch changed calendar events from JMAP, falling back to CalDAV");
-                                                jmap_failed = true;
-                                            }
-                                        }
-                                    }
-                                    if !jmap_failed && conversion_failed {
-                                        // The delta named events we could not
-                                        // turn into items; storing its state
-                                        // would skip them forever. Re-read via
-                                        // CalDAV instead.
-                                        jmap_failed = true;
-                                    }
-                                    if !jmap_failed {
-                                        token_to_store = Some(changes.new_state.clone());
-                                    }
-                                }
-                                Err(e) => {
-                                    tracing::debug!(target: "sync", error = %e, "JMAP Calendar changes failed, falling back to CalDAV");
-                                    jmap_failed = true;
-                                }
-                            }
-                        } else {
-                            jmap_failed = true;
                         }
                     }
                 }
@@ -1717,6 +1893,13 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
         }
     }
 
+    // Deterministic delivery order: the EAS response window is applied to
+    // `pending_items` in vector order, so a stable sort makes a clipped prime
+    // deliver a contiguous, stable prefix of the set across successive Syncs
+    // (server_id is derived from the href, so ordering by href is equivalent).
+    // Delta results (already a bounded change set) are unaffected in practice.
+    events.sort_by(|a, b| a.href.cmp(&b.href));
+
     let existing_map = storage
         .list_ews_items(params.owner, 4096, 0)
         .await?
@@ -1736,6 +1919,7 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
     let mut pending_deletes: Vec<String> = Vec::new();
     let mut seen_ids = HashSet::new();
     let initial_sync = params.incoming_sync_key == "0";
+    let in_prime_cursor = prime_cursor.is_some();
 
     for ev in &events {
         if ev.href.is_empty() {
@@ -1751,7 +1935,18 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
         let changed = existing
             .map(|row| row.etag.as_deref() != Some(etag.as_str()))
             .unwrap_or(true);
-        if !initial_sync && !changed {
+        // A prime continuation resumes strictly after the stored href
+        // cursor: events at/before it were already delivered to THIS device,
+        // so they are skipped unconditionally. Events past it are force-
+        // delivered even when the shared item_map already holds them with
+        // a matching etag (another device's completed prime may have
+        // populated the map with events this device never saw, and the
+        // `changed` check would otherwise filter them out forever).
+        if in_prime_cursor {
+            if ev.href.as_str() <= prime_cursor.as_deref().unwrap() {
+                continue;
+            }
+        } else if !initial_sync && !changed {
             continue;
         }
         pending_items.push(PendingItem {
@@ -1779,10 +1974,14 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
             server_id,
         );
         if deleted {
+            // Queue the tombstone now (it carries the journal seq and
+            // must survive a clipped window) but RETAIN the item_map row:
+            // removing it before its `<Delete>` is emitted would make the
+            // held-token retry miss the journal row (`start_db_seq` has
+            // moved past it) and the client would keep the deleted
+            // meeting indefinitely. The row is dropped by the delete fill
+            // only once its `<Delete>` command has been emitted.
             let _ = storage.add_delete_tombstone(params.owner, server_id).await;
-            let _ = storage
-                .delete_item_by_server_id(params.owner, server_id)
-                .await;
         }
     }
 
@@ -1802,12 +2001,15 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
     );
     let mut items_included = 0usize;
     let mut more_available = false;
+    // Href of the last item actually delivered, for the prime cursor.
+    let mut last_delivered_href: Option<String> = None;
 
     for pi in &pending_items {
         if items_included >= window_size {
             more_available = true;
             break;
         }
+        last_delivered_href = Some(pi.resource_href.clone());
         storage
             .upsert_item_map(
                 params.owner,
@@ -1867,17 +2069,71 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
                 xml_escape(server_id)
             ));
             items_included += 1;
+            // The push of this delete above is the moment the item_map row
+            // may finally be removed. Deleting it any earlier (e.g. in the
+            // sweep above) would lose the retry path: a clipped window that
+            // has not emitted this `<Delete>` yet must keep the row so the
+            // held-token retry re-queues it.
+            let _ = storage
+                .delete_item_by_server_id(params.owner, server_id)
+                .await;
         }
     }
 
     let new_sync_key = Uuid::new_v4().to_string();
-    let token_val = token_to_store.unwrap_or_else(|| sync_seq_to_token(start_db_seq));
+    // Advance the provider token only when the whole change set was delivered.
+    // A clipped EAS window (MoreAvailable) leaves undelivered items behind
+    // the current token; storing the new state there would make the next
+    // delta start AFTER them and lose those events. Instead:
+    // - a clipped DELTA keeps the previous token, so the next Sync re-derives
+    //   the same change set (delivered items are filtered by the item_map
+    //   etag comparison);
+    // - a clipped SNAPSHOT (initial sync, re-prime, or CalDAV fallback
+    //   snapshot) stores a `prime-cursor:` token naming the last delivered
+    //   href in delivery order, so the continuation re-primes from that
+    //   cursor — never as a delta from a stale provider token, and with
+    //   forced delivery past the cursor (see `in_prime_cursor`);
+    // - a drain that stopped at its cap with `hasMoreChanges` set also
+    //   signals `<MoreAvailable/>`, but the accumulated changes were
+    //   delivered, so the intermediate state IS persisted and the next delta
+    //   resumes from `newState`.
+    let provider_token = token_to_store;
+    // An incomplete JMAP prime snapshot (query pages stopped making
+    // progress: `calendar_delta_partial` set with no provider token) must
+    // store NO token at all, so the next Sync re-primes from the full
+    // snapshot instead of attempting a delta from a state that skips the
+    // unseen events.
+    let incomplete_prime = calendar_delta_partial && provider_token.is_none();
+    let token_val: Option<String> = if more_available {
+        if calendar_delta_partial && provider_token.is_some() {
+            // Clipped JMAP delta (or a clipped delta that drained the chain
+            // fully): hold the previous token so the next Sync re-derives
+            // the same change set.
+            previous_state.as_ref().and_then(|(_, t)| t.clone())
+        } else {
+            // Clipped snapshot (initial sync, re-prime, or CalDAV
+            // fallback snapshot): store a prime cursor over the delivered
+            // prefix (falling back to the pre-sync start when nothing was
+            // delivered, which re-primes from the beginning).
+            let cursor = match last_delivered_href.as_deref().or(prime_cursor.as_deref()) {
+                Some(href) => prime_cursor_token(href),
+                None => sync_seq_to_token(start_db_seq),
+            };
+            Some(cursor)
+        }
+    } else if drain_has_more {
+        Some(provider_token.unwrap_or_else(|| sync_seq_to_token(start_db_seq)))
+    } else if incomplete_prime {
+        None
+    } else {
+        Some(provider_token.unwrap_or_else(|| sync_seq_to_token(start_db_seq)))
+    };
     storage
         .set_sync_key(
             params.owner,
             params.state_collection_id,
             &new_sync_key,
-            Some(&token_val),
+            token_val.as_deref(),
         )
         .await?;
     // Journal watermark independent of the provider token (which may be a
@@ -1897,7 +2153,7 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
     storage
         .set_journal_watermark(params.owner, params.state_collection_id, journal_seq)
         .await?;
-    let more_available_tag = if more_available {
+    let more_available_tag = if more_available || drain_has_more {
         "<MoreAvailable/>"
     } else {
         ""
@@ -2242,5 +2498,942 @@ mod tests {
                 "explicit UTC ({utc_id}) event must omit <Calendar:Timezone>:\n{xml}"
             );
         }
+    }
+
+    // ---- Calendar delta-path end-to-end tests (AUDIT3 findings #5/#6/#7) ----
+
+    use serde_json::{Value, json};
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+    /// Shared state for the scripted calendar JMAP stub.
+    #[derive(Clone)]
+    struct CalStub {
+        base: String,
+        /// Scripted `CalendarEvent/changes` response argument objects, served
+        /// in order; the last one repeats if a call exceeds the script.
+        changes_pages: std::sync::Arc<Mutex<Vec<Value>>>,
+        change_idx: std::sync::Arc<AtomicUsize>,
+        /// Full event objects returned by `CalendarEvent/get`.
+        events: std::sync::Arc<Mutex<Vec<Value>>>,
+        query_state: std::sync::Arc<String>,
+        get_state: std::sync::Arc<String>,
+        /// Every parsed request body, for assertions.
+        recorded: std::sync::Arc<Mutex<Vec<Value>>>,
+        /// When set, `CalendarEvent/changes` answers with this method error.
+        changes_error: std::sync::Arc<Option<String>>,
+        /// Reported `CalendarEvent/query` total; 0 means "use the event count".
+        query_total: std::sync::Arc<AtomicUsize>,
+        /// When true, `CalendarEvent/query` honours `position`/`limit` like the
+        /// real backend (paging a sorted id list), instead of returning the
+        /// whole list on every call.
+        honour_position: std::sync::Arc<AtomicBool>,
+    }
+
+    async fn spawn_calendar_stub(
+        changes_pages: Vec<Value>,
+        events: Vec<Value>,
+        query_state: &str,
+        get_state: &str,
+        changes_error: Option<String>,
+    ) -> CalStub {
+        use axum::routing::{get, post};
+
+        async fn session(axum::Extension(s): axum::Extension<CalStub>) -> axum::Json<Value> {
+            axum::Json(json!({
+                "apiUrl": s.base,
+                "downloadUrl": format!("{}/download/{{accountId}}/{{blobId}}", s.base),
+                "uploadUrl": format!("{}/upload/{{accountId}}", s.base),
+                "eventSourceUrl": format!("{}/eventsource", s.base),
+                "state": "s",
+                "username": "u",
+                "accounts": {
+                    "acct": { "name": "u", "isPersonal": true, "isReadOnly": false, "accountCapabilities": {} }
+                },
+                "primaryAccounts": { crate::jmap::JMAP_CAL_CAPABILITY: "acct" },
+                "capabilities": {
+                    crate::jmap::JMAP_CORE_CAPABILITY: { "maxObjectsInGet": 500 },
+                    crate::jmap::JMAP_CAL_CAPABILITY: {},
+                },
+            }))
+        }
+
+        async fn api(
+            axum::Extension(s): axum::Extension<CalStub>,
+            axum::Json(body): axum::Json<Value>,
+        ) -> axum::Json<Value> {
+            s.recorded.lock().unwrap().push(body.clone());
+            let calls = body
+                .get("methodCalls")
+                .and_then(|c| c.as_array())
+                .cloned()
+                .unwrap_or_default();
+            let mut responses = Vec::new();
+            for call in calls {
+                let name = call.get(0).and_then(|v| v.as_str()).unwrap_or("");
+                let args = call.get(1).cloned().unwrap_or(Value::Null);
+                let id = call.get(2).and_then(|v| v.as_str()).unwrap_or("x");
+                match name {
+                    "CalendarEvent/changes" => {
+                        if let Some(err) = s.changes_error.as_ref() {
+                            responses.push(json!([
+                                "error",
+                                { "type": err, "description": "scripted" },
+                                id
+                            ]));
+                            continue;
+                        }
+                        let idx = s.change_idx.fetch_add(1, Ordering::SeqCst);
+                        let pages = s.changes_pages.lock().unwrap();
+                        let page = pages
+                            .get(idx)
+                            .or_else(|| pages.last())
+                            .cloned()
+                            .unwrap_or_else(|| json!({}));
+                        responses.push(json!(["CalendarEvent/changes", page, id]));
+                    }
+                    "CalendarEvent/query" => {
+                        let mut ids: Vec<String> = s
+                            .events
+                            .lock()
+                            .unwrap()
+                            .iter()
+                            .filter_map(|e| e.get("id").and_then(|v| v.as_str()).map(String::from))
+                            .collect();
+                        ids.sort();
+                        let total = s.query_total.load(Ordering::SeqCst);
+                        let total = if total == 0 { ids.len() } else { total };
+                        let page_ids = if s.honour_position.load(Ordering::SeqCst) {
+                            let position =
+                                args.get("position").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+                            let limit =
+                                args.get("limit").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+                            let end = position.saturating_add(limit).min(ids.len());
+                            let start = position.min(ids.len());
+                            ids[start..end].to_vec()
+                        } else {
+                            ids
+                        };
+                        responses.push(json!([
+                            "CalendarEvent/query",
+                            { "ids": page_ids, "total": total, "queryState": s.query_state.as_str() },
+                            id
+                        ]));
+                    }
+                    "CalendarEvent/get" => {
+                        let want: Vec<String> = args
+                            .get("ids")
+                            .and_then(|v| v.as_array())
+                            .map(|a| {
+                                a.iter()
+                                    .filter_map(|v| v.as_str())
+                                    .map(String::from)
+                                    .collect()
+                            })
+                            .unwrap_or_default();
+                        let list: Vec<Value> = s
+                            .events
+                            .lock()
+                            .unwrap()
+                            .iter()
+                            .filter(|e| {
+                                want.is_empty()
+                                    || e.get("id")
+                                        .and_then(|v| v.as_str())
+                                        .map(|i| want.iter().any(|w| w == i))
+                                        .unwrap_or(false)
+                            })
+                            .cloned()
+                            .collect();
+                        responses.push(json!([
+                            "CalendarEvent/get",
+                            { "accountId": "acct", "state": s.get_state.as_str(), "list": list, "notFound": [] },
+                            id
+                        ]));
+                    }
+                    _ => {}
+                }
+            }
+            axum::Json(json!({ "methodResponses": responses }))
+        }
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let base = format!("http://127.0.0.1:{port}");
+        let stub = CalStub {
+            base: base.clone(),
+            changes_pages: std::sync::Arc::new(Mutex::new(changes_pages)),
+            change_idx: std::sync::Arc::new(AtomicUsize::new(0)),
+            events: std::sync::Arc::new(Mutex::new(events)),
+            query_state: std::sync::Arc::new(query_state.to_string()),
+            get_state: std::sync::Arc::new(get_state.to_string()),
+            recorded: std::sync::Arc::new(Mutex::new(Vec::new())),
+            changes_error: std::sync::Arc::new(changes_error),
+            query_total: std::sync::Arc::new(AtomicUsize::new(0)),
+            honour_position: std::sync::Arc::new(AtomicBool::new(false)),
+        };
+        let app = axum::Router::new()
+            .route("/session", get(session))
+            .route("/", post(api))
+            .layer(axum::Extension(stub.clone()));
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        stub
+    }
+
+    fn stub_event(id: &str, uid: &str, title: &str) -> Value {
+        json!({
+            "id": id,
+            "uid": uid,
+            "title": title,
+            "start": "2026-01-05T09:00:00",
+            "timeZone": "Europe/Berlin",
+            "duration": "PT1H",
+            "iCalendar": {
+                "convertedProperties": { "duration": { "name": "dtend" } },
+                "name": "vevent"
+            }
+        })
+    }
+
+    async fn calendar_sync_state(jmap_base: &str) -> Arc<AppState> {
+        use crate::models::AppState;
+        let storage = crate::storage::Storage::new("sqlite::memory:")
+            .await
+            .expect("in-memory storage");
+        storage.init_schema().await.expect("schema init");
+        let cfg = crate::config::Config {
+            jmap_base: jmap_base.to_string(),
+            email_enabled: true,
+            prefer_jmap_calendar: true,
+            mail_domain: "example.com".to_string(),
+            hmac_secret: SecretString::from("a".repeat(32)),
+            ..Default::default()
+        };
+        Arc::new(AppState::new(cfg, Arc::new(storage)))
+    }
+
+    async fn run_calendar_sync(state: &Arc<AppState>, incoming_sync_key: &str) -> String {
+        let opts = SyncOptions {
+            window_size: 100,
+            get_changes: true,
+            filter_start: Utc::now() - Duration::weeks(52),
+            body_options: crate::eas_sync_options::EasSyncCollectionOptions::default(),
+        };
+        perform_sync(&PerformSyncParams {
+            state: state.clone(),
+            owner: "user@example.com",
+            collection_id: "calendar",
+            state_collection_id: "calendar",
+            incoming_sync_key,
+            content_class: "Calendar",
+            opts,
+            username: "user@example.com",
+            password: "pw",
+            client_mutation_responses: "",
+        })
+        .await
+        .expect("perform_sync")
+    }
+
+    /// Finding #5: a `CalendarEvent/changes` chain that reports
+    /// `hasMoreChanges` must be drained to the FINAL `newState`, and every
+    /// page's events delivered. Storing an intermediate state would make the
+    /// next delta skip the undrained pages.
+    #[tokio::test]
+    async fn calendar_delta_drains_all_pages_and_stores_final_state() {
+        let page1 = json!({
+            "accountId": "acct", "oldState": "s0", "newState": "s1",
+            "hasMoreChanges": true,
+            "created": ["e1"], "updated": [], "destroyed": []
+        });
+        let page2 = json!({
+            "accountId": "acct", "oldState": "s1", "newState": "s2",
+            "hasMoreChanges": false,
+            "created": ["e2"], "updated": [], "destroyed": []
+        });
+        let stub = spawn_calendar_stub(
+            vec![page1, page2],
+            vec![
+                stub_event("e1", "uid-e1", "Event One"),
+                stub_event("e2", "uid-e2", "Event Two"),
+            ],
+            "query-s",
+            "get-s",
+            None,
+        )
+        .await;
+        let state = calendar_sync_state(&stub.base).await;
+        state
+            .storage
+            .set_sync_key("user@example.com", "calendar", "key-1", Some("s0"))
+            .await
+            .unwrap();
+
+        let xml = run_calendar_sync(&state, "key-1").await;
+        assert!(xml.contains("uid-e1"), "page 1 event delivered:\n{xml}");
+        assert!(xml.contains("uid-e2"), "page 2 event delivered:\n{xml}");
+
+        let (_, token) = state
+            .storage
+            .get_sync_key("user@example.com", "calendar")
+            .await
+            .unwrap()
+            .expect("sync key persisted");
+        assert_eq!(
+            token.as_deref(),
+            Some("s2"),
+            "final state, not an intermediate"
+        );
+
+        // The delta must have walked two `CalendarEvent/changes` pages.
+        let rec = stub.recorded.lock().unwrap().clone();
+        let changes_calls: Vec<_> = rec
+            .iter()
+            .filter(|b| b.to_string().contains("CalendarEvent/changes"))
+            .collect();
+        assert_eq!(changes_calls.len(), 2, "both pages requested");
+    }
+
+    /// Finding #7: the initial prime stores the `CalendarEvent/get` data-type
+    /// `state` — the token `CalendarEvent/changes` accepts — not the query's
+    /// `queryState`.
+    #[tokio::test]
+    async fn calendar_prime_stores_get_state_not_query_state() {
+        let stub = spawn_calendar_stub(
+            vec![],
+            vec![stub_event("e1", "uid-e1", "Event One")],
+            "query-7",
+            "get-9",
+            None,
+        )
+        .await;
+        let state = calendar_sync_state(&stub.base).await;
+
+        let xml = run_calendar_sync(&state, "0").await;
+        assert!(xml.contains("uid-e1"), "prime delivers the event:\n{xml}");
+
+        let (_, token) = state
+            .storage
+            .get_sync_key("user@example.com", "calendar")
+            .await
+            .unwrap()
+            .expect("sync key persisted");
+        assert_eq!(
+            token.as_deref(),
+            Some("get-9"),
+            "the CalendarEvent/get state, not queryState"
+        );
+    }
+
+    /// Finding #7: a `cannotCalculateChanges` reply re-primes from a full
+    /// query (instead of falling back to CalDAV) and stores the fresh state.
+    #[tokio::test]
+    async fn calendar_cannot_calculate_changes_reprimes() {
+        let stub = spawn_calendar_stub(
+            vec![],
+            vec![stub_event("e1", "uid-e1", "Event One")],
+            "query-7",
+            "get-9",
+            Some("cannotCalculateChanges".to_string()),
+        )
+        .await;
+        let state = calendar_sync_state(&stub.base).await;
+        state
+            .storage
+            .set_sync_key("user@example.com", "calendar", "key-1", Some("stale"))
+            .await
+            .unwrap();
+
+        let xml = run_calendar_sync(&state, "key-1").await;
+        assert!(
+            xml.contains("uid-e1"),
+            "re-prime must deliver the event:\n{xml}"
+        );
+        assert!(
+            xml.contains("<Status>1</Status>"),
+            "re-prime must succeed, not fall back to CalDAV:\n{xml}"
+        );
+
+        let (_, token) = state
+            .storage
+            .get_sync_key("user@example.com", "calendar")
+            .await
+            .unwrap()
+            .expect("sync key persisted");
+        assert_eq!(token.as_deref(), Some("get-9"), "fresh state stored");
+    }
+
+    /// Finding #6: the same event object yields the same content-hash etag on
+    /// the initial prime and a later delta, so etag-based change detection is
+    /// stable across both paths.
+    #[tokio::test]
+    async fn calendar_etag_is_stable_across_prime_and_delta() {
+        let event = stub_event("e1", "uid-e1", "Event One");
+        let expected = crate::jmap::calendar_event_etag(&event, None);
+
+        // Prime.
+        let prime = spawn_calendar_stub(vec![], vec![event.clone()], "q", "get-s", None).await;
+        let prime_state = calendar_sync_state(&prime.base).await;
+        run_calendar_sync(&prime_state, "0").await;
+        let stored_prime = prime_state
+            .storage
+            .list_ews_items("user@example.com", 16, 0)
+            .await
+            .unwrap();
+        assert_eq!(stored_prime.len(), 1);
+        assert_eq!(stored_prime[0].etag.as_deref(), Some(expected.as_str()));
+
+        // Delta.
+        let page = json!({
+            "accountId": "acct", "oldState": "s0", "newState": "s1",
+            "hasMoreChanges": false,
+            "created": [], "updated": ["e1"], "destroyed": []
+        });
+        let delta = spawn_calendar_stub(vec![page], vec![event], "q", "get-s", None).await;
+        let delta_state = calendar_sync_state(&delta.base).await;
+        delta_state
+            .storage
+            .set_sync_key("user@example.com", "calendar", "key-1", Some("s0"))
+            .await
+            .unwrap();
+        run_calendar_sync(&delta_state, "key-1").await;
+        let stored_delta = delta_state
+            .storage
+            .list_ews_items("user@example.com", 16, 0)
+            .await
+            .unwrap();
+        assert_eq!(stored_delta.len(), 1);
+        assert_eq!(
+            stored_delta[0].etag.as_deref(),
+            Some(expected.as_str()),
+            "the delta etag must match the prime etag for unchanged content"
+        );
+    }
+
+    /// A clipped delta window (MoreAvailable) must NOT advance the stored
+    /// token: the undelivered changes are still behind the old token, and the
+    /// next Sync re-derives them (the already-delivered ones are filtered by
+    /// the `item_map` etag comparison).
+    #[tokio::test]
+    async fn calendar_clipped_window_preserves_token() {
+        let page = json!({
+            "accountId": "acct", "oldState": "s0", "newState": "s1",
+            "hasMoreChanges": false,
+            "created": ["e1", "e2"], "updated": [], "destroyed": []
+        });
+        let stub = spawn_calendar_stub(
+            vec![page],
+            vec![
+                stub_event("e1", "uid-e1", "Event One"),
+                stub_event("e2", "uid-e2", "Event Two"),
+            ],
+            "q",
+            "get-s",
+            None,
+        )
+        .await;
+        let state = calendar_sync_state(&stub.base).await;
+        state
+            .storage
+            .set_sync_key("user@example.com", "calendar", "key-1", Some("s0"))
+            .await
+            .unwrap();
+
+        // Window of 1: only one of the two changed events fits.
+        let opts = SyncOptions {
+            window_size: 1,
+            get_changes: true,
+            filter_start: Utc::now() - Duration::weeks(52),
+            body_options: crate::eas_sync_options::EasSyncCollectionOptions::default(),
+        };
+        let xml = perform_sync(&PerformSyncParams {
+            state: state.clone(),
+            owner: "user@example.com",
+            collection_id: "calendar",
+            state_collection_id: "calendar",
+            incoming_sync_key: "key-1",
+            content_class: "Calendar",
+            opts,
+            username: "user@example.com",
+            password: "pw",
+            client_mutation_responses: "",
+        })
+        .await
+        .expect("perform_sync");
+
+        assert!(
+            xml.contains("<MoreAvailable/>"),
+            "a clipped window must signal MoreAvailable:\n{xml}"
+        );
+        let (_, token) = state
+            .storage
+            .get_sync_key("user@example.com", "calendar")
+            .await
+            .unwrap()
+            .expect("sync key persisted");
+        assert_eq!(
+            token.as_deref(),
+            Some("s0"),
+            "a clipped window must keep the old token so the next delta re-derives the set"
+        );
+    }
+
+    /// A prime whose query reports more events than it returned (a truncated
+    /// snapshot) must NOT tombstone stored events that are absent from it.
+    #[tokio::test]
+    async fn calendar_truncated_prime_does_not_tombstone() {
+        let stub = spawn_calendar_stub(
+            vec![],
+            vec![stub_event("e2", "uid-e2", "Event Two")],
+            "q",
+            "get-s",
+            None,
+        )
+        .await;
+        // The server says there are more events than the page carries.
+        stub.query_total.store(50, Ordering::SeqCst);
+        let state = calendar_sync_state(&stub.base).await;
+        // A stored event absent from the (truncated) page.
+        state
+            .storage
+            .upsert_item_map(
+                "user@example.com",
+                "jmap://calendar/acct/e1",
+                "jmap://calendar/acct/e1",
+                "sid-e1",
+                "uid-e1",
+                "old-etag",
+            )
+            .await
+            .unwrap();
+
+        run_calendar_sync(&state, "0").await;
+
+        let stored = state
+            .storage
+            .list_ews_items("user@example.com", 16, 0)
+            .await
+            .unwrap();
+        let ids: Vec<&str> = stored.iter().map(|r| r.server_id.as_str()).collect();
+        assert!(
+            ids.contains(&"sid-e1"),
+            "a truncated prime must not delete the event it did not return: {ids:?}"
+        );
+    }
+
+    /// `query_all_calendar_events` must page `CalendarEvent/query` by
+    /// `position` until every id in `total` has been seen, so a backend that
+    /// caps query page size never silently truncates the prime snapshot.
+    #[tokio::test]
+    async fn calendar_prime_pages_query_by_position() {
+        let stub = spawn_calendar_stub(
+            vec![],
+            vec![
+                stub_event("e1", "uid-e1", "Event One"),
+                stub_event("e2", "uid-e2", "Event Two"),
+                stub_event("e3", "uid-e3", "Event Three"),
+                stub_event("e4", "uid-e4", "Event Four"),
+            ],
+            "query-7",
+            "get-9",
+            None,
+        )
+        .await;
+        stub.honour_position.store(true, Ordering::SeqCst);
+        let state = calendar_sync_state(&stub.base).await;
+        let xml = run_calendar_sync(&state, "0").await;
+
+        let adds = xml.matches("<Add><ServerId>").count();
+        assert_eq!(
+            adds, 4,
+            "all 4 events must be delivered across query pages:\n{xml}"
+        );
+        let recorded = stub.recorded.lock().unwrap().clone();
+        let mut positions = Vec::new();
+        for body in &recorded {
+            let calls = body
+                .get("methodCalls")
+                .and_then(|c| c.as_array())
+                .cloned()
+                .unwrap_or_default();
+            for call in calls.iter() {
+                let name = call.get(0).and_then(|v| v.as_str()).unwrap_or("");
+                if name == "CalendarEvent/query"
+                    && let Some(position) = call
+                        .get(1)
+                        .and_then(|a| a.get("position"))
+                        .and_then(|v| v.as_u64())
+                {
+                    positions.push(position);
+                }
+            }
+        }
+        assert!(
+            !positions.is_empty(),
+            "the client must page the query by position: {recorded:?}"
+        );
+        assert_eq!(
+            positions[0], 0,
+            "the first query page starts at position 0: {recorded:?}"
+        );
+    }
+
+    /// A `CalendarEvent/changes` drain that stops at its cap with
+    /// `hasMoreChanges` set must signal `<MoreAvailable/>` even when the
+    /// accumulated changes fit the EAS window, and the INTERMEDIATE state
+    /// must be stored so the next delta resumes from `newState` rather
+    /// than re-delivering the same pages forever.
+    #[tokio::test]
+    async fn calendar_drain_cap_signals_more_available_and_keeps_intermediate_state() {
+        let page1 = json!({
+            "accountId": "acct", "oldState": "s0", "newState": "s1",
+            "hasMoreChanges": true,
+            "created": ["e1"], "updated": [], "destroyed": []
+        });
+        let page2 = json!({
+            "accountId": "acct", "oldState": "s1", "newState": "s2",
+            "hasMoreChanges": true,
+            "created": ["e2"], "updated": [], "destroyed": []
+        });
+        let stub = spawn_calendar_stub(
+            vec![page1, page2],
+            vec![
+                stub_event("e1", "uid-e1", "Event One"),
+                stub_event("e2", "uid-e2", "Event Two"),
+            ],
+            "query-7",
+            "get-9",
+            None,
+        )
+        .await;
+        let state = calendar_sync_state(&stub.base).await;
+        state
+            .storage
+            .set_sync_key("user@example.com", "calendar", "key-1", Some("s0"))
+            .await
+            .unwrap();
+        let xml = run_calendar_sync(&state, "key-1").await;
+
+        assert!(
+            xml.contains("<MoreAvailable/>"),
+            "a capped drain must signal MoreAvailable:\n{xml}"
+        );
+        let (_, token) = state
+            .storage
+            .get_sync_key("user@example.com", "calendar")
+            .await
+            .unwrap()
+            .expect("sync key persisted");
+        assert_eq!(
+            token.as_deref(),
+            Some("s2"),
+            "the intermediate newState from the capped drain must be persisted: {token:?}"
+        );
+    }
+
+    /// A clipped PRIME window (MoreAvailable) must store a **per-prime**
+    /// cursor (`prime-cursor:<delivered-href>`) instead of a provider token,
+    /// and the follow-up Sync must make forward progress: it re-primes from
+    /// the cursor and force-delivers the remainder even when the shared
+    /// `item_map` already holds a matching etag (another device's completed
+    /// prime may have populated the map with events this device never saw).
+    /// Only the fully-delivered window stores the provider get-state token.
+    #[tokio::test]
+    async fn calendar_clipped_prime_reprimes_and_progresses() {
+        let stub = spawn_calendar_stub(
+            vec![],
+            vec![
+                stub_event("e1", "uid-e1", "Event One"),
+                stub_event("e2", "uid-e2", "Event Two"),
+            ],
+            "query-7",
+            "get-9",
+            None,
+        )
+        .await;
+        let state = calendar_sync_state(&stub.base).await;
+
+        let make_opts = || SyncOptions {
+            window_size: 1,
+            get_changes: true,
+            filter_start: Utc::now() - Duration::weeks(52),
+            body_options: crate::eas_sync_options::EasSyncCollectionOptions::default(),
+        };
+
+        // First Sync: window clips after one event.
+        let first = perform_sync(&PerformSyncParams {
+            state: state.clone(),
+            owner: "user@example.com",
+            collection_id: "calendar",
+            state_collection_id: "calendar",
+            incoming_sync_key: "0",
+            content_class: "Calendar",
+            opts: make_opts(),
+            username: "user@example.com",
+            password: "pw",
+            client_mutation_responses: "",
+        })
+        .await
+        .expect("perform_sync");
+        assert!(
+            first.contains("<MoreAvailable/>"),
+            "a clipped prime must signal MoreAvailable:\n{first}"
+        );
+        let (_, token) = state
+            .storage
+            .get_sync_key("user@example.com", "calendar")
+            .await
+            .unwrap()
+            .expect("sync key persisted");
+        assert!(
+            token
+                .as_deref()
+                .is_some_and(|t| t.starts_with("prime-cursor:")),
+            "a clipped prime must store a prime cursor, not a provider token: {token:?}"
+        );
+        let first_key = first
+            .split("<SyncKey>")
+            .nth(1)
+            .and_then(|s| s.split("</SyncKey>").next())
+            .expect("SyncKey in response")
+            .to_string();
+        assert_eq!(
+            state
+                .storage
+                .list_ews_items("user@example.com", 16, 0)
+                .await
+                .unwrap()
+                .len(),
+            1,
+            "only the delivered window is stored"
+        );
+
+        // Simulate a second device completing its own prime: delete this
+        // device's item_map row so a re-prime that relied on etag filtering
+        // would refill from empty — but the cursor continuation must
+        // force-deliver the remainder regardless of item_map state.
+        let stored_before = state
+            .storage
+            .list_ews_items("user@example.com", 16, 0)
+            .await
+            .unwrap();
+        let stored_server_id = stored_before[0].server_id.clone();
+        state
+            .storage
+            .delete_item_by_server_id("user@example.com", &stored_server_id)
+            .await
+            .unwrap();
+        assert_eq!(
+            state
+                .storage
+                .list_ews_items("user@example.com", 16, 0)
+                .await
+                .unwrap()
+                .len(),
+            0,
+            "item_map wiped to force the etag-filter would have nothing to match"
+        );
+
+        // Follow-up Sync resumes the prime from the cursor and delivers the
+        // remaining event.
+        let second = perform_sync(&PerformSyncParams {
+            state: state.clone(),
+            owner: "user@example.com",
+            collection_id: "calendar",
+            state_collection_id: "calendar",
+            incoming_sync_key: &first_key,
+            content_class: "Calendar",
+            opts: make_opts(),
+            username: "user@example.com",
+            password: "pw",
+            client_mutation_responses: "",
+        })
+        .await
+        .expect("perform_sync");
+        assert!(
+            !second.contains("<MoreAvailable/>"),
+            "the second window completes the set:\n{second}"
+        );
+        let (_, token) = state
+            .storage
+            .get_sync_key("user@example.com", "calendar")
+            .await
+            .unwrap()
+            .expect("sync key persisted");
+        assert_eq!(
+            token.as_deref(),
+            Some("get-9"),
+            "the completed prime stores the get state"
+        );
+        assert_eq!(
+            state
+                .storage
+                .list_ews_items("user@example.com", 16, 0)
+                .await
+                .unwrap()
+                .len(),
+            1,
+            "only the forced remainder event is stored after the cursor continuation"
+        );
+    }
+
+    /// An incomplete prime snapshot must store NO token, so the next Sync
+    /// re-primes from the full snapshot rather than attempting a delta.
+    #[tokio::test]
+    async fn calendar_incomplete_prime_stores_no_token() {
+        let stub = spawn_calendar_stub(
+            vec![],
+            vec![stub_event("e2", "uid-e2", "Event Two")],
+            "q",
+            "get-s",
+            None,
+        )
+        .await;
+        stub.query_total.store(50, Ordering::SeqCst);
+        let state = calendar_sync_state(&stub.base).await;
+
+        let xml = run_calendar_sync(&state, "0").await;
+        assert!(
+            !xml.contains("<MoreAvailable/>"),
+            "an unclipped incomplete prime must not signal MoreAvailable:\n{xml}"
+        );
+        let (_, token) = state
+            .storage
+            .get_sync_key("user@example.com", "calendar")
+            .await
+            .unwrap()
+            .expect("sync key persisted");
+        assert!(
+            token.is_none(),
+            "an incomplete snapshot must store no delta token: {token:?}"
+        );
+    }
+
+    /// A destroyed item whose `<Delete>` was clipped away must be RETAINED
+    /// in `item_map` so the held-token retry re-queues its delete, and the
+    /// row must be removed only once the `<Delete>` is actually emitted.
+    #[tokio::test]
+    async fn calendar_clipped_destroy_retains_row_until_delete_emitted() {
+        let page = json!({
+            "accountId": "acct", "oldState": "s0", "newState": "s1",
+            "hasMoreChanges": false,
+            "created": ["e1"], "updated": [], "destroyed": ["e9"]
+        });
+        let stub = spawn_calendar_stub(
+            vec![page],
+            vec![stub_event("e1", "uid-e1", "Event One")],
+            "q",
+            "get-s",
+            None,
+        )
+        .await;
+        let state = calendar_sync_state(&stub.base).await;
+        let href_e9 = "jmap://calendar/acct/e9";
+        let sid_e9 = generate_server_id(state.cfg.hmac_secret(), href_e9);
+        state
+            .storage
+            .upsert_item_map(
+                "user@example.com",
+                href_e9,
+                href_e9,
+                &sid_e9,
+                "uid-e9",
+                "old-etag",
+            )
+            .await
+            .unwrap();
+        state
+            .storage
+            .set_sync_key("user@example.com", "calendar", "key-1", Some("s0"))
+            .await
+            .unwrap();
+
+        let make_opts = || SyncOptions {
+            window_size: 1,
+            get_changes: true,
+            filter_start: Utc::now() - Duration::weeks(52),
+            body_options: crate::eas_sync_options::EasSyncCollectionOptions::default(),
+        };
+        let run = |key: String| {
+            let state = state.clone();
+            async move {
+                perform_sync(&PerformSyncParams {
+                    state,
+                    owner: "user@example.com",
+                    collection_id: "calendar",
+                    state_collection_id: "calendar",
+                    incoming_sync_key: &key,
+                    content_class: "Calendar",
+                    opts: make_opts(),
+                    username: "user@example.com",
+                    password: "pw",
+                    client_mutation_responses: "",
+                })
+                .await
+                .expect("perform_sync")
+            }
+        };
+
+        // Window of 1: the Add fills the window, so the Delete is clipped.
+        let first = run("key-1".to_string()).await;
+        assert!(
+            first.contains("<MoreAvailable/>"),
+            "the clipped delete must signal MoreAvailable:\n{first}"
+        );
+        assert!(
+            !first.contains("<Delete>"),
+            "the delete must not be emitted in the clipped window:\n{first}"
+        );
+        assert!(
+            state
+                .storage
+                .list_ews_items("user@example.com", 16, 0)
+                .await
+                .unwrap()
+                .iter()
+                .any(|r| r.server_id == sid_e9),
+            "the destroyed row must be RETAINED until its Delete is emitted"
+        );
+        let (_, first_token) = state
+            .storage
+            .get_sync_key("user@example.com", "calendar")
+            .await
+            .unwrap()
+            .expect("sync key persisted");
+        assert_eq!(
+            first_token.as_deref(),
+            Some("s0"),
+            "a clipped delta must keep the old token"
+        );
+        let first_key = first
+            .split("<SyncKey>")
+            .nth(1)
+            .and_then(|s| s.split("</SyncKey>").next())
+            .expect("SyncKey in response")
+            .to_string();
+
+        // Retry with the held token: the retained row is re-queued and the
+        // Delete is now emitted (e1 is unchanged, so it is filtered out).
+        let second = run(first_key).await;
+        assert!(
+            second.contains("<Delete>"),
+            "the retry must emit the Delete:\n{second}"
+        );
+        assert!(
+            second.contains(&sid_e9),
+            "the emitted Delete must name the destroyed event:\n{second}"
+        );
+        assert!(
+            !state
+                .storage
+                .list_ews_items("user@example.com", 16, 0)
+                .await
+                .unwrap()
+                .iter()
+                .any(|r| r.server_id == sid_e9),
+            "the row must be removed after its Delete is emitted"
+        );
     }
 }
