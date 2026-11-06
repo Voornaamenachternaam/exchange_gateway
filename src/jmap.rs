@@ -94,8 +94,10 @@ const CALENDAR_CHANGES_PAGE_SIZE: u32 = 500;
 
 /// Upper bound on ids accumulated across a `CalendarEvent/changes` drain, so a
 /// pathological backend cannot loop forever. Anything past this bound stays
-/// behind the final `newState` and is picked up by the next Sync's diff, so
-/// nothing is lost.
+/// behind the intermediate `newState` and is drained by the next Sync's
+/// follow-up delta (the intermediate state is persisted with
+/// `has_more_changes = true` and the EAS response signals `<MoreAvailable/>`),
+/// so nothing is lost.
 const MAX_CALENDAR_CHANGE_ACCUMULATION: usize = 5000;
 
 /// Upper bound on the number of `CalendarEvent/changes` pages drained in one
@@ -1073,6 +1075,11 @@ pub struct QueryCalendarEventsParams<'a> {
     pub calendar_id: Option<&'a str>,
     pub start: &'a str,
     pub end: &'a str,
+    /// RFC 8620 §5.1 `position`: zero-based offset into the sorted result
+    /// set. Non-zero positions page through a result set larger than one
+    /// `limit`-sized page; the prime path loops on it until every id is
+    /// fetched so a truncated snapshot never advances the delta state.
+    pub position: u64,
     pub limit: u64,
     pub username: &'a str,
     pub password: &'a SecretString,
@@ -2518,9 +2525,14 @@ impl JmapClient {
     /// that is destroyed wins (a later create followed by a destroy is a net
     /// deletion).
     ///
-    /// The page cap ([`MAX_CALENDAR_CHANGE_ACCUMULATION`]) bounds a
-    /// pathological backend; anything past it stays behind the returned
-    /// `newState` and is picked up by the next Sync's diff, so nothing is lost.
+    /// The id cap ([`MAX_CALENDAR_CHANGE_ACCUMULATION`]) and the page cap
+    /// ([`MAX_CALENDAR_CHANGE_PAGES`]) bound a pathological backend. If
+    /// either bound is hit while the server still reports
+    /// `hasMoreChanges`, the result preserves that flag (and the
+    /// intermediate `newState`) so the sync caller can persist the
+    /// intermediate token and signal `<MoreAvailable/>`: the delivered
+    /// accumulated changes are consumed, and the next delta resumes from the
+    /// intermediate state to drain the remainder.
     pub async fn accumulate_calendar_changes(
         &self,
         account_id: &str,
@@ -2533,7 +2545,7 @@ impl JmapClient {
         let mut destroyed: Vec<String> = Vec::new();
         let mut since = old_state.to_string();
         let mut pages = 0usize;
-        loop {
+        let more = loop {
             let batch = self
                 .changes_calendar_events(
                     account_id,
@@ -2553,9 +2565,9 @@ impl JmapClient {
                     >= MAX_CALENDAR_CHANGE_ACCUMULATION
                 || pages >= MAX_CALENDAR_CHANGE_PAGES
             {
-                break;
+                break batch.has_more_changes;
             }
-        }
+        };
         // A destroyed id wins over created/updated: across chained pages an id
         // can be created on one page and destroyed on a later one, and the net
         // effect for the client is a deletion.
@@ -2571,7 +2583,7 @@ impl JmapClient {
             updated,
             destroyed,
             new_state: since,
-            has_more_changes: false,
+            has_more_changes: more,
         })
     }
 
@@ -5046,6 +5058,7 @@ impl JmapClient {
                     "accountId": params.account_id,
                     "filter": filter,
                     "sort": [{ "property": "start", "isAscending": true }],
+                    "position": params.position,
                     "limit": params.limit,
                     "calculateTotal": true,
                 }),
@@ -7662,6 +7675,7 @@ mod tests {
                 calendar_id: None,
                 start: "2026-01-01T00:00:00Z",
                 end: "2026-12-31T00:00:00Z",
+                position: 0,
                 limit: 100,
                 username: "u",
                 password: &pw,
@@ -8448,6 +8462,7 @@ mod tests {
                 calendar_id: None,
                 start: "2026-01-01T00:00:00Z",
                 end: "2027-01-01T00:00:00Z",
+                position: 0,
                 limit: 100,
                 username: "u",
                 password: &pw,

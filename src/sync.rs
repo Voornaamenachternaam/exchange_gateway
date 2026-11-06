@@ -4,7 +4,6 @@ use crate::calendar::{
     Attendee, CalendarException, CalendarItem, EasSyncMutation, parse_datetime,
     parse_eas_sync_mutations, parse_ics_event, render_ics,
 };
-use crate::jmap::QueryCalendarEventsParams;
 use crate::models::AppState;
 use crate::util::{resolve_xml_reference, xml_escape};
 use anyhow::{Result, anyhow};
@@ -1242,6 +1241,108 @@ fn calendar_event_deleted(
     !delta_partial || destroyed_server_ids.contains(server_id)
 }
 
+/// Sync-state token stored while a snapshot prime is still being delivered
+/// in clipped windows: `prime-cursor:<last-delivered-href>`. The href
+/// ordering matches the deterministic `events.sort_by(href)` delivery order,
+/// so the continuation can resume strictly after the delivered prefix and —
+/// crucially — force-deliver the remainder even when a shared `item_map`
+/// row already exists (another device's completed prime may have populated
+/// the map with events this device never saw). A JMAP delta token never
+/// takes this shape, so `previous_state` is a prime continuation only when
+/// it resolves under this prefix and the SyncKey matches (checked by the
+/// caller before the prime/delta dispatch).
+fn prime_cursor_token(last_href: &str) -> String {
+    format!("prime-cursor:{last_href}")
+}
+
+fn prime_cursor_from_token(token: Option<&str>) -> Option<String> {
+    token
+        .and_then(|t| t.strip_prefix("prime-cursor:"))
+        .filter(|h| !h.is_empty())
+        .map(str::to_string)
+}
+
+/// Fetch the complete calendar snapshot for the wide prime window by paging
+/// `CalendarEvent/query` with `position` until every reported id has been
+/// seen. The page size is deliberately small (100) so a backend that caps
+/// query results per page is drained incrementally rather than truncated.
+/// The loop terminates when the accumulated distinct-id count reaches the
+/// first page's `total`, when a page returns no event, or when a page
+/// contributes zero NEW ids (the backend stopped making progress and the
+/// caller-visible snapshot is incomplete — surfaced via `total > len`). The
+/// delta `state`/`query_state` and the merged `total` are taken from the
+/// FIRST page: they describe the snapshot as of the initial query and must
+/// not drift across pages.
+const PRIME_QUERY_PAGE_SIZE: u64 = 100;
+
+async fn query_all_calendar_events(
+    jmap: &crate::jmap::JmapClient,
+    account_id: &str,
+    start: &str,
+    end: &str,
+    username: &str,
+    password: &SecretString,
+) -> Result<crate::jmap::CalendarEventListResult> {
+    let first = jmap
+        .query_calendar_events(crate::jmap::QueryCalendarEventsParams {
+            account_id,
+            calendar_id: None,
+            start,
+            end,
+            position: 0,
+            limit: PRIME_QUERY_PAGE_SIZE,
+            username,
+            password,
+        })
+        .await?;
+    let total = first.total;
+    let mut events = first.events;
+    let mut seen: HashSet<String> = events.iter().filter_map(|e| e.id.clone()).collect();
+    // Page while more ids remain behind the accumulated distinct set.
+    loop {
+        if (events.len() as u64) >= total {
+            break;
+        }
+        let page = jmap
+            .query_calendar_events(crate::jmap::QueryCalendarEventsParams {
+                account_id,
+                calendar_id: None,
+                start,
+                end,
+                position: events.len() as u64,
+                limit: PRIME_QUERY_PAGE_SIZE,
+                username,
+                password,
+            })
+            .await?;
+        if page.events.is_empty() {
+            break;
+        }
+        let new_ids: Vec<_> = page
+            .events
+            .into_iter()
+            .filter(|e| e.id.as_ref().is_some_and(|id| seen.insert(id.clone())))
+            .collect();
+        if new_ids.is_empty() {
+            // The backend stopped making progress: surface an incomplete
+            // snapshot (`total > len`) so the caller never persists a
+            // state that would skip the unseen events.
+            break;
+        }
+        events.extend(new_ids);
+        if (events.len() as u64) >= total {
+            break;
+        }
+    }
+    Ok(crate::jmap::CalendarEventListResult {
+        events,
+        total,
+        query_state: first.query_state,
+        state: first.state,
+        unparseable: first.unparseable,
+    })
+}
+
 pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
     let storage = &params.state.storage;
     let window_size = params.opts.window_size.clamp(1, MAX_WINDOW_SIZE);
@@ -1377,6 +1478,17 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
     let mut calendar_delta_partial = false;
     // Server IDs the delta explicitly reported as destroyed.
     let mut jmap_destroyed_server_ids: HashSet<String> = HashSet::new();
+    // True when the JMAP drain stopped at its accumulation/page cap with
+    // `hasMoreChanges` still set: the response must signal
+    // `<MoreAvailable/>` even when it fits the EAS window, and the
+    // intermediate state is persisted so the next delta drains the rest.
+    let mut drain_has_more = false;
+    // Delivery cursor for an in-progress snapshot prime: `Some(href)` when
+    // `previous_state` carries a `prime-cursor:` token (per-device, since
+    // `state_collection_id` is device-scoped). A prime continuation resumes
+    // after this href and force-delivers the remainder.
+    let prime_cursor: Option<String> =
+        prime_cursor_from_token(previous_state.as_ref().and_then(|(_, t)| t.as_deref()));
 
     if params.state.cfg.prefer_jmap_calendar {
         if let Some(jmap) = &params.state.jmap_client {
@@ -1401,19 +1513,20 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
                     // Resume token for a `CalendarEvent/changes` delta. `None`
                     // means "prime from a full snapshot": either SyncKey 0, a
                     // delta the server refused with `cannotCalculateChanges`
-                    // (finding #7), or an in-progress windowed prime whose
-                    // keyset cursor is still present — the prime below then
-                    // re-issues the query (resuming past the cursor) and stores
-                    // the resulting state once the live set is fully delivered.
-                    let resume: Option<String> = if params.incoming_sync_key == "0" {
-                        None
-                    } else {
-                        previous_state
-                            .as_ref()
-                            .and_then(|(_, token)| token.as_deref())
-                            .filter(|s| !s.is_empty())
-                            .map(str::to_string)
-                    };
+                    // (finding #7), or an in-progress windowed prime carrying a
+                    // `prime-cursor:` token — the prime below then re-issues the
+                    // query resuming past the cursor and stores the resulting
+                    // state once the live set is fully delivered.
+                    let resume: Option<String> =
+                        if params.incoming_sync_key == "0" || prime_cursor.is_some() {
+                            None
+                        } else {
+                            previous_state
+                                .as_ref()
+                                .and_then(|(_, token)| token.as_deref())
+                                .filter(|s| !s.is_empty())
+                                .map(str::to_string)
+                        };
                     let mut done = false;
 
                     if let Some(old_state_str) = resume.as_deref() {
@@ -1506,6 +1619,7 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
                                     jmap_failed = true;
                                 }
                                 if !jmap_failed {
+                                    drain_has_more = changes.has_more_changes;
                                     token_to_store = Some(changes.new_state);
                                     done = true;
                                 }
@@ -1541,17 +1655,15 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
                         let end = (Utc::now() + Duration::weeks(104))
                             .format("%Y-%m-%dT%H:%M:%SZ")
                             .to_string();
-                        match jmap
-                            .query_calendar_events(QueryCalendarEventsParams {
-                                account_id: &account_id,
-                                calendar_id: None,
-                                start: &start,
-                                end: &end,
-                                limit: 1000,
-                                username: params.username,
-                                password: &password_secret,
-                            })
-                            .await
+                        match query_all_calendar_events(
+                            jmap,
+                            &account_id,
+                            &start,
+                            &end,
+                            params.username,
+                            &password_secret,
+                        )
+                        .await
                         {
                             Ok(result) => {
                                 let mut conversion_failed = false;
@@ -1600,14 +1712,24 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
                                     // skip the unprocessed event on the next
                                     // delta; re-query the full set instead.
                                     jmap_failed = true;
+                                } else if result.total > result.events.len() as u64 {
+                                    // `query_all_calendar_events` paged by
+                                    // `position` until the snapshot was
+                                    // exhausted, so `total > len` here means
+                                    // the pages stopped making progress (a
+                                    // new id never appeared) — an incomplete
+                                    // snapshot. Never store its state: the
+                                    // next Sync re-primes from the start, and
+                                    // the partial mark keeps the tombstone
+                                    // sweep from deleting unseen events.
+                                    tracing::warn!(
+                                        target: "sync",
+                                        total = result.total,
+                                        fetched = result.events.len(),
+                                        "JMAP calendar prime snapshot incomplete; re-priming next Sync"
+                                    );
+                                    calendar_delta_partial = true;
                                 } else {
-                                    // A query that hit its `limit` returned a
-                                    // truncated snapshot: a stored event absent
-                                    // from it is not necessarily deleted, so the
-                                    // tombstone sweep must treat it as partial.
-                                    if result.total > result.events.len() as u64 {
-                                        calendar_delta_partial = true;
-                                    }
                                     // Store the `CalendarEvent/get` data-type
                                     // `state`, which is what
                                     // `CalendarEvent/changes` accepts as
@@ -1797,6 +1919,7 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
     let mut pending_deletes: Vec<String> = Vec::new();
     let mut seen_ids = HashSet::new();
     let initial_sync = params.incoming_sync_key == "0";
+    let in_prime_cursor = prime_cursor.is_some();
 
     for ev in &events {
         if ev.href.is_empty() {
@@ -1812,7 +1935,18 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
         let changed = existing
             .map(|row| row.etag.as_deref() != Some(etag.as_str()))
             .unwrap_or(true);
-        if !initial_sync && !changed {
+        // A prime continuation resumes strictly after the stored href
+        // cursor: events at/before it were already delivered to THIS device,
+        // so they are skipped unconditionally. Events past it are force-
+        // delivered even when the shared item_map already holds them with
+        // a matching etag (another device's completed prime may have
+        // populated the map with events this device never saw, and the
+        // `changed` check would otherwise filter them out forever).
+        if in_prime_cursor {
+            if ev.href.as_str() <= prime_cursor.as_deref().unwrap() {
+                continue;
+            }
+        } else if !initial_sync && !changed {
             continue;
         }
         pending_items.push(PendingItem {
@@ -1840,10 +1974,14 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
             server_id,
         );
         if deleted {
+            // Queue the tombstone now (it carries the journal seq and
+            // must survive a clipped window) but RETAIN the item_map row:
+            // removing it before its `<Delete>` is emitted would make the
+            // held-token retry miss the journal row (`start_db_seq` has
+            // moved past it) and the client would keep the deleted
+            // meeting indefinitely. The row is dropped by the delete fill
+            // only once its `<Delete>` command has been emitted.
             let _ = storage.add_delete_tombstone(params.owner, server_id).await;
-            let _ = storage
-                .delete_item_by_server_id(params.owner, server_id)
-                .await;
         }
     }
 
@@ -1863,12 +2001,15 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
     );
     let mut items_included = 0usize;
     let mut more_available = false;
+    // Href of the last item actually delivered, for the prime cursor.
+    let mut last_delivered_href: Option<String> = None;
 
     for pi in &pending_items {
         if items_included >= window_size {
             more_available = true;
             break;
         }
+        last_delivered_href = Some(pi.resource_href.clone());
         storage
             .upsert_item_map(
                 params.owner,
@@ -1928,22 +2069,64 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
                 xml_escape(server_id)
             ));
             items_included += 1;
+            // The push of this delete above is the moment the item_map row
+            // may finally be removed. Deleting it any earlier (e.g. in the
+            // sweep above) would lose the retry path: a clipped window that
+            // has not emitted this `<Delete>` yet must keep the row so the
+            // held-token retry re-queues it.
+            let _ = storage
+                .delete_item_by_server_id(params.owner, server_id)
+                .await;
         }
     }
 
     let new_sync_key = Uuid::new_v4().to_string();
     // Advance the provider token only when the whole change set was delivered.
-    // A clipped window (MoreAvailable) leaves undelivered items behind the
-    // current token; storing the new state there would make the next delta
-    // start AFTER them and lose those events. Instead the token stays where it
-    // was, so the next Sync re-derives the same change set — the delivered
-    // items are then filtered out by the `item_map` etag comparison, so nothing
-    // is re-added and nothing is lost. `previous_state` is None for a fresh
-    // prime, so a clipped prime stores no token and re-primes next Sync.
+    // A clipped EAS window (MoreAvailable) leaves undelivered items behind
+    // the current token; storing the new state there would make the next
+    // delta start AFTER them and lose those events. Instead:
+    // - a clipped DELTA keeps the previous token, so the next Sync re-derives
+    //   the same change set (delivered items are filtered by the item_map
+    //   etag comparison);
+    // - a clipped SNAPSHOT (initial sync, re-prime, or CalDAV fallback
+    //   snapshot) stores a `prime-cursor:` token naming the last delivered
+    //   href in delivery order, so the continuation re-primes from that
+    //   cursor — never as a delta from a stale provider token, and with
+    //   forced delivery past the cursor (see `in_prime_cursor`);
+    // - a drain that stopped at its cap with `hasMoreChanges` set also
+    //   signals `<MoreAvailable/>`, but the accumulated changes were
+    //   delivered, so the intermediate state IS persisted and the next delta
+    //   resumes from `newState`.
+    let provider_token = token_to_store;
+    // An incomplete JMAP prime snapshot (query pages stopped making
+    // progress: `calendar_delta_partial` set with no provider token) must
+    // store NO token at all, so the next Sync re-primes from the full
+    // snapshot instead of attempting a delta from a state that skips the
+    // unseen events.
+    let incomplete_prime = calendar_delta_partial && provider_token.is_none();
     let token_val: Option<String> = if more_available {
-        previous_state.as_ref().and_then(|(_, token)| token.clone())
+        if calendar_delta_partial && provider_token.is_some() {
+            // Clipped JMAP delta (or a clipped delta that drained the chain
+            // fully): hold the previous token so the next Sync re-derives
+            // the same change set.
+            previous_state.as_ref().and_then(|(_, t)| t.clone())
+        } else {
+            // Clipped snapshot (initial sync, re-prime, or CalDAV
+            // fallback snapshot): store a prime cursor over the delivered
+            // prefix (falling back to the pre-sync start when nothing was
+            // delivered, which re-primes from the beginning).
+            let cursor = match last_delivered_href.as_deref().or(prime_cursor.as_deref()) {
+                Some(href) => prime_cursor_token(href),
+                None => sync_seq_to_token(start_db_seq),
+            };
+            Some(cursor)
+        }
+    } else if drain_has_more {
+        Some(provider_token.unwrap_or_else(|| sync_seq_to_token(start_db_seq)))
+    } else if incomplete_prime {
+        None
     } else {
-        Some(token_to_store.unwrap_or_else(|| sync_seq_to_token(start_db_seq)))
+        Some(provider_token.unwrap_or_else(|| sync_seq_to_token(start_db_seq)))
     };
     storage
         .set_sync_key(
@@ -1970,7 +2153,7 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
     storage
         .set_journal_watermark(params.owner, params.state_collection_id, journal_seq)
         .await?;
-    let more_available_tag = if more_available {
+    let more_available_tag = if more_available || drain_has_more {
         "<MoreAvailable/>"
     } else {
         ""
@@ -2321,7 +2504,7 @@ mod tests {
 
     use serde_json::{Value, json};
     use std::sync::Mutex;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
     /// Shared state for the scripted calendar JMAP stub.
     #[derive(Clone)]
@@ -2341,6 +2524,10 @@ mod tests {
         changes_error: std::sync::Arc<Option<String>>,
         /// Reported `CalendarEvent/query` total; 0 means "use the event count".
         query_total: std::sync::Arc<AtomicUsize>,
+        /// When true, `CalendarEvent/query` honours `position`/`limit` like the
+        /// real backend (paging a sorted id list), instead of returning the
+        /// whole list on every call.
+        honour_position: std::sync::Arc<AtomicBool>,
     }
 
     async fn spawn_calendar_stub(
@@ -2406,18 +2593,30 @@ mod tests {
                         responses.push(json!(["CalendarEvent/changes", page, id]));
                     }
                     "CalendarEvent/query" => {
-                        let ids: Vec<String> = s
+                        let mut ids: Vec<String> = s
                             .events
                             .lock()
                             .unwrap()
                             .iter()
                             .filter_map(|e| e.get("id").and_then(|v| v.as_str()).map(String::from))
                             .collect();
+                        ids.sort();
                         let total = s.query_total.load(Ordering::SeqCst);
                         let total = if total == 0 { ids.len() } else { total };
+                        let page_ids = if s.honour_position.load(Ordering::SeqCst) {
+                            let position =
+                                args.get("position").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+                            let limit =
+                                args.get("limit").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+                            let end = position.saturating_add(limit).min(ids.len());
+                            let start = position.min(ids.len());
+                            ids[start..end].to_vec()
+                        } else {
+                            ids
+                        };
                         responses.push(json!([
                             "CalendarEvent/query",
-                            { "ids": ids, "total": total, "queryState": s.query_state.as_str() },
+                            { "ids": page_ids, "total": total, "queryState": s.query_state.as_str() },
                             id
                         ]));
                     }
@@ -2471,6 +2670,7 @@ mod tests {
             recorded: std::sync::Arc::new(Mutex::new(Vec::new())),
             changes_error: std::sync::Arc::new(changes_error),
             query_total: std::sync::Arc::new(AtomicUsize::new(0)),
+            honour_position: std::sync::Arc::new(AtomicBool::new(false)),
         };
         let app = axum::Router::new()
             .route("/session", get(session))
@@ -2823,10 +3023,123 @@ mod tests {
         );
     }
 
-    /// A clipped PRIME window (MoreAvailable) must not store a provider token,
-    /// and the follow-up Sync must make forward progress: the events already
-    /// delivered are filtered by the `item_map` etag comparison, so the next
-    /// window delivers the remainder and only then stores the token.
+    /// `query_all_calendar_events` must page `CalendarEvent/query` by
+    /// `position` until every id in `total` has been seen, so a backend that
+    /// caps query page size never silently truncates the prime snapshot.
+    #[tokio::test]
+    async fn calendar_prime_pages_query_by_position() {
+        let stub = spawn_calendar_stub(
+            vec![],
+            vec![
+                stub_event("e1", "uid-e1", "Event One"),
+                stub_event("e2", "uid-e2", "Event Two"),
+                stub_event("e3", "uid-e3", "Event Three"),
+                stub_event("e4", "uid-e4", "Event Four"),
+            ],
+            "query-7",
+            "get-9",
+            None,
+        )
+        .await;
+        stub.honour_position.store(true, Ordering::SeqCst);
+        let state = calendar_sync_state(&stub.base).await;
+        let xml = run_calendar_sync(&state, "0").await;
+
+        let adds = xml.matches("<Add><ServerId>").count();
+        assert_eq!(
+            adds, 4,
+            "all 4 events must be delivered across query pages:\n{xml}"
+        );
+        let recorded = stub.recorded.lock().unwrap().clone();
+        let mut positions = Vec::new();
+        for body in &recorded {
+            let calls = body
+                .get("methodCalls")
+                .and_then(|c| c.as_array())
+                .cloned()
+                .unwrap_or_default();
+            for call in calls.iter() {
+                let name = call.get(0).and_then(|v| v.as_str()).unwrap_or("");
+                if name == "CalendarEvent/query"
+                    && let Some(position) = call
+                        .get(1)
+                        .and_then(|a| a.get("position"))
+                        .and_then(|v| v.as_u64())
+                {
+                    positions.push(position);
+                }
+            }
+        }
+        assert!(
+            !positions.is_empty(),
+            "the client must page the query by position: {recorded:?}"
+        );
+        assert_eq!(
+            positions[0], 0,
+            "the first query page starts at position 0: {recorded:?}"
+        );
+    }
+
+    /// A `CalendarEvent/changes` drain that stops at its cap with
+    /// `hasMoreChanges` set must signal `<MoreAvailable/>` even when the
+    /// accumulated changes fit the EAS window, and the INTERMEDIATE state
+    /// must be stored so the next delta resumes from `newState` rather
+    /// than re-delivering the same pages forever.
+    #[tokio::test]
+    async fn calendar_drain_cap_signals_more_available_and_keeps_intermediate_state() {
+        let page1 = json!({
+            "accountId": "acct", "oldState": "s0", "newState": "s1",
+            "hasMoreChanges": true,
+            "created": ["e1"], "updated": [], "destroyed": []
+        });
+        let page2 = json!({
+            "accountId": "acct", "oldState": "s1", "newState": "s2",
+            "hasMoreChanges": true,
+            "created": ["e2"], "updated": [], "destroyed": []
+        });
+        let stub = spawn_calendar_stub(
+            vec![page1, page2],
+            vec![
+                stub_event("e1", "uid-e1", "Event One"),
+                stub_event("e2", "uid-e2", "Event Two"),
+            ],
+            "query-7",
+            "get-9",
+            None,
+        )
+        .await;
+        let state = calendar_sync_state(&stub.base).await;
+        state
+            .storage
+            .set_sync_key("user@example.com", "calendar", "key-1", Some("s0"))
+            .await
+            .unwrap();
+        let xml = run_calendar_sync(&state, "key-1").await;
+
+        assert!(
+            xml.contains("<MoreAvailable/>"),
+            "a capped drain must signal MoreAvailable:\n{xml}"
+        );
+        let (_, token) = state
+            .storage
+            .get_sync_key("user@example.com", "calendar")
+            .await
+            .unwrap()
+            .expect("sync key persisted");
+        assert_eq!(
+            token.as_deref(),
+            Some("s2"),
+            "the intermediate newState from the capped drain must be persisted: {token:?}"
+        );
+    }
+
+    /// A clipped PRIME window (MoreAvailable) must store a **per-prime**
+    /// cursor (`prime-cursor:<delivered-href>`) instead of a provider token,
+    /// and the follow-up Sync must make forward progress: it re-primes from
+    /// the cursor and force-delivers the remainder even when the shared
+    /// `item_map` already holds a matching etag (another device's completed
+    /// prime may have populated the map with events this device never saw).
+    /// Only the fully-delivered window stores the provider get-state token.
     #[tokio::test]
     async fn calendar_clipped_prime_reprimes_and_progresses() {
         let stub = spawn_calendar_stub(
@@ -2875,8 +3188,10 @@ mod tests {
             .unwrap()
             .expect("sync key persisted");
         assert!(
-            token.is_none(),
-            "a clipped prime must store no token: {token:?}"
+            token
+                .as_deref()
+                .is_some_and(|t| t.starts_with("prime-cursor:")),
+            "a clipped prime must store a prime cursor, not a provider token: {token:?}"
         );
         let first_key = first
             .split("<SyncKey>")
@@ -2895,7 +3210,34 @@ mod tests {
             "only the delivered window is stored"
         );
 
-        // Follow-up Sync re-primes and delivers the remaining event.
+        // Simulate a second device completing its own prime: delete this
+        // device's item_map row so a re-prime that relied on etag filtering
+        // would refill from empty — but the cursor continuation must
+        // force-deliver the remainder regardless of item_map state.
+        let stored_before = state
+            .storage
+            .list_ews_items("user@example.com", 16, 0)
+            .await
+            .unwrap();
+        let stored_server_id = stored_before[0].server_id.clone();
+        state
+            .storage
+            .delete_item_by_server_id("user@example.com", &stored_server_id)
+            .await
+            .unwrap();
+        assert_eq!(
+            state
+                .storage
+                .list_ews_items("user@example.com", 16, 0)
+                .await
+                .unwrap()
+                .len(),
+            0,
+            "item_map wiped to force the etag-filter would have nothing to match"
+        );
+
+        // Follow-up Sync resumes the prime from the cursor and delivers the
+        // remaining event.
         let second = perform_sync(&PerformSyncParams {
             state: state.clone(),
             owner: "user@example.com",
@@ -2932,8 +3274,166 @@ mod tests {
                 .await
                 .unwrap()
                 .len(),
-            2,
-            "both events stored after the re-prime"
+            1,
+            "only the forced remainder event is stored after the cursor continuation"
+        );
+    }
+
+    /// An incomplete prime snapshot must store NO token, so the next Sync
+    /// re-primes from the full snapshot rather than attempting a delta.
+    #[tokio::test]
+    async fn calendar_incomplete_prime_stores_no_token() {
+        let stub = spawn_calendar_stub(
+            vec![],
+            vec![stub_event("e2", "uid-e2", "Event Two")],
+            "q",
+            "get-s",
+            None,
+        )
+        .await;
+        stub.query_total.store(50, Ordering::SeqCst);
+        let state = calendar_sync_state(&stub.base).await;
+
+        let xml = run_calendar_sync(&state, "0").await;
+        assert!(
+            !xml.contains("<MoreAvailable/>"),
+            "an unclipped incomplete prime must not signal MoreAvailable:\n{xml}"
+        );
+        let (_, token) = state
+            .storage
+            .get_sync_key("user@example.com", "calendar")
+            .await
+            .unwrap()
+            .expect("sync key persisted");
+        assert!(
+            token.is_none(),
+            "an incomplete snapshot must store no delta token: {token:?}"
+        );
+    }
+
+    /// A destroyed item whose `<Delete>` was clipped away must be RETAINED
+    /// in `item_map` so the held-token retry re-queues its delete, and the
+    /// row must be removed only once the `<Delete>` is actually emitted.
+    #[tokio::test]
+    async fn calendar_clipped_destroy_retains_row_until_delete_emitted() {
+        let page = json!({
+            "accountId": "acct", "oldState": "s0", "newState": "s1",
+            "hasMoreChanges": false,
+            "created": ["e1"], "updated": [], "destroyed": ["e9"]
+        });
+        let stub = spawn_calendar_stub(
+            vec![page],
+            vec![stub_event("e1", "uid-e1", "Event One")],
+            "q",
+            "get-s",
+            None,
+        )
+        .await;
+        let state = calendar_sync_state(&stub.base).await;
+        let href_e9 = "jmap://calendar/acct/e9";
+        let sid_e9 = generate_server_id(state.cfg.hmac_secret(), href_e9);
+        state
+            .storage
+            .upsert_item_map(
+                "user@example.com",
+                href_e9,
+                href_e9,
+                &sid_e9,
+                "uid-e9",
+                "old-etag",
+            )
+            .await
+            .unwrap();
+        state
+            .storage
+            .set_sync_key("user@example.com", "calendar", "key-1", Some("s0"))
+            .await
+            .unwrap();
+
+        let make_opts = || SyncOptions {
+            window_size: 1,
+            get_changes: true,
+            filter_start: Utc::now() - Duration::weeks(52),
+            body_options: crate::eas_sync_options::EasSyncCollectionOptions::default(),
+        };
+        let run = |key: String| {
+            let state = state.clone();
+            async move {
+                perform_sync(&PerformSyncParams {
+                    state,
+                    owner: "user@example.com",
+                    collection_id: "calendar",
+                    state_collection_id: "calendar",
+                    incoming_sync_key: &key,
+                    content_class: "Calendar",
+                    opts: make_opts(),
+                    username: "user@example.com",
+                    password: "pw",
+                    client_mutation_responses: "",
+                })
+                .await
+                .expect("perform_sync")
+            }
+        };
+
+        // Window of 1: the Add fills the window, so the Delete is clipped.
+        let first = run("key-1".to_string()).await;
+        assert!(
+            first.contains("<MoreAvailable/>"),
+            "the clipped delete must signal MoreAvailable:\n{first}"
+        );
+        assert!(
+            !first.contains("<Delete>"),
+            "the delete must not be emitted in the clipped window:\n{first}"
+        );
+        assert!(
+            state
+                .storage
+                .list_ews_items("user@example.com", 16, 0)
+                .await
+                .unwrap()
+                .iter()
+                .any(|r| r.server_id == sid_e9),
+            "the destroyed row must be RETAINED until its Delete is emitted"
+        );
+        let (_, first_token) = state
+            .storage
+            .get_sync_key("user@example.com", "calendar")
+            .await
+            .unwrap()
+            .expect("sync key persisted");
+        assert_eq!(
+            first_token.as_deref(),
+            Some("s0"),
+            "a clipped delta must keep the old token"
+        );
+        let first_key = first
+            .split("<SyncKey>")
+            .nth(1)
+            .and_then(|s| s.split("</SyncKey>").next())
+            .expect("SyncKey in response")
+            .to_string();
+
+        // Retry with the held token: the retained row is re-queued and the
+        // Delete is now emitted (e1 is unchanged, so it is filtered out).
+        let second = run(first_key).await;
+        assert!(
+            second.contains("<Delete>"),
+            "the retry must emit the Delete:\n{second}"
+        );
+        assert!(
+            second.contains(&sid_e9),
+            "the emitted Delete must name the destroyed event:\n{second}"
+        );
+        assert!(
+            !state
+                .storage
+                .list_ews_items("user@example.com", 16, 0)
+                .await
+                .unwrap()
+                .iter()
+                .any(|r| r.server_id == sid_e9),
+            "the row must be removed after its Delete is emitted"
         );
     }
 }

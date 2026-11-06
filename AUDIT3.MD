@@ -585,31 +585,45 @@ Ladder 1→4 (existing deps + a small helper). No new dependency.
    `changes_calendar_events(..., Some(CALENDAR_CHANGES_PAGE_SIZE))` in a loop
    while the server reports `hasMoreChanges` (RFC 8620 §5.2), concatenating
    every page's `created`/`updated`/`destroyed` and returning the FINAL
-   `newState` — the only token safe to persist. Ids are de-duplicated
-   preserving first-seen order, and a destroyed id wins over a created/updated
-   one (a create followed by a destroy on a later page is a net deletion).
-   Two bounds stop a pathological backend: `MAX_CALENDAR_CHANGE_ACCUMULATION`
-   (5000 ids) and `MAX_CALENDAR_CHANGE_PAGES` (100 pages); anything past them
-   stays behind the returned `newState` and is picked up by the next Sync's
-   diff, so nothing is lost.
+   `newState` — the only token safe to persist when the chain is exhausted.
+   Ids are de-duplicated preserving first-seen order, and a destroyed id wins
+   over a created/updated one (a create followed by a destroy on a later page
+   is a net deletion). Two bounds stop a pathological backend:
+   `MAX_CALENDAR_CHANGE_ACCUMULATION` (5000 ids) and
+   `MAX_CALENDAR_CHANGE_PAGES` (100 pages); when either bound is hit while the
+   server still reports `hasMoreChanges`, the result is marked
+   `has_more_changes = true` carrying the intermediate `newState`, so the
+   sync caller can signal `<MoreAvailable/>`, persist that intermediate
+   state, and drain the remainder on the next delta — nothing is lost and
+   nothing is re-drained from the start.
 2. **The sync delta path uses the drain.** `src/sync.rs` replaces the direct
    `changes_calendar_events` call with `accumulate_calendar_changes` and stores
-   the drained `newState`.
+   the drained `newState`. A drain that stopped at its cap with
+   `hasMoreChanges` set stores the intermediate state and forces
+   `<MoreAvailable/>` in the EAS response, even when the accumulated set
+   fits the EAS window.
 3. **Window clipping no longer advances the token past undelivered changes.**
-   When the EAS response window clips (`<MoreAvailable/>`), the stored token is
-   held at its previous value instead of being advanced to the new state, so
-   the next Sync re-derives the same change set; the already-delivered items
-   are filtered out by the `item_map` etag comparison, so nothing is re-added
-   and nothing is lost.
-4. **A clipped PRIME window also stores no token.** The same rule applies to
-   the initial/re-prime `CalendarEvent/query` snapshot: when its window clips,
-   no provider token is stored (the query's `state`/`queryState` would make the
-   first delta start past the undelivered events). The follow-up Sync re-primes
-   and, because the already-delivered events are filtered by the `item_map`
-   etag comparison, delivers the remainder and only then stores the token.
-   (A query that reports more events than it returned — a truncated snapshot —
+   When the EAS response window clips (`<MoreAvailable/>`), a clipped DELTA
+   keeps its previous token (the next Sync re-derives the change set; the
+   already-delivered items are filtered by the `item_map` etag comparison, so
+   nothing is re-added and nothing is lost), while a clipped SNAPSHOT stores
+   a per-prime cursor (`prime-cursor:<delivered-href>`) and never a provider
+   token. The cursor continuation re-primes from the snapshot, force-delivers
+   the remainder past the cursor even when the shared `item_map` already holds
+   a matching etag (another device's completed prime may have populated the
+   map with events this device never saw), and only then stores the provider
+   get-state token.
+4. **A clipped PRIME window stores a per-prime cursor, not silence.**
+   The same rule applies to the initial/re-prime `CalendarEvent/query`
+   snapshot: when its window clips, the stored token is a prime cursor naming
+   the last delivered href in delivery order, so the continuation resumes
+   strictly after that prefix and force-delivers the suffix. (A query that
+   reports more events than it returned — a truncated snapshot —
    is likewise treated as a partial view so the tombstone sweep never deletes
-   events the page did not carry.)
+   events the page did not carry; the prime now pages `CalendarEvent/query`
+   `position` until the snapshot is exhausted via `query_all_calendar_events`,
+   and an S-incomplete paged snapshot stores no token so the next Sync
+   re-primes from the start.)
 
 Tests: `src/jmap.rs` — `accumulate_calendar_changes_drains_has_more_changes`
 (two pages, final state `s2`, both pages requested at `maxChanges: 500`),
@@ -617,7 +631,9 @@ Tests: `src/jmap.rs` — `accumulate_calendar_changes_drains_has_more_changes`
 `src/sync.rs` — `calendar_delta_drains_all_pages_and_stores_final_state`,
 `calendar_clipped_window_preserves_token`,
 `calendar_clipped_prime_reprimes_and_progresses`,
-`calendar_truncated_prime_does_not_tombstone`.
+`calendar_truncated_prime_does_not_tombstone`,
+`calendar_prime_pages_query_by_position`,
+`calendar_drain_cap_signals_more_available_and_keeps_intermediate_state`.
 
 ### 6. `@etag` is not a supported JMAP property on Stalwart — calendar etags are always empty
 
