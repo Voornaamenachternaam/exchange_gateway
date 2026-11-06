@@ -114,6 +114,49 @@ In the same tunnel settings (**Public Hostname** tab), add **two** (or
 > (skip it if the root domain must serve a website or other content).
 > The Android wizard proceeds via Hostname B alone when B answers.
 
+### One canonical host serves every gateway surface — no per-protocol routes
+
+The gateway binds a single HTTP port (`GATEWAY_BIND`, `8134` in the shipped
+compose) and serves **every** client-facing surface from that one origin
+(see the route table in `src/main.rs`):
+
+| Path | Surface |
+|------|---------|
+| `/Microsoft-Server-ActiveSync` | EAS (ActiveSync) |
+| `/EWS/Exchange.asmx`, `/EWS/{*path}` | EWS SOAP |
+| `/autodiscover/autodiscover.xml`, `/autodiscover/autodiscover.svc`, `/autodiscover/autodiscover.json` | Autodiscover (V1 XML/SOAP + V2 JSON) |
+| `/mapi/emsmdb`, `/mapi/nspi` | MAPI/HTTP + NSPI |
+| `/OAB/{guid}/{file}` | Offline Address Book download |
+| `/ecp`, `/ecp/{*path}` | Exchange Control Panel |
+| `/health`, `/health/live`, `/health/ready`, `/metrics` | Health + metrics |
+
+Autodiscover renders every service URL from the single `GATEWAY_HOST`
+(e.g. `<EwsUrl>https://{GATEWAY_HOST}/EWS/Exchange.asmx</EwsUrl>`,
+`<Url>https://{GATEWAY_HOST}/Microsoft-Server-ActiveSync</Url>`), so the
+EWS, MAPI, OAB and ECP endpoints all live on **Hostname A**
+(`GATEWAY_HOST`, `calendar.example.com` in the examples) — no additional
+tunnel route is needed for any of them. The two existing Zero-Trust routes
+(`calendar.<domain>` and `autodiscover.<domain>` → port 8134) are therefore
+sufficient **provided the client is configured for the canonical
+`GATEWAY_HOST`**: Autodiscover must be reachable on the
+`autodiscover.<mail-domain>` host (Hostname B) and the response must point
+at `GATEWAY_HOST`. A third route (`mail.<domain>` → 8134) is needed **only
+if** the client is told to use `mail.<domain>` for EAS/EWS instead of
+`GATEWAY_HOST` — the gateway never advertises such a URL on its own. Do not
+create a tunnel route for the root domain (its A/AAAA records already exist
+and cannot be proxied to the tunnel); Hostname C above is optional and
+independent of the gateway surfaces.
+
+### `GATEWAY_MAIL_HOST` must be the public MX host (AUDIT3 §8)
+
+Autodiscover's IMAP/SMTP `<Protocol>` blocks advertise `GATEWAY_MAIL_HOST`
+(`src/autodiscover.rs` renders `<Server>{mail_host}</Server>` from it).
+Set it to the **publicly resolvable MX host** (e.g. `mail.example.com`,
+matching your MX record) — never the internal Docker service name
+(`stalwart`), which IMAP/SMTP-capable clients cannot resolve. The backend
+plumbing variables `GATEWAY_SMTP_HOST`/`GATEWAY_IMAP_HOST` stay on the
+internal service name and are never advertised.
+
 ---
 
 ## Step 3: Create DNS Records
@@ -297,8 +340,8 @@ services:
     ports:
       - 8134:8134
     volumes:
-      - /armblock/exchange-gateway/data:/var/lib/exchange-gateway
-      - /armblock/exchange-gateway/certs:/var/lib/exchange-gateway/certs
+      # Host path the operator creates (must be writable by UID 10001).
+      - /armblock/exchange-gateway-data:/var/lib/exchange-gateway
     networks:
       - network1
     healthcheck:
@@ -323,7 +366,10 @@ Because there is no `.env` file, the credential-bearing variables
 inline in `docker-compose.yml`. Restrict that file's permissions
 (`chmod 600 docker-compose.yml`). As an alternative, each of those variables has
 a `<VAR>_FILE` companion that reads the value from a mounted file (Docker
-secrets), which takes precedence over the inline value:
+secrets / mounted secret files), which takes precedence over the inline value.
+The compose file is the authoritative template: every variable the binary
+reads is listed there (active or commented with its default), so no `.env`
+file is ever needed — do not create one.
 
 ```yaml
     environment:
@@ -334,6 +380,19 @@ secrets:
   gateway_hmac:
     file: ./secrets/gateway_hmac
 ```
+
+### JMAP-first calendar (AUDIT3 §12)
+
+The shipped compose sets `GATEWAY_PREFER_JMAP_CALENDAR=1` with
+`GATEWAY_FORCE_CALDAV_CALENDAR=0`: calendar reads, writes and free/busy use
+JMAP first with CalDAV as fallback. That configuration is correct **now**
+that the JMAP calendar read/write defects are fixed (AUDIT3 §1–§2, §5–§7).
+`GATEWAY_FORCE_CALDAV_CALENDAR=1` is an emergency escape hatch only: it
+forces the CalDAV path and forfeits the JMAP-first mandate. Use it
+temporarily if the backend's JMAP calendar path regresses — the write path
+also self-verifies and auto-disables lossy JMAP writes at runtime (failing
+closed to CalDAV for that request) — and remove it once the backend is
+restored.
 
 ---
 
