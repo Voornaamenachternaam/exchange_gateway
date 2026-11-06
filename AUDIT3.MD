@@ -576,6 +576,49 @@ Fix (ladder 1→4): drain the change chain exactly as
 `accumulate_email_changes` does, only advancing the stored token to the final
 `newState`.
 
+#### Delivered (this change)
+
+Ladder 1→4 (existing deps + a small helper). No new dependency.
+
+1. **`JmapClient::accumulate_calendar_changes`** (`src/jmap.rs`) drains the
+   whole `CalendarEvent/changes` chain: it calls
+   `changes_calendar_events(..., Some(CALENDAR_CHANGES_PAGE_SIZE))` in a loop
+   while the server reports `hasMoreChanges` (RFC 8620 §5.2), concatenating
+   every page's `created`/`updated`/`destroyed` and returning the FINAL
+   `newState` — the only token safe to persist. Ids are de-duplicated
+   preserving first-seen order, and a destroyed id wins over a created/updated
+   one (a create followed by a destroy on a later page is a net deletion).
+   Two bounds stop a pathological backend: `MAX_CALENDAR_CHANGE_ACCUMULATION`
+   (5000 ids) and `MAX_CALENDAR_CHANGE_PAGES` (100 pages); anything past them
+   stays behind the returned `newState` and is picked up by the next Sync's
+   diff, so nothing is lost.
+2. **The sync delta path uses the drain.** `src/sync.rs` replaces the direct
+   `changes_calendar_events` call with `accumulate_calendar_changes` and stores
+   the drained `newState`.
+3. **Window clipping no longer advances the token past undelivered changes.**
+   When the EAS response window clips (`<MoreAvailable/>`), the stored token is
+   held at its previous value instead of being advanced to the new state, so
+   the next Sync re-derives the same change set; the already-delivered items
+   are filtered out by the `item_map` etag comparison, so nothing is re-added
+   and nothing is lost.
+4. **A clipped PRIME window also stores no token.** The same rule applies to
+   the initial/re-prime `CalendarEvent/query` snapshot: when its window clips,
+   no provider token is stored (the query's `state`/`queryState` would make the
+   first delta start past the undelivered events). The follow-up Sync re-primes
+   and, because the already-delivered events are filtered by the `item_map`
+   etag comparison, delivers the remainder and only then stores the token.
+   (A query that reports more events than it returned — a truncated snapshot —
+   is likewise treated as a partial view so the tombstone sweep never deletes
+   events the page did not carry.)
+
+Tests: `src/jmap.rs` — `accumulate_calendar_changes_drains_has_more_changes`
+(two pages, final state `s2`, both pages requested at `maxChanges: 500`),
+`accumulate_calendar_changes_destroyed_wins_and_dedupes`.
+`src/sync.rs` — `calendar_delta_drains_all_pages_and_stores_final_state`,
+`calendar_clipped_window_preserves_token`,
+`calendar_clipped_prime_reprimes_and_progresses`,
+`calendar_truncated_prime_does_not_tombstone`.
+
 ### 6. `@etag` is not a supported JMAP property on Stalwart — calendar etags are always empty
 
 The gateway requests `"@etag"` for calendar events (`jmap.rs:4709`,
@@ -602,6 +645,30 @@ authoritative change signal instead of an etag, or derive a stable content hash
 (the contacts path already does exactly this with `sha2::Sha256` over the card
 JSON — reuse that approach for events).
 
+#### Delivered (this change)
+
+Ladder 1→4 (existing deps — `sha2`/`const_hex` were already used by the
+contacts path). No new dependency.
+
+1. **`jmap::calendar_event_etag(event, server_etag)`** derives a stable,
+   content-addressed token: a server-provided `@etag` wins (with surrounding
+   quotes trimmed) and is returned as-is; otherwise the first 16 bytes of the
+   SHA-256 over the event object's canonical `serde_json::to_vec` form (sorted
+   keys) are hex-encoded. The JMAP `id` is never included, so a re-created event
+   with identical content keeps the same token, and any content change yields a
+   new one.
+2. **One derivation for every read path.** The initial prime (`sync.rs`), the
+   delta fetch (`get_calendar_events`), the single fetch (`get_calendar_event`),
+   and both write read-backs (`set_calendar_event` create/update) all use
+   `calendar_event_etag`, so the etag/EWS `ChangeKey` is stable and consistent
+   across prime, delta, and write — the previously divergent
+   `event.id`-as-etag / `""`-etag split is gone.
+
+Tests: `src/jmap.rs` — `calendar_event_etag_is_stable_and_content_addressed`
+(order-insensitivity, content change, server-etag precedence, empty-etag
+fallback). `src/sync.rs` — `calendar_etag_is_stable_across_prime_and_delta`
+(the same event object yields the same etag via the prime and the delta path).
+
 ### 7. Calendar `queryState` token is stored but never used for delta; and there is no `cannotCalculateChanges` handling
 
 `query_calendar_events` returns `query_state` (`jmap.rs:4622`) and the initial
@@ -619,6 +686,29 @@ again.
 Fix (ladder 1→4): on `cannotCalculateChanges` (or an unusable token), re-prime
 from a full `CalendarEvent/query` and store its `queryState`/state properly, as
 the EWS `SyncFolderItems` path already does for its snapshot prime.
+
+#### Delivered (this change)
+
+Ladder 1→4 (existing deps + a small helper). No new dependency.
+
+1. **The prime stores the `CalendarEvent/get` data-type `state`, not the
+   query's `queryState`.** `CalendarEventListResult` gained a `state` field
+   populated from the `CalendarEvent/get` response's `state`. This is the token
+   `CalendarEvent/changes` accepts as `sinceState` (the query's `queryState` is
+   a different state space); `queryState` is kept only as a fallback when the
+   server omits the data-type state.
+2. **`cannotCalculateChanges` is handled.** `changes_calendar_events` already
+   downcasts the RFC 8620 §5.2 `cannotCalculateChanges` method error (and a
+   missing `newState`) to a typed `CannotCalculateChanges`. The sync delta path
+   catches it and re-primes from a full `CalendarEvent/query` (storing the fresh
+   state) instead of falling back to CalDAV. A `None`/empty stored token is
+   treated the same way: the delta is skipped and the full prime runs.
+
+Tests: `src/jmap.rs` — `query_calendar_events_captures_get_state`,
+`accumulate_calendar_changes_surfaces_cannot_calculate_changes`,
+`accumulate_calendar_changes_missing_new_state_is_cannot_calculate`.
+`src/sync.rs` — `calendar_prime_stores_get_state_not_query_state`,
+`calendar_cannot_calculate_changes_reprimes`.
 
 ---
 
@@ -823,10 +913,10 @@ to EWS. This is a client-friction item, not a data-loss item.
 | 1 | P0 | Calendar read | `iCalendar` is a JSCalendar object; `Option<String>` decode fails the whole list → 0 events everywhere | **DELIVERED** — calcard dep + whole-object ICS reconstruction + per-element parse |
 | 2 | P0 | Calendar write | JMAP create discards payload; guard skipped when admin creds empty (compose ships empty) and defaults to writes-enabled | **DELIVERED** — structured JSCalendar write + per-write read-back verification + fail-closed runtime gate (works without admin creds) |
 | 3 | P0 | Contacts (EWS) | CardDAV base `/carddav/{u}/` 404s; correct path is `/dav/card/{u}/`; EWS contacts are CardDAV-only | **DELIVERED** — `/dav/card` base + JMAP-first EWS/MAPI contacts (also fixed the `upsert_contact` conflict-target and Get/Update/Delete misrouting) |
-| 4 | P1 | Mail/push | Explicit `Email/get` ids >500 → `requestTooLarge`; `jmap_push` union is unbounded | dep 1 (chunking) |
-| 5 | P1 | Calendar delta | `CalendarEvent/changes` `hasMoreChanges` ignored → dropped changes | dep 1 (drain loop) |
-| 6 | P1 | Calendar etag | `@etag` unsupported by Stalwart; etags empty/inconsistent | dep 1 (changes API / sha2) |
-| 7 | P1 | Calendar delta | `queryState` fed to `changes`; no `cannotCalculateChanges` handling | dep 1 |
+| 4 | P1 | Mail/push | Explicit `Email/get` ids >500 → `requestTooLarge`; `jmap_push` union is unbounded | **DELIVERED** — `chunk_ids` + `session_max_objects_in_get`, every explicit-`ids` get chunked at the session cap |
+| 5 | P1 | Calendar delta | `CalendarEvent/changes` `hasMoreChanges` ignored → dropped changes | **DELIVERED** — `accumulate_calendar_changes` drain loop + clip-aware token |
+| 6 | P1 | Calendar etag | `@etag` unsupported by Stalwart; etags empty/inconsistent | **DELIVERED** — `calendar_event_etag` content hash on every read/write path |
+| 7 | P1 | Calendar delta | `queryState` fed to `changes`; no `cannotCalculateChanges` handling | **DELIVERED** — prime stores the `get` state + `cannotCalculateChanges` re-prime |
 | 8 | P2 | Autodiscover | `GATEWAY_MAIL_HOST=stalwart` leaks internal hostname to clients | **compose fixed** |
 | 9 | P2 | Compose | 11 env vars read by code absent from compose; `GATEWAY_CALDAV_USER/PASSWORD` are phantom (message only) | **compose fixed** + code msg fix |
 | 10 | P2 | Repo | `.env.example` contradicts the no-env-file contract | **deleted** |
@@ -855,4 +945,11 @@ deploy-time admin-creds check is skipped. P0 #3 — EWS contacts — is now fixe
 too: the CardDAV base is `/dav/card`, the EWS/MAPI contact surface is JMAP-first
 with CardDAV fallback, and two further latent defects on that path (the
 `upsert_contact` conflict target and the Get/Update/Delete misrouting to the
-email handler) are repaired; see the Delivered note in that section.)*
+email handler) are repaired; see the Delivered note in that section. P1 #5–#7 —
+the calendar delta path — are now fixed: the `CalendarEvent/changes` chain is
+drained to its final `newState`, a clipped response window (delta or prime)
+never advances the token past undelivered events, the stored token is the
+`CalendarEvent/get` data-type `state` (not the query's `queryState`), and a
+`cannotCalculateChanges` reply re-primes from a full query; the calendar etag is
+a stable content-addressed hash on every read and write path. See the Delivered
+notes in sections 5–7.)*
