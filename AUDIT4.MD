@@ -99,14 +99,21 @@ mail domain) but `GATEWAY_HOST=calendar.example.com` (the placeholder), the
 clients are pointed at an unresolvable host. If `GATEWAY_HOST` is set to
 `calendar.redacted.com` but the tunnel only routes `calendar.redacted.com`
 and `autodiscover.redacted.com`, the setup works — but the shipped
-`CLOUDFLARED_SETUP.md` *also* instructs the operator to add a third
-hostname (the bare root domain, `example.com`) and to render
-`cloudflared/config.yml` with `sed` over three hostnames
+`CLOUDFLARED_SETUP.md` *also* lists a third hostname (the bare root domain,
+`example.com`, “Hostname C — recommended”, `CLOUDFLARED_SETUP.md:107`) and
+renders `cloudflared/config.yml` with `sed` over three hostnames
 (`CLOUDFLARED_SETUP.md:268-293`). The task states a root-domain tunnel
-route is *not* possible. The root route therefore cannot be created, and
-the docs that present it as “recommended” (`CLOUDFLARED_SETUP.md:113`)
-create a deploy-time fork: an operator who follows the docs literally will
-wait for a route that can never exist.
+route is *not* possible, so Hostname C cannot be created in the stated
+topology. The guide itself makes Hostname C conditional — “Only add
+Hostname C if the bare mail domain may be served by this tunnel (skip it
+if the root domain must serve a website or other content)” — so its
+presence is not a deployment blocker for the two-route setup (as §12.1
+confirms: the two gateway routes are sufficient and the root route should
+not be created). The defect is presentational: a “recommended” label on a
+route the operator must skip invites a deploy-time fork (a literal
+follower waits for a route that can never exist). The fix makes the
+conditional explicit in the shipped examples rather than treating
+Hostname C as a blocker.
 
 **Fix (ladder 1 — existing code, docs-only).**
 
@@ -127,8 +134,8 @@ wait for a route that can never exist.
    `mail_domain` is empty, so a mismatched pair is loud at deploy time
    rather than silent in the Android wizard.
 
-> **Scope note — per-mail-domain discovery (RFC 7908 / Autodiscover
-> pairing).** The above pairing (`calendar.<mail-domain>` +
+> **Scope note — per-mail-domain discovery (Autodiscover pairing, per the
+> Microsoft Exchange Autodiscover specification).** The above pairing (`calendar.<mail-domain>` +
 > `autodiscover.<mail-domain>`) is the correct fix for the single
 > `GATEWAY_MAIL_DOMAIN` this deployment serves: every mailbox whose
 > domain equals `GATEWAY_MAIL_DOMAIN` is discovered by the
@@ -545,15 +552,19 @@ check to the image publish pipeline, or switch to a static musl target
 `docker-compose.yml:65-72` sets `GATEWAY_MAX_PING_HEARTBEAT=80` for Ping.
 
 **Impact.** New Outlook for Windows uses EWS `Subscribe` /
-`GetStreamingEvents` for calendar push. Through Cloudflare, the connection
-will be cut at the Proxy Read Timeout (HTTP 524) regardless of the
-30-minute timeout. The handler already emits a per-turn `StatusEvent`
-keep-alive (10s turn) and a terminal `Closed` fragment, but the stream is
-buffered: `handle_ews` returns a `ReceiverStream` body with no
-`Cache-Control: no-transform`/`X-Accel-Buffering: no` streaming headers,
-so intermediary buffering between the tunneled origin and the client can
-hold the keep-alives until the 524 reset. The client will reconnect, but
-push latency degrades to “reconnect every 2 minutes”.
+`GetStreamingEvents` for calendar push. Whether the connection is cut at
+the Cloudflare Proxy Read Timeout (HTTP 524) depends on zone
+response-body-buffering and inspection settings, which are not observable
+from this repository: the missing streaming headers below are a risk
+factor, not proof that Cloudflare buffers this response. The handler
+already emits a per-turn `StatusEvent` keep-alive (10s turn) and a
+terminal `Closed` fragment, but `handle_ews` returns a `ReceiverStream`
+body with no `Cache-Control: no-transform`/`X-Accel-Buffering: no`
+streaming headers, so intermediary buffering between the tunneled origin
+and the client *can* hold the keep-alives until a 524 reset. Verify with
+an edge test (or a buffering rule) before asserting the 524 behavior. If
+buffering occurs, the client will reconnect, but push latency degrades to
+“reconnect every 2 minutes”.
 
 **Fix (ladder 1).** Clamp `ConnectionTimeout` for Cloudflare-proxied
 requests (detect `CF-RAY`, as Ping does at `src/eas.rs:1316`) to ≤80s,
@@ -677,9 +688,10 @@ security-correct; the risk is the *inconsistent* treatment: downloads
 survive an origin mismatch, uploads do not.
 
 **Fix (ladder 1).** No code change; add a comment in `docker-compose.yml`
-at `GATEWAY_JMAP_BASE` stating that the gateway rewrites all session URLs
-to the bridge-network base, so the advertised external URLs in Stalwart’s
-session do not matter.
+at `GATEWAY_JMAP_BASE` stating that the gateway rewrites `downloadUrl`
+and `eventSourceUrl` to the bridge-network base, while `uploadUrl` is
+not rewritten and must be advertised on the same origin as `base_url`
+(mismatched `uploadUrl` origins are rejected in `upload_blob`).
 
 ---
 
@@ -772,8 +784,9 @@ IPv6 gateway listener is unreachable from the host. Cloudflare Tunnel
 connects via `localhost:8134` (IPv4 or IPv6 depending on `getent`), so
 this is minor.
 
-**Fix (ladder 1).** Change the publish to `8134:8134` with a comment, or
-remove it entirely (item 4).
+**Fix (ladder 1).** Apply the item 4 fix — retain the publish bound to
+loopback (`127.0.0.1:8134:8134`). Do not remove it (host-run
+`cloudflared` needs the published port to reach the container).
 
 ---
 
@@ -1046,8 +1059,11 @@ their *copy* before deploying via Portainer):
 
 The volume `/armblock/exchange-gateway-data:/var/lib/exchange-gateway`
 already matches the task’s stated path. The host directory must be
-writable by UID 10001 (the gateway user in the Dockerfile). Remove the
-`ports: 8134:8134` publish (item 4) or bind to `127.0.0.1`.
+writable by UID 10001 (the gateway user in the Dockerfile). Retain the
+`ports:` mapping but bind it to loopback — `127.0.0.1:8134:8134` (item 4).
+Do *not* remove the mapping: the host-run `cloudflared` targets
+`http://localhost:8134`, and removing the publish disconnects both
+gateway tunnel routes from the container.
 
 ---
 
@@ -1129,7 +1145,7 @@ task’s “no env-variable file” requirement.
 | 1 | P0 | Cloudflare / Autodiscover | Hostnames in docs/examples do not match the `autodiscover.<mail-domain>` + `GATEWAY_HOST` contract; root route presented as required but impossible | docs + startup warning (1) |
 | 2 | P0 | Autodiscover | `GATEWAY_MAIL_HOST` placeholder leaks NXDOMAIN to IMAP/SMTP clients | compose + warning (1) |
 | 3 | P0 | HTTP/TLS | Gateway serves plain HTTP only; `x-forwarded-proto` enforcement inconsistent | TLS listener (2) / warning (1) |
-| 4 | P0 | Compose | Port 8134 published, bypasses tunnel | remove/loopback bind (1) |
+| 4 | P0 | Compose | Port 8134 published on wildcard bind, bypasses tunnel | loopback-only publish (1) |
 | 5 | P0 | EAS | `FolderCreate/Delete/Update`, `GetAttachment`, `GetHierarchy`, `Find` unimplemented (Status 5) | handlers (1→4) |
 | 6 | P0 | New Outlook Win | MAPI/HTTP is the real path, not EAS; no MAPI smoke coverage | smoke script + docs (1) |
 | 7 | P0 | Outlook Android | Option matrix pinned to 5.2634.2, task pins 5.2641.1 | re-capture matrix (1) |
@@ -1177,7 +1193,8 @@ compose/docs, plus the EAS handlers in item 5) is **not** by itself
 sufficient to guarantee the use-case: item 6 records the New Outlook for
 Windows (MAPI/HTTP) provisioning flow as **unproven** and must be
 validated against build 20251205004.10 before the use-case can be
-claimed complete; items 15–25 and 30–36 are robustness and friction.
+claimed complete; items 15–25 are P1 (degrades the use-case) and items
+14, 26–36 are P2 (robustness and friction), per the summary table.
 
 ---
 
@@ -1209,9 +1226,13 @@ direct HTTPS is later required, add a TLS listener as a separate bind
 | OOF / Sieve | JMAP Sieve | yes | `src/oof.rs` |
 | Push | JMAP EventSource, EAS Ping | yes | `src/jmap_push.rs` |
 
-The only non-JMAP backends are Tasks/Notes (Stalwart limitation) and the
-SMTP fallback for send (when JMAP submission is unavailable). This
-satisfies “wherever possible/feasible/preferable JMAP must be used”.
+The only non-JMAP backends are Tasks/Notes (Stalwart limitation) and SMTP
+for send: simple text/html messages use JMAP `EmailSubmission/set`, but
+complex MIME (attachments, S/MIME, TNEF, nested messages) is always
+relayed via SMTP (`send_eas_mime_message`, `src/email.rs:2773`) even when
+JMAP submission is available. This satisfies “wherever
+possible/feasible/preferable JMAP must be used” for the simple-message
+path; the complex-MIME path is a documented SMTP exception (item 19).
 
 ## Appendix C — Files changed by this audit
 
