@@ -35,7 +35,7 @@ base64ct = { version = "^1.8.3", features = ["std"] }
 url = "^2.5.8"
 tower = { version = "^0.5.3", features = ["util", "limit", "timeout", "buffer"] }
 tower-http = { version = "^0.7.1", features = ["trace", "cors", "limit", "timeout", "request-id", "sensitive-headers", "decompression-full", "compression-full", "set-header", "metrics"] }
-parking_lot = { version = "^0.12.5", features = ["send_guard"] }
+parking_lot = { version = "^0.13.0", features = ["send_guard"] }
 futures-util = "^0.3.34"
 futures-core = "^0.3.34"
 compact_str = { version = "^0.9.1", features = ["serde", "bytes"] }
@@ -50,7 +50,7 @@ pin-project-lite = "^0.2.17"
 http-body-util = "^0.1.5"
 http-body = "^1.1.0"
 mime = "^0.3.17"
-lru = "^0.18.5"
+lru = "^0.19.0"
 moka = { version = "^0.12.16", features = ["sync"] }
 arc-swap = "^1.9.3"
 memchr = "^2.8.3"
@@ -80,7 +80,7 @@ lettre = { version = "^0.11.23", default-features = false, features = ["tokio1-r
 rustls-pki-types = "^1.15.1"
 prometheus = "^0.14.0"
 governor = "^0.10.4"
-mail-parser = "^0.11.9"
+mail-parser = "^1.0.0"
 lzxd = "^0.2.7"
 compressed-rtf = "^1.0.1"
 cms = { version = "^0.3.0-rc.0", default-features = false }
