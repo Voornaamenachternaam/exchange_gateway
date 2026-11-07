@@ -5539,8 +5539,25 @@ impl JmapClient {
             .await?;
 
         for (method, data, _) in &response.method_responses {
-            if method == "CalendarEvent/set"
-                && let Some(not_destroyed) = data.get("notDestroyed")
+            // RFC 8620 §3.3: a method-level error is an ["error", {...}, id]
+            // response, not a "CalendarEvent/set" result — reject it rather
+            // than falling through to Ok, or the caller (e.g. EWS DeleteItem)
+            // would skip the CalDAV fallback and report a deletion that
+            // never happened.
+            if method == "error" {
+                let err_type = data
+                    .get("type")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown");
+                return Err(anyhow!(
+                    "CalendarEvent/set returned method error: {}",
+                    err_type
+                ));
+            }
+            if method != "CalendarEvent/set" {
+                continue;
+            }
+            if let Some(not_destroyed) = data.get("notDestroyed")
                 && !not_destroyed.is_null()
                 && not_destroyed.as_object().is_none_or(|o| !o.is_empty())
             {
@@ -5549,9 +5566,30 @@ impl JmapClient {
                     not_destroyed
                 ));
             }
+            // Success only when every requested id is confirmed in
+            // `destroyed` — an empty/partial `destroyed` array or a missing
+            // one means the server silently did nothing, which must fail
+            // the same way a method error does.
+            let destroyed_ok = data
+                .get("destroyed")
+                .and_then(|d| d.as_array())
+                .map(|list| {
+                    event_ids
+                        .iter()
+                        .all(|id| list.iter().any(|v| v.as_str() == Some(id.as_str())))
+                })
+                .unwrap_or(false);
+            if !destroyed_ok {
+                return Err(anyhow!(
+                    "CalendarEvent/set destroy: requested ids absent from `destroyed`"
+                ));
+            }
+            return Ok(());
         }
 
-        Ok(())
+        Err(anyhow!(
+            "CalendarEvent/set returned no method response for destroy"
+        ))
     }
 
     /// Check whether the JMAP server supports contacts (RFC 9610), reporting a
@@ -7936,6 +7974,78 @@ mod tests {
             .await
             .unwrap_err();
         assert!(!err.is_payload_discarded(), "{err:?}");
+    }
+
+    /// A JMAP method-level `error` response to CalendarEvent/set (RFC 8620
+    /// §3.3) must be rejected, not treated as a successful destroy — the
+    /// caller (EWS DeleteItem) relies on the Err to fall back to CalDAV.
+    #[tokio::test]
+    async fn destroy_calendar_events_rejects_method_error() {
+        let resp = json!({ "methodResponses": [
+            ["error", { "type": "forbidden", "description": "denied" }, "es0"]
+        ]});
+        let (base, _rec) = spawn_recording_stub(vec![resp]).await;
+        let client = JmapClient::new(&base).unwrap();
+        let pw = SecretString::from("pw");
+        let err = client
+            .destroy_calendar_events("acct", &["e1".to_string()], "u", &pw)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("method error"), "{err:?}");
+    }
+
+    /// A `CalendarEvent/set` response whose `destroyed` array omits the
+    /// requested id (silently did nothing) must also fail — only a fully
+    /// confirmed destroy is success.
+    #[tokio::test]
+    async fn destroy_calendar_events_rejects_missing_destroyed() {
+        let empty = json!({ "methodResponses": [
+            ["CalendarEvent/set", { "destroyed": [] }, "es0"]
+        ]});
+        let (base, _rec) = spawn_recording_stub(vec![empty]).await;
+        let client = JmapClient::new(&base).unwrap();
+        let pw = SecretString::from("pw");
+        let err = client
+            .destroy_calendar_events("acct", &["e1".to_string()], "u", &pw)
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("absent from `destroyed`"),
+            "{err:?}"
+        );
+    }
+
+    /// A response with no `CalendarEvent/set` method answer at all is an
+    /// error, not success.
+    #[tokio::test]
+    async fn destroy_calendar_events_rejects_no_method_response() {
+        let resp = json!({ "methodResponses": [
+            ["CalendarEvent/query", { "ids": [] }, "q0"]
+        ]});
+        let (base, _rec) = spawn_recording_stub(vec![resp]).await;
+        let client = JmapClient::new(&base).unwrap();
+        let pw = SecretString::from("pw");
+        let err = client
+            .destroy_calendar_events("acct", &["e1".to_string()], "u", &pw)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("no method response"), "{err:?}");
+    }
+
+    /// A `CalendarEvent/set` response that confirms every requested id in
+    /// `destroyed` is the one success shape.
+    #[tokio::test]
+    async fn destroy_calendar_events_succeeds_only_when_confirmed() {
+        let resp = json!({ "methodResponses": [
+            ["CalendarEvent/set", { "destroyed": ["e1", "e2"] }, "es0"]
+        ]});
+        let (base, _rec) = spawn_recording_stub(vec![resp]).await;
+        let client = JmapClient::new(&base).unwrap();
+        let pw = SecretString::from("pw");
+        client
+            .destroy_calendar_events("acct", &["e1".to_string(), "e2".to_string()], "u", &pw)
+            .await
+            .unwrap();
     }
 
     #[test]

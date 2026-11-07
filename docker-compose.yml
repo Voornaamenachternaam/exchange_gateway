@@ -110,8 +110,10 @@ services:
       # use JMAP with CalDAV/CardDAV as fallback. GATEWAY_FORCE_CALDAV_CALENDAR=1
       # is an emergency escape hatch ONLY (it forfeits the JMAP-first mandate):
       # flip it to 1 temporarily if the backend's JMAP calendar path regresses,
-      # and back to 0 once restored. The JMAP write path self-verifies every
-      # write and auto-disables lossy writes at runtime (fail-closed to CalDAV).
+      # and back to 0 once restored. The JMAP *create/update* write path
+      # self-verifies every create/update by read-back and auto-disables
+      # lossy writes at runtime (fail-closed to CalDAV); deletes have no
+      # read-back verification and are confirmed via `destroyed`.
       - GATEWAY_PREFER_JMAP_CALENDAR=1
       - GATEWAY_PREFER_JMAP_CONTACTS=1
       - GATEWAY_PREFER_CALDAV_FREEBUSY=0

@@ -142,10 +142,15 @@ sufficient **provided the client is configured for the canonical
 `autodiscover.<mail-domain>` host (Hostname B) and the response must point
 at `GATEWAY_HOST`. A third route (`mail.<domain>` → 8134) is needed **only
 if** the client is told to use `mail.<domain>` for EAS/EWS instead of
-`GATEWAY_HOST` — the gateway never advertises such a URL on its own. Do not
-create a tunnel route for the root domain (its A/AAAA records already exist
-and cannot be proxied to the tunnel); Hostname C above is optional and
-independent of the gateway surfaces.
+`GATEWAY_HOST` — the gateway never advertises such a URL on its own.
+Hostname C (the root-domain route) is **optional and conditional**: create
+it only when the root domain (`<GATEWAY_MAIL_DOMAIN>`) is available for the
+tunnel. Cloudflare Tunnel serves a root hostname via CNAME flattening, but
+if the root domain already has A/AAAA records serving other content
+(e.g. a website), those records must be **retained** and Hostname C must be
+skipped — the records cannot be proxied to the tunnel and duplicated at
+the same time. Hostname C is independent of the gateway surfaces (A/B are
+always sufficient); it only affects clients that probe the bare domain.
 
 ### `GATEWAY_MAIL_HOST` must be the public MX host (AUDIT3 §8)
 
@@ -389,9 +394,11 @@ JMAP first with CalDAV as fallback. That configuration is correct **now**
 that the JMAP calendar read/write defects are fixed (AUDIT3 §1–§2, §5–§7).
 `GATEWAY_FORCE_CALDAV_CALENDAR=1` is an emergency escape hatch only: it
 forces the CalDAV path and forfeits the JMAP-first mandate. Use it
-temporarily if the backend's JMAP calendar path regresses — the write path
-also self-verifies and auto-disables lossy JMAP writes at runtime (failing
-closed to CalDAV for that request) — and remove it once the backend is
+temporarily if the backend's JMAP calendar path regresses — the
+create/update write path also self-verifies every create/update by
+read-back and auto-disables lossy JMAP writes at runtime (failing closed to
+CalDAV for that request); deletes have no read-back verification and are
+confirmed via `destroyed` — and remove the flag once the backend is
 restored.
 
 ---
