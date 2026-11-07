@@ -1,0 +1,223 @@
+FAILED: .
+       Compiling exchange_gateway v0.1.0 (/home/runner/work/exchange_gateway/exchange_gateway)
+    error[E0616]: field `tbs_certificate` of struct `x509_cert::certificate::CertificateInner` is private
+      --> src/smime.rs:55:36
+       |
+    55 |     if let Some(extensions) = cert.tbs_certificate.extensions.as_ref() {
+       |                                    ^^^^^^^^^^^^^^^ private field
+       |
+    help: a method `tbs_certificate` also exists, call it with parentheses
+       |
+    55 |     if let Some(extensions) = cert.tbs_certificate().extensions.as_ref() {
+       |                                                   ++
+    
+    error[E0616]: field `tbs_certificate` of struct `x509_cert::certificate::CertificateInner` is private
+      --> src/smime.rs:71:21
+       |
+    71 |     for rdn in cert.tbs_certificate.subject.0.iter() {
+       |                     ^^^^^^^^^^^^^^^ private field
+       |
+    help: a method `tbs_certificate` also exists, call it with parentheses
+       |
+    71 |     for rdn in cert.tbs_certificate().subject.0.iter() {
+       |                                    ++
+    
+    error[E0277]: the trait bound `cms::cert::x509_cert::certificate::CertificateInner: der::Encode` is not satisfied
+       --> src/smime.rs:101:60
+        |
+    101 |                 && let Ok(der_bytes) = der::Encode::to_der(cert)
+        |                                        ------------------- ^^^^ the trait `der::EncodeValue` is not implemented for `cms::cert::x509_cert::certificate::CertificateInner`
+        |                                        |
+        |                                        required by a bound introduced by this call
+        |
+        = note: Consider adding impls of `EncodeValue` and `FixedTag` to `cms::cert::x509_cert::certificate::CertificateInner`
+    note: there are multiple different versions of crate `der` in the dependency graph
+       --> /home/runner/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/der-0.8.3/src/encode.rs:220:1
+        |
+    220 | pub trait EncodeValue {
+        | ^^^^^^^^^^^^^^^^^^^^^ this is the expected trait
+        |
+       ::: /home/runner/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/der-0.7.10/src/encode.rs:128:1
+        |
+    128 | pub trait EncodeValue {
+        | --------------------- this is the found trait
+        = help: you can use `cargo tree` to explore your dependency tree
+    help: item with same name found
+       --> /home/runner/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/x509-cert-0.3.0/src/certificate.rs:333:1
+        |
+    333 | pub struct CertificateInner<P: Profile = Rfc5280> {
+        | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        = note: there are multiple different versions of crate `x509_cert` in the dependency graph
+        = help: the following other types implement trait `der::EncodeValue`:
+                  &der::asn1::OctetStringRef
+                  ()
+                  ApplicationRef<'_, T>
+                  Box<T>
+                  Cow<'_, T>
+                  FlagSet<T>
+                  GeneralStringRef<'_>
+                  HardwareModuleName
+                and 113 others
+        = note: there are multiple different versions of crate `x509_cert` in the dependency graph
+        = help: you can use `cargo tree` to explore your dependency tree
+        = note: required for `cms::cert::x509_cert::certificate::CertificateInner` to implement `der::Encode`
+    
+    error[E0277]: the trait bound `cms::cert::x509_cert::certificate::CertificateInner: der::Encode` is not satisfied
+       --> src/smime.rs:101:60
+        |
+    101 |                 && let Ok(der_bytes) = der::Encode::to_der(cert)
+        |                                        ------------------- ^^^^ the trait `der::Sequence<'_>` is not implemented for `cms::cert::x509_cert::certificate::CertificateInner`
+        |                                        |
+        |                                        required by a bound introduced by this call
+        |
+        = note: Consider adding impls of `EncodeValue` and `FixedTag` to `cms::cert::x509_cert::certificate::CertificateInner`
+    note: there are multiple different versions of crate `der` in the dependency graph
+       --> /home/runner/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/der-0.8.3/src/asn1/sequence.rs:15:1
+        |
+     15 | pub trait Sequence<'a> {}
+        | ^^^^^^^^^^^^^^^^^^^^^^ this is the expected trait
+        |
+       ::: /home/runner/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/der-0.7.10/src/asn1/sequence.rs:14:1
+        |
+     14 | pub trait Sequence<'a>: DecodeValue<'a> + EncodeValue {}
+        | ----------------------------------------------------- this is the found trait
+        = help: you can use `cargo tree` to explore your dependency tree
+    help: item with same name found
+       --> /home/runner/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/x509-cert-0.3.0/src/certificate.rs:333:1
+        |
+    333 | pub struct CertificateInner<P: Profile = Rfc5280> {
+        | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        = note: there are multiple different versions of crate `x509_cert` in the dependency graph
+        = help: the following other types implement trait `der::Sequence<'a>`:
+                  `&'a der::asn1::SequenceRef` implements `der::Sequence<'a>`
+                  `Box<T>` implements `der::Sequence<'a>`
+                  `HardwareModuleName` implements `der::Sequence<'__der_lifetime>`
+                  `x509_cert::anchor::CertPathControls<P>` implements `der::Sequence<'__der_lifetime>`
+                  `x509_cert::anchor::TrustAnchorInfo<P>` implements `der::Sequence<'__der_lifetime>`
+                  `x509_cert::attr::Attribute` implements `der::Sequence<'__der_lifetime>`
+                  `x509_cert::attr::AttributeTypeAndValue` implements `der::Sequence<'__der_lifetime>`
+                  `x509_cert::certificate::CertificateInner<P>` implements `der::Sequence<'__der_lifetime>`
+                and 26 others
+        = note: there are multiple different versions of crate `x509_cert` in the dependency graph
+        = help: you can use `cargo tree` to explore your dependency tree
+        = note: required for `cms::cert::x509_cert::certificate::CertificateInner` to implement `der::FixedTag`
+        = note: required for `cms::cert::x509_cert::certificate::CertificateInner` to implement `der::Tagged`
+        = note: required for `cms::cert::x509_cert::certificate::CertificateInner` to implement `der::Encode`
+    
+    error[E0308]: mismatched types
+       --> src/smime.rs:103:27
+        |
+    103 |                 out.push((cert.clone(), der_bytes));
+        |                           ^^^^^^^^^^^^ expected `x509_cert::certificate::CertificateInner`, found `CertificateInner`
+        |
+    note: there are multiple different versions of crate `x509_cert` in the dependency graph
+       --> /home/runner/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/x509-cert-0.3.0/src/certificate.rs:333:1
+        |
+    333 | pub struct CertificateInner<P: Profile = Rfc5280> {
+        | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ this is the expected type
+        |
+       ::: /home/runner/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/x509-cert-0.2.5/src/certificate.rs:197:1
+        |
+    197 | pub struct CertificateInner<P: Profile = Rfc5280> {
+        | ------------------------------------------------- this is the found type
+        = help: you can use `cargo tree` to explore your dependency tree
+    
+    error[E0599]: the associated function or constant `from_der` exists for struct `SignedData`, but its trait bounds were not satisfied
+       --> src/smime.rs:115:33
+        |
+    115 |     if let Ok(sd) = SignedData::from_der(bytes) {
+        |                                 ^^^^^^^^ associated function or constant cannot be called on `SignedData` due to unsatisfied trait bounds
+        |
+       ::: /home/runner/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cms-0.2.3/src/signed_data.rs:30:1
+        |
+     30 | pub struct SignedData {
+        | --------------------- doesn't satisfy `SignedData: der::Decode<'_>`, `SignedData: der::DecodeValue<'_>` or `SignedData: der::FixedTag`
+        |
+        = note: the following trait bounds were not satisfied:
+                `SignedData: der::DecodeValue<'_>`
+                which is required by `SignedData: der::Decode<'_>`
+                `SignedData: der::FixedTag`
+                which is required by `SignedData: der::Decode<'_>`
+                `&SignedData: der::DecodeValue<'_>`
+                which is required by `&SignedData: der::Decode<'_>`
+                `&SignedData: der::FixedTag`
+                which is required by `&SignedData: der::Decode<'_>`
+                `&mut SignedData: der::DecodeValue<'_>`
+                which is required by `&mut SignedData: der::Decode<'_>`
+                `&mut SignedData: der::FixedTag`
+                which is required by `&mut SignedData: der::Decode<'_>`
+    note: there are multiple different versions of crate `der` in the dependency graph
+       --> /home/runner/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/der-0.7.10/src/decode.rs:19:1
+        |
+     19 | pub trait Decode<'a>: Sized {
+        | ^^^^^^^^^^^^^^^^^^^^^^^^^^^ this is the expected trait
+        |
+       ::: /home/runner/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/der-0.8.3/src/decode.rs:55:1
+        |
+     55 | pub trait Decode<'a>: Sized + 'a {
+        | -------------------------------- this is the found trait
+        = help: you can use `cargo tree` to explore your dependency tree
+    
+    error[E0599]: the associated function or constant `from_der` exists for struct `ContentInfo`, but its trait bounds were not satisfied
+       --> src/smime.rs:119:38
+        |
+    119 |         && let Ok(ci) = ContentInfo::from_der(bytes)
+        |                                      ^^^^^^^^ associated function or constant cannot be called on `ContentInfo` due to unsatisfied trait bounds
+        |
+       ::: /home/runner/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cms-0.2.3/src/content_info.rs:52:1
+        |
+     52 | pub struct ContentInfo {
+        | ---------------------- doesn't satisfy `ContentInfo: der::Decode<'_>`, `ContentInfo: der::DecodeValue<'_>` or `ContentInfo: der::FixedTag`
+        |
+        = note: the following trait bounds were not satisfied:
+                `ContentInfo: der::DecodeValue<'_>`
+                which is required by `ContentInfo: der::Decode<'_>`
+                `ContentInfo: der::FixedTag`
+                which is required by `ContentInfo: der::Decode<'_>`
+                `&ContentInfo: der::DecodeValue<'_>`
+                which is required by `&ContentInfo: der::Decode<'_>`
+                `&ContentInfo: der::FixedTag`
+                which is required by `&ContentInfo: der::Decode<'_>`
+                `&mut ContentInfo: der::DecodeValue<'_>`
+                which is required by `&mut ContentInfo: der::Decode<'_>`
+                `&mut ContentInfo: der::FixedTag`
+                which is required by `&mut ContentInfo: der::Decode<'_>`
+    note: there are multiple different versions of crate `der` in the dependency graph
+       --> /home/runner/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/der-0.7.10/src/decode.rs:19:1
+        |
+     19 | pub trait Decode<'a>: Sized {
+        | ^^^^^^^^^^^^^^^^^^^^^^^^^^^ this is the expected trait
+        |
+       ::: /home/runner/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/der-0.8.3/src/decode.rs:55:1
+        |
+     55 | pub trait Decode<'a>: Sized + 'a {
+        | -------------------------------- this is the found trait
+        = help: you can use `cargo tree` to explore your dependency tree
+    
+    error[E0616]: field `tbs_certificate` of struct `x509_cert::certificate::CertificateInner` is private
+       --> src/smime.rs:212:37
+        |
+    212 |         let nb = time_to_unix(&cert.tbs_certificate.validity.not_before);
+        |                                     ^^^^^^^^^^^^^^^ private field
+        |
+    help: a method `tbs_certificate` also exists, call it with parentheses
+        |
+    212 |         let nb = time_to_unix(&cert.tbs_certificate().validity.not_before);
+        |                                                    ++
+    
+    error[E0616]: field `tbs_certificate` of struct `x509_cert::certificate::CertificateInner` is private
+       --> src/smime.rs:213:37
+        |
+    213 |         let na = time_to_unix(&cert.tbs_certificate.validity.not_after);
+        |                                     ^^^^^^^^^^^^^^^ private field
+        |
+    help: a method `tbs_certificate` also exists, call it with parentheses
+        |
+    213 |         let na = time_to_unix(&cert.tbs_certificate().validity.not_after);
+        |                                                    ++
+    
+    Some errors have detailed explanations: E0277, E0308, E0599, E0616.
+    For more information about an error, try `rustc --explain E0277`.
+    error: could not compile `exchange_gateway` (lib) due to 9 previous errors
+    warning: build failed, waiting for other jobs to finish...
+    error: could not compile `exchange_gateway` (lib test) due to 9 previous errors
