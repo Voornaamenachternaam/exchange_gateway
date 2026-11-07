@@ -35,13 +35,18 @@ impl CaldavClient {
     /// Sanitize base URL by removing any embedded credentials.
     /// Credentials in the URL are deprecated and interfere with proper Basic Auth.
     /// Returns sanitized URL without userinfo, or original if parsing fails.
+    ///
+    /// There is intentionally no separate CalDAV/service-account identity:
+    /// every CalDAV request authenticates with the logged-in user's own
+    /// per-request Basic credentials, so embedded userinfo in the base URL is
+    /// simply ignored (never read back as a fallback identity).
     fn sanitize_base_url(caldav_base: &str) -> String {
         match reqwest::Url::parse(caldav_base) {
             Ok(mut url) => {
                 let had_creds = !url.username().is_empty() || url.password().is_some();
                 if had_creds {
                     warn!(
-                        "CalDAV base URL contains embedded credentials. These will be ignored; use GATEWAY_CALDAV_USER and GATEWAY_CALDAV_PASSWORD environment variables instead, or configure credentials separately. Sanitizing URL by removing userinfo."
+                        "CalDAV base URL contains embedded credentials. These will be ignored; CalDAV requests authenticate with the logged-in user's own credentials. Sanitizing URL by removing userinfo."
                     );
                     url.set_username("").ok();
                     url.set_password(None).ok();
@@ -1313,6 +1318,20 @@ mod tests {
     fn test_format_etag_for_if_match_empty() {
         // Empty etag (shouldn't happen, but be safe)
         assert_eq!(CaldavClient::format_etag_for_if_match(""), "\"\"");
+    }
+
+    #[test]
+    fn test_sanitize_base_url_removes_embedded_credentials() {
+        let input = "http://user:pass@stalwart:8080/dav/";
+        let out = CaldavClient::sanitize_base_url(input);
+        assert!(!out.contains('@'), "userinfo must be stripped: {out}");
+        assert_eq!(out, "http://stalwart:8080/dav/");
+    }
+
+    #[test]
+    fn test_sanitize_base_url_without_credentials_is_identity() {
+        let input = "http://stalwart:8080/dav";
+        assert_eq!(CaldavClient::sanitize_base_url(input), input);
     }
 
     #[test]

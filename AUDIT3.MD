@@ -825,6 +825,15 @@ route is needed. Recommend documenting one canonical host
 (`calendar.redacted.com`) for both routes to avoid Autodiscover/EWS origin
 mismatch.
 
+> **STATUS: DELIVERED (docs).** `CLOUDFLARED_SETUP.md` now carries an explicit
+> "One canonical host serves every gateway surface" section: a route table
+> (EAS/EWS/Autodiscover/MAPI/NSPI/OAB/ECP/health all on the single `8134`
+> origin, verified against `src/main.rs:812-890`), the rule that Autodiscover
+> renders every service URL from `GATEWAY_HOST`, and the exact condition
+> under which a third (`mail.<domain>`) route would be needed. The stale
+> `/armblock/exchange-gateway/data` volume path in the Step-5 sample was
+> corrected to `/armblock/exchange-gateway-data` to match the compose.
+
 ### 12. `GATEWAY_FORCE_CALDAV_CALENDAR` and `GATEWAY_PREFER_JMAP_CALENDAR=1` interact badly with findings #1–#3
 
 The compose ships `GATEWAY_PREFER_JMAP_CALENDAR=1` and
@@ -834,6 +843,14 @@ the calendar is empty; forcing CalDAV
 (`GATEWAY_FORCE_CALDAV_CALENDAR=1`) would make it work today but forfeit the
 JMAP-first mandate. This is a consequence of #1–#3, not an independent bug, but
 it must be documented as the interim workaround until #1–#3 are fixed.
+
+> **STATUS: DELIVERED.** Findings #1–#3 are now fixed, so the shipped
+> `PREFER_JMAP_CALENDAR=1` / `FORCE_CALDAV_CALENDAR=0` configuration is
+> correct. The interim escape hatch is documented in two places:
+> `docker-compose.yml` (the JMAP-first block now states that
+> `GATEWAY_FORCE_CALDAV_CALENDAR=1` is an emergency-only switch to be
+> reverted once the backend is restored) and `CLOUDFLARED_SETUP.md`
+> ("JMAP-first calendar (AUDIT3 §12)").
 
 ---
 
@@ -933,11 +950,11 @@ to EWS. This is a client-friction item, not a data-loss item.
 | 5 | P1 | Calendar delta | `CalendarEvent/changes` `hasMoreChanges` ignored → dropped changes | **DELIVERED** — `accumulate_calendar_changes` drain loop + clip-aware token |
 | 6 | P1 | Calendar etag | `@etag` unsupported by Stalwart; etags empty/inconsistent | **DELIVERED** — `calendar_event_etag` content hash on every read/write path |
 | 7 | P1 | Calendar delta | `queryState` fed to `changes`; no `cannotCalculateChanges` handling | **DELIVERED** — prime stores the `get` state + `cannotCalculateChanges` re-prime |
-| 8 | P2 | Autodiscover | `GATEWAY_MAIL_HOST=stalwart` leaks internal hostname to clients | **compose fixed** |
-| 9 | P2 | Compose | 11 env vars read by code absent from compose; `GATEWAY_CALDAV_USER/PASSWORD` are phantom (message only) | **compose fixed** + code msg fix |
-| 10 | P2 | Repo | `.env.example` contradicts the no-env-file contract | **deleted** |
-| 11 | P2 | Deploy | Cloudflare route/host canonicalization | docs |
-| 12 | P2 | Config | JMAP-prefer + broken read = empty calendar; document interim CalDAV force | docs |
+| 8 | P2 | Autodiscover | `GATEWAY_MAIL_HOST=stalwart` leaks internal hostname to clients | **DELIVERED** — compose ships public `mail.<domain>` + comment |
+| 9 | P2 | Compose | 11 env vars read by code absent from compose; `GATEWAY_CALDAV_USER/PASSWORD` are phantom (message only) | **DELIVERED** — compose lists every var (active or commented); phantom-var warning corrected to state per-request Basic auth + sanitize tests |
+| 10 | P2 | Repo | `.env.example` contradicts the no-env-file contract | **DELIVERED** — deleted; compose is the authoritative template |
+| 11 | P2 | Deploy | Cloudflare route/host canonicalization | **DELIVERED** — one-canonical-host section + route table in CLOUDFLARED_SETUP.md |
+| 12 | P2 | Config | JMAP-prefer + broken read = empty calendar; document interim CalDAV force | **DELIVERED** — escape hatch documented in compose + CLOUDFLARED_SETUP.md (§1–§3 fixed, so JMAP-first is now correct) |
 | 13 | P3 | Contacts | etag fallback is a hash (fine) — align events with it | dep 1 |
 | 14 | P3 | Free/busy | `get_availability` unused | dep 1 |
 | 15 | P3 | EAS Search | status 6 when JMAP absent (correct) | — |

@@ -50,6 +50,11 @@ services:
       # --- Required identity / crypto -------------------------------------
       # >= 32 characters, must NOT start with "REPLACE_".
       - GATEWAY_HMAC_SECRET=REPLACE_WITH_A_RANDOM_32_CHAR_MINIMUM_SECRET
+      # GATEWAY_HOST is the ONE canonical public host: every surface
+      # (EAS/EWS/MAPI/OAB/ECP/Autodiscover) is served on it (port 8134) and
+      # Autodiscover renders all service URLs from it — no per-protocol
+      # tunnel route is needed. It must be a public hostname on the tunnel
+      # (see CLOUDFLARED_SETUP.md "One canonical host").
       - GATEWAY_HOST=calendar.example.com
       - GATEWAY_MAIL_DOMAIN=example.com
 
@@ -101,6 +106,14 @@ services:
       - GATEWAY_ALLOW_INSECURE_HTTP=1
 
       # --- JMAP-first calendar/contacts -----------------------------------
+      # JMAP-first (AUDIT3 §12): calendar reads/writes/free-busy and contacts
+      # use JMAP with CalDAV/CardDAV as fallback. GATEWAY_FORCE_CALDAV_CALENDAR=1
+      # is an emergency escape hatch ONLY (it forfeits the JMAP-first mandate):
+      # flip it to 1 temporarily if the backend's JMAP calendar path regresses,
+      # and back to 0 once restored. The JMAP *create/update* write path
+      # self-verifies every create/update by read-back and auto-disables
+      # lossy writes at runtime (fail-closed to CalDAV); deletes have no
+      # read-back verification and are confirmed via `destroyed`.
       - GATEWAY_PREFER_JMAP_CALENDAR=1
       - GATEWAY_PREFER_JMAP_CONTACTS=1
       - GATEWAY_PREFER_CALDAV_FREEBUSY=0
