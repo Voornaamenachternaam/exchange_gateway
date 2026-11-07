@@ -858,11 +858,30 @@ it must be documented as the interim workaround until #1–#3 are fixed.
 
 ### 13. Contacts `@etag` fallback is a content hash, not the server etag — fine, but inconsistent with events
 
+> **STATUS: DELIVERED.** All three change-key/etag derivations now use the
+> same SHA-256 (first 16 bytes) content-hash pattern: calendar events
+> (`jmap::calendar_event_etag`, AUDIT3 #6) and contacts
+> (`contacts::jmap_contact_etag` / `contact_hash`) already used it; the MAPI
+> contact `PR_CHANGE_KEY` (`mapi/converters.rs::contact_change_key`) used the
+> unspecified `DefaultHasher` and is now SHA-256 too, so every path is stable
+> across restarts and rustc releases.
+
 `sync.rs:1262` computes `sha2::Sha256` over the card JSON when the server
 provides no etag. This is a reasonable substitute and is the pattern finding #6
 recommends adopting for calendar events. No change needed beyond consistency.
 
 ### 14. `get_availability` is dead code
+
+> **STATUS: DELIVERED.** Wired in as the preferred free/busy primitive.
+> `JmapClient::supports_availability` probes the
+> `urn:ietf:params:jmap:principals:availability` capability and
+> `JmapClient::availability_to_merged_freebusy` renders the
+> `availability[].busy[]` payload into the merged string + detailed-event XML
+> (worst-wins per slot, `None` on an empty payload). Both free/busy paths —
+> EWS `fetch_freebusy_jmap` and EAS `fetch_freebusy_jmap_eas` — try it first
+> when advertised and fall back to the calendar-event query / CalDAV paths
+> otherwise. Tests: `availability_to_merged_freebusy_renders_busy_slots` +
+> `availability_to_merged_freebusy_empty_payload_is_none`.
 
 `JmapClient::get_availability` (`jmap.rs:5288`) using
 `urn:ietf:params:jmap:principals:availability` has **no caller** (grep confirms
@@ -886,6 +905,13 @@ calendar delta is empty).
 
 ### 17. `mapi_enabled` defaults true while the compose sets `GATEWAY_MAPI_HMA_ENABLED=0`
 
+> **STATUS: DELIVERED.** The `mapiHttp` block is now gated: `handle_outlook_xml`
+> takes `include_mapi_http` (plumbed via `AutodiscoverXmlRequest` from
+> `main.rs` as `mapi_enabled && mapi_hma_enabled`). The shipped compose
+> posture (MAPI on, HMA off) omits the block, so New Outlook falls back to
+> EWS/EAS. Test: `test_outlook_response_omits_mapi_http_block_when_hma_disabled`
+> (the existing `includes_mapi_http_block` test passes `true`).
+
 `default_mapi_enabled` is `true` (`config.rs:425`) and the compose enables
 `GATEWAY_MAPI_ENABLED=1` but disables HMA
 (`GATEWAY_MAPI_HMA_ENABLED=0`). Autodiscover still emits a `<Protocol
@@ -895,6 +921,13 @@ attempt MAPI/HTTP against an HMA-disabled endpoint. Either gate the
 to EWS. This is a client-friction item, not a data-loss item.
 
 ### 18. Compose is otherwise correct for the deployment scenario
+
+> **STATUS: DELIVERED (verified).** Re-audited end to end for this item:
+> placeholder `<registry>` image kept, no `env_file:` / `.env` anywhere,
+> volume `/armblock/exchange-gateway-data` (UID 10001), `network1` external
+> `my-bridge-network`, `/health/ready` healthcheck. The MAPI surface-gating
+> comment was corrected to match the #17 fix (Autodiscover omits `mapiHttp`
+> when HMA is off).
 
 - Image is a registry reference with a placeholder `<registry>` (must be
   replaced by the operator — the task says do not replace placeholders).

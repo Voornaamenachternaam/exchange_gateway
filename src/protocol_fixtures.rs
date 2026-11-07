@@ -170,6 +170,7 @@ pub fn autodiscover_response(host: &str, email: &str) -> String {
         accept_language: None,
         mail_host: &mail_host,
         include_imap_smtp: true,
+        include_mapi_http: false,
         auth_advert: &crate::autodiscover::AuthAdvert::Basic,
         mobilesync_display_name: &display_name,
     };

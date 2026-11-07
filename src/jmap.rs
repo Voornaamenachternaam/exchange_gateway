@@ -4333,6 +4333,21 @@ impl JmapClient {
         }
     }
 
+    /// Check whether the JMAP server advertises the principals-availability
+    /// capability (`urn:ietf:params:jmap:principals:availability`). When it
+    /// does, free/busy is served by `Principal/getAvailability` (the correct
+    /// JMAP free/busy primitive); when it does not, callers fall back to the
+    /// calendar-event query path. A session-fetch error is `false` (the
+    /// caller then falls back and surfaces its own backend error).
+    pub async fn supports_availability(&self, username: &str, password: &SecretString) -> bool {
+        match self.get_session(username, password).await {
+            Ok(session) => session
+                .capabilities
+                .contains_key(JMAP_CAL_AVAILABILITY_CAPABILITY),
+            Err(_) => false,
+        }
+    }
+
     /// Deploy-time verification of the JMAP Calendars capability
     /// (`urn:ietf:params:jmap:calendars`, draft-ietf-jmap-calendars §1.5.1)
     /// against the configured backend.
@@ -6048,6 +6063,88 @@ impl JmapClient {
 
         Err(anyhow!("Principal/getAvailability returned no data"))
     }
+
+    /// Render a `Principal/getAvailability` result into the gateway's
+    /// merged free/busy string (`0`/`1`/`2`/`3` per `safe_interval`-minute
+    /// slot, worst-wins) plus the detailed-event XML rows (EWS
+    /// `<t:CalendarEvent>` shape). Returns `None` when the payload carries
+    /// no usable availability, so the caller falls back to the
+    /// calendar-event query / CalDAV paths rather than publishing an empty
+    /// (all-free) view.
+    pub fn availability_to_merged_freebusy(
+        data: &Value,
+        start: chrono::DateTime<chrono::Utc>,
+        end: chrono::DateTime<chrono::Utc>,
+        safe_interval: i64,
+    ) -> Option<(String, String)> {
+        let slot_count = (((end - start).num_seconds().max(0) + (safe_interval * 60 - 1))
+            / (safe_interval * 60)) as usize;
+        if slot_count == 0 {
+            return None;
+        }
+        let mut merged = vec!['0'; slot_count];
+        let mut events_xml = String::new();
+        let mut saw_availability = false;
+        for principal in data
+            .get("availability")
+            .and_then(|v| v.as_array())
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+        {
+            let Some(busy) = principal.get("busy").and_then(|v| v.as_array()) else {
+                continue;
+            };
+            saw_availability = true;
+            for block in busy {
+                let Some(block_start) = block
+                    .get("start")
+                    .and_then(|v| v.as_str())
+                    .and_then(crate::calendar::parse_datetime)
+                else {
+                    continue;
+                };
+                let Some(block_end) = block
+                    .get("end")
+                    .and_then(|v| v.as_str())
+                    .and_then(crate::calendar::parse_datetime)
+                else {
+                    continue;
+                };
+                if block_end <= block_start {
+                    continue;
+                }
+                let sd = match block.get("type").and_then(|v| v.as_str()) {
+                    Some("free") => '0',
+                    Some("tentative") => '1',
+                    Some("oof") => '3',
+                    _ => '2',
+                };
+                for (i, slot) in merged.iter_mut().enumerate() {
+                    let ss = start + chrono::Duration::minutes((i as i64) * safe_interval);
+                    let se = ss + chrono::Duration::minutes(safe_interval);
+                    if block_start < se && block_end > ss && sd > *slot {
+                        *slot = sd;
+                    }
+                }
+                let busy_type = match sd {
+                    '0' => "Free",
+                    '1' => "Tentative",
+                    '3' => "OOF",
+                    _ => "Busy",
+                };
+                events_xml.push_str(&format!(
+                    "<t:CalendarEvent><t:StartTime>{}</t:StartTime><t:EndTime>{}</t:EndTime><t:BusyType>{}</t:BusyType></t:CalendarEvent>",
+                    crate::util::format_ews_datetime(&block_start),
+                    crate::util::format_ews_datetime(&block_end),
+                    busy_type
+                ));
+            }
+        }
+        if !saw_availability {
+            return None;
+        }
+        Some((merged.into_iter().collect(), events_xml))
+    }
 }
 
 /// Pure parser: extract `updated` / `notUpdated` / method-level `error` from
@@ -6182,6 +6279,61 @@ mod tests {
         assert_eq!(
             JMAP_CAL_AVAILABILITY_CAPABILITY,
             "urn:ietf:params:jmap:principals:availability"
+        );
+    }
+
+    #[test]
+    fn availability_to_merged_freebusy_renders_busy_slots() {
+        // AUDIT3 #14: a Principal/getAvailability payload must render the
+        // same merged string the calendar-event path renders — worst-wins
+        // per slot, with the busy block's type mapped onto the slot digit.
+        use chrono::TimeZone as _;
+        let start = chrono::Utc.with_ymd_and_hms(2026, 1, 5, 9, 0, 0).unwrap();
+        let end = chrono::Utc.with_ymd_and_hms(2026, 1, 5, 11, 0, 0).unwrap();
+        let data = json!({
+            "availability": [{
+                "id": "p1",
+                "busy": [
+                    {"start": "2026-01-05T09:30:00", "end": "2026-01-05T10:30:00", "type": "busy"},
+                    {"start": "2026-01-05T10:00:00", "end": "2026-01-05T10:15:00", "type": "tentative"}
+                ]
+            }]
+        });
+        let (merged, events_xml) =
+            JmapClient::availability_to_merged_freebusy(&data, start, end, 30).unwrap();
+        // 4 slots (09:00, 09:30, 10:00, 10:30): 09:00 free, 09:30 busy,
+        // 10:00 busy (busy beats tentative), 10:30 free (busy ends 10:30).
+        assert_eq!(merged, "0220");
+        assert!(events_xml.contains("<t:BusyType>Busy</t:BusyType>"));
+        assert!(events_xml.contains("<t:BusyType>Tentative</t:BusyType>"));
+        assert!(events_xml.contains("2026-01-05T09:30:00Z"));
+    }
+
+    #[test]
+    fn availability_to_merged_freebusy_empty_payload_is_none() {
+        // No availability array (or an empty one) must yield None so the
+        // caller falls back instead of publishing an all-free view.
+        use chrono::TimeZone as _;
+        let start = chrono::Utc.with_ymd_and_hms(2026, 1, 5, 9, 0, 0).unwrap();
+        let end = chrono::Utc.with_ymd_and_hms(2026, 1, 5, 10, 0, 0).unwrap();
+        assert!(JmapClient::availability_to_merged_freebusy(&json!({}), start, end, 30).is_none());
+        assert!(
+            JmapClient::availability_to_merged_freebusy(
+                &json!({"availability": []}),
+                start,
+                end,
+                30
+            )
+            .is_none()
+        );
+        assert!(
+            JmapClient::availability_to_merged_freebusy(
+                &json!({"availability": [{"id": "p1"}]}),
+                start,
+                end,
+                30
+            )
+            .is_none()
         );
     }
 
