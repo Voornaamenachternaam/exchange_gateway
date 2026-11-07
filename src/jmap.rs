@@ -6013,11 +6013,79 @@ impl JmapClient {
         ))
     }
 
+    /// Resolve the Principal `id` for `account_id` (the caller's own
+    /// mailbox account) via `Principal/query` filtered on `accountIds`, so
+    /// `Principal/getAvailability` can be called with the draft-ietf-jmap-
+    /// calendars §2.2 argument shape (`id`, not the account id). Falls back
+    /// to `account_id` itself when the query cannot be used — for a caller
+    /// authenticated as the principal owner the account id and principal id
+    /// denote the same account on Stalwart, and `get_availability`'s callers
+    /// already treat any unusable payload as "fall back", so the fallback can
+    /// only lose the fast path, never correctness.
+    pub async fn get_principal_id(
+        &self,
+        account_id: &str,
+        username: &str,
+        password: &SecretString,
+    ) -> String {
+        let Ok(session) = self.get_session(username, password).await else {
+            return account_id.to_string();
+        };
+        let api_url = &session.api_url;
+
+        let method_calls = vec![(
+            "Principal/query",
+            json!({
+                "accountId": account_id,
+                "filter": {
+                    "accountIds": [account_id],
+                },
+            }),
+            "pq0",
+        )];
+
+        let Ok(response) = self
+            .api_call(
+                api_url,
+                &[
+                    "urn:ietf:params:jmap:core",
+                    "urn:ietf:params:jmap:principals",
+                    JMAP_CAL_AVAILABILITY_CAPABILITY,
+                ],
+                method_calls,
+                username,
+                password,
+            )
+            .await
+        else {
+            return account_id.to_string();
+        };
+
+        for (method, data, _) in response.method_responses {
+            if method == "Principal/query"
+                && let Some(id) = data
+                    .get("ids")
+                    .and_then(|v| v.as_array())
+                    .and_then(|ids| ids.first())
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
+            {
+                return id.to_string();
+            }
+        }
+        account_id.to_string()
+    }
+
     /// Get free-busy availability via Principal/getAvailability
     /// (draft-ietf-jmap-calendars §2.2).
     ///
     /// Replaces CalDAV `get_freebusy` (REPORT free-busy-query).
-    /// Returns the raw JSON response for the caller to parse.
+    /// Returns the raw JSON response (`{"list": [...]}`) for the caller to
+    /// parse. `account_id` is the calendars account; the Principal `id` is
+    /// resolved from it via [`Self::get_principal_id`], because draft §2.2
+    /// takes `id` (the Principal), `utcStart`, `utcEnd` — not `principalIds`
+    /// / `duration` — and returns `list` entries with `utcStart`, `utcEnd`,
+    /// and `busyStatus`.
     pub async fn get_availability(
         &self,
         account_id: &str,
@@ -6028,16 +6096,16 @@ impl JmapClient {
     ) -> Result<Value> {
         let session = self.get_session(username, password).await?;
         let api_url = &session.api_url;
+        let principal_id = self.get_principal_id(account_id, username, password).await;
 
         let method_calls = vec![(
             "Principal/getAvailability",
             json!({
                 "accountId": account_id,
-                "principalIds": [account_id],
-                "duration": {
-                    "start": start,
-                    "end": end,
-                },
+                "id": principal_id,
+                "utcStart": start,
+                "utcEnd": end,
+                "showDetails": true,
             }),
             "pa0",
         )];
@@ -6064,83 +6132,144 @@ impl JmapClient {
         Err(anyhow!("Principal/getAvailability returned no data"))
     }
 
-    /// Render a `Principal/getAvailability` result into the gateway's
-    /// merged free/busy string (`0`/`1`/`2`/`3` per `safe_interval`-minute
-    /// slot, worst-wins) plus the detailed-event XML rows (EWS
-    /// `<t:CalendarEvent>` shape). Returns `None` when the payload carries
-    /// no usable availability, so the caller falls back to the
-    /// calendar-event query / CalDAV paths rather than publishing an empty
-    /// (all-free) view.
+    /// Render a draft-ietf-jmap-calendars §2.2 `Principal/getAvailability`
+    /// result (`{"list": [...]}` of `{utcStart, utcEnd, busyStatus, event?}`
+    /// BusyPeriods) into the gateway's merged free/busy string (`0`/`1`/`2`/`3`
+    /// per `safe_interval`-minute slot, worst-wins) plus the detailed-event XML
+    /// rows (EWS `<t:CalendarEvent>` shape, with a `<t:CalendarEventDetails>`
+    /// child when the period carries a JSCalendar `event` object — the
+    /// `showDetails: true` request). The legacy `availability[].busy[]`
+    /// (non-standard) payload is also accepted so an older backend shape still
+    /// renders instead of silently falling back.
+    ///
+    /// Returns `None` when no usable busy period exists, so the caller falls
+    /// back to the calendar-event query / CalDAV paths rather than publishing
+    /// a fabricated all-free view; also `None` for a non-positive
+    /// `safe_interval`.
+    ///
+    /// Merged-slot mapping (draft `busyStatus` → EWS digits): `confirmed`
+    /// and the default `unavailable` → `2` (Busy), `tentative` → `1`, `free`
+    /// (legacy `type` only) → `0`, and legacy `type` `oof` → `3`; any other
+    /// legacy `type` value → `2`. Per the draft, `unavailable` is the default
+    /// when `busyStatus` is omitted.
     pub fn availability_to_merged_freebusy(
         data: &Value,
         start: chrono::DateTime<chrono::Utc>,
         end: chrono::DateTime<chrono::Utc>,
         safe_interval: i64,
     ) -> Option<(String, String)> {
+        if safe_interval <= 0 {
+            return None;
+        }
         let slot_count = (((end - start).num_seconds().max(0) + (safe_interval * 60 - 1))
             / (safe_interval * 60)) as usize;
         if slot_count == 0 {
             return None;
         }
-        let mut merged = vec!['0'; slot_count];
-        let mut events_xml = String::new();
-        let mut saw_availability = false;
+        // Collect (block, busy status) tuples from both wire shapes.
+        let mut blocks: Vec<(&Value, &str, bool)> = Vec::new();
+        for period in data
+            .get("list")
+            .and_then(|v| v.as_array())
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+        {
+            blocks.push((
+                period,
+                period
+                    .get("busyStatus")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(""),
+                true,
+            ));
+        }
         for principal in data
             .get("availability")
             .and_then(|v| v.as_array())
             .map(Vec::as_slice)
             .unwrap_or_default()
         {
-            let Some(busy) = principal.get("busy").and_then(|v| v.as_array()) else {
-                continue;
-            };
-            saw_availability = true;
-            for block in busy {
-                let Some(block_start) = block
-                    .get("start")
-                    .and_then(|v| v.as_str())
-                    .and_then(crate::calendar::parse_datetime)
-                else {
-                    continue;
-                };
-                let Some(block_end) = block
-                    .get("end")
-                    .and_then(|v| v.as_str())
-                    .and_then(crate::calendar::parse_datetime)
-                else {
-                    continue;
-                };
-                if block_end <= block_start {
-                    continue;
+            if let Some(busy) = principal.get("busy").and_then(|v| v.as_array()) {
+                for block in busy {
+                    blocks.push((
+                        block,
+                        block.get("type").and_then(|v| v.as_str()).unwrap_or(""),
+                        false,
+                    ));
                 }
-                let sd = match block.get("type").and_then(|v| v.as_str()) {
-                    Some("free") => '0',
-                    Some("tentative") => '1',
-                    Some("oof") => '3',
-                    _ => '2',
-                };
-                for (i, slot) in merged.iter_mut().enumerate() {
-                    let ss = start + chrono::Duration::minutes((i as i64) * safe_interval);
-                    let se = ss + chrono::Duration::minutes(safe_interval);
-                    if block_start < se && block_end > ss && sd > *slot {
-                        *slot = sd;
-                    }
-                }
-                let busy_type = match sd {
-                    '0' => "Free",
-                    '1' => "Tentative",
-                    '3' => "OOF",
-                    _ => "Busy",
-                };
-                events_xml.push_str(&format!(
-                    "<t:CalendarEvent><t:StartTime>{}</t:StartTime><t:EndTime>{}</t:EndTime><t:BusyType>{}</t:BusyType></t:CalendarEvent>",
-                    crate::util::format_ews_datetime(&block_start),
-                    crate::util::format_ews_datetime(&block_end),
-                    busy_type
-                ));
             }
         }
-        if !saw_availability {
+        let mut merged = vec!['0'; slot_count];
+        let mut events_xml = String::new();
+        let mut saw_usable_block = false;
+        for (block, status, from_draft) in blocks {
+            let Some(block_start) = block
+                .get("utcStart")
+                .or_else(|| block.get("start"))
+                .and_then(|v| v.as_str())
+                .and_then(crate::calendar::parse_datetime)
+            else {
+                continue;
+            };
+            let Some(block_end) = block
+                .get("utcEnd")
+                .or_else(|| block.get("end"))
+                .and_then(|v| v.as_str())
+                .and_then(crate::calendar::parse_datetime)
+            else {
+                continue;
+            };
+            if block_end <= block_start {
+                continue;
+            }
+            // `free` exists only in the legacy `type` field; the draft
+            // `busyStatus` set is confirmed/tentative/unavailable, with
+            // `unavailable` the default when omitted (→ Busy).
+            let sd = match status {
+                "tentative" => '1',
+                "oof" => '3',
+                "free" if !from_draft => '0',
+                _ => '2',
+            };
+            saw_usable_block = true;
+            for (i, slot) in merged.iter_mut().enumerate() {
+                let ss = start + chrono::Duration::minutes((i as i64) * safe_interval);
+                let se = ss + chrono::Duration::minutes(safe_interval);
+                if block_start < se && block_end > ss && sd > *slot {
+                    *slot = sd;
+                }
+            }
+            let busy_type = match sd {
+                '0' => "Free",
+                '1' => "Tentative",
+                '3' => "OOF",
+                _ => "Busy",
+            };
+            let details_xml = block
+                .get("event")
+                .and_then(crate::jscalendar::jscalendar_event_to_ics)
+                .and_then(|ics| crate::calendar::parse_ics_event(&ics))
+                .map(|item| {
+                    format!(
+                        "<t:CalendarEventDetails><t:Subject>{}</t:Subject><t:Location>{}</t:Location><t:IsMeeting>{}</t:IsMeeting><t:IsRecurring>{}</t:IsRecurring><t:IsException>false</t:IsException><t:IsReminderSet>{}</t:IsReminderSet><t:IsPrivate>{}</t:IsPrivate></t:CalendarEventDetails>",
+                        crate::util::xml_escape(&item.subject),
+                        crate::util::xml_escape(&item.location),
+                        if item.attendees.is_empty() { "false" } else { "true" },
+                        if item.rrule.is_some() { "true" } else { "false" },
+                        if item.reminder.is_some() { "true" } else { "false" },
+                        if item.sensitivity.map(|v| v >= 2).unwrap_or(false) { "true" } else { "false" },
+                    )
+                })
+                .unwrap_or_default();
+            events_xml.push_str(&format!(
+                "<t:CalendarEvent><t:StartTime>{}</t:StartTime><t:EndTime>{}</t:EndTime><t:BusyType>{}</t:BusyType>{}</t:CalendarEvent>",
+                crate::util::format_ews_datetime(&block_start),
+                crate::util::format_ews_datetime(&block_end),
+                busy_type,
+                details_xml
+            ));
+        }
+        if !saw_usable_block {
             return None;
         }
         Some((merged.into_iter().collect(), events_xml))
@@ -6335,6 +6464,107 @@ mod tests {
             )
             .is_none()
         );
+    }
+
+    #[test]
+    fn availability_to_merged_freebusy_standard_list_payload() {
+        // draft-ietf-jmap-calendars §2.2: `{"list": [...]}` of
+        // `{utcStart, utcEnd, busyStatus, event?}` BusyPeriods is what a
+        // conforming server returns, and showDetails periods must render
+        // <t:CalendarEventDetails> for DetailedMerged views.
+        use chrono::TimeZone as _;
+        let start = chrono::Utc.with_ymd_and_hms(2026, 1, 5, 9, 0, 0).unwrap();
+        let end = chrono::Utc.with_ymd_and_hms(2026, 1, 5, 11, 0, 0).unwrap();
+        let data = json!({
+            "list": [
+                {
+                    "utcStart": "2026-01-05T09:30:00Z",
+                    "utcEnd": "2026-01-05T10:30:00Z",
+                    "busyStatus": "confirmed",
+                    "event": {
+                        "@type": "Event",
+                        "uid": "avail-1",
+                        "title": "Focus Time",
+                        "start": "2026-01-05T09:30:00",
+                        "duration": "PT1H",
+                        "locations": { "l1": { "@type": "Location", "name": "Room 9" } },
+                        "iCalendar": {
+                            "convertedProperties": { "duration": { "name": "dtend" } },
+                            "name": "vevent"
+                        }
+                    }
+                },
+                {
+                    "utcStart": "2026-01-05T10:00:00Z",
+                    "utcEnd": "2026-01-05T10:15:00Z",
+                    "busyStatus": "tentative"
+                }
+            ]
+        });
+        let (merged, events_xml) =
+            JmapClient::availability_to_merged_freebusy(&data, start, end, 30).unwrap();
+        assert_eq!(merged, "0220");
+        assert!(events_xml.contains("<t:BusyType>Busy</t:BusyType>"));
+        assert!(events_xml.contains("<t:BusyType>Tentative</t:BusyType>"));
+        assert!(events_xml.contains("2026-01-05T09:30:00Z"));
+        // The confirmed period carries an event: DetailedMerged keeps the
+        // subject/location rendered through the JSCalendar→ICS chain.
+        assert!(events_xml.contains("<t:Subject>Focus Time</t:Subject>"));
+        assert!(events_xml.contains("<t:Location>Room 9</t:Location>"));
+        // The tentative period carries none — no details element for it.
+        assert_eq!(
+            events_xml.matches("<t:CalendarEventDetails>").count(),
+            1,
+            "only the event-carrying period renders details: {events_xml}"
+        );
+    }
+
+    #[test]
+    fn availability_to_merged_freebusy_unparseable_blocks_is_none() {
+        // A payload whose only periods are unparseable (or end <= start)
+        // must yield None so the caller falls back, never an all-free string.
+        use chrono::TimeZone as _;
+        let start = chrono::Utc.with_ymd_and_hms(2026, 1, 5, 9, 0, 0).unwrap();
+        let end = chrono::Utc.with_ymd_and_hms(2026, 1, 5, 10, 0, 0).unwrap();
+        assert!(
+            JmapClient::availability_to_merged_freebusy(
+                &json!({"list": [{"utcStart": "bogus", "utcEnd": "2026-01-05T10:00:00Z", "busyStatus": "confirmed"}]}),
+                start,
+                end,
+                30
+            )
+            .is_none()
+        );
+        assert!(
+            JmapClient::availability_to_merged_freebusy(
+                &json!({"list": [{"utcStart": "2026-01-05T10:00:00Z", "utcEnd": "2026-01-05T09:00:00Z", "busyStatus": "confirmed"}]}),
+                start,
+                end,
+                30
+            )
+            .is_none()
+        );
+        assert!(
+            JmapClient::availability_to_merged_freebusy(
+                &json!({"availability": [{"busy": [{"start": "bogus", "end": "bogus"}]}]}),
+                start,
+                end,
+                30
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn availability_to_merged_freebusy_rejects_nonpositive_interval() {
+        use chrono::TimeZone as _;
+        let start = chrono::Utc.with_ymd_and_hms(2026, 1, 5, 9, 0, 0).unwrap();
+        let end = chrono::Utc.with_ymd_and_hms(2026, 1, 5, 10, 0, 0).unwrap();
+        let data = json!({
+            "list": [{"utcStart": "2026-01-05T09:00:00Z", "utcEnd": "2026-01-05T10:00:00Z", "busyStatus": "confirmed"}]
+        });
+        assert!(JmapClient::availability_to_merged_freebusy(&data, start, end, 0).is_none());
+        assert!(JmapClient::availability_to_merged_freebusy(&data, start, end, -5).is_none());
     }
 
     #[test]

@@ -1585,7 +1585,7 @@ async fn fetch_freebusy_jmap(
     // the JMAP free/busy primitive and avoids the ICS round-trip. A payload
     // with no usable availability falls through to the event-query path.
     if jmap.supports_availability(mailbox, &secret_password).await {
-        let data = jmap
+        match jmap
             .get_availability(
                 &account_id,
                 &start.format("%Y-%m-%dT%H:%M:%SZ").to_string(),
@@ -1593,11 +1593,22 @@ async fn fetch_freebusy_jmap(
                 mailbox,
                 &secret_password,
             )
-            .await?;
-        if let Some(rendered) =
-            JmapClient::availability_to_merged_freebusy(&data, start, end, safe_interval)
+            .await
         {
-            return Ok(rendered);
+            Ok(data) => {
+                if let Some(rendered) =
+                    JmapClient::availability_to_merged_freebusy(&data, start, end, safe_interval)
+                {
+                    return Ok(rendered);
+                }
+            }
+            Err(e) => {
+                tracing::debug!(
+                    target: "ews",
+                    error = %e,
+                    "Principal/getAvailability failed; falling back to event query"
+                );
+            }
         }
     }
     let slot_count = (((end - start).num_seconds().max(0) + (safe_interval * 60 - 1))

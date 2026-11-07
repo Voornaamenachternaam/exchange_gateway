@@ -204,11 +204,16 @@ async fn autodiscover_xml(
         accept_language,
         mail_host: &state.cfg.mail_host,
         include_imap_smtp: state.smtp_client.is_some(),
-        // AUDIT3 #17: advertise mapiHttp only when the MAPI/HTTP surface is
-        // enabled and Hybrid Modern Auth is enabled — the shipped compose
-        // (MAPI on, HMA off) must NOT advertise it, so New Outlook falls
-        // back to EWS/EAS instead of attempting a disabled surface.
-        include_mapi_http: state.cfg.mapi_enabled && state.cfg.mapi_hma_enabled,
+        // AUDIT3 #17: advertise mapiHttp whenever the MAPI/HTTP surface is
+        // enabled. The shipped compose (MAPI on, HMA off) deliberately
+        // advertises it: the endpoint accepts Basic credentials without HMA
+        // (mapi/logon.rs verifies Basic via the AuthVerifier; the HMA
+        // bearer gate is an additional path, not a requirement), and New
+        // Outlook for Windows uses MAPI/HTTP rather than EWS for the
+        // mailbox, so omitting the block would leave Basic-capable clients
+        // without the only working transport (there is no Outlook Anywhere
+        // route). The block is omitted only when MAPI is fully disabled.
+        include_mapi_http: state.cfg.mapi_enabled,
         auth_advert: &auth_advert,
         mobilesync_display_name: &display_name,
     };

@@ -129,13 +129,15 @@ services:
       - GATEWAY_EAS_REQUIRE_POLICY_KEY=0
 
       # --- Surface gating -------------------------------------------------
-      # MAPI/HTTP is in-code enabled by default (mapi_enabled defaults to
-      # true), but Autodiscover only advertises the mapiHttp <Protocol> block
-      # when BOTH MAPI and Hybrid Modern Auth are enabled (AUDIT3 #17). With
-      # the shipped posture below (MAPI on, HMA off) the block is omitted, so
-      # New Outlook falls back to EWS/EAS instead of attempting a surface
-      # that will not accept it. The MAPI routes themselves return 404 when
-      # GATEWAY_MAPI_ENABLED=0, keeping the surface invisible.
+      # Autodiscover advertises the mapiHttp <Protocol> block whenever the
+      # MAPI/HTTP surface is enabled (AUDIT3 #17). The shipped posture below
+      # (MAPI on, HMA off) DOES advertise it, because the MAPI endpoint
+      # accepts Basic authentication without HMA (the HMA bearer path is
+      # additional, not a requirement) and New Outlook for Windows uses
+      # MAPI/HTTP rather than EWS for the mailbox. Set GATEWAY_MAPI_ENABLED=0
+      # to omit the block and the /mapi/ routes (404), so clients fall back
+      # to EWS/EAS. GATEWAY_MAPI_HMA_ENABLED additionally enables the HMA
+      # bearer path (requires issuer + audience).
       - GATEWAY_MAPI_ENABLED=1
       - GATEWAY_MAPI_HMA_ENABLED=0
       - GATEWAY_EMAIL_ENABLED=1

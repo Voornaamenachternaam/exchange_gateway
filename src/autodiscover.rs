@@ -562,9 +562,10 @@ pub struct AutodiscoverXmlRequest<'a> {
     /// `<Protocol>` blocks rendered by `handle_outlook_xml`).
     pub include_imap_smtp: bool,
     /// Whether the Outlook `mapiHttp` `<Protocol>` block should be rendered.
-    /// True only when the MAPI/HTTP surface is enabled AND Hybrid Modern
-    /// Auth is enabled (AUDIT3 #17): advertising the block while HMA is
-    /// disabled points clients at a surface that will not accept them.
+    /// True whenever the MAPI/HTTP surface is enabled (AUDIT3 #17): the
+    /// endpoint accepts Basic without HMA, so the shipped MAPI-on/HMA-off
+    /// posture advertises it; the block is omitted only when MAPI is fully
+    /// disabled so clients fall back to EWS/EAS.
     pub include_mapi_http: bool,
     /// EXCH/EXPR `<AuthPackage>` advertisement (Basic vs Hybrid Modern Auth).
     pub auth_advert: &'a AuthAdvert,
@@ -1175,10 +1176,11 @@ mod tests {
     }
 
     #[test]
-    fn test_outlook_response_omits_mapi_http_block_when_hma_disabled() {
-        // AUDIT3 #17: with HMA disabled (the shipped compose posture) the
-        // mapiHttp block must be omitted so clients fall back to EWS/EAS
-        // instead of attempting a surface that will not accept them.
+    fn test_outlook_response_omits_mapi_http_block_when_mapi_disabled() {
+        // AUDIT3 #17: the mapiHttp block is omitted only when MAPI itself is
+        // disabled (`include_mapi_http: false`), so clients fall back to
+        // EWS/EAS; the shipped MAPI-on/HMA-off posture advertises it because
+        // the endpoint accepts Basic without HMA.
         let (status, _hdrs, body) = handle_outlook_xml(
             "mail.example.com",
             "user@example.com",
