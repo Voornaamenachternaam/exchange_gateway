@@ -63,7 +63,10 @@ compose env-var inventory.
 
 ---
 
-## P0 — Blocks the use-case
+## P0 — Blocks the use-case (items 1–10)
+
+Items 11–14 are P1/P2 (see below) and are placed after the P0 block so
+each item’s section matches its severity in the summary table.
 
 ### 1. The two Cloudflare ingress hostnames do not match the Autodiscover contract — Android “Exchange” signup cannot reach the gateway
 
@@ -123,6 +126,28 @@ wait for a route that can never exist.
    `gateway_host` is not `calendar.{mail_domain}` or if
    `mail_domain` is empty, so a mismatched pair is loud at deploy time
    rather than silent in the Android wizard.
+
+> **Scope note — per-mail-domain discovery (RFC 7908 / Autodiscover
+> pairing).** The above pairing (`calendar.<mail-domain>` +
+> `autodiscover.<mail-domain>`) is the correct fix for the single
+> `GATEWAY_MAIL_DOMAIN` this deployment serves: every mailbox whose
+> domain equals `GATEWAY_MAIL_DOMAIN` is discovered by the
+> `autodiscover.<mail-domain>` route, and the mobilesync response points
+> at `https://{GATEWAY_HOST}/Microsoft-Server-ActiveSync` for *any*
+> mailbox domain (`src/autodiscover.rs:646`, verified by
+> `mobilesync_response_points_at_gateway_host_for_any_mailbox_domain`).
+> That response rule is *not* a substitute for per-domain discovery:
+> Android probes `https://autodiscover.<typed-domain>/…` where
+> `<typed-domain>` is the domain part of the entered email address, so a
+> second mailbox domain needs its own public `autodiscover.<domain>`
+> alias *and*, because Autodiscover otherwise returns Stalwart IMAP/SMTP
+> `<Protocol>` blocks advertising `GATEWAY_MAIL_HOST`, its own Autodiscover
+> adapter (`ResponseSchema::MobileSync` handling is the mechanism for
+> returning *only* the `mobilesync` block for that domain) — otherwise the
+> client pairs the Stalwart `IMAP`/`SMTP` blocks with the gateway’s
+> `mapiHttp`/`mobilesync` blocks and fails. The single-domain fix above is
+> complete for this deployment; multi-domain support is a separate
+> configuration concern and is not claimed here.
 
 ---
 
@@ -207,22 +232,28 @@ posture is correct for the tunnel, but two gaps remain:
 ### 4. The compose publishes port 8134 to the host, which bypasses Cloudflare Tunnel and exposes plain HTTP to the LAN/WAN
 
 **Evidence.** `docker-compose.yml:169-170`:
-`ports: - 8134:8134`. `CLOUDFLARED_SETUP.md:346` repeats it. The tunnel
-ingress targets `http://localhost:8134` (`cloudflared/config.yml`), so the
-published port is not needed for the tunnel — `cloudflared` on the host
-connects to the container via the Docker bridge, not via the published
-port.
+`ports: - 8134:8134` (wildcard bind, i.e. all host interfaces).
+`CLOUDFLARED_SETUP.md:346` repeats it. The tunnel ingress targets
+`http://localhost:8134` on the *host* (`cloudflared/config.yml:62,77,90`:
+`service: http://localhost:8134`). `cloudflared` runs on the Ubuntu host
+and makes an outbound tunnel connection; it never routes through the
+Docker bridge `my-bridge-network`.
 
-**Impact.** Publishing 8134 defeats the tunnel’s access control: anyone who
-can reach the host’s 8134 (LAN, or WAN if the firewall is open) gets plain
-HTTP + Basic auth with no Cloudflare edge in between. The task’s topology
-is “cloudflared on the Ubuntu server”; the published port is an
-unnecessary attack surface.
+**Impact.** The wildcard publish exposes plain HTTP + Basic auth on the
+host’s 8134 to the LAN/WAN, bypassing Cloudflare edge access control.
+The publish itself is *not* optional for the stated topology: it is the
+only host-local path `cloudflared` has to the container on 8134.
 
-**Fix (ladder 1 — compose only).** Remove the `ports:` block, or bind it
-to loopback (`127.0.0.1:8134:8134`) if host-local `curl` health checks are
-required. Keep `GATEWAY_BIND=[::]:8134` (the in-container bind). If the
-operator needs external direct access, they can re-add the port explicitly.
+**Fix (ladder 1 — compose only).** Retain the publish but restrict it to
+loopback: `ports: - 127.0.0.1:8134:8134`. This keeps
+`http://localhost:8134` reachable for `cloudflared` (and for host-local
+`curl` health checks) while closing the LAN/WAN exposure. Do *not* remove
+the `ports:` block outright (that would break the host tunnel routes),
+and do not add an alternative tunnel route to the container’s bridge
+address — host networking and bridge networking are different networks;
+the tunnel’s `localhost` target resolves on the host, not in the bridge.
+Keep `GATEWAY_BIND=[::]:8134` (the in-container bind). If the operator
+needs external direct access, they can re-add an explicit wildcard publish.
 
 ---
 
@@ -238,23 +269,38 @@ at `exchange_protocols/[MS-ASCMD].txt:206-236`) also includes `Find`
 `FolderUpdate` (§2.2.1.6), `GetAttachment` (§2.2.1.7), and `GetHierarchy`
 (§2.2.1.8). None of those strings appear in `src/eas.rs` dispatch.
 
-**Impact.** Outlook Android’s “Exchange” wizard and New Outlook for Windows
-both probe `GetHierarchy` / `Find` during provisioning in some flows;
-`FolderCreate/Delete/Update` are required for the client to manage folders
-(New Outlook lets users create folders). `GetAttachment` without
-`ItemOperations` is a legacy path, but Android may use it. Returning
-Status 5 is *correct* per spec for an unsupported command, so a client
-that depends on it will fail provisioning or folder management.
+**Impact.** No client-trace evidence has been captured showing either
+pinned client issues `GetHierarchy` for 14.0–16.1 during provisioning;
+FolderSync is the hierarchy source for those versions and is implemented.
+`GetHierarchy` support is required for 2.5/12.0/12.1 only
+(`[MS-ASCMD] §2.2.1.8` protocol table: 14.0–16.1 leave the cell blank and
+state “the FolderSync command is used to retrieve email folders”). The
+P0 gap is therefore **not** `GetHierarchy` on the pinned versions — it is
+`FolderCreate`/`FolderDelete`/`FolderUpdate`, which hide folder-management
+breakage behind the misleading `MS-ASProtocolCommands` advertisement, plus
+`Find` routing for mailbox/GAL search. Returning Status 5 is *correct* per
+spec for an unsupported command; the defect is that the advertised command
+list (`MoveItems` is dispatched at `src/eas.rs:7586` but absent from the
+advertised `MS-ASProtocolCommands` string) does not match the dispatch
+table, so clients may assume folder/attachment flows exist when they do
+not. `GetAttachment` (2.5/12.x legacy, reached via `ItemOperations` Fetch on
+14.0+) is a lower-priority gap.
 
 **Fix (ladder 1 → 4).**
 
-1. `GetHierarchy` (ladder 1): it is a read of the folder hierarchy the
-   gateway already materialises for `FolderSync` (`handle_folder_sync`,
-   `src/eas.rs:1794`). Add a `GetHierarchy` handler that returns the same
-   hierarchy in the `GetHierarchy` response shape.
+1. `GetHierarchy` (ladder 1): implement it for the 2.5/12.0/12.1 contract
+   only; do not treat its absence on 14.0–16.1 as a provisioning blocker.
 2. `Find` (ladder 1): `Search` is already implemented (`handle_search`,
-   `src/eas.rs:4764`); `Find` is the GAL-search cousin. If the client
-   sends `Find`, answer with the GAL path (`handle_gal_search`).
+   `src/eas.rs:4764`) and dispatches GAL vs Mailbox on the Store name
+   (`handle_gal_search`, `src/eas.rs:4885`). `Find` ([MS-ASCMD] §2.2.1.2)
+   has its own request/response shape (`<Find>` with
+   `GALSearchCriterion`/`MailBoxSearchCriterion`, `<ExecuteSearch>`,
+   `<Response>/<Result>` carrying `airsync:Class`/`airsync:CollectionId`,
+   and per-result `email:*` vs `gal:*` property blocks). Reusing the
+   `Search` envelopes verbatim or always routing to the GAL path is
+   wrong: dispatch each Find form — GAL criteria to the GAL path
+   (§4.13 equivalent), mailbox criteria to the mailbox path — and render
+   the Find response shape each form requires.
 3. `FolderCreate/Delete/Update` (ladder 4 — custom): these need a
    JMAP `Mailbox/set` (create/destroy/update) for email folders and a
    `Calendar/set` / `CalendarEvent` path for calendar folders. The
@@ -263,8 +309,9 @@ that depends on it will fail provisioning or folder management.
 4. `GetAttachment` (ladder 1): `handle_email_attachment_fetch`
    (`src/eas.rs:3140`) already serves the byte range; expose it under
    `GetAttachment` as well.
-5. Update `MS-ASProtocolCommands` (`src/eas.rs:1456`) to advertise only
-   what is implemented, so clients do not probe unimplemented commands.
+5. Update `MS-ASProtocolCommands` (`src/eas.rs:1456`) to advertise exactly
+   what is dispatched (including `MoveItems`) and nothing that is not, so
+   clients do not probe unimplemented commands.
 
 ---
 
@@ -281,21 +328,32 @@ advertised in Autodiscover via the `mapiHttp` `<Protocol>` block
 (`src/autodiscover.rs:783-791`, `src/main.rs:206-215`).
 
 **Impact.** The task requires *both* clients to work. For New Outlook for
-Windows, the critical path is: Autodiscover (XML/JSON) → `mapiHttp` block →
-`/mapi/emsmdb` + `/mapi/nspi` → MAPI/HTTP ROPs. The EAS work (WBXML, Sync,
-Ping) serves Outlook Android’s “Exchange” wizard and the native Android
-account. An audit that only checks EAS will miss the New Outlook path.
-The MAPI/HTTP surface is 11 065 lines (`src/mapi/handler.rs`) plus 6 016
-lines (`src/mapi/rops.rs`) — it is the largest single risk area for New
-Outlook and is *not* covered by the EAS conformance tests.
+Windows, the **MAPI/HTTP path is unproven**: `DEPLOY_RUNBOOK.md` §5 states
+the Autodiscover/mobilsync flow, but no trace, test, or client session
+proves New Outlook for Windows (20251205004.10) completes provisioning
+against a third-party (Stalwart-backed) account through this gateway. The
+codebase comment itself records that Microsoft documents no on-premises
+Exchange support for New Outlook (`src/eas.rs:6632-6640`), so whether the
+`mapiHttp` route works at all is an open use-case question, not a settled
+one. The `mapiHttp` block being advertised does not prove the client
+accepts it. Record this as a **use-case blocker**: validate the exact
+New Outlook provisioning flow (Autodiscover JSON → `mapiHttp` block →
+`/mapi/emsmdb` + `/mapi/nspi` → `RopLogon` round-trip) against the pinned
+build before claiming the MAPI path works or that items 1–13 suffice. The
+EAS work (WBXML, Sync, Ping) serves Outlook Android’s “Exchange” wizard
+and the native Android account. The MAPI/HTTP surface is 11 065 lines
+(`src/mapi/handler.rs`) plus 6 016 lines (`src/mapi/rops.rs`) — it is the
+largest single risk area for New Outlook and is *not* covered by the EAS
+conformance tests.
 
 **Fix (ladder 1).** Add a New Outlook provisioning checklist to
 `DEPLOY_RUNBOOK.md` §5 that exercises: Autodiscover JSON v1.0 path form
-(`src/main.rs:349`), `mapiHttp` block present, `/mapi/emsmdb` OPTIONS,
-`/mapi/nspi` OPTIONS, and a `RopLogon` round-trip (the smoke script
-`tests/outlook_cloudflare_smoke.sh` already checks Autodiscover JSON but
-does not check MAPI). Extend the smoke script with a MAPI `emsmdb`/`nspi`
-probe.
+(`src/main.rs:349`), `mapiHttp` block present, and a `RopLogon`
+round-trip (the smoke script `tests/outlook_cloudflare_smoke.sh` already
+checks Autodiscover JSON but does not check MAPI). Extend the smoke
+script with a MAPI `emsmdb`/`nspi` probe that sends valid **POST**
+requests (the registered routes are POST-only, `src/main.rs:844-856`);
+OPTIONS probes are not a valid check of those routes.
 
 ---
 
@@ -327,7 +385,10 @@ Exchange account wizard talks EAS directly”. `DEPLOY_RUNBOOK.md:105-108`
 documents the same. The task’s use-case explicitly says “adding the
 Stalwart Mailserver-account via android settings as an ‘Exchange’-account” —
 that is the *native Android* wizard, which talks EAS directly to the
-gateway and does not go through Microsoft’s cloud.
+gateway. Whether credentials “transit Microsoft” on the cloud path is a
+client claim not verified in this repository; the audit does not assert
+credential-transit, only that the cloud-connector path introduces a
+shared-egress-IP and cloud dependency the native wizard avoids.
 
 **Impact.** If the operator tests with Outlook Android (the app) instead
 of Android Settings → Accounts → Exchange, the account is provisioned via
@@ -393,6 +454,8 @@ is an operator step, not a repo edit). Update `DEPLOY_RUNBOOK.md:19` and
 already says to pin the gateway image; add the same guidance for Stalwart.
 
 ---
+
+## P1 — Degrades the use-case (items 11–13, 15–25)
 
 ### 11. The gateway’s `GATEWAY_JMAP_BASE` / `GATEWAY_CALDAV_BASE` / `GATEWAY_CARDDAV_BASE` point at `stalwart:8080`, but the operator’s Stalwart exposes 8080 *and* 8133 — the gateway must use the bridge-network service name, not the host port
 
@@ -473,8 +536,6 @@ check to the image publish pipeline, or switch to a static musl target
 
 ---
 
-## P1 — Degrades the use-case
-
 ### 15. EWS `GetStreamingEvents` holds a connection for up to 30 minutes, which exceeds the Cloudflare 125s Proxy Read Timeout
 
 **Evidence.** `src/ews.rs:6432-6600` (`handle_get_streaming_events`):
@@ -485,9 +546,14 @@ check to the image publish pipeline, or switch to a static musl target
 
 **Impact.** New Outlook for Windows uses EWS `Subscribe` /
 `GetStreamingEvents` for calendar push. Through Cloudflare, the connection
-will be cut at 125s (HTTP 524) regardless of the 30-minute timeout.
-The client will reconnect, but push latency degrades to “reconnect every
-2 minutes”.
+will be cut at the Proxy Read Timeout (HTTP 524) regardless of the
+30-minute timeout. The handler already emits a per-turn `StatusEvent`
+keep-alive (10s turn) and a terminal `Closed` fragment, but the stream is
+buffered: `handle_ews` returns a `ReceiverStream` body with no
+`Cache-Control: no-transform`/`X-Accel-Buffering: no` streaming headers,
+so intermediary buffering between the tunneled origin and the client can
+hold the keep-alives until the 524 reset. The client will reconnect, but
+push latency degrades to “reconnect every 2 minutes”.
 
 **Fix (ladder 1).** Clamp `ConnectionTimeout` for Cloudflare-proxied
 requests (detect `CF-RAY`, as Ping does at `src/eas.rs:1316`) to ≤80s,
@@ -570,12 +636,17 @@ TLS). `lettre`’s `relay()` verifies the server certificate against the
 hostname (`stalwart`). Stalwart’s 465 listener presents a certificate
 for `mail.<domain>`, not for `stalwart`, so verification fails.
 
-**Impact.** `SendMail` / `SmartReply` / `SmartForward` (EAS) and EWS
-`SendItem` / `CreateItem` with `MessageDisposition=SendOnly` will fail
-with a TLS error. The JMAP `EmailSubmission/set` path
-(`src/email.rs:1234-1276`) is preferred when JMAP is configured, so the
-SMTP path is the *fallback*. If JMAP submission is unavailable, sends
-fail.
+**Impact.** Simple text/html `SendMail`/`SmartReply`/`SmartForward` (EAS)
+and EWS `SendItem` can use the JMAP `EmailSubmission/set` path
+(`src/email.rs:1234-1276`), which is preferred when JMAP is configured.
+Complex EAS MIME submissions (attachments, S/MIME, TNEF, nested messages)
+*bypass* JMAP and relay the raw MIME via SMTP directly
+(`send_eas_mime_message`, `src/email.rs:2773+`:
+“for anything that cannot be re-expressed losslessly … the bytes are
+relayed via SMTP”). Those messages fail with the TLS error above *even
+when* JMAP submission is available, so this is P1 (send-path breakage for
+the common “send a message with an attachment” case), not a fallback-only
+failure.
 
 **Fix (ladder 1).** Set `GATEWAY_SMTP_HOST=mail.<domain>` (the public MX
 host, matching `GATEWAY_MAIL_HOST`) so TLS verification succeeds, or
@@ -592,15 +663,18 @@ already says “keep them on the Docker service name” — that comment is
 overridden wholesale to `base_url`; `download_url` and `event_source_url`
 are passed through `internalize_template` (scheme+host+port swap, path
 preserved). `upload_url` is *not* internalised in `get_session` — it is
-handled later in `upload_blob` (`src/jmap.rs:1757-1800`) via
-`Self::internalize_template` as well. The logic is correct but scattered.
+handled later in `upload_blob` (`src/jmap.rs:1757-1820`) via a
+*same-origin guard*, not a rewrite: the session-advertised `uploadUrl`
+template is used as-is and rejected (`anyhow!`) unless its scheme, host,
+and port match the configured `base_url` origin.
 
-**Impact.** If Stalwart’s session advertises a `downloadUrl` with a
-different path prefix than the gateway’s `base_url`, `internalize_template`
-preserves the path, which is correct. The risk is a future Stalwart that
-advertises a `downloadUrl` on a different *port* (e.g. 8133) — the swap
-would change the port to the gateway’s, which is correct for the bridge
-network but would break if the operator intentionally uses 8133.
+**Impact.** If Stalwart’s session advertises an `uploadUrl` on an origin
+different from the bridge-network `base_url` (e.g. a public hostname or
+port 8133), `upload_blob` fails outright instead of rewiring to the
+bridge — blob upload (attachments, body blobs) breaks while `downloadUrl`
+(direct blob fetch) keeps working. That failure is fail-closed and
+security-correct; the risk is the *inconsistent* treatment: downloads
+survive an origin mismatch, uploads do not.
 
 **Fix (ladder 1).** No code change; add a comment in `docker-compose.yml`
 at `GATEWAY_JMAP_BASE` stating that the gateway rewrites all session URLs
@@ -612,20 +686,23 @@ session do not matter.
 ### 21. Calendar free/busy prefers JMAP `get_availability`, but the compose sets `GATEWAY_PREFER_CALDAV_FREEBUSY=0` while the code defaults to JMAP — the compose value is redundant but the fallback is CalDAV, not JMAP
 
 **Evidence.** `docker-compose.yml:119` sets `GATEWAY_PREFER_CALDAV_FREEBUSY=0`.
-`src/config.rs:49,1030` reads it. `src/ews.rs:1586-1600`: if
-`jmap.supports_availability()` then `get_availability()`, else fall
-through to the event-query path. `src/jmap.rs:4336-4342`
-(`supports_availability`) checks for
+`src/config.rs:49,1030` reads it. The knob is honored in the **EAS** path
+(`src/eas.rs:4350`: skipped when `prefer_caldav_freebusy` is true) but
+**ignored** in the **EWS** path — `merged_freebusy_for_mailbox`
+(`src/ews.rs:1670`) and `fetch_freebusy_jmap` (`src/ews.rs:1586-1600`)
+have no `prefer_caldav_freebusy` check at all; EWS always tries JMAP
+first (`supports_availability()` → `get_availability()`, else the JMAP
+event-query path) and only falls through to CalDAV when JMAP errors.
+`src/jmap.rs:4336-4342` (`supports_availability`) checks for
 `urn:ietf:params:jmap:principals:availability`.
 
-**Impact.** When JMAP availability is unavailable, the gateway queries
-calendar events and derives free/busy itself. That is correct, but it
-means a CalDAV fallback is never used for free/busy even though
-`GATEWAY_PREFER_CALDAV_FREEBUSY=0` suggests CalDAV is an option.
+**Impact.** Setting `GATEWAY_PREFER_CALDAV_FREEBUSY=1` does not change
+EWS free/busy behavior, only EAS. The compose value is misleading as a
+global knob.
 
 **Fix (ladder 1).** Clarify the compose comment: `PREFER_CALDAV_FREEBUSY`
-only matters when JMAP availability is absent; the event-derivation path
-is the actual fallback.
+is EAS-only; EWS free/busy is JMAP-first unconditionally, with CalDAV as
+the error fallback.
 
 ---
 
@@ -764,15 +841,28 @@ other.
 ### 30. `GATEWAY_MAX_ATTACHMENT_BYTES=5242880` (5 MiB) may be too small for Outlook attachments
 
 **Evidence.** `docker-compose.yml:63`. `src/config.rs:26,776-790` reads it,
-floors at 1024, caps at 50 MiB (`src/config.rs:633-637`).
+floors at 1024, caps at 50 MiB (`src/config.rs:633-637`). Route body limits
+are hardcoded at 4 MiB (`src/main.rs:31` `MAX_BODY_BYTES`, applied to the
+EAS/EWS/Autodiscover routes at `src/main.rs:828-870`). The code's own
+comment notes the 4 MiB cap must not silently reject large `RopLogon`
+batches.
 
 **Impact.** Outlook Android and New Outlook for Windows routinely send
->5 MiB attachments. The gateway will reject with `Status 11`
-(`src/eas.rs:3314`, `src/jmap.rs` `BlobFetchError::TooLarge`).
+>5 MiB attachments. Even if the operator raises
+`GATEWAY_MAX_ATTACHMENT_BYTES`, a request carrying an attachment at the
+limit never reaches the handler: the 4 MiB `RequestBodyLimitLayer` rejects
+it first (Fetch responses are the opposite direction — the gateway *sends*
+attachment bytes, so `TooLarge`/`Status 11` there is a fetch-time reject,
+not a request-size reject). The attachment default and the route body
+limit must be raised together, or large-attachment sends fail at the
+edge.
 
 **Fix (ladder 1).** Raise the compose default to `10485760` (10 MiB) or
-`52428800` (50 MiB, the code cap) and document the trade-off with
-`GATEWAY_MAX_PING_HEARTBEAT`.
+`52428800` (50 MiB, the code cap) *and* raise `MAX_BODY_BYTES` in
+`src/main.rs` to a value that covers the configured maximum attachment
+plus encoding overhead (at least `max_attachment_bytes` × 4/3 for
+base64 MIMEData, plus WBXML/soap envelope margin). Document the trade-off
+with `GATEWAY_MAX_PING_HEARTBEAT`.
 
 ---
 
@@ -1046,9 +1136,9 @@ task’s “no env-variable file” requirement.
 | 8 | P0 | Android provisioning | Outlook Android app goes via Microsoft cloud; native wizard is direct | docs (1) |
 | 9 | P0 | GAL / deploy check | Admin creds empty → self-only GAL, no JMAP probe | docs + log (1) |
 | 10 | P0 | Version drift | Stalwart `:latest` vs validated v1.0.3; docs say v1.0.1 | pin image (1) |
-| 11 | P0 | Backend ports | 8080 vs 8133 undocumented | compose comment (1) |
-| 12 | P0 | Docs | `cloudflared/config.yml` references a forbidden `.env` | docs (1) |
-| 13 | P0 | Healthcheck | `/health/ready` unhealthy during Stalwart restart; no auto-restart | docs (1) |
+| 11 | P1 | Backend ports | 8080 vs 8133 undocumented | compose comment (1) |
+| 12 | P1 | Docs | `cloudflared/config.yml` references a forbidden `.env` | docs (1) |
+| 13 | P1 | Healthcheck | `/health/ready` unhealthy during Stalwart restart; no auto-restart | docs (1) |
 | 14 | P2 | Dockerfile | Dynamic linking; no static target | smoke / musl (1→3) |
 | 15 | P1 | EWS streaming | 30-min `GetStreamingEvents` exceeds CF 125s cap | CF-aware clamp (1) |
 | 16 | P1 | Rate limit | Per-IP limit throttles Microsoft cloud egress | docs (1) |
@@ -1078,12 +1168,16 @@ MAPI/HTTP, Autodiscover, JMAP calendar/contacts, Tasks/Notes via CalDAV)
 is substantially sound and the AUDIT3 P0s are delivered. The remaining
 P0s are *deployment-contract* failures, not protocol failures: the
 hostnames in the shipped examples do not match the Autodiscover contract
-for the operator’s real domain, the compose publishes a port that bypasses
-the tunnel, the SMTP host breaks TLS, and the EAS command surface is
-missing six commands the clients may probe. Fixing items 1–13 (mostly
-compose/docs, plus the six EAS handlers) is sufficient to realise the
-stated use-case with the two pinned clients; the P1/P2 items are
-robustness and friction.
+for the operator’s real domain, the compose publishes a port on a wildcard
+bind that bypasses the tunnel, the SMTP host breaks TLS, and the EAS
+command surface is missing the folder-management and search commands the
+clients use (with `GetHierarchy` scoped to the 2.5/12.x contract only).
+Fixing P0 items 1–10 plus P1 items 11–13 (mostly
+compose/docs, plus the EAS handlers in item 5) is **not** by itself
+sufficient to guarantee the use-case: item 6 records the New Outlook for
+Windows (MAPI/HTTP) provisioning flow as **unproven** and must be
+validated against build 20251205004.10 before the use-case can be
+claimed complete; items 15–25 and 30–36 are robustness and friction.
 
 ---
 
@@ -1104,7 +1198,7 @@ direct HTTPS is later required, add a TLS listener as a separate bind
 | Surface | Backend used | JMAP? | Notes |
 |---------|--------------|-------|-------|
 | Email read/sync | JMAP `Email/*` | yes | `src/jmap.rs` |
-| Email send | JMAP `EmailSubmission/set`, SMTP fallback | yes | `src/email.rs:1234` |
+| Email send | JMAP `EmailSubmission/set` for simple text/html; raw-MIME SMTP relay for complex MIME | partial | `src/email.rs:1234`, `src/email.rs:2773` |
 | Calendar read/write | JMAP `CalendarEvent/*`, CalDAV fallback | yes | `src/jmap.rs`, `src/jscalendar.rs` |
 | Calendar free/busy | JMAP `getAvailability`, event-derivation fallback | yes | `src/ews.rs:1586` |
 | Contacts | JMAP `ContactCard/*` (RFC 9610), CardDAV fallback | yes | `src/contacts.rs` |
