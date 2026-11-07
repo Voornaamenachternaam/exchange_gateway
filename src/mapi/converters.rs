@@ -537,9 +537,14 @@ pub fn contact_to_cells(
 /// field produces a different `PR_CHANGE_KEY`. Outlook diffs change keys to
 /// detect stale rows + conflicts, so a UID-only key would hide edits. The
 /// leading 16 bytes are the provider GUID placeholder, per MS-OXCDATA §2.12.2.
+///
+/// The digest is SHA-256 (first 16 bytes) — the same content-hash derivation
+/// the EWS contacts path (`contacts::contact_hash`) and the JMAP calendar
+/// path (`jmap::calendar_event_etag`) use (AUDIT3 #13) — so the MAPI
+/// `PR_CHANGE_KEY` is stable across restarts and identical in spirit to the
+/// EWS `ChangeKey` for the same vCard, instead of depending on `DefaultHasher`
+/// (which is not specified stable across Rust releases).
 fn contact_change_key(uid: &str, vcard: &str) -> Vec<u8> {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
     // Folded-line whitespace is normalised so a repackaged-but-equal vCard
     // (different folding) hashes the same; the leading BEGIN/END lines are
     // excluded so an identical body under different protocol noise stays equal.
@@ -549,12 +554,11 @@ fn contact_change_key(uid: &str, vcard: &str) -> Vec<u8> {
         .map(|l| l.trim())
         .collect::<Vec<_>>()
         .join("\n");
-    let mut h = DefaultHasher::new();
-    body.hash(&mut h);
-    let digest = h.finish().to_le_bytes();
-    let mut out = Vec::with_capacity(16 + digest.len() + uid.len());
+    use sha2::Digest as _;
+    let digest = sha2::Sha256::digest(body.as_bytes());
+    let mut out = Vec::with_capacity(16 + 16 + uid.len());
     out.extend_from_slice(&[0x01; 16]); // provider GUID placeholder
-    out.extend_from_slice(&digest);
+    out.extend_from_slice(&digest[..16]);
     out.extend_from_slice(uid.as_bytes());
     out
 }

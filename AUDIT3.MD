@@ -858,18 +858,48 @@ it must be documented as the interim workaround until #1–#3 are fixed.
 
 ### 13. Contacts `@etag` fallback is a content hash, not the server etag — fine, but inconsistent with events
 
-`sync.rs:1262` computes `sha2::Sha256` over the card JSON when the server
-provides no etag. This is a reasonable substitute and is the pattern finding #6
-recommends adopting for calendar events. No change needed beyond consistency.
+> **STATUS: DELIVERED.** All three change-key/etag derivations now use the
+> same SHA-256 (first 16 bytes) content-hash pattern: calendar events
+> (`jmap::calendar_event_etag`, AUDIT3 #6) and contacts
+> (`contacts::jmap_contact_etag` / `contact_hash`) already used it; the MAPI
+> contact `PR_CHANGE_KEY` (`mapi/converters.rs::contact_change_key`) used the
+> unspecified `DefaultHasher` and is now SHA-256 too, so every path is stable
+> across restarts and rustc releases.
+
+*Original finding, for the record:* contacts computed a SHA-256 content hash
+in `sync.rs:1262` when the server provides no etag — a reasonable substitute
+and the pattern finding #6 recommends adopting for calendar events; the only
+change needed was the consistency alignment above.
 
 ### 14. `get_availability` is dead code
 
-`JmapClient::get_availability` (`jmap.rs:5288`) using
-`urn:ietf:params:jmap:principals:availability` has **no caller** (grep confirms
-only the definition). Free/busy is served by `query_calendar_events` in both
-EWS (`ews.rs:1590`) and EAS (`eas.rs:4253`), so the availability capability
-advertised by Stalwart is unused. Either wire it in (it is the correct JMAP
-free/busy primitive and would avoid the ICS round-trip) or remove it.
+> **STATUS: DELIVERED.** Wired in as the preferred free/busy primitive, then
+> corrected to the standard wire shape during review (draft-ietf-jmap-
+> calendars §2.2): the request now sends `id` + `utcStart` + `utcEnd` +
+> `showDetails` (principal id resolved via `Principal/query` on
+> `accountIds`), and the parser reads the response `list` of
+> `{utcStart, utcEnd, busyStatus, event?}` BusyPeriods plus the legacy
+> `availability[].busy[]` shape for older backends. `JmapClient::
+> supports_availability` probes the
+> `urn:ietf:params:jmap:principals:availability` capability and
+> `JmapClient::availability_to_merged_freebusy` renders the payload into the
+> merged string + detailed-event XML (worst-wins per slot, `None` on a
+> non-positive interval or when no usable busy period exists, and a
+> `<t:CalendarEventDetails>` child when a period carries a JSCalendar
+> `event` with `showDetails`, so `DetailedMerged` views keep their subjects
+> and locations). Both free/busy paths — EWS `fetch_freebusy_jmap` and EAS
+> `fetch_freebusy_jmap_eas` — try it first when advertised and fall back to
+> the calendar-event query / CalDAV paths on any failure. Tests:
+> `availability_to_merged_freebusy_renders_busy_slots`,
+> `availability_to_merged_freebusy_standard_list_payload`,
+> `availability_to_merged_freebusy_unparseable_blocks_is_none`, and
+> `availability_to_merged_freebusy_rejects_nonpositive_interval`.
+
+*Original finding, for the record:* `JmapClient::get_availability`
+(`jmap.rs:5288`) using `urn:ietf:params:jmap:principals:availability` had
+**no caller** (grep confirmed only the definition); free/busy was served by
+`query_calendar_events` in both EWS (`ews.rs:1590`) and EAS (`eas.rs:4253`),
+so the availability capability advertised by Stalwart was unused.
 
 ### 15. EAS `Search` falls back to an empty result when JMAP is unavailable, but status 6 is correct
 
@@ -886,15 +916,35 @@ calendar delta is empty).
 
 ### 17. `mapi_enabled` defaults true while the compose sets `GATEWAY_MAPI_HMA_ENABLED=0`
 
-`default_mapi_enabled` is `true` (`config.rs:425`) and the compose enables
-`GATEWAY_MAPI_ENABLED=1` but disables HMA
-(`GATEWAY_MAPI_HMA_ENABLED=0`). Autodiscover still emits a `<Protocol
-Type="mapiHttp">` block unconditionally (`autodiscover.rs:762`), so clients may
-attempt MAPI/HTTP against an HMA-disabled endpoint. Either gate the
-`mapiHttp` block on `mapi_hma_enabled`, or document that New Outlook falls back
-to EWS. This is a client-friction item, not a data-loss item.
+> **STATUS: DELIVERED.** The `mapiHttp` block is now driven by an explicit
+> `include_mapi_http` flag (`handle_outlook_xml` takes it, plumbed via
+> `AutodiscoverXmlRequest` from `main.rs` as `mapi_enabled`), so the block
+> is omitted only when MAPI itself is disabled and clients fall back to
+> EWS/EAS. The shipped compose posture (MAPI on, HMA off) deliberately
+> ADVERTISES the block: the MAPI endpoint accepts Basic without HMA, and New
+> Outlook for Windows uses MAPI/HTTP rather than EWS for the mailbox, so
+> hiding it would leave Basic-capable clients without a usable transport.
+> Tests: `test_outlook_response_includes_mapi_http_block` (passes `true`) +
+> `test_outlook_response_omits_mapi_http_block_when_mapi_disabled` (passes
+> `false`).
+
+*Original finding, for the record:* `default_mapi_enabled` is `true`
+(`config.rs:425`) and the compose enables `GATEWAY_MAPI_ENABLED=1` but
+disables HMA (`GATEWAY_MAPI_HMA_ENABLED=0`), while Autodiscover emitted a
+`<Protocol Type="mapiHttp">` block unconditionally (`autodiscover.rs:762`)
+with no explicit control point — the delivery above adds the control point
+and documents the intended advertisement behaviour. This is a
+client-friction item, not a data-loss item.
 
 ### 18. Compose is otherwise correct for the deployment scenario
+
+> **STATUS: DELIVERED (verified).** Re-audited end to end for this item:
+> placeholder `<registry>` image kept, no `env_file:` / `.env` anywhere,
+> volume `/armblock/exchange-gateway-data` (UID 10001), `network1` external
+> `my-bridge-network`, `/health/ready` healthcheck. The MAPI surface-gating
+> comment was corrected to match the #17 delivery (Autodiscover advertises
+> `mapiHttp` whenever MAPI is enabled; the shipped MAPI-on/HMA-off posture
+> therefore advertises it).
 
 - Image is a registry reference with a placeholder `<registry>` (must be
   replaced by the operator — the task says do not replace placeholders).

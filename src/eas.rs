@@ -4249,6 +4249,37 @@ async fn fetch_freebusy_jmap_eas(
         }
     };
 
+    // Preferred when advertised: Principal/getAvailability is the JMAP
+    // free/busy primitive and avoids the ICS round-trip. EAS only needs the
+    // merged string, so the detailed-event XML is discarded here.
+    if jmap.supports_availability(mailbox, password).await {
+        match jmap
+            .get_availability(
+                &account_id,
+                &start.format("%Y-%m-%dT%H:%M:%SZ").to_string(),
+                &end.format("%Y-%m-%dT%H:%M:%SZ").to_string(),
+                mailbox,
+                password,
+            )
+            .await
+        {
+            Ok(data) => {
+                if let Some((merged, _)) =
+                    JmapClient::availability_to_merged_freebusy(&data, start, end, safe_interval)
+                {
+                    return Some(merged);
+                }
+            }
+            Err(e) => {
+                tracing::debug!(
+                    target: "eas",
+                    error = %e,
+                    "Principal/getAvailability failed; falling back to event query"
+                );
+            }
+        }
+    }
+
     let result = match jmap
         .query_calendar_events(QueryCalendarEventsParams {
             account_id: &account_id,

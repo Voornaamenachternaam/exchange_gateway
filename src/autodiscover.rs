@@ -561,6 +561,12 @@ pub struct AutodiscoverXmlRequest<'a> {
     /// Whether IMAP/SMTP endpoints should be advertised (affects the Outlook
     /// `<Protocol>` blocks rendered by `handle_outlook_xml`).
     pub include_imap_smtp: bool,
+    /// Whether the Outlook `mapiHttp` `<Protocol>` block should be rendered.
+    /// True whenever the MAPI/HTTP surface is enabled (AUDIT3 #17): the
+    /// endpoint accepts Basic without HMA, so the shipped MAPI-on/HMA-off
+    /// posture advertises it; the block is omitted only when MAPI is fully
+    /// disabled so clients fall back to EWS/EAS.
+    pub include_mapi_http: bool,
     /// EXCH/EXPR `<AuthPackage>` advertisement (Basic vs Hybrid Modern Auth).
     pub auth_advert: &'a AuthAdvert,
     /// Pre-resolved user display name rendered in the mobilesync
@@ -602,6 +608,7 @@ pub fn handle_autodiscover_xml(req: &AutodiscoverXmlRequest<'_>) -> AdResponse {
             req.mail_host,
             req.include_imap_smtp,
             req.auth_advert,
+            req.include_mapi_http,
         ),
     }
 }
@@ -691,6 +698,7 @@ fn handle_outlook_xml(
     mail_host: &str,
     include_imap_smtp: bool,
     auth_advert: &AuthAdvert,
+    include_mapi_http: bool,
 ) -> AdResponse {
     let email_escaped = xml_escape(email);
     let host_escaped = xml_escape(host);
@@ -754,7 +762,21 @@ fn handle_outlook_xml(
 <EwsPartnerUrl>https://{host}/EWS/Exchange.asmx</EwsPartnerUrl>
 <OABUrl>{oab_url}</OABUrl>
 </Protocol>
-<Protocol Type="mapiHttp" Version="1">
+{mapi_http_protocol}{imap_smtp_protocols}
+</Account>
+</Response>
+</Autodiscover>"#,
+        OUTLOOK_RESPONSE_NS = OUTLOOK_RESPONSE_NS,
+        host = host_escaped,
+        email = email_escaped,
+        oab_url = oab_url_escaped,
+        ecp_url = ecp_url_escaped,
+        auth_package = auth_package,
+        auth_extra = auth_extra,
+        server_version = version::current().render_server_version_element(),
+        mapi_http_protocol = if include_mapi_http {
+            format!(
+                r#"<Protocol Type="mapiHttp" Version="1">
 <Server>{host}</Server>
 <ServerExclusiveConnect>on</ServerExclusiveConnect>
 <SSL>on</SSL>
@@ -769,18 +791,13 @@ fn handle_outlook_xml(
 <InternalUrl>https://{host}/mapi/nspi?MailboxId={email}</InternalUrl>
 </AddressBook>
 </Protocol>
-{imap_smtp_protocols}
-</Account>
-</Response>
-</Autodiscover>"#,
-        OUTLOOK_RESPONSE_NS = OUTLOOK_RESPONSE_NS,
-        host = host_escaped,
-        email = email_escaped,
-        oab_url = oab_url_escaped,
-        ecp_url = ecp_url_escaped,
-        auth_package = auth_package,
-        auth_extra = auth_extra,
-        server_version = version::current().render_server_version_element(),
+"#,
+                host = host_escaped,
+                email = email_escaped,
+            )
+        } else {
+            String::new()
+        },
         imap_smtp_protocols = if include_imap_smtp && !mail_host_escaped.is_empty() {
             format!(
                 r#"<Protocol>
@@ -1092,6 +1109,7 @@ mod tests {
             "mail.example.com",
             true,
             &AuthAdvert::Basic,
+            false,
         );
         assert_eq!(status, StatusCode::OK);
         assert!(body.contains("outlook/responseschema/2006a"));
@@ -1117,6 +1135,7 @@ mod tests {
             "mail.example.com",
             true,
             &AuthAdvert::Basic,
+            false,
         );
         assert_eq!(status, StatusCode::OK);
         let sv = format!(
@@ -1138,6 +1157,7 @@ mod tests {
             "mail.example.com",
             false,
             &AuthAdvert::Basic,
+            true,
         );
         assert_eq!(status, StatusCode::OK);
         // The mapiHttp Protocol element carries the `Type` and `Version` XML
@@ -1153,6 +1173,27 @@ mod tests {
         assert!(body.contains("https://mail.example.com/mapi/emsmdb?MailboxId=user@example.com"));
         // AddressBook ExternalUrl points to the NSPI endpoint separately.
         assert!(body.contains("https://mail.example.com/mapi/nspi?MailboxId=user@example.com"));
+    }
+
+    #[test]
+    fn test_outlook_response_omits_mapi_http_block_when_mapi_disabled() {
+        // AUDIT3 #17: the mapiHttp block is omitted only when MAPI itself is
+        // disabled (`include_mapi_http: false`), so clients fall back to
+        // EWS/EAS; the shipped MAPI-on/HMA-off posture advertises it because
+        // the endpoint accepts Basic without HMA.
+        let (status, _hdrs, body) = handle_outlook_xml(
+            "mail.example.com",
+            "user@example.com",
+            "mail.example.com",
+            false,
+            &AuthAdvert::Basic,
+            false,
+        );
+        assert_eq!(status, StatusCode::OK);
+        assert!(!body.contains("mapiHttp"));
+        assert!(!body.contains("/mapi/emsmdb"));
+        assert!(body.contains("<Type>EXCH</Type>"));
+        assert!(body.contains("https://mail.example.com/EWS/Exchange.asmx"));
     }
 
     #[test]
@@ -1181,6 +1222,7 @@ mod tests {
             "mail.example.com",
             false,
             &AuthAdvert::Basic,
+            false,
         );
         assert_eq!(status, StatusCode::OK);
         let expected = oab_url("mail.example.com");
@@ -1220,6 +1262,7 @@ mod tests {
             "mail.example.com",
             false,
             &AuthAdvert::Basic,
+            false,
         );
         assert_eq!(status, StatusCode::OK);
         let expected = ecp_url("mail.example.com");
@@ -1256,6 +1299,7 @@ mod tests {
             "mail.example.com",
             false,
             &advert,
+            true,
         );
         assert_eq!(status, StatusCode::OK);
         // Both EXCH and EXPR blocks advertise the Modern Auth package.
@@ -1291,6 +1335,7 @@ mod tests {
             "mail.example.com",
             false,
             &AuthAdvert::Basic,
+            false,
         );
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body.matches("<AuthPackage>Basic</AuthPackage>").count(), 2);
@@ -1367,6 +1412,7 @@ mod tests {
             accept_language: None,
             mail_host: "mail.example.com",
             include_imap_smtp: true,
+            include_mapi_http: false,
             auth_advert: &AuthAdvert::Basic,
             mobilesync_display_name: "Chris Gray",
         };
@@ -1390,6 +1436,7 @@ mod tests {
             accept_language: None,
             mail_host: "mail.example.com",
             include_imap_smtp: true,
+            include_mapi_http: false,
             auth_advert: &AuthAdvert::Basic,
             mobilesync_display_name: "Chris Gray",
         };
@@ -1409,6 +1456,7 @@ mod tests {
             accept_language: None,
             mail_host: "mail.example.com",
             include_imap_smtp: true,
+            include_mapi_http: false,
             auth_advert: &AuthAdvert::Basic,
             mobilesync_display_name: "Chris Gray",
         };

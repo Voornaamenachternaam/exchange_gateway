@@ -1580,6 +1580,37 @@ async fn fetch_freebusy_jmap(
     // MergedFreeBusy string has the same slot granularity the caller (and thus
     // the client) expects, matching the CalDAV fallback path exactly.
     let safe_interval = interval_minutes.clamp(5, 1440);
+
+    // Preferred when the backend advertises it: Principal/getAvailability is
+    // the JMAP free/busy primitive and avoids the ICS round-trip. A payload
+    // with no usable availability falls through to the event-query path.
+    if jmap.supports_availability(mailbox, &secret_password).await {
+        match jmap
+            .get_availability(
+                &account_id,
+                &start.format("%Y-%m-%dT%H:%M:%SZ").to_string(),
+                &end.format("%Y-%m-%dT%H:%M:%SZ").to_string(),
+                mailbox,
+                &secret_password,
+            )
+            .await
+        {
+            Ok(data) => {
+                if let Some(rendered) =
+                    JmapClient::availability_to_merged_freebusy(&data, start, end, safe_interval)
+                {
+                    return Ok(rendered);
+                }
+            }
+            Err(e) => {
+                tracing::debug!(
+                    target: "ews",
+                    error = %e,
+                    "Principal/getAvailability failed; falling back to event query"
+                );
+            }
+        }
+    }
     let slot_count = (((end - start).num_seconds().max(0) + (safe_interval * 60 - 1))
         / (safe_interval * 60)) as usize;
     let mut merged = vec!['0'; slot_count];
