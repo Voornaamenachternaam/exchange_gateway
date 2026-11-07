@@ -35,7 +35,7 @@ base64ct = { version = "^1.8.3", features = ["std"] }
 url = "^2.5.8"
 tower = { version = "^0.5.3", features = ["util", "limit", "timeout", "buffer"] }
 tower-http = { version = "^0.7.1", features = ["trace", "cors", "limit", "timeout", "request-id", "sensitive-headers", "decompression-full", "compression-full", "set-header", "metrics"] }
-parking_lot = { version = "^0.12.5", features = ["send_guard"] }
+parking_lot = { version = "^0.13.0", features = ["send_guard"] }
 futures-util = "^0.3.34"
 futures-core = "^0.3.34"
 compact_str = { version = "^0.9.1", features = ["serde", "bytes"] }
