@@ -70,10 +70,16 @@ ingress:
       tlsTimeout: 10s
       httpHostHeader: autodiscover.<GATEWAY_MAIL_DOMAIN>
 
-  # DO NOT ADD a root-domain ingress entry here. The bare root domain
-  # (placeholder example.com = your real root domain) already has A/AAAA
-  # records and cannot be tunnel-routed; Android's primary probe is the
-  # autodiscover. hostname above, so no fallback entry is needed.
+  # DO NOT ADD a root-domain ingress entry here. Per MS-OXDSCLI §4 the
+  # client first attempts https://<GATEWAY_MAIL_DOMAIN>/autodiscover/autodiscover.xml
+  # (the bare root domain, placeholder example.com = your real root domain)
+  # and only falls through to the autodiscover. hostname above when that
+  # first attempt fails. The root already has A/AAAA records serving other
+  # content, so in this deployment the root attempt is expected to fail and
+  # the client proceeds via the autodiscover. hostname above. Do not read
+  # the expected apex request as a tunnel fault, and do not add a root
+  # ingress entry to "fix" it - a root CNAME would conflict with the
+  # existing records.
 
   # EAS service hostname ($GATEWAY_HOST) — ActiveSync, EWS and all other
   # protocol paths are served by the gateway on this single hostname; the

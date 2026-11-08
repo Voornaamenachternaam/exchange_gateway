@@ -10,9 +10,10 @@ and Stalwart Mailserver v1.0.3 is running.
 > variable is documented inline in `docker-compose.yml`.
 
 > **Placeholder convention — read before deploying.** Every `example.com`
-> hostname in this repository is a **placeholder** and must be replaced in
-> your own copy before deployment (the repository templates keep the
-> placeholders on purpose and must never be deployed as-is):
+> hostname in the deployment templates and docs (`docker-compose.yml`,
+> `cloudflared/config.yml`, and these guides) is a **placeholder** and must
+> be replaced in your own copy before deployment (the repository templates
+> keep the placeholders on purpose and must never be deployed as-is):
 >
 > | Placeholder | Stands for |
 > |---|---|
@@ -84,6 +85,15 @@ Render `cloudflared/config.yml` with the tunnel UUID and both hostnames
 
 ## 3. Start the gateway
 
+> **Before running the commands below (first start only):** replace the
+> `GATEWAY_HMAC_SECRET` placeholder in `docker-compose.yml` with
+> `openssl rand -hex 32` output (≥32 chars, must not start with `REPLACE_`)
+> — the shipped `REPLACE_…` value fails configuration validation, so the
+> container will not start until this is done. While editing the file,
+> also replace every `example.com` placeholder hostname (see the
+> placeholder convention at the top of this runbook) with your real
+> domain / MX hostname.
+
 ```bash
 # From the directory containing docker-compose.yml
 docker compose pull
@@ -91,10 +101,6 @@ docker compose up -d
 docker compose ps           # expect: healthy
 curl -fsS http://localhost:8134/health/ready && echo OK
 ```
-
-> **First start only:** set `GATEWAY_HMAC_SECRET` in `docker-compose.yml` to
-> `openssl rand -hex 32` output (≥32 chars, must not start with `REPLACE_`) —
-> the placeholder shipped in the template fails startup on purpose.
 
 If `health/ready` is not 200, the gateway cannot reach Stalwart's JMAP auth
 backend — check `GATEWAY_JMAP_BASE`/`GATEWAY_CALDAV_BASE` and that the two
@@ -148,8 +154,16 @@ bootstrap.
 ## 6. Verify
 
 ```bash
-# Local end-to-end smoke (Autodiscover + OPTIONS + a Ping), from the repo:
-tests/outlook_cloudflare_smoke.sh https://calendar.example.com user@example.com  # example.com = placeholder for your real domain
+# Local end-to-end smoke (Autodiscover + OPTIONS + a Ping), from the repo.
+# The script takes no positional arguments; it reads GATEWAY_BASE_URL /
+# GATEWAY_USER / GATEWAY_PASS from the shell environment and refuses to
+# run against a placeholder hostname. example.com below is a placeholder
+# for your real domain.
+export GATEWAY_BASE_URL='https://calendar.example.com'
+export GATEWAY_USER='user@example.com'
+read -rsp 'Gateway password: ' GATEWAY_PASS; echo
+export GATEWAY_PASS
+tests/outlook_cloudflare_smoke.sh
 ```
 
 Then confirm in each client: send/receive mail, create/move an event, add a

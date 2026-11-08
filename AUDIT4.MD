@@ -20,12 +20,13 @@ the image from a registry. Building the image is out of scope except for
 `Dockerfile` and `docker-compose.yml` in this repo. The gateway should serve
 HTTP because `cloudflared` on the Ubuntu host terminates TLS.
 
-**Placeholder convention.** Every `example.com` hostname in this repository
-(including `docker-compose.yml`, `CLOUDFLARED_SETUP.md`,
-`DEPLOY_RUNBOOK.md`, `cloudflared/config.yml`, and this file) is a
-**placeholder** for the operator's real domain and must be replaced in the
-operator's own copy before deployment; the repository templates keep the
-placeholders on purpose and must never be deployed as-is:
+**Placeholder convention.** Every `example.com` hostname in the
+deployment templates and docs (`docker-compose.yml`,
+`cloudflared/config.yml`, `CLOUDFLARED_SETUP.md`, `DEPLOY_RUNBOOK.md`,
+and this file) is a **placeholder** for the operator's real domain and
+must be replaced in the operator's own copy before deployment; the
+repository templates keep the placeholders on purpose and must never be
+deployed as-is:
 
 - `example.com` = the operator's real root / mail domain (the domain part
   of the users' email addresses; `GATEWAY_MAIL_DOMAIN`),
@@ -91,7 +92,7 @@ compose env-var inventory.
 Items 11–14 are P1/P2 (see below) and are placed after the P0 block so
 each item’s section matches its severity in the summary table.
 
-### 1. The Cloudflare ingress hostnames and the Autodiscover contract (resolved by the placeholder convention)
+### 1. The Cloudflare ingress hostnames and the Autodiscover contract — OPEN until the startup pairing check exists (the placeholder convention alone is not enforced)
 
 **Evidence.**
 
@@ -123,7 +124,11 @@ sufficient and correct for both pinned clients: discovery is derived from
 the mailbox domain, the `autodiscover.` route answers the primary probe,
 and the response points at `calendar.` (`GATEWAY_HOST`). No route for the
 bare root domain is needed or possible - it already has A/AAAA records -
-and none is documented as required anywhere in the rewritten docs.
+and none is documented as required anywhere in the rewritten docs. This
+item is **OPEN, not resolved**: the placeholder convention is a
+documentation rule that nothing enforces, and the startup pairing check
+in the Fix below does not exist yet, so a left-in placeholder still fails
+silently in the Android wizard.
 
 **Fix (ladder 1 - existing code, docs-only).**
 
@@ -162,7 +167,7 @@ and none is documented as required anywhere in the rewritten docs.
 
 ---
 
-### 2. `GATEWAY_MAIL_HOST` and the public MX hostname (placeholder convention)
+### 2. `GATEWAY_MAIL_HOST` and the public MX hostname — OPEN until the `mail_host` startup check exists (the placeholder convention alone is not enforced)
 
 **Evidence.** `docker-compose.yml` ships
 `GATEWAY_MAIL_HOST=mail.example.com`. `src/config.rs` derives `mail_host`
@@ -175,9 +180,10 @@ blocks whenever `include_imap_smtp` is true.
 mailserver hostname / MX record. An operator who copies the compose and
 only edits `GATEWAY_HOST` / `GATEWAY_MAIL_DOMAIN` will advertise the
 placeholder - an unresolvable host - to any client that reads the
-IMAP/SMTP blocks. The fix is the placeholder convention itself: the
-values must be replaced in the operator's copy so that
-`GATEWAY_MAIL_HOST` matches the existing MX record for the real domain.
+IMAP/SMTP blocks. The placeholder convention documents that the values
+must be replaced in the operator's copy, but it enforces nothing: this
+item stays **OPEN** until the `mail_host` startup check in the Fix
+exists (today only `gateway_host` is checked, `src/main.rs`).
 
 **Fix (ladder 1).** The compose comment at `GATEWAY_MAIL_HOST` states
 that `mail.example.com` is a placeholder for the real MX hostname and
@@ -1150,8 +1156,8 @@ task’s “no env-variable file” requirement.
 
 | # | Sev | Area | Defect | Fix ladder |
 |---|-----|------|--------|------------|
-| 1 | P0 | Cloudflare / Autodiscover | Ingress hostnames must match the `autodiscover.` + mail-domain / `GATEWAY_HOST` contract (`example.com` placeholders) | docs + startup warning (1) |
-| 2 | P0 | Autodiscover | `GATEWAY_MAIL_HOST` placeholder leaks NXDOMAIN to IMAP/SMTP clients | compose + warning (1) |
+| 1 | P0 | Cloudflare / Autodiscover | Ingress hostnames must match the `autodiscover.` + mail-domain / `GATEWAY_HOST` contract (`example.com` placeholders) — **OPEN**: the placeholder convention is unenforced; the startup pairing check does not exist yet | docs + startup check (1) |
+| 2 | P0 | Autodiscover | `GATEWAY_MAIL_HOST` placeholder leaks NXDOMAIN to IMAP/SMTP clients — **OPEN**: only `gateway_host` is startup-checked today, `mail_host` is not | compose + startup check (1) |
 | 3 | P0 | HTTP/TLS | Gateway serves plain HTTP only; `x-forwarded-proto` enforcement inconsistent | TLS listener (2) / warning (1) |
 | 4 | P0 | Compose | Port 8134 published on wildcard bind, bypasses tunnel | loopback-only publish (1) |
 | 5 | P0 | EAS | `FolderCreate/Delete/Update`, `GetAttachment`, `GetHierarchy`, `Find` unimplemented (Status 5) | handlers (1→4) |
@@ -1191,11 +1197,13 @@ task’s “no env-variable file” requirement.
 MAPI/HTTP, Autodiscover, JMAP calendar/contacts, Tasks/Notes via CalDAV)
 is substantially sound and the AUDIT3 P0s are delivered. The remaining
 P0s are *deployment-contract* failures, not protocol failures: the
-hostnames in the shipped examples do not match the Autodiscover contract
-for the operator’s real domain, the compose publishes a port on a wildcard
-bind that bypasses the tunnel, the SMTP host breaks TLS, and the EAS
-command surface is missing the folder-management and search commands the
-clients use (with `GetHierarchy` scoped to the 2.5/12.x contract only).
+`example.com` placeholders must be replaced with the operator's real
+domain before deployment (items 1-2, 23 — still **OPEN**, because the
+placeholder convention is unenforced and the startup checks do not exist
+yet), the compose publishes a port on a wildcard bind that bypasses the
+tunnel, the SMTP host breaks TLS, and the EAS command surface is missing
+the folder-management and search commands the clients use (with
+`GetHierarchy` scoped to the 2.5/12.x contract only).
 Fixing P0 items 1–10 plus P1 items 11–13 (mostly
 compose/docs, plus the EAS handlers in item 5) is **not** by itself
 sufficient to guarantee the use-case: item 6 records the New Outlook for
@@ -1244,12 +1252,16 @@ path; the complex-MIME path is a documented SMTP exception (item 19).
 
 ## Appendix C — Placeholder convention and files changed
 
-This audit adds only `AUDIT4.MD`. The placeholder convention at the top
-of this file is the single rule for every hostname in the repository:
-`example.com` (and `mail.example.com`, `calendar.example.com`,
-`autodiscover.example.com`, `stalwart.example.com`) are placeholders for
-the operator's real domain / MX hostname and are replaced in the
-operator's own copy before deployment. The operator's changes in §12 are
-applied to *their* copies of `docker-compose.yml` (gateway and Stalwart),
-not to the repo template placeholders, per the task's "do not replace any
-placeholders". No real domain appears anywhere in this repository.
+This audit's placeholder convention applies to every hostname in the
+deployment templates and docs. The files changed by the PR that
+introduced it are `AUDIT4.MD`, `docker-compose.yml`,
+`cloudflared/config.yml`, `CLOUDFLARED_SETUP.md`, and
+`DEPLOY_RUNBOOK.md`. The convention at the top of this file is the
+single rule for those hostnames: `example.com` (and `mail.example.com`,
+`calendar.example.com`, `autodiscover.example.com`,
+`stalwart.example.com`) are placeholders for the operator's real domain /
+MX hostname and are replaced in the operator's own copy before
+deployment. The operator's changes in §12 are applied to *their* copies
+of `docker-compose.yml` (gateway and Stalwart), not to the repo
+template placeholders, per the task's "do not replace any placeholders".
+No real domain appears in any of these files.

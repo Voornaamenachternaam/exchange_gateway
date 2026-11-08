@@ -124,11 +124,16 @@ entries, each pointing at the gateway:
 
 There is **no** third public hostname for the bare root domain
 (`example.com` = your real root domain). The root domain already has
-A/AAAA records and **cannot** be tunnel-routed, and no route for it may
-be created. This is not a gap: Android's primary Autodiscover probe is
-Hostname B (`autodiscover.` + the mail domain, per MS-OXDSCLI 2.2.3), and
-the Android wizard proceeds via Hostname B alone when B answers. The
-root-domain fallback probe will fail, which is expected and harmless.
+A/AAAA records serving other content, so the root is not routed through
+the tunnel in this deployment: a root CNAME to the tunnel would conflict
+with those existing records. This is an operator constraint for this
+deployment, not a Cloudflare limitation in general. Android's primary
+Autodiscover probe is Hostname B (`autodiscover.` + the mail domain, per
+MS-OXDSCLI §3.2.5 / §4), and the Android wizard proceeds via Hostname B
+alone when B answers. The root-domain autodiscovery attempt
+(`https://example.com/autodiscover/autodiscover.xml`) will fail because
+no tunnel route serves the root; some Android builds may take longer to
+sign up as a result.
 
 ### One canonical host serves every gateway surface — no per-protocol routes
 
@@ -158,11 +163,13 @@ placeholders for `calendar.` + your real domain and `autodiscover.` +
 your real domain) are therefore sufficient **provided the client is
 configured for the canonical `GATEWAY_HOST`**: Autodiscover must be
 reachable on the `autodiscover.example.com` host (Hostname B) and the
-response must point at `GATEWAY_HOST`. A third route
-(`mail.example.com` to 8134; placeholder for your real MX hostname) is
-needed **only if** the client is told to use `mail.example.com` for
-EAS/EWS instead of `GATEWAY_HOST` - the gateway never advertises such a
-URL on its own. No root-domain route exists or may be created (see "No
+response must point at `GATEWAY_HOST`. The gateway never advertises
+`mail.example.com` (placeholder for your real MX hostname, the Stalwart
+mail endpoint) for EAS/EWS, so no route to the MX hostname is part of
+this deployment; if a client is ever configured to use a non-canonical
+host for EAS/EWS instead of `GATEWAY_HOST`, that host needs its own
+explicit route - use a separate non-MX hostname for that, never the MX
+hostname. No root-domain route exists or may be created (see "No
 Hostname C" above): the bare root domain already has A/AAAA records.
 
 ### `GATEWAY_MAIL_HOST` must be the public MX host (AUDIT3 §8)
