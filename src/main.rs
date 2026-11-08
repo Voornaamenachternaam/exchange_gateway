@@ -28,7 +28,11 @@ use tower_http::{
 };
 use tracing::{debug, info, warn};
 
-const MAX_BODY_BYTES: usize = 4 * 1024 * 1024;
+/// Route-level request body ceiling for EAS/EWS/Autodiscover. Must cover
+/// a 25 MiB attachment as base64 MIMEData (~35 MiB) plus envelope margin:
+/// 4 MiB base of small requests + 30 MiB of encoded MIME. MAPI/HTTP routes
+/// keep their own transport-level cap (128 MiB per MS-OXCMAPIHTTP).
+const MAX_BODY_BYTES: usize = 4 * 1024 * 1024 + 30 * 1024 * 1024;
 const REQUEST_TIMEOUT_SECS: u64 = 60;
 
 /// AUDIT.md §25: predicate that only compresses responses with a known
@@ -697,13 +701,56 @@ async fn main() -> anyhow::Result<()> {
     // A placeholder hostname means the operator left the compose template
     // unedited. Autodiscover would advertise a URL the clients cannot resolve,
     // so surface it as a loud, actionable warning rather than failing startup
-    // (a dev run against localhost is legitimate).
-    if exchange_gateway::config::is_placeholder_host(&config.gateway_host) {
+    // (a dev run against localhost is legitimate). The full pairing check
+    // (GATEWAY_HOST vs GATEWAY_MAIL_DOMAIN vs GATEWAY_MAIL_HOST) lives in
+    // `validate_host_pairing` (AUDIT4 items 1-2).
+    for problem in exchange_gateway::config::validate_host_pairing(&config) {
+        tracing::warn!(problem = %problem, "Deployment hostname pairing check");
+    }
+    // Item 17: `GATEWAY_ALLOW_INSECURE_HTTP=1` is a global switch that
+    // disables the HTTPS check for *all* JMAP/CalDAV/CardDAV backends. Warn
+    // loudly when any base URL's host is outside the bridge-network service
+    // name (`stalwart`), `localhost`, or an RFC1918 address, so a typo that
+    // points the backend at a public host is visible at startup.
+    if config.allow_insecure_http {
+        for (field, url) in [
+            ("jmap_base", config.jmap_base.as_str()),
+            ("caldav_base", config.caldav_base.as_str()),
+            ("carddav_base", config.carddav_base.as_str()),
+        ] {
+            if url.is_empty() {
+                continue;
+            }
+            let host = url::Url::parse(url)
+                .ok()
+                .and_then(|u| u.host().map(|h| h.to_string()))
+                .unwrap_or_default();
+            let host_lower = host.trim().to_ascii_lowercase();
+            let private = host_lower == "stalwart"
+                || host_lower == "localhost"
+                || host_lower.starts_with("10.")
+                || host_lower.starts_with("192.168.")
+                || host_lower
+                    .split('.')
+                    .next()
+                    .and_then(|o| o.parse::<u8>().ok())
+                    .is_some_and(|o| {
+                        (172..=191).contains(&o) && host_lower.split('.').count() == 4
+                    });
+            if !private {
+                tracing::warn!(
+                    field = %field,
+                    host = %host,
+                    url = %url,
+                    "GATEWAY_ALLOW_INSECURE_HTTP=1 with a non-bridge backend host; Basic credentials would be sent in cleartext"
+                );
+            }
+        }
+    }
+    if config.allow_insecure_http {
         tracing::warn!(
-            gateway_host = %config.gateway_host,
-            "GATEWAY_HOST still looks like a placeholder; set it to the public \
-             EAS hostname (e.g. calendar.example.com) or Android/Outlook \
-             Autodiscover will advertise an unresolvable URL"
+            host = %config.gateway_host,
+            "GATEWAY_ALLOW_INSECURE_HTTP=1 is set; plain http backends are permitted for all JMAP/CalDAV/CardDAV bases"
         );
     }
 
@@ -824,6 +871,16 @@ async fn main() -> anyhow::Result<()> {
         .route("/health/ready", get(health_check))
         .route("/metrics", get(metrics_handler))
         .route(
+            "/health/smoke",
+            get(|| async {
+                (
+                    StatusCode::OK,
+                    [("content-type", "application/json")],
+                    r#"{"status":"ok","build":"AUDIT4","protocol":"16.1"}"#,
+                )
+            }),
+        )
+        .route(
             "/EWS/Exchange.asmx",
             post(ews::handle).layer(RequestBodyLimitLayer::new(MAX_BODY_BYTES)),
         )
@@ -836,11 +893,11 @@ async fn main() -> anyhow::Result<()> {
             any(eas::handle).layer(RequestBodyLimitLayer::new(MAX_BODY_BYTES)),
         )
         // MAPI/HTTP advertises up to 128 MiB per request (MS-OXCMAPIHTTP);
-        // apply the larger body limit per-route, not globally, so the smaller
-        // 4 MiB cap on EWS/EAS/Autodiscover does not silently reject large
-        // ROP batches before `mapi::transport::parse_request` ever runs. The
-        // transport layer's own `MAX_MAPI_BODY_BYTES` check is the
-        // authoritative envelope bound.
+        // apply the larger body limit per-route, not globally, so the
+        // route-level cap on EWS/EAS/Autodiscover does not silently reject
+        // large ROP batches before `mapi::transport::parse_request` ever
+        // runs. The transport layer's own `MAX_MAPI_BODY_BYTES` check is
+        // the authoritative envelope bound.
         .route(
             "/mapi/emsmdb",
             post(|st, h, b| mapi_http_path("/mapi/emsmdb", st, h, b)).layer(

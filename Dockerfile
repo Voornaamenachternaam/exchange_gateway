@@ -28,7 +28,10 @@ COPY sqlite_schema.sql ./
 # transitive crate cannot slip in between `cargo fetch` and the build.
 RUN cargo build --release --locked --bin exchange_gateway
 
-# Runtime stage - ultra-minimal and secure
+# Runtime stage - ultra-minimal and secure. AUDIT4 item 25: the image
+# build is out of scope for the operator task; what matters here is that
+# the runtime image carries no build toolchain (the builder's `rustup`
+# install stays in stage 1) and installs only the runtime libraries.
 FROM debian:bookworm-slim AS runtime
 
 # Install runtime dependencies
@@ -37,7 +40,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     tzdata \
     libsqlite3-0 \
     curl \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && apt-get purge -y --auto-remove \
+    && rm -rf /var/cache/apt/archives /var/lib/dpkg/lists/* /tmp/*
 
 # Create non-root user and directories with proper permissions
 RUN groupadd --system --gid 10001 gateway && \

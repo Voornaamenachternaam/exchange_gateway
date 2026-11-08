@@ -85,7 +85,11 @@ fn rate_limit_key(headers: &header::HeaderMap) -> (String, &'static str) {
 /// scrapers are never throttled. Covers the §20 liveness/readiness split
 /// (`/health/live`, `/health/ready`) plus the `/health` readiness alias.
 fn is_unmetered_path(path: &str) -> bool {
-    path == "/health" || path == "/health/live" || path == "/health/ready" || path == "/metrics"
+    path == "/health"
+        || path == "/health/live"
+        || path == "/health/ready"
+        || path == "/health/smoke"
+        || path == "/metrics"
 }
 
 pub async fn check_rate_limit(
@@ -154,7 +158,13 @@ mod tests {
     /// rate limiting; protocol surfaces stay metered.
     #[test]
     fn health_paths_are_unmetered() {
-        for path in ["/health", "/health/live", "/health/ready", "/metrics"] {
+        for path in [
+            "/health",
+            "/health/live",
+            "/health/ready",
+            "/health/smoke",
+            "/metrics",
+        ] {
             assert!(is_unmetered_path(path), "{path} must skip rate limiting");
         }
         assert!(

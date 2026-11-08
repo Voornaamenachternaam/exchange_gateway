@@ -2485,11 +2485,11 @@ pub struct ParsedMimeSendMessage {
 }
 
 /// Extract bare email addresses from a parsed `From`/`To`/`Cc`/`Bcc` header.
-fn mime_address_list(addr: Option<&mail_parser::Address<'_>>) -> Vec<String> {
+fn mime_address_list(addr: Option<mail_parser::AddressList<'_>>) -> Vec<String> {
     let mut out = Vec::new();
     if let Some(addr) = addr {
-        for entry in addr.iter() {
-            if let Some(email) = entry.address() {
+        for mailbox in addr.mailboxes() {
+            if let Some(email) = mailbox.address() {
                 out.push(email.to_string());
             }
         }
@@ -2499,16 +2499,10 @@ fn mime_address_list(addr: Option<&mail_parser::Address<'_>>) -> Vec<String> {
 
 /// Convert a parsed In-Reply-To / References header into individual message
 /// IDs (angle brackets stripped, whitespace-separated tokens split).
-fn mime_header_id_list(hv: &mail_parser::HeaderValue<'_>) -> Vec<String> {
-    use mail_parser::HeaderValue as Hv;
+fn mime_header_id_list(hv: Option<mail_parser::TextList<'_>>) -> Vec<String> {
     let texts: Vec<String> = match hv {
-        Hv::TextList(list) => list.iter().map(|s| s.to_string()).collect(),
-        Hv::Text(t) => vec![t.to_string()],
-        Hv::Empty => Vec::new(),
-        other => other
-            .as_text()
-            .map(|t| vec![t.to_string()])
-            .unwrap_or_default(),
+        Some(list) => list.iter().map(|s| s.to_string()).collect(),
+        None => Vec::new(),
     };
     texts
         .into_iter()
@@ -2527,9 +2521,7 @@ fn mime_header_id_list(hv: &mail_parser::HeaderValue<'_>) -> Vec<String> {
 /// RFC 5322/2045‑2049 parse, so no headers, encoded words, or nesting levels
 /// are missed. Returns `Err` only when the blob is not valid MIME at all.
 pub fn parse_mime_for_send(raw: &[u8]) -> anyhow::Result<ParsedMimeSendMessage> {
-    use mail_parser::MimeHeaders;
-
-    let msg = mail_parser::MessageParser::default()
+    let msg = mail_parser::MessageParser::new()
         .parse(raw)
         .ok_or_else(|| anyhow::anyhow!("MIME data is not a parseable RFC 5322 message"))?;
 
@@ -2538,51 +2530,31 @@ pub fn parse_mime_for_send(raw: &[u8]) -> anyhow::Result<ParsedMimeSendMessage> 
         .next()
         .unwrap_or_default();
 
-    // Bodies are resolved from the declared body part lists, filtered by real
-    // content type — `mail-parser` converts a lone text/plain part into
-    // synthesized HTML and lists it in `html_body`, so `body_html()` alone
-    // cannot distinguish that from a genuine text/html part.
-    let body_text_of = |ids: &[u32], subtype: &str| -> Option<String> {
-        ids.iter()
-            .filter_map(|id| msg.parts.get(*id as usize))
-            .find(|p| match p.content_type() {
-                // RFC 2046 §5.1: a part without a Content-Type header is
-                // text/plain.
-                None => subtype == "plain",
-                Some(_) => p.is_content_type("text", subtype),
-            })
-            .and_then(|p| match &p.body {
-                mail_parser::PartType::Text(t) | mail_parser::PartType::Html(t) => {
-                    Some(t.to_string())
-                }
-                _ => None,
-            })
-    };
-    let text_body = body_text_of(&msg.text_body, "plain").unwrap_or_default();
-    let html_body = body_text_of(&msg.html_body, "html");
+    let body_text_of =
+        |parts: Vec<mail_parser::MessagePart<'_>>, subtype: &str| -> Option<String> {
+            parts
+                .into_iter()
+                .find(|p| match p.content_type() {
+                    None => subtype == "plain",
+                    Some(_) => p.is_content_type("text", subtype),
+                })
+                .and_then(|p| p.text().map(|t| t.to_string()))
+        };
+    let text_body = body_text_of(msg.text_body().collect(), "plain").unwrap_or_default();
+    let html_body = body_text_of(msg.html_body().collect(), "html");
 
-    // The message is "simple" iff every leaf part is a text/plain or
-    // text/html body. `parts` also lists the multipart container itself, and
-    // any attachment / nested message / signature part shows up as a non-text
-    // leaf, forcing the verbatim raw-relay path.
-    let is_simple = msg.parts.iter().all(|part| {
-        // RFC 2046 §5.1: a part without a Content-Type header defaults to
-        // text/plain. mail-parser likewise classifies it as TextPlain but
-        // leaves content_type() empty, so a missing header must not force
-        // the complex raw-relay path.
-        match part.content_type() {
-            None => true,
-            Some(ct) => {
-                ct.ctype().eq_ignore_ascii_case("multipart")
-                    || (ct.ctype().eq_ignore_ascii_case("text")
-                        && (ct.subtype().is_none()
-                            || ct
-                                .subtype()
-                                .is_some_and(|st| st.eq_ignore_ascii_case("plain"))
-                            || ct
-                                .subtype()
-                                .is_some_and(|st| st.eq_ignore_ascii_case("html"))))
-            }
+    let is_simple = msg.parts().all(|part| match part.content_type() {
+        None => true,
+        Some(ct) => {
+            ct.ctype().eq_ignore_ascii_case("multipart")
+                || (ct.ctype().eq_ignore_ascii_case("text")
+                    && (ct.subtype().is_none()
+                        || ct
+                            .subtype()
+                            .is_some_and(|st| st.eq_ignore_ascii_case("plain"))
+                        || ct
+                            .subtype()
+                            .is_some_and(|st| st.eq_ignore_ascii_case("html"))))
         }
     }) && msg.attachments().next().is_none();
 
@@ -3035,10 +3007,9 @@ pub fn is_email_server_id(id: &str) -> bool {
 /// attachments), returning the first `text/calendar` payload containing
 /// `METHOD:REQUEST`. Returns `None` when the email carries no calendar invite.
 pub fn extract_meeting_request_ics(raw_mime: &[u8]) -> Option<String> {
-    let parsed = mail_parser::MessageParser::default().parse(raw_mime)?;
-    // Body parts first (most invites put the calendar part inline), then attachments.
-    for part in parsed.parts.iter() {
-        let ics = calendar_part_ics(part)?;
+    let parsed = mail_parser::MessageParser::new().parse(raw_mime)?;
+    for part in parsed.parts() {
+        let ics = calendar_part_ics(&part)?;
         if ics.starts_with("BEGIN:") && ics.contains("METHOD:REQUEST") {
             return Some(ics);
         }
@@ -3048,14 +3019,13 @@ pub fn extract_meeting_request_ics(raw_mime: &[u8]) -> Option<String> {
 
 /// Inspect a single MIME part; if it is `text/calendar`, return its text body.
 fn calendar_part_ics(part: &mail_parser::MessagePart<'_>) -> Option<String> {
-    use mail_parser::MimeHeaders;
     let ct = part.content_type()?;
     let is_calendar = ct.ctype().eq_ignore_ascii_case("text")
         && ct
             .subtype()
             .map(|s| s.eq_ignore_ascii_case("calendar"))
             .unwrap_or(false);
-    let text = part.text_contents()?;
+    let text = part.text()?;
     is_calendar.then(|| text.to_string())
 }
 
@@ -3567,8 +3537,12 @@ mod tests {
 
     #[test]
     fn test_mime_header_id_list_strips_brackets() {
-        let hv = mail_parser::HeaderValue::Text("  <a@x> <b@y>  ".into());
-        assert_eq!(mime_header_id_list(&hv), vec!["a@x", "b@y"]);
+        // In mail-parser 1.0 `HeaderValue::TextList` wraps message IDs; the
+        // test verifies `mime_header_id_list` splits on whitespace and
+        // strips brackets from each ID.
+        let raw = b"From: alice@example.com\r\nIn-Reply-To: <a@x> <b@y>\r\n\r\nbody\r\n";
+        let msg = mail_parser::MessageParser::new().parse(raw).expect("parse");
+        assert_eq!(mime_header_id_list(msg.in_reply_to()), vec!["a@x", "b@y"]);
     }
 
     #[test]

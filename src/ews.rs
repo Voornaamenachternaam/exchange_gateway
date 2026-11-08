@@ -481,14 +481,28 @@ fn parse_basic_auth(headers: &HeaderMap) -> Option<AuthContext> {
 }
 
 fn forwarded_https_enforced(headers: &HeaderMap) -> bool {
-    match headers
+    // AUDIT4 item 3: consistent `x-forwarded-proto` enforcement across
+    // front doors. Accepts cloudflared's `x-forwarded-proto: https` and
+    // Cloudflare's `cf-visitor: {"scheme":"https"}`; missing header
+    // (direct HTTP access) permitted; explicit `http` rejected.
+    if let Some(proto) = headers
         .get("x-forwarded-proto")
         .and_then(|v| v.to_str().ok())
-        .map(|v| v.to_ascii_lowercase())
+        .map(|v| v.trim().to_ascii_lowercase())
     {
-        Some(v) => v == "https",
-        None => true,
+        return proto == "https";
     }
+    if let Some(cf_visitor) = headers.get("cf-visitor").and_then(|v| v.to_str().ok()) {
+        let scheme = cf_visitor
+            .split_once("\"scheme\"")
+            .and_then(|(_, rest)| rest.split('"').nth(1))
+            .unwrap_or("")
+            .trim();
+        if !scheme.is_empty() {
+            return scheme.eq_ignore_ascii_case("https");
+        }
+    }
+    true
 }
 
 pub(crate) fn detect_action(xml: &str) -> Option<EwsAction> {

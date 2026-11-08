@@ -21,7 +21,6 @@ use cms::cert::CertificateChoices;
 use cms::content_info::ContentInfo;
 use cms::signed_data::SignedData;
 use der::Decode;
-use mail_parser::MimeHeaders;
 use sha2::Digest;
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -127,26 +126,10 @@ pub fn certs_from_cms_blob(bytes: &[u8]) -> Vec<(x509_cert::Certificate, Vec<u8>
 }
 
 pub(crate) fn decode_mime_part_body(part: &mail_parser::MessagePart<'_>) -> Option<Vec<u8>> {
-    let raw = part.contents();
-    // Content-transfer-encoding in mail-parser is exposed via the part
-    // headers; prefer the raw bytes and handle base64 explicitly since the
-    // CMS blob must be byte-exact.
-    let is_b64 = part
-        .content_transfer_encoding()
-        .map(|v| v.eq_ignore_ascii_case("base64"))
-        .unwrap_or(false);
-    if is_b64 {
-        use base64::Engine;
-        let compact: Vec<u8> = raw
-            .iter()
-            .copied()
-            .filter(|b| !b.is_ascii_whitespace())
-            .collect();
-        if let Ok(decoded) = base64::engine::general_purpose::STANDARD.decode(&compact) {
-            return Some(decoded);
-        }
-    }
-    Some(raw.to_vec())
+    // mail-parser 1.0's `decoded()` returns the transfer-decoded body
+    // (base64 decoded for us). The CMS blob must be byte-exact, which
+    // this satisfies.
+    Some(part.decoded().into_owned())
 }
 
 fn is_smime_content_type(part: &mail_parser::MessagePart<'_>) -> bool {
@@ -169,8 +152,8 @@ fn is_smime_content_type(part: &mail_parser::MessagePart<'_>) -> bool {
 pub(crate) fn message_from_addresses(msg: &mail_parser::Message<'_>) -> Vec<String> {
     let mut out = Vec::new();
     if let Some(from) = msg.from() {
-        for addr in from.iter() {
-            if let Some(email) = addr.address()
+        for mailbox in from.mailboxes() {
+            if let Some(email) = mailbox.address()
                 && email_address::EmailAddress::is_valid(email)
             {
                 out.push(email.to_lowercase());
@@ -230,16 +213,16 @@ fn build_records(
 /// Extract every S/MIME certificate embedded in a MIME message, keyed by
 /// the email addresses they represent.
 pub fn harvest_mime(raw: &[u8]) -> Vec<SmimeCertificate> {
-    let Some(msg) = mail_parser::MessageParser::default().parse(raw) else {
+    let Some(msg) = mail_parser::MessageParser::new().parse(raw) else {
         return Vec::new();
     };
     let from = message_from_addresses(&msg);
     let mut all = Vec::new();
-    for part in msg.parts.iter() {
-        if !is_smime_content_type(part) {
+    for part in msg.parts() {
+        if !is_smime_content_type(&part) {
             continue;
         }
-        let Some(bytes) = decode_mime_part_body(part) else {
+        let Some(bytes) = decode_mime_part_body(&part) else {
             continue;
         };
         all.extend(certs_from_cms_blob(&bytes));

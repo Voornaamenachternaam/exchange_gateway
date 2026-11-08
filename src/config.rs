@@ -4,7 +4,7 @@ use serde::Deserialize;
 use std::env;
 use std::fs;
 
-const DEFAULT_MAX_ATTACHMENT_BYTES: usize = 5 * 1024 * 1024;
+const DEFAULT_MAX_ATTACHMENT_BYTES: usize = 25 * 1024 * 1024;
 const DEFAULT_AUTH_CACHE_TTL_SECS: u64 = 300;
 const DEFAULT_AUTH_CACHE_NEGATIVE_TTL_SECS: u64 = 30;
 const DEFAULT_AUTH_CACHE_MAX_ENTRIES: usize = 10000;
@@ -325,7 +325,12 @@ fn default_max_attachment_bytes() -> usize {
 }
 
 fn default_max_body_bytes() -> usize {
-    4 * 1024 * 1024 // 4MB
+    // Route-level body ceiling (EAS/EWS/Autodiscover/OPTIONS). EAS SendMail
+    // carries base64 MIMEData: a 25 MiB attachment yields ~35 MiB of base64
+    // before WBXML/soap envelope margin. This default is the route layer;
+    // the EAS handler additionally enforces MAX_BODY_SIZE (1 MiB) for the
+    // non-MIMEData commands and parses the query-scoped attachment bounds.
+    4 * 1024 * 1024 + 26 * 1024 * 1024
 }
 
 fn default_rate_limit_enabled() -> bool {
@@ -333,7 +338,7 @@ fn default_rate_limit_enabled() -> bool {
 }
 
 fn default_rate_limit_requests_per_minute() -> u32 {
-    120
+    1200
 }
 
 fn default_rate_limit_max_concurrent() -> usize {
@@ -1216,9 +1221,11 @@ fn extract_host_from_caldav(url_str: &str) -> Option<String> {
 }
 
 /// Whether a configured public hostname still looks like an unedited template
-/// placeholder. Used only to emit a loud startup warning: a placeholder host
-/// makes Autodiscover advertise an unresolvable URL, but it is not a fatal
-/// configuration error (a local/dev run may legitimately use `localhost`).
+/// placeholder. Used to emit a loud startup warning: a placeholder host
+/// makes Autodiscover advertise an unresolvable URL. A local/dev run may
+/// legitimately use `localhost`. The deployment-time pairing check
+/// (`validate_host_pairing`) pairs `GATEWAY_HOST` with `GATEWAY_MAIL_DOMAIN`
+/// and also validates `GATEWAY_MAIL_HOST` against the MX host.
 pub fn is_placeholder_host(host: &str) -> bool {
     let h = host.trim().to_ascii_lowercase();
     if h.is_empty() {
@@ -1232,6 +1239,69 @@ pub fn is_placeholder_host(host: &str) -> bool {
         || h.ends_with(".example.org")
         || h.contains("replace")
         || h.contains("your-")
+}
+
+/// Deployment-time pairing check (AUDIT4 items 1–2). The public EAS/
+/// Autodiscover hostname (`GATEWAY_HOST`) must pair with the mailbox domain
+/// (`GATEWAY_MAIL_DOMAIN`) and the advertised MX host
+/// (`GATEWAY_MAIL_HOST` / `mail_host`):
+/// - `GATEWAY_HOST` equals `calendar.<mail_domain>` (the Cloudflare
+///   Zero-Trust `calendar.` route), or the pairing check skips hosts with a
+///   non-`calendar.` prefix;
+/// - the autodiscover host `autodiscover.<mail_domain>` is derivable (always
+///   true for a non-empty domain);
+/// - `GATEWAY_MAIL_HOST` equals the MX host `mail.<mail_domain>` or is
+///   non-empty and not a bridge-internal service name.
+///
+/// The check is exposed as a startup warning (not a fatal error) so a local
+/// dev run against `localhost` still starts. A placeholder in any of the
+/// three hostnames triggers a loud warning naming the offending variable.
+pub fn validate_host_pairing(cfg: &Config) -> Vec<String> {
+    let mut problems = Vec::new();
+    let domain = cfg.mail_domain.trim().to_ascii_lowercase();
+    let host = cfg.gateway_host.trim().to_ascii_lowercase();
+    if is_placeholder_host(&domain) {
+        problems.push(format!(
+            "GATEWAY_MAIL_DOMAIN='{cfg}' still looks like a placeholder; set it to your real root / mail domain",
+            cfg = cfg.mail_domain
+        ));
+    }
+    if is_placeholder_host(&host) {
+        problems.push(format!(
+            "GATEWAY_HOST='{cfg}' still looks like a placeholder; set it to calendar.<mail_domain>",
+            cfg = cfg.gateway_host
+        ));
+    }
+    if !domain.is_empty() && !host.is_empty() && !is_placeholder_host(&host) {
+        let expected = format!("calendar.{domain}");
+        if host != expected && host != "localhost" {
+            problems.push(format!(
+                "GATEWAY_HOST='{host}' does not pair with GATEWAY_MAIL_DOMAIN='{domain}' (expected '{expected}')"
+            ));
+        }
+    }
+    let mail_host = cfg.mail_host.trim().to_ascii_lowercase();
+    if !mail_host.is_empty() && is_placeholder_host(&mail_host) {
+        problems.push(format!(
+            "GATEWAY_MAIL_HOST='{cfg}' still looks like a placeholder; set it to your real MX hostname (mail.<mail_domain>)",
+            cfg = cfg.mail_host
+        ));
+    }
+    if !mail_host.is_empty()
+        && !is_placeholder_host(&mail_host)
+        && !domain.is_empty()
+        && mail_host != format!("mail.{domain}")
+        && mail_host != "localhost"
+    {
+        // Not fatal: the operator may use a non-`mail.` MX hostname that
+        // matches their DNS MX record, which is also correct.
+        tracing::info!(
+            mail_host = %mail_host,
+            expected = %format!("mail.{domain}"),
+            "GATEWAY_MAIL_HOST differs from the mail.<domain> default; verify it matches the DNS MX record"
+        );
+    }
+    problems
 }
 
 fn validate_url(url: &str, field_name: &str) -> anyhow::Result<()> {
@@ -1371,7 +1441,7 @@ impl Default for Config {
             admin_username: String::new(),
             admin_password: String::new(),
             rate_limit_enabled: true,
-            rate_limit_requests_per_minute: 120,
+            rate_limit_requests_per_minute: default_rate_limit_requests_per_minute(),
             rate_limit_max_concurrent: 1000,
             max_ping_heartbeat_secs: None,
             eas_require_policy_key: default_eas_require_policy_key(),

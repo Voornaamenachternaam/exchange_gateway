@@ -2,9 +2,9 @@
 
 ## Project
 Rust gateway (~96k LOC) translating Microsoft Exchange/Outlook protocols (EAS via
-WBXML, EWS, MAPI/HTTP, Autodiscover, SMTP) to a Stalwart Mailserver v1.0.1
+WBXML, EWS, MAPI/HTTP, Autodiscover, SMTP) to a Stalwart Mailserver v1.0.3
 backend (JMAP-first, CalDAV fallback for calendar). Target clients ONLY:
-New Outlook for Windows (20251205004.10), Outlook Android (5.2634.2).
+New Outlook for Windows (20251205004.10), Outlook Android (5.2641.1).
 Specs: `exchange_protocols/` (v20250520 .txt docs). Toolchain: Rust 1.99.1.
 EAS specs v20250520 (16.1); older EAS compat NOT needed.
 

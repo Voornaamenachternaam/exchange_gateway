@@ -9,6 +9,16 @@ and Stalwart Mailserver v1.0.3 is running.
 > file. See `CLOUDFLARED_SETUP.md` for the tunnel details; the meaning of every
 > variable is documented inline in `docker-compose.yml`.
 
+> **No `.env` file is used in this deployment.** Create
+> `/armblock/exchange-gateway-data` on the Docker engine host, place your
+> copy of `docker-compose.yml` next to it, and point the gateway service's
+> database volume at it. Fill in the missing/required and the optional
+> environment variables inline in the compose file; delete any `.env` file
+> found in the repository tree. Then deploy the container with Portainer
+> (the image is pulled from the registry you use; building the image is
+> out of scope — only the `Dockerfile` and `docker-compose.yml` are
+> provided here).
+
 > **Placeholder convention — read before deploying.** Every `example.com`
 > hostname in the deployment templates and docs (`docker-compose.yml`,
 > `cloudflared/config.yml`, and these guides) is a **placeholder** and must
