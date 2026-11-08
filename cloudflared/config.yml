@@ -21,11 +21,14 @@
 # placeholders below with the SAME values used for the gateway's environment:
 #
 #   $GATEWAY_MAIL_DOMAIN → the mailbox domain users sign up with
-#                          (e.g. the "example.com" in "user@example.com")
+#                          (the shipped placeholder value is "example.com",
+#                          standing for your real root / mail domain)
 #   $GATEWAY_HOST        → the public EAS/Autodiscover service hostname
-#                          (e.g. calendar.example.com)
+#                          (the shipped placeholder value is
+#                          "calendar.example.com", standing for
+#                          calendar.<your real domain>)
 #
-# One-liner using the gateway's .env file. Export TUNNEL_ID first (from the
+# One-liner (there is no .env file in this deployment). Export TUNNEL_ID first (from the
 # Zero Trust dashboard, or `cloudflared tunnel list`) so the tunnel UUID is
 # substituted in the SAME pass as the hostnames — running separate sed passes
 # against this template and the deployed file in either order would leave one
@@ -35,8 +38,8 @@
 #
 #   # There is no .env file: read the two hostnames from docker-compose.yml
 #   # (they are written inline under the exchange-gateway service). Example:
-#   GATEWAY_MAIL_DOMAIN=example.com      # <- your GATEWAY_MAIL_DOMAIN
-#   GATEWAY_HOST=calendar.example.com    # <- your GATEWAY_HOST
+#   GATEWAY_MAIL_DOMAIN=example.com      # <- your GATEWAY_MAIL_DOMAIN (placeholder for your real domain)
+#   GATEWAY_HOST=calendar.example.com    # <- your GATEWAY_HOST (placeholder for calendar.<your real domain>)
 #   export GATEWAY_MAIL_DOMAIN GATEWAY_HOST
 #   export TUNNEL_ID=<your-tunnel-uuid>  # from the dashboard or `cloudflared tunnel list`
 #   sed -e "s|<YOUR-TUNNEL-UUID>|${TUNNEL_ID}|g" \
@@ -51,8 +54,9 @@ credentials-file: ~/.cloudflared/<YOUR-TUNNEL-UUID>.json
 ingress:
   # Autodiscover — the Android "Exchange" wizard and Microsoft AutoDetect
   # (used by Outlook Android / New Outlook for Windows) probe
-  # https://autodiscover.<mail-domain>/autodiscover/autodiscover.xml per
-  # MS-OXDSCLI §2.2.3 before anything else, where <mail-domain> is the
+  # https://autodiscover.example.com/autodiscover/autodiscover.xml per
+  # MS-OXDSCLI §2.2.3 before anything else, where example.com is the
+  # placeholder for your real root / mail domain and the mail-domain is the
   # domain part of the email address the user enters. This hostname MUST
   # therefore be autodiscover.<GATEWAY_MAIL_DOMAIN>; other subdomains are
   # never probed. Handles V1 XML, V2 JSON, and mobilesync; the mobilesync
@@ -66,20 +70,10 @@ ingress:
       tlsTimeout: 10s
       httpHostHeader: autodiscover.<GATEWAY_MAIL_DOMAIN>
 
-  # Root-domain autodiscover fallback — some Android builds also probe
-  # https://<mail-domain>/autodiscover/autodiscover.xml (root, without the
-  # autodiscover. prefix) per MS-OXDSCLI §2.2.3 fallback rules. Publishing
-  # the bare mail domain through the tunnel makes that probe succeed
-  # instead of timing out, speeding up signup. Only enable this entry when
-  # the bare mail domain is (or may be) pointed at this tunnel; delete it
-  # if the root domain must serve other content.
-  - hostname: <GATEWAY_MAIL_DOMAIN>
-    service: http://localhost:8134
-    originRequest:
-      noTLSVerify: false
-      connectTimeout: 30s
-      tlsTimeout: 10s
-      httpHostHeader: autodiscover.<GATEWAY_MAIL_DOMAIN>
+  # DO NOT ADD a root-domain ingress entry here. The bare root domain
+  # (placeholder example.com = your real root domain) already has A/AAAA
+  # records and cannot be tunnel-routed; Android's primary probe is the
+  # autodiscover. hostname above, so no fallback entry is needed.
 
   # EAS service hostname ($GATEWAY_HOST) — ActiveSync, EWS and all other
   # protocol paths are served by the gateway on this single hostname; the

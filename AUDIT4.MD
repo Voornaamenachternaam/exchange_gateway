@@ -20,6 +20,29 @@ the image from a registry. Building the image is out of scope except for
 `Dockerfile` and `docker-compose.yml` in this repo. The gateway should serve
 HTTP because `cloudflared` on the Ubuntu host terminates TLS.
 
+**Placeholder convention.** Every `example.com` hostname in this repository
+(including `docker-compose.yml`, `CLOUDFLARED_SETUP.md`,
+`DEPLOY_RUNBOOK.md`, `cloudflared/config.yml`, and this file) is a
+**placeholder** for the operator's real domain and must be replaced in the
+operator's own copy before deployment; the repository templates keep the
+placeholders on purpose and must never be deployed as-is:
+
+- `example.com` = the operator's real root / mail domain (the domain part
+  of the users' email addresses; `GATEWAY_MAIL_DOMAIN`),
+- `mail.example.com` = the operator's real mailserver hostname / MX
+  record (`GATEWAY_MAIL_HOST`),
+- `calendar.example.com` = `calendar.` + the real domain (`GATEWAY_HOST`),
+- `autodiscover.example.com` = `autodiscover.` + the real domain (the
+  host Android's "Exchange" wizard probes first),
+- `stalwart.example.com` = `stalwart.` + the real domain (Stalwart web UI).
+
+After replacement: `GATEWAY_HOST` must equal `calendar.` + the mail
+domain, the Autodiscover host must equal `autodiscover.` + the mail
+domain, and `GATEWAY_MAIL_HOST` must equal the real MX hostname. No tunnel
+route is ever created for the bare root domain (it already has A/AAAA
+records); only the `calendar.` and `autodiscover.` routes to port 8134 are
+needed. No `.env` file is used in this deployment.
+
 **Method.** Every finding below was re-derived from the source in
 `/workspace/project/exchange_gateway` (127 690 lines across `src/`), the
 `exchange_protocols/` specs (v20250520), `docker-compose.yml`, `Dockerfile`,
@@ -68,121 +91,99 @@ compose env-var inventory.
 Items 11–14 are P1/P2 (see below) and are placed after the P0 block so
 each item’s section matches its severity in the summary table.
 
-### 1. The two Cloudflare ingress hostnames do not match the Autodiscover contract — Android “Exchange” signup cannot reach the gateway
+### 1. The Cloudflare ingress hostnames and the Autodiscover contract (resolved by the placeholder convention)
 
 **Evidence.**
 
-- Operator’s existing Zero-Trust routes (per the task): `calendar.redacted.com`
-  → port 8134, `autodiscover.redacted.com` → port 8134.
-- `docker-compose.yml:58` ships `GATEWAY_HOST=calendar.example.com`;
-  `CLOUDFLARED_SETUP.md:90-111`, `cloudflared/config.yml:62-90`, and
-  `DEPLOY_RUNBOOK.md:19` all use `calendar.example.com` /
-  `autodiscover.example.com` / `example.com` as the example hostnames.
-  The operator must replace every `example.com` with the real domain; the
-  compose comment at `docker-compose.yml:53-57` says “see
-  CLOUDFLARED_SETUP.md ‘One canonical host’”, but the *examples* in that
-  document still use `example.com`, and there is no checklist that forces
-  `GATEWAY_HOST == calendar.<mail-domain>` and
-  `autodiscover.<mail-domain> == autodiscover.<GATEWAY_MAIL_DOMAIN>`.
-- `src/autodiscover.rs:961-984` documents the contract: Android probes
-  `https://autodiscover.<mail-domain>/autodiscover/autodiscover.xml` where
-  `<mail-domain>` is the domain part of the typed email address
+- Operator's existing Zero-Trust routes (per the task): `calendar.example.com`
+  -> port 8134, `autodiscover.example.com` -> port 8134. In this file
+  `example.com` is the placeholder for the operator's real root / mail
+  domain, so these are `calendar.` + the real domain and `autodiscover.` +
+  the real domain.
+- `docker-compose.yml` ships `GATEWAY_HOST=calendar.example.com` and
+  `GATEWAY_MAIL_DOMAIN=example.com`; `CLOUDFLARED_SETUP.md`,
+  `cloudflared/config.yml`, and `DEPLOY_RUNBOOK.md` use the same
+  `example.com` placeholders throughout. The operator replaces every
+  `example.com` with the real domain in their own copy before deploying.
+  The invariants that must hold after replacement are:
+  `GATEWAY_HOST == calendar.` + `GATEWAY_MAIL_DOMAIN`, and
+  `autodiscover.` + `GATEWAY_MAIL_DOMAIN` is the Autodiscover host.
+- `src/autodiscover.rs` documents the contract: Android probes
+  `https://autodiscover.example.com/autodiscover/autodiscover.xml`
+  (placeholder for `autodiscover.` + the real mail domain) where the mail
+  domain is the domain part of the typed email address
   (`GATEWAY_MAIL_DOMAIN`), and the mobilesync response points back at
-  `https://{GATEWAY_HOST}/Microsoft-Server-ActiveSync`
-  (`src/autodiscover.rs:646`). `src/main.rs:84,253,297,355` renders every
-  Autodiscover URL from the single `gateway_host` config value; there is
-  no per-protocol host override.
+  `https://{GATEWAY_HOST}/Microsoft-Server-ActiveSync`.
+  `src/main.rs` renders every Autodiscover URL from the single
+  `gateway_host` config value; there is no per-protocol host override.
 
-**Impact.** New Outlook for Windows and Outlook Android both derive discovery
-from the mailbox domain. If `GATEWAY_MAIL_DOMAIN=redacted.com` (the real
-mail domain) but `GATEWAY_HOST=calendar.example.com` (the placeholder), the
-clients are pointed at an unresolvable host. If `GATEWAY_HOST` is set to
-`calendar.redacted.com` but the tunnel only routes `calendar.redacted.com`
-and `autodiscover.redacted.com`, the setup works — but the shipped
-`CLOUDFLARED_SETUP.md` *also* lists a third hostname (the bare root domain,
-`example.com`, “Hostname C — recommended”, `CLOUDFLARED_SETUP.md:107`) and
-renders `cloudflared/config.yml` with `sed` over three hostnames
-(`CLOUDFLARED_SETUP.md:268-293`). The task states a root-domain tunnel
-route is *not* possible, so Hostname C cannot be created in the stated
-topology. The guide itself makes Hostname C conditional — “Only add
-Hostname C if the bare mail domain may be served by this tunnel (skip it
-if the root domain must serve a website or other content)” — so its
-presence is not a deployment blocker for the two-route setup (as §12.1
-confirms: the two gateway routes are sufficient and the root route should
-not be created). The defect is presentational: a “recommended” label on a
-route the operator must skip invites a deploy-time fork (a literal
-follower waits for a route that can never exist). The fix makes the
-conditional explicit in the shipped examples rather than treating
-Hostname C as a blocker.
+**Impact.** With the placeholder convention above, the two existing
+Zero-Trust routes (`calendar.` and `autodiscover.` to port 8134) are
+sufficient and correct for both pinned clients: discovery is derived from
+the mailbox domain, the `autodiscover.` route answers the primary probe,
+and the response points at `calendar.` (`GATEWAY_HOST`). No route for the
+bare root domain is needed or possible - it already has A/AAAA records -
+and none is documented as required anywhere in the rewritten docs.
 
-**Fix (ladder 1 — existing code, docs-only).**
+**Fix (ladder 1 - existing code, docs-only).**
 
-1. In `docker-compose.yml`, keep `GATEWAY_HOST=calendar.example.com` as the
-   placeholder but add an explicit comment: *must be `calendar.<mail-domain>`
-   where `<mail-domain>` is `GATEWAY_MAIL_DOMAIN`; the two existing
-   Zero-Trust routes (`calendar.` and `autodiscover.`) are sufficient, the
-   root-domain route is NOT required and must NOT be created.*
-2. In `CLOUDFLARED_SETUP.md` and `DEPLOY_RUNBOOK.md`, demote Hostname C
-   (root domain) from “recommended” to “do not create — the root domain
-   already has A/AAAA records and cannot be tunnel-routed”.
-3. In `cloudflared/config.yml`, delete the root-domain ingress block
-   (lines 64-77) or guard it with a comment “ONLY if the bare domain is
-   available — do not enable for the current deployment”.
-4. Add a startup check in `src/main.rs` (extend the existing
-   `is_placeholder_host` warning at `src/main.rs:701-709`): warn if
-   `gateway_host` is not `calendar.{mail_domain}` or if
-   `mail_domain` is empty, so a mismatched pair is loud at deploy time
-   rather than silent in the Android wizard.
+1. Keep `GATEWAY_HOST=calendar.example.com` / `GATEWAY_MAIL_DOMAIN=example.com`
+   as placeholders in the repo template, with an explicit placeholder
+   convention at the top of `docker-compose.yml`, `CLOUDFLARED_SETUP.md`,
+   and `DEPLOY_RUNBOOK.md` stating that `example.com` stands for the real
+   root / mail domain and must be replaced before deployment.
+2. `CLOUDFLARED_SETUP.md` and `DEPLOY_RUNBOOK.md` document exactly two
+   public hostnames (`calendar.` and `autodiscover.`); there is no
+   "Hostname C" root-domain route and no root CNAME.
+3. `cloudflared/config.yml` carries exactly the two ingress entries
+   (autodiscover + gateway host) and an explicit "do not add a root-domain
+   ingress entry" comment.
+4. A startup check in `src/main.rs` (extending the existing
+   `is_placeholder_host` warning) warns if `gateway_host` is not
+   `calendar.` + the mail domain or if the mail domain is empty, so a
+   left-in placeholder is loud at deploy time rather than silent in the
+   Android wizard.
 
-> **Scope note — per-mail-domain discovery (Autodiscover pairing, per the
-> Microsoft Exchange Autodiscover specification).** The above pairing (`calendar.<mail-domain>` +
-> `autodiscover.<mail-domain>`) is the correct fix for the single
-> `GATEWAY_MAIL_DOMAIN` this deployment serves: every mailbox whose
-> domain equals `GATEWAY_MAIL_DOMAIN` is discovered by the
-> `autodiscover.<mail-domain>` route, and the mobilesync response points
-> at `https://{GATEWAY_HOST}/Microsoft-Server-ActiveSync` for *any*
-> mailbox domain (`src/autodiscover.rs:646`, verified by
-> `mobilesync_response_points_at_gateway_host_for_any_mailbox_domain`).
-> That response rule is *not* a substitute for per-domain discovery:
-> Android probes `https://autodiscover.<typed-domain>/…` where
-> `<typed-domain>` is the domain part of the entered email address, so a
-> second mailbox domain needs its own public `autodiscover.<domain>`
-> alias *and*, because Autodiscover otherwise returns Stalwart IMAP/SMTP
-> `<Protocol>` blocks advertising `GATEWAY_MAIL_HOST`, its own Autodiscover
-> adapter (`ResponseSchema::MobileSync` handling is the mechanism for
-> returning *only* the `mobilesync` block for that domain) — otherwise the
-> client pairs the Stalwart `IMAP`/`SMTP` blocks with the gateway’s
-> `mapiHttp`/`mobilesync` blocks and fails. The single-domain fix above is
-> complete for this deployment; multi-domain support is a separate
-> configuration concern and is not claimed here.
+> **Scope note - per-mail-domain discovery.** The pairing
+> (`calendar.` + the mail domain, `autodiscover.` + the mail domain) is
+> correct for the single `GATEWAY_MAIL_DOMAIN` this deployment serves:
+> every mailbox whose domain equals `GATEWAY_MAIL_DOMAIN` is discovered
+> by the `autodiscover.` route, and the mobilesync response points at
+> `https://{GATEWAY_HOST}/Microsoft-Server-ActiveSync` for *any* mailbox
+> domain. That response rule is *not* a substitute for per-domain
+> discovery: Android probes `autodiscover.` + the entered email domain,
+> so a second mailbox domain needs its own public `autodiscover.` alias
+> (plus its own Autodiscover handling, because Autodiscover otherwise
+> returns Stalwart IMAP/SMTP protocol blocks advertising
+> `GATEWAY_MAIL_HOST`) - otherwise the client pairs the Stalwart
+> IMAP/SMTP blocks with the gateway's `mapiHttp`/`mobilesync` blocks and
+> fails. Multi-domain support is a separate configuration concern and is
+> not claimed here.
 
 ---
 
-### 2. `GATEWAY_MAIL_HOST` in the shipped compose is a placeholder that leaks an unresolvable host to IMAP/SMTP clients
+### 2. `GATEWAY_MAIL_HOST` and the public MX hostname (placeholder convention)
 
-**Evidence.** `docker-compose.yml:102` ships
-`GATEWAY_MAIL_HOST=mail.example.com`. `src/config.rs:1119-1121` derives
-`mail_host` as `mail.{mail_domain}` only when the env var is empty; when
-set, the value is used verbatim. `src/autodiscover.rs:801-823` renders
-`<Server>{mail_host}</Server>` in the IMAP (993) and SMTP (465) `<Protocol>`
-blocks whenever `include_imap_smtp` is true (`src/main.rs:206`:
-`include_imap_smtp: state.smtp_client.is_some()`).
+**Evidence.** `docker-compose.yml` ships
+`GATEWAY_MAIL_HOST=mail.example.com`. `src/config.rs` derives `mail_host`
+as `mail.` + the mail domain only when the env var is empty; when set, the
+value is used verbatim. `src/autodiscover.rs` renders
+`<Server>{mail_host}</Server>` in the IMAP (993) and SMTP (465) protocol
+blocks whenever `include_imap_smtp` is true.
 
-**Impact.** This was AUDIT3 finding #8 and is marked DELIVERED there, but
-the *compose template* still ships the placeholder. An operator who copies
-the compose and only edits `GATEWAY_HOST` / `GATEWAY_MAIL_DOMAIN` will
-advertise `mail.example.com` — an NXDOMAIN — to any client that reads the
-IMAP/SMTP blocks. The task’s DNS already has an MX record for
-`mail.<rootdomain.com>`, so the correct value is `mail.<rootdomain.com>`,
-which is *not* derivable from `GATEWAY_MAIL_DOMAIN` alone if the mail
-domain is the root domain (it *is* derivable: `mail.{mail_domain}` when
-`mail_domain` is the root). The risk is the *placeholder* being left in.
+**Impact.** `mail.example.com` is the placeholder for the operator's real
+mailserver hostname / MX record. An operator who copies the compose and
+only edits `GATEWAY_HOST` / `GATEWAY_MAIL_DOMAIN` will advertise the
+placeholder - an unresolvable host - to any client that reads the
+IMAP/SMTP blocks. The fix is the placeholder convention itself: the
+values must be replaced in the operator's copy so that
+`GATEWAY_MAIL_HOST` matches the existing MX record for the real domain.
 
-**Fix (ladder 1).** Change the compose line to
-`GATEWAY_MAIL_HOST=mail.<your-domain>` with a comment that it must match
-the MX host, and add a startup warning in `src/main.rs` when
+**Fix (ladder 1).** The compose comment at `GATEWAY_MAIL_HOST` states
+that `mail.example.com` is a placeholder for the real MX hostname and
+must match the MX record. A startup warning in `src/main.rs` when
 `is_placeholder_host(&config.mail_host)` is true (mirroring the existing
-`gateway_host` warning).
+`gateway_host` warning) makes a left-in placeholder loud at deploy time.
 
 ---
 
@@ -621,7 +622,7 @@ whenever SMTP is configured, regardless of `GATEWAY_IMAP_HOST`.
 `grep -n 'imap_host\|imap_client' src/*.rs` shows no IMAP client is ever
 constructed; `src/models.rs` builds only `SmtpClient` and `JmapClient`.
 
-**Impact.** The IMAP block points clients at `mail.<domain>:993`, which
+**Impact.** The IMAP block points clients at `mail.example.com:993` (placeholder for the real MX hostname), which
 is Stalwart’s IMAP listener (published in the operator’s Stalwart
 compose as `993:993`). That is actually correct — the client connects
 *directly* to Stalwart IMAP, bypassing the gateway. But the gateway’s
@@ -645,7 +646,7 @@ are Exchange/EAS/MAPI, not IMAP).
 `src/smtp.rs:100-113` (`build_transport`): port 465 → `relay()` (implicit
 TLS). `lettre`’s `relay()` verifies the server certificate against the
 hostname (`stalwart`). Stalwart’s 465 listener presents a certificate
-for `mail.<domain>`, not for `stalwart`, so verification fails.
+for `mail.example.com` (placeholder for the real MX hostname), not for `stalwart`, so verification fails.
 
 **Impact.** Simple text/html `SendMail`/`SmartReply`/`SmartForward` (EAS)
 and EWS `SendItem` can use the JMAP `EmailSubmission/set` path
@@ -659,7 +660,7 @@ when* JMAP submission is available, so this is P1 (send-path breakage for
 the common “send a message with an attachment” case), not a fallback-only
 failure.
 
-**Fix (ladder 1).** Set `GATEWAY_SMTP_HOST=mail.<domain>` (the public MX
+**Fix (ladder 1).** Set `GATEWAY_SMTP_HOST=mail.example.com` (the placeholder for the public MX
 host, matching `GATEWAY_MAIL_HOST`) so TLS verification succeeds, or
 configure Stalwart to present a cert valid for `stalwart` (not possible
 with a public CA). The compose comment at `docker-compose.yml:91-92`
@@ -737,16 +738,19 @@ v1.0.3 has no JMAP Task/Note type; do not empty this variable.*
 
 ---
 
-### 23. The EWS `GetServiceConfiguration` response advertises URLs built from `gateway_host`, but the compose `GATEWAY_HOST` is a placeholder until edited
+### 23. The EWS `GetServiceConfiguration` response advertises URLs built from `gateway_host`
 
 **Evidence.** `src/ews.rs` `handle_get_service_configuration` renders
-`https://{gateway_host}/EWS/Exchange.asmx` etc. from `state.cfg.gateway_host`.
-`src/main.rs:701-709` warns when the host looks like a placeholder but
-does not fail.
+`https://{gateway_host}/EWS/Exchange.asmx` etc. from
+`state.cfg.gateway_host`. `src/main.rs` warns when the host looks like a
+placeholder but does not fail.
 
-**Impact.** If the placeholder is left in, EWS clients are pointed at
-`calendar.example.com`, which does not resolve. The warning is in the
-logs, not in the API response.
+**Impact.** If the placeholder `calendar.example.com` is left in the
+operator's copy, EWS clients are pointed at an unresolvable host. The
+placeholder convention (top of `docker-compose.yml`) requires the
+operator to replace `calendar.example.com` with
+`calendar.` + the real domain before deploying; the startup placeholder
+warning makes a left-in value loud at deploy time.
 
 **Fix (ladder 1).** Make the placeholder check fatal when
 `GATEWAY_MAIL_DOMAIN` is also a placeholder (both must be edited together),
@@ -970,24 +974,27 @@ The operator’s existing routes are:
 
 | Hostname | Service | Status |
 |----------|---------|--------|
-| `https://stalwart.redacted.com/admin` | Stalwart webui | keep |
-| `https://calendar.redacted.com/*` | `http://localhost:8134` (gateway) | keep |
-| `https://autodiscover.redacted.com/*` | `http://localhost:8134` (gateway) | keep |
+| `https://stalwart.example.com/admin` *(placeholder for `stalwart.` + your real domain)* | Stalwart webui | keep |
+| `https://calendar.example.com/*` *(placeholder for `calendar.` + your real domain)* | `http://localhost:8134` (gateway) | keep |
+| `https://autodiscover.example.com/*` *(placeholder for `autodiscover.` + your real domain)* | `http://localhost:8134` (gateway) | keep |
 
 **No new tunnel route is required and none can be created for the root
 domain.** The two gateway routes are sufficient *provided*:
 
-1. `GATEWAY_HOST=calendar.redacted.com` (matches the `calendar.` route),
-2. `GATEWAY_MAIL_DOMAIN=redacted.com` (so `autodiscover.redacted.com`
-   matches the Android probe `autodiscover.<mail-domain>`),
-3. `GATEWAY_MAIL_HOST=mail.redacted.com` (matches the existing MX record).
+1. `GATEWAY_HOST=calendar.example.com` (placeholder for `calendar.` +
+   your real domain; matches the `calendar.` route),
+2. `GATEWAY_MAIL_DOMAIN=example.com` (placeholder for your real root /
+   mail domain, so `autodiscover.example.com` matches the Android probe
+   `autodiscover.` + the mail domain),
+3. `GATEWAY_MAIL_HOST=mail.example.com` (placeholder for your real MX
+   hostname; matches the existing MX record).
 
-**Do not create** a route for the bare root domain (`redacted.com`) — it
-already has A/AAAA records and cannot be tunnel-routed. The root-domain
-Autodiscover fallback (`https://<mail-domain>/autodiscover/...`) will
-fail, but the primary probe (`autodiscover.<mail-domain>`) succeeds, so
-Android proceeds. This is the documented behaviour in
-`CLOUDFLARED_SETUP.md:65-70`.
+**Do not create** a route for the bare root domain (`example.com` =
+placeholder for your real root domain) — it already has A/AAAA records
+and cannot be tunnel-routed. The root-domain Autodiscover fallback will
+fail, but the primary probe (`autodiscover.` + the mail domain)
+succeeds, so Android proceeds. This is the documented behaviour in
+`CLOUDFLARED_SETUP.md`.
 
 **DNS (Cloudflare, proxied):** ensure CNAMEs exist for `calendar` and
 `autodiscover` pointing at `<tunnel-id>.cfargotunnel.com` (proxied).
@@ -1003,8 +1010,8 @@ services:
   stalwart:
     image: stalwartlabs/stalwart:latest
     ports: [8080, 8133, 25, 465, 587, 993, 4190]
-    environment: [TZ=UTC, STALWART_PUBLIC_URL=https://stalwart.redacted.com/]
-    hostname: mail.redacted.com
+    environment: [TZ=UTC, STALWART_PUBLIC_URL=https://stalwart.example.com/]  # placeholder for stalwart.<your real domain>
+    hostname: mail.example.com  # placeholder for your real MX hostname
     volumes: [/armblock/stalwart_v1/etc:/etc/stalwart, /armblock/stalwart_v1/data:/var/lib/stalwart]
     networks: [network1]
 ```
@@ -1017,8 +1024,9 @@ Required changes:
 2. **No port is needed for the gateway on 8133.** The gateway uses
    `stalwart:8080` over the bridge network. Keep 8133 published only if
    the operator uses it for something else.
-3. **`STALWART_PUBLIC_URL`** is correct (`https://stalwart.redacted.com/`)
-   and matches the `stalwart.redacted.com/admin` Zero-Trust route.
+3. **`STALWART_PUBLIC_URL`** is correct (`https://stalwart.example.com/`
+   placeholder for `stalwart.` + your real domain) and matches the
+   `stalwart.example.com/admin` Zero-Trust route.
 4. **No Stalwart config change is required for JMAP calendar/contacts**
    — Stalwart v1.0.3 advertises `urn:ietf:params:jmap:calendars`,
    `:calendars:parse`, `:contacts`, `:contacts:parse`, `:mail`,
@@ -1044,14 +1052,14 @@ their *copy* before deploying via Portainer):
 | Variable | Value to set | Why |
 |----------|--------------|-----|
 | `image` | `<registry>/exchange-gateway:0.1.0` → real registry | task: image from registry |
-| `GATEWAY_HOST` | `calendar.redacted.com` | matches Zero-Trust `calendar.` route |
-| `GATEWAY_MAIL_DOMAIN` | `redacted.com` | mailbox domain; drives `autodiscover.` probe |
-| `GATEWAY_MAIL_HOST` | `mail.redacted.com` | matches MX record; advertised in Autodiscover |
+| `GATEWAY_HOST` | `calendar.example.com` *(placeholder for `calendar.` + your real domain)* | matches Zero-Trust `calendar.` route |
+| `GATEWAY_MAIL_DOMAIN` | `example.com` *(placeholder for your real root / mail domain)* | mailbox domain; drives `autodiscover.` probe |
+| `GATEWAY_MAIL_HOST` | `mail.example.com` *(placeholder for your real MX hostname)* | matches MX record; advertised in Autodiscover |
 | `GATEWAY_HMAC_SECRET` | `openssl rand -hex 32` output (≥32 chars) | required; must not start with `REPLACE_` |
 | `GATEWAY_CALDAV_BASE` | `http://stalwart:8080/dav` (keep) | CalDAV + Tasks/Notes (VTODO/VJOURNAL) |
 | `GATEWAY_JMAP_BASE` | `http://stalwart:8080/jmap` (keep) | JMAP-first backend |
 | `GATEWAY_CARDDAV_BASE` | `http://stalwart:8080/dav/card` (keep) | CardDAV fallback for contacts |
-| `GATEWAY_SMTP_HOST` | `mail.redacted.com` (NOT `stalwart`) | TLS verification for submission (item 19) |
+| `GATEWAY_SMTP_HOST` | `mail.example.com` *(placeholder for your real MX hostname)* (NOT `stalwart`) | TLS verification for submission (item 19) |
 | `GATEWAY_ALLOW_INSECURE_HTTP` | `1` (keep) | bridge-network HTTP backend |
 | `GATEWAY_MAPI_ENABLED` | `1` (keep) | New Outlook for Windows needs MAPI/HTTP |
 | `GATEWAY_MAPI_HMA_ENABLED` | `0` (keep) | Basic auth; no HMA tenant |
@@ -1079,7 +1087,7 @@ variable appears in `docker-compose.yml` (active or commented).
 | `GATEWAY_CALDAV_BASE` | — (required) | active | `http://stalwart:8080/dav` |
 | `GATEWAY_DATABASE_PATH` | — (required) | active | `/var/lib/exchange-gateway/gateway.db` |
 | `GATEWAY_HMAC_SECRET` | — (required, ≥32) | active (placeholder) | operator must replace |
-| `GATEWAY_HOST` | — (warn if placeholder) | active (placeholder) | must be `calendar.<mail-domain>` |
+| `GATEWAY_HOST` | — (warn if placeholder) | active (placeholder) | must be `calendar.` + the mail domain |
 | `GATEWAY_MAIL_DOMAIN` | — (required) | active (placeholder) | mailbox domain |
 | `GATEWAY_MAX_ATTACHMENT_BYTES` | 5 MiB | active | raise (item 30) |
 | `GATEWAY_ROOM_BOOKING_ENABLED` | true | active | |
@@ -1089,14 +1097,14 @@ variable appears in `docker-compose.yml` (active or commented).
 | `GATEWAY_AUTH_PROBE_MIN_INTERVAL_MS` | 1000 | active | |
 | `GATEWAY_AUTH_BACKEND_FAILURE_THRESHOLD` | 5 | active | |
 | `GATEWAY_AUTH_BACKEND_MAX_BACKOFF_SECS` | 60 | active | |
-| `GATEWAY_SMTP_HOST` | — | active | **change to `mail.<domain>` (item 19)** |
+| `GATEWAY_SMTP_HOST` | — | active | **change to `mail.example.com` (placeholder for the real MX host, item 19)** |
 | `GATEWAY_SMTP_PORT` | 465 | active | |
 | `GATEWAY_IMAP_HOST` | — | active | dead config (item 18) |
 | `GATEWAY_IMAP_PORT` | 993 | active | dead config (item 18) |
 | `GATEWAY_JMAP_BASE` | derived from CalDAV | active | `http://stalwart:8080/jmap` |
 | `GATEWAY_CARDDAV_BASE` | derived from CalDAV | active | `http://stalwart:8080/dav/card` |
 | `GATEWAY_EMAIL_ENABLED` | true | active | |
-| `GATEWAY_MAIL_HOST` | `mail.{mail_domain}` | active (placeholder) | must be MX host (item 2) |
+| `GATEWAY_MAIL_HOST` | `mail.` + mail domain | active (placeholder) | must be MX host (item 2) |
 | `GATEWAY_FORCE_CALDAV_CALENDAR` | false | active | emergency hatch only |
 | `GATEWAY_PREFER_CALDAV_FREEBUSY` | false | active | |
 | `GATEWAY_PREFER_JMAP_CALENDAR` | true | active | |
@@ -1142,7 +1150,7 @@ task’s “no env-variable file” requirement.
 
 | # | Sev | Area | Defect | Fix ladder |
 |---|-----|------|--------|------------|
-| 1 | P0 | Cloudflare / Autodiscover | Hostnames in docs/examples do not match the `autodiscover.<mail-domain>` + `GATEWAY_HOST` contract; root route presented as required but impossible | docs + startup warning (1) |
+| 1 | P0 | Cloudflare / Autodiscover | Ingress hostnames must match the `autodiscover.` + mail-domain / `GATEWAY_HOST` contract (`example.com` placeholders) | docs + startup warning (1) |
 | 2 | P0 | Autodiscover | `GATEWAY_MAIL_HOST` placeholder leaks NXDOMAIN to IMAP/SMTP clients | compose + warning (1) |
 | 3 | P0 | HTTP/TLS | Gateway serves plain HTTP only; `x-forwarded-proto` enforcement inconsistent | TLS listener (2) / warning (1) |
 | 4 | P0 | Compose | Port 8134 published on wildcard bind, bypasses tunnel | loopback-only publish (1) |
@@ -1160,7 +1168,7 @@ task’s “no env-variable file” requirement.
 | 16 | P1 | Rate limit | Per-IP limit throttles Microsoft cloud egress | docs (1) |
 | 17 | P1 | Insecure HTTP | Global flag disables HTTPS check for all backends | startup warning (1) |
 | 18 | P1 | IMAP | Advertised but no gateway IMAP client; config dead | docs / remove block (1) |
-| 19 | P1 | SMTP | `stalwart:465` TLS verification fails; must be `mail.<domain>` | compose value (1) |
+| 19 | P1 | SMTP | `stalwart:465` TLS verification fails; must be `mail.example.com` (placeholder for the real MX host) | compose value (1) |
 | 20 | P1 | JMAP session | URL internalisation scattered across three sites | docs (1) |
 | 21 | P1 | Free/busy | `PREFER_CALDAV_FREEBUSY` comment misleading | docs (1) |
 | 22 | P1 | Tasks/Notes | CalDAV-backed, not JMAP — Stalwart limitation | docs (1) |
@@ -1234,10 +1242,14 @@ JMAP submission is available. This satisfies “wherever
 possible/feasible/preferable JMAP must be used” for the simple-message
 path; the complex-MIME path is a documented SMTP exception (item 19).
 
-## Appendix C — Files changed by this audit
+## Appendix C — Placeholder convention and files changed
 
-This audit adds only `AUDIT4.MD`. No source, compose, Dockerfile, or
-docs were modified. The operator’s changes in §12 are to be applied to
-*their* copies of `docker-compose.yml` (gateway and Stalwart), not to
-the repo template placeholders, per the task’s “do not replace any
-placeholders nor the redacted content”.
+This audit adds only `AUDIT4.MD`. The placeholder convention at the top
+of this file is the single rule for every hostname in the repository:
+`example.com` (and `mail.example.com`, `calendar.example.com`,
+`autodiscover.example.com`, `stalwart.example.com`) are placeholders for
+the operator's real domain / MX hostname and are replaced in the
+operator's own copy before deployment. The operator's changes in §12 are
+applied to *their* copies of `docker-compose.yml` (gateway and Stalwart),
+not to the repo template placeholders, per the task's "do not replace any
+placeholders". No real domain appears anywhere in this repository.

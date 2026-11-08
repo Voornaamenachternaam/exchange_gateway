@@ -4,6 +4,19 @@
 
 This guide configures Cloudflare Tunnel to expose the Exchange Gateway container via HTTPS. cloudflared runs natively on Ubuntu Server 24.04 LTS (not as a container). All container configuration is done via environment variables in Docker Compose.
 
+> **Placeholder convention - read before deploying.** Every `example.com`
+> hostname in this file is a **placeholder** for your real domain and must
+> be replaced in your own copy before deployment. `example.com` stands for
+> your real root / mail domain (`GATEWAY_MAIL_DOMAIN`), `mail.example.com`
+> for your real mailserver hostname / MX record (`GATEWAY_MAIL_HOST`),
+> `calendar.example.com` for `calendar.` + your real domain (`GATEWAY_HOST`),
+> and `autodiscover.example.com` for `autodiscover.` + your real domain.
+> After replacement: `GATEWAY_HOST` must equal `calendar.` + the mail
+> domain, and `GATEWAY_MAIL_HOST` must equal your real MX hostname. No
+> tunnel route is ever created for the bare root domain (it already has
+> A/AAAA records) - only the `calendar.` and `autodiscover.` routes to
+> port 8134 are needed.
+
 **Two deployment options are supported:**
 1. **Token-based (recommended)**: Use `--token <TUNNEL_TOKEN>` in systemd service - no config file needed
 2. **Config-file based**: Use `--config /path/to/config.yml` with `cloudflared/config.yml` from this repository
@@ -50,69 +63,72 @@ Cloudflare terminates TLS at the edge. The tunnel provides encrypted transport f
 
 ---
 
-## Step 2: Configure Public Hostnames (Android "Exchange" signup requires TWO)
+## Step 2: Configure Public Hostnames (Android "Exchange" signup requires exactly TWO)
 
 Android's "Exchange" account wizard and Microsoft AutoDetect (the cloud
 probing service used by Outlook Android and New Outlook for Windows)
 derive discovery addresses from **the domain part of the email address the
 user types** — i.e. your `GATEWAY_MAIL_DOMAIN` — per MS-OXDSCLI §2.2.3:
 
-1. `https://autodiscover.<mail-domain>/autodiscover/autodiscover.xml`
-   (primary probe — **mandatory**),
-2. `https://<mail-domain>/autodiscover/autodiscover.xml`
-   (root-domain fallback probe — some Android builds try it when the first
-   fails or stalls; publishing it makes signup succeed faster and more
-   predictably).
+1. `https://autodiscover.example.com/autodiscover/autodiscover.xml`
+   (*placeholder for `autodiscover.` + your real domain*; primary probe -
+   **mandatory**).
+2. `https://calendar.example.com/Microsoft-Server-ActiveSync`
+   (*placeholder for `calendar.` + your real domain* = `GATEWAY_HOST`; the
+   URL the gateway's Autodiscover response points at).
 
 Both probes must reach the gateway, and the gateway's Autodiscover response
 (per `src/autodiscover.rs`, `ResponseSchema::MobileSync` detection) answers
 MobileSync clients with `<Url>https://$GATEWAY_HOST/Microsoft-Server-ActiveSync</Url>`
 — so `GATEWAY_HOST` itself must also be a public hostname on the tunnel.
 
-**Scope note — one discovery setup per mailbox domain.** The sign-up flow
-described here works for mailboxes under `GATEWAY_MAIL_DOMAIN`, because that
-is the (only) domain for which Steps 2–3 publish discovery DNS records,
-tunnel ingress routes, and TLS. The mobilesync response itself returns the
-`GATEWAY_HOST` URL for **any** email domain (verified by
+**Scope note - one discovery setup per mailbox domain.** The sign-up flow
+described here works for mailboxes under `GATEWAY_MAIL_DOMAIN` (placeholder
+`example.com` = your real root / mail domain), because that is the (only)
+domain for which Steps 2-3 publish discovery DNS records, tunnel ingress
+routes, and TLS. The mobilesync response itself returns the `GATEWAY_HOST`
+URL for **any** email domain (verified by
 `mobilesync_response_points_at_gateway_host_for_any_mailbox_domain` in
 `src/autodiscover.rs`), but that only means no per-domain changes are needed
-*in the gateway response* — it does not make `autodiscover.<some other
-domain>` resolvable. To also support Android signup for an additional
-mailbox domain (e.g. `user@example.org`), repeat Hostnames B/C and the
-CNAME records below **for that domain**: add `autodiscover.example.org`
-(and optionally the `example.org` apex) as public hostnames on the tunnel
-with matching ingress entries and Cloudflare-proxied DNS records, and
-ensure Cloudflare issues a TLS certificate for those hostnames (Universal
-SSL on that zone, or move the zone to Cloudflare). Without those per-domain
+*in the gateway response* - it does not make `autodiscover.<other domain>`
+resolvable. To also support Android signup for an additional mailbox domain,
+repeat Hostnames A/B and the CNAME records below **for that domain** (with
+`example.com` replaced by that domain): add `autodiscover.<that domain>`
+and `calendar.<that domain>` as public hostnames on the tunnel with
+matching ingress entries and Cloudflare-proxied DNS records, and ensure
+Cloudflare issues a TLS certificate for those hostnames (Universal SSL on
+that zone, or move the zone to Cloudflare). Without those per-domain
 records, Android's first probe for that domain never reaches the gateway,
 regardless of what the Autodiscover response contains.
 
-In the same tunnel settings (**Public Hostname** tab), add **two** (or
-**three**) entries, each pointing at the gateway:
+In the same tunnel settings (**Public Hostname** tab), add exactly **two**
+entries, each pointing at the gateway:
 
-#### Hostname A — EAS service hostname (`GATEWAY_HOST`)
+#### Hostname A - EAS service hostname (`GATEWAY_HOST`)
 
-- **Subdomain/Domain**: `calendar.example.com` (the value you will set as
-  `GATEWAY_HOST` in `docker-compose.yml`)
+- **Subdomain/Domain**: `calendar.example.com` (*placeholder for
+  `calendar.` + your real domain*; the value you will set as `GATEWAY_HOST`
+  in `docker-compose.yml`)
 - **Type**: HTTP
 - **Service**: `http://localhost:8134`
 
-#### Hostname B — Autodiscover subdomain (`autodiscover.<GATEWAY_MAIL_DOMAIN>`) — REQUIRED for Android
+#### Hostname B - Autodiscover subdomain (`autodiscover.` + `GATEWAY_MAIL_DOMAIN`) - REQUIRED for Android
 
-- **Subdomain/Domain**: `autodiscover.example.com`
-  (i.e. `autodiscover.` + the exact `GATEWAY_MAIL_DOMAIN` from `docker-compose.yml`)
+- **Subdomain/Domain**: `autodiscover.example.com` *(placeholder for
+  `autodiscover.` + your real domain*, i.e. `autodiscover.` + the exact
+  `GATEWAY_MAIL_DOMAIN` from `docker-compose.yml`)
 - **Type**: HTTP
 - **Service**: `http://localhost:8134`
 
-#### Hostname C — root-domain fallback (`<GATEWAY_MAIL_DOMAIN>`) — recommended
+#### No Hostname C - do not create a root-domain route
 
-- **Subdomain/Domain**: `example.com` (the bare `GATEWAY_MAIL_DOMAIN`)
-- **Type**: HTTP
-- **Service**: `http://localhost:8134`
-
-> Only add Hostname C if the bare mail domain may be served by this tunnel
-> (skip it if the root domain must serve a website or other content).
-> The Android wizard proceeds via Hostname B alone when B answers.
+There is **no** third public hostname for the bare root domain
+(`example.com` = your real root domain). The root domain already has
+A/AAAA records and **cannot** be tunnel-routed, and no route for it may
+be created. This is not a gap: Android's primary Autodiscover probe is
+Hostname B (`autodiscover.` + the mail domain, per MS-OXDSCLI 2.2.3), and
+the Android wizard proceeds via Hostname B alone when B answers. The
+root-domain fallback probe will fail, which is expected and harmless.
 
 ### One canonical host serves every gateway surface — no per-protocol routes
 
@@ -134,30 +150,27 @@ Autodiscover renders every service URL from the single `GATEWAY_HOST`
 (e.g. `<EwsUrl>https://{GATEWAY_HOST}/EWS/Exchange.asmx</EwsUrl>`,
 `<Url>https://{GATEWAY_HOST}/Microsoft-Server-ActiveSync</Url>`), so the
 EWS, MAPI, OAB and ECP endpoints all live on **Hostname A**
-(`GATEWAY_HOST`, `calendar.example.com` in the examples) — no additional
-tunnel route is needed for any of them. The two existing Zero-Trust routes
-(`calendar.<domain>` and `autodiscover.<domain>` → port 8134) are therefore
-sufficient **provided the client is configured for the canonical
-`GATEWAY_HOST`**: Autodiscover must be reachable on the
-`autodiscover.<mail-domain>` host (Hostname B) and the response must point
-at `GATEWAY_HOST`. A third route (`mail.<domain>` → 8134) is needed **only
-if** the client is told to use `mail.<domain>` for EAS/EWS instead of
-`GATEWAY_HOST` — the gateway never advertises such a URL on its own.
-Hostname C (the root-domain route) is **optional and conditional**: create
-it only when the root domain (`<GATEWAY_MAIL_DOMAIN>`) is available for the
-tunnel. Cloudflare Tunnel serves a root hostname via CNAME flattening, but
-if the root domain already has A/AAAA records serving other content
-(e.g. a website), those records must be **retained** and Hostname C must be
-skipped — the records cannot be proxied to the tunnel and duplicated at
-the same time. Hostname C is independent of the gateway surfaces (A/B are
-always sufficient); it only affects clients that probe the bare domain.
+(`GATEWAY_HOST`; `calendar.example.com` in the examples is a placeholder
+for `calendar.` + your real domain) - no additional tunnel route is needed
+for any of them. The two existing Zero-Trust routes
+(`calendar.example.com` and `autodiscover.example.com` to port 8134;
+placeholders for `calendar.` + your real domain and `autodiscover.` +
+your real domain) are therefore sufficient **provided the client is
+configured for the canonical `GATEWAY_HOST`**: Autodiscover must be
+reachable on the `autodiscover.example.com` host (Hostname B) and the
+response must point at `GATEWAY_HOST`. A third route
+(`mail.example.com` to 8134; placeholder for your real MX hostname) is
+needed **only if** the client is told to use `mail.example.com` for
+EAS/EWS instead of `GATEWAY_HOST` - the gateway never advertises such a
+URL on its own. No root-domain route exists or may be created (see "No
+Hostname C" above): the bare root domain already has A/AAAA records.
 
 ### `GATEWAY_MAIL_HOST` must be the public MX host (AUDIT3 §8)
 
 Autodiscover's IMAP/SMTP `<Protocol>` blocks advertise `GATEWAY_MAIL_HOST`
 (`src/autodiscover.rs` renders `<Server>{mail_host}</Server>` from it).
-Set it to the **publicly resolvable MX host** (e.g. `mail.example.com`,
-matching your MX record) — never the internal Docker service name
+Set it to the **publicly resolvable MX host** (`mail.example.com` =
+placeholder for your real MX hostname, matching your MX record) — never the internal Docker service name
 (`stalwart`), which IMAP/SMTP-capable clients cannot resolve. The backend
 plumbing variables `GATEWAY_SMTP_HOST`/`GATEWAY_IMAP_HOST` stay on the
 internal service name and are never advertised.
@@ -166,18 +179,21 @@ internal service name and are never advertised.
 
 ## Step 3: Create DNS Records
 
-Create one **CNAME** per public hostname from Step 2, all pointing at the
-same tunnel target (`<tunnel-id>.cfargotunnel.com`, shown in the tunnel
-settings). For `GATEWAY_MAIL_DOMAIN=example.com` and
-`GATEWAY_HOST=calendar.example.com`:
+Create one **CNAME** per public hostname from Step 2 (exactly two -
+there is no root-domain record), all pointing at the same tunnel target
+(`<tunnel-id>.cfargotunnel.com`, shown in the tunnel settings). With the
+placeholders as shipped (`GATEWAY_MAIL_DOMAIN=example.com`,
+`GATEWAY_HOST=calendar.example.com`):
 
 | Type  | Name                        | Target                              | Proxy status              |
 |-------|-----------------------------|-------------------------------------|---------------------------|
 | CNAME | `calendar` (GATEWAY_HOST)   | `<tunnel-id>.cfargotunnel.com`      | Proxied                   |
 | CNAME | `autodiscover`              | `<tunnel-id>.cfargotunnel.com`      | Proxied                   |
-| CNAME | `@` (root, optional)        | `<tunnel-id>.cfargotunnel.com`      | Proxied (CNAME flattening)|
 
-All three records MUST be **Proxied** from the start. A DNS-only record
+> **Do not create an `@` (root) CNAME.** The bare root domain already has
+> A/AAAA records and must not be pointed at the tunnel.
+
+Both records MUST be **Proxied** from the start. A DNS-only record
 pointing at `*.cfargotunnel.com` never reaches the tunnel: tunnel routing
 happens only inside Cloudflare's edge, so a DNS-only hostname resolves to a
 CF any-cast address that does not answer HTTP for this service and the
@@ -185,9 +201,6 @@ verification checks below (and the Android wizard itself) would fail
 against the intended public HTTPS path. Public TLS is provided by
 Cloudflare's Proxied mode via Universal SSL; the gateway's Cloudflare-mode
 Ping clamp documented below likewise only engages on Proxied traffic.
-
-The apex (`@` / root) record relies on Cloudflare's CNAME flattening, which
-is supported automatically on Cloudflare-hosted zones.
 
 **Verification (from any network):**
 
@@ -204,18 +217,12 @@ curl --fail-with-body -sS -X POST \
   https://autodiscover.example.com/autodiscover/autodiscover.xml \
   | grep -F "$EXPECTED_URL"
 # The <Url> in the response MUST be https://calendar.example.com/Microsoft-Server-ActiveSync
-# (i.e. GATEWAY_HOST), regardless of the email domain queried.
+# (i.e. GATEWAY_HOST; calendar.example.com = placeholder for
+# calendar.<your real domain>), regardless of the email domain queried.
 
-# Root-domain fallback (Hostname C, only if added) — Android POSTs the same
-# MobileSync Autodiscover request here per MS-OXDSCLI fallback rules, so
-# verify the identical POST + URL assertion instead of a bare GET (a GET
-# carries no AcceptableResponseSchema and cannot prove the POST probe
-# Android actually sends will succeed).
-curl --fail-with-body -sS -X POST \
-  -H 'Content-Type: text/xml' \
-  -d "$MOBILESYNC_XML" \
-  https://example.com/autodiscover/autodiscover.xml \
-  | grep -F "$EXPECTED_URL"
+# There is deliberately no root-domain check: no route for the bare root
+# domain exists (it already has A/AAAA records), and Android's primary
+# probe is the autodiscover. hostname above.
 
 # EAS service hostname (Hostname A)
 curl --fail-with-body -sS https://calendar.example.com/health
@@ -277,12 +284,14 @@ mkdir -p ~/.cloudflared
    exported `TUNNEL_ID` in a single `sed` pass, writing the result to
    `~/.cloudflared/config.yml` directly from the template:
    - `<YOUR-TUNNEL-UUID>` → your tunnel UUID from Step 1 (`TUNNEL_ID`)
-   - `<GATEWAY_MAIL_DOMAIN>` → the `GATEWAY_MAIL_DOMAIN` from `docker-compose.yml`
-     (drives the `autodiscover.` and root-fallback ingress entries)
-   - `<GATEWAY_HOST>` → the `GATEWAY_HOST` from `docker-compose.yml`
-   (the config file carries the two required hostnames from Step 2 plus the
-   optional root-domain fallback entry — delete that ingress block if the
-   bare mail domain must serve other content)
+   - `<GATEWAY_MAIL_DOMAIN>` -> the `GATEWAY_MAIL_DOMAIN` from `docker-compose.yml`
+     (drives the `autodiscover.` ingress entry; the shipped placeholder
+     value is `example.com` = your real root / mail domain)
+   - `<GATEWAY_HOST>` -> the `GATEWAY_HOST` from `docker-compose.yml`
+     (the shipped placeholder value is `calendar.example.com` =
+     `calendar.` + your real domain)
+   (the config file carries exactly the two required hostnames from Step 2;
+   there is no root-domain ingress entry - do not add one)
    Do NOT edit the UUID into `~/.cloudflared/config.yml` first and then run
    the one-liner: the command re-reads the template (which always contains
    the literal `<YOUR-TUNNEL-UUID>`) and would overwrite your edit, leaving
@@ -337,13 +346,15 @@ services:
       - GATEWAY_JMAP_BASE=http://stalwart:8080/jmap
       - GATEWAY_CARDDAV_BASE=http://stalwart:8080/dav/card
       - GATEWAY_HMAC_SECRET=REPLACE_WITH_A_RANDOM_32_CHAR_MINIMUM_SECRET
-      - GATEWAY_HOST=calendar.example.com
-      - GATEWAY_MAIL_DOMAIN=example.com
+      - GATEWAY_HOST=calendar.example.com       # placeholder for calendar.<your real domain>
+      - GATEWAY_MAIL_DOMAIN=example.com          # placeholder for your real root / mail domain
       # Keep the EAS Ping long-poll under Cloudflare's 125s Proxy Read Timeout.
       - GATEWAY_MAX_PING_HEARTBEAT=80
       - GATEWAY_ALLOW_INSECURE_HTTP=1
     ports:
-      - 8134:8134
+      # Loopback only: host-run cloudflared reaches the container via
+      # http://localhost:8134; never publish on a wildcard bind.
+      - 127.0.0.1:8134:8134
     volumes:
       # Host path the operator creates (must be writable by UID 10001).
       - /armblock/exchange-gateway-data:/var/lib/exchange-gateway
