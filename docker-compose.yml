@@ -1,3 +1,27 @@
+# PLACEHOLDER CONVENTION — READ BEFORE DEPLOYING
+# Every `example.com` hostname in this file is a PLACEHOLDER, not a real
+# domain. Replace each one in YOUR copy of this file before deploying
+# (e.g. in Portainer); the repository template intentionally keeps the
+# placeholders and must not be deployed as-is:
+#   example.com              = PLACEHOLDER for your real root / mail domain
+#                              (the domain part of your users' email
+#                              addresses; set as GATEWAY_MAIL_DOMAIN)
+#   mail.example.com         = PLACEHOLDER for your real mailserver hostname
+#                              (the MX host; set as GATEWAY_MAIL_HOST)
+#   calendar.example.com     = PLACEHOLDER for calendar.<your real domain>
+#                              (= GATEWAY_HOST; the public EAS/EWS/MAPI host)
+#   autodiscover.example.com = PLACEHOLDER for autodiscover.<your real domain>
+#                              (derived from GATEWAY_MAIL_DOMAIN; the host
+#                              Android's "Exchange" wizard probes first)
+# Invariants that must hold after replacement:
+#   GATEWAY_HOST          == calendar.<GATEWAY_MAIL_DOMAIN>
+#   Autodiscover host     == autodiscover.<GATEWAY_MAIL_DOMAIN>
+#   GATEWAY_MAIL_HOST     == your real MX hostname (mail. + the mail domain
+#                            in this deployment, matching the MX record)
+# No tunnel route is ever created for the bare root domain: it already has
+# A/AAAA records. Only the `calendar.` and `autodiscover.` routes below
+# (see CLOUDFLARED_SETUP.md) are needed. A `.env` file is forbidden in this
+# deployment — every value lives inline in this file.
 services:
   exchange-gateway:
     # --- Registry image (production) --------------------------------------
@@ -55,7 +79,14 @@ services:
       # Autodiscover renders all service URLs from it — no per-protocol
       # tunnel route is needed. It must be a public hostname on the tunnel
       # (see CLOUDFLARED_SETUP.md "One canonical host").
+      # PLACEHOLDER: `calendar.example.com` = calendar.<your real domain>.
+      # Replace in your copy so that GATEWAY_HOST == calendar. + the mail
+      # domain below, i.e. GATEWAY_HOST == calendar.{GATEWAY_MAIL_DOMAIN}.
       - GATEWAY_HOST=calendar.example.com
+      # PLACEHOLDER: `example.com` = your real root / mail domain (the
+      # domain part of your users' email addresses). It drives the
+      # Autodiscover host Android probes (autodiscover.example.com =
+      # autodiscover.<your real domain>).
       - GATEWAY_MAIL_DOMAIN=example.com
 
       # --- Storage --------------------------------------------------------
@@ -96,9 +127,12 @@ services:
       - GATEWAY_IMAP_PORT=993
       # GATEWAY_MAIL_HOST is ADVERTISED to clients inside Autodiscover's
       # IMAP/SMTP <Protocol> blocks. It must be a PUBLICLY RESOLVABLE name
-      # (the MX host, e.g. mail.<your-domain>), NOT the internal container
-      # name — otherwise an IMAP/SMTP-capable client is pointed at an
-      # unreachable host. See AUDIT3.MD finding #8.
+      # (the MX host), NOT the internal container name — otherwise an
+      # IMAP/SMTP-capable client is pointed at an unreachable host.
+      # See AUDIT3.MD finding #8.
+      # PLACEHOLDER: `mail.example.com` = your real mailserver hostname /
+      # MX record (mail. + your real domain in this deployment). Replace in
+      # your copy so it matches the existing MX record for example.com.
       - GATEWAY_MAIL_HOST=mail.example.com
 
       # Plain HTTP to Stalwart only over the private bridge network; the public
@@ -167,7 +201,11 @@ services:
       - GATEWAY_SMIME_CERT_STORE_DIR=
 
     ports:
-      - 8134:8134
+      # Loopback only: host-run cloudflared reaches the container via
+      # http://localhost:8134 (the Zero-Trust routes target port 8134 on
+      # the host). Never publish on a wildcard bind — that would expose
+      # plain HTTP + Basic auth to the LAN/WAN, bypassing the tunnel.
+      - 127.0.0.1:8134:8134
     volumes:
       # Host path the operator creates (per the deployment scenario):
       #   /armblock/exchange-gateway-data  (must be writable by UID 10001)
