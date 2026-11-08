@@ -34,8 +34,8 @@ use crate::room::{
 use crate::storage::EwsItemRow;
 use crate::sync::generate_server_id;
 use crate::util::{
-    canonicalize_username, format_ews_datetime, nfc, normalize_username, resolve_xml_reference,
-    xml_escape,
+    canonicalize_username, format_ews_datetime, forwarded_https_enforced, nfc, normalize_username,
+    resolve_xml_reference, xml_escape,
 };
 use crate::version;
 use anyhow::anyhow;
@@ -478,31 +478,6 @@ fn parse_basic_auth(headers: &HeaderMap) -> Option<AuthContext> {
         username: user,
         password: pass,
     })
-}
-
-fn forwarded_https_enforced(headers: &HeaderMap) -> bool {
-    // AUDIT4 item 3: consistent `x-forwarded-proto` enforcement across
-    // front doors. Accepts cloudflared's `x-forwarded-proto: https` and
-    // Cloudflare's `cf-visitor: {"scheme":"https"}`; missing header
-    // (direct HTTP access) permitted; explicit `http` rejected.
-    if let Some(proto) = headers
-        .get("x-forwarded-proto")
-        .and_then(|v| v.to_str().ok())
-        .map(|v| v.trim().to_ascii_lowercase())
-    {
-        return proto == "https";
-    }
-    if let Some(cf_visitor) = headers.get("cf-visitor").and_then(|v| v.to_str().ok()) {
-        let scheme = cf_visitor
-            .split_once("\"scheme\"")
-            .and_then(|(_, rest)| rest.split('"').nth(1))
-            .unwrap_or("")
-            .trim();
-        if !scheme.is_empty() {
-            return scheme.eq_ignore_ascii_case("https");
-        }
-    }
-    true
 }
 
 pub(crate) fn detect_action(xml: &str) -> Option<EwsAction> {

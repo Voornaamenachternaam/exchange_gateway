@@ -326,11 +326,14 @@ fn default_max_attachment_bytes() -> usize {
 
 fn default_max_body_bytes() -> usize {
     // Route-level body ceiling (EAS/EWS/Autodiscover/OPTIONS). EAS SendMail
-    // carries base64 MIMEData: a 25 MiB attachment yields ~35 MiB of base64
-    // before WBXML/soap envelope margin. This default is the route layer;
-    // the EAS handler additionally enforces MAX_BODY_SIZE (1 MiB) for the
-    // non-MIMEData commands and parses the query-scoped attachment bounds.
-    4 * 1024 * 1024 + 26 * 1024 * 1024
+    // carries base64 MIMEData: a 25 MiB attachment yields ~33.3 MiB of
+    // base64 (25 MiB * 4/3) before WBXML/SOAP envelope margin. This default
+    // is the route layer; the EAS handler additionally enforces a 1 MiB
+    // admission ceiling for non-MIMEData commands and applies the same
+    // value to the MIMEData commands (SendMail/SmartReply/SmartForward),
+    // whose per-item attachment budget is capped separately by
+    // `max_attachment_bytes`.
+    4 * 1024 * 1024 + 36 * 1024 * 1024
 }
 
 fn default_rate_limit_enabled() -> bool {
@@ -1418,7 +1421,7 @@ impl Default for Config {
             database_path: String::from("/var/lib/exchange-gateway/gateway.db"),
             hmac_secret: SecretString::from(String::new()),
             max_attachment_bytes: DEFAULT_MAX_ATTACHMENT_BYTES,
-            max_body_bytes: 4 * 1024 * 1024,
+            max_body_bytes: default_max_body_bytes(),
             room_booking_enabled: true,
             auth_cache_ttl_secs: DEFAULT_AUTH_CACHE_TTL_SECS,
             auth_cache_negative_ttl_secs: DEFAULT_AUTH_CACHE_NEGATIVE_TTL_SECS,

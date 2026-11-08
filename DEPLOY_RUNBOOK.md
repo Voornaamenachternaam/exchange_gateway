@@ -18,6 +18,15 @@ and Stalwart Mailserver v1.0.3 is running.
 > (the image is pulled from the registry you use; building the image is
 > out of scope — only the `Dockerfile` and `docker-compose.yml` are
 > provided here).
+>
+> **File ownership.** The gateway container runs as user `10001` (see the
+> `user:` field in `docker-compose.yml` and the matching `USER` in the
+> `Dockerfile`). The folder you created must be writable by that UID —
+> run `chown 10001:10001 /armblock/exchange-gateway-data` (or create the
+> folder through the container runtime as that user) before first start,
+> or the database volume mount will start the container in a crash loop.
+> If your Docker volumes live under a different host prefix, use the same
+> UID on the host path your compose file mounts.
 
 > **Placeholder convention — read before deploying.** Every `example.com`
 > hostname in the deployment templates and docs (`docker-compose.yml`,

@@ -3009,7 +3009,9 @@ pub fn is_email_server_id(id: &str) -> bool {
 pub fn extract_meeting_request_ics(raw_mime: &[u8]) -> Option<String> {
     let parsed = mail_parser::MessageParser::new().parse(raw_mime)?;
     for part in parsed.parts() {
-        let ics = calendar_part_ics(&part)?;
+        let Some(ics) = calendar_part_ics(&part) else {
+            continue;
+        };
         if ics.starts_with("BEGIN:") && ics.contains("METHOD:REQUEST") {
             return Some(ics);
         }

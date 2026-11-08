@@ -29,10 +29,10 @@ use tower_http::{
 use tracing::{debug, info, warn};
 
 /// Route-level request body ceiling for EAS/EWS/Autodiscover. Must cover
-/// a 25 MiB attachment as base64 MIMEData (~35 MiB) plus envelope margin:
-/// 4 MiB base of small requests + 30 MiB of encoded MIME. MAPI/HTTP routes
+/// a 25 MiB attachment as base64 MIMEData (~33.3 MiB) plus envelope margin:
+/// 4 MiB base of small requests + 36 MiB of encoded MIME. MAPI/HTTP routes
 /// keep their own transport-level cap (128 MiB per MS-OXCMAPIHTTP).
-const MAX_BODY_BYTES: usize = 4 * 1024 * 1024 + 30 * 1024 * 1024;
+const MAX_BODY_BYTES: usize = 4 * 1024 * 1024 + 36 * 1024 * 1024;
 const REQUEST_TIMEOUT_SECS: u64 = 60;
 
 /// AUDIT.md §25: predicate that only compresses responses with a known

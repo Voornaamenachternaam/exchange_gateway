@@ -1,8 +1,39 @@
 // src/util.rs
 
+use axum::http::HeaderMap;
 use chrono::Utc;
 use std::borrow::Cow;
 use unicode_normalization::UnicodeNormalization;
+
+/// AUDIT4 item 3: `x-forwarded-proto` enforcement is consistent across
+/// all front doors. cloudflared sets `x-forwarded-proto: https` and
+/// Cloudflare sets `cf-visitor: {"scheme":"https"}`; both are accepted.
+/// A missing header (direct HTTP access for the tunnel / local health
+/// probes) is permitted; an explicit `http` value is rejected. An
+/// empty or unparseable `cf-visitor` value with no usable `x-forwarded-proto`
+/// is rejected — a malformed visitor scheme is treated as an explicit
+/// cleartext indication, not as HTTPS.
+pub(crate) fn forwarded_https_enforced(headers: &HeaderMap) -> bool {
+    if let Some(proto) = headers
+        .get("x-forwarded-proto")
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v.trim().to_ascii_lowercase())
+    {
+        return proto == "https";
+    }
+    if let Some(cf_visitor) = headers.get("cf-visitor").and_then(|v| v.to_str().ok()) {
+        let scheme = cf_visitor
+            .split_once("\"scheme\"")
+            .and_then(|(_, rest)| rest.split('"').nth(1))
+            .map(|s| s.trim())
+            .unwrap_or("");
+        if scheme.is_empty() {
+            return false;
+        }
+        return scheme.eq_ignore_ascii_case("https");
+    }
+    true
+}
 
 pub fn xml_escape(s: &str) -> Cow<'_, str> {
     quick_xml::escape::escape(s)

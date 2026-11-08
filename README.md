@@ -25,3 +25,16 @@ routes the operator must configure in the Cloudflare Zero Trust
 dashboard and in the existing Stalwart container. No Cloudflare Tunnel
 route for the root domain is needed; the root domain's A/AAAA records
 already serve other content.
+
+## Backend and authentication context
+
+The gateway is a protocol-translation layer only. It authenticates every
+client against the Stalwart backend (JMAP session, or CalDAV where JMAP
+is not configured) and finds each mailbox through that same backend; it
+holds no credentials of its own and never sends mail directly. Sending
+is done through the Stalwart SMTP submission service the operator
+routes to the gateway with `GATEWAY_SMTP_HOST` (the public MX hostname)
+and `GATEWAY_SMTP_PORT`; the gateway hands the message to that service
+after authentication, and TLS verification on that connection requires
+`GATEWAY_SMTP_HOST` to be the public MX hostname (not the bridge-network
+service name).
