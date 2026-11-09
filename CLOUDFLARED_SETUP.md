@@ -363,7 +363,8 @@ services:
       # http://localhost:8134; never publish on a wildcard bind.
       - 127.0.0.1:8134:8134
     volumes:
-      # Host path the operator creates (must be writable by UID 10001).
+      # Host path the operator creates (must be writable by UID 10001 —
+      # `chown 10001:10001 /armblock/exchange-gateway-data` before first start).
       - /armblock/exchange-gateway-data:/var/lib/exchange-gateway
     networks:
       - network1

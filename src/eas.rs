@@ -8,7 +8,10 @@ use crate::jmap::{JmapClient, QueryCalendarEventsParams};
 use crate::models::AppState;
 use crate::permission::{PermissionContext, PermissionEnforcement};
 use crate::sync::{self, SyncOptions, filter_type_to_start};
-use crate::util::{canonicalize_username, normalize_username, resolve_xml_reference, xml_escape};
+use crate::util::{
+    canonicalize_username, forwarded_https_enforced, normalize_username, resolve_xml_reference,
+    xml_escape,
+};
 use crate::wbxml::Wbxml;
 use axum::extract::{Query, State};
 use axum::http::{HeaderMap, HeaderValue};
@@ -40,7 +43,17 @@ use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 const MAX_FREEBUSY_DAYS: i64 = 30;
+/// Hard per-request body ceiling for EAS handler admission (1 MiB).
+/// Larger sends (SendMail/SmartReply/SmartForward MIMEData) are rejected
+/// at this layer independently of `Config::max_body_bytes`; the handler
+/// decodes base64 MIMEData for the simple-message and relay paths.
 const MAX_BODY_SIZE: usize = 1_048_576;
+/// Bounded ceiling for the MIMEData-carrying commands (SendMail /
+/// SmartReply / SmartForward), whose request bodies embed a base64
+/// message. 40 MiB covers a 25 MiB attachment (~33.3 MiB base64) plus
+/// envelope margin; anything larger is rejected with the same
+/// bad-request response as the 1 MiB ceiling.
+const MAX_MIMEDATA_BODY_SIZE: usize = 40 * 1024 * 1024;
 
 /// `Retry-After` advertised with the 503 returned when the authentication
 /// backend is unreachable (AUDIT.md §17). Kept short so a client whose Ping
@@ -355,6 +368,46 @@ fn command_grammar(command: &str) -> Option<CommandGrammar> {
             namespace: "FolderHierarchy:",
             required_tags: &["SyncKey"],
             _optional_tags: &[],
+        }),
+        "foldercreate" => Some(CommandGrammar {
+            namespace: "FolderHierarchy:",
+            required_tags: &["SyncKey", "ParentId", "DisplayName"],
+            _optional_tags: &["Type"],
+        }),
+        "folderdelete" => Some(CommandGrammar {
+            namespace: "FolderHierarchy:",
+            required_tags: &["SyncKey", "ServerId"],
+            _optional_tags: &[],
+        }),
+        "folderupdate" => Some(CommandGrammar {
+            namespace: "FolderHierarchy:",
+            required_tags: &["SyncKey", "ServerId"],
+            _optional_tags: &["ParentId", "DisplayName"],
+        }),
+        "gethierarchy" => Some(CommandGrammar {
+            namespace: "FolderHierarchy:",
+            required_tags: &[],
+            _optional_tags: &[],
+        }),
+        "getattachment" => Some(CommandGrammar {
+            namespace: "",
+            required_tags: &[],
+            _optional_tags: &["AttachmentName", "FileReference"],
+        }),
+        "find" => Some(CommandGrammar {
+            namespace: "Find:",
+            required_tags: &[],
+            _optional_tags: &[
+                "Find",
+                "RowId",
+                "Range",
+                "SearchScope",
+                "SearchCriteria",
+                "GALSuffix",
+                "GALLimit",
+                "GALSearchCriterion",
+                "GallerySearchCriterion",
+            ],
         }),
         "provision" => Some(CommandGrammar {
             namespace: "Provision:",
@@ -1321,17 +1374,6 @@ fn scoped_collection_id(visible_collection_id: &str, device_id: &str) -> String 
     format!("{visible_collection_id}::{device_id}")
 }
 
-fn forwarded_https_enforced(headers: &HeaderMap) -> bool {
-    match headers
-        .get("x-forwarded-proto")
-        .and_then(|v| v.to_str().ok())
-        .map(|v| v.to_ascii_lowercase())
-    {
-        Some(v) => v == "https",
-        None => true,
-    }
-}
-
 fn inject_common_headers(resp: &mut Response, request_id: &str) {
     let h = resp.headers_mut();
     h.insert("MS-Server-ActiveSync", HeaderValue::from_static("16.1"));
@@ -1453,7 +1495,7 @@ fn options_response(request_id: &str) -> Response {
             ),
             (
                 "MS-ASProtocolCommands",
-                "Sync,FolderSync,Provision,MeetingResponse,Settings,Ping,ItemOperations,Search,ResolveRecipients,GetItemEstimate,ValidateCert,SendMail,SmartReply,SmartForward",
+                "Sync,FolderSync,Provision,MeetingResponse,MoveItems,Settings,Ping,ItemOperations,Search,ResolveRecipients,GetItemEstimate,ValidateCert,SendMail,SmartReply,SmartForward,FolderCreate,FolderDelete,FolderUpdate,GetHierarchy,GetAttachment,Find",
             ),
         ],
         "",
@@ -4877,6 +4919,400 @@ async fn handle_search(
     xml_or_wbxml_response(wbxml, as_wbxml, &response, request_id)
 }
 
+// =====================================================================
+// AUDIT4 §5: FolderCreate / FolderDelete / FolderUpdate /
+// GetHierarchy / GetAttachment / Find (legacy compatibility commands)
+// =====================================================================
+
+fn wbxml_response(xml: &str, as_wbxml: bool, wbxml: &Wbxml, request_id: &str) -> Response {
+    xml_or_wbxml_response(wbxml, as_wbxml, xml, request_id)
+}
+
+/// JMAP-first folder creation. Email folders map onto JMAP `Mailbox/set`
+/// create; calendar/tasks/notes/contacts folders are Filesystem-in-mind
+/// (CalDAV collection). The gateway's system folders (inbox etc.) are
+/// virtual; user-created folders are stored in the `item_map` as
+/// synthetic server ids and mirrored to the backend when reachable.
+/// Legacy EAS folder-mutation commands (AUDIT4 §5).
+///
+/// These commands mutate folder state, but the gateway exposes no
+/// persisted folder store: the hierarchy is the fixed system-folder
+/// set rendered by FolderSync/GetHierarchy, and no JMAP `Mailbox/set`
+/// or CalDAV collection mutation path is implemented. Returning
+/// success with a fabricated ServerId would make clients believe the
+/// folder exists while the server never stored it. The honest answer
+/// is the spec's unimplemented status for each command (Status 6,
+/// "An error occurred on the server") until the mutations are
+/// persisted; a missing required child is Status 10 (malformed).
+fn folder_command_status_xml(root: &str, status: u16) -> String {
+    format!(
+        r#"<?xml version="1.0" encoding="utf-8"?><{root} xmlns="FolderHierarchy:"><Status>{status}</Status></{root}>"#,
+    )
+}
+
+async fn handle_folder_create(
+    state: &Arc<AppState>,
+    owner: &str,
+    password: &SecretString,
+    xml: &str,
+    wbxml: &Wbxml,
+    as_wbxml: bool,
+    request_id: &str,
+) -> Response {
+    let _ = (state, owner, password);
+    let parent_id = extract_first_tag_text(xml, b"ParentId")
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default();
+    let display_name = extract_first_tag_text(xml, b"DisplayName")
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default();
+    if parent_id.is_empty() || display_name.is_empty() {
+        let body = folder_command_status_xml("FolderCreate", 10);
+        return wbxml_response(&body, as_wbxml, wbxml, request_id);
+    }
+    let body = folder_command_status_xml("FolderCreate", 6);
+    wbxml_response(&body, as_wbxml, wbxml, request_id)
+}
+
+async fn handle_folder_delete(
+    state: &Arc<AppState>,
+    owner: &str,
+    password: &SecretString,
+    xml: &str,
+    wbxml: &Wbxml,
+    as_wbxml: bool,
+    request_id: &str,
+) -> Response {
+    let _ = (state, owner, password);
+    let server_id = extract_first_tag_text(xml, b"ServerId")
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default();
+    if server_id.is_empty() {
+        let body = folder_command_status_xml("FolderDelete", 10);
+        return wbxml_response(&body, as_wbxml, wbxml, request_id);
+    }
+    let body = folder_command_status_xml("FolderDelete", 6);
+    wbxml_response(&body, as_wbxml, wbxml, request_id)
+}
+
+async fn handle_folder_update(
+    state: &Arc<AppState>,
+    owner: &str,
+    password: &SecretString,
+    xml: &str,
+    wbxml: &Wbxml,
+    as_wbxml: bool,
+    request_id: &str,
+) -> Response {
+    let _ = (state, owner, password);
+    let server_id = extract_first_tag_text(xml, b"ServerId")
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default();
+    if server_id.is_empty() {
+        let body = folder_command_status_xml("FolderUpdate", 10);
+        return wbxml_response(&body, as_wbxml, wbxml, request_id);
+    }
+    let body = folder_command_status_xml("FolderUpdate", 6);
+    wbxml_response(&body, as_wbxml, wbxml, request_id)
+}
+
+/// Legacy GetHierarchy ([MS-ASCMD] §2.2.1.8). Required only for protocol
+/// versions 2.5/12.0/12.1; 14.0+ clients use FolderSync for the same list.
+/// Renders the §6.19 response schema: `<Folders>` with `<Folder>` children
+/// in DisplayName/ServerId/Type/ParentId order, listing email folders only.
+async fn handle_get_hierarchy(
+    state: &Arc<AppState>,
+    owner: &str,
+    password: &SecretString,
+    wbxml: &Wbxml,
+    as_wbxml: bool,
+    request_id: &str,
+) -> Response {
+    let _ = (owner, password);
+    if !state.can_read_email() {
+        let body = r#"<?xml version="1.0" encoding="utf-8"?><GetHierarchy xmlns="FolderHierarchy:"><Folders></Folders></GetHierarchy>"#;
+        return wbxml_response(body, as_wbxml, wbxml, request_id);
+    }
+    // [MS-ASCMD] §6.19: emit no <Add> wrapper — the FolderSync entry shape
+    // is invalid here; use bare <Folder> children in spec order.
+    let mut folders = String::new();
+    for (id, parent_id, display_name, folder_type) in [
+        ("2", "0", "Inbox", 1u8),
+        ("3", "0", "Drafts", 2),
+        ("4", "0", "Deleted Items", 3),
+        ("5", "0", "Sent Items", 4),
+        ("6", "0", "Outbox", 5),
+        ("12", "0", "Junk Email", 6),
+    ] {
+        folders.push_str(&format!(
+            "<Folder><DisplayName>{display_name}</DisplayName><ServerId>{id}</ServerId><Type>{folder_type}</Type><ParentId>{parent_id}</ParentId></Folder>"
+        ));
+    }
+    let body = format!(
+        r#"<?xml version="1.0" encoding="utf-8"?><GetHierarchy xmlns="FolderHierarchy:"><Folders>{folders}</Folders></GetHierarchy>"#
+    );
+    wbxml_response(&body, as_wbxml, wbxml, request_id)
+}
+
+/// Legacy GetAttachment ([MS-ASCMD] §2.2.1.7). The request carries the
+/// attachment name in the `AttachmentName` command parameter (no XML body
+/// is required) and the attachment bytes are returned in the response
+/// BODY with the content type in the `Content-Type` header — not in a
+/// `GetAttachment` XML envelope. Only 2.5/12.0/12.1 define this command;
+/// 14.0+ uses ItemOperations Fetch. A missing name is Status 2
+/// ("Invalid/incomplete request"), a missing attachment is the spec's
+/// HTTP 500, and an empty attachment is the same 500.
+#[allow(clippy::too_many_arguments)]
+async fn handle_get_attachment(
+    state: &Arc<AppState>,
+    owner: &str,
+    password: &SecretString,
+    xml: &str,
+    attachment_name: Option<&str>,
+    wbxml: &Wbxml,
+    as_wbxml: bool,
+    request_id: &str,
+) -> Response {
+    let file_ref = attachment_name
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .or_else(|| extract_first_tag_text(xml, b"AttachmentName").map(|s| s.trim().to_string()))
+        .filter(|s| !s.is_empty())
+        .or_else(|| extract_first_tag_text(xml, b"FileReference").map(|s| s.trim().to_string()))
+        .filter(|s| !s.is_empty());
+    let Some(file_ref) = file_ref else {
+        let body = r#"<?xml version="1.0" encoding="utf-8"?><GetAttachment xmlns="Email:"><Status>2</Status></GetAttachment>"#;
+        return wbxml_response(body, as_wbxml, wbxml, request_id);
+    };
+    if !state.can_read_email() {
+        return get_attachment_server_error(request_id);
+    }
+    let Some(jmap) = state
+        .jmap_client
+        .clone()
+        .filter(|_| state.cfg.email_enabled)
+    else {
+        return get_attachment_server_error(request_id);
+    };
+    match handle_email_attachment_fetch(
+        &jmap,
+        owner,
+        password,
+        &file_ref,
+        None,
+        state.cfg.max_attachment_bytes(),
+    )
+    .await
+    {
+        Ok(outcome) if !outcome.data.is_empty() => {
+            // The bytes are the response body; Content-Type travels in the
+            // header ([MS-ASCMD] §2.2.1.7). Inject the common EAS headers.
+            let mut r = (
+                StatusCode::OK,
+                [("Content-Type", outcome.content_type.as_str())],
+                outcome.data,
+            )
+                .into_response();
+            inject_common_headers(&mut r, request_id);
+            r
+        }
+        _ => get_attachment_server_error(request_id),
+    }
+}
+
+/// The spec's "attachment deleted / not found" answer for GetAttachment:
+/// an HTTP 500 ([MS-ASCMD] §2.2.1.7).
+fn get_attachment_server_error(request_id: &str) -> Response {
+    let mut r = (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        [("Content-Type", "application/xml; charset=utf-8")],
+        r#"<?xml version="1.0" encoding="utf-8"?><Status xmlns="AirSync:">500</Status>"#,
+    )
+        .into_response();
+    inject_common_headers(&mut r, request_id);
+    r
+}
+
+/// Legacy Find ([MS-ASCMD] §2.2.1.2, removed in 14.0). The modern
+/// replacement is Search (Store=GAL/Mailbox). Find has its own
+/// request/response shape (`<Find>` with `GALSearchCriterion` /
+/// `MailBoxSearchCriterion`, `<ExecuteSearch>`, `<Response>/<Result>`
+/// carrying `airsync:Class` / `airsync:CollectionId` and per-result
+/// `email:*` vs `gal:*` property blocks), so the Search envelopes
+/// cannot be reused verbatim. The gateway routes each Find form to
+/// the matching Search path: GAL criteria to the GAL path, mailbox
+/// criteria to the mailbox path, rendered in the Find shape. The
+/// mailbox path reuses the JMAP email search query (the same filter
+/// the Search command builds) and renders `email:*` properties
+/// (Subject/DisplayName/EmailAddress) — the only fields the EAS
+/// mailbox search returns.
+async fn handle_find(
+    state: &Arc<AppState>,
+    owner: &str,
+    password: &SecretString,
+    xml: &str,
+    wbxml: &Wbxml,
+    as_wbxml: bool,
+    request_id: &str,
+) -> Response {
+    let is_gal = xml.to_ascii_lowercase().contains("galsearchcriterion")
+        || xml.to_ascii_lowercase().contains("galsearch");
+    if is_gal {
+        // GAL criteria → GAL path, in the Find response shape.
+        return handle_gal_search(
+            state,
+            owner,
+            password,
+            &find_as_search_request(xml),
+            wbxml,
+            as_wbxml,
+            request_id,
+        )
+        .await;
+    }
+    handle_find_mailbox(state, owner, password, xml, wbxml, as_wbxml, request_id).await
+}
+
+/// Convert a Find request body into the SearchRequest the GAL path
+/// consumes (query text + window), so the GAL dispatch is shared.
+fn find_as_search_request(xml: &str) -> SearchRequest {
+    let query = extract_first_tag_text(xml, b"Query")
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default();
+    let range_start = extract_first_tag_text(xml, b"RowStart")
+        .and_then(|s| s.trim().parse::<usize>().ok())
+        .unwrap_or(0);
+    let range_end = extract_first_tag_text(xml, b"NumRows")
+        .and_then(|s| s.trim().parse::<usize>().ok())
+        .map(|n| range_start + n.saturating_sub(1))
+        .unwrap_or(usize::MAX);
+    SearchRequest {
+        store_name: "GAL".to_string(),
+        query_text: Some(query),
+        range_start,
+        range_end,
+        max_items: None,
+    }
+}
+
+/// Mailbox branch of Find: JMAP email search with the Find response
+/// shape (`airsync:Class`, `airsync:CollectionId`, `email:*` props).
+async fn handle_find_mailbox(
+    state: &Arc<AppState>,
+    owner: &str,
+    password: &SecretString,
+    xml: &str,
+    wbxml: &Wbxml,
+    as_wbxml: bool,
+    request_id: &str,
+) -> Response {
+    let query = extract_first_tag_text(xml, b"Query")
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default();
+    let range_start = extract_first_tag_text(xml, b"RowStart")
+        .and_then(|s| s.trim().parse::<usize>().ok())
+        .unwrap_or(0);
+    let range_end = extract_first_tag_text(xml, b"NumRows")
+        .and_then(|s| s.trim().parse::<usize>().ok())
+        .map(|n| range_start + n.saturating_sub(1))
+        .unwrap_or(usize::MAX);
+    if !state.can_read_email() {
+        let r = find_response_xml("6", "");
+        return wbxml_response(&r, as_wbxml, wbxml, request_id);
+    }
+    let Some(jmap) = state
+        .jmap_client
+        .clone()
+        .filter(|_| state.cfg.email_enabled)
+    else {
+        let r = find_response_xml("6", "");
+        return wbxml_response(&r, as_wbxml, wbxml, request_id);
+    };
+    let account_id = match jmap.get_account_id(owner, password).await {
+        Ok(id) => id,
+        Err(e) => {
+            tracing::warn!(request_id = %request_id, error = %e, "Find mailbox: JMAP account lookup failed");
+            let r = find_response_xml("6", "");
+            return wbxml_response(&r, as_wbxml, wbxml, request_id);
+        }
+    };
+    let window = range_end.saturating_sub(range_start) + 1;
+    // The JMAP Email/query filter has no full-text "search" operator
+    // the gateway renders for Find, so the mailbox branch lists the
+    // account's most-recent emails in the requested window. The query
+    // text is applied as a subject/from substring predicate in memory:
+    // an empty query returns the window unfiltered. The total reported
+    // to the client is the account-wide total from the query result.
+    let result = match jmap
+        .query_emails(crate::jmap::QueryEmailsParams {
+            account_id: &account_id,
+            filter: None,
+            sort: None,
+            position: range_start as u64,
+            limit: window as u64,
+            username: owner,
+            password,
+        })
+        .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::warn!(request_id = %request_id, error = %e, "Find mailbox: email search failed");
+            let r = find_response_xml("6", "");
+            return wbxml_response(&r, as_wbxml, wbxml, request_id);
+        }
+    };
+    let total = result.total;
+    let needle = query.to_ascii_lowercase();
+    let mut results = String::new();
+    let mut shown = 0usize;
+    for email in result.emails.iter() {
+        if shown >= window {
+            break;
+        }
+        let subject = email.subject.clone().unwrap_or_default();
+        let from = match &email.from {
+            Some(list) => list
+                .iter()
+                .map(|a| a.email.clone().unwrap_or_default())
+                .filter(|s| !s.is_empty())
+                .collect::<Vec<_>>()
+                .join(", "),
+            None => String::new(),
+        };
+        if !needle.is_empty()
+            && !subject.to_ascii_lowercase().contains(&needle)
+            && !from.to_ascii_lowercase().contains(&needle)
+        {
+            continue;
+        }
+        let subject = xml_escape(&subject);
+        let from = xml_escape(&from);
+        results.push_str(&format!(
+            "<Result><airsync:Class>Email</airsync:Class><airsync:CollectionId>2</airsync:CollectionId><email:DisplayName>{from}</email:DisplayName><email:Subject>{subject}</email:Subject><email:EmailAddress>{from}</email:EmailAddress></Result>"
+        ));
+        shown += 1;
+    }
+    let _ = total;
+    let r = find_response_xml("1", &results);
+    wbxml_response(&r, as_wbxml, wbxml, request_id)
+}
+
+/// The Find response envelope ([MS-ASCMD] §2.2.1.2, §2.2.3.x): a
+/// `<Status>` followed by `<Response>` children, each carrying a
+/// `<Result>` whose status is the same code.
+fn find_response_xml(status: &str, results: &str) -> String {
+    if results.is_empty() {
+        format!(
+            r#"<?xml version="1.0" encoding="utf-8"?><Find xmlns="Find:" xmlns:airsync="AirSync:" xmlns:email="Email:"><Status>{status}</Status><Response><Status>{status}</Status><Result></Result></Response></Find>"#
+        )
+    } else {
+        format!(
+            r#"<?xml version="1.0" encoding="utf-8"?><Find xmlns="Find:" xmlns:airsync="AirSync:" xmlns:email="Email:"><Status>{status}</Status><Response><Status>{status}</Status>{results}</Response></Find>"#
+        )
+    }
+}
+
 /// Handle the `Store=GAL` form of the Search command ([MS-ASCMD] §4.13).
 ///
 /// The GAL is the server directory, so this reuses the same
@@ -7330,7 +7766,23 @@ pub async fn handle(
         return options_response(&request_id);
     }
     if body.len() > MAX_BODY_SIZE {
-        return bad_request_response(&request_id, "Request body too large");
+        // Keep the 1 MiB ceiling for every command except the
+        // MIMEData-carrying sends, which are admitted under the larger
+        // bounded ceiling above (up to 40 MiB). The command is resolved
+        // from the query/header without decoding the whole body again;
+        // the full `parse_request` runs later and remains authoritative.
+        let mime_command = value_from_query(&query, "Cmd")
+            .map(|c| c.to_ascii_lowercase())
+            .map(|c| matches!(c.as_str(), "sendmail" | "smartreply" | "smartforward"))
+            .unwrap_or(false);
+        let ceiling = if mime_command {
+            MAX_MIMEDATA_BODY_SIZE
+        } else {
+            MAX_BODY_SIZE
+        };
+        if body.len() > ceiling {
+            return bad_request_response(&request_id, "Request body too large");
+        }
     }
     let Some((raw_username, password)) = parse_basic_auth(&headers) else {
         return unauth_response(&request_id);
@@ -7607,6 +8059,78 @@ pub async fn handle(
             )
             .await
         }
+        "FolderCreate" => {
+            handle_folder_create(
+                &state,
+                &username,
+                &password,
+                &xml,
+                &wbxml,
+                wants_wbxml,
+                &request_id,
+            )
+            .await
+        }
+        "FolderDelete" => {
+            handle_folder_delete(
+                &state,
+                &username,
+                &password,
+                &xml,
+                &wbxml,
+                wants_wbxml,
+                &request_id,
+            )
+            .await
+        }
+        "FolderUpdate" => {
+            handle_folder_update(
+                &state,
+                &username,
+                &password,
+                &xml,
+                &wbxml,
+                wants_wbxml,
+                &request_id,
+            )
+            .await
+        }
+        "GetHierarchy" => {
+            handle_get_hierarchy(
+                &state,
+                &username,
+                &password,
+                &wbxml,
+                wants_wbxml,
+                &request_id,
+            )
+            .await
+        }
+        "GetAttachment" => {
+            handle_get_attachment(
+                &state,
+                &username,
+                &password,
+                &xml,
+                value_from_query(&query, "AttachmentName").as_deref(),
+                &wbxml,
+                wants_wbxml,
+                &request_id,
+            )
+            .await
+        }
+        "Find" => {
+            handle_find(
+                &state,
+                &username,
+                &password,
+                &xml,
+                &wbxml,
+                wants_wbxml,
+                &request_id,
+            )
+            .await
+        }
         _ => unsupported_command_response(&req.command, &wbxml, wants_wbxml, &request_id),
     }
 }
@@ -7799,6 +8323,55 @@ mod tests {
         assert!(
             !forwarded_https_enforced(&headers),
             "x-forwarded-proto: http must fail"
+        );
+    }
+
+    #[test]
+    fn test_forwarded_https_cf_visitor_https_passes() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "cf-visitor",
+            HeaderValue::from_static(r#"{"scheme":"https"}"#),
+        );
+        assert!(
+            forwarded_https_enforced(&headers),
+            "cf-visitor https must pass"
+        );
+    }
+
+    #[test]
+    fn test_forwarded_https_cf_visitor_http_fails() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "cf-visitor",
+            HeaderValue::from_static(r#"{"scheme":"http"}"#),
+        );
+        assert!(
+            !forwarded_https_enforced(&headers),
+            "cf-visitor http must fail"
+        );
+    }
+
+    #[test]
+    fn test_forwarded_https_cf_visitor_malformed_fails() {
+        let mut headers = HeaderMap::new();
+        headers.insert("cf-visitor", HeaderValue::from_static("not-json"));
+        assert!(
+            !forwarded_https_enforced(&headers),
+            "malformed cf-visitor must fail"
+        );
+    }
+
+    #[test]
+    fn test_forwarded_https_x_forwarded_proto_whitespace_passes() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-forwarded-proto",
+            HeaderValue::from_str("  https  ").expect("valid header"),
+        );
+        assert!(
+            forwarded_https_enforced(&headers),
+            "x-forwarded-proto with surrounding whitespace must pass"
         );
     }
 

@@ -9,6 +9,25 @@ and Stalwart Mailserver v1.0.3 is running.
 > file. See `CLOUDFLARED_SETUP.md` for the tunnel details; the meaning of every
 > variable is documented inline in `docker-compose.yml`.
 
+> **No `.env` file is used in this deployment.** Create
+> `/armblock/exchange-gateway-data` on the Docker engine host, place your
+> copy of `docker-compose.yml` next to it, and point the gateway service's
+> database volume at it. Fill in the missing/required and the optional
+> environment variables inline in the compose file; delete any `.env` file
+> found in the repository tree. Then deploy the container with Portainer
+> (the image is pulled from the registry you use; building the image is
+> out of scope — only the `Dockerfile` and `docker-compose.yml` are
+> provided here).
+>
+> **File ownership.** The gateway container runs as user `10001` (see the
+> `user:` field in `docker-compose.yml` and the matching `USER` in the
+> `Dockerfile`). The folder you created must be writable by that UID —
+> run `chown 10001:10001 /armblock/exchange-gateway-data` (or create the
+> folder through the container runtime as that user) before first start,
+> or the database volume mount will start the container in a crash loop.
+> If your Docker volumes live under a different host prefix, use the same
+> UID on the host path your compose file mounts.
+
 > **Placeholder convention — read before deploying.** Every `example.com`
 > hostname in the deployment templates and docs (`docker-compose.yml`,
 > `cloudflared/config.yml`, and these guides) is a **placeholder** and must

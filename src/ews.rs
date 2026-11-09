@@ -34,8 +34,8 @@ use crate::room::{
 use crate::storage::EwsItemRow;
 use crate::sync::generate_server_id;
 use crate::util::{
-    canonicalize_username, format_ews_datetime, nfc, normalize_username, resolve_xml_reference,
-    xml_escape,
+    canonicalize_username, format_ews_datetime, forwarded_https_enforced, nfc, normalize_username,
+    resolve_xml_reference, xml_escape,
 };
 use crate::version;
 use anyhow::anyhow;
@@ -478,17 +478,6 @@ fn parse_basic_auth(headers: &HeaderMap) -> Option<AuthContext> {
         username: user,
         password: pass,
     })
-}
-
-fn forwarded_https_enforced(headers: &HeaderMap) -> bool {
-    match headers
-        .get("x-forwarded-proto")
-        .and_then(|v| v.to_str().ok())
-        .map(|v| v.to_ascii_lowercase())
-    {
-        Some(v) => v == "https",
-        None => true,
-    }
 }
 
 pub(crate) fn detect_action(xml: &str) -> Option<EwsAction> {

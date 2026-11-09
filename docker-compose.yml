@@ -72,7 +72,14 @@ services:
       - GATEWAY_CALENDAR_CAPABILITY_CHECK=warn
 
       # --- Required identity / crypto -------------------------------------
-      # >= 32 characters, must NOT start with "REPLACE_".
+      # >= 32 characters, must NOT start with "REPLACE_". The shipped value
+      # below is a placeholder that fails validation; replace it in your copy
+      # with `openssl rand -hex 32` output before first start. AUDIT4 item 26:
+      # the secret must NOT be committed to the repository — the compose
+      # file lives only on the operator machine (Portainer). The
+      # `GATEWAY_HMAC_SECRET_FILE` form (a Docker secret mounted at
+      # /run/secrets/gateway_hmac) is supported by `get_secret_env` in
+      # `src/config.rs`; either form works — a present `_FILE` wins.
       - GATEWAY_HMAC_SECRET=REPLACE_WITH_A_RANDOM_32_CHAR_MINIMUM_SECRET
       # GATEWAY_HOST is the ONE canonical public host: every surface
       # (EAS/EWS/MAPI/OAB/ECP/Autodiscover) is served on it (port 8134) and
@@ -91,7 +98,10 @@ services:
 
       # --- Storage --------------------------------------------------------
       - GATEWAY_DATABASE_PATH=/var/lib/exchange-gateway/gateway.db
-      - GATEWAY_MAX_ATTACHMENT_BYTES=5242880
+      # 25 MiB (AUDIT4 item 30): Outlook's 25 MB send cap. The code cap is
+      # 50 MiB; 25 MiB attachments yield ~35 MiB of base64 MIMEData inside
+      # SendMail. Raise to 50 MiB if the operator needs to send larger.
+      - GATEWAY_MAX_ATTACHMENT_BYTES=26214400
 
       # --- EAS Ping vs. Cloudflare edge timeout (audit P0) ----------------
       # Cloudflare cuts an unanswered request at the 125s Proxy Read Timeout
@@ -105,9 +115,11 @@ services:
       # --- Rate limiting (per CF-Connecting-IP) ---------------------------
       # Sized for several devices behind one Microsoft datacenter egress IP:
       # Ping re-issues every ~80s per device and Sync bursts are dense. Raise
-      # these if the target clients ever see 429s.
+      # these if the target clients ever see 429s. AUDIT4 item 31 raises the
+      # per-minute floor to 1200 (code default 1200; the compose value below
+      # overrides it for the shipped template).
       - GATEWAY_RATE_LIMIT_ENABLED=1
-      - GATEWAY_RATE_LIMIT_REQUESTS_PER_MINUTE=600
+      - GATEWAY_RATE_LIMIT_REQUESTS_PER_MINUTE=1200
       - GATEWAY_RATE_LIMIT_MAX_CONCURRENT=2000
 
       # --- Auth cache / circuit breaker -----------------------------------
@@ -120,7 +132,12 @@ services:
 
       # --- Mail plumbing (SMTP/IMAP on Stalwart) --------------------------
       # *_HOST/*_PORT are the backend the gateway talks to over the bridge
-      # network; keep them on the Docker service name.
+      # network; keep them on the Docker service name. AUDIT4 items 18-19:
+      # the SMTP/IMAP connection host stays `stalwart` (the bridge service
+      # name), while the advertised host (`GATEWAY_MAIL_HOST` + the
+      # Autodiscover IMAP/SMTP <Protocol> blocks) is the public MX hostname
+      # so TLS verification succeeds. Setting GATEWAY_SMTP_HOST to the
+      # public MX name would break the bridge connection; do not do that.
       - GATEWAY_SMTP_HOST=stalwart
       - GATEWAY_SMTP_PORT=465
       - GATEWAY_IMAP_HOST=stalwart
@@ -153,6 +170,11 @@ services:
       - GATEWAY_PREFER_CALDAV_FREEBUSY=0
       - GATEWAY_FORCE_CALDAV_CALENDAR=0
       - GATEWAY_ROOM_BOOKING_ENABLED=true
+      # AUDIT4 item 22: on Stalwart v1.0.3 there is NO JMAP Task/Note type
+      # (v1.0.1 did not have one either; the JMAP-first mandate cannot be met
+      # for Tasks/Notes). Do NOT set GATEWAY_PREFER_JMAP_TASKS=1 — it is
+      # intentionally omitted; Tasks/Notes stay on CalDAV (VTODO/VJOURNAL)
+      # by design, mirroring §15.
 
       # --- EAS device policy (Provision) ----------------------------------
       # The gateway advertises an all-off, no-op policy, so PolicyKey
@@ -208,7 +230,9 @@ services:
       - 127.0.0.1:8134:8134
     volumes:
       # Host path the operator creates (per the deployment scenario):
-      #   /armblock/exchange-gateway-data  (must be writable by UID 10001)
+      #   /armblock/exchange-gateway-data  (must be writable by UID 10001;
+      #   run `chown 10001:10001 /armblock/exchange-gateway-data` before
+      #   first start — the container runs as user 10001, see `user:`).
       - /armblock/exchange-gateway-data:/var/lib/exchange-gateway
       # OPTIONAL operator-seeded S/MIME certificate store for the GAL. Create
       # the host directory (or remove this line) before first start.
