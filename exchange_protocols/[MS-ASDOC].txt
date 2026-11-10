@@ -1,0 +1,1570 @@
+﻿[MS-ASDOC]:  
+
+Exchange ActiveSync: Document Class Protocol 
+
+ 
+
+Intellectual Property Rights Notice for Open Specifications Documentation 
+
+ Technical Documentation. Microsoft publishes Open Specifications documentation (“this 
+documentation”) for protocols, file formats, data portability, computer languages, and standards 
+support. Additionally, overview documents cover inter-protocol relationships and interactions.  
+
+ Copyrights. This documentation is covered by Microsoft copyrights. Regardless of any other 
+terms that are contained in the terms of use for the Microsoft website that hosts this 
+documentation, you can make copies of it in order to develop implementations of the technologies 
+that are described in this documentation and can distribute portions of it in your implementations 
+that use these technologies or in your documentation as necessary to properly document the 
+implementation. You can also distribute in your implementation, with or without modification, any 
+schemas, IDLs, or code samples that are included in the documentation. This permission also 
+applies to any documents that are referenced in the Open Specifications documentation.  
+
+ No Trade Secrets. Microsoft does not claim any trade secret rights in this documentation.  
+ Patents. Microsoft has patents that might cover your implementations of the technologies 
+
+described in the Open Specifications documentation. Neither this notice nor Microsoft's delivery of 
+this documentation grants any licenses under those patents or any other Microsoft patents. 
+However, a given Open Specifications document might be covered by the Microsoft Open 
+Specifications Promise or the Microsoft Community Promise. If you would prefer a written license, 
+or if the technologies described in this documentation are not covered by the Open Specifications 
+Promise or Community Promise, as applicable, patent licenses are available by contacting 
+iplg@microsoft.com.  
+
+ License Programs. To see all of the protocols in scope under a specific license program and the 
+associated patents, visit the Patent Map.  
+
+ Trademarks. The names of companies and products contained in this documentation might be 
+covered by trademarks or similar intellectual property rights. This notice does not grant any 
+licenses under those rights. For a list of Microsoft trademarks, visit 
+www.microsoft.com/trademarks.  
+
+ Fictitious Names. The example companies, organizations, products, domain names, email 
+addresses, logos, people, places, and events that are depicted in this documentation are fictitious. 
+No association with any real company, organization, product, domain name, email address, logo, 
+person, place, or event is intended or should be inferred. 
+
+Reservation of Rights. All other rights are reserved, and this notice does not grant any rights other 
+than as specifically described above, whether by implication, estoppel, or otherwise.  
+
+Tools. The Open Specifications documentation does not require the use of Microsoft programming 
+tools or programming environments in order for you to develop an implementation. If you have access 
+to Microsoft programming tools and environments, you are free to take advantage of them. Certain 
+Open Specifications documents are intended for use in conjunction with publicly available standards 
+specifications and network programming art and, as such, assume that the reader either is familiar 
+with the aforementioned material or has immediate access to it. 
+
+Support. For questions and support, please contact dochelp@microsoft.com.  
+
+1 / 28 
+
+[MS-ASDOC] - v20250520 
+Exchange ActiveSync: Document Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Revision Summary 
+
+Revision Revision 
+Date History Class Comments 
+
+12/3/2008 1.0.0 Major Initial Release. 
+
+2/4/2009 1.0.1 Editorial Revised and edited technical content. 
+
+3/4/2009 1.0.2 Editorial Revised and edited technical content. 
+
+4/10/2009 2.0.0 Major Updated applicable product releases. 
+
+7/15/2009 3.0.0 Major Revised and edited for technical content. 
+
+11/4/2009 4.0.0 Major Updated and revised the technical content. 
+
+2/10/2010 5.0.0 Major Updated and revised the technical content. 
+
+5/5/2010 6.0.0 Major Updated and revised the technical content. 
+
+8/4/2010 7.0 Major Significantly changed the technical content. 
+
+11/3/2010 7.1 Minor Clarified the meaning of the technical content. 
+
+3/18/2011 7.2 Minor Clarified the meaning of the technical content. 
+
+8/5/2011 8.0 Major Significantly changed the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+10/7/2011 8.0 None 
+
+technical content. 
+
+1/20/2012 9.0 Major Significantly changed the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+4/27/2012 9.0 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+7/16/2012 9.0 None 
+
+technical content. 
+
+10/8/2012 9.1 Minor Clarified the meaning of the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+2/11/2013 9.1 None 
+
+technical content. 
+
+7/26/2013 10.0 Major Significantly changed the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+11/18/2013 10.0 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+2/10/2014 10.0 None 
+
+technical content. 
+
+4/30/2014 11.0 Major Significantly changed the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+7/31/2014 11.0 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+10/30/2014 11.0 None 
+
+technical content. 
+
+5/26/2015 12.0 Major Significantly changed the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+6/30/2015 12.0 None 
+
+technical content. 
+
+2 / 28 
+
+[MS-ASDOC] - v20250520 
+Exchange ActiveSync: Document Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Revision Revision 
+Date History Class Comments 
+
+9/14/2015 12.1 Minor Clarified the meaning of the technical content. 
+
+6/9/2016 13.0 Major Significantly changed the technical content. 
+
+2/28/2017 14.0 Major Significantly changed the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+4/18/2017 14.0 None 
+
+technical content. 
+
+7/24/2018 15.0 Major Significantly changed the technical content. 
+
+10/1/2018 16.0 Major Significantly changed the technical content. 
+
+5/20/2025 17.0 Major Significantly changed the technical content. 
+
+3 / 28 
+
+[MS-ASDOC] - v20250520 
+Exchange ActiveSync: Document Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Table of Contents 
+1 Introduction ............................................................................................................ 6 
+
+1.1 Glossary ........................................................................................................... 6 
+1.2 References ........................................................................................................ 7 
+
+1.2.1 Normative References ................................................................................... 7 
+1.2.2 Informative References ................................................................................. 7 
+
+1.3 Overview .......................................................................................................... 7 
+1.4 Relationship to Other Protocols ............................................................................ 7 
+1.5 Prerequisites/Preconditions ................................................................................. 8 
+1.6 Applicability Statement ....................................................................................... 8 
+1.7 Versioning and Capability Negotiation ................................................................... 8 
+1.8 Vendor-Extensible Fields ..................................................................................... 8 
+1.9 Standards Assignments ....................................................................................... 8 
+
+2 Messages ................................................................................................................. 9 
+2.1 Transport .......................................................................................................... 9 
+2.2 Message Syntax ................................................................................................. 9 
+
+2.2.1 Namespaces ................................................................................................ 9 
+2.2.2 Elements ..................................................................................................... 9 
+
+2.2.2.1 ContentLength ...................................................................................... 10 
+2.2.2.2 ContentType ......................................................................................... 10 
+2.2.2.3 CreationDate ........................................................................................ 11 
+2.2.2.4 DisplayName ........................................................................................ 12 
+2.2.2.5 IsFolder ............................................................................................... 12 
+2.2.2.6 IsHidden .............................................................................................. 13 
+2.2.2.7 LastModifiedDate .................................................................................. 14 
+2.2.2.8 LinkId .................................................................................................. 14 
+
+3 Protocol Details ..................................................................................................... 16 
+3.1 Client Details ................................................................................................... 16 
+
+3.1.1 Abstract Data Model .................................................................................... 16 
+3.1.2 Timers ...................................................................................................... 16 
+3.1.3 Initialization ............................................................................................... 16 
+3.1.4 Higher-Layer Triggered Events ..................................................................... 16 
+
+3.1.4.1 Searching for Documents ....................................................................... 16 
+3.1.4.2 Requesting Details for Specific Documents ............................................... 16 
+3.1.4.3 Requesting the Document Body from the Server ....................................... 16 
+
+3.1.5 Message Processing Events and Sequencing Rules .......................................... 16 
+3.1.5.1 ItemOperations Command Request ......................................................... 17 
+3.1.5.2 Search Command Request ..................................................................... 17 
+
+3.1.6 Timer Events .............................................................................................. 17 
+3.1.7 Other Local Events ...................................................................................... 17 
+
+3.2 Server Details .................................................................................................. 17 
+3.2.1 Abstract Data Model .................................................................................... 17 
+3.2.2 Timers ...................................................................................................... 18 
+3.2.3 Initialization ............................................................................................... 18 
+3.2.4 Higher-Layered Triggered Events .................................................................. 18 
+
+3.2.4.1 Searching for Documents ....................................................................... 18 
+3.2.4.2 Retrieving Details for Specific Documents ................................................ 18 
+3.2.4.3 Retrieving the Document Body ............................................................... 18 
+
+3.2.5 Message Processing Events and Sequencing Rules .......................................... 18 
+3.2.5.1 ItemOperations Command Response ....................................................... 18 
+3.2.5.2 Search Command Response ................................................................... 19 
+
+3.2.6 Timer Events .............................................................................................. 19 
+3.2.7 Other Local Events ...................................................................................... 19 
+
+4 / 28 
+
+[MS-ASDOC] - v20250520 
+Exchange ActiveSync: Document Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+4 Protocol Examples ................................................................................................. 20 
+4.1 Searching for a Document by LinkId ................................................................... 20 
+4.2 Retrieving the Text of a Document by Using the ItemOperations Command ............. 20 
+4.3 Browsing a Document Folder ............................................................................. 21 
+
+5 Security ................................................................................................................. 23 
+5.1 Security Considerations for Implementers ........................................................... 23 
+5.2 Index of Security Parameters ............................................................................ 23 
+
+6 Appendix A: Full XML Schema ................................................................................ 24 
+
+7 Appendix B: Product Behavior ............................................................................... 25 
+
+8 Change Tracking .................................................................................................... 26 
+
+9 Index ..................................................................................................................... 27 
+
+ 
+
+5 / 28 
+
+[MS-ASDOC] - v20250520 
+Exchange ActiveSync: Document Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+1 Introduction 
+
+The Exchange ActiveSync: Document Class Protocol supports accessing documents stored in a web-
+based team collaboration environment and on file shares specified using Universal Naming 
+Convention (UNC) paths. This protocol enables the communication of document data between a 
+mobile device and the server in the ActiveSync protocol. 
+
+Sections 1.5, 1.8, 1.9, 2, and 3 of this specification are normative. All other sections and examples in 
+this specification are informative. 
+
+1.1 Glossary 
+
+This document uses the following terms: 
+
+base64 encoding: A binary-to-text encoding scheme whereby an arbitrary sequence of bytes is 
+converted to a sequence of printable ASCII characters, as described in [RFC4648]. 
+
+Coordinated Universal Time (UTC): A high-precision atomic time standard that approximately 
+tracks Universal Time (UT). It is the basis for legal, civil time all over the Earth. Time zones 
+around the world are expressed as positive and negative offsets from UTC. In this role, it is also 
+referred to as Zulu time (Z) and Greenwich Mean Time (GMT). In these specifications, all 
+references to UTC refer to the time at UTC-0 (or GMT). 
+
+header: A name-value pair that supplies structured data in an Internet email message or MIME 
+entity. 
+
+Multipurpose Internet Mail Extensions (MIME): A set of extensions that redefines and 
+expands support for various types of content in email messages, as described in [RFC2045], 
+[RFC2046], and [RFC2047]. 
+
+Uniform Resource Identifier (URI): A string that identifies a resource. The URI is an addressing 
+mechanism defined in Internet Engineering Task Force (IETF) Uniform Resource Identifier (URI): 
+Generic Syntax [RFC3986]. 
+
+Universal Naming Convention (UNC): A string format that specifies the location of a resource. 
+For more information, see [MS-DTYP] section 2.2.57. 
+
+Wireless Application Protocol (WAP) Binary XML (WBXML): A compact binary representation 
+of XML that is designed to reduce the transmission size of XML documents over narrowband 
+communication channels. 
+
+XML: The Extensible Markup Language, as described in [XML1.0]. 
+
+XML namespace: A collection of names that is used to identify elements, types, and attributes in 
+XML documents identified in a URI reference [RFC3986]. A combination of XML namespace and 
+local name allows XML documents to use elements, types, and attributes that have the same 
+names but come from different sources. For more information, see [XMLNS-2ED]. 
+
+XML schema: A description of a type of XML document that is typically expressed in terms of 
+constraints on the structure and content of documents of that type, in addition to the basic 
+syntax constraints that are imposed by XML itself. An XML schema provides a view of a 
+document type at a relatively high level of abstraction. 
+
+MAY, SHOULD, MUST, SHOULD NOT, MUST NOT: These terms (in all caps) are used as defined 
+in [RFC2119]. All statements of optional behavior use either MAY, SHOULD, or SHOULD NOT. 
+
+6 / 28 
+
+[MS-ASDOC] - v20250520 
+Exchange ActiveSync: Document Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+1.2 References 
+
+Links to a document in the Microsoft Open Specifications library point to the correct section in the 
+most recently published version of the referenced document. However, because individual documents 
+in the library are not updated at the same time, the section numbers in the documents may not 
+match. You can confirm the correct section numbering by checking the Errata.   
+
+1.2.1 Normative References 
+
+We conduct frequent surveys of the normative references to assure their continued availability. If you 
+have any issue with finding a normative reference, please contact dochelp@microsoft.com. We will 
+assist you in finding the relevant information.  
+
+[MS-ASAIRS] Microsoft Corporation, "Exchange ActiveSync: AirSyncBase Namespace Protocol". 
+
+[MS-ASCMD] Microsoft Corporation, "Exchange ActiveSync: Command Reference Protocol". 
+
+[MS-ASDTYPE] Microsoft Corporation, "Exchange ActiveSync: Data Types". 
+
+[MS-ASHTTP] Microsoft Corporation, "Exchange ActiveSync: HTTP Protocol". 
+
+[MS-ASWBXML] Microsoft Corporation, "Exchange ActiveSync: WAP Binary XML (WBXML) Algorithm". 
+
+[RFC2119] Bradner, S., "Key words for use in RFCs to Indicate Requirement Levels", BCP 14, RFC 
+2119, March 1997, https://www.rfc-editor.org/info/rfc2119 
+
+[XMLNS] Bray, T., Hollander, D., Layman, A., et al., Eds., "Namespaces in XML 1.0 (Third Edition)", 
+W3C Recommendation, December 2009, https://www.w3.org/TR/2009/REC-xml-names-20091208/ 
+
+[XMLSCHEMA1] Thompson, H., Beech, D., Maloney, M., and Mendelsohn, N., Eds., "XML Schema Part 
+1: Structures", W3C Recommendation, May 2001, https://www.w3.org/TR/2001/REC-xmlschema-1-
+20010502/ 
+
+[XML] World Wide Web Consortium, "Extensible Markup Language (XML) 1.0 (Fourth Edition)", W3C 
+Recommendation 16 August 2006, edited in place 29 September 2006, 
+http://www.w3.org/TR/2006/REC-xml-20060816/ 
+
+1.2.2 Informative References 
+
+[MS-OXPROTO] Microsoft Corporation, "Exchange Server Protocols System Overview". 
+
+1.3 Overview 
+
+This protocol describes the XML representation of documents that is used for client and server 
+communication as described in [MS-ASCMD]. The document data is included in protocol command 
+requests when document data is being sent from the client to the server, and is included in protocol 
+command responses when document data is returned from the server to the client. 
+
+1.4 Relationship to Other Protocols 
+
+This protocol describes the XML representation of documents that is used by the command requests 
+and responses that are described in [MS-ASCMD]. The protocol governing the transmission of these 
+commands between the client and the server is described in [MS-ASCMD] . The Wireless Application 
+Protocol (WAP) Binary XML (WBXML), as described in [MS-ASWBXML], is used to transmit the 
+XML markup that constitutes the request body and the response body. 
+
+7 / 28 
+
+[MS-ASDOC] - v20250520 
+Exchange ActiveSync: Document Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+All simple data types in this document conform to the data type definitions that are described in [MS-
+ASDTYPE]. 
+
+For conceptual background information and overviews of the relationships and interactions between 
+this and other protocols, see [MS-OXPROTO]. 
+
+1.5 Prerequisites/Preconditions 
+
+None. 
+
+1.6 Applicability Statement 
+
+This protocol describes a set of elements that is used to communicate document data when using the 
+commands described in [MS-ASCMD]. This set of elements is applicable when communicating 
+document data such as the document's name, location, estimated size, and visibility between a mobile 
+device and a server. These elements are not applicable when sending calendar, e-mail, note, contact, 
+or task data between a mobile device and a server. 
+
+1.7 Versioning and Capability Negotiation 
+
+None. 
+
+1.8 Vendor-Extensible Fields 
+
+None. 
+
+1.9 Standards Assignments 
+
+None. 
+
+8 / 28 
+
+[MS-ASDOC] - v20250520 
+Exchange ActiveSync: Document Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+2 Messages 
+
+2.1 Transport 
+
+This protocol consists of a series of XML elements that are embedded inside of a command request or 
+command response, as specified in [MS-ASCMD].  
+
+The XML markup that constitutes the request body or the response body that is transmitted between 
+the client and the server uses Wireless Application Protocol (WAP) Binary XML (WBXML), as 
+specified in [MS-ASWBXML]. 
+
+2.2 Message Syntax 
+
+The XML schema for the DocumentLibrary namespace is described in section 6. 
+
+The markup that is used by this protocol MUST be well-formed XML, as specified in [XML]. 
+
+2.2.1 Namespaces 
+
+This specification defines and references various XML namespaces using the mechanisms specified in 
+[XMLNS]. Although this specification associates a specific XML namespace prefix for each XML 
+namespace that is used, the choice of any particular XML namespace prefix is implementation-specific 
+and is not significant for interoperability. 
+
+Prefix Namespace URI Reference 
+
+(none) DocumentLibrary  
+
+airsyncbase AirSyncBase [MS-ASAIRS] 
+
+itemoperations ItemOperations [MS-ASCMD] section 2.2.1.10 
+
+search Search [MS-ASCMD] section 2.2.1.16 
+
+xs http://www.w3.org/2001/XMLSchema [XMLSCHEMA1] 
+
+ 
+
+2.2.2 Elements 
+
+Elements of the Document class are defined in two namespaces: DocumentLibrary and 
+AirSyncBase. All Document class elements are specified in this document. However, elements 
+defined in the AirSyncBase namespace are further specified in [MS-ASAIRS]. 
+
+The following table summarizes the set of common XML schema element definitions defined by this 
+specification. For details about how these elements are used by a particular operation, see sections 
+3.1.5.1, 3.1.5.2, 3.2.5.1, and 3.2.5.2. 
+
+Element name Description 
+
+LinkId (section 2.2.2.8) The link to the document, specified as a Uniform Resource Identifier (URI). 
+
+DisplayName (section The name of the document or folder, as displayed by the client. 
+2.2.2.4) 
+
+IsFolder (section 2.2.2.5) Specifies whether the item is a folder or a document. 
+
+9 / 28 
+
+[MS-ASDOC] - v20250520 
+Exchange ActiveSync: Document Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Element name Description 
+
+CreationDate (section The date and time when the document or folder was first created. 
+2.2.2.3) 
+
+LastModifiedDate (section The date and time when the document, or the folder, or its properties was last 
+2.2.2.7) modified. 
+
+IsHidden (section 2.2.2.6) Specifies whether this is a hidden object. 
+
+ContentLength (section The estimated size of the document, in bytes. 
+2.2.2.1) 
+
+ContentType (section The Multipurpose Internet Mail Extensions (MIME) type of the binary-
+2.2.2.2) encoded content or content encoded with base64 encoding. 
+
+ 
+
+2.2.2.1 ContentLength 
+
+The ContentLength element is a required child element of the search:Properties element ([MS-
+ASCMD] section 2.2.3.139.3) for Document class document items in a Search command response 
+([MS-ASCMD] section 2.2.1.16) that specifies the estimated size, in bytes, of the document. For more 
+details about the Search command response for Document class items, see section 3.2.5.2. 
+
+The value of this element is an integer data type, as specified in [MS-ASDTYPE] section 2.6. 
+
+Because documents accessed by using the ActiveSync protocol can be shared across a network, it is 
+possible that the value of the ContentLength element will differ between the time the document 
+description is retrieved and the time the document is accessed. 
+
+Protocol Versions 
+
+The following table specifies the protocol versions that support this element. The client indicates the 
+protocol version being used by setting either the MS-ASProtocolVersion header, as specified in [MS-
+ASHTTP] section 2.2.1.1.2.6, or the Protocol version field, as specified in [MS-ASHTTP] section 
+2.2.1.1.1.1, in the request. 
+
+Protocol version Element support 
+
+2.5  
+
+12.0 Yes 
+
+12.1 Yes 
+
+14.0 Yes 
+
+14.1 Yes 
+
+16.0 Yes 
+
+16.1 Yes 
+
+ 
+
+2.2.2.2 ContentType 
+
+The ContentType element is a required child element of the search:Properties element ([MS-
+ASCMD] section 2.2.3.139.3) for Document class document items in a Search command response 
+
+10 / 28 
+
+[MS-ASDOC] - v20250520 
+Exchange ActiveSync: Document Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+([MS-ASCMD] section 2.2.1.16) that specifies the MIME type of the binary-encoded content or 
+document encoded with base64 encoding, if known. For more details about the Search command 
+response for Document class items, see section 3.2.5.2. 
+
+The value of this element is a string data type, as specified in [MS-ASDTYPE] section 2.7. 
+
+Protocol Versions 
+
+The following table specifies the protocol versions that support this element. The client indicates the 
+protocol version being used by setting either the MS-ASProtocolVersion header, as specified in [MS-
+ASHTTP] section 2.2.1.1.2.6, or the Protocol version field, as specified in [MS-ASHTTP] section 
+2.2.1.1.1.1, in the request. 
+
+Protocol version Element support 
+
+2.5  
+
+12.0 Yes 
+
+12.1 Yes 
+
+14.0 Yes 
+
+14.1 Yes 
+
+16.0 Yes 
+
+16.1 Yes 
+
+ 
+
+2.2.2.3 CreationDate 
+
+The CreationDate element is a required child element of the search:Properties element ([MS-
+ASCMD] section 2.2.3.139.3) for Document class items in a Search command response ([MS-
+ASCMD] section 2.2.1.16) that specifies the date and time when the document or folder was created. 
+For more details about the Search command response for Document class items, see section 
+3.2.5.2. 
+
+The value of this element is a datetime data type in Coordinated Universal Time (UTC) format, as 
+specified in [MS-ASDTYPE] section 2.3. 
+
+Protocol Versions 
+
+The following table specifies the protocol versions that support this element. The client indicates the 
+protocol version being used by setting either the MS-ASProtocolVersion header, as specified in [MS-
+ASHTTP] section 2.2.1.1.2.6, or the Protocol version field, as specified in [MS-ASHTTP] section 
+2.2.1.1.1.1, in the request. 
+
+Protocol version Element support 
+
+2.5  
+
+12.0 Yes 
+
+12.1 Yes 
+
+14.0 Yes 
+
+14.1 Yes 
+
+11 / 28 
+
+[MS-ASDOC] - v20250520 
+Exchange ActiveSync: Document Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Protocol version Element support 
+
+16.0 Yes 
+
+16.1 Yes 
+
+ 
+
+2.2.2.4 DisplayName 
+
+The DisplayName element is a required child element of the search:Properties element ([MS-
+ASCMD] section 2.2.3.139.3) for Document class items in a Search command response ([MS-
+ASCMD] section 2.2.1.16) that specifies the name of the document or folder as it is displayed to the 
+user. For more details about the Search command response for Document class items, see section 
+3.2.5.2. 
+
+The value of this element is a string data type, as specified in [MS-ASDTYPE] section 2.7. 
+
+Protocol Versions 
+
+The following table specifies the protocol versions that support this element. The client indicates the 
+protocol version being used by setting either the MS-ASProtocolVersion header, as specified in [MS-
+ASHTTP] section 2.2.1.1.2.6, or the Protocol version field, as specified in [MS-ASHTTP] section 
+2.2.1.1.1.1, in the request. 
+
+Protocol version Element support 
+
+2.5  
+
+12.0 Yes 
+
+12.1 Yes 
+
+14.0 Yes 
+
+14.1 Yes 
+
+16.0 Yes 
+
+16.1 Yes 
+
+ 
+
+2.2.2.5 IsFolder 
+
+The IsFolder element is a required child element of the search:Properties element ([MS-ASCMD] 
+section 2.2.3.139.3) for Document class items in a Search command response ([MS-ASCMD] section 
+2.2.1.16) that specifies whether the item is a folder. For more details about the Search command 
+response for Document class items, see section 3.2.5.2. 
+
+The value of this element is an unsignedByte data type, as specified in [MS-ASDTYPE] section 2.8. 
+Valid values for this element are as follows. 
+
+Value Meaning 
+
+0 The item is not a folder. 
+
+1 The item is a folder. 
+
+12 / 28 
+
+[MS-ASDOC] - v20250520 
+Exchange ActiveSync: Document Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+ 
+
+Protocol Versions 
+
+The following table specifies the protocol versions that support this element. The client indicates the 
+protocol version being used by setting either the MS-ASProtocolVersion header, as specified in [MS-
+ASHTTP] section 2.2.1.1.2.6, or the Protocol version field, as specified in [MS-ASHTTP] section 
+2.2.1.1.1.1, in the request. 
+
+Protocol version Element support 
+
+2.5  
+
+12.0 Yes 
+
+12.1 Yes 
+
+14.0 Yes 
+
+14.1 Yes 
+
+16.0 Yes 
+
+16.1 Yes 
+
+ 
+
+2.2.2.6 IsHidden 
+
+The IsHidden element is a required child element of the search:Properties element ([MS-ASCMD] 
+section 2.2.3.139.3) for Document class items in a Search command response ([MS-ASCMD] section 
+2.2.1.16) that specifies whether the document or folder is a hidden object. For more details about the 
+Search command response for Document class items, see section 3.2.5.2. 
+
+The value of this element is an unsignedByte data type, as specified in [MS-ASDTYPE] section 2.8. 
+The value of the IsHidden element MUST be one of the following values. 
+
+Value Meaning 
+
+0 The document or folder is not hidden. 
+
+1 The document or folder is hidden. 
+
+ 
+
+Protocol Versions 
+
+The following table specifies the protocol versions that support this element. The client indicates the 
+protocol version being used by setting either the MS-ASProtocolVersion header, as specified in [MS-
+ASHTTP] section 2.2.1.1.2.6, or the Protocol version field, as specified in [MS-ASHTTP] section 
+2.2.1.1.1.1, in the request. 
+
+Protocol version Element support 
+
+2.5  
+
+12.0 Yes 
+
+12.1 Yes 
+
+13 / 28 
+
+[MS-ASDOC] - v20250520 
+Exchange ActiveSync: Document Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Protocol version Element support 
+
+14.0 Yes 
+
+14.1 Yes 
+
+16.0 Yes 
+
+16.1 Yes 
+
+ 
+
+2.2.2.7 LastModifiedDate 
+
+The LastModifiedDate element is a required child element of the search:Properties element ([MS-
+ASCMD] section 2.2.3.139.3) for Document class items in a Search command response ([MS-
+ASCMD] section 2.2.1.16) that specifies the date and time that the document, or the folder, or the 
+properties of either the document or folder were last modified. For more details about the Search 
+command response for Document class items, see section 3.2.5.2. 
+
+The value of this element is a datetime data type in UTC format, as specified in [MS-ASDTYPE] 
+section 2.3. 
+
+Protocol Versions 
+
+The following table specifies the protocol versions that support this element. The client indicates the 
+protocol version being used by setting either the MS-ASProtocolVersion header, as specified in [MS-
+ASHTTP] section 2.2.1.1.2.6, or the Protocol version field, as specified in [MS-ASHTTP] section 
+2.2.1.1.1.1, in the request. 
+
+Protocol version Element support 
+
+2.5  
+
+12.0 Yes 
+
+12.1 Yes 
+
+14.0 Yes 
+
+14.1 Yes 
+
+16.0 Yes 
+
+16.1 Yes 
+
+ 
+
+2.2.2.8 LinkId 
+
+The LinkId element specifies the link to the document in the form of a URI. It is a required child 
+element of the itemoperations:Fetch element ([MS-ASCMD] section 2.2.3.67.1) for Document 
+class items in an ItemOperations command request and an ItemOperations command response 
+([MS-ASCMD] section 2.2.1.10), a required child element of the search:EqualTo element ([MS-
+ASCMD] section 2.2.3.62) for Document class items in a Search command request ([MS-ASCMD] 
+section 2.2.1.16), and a required child element of the search:Properties element ([MS-ASCMD] 
+section 2.2.3.139.3) for Document class items in a Search command response. 
+
+14 / 28 
+
+[MS-ASDOC] - v20250520 
+Exchange ActiveSync: Document Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+For more details about how the LinkId element is used by the ItemOperations command request, 
+the Search command request, the ItemOperations command response, and the Search command 
+response, see sections 3.1.5.1, 3.1.5.2, 3.2.5.1, and 3.2.5.2, respectively. 
+
+Protocol Versions 
+
+The following table specifies the protocol versions that support this element. The client indicates the 
+protocol version being used by setting either the MS-ASProtocolVersion header, as specified in [MS-
+ASHTTP] section 2.2.1.1.2.6, or the Protocol version field, as specified in [MS-ASHTTP] section 
+2.2.1.1.1.1, in the request. 
+
+Protocol version Element support 
+
+2.5  
+
+12.0 Yes 
+
+12.1 Yes 
+
+14.0 Yes 
+
+14.1 Yes 
+
+16.0 Yes 
+
+16.1 Yes 
+
+ 
+
+15 / 28 
+
+[MS-ASDOC] - v20250520 
+Exchange ActiveSync: Document Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+3 Protocol Details 
+
+3.1 Client Details 
+
+3.1.1 Abstract Data Model 
+
+This section describes a conceptual model of possible data organization that an implementation 
+maintains to participate in this protocol. The described organization is provided to facilitate the 
+explanation of how the protocol behaves. This document does not mandate that implementations 
+adhere to this model as long as their external behavior is consistent with that described in this 
+document. 
+
+Document class: A structured XML text block that adheres to the XML schema defined in section 
+2.2. It is returned by the server as part of a full XML response to the client command requests 
+specified in section 3.1.5. 
+
+Command request: A WBXML formatted message that adheres to the command schemas specified 
+in [MS-ASCMD]. 
+
+3.1.2 Timers 
+
+None. 
+
+3.1.3 Initialization 
+
+None. 
+
+3.1.4 Higher-Layer Triggered Events 
+
+3.1.4.1 Searching for Documents 
+
+The client searches for Document class data on a server by sending a Search command request 
+([MS-ASCMD] section 2.2.1.16) to the server. 
+
+3.1.4.2 Requesting Details for Specific Documents 
+
+The client requests Document class data for one or more individual documents by sending an 
+ItemOperations command request ([MS-ASCMD] section 2.2.1.10) to the server that contains one or 
+more itemoperations:Fetch elements ([MS-ASCMD] section 2.2.3.67.1). 
+
+3.1.4.3 Requesting the Document Body from the Server 
+
+Because the body of the document is not returned as part of the Document class data, the client 
+submits the value of the LinkId element (section 2.2.2.8) in a separate ItemOperations command 
+request ([MS-ASCMD] section 2.2.1.10) to obtain the body of the document. The body of the 
+document is returned as either text encoded with base64 encoding in the itemoperations:Data 
+element ([MS-ASCMD] section 2.2.3.39.2) of the ItemOperations command response or as binary 
+data, depending on the content type that the client requested. For details about how the client 
+requests a particular content type in an ItemOperations command request, see section 3.1.5.1. 
+
+16 / 28 
+
+[MS-ASDOC] - v20250520 
+Exchange ActiveSync: Document Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+3.1.5 Message Processing Events and Sequencing Rules 
+
+The following sections define how various elements of the Document class are used in the context of 
+specific ActiveSync commands. For more details about the commands themselves, see [MS-ASCMD]. 
+
+3.1.5.1 ItemOperations Command Request 
+
+A client uses an ItemOperations command request ([MS-ASCMD] section 2.2.1.10) that contains 
+one or more itemoperations:Fetch elements ([MS-ASCMD] section 2.2.3.67.1) to retrieve data from 
+the server for one or more individual documents.  
+
+The LinkId element (section 2.2.2.8) is the only Document class element that can be included in an 
+ItemOperations command request. The LinkId element is transmitted as a child element of the 
+itemoperations:Fetch element ([MS-ASCMD] section 2.2.3.67.1). 
+
+A client can use the HTTP header MS-ASAcceptMultiPart: T to specify that the server returns the 
+document data in multipart binary format. If this header is not used, the document data is returned as 
+text. For more details about this header, see [MS-ASCMD] section 2.2.1.10.1. 
+
+3.1.5.2 Search Command Request 
+
+A client uses the Search command request ([MS-ASCMD] section 2.2.1.16) to retrieve Document 
+class items that match the criteria specified by the client. 
+
+The LinkId element (section 2.2.2.8) is a required element in a Search command request, and is 
+transmitted as a child element of the search:EqualTo element ([MS-ASCMD] section 2.2.3.62). The 
+search:Value element ([MS-ASCMD] section 2.2.3.196) can also be included as a child of the 
+search:EqualTo element. The value of the search:Value element is a string that describes the 
+Universal Naming Convention (UNC) path of a file on a file share. A full example of this usage is 
+provided in [MS-ASCMD] section 4.23.1. 
+
+If the LinkId element is not included in a Search command request, then the server MUST respond 
+with protocol error 2. 
+
+3.1.6 Timer Events 
+
+None. 
+
+3.1.7 Other Local Events 
+
+None. 
+
+3.2 Server Details 
+
+3.2.1 Abstract Data Model 
+
+This section describes a conceptual model of possible data organization that an implementation 
+maintains to participate in this protocol. The described organization is provided to facilitate the 
+explanation of how the protocol behaves. This document does not mandate that implementations 
+adhere to this model as long as their external behavior is consistent with that described in this 
+document. 
+
+Document class: A structured XML text block that adheres to the XML schema defined in section 
+2.2. It is returned by the server as part of a full XML response to the client command requests 
+specified in section 3.1.5. 
+
+17 / 28 
+
+[MS-ASDOC] - v20250520 
+Exchange ActiveSync: Document Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Command response: A WBXML formatted message that adheres to the command schemas specified 
+in [MS-ASCMD]. 
+
+3.2.2 Timers 
+
+None. 
+
+3.2.3 Initialization 
+
+None. 
+
+3.2.4 Higher-Layered Triggered Events 
+
+3.2.4.1 Searching for Documents 
+
+Searching for Document class data is initiated by the client, as specified in section 3.1.4.1. The 
+server responds with a Search command response ([MS-ASCMD] section 2.2.1.16). 
+
+3.2.4.2 Retrieving Details for Specific Documents 
+
+Retrieval of Document class data for one or more individual documents is initiated by the client, as 
+specified in section 3.1.4.2. The server responds with an ItemOperations command response ([MS-
+ASCMD] section 2.2.1.10). 
+
+3.2.4.3 Retrieving the Document Body 
+
+Retrieval of the body of a document is initiated by the client, as specified in section 3.1.4.3. The 
+server responds with an ItemOperations command response ([MS-ASCMD] section 2.2.1.10), which 
+returns the body of the document either as text encoded with base64 encoding in the 
+itemoperations:Data element ([MS-ASCMD] section 2.2.3.39.2) of the response or as binary text in 
+multiple parts if the command request was a multi-part request.  
+
+3.2.5 Message Processing Events and Sequencing Rules 
+
+The following sections define how various elements of the Document class are used in the context of 
+specific commands. For more details about the commands themselves, see [MS-ASCMD]. 
+
+3.2.5.1 ItemOperations Command Response 
+
+When a client uses an ItemOperations command request ([MS-ASCMD] section 2.2.1.10) to retrieve 
+data from the server for one or more individual documents, as specified in section 3.1.5.1, the server 
+responds with an ItemOperations command response.  
+
+The server MUST return a Document class XML block for every item that matches the criteria 
+specified in the client command request. The server can return zero or more Document class blocks 
+in its response, depending on how many document items match the criteria specified in the client 
+command request. 
+
+The LinkId element (section 2.2.2.8) is the only Document class element returned in an 
+ItemOperations command response. The LinkId element is transmitted as a child element of the 
+Itemoperations:Fetch element ([MS-ASCMD] section 2.2.3.67.1).  
+
+If an ItemOperations command request for the body of the document was made using the MS-
+ASAcceptMultiPart: T header, then the server MUST respond by providing the document body as 
+binary data in multiple parts. Otherwise, the server MUST transmit the document as data encoded 
+
+18 / 28 
+
+[MS-ASDOC] - v20250520 
+Exchange ActiveSync: Document Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+with base64 encoding within the itemoperations:Data element ([MS-ASCMD] section 2.2.3.39.2) 
+of the ItemOperations command response. For more details about content delivery for documents, 
+see [MS-ASCMD] section 2.2.1.10.1. 
+
+The ItemOperations command is specified in [MS-ASCMD] section 2.2.1.10. 
+
+3.2.5.2 Search Command Response 
+
+When a client uses the Search command request ([MS-ASCMD] section 2.2.1.16) to retrieve 
+Document class items that match the criteria specified by the client, as specified in section 3.1.5.2, 
+the server responds with a Search command response. 
+
+The server MUST return a Document class XML block for every item that matches the criteria 
+specified in the client command request. The server can return zero or more Document class blocks 
+in its response, depending on how many document items match the criteria specified in the client 
+command request. 
+
+Any of the elements for the Document class, as specified in section 2.2.2, can be included in a 
+Search command response. Document class elements are returned as child elements of the 
+search:Properties element ([MS-ASCMD] section 2.2.3.139.3) in a Search command response. 
+
+3.2.6 Timer Events 
+
+None. 
+
+3.2.7 Other Local Events 
+
+None. 
+
+19 / 28 
+
+[MS-ASDOC] - v20250520 
+Exchange ActiveSync: Document Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+4 Protocol Examples 
+
+4.1 Searching for a Document by LinkId 
+
+The following example demonstrates a client request to search for a document by using the specified 
+LinkId element (section 2.2.2.8) value (which in this example is the UNC path of the document), and 
+the server response. 
+
+Request: 
+
+ <?xml version="1.0" encoding="utf-8"?> 
+ <Search xmlns="Search:" xmlns:A="DocumentLibrary:"> 
+  <Store> 
+    <Name>DocumentLibrary</Name> 
+    <Query> 
+      <EqualTo> 
+        <A:LinkId/> 
+        <Value>\\EXCH-D-810\DocumentShare\document.txt</Value> 
+      </EqualTo> 
+    </Query> 
+    <Options> 
+      <Range>0-999</Range> 
+    </Options> 
+  </Store> 
+ </Search> 
+
+Response: 
+
+ <?xml version="1.0" encoding="utf-8"?> 
+ <Search  
+ xmlns:documentlibrary="DocumentLibrary:" > 
+  <Status>1 Success</Status> 
+  <Response> 
+    <Store> 
+      <Status>1 Success</Status> 
+      <Result> 
+        <Properties> 
+          <documentlibrary:LinkId>\\exch-d-
+810\DocumentShare\document.txt</documentlibrary:LinkId> 
+          <documentlibrary:DisplayName>document.txt</documentlibrary:DisplayName> 
+          <documentlibrary:IsFolder>0</documentlibrary:IsFolder> 
+          <documentlibrary:CreationDate>2009-11-
+11T17:07:08.156Z</documentlibrary:CreationDate> 
+          <documentlibrary:LastModifiedDate>2009-11-
+11T17:07:17.613Z</documentlibrary:LastModifiedDate> 
+          <documentlibrary:IsHidden>0</documentlibrary:IsHidden> 
+          <documentlibrary:ContentLength>13</documentlibrary:ContentLength> 
+          <documentlibrary:ContentType>text/plain</documentlibrary:ContentType> 
+        </Properties> 
+      </Result> 
+      <Range>0-0</Range> 
+      <Total>1</Total> 
+    </Store> 
+  </Response> 
+ </Search> 
+
+4.2 Retrieving the Text of a Document by Using the ItemOperations Command 
+
+The following example demonstrates a client request to retrieve the data for a document by using the 
+ItemOperations command ([MS-ASCMD] section 2.2.1.10), and the server response. In the XML 
+
+20 / 28 
+
+[MS-ASDOC] - v20250520 
+Exchange ActiveSync: Document Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+response below, the value of the itemoperations:Data element ([MS-ASCMD] section 2.2.3.39.2) 
+has been truncated for the sake of brevity. 
+
+Request: 
+
+ <?xml version="1.0" encoding="utf-8"?> 
+ <ItemOperations xmlns:documentlibrary="DocumentLibrary:" xmlns="ItemOperations:"> 
+  <Fetch> 
+      <Store>DocumentLibrary</Store> 
+      <documentlibrary:LinkId>\\EXCH-D-810\DocumentShare\Word 
+Document.docx</documentlibrary:LinkId> 
+  </Fetch> 
+ </ItemOperations> 
+
+Response: 
+
+ <?xml version="1.0" encoding="utf-8"?> 
+ <ItemOperations  
+ xmlns:documentlibrary="DocumentLibrary:" 
+ > 
+  <Status>1</Status> 
+  <Response> 
+    <Fetch> 
+      <Status>1</Status> 
+      <documentlibrary:LinkId>\\EXCH-D-810\DocumentShare\Word 
+Document.docx</documentlibrary:LinkId> 
+      <Properties> 
+       
+<Data>UEsDBBQABgAIAAAAIQDd/+ImYzsKNchci+VLqQHEkJU4+RzBv1jKu6vsf0VwOamabaWQ1pZ+9AtcdYNl/WDl03G
+n4KZu/Yy4kVyAdhb9kuYipsSc 
+ ZyjWop9SwabDDPJZ2RYqwKNuBpotX1RP9fi46FLAmhCYnP83x1nANaXg902aJ5x687HyFZLBZ9e/tDg7MvaD4BAAD//wM
+AUEsDBBQABgAIAAAAIQDWZLNR 
+ +gAAADEDAAAcAAgBd29yZC9fcmVscy9kb2N1bWVudC54bWwucmVscyCiBAEooAABAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+AAAAAAAAAAAAAA...</Data> 
+        <Version>2009-11-11T19:15:45.177Z</Version> 
+      </Properties> 
+    </Fetch> 
+  </Response> 
+ </ItemOperations> 
+
+4.3 Browsing a Document Folder 
+
+The following example demonstrates how a client can use the Search command request ([MS-
+ASCMD] section 2.2.1.16) to browse a folder on a remote share. The client submits a request for a 
+folder to view, and the server responds with a list of the folder's contents. 
+
+Request: 
+
+ <?xml version="1.0" encoding="utf-8"?> 
+ <Search xmlns="Search:" xmlns:documentlibrary="DocumentLibrary:"> 
+  <Store> 
+    <Name>DocumentLibrary</Name> 
+    <Query> 
+      <EqualTo> 
+        <documentlibrary:LinkId/> 
+        <Value>\\myserver\myshare</Value> 
+      </EqualTo> 
+    </Query> 
+    <Options> 
+      <Range>0-999</Range> 
+    </Options> 
+  </Store> 
+
+21 / 28 
+
+[MS-ASDOC] - v20250520 
+Exchange ActiveSync: Document Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+ </Search> 
+
+Response: 
+
+ <?xml version="1.0" encoding="utf-8"?> 
+ <Search xmlns="Search:" xmlns:documentlibrary="DocumentLibrary:"> 
+  <Status>1</Status> 
+  <Response> 
+    <Store> 
+      <Status>1</Status> 
+      <Result> 
+        <Properties> 
+          <documentlibrary:LinkId>\\myserver\myshare</documentlibrary:LinkId> 
+          <documentlibrary:DisplayName>d$</documentlibrary:DisplayName> 
+          <documentlibrary:IsFolder>1</documentlibrary:IsFolder> 
+          <documentlibrary:CreationDate>2007-10-
+02T00:34:28.686Z</documentlibrary:CreationDate> 
+          <documentlibrary:LastModifiedDate>2009-11-
+13T21:48:20.919Z</documentlibrary:LastModifiedDate> 
+          <documentlibrary:IsHidden>1</documentlibrary:IsHidden> 
+        </Properties> 
+      </Result> 
+      <Result> 
+        <Properties> 
+          <documentlibrary:LinkId\\myserver\myshare\blah.txt</documentlibrary:LinkId> 
+          <documentlibrary:DisplayName>blah.txt</documentlibrary:DisplayName> 
+          <documentlibrary:IsFolder>0</documentlibrary:IsFolder> 
+          <documentlibrary:CreationDate>2007-10-
+02T18:26:52.265Z</documentlibrary:CreationDate> 
+          <documentlibrary:LastModifiedDate>2009-04-
+02T02:57:55.843Z</documentlibrary:LastModifiedDate> 
+          <documentlibrary:IsHidden>1</documentlibrary:IsHidden> 
+          <documentlibrary:ContentLength>48</documentlibrary:ContentLength> 
+          <documentlibrary:ContentType>text/plain</documentlibrary:ContentType> 
+        </Properties> 
+      </Result> 
+      <Result> 
+        <Properties> 
+          <documentlibrary:LinkId>\\myserver\myshare\foo</documentlibrary:LinkId> 
+          <documentlibrary:DisplayName>foo</documentlibrary:DisplayName> 
+          <documentlibrary:IsFolder>1</documentlibrary:IsFolder> 
+          <documentlibrary:CreationDate>2009-10-
+13T00:43:44.660Z</documentlibrary:CreationDate> 
+          <documentlibrary:LastModifiedDate>2009-10-
+13T00:46:17.421Z</documentlibrary:LastModifiedDate> 
+          <documentlibrary:IsHidden>0</documentlibrary:IsHidden> 
+        </Properties> 
+      </Result> 
+      <Range>0-2</Range> 
+      <Total>3</Total> 
+    </Store> 
+  </Response> 
+ </Search> 
+
+22 / 28 
+
+[MS-ASDOC] - v20250520 
+Exchange ActiveSync: Document Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+5 Security 
+
+5.1 Security Considerations for Implementers 
+
+None. 
+
+5.2 Index of Security Parameters 
+
+None. 
+
+23 / 28 
+
+[MS-ASDOC] - v20250520 
+Exchange ActiveSync: Document Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+6 Appendix A: Full XML Schema 
+
+For ease of implementation, this section contains the contents of the DocumentLibrary.xsd file, which 
+represents the full XML schema for this protocol. 
+
+ <?xml version="1.0" encoding="UTF-8"?> 
+ <xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns="DocumentLibrary"  
+    targetNamespace="DocumentLibrary" elementFormDefault="qualified"  
+    attributeFormDefault="unqualified"> 
+  <xs:element name="LinkId" type="xs:string"/> 
+  <xs:element name="DisplayName" type="xs:string"/> 
+  <xs:element name="IsFolder" type="xs:unsignedByte"/> 
+  <xs:element name="CreationDate" type="xs:dateTime"/> 
+  <xs:element name="LastModifiedDate" type="xs:dateTime"/> 
+  <xs:element name="IsHidden" type="xs:unsignedByte"/> 
+  <xs:element name="ContentLength" type="xs:integer"/> 
+  <xs:element name="ContentType" type="xs:string"/> 
+  <xs:group name="AllProps"> 
+    <xs:sequence> 
+      <xs:choice maxOccurs="unbounded"> 
+        <xs:element ref="LinkId"/> 
+        <xs:element ref="DisplayName"/> 
+        <xs:element ref="IsFolder"/> 
+        <xs:element ref="CreationDate"/> 
+        <xs:element ref="LastModifiedDate"/> 
+        <xs:element ref="IsHidden"/> 
+        <xs:element ref="ContentLength"/> 
+        <xs:element ref="ContentType"/> 
+      </xs:choice> 
+    </xs:sequence> 
+  </xs:group> 
+ </xs:schema> 
+
+24 / 28 
+
+[MS-ASDOC] - v20250520 
+Exchange ActiveSync: Document Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+7 Appendix B: Product Behavior 
+
+The information in this specification is applicable to the following Microsoft products or supplemental 
+software. References to product versions include updates to those products. 
+
+ Microsoft Exchange Server 2007 Service Pack 1 (SP1) 
+
+ Microsoft Exchange Server 2010 
+
+ Microsoft Exchange Server 2013 
+
+ Microsoft Exchange Server 2016  
+
+ Microsoft Exchange Server 2019 
+
+ Microsoft Exchange Server Subscription Edition 
+
+Exceptions, if any, are noted in this section. If an update version, service pack or Knowledge Base 
+(KB) number appears with a product name, the behavior changed in that update. The new behavior 
+also applies to subsequent updates unless otherwise specified. If a product edition appears with the 
+product version, behavior is different in that product edition. 
+
+Unless otherwise specified, any statement of optional behavior in this specification that is prescribed 
+using the terms "SHOULD" or "SHOULD NOT" implies product behavior in accordance with the 
+SHOULD or SHOULD NOT prescription. Unless otherwise specified, the term "MAY" implies that the 
+product does not follow the prescription. 
+
+25 / 28 
+
+[MS-ASDOC] - v20250520 
+Exchange ActiveSync: Document Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+8 Change Tracking 
+
+This section identifies changes that were made to this document since the last release. Changes are 
+classified as Major, Minor, or None.  
+
+The revision class Major means that the technical content in the document was significantly revised. 
+Major changes affect protocol interoperability or implementation. Examples of major changes are: 
+
+ A document revision that incorporates changes to interoperability requirements. 
+ A document revision that captures changes to protocol functionality. 
+
+The revision class Minor means that the meaning of the technical content was clarified. Minor changes 
+do not affect protocol interoperability or implementation. Examples of minor changes are updates to 
+clarify ambiguity at the sentence, paragraph, or table level. 
+
+The revision class None means that no new technical changes were introduced. Minor editorial and 
+formatting changes may have been made, but the relevant technical content is identical to the last 
+released version. 
+
+The changes made to this document are listed in the following table. For more information, please 
+contact dochelp@microsoft.com. 
+
+Section Description Revision class 
+
+7 Appendix B: Product Behavior Updated list of supported products. Major 
+
+26 / 28 
+
+[MS-ASDOC] - v20250520 
+Exchange ActiveSync: Document Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+9 Index
+A  
+ M 
+Abstract data model  
+   client 16 Message processing 
+   server 17    client 16 
+Applicability 8    server 18 
+ Messages 
+C    Elements 9 
+    Namespaces 9 
+Capability negotiation 8    syntax 9 
+Change tracking 26    transport 9 
+Client  
+   abstract data model 16 N 
+   initialization 16  
+   message processing 16 Namespaces message 9 
+   other local events 17 Normative references 7 
+   sequencing rules 16  
+   timer events 17 O 
+   timers 16  
+ Other local events 
+D    client 17 
+    server 19 
+Data model - abstract Overview (synopsis) 7 
+   client 16  
+   server 17 P 
+  
+E Parameters - security index 23 
+ Preconditions 8 
+Elements Prerequisites 8 
+   ContentLength 10 Product behavior 25 
+   ContentType 10  
+   CreationDate 11 R 
+   DisplayName 12  
+   IsFolder 12 References 7 
+   IsHidden 13    informative 7 
+   LastModifiedDate 14    normative 7 
+   LinkId 14 Relationship to other protocols 7 
+Elements message 9  
+Examples S 
+   browsing a document folder 21  
+   retrieving the text of a document 20 Security 
+   searching for a document by LinkId 20    implementer considerations 23 
+    parameter index 23 
+F Sequencing rules 
+    client 16 
+Fields - vendor-extensible 8    server 18 
+Full XML schema 24 Server 
+    abstract data model 17 
+G    initialization 18 
+    message processing 18 
+Glossary 6    other local events 19 
+    sequencing rules 18 
+I    timer events 19 
+    timers 18 
+Implementer - security considerations 23 Standards assignments 8 
+Index of security parameters 23  
+Informative references 7 T 
+Initialization  
+   client 16 Timer events 
+   server 18    client 17 
+Introduction 6    server 19 
+
+27 / 28 
+
+[MS-ASDOC] - v20250520 
+Exchange ActiveSync: Document Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Timers 
+   client 16 
+   server 18 
+Tracking changes 26 
+Transport 9 
+ 
+V 
+ 
+Vendor-extensible fields 8 
+Versioning 8 
+ 
+X 
+ 
+XML schema 24 
+
+ 
+
+28 / 28 
+
+[MS-ASDOC] - v20250520 
+Exchange ActiveSync: Document Class Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025

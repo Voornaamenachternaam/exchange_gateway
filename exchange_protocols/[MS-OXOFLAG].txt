@@ -1,0 +1,2584 @@
+﻿[MS-OXOFLAG]:  
+
+Informational Flagging Protocol 
+
+ 
+
+Intellectual Property Rights Notice for Open Specifications Documentation 
+
+ Technical Documentation. Microsoft publishes Open Specifications documentation (“this 
+documentation”) for protocols, file formats, data portability, computer languages, and standards 
+support. Additionally, overview documents cover inter-protocol relationships and interactions.  
+
+ Copyrights. This documentation is covered by Microsoft copyrights. Regardless of any other 
+terms that are contained in the terms of use for the Microsoft website that hosts this 
+documentation, you can make copies of it in order to develop implementations of the technologies 
+that are described in this documentation and can distribute portions of it in your implementations 
+that use these technologies or in your documentation as necessary to properly document the 
+implementation. You can also distribute in your implementation, with or without modification, any 
+schemas, IDLs, or code samples that are included in the documentation. This permission also 
+applies to any documents that are referenced in the Open Specifications documentation.  
+
+ No Trade Secrets. Microsoft does not claim any trade secret rights in this documentation.  
+ Patents. Microsoft has patents that might cover your implementations of the technologies 
+
+described in the Open Specifications documentation. Neither this notice nor Microsoft's delivery of 
+this documentation grants any licenses under those patents or any other Microsoft patents. 
+However, a given Open Specifications document might be covered by the Microsoft Open 
+Specifications Promise or the Microsoft Community Promise. If you would prefer a written license, 
+or if the technologies described in this documentation are not covered by the Open Specifications 
+Promise or Community Promise, as applicable, patent licenses are available by contacting 
+iplg@microsoft.com.  
+
+ License Programs. To see all of the protocols in scope under a specific license program and the 
+associated patents, visit the Patent Map.  
+
+ Trademarks. The names of companies and products contained in this documentation might be 
+covered by trademarks or similar intellectual property rights. This notice does not grant any 
+licenses under those rights. For a list of Microsoft trademarks, visit 
+www.microsoft.com/trademarks.  
+
+ Fictitious Names. The example companies, organizations, products, domain names, email 
+addresses, logos, people, places, and events that are depicted in this documentation are fictitious. 
+No association with any real company, organization, product, domain name, email address, logo, 
+person, place, or event is intended or should be inferred. 
+
+Reservation of Rights. All other rights are reserved, and this notice does not grant any rights other 
+than as specifically described above, whether by implication, estoppel, or otherwise.  
+
+Tools. The Open Specifications documentation does not require the use of Microsoft programming 
+tools or programming environments in order for you to develop an implementation. If you have access 
+to Microsoft programming tools and environments, you are free to take advantage of them. Certain 
+Open Specifications documents are intended for use in conjunction with publicly available standards 
+specifications and network programming art and, as such, assume that the reader either is familiar 
+with the aforementioned material or has immediate access to it. 
+
+Support. For questions and support, please contact dochelp@microsoft.com.  
+
+1 / 41 
+
+[MS-OXOFLAG] - v20250520 
+Informational Flagging Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Revision Summary 
+
+Revision Revision 
+Date History Class Comments 
+
+4/4/2008 0.1 New Initial Availability. 
+
+Revised and updated property names and other technical 
+4/25/2008 0.2 Minor 
+
+content. 
+
+6/27/2008 1.0 Major Initial Release. 
+
+8/6/2008 1.01 Minor Revised and edited technical content. 
+
+9/3/2008 1.02 Minor Revised and edited technical content. 
+
+12/3/2008 1.03 Minor Revised and edited technical content. 
+
+4/10/2009 2.0 Major Updated technical content and applicable product releases. 
+
+7/15/2009 3.0 Major Revised and edited for technical content. 
+
+11/4/2009 4.0.0 Major Updated and revised the technical content. 
+
+2/10/2010 5.0.0 Major Updated and revised the technical content. 
+
+5/5/2010 5.0.1 Editorial Revised and edited the technical content. 
+
+8/4/2010 5.1 Minor Clarified the meaning of the technical content. 
+
+11/3/2010 5.2 Minor Clarified the meaning of the technical content. 
+
+No changes to the meaning, language, and formatting of the 
+3/18/2011 5.2 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+8/5/2011 5.2 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+10/7/2011 5.2 None 
+
+technical content. 
+
+1/20/2012 6.0 Major Significantly changed the technical content. 
+
+4/27/2012 6.1 Minor Clarified the meaning of the technical content. 
+
+7/16/2012 7.0 Major Significantly changed the technical content. 
+
+10/8/2012 7.1 Minor Clarified the meaning of the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+2/11/2013 7.1 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+7/26/2013 7.1 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+11/18/2013 7.1 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+2/10/2014 7.1 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+4/30/2014 7.1 None 
+
+technical content. 
+
+7/31/2014 7.1 None No changes to the meaning, language, or formatting of the 
+
+2 / 41 
+
+[MS-OXOFLAG] - v20250520 
+Informational Flagging Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Revision Revision 
+Date History Class Comments 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+10/30/2014 7.1 None 
+
+technical content. 
+
+3/16/2015 8.0 Major Significantly changed the technical content. 
+
+5/26/2015 9.0 Major Significantly changed the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+9/14/2015 9.0 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+6/13/2016 9.0 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+9/14/2016 9.0 None 
+
+technical content. 
+
+7/24/2018 10.0 Major Significantly changed the technical content. 
+
+10/1/2018 11.0 Major Significantly changed the technical content. 
+
+4/22/2021 12.0 Major Significantly changed the technical content. 
+
+8/17/2021 13.0 Major Significantly changed the technical content. 
+
+8/20/2024 14.0 Major Significantly changed the technical content. 
+
+5/20/2025 15.0 Major Significantly changed the technical content. 
+
+3 / 41 
+
+[MS-OXOFLAG] - v20250520 
+Informational Flagging Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Table of Contents 
+1 Introduction ............................................................................................................ 6 
+
+1.1 Glossary ........................................................................................................... 6 
+1.2 References ........................................................................................................ 8 
+
+1.2.1 Normative References ................................................................................... 8 
+1.2.2 Informative References ................................................................................. 8 
+
+1.3 Overview .......................................................................................................... 8 
+1.4 Relationship to Other Protocols ............................................................................ 9 
+1.5 Prerequisites/Preconditions ................................................................................. 9 
+1.6 Applicability Statement ....................................................................................... 9 
+1.7 Versioning and Capability Negotiation ................................................................... 9 
+1.8 Vendor-Extensible Fields ..................................................................................... 9 
+1.9 Standards Assignments ....................................................................................... 9 
+
+2 Messages ............................................................................................................... 10 
+2.1 Transport ........................................................................................................ 10 
+2.2 Message Syntax ............................................................................................... 10 
+
+2.2.1 Properties Specific to the Informational Flagging Protocol ................................ 10 
+2.2.1.1 PidTagFlagStatus Property ..................................................................... 10 
+2.2.1.2 PidTagFollowupIcon Property .................................................................. 10 
+2.2.1.3 PidTagFlagCompleteTime Property .......................................................... 11 
+2.2.1.4 PidTagReplyRequested Property .............................................................. 11 
+2.2.1.5 PidTagResponseRequested Property ........................................................ 11 
+2.2.1.6 PidTagToDoItemFlags Property ............................................................... 11 
+2.2.1.7 PidTagSwappedToDoData Property .......................................................... 12 
+2.2.1.8 PidTagSwappedToDoStore Property ......................................................... 14 
+2.2.1.9 PidLidFlagRequest Property .................................................................... 14 
+2.2.1.10 PidLidFlagString Property ....................................................................... 14 
+2.2.1.11 PidLidValidFlagStringProof Property ......................................................... 15 
+2.2.1.12 PidLidToDoTitle Property ........................................................................ 15 
+2.2.1.13 PidLidToDoOrdinalDate Property ............................................................. 16 
+2.2.1.14 PidLidToDoSubOrdinal Property ............................................................... 16 
+
+2.2.2 Properties Shared with the Task-Related Object Protocol ................................. 16 
+2.2.2.1 PidLidTaskStatus Property ...................................................................... 17 
+2.2.2.2 PidLidTaskComplete Property .................................................................. 17 
+2.2.2.3 PidLidPercentComplete Property .............................................................. 17 
+
+2.2.3 Properties Shared with the Reminder Settings Protocol .................................... 17 
+2.2.3.1 PidTagReplyTime Property ...................................................................... 18 
+
+3 Protocol Details ..................................................................................................... 19 
+3.1 Client Details ................................................................................................... 19 
+
+3.1.1 Abstract Data Model .................................................................................... 19 
+3.1.2 Timers ...................................................................................................... 19 
+3.1.3 Initialization ............................................................................................... 19 
+3.1.4 Higher-Layer Triggered Events ..................................................................... 19 
+
+3.1.4.1 Flagging a Message Object ..................................................................... 19 
+3.1.4.1.1 Setting a Color Flag ......................................................................... 20 
+3.1.4.1.2 Setting a Basic Flag ......................................................................... 20 
+3.1.4.1.3 Setting a Time Flag .......................................................................... 20 
+3.1.4.1.4 Setting a Complete Flag ................................................................... 21 
+3.1.4.1.5 Setting a Recipient Flag .................................................................... 21 
+3.1.4.1.6 Setting a Sender Flag....................................................................... 22 
+
+3.1.4.2 Clearing a Flag on a Message Object ....................................................... 22 
+3.1.4.2.1 Clearing a Flag on a Meeting-Related Object ....................................... 22 
+3.1.4.2.2 Clearing a Flag on a Task Object ....................................................... 22 
+3.1.4.2.3 Clearing a Flag on Other Message Objects .......................................... 22 
+
+4 / 41 
+
+[MS-OXOFLAG] - v20250520 
+Informational Flagging Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+3.1.4.3 Post-Transmit Processing of a Flagged Message ........................................ 23 
+3.1.5 Message Processing Events and Sequencing Rules .......................................... 23 
+3.1.6 Timer Events .............................................................................................. 24 
+3.1.7 Other Local Events ...................................................................................... 24 
+
+3.2 Server Details .................................................................................................. 24 
+3.2.1 Abstract Data Model .................................................................................... 24 
+3.2.2 Timers ...................................................................................................... 24 
+3.2.3 Initialization ............................................................................................... 24 
+3.2.4 Higher-Layer Triggered Events ..................................................................... 24 
+3.2.5 Message Processing Events and Sequencing Rules .......................................... 24 
+3.2.6 Timer Events .............................................................................................. 25 
+3.2.7 Other Local Events ...................................................................................... 25 
+
+4 Protocol Examples ................................................................................................. 26 
+4.1 Color-Flagged Object ........................................................................................ 27 
+4.2 Time Flagged Object ......................................................................................... 28 
+4.3 Completed Object ............................................................................................ 30 
+4.4 Flagging a Draft Message Object for the Sender and Recipient ............................... 30 
+
+5 Security ................................................................................................................. 36 
+5.1 Security Considerations for Implementers ........................................................... 36 
+5.2 Index of Security Parameters ............................................................................ 36 
+
+6 Appendix A: Product Behavior ............................................................................... 37 
+
+7 Change Tracking .................................................................................................... 39 
+
+8 Index ..................................................................................................................... 40 
+
+ 
+
+5 / 41 
+
+[MS-OXOFLAG] - v20250520 
+Informational Flagging Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+1 Introduction 
+
+The Informational Flagging Protocol allows a Message object to be marked for either follow-up or 
+categorization. This protocol extends the Message and Attachment Object Protocol, which is described 
+in [MS-OXCMSG]. 
+
+Sections 1.5, 1.8, 1.9, 2, and 3 of this specification are normative. All other sections and examples in 
+this specification are informative. 
+
+1.1 Glossary 
+
+This document uses the following terms: 
+
+Appointment object: A Calendar object that has an organizer but no attendees. 
+
+basic flag: A flag on a Message object that indicates that the object has an associated work item 
+or shares a defining characteristic with other Message objects with such flags. 
+
+color flag: A flag that extends the concept of a basic flag by associating one of a chosen set of 
+color values with a flagged Message object. 
+
+complete flag: A flag on a messaging object that indicates that the associated work item has been 
+completed. 
+
+consolidated to-do list: A list of all tasks and flagged Message objects that are in a user's 
+mailbox. 
+
+Contact object: A Message object that contains properties pertaining to a contact. 
+
+Coordinated Universal Time (UTC): A high-precision atomic time standard that approximately 
+tracks Universal Time (UT). It is the basis for legal, civil time all over the Earth. Time zones 
+around the world are expressed as positive and negative offsets from UTC. In this role, it is also 
+referred to as Zulu time (Z) and Greenwich Mean Time (GMT). In these specifications, all 
+references to UTC refer to the time at UTC-0 (or GMT). 
+
+Draft Message object: A Message object that has not been sent. 
+
+Email object: A Message object that represents an email message in a message store and 
+adheres to the property descriptions that are described in in [MS-OXOMSG]. 
+
+handle: Any token that can be used to identify and access an object such as a device, file, or a 
+window. 
+
+Journal object: A Message object that represents an entry in a journal or log and adheres to the 
+property descriptions that are described in in [MS-OXOJRNL]. 
+
+mailbox: A message store that contains email, calendar items, and other Message objects for a 
+single recipient. 
+
+meeting-related object: A Message object that represents a relay of information between a 
+meeting organizer and an attendee. It can be any of the following: Meeting Request object, 
+Meeting Update object, Meeting Cancellation object, or Meeting Response object. 
+
+Message object: A set of properties that represents an email message, appointment, contact, or 
+other type of personal-information-management object. In addition to its own properties, a 
+Message object contains recipient properties that represent the addressees to which it is 
+addressed, and an attachments table that represents any files and other Message objects that 
+are attached to it. 
+
+6 / 41 
+
+[MS-OXOFLAG] - v20250520 
+Informational Flagging Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+named property: A property that is identified by both a GUID and either a string name or a 32-bit 
+identifier. 
+
+Note object: A Message object that represents a simple text note in a messaging store and that 
+adheres to the property descriptions that are described in [MS-OXONOTE]. A Note object 
+functions as an electronic equivalent of a paper sticky note. 
+
+primary flag storage location: The typical location that is used to store flagging properties, as 
+opposed to the secondary flag storage location. 
+
+property ID: A 16-bit numeric identifier of a specific attribute. A property ID does not include any 
+property type information. 
+
+recipient: An entity that can receive email messages.   
+
+recipient flag: A collection of property values indicating that a draft Message object is marked 
+such that it will appear as flagged with a basic flag to recipients. 
+
+recipient reminder: A collection of property values indicating that a Draft Message object is 
+marked such that it will have an active reminder for the recipients of the Message Object. 
+
+reminder: A generally user-visible notification that a specified time has been reached. A reminder 
+is most commonly related to the beginning of a meeting or the due time of a task but it can be 
+applied to any object type. 
+
+reminder properties: A set of properties that specify the attributes of a reminder. These 
+attributes include the time at which and the method by which a reminder is signaled or 
+displayed. 
+
+remote operation (ROP): An operation that is invoked against a server. Each ROP represents an 
+action, such as delete, send, or query. A ROP is contained in a ROP buffer for transmission over 
+the wire. 
+
+ROP request: See ROP request buffer. 
+
+ROP request buffer: A ROP buffer that a client sends to a server to be processed. 
+
+ROP response: See ROP response buffer. 
+
+ROP response buffer: A ROP buffer that a server sends to a client to be processed. 
+
+secondary flag storage location: A binary property that is used to encode a second set of 
+flagging properties, which do not affect the flagged state of a Message object. 
+
+sender flag: A collection of property values that indicate that a Draft Message object has been 
+marked such that the copy of the Message object that is saved in the sender's mailbox after 
+the message is sent will appear flagged to the sender. 
+
+sender reminder: A collection of property values that indicate that a Draft Message object has 
+been marked such that the copy of the Message object that is saved in the sender's mailbox 
+after the message is sent will have an active reminder. 
+
+Task object: A Message object that represents an assignment to be completed. 
+
+time flag: A flag that extends the concept of a basic flag by associating time-related properties, 
+such as start and due dates, with the flag information on a Message object. A time flagged 
+Message object is also marked with a red color flag, but it is not considered to be color flagged 
+by definition. 
+
+Unicode: A character encoding standard developed by the Unicode Consortium that represents 
+almost all of the written languages of the world. The Unicode standard [UNICODE5.0.0/2007] 
+
+7 / 41 
+
+[MS-OXOFLAG] - v20250520 
+Informational Flagging Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+provides three forms (UTF-8, UTF-16, and UTF-32) and seven schemes (UTF-8, UTF-16, UTF-16 
+BE, UTF-16 LE, UTF-32, UTF-32 LE, and UTF-32 BE). 
+
+MAY, SHOULD, MUST, SHOULD NOT, MUST NOT: These terms (in all caps) are used as defined 
+in [RFC2119]. All statements of optional behavior use either MAY, SHOULD, or SHOULD NOT. 
+
+1.2 References 
+
+Links to a document in the Microsoft Open Specifications library point to the correct section in the 
+most recently published version of the referenced document. However, because individual documents 
+in the library are not updated at the same time, the section numbers in the documents may not 
+match. You can confirm the correct section numbering by checking the Errata.   
+
+1.2.1 Normative References 
+
+We conduct frequent surveys of the normative references to assure their continued availability. If you 
+have any issue with finding a normative reference, please contact dochelp@microsoft.com. We will 
+assist you in finding the relevant information.  
+
+[MS-OXCDATA] Microsoft Corporation, "Data Structures". 
+
+[MS-OXCMSG] Microsoft Corporation, "Message and Attachment Object Protocol". 
+
+[MS-OXCPRPT] Microsoft Corporation, "Property and Stream Object Protocol". 
+
+[MS-OXCROPS] Microsoft Corporation, "Remote Operations (ROP) List and Encoding Protocol". 
+
+[MS-OXCSTOR] Microsoft Corporation, "Store Object Protocol". 
+
+[MS-OXOCAL] Microsoft Corporation, "Appointment and Meeting Object Protocol". 
+
+[MS-OXOMSG] Microsoft Corporation, "Email Object Protocol". 
+
+[MS-OXORMDR] Microsoft Corporation, "Reminder Settings Protocol". 
+
+[MS-OXOTASK] Microsoft Corporation, "Task-Related Objects Protocol". 
+
+[MS-OXPROPS] Microsoft Corporation, "Exchange Server Protocols Master Property List". 
+
+[RFC2119] Bradner, S., "Key words for use in RFCs to Indicate Requirement Levels", BCP 14, RFC 
+2119, March 1997, https://www.rfc-editor.org/info/rfc2119 
+
+1.2.2 Informative References 
+
+[MS-OXPROTO] Microsoft Corporation, "Exchange Server Protocols System Overview". 
+
+1.3 Overview 
+
+The Informational Flagging Protocol allows a user to mark an item for either follow-up or 
+categorization. The marker is referred to as a flag. By flagging an item for follow up, the user can 
+track the progress and completion of an associated work item. Categorizing items with flags enables a 
+user to organize items in the user's mailbox. For example, users can assign start dates and due dates 
+to their flagged items to prioritize their work, or they can assign a flag color to group related items. 
+
+This protocol specifies a set of properties that identify a Message object as being flagged. There are 
+six different types of flags: basic flag, color flag, time flag, complete flag, recipient flag, and 
+sender flag. A Message object that is delivered to a recipient and the sender's copy of that Message 
+object can have their flag-related properties set independently of each other. 
+
+8 / 41 
+
+[MS-OXOFLAG] - v20250520 
+Informational Flagging Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+This protocol extends the Message and Attachment Object Protocol, described in [MS-OXCMSG], in 
+that it adds capability for flagging a Message object.  
+
+1.4 Relationship to Other Protocols 
+
+The Informational Flagging Protocol has the same dependencies as the Message and Attachment 
+Object Protocol, which is described in [MS-OXCMSG]. A sender flag is closely related to a sender 
+reminder, which is described in [MS-OXORMDR]. 
+
+For conceptual background information and overviews of the relationships and interactions between 
+this and other protocols, see [MS-OXPROTO]. 
+
+1.5 Prerequisites/Preconditions 
+
+This protocol assumes that the client has previously logged on to the server, as specified in [MS-
+OXCSTOR], and has acquired a handle to the Message object on which it intends to operate. 
+
+1.6 Applicability Statement 
+
+A client can use the Informational Flagging Protocol to set various flags on a Message object. This 
+protocol is intended to be a complement, and not a substitute, for full task management, which is 
+described in [MS-OXOTASK]. 
+
+1.7 Versioning and Capability Negotiation 
+
+None. 
+
+1.8 Vendor-Extensible Fields 
+
+None. 
+
+1.9 Standards Assignments 
+
+None. 
+
+9 / 41 
+
+[MS-OXOFLAG] - v20250520 
+Informational Flagging Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+2 Messages 
+
+2.1 Transport 
+
+The Informational Flagging Protocol uses the same underlying transport as that used by the Message 
+and Attachment Object Protocol, which is specified in [MS-OXCMSG]. 
+
+2.2 Message Syntax 
+
+A Message object can have its flag state changed by the client. Constraints for setting flags on a 
+Message object are defined in section 2.2.1 through section 2.2.3. 
+
+When a value is specified as not present, the property MUST NOT exist on the Message object, and if it 
+exists, it MUST be deleted. Setting a property to 0 or to a zero-length string does not delete the 
+property from the Message object. 
+
+2.2.1 Properties Specific to the Informational Flagging Protocol 
+
+2.2.1.1 PidTagFlagStatus Property 
+
+Type: PtypInteger32 ([MS-OXCDATA] section 2.11.1) 
+
+The PidTagFlagStatus property ([MS-OXPROPS] section 2.698) specifies the flag state of the 
+Message object. This property is present on the Message object only if the object has been flagged 
+and is not present otherwise. It MUST NOT exist on a meeting-related object, and it SHOULD 
+NOT<1> exist on a Task object. When acting on other Message objects, this property is set to one of 
+the following values. 
+
+Numeric 
+value Name  Meaning 
+
+0x00000001 followupComplete The object is flagged as complete. This value is valid only for a complete 
+flag. 
+
+0x00000002 followupFlagged The object is flagged for follow-up. This value is valid for a basic flag, a 
+color flag, a time flag, and a recipient flag. 
+
+ 
+
+2.2.1.2 PidTagFollowupIcon Property 
+
+Type: PtypInteger32 ([MS-OXCDATA] section 2.11.1) 
+
+The PidTagFollowupIcon property ([MS-OXPROPS] section 2.704) specifies the color of the flag that 
+is set on the Message object. The flag will appear with the specified color in the UI. This property 
+SHOULD NOT<2> exist on a Task object. When acting on other Message objects, this property is set 
+to one of the following values. If this property is not present on a flagged object, the flag has no color. 
+This property can be set to any of these values for a color flag, but it MUST be set to 0x00000006 for 
+a time flag and a recipient flag. 
+
+Numeric value  Meaning  
+
+0x00000001 Purple flag 
+
+0x00000002 Orange flag 
+
+10 / 41 
+
+[MS-OXOFLAG] - v20250520 
+Informational Flagging Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Numeric value  Meaning  
+
+0x00000003 Green flag 
+
+0x00000004 Yellow flag 
+
+0x00000005 Blue flag 
+
+0x00000006 Red flag 
+
+ 
+
+2.2.1.3 PidTagFlagCompleteTime Property 
+
+Type: PtypTime ([MS-OXCDATA] section 2.11.1) 
+
+The PidTagFlagCompleteTime property ([MS-OXPROPS] section 2.697) specifies the date and time, 
+in Coordinated Universal Time (UTC), that the Message object was flagged as completed. The 
+time's smallest resolution MUST be minutes, and the value MUST be a multiple of 600,000,000. This 
+property is present on the Message object only if the object's PidTagFlagStatus property (section 
+2.2.1.1) is set to 0x00000001. This property MUST NOT exist on a meeting-related object; it 
+SHOULD NOT<3> exist on a Task object. 
+
+2.2.1.4 PidTagReplyRequested Property 
+
+Type: PtypBoolean ([MS-OXCDATA] section 2.11.1) 
+
+The PidTagReplyRequested property ([MS-OXOMSG] section 2.2.1.45) indicates whether a reply is 
+requested by the message's sender. This property SHOULD NOT be changed on a meeting-related 
+object because this property has a specialized meaning for meeting-related objects, as specified in 
+[MS-OXOCAL]. This property SHOULD NOT<4> exist on a Task object. For a Message object that is 
+neither a meeting-related object nor a Task object, this property SHOULD be set as follows for 
+flags:<5> 
+
+ For a basic flag, color flag, time flag, or a recipient flag: 0x01 (TRUE) 
+
+ For a complete flag: 0x00 (FALSE) 
+
+ For a sender flag: the PidTagReplyRequested property is not present 
+
+The server does not set the PidTagReplyRequested property. 
+
+2.2.1.5 PidTagResponseRequested Property 
+
+Type: PtypBoolean ([MS-OXCDATA] section 2.11.1) 
+
+The PidTagResponseRequested property ([MS-OXOMSG] section 2.2.1.46) has identical values and 
+semantics to the PidTagReplyRequested property ([MS-OXOMSG] section 2.2.1.45) in terms of this 
+protocol, and therefore, the client updates these values in an identical manner. 
+
+The server does not set the PidTagResponseRequested property. 
+
+2.2.1.6 PidTagToDoItemFlags Property 
+
+Type: PtypInteger32 ([MS-OXCDATA] section 2.11.1) 
+
+11 / 41 
+
+[MS-OXOFLAG] - v20250520 
+Informational Flagging Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+The PidTagToDoItemFlags property ([MS-OXPROPS] section 2.1050) specifies the type of flag that 
+is set on a Message object.<6> The possible bit values are as follows. All bits not specified in the 
+table are reserved. They MUST be ignored but SHOULD be preserved if they are set. 
+
+Bit Bit name Meaning 
+
+0x00000001 todoTimeFlagged A time flag or a complete flag is set. 
+
+0x00000008 todoRecipientFlagged A recipient flag or a sender flag is set. This bit SHOULD be set only 
+on a Draft Message object. 
+
+ 
+
+2.2.1.7 PidTagSwappedToDoData Property 
+
+Type: PtypBinary ([MS-OXCDATA] section 2.11.1) 
+
+The PidTagSwappedToDoData property ([MS-OXPROPS] section 2.1039) acts as the secondary 
+flag storage location if sender flags or sender reminders are supported.<7> This secondary 
+storage location can be used by the client to maintain a second set of the flagging-related property 
+values that do not affect the flag state of the Message object. 
+
+Properties for a sender flag or a sender reminder can be stored in the PidTagSwappedToDoData 
+property without exposing the sender flag or sender reminder information to the recipients of the 
+message. Similarly, properties for a recipient flag or a recipient reminder can be stored in the 
+PidTagSwappedToDoData property for informational purposes on a previously sent message. For 
+details about reminders, see [MS-OXORMDR]. 
+
+The PidTagSwappedToDoData property contains the following fields. The mapping of these fields to 
+the primary flag storage location is specified in each field description. 
+
+1 2 3 
+0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 
+
+ulVersion 
+
+dwFlags 
+
+dwToDoItem 
+
+wszFlagTo 
+
+... 
+
+... 
+
+... 
+
+... 
+
+... 
+
+... 
+
+12 / 41 
+
+[MS-OXOFLAG] - v20250520 
+Informational Flagging Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+... 
+
+(wszFlagTo cont'd for 120 rows) 
+
+rtmStartDate 
+
+rtmDueDate 
+
+rtmReminder 
+
+fReminderSet 
+
+ulVersion (4 bytes):  An integer that specifies the version of the PidTagSwappedToDoData 
+property. This protocol specifies only version 0x00000001. The contents of the 
+PidTagSwappedToDoData property MUST be ignored if the version number is not 0x00000001. 
+
+dwFlags (4 bytes):  A set of bits that indicate the validity of the six member fields that correspond 
+to properties. The bits specified in the following table are combined by using a bitwise OR 
+operation. 
+
+Bit  Meaning 
+
+0x00000001 The dwToDoItem field contains valid data. 
+
+0x00000008 The rtmStartDate field contains valid data. 
+
+0x00000010 The rtmDueDate field contains valid data. 
+
+0x00000020 The wszFlagTo field contains valid data. 
+
+0x00000040 The fReminderSet field contains valid data. 
+
+0x00000080 The rtmReminder field contains valid data. 
+
+dwToDoItem (4 bytes):  An integer that corresponds to the PidTagToDoItemFlags property 
+(section 2.2.1.6). 
+
+wszFlagTo (512 bytes):  A string of Unicode characters that corresponds to the 
+PidLidFlagRequest property (section 2.2.1.9). 
+
+rtmStartDate (4 bytes):  An integer that corresponds to the PidLidTaskStartDate property ([MS-
+OXOTASK] section 2.2.2.2.4). 
+
+rtmDueDate (4 bytes):  An integer that corresponds to the PidLidTaskDueDate property ([MS-
+OXOTASK] section 2.2.2.2.5). 
+
+rtmReminder (4 bytes):  An integer that corresponds to the PidLidReminderTime ([MS-
+OXORMDR] section 2.2.1.4), PidLidReminderSignalTime ([MS-OXORMDR] section 2.2.1.2), and 
+PidTagReplyTime (section 2.2.3.1) properties.  
+
+When the contents of the primary flag storage location and secondary flag storage location are 
+swapped, the contents of the rtmReminder field are written to the PidLidReminderTime, 
+PidLidReminderSignalTime, and PidTagReplyTime properties, and the data in the 
+PidLidReminderTime property is written to the rtmReminder field. For details about reminder 
+properties, see [MS-OXORMDR] section 2.2.1. 
+
+13 / 41 
+
+[MS-OXOFLAG] - v20250520 
+Informational Flagging Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+fReminderSet (4 bytes):  A Boolean value that corresponds to the PidLidReminderSet property 
+([MS-OXORMDR] section 2.2.1.1).  
+
+The value in the rtmStartDate, rtmDueDate, and rtmReminder fields is stored as a 4-byte integer 
+that is expressed as the number of minutes since 00:00:00 on January 1, 1601, in UTC. To indicate 
+no date and time, the rtmStartDate, rtmDueDate, and rtmReminder fields are set to the value 
+0x5AE980E0. 
+
+2.2.1.8 PidTagSwappedToDoStore Property 
+
+Type: PtypBinary ([MS-OXCDATA] section 2.11.1) 
+
+The PidTagSwappedToDoStore property ([MS-OXPROPS] section 2.1040) specifies a binary value 
+that is used to determine the need for post-transmit processing of an e-mail message, as specified in 
+section 3.1.4.3. If the PidTagSwappedToDoData property (section 2.2.1.7) is set on a Draft 
+Message object, then the PidTagSwappedToDoStore property is set to the value of the 
+PidTagStoreEntryId property ([MS-OXCMSG] section 2.2.1.44) of the E-mail object; otherwise, the 
+PidTagSwappedToDoStore property is not set.  
+
+2.2.1.9 PidLidFlagRequest Property 
+
+Type: PtypString ([MS-OXCDATA] section 2.11.1) 
+
+The PidLidFlagRequest property ([MS-OXPROPS] section 2.136) specifies user-supplied text to be 
+associated with the flag that is set on the Message object. If the user does not supply a value, this 
+property is set to "Follow up". This property SHOULD NOT exist on a meeting-related object.  
+
+The client ignores the PidLidFlagRequest property if the PidLidFlagString property (section 
+2.2.1.10) is set to a nonzero value. The server always uses the PidLidFlagRequest property. 
+
+2.2.1.10 PidLidFlagString Property 
+
+Type: PtypInteger32 ([MS-OXCDATA] section 2.11.1) 
+
+The PidLidFlagString property ([MS-OXPROPS] section 2.137) contains an integer that identifies a 
+predefined text string to be associated with the flag. This property MUST NOT exist on meeting-
+related objects and is optional on other Message objects. Setting this property is optional for the 
+client. The server does not read or set this property. If this property is either not present on the object 
+or set to 0x00000000, the client associates the value of the PidLidFlagRequest property (section 
+2.2.1.9) with the flag; otherwise, the client uses the text identified by this property. 
+
+The predefined text strings and their associated integer identifiers are specified in the following tables. 
+All strings can be translated into the user's language, if appropriate. 
+
+The predefined text strings for Contact objects are as follows. 
+
+Value  English string  
+
+0x0000006E "Follow up" 
+
+0x0000006F "Call" 
+
+0x00000070 "Arrange Meeting" 
+
+0x00000071 "Send E-mail" 
+
+0x00000072 "Send Letter" 
+
+The predefined text strings for all other Message objects are as follows. 
+
+14 / 41 
+
+[MS-OXOFLAG] - v20250520 
+Informational Flagging Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Value English string 
+
+0x00000001 "Call" 
+
+0x00000002 "Do not Forward" 
+
+0x00000003 "Follow up" 
+
+0x00000004 "For Your Information" 
+
+0x00000005 "Forward" 
+
+0x00000006 "No Response Necessary" 
+
+0x00000007 "Read" 
+
+0x00000008 "Reply" 
+
+0x00000009 "Reply to All" 
+
+0x0000000A "Review" 
+
+ 
+
+2.2.1.11 PidLidValidFlagStringProof Property 
+
+Type: PtypTime ([MS-OXCDATA] section 2.11.1) 
+
+The PidLidValidFlagStringProof property ([MS-OXPROPS] section 2.348) MUST NOT exist on 
+meeting-related objects. On objects that are not sendable (received mail and objects that are not 
+mail), this property is optional. If present, this property is set equal to the 
+PidTagMessageDeliveryTime property ([MS-OXOMSG] section 2.2.3.9) when modifying the 
+PidLidFlagRequest property (section 2.2.1.9). Setting this property is optional for the client. The 
+server does not read or set this property. 
+
+This property can be used to validate whether the PidLidFlagRequest property was set by an agent 
+with knowledge of the value of the PidTagMessageDeliveryTime property. Since the value of the 
+PidTagMessageDeliveryTime property cannot be predicted by the sender, if the value of the 
+PidLidValidFlagStringProof property is equal to the value of the PidTagMessageDeliveryTime 
+property, it is reasonably certain that the value of the PidLidFlagRequest property did not originate 
+from the sender of the message. A client can decide how to present the value of the 
+PidLidFlagRequest property to the end user based on the result of this comparison in accordance 
+with the specific security policy of the client.  
+
+If the client ignores the PidLidFlagRequest property due to the value of the PidLidFlagString 
+property (section 2.2.1.10), the client also ignores the PidLidValidFlagStringProof property. 
+
+2.2.1.12 PidLidToDoTitle Property 
+
+Type: PtypString ([MS-OXCDATA] section 2.11.1) 
+
+The PidLidToDoTitle property ([MS-OXPROPS] section 2.346) specifies user-supplied text to identify 
+the Message object in a consolidated to-do list. The PidLidToDoTitle property MUST NOT be set 
+on a Task object.  
+
+To indicate an empty property, the PidLidToDoTitle property SHOULD NOT be set to the zero-length 
+string and instead SHOULD be deleted. If this property does not exist on an object, a client 
+SHOULD<8> set this property to the value of the PidTagNormalizedSubject property ([MS-
+OXCMSG] section 2.2.1.10). 
+
+15 / 41 
+
+[MS-OXOFLAG] - v20250520 
+Informational Flagging Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+On a Draft Message object, if the client implements sender flags, this property SHOULD be set to 
+the value of the PidLidFlagRequest property (section 2.2.1.9). 
+
+2.2.1.13 PidLidToDoOrdinalDate Property 
+
+Type: PtypTime ([MS-OXCDATA] section 2.11.1) 
+
+The PidLidToDoOrdinalDate property ([MS-OXPROPS] section 2.344) specifies the time that an 
+object is flagged. When an object is flagged, this property SHOULD<9> be set to the current time in 
+UTC. 
+
+This property SHOULD be used to determine the order of objects in a consolidated to-do list. If the 
+client allows a user to reorder tasks within the consolidated to-do list via dragging or other 
+mechanisms, the client can use any suitable algorithm to determine the new value of this property 
+such that the task appears in the correct place when this property is used as a sorting field. When this 
+property is used to sort objects and two or more of the objects have the same value for this property, 
+the objects with the matching values will tie for placement in the list. In this case, the 
+PidLidToDoSubOrdinal property (section 2.2.1.14) is used to break the tie. 
+
+2.2.1.14 PidLidToDoSubOrdinal Property 
+
+Type: PtypString ([MS-OXCDATA] section 2.11.1) 
+
+The PidLidToDoSubOrdinal property ([MS-OXPROPS] section 2.345) specifies a string that is used to 
+break a tie for placement within a sorted list of Message objects. When the 
+PidLidToDoOrdinalDate property (section 2.2.1.13) is used to sort objects and two or more of the 
+objects have the same value for this property, the objects with the matching values tie for placement 
+in the list. In this case, the PidLidToDoSubOrdinal property is used to break the tie. If used, this 
+property MUST be sorted lexicographically.  
+
+The component characters of the string consist of only the numerals 0 through 9. This property 
+SHOULD be initially set to "5555555". The length of this property MUST NOT exceed 254 characters 
+(excluding the terminating null character). 
+
+2.2.2 Properties Shared with the Task-Related Object Protocol 
+
+The following properties are shared by this protocol and the Task-Related Object Protocol, which is 
+specified in [MS-OXOTASK]: 
+
+ PidLidTaskStartDate ([MS-OXOTASK] section 2.2.2.2.4) 
+
+ PidLidTaskDueDate ([MS-OXOTASK] section 2.2.2.2.5) 
+
+ PidLidTaskDateCompleted ([MS-OXOTASK] section 2.2.2.2.9) 
+
+ PidLidTaskComplete ([MS-OXOTASK] section 2.2.2.2.20) 
+
+ PidLidTaskStatus ([MS-OXOTASK] section 2.2.2.2.2) 
+
+ PidLidPercentComplete (section 2.2.2.3) 
+
+ PidLidCommonStart ([MS-OXCMSG] section 2.2.1.18) 
+
+ PidLidCommonEnd ([MS-OXCMSG] section 2.2.1.19) 
+
+Unless noted in section 2.2.2.1 through section 2.2.2.3, the semantics and accepted values of these 
+shared properties are identical to those specified in [MS-OXOTASK]. 
+
+16 / 41 
+
+[MS-OXOFLAG] - v20250520 
+Informational Flagging Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+2.2.2.1 PidLidTaskStatus Property 
+
+Type: PtypInteger32 ([MS-OXCDATA] section 2.11.1) 
+
+The PidLidTaskStatus property ([MS-OXOTASK] section 2.2.2.2.2) is set on a Message object as 
+follows for flags:<10> 
+
+ For a time flag and a recipient flag: 0x00000000 
+
+ For a complete flag: 0x00000002 
+
+ For other flags: the PidLidTaskStatus property is not present. 
+
+The server does not set this property. 
+
+2.2.2.2 PidLidTaskComplete Property 
+
+Type: PtypBoolean ([MS-OXCDATA] section 2.11.1) 
+
+The PidLidTaskComplete property ([MS-OXOTASK] section 2.2.2.2.20) is set on a Message object 
+as follows for flags:<11> 
+
+ For a time flag and a recipient flag: 0x00 (FALSE) 
+
+ For a complete flag: 0x01 (TRUE) 
+
+ For other flags: the PidLidTaskComplete property is not present. 
+
+The server does not set this property. 
+
+2.2.2.3 PidLidPercentComplete Property 
+
+Type: PtypFloating64 ([MS-OXCDATA] section 2.11.1) 
+
+The PidLidPercentComplete property ([MS-OXPROPS] section 2.202) is set on a Message object 
+as follows for flags:<12> 
+
+ For a time flag and a recipient flag: 0.0 
+
+ For a complete flag: 1.0 
+
+ For other flags: the PidLidPercentComplete property is not present. 
+
+The server does not set this property. 
+
+2.2.3 Properties Shared with the Reminder Settings Protocol 
+
+The following properties are shared by this protocol and the Reminder Settings Protocol, as specified 
+in [MS-OXORMDR]: 
+
+ PidLidReminderSet ([MS-OXORMDR] section 2.2.1.1) 
+
+ PidLidReminderTime ([MS-OXORMDR] section 2.2.1.4) 
+
+ PidLidReminderSignalTime ([MS-OXORMDR] section 2.2.1.2) 
+
+ PidTagReplyTime (section 2.2.3.1) 
+
+Unless noted in section 2.2.3.1, the semantics and accepted values of these properties are identical to 
+those specified in [MS-OXORMDR]. 
+
+17 / 41 
+
+[MS-OXOFLAG] - v20250520 
+Informational Flagging Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+2.2.3.1 PidTagReplyTime Property 
+
+Type: PtypTime ([MS-OXCDATA] section 2.11.1) 
+
+On a Draft Message object, if the sender desires to set a deadline for the recipient, the 
+PidTagReplyTime property ([MS-OXPROPS] section 2.921) is set to the desired deadline, in UTC.  
+
+The server does not set the PidTagReplyTime property. 
+
+18 / 41 
+
+[MS-OXOFLAG] - v20250520 
+Informational Flagging Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+3 Protocol Details 
+
+3.1 Client Details 
+
+The client sets flags on a Message object and operates within the client role as specified in [MS-
+OXCMSG]. 
+
+3.1.1 Abstract Data Model 
+
+This section describes a conceptual model of possible data organization that an implementation 
+maintains to participate in this protocol. The described organization is provided to facilitate the 
+explanation of how the protocol behaves. This specification does not mandate that implementations 
+adhere to this model as long as their external behavior is consistent with that described in this 
+document. 
+
+A Message object is always considered to be in one of the following states with respect to this 
+protocol: 
+
+ Unflagged 
+
+ Basic-flagged 
+
+ Color-flagged 
+
+ Time-flagged 
+
+ Flagged as complete 
+
+ Recipient-flagged 
+
+ Sender-flagged 
+
+Otherwise, the abstract data model of the Informational Flagging Protocol does not differ significantly 
+from the abstract data model of the Message object to which this protocol is being applied. For details 
+about the abstract data model of the Message object for the client, see [MS-OXCMSG] section 3.1.1. 
+
+3.1.2 Timers 
+
+None. 
+
+3.1.3 Initialization 
+
+None. 
+
+3.1.4 Higher-Layer Triggered Events 
+
+3.1.4.1 Flagging a Message Object 
+
+To flag a Message object, the client opens the object by sending a RopOpenMessage remote 
+operation (ROP) request ([MS-OXCROPS] section 2.2.6.1). Message objects, other than 
+Appointment objects, Journal objects, and Note objects, can be flagged.<13>  
+
+The client then sets properties on the object by using the property ROPs that are specified in [MS-
+OXCPRPT]. The properties that are set depend on the particular flag used, as specified in section 
+3.1.4.1.1 through section 3.1.4.1.6. In addition, some properties are not set on some Message 
+
+19 / 41 
+
+[MS-OXOFLAG] - v20250520 
+Informational Flagging Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+objects. For details about property constraints, see the property definitions in section 2.2.1 through 
+section 2.2.3.  
+
+3.1.4.1.1 Setting a Color Flag 
+
+The client sets the following properties to flag a Message object with a color flag.<14> Some of 
+these properties cannot be set on a meeting-related object or a Task object. For details, see the 
+property definitions in section 2.2.1. 
+
+ PidTagFollowupIcon (section 2.2.1.2)  
+
+ PidLidFlagRequest (section 2.2.1.9)  
+
+ PidLidFlagString (section 2.2.1.10)  
+
+ PidLidValidFlagStringProof (section 2.2.1.11)  
+
+ PidTagFlagStatus (section 2.2.1.1)  
+
+ PidTagReplyRequested (section 2.2.1.4)  
+
+ PidTagResponseRequested (section 2.2.1.5)  
+
+3.1.4.1.2 Setting a Basic Flag 
+
+A basic flag is identical to the color flag specified in section 3.1.4.1 except that the 
+PidTagFollowupIcon property (section 2.2.1.2) is not set.<15> Meeting-related objects cannot 
+have a basic flag. 
+
+3.1.4.1.3 Setting a Time Flag 
+
+The client sets the following properties to flag a Message object with a time flag.<16> Some of 
+these properties cannot be set on a meeting-related object or a Task object. For details, see the 
+property definitions in section 2.2.1. 
+
+ PidTagFollowupIcon (section 2.2.1.2)  
+
+ PidTagToDoItemFlags (section 2.2.1.6)  
+
+ PidLidToDoOrdinalDate (section 2.2.1.13)—set only if it does not already exist on the object 
+
+ PidLidToDoSubOrdinal (section 2.2.1.14)  
+
+ PidLidToDoTitle (section 2.2.1.12)  
+
+ PidLidFlagRequest (section 2.2.1.9)—set only if it does not already exist on the object 
+
+ PidLidFlagString (section 2.2.1.10)—set only if it does not already exist on the object 
+
+ PidLidValidFlagStringProof (section 2.2.1.11)—set only if it does not already exist on the object 
+
+ PidTagFlagStatus (section 2.2.1.1)  
+
+ PidTagReplyRequested (section 2.2.1.4)  
+
+ PidTagResponseRequested (section 2.2.1.5)  
+
+ PidLidTaskDueDate ([MS-OXOTASK] section 2.2.2.2.5)  
+
+ PidLidTaskStartDate ([MS-OXOTASK] section 2.2.2.2.4)  
+
+20 / 41 
+
+[MS-OXOFLAG] - v20250520 
+Informational Flagging Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+ PidLidCommonStart ([MS-OXCMSG] section 2.2.1.18)  
+
+ PidLidCommonEnd ([MS-OXCMSG] section 2.2.1.19)  
+
+ PidLidTaskComplete (section 2.2.2.2)  
+
+ PidLidTaskStatus (section 2.2.2.1)  
+
+ PidLidPercentComplete (section 2.2.2.3)  
+
+Even if the user does not specify dates for the PidLidTaskStartDate and the PidLidTaskDueDate 
+properties, the flag is still considered a time flag if the PidTagToDoItemFlags property is set to 
+todoTimeFlagged (0x00000001).  
+
+3.1.4.1.4 Setting a Complete Flag 
+
+The client sets the following properties to flag a Message object with a complete flag.<17> Some 
+of these properties cannot be set on a meeting-related object or a Task object. For details, see the 
+property definitions in section 2.2.1. 
+
+ PidTagToDoItemFlags (section 2.2.1.6)  
+
+ PidLidToDoOrdinalDate (section 2.2.1.13)—set only if it does not already exist on the object 
+
+ PidLidToDoSubOrdinal (section 2.2.1.14)  
+
+ PidLidToDoTitle (section 2.2.1.12)  
+
+ PidLidFlagRequest (section 2.2.1.9)—set only if it does not already exist on the object 
+
+ PidLidFlagString (section 2.2.1.10)—set only if it does not already exist on the object 
+
+ PidLidValidFlagStringProof (section 2.2.1.11)—set only if it does not already exist on the object 
+
+ PidTagFlagStatus (section 2.2.1.1)  
+
+ PidTagFlagCompleteTime (section 2.2.1.3) 
+
+ PidTagReplyRequested (section 2.2.1.4)  
+
+ PidTagResponseRequested (section 2.2.1.5)  
+
+ PidLidTaskDateCompleted ([MS-OXOTASK] section 2.2.2.2.9) 
+
+ PidLidTaskComplete (section 2.2.2.2) 
+
+ PidLidTaskStatus (section 2.2.2.1) 
+
+ PidLidPercentComplete (section 2.2.2.3) 
+
+3.1.4.1.5 Setting a Recipient Flag 
+
+The client sets the following properties to flag a Draft Message object with a recipient flag. When a 
+recipient flag arrives in the recipient's mailbox, it appears as a basic flag.  
+
+ PidTagFlagStatus (section 2.2.1.1)  
+
+ PidTagReplyRequested (section 2.2.1.4)  
+
+ PidTagResponseRequested (section 2.2.1.5)  
+
+ PidLidFlagRequest (section 2.2.1.9) 
+
+21 / 41 
+
+[MS-OXOFLAG] - v20250520 
+Informational Flagging Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+ PidLidFlagString (section 2.2.1.10) 
+
+ PidTagToDoItemFlags (section 2.2.1.6)  
+
+ PidLidTaskComplete (section 2.2.2.2)  
+
+ PidLidTaskStatus (section 2.2.2.1)  
+
+ PidLidPercentComplete (section 2.2.2.3)  
+
+If the client supports sender flags, the PidTagSwappedToDoStore property (section 2.2.1.8) is set 
+to trigger the post-transmit processing specified in section 3.1.4.3. 
+
+3.1.4.1.6 Setting a Sender Flag 
+
+The client sets the following properties to flag a Draft Message object with a sender flag.<18>  
+
+ PidTagSwappedToDoData property (section 2.2.1.7)—acts as the secondary flag storage 
+location  
+
+ PidTagSwappedToDoStore property (section 2.2.1.8)—triggers post-transmit processing, as 
+specified in section 3.1.4.3 
+
+The recipient flag properties are stored in the primary flag storage location, as specified in 
+section 3.1.4.1.5, whereas the sender flag properties are stored in the secondary flag storage location 
+(the PidTagSwappedToDoData property). 
+
+3.1.4.2 Clearing a Flag on a Message Object 
+
+To clear a flag from a Message object, the client opens the object by sending a RopOpenMessage 
+ROP request buffer ([MS-OXCROPS] section 2.2.6.1). The client then sets or deletes properties on 
+the object by using the property ROPs that are specified in [MS-OXCPRPT]. The properties that are 
+set depend on the particular flag used, as specified in section 3.1.4.1.1 through section 3.1.4.1.6.  
+
+3.1.4.2.1 Clearing a Flag on a Meeting-Related Object 
+
+Clearing a flag on a meeting-related object is identical to clearing a flag on other Message 
+objects, as specified in section 3.1.4.2.3, except that the following properties MUST NOT be deleted 
+or altered:  
+
+ PidTagFlagStatus (section 2.2.1.1)  
+
+ PidTagFlagCompleteTime (section 2.2.1.3)  
+
+ PidTagReplyRequested ([MS-OXOMSG] section 2.2.1.45)  
+
+ PidTagResponseRequested ([MS-OXOMSG] section 2.2.1.46)  
+
+ PidLidFlagRequest (section 2.2.1.9)  
+
+ PidLidFlagString (section 2.2.1.10)  
+
+ PidLidValidFlagStringProof (section 2.2.1.11) 
+
+3.1.4.2.2 Clearing a Flag on a Task Object 
+
+Flagging a task is a shortcut for the user to change the values of PidLidTaskStartDate ([MS-
+OXOTASK] section 2.2.2.2.4) and PidLidTaskDueDate ([MS-OXOTASK] section 2.2.2.2.5). A client 
+can, in this way, always view an uncompleted task as having a time flag. Because of this, clearing a 
+flag on a task can be viewed as equivalent to deleting the Task object. 
+
+22 / 41 
+
+[MS-OXOFLAG] - v20250520 
+Informational Flagging Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+3.1.4.2.3 Clearing a Flag on Other Message Objects 
+
+To clear a flag from a Message object, the properties that were set for the particular flag SHOULD be 
+deleted, with the following exceptions. These properties are set to the following values. 
+
+Property Value 
+
+PidTagToDoItemFlags (section 2.2.1.6) Set the bit (todoTimeFlagged or todoRecipientFlagged) for the 
+associated flag to 0. 
+
+PidLidTaskComplete (section 2.2.2.2) 0x00 (FALSE) 
+
+PidLidTaskStatus (section 2.2.2.1) 0x00000000 
+
+PidLidPercentComplete (section 0.0 
+2.2.2.3) 
+
+PidTagReplyRequested (section 0x00 (FALSE) 
+2.2.1.4) 
+
+PidTagResponseRequested (section 0x00 (FALSE) 
+2.2.1.5) 
+
+PidLidFlagRequest (section 2.2.1.9) Zero-length string 
+
+PidLidFlagString (section 2.2.1.10) 0x00000000 
+
+PidLidToDoOrdinalDate (section 4501/01/01 00:00:00.000 
+2.2.1.13) 
+
+PidLidToDoSubOrdinal (section Zero-length string 
+2.2.1.14) 
+
+ 
+
+3.1.4.3 Post-Transmit Processing of a Flagged Message 
+
+Once a message that has a value set for the PidTagSwappedToDoStore property (section 2.2.1.8) 
+has been sent, a client that supports sender flags or sender reminders takes the following 
+actions.<19> 
+
+ If the value of the PidTagSwappedToDoStore property matches the value of the 
+PidTagStoreEntryId property ([MS-OXCMSG] section 2.2.1.44) of the Message object, the 
+client swaps the contents of the PidTagSwappedToDoData property (section 2.2.1.7) and the 
+primary flag storage location, with the exception that if the PidTagToDoItemFlags property 
+(section 2.2.1.6) is set to todoRecipientFlagged, then the dwToDoItem field of the 
+PidTagSwappedToDoData property is set to todoTimeFlagged. After the operation, the 
+previous contents of the primary flag storage location are now in the secondary flag storage 
+location and vice versa. In addition, the PidLidValidFlagStringProof property (section 
+2.2.1.11) is set equal to the PidTagMessageDeliveryTime property ([MS-OXOMSG] section 
+2.2.3.9). 
+
+ If the value of the PidTagSwappedToDoStore property does not match the value of the 
+PidTagStoreEntryId property, the client clears the PidTagSwappedToDoData property. 
+
+In both cases, the PidTagSwappedToDoStore property is deleted. 
+
+3.1.5 Message Processing Events and Sequencing Rules 
+
+None. 
+
+23 / 41 
+
+[MS-OXOFLAG] - v20250520 
+Informational Flagging Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+3.1.6 Timer Events 
+
+None. 
+
+3.1.7 Other Local Events 
+
+None. 
+
+3.2 Server Details 
+
+The server processes a client's requests regarding the flagging of a Message object and in all other 
+ways operates within the server role as specified in [MS-OXCMSG]. 
+
+3.2.1 Abstract Data Model 
+
+This section describes a conceptual model of possible data organization that an implementation 
+maintains to participate in this protocol. The described organization is provided to facilitate the 
+explanation of how the protocol behaves. This specification does not mandate that implementations 
+adhere to this model as long as their external behavior is consistent with that described in this 
+document. 
+
+A Message object is always considered to be in one of the following states with respect to this 
+protocol: 
+
+ Unflagged 
+
+ Basic-flagged 
+
+ Color-flagged 
+
+ Time-flagged 
+
+ Flagged as complete 
+
+ Recipient-flagged 
+
+ Sender-flagged 
+
+Otherwise, the abstract data model of the Informational Flagging Protocol does not differ significantly 
+from the abstract data model of the Message object to which this protocol is being applied. For details 
+about the abstract data model of the Message object for the server, see [MS-OXCMSG] section 3.2.1. 
+
+3.2.2 Timers 
+
+None.  
+
+3.2.3 Initialization 
+
+None.  
+
+3.2.4 Higher-Layer Triggered Events 
+
+None.  
+
+3.2.5 Message Processing Events and Sequencing Rules 
+
+The server responds to client requests as specified in [MS-OXCMSG] section 3.2.5. 
+
+24 / 41 
+
+[MS-OXOFLAG] - v20250520 
+Informational Flagging Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+3.2.6 Timer Events 
+
+None.  
+
+3.2.7 Other Local Events 
+
+None.  
+
+25 / 41 
+
+[MS-OXOFLAG] - v20250520 
+Informational Flagging Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+4 Protocol Examples 
+
+All examples in this section assume that the user who is flagging the object resides in the Pacific 
+Standard Time Zone (UTC - 8). The following are descriptions of what a client does to accomplish the 
+scenarios and the responses that a server returns. 
+
+Before flagging any Message objects, the client requests the server to map named properties to 
+property IDs by using the RopGetPropertyIDsFromNames ROP ([MS-OXCROPS] section 2.2.8.1). 
+
+Property Property set GUID LID  
+
+PidLidFlagRequest (section 2.2.1.9) {00062008-0000-0000-C000- 0x8530 
+000000000046} 
+
+PidLidFlagString (section 2.2.1.10) {00062008-0000-0000-C000- 0x85C0 
+000000000046} 
+
+PidLidValidFlagStringProof (section 2.2.1.11) {00062008-0000-0000-C000- 0x85BF 
+000000000046} 
+
+PidLidToDoTitle (section 2.2.1.12) {00062008-0000-0000-C000- 0x85A4 
+000000000046} 
+
+PidLidToDoOrdinalDate (section 2.2.1.13) {00062008-0000-0000-C000- 0x85A0 
+000000000046} 
+
+PidLidToDoSubOrdinal (section 2.2.1.14) {00062008-0000-0000-C000- 0x85A1 
+000000000046} 
+
+PidLidTaskStartDate ([MS-OXOTASK] section 2.2.2.2.4) {00062003-0000-0000-C000- 0x8104 
+000000000046} 
+
+PidLidTaskDueDate ([MS-OXOTASK] section 2.2.2.2.5) {00062003-0000-0000-C000- 0x8105 
+000000000046} 
+
+PidLidCommonStart ([MS-OXCMSG] section 2.2.1.18) {00062008-0000-0000-C000- 0x8516 
+000000000046} 
+
+PidLidCommonEnd ([MS-OXCMSG] section 2.2.1.19) {00062008-0000-0000-C000- 0x8517 
+000000000046} 
+
+PidLidTaskDateCompleted ([MS-OXOTASK] section {00062003-0000-0000-C000- 0x810F 
+2.2.2.2.9) 000000000046} 
+
+PidLidTaskComplete (section 2.2.2.2) {00062003-0000-0000-C000- 0x811C 
+000000000046} 
+
+PidLidTaskStatus (section 2.2.2.1) {00062003-0000-0000-C000- 0x8101 
+000000000046} 
+
+PidLidPercentComplete (section 2.2.2.3) {00062003-0000-0000-C000- 0x8102 
+000000000046} 
+
+PidLidReminderSet ([MS-OXORMDR] section 2.2.1.1) {00062008-0000-0000-C000- 0x8503 
+000000000046} 
+
+PidLidReminderDelta ([MS-OXORMDR] section 2.2.1.3) {00062008-0000-0000-C000- 0x8501 
+000000000046} 
+
+PidLidReminderTime ([MS-OXORMDR] section 2.2.1.4) {00062008-0000-0000-C000- 0x8502 
+000000000046} 
+
+PidLidReminderSignalTime ([MS-OXORMDR] section {00062008-0000-0000-C000- 0x8560 
+
+26 / 41 
+
+[MS-OXOFLAG] - v20250520 
+Informational Flagging Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Property Property set GUID LID  
+
+2.2.1.2) 000000000046} 
+
+The server responds with the following property IDs, which will be used in the examples that follow 
+(the actual identifiers are at the discretion of the server). 
+
+Property Property ID  
+
+PidLidFlagRequest  0x802A 
+
+PidLidFlagString  0x83C0 
+
+PidLidValidFlagStringProof  0x83CA 
+
+PidLidToDoTitle  0x8018 
+
+PidLidToDoOrdinalDate  0x830D 
+
+PidLidToDoSubOrdinal  0x830E 
+
+PidLidTaskStartDate  0x8143 
+
+PidLidTaskDueDate  0x8144 
+
+PidLidCommonStart  0x81BC 
+
+PidLidCommonEnd  0x81BB 
+
+PidLidTaskDateCompleted  0x8149 
+
+PidLidTaskComplete  0x8148 
+
+PidLidTaskStatus  0x8145 
+
+PidLidPercentComplete  0x8146 
+
+PidLidReminderSet  0x8004 
+
+PidLidReminderDelta  0x81FF 
+
+PidLidReminderTime  0x8005 
+
+PidLidReminderSignalTime  0x8006 
+
+ 
+
+4.1 Color-Flagged Object 
+
+Ryan Gregg has a message in his Inbox related to the Woodgrove Bank account, which he has 
+associated to the orange flag. He uses the default request string designated by the client, which is 
+"Follow up". The following is a description of what a client might do to accomplish Ryan's intentions 
+and the responses a server might return. 
+
+To open the message to be flagged, the client sends a RopOpenMessage ROP request ([MS-
+OXCROPS] section 2.2.6.1) and waits for the server to respond. The server response contains a 
+handle to the Message object. 
+
+To retrieve some properties of the Message object, the client sends a RopGetPropertiesSpecific ROP 
+request ([MS-OXCROPS] section 2.2.8.3). 
+
+27 / 41 
+
+[MS-OXOFLAG] - v20250520 
+Informational Flagging Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Property 
+Property ID Property type 
+
+PidTagMessageDeliveryTime ([MS-OXOMSG] 0x0E06 0x0040 (PtypTime ([MS-OXCDATA] 
+section 2.2.3.9) section 2.11.1)) 
+
+The client receives a ROP response buffer from the server with the requested property values. 
+
+Property Property ID Property type Value 
+
+PidTagMessageDeliveryTime  0x0E06 0x0040  2008/02/11 22:41:24.765 
+
+To set the properties for the color flag, the client sends a RopSetProperties ROP request ([MS-
+OXCROPS] section 2.2.8.6) with the values that are specified in the following table. 
+
+Property 
+Property ID Property type Value 
+
+PidTagFlagStatus (section 2.2.1.1) 0x1090 0x0003 (PtypInteger32 ([MS- 0x00000002 
+OXCDATA] section 2.11.1)) 
+
+PidTagFollowupIcon (section 0x1095 0x0003  0x00000002 
+2.2.1.2) 
+
+PidTagReplyRequested (section 0x0C17 0x000B (PtypBoolean ([MS- 0x01 (TRUE) 
+2.2.1.4) OXCDATA] section 2.11.1)) 
+
+PidTagResponseRequested 0x0063 0x000B 0x01 (TRUE) 
+(section 2.2.1.5) 
+
+PidLidFlagRequest (section 2.2.1.9) 0x802A 0x001F (PtypString ([MS- "Follow up" 
+OXCDATA] section 2.11.1)) 
+
+PidLidFlagString (section 2.2.1.10) 0x83C0 0x0003  0x00000003 
+
+PidLidValidFlagStringProof (section 0x83CA 0x0040 2008/02/11 
+2.2.1.11) 22:41:24.765 
+
+Finally, to persist the Message object on the server, the client sends a RopSaveChangesMessage 
+ROP request ([MS-OXCROPS] section 2.2.6.3), followed by a RopRelease ROP request ([MS-
+OXCROPS] section 2.2.15.3) to release the object. 
+
+The above properties are all that is strictly necessary to flag an object with a color flag. Clients can set 
+the other properties discussed in section 2.2.1.7 to appropriate values, if desired. 
+
+4.2 Time Flagged Object 
+
+Kendall Keil has a message in his Inbox with the subject "Contoso Project", and he wants to be sure to 
+remember to follow up on that message starting on 2008/02/11, and he needs to be done by 
+2008/02/12. He uses the default request string designated by the client, which is "Follow up". He flags 
+the item on 2008/02/11 22:16:28.177 (UTC). The following is a description of what a client might do 
+to accomplish Kendall's intentions and the responses a server might return. 
+
+As before, the client first retrieves a handle to the Message object by sending a RopOpenMessage 
+ROP request ([MS-OXCROPS] section 2.2.6.1). 
+
+Besides a handle, the server returns the following relevant data in the RopOpenMessage ROP 
+response ([MS-OXCROPS] section 2.2.6.1). 
+
+28 / 41 
+
+[MS-OXOFLAG] - v20250520 
+Informational Flagging Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Property 
+Property ID Property type Value 
+
+PidTagNormalizedSubject ([MS-OXCMSG] 0x0E1D 0x001F (PtypString ([MS- "Contoso 
+section 2.2.1.10) OXCDATA] section 2.11.1)) Project" 
+
+To retrieve the state of the Message object, the client sends a RopGetPropertiesSpecific ROP 
+request ([MS-OXCROPS] section 2.2.8.3). 
+
+Property 
+Property ID Property type 
+
+PidTagMessageDeliveryTime ([MS-OXOMSG] 0x0E06 0x0040 (PtypTime ([MS-OXCDATA] 
+section 2.2.3.9) section 2.11.1)) 
+
+The client receives a ROP response buffer from the server with the requested values. 
+
+Property Property ID Property type Value 
+
+PidTagMessageDeliveryTime  0x0E06 0x0040  2008/02/11 22:41:24.765 
+
+To set the properties for the time flag, the client sends a RopSetProperties ROP request ([MS-
+OXCROPS] section 2.2.8.6) with the values that are specified in the following table. 
+
+Property 
+Property ID Property type Value 
+
+PidTagFlagStatus (section 2.2.1.1) 0x1090 0x0003 (PtypInteger32 ([MS- 0x00000002 
+OXCDATA] section 2.11.1)) 
+
+PidTagFollowupIcon (section 2.2.1.2) 0x1095 0x0003  0x00000006 
+
+PidTagReplyRequested (section 0x0C17 0x000B (PtypBoolean ([MS- 0x01 (TRUE) 
+2.2.1.4) OXCDATA] section 2.11.1)) 
+
+PidTagResponseRequested (section 0x0063 0x000B  0x01 (TRUE) 
+2.2.1.5)  
+
+PidTagToDoItemFlags (section 0x0E2B 0x0003  0x00000001 
+2.2.1.6) 
+
+PidLidFlagRequest (section 2.2.1.9) 0x802A 0x001F "Follow up" 
+
+PidLidFlagString (section 2.2.1.10) 0x83C0 0x0003  0x00000003 
+
+PidLidValidFlagStringProof (section 0x83CA 0x0040  2008/02/11 
+2.2.1.11) 22:41:24.765 
+
+PidLidToDoTitle (section 2.2.1.12) 0x8018 0x001F  "Contoso Project" 
+
+PidLidToDoOrdinalDate (section 0x830D 0x0040  2008/02/11 
+2.2.1.13) 22:16:28.177 
+
+PidLidToDoSubOrdinal (section 0x830E 0x001F  "5555555" 
+2.2.1.14) 
+
+PidLidTaskStartDate ([MS-OXOTASK] 0x8143 0x0040  2008/02/11 
+section 2.2.2.2.4) 00:00:00.000 
+
+PidLidTaskDueDate ([MS-OXOTASK] 0x8144 0x0040  2008/02/12 
+section 2.2.2.2.5) 00:00:00.000 
+
+29 / 41 
+
+[MS-OXOFLAG] - v20250520 
+Informational Flagging Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Property 
+Property ID Property type Value 
+
+PidLidCommonStart ([MS-OXCMSG] 0x81BC 0x0040  2008/02/11 
+section 2.2.1.18) 08:00:00.000 
+
+PidLidCommonEnd ([MS-OXCMSG] 0x81BB 0x0040  2008/02/12 
+section 2.2.1.19) 08:00:00.000 
+
+Finally, to persist the Message object on the server, the client sends a RopSaveChangesMessage 
+ROP request ([MS-OXCROPS] section 2.2.6.3) followed by a RopRelease ROP request ([MS-
+OXCROPS] section 2.2.15.3) to release the object. 
+
+4.3 Completed Object 
+
+Kendall Keil is now finished with the work item associated with the message in the example given in 
+section 4.2. The following is a description of what a client might do to accomplish Kendall's intentions 
+and the responses a server might return. 
+
+As before, the client first retrieves a handle to the Message object by sending a RopOpenMessage 
+ROP request ([MS-OXCROPS] section 2.2.6.1). 
+
+To set the properties for the complete flag, the client sends a RopSetProperties ROP request ([MS-
+OXCROPS] section 2.2.8.6) with the values that are specified in the following table. 
+
+Property 
+Property ID Property type Value 
+
+PidTagFlagStatus (section 2.2.1.1) 0x1090 0x0003 (PtypInteger32 ([MS- 0x00000001 
+OXCDATA] section 2.11.1)) 
+
+PidTagFlagCompleteTime (section 0x1091 0x0040 (PtypTime ([MS- 2008/02/11 
+2.2.1.3) OXCDATA] section 2.11.1)) 22:23:00.000 
+
+PidTagReplyRequested (section 2.2.1.4) 0x0C17 0x000B  0x00 (FALSE) 
+
+PidTagResponseRequested (section 0x0063 0x000B  0x00 (FALSE) 
+2.2.1.5)  
+
+PidLidTaskDateCompleted ([MS- 0x8149 0x0040  2008/02/11 
+OXOTASK] section 2.2.2.2.9) 08:00:00.000 
+
+PidLidTaskComplete (section 2.2.2.2) 0x8148 0x000B  0x01 (TRUE) 
+
+PidLidTaskStatus (section 2.2.2.1) 0x8145 0x0003  0x00000002 
+
+PidLidPercentComplete (section 0x8146 0x0005 (PtypFloating64 ([MS- 1.0 
+2.2.2.3) OXCDATA] section 2.11.1)) 
+
+PidLidReminderSet ([MS-OXORMDR] 0x8004 0x000B  0x00 (FALSE) 
+section 2.2.1.1) 
+
+To delete the following property, the client sends a RopDeletePropertiesNoReplicate ROP request 
+([MS-OXCROPS] section 2.2.8.9). 
+
+Property Property ID Property type 
+
+PidTagFollowupIcon (section 2.2.1.2) 0x1095 0x0003  
+
+30 / 41 
+
+[MS-OXOFLAG] - v20250520 
+Informational Flagging Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Finally, to persist the Message object on the server, the client sends a RopSaveChangesMessage 
+ROP request ([MS-OXCROPS] section 2.2.6.3) followed by a RopRelease ROP request ([MS-
+OXCROPS] section 2.2.15.3) to release the object. 
+
+4.4 Flagging a Draft Message Object for the Sender and Recipient 
+
+Randy Byrne is planning to send a contract to a customer on March 7, 2008. He wants his co-worker, 
+Marina Dukhon, to review the contract before he sends it out. He sends a message to Marina with a 
+sender flag that has a due date of 2008/03/07 with a request string of "Forward", and a recipient 
+flag to Marina with a reminder on March 6, 2008, at 4:00 P.M. local time and a request string of 
+"Review". The following is a description of what a client might do to accomplish Randy's intentions and 
+the responses a server might return. 
+
+As before, the client first retrieves a handle to the Message object by sending the 
+RopOpenMessage ROP request ([MS-OXCROPS] section 2.2.6.1). 
+
+To set the properties for the sender flag and the recipient flag, the client sends a RopSetProperties 
+ROP request ([MS-OXCROPS] section 2.2.8.6) with the values that are specified in the following table. 
+
+Property 
+Property ID Property type Value 
+
+PidTagFlagStatus (section 2.2.1.1) 0x1090 0x0003 (PtypInteger32 ([MS- 0x00000002 
+OXCDATA] section 2.11.1)) 
+
+PidTagReplyRequested (section 0x0C17 0x000B (PtypBoolean ([MS- 0x01 (TRUE) 
+2.2.1.4) OXCDATA] section 2.11.1)) 
+
+PidTagResponseRequested (section 0x0063 0x000B  0x01 (TRUE) 
+2.2.1.5) 
+
+PidTagReplyTime (section 2.2.3.1) 0x0030 0x0040 (PtypTime ([MS- 2008/03/07 
+OXCDATA] section 2.11.1)) 00:00:00.000 
+
+PidTagToDoItemFlags (section 2.2.1.6) 0x0E2B 0x0003  0x00000008 
+
+PidTagSwappedToDoData (section 0x0E2D 0x0102 (PtypBinary ([MS- See note 2 
+2.2.1.7) OXCDATA] section 2.11.1)) following this table 
+
+PidTagSwappedToDoStore (section 0xE2C 0x0102  See note 1 
+2.2.1.8) following this table 
+
+PidLidFlagRequest (section 2.2.1.9) 0x802A 0x001F (PtypString ([MS- "Review" 
+OXCDATA] section 2.11.1)) 
+
+PidLidFlagString (section 2.2.1.10) 0x83C0 0x0003  0x0000000A 
+
+PidLidToDoTitle (section 2.2.1.12) 0x8018 0x001F  "Review" 
+
+PidLidTaskStatus (section 2.2.2.1) 0x8145 0x0003  0x00000000 
+
+PidLidPercentComplete (section 0x8146 0x0005 (PtypFloating64 ([MS- 0.0 
+2.2.2.3) OXCDATA] section 2.11.1)) 
+
+PidLidTaskComplete (section 2.2.2.2) 0x8148 0x000B  0x00 (FALSE) 
+
+PidLidReminderSet ([MS-OXORMDR] 0x8004 0x000B  0x01 (TRUE) 
+section 2.2.1.1) 
+
+PidLidReminderDelta ([MS-OXORMDR] 0x81FF 0x0003  0x00000000 
+section 2.2.1.3) 
+
+31 / 41 
+
+[MS-OXOFLAG] - v20250520 
+Informational Flagging Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Property 
+Property ID Property type Value 
+
+PidLidReminderTime ([MS-OXORMDR] 0x8005 0x0040  2008/03/07 
+section 2.2.1.4) 00:00:00.000 
+
+PidLidReminderSignalTime ([MS- 0x8006 0x0040  2008/03/07 
+OXORMDR] section 2.2.1.2) 00:00:00.000 
+
+Note 1: The PidTagSwappedToDoStore property is set to the value of the PidTagStoreEntryId 
+property ([MS-OXCMSG] section 2.2.1.44) of the Message object. 
+
+Note 2: The PidTagSwappedToDoData property contains the following binary data. 
+
+ 000: 01 00 00 00 79 00 00 00 01 00 00 00 46 00 6F 00 
+ 010: 72 00 77 00 61 00 72 00 64 00 00 00 00 00 00 00 
+ 020: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+ 030: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+ 040: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+ 050: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+ 060: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+ 070: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+ 080: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+ 090: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+ 0A0: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+ 0B0: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+ 0C0: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+ 0D0: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+ 0E0: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+ 0F0: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+ 100: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+ 110: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+ 120: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+ 130: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+ 140: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+ 150: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+ 160: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+ 170: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+ 180: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+ 190: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+ 1A0: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+ 1B0: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+ 1C0: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+ 1D0: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+ 1E0: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+ 1F0: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+ 200: 00 00 00 00 00 00 00 00 00 00 00 00 E0 80 E9 5A 
+ 210: 60 C0 C3 0C 00 00 00 00 00 00 00 00 
+
+This binary data corresponds to the following values in the fields of the PidTagSwappedToDoData 
+property. 
+
+Field Value 
+
+ulVersion  0x00000001 
+
+dwFlags  0x00000079 
+
+dwToDoItem  0x00000001 
+
+wszFlagTo  "Forward" 
+
+rtmStartDate  0x5AE980E0 (None) 
+
+32 / 41 
+
+[MS-OXOFLAG] - v20250520 
+Informational Flagging Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Field Value 
+
+rtmDueDate  0x0CC3C060 (2008/03/07 00:00:00.000) 
+
+rtmReminder  0x00000000 
+
+fReminderSet  0x00000000 (FALSE) 
+
+Finally, to send the message to the intended recipients, the client sends a RopSubmitMessage ROP 
+request ([MS-OXCROPS] section 2.2.7.1) followed by a RopRelease ROP request ([MS-OXCROPS] 
+section 2.2.15.3) to release the object. 
+
+When the above message is sent, the client performs post-transmit processing on the message, as 
+described in both section 3.1.4.3 and the remainder of this section.  
+
+The client retrieves a handle to the Message object by sending a RopOpenMessage request and gets 
+the relevant flagging properties by sending a RopGetPropertiesSpecific ROP request ([MS-
+OXCROPS] section 2.2.8.3). The values of the properties returned would be identical to the values set 
+above, except for the following property, which is changed by the server during message delivery. 
+
+Property Property 
+Property ID type Value 
+
+PidTagMessageDeliveryTime ([MS-OXOMSG] section 0x0E06 0x0040  2008/03/03 
+2.2.3.9) 21:03:00.000 
+
+To perform the swap, the client sends a RopSetProperties request with the values that are specified 
+in the following table. 
+
+Property Property 
+Property ID type Value 
+
+PidTagFlagStatus  0x1090 0x0003  0x00000002 
+
+PidTagFollowupIcon (section 2.2.1.2) 0x1095 0x0003  0x00000006 
+
+PidTagReplyRequested  0x0C17 0x000B  0x01 (TRUE) 
+
+PidTagResponseRequested  0x0063 0x000B  0x01 (TRUE) 
+
+PidTagToDoItemFlags  0x0E2B 0x0003  0x00000001 
+
+PidTagSwappedToDoData  0x0E2D 0x0102  See note 3 following this 
+table. 
+
+PidLidFlagRequest  0x802A 0x001F  "Forward" 
+
+PidLidFlagString 0x83C0 0x0003  0x00000000 
+
+PidLidValidFlagStringProof (section 2.2.1.11) 0x83CA 0x0040  2008/03/03 21:03:00.000 
+
+PidLidToDoTitle  0x8018 0x001F  "Contoso Project" 
+
+PidLidToDoOrdinalDate (section 2.2.1.13) 0x830D 0x0040  2008/03/03 21:03:29.438 
+
+PidLidToDoSubOrdinal (section 2.2.1.14) 0x830E 0x001F  "5555555" 
+
+PidLidTaskDueDate ([MS-OXOTASK] section 0x8144 0x0040 2008/03/07 00:00:00.000 
+2.2.2.2.5) 
+
+PidLidCommonEnd ([MS-OXCMSG] section 0x81BB 0x0040  2008/03/07 08:00:00.000 
+2.2.1.19) 
+
+33 / 41 
+
+[MS-OXOFLAG] - v20250520 
+Informational Flagging Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Property Property 
+Property ID type Value 
+
+PidLidTaskComplete  0x8148 0x000B  0x00 (FALSE) 
+
+PidLidTaskStatus 0x8145 0x0003  0x00000000 
+
+PidLidPercentComplete  0x8146 0x0005  0.0 
+
+PidLidReminderSet  0x8004 0x000B  0x00 (FALSE) 
+
+Note 3: The PidTagSwappedToDoData property contains the following binary data. 
+
+ 000: 01 00 00 00 F9 00 00 00 01 00 00 00 52 00 65 00 
+ 010: 76 00 69 00 65 00 77 00 00 00 00 00 00 00 00 00 
+ 020: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+ 030: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+ 040: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+ 050: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+ 060: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+ 070: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+ 080: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+ 090: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+ 0A0: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+ 0B0: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+ 0C0: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+ 0D0: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+ 0E0: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+ 0F0: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+ 100: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+ 110: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+ 120: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+ 130: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+ 140: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+ 150: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+ 160: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+ 170: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+ 180: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+ 190: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+ 1A0: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+ 1B0: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+ 1C0: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+ 1D0: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+ 1E0: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+ 1F0: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 
+ 200: 00 00 00 00 00 00 00 00 00 00 00 00 E0 80 E9 5A 
+ 210: E0 80 E9 5A 60 C0 C3 0C 01 00 00 00 
+
+This binary data corresponds to the following values in the fields of the PidTagSwappedToDoData 
+property. 
+
+Field Value 
+
+ulVersion  0x00000001 
+
+dwFlags  0x000000F9 
+
+dwToDoItem  0x00000001 
+
+wszFlagTo  "Review" 
+
+rtmStartDate  0x5AE980E0 (None) 
+
+rtmDueDate  0x5AE980E0 (None) 
+
+34 / 41 
+
+[MS-OXOFLAG] - v20250520 
+Informational Flagging Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Field Value 
+
+rtmReminder  0x0CC3C060 (2008/03/07 00:00:00.000) 
+
+fReminderSet  0x00000001 (TRUE) 
+
+To delete the following properties, the client sends a RopDeletePropertiesNoReplicate ROP request 
+([MS-OXCROPS] section 2.2.8.9). 
+
+Property Property ID Property type 
+
+PidTagSwappedToDoStore 0xE2C 0x0102  
+
+PidLidTaskStartDate ([MS-OXOTASK] section 2.2.2.2.4) 0x8143 0x0040  
+
+PidLidCommonStart ([MS-OXCMSG] section 2.2.1.18) 0x81BC 0x0040  
+
+PidLidTaskDateCompleted ([MS-OXOTASK] section 2.2.2.2.9) 0x8149 0x0040  
+
+PidLidReminderTime  0x8005 0x0040  
+
+PidLidReminderSignalTime  0x8006 0x0040  
+
+PidTagReplyTime 0x0030 0x0040  
+
+Finally, to persist the Message object on the server, the client sends a RopSaveChangesMessage 
+ROP request ([MS-OXCROPS] section 2.2.6.3) followed by a RopRelease ROP request to release the 
+object. 
+
+35 / 41 
+
+[MS-OXOFLAG] - v20250520 
+Informational Flagging Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+5 Security 
+
+5.1 Security Considerations for Implementers 
+
+There are no security considerations specific to the Informational Flagging Protocol. General security 
+considerations pertaining to the underlying transport apply, as described in [MS-OXCMSG]. 
+
+5.2 Index of Security Parameters 
+
+None. 
+
+36 / 41 
+
+[MS-OXOFLAG] - v20250520 
+Informational Flagging Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+6 Appendix A: Product Behavior 
+
+The information in this specification is applicable to the following Microsoft products or supplemental 
+software. References to product versions include updates to those products. 
+
+ Microsoft Exchange Server 2003 
+
+ Microsoft Exchange Server 2007 
+
+ Microsoft Exchange Server 2010 
+
+ Microsoft Exchange Server 2013 
+
+ Microsoft Exchange Server 2016  
+
+ Microsoft Exchange Server 2019  
+
+ Microsoft Office Outlook 2003 
+
+ Microsoft Office Outlook 2007 
+
+ Microsoft Outlook 2010 
+
+ Microsoft Outlook 2013 
+
+ Microsoft Outlook 2016 
+
+ Microsoft Outlook 2019  
+
+ Microsoft Outlook 2021 
+
+ Microsoft Outlook LTSC 2024 
+
+ Microsoft Exchange Server Subscription Edition 
+
+Exceptions, if any, are noted in this section. If an update version, service pack or Knowledge Base 
+(KB) number appears with a product name, the behavior changed in that update. The new behavior 
+also applies to subsequent updates unless otherwise specified. If a product edition appears with the 
+product version, behavior is different in that product edition. 
+
+Unless otherwise specified, any statement of optional behavior in this specification that is prescribed 
+using the terms "SHOULD" or "SHOULD NOT" implies product behavior in accordance with the 
+SHOULD or SHOULD NOT prescription. Unless otherwise specified, the term "MAY" implies that the 
+product does not follow the prescription. 
+
+<1> Section 2.2.1.1: Office Outlook 2003 does provide a way for the user to set the value of the 
+PidTagFlagStatus property (section 2.2.1.1) on a Task object. 
+
+<2> Section 2.2.1.2: Office Outlook 2003 does provide a way for the user to set the value of the 
+PidTagFollowupIcon property (section 2.2.1.2) on a Task object. 
+
+<3> Section 2.2.1.3: Office Outlook 2003 does provide a way for the user to set the value of the 
+PidTagFlagCompleteTime property (section 2.2.1.3) on a Task object. 
+
+<4> Section 2.2.1.4: Office Outlook 2003 does provide a way for the user to set the value of the 
+PidTagReplyRequested ([MS-OXOMSG] section 2.2.1.45) and PidTagResponseRequested ([MS-
+OXOMSG] section 2.2.1.46) properties on a Task object. 
+
+<5> Section 2.2.1.4: In Office Outlook 2007, when swapping the contents of the primary flag 
+storage location and secondary flag storage location, the PidTagReplyRequested ([MS-
+OXOMSG] section 2.2.1.45) and PidTagResponseRequested ([MS-OXOMSG] section 2.2.1.46) 
+
+37 / 41 
+
+[MS-OXOFLAG] - v20250520 
+Informational Flagging Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+properties do not get updated to the correct value according to the new flagging state of the primary 
+flag storage location. 
+
+<6> Section 2.2.1.6: Exchange 2003 and Office Outlook 2003 do not read or write the 
+PidTagToDoItemFlags property (section 2.2.1.6). 
+
+<7> Section 2.2.1.7: Exchange 2003 and Office Outlook 2003 do not support sender flags. 
+
+<8> Section 2.2.1.12: Office Outlook 2007 substitutes the concatenated values of 
+PidTagSubjectPrefix ([MS-OXCMSG] section 2.2.1.9) and PidTagNormalizedSubject ([MS-
+OXCMSG] section 2.2.1.10) when displaying a Message object without a value in the 
+PidLidToDoTitle property. 
+
+<9> Section 2.2.1.13: Exchange 2003 and Office Outlook 2003 do not read or write the 
+PidLidToDoOrdinalDate property. 
+
+<10> Section 2.2.2.1: Office Outlook 2003 does not set the PidLidTaskStatus property (section 
+2.2.2.1). 
+
+<11> Section 2.2.2.2: Office Outlook 2003 does not set the PidLidTaskComplete property (section 
+2.2.2.2). 
+
+<12> Section 2.2.2.3: Office Outlook 2003 does not set the PidLidPercentComplete property 
+(section 2.2.2.3). 
+
+<13> Section 3.1.4.1: The default Outlook user interface does not permit users to flag Appointment 
+objects, Journal objects, or Note objects, but it is possible to manipulate the UI in nonstandard 
+ways in order to set flag-related properties on such objects. Flagging Appointment objects, Journal 
+objects, or Note objects will result in undefined behavior. 
+
+<14> Section 3.1.4.1.1: Exchange 2007, Exchange 2010, Exchange 2013, Exchange 2016, Exchange 
+2019, Office Outlook 2007, Microsoft Outlook 2010, Outlook 2013, Outlook 2016, and Outlook 2019 do 
+not support color flags. 
+
+<15> Section 3.1.4.1.2: Except for receiving a recipient flag, as described in section 3.1.4.1.5, 
+basic flags are not supported by Office Outlook 2007, Outlook 2010, Outlook 2013, Outlook 2016, 
+and Outlook 2019. 
+
+<16> Section 3.1.4.1.3: Exchange 2003 and Office Outlook 2003 do not support time flags. 
+
+<17> Section 3.1.4.1.4: In addition to the exceptions as noted for individual properties, Exchange 
+2003 and Office Outlook 2003 do not set the following properties when marking a Message object 
+complete: PidTagToDoItemFlags (section 2.2.1.6), PidLidToDoTitle (section 2.2.1.12), 
+PidLidToDoOrdinalDate (section 2.2.1.13), PidLidToDoSubOrdinal (section 2.2.1.14), 
+PidLidTaskDateCompleted ([MS-OXOTASK] section 2.2.2.2.9), PidLidTaskComplete ([MS-
+OXOTASK] section 2.2.2.2.20), PidLidTaskStatus ([MS-OXOTASK] section 2.2.2.2.2), and 
+PidLidPercentComplete (section 2.2.2.3). Becuase Exchange 2003 and Office Outlook 2003 also do 
+not set the PidTagFlagStatus property (section 2.2.1.1) for a meeting-related object, Exchange 
+2003 and Office Outlook 2003 do not support complete flags for a meeting-related object. 
+
+<18> Section 3.1.4.1.6: Office Outlook 2003 does not support sender flags. Only recipient flags can 
+be set in Office Outlook 2003. 
+
+<19> Section 3.1.4.3: Exchange 2003 and Office Outlook 2003 do not support sender flags, and thus 
+do not support post-transmit processing of a flagged message. 
+
+38 / 41 
+
+[MS-OXOFLAG] - v20250520 
+Informational Flagging Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+7 Change Tracking 
+
+This section identifies changes that were made to this document since the last release. Changes are 
+classified as Major, Minor, or None.  
+
+The revision class Major means that the technical content in the document was significantly revised. 
+Major changes affect protocol interoperability or implementation. Examples of major changes are: 
+
+ A document revision that incorporates changes to interoperability requirements. 
+ A document revision that captures changes to protocol functionality. 
+
+The revision class Minor means that the meaning of the technical content was clarified. Minor changes 
+do not affect protocol interoperability or implementation. Examples of minor changes are updates to 
+clarify ambiguity at the sentence, paragraph, or table level. 
+
+The revision class None means that no new technical changes were introduced. Minor editorial and 
+formatting changes may have been made, but the relevant technical content is identical to the last 
+released version. 
+
+The changes made to this document are listed in the following table. For more information, please 
+contact dochelp@microsoft.com. 
+
+Section Description Revision class 
+
+6 Appendix A: Product Behavior Updated list of supported products. Major 
+
+39 / 41 
+
+[MS-OXOFLAG] - v20250520 
+Informational Flagging Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+8 Index
+A  
+ I 
+Abstract data model  
+   client 19 Implementer - security considerations 36 
+   server 24 Index of security parameters 36 
+Applicability 9 Informative references 8 
+ Initialization 
+C    client 19 
+    server 24 
+Capability negotiation 9 Introduction 6 
+Change tracking 39  
+Client M 
+   abstract data model 19  
+   initialization 19 Message processing 
+   message processing 23    client 23 
+   other local events 24    server 24 
+   overview 19 Messages 
+   sequencing rules 23    Properties Shared with the Reminder Settings 
+   timer events 24 Protocol 17 
+   timers 19    Properties Shared with the Task-Related Object 
+Client - higher-layer triggered events Protocol 16 
+   clearing a flag on a Message object 22    syntax 10 
+   flagging a Message object 19    transport 10 
+   post-transmit processing of a flagged message 23  
+Color-flagged object example 27 N 
+Completed object example 30  
+ Normative references 8 
+D  
+ O 
+Data model - abstract  
+   client 19 Other local events 
+   server 24    client 24 
+    server 25 
+E Overview (synopsis) 8 
+  
+Examples P 
+   color-flagged object 27  
+   completed object 30 Parameters - security index 36 
+   flagging a Draft Message object for the sender and PidLidFlagRequest property 14 
+
+recipient 30 PidLidFlagString property 14 
+   overview 26 PidLidPercentComplete shared property 17 
+   time-flagged object 28 PidLidTaskComplete shared property 17 
+ PidLidTaskStatus shared property 17 
+F PidLidToDoOrdinalDate property 16 
+ PidLidToDoSubOrdinal property 16 
+Fields - vendor-extensible 9 PidLidToDoTitle property 15 
+Flagging a Draft Message object for the sender and PidLidValidFlagStringProof property 15 
+
+recipient example 30 PidTagFlagCompleteTime property 11 
+ PidTagFlagStatus property 10 
+G PidTagFollowupIcon property 10 
+ PidTagReplyRequested property 11 
+Glossary 6 PidTagReplyTime shared property 18 
+ PidTagResponseRequested property 11 
+
+H PidTagSwappedToDoData property 12 
+
+ PidTagSwappedToDoStore property 14 
+
+Higher-layer triggered events PidTagToDoItemFlags property 11 
+
+   server 24 Preconditions 9 
+
+Higher-layer triggered events - client Prerequisites 9 
+
+   clearing a flag on a Message object 22 Product behavior 37 
+
+   flagging a Message object 19 Properties Shared with the Reminder Settings 
+
+   post-transmit processing of a flagged message 23 Protocol message 17 
+
+40 / 41 
+
+[MS-OXOFLAG] - v20250520 
+Informational Flagging Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Properties shared with the ReminderSettings Protocol Triggered events - client 
+   PidTagReplyTime property 18    clearing a flag on a Message object 22 
+Properties shared with the Task-Related Object    flagging a Message object 19 
+
+Protocol    post-transmit processing of a flagged message 23 
+   PidLidPercentComplete property 17 Triggered events - higher-layer 
+   PidLidTaskComplete property 17    server 24 
+   PidLidTaskStatus property 17  
+Properties Shared with the Task-Related Object V 
+
+Protocol message 16  
+Properties specific to the Informational Flagging Vendor-extensible fields 9 
+
+Protocol Versioning 9 
+   PidLidFlagRequest property 14 
+   PidLidFlagString property 14  
+   PidLidToDoOrdinalDate property 16 
+   PidLidToDoSubOrdinal property 16 
+   PidLidToDoTitle property 15 
+   PidLidValidFlagStringProof property 15 
+   PidTagFlagCompleteTime property 11 
+   PidTagFlagStatus property 10 
+   PidTagFollowupIcon property 10 
+   PidTagReplyRequested property 11 
+   PidTagResponseRequested property 11 
+   PidTagSwappedToDoData property 12 
+   PidTagSwappedToDoStore property 14 
+   PidTagToDoItemFlags property 11 
+ 
+R 
+ 
+References 8 
+   informative 8 
+   normative 8 
+Relationship to other protocols 9 
+ 
+S 
+ 
+Security 
+   implementer considerations 36 
+   parameter index 36 
+Sequencing rules 
+   client 23 
+   server 24 
+Server 
+   abstract data model 24 
+   higher-layer triggered events 24 
+   initialization 24 
+   message processing 24 
+   other local events 25 
+   overview 24 
+   sequencing rules 24 
+   timer events 25 
+   timers 24 
+Standards assignments 9 
+Syntax 10 
+ 
+T 
+ 
+Time-flagged object example 28 
+Timer events 
+   client 24 
+   server 25 
+Timers 
+   client 19 
+   server 24 
+Tracking changes 39 
+Transport 10 
+
+41 / 41 
+
+[MS-OXOFLAG] - v20250520 
+Informational Flagging Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025

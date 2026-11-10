@@ -1,0 +1,1538 @@
+﻿[MS-OXLDAP]:  
+
+Lightweight Directory Access Protocol (LDAP) Version 3 
+Extensions 
+
+ 
+
+Intellectual Property Rights Notice for Open Specifications Documentation 
+
+ Technical Documentation. Microsoft publishes Open Specifications documentation (“this 
+documentation”) for protocols, file formats, data portability, computer languages, and standards 
+support. Additionally, overview documents cover inter-protocol relationships and interactions.  
+
+ Copyrights. This documentation is covered by Microsoft copyrights. Regardless of any other 
+terms that are contained in the terms of use for the Microsoft website that hosts this 
+documentation, you can make copies of it in order to develop implementations of the technologies 
+that are described in this documentation and can distribute portions of it in your implementations 
+that use these technologies or in your documentation as necessary to properly document the 
+implementation. You can also distribute in your implementation, with or without modification, any 
+schemas, IDLs, or code samples that are included in the documentation. This permission also 
+applies to any documents that are referenced in the Open Specifications documentation.  
+
+ No Trade Secrets. Microsoft does not claim any trade secret rights in this documentation.  
+ Patents. Microsoft has patents that might cover your implementations of the technologies 
+
+described in the Open Specifications documentation. Neither this notice nor Microsoft's delivery of 
+this documentation grants any licenses under those patents or any other Microsoft patents. 
+However, a given Open Specifications document might be covered by the Microsoft Open 
+Specifications Promise or the Microsoft Community Promise. If you would prefer a written license, 
+or if the technologies described in this documentation are not covered by the Open Specifications 
+Promise or Community Promise, as applicable, patent licenses are available by contacting 
+iplg@microsoft.com.  
+
+ License Programs. To see all of the protocols in scope under a specific license program and the 
+associated patents, visit the Patent Map.  
+
+ Trademarks. The names of companies and products contained in this documentation might be 
+covered by trademarks or similar intellectual property rights. This notice does not grant any 
+licenses under those rights. For a list of Microsoft trademarks, visit 
+www.microsoft.com/trademarks.  
+
+ Fictitious Names. The example companies, organizations, products, domain names, email 
+addresses, logos, people, places, and events that are depicted in this documentation are fictitious. 
+No association with any real company, organization, product, domain name, email address, logo, 
+person, place, or event is intended or should be inferred. 
+
+Reservation of Rights. All other rights are reserved, and this notice does not grant any rights other 
+than as specifically described above, whether by implication, estoppel, or otherwise.  
+
+Tools. The Open Specifications documentation does not require the use of Microsoft programming 
+tools or programming environments in order for you to develop an implementation. If you have access 
+to Microsoft programming tools and environments, you are free to take advantage of them. Certain 
+Open Specifications documents are intended for use in conjunction with publicly available standards 
+specifications and network programming art and, as such, assume that the reader either is familiar 
+with the aforementioned material or has immediate access to it. 
+
+Support. For questions and support, please contact dochelp@microsoft.com.  
+
+1 / 25 
+
+[MS-OXLDAP] - v20250520 
+Lightweight Directory Access Protocol (LDAP) Version 3 Extensions 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Revision Summary 
+
+Revision Revision 
+Date History Class Comments 
+
+4/4/2008 0.1 New Initial Availability. 
+
+Revised and updated property names and other technical 
+4/25/2008 0.2 Minor 
+
+content. 
+
+6/27/2008 1.0 Major Initial Release. 
+
+8/6/2008 1.01 Minor Revised and edited technical content. 
+
+9/3/2008 1.02 Minor Updated references. 
+
+12/3/2008 1.03 Minor Updated IP notice. 
+
+4/10/2009 2.0 Major Updated technical content for new product releases. 
+
+7/15/2009 3.0 Major Revised and edited for technical content. 
+
+11/4/2009 4.0.0 Major Updated and revised the technical content. 
+
+2/10/2010 4.1.0 Minor Updated the technical content. 
+
+5/5/2010 4.1.1 Editorial Revised and edited the technical content. 
+
+8/4/2010 4.2 Minor Clarified the meaning of the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+11/3/2010 4.2 None 
+
+technical content. 
+
+3/18/2011 4.3 Minor Clarified the meaning of the technical content. 
+
+8/5/2011 5.0 Major Significantly changed the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+10/7/2011 5.0 None 
+
+technical content. 
+
+1/20/2012 6.0 Major Significantly changed the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+4/27/2012 6.0 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+7/16/2012 6.0 None 
+
+technical content. 
+
+10/8/2012 7.0 Major Significantly changed the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+2/11/2013 7.0 None 
+
+technical content. 
+
+7/26/2013 8.0 Major Significantly changed the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+11/18/2013 8.0 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+2/10/2014 8.0 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+4/30/2014 8.0 None 
+
+technical content. 
+
+7/31/2014 8.0 None No changes to the meaning, language, or formatting of the 
+
+2 / 25 
+
+[MS-OXLDAP] - v20250520 
+Lightweight Directory Access Protocol (LDAP) Version 3 Extensions 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Revision Revision 
+Date History Class Comments 
+
+technical content. 
+
+10/30/2014 8.1 Minor Clarified the meaning of the technical content. 
+
+3/16/2015 9.0 Major Significantly changed the technical content. 
+
+5/26/2015 10.0 Major Significantly changed the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+9/14/2015 10.0 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+6/13/2016 10.0 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+9/14/2016 10.0 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+9/19/2017 10.0 None 
+
+technical content. 
+
+7/24/2018 11.0 Major Significantly changed the technical content. 
+
+10/1/2018 12.0 Major Significantly changed the technical content. 
+
+4/22/2021 13.0 Major Significantly changed the technical content. 
+
+8/17/2021 14.0 Major Significantly changed the technical content. 
+
+8/20/2024 15.0 Major Significantly changed the technical content. 
+
+5/20/2025 16.0 Major Significantly changed the technical content. 
+
+3 / 25 
+
+[MS-OXLDAP] - v20250520 
+Lightweight Directory Access Protocol (LDAP) Version 3 Extensions 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Table of Contents 
+1 Introduction ............................................................................................................ 6 
+
+1.1 Glossary ........................................................................................................... 6 
+1.2 References ........................................................................................................ 7 
+
+1.2.1 Normative References ................................................................................... 7 
+1.2.2 Informative References ................................................................................. 8 
+
+1.3 Overview .......................................................................................................... 8 
+1.4 Relationship to Other Protocols ............................................................................ 8 
+1.5 Prerequisites/Preconditions ................................................................................. 8 
+1.6 Applicability Statement ....................................................................................... 8 
+1.7 Versioning and Capability Negotiation ................................................................... 8 
+1.8 Vendor-Extensible Fields ..................................................................................... 8 
+1.9 Standards Assignments ....................................................................................... 8 
+
+2 Messages ................................................................................................................. 9 
+2.1 Transport .......................................................................................................... 9 
+2.2 Message Syntax ................................................................................................. 9 
+
+2.2.1 Extension-Specific Name Attributes ............................................................... 11 
+2.2.1.1 Display Name ....................................................................................... 11 
+
+2.2.2 Extension-Specific Organizational Attributes ................................................... 11 
+2.2.2.1 Organizational Unit................................................................................ 11 
+2.2.2.2 Reports ................................................................................................ 11 
+
+2.2.3 Extension-Specific E-Mail Attributes .............................................................. 11 
+2.2.3.1 Account ............................................................................................... 11 
+2.2.3.2 Exchange Distinguished Name ................................................................ 11 
+2.2.3.3 Exchange Home Server .......................................................................... 11 
+2.2.3.4 Proxy Addresses ................................................................................... 11 
+2.2.3.5 X.400 Address ...................................................................................... 12 
+
+2.2.4 Extension-Specific Telephone Attributes ........................................................ 12 
+2.2.4.1 Assistant Phone Number ........................................................................ 12 
+2.2.4.2 Secondary Phone Number ...................................................................... 12 
+
+2.2.5 Other Extension-Specific Attributes ............................................................... 12 
+2.2.5.1 Object Class ......................................................................................... 12 
+2.2.5.2 S/MIME Certificate ................................................................................ 13 
+
+3 Protocol Details ..................................................................................................... 14 
+3.1 Client Details ................................................................................................... 14 
+
+3.1.1 Abstract Data Model .................................................................................... 14 
+3.1.2 Timers ...................................................................................................... 14 
+3.1.3 Initialization ............................................................................................... 14 
+
+3.1.3.1 Querying for Supported Controls ............................................................. 14 
+3.1.3.2 Querying for Supported Capabilities ........................................................ 14 
+
+3.1.4 Higher-Layer Triggered Events ..................................................................... 14 
+3.1.5 Message Processing Events and Sequencing Rules .......................................... 15 
+
+3.1.5.1 Issuing a Search Request ....................................................................... 15 
+3.1.5.1.1 Retrieving a Search Base .................................................................. 15 
+3.1.5.1.2 Basic Search Filter ........................................................................... 16 
+3.1.5.1.3 Advanced Search Filter ..................................................................... 16 
+3.1.5.1.4 ANR Search Filter ............................................................................ 17 
+3.1.5.1.5 Virtual List View Search Filter ............................................................ 17 
+
+3.1.6 Timer Events .............................................................................................. 17 
+3.1.7 Other Local Events ...................................................................................... 17 
+
+3.2 Server Details .................................................................................................. 17 
+3.2.1 Abstract Data Model .................................................................................... 17 
+3.2.2 Timers ...................................................................................................... 17 
+3.2.3 Initialization ............................................................................................... 17 
+
+4 / 25 
+
+[MS-OXLDAP] - v20250520 
+Lightweight Directory Access Protocol (LDAP) Version 3 Extensions 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+3.2.4 Higher-Layer Triggered Events ..................................................................... 18 
+3.2.5 Message Processing Events and Sequencing Rules .......................................... 18 
+
+3.2.5.1 Handling a Query for the supportedControl Attribute ................................. 18 
+3.2.5.2 Handling a Query for the supportedCapabilities Attribute ........................... 18 
+3.2.5.3 Handling Search Requests ...................................................................... 18 
+
+3.2.5.3.1 Handling a Query for the defaultNamingContext Attribute ..................... 18 
+3.2.5.3.2 Responding to Query Attributes ......................................................... 18 
+
+3.2.6 Timer Events .............................................................................................. 18 
+3.2.7 Other Local Events ...................................................................................... 18 
+
+4 Protocol Examples ................................................................................................. 19 
+4.1 Simple Search Scenario .................................................................................... 19 
+
+5 Security ................................................................................................................. 21 
+5.1 Security Considerations for Implementers ........................................................... 21 
+5.2 Index of Security Parameters ............................................................................ 21 
+
+6 Appendix A: Product Behavior ............................................................................... 22 
+
+7 Change Tracking .................................................................................................... 24 
+
+8 Index ..................................................................................................................... 25 
+
+ 
+
+5 / 25 
+
+[MS-OXLDAP] - v20250520 
+Lightweight Directory Access Protocol (LDAP) Version 3 Extensions 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+1 Introduction 
+
+The Lightweight Directory Access Protocol (LDAP) Version 3 Extensions is a set of extensions to LDAP, 
+as described in [RFC4511] and [RFC4512], and the LDAP user schema, as described in [RFC4519], 
+that defines new attributes and values for existing attributes related to the operation of e-mail clients 
+and servers. 
+
+Sections 1.5, 1.8, 1.9, 2, and 3 of this specification are normative. All other sections and examples in 
+this specification are informative. 
+
+1.1 Glossary 
+
+This document uses the following terms: 
+
+AD-type server: An LDAP server that returns an object identifier (OID) value of 
+"1.2.840.113556.1.4.800" when it is queried for the supportedCapabilities LDAP attribute. 
+
+ambiguous name resolution (ANR): A search algorithm that permits a client to search multiple 
+naming-related attributes on objects by way of a single clause of the form "(anr=value)" in a 
+Lightweight Directory Access Protocol (LDAP) search filter. This permits a client to query 
+for an object when the client possesses some identifying material related to the object but does 
+not know which attribute of the object contains that identifying material. 
+
+Augmented Backus-Naur Form (ABNF): A modified version of Backus-Naur Form (BNF), 
+commonly used by Internet specifications. ABNF notation balances compactness and simplicity 
+with reasonable representational power. ABNF differs from standard BNF in its definitions and 
+uses of naming rules, repetition, alternatives, order-independence, and value ranges. For more 
+information, see [RFC5234]. 
+
+distinguished name (DN): In Lightweight Directory Access Protocol (LDAP), an LDAP 
+Distinguished Name, as described in [RFC2251] section 4.1.3. The DN of an object is the DN of 
+its parent, preceded by the RDN of the object. For example: CN=David Thompson, OU=Users, 
+DC=Microsoft, DC=COM. For definitions of CN and OU, see [RFC2256] sections 5.4 and 5.12, 
+respectively. 
+
+Lightweight Directory Access Protocol (LDAP): The primary access protocol for Active 
+Directory. Lightweight Directory Access Protocol (LDAP) is an industry-standard protocol, 
+established by the Internet Engineering Task Force (IETF), which allows users to query and 
+update information in a directory service (DS), as described in [MS-ADTS]. The Lightweight 
+Directory Access Protocol can be either version 2 [RFC1777] or version 3 [RFC3377]. 
+
+mailbox: A message store that contains email, calendar items, and other Message objects for a 
+single recipient. 
+
+object identifier (OID): In the Lightweight Directory Access Protocol (LDAP), a sequence of 
+numbers in a format described by [RFC1778]. In many LDAP directory implementations, an OID 
+is the standard internal representation of an attribute. In the directory model used in this 
+specification, the more familiar ldapDisplayName represents an attribute. 
+
+public folder: A Folder object that is stored in a location that is publicly available. 
+
+recipient: An entity that is in an address list, can receive email messages, and contains a set of 
+attributes. Each attribute has a set of associated values. 
+
+S/MIME (Secure/Multipurpose Internet Mail Extensions): A set of cryptographic security 
+services, as described in [RFC5751]. 
+
+Simple Mail Transfer Protocol (SMTP): A member of the TCP/IP suite of protocols that is used 
+to transport Internet messages, as described in [RFC5321]. 
+
+6 / 25 
+
+[MS-OXLDAP] - v20250520 
+Lightweight Directory Access Protocol (LDAP) Version 3 Extensions 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+MAY, SHOULD, MUST, SHOULD NOT, MUST NOT: These terms (in all caps) are used as defined 
+in [RFC2119]. All statements of optional behavior use either MAY, SHOULD, or SHOULD NOT. 
+
+1.2 References 
+
+Links to a document in the Microsoft Open Specifications library point to the correct section in the 
+most recently published version of the referenced document. However, because individual documents 
+in the library are not updated at the same time, the section numbers in the documents may not 
+match. You can confirm the correct section numbering by checking the Errata.   
+
+1.2.1 Normative References 
+
+We conduct frequent surveys of the normative references to assure their continued availability. If you 
+have any issue with finding a normative reference, please contact dochelp@microsoft.com. We will 
+assist you in finding the relevant information.  
+
+[LDAPEX-SVB] Boreham, D., Sermersheim, J., and Kashi, A., "LDAP Extensions for Scrolling View 
+Browsing of Search Results", Internet-Draft <draft-ietf-ldapext-ldapv3-vlv-09.txt>, November 2002, 
+http://www.ietf.org/proceedings/02nov/I-D/draft-ietf-ldapext-ldapv3-vlv-09.txt 
+
+[MS-ADTS] Microsoft Corporation, "Active Directory Technical Specification". 
+
+[MS-OXOABK] Microsoft Corporation, "Address Book Object Protocol". 
+
+[RFC1274] Barker, P. and Kille, S., "The COSINE and Internet X.500 Schema", RFC 1274, November 
+1991, https://www.rfc-editor.org/info/rfc1274 
+
+[RFC2119] Bradner, S., "Key words for use in RFCs to Indicate Requirement Levels", BCP 14, RFC 
+2119, March 1997, https://www.rfc-editor.org/info/rfc2119 
+
+[RFC2696] Weider, C., Herron, A., Anantha, A., and Howes, T., "LDAP Control Extension for Simple 
+Paged Results Manipulation", RFC 2696, September 1999, https://www.rfc-editor.org/info/rfc2696 
+
+[RFC2798] Smith, M., "Definition of the inetOrgPerson LDAP Object Class", RFC 2798, April 2000, 
+https://www.rfc-editor.org/info/rfc2798 
+
+[RFC2891] Howes, T., Wahl, M., and Anantha, A., "LDAP Control Extension for Server Side Sorting of 
+Search Results", RFC 2891, August 2000, https://www.rfc-editor.org/info/rfc2891 
+
+[RFC4511] Sermersheim, J., "Lightweight Directory Access Protocol (LDAP): The Protocol", RFC 4511, 
+June 2006, https://www.rfc-editor.org/info/rfc4511 
+
+[RFC4512] Zeilenga, K., "Lightweight Directory Access Protocol (LDAP): Directory Information 
+Models", RFC 4512, June 2006, http://www.rfc-editor.org/rfc/rfc4512.txt 
+
+[RFC4519] Sciberras, A., Ed., "Lightweight Directory Access Protocol (LDAP): Schema for User 
+Applications", RFC 4519, June 2006, http://www.rfc-editor.org/rfc/rfc4519.txt 
+
+[RFC4523] Zeilenga, K., "Lightweight Directory Access Protocol (LDAP) Schema Definitions for X.509 
+Certificates", RFC 4523, June 2006, https://www.rfc-editor.org/info/rfc4523 
+
+[RFC4524] Zeilenga, K., Ed., "COSINE LDAP/X.500 Schema", RFC 4524, June 2006, https://www.rfc-
+editor.org/info/rfc4524 
+
+[RFC5234] Crocker, D., Ed., and Overell, P., "Augmented BNF for Syntax Specifications: ABNF", STD 
+68, RFC 5234, January 2008, https://www.rfc-editor.org/info/rfc5234 
+
+7 / 25 
+
+[MS-OXLDAP] - v20250520 
+Lightweight Directory Access Protocol (LDAP) Version 3 Extensions 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+1.2.2 Informative References 
+
+[MS-OXPROTO] Microsoft Corporation, "Exchange Server Protocols System Overview". 
+
+1.3 Overview 
+
+LDAP, as described in [RFC4511] and [RFC4512], is an Internet protocol that is used for querying and 
+modifying entries in a directory server. LDAP provides a general purpose directory for storing 
+information about objects. The LDAP user schema, as described in [RFC4519], defines a set of 
+attributes for objects contained in a directory server. 
+
+This extension defines a set of extensions to LDAP and the LDAP user schema that provides attributes 
+and object types related to the operation of e-mail clients and servers. These attributes and object 
+types include the following: 
+
+ New name attributes, organizational attributes, e-mail attributes, and telephone attributes. 
+
+ New values of the objectClass attribute that identify e-mail groups, remote addresses, and 
+public folders. 
+
+ A new value of the supportedControl attribute that identifies an AD-type server. 
+
+1.4 Relationship to Other Protocols 
+
+This extension defines a set of extensions to LDAP, as described in [RFC4511] and [RFC4512], and 
+the LDAP user schema, as described in [RFC4519]. 
+
+For conceptual background information and overviews of the relationships and interactions between 
+this and other protocols, see [MS-OXPROTO]. 
+
+1.5 Prerequisites/Preconditions 
+
+None. 
+
+1.6 Applicability Statement 
+
+This extension can be used to retrieve information related to the operation of e-mail clients and 
+servers, such as a user's e-mail address or the mailbox server that hosts the user's mailbox, from an 
+LDAP server. 
+
+1.7 Versioning and Capability Negotiation 
+
+This extension does not introduce any versioning constraints beyond those that exist in LDAP, as 
+described in [RFC4511]. 
+
+1.8 Vendor-Extensible Fields 
+
+None. 
+
+1.9 Standards Assignments 
+
+None. 
+
+8 / 25 
+
+[MS-OXLDAP] - v20250520 
+Lightweight Directory Access Protocol (LDAP) Version 3 Extensions 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+2 Messages 
+
+2.1 Transport 
+
+This extension does not introduce any transport requirements beyond those that exist in LDAP, as 
+specified in [RFC4511]. 
+
+2.2 Message Syntax 
+
+This extension follows the LDAP standard for message syntax, as specified in [RFC4511]. According to 
+the LDAP standard, an attribute list can contain implementation-specific attributes. The attributes 
+specific to this extension are listed in this section. 
+
+The following table lists every LDAP attribute for which the client can query. In many cases, more than 
+one LDAP attribute corresponds to a single field in the table below because different server 
+implementations of LDAP use different attribute names to represent similar concepts (fields). In those 
+cases, the attributes listed first in the table take precedence over the attributes listed later. For 
+example, for the Last Name field, the sn attribute takes precedence over the surname attribute. The 
+client only needs to query for one attribute name in each field. 
+
+The client SHOULD implement the LDAP user schema, as specified in [RFC4519], the COSINE 
+LDAP/X.500 schema, as specified in [RFC4524], the inetOrgPerson LDAP Object Class, as specified in 
+[RFC2798], and the LDAP X.509 schema, as specified in [RFC4523]. The client SHOULD support the 
+attributes that are listed in the following table.  
+
+Field LDAP attribute 
+
+Name attributes 
+
+Display Name  display-name (section 2.2.1.1) 
+
+displayName (section 2.2.1.1) 
+
+CN ([RFC4519]) 
+
+commonName ([RFC4519]) 
+
+Last Name sn ([RFC4519]) 
+
+surname ([RFC4519]) 
+
+First Name givenName ([RFC4519]) 
+
+Initials Initials ([RFC4519]) 
+
+Organizational attributes 
+
+Company Name organizationName ([RFC4519]) 
+
+o<1> ([RFC4519]) 
+
+Title Title ([RFC4519]) 
+
+Organizational Unit ou ([RFC4519]) 
+
+organizationalUnitName ([RFC4519]) 
+
+department (section 2.2.2.1) 
+
+Office Location physicalDeliveryOfficeName ([RFC4519]) 
+
+roomNumber ([RFC4524]) 
+
+Assistant Name secretary ([RFC4524]) 
+
+9 / 25 
+
+[MS-OXLDAP] - v20250520 
+Lightweight Directory Access Protocol (LDAP) Version 3 Extensions 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Field LDAP attribute 
+
+Manager manager ([RFC4524]) 
+
+Reports directReports (section 2.2.2.2) 
+
+reports (section 2.2.2.2) 
+
+E-mail attributes 
+
+E-mail Address mail ([RFC4524]) 
+
+Exchange Distinguished Name legacyExchangeDN (section 2.2.3.2) 
+
+Account mailNickname (section 2.2.3.1) 
+
+uid ([RFC4519]) 
+
+X.400 Address TextEncodedORaddress (section 2.2.3.5) 
+
+Exchange Home Server msExchHomeServerName (section 2.2.3.3) 
+
+Proxy Addresses proxyAddresses (section 2.2.3.4) 
+
+otherMailbox (section 2.2.3.4) 
+
+Physical address attributes 
+
+Address postalAddress ([RFC4519]) 
+
+streetAddress ([RFC4519]) 
+
+Locality / City l ([RFC4519]) 
+
+State st ([RFC4519]) 
+
+Postal Code postalCode ([RFC4519]) 
+
+Country c ([RFC4519]) 
+
+Telephone attributes 
+
+Telephone Number telephoneNumber ([RFC4519]) 
+
+Secondary Phone Number Telephone-Office2 (section 2.2.4.2) 
+
+Fax Number facsimileTelephoneNumber ([RFC4519]) 
+
+Assistant Phone Number Telephone-Assistant (section 2.2.4.1) 
+
+Home Phone homephone ([RFC4524]) 
+
+Cell Phone mobile ([RFC4524]) 
+
+Pager Number pager ([RFC4524]) 
+
+Notes info ([RFC4524]) 
+
+Other attributes 
+
+User Certificate userCertificate ([RFC4523]) 
+
+S/MIME Certificate userSMIMECertificate (section 2.2.5.2) 
+
+Unused user-cert<2> 
+
+Object Class objectClass (section 2.2.5.1) 
+
+10 / 25 
+
+[MS-OXLDAP] - v20250520 
+Lightweight Directory Access Protocol (LDAP) Version 3 Extensions 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Field LDAP attribute 
+
+Role Occupant roleOccupant ([RFC4519]) 
+
+ 
+
+2.2.1 Extension-Specific Name Attributes 
+
+2.2.1.1 Display Name 
+
+The display-name and displayName attributes SHOULD be used as the primary name to be shown 
+to the user when displaying an LDAP entry. If the display-name attribute is empty or not user-
+readable, the client SHOULD construct a display-name attribute from other attributes. Applications 
+use implementation-specific logic to construct a display-name attribute when needed.<3> 
+
+2.2.2 Extension-Specific Organizational Attributes 
+
+2.2.2.1 Organizational Unit 
+
+The department attribute is a multi-valued string attribute that contains the names of any 
+departments or other organizational units to which an object belongs. The syntax of this attribute is 
+the same as the ou or organizationalUnitName attributes, as specified in [RFC4519].  
+
+2.2.2.2 Reports 
+
+The reports and directReports attributes are multi-valued string attributes containing the 
+distinguished names (DNs) of any direct reports. 
+
+2.2.3 Extension-Specific E-Mail Attributes 
+
+2.2.3.1 Account 
+
+The mailNickname attribute is a multi-valued string attribute that contains login names associated 
+with the object. The syntax of this attribute is the same as the uid attribute, as specified in 
+[RFC4519]. 
+
+2.2.3.2 Exchange Distinguished Name 
+
+The legacyExchangeDN attribute represents a distinguished name (DN) of the entry. This DN 
+MUST be formatted as specified in [MS-OXOABK] section 2.2.1.1. This value MAY<4> be used as a 
+proxy address for an entry, with the following format.  
+
+ proxyAddressFromExchangeDN ::= "EX:" <Exchange DN> 
+ <Exchange DN> ::= ; The value of the LDAP attribute legacyExchangeDN 
+
+2.2.3.3 Exchange Home Server 
+
+The msExchHomeServerName attribute MUST contain the DN of the mailbox server where mail is 
+delivered for that user. For the client, this attribute has the same semantics as the 
+PidTagAddressBookHomeMessageDatabase property, as specified in [MS-OXOABK] section 
+2.2.4.37. 
+
+11 / 25 
+
+[MS-OXLDAP] - v20250520 
+Lightweight Directory Access Protocol (LDAP) Version 3 Extensions 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+2.2.3.4 Proxy Addresses 
+
+If multiple e-mail addresses are associated with an entry, they MUST be included in the 
+proxyAddresses and otherMailbox attributes. These addresses can be used as alternate e-mail 
+addresses to reach the user. Specific e-mail addresses can be retrieved from this value depending on 
+the intended use. The semantics of proxy addresses are not constrained by this extension, and are 
+specific to the protocol that creates the proxy addresses. This extension does not constrain how a 
+client uses proxy addresses. For the client, these proxy addresses have the same semantics as the 
+values of the PidTagAddressBookProxyAddresses property, as specified in [MS-OXOABK] section 
+2.2.3.23. 
+
+The format of each e-mail address MUST be as follows. 
+
+ emailString  = <emailType> ":" <emailAddress> 
+ emailType    =  <a string indicating what type of e-mail it is. i.e. SMTP, x500, etc> 
+ emailAddress =  <a string representing the e-mail address> 
+
+For example, for a Simple Mail Transfer Protocol (SMTP) e-mail address of 
+someone@example.com, the resulting value in the proxyAddresses or otherMailbox attributes 
+would have the following format. 
+
+SMTP:someone@example.com 
+
+2.2.3.5 X.400 Address 
+
+The TextEncodedORAddress attribute is a string attribute that contains a text representation of an 
+X.400 O/R address, as specified in [RFC1274]. 
+
+2.2.4 Extension-Specific Telephone Attributes 
+
+2.2.4.1 Assistant Phone Number 
+
+The Telephone-Assistant attribute is a string attribute that contains a telephone number for the 
+assistant to the user represented by the directory object. 
+
+2.2.4.2 Secondary Phone Number 
+
+The Telephone-Office2 attribute is a string attribute that contains a secondary telephone number for 
+the user represented by the directory object. 
+
+2.2.5 Other Extension-Specific Attributes 
+
+2.2.5.1 Object Class 
+
+The client SHOULD support the following values for the objectClass attribute. 
+
+Attribute value Object type 
+
+organizationalPerson This value is specified in [RFC4519]. 
+
+groupOfNames The groupOfNames value is specified in [RFC4519]. 
+
+group The group value is specific to this extension and is used in the same way as the 
+groupOfNames value. 
+
+12 / 25 
+
+[MS-OXLDAP] - v20250520 
+Lightweight Directory Access Protocol (LDAP) Version 3 Extensions 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Attribute value Object type 
+
+Remote-Address This value is specific to this extension and represents a recipient that is known to be 
+from a foreign or remote messaging system.  
+
+Public-Folder This value is specific to this extension and represents a place where public discussions 
+take place such as a bulletin board, public folder, or shared folder. 
+
+The client SHOULD use the value of the objectClass attribute to help distinguish between different 
+types of directory entries when displaying entries to the user. For example, the client can display a 
+different icon or make the item bold to make it easy for a user viewing the object to distinguish its 
+type. If no objectClass attribute is returned for an entry, the client MUST treat it as a value of 
+"organizationalPerson". 
+
+The value of the objectClass attribute is used to determine the value of the PidTagDisplayType 
+property, as specified in [MS-OXOABK] section 2.2.3.11. The following objectClass attribute values 
+correspond to the following PidTagDisplayType property values. 
+
+objectClass attribute value PidTagDisplayType property value 
+
+organizationalPerson DT_MAILUSER 
+
+groupOfNames DT_DISTLIST 
+
+group 
+
+Remote-Address DT_REMOTE_MAILUSER 
+
+Public-Folder DT_FORUM 
+
+ 
+
+2.2.5.2 S/MIME Certificate 
+
+The userSMIMECertificate attribute contains certificates in the format specified in [RFC2798] or 
+certificates in the format defined for the PidTagUserX509Certificate property, as specified in [MS-
+OXOABK] section 2.2.4.36. If available, this attribute SHOULD be preferred over the userCertificate 
+attribute for S/MIME (Secure/Multipurpose Internet Mail Extensions) applications. 
+
+13 / 25 
+
+[MS-OXLDAP] - v20250520 
+Lightweight Directory Access Protocol (LDAP) Version 3 Extensions 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+3 Protocol Details 
+
+3.1 Client Details 
+
+3.1.1 Abstract Data Model 
+
+None. 
+
+3.1.2 Timers 
+
+None. 
+
+3.1.3 Initialization 
+
+This extension conforms to the initialization defined by LDAP, as specified in [RFC4511]. In addition, 
+this extension specifies two operations that SHOULD be performed upon connecting to an LDAP 
+server: 
+
+ Querying for supported controls. For more details, see section 3.1.3.1. 
+
+ Querying for supported capabilities. For more details, see section 3.1.3.2. 
+
+3.1.3.1 Querying for Supported Controls 
+
+Upon connecting to the LDAP server, the client SHOULD query the server for the supportedControl 
+attribute, as specified in [RFC4512]. The OID values returned by the server indicate what controls the 
+server supports and makes available to the client. If the client supports browsing the server, it 
+SHOULD recognize the following OID values. 
+
+OID value Supported control 
+
+2.16.840.1.113730.3.4.9 Virtual list support ([LDAPEX-SVB]) 
+
+1.2.840.113556.1.4.319 Paged results support ([RFC2696]) 
+
+1.2.840.113556.1.4.473 Server sort support ([RFC2891]) 
+
+ 
+
+3.1.3.2 Querying for Supported Capabilities 
+
+Upon connecting to the LDAP server, the client SHOULD query the server for the 
+supportedCapabilities custom attribute, as specified in [MS-ADTS], and MUST recognize the OID 
+value for an AD-type server: "1.2.840.113556.1.4.800". 
+
+If the client does not query for this capability, or the server does not return the OID value for an AD-
+type server, the client MUST treat the server as a non-AD-type server. 
+
+When sorting, the protocol client SHOULD use the displayName attribute instead of the CN attribute 
+on AD-type servers. 
+
+3.1.4 Higher-Layer Triggered Events 
+
+None. 
+
+14 / 25 
+
+[MS-OXLDAP] - v20250520 
+Lightweight Directory Access Protocol (LDAP) Version 3 Extensions 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+3.1.5 Message Processing Events and Sequencing Rules 
+
+3.1.5.1 Issuing a Search Request 
+
+All search requests issued by the client MUST follow the search request definition specified in 
+[RFC4511] section 4.5.1, with the following options specified. 
+
+Search request 
+parameter Value 
+
+baseObject See section 3.1.5.1.1. 
+
+Scope wholeSubtree 
+
+derefAliases derefAlways 
+
+typesOnly FALSE 
+
+sizeLimit Specified by the user. 
+
+timeLimit Specified by the user. 
+
+AttributeSelection CN, commonName, mail, roleOccupant, display-name, displayname, sn, surname, c, 
+organizationName, o, givenName, legacyExchangeDN, objectClass, uid, mailNickname, 
+title, company, physicalDeliveryOfficeName, telephoneNumber 
+
+Filter Depends on the type of search (sections 3.1.5.1.2, 3.1.5.1.3, and 3.1.5.1.4). 
+
+ 
+
+3.1.5.1.1 Retrieving a Search Base 
+
+A search base is a string representing the DN of the base object entry relative to which a search is to 
+be performed. This value is used as the value of the baseObject parameter of a search request, as 
+specified in [RFC4511]. 
+
+The client can use a user-provided string as the search base. If the user-provided string is an empty 
+string, the client MAY<5> query the server for the defaultNamingContext attribute and use the 
+returned value for the search base instead of an empty string. If the user has not specified a search 
+base, the client SHOULD query the server for the defaultNamingContext attribute and use the 
+returned value for the search base.  
+
+To query the server for the defaultNamingContext attribute, the client SHOULD send a search 
+request to the server, as specified in [RFC4511] section 4.5.1, with the following options specified. 
+
+Search request parameter Value 
+
+baseObject Empty string (that is, a zero-length string).   
+
+Scope baseObject 
+
+derefAliases neverDerefAliases 
+
+typesOnly FALSE 
+
+sizeLimit 0  
+
+TimeLimit 0 
+
+Filter (objectClass=*) 
+
+15 / 25 
+
+[MS-OXLDAP] - v20250520 
+Lightweight Directory Access Protocol (LDAP) Version 3 Extensions 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Search request parameter Value 
+
+Attributes objectClass, defaultNamingContext 
+
+ 
+
+3.1.5.1.2 Basic Search Filter 
+
+When performing a basic search, the client SHOULD<6> use the following filter as the search filter. 
+
+This search filter is specified in Augmented Backus-Naur Form (ABNF), as specified in [RFC5234]. 
+
+ basicSearchFilter = "(&(|(mail=" <search-string> "*)(cn=" <search-string> 
+ "*)(sn=" <search-string> "*)(givenName=" <search-string> "*)(displayName="  
+ <search-string> "*)))"search-string =  <a user specified search string> 
+
+3.1.5.1.3 Advanced Search Filter 
+
+The client SHOULD<7> provide a way to search on one or more LDAP attributes. The client SHOULD 
+use strings provided by the user to construct the LDAP filter. 
+
+This search filter is specified in ABNF, as specified in [RFC5234]. 
+
+ advancedFilter = "(&(|" *<indvidualAttribute> "))" 
+ 
+ individualAttribute = "(" <attributeName> "=" <attributeValue> ")" 
+ 
+ attributeName = displayName / display-name / cn / physicalDeliveryOfficeName  
+ / roomNumber / uid / mailNickname / givenName / sn / telephoneNumber / l  
+ / title / department / mail 
+ 
+ attributeValue = [<containsORbegins>] <userSpecifiedValue> "*" 
+ 
+ containsORbegins = "*"; include if searching for a substring, exclude if  
+                      ; looking for a string beginning with a substring 
+ 
+ userSpecifiedValue =  <a user specified value for that field> 
+
+For each search field requested by the user, the client MUST add all <attributeValue> entries specified 
+in the following table. 
+
+Search field attributeValue 
+
+Display Name displayName (for AD-type servers only) 
+
+display-name (for AD-type servers only) 
+
+CN (for non-AD-type servers only) 
+
+Office Location physicalDeliveryOfficeName 
+
+roomNumber 
+
+Account uid 
+
+mailNickname 
+
+First Name givenName 
+
+Last Name sn 
+
+Telephone Number telephoneNumber 
+
+16 / 25 
+
+[MS-OXLDAP] - v20250520 
+Lightweight Directory Access Protocol (LDAP) Version 3 Extensions 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Search field attributeValue 
+
+Locality / City l 
+
+Title title 
+
+Department department 
+
+E-mail Address mail 
+
+ 
+
+3.1.5.1.4 ANR Search Filter 
+
+When the client performs an ambiguous name resolution (ANR) search, it SHOULD use the 
+following query. 
+
+This search query is specified in ABNF, as specified in [RFC5234]. 
+
+ 
+ ANRFilter     = "(&(mail=*)(|(mail=" <search-string> "*)(cn=" <search- 
+ string> "*)(sn=" <search-string> "*)(givenName=" <search-string> "*) 
+ (displayName=" <search-string> "*)))" search-string =  <a user specified search string> 
+
+3.1.5.1.5 Virtual List View Search Filter 
+
+If the server indicates support for virtual lists by returning the OID value specified in section 3.1.3.1, 
+clients can generate a Virtual List View, as specified in [LDAPEX-SVB]. Clients SHOULD use the 
+following search filter. 
+
+ VLVFilter = "(&(mail=*)(CN=*))" 
+
+3.1.6 Timer Events 
+
+None. 
+
+3.1.7 Other Local Events 
+
+None. 
+
+3.2 Server Details 
+
+3.2.1 Abstract Data Model 
+
+None. 
+
+3.2.2 Timers 
+
+None. 
+
+3.2.3 Initialization 
+
+This extension conforms to the initialization defined by LDAP, as specified in [RFC4511]. 
+
+17 / 25 
+
+[MS-OXLDAP] - v20250520 
+Lightweight Directory Access Protocol (LDAP) Version 3 Extensions 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+3.2.4 Higher-Layer Triggered Events 
+
+None. 
+
+3.2.5 Message Processing Events and Sequencing Rules 
+
+3.2.5.1 Handling a Query for the supportedControl Attribute 
+
+The server MUST respond to a query for the supportedControl attribute as specified in [RFC4512]. 
+For each of the controls it supports, the server MUST return the corresponding OID value from the 
+table in section 3.1.3.1. 
+
+The server SHOULD return other OID values if it provides support for more controls than the ones 
+specified in this extension. 
+
+3.2.5.2 Handling a Query for the supportedCapabilities Attribute 
+
+The server MUST respond to a query for the supportedCapabilities custom attribute as specified in 
+[MS-ADTS]. If the server supports AD-type server capabilities, as specified in this extension, it MUST 
+return the OID value for an AD-type server: "1.2.840.113556.1.4.800". 
+
+The server SHOULD return other OID values if it provides support for more capabilities than the ones 
+specified in this extension. 
+
+3.2.5.3 Handling Search Requests 
+
+3.2.5.3.1 Handling a Query for the defaultNamingContext Attribute 
+
+The server SHOULD respond to a query for the defaultNamingContext attribute as specified in 
+section 3.1.5.1.1. If the server returns a value for the defaultNamingContext attribute, the server 
+MUST return the DN of the base object. 
+
+3.2.5.3.2 Responding to Query Attributes 
+
+A server SHOULD support the attributes specified in section 2.2. The client can request more than one 
+attribute representing the same conceptual data. A server is only required to return the value for one 
+of the attributes corresponding to a piece of data requested by the client. For more details about 
+which attributes the client can request, and the order of precedence used when handling return 
+values, see section 2.2 
+
+If the server returned the OID value specified in section 3.2.5.2, indicating that it is an AD-type 
+server, it MUST support queries for the displayname and display-name attributes. 
+
+3.2.6 Timer Events 
+
+None. 
+
+3.2.7 Other Local Events 
+
+None. 
+
+18 / 25 
+
+[MS-OXLDAP] - v20250520 
+Lightweight Directory Access Protocol (LDAP) Version 3 Extensions 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+4 Protocol Examples 
+
+4.1 Simple Search Scenario 
+
+If the client is directed to search for a user named "Robin" in an AD-type server, the following 
+sequence of events occurs: 
+
+ The client sends an LDAP Bind request to the server, as described in [RFC4511]. 
+
+ BindRequest (0x00): 
+ Version:3 
+ Name:Null 
+ authentication: Authentication type = sasl 
+
+ The LDAP server receives the request and returns a Bind response to the client, as described in 
+[RFC4511]. 
+
+ BindResponse (0x01): 
+ Status: Success 
+ MatchedDN: Null 
+ ErrorMessage: Null 
+
+ The client sends a search request to the server for the defaultNamingContext attribute, as 
+described in section 3.1.5.1.1. 
+
+ 
+ SearchRequest (0x03): 
+ BaseObject: Null 
+ Scope: baseObject 
+ Alias: neverDerefAliases 
+ SizeLimit: 0 (no limit) 
+ TimeLimit: 0 (no limit) 
+ TypesOnly: False 
+ Filter: (objectClass=*) 
+ Attributes: (objectClass)(defaultNamingContext) 
+
+ The LDAP server returns the search base to the client in the defaultNamingContext attribute. 
+
+ 
+ SearchResultEntry (0x04): 
+ ObjectNames: Null 
+ Attributes Returned: 
+ defaultNamingContext: (DC=company,DC=corp,DC=contoso,DC=com) 
+ 
+ SearchResultDone(0x05): 
+ Status: Success 
+ MatchedDN: NULL 
+ ErrorMessage: NULL 
+
+ The client uses the search base and the simple query described in section 3.1.5.1.2 to send 
+another search request to the server. 
+
+ 
+ Search Request (0x03): 
+ BaseObject: (DC=company,DC=corp,DC=contoso,DC=com) 
+ Scope: WholeSubtree 
+ Alias: derefAlways 
+
+19 / 25 
+
+[MS-OXLDAP] - v20250520 
+Lightweight Directory Access Protocol (LDAP) Version 3 Extensions 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+ SizeLimit: 100 entries 
+ TimeLimit: 60 seconds 
+ TypesOnly: False 
+ Filter:(&(|(mail=robin*)(cn=robin*)(sn=robin*)(givenName=robin*) 
+ (displayName=robin*)))Attributes: (cn)(commonName)(mail)(roleOccupant) 
+ (display-name)(displayname)(sn)(surname)(c)(organizationName)(o)(givenName) 
+ (legacyExchangeDN)(objectClass)(uid)(mailNickname)(title)(company) 
+ (physicalDeliveryOfficeName)(telephoneNumber) 
+ 
+
+ The LDAP server returns results that match the query. The trace below represents one result that 
+matched the query. 
+
+ 
+ SearchResultsEntry (0x04): 
+ ObjectName: CN=Robin,OU=UsersOU,DC=company,DC=corp,DC=contoso,DC=com 
+ Attributes: 
+ objectClass: ( top ) ( person ) (organizationalPerson ) ( user ) 
+ cn: Robin Wood 
+ sn: Wood 
+ title: Dr. 
+ physicalDeliveryOfficeName: 36/2495 
+ telephoneNumber: 1 (425) 555-0534 
+ givenName: Robin 
+ displayName: Robin Wood 
+ company: contoso 
+ mailNickname: robin 
+ legacyExchangeDN: /o=contoso/ou=First Admin Group/cn=Recipents/cn=robin 
+ mail: robin@contoso.com 
+ 
+ SearchResultDone(0x05): 
+ Status: Success 
+ MatchedDN: NULL 
+ ErrorMessage: NULL 
+
+ The client sends an LDAP Unbind request to the server, as described in [RFC4511]. 
+
+ 
+ UnbindRequest(0x02) 
+
+ The client uses the attributes returned by the server to display the search results to the user. 
+
+20 / 25 
+
+[MS-OXLDAP] - v20250520 
+Lightweight Directory Access Protocol (LDAP) Version 3 Extensions 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+5 Security 
+
+5.1 Security Considerations for Implementers 
+
+There are no security considerations specific to this extension beyond those that exist in LDAP, as 
+specified in [RFC4511]. 
+
+5.2 Index of Security Parameters 
+
+None. 
+
+21 / 25 
+
+[MS-OXLDAP] - v20250520 
+Lightweight Directory Access Protocol (LDAP) Version 3 Extensions 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+6 Appendix A: Product Behavior 
+
+The information in this specification is applicable to the following Microsoft products or supplemental 
+software. References to product versions include updates to those products. 
+
+ Microsoft Exchange Server 2003 
+
+ Microsoft Exchange Server 2007 
+
+ Microsoft Exchange Server 2010 
+
+ Microsoft Exchange Server 2013 
+
+ Microsoft Exchange Server 2016  
+
+ Microsoft Exchange Server 2019  
+
+ Microsoft Office Outlook 2003 
+
+ Microsoft Office Outlook 2007 
+
+ Microsoft Outlook 2010 
+
+ Microsoft Outlook 2013 
+
+ Microsoft Outlook 2016 
+
+ Microsoft Outlook 2019  
+
+ Microsoft Outlook 2021 
+
+ Microsoft Outlook LTSC 2024 
+
+ Microsoft Exchange Server Subscription Edition 
+
+Exceptions, if any, are noted in this section. If an update version, service pack or Knowledge Base 
+(KB) number appears with a product name, the behavior changed in that update. The new behavior 
+also applies to subsequent updates unless otherwise specified. If a product edition appears with the 
+product version, behavior is different in that product edition. 
+
+Unless otherwise specified, any statement of optional behavior in this specification that is prescribed 
+using the terms "SHOULD" or "SHOULD NOT" implies product behavior in accordance with the 
+SHOULD or SHOULD NOT prescription. Unless otherwise specified, the term "MAY" implies that the 
+product does not follow the prescription. 
+
+<1> Section 2.2: Office Outlook 2003, Office Outlook 2007, Outlook 2010, Outlook 2013, Outlook 
+2016, and Outlook 2019 query for the o attribute, but do not use the value received from the server. 
+
+<2> Section 2.2: Office Outlook 2003, Office Outlook 2007, Outlook 2010, Outlook 2013, Outlook 
+2016, and Outlook 2019 query for the user-cert attribute, but do not use the value received from the 
+server. 
+
+<3> Section 2.2.1.1: Office Outlook 2003, Office Outlook 2007, and Outlook 2010 consider a display-
+name attribute to be not user-readable if it is exactly the same as one of the E-Mail Address 
+attributes. Office Outlook 2003, Office Outlook 2007, and Outlook 2010 construct the display-name 
+attribute in the following manner. 
+
+ displayName ::= <common name> / <givenname> " "<surname> / <surname> / <company name> / 
+<email address> ;  
+ NOTE: Priority is given to non-empty combinations listed first. 
+ 
+
+22 / 25 
+
+[MS-OXLDAP] - v20250520 
+Lightweight Directory Access Protocol (LDAP) Version 3 Extensions 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+ common name ::= ; Common Name LDAP attribute 
+ givenname ::= ; First Name LDAP attribute 
+ surname::= ; Last name LDAP attribute 
+ company name ::= ; Organization Name LDAP attribute 
+ email address ::= ; E-Mail Address LDAP attribute 
+
+<4> Section 2.2.3.2: Office Outlook 2003, Office Outlook 2007, and Outlook 2010 add a proxy 
+address based on the value of the legacyExchangeDN attribute to the proxyAddresses and 
+otherMailbox attributes if it is not present in those attributes on the server. 
+
+<5> Section 3.1.5.1.1:  If the user-provided string is an empty string, Office Outlook 2003 queries 
+the server for the defaultNamingContext attribute and uses the returned value for the search base. 
+
+<6> Section 3.1.5.1.2: Office Outlook 2003 does not implement basic search. 
+
+<7> Section 3.1.5.1.3: Office Outlook 2003 does not support E-Mail (LDAP attribute mail) in 
+advanced searches. 
+
+23 / 25 
+
+[MS-OXLDAP] - v20250520 
+Lightweight Directory Access Protocol (LDAP) Version 3 Extensions 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+7 Change Tracking 
+
+This section identifies changes that were made to this document since the last release. Changes are 
+classified as Major, Minor, or None.  
+
+The revision class Major means that the technical content in the document was significantly revised. 
+Major changes affect protocol interoperability or implementation. Examples of major changes are: 
+
+ A document revision that incorporates changes to interoperability requirements. 
+ A document revision that captures changes to protocol functionality. 
+
+The revision class Minor means that the meaning of the technical content was clarified. Minor changes 
+do not affect protocol interoperability or implementation. Examples of minor changes are updates to 
+clarify ambiguity at the sentence, paragraph, or table level. 
+
+The revision class None means that no new technical changes were introduced. Minor editorial and 
+formatting changes may have been made, but the relevant technical content is identical to the last 
+released version. 
+
+The changes made to this document are listed in the following table. For more information, please 
+contact dochelp@microsoft.com. 
+
+Section Description Revision class 
+
+6 Appendix A: Product Behavior Updated list of supported products. Major 
+
+24 / 25 
+
+[MS-OXLDAP] - v20250520 
+Lightweight Directory Access Protocol (LDAP) Version 3 Extensions 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+8 Index
+A N 
+  
+Abstract data model Normative references 7 
+   client 14  
+   server 17 O 
+Applicability 8  
+ Other local events 
+C    client 17 
+    server 18 
+Capability negotiation 8 Overview (synopsis) 8 
+Change tracking 24  
+Client P 
+   abstract data model 14  
+   higher-layer triggered events 14 Parameters - security index 21 
+   initialization 14 Preconditions 8 
+   other local events 17 Prerequisites 8 
+   timer events 17 Product behavior 22 
+   timers 14  
+ R 
+D  
+ References 7 
+Data model - abstract    informative 8 
+   client 14    normative 7 
+   server 17 Relationship to other protocols 8 
+  
+E S 
+  
+Examples Security 
+   simple search scenario 19    implementer considerations 21 
+    parameter index 21 
+F Server 
+    abstract data model 17 
+Fields - vendor-extensible 8    higher-layer triggered events 18 
+    initialization 17 
+G    other local events 18 
+    timer events 18 
+Glossary 6    timers 17 
+ Simple search scenario example 19 
+
+H Standards assignments 8 
+
+ Syntax 9 
+
+Higher-layer triggered events  
+
+   client 14 T 
+   server 18  
+ Timer events 
+
+I    client 17 
+
+    server 18 
+
+Implementer - security considerations 21 Timers 
+
+Index of security parameters 21    client 14 
+
+Informative references 8    server 17 
+
+Initialization Tracking changes 24 
+
+   client 14 Transport 9 
+
+   server 17 Triggered events - higher-layer 
+
+Introduction 6    client 14 
+
+    server 18 
+
+M  
+
+ V 
+Messages  
+
+   syntax 9 Vendor-extensible fields 8 
+
+   transport 9 Versioning 8 
+
+ 
+ 
+
+25 / 25 
+
+[MS-OXLDAP] - v20250520 
+Lightweight Directory Access Protocol (LDAP) Version 3 Extensions 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025

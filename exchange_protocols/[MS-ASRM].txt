@@ -1,0 +1,3085 @@
+﻿[MS-ASRM]:  
+
+Exchange ActiveSync: Rights Management Protocol 
+
+ 
+
+Intellectual Property Rights Notice for Open Specifications Documentation 
+
+ Technical Documentation. Microsoft publishes Open Specifications documentation (“this 
+documentation”) for protocols, file formats, data portability, computer languages, and standards 
+support. Additionally, overview documents cover inter-protocol relationships and interactions.  
+
+ Copyrights. This documentation is covered by Microsoft copyrights. Regardless of any other 
+terms that are contained in the terms of use for the Microsoft website that hosts this 
+documentation, you can make copies of it in order to develop implementations of the technologies 
+that are described in this documentation and can distribute portions of it in your implementations 
+that use these technologies or in your documentation as necessary to properly document the 
+implementation. You can also distribute in your implementation, with or without modification, any 
+schemas, IDLs, or code samples that are included in the documentation. This permission also 
+applies to any documents that are referenced in the Open Specifications documentation.  
+
+ No Trade Secrets. Microsoft does not claim any trade secret rights in this documentation.  
+ Patents. Microsoft has patents that might cover your implementations of the technologies 
+
+described in the Open Specifications documentation. Neither this notice nor Microsoft's delivery of 
+this documentation grants any licenses under those patents or any other Microsoft patents. 
+However, a given Open Specifications document might be covered by the Microsoft Open 
+Specifications Promise or the Microsoft Community Promise. If you would prefer a written license, 
+or if the technologies described in this documentation are not covered by the Open Specifications 
+Promise or Community Promise, as applicable, patent licenses are available by contacting 
+iplg@microsoft.com.  
+
+ License Programs. To see all of the protocols in scope under a specific license program and the 
+associated patents, visit the Patent Map.  
+
+ Trademarks. The names of companies and products contained in this documentation might be 
+covered by trademarks or similar intellectual property rights. This notice does not grant any 
+licenses under those rights. For a list of Microsoft trademarks, visit 
+www.microsoft.com/trademarks.  
+
+ Fictitious Names. The example companies, organizations, products, domain names, email 
+addresses, logos, people, places, and events that are depicted in this documentation are fictitious. 
+No association with any real company, organization, product, domain name, email address, logo, 
+person, place, or event is intended or should be inferred. 
+
+Reservation of Rights. All other rights are reserved, and this notice does not grant any rights other 
+than as specifically described above, whether by implication, estoppel, or otherwise.  
+
+Tools. The Open Specifications documentation does not require the use of Microsoft programming 
+tools or programming environments in order for you to develop an implementation. If you have access 
+to Microsoft programming tools and environments, you are free to take advantage of them. Certain 
+Open Specifications documents are intended for use in conjunction with publicly available standards 
+specifications and network programming art and, as such, assume that the reader either is familiar 
+with the aforementioned material or has immediate access to it. 
+
+Support. For questions and support, please contact dochelp@microsoft.com.  
+
+1 / 49 
+
+[MS-ASRM] - v20250520 
+Exchange ActiveSync: Rights Management Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Revision Summary 
+
+Revision Revision 
+Date History Class Comments 
+
+8/4/2010 0.1 New Released new document. 
+
+11/3/2010 0.2 Minor Clarified the meaning of the technical content. 
+
+3/18/2011 0.3 Minor Clarified the meaning of the technical content. 
+
+8/5/2011 1.0 Major Significantly changed the technical content. 
+
+10/7/2011 1.1 Minor Clarified the meaning of the technical content. 
+
+1/20/2012 2.0 Major Significantly changed the technical content. 
+
+4/27/2012 2.1 Minor Clarified the meaning of the technical content. 
+
+7/16/2012 2.2 Minor Clarified the meaning of the technical content. 
+
+10/8/2012 2.3 Minor Clarified the meaning of the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+2/11/2013 2.3 None 
+
+technical content. 
+
+7/26/2013 3.0 Major Significantly changed the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+11/18/2013 3.0 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+2/10/2014 3.0 None 
+
+technical content. 
+
+4/30/2014 4.0 Major Significantly changed the technical content. 
+
+7/31/2014 5.0 Major Significantly changed the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+10/30/2014 5.0 None 
+
+technical content. 
+
+5/26/2015 6.0 Major Significantly changed the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+6/30/2015 6.0 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+9/14/2015 6.0 None 
+
+technical content. 
+
+6/9/2016 7.0 Major Significantly changed the technical content. 
+
+2/28/2017 8.0 Major Significantly changed the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+4/18/2017 8.0 None 
+
+technical content. 
+
+9/19/2017 8.1 Minor Clarified the meaning of the technical content. 
+
+7/24/2018 9.0 Major Significantly changed the technical content. 
+
+10/1/2018 10.0 Major Significantly changed the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+2/15/2022 10.0 None 
+
+technical content. 
+
+2 / 49 
+
+[MS-ASRM] - v20250520 
+Exchange ActiveSync: Rights Management Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Revision Revision 
+Date History Class Comments 
+
+5/20/2025 11.0 Major Significantly changed the technical content. 
+
+3 / 49 
+
+[MS-ASRM] - v20250520 
+Exchange ActiveSync: Rights Management Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Table of Contents 
+1 Introduction ............................................................................................................ 6 
+
+1.1 Glossary ........................................................................................................... 6 
+1.2 References ........................................................................................................ 7 
+
+1.2.1 Normative References ................................................................................... 7 
+1.2.2 Informative References ................................................................................. 7 
+
+1.3 Overview .......................................................................................................... 7 
+1.4 Relationship to Other Protocols ............................................................................ 8 
+1.5 Prerequisites/Preconditions ................................................................................. 8 
+1.6 Applicability Statement ....................................................................................... 9 
+1.7 Versioning and Capability Negotiation ................................................................... 9 
+1.8 Vendor-Extensible Fields ..................................................................................... 9 
+1.9 Standards Assignments ....................................................................................... 9 
+
+2 Messages ............................................................................................................... 10 
+2.1 Transport ........................................................................................................ 10 
+2.2 Message Syntax ............................................................................................... 10 
+
+2.2.1 Namespaces .............................................................................................. 10 
+2.2.2 Elements ................................................................................................... 10 
+
+2.2.2.1 ContentExpiryDate ................................................................................ 10 
+2.2.2.2 ContentOwner ...................................................................................... 11 
+2.2.2.3 EditAllowed .......................................................................................... 12 
+2.2.2.4 ExportAllowed ...................................................................................... 12 
+2.2.2.5 ExtractAllowed ...................................................................................... 13 
+2.2.2.6 ForwardAllowed .................................................................................... 14 
+2.2.2.7 ModifyRecipientsAllowed ........................................................................ 15 
+2.2.2.8 Owner ................................................................................................. 15 
+2.2.2.9 PrintAllowed ......................................................................................... 16 
+2.2.2.10 ProgrammaticAccessAllowed ................................................................... 16 
+2.2.2.11 RemoveRightsManagementProtection ...................................................... 17 
+2.2.2.12 ReplyAllAllowed .................................................................................... 18 
+2.2.2.13 ReplyAllowed ........................................................................................ 18 
+2.2.2.14 RightsManagementLicense ..................................................................... 19 
+2.2.2.15 RightsManagementSupport .................................................................... 20 
+2.2.2.16 RightsManagementTemplate ................................................................... 21 
+2.2.2.17 RightsManagementTemplates ................................................................. 21 
+2.2.2.18 TemplateDescription .............................................................................. 22 
+
+2.2.2.18.1 TemplateDescription (RightsManagementLicense) ................................ 22 
+2.2.2.18.2 TemplateDescription (RightsManagementTemplate) ............................. 23 
+
+2.2.2.19 TemplateID .......................................................................................... 23 
+2.2.2.19.1 TemplateID (RightsManagementLicense) ............................................ 24 
+2.2.2.19.2 TemplateID (RightsManagementTemplate) ......................................... 24 
+2.2.2.19.3 TemplateID (SendMail, SmartForward, SmartReply) ............................ 25 
+
+2.2.2.20 TemplateName ..................................................................................... 26 
+2.2.2.20.1 TemplateName (RightsManagementLicense) ....................................... 26 
+2.2.2.20.2 TemplateName (RightsManagementTemplate) .................................... 26 
+
+3 Protocol Details ..................................................................................................... 28 
+3.1 Client Details ................................................................................................... 28 
+
+3.1.1 Abstract Data Model .................................................................................... 28 
+3.1.2 Timers ...................................................................................................... 28 
+3.1.3 Initialization ............................................................................................... 28 
+3.1.4 Higher-Layer Triggered Events ..................................................................... 28 
+
+3.1.4.1 Requesting Server-Side Decompression and Decryption of Rights-Managed E-
+mail Messages ...................................................................................... 28 
+
+3.1.4.2 Getting Rights Policy Templates .............................................................. 28 
+
+4 / 49 
+
+[MS-ASRM] - v20250520 
+Exchange ActiveSync: Rights Management Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+3.1.4.3 Sending Protected E-mail ....................................................................... 29 
+3.1.5 Message Processing Events and Sequencing Rules .......................................... 29 
+3.1.6 Timer Events .............................................................................................. 29 
+3.1.7 Other Local Events ...................................................................................... 29 
+
+3.2 Server Details .................................................................................................. 29 
+3.2.1 Abstract Data Model .................................................................................... 29 
+3.2.2 Timers ...................................................................................................... 29 
+3.2.3 Initialization ............................................................................................... 29 
+3.2.4 Higher-Layer Triggered Events ..................................................................... 29 
+
+3.2.4.1 Enforcing Rights Policy Template Settings ................................................ 29 
+3.2.4.2 Sending Rights Policy Templates ............................................................. 30 
+3.2.4.3 Sending Rights-Managed E-Mail Messages to the Client ............................. 30 
+
+3.2.5 Message Processing Events and Sequencing Rules .......................................... 30 
+3.2.5.1 Handling SmartForward and SmartReply Requests .................................... 30 
+
+3.2.6 Timer Events .............................................................................................. 32 
+3.2.7 Other Local Events ...................................................................................... 33 
+
+4 Protocol Examples ................................................................................................. 34 
+4.1 Retrieve Rights Policy Templates by Using the Settings Command .......................... 34 
+4.2 Request That the Server Decompress and Decrypt Rights-Managed E-mail Messages 35 
+4.3 Request That the Server Not Decompress and Decrypt Rights-Managed E-mail 
+
+Messages ........................................................................................................ 36 
+4.4 Reply to a Rights-Managed E-Mail Message by Using the SmartReply Command ...... 37 
+4.5 Search for a Rights-Managed E-Mail Message by Using the Search Command .......... 38 
+4.6 Fetch a Rights-Managed E-Mail Message by Using the ItemOperations Command ..... 39 
+4.7 Remove IRM Protection by Using the ItemOperations Command ............................ 41 
+
+5 Security ................................................................................................................. 44 
+5.1 Security Considerations for Implementers ........................................................... 44 
+5.2 Index of Security Parameters ............................................................................ 44 
+
+6 Appendix A: Full XML Schema ................................................................................ 45 
+
+7 Appendix B: Product Behavior ............................................................................... 46 
+
+8 Change Tracking .................................................................................................... 47 
+
+9 Index ..................................................................................................................... 48 
+
+ 
+
+5 / 49 
+
+[MS-ASRM] - v20250520 
+Exchange ActiveSync: Rights Management Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+1 Introduction 
+
+The Exchange ActiveSync: Rights Management Protocol is used by a client, typically a mobile device, 
+to create and consume rights-managed e-mail messages. A rights-managed e-mail message is 
+used to protect e-mail content from inappropriate access, use, and distribution. 
+
+Sections 1.5, 1.8, 1.9, 2, and 3 of this specification are normative. All other sections and examples in 
+this specification are informative. 
+
+1.1 Glossary 
+
+This document uses the following terms: 
+
+Hypertext Transfer Protocol (HTTP): An application-level protocol for distributed, collaborative, 
+hypermedia information systems (text, graphic images, sound, video, and other multimedia 
+files) on the World Wide Web. 
+
+Information Rights Management (IRM): A technology that provides persistent protection to 
+digital data by using encryption, certificates, and authentication. Authorized recipients or users 
+acquire a license to gain access to the protected files according to the rights or business rules 
+that are set by the content owner. 
+
+recipient: An entity that can receive email messages.   
+
+rights policy template: An XrML 1.2 document that contains a predefined usage policy that is 
+used to create the PL when content is protected. Conceptually, a rights policy template (or 
+"template") is a blueprint for a PL, identifying authorized users and the actions they are 
+authorized to take with the content (along with any conditions on that usage). Unlike a PL, a 
+template does not contain a content key or information about the content owner. The content 
+key and information about the content owner are required to be added when the PL for a given 
+piece is created from the template. End users can use a template when protecting a document 
+instead of defining the specifics of the usage policy themselves. When a document is published 
+using a template, the template is used to generate the PL. 
+
+rights-managed email message: An email message that specifies permissions that are designed 
+to protect its content from inappropriate access, use, and distribution. 
+
+Secure Sockets Layer (SSL): A security protocol that supports confidentiality and integrity of 
+messages in client and server applications that communicate over open networks. SSL supports 
+server and, optionally, client authentication using X.509 certificates [X509] and [RFC5280]. SSL 
+is superseded by Transport Layer Security (TLS). TLS version 1.0 is based on SSL version 3.0 
+[SSL3]. 
+
+Wireless Application Protocol (WAP) Binary XML (WBXML): A compact binary representation 
+of XML that is designed to reduce the transmission size of XML documents over narrowband 
+communication channels. 
+
+XML: The Extensible Markup Language, as described in [XML1.0]. 
+
+XML namespace: A collection of names that is used to identify elements, types, and attributes in 
+XML documents identified in a URI reference [RFC3986]. A combination of XML namespace and 
+local name allows XML documents to use elements, types, and attributes that have the same 
+names but come from different sources. For more information, see [XMLNS-2ED]. 
+
+XML schema: A description of a type of XML document that is typically expressed in terms of 
+constraints on the structure and content of documents of that type, in addition to the basic 
+syntax constraints that are imposed by XML itself. An XML schema provides a view of a 
+document type at a relatively high level of abstraction. 
+
+6 / 49 
+
+[MS-ASRM] - v20250520 
+Exchange ActiveSync: Rights Management Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+MAY, SHOULD, MUST, SHOULD NOT, MUST NOT: These terms (in all caps) are used as defined 
+in [RFC2119]. All statements of optional behavior use either MAY, SHOULD, or SHOULD NOT. 
+
+1.2 References 
+
+Links to a document in the Microsoft Open Specifications library point to the correct section in the 
+most recently published version of the referenced document. However, because individual documents 
+in the library are not updated at the same time, the section numbers in the documents may not 
+match. You can confirm the correct section numbering by checking the Errata.   
+
+1.2.1 Normative References 
+
+We conduct frequent surveys of the normative references to assure their continued availability. If you 
+have any issue with finding a normative reference, please contact dochelp@microsoft.com. We will 
+assist you in finding the relevant information.  
+
+[MS-ASAIRS] Microsoft Corporation, "Exchange ActiveSync: AirSyncBase Namespace Protocol". 
+
+[MS-ASCMD] Microsoft Corporation, "Exchange ActiveSync: Command Reference Protocol". 
+
+[MS-ASDTYPE] Microsoft Corporation, "Exchange ActiveSync: Data Types". 
+
+[MS-ASEMAIL] Microsoft Corporation, "Exchange ActiveSync: Email Class Protocol". 
+
+[MS-ASHTTP] Microsoft Corporation, "Exchange ActiveSync: HTTP Protocol". 
+
+[MS-ASWBXML] Microsoft Corporation, "Exchange ActiveSync: WAP Binary XML (WBXML) Algorithm". 
+
+[MS-OXORMMS] Microsoft Corporation, "Rights-Managed Email Object Protocol". 
+
+[RFC2119] Bradner, S., "Key words for use in RFCs to Indicate Requirement Levels", BCP 14, RFC 
+2119, March 1997, https://www.rfc-editor.org/info/rfc2119 
+
+[XMLNS] Bray, T., Hollander, D., Layman, A., et al., Eds., "Namespaces in XML 1.0 (Third Edition)", 
+W3C Recommendation, December 2009, https://www.w3.org/TR/2009/REC-xml-names-20091208/ 
+
+[XMLSCHEMA1] Thompson, H., Beech, D., Maloney, M., and Mendelsohn, N., Eds., "XML Schema Part 
+1: Structures", W3C Recommendation, May 2001, https://www.w3.org/TR/2001/REC-xmlschema-1-
+20010502/ 
+
+1.2.2 Informative References 
+
+[MS-OXPROTO] Microsoft Corporation, "Exchange Server Protocols System Overview". 
+
+[MSFT-ARPTC] Microsoft Corporation, "AD RMS Policy Template Considerations", 
+http://technet.microsoft.com/en-us/library/dd996658(WS.10).aspx 
+
+[MSFT-IRMEAS] Microsoft Corporation, "Understanding Information Rights Management in Exchange 
+ActiveSync", http://technet.microsoft.com/en-us/library/ff657743(EXCHG.141).aspx 
+
+1.3 Overview 
+
+This protocol defines a set of XML elements used by a client to create and consume rights-managed 
+e-mail messages. A rights-managed e-mail message is used to protect e-mail content from 
+inappropriate access, use and distribution. Each rights-managed e-mail message has an associated 
+rights policy template, which controls the usage policy applied to each rights-managed e-mail 
+message. 
+
+7 / 49 
+
+[MS-ASRM] - v20250520 
+Exchange ActiveSync: Rights Management Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+A rights policy template specifies whether a user can edit, forward, reply, reply all, print, extract 
+(copy), export (remove protection), or programmatically access the content in the rights-managed e-
+mail message. When a user creates a rights-managed e-mail message, the user chooses and applies 
+the rights policy template that has the protection settings they require. For example, a manager can 
+send an employee confidential information using a template that prohibits forwarding or printing the 
+e-mail, but does allow the user to respond to the e-mail. Or, a public relations manager can send 
+confidential company information to users inside their organization, and select a template that only 
+allows the protected content to be viewed, replied to, and forwarded within the organization, but not 
+viewed outside the organization. 
+
+The creation of rights policy templates is external to this protocol. For more information about 
+deployment and distribution of rights policy templates, see [MSFT-ARPTC]. 
+
+The XML elements specified in this protocol enable the client to: 
+
+ Retrieve the rights policy templates available to the client for composing rights-managed e-mail 
+message. 
+
+ Compose new e-mail by using rights policy templates. 
+
+ Retrieve rights-managed e-mail messages. 
+
+ Request that the server decompress and decrypt rights-managed e-mail messages before sending 
+them to the client. For details about decompress and decrypt rights-managed email messages, 
+refer to [MS-OXORMMS] section 3.1.4.2.1. 
+
+ Perform actions on a rights-managed e-mail message in accordance with the rights policy 
+template applied to the e-mail message. 
+
+It is the responsibility of the client to enforce the rights specified by the rights policy template to the 
+rights-managed e-mail message. 
+
+1.4 Relationship to Other Protocols 
+
+This protocol consists of a series of XML elements that are embedded inside an XML-formatted 
+command request or a command response. Command requests and responses are described in [MS-
+ASCMD]. Command requests and responses are transmitted using Wireless Application Protocol 
+(WAP) Binary XML (WBXML), as described in [MS-ASWBXML]. 
+
+The protected content contained in rights-managed e-mail messages are synchronized between 
+the client and the server by using the E-mail class elements defined in [MS-ASEMAIL]. 
+
+This protocol defines elements according to the data type definitions that are described in [MS-
+ASDTYPE]. 
+
+For conceptual background information and overviews of the relationships and interactions between 
+this and other protocols, see [MS-OXPROTO]. 
+
+1.5 Prerequisites/Preconditions 
+
+This protocol requires a secure connection between the client and server, as described in section 5.1. 
+
+This protocol assumes that the client has been approved to consume and compose IRM content by 
+the server. For more information about client-side and server-side IRM requirements, see [MSFT-
+IRMEAS]. 
+
+8 / 49 
+
+[MS-ASRM] - v20250520 
+Exchange ActiveSync: Rights Management Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+1.6 Applicability Statement 
+
+This protocol is designed for the creation and consumption of rights-managed e-mail messages on 
+a client, which is typically a mobile device. 
+
+1.7 Versioning and Capability Negotiation 
+
+None. 
+
+1.8 Vendor-Extensible Fields 
+
+None. 
+
+1.9 Standards Assignments 
+
+None. 
+
+9 / 49 
+
+[MS-ASRM] - v20250520 
+Exchange ActiveSync: Rights Management Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+2 Messages 
+
+2.1 Transport 
+
+This protocol consists of a series of XML elements that are embedded inside a command request or a 
+command response. The XML markup that constitutes the request body or the response body is 
+transmitted between client and server by using Wireless Application Protocol (WAP) Binary XML 
+(WBXML), as specified in [MS-ASWBXML]. 
+
+2.2 Message Syntax 
+
+The XML schema for the RightsManagement namespace is described in section 6. 
+
+For more information about how the RightsManagement namespace elements are used in command 
+requests and responses, see sections 3.1.4 and 3.2.4. 
+
+2.2.1 Namespaces 
+
+This specification defines and references various XML namespaces using the mechanisms specified in 
+[XMLNS]. Although this specification associates a specific XML namespace prefix for each XML 
+namespace that is used, the choice of any particular XML namespace prefix is implementation-specific 
+and not significant for interoperability. 
+
+Prefix Namespace URI Reference 
+
+None RightsManagement  
+
+airsync AirSync [MS-ASCMD] section 2.2.1.21  
+
+airsycnbase AirSyncBase [MS-ASAIRS] 
+
+composemail ComposeMail [MS-ASCMD] sections 2.2.1.17, 2.2.1.19, and 2.2.1.20 
+
+email Email [MS-ASEMAIL] 
+
+email2 Email2 [MS-ASEMAIL] 
+
+itemoperations ItemOperations [MS-ASCMD] section 2.2.1.10  
+
+search Search [MS-ASCMD] section 2.2.1.16  
+
+settings Settings [MS-ASCMD] section 2.2.1.18  
+
+xs http://www.w3.org/2001/XMLSchema [XMLSCHEMA1] 
+
+ 
+
+2.2.2 Elements 
+
+2.2.2.1 ContentExpiryDate 
+
+The ContentExpiryDate element is a required child element of the RightsManagementLicense 
+element (section 2.2.2.14). It specifies the expiration date for the license. The ContentExpiryDate 
+element is set to "9999-12-30T23:59:59.999Z" if the rights management license has no expiration 
+date set. The client MUST purge the body and attachments of the e-mail message when the 
+ContentExpiryDate has passed. The client can then use the ItemOperations command ([MS-
+
+10 / 49 
+
+[MS-ASRM] - v20250520 
+Exchange ActiveSync: Rights Management Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+ASCMD] section 2.2.1.10) to fetch the content again from the server. If the rights management 
+license allows it, the content can be provided once more with a new ContentExpiryDate. 
+
+The value of this element is a dateTime ([MS-ASDTYPE] section 2.3). 
+
+The ContentExpiryDate element has no child elements. 
+
+Protocol Versions 
+
+The following table specifies the protocol versions that support this element. The client indicates the 
+protocol version being used by setting either the MS-ASProtocolVersion header, as specified in [MS-
+ASHTTP] section 2.2.1.1.2.6, or the Protocol version field, as specified in [MS-ASHTTP] section 
+2.2.1.1.1.1, in the request. 
+
+Protocol version Element support 
+
+2.5  
+
+12.0  
+
+12.1  
+
+14.0  
+
+14.1 Yes 
+
+16.0 Yes 
+
+16.1 Yes 
+
+ 
+
+2.2.2.2 ContentOwner 
+
+The ContentOwner element is a required child element of the RightsManagementLicense element 
+(section 2.2.2.14). It specifies the e-mail address of the content owner. The Owner element is set to 
+TRUE for the user specified by the ContentOwner element. 
+
+The value of this element is a string ([MS-ASDTYPE] section 2.7). The value MUST have a minimum 
+of one character. 
+
+The ContentOwner element has no child elements. 
+
+The maximum length of the ContentOwner value is 320 characters. 
+
+Protocol Versions 
+
+The following table specifies the protocol versions that support this element. The client indicates the 
+protocol version being used by setting either the MS-ASProtocolVersion header, as specified in [MS-
+ASHTTP] section 2.2.1.1.2.6, or the Protocol version field, as specified in [MS-ASHTTP] section 
+2.2.1.1.1.1, in the request. 
+
+Protocol version Element support 
+
+2.5  
+
+12.0  
+
+12.1  
+
+14.0  
+
+11 / 49 
+
+[MS-ASRM] - v20250520 
+Exchange ActiveSync: Rights Management Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Protocol version Element support 
+
+14.1 Yes 
+
+16.0 Yes 
+
+16.1 Yes 
+
+ 
+
+2.2.2.3 EditAllowed 
+
+The EditAllowed element is a required child element of the RightsManagementLicense element 
+(section 2.2.2.14). It specifies whether the content of the original email can be modified by the user 
+when the user forwards, replies, or replies all to the email message. 
+
+The value of this element is a boolean ([MS-ASDTYPE] section 2.1). If the value is TRUE (1), the e-
+mail can be modified by the user; if the value is FALSE (0), the email cannot be modified by the user. 
+The value of this element MUST be set to TRUE (1) if the ExportAllowed element is set to TRUE (1). 
+
+A value of FALSE requires that the client MUST exclude the original rights-managed email 
+message from the SmartForward ([MS-ASCMD] section 2.2.1.19) or SmartReply ([MS-ASCMD] 
+section 2.2.1.20) request. Consequently, inline replies are not allowed if the EditAllowed element is 
+set to FALSE. When EditAllowed is set to FALSE and composemail:ReplaceMime ([MS-ASCMD] 
+section 2.2.3.148) is not present in a SmartForward or SmartReply request, the server will add the 
+original rights-managed email message as an attachment to the new message. Conversely, if 
+composemail:ReplaceMime is present, the server will not attach the original rights-managed email 
+message as an attachment. 
+
+The EditAllowed element has no child elements. 
+
+Protocol Versions 
+
+The following table specifies the protocol versions that support this element. The client indicates the 
+protocol version being used by setting either the MS-ASProtocolVersion header, as specified in [MS-
+ASHTTP] section 2.2.1.1.2.6, or the Protocol version field, as specified in [MS-ASHTTP] section 
+2.2.1.1.1.1, in the request. 
+
+Protocol version Element support 
+
+2.5  
+
+12.0  
+
+12.1  
+
+14.0  
+
+14.1 Yes 
+
+16.0 Yes 
+
+16.1 Yes 
+
+ 
+
+12 / 49 
+
+[MS-ASRM] - v20250520 
+Exchange ActiveSync: Rights Management Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+2.2.2.4 ExportAllowed 
+
+The ExportAllowed element is a required child element of the RightsManagementLicense element 
+(section 2.2.2.14). It specifies whether the IRM protection on the e-mail message can be removed by 
+the user. 
+
+The value of this element is a boolean ([MS-ASDTYPE] section 2.1). If the value is TRUE (1), the 
+user can remove the IRM protection of the original message’s content in the outgoing message when 
+the user forwards, replies, or replies all to the original e-mail message; if the value is FALSE (0), the 
+user cannot remove the IRM protection of the original message’s content in the outgoing message 
+when the user forwards, replies, or replies all to the original e-mail message. 
+
+If a rights-managed email message is forwarded or replied to using the SmartForward ([MS-
+ASCMD] section 2.2.1.19) or SmartReply ([MS-ASCMD] section 2.2.1.20) command, the following 
+conditions are evaluated: 
+
+ The original rights policy template has the ExportAllowed element set to TRUE 
+
+ The TemplateID (section 2.2.2.19.3) on the new message is set to the "No Restriction" template 
+(TemplateID value "00000000-0000-0000-0000-000000000000") 
+
+If both of the conditions are true, the IRM protection is removed from the outgoing message. The 
+original message retains its IRM protection. 
+
+The ExportAllowed element has no child elements. 
+
+Protocol Versions 
+
+The following table specifies the protocol versions that support this element. The client indicates the 
+protocol version being used by setting either the MS-ASProtocolVersion header, as specified in [MS-
+ASHTTP] section 2.2.1.1.2.6, or the Protocol version field, as specified in [MS-ASHTTP] section 
+2.2.1.1.1.1, in the request. 
+
+Protocol version Element support 
+
+2.5  
+
+12.0  
+
+12.1  
+
+14.0  
+
+14.1 Yes 
+
+16.0 Yes 
+
+16.1 Yes 
+
+ 
+
+2.2.2.5 ExtractAllowed 
+
+The ExtractAllowed element is a required child element of the RightsManagementLicense element 
+(section 2.2.2.14). It specifies whether the user can copy content out of the e-mail message. 
+
+The value of this element is a boolean ([MS-ASDTYPE] section 2.1). If the value is TRUE (1), the 
+content of the e-mail message can be cut, copied, or a screen capture can be taken of the content; if 
+the value is FALSE (0), the content of the e-mail message cannot be cut, copied, or a screen capture 
+cannot be taken of the content. 
+
+13 / 49 
+
+[MS-ASRM] - v20250520 
+Exchange ActiveSync: Rights Management Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+The ExtractAllowed element has no child elements. 
+
+Protocol Versions 
+
+The following table specifies the protocol versions that support this element. The client indicates the 
+protocol version being used by setting either the MS-ASProtocolVersion header, as specified in [MS-
+ASHTTP] section 2.2.1.1.2.6, or the Protocol version field, as specified in [MS-ASHTTP] section 
+2.2.1.1.1.1, in the request. 
+
+Protocol version Element support 
+
+2.5  
+
+12.0  
+
+12.1  
+
+14.0  
+
+14.1 Yes 
+
+16.0 Yes 
+
+16.1 Yes 
+
+ 
+
+2.2.2.6 ForwardAllowed 
+
+The ForwardAllowed element is a required child element of the RightsManagementLicense 
+element (section 2.2.2.14). It specifies whether the user can forward the e-mail message. 
+
+The value of this element is a boolean ([MS-ASDTYPE] section 2.1). If the value is TRUE (1), the 
+user can forward the e-mail message; if the value is FALSE (0), the user cannot forward the e-mail 
+message. 
+
+The ForwardAllowed element has no child elements. 
+
+Protocol Versions 
+
+The following table specifies the protocol versions that support this element. The client indicates the 
+protocol version being used by setting either the MS-ASProtocolVersion header, as specified in [MS-
+ASHTTP] section 2.2.1.1.2.6, or the Protocol version field, as specified in [MS-ASHTTP] section 
+2.2.1.1.1.1, in the request. 
+
+Protocol version Element support 
+
+2.5  
+
+12.0  
+
+12.1  
+
+14.0  
+
+14.1 Yes 
+
+16.0 Yes 
+
+16.1 Yes 
+
+14 / 49 
+
+[MS-ASRM] - v20250520 
+Exchange ActiveSync: Rights Management Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+ 
+
+2.2.2.7 ModifyRecipientsAllowed 
+
+The ModifyRecipientsAllowed element is a required child element of the 
+RightsManagementLicense element (section 2.2.2.14). It specifies whether the user can modify the 
+recipient list when the user forwards, or replies to the e-mail message. 
+
+This element is a boolean data type, as specified in [MS-ASDTYPE] section 2.1. If the value is TRUE 
+(1), the user can modify the recipient list; if the value is FALSE (0), the user cannot modify the 
+recipient list. The value of this element MUST be the same as that of the ForwardAllowed element in 
+the response. 
+
+The ModifyRecipientsAllowed element has no child elements. 
+
+Protocol Versions 
+
+The following table specifies the protocol versions that support this element. The client indicates the 
+protocol version being used by setting either the MS-ASProtocolVersion header, as specified in [MS-
+ASHTTP] section 2.2.1.1.2.6, or the Protocol version field, as specified in [MS-ASHTTP] section 
+2.2.1.1.1.1, in the request. 
+
+Protocol version Element support 
+
+2.5  
+
+12.0  
+
+12.1  
+
+14.0  
+
+14.1 Yes 
+
+16.0 Yes 
+
+16.1 Yes 
+
+ 
+
+2.2.2.8 Owner 
+
+The Owner element is a required child element of the RightsManagementLicense element (section 
+2.2.2.14). It specifies whether the user is the owner of the e-mail message. 
+
+The value of this element is a boolean ([MS-ASDTYPE] section 2.1). If the value is TRUE (1), the 
+user is the owner of the e-mail message; if the value is FALSE (0), the user is not the owner of the e-
+mail message. A value of TRUE indicates that the authenticated user has owner rights on this 
+message. This element is used for information presentation purposes only. The Allowed elements 
+(EditAllowed, ReplyAllowed, etc.) are used to evaluate whether a particular action is permitted or 
+restricted. 
+
+The Owner element has no child elements. 
+
+Protocol Versions 
+
+The following table specifies the protocol versions that support this element. The client indicates the 
+protocol version being used by setting either the MS-ASProtocolVersion header, as specified in [MS-
+ASHTTP] section 2.2.1.1.2.6, or the Protocol version field, as specified in [MS-ASHTTP] section 
+2.2.1.1.1.1, in the request. 
+
+15 / 49 
+
+[MS-ASRM] - v20250520 
+Exchange ActiveSync: Rights Management Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Protocol version Element support 
+
+2.5  
+
+12.0  
+
+12.1  
+
+14.0  
+
+14.1 Yes 
+
+16.0 Yes 
+
+16.1 Yes 
+
+ 
+
+2.2.2.9 PrintAllowed 
+
+The PrintAllowed element is a required child element of the RightsManagementLicense element 
+(section 2.2.2.14). It specifies whether the e-mail can be printed by the user. This element does not 
+indicate client support for printing an e-mail message; it only specifies whether the e-mail message 
+can be printed if the client supports printing. 
+
+The value of this element is a boolean ([MS-ASDTYPE] section 2.1). If the value is TRUE (1), the e-
+mail can be printed by the user; if the value is FALSE (0), the e-mail cannot be printed by the user. 
+
+The PrintAllowed element has no child elements. 
+
+Protocol Versions 
+
+The following table specifies the protocol versions that support this element. The client indicates the 
+protocol version being used by setting either the MS-ASProtocolVersion header, as specified in [MS-
+ASHTTP] section 2.2.1.1.2.6, or the Protocol version field, as specified in [MS-ASHTTP] section 
+2.2.1.1.1.1, in the request. 
+
+Protocol version Element support 
+
+2.5  
+
+12.0  
+
+12.1  
+
+14.0  
+
+14.1 Yes 
+
+16.0 Yes 
+
+16.1 Yes 
+
+ 
+
+2.2.2.10 ProgrammaticAccessAllowed 
+
+The ProgrammaticAccessAllowed element is a required child element of the 
+RightsManagementLicense element (section 2.2.2.14). It specifies whether the contents of the e-
+mail message can be accessed programmatically by third party applications. 
+
+16 / 49 
+
+[MS-ASRM] - v20250520 
+Exchange ActiveSync: Rights Management Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+The value of this element is a boolean ([MS-ASDTYPE] section 2.1). If the value is TRUE (1), third 
+party applications can access the protected content of the e-mail message programmatically; if the 
+value is FALSE (0), third party applications cannot access the protected content of the e-mail 
+message programmatically. Protected content consists of the message body and attachments. 
+
+The ProgrammaticAccessAllowed element has no child elements. 
+
+Protocol Versions 
+
+The following table specifies the protocol versions that support this element. The client indicates the 
+protocol version being used by setting either the MS-ASProtocolVersion header, as specified in [MS-
+ASHTTP] section 2.2.1.1.2.6, or the Protocol version field, as specified in [MS-ASHTTP] section 
+2.2.1.1.1.1, in the request. 
+
+Protocol version Element support 
+
+2.5  
+
+12.0  
+
+12.1  
+
+14.0  
+
+14.1 Yes 
+
+16.0 Yes 
+
+16.1 Yes 
+
+ 
+
+2.2.2.11 RemoveRightsManagementProtection 
+
+The RemoveRightsManagementProtection element is an optional child element of the Fetch 
+element ([MS-ASCMD] section 2.2.3.67.1) used in ItemOperations commands. If present, it 
+indicates that the client is removing the IRM protection from the e-mail. 
+
+The RemoveRightsManagementProtection element is an empty tag element, meaning it has no 
+value or data type. 
+
+IRM protection can only be removed from e-mail messages when the ExportAllowed element is set 
+to TRUE. 
+
+The RemoveRightsManagementProtection element has no child elements. 
+
+Protocol Versions 
+
+The following table specifies the protocol versions that support this element. The client indicates the 
+protocol version being used by setting either the MS-ASProtocolVersion header, as specified in [MS-
+ASHTTP] section 2.2.1.1.2.6, or the Protocol version field, as specified in [MS-ASHTTP] section 
+2.2.1.1.1.1, in the request. 
+
+Protocol version Element support 
+
+2.5  
+
+12.0  
+
+12.1  
+
+17 / 49 
+
+[MS-ASRM] - v20250520 
+Exchange ActiveSync: Rights Management Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Protocol version Element support 
+
+14.0  
+
+14.1 Yes 
+
+16.0 Yes 
+
+16.1 Yes 
+
+ 
+
+2.2.2.12 ReplyAllAllowed 
+
+The ReplyAllAllowed element is a required child element of the RightsManagementLicense 
+element (section 2.2.2.14). It specifies whether the user can reply to all of the recipients of the 
+original e-mail message. 
+
+The value of this element is a boolean ([MS-ASDTYPE] section 2.1). If the value is TRUE (1), the 
+user can reply to all of the recipients of the e-mail message; if the value is FALSE (0), the user cannot 
+reply to all of the recipients of the e-mail message. 
+
+The ReplyAllAllowed element has no child elements. 
+
+Protocol Versions 
+
+The following table specifies the protocol versions that support this element. The client indicates the 
+protocol version being used by setting either the MS-ASProtocolVersion header, as specified in [MS-
+ASHTTP] section 2.2.1.1.2.6, or the Protocol version field, as specified in [MS-ASHTTP] section 
+2.2.1.1.1.1, in the request. 
+
+Protocol version Element support 
+
+2.5  
+
+12.0  
+
+12.1  
+
+14.0  
+
+14.1 Yes 
+
+16.0 Yes 
+
+16.1 Yes 
+
+ 
+
+2.2.2.13 ReplyAllowed 
+
+The ReplyAllowed element is a required child element of the RightsManagementLicense element 
+(section 2.2.2.14). It specifies whether the user is allowed to reply to the e-mail message. 
+
+The value of this element is a boolean ([MS-ASDTYPE] section 2.1). If the value is TRUE (1), the 
+user can reply to the e-mail message; if the value is FALSE (0), the user cannot reply to the e-mail 
+message. 
+
+The ReplyAllowed element has no child elements. 
+
+18 / 49 
+
+[MS-ASRM] - v20250520 
+Exchange ActiveSync: Rights Management Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Protocol Versions 
+
+The following table specifies the protocol versions that support this element. The client indicates the 
+protocol version being used by setting either the MS-ASProtocolVersion header, as specified in [MS-
+ASHTTP] section 2.2.1.1.2.6, or the Protocol version field, as specified in [MS-ASHTTP] section 
+2.2.1.1.1.1, in the request. 
+
+Protocol version Element support 
+
+2.5  
+
+12.0  
+
+12.1  
+
+14.0  
+
+14.1 Yes 
+
+16.0 Yes 
+
+16.1 Yes 
+
+ 
+
+2.2.2.14 RightsManagementLicense 
+
+The RightsManagementLicense element is an optional child element of the ApplicationData 
+element ([MS-ASCMD] section 2.2.3.11). It contains the rights policy template settings for the 
+template applied to the e-mail message being synchronized. 
+
+The value of this element is a container ([MS-ASDTYPE] section 2.2). 
+
+The RightsManagementLicense element can only have the following child elements: 
+
+ ContentExpiryDate (section 2.2.2.1). This element is required. 
+
+ ContentOwner (section 2.2.2.2). This element is required. 
+
+ EditAllowed (section 2.2.2.3). This element is required. 
+
+ ExportAllowed (section 2.2.2.4). This element is required. 
+
+ ExtractAllowed (section 2.2.2.5). This element is required. 
+
+ ForwardAllowed (section 2.2.2.6). This element is required. 
+
+ ModifyRecipientsAllowed (section 2.2.2.7). This element is required. 
+
+ Owner (section 2.2.2.8). This element is required. 
+
+ PrintAllowed (section 2.2.2.9). This element is required. 
+
+ ProgrammaticAccessAllowed (section 2.2.2.10). This element is required. 
+
+ ReplyAllAllowed (section 2.2.2.12). This element is required. 
+
+ ReplyAllowed (section 2.2.2.13). This element is required. 
+
+ TemplateDescription (section 2.2.2.18.1). This element is required. 
+
+ TemplateID (section 2.2.2.19.1). This element is required. 
+
+19 / 49 
+
+[MS-ASRM] - v20250520 
+Exchange ActiveSync: Rights Management Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+ TemplateName (section 2.2.2.20.1). This element is required. 
+
+Protocol Versions 
+
+The following table specifies the protocol versions that support this element. The client indicates the 
+protocol version being used by setting either the MS-ASProtocolVersion header, as specified in [MS-
+ASHTTP] section 2.2.1.1.2.6, or the Protocol version field, as specified in [MS-ASHTTP] section 
+2.2.1.1.1.1, in the request. 
+
+Protocol version Element support 
+
+2.5  
+
+12.0  
+
+12.1  
+
+14.0  
+
+14.1 Yes 
+
+16.0 Yes 
+
+16.1 Yes 
+
+ 
+
+2.2.2.15 RightsManagementSupport 
+
+The RightsManagementSupport element is an optional child element of the sync:Options element 
+([MS-ASCMD] section 2.2.3.125.6), the itemoperations:Options element ([MS-ASCMD] section 
+2.2.3.125.3), and the search:Options element ([MS-ASCMD] section 2.2.3.125.5). It specifies how 
+the server returns rights-managed email messages to the client. 
+
+The value of this element is a boolean ([MS-ASDTYPE] section 2.1). If the value of this element is 
+TRUE (1), the server will decompress and decrypt rights-managed email messages before sending 
+them to the client, as specified in section 3.2.4.3. If the value is FALSE (0), the server will not 
+decompress or decrypt rights-managed email messages before sending them to the client. If the 
+RightsManagementSupport element is not included in a request message, a default value of FALSE 
+is assumed. 
+
+The RightsManagementSupport element has no child elements. 
+
+Protocol Versions 
+
+The following table specifies the protocol versions that support this element. The client indicates the 
+protocol version being used by setting either the MS-ASProtocolVersion header, as specified in [MS-
+ASHTTP] section 2.2.1.1.2.6, or the Protocol version field, as specified in [MS-ASHTTP] section 
+2.2.1.1.1.1, in the request. 
+
+Protocol version Element support 
+
+2.5  
+
+12.0  
+
+12.1  
+
+14.0  
+
+20 / 49 
+
+[MS-ASRM] - v20250520 
+Exchange ActiveSync: Rights Management Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Protocol version Element support 
+
+14.1 Yes 
+
+16.0 Yes 
+
+16.1 Yes 
+
+ 
+
+2.2.2.16 RightsManagementTemplate 
+
+The RightsManagementTemplate element is an optional child element of the 
+RightsManagementTemplates element (section 2.2.2.17). It contains the template identifier, 
+name, and description of a rights policy template available on the client. 
+
+The value of this element is a container ([MS-ASDTYPE] section 2.2). 
+
+The RightsManagementTemplate element can have only one of each of the following child 
+elements: 
+
+ TemplateDescription (section 2.2.2.18.2). This element is required. 
+
+ TemplateID (section 2.2.2.19.2). This element is required. 
+
+ TemplateName (section 2.2.2.20.2). This element is required. 
+
+Protocol Versions 
+
+The following table specifies the protocol versions that support this element. The client indicates the 
+protocol version being used by setting either the MS-ASProtocolVersion header, as specified in [MS-
+ASHTTP] section 2.2.1.1.2.6, or the Protocol version field, as specified in [MS-ASHTTP] section 
+2.2.1.1.1.1, in the request. 
+
+Protocol version Element support 
+
+2.5  
+
+12.0  
+
+12.1  
+
+14.0  
+
+14.1 Yes 
+
+16.0 Yes 
+
+16.1 Yes 
+
+ 
+
+2.2.2.17 RightsManagementTemplates 
+
+The RightsManagementTemplates element is an optional child element of the Get element ([MS-
+ASCMD] section 2.2.3.83) that contains the rights policy templates available to the client. 
+
+The value of this element is a container ([MS-ASDTYPE] section 2.2). 
+
+The RightsManagementTemplates element can only have the following child element 
+
+21 / 49 
+
+[MS-ASRM] - v20250520 
+Exchange ActiveSync: Rights Management Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+ RightsManagementTemplate (section 2.2.2.16). This element is optional. A maximum of 20 
+RightsManagementTemplate elements can be returned to the client. 
+
+Protocol Versions 
+
+The following table specifies the protocol versions that support this element. The client indicates the 
+protocol version being used by setting either the MS-ASProtocolVersion header, as specified in [MS-
+ASHTTP] section 2.2.1.1.2.6, or the Protocol version field, as specified in [MS-ASHTTP] section 
+2.2.1.1.1.1, in the request. 
+
+Protocol version Element support 
+
+2.5  
+
+12.0  
+
+12.1  
+
+14.0  
+
+14.1 Yes 
+
+16.0 Yes 
+
+16.1 Yes 
+
+ 
+
+2.2.2.18 TemplateDescription 
+
+The TemplateDescription element is a child element of the RightsManagementLicense element 
+(section 2.2.2.14) and the RightsManagementTemplate element (section 2.2.2.16). 
+
+The value of this element is a string ([MS-ASDTYPE] section 2.7). The value MUST have a minimum 
+of one character. 
+
+2.2.2.18.1 TemplateDescription (RightsManagementLicense) 
+
+The TemplateDescription element is a required child element of the RightsManagementLicense 
+element (section 2.2.2.14). It contains a description of the rights policy template represented by 
+the parent RightsManagementLicense element. This element is used for informational presentation 
+purposes only. 
+
+The TemplateDescription element has no child elements. 
+
+The maximum length of the TemplateDescription element is 10240 characters. 
+
+Protocol Versions 
+
+The following table specifies the protocol versions that support this element. The client indicates the 
+protocol version being used by setting either the MS-ASProtocolVersion header, as specified in [MS-
+ASHTTP] section 2.2.1.1.2.6, or the Protocol version field, as specified in [MS-ASHTTP] section 
+2.2.1.1.1.1, in the request. 
+
+Protocol version Element support 
+
+2.5  
+
+12.0  
+
+22 / 49 
+
+[MS-ASRM] - v20250520 
+Exchange ActiveSync: Rights Management Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Protocol version Element support 
+
+12.1  
+
+14.0  
+
+14.1 Yes 
+
+16.0 Yes 
+
+16.1 Yes 
+
+ 
+
+2.2.2.18.2 TemplateDescription (RightsManagementTemplate) 
+
+The TemplateDescription element is a required child element of the RightsManagementTemplate 
+element (section 2.2.2.16). It contains a description of the rights policy template represented by 
+the parent RightsManagementTemplate element. This element is used for informational 
+presentation purposes only. 
+
+The TemplateDescription element has no child elements. 
+
+The maximum length of the TemplateDescription element is 10240 characters. 
+
+Protocol Versions 
+
+The following table specifies the protocol versions that support this element. The client indicates the 
+protocol version being used by setting either the MS-ASProtocolVersion header, as specified in [MS-
+ASHTTP] section 2.2.1.1.2.6, or the Protocol version field, as specified in [MS-ASHTTP] section 
+2.2.1.1.1.1, in the request. 
+
+Protocol version Element support 
+
+2.5  
+
+12.0  
+
+12.1  
+
+14.0  
+
+14.1 Yes 
+
+16.0 Yes 
+
+16.1 Yes 
+
+ 
+
+2.2.2.19 TemplateID 
+
+The TemplateID element is a child element of the following elements: 
+
+ SendMail ([MS-ASCMD] section 2.2.3.162) 
+
+ SmartForward ([MS-ASCMD] section 2.2.3.169) 
+
+ SmartReply ([MS-ASCMD] section 2.2.3.170) 
+
+ RightsManagementLicense (section 2.2.2.14) 
+
+23 / 49 
+
+[MS-ASRM] - v20250520 
+Exchange ActiveSync: Rights Management Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+ RightsManagementTemplate (section 2.2.2.16) 
+
+The value of this element is a string ([MS-ASDTYPE] section 2.7). The value MUST have a minimum 
+of one character. 
+
+2.2.2.19.1 TemplateID (RightsManagementLicense) 
+
+The TemplateID element is a required child element of the RightsManagementLicense element 
+(section 2.2.2.14). It contains a string that identifies the rights policy template represented by the 
+parent RightsManagementLicense element. 
+
+The TemplateID element has no child elements. 
+
+Protocol Versions 
+
+The following table specifies the protocol versions that support this element. The client indicates the 
+protocol version being used by setting either the MS-ASProtocolVersion header, as specified in [MS-
+ASHTTP] section 2.2.1.1.2.6, or the Protocol version field, as specified in [MS-ASHTTP] section 
+2.2.1.1.1.1, in the request. 
+
+Protocol version Element support 
+
+2.5  
+
+12.0  
+
+12.1  
+
+14.0  
+
+14.1 Yes 
+
+16.0 Yes 
+
+16.1 Yes 
+
+ 
+
+2.2.2.19.2 TemplateID (RightsManagementTemplate) 
+
+The TemplateID element is a required child element of the RightsManagementTemplate element 
+(section 2.2.2.16). It contains a string that identifies the rights policy template represented by the 
+parent RightsManagementTempalte element. 
+
+The TemplateID element has no child elements. 
+
+Protocol Versions 
+
+The following table specifies the protocol versions that support this element. The client indicates the 
+protocol version being used by setting either the MS-ASProtocolVersion header, as specified in [MS-
+ASHTTP] section 2.2.1.1.2.6, or the Protocol version field, as specified in [MS-ASHTTP] section 
+2.2.1.1.1.1, in the request. 
+
+Protocol version Element support 
+
+2.5  
+
+12.0  
+
+12.1  
+
+24 / 49 
+
+[MS-ASRM] - v20250520 
+Exchange ActiveSync: Rights Management Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Protocol version Element support 
+
+14.0  
+
+14.1 Yes 
+
+16.0 Yes 
+
+16.1 Yes 
+
+ 
+
+2.2.2.19.3 TemplateID (SendMail, SmartForward, SmartReply) 
+
+The TemplateID element is an optional child element of the SendMail element ([MS-ASCMD] section 
+2.2.3.162), the SmartForward element ([MS-ASCMD] section 2.2.3.169), and the SmartReply 
+element ([MS-ASCMD] section 2.2.3.170). It contains a string that identifies a particular rights policy 
+template to be applied to the outgoing message. 
+
+If a rights-managed e-mail message is forwarded or replied to using the SmartForward or 
+SmartReply command, the IRM protection is removed from the outgoing message if the following 
+conditions are true: 
+
+ The original rights policy template has the ExportAllowed element set to TRUE. 
+
+ The TemplateID on the new message is set to the "No Restriction" template (TemplateID value 
+"00000000-0000-0000-0000-000000000000"). 
+
+The original message retains its IRM protection. 
+
+The TemplateID element has no child elements. 
+
+Protocol Versions 
+
+The following table specifies the protocol versions that support this element. The client indicates the 
+protocol version being used by setting either the MS-ASProtocolVersion header, as specified in [MS-
+ASHTTP] section 2.2.1.1.2.6, or the Protocol version field, as specified in [MS-ASHTTP] section 
+2.2.1.1.1.1, in the request. 
+
+Protocol version Element support 
+
+2.5  
+
+12.0  
+
+12.1  
+
+14.0  
+
+14.1 Yes 
+
+16.0 Yes 
+
+16.1 Yes 
+
+ 
+
+25 / 49 
+
+[MS-ASRM] - v20250520 
+Exchange ActiveSync: Rights Management Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+2.2.2.20 TemplateName 
+
+The TemplateName element is a child element of the RightsManagementLicense element (section 
+2.2.2.14) and the RightsManagementTemplate element (section 2.2.2.16). 
+
+The value of this element is a string ([MS-ASDTYPE] section 2.7). The value MUST have a minimum 
+of one character. 
+
+2.2.2.20.1 TemplateName (RightsManagementLicense) 
+
+The TemplateName element is a required child element of the RightsManagementLicense element 
+(section 2.2.2.14). It specifies the name of the rights policy template represented by the parent 
+RightsManagementLicense element. This element is used for informational presentation purposes 
+only. 
+
+The TemplateName element has no child elements. 
+
+The maximum length of the TemplateName element is 256 characters. 
+
+Protocol Versions 
+
+The following table specifies the protocol versions that support this element. The client indicates the 
+protocol version being used by setting either the MS-ASProtocolVersion header, as specified in [MS-
+ASHTTP] section 2.2.1.1.2.6, or the Protocol version field, as specified in [MS-ASHTTP] section 
+2.2.1.1.1.1, in the request. 
+
+Protocol version Element support 
+
+2.5  
+
+12.0  
+
+12.1  
+
+14.0  
+
+14.1 Yes 
+
+16.0 Yes 
+
+16.1 Yes 
+
+ 
+
+2.2.2.20.2 TemplateName (RightsManagementTemplate) 
+
+The TemplateName element is a required child element of the RightsManagementTemplate 
+element (section 2.2.2.16). It specifies the name of the rights policy template represented by the 
+parent RightsManagementTemplate element. This element is used for informational presentation 
+purposes only. 
+
+The TemplateName element has no child elements. 
+
+The maximum length of the TemplateName element is 256 characters. 
+
+Protocol Versions 
+
+The following table specifies the protocol versions that support this element. The client indicates the 
+protocol version being used by setting either the MS-ASProtocolVersion header, as specified in [MS-
+ASHTTP] section 2.2.1.1.2.6, or the Protocol version field, as specified in [MS-ASHTTP] section 
+2.2.1.1.1.1, in the request. 
+
+26 / 49 
+
+[MS-ASRM] - v20250520 
+Exchange ActiveSync: Rights Management Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Protocol version Element support 
+
+2.5  
+
+12.0  
+
+12.1  
+
+14.0  
+
+14.1 Yes 
+
+16.0 Yes 
+
+16.1 Yes 
+
+ 
+
+27 / 49 
+
+[MS-ASRM] - v20250520 
+Exchange ActiveSync: Rights Management Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+3 Protocol Details 
+
+3.1 Client Details 
+
+3.1.1 Abstract Data Model 
+
+None. 
+
+3.1.2 Timers 
+
+None. 
+
+3.1.3 Initialization 
+
+None. 
+
+3.1.4 Higher-Layer Triggered Events 
+
+The user triggers the client to create request messages when they synchronize, search, fetch, reply, 
+or forward rights-managed e-mail messages from their mobile device. 
+
+3.1.4.1 Requesting Server-Side Decompression and Decryption of Rights-Managed E-
+mail Messages 
+
+When the client sends a Sync ([MS-ASCMD] section 2.2.1.21), ItemOperations ([MS-ASCMD] 
+section 2.2.1.10), or Search ([MS-ASCMD] section 2.2.1.16) command request, the client can request 
+that the server decompress and decrypt rights-managed email messages by including the 
+RightsManagementSupport element set to TRUE (1). Clients MUST enforce the restrictions on the 
+message as indicated by the RightsManagementLicense element (section 2.2.2.14) included in the 
+response. If a client cannot enforce the restrictions on the message, it SHOULD NOT include the 
+RightsManagementSupport element set to TRUE (1) in requests. 
+
+In a Sync request, the RightsManagementSupport element is included as the child of the 
+sync:Options element ([MS-ASCMD] section 2.2.3.125.6). 
+
+In an ItemOperations command request, the RightsManagementSupport element is included as 
+the child of the itemoperations:Options element ([MS-ASCMD] section 2.2.3.125.3). 
+
+In a Search command request, the RightsManagementSupport element is included as the child of 
+the search:Options element ([MS-ASCMD] section 2.2.3.125.5). 
+
+3.1.4.2 Getting Rights Policy Templates 
+
+The client obtains the details about the available rights policy templates by sending a Settings 
+command request that includes the settings:RightsManagementInformation element ([MS-
+ASCMD] section 2.2.3.156) with a settings:Get child element. The server returns the rights policy 
+template settings in the response, as defined in section 3.2.4.2. Once the server returns the 
+templates, the client stores the templates locally for future use within the SendMail, SmartReply or 
+SmartForward commands. Because the templates can change, it is recommended that the client 
+caches the templates for no longer than 24 hours. 
+
+28 / 49 
+
+[MS-ASRM] - v20250520 
+Exchange ActiveSync: Rights Management Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+3.1.4.3 Sending Protected E-mail 
+
+The client protects an e-mail message by including the TemplateID element in the SendMail ([MS-
+ASCMD] section 2.2.1.17), SmartReply ([MS-ASCMD] section 2.2.1.20), or SmartForward ([MS-
+ASCMD] section 2.2.1.19) command requests. If the command request does not include the 
+TemplateID element, the e-mail message is sent without rights management. 
+
+3.1.5 Message Processing Events and Sequencing Rules 
+
+The client creates request messages as specified in [MS-ASCMD]. 
+
+3.1.6 Timer Events 
+
+None. 
+
+3.1.7 Other Local Events 
+
+None. 
+
+3.2 Server Details 
+
+3.2.1 Abstract Data Model 
+
+None. 
+
+3.2.2 Timers 
+
+None. 
+
+3.2.3 Initialization 
+
+None. 
+
+3.2.4 Higher-Layer Triggered Events 
+
+The client triggers the server to create response messages when it receives request messages that 
+contain IRM-protected data or settings. 
+
+3.2.4.1 Enforcing Rights Policy Template Settings 
+
+The server returns Status ([MS-ASCMD] section 2.2.3.177) value 168 if IRM is disabled on the 
+server. For an example, see section 4.1. 
+
+The server returns Status value 169 if a transient failure was encountered. The client SHOULD retry 
+the request in a few minutes if Status value 169 is returned. 
+
+The server returns Status value 170 if a permanent failure or multiple transient failures were 
+encountered.  
+
+The server returns Status value 171 in a SmartReply or SmartForward command response if the 
+request included an invalid TemplateID value. 
+
+The server returns Status value 172 if the client tries to perform an action on a rights-managed e-
+mail message that is prohibited by the rights policy template. 
+
+29 / 49 
+
+[MS-ASRM] - v20250520 
+Exchange ActiveSync: Rights Management Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+3.2.4.2 Sending Rights Policy Templates 
+
+The settings:RightsManagementInformation element that is included in the Settings response 
+contains all the rights policy templates that are available to the client. The 
+RightsManagementTemplate element contains the specific settings for each template. 
+
+The string values in the TemplateDescription and TemplateName elements SHOULD be returned 
+to the client in the language specified in the request (either by the Locale field in the Base64 
+Encoded Query Value as specified in [MS-ASHTTP] section 2.2.1.1.1.1, or by the Accept-Language 
+header if the request line is not encoded) if available on the server. If the requested language is not 
+available, the server SHOULD return the strings in the closest possible match to the requested 
+language. The method of determining a closest possible match is implementation-specific. If no 
+language is specified in the request, the string values SHOULD be returned in English. 
+
+3.2.4.3 Sending Rights-Managed E-Mail Messages to the Client 
+
+To respond to a Sync, ItemOperations, or Search command request message that includes the 
+RightsManagementSupport element, the server includes the RightsManagementLicense element 
+and its child elements in the Sync, ItemOperations, or Search command response message. 
+
+In a Sync command response, the RightsManagementLicense element is included as a child of the 
+sync:ApplicationData element ([MS-ASCMD] section 2.2.3.11). 
+
+In an ItemOperations command response, the RightsManagementLicense element is included as 
+a child of the itemoperations:Properties element ([MS-ASCMD] section 2.2.3.139.2). 
+
+In a Search command response, the RightsManagementLicense element is included as a child of 
+the search:Properties element ([MS-ASCMD] section 2.2.3.139.3). 
+
+The string values in the TemplateDescription and TemplateName elements SHOULD be returned 
+to the client in the language specified in the request (either by the Locale field in the Base64 
+Encoded Query Value as specified in [MS-ASHTTP] section 2.2.1.1.1.1, or by the Accept-Language 
+header if the request line is not encoded) if available on the server. If the requested language is not 
+available, the server SHOULD return the strings in the closest possible match to the requested 
+language. The method of determining a closest possible match is implementation-specific. If no 
+language is specified in the request, the string values SHOULD be returned in English. 
+
+3.2.5 Message Processing Events and Sequencing Rules 
+
+The server processes request messages as specified in [MS-ASCMD]. If the protocol version that is 
+specified by the command request does not support the XML elements that are defined for this 
+protocol, the server SHOULD consider the XML body of the command request to be invalid. For details 
+about the XML elements for this protocol and the protocol versions that support them, see section 
+2.2.2. 
+
+3.2.5.1 Handling SmartForward and SmartReply Requests 
+
+When the client sends the server a SmartForward or SmartReply command request for a message 
+with a rights policy template, the server MUST do the following to enforce the rights policy template: 
+
+1. If no TemplateID element is included in the command request, the server proceeds as follows:  
+
+ If the original message being forwarded or replied to has no rights management 
+restrictions, the server proceeds to step 6.  
+
+ If the original message had rights management restrictions, the server replaces the body 
+of the message with boilerplate text. In a SmartForward command, the rights-
+
+30 / 49 
+
+[MS-ASRM] - v20250520 
+Exchange ActiveSync: Rights Management Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+managed e-mail message is added as an .rpmsg attachment as specified in [MS-
+OXORMMS].  
+
+2. If any of the following are true, the server fails the request and returns composemail:Status 
+value 168:  
+
+ The connection to the server does not use SSL.  
+
+ The server does not support IRM features. See section 1.5 for more details.  
+
+3. If the TemplateID element is included in the command request, the server does the following:  
+
+ If the original message is not protected, the server proceeds to step 5. If the template 
+does not exist on the server, the server fails the request and returns a 
+composemail:Status value of 171.  
+
+ If the original message is protected and the specified TemplateID value is the same as 
+the TemplateID value on the original message, the server proceeds to step 4.  
+
+ If the original message is protected and the specified TemplateID value is different than 
+the TemplateID value on the original message, the server verifies that the new 
+TemplateID value exists on the server. If the TemplateID value does not correspond to 
+a template on the server, the server fails the request and returns a composemail:Status 
+value of 171; otherwise, the server proceeds to step 4.  
+
+4. The server compares the recipients on the original message to the recipients sent by the client 
+within the new message. The server verifies that the recipient list on the new message aligns with 
+the granted permissions, as specified in the following table. If permissions allow it, the server 
+creates the reply or forwarded message; otherwise, a composemail:Status value of 172 is 
+returned by the server.  
+
+5. If the message has a TemplateID element, the server protects the new outgoing message with 
+the specified rights policy template.  
+
+6. The server sends the new message.  
+
+The following table describes the reply, reply all, and forward enforcement that is performed by the 
+server. 
+
+ReplyAllowed ReplyAllAllowed ForwardAllowed Server-side enforcement 
+
+ModifyRecipientsAllowed = TRUE* There are no restrictions. 
+TRUE 
+
+ModifyRecipientsAllowed = TRUE* For reply and reply all, refer to the last four rows in 
+FALSE this table. 
+
+For forwarding, attach the original message and send 
+it.* 
+
+TRUE TRUE FALSE Reply to exactly one recipient or all original recipients. 
+Whether the sender chooses to include themselves in 
+the reply message is optional. All other SmartReply 
+command requests are restricted and error out with a 
+composemail:Status value of 172. 
+
+SmartForward requests are restricted and return a 
+composemail:Status value of 172. 
+
+TRUE FALSE FALSE Reply to exactly one recipient, the sender of the 
+original message. All other SmartReply command 
+requests are restricted and error out with a 
+composemail:Status value of 172. 
+
+31 / 49 
+
+[MS-ASRM] - v20250520 
+Exchange ActiveSync: Rights Management Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+ReplyAllowed ReplyAllAllowed ForwardAllowed Server-side enforcement 
+
+SmartForward command requests are restricted and 
+return a composemail:Status value of 172. 
+
+FALSE TRUE FALSE Reply to exactly all original recipients. Whether the 
+sender chooses to include themselves in the reply 
+message is optional All other SmartReply command 
+requests are restricted and error out with a 
+composemail:Status value of 172. 
+
+SmartForward command requests are restricted and 
+return a composemail:Status value of 172. 
+
+FALSE FALSE FALSE All SmartReply and SmartForward command 
+requests error out with a composemail:Status value 
+of 172. 
+
+*The server does not enforce the lack of reply and reply all rights. 
+
+The following table describes the edit and export enforcement that is performed by the server. 
+
+New message New message 
+ExportAllowed EditAllowed composemail:ReplaceMime uses the same uses a different 
+value value present? TemplateID value TemplateID value 
+
+TRUE TRUE yes Send the message. Send the message. 
+
+TRUE FALSE yes Send the Send the 
+message.* message.* 
+
+FALSE TRUE yes Send the message. Send the 
+message.* 
+
+FALSE FALSE yes Send the Send the 
+message.* message.* 
+
+TRUE TRUE no Send the message, Send the message, 
+including the including the 
+original message as original message as 
+inline content. inline content. 
+
+TRUE FALSE no Send the message, Send the message, 
+including the including the 
+original message as original message as 
+an attachment.* an attachment.* 
+
+FALSE TRUE no Send the message, Send the message, 
+including the including the 
+original message as original message as 
+inline content. an attachment.* 
+
+FALSE FALSE no Send the message, Send the message, 
+including the including the 
+original message as original message as 
+an attachment.* an attachment.* 
+
+*In these cases, the client MUST NOT include the original message inline in the new message due to 
+the possible breach of IRM protection. 
+
+3.2.6 Timer Events 
+
+None. 
+
+32 / 49 
+
+[MS-ASRM] - v20250520 
+Exchange ActiveSync: Rights Management Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+3.2.7 Other Local Events 
+
+None. 
+
+33 / 49 
+
+[MS-ASRM] - v20250520 
+Exchange ActiveSync: Rights Management Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+4 Protocol Examples 
+
+4.1 Retrieve Rights Policy Templates by Using the Settings Command 
+
+To retrieve the rights policy templates available to the user, the client sends the Settings 
+command to the server. The request message includes the 
+settings:RightsManagementInformation and settings:Get elements, which instruct the server to 
+include the rights policy template in the response. In this scenario, the successful response includes 
+two rights policy templates, each specified in its own RightsManagementTemplate element. The 
+unsuccessful response includes settings:Status value 168, which indicates that IRM protection is 
+disabled on the server. Other error values are possible and are specified in section 3.2.4.1. 
+
+Request 
+
+ <?xml version="1.0" encoding="utf-8"?> 
+ <Settings xmlns="Settings:"> 
+  <RightsManagementInformation> 
+    <Get/> 
+  </RightsManagementInformation> 
+ </Settings> 
+
+Successful Response 
+
+ <?xml version="1.0" encoding="utf-8"?> 
+ <Settings xmlns:rm="RightsManagement:" xmlns="Settings:"> 
+  <Status>1</Status> 
+  <RightsManagementInformation> 
+    <Status>1</Status> 
+    <Get> 
+      <rm:RightsManagementTemplates> 
+        <rm:RightsManagementTemplate> 
+          <rm:TemplateID>cf5cf348-a8d7-40d5-91ef-a600b88a395d</rm:TemplateID> 
+          <rm:TemplateName>Do Not Forward</rm:TemplateName> 
+          <rm:TemplateDescription>Recipients can read this message, but they can't forward, 
+print, or copy content. The conversation owner has full permission to their message and all 
+replies.</rm:TemplateDescription> 
+        </rm:RightsManagementTemplate> 
+        <rm:RightsManagementTemplate> 
+          <rm:TemplateID>abfafb18-80a0-4763-ac37-48deb93e51e4</rm:TemplateID> 
+          <rm:TemplateName>DoNotReplyAll</rm:TemplateName> 
+          <rm:TemplateDescription>Description for template 
+'DoNotReplyAll'</rm:TemplateDescription> 
+        </rm:RightsManagementTemplate> 
+      </rm:RightsManagementTemplates> 
+    </Get> 
+  </RightsManagementInformation> 
+ </Settings> 
+
+Unsuccessful Response 
+
+ <?xml version="1.0" encoding="utf-8"?> 
+ <Settings xmlns:rm="RightsManagement:" xmlns="Settings:"> 
+  <Status>1</Status> 
+  <RightsManagementInformation> 
+    <Status>168</Status> 
+    <Get> 
+      <rm:RightsManagementTemplates /> 
+    </Get> 
+  </RightsManagementInformation> 
+ </Settings> 
+
+34 / 49 
+
+[MS-ASRM] - v20250520 
+Exchange ActiveSync: Rights Management Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+4.2 Request That the Server Decompress and Decrypt Rights-Managed E-mail 
+Messages 
+
+To retrieve a new email message from the server and request that the server decompress and decrypt 
+rights-managed email messages, the client sends the Sync command and sets the 
+RightsManagementSupport element to TRUE. The response includes a new rights-managed email 
+message, which has the rights policy template included in the RightsManagementLicense element. 
+
+Request 
+
+ <?xml version="1.0" encoding="utf-8"?> 
+ <Sync xmlns:airsyncbase="AirSyncBase:" xmlns:rm="RightsManagement:" xmlns="AirSync:"> 
+  <Collections> 
+    <Collection> 
+      <SyncKey>624199877</SyncKey> 
+      <CollectionId>5</CollectionId> 
+      <GetChanges>1</GetChanges> 
+      <Options> 
+        <rm:RightsManagementSupport>1</rm:RightsManagementSupport> 
+        <airsyncbase:BodyPreference> 
+          <airsyncbase:Type>1</airsyncbase:Type> 
+          <airsyncbase:TruncationSize>1024</airsyncbase:TruncationSize> 
+        </airsyncbase:BodyPreference> 
+        <airsyncbase:BodyPartPreference> 
+          <airsyncbase:Type>2</airsyncbase:Type> 
+        </airsyncbase:BodyPartPreference> 
+      </Options> 
+    </Collection> 
+  </Collections> 
+ </Sync> 
+
+Response 
+
+ <?xml version="1.0" encoding="utf-8"?> 
+ <Sync xmlns:email="Email:" xmlns:airsyncbase="AirSyncBase:" xmlns:email2="Email2:" 
+xmlns:rm="RightsManagement:" xmlns="AirSync:"> 
+  <Collections> 
+    <Collection> 
+      <SyncKey>1556727147</SyncKey> 
+      <CollectionId>5</CollectionId> 
+      <Status>1</Status> 
+      <Commands> 
+        <Add> 
+          <ServerId>5:1</ServerId> 
+          <ApplicationData> 
+            <email:To>"T0SyncUser3" &lt;T0SyncUser3@contoso.com;</email:To> 
+            <email:From>"T0SyncUser1" &lt;T0SyncUser1@contoso.com&gt;</email:From> 
+            <email:Subject>DoNotForward</email:Subject> 
+            <email:DateReceived>2010-07-01T00:23:24.232Z</email:DateReceived> 
+            <email:DisplayTo>T0SyncUser3</email:DisplayTo> 
+            <email:ThreadTopic>DoNotForward</email:ThreadTopic> 
+            <email:Importance>1</email:Importance> 
+            <email:Read>0</email:Read> 
+            <airsyncbase:Body> 
+              <airsyncbase:Type>1</airsyncbase:Type> 
+              <airsyncbase:EstimatedDataSize>64</airsyncbase:EstimatedDataSize> 
+              <airsyncbase:Data>This is a test message that we want to 
+use.</airsyncbase:Data> 
+            </airsyncbase:Body> 
+            <email:MessageClass>IPM.Note</email:MessageClass> 
+            <email:InternetCPID>28591</email:InternetCPID> 
+            <email:Flag /> 
+            <email:ContentClass>urn:content-classes:message</email:ContentClass> 
+            <airsyncbase:NativeBodyType>1</airsyncbase:NativeBodyType> 
+            <email2:ConversationId>…</email2:ConversationId> 
+
+35 / 49 
+
+[MS-ASRM] - v20250520 
+Exchange ActiveSync: Rights Management Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+            <email2:ConversationIndex>…</email2:ConversationIndex> 
+            <email:Categories /> 
+            <airsyncbase:BodyPart> 
+              <airsyncbase:Status>1</airsyncbase:Status> 
+              <airsyncbase:Type>2</airsyncbase:Type> 
+              <airsyncbase:EstimatedDataSize>90</airsyncbase:EstimatedDataSize> 
+              <airsyncbase:Data>&lt;div&gt; 
+ &lt;div&gt;This is a test message that we want to use.&lt;/div&gt; 
+ &lt;/div&gt; 
+ </airsyncbase:Data> 
+            </airsyncbase:BodyPart> 
+            <rm:RightsManagementLicense> 
+              <rm:Owner>0</rm:Owner> 
+              <rm:ContentOwner>T0SyncUser1@contoso.com</rm:ContentOwner> 
+              <rm:ReplyAllAllowed>1</rm:ReplyAllAllowed> 
+              <rm:EditAllowed>1</rm:EditAllowed> 
+              <rm:ReplyAllowed>1</rm:ReplyAllowed> 
+              <rm:ForwardAllowed>0</rm:ForwardAllowed> 
+              <rm:ExportAllowed>0</rm:ExportAllowed> 
+              <rm:ModifyRecipientsAllowed>0</rm:ModifyRecipientsAllowed> 
+              <rm:TemplateID>cf5cf348-a8d7-40d5-91ef-a600b88a395d</rm:TemplateID> 
+              <rm:ExtractAllowed>0</rm:ExtractAllowed> 
+              <rm:TemplateDescription>Recipients can read this message, but they can't 
+forward, print, or copy content. The conversation owner has full permission to their message 
+and all replies.</rm:TemplateDescription> 
+              <rm:ContentExpiryDate>9999-12-30T23:59:59.999Z</rm:ContentExpiryDate> 
+              <rm:TemplateName>Do Not Forward</rm:TemplateName> 
+              <rm:PrintAllowed>0</rm:PrintAllowed> 
+              <rm:ProgrammaticAccessAllowed>0</rm:ProgrammaticAccessAllowed> 
+            </rm:RightsManagementLicense> 
+            <email2:IsDraft>0</email2:IsDraft> 
+          </ApplicationData> 
+        </Add> 
+      </Commands> 
+    </Collection> 
+  </Collections> 
+ </Sync> 
+
+4.3 Request That the Server Not Decompress and Decrypt Rights-Managed E-mail 
+Messages 
+
+When the client does not request that the server decompress and decrypt rights-managed email 
+messages, the server sends the content  as a message.rpmsg attachment, as described in [MS-
+OXORMMS] section 2.2.4.5. In this scenario, the RightsManagementSupport element is not 
+included in the Sync command request, and a default value of FALSE is assumed on the server. 
+
+The response message includes the file message.rpmsg as an attachment to the e-mail message. The 
+message.rpmsg file includes the protected content, which cannot be opened on a client that does not 
+support IRM natively. 
+
+Request 
+
+ <?xml version="1.0" encoding="utf-8"?> 
+ <Sync xmlns:airsyncbase="AirSyncBase:" xmlns="AirSync:"> 
+  <Collections> 
+    <Collection> 
+      <SyncKey>408238195</SyncKey> 
+      <CollectionId>5</CollectionId> 
+      <GetChanges>1</GetChanges> 
+      <Options> 
+        <airsyncbase:BodyPreference> 
+          <airsyncbase:Type>1</airsyncbase:Type> 
+        </airsyncbase:BodyPreference> 
+      </Options> 
+
+36 / 49 
+
+[MS-ASRM] - v20250520 
+Exchange ActiveSync: Rights Management Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+    </Collection> 
+  </Collections> 
+ </Sync> 
+
+Response 
+
+ <?xml version="1.0" encoding="utf-8"?> 
+ <Sync xmlns:email="Email:" xmlns:airsyncbase="AirSyncBase:" xmlns:email2="Email2:" 
+xmlns:rm="RightsManagement:" xmlns="AirSync:"> 
+  <Collections> 
+    <Collection> 
+      <SyncKey>334913177</SyncKey> 
+      <CollectionId>5</CollectionId> 
+      <Status>1</Status> 
+      <Commands> 
+        <Add> 
+          <ServerId>5:1</ServerId> 
+          <ApplicationData> 
+            <email:To>"T0SyncUser3" &lt;T0SyncUser3@contoso.com&gt;</email:To> 
+            <email:From>"T0SyncUser1" &lt;T0SyncUser1@contoso.com&gt;</email:From> 
+            <email:Subject> ReplyReplyAllForward</email:Subject> 
+            <email:DateReceived>2010-07-01T02:14:43.245Z</email:DateReceived> 
+            <email:DisplayTo>T0SyncUser3</email:DisplayTo> 
+            <email:ThreadTopic>ReplyReplyAllForward</email:ThreadTopic> 
+            <email:Importance>1</email:Importance> 
+            <email:Read>0</email:Read> 
+            <airsyncbase:Attachments> 
+              <airsyncbase:Attachment> 
+                <airsyncbase:DisplayName>message.rpmsg</airsyncbase:DisplayName> 
+                <airsyncbase:FileReference>5%3a1%3a0</airsyncbase:FileReference> 
+                <airsyncbase:Method>1</airsyncbase:Method> 
+                <airsyncbase:EstimatedDataSize>9915</airsyncbase:EstimatedDataSize> 
+              </airsyncbase:Attachment> 
+            </airsyncbase:Attachments> 
+            <airsyncbase:Body> 
+              <airsyncbase:Type>1</airsyncbase:Type> 
+              <airsyncbase:EstimatedDataSize>289</airsyncbase:EstimatedDataSize> 
+              <airsyncbase:Data>The message you tried to open is protected with Information 
+Rights Management.</airsyncbase:Data> 
+            </airsyncbase:Body> 
+            <email:MessageClass>IPM.Note</email:MessageClass> 
+            <email:InternetCPID>28591</email:InternetCPID> 
+            <email:Flag /> 
+            <email:ContentClass>rpmsg.message</email:ContentClass> 
+            <airsyncbase:NativeBodyType>1</airsyncbase:NativeBodyType> 
+            <email2:ConversationId>…</email2:ConversationId> 
+            <email2:ConversationIndex>…</email2:ConversationIndex> 
+            <email:Categories /> 
+            <email2:IsDraft>0</email2:IsDraft> 
+          </ApplicationData> 
+        </Add> 
+      </Commands> 
+    </Collection> 
+  </Collections> 
+ </Sync> 
+
+4.4 Reply to a Rights-Managed E-Mail Message by Using the SmartReply Command 
+
+To reply to a rights-managed email message, the client sends a SmartReply command message 
+and includes the TemplateID element. In this scenario, the client retrieves the TemplateID from the 
+local store, because it is responding to a message that it sent originally. 
+
+Request 
+
+37 / 49 
+
+[MS-ASRM] - v20250520 
+Exchange ActiveSync: Rights Management Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+ <?xml version="1.0" encoding="utf-8"?> 
+ <SmartReply xmlns:rm="RightsManagement:" xmlns="ComposeMail:"> 
+  <ClientId>634135220584105742</ClientId> 
+  <Source> 
+    <FolderId>5</FolderId> 
+    <ItemId>5:1</ItemId> 
+  </Source> 
+  <Mime>From: T0SyncUser2@contoso.com 
+ To: T0SyncUser1@contoso.com 
+ Subject: Message 
+ MIME-Version: 1.0 
+ Content-Type: text/plain; Charset= us-ascii 
+ Content-Transfer-Encoding: 7bit 
+ X-MimeOLE: Produced By Microsoft MimeOLE V6.00.2800.1441 
+ 
+ Message contents. </Mime> 
+  <rm:TemplateID>CF5CF348-A8D7-40D5-91EF-A600B88A395D</rm:TemplateID> 
+ </SmartReply> 
+
+Response 
+
+ HTTP/1.1 200 OK 
+ Date: Thu, 01 Jul 2010 02:14:20 GMT 
+ Content-Length: 0 
+
+4.5 Search for a Rights-Managed E-Mail Message by Using the Search Command 
+
+To search for a rights-managed e-mail message, the client sends the Search command and sets 
+the RightsManagementSupport element to TRUE. 
+
+The response includes the rights-managed e-mail message. 
+
+Request 
+
+ <?xml version="1.0" encoding="utf-8"?> 
+ <Search xmlns:airsyncbase="AirSync:" xmlns:airsyncbase="AirSyncBase:" 
+xmlns:rm="RightsManagement:" xmlns="Search:"> 
+  <Store> 
+    <Name>Mailbox</Name> 
+    <Query> 
+      <And> 
+        <airsyncbase:CollectionId>5</airsyncbase:CollectionId> 
+        <FreeText>IRMEAS</FreeText> 
+        <airsyncbase:Class>Email</airsyncbase:Class> 
+      </And> 
+    </Query> 
+    <Options> 
+      <Range>0-0</Range> 
+      <RebuildResults/> 
+      <DeepTraversal/> 
+      <airsyncbase:BodyPreference> 
+        <airsyncbase:Type>1</airsyncbase:Type> 
+        <airsyncbase:TruncationSize>512</airsyncbase:TruncationSize> 
+      </airsyncbase:BodyPreference> 
+      <rm:RightsManagementSupport>1</rm:RightsManagementSupport> 
+    </Options> 
+  </Store> 
+ </Search> 
+
+Response 
+
+38 / 49 
+
+[MS-ASRM] - v20250520 
+Exchange ActiveSync: Rights Management Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+ <?xml version="1.0" encoding="utf-8"?> 
+ <Search xmlns:airsyncbase="AirSync:" xmlns:email="Email:" xmlns:airsyncbase="AirSyncBase:" 
+xmlns:email2="Email2:" xmlns:rm="RightsManagement:" xmlns="Search:"> 
+  <Status>1</Status> 
+  <Response> 
+    <Store> 
+      <Status>1</Status> 
+      <Result> 
+        <airsyncbase:Class>Email</airsyncbase:Class> 
+        
+<LongId>RgAAAAC56adCCdvKRYRrNA1IgBolBwB%2bSy6NhndsQ7ldDXB%2fCAqQAAAAbHbTAAB%2bSy6NhndsQ7ldDXB
+%2fCAqQAAAAbJ5XAAAJ</LongId> 
+        <airsyncbase:CollectionId>5</airsyncbase:CollectionId> 
+        <Properties> 
+          <email:To>"T0SyncUser3" &lt;T0SyncUser3@contoso.com&gt;</email:To> 
+          <email:From>"T0SyncUser1" &lt;T0SyncUser1@contoso.com&gt;</email:From> 
+          <email:Subject>DoNotForward</email:Subject> 
+          <email:DateReceived>2010-06-30T23:52:51.908Z</email:DateReceived> 
+          <email:DisplayTo>T0SyncUser3</email:DisplayTo> 
+          <email:ThreadTopic>DoNotForward</email:ThreadTopic> 
+          <email:Importance>1</email:Importance> 
+          <email:Read>0</email:Read> 
+          <airsyncbase:Body> 
+            <airsyncbase:Type>1</airsyncbase:Type> 
+            <airsyncbase:EstimatedDataSize>64</airsyncbase:EstimatedDataSize> 
+            <airsyncbase:Data>This is a test message that we want to use.</airsyncbase:Data> 
+          </airsyncbase:Body> 
+          <email:MessageClass>IPM.Note</email:MessageClass> 
+          <email:InternetCPID>28591</email:InternetCPID> 
+          <email:Flag /> 
+          <email:ContentClass>urn:content-classes:message</email:ContentClass> 
+          <airsyncbase:NativeBodyType>1</airsyncbase:NativeBodyType> 
+          <email2:ConversationId>…</email2:ConversationId> 
+          <email2:ConversationIndex>…</email2:ConversationIndex> 
+          <email:Categories /> 
+          <rm:RightsManagementLicense> 
+            <rm:Owner>0</rm:Owner> 
+            <rm:ContentOwner>T0SyncUser1@contoso.com</rm:ContentOwner> 
+            <rm:ReplyAllAllowed>1</rm:ReplyAllAllowed> 
+            <rm:EditAllowed>1</rm:EditAllowed> 
+            <rm:ReplyAllowed>1</rm:ReplyAllowed> 
+            <rm:ForwardAllowed>0</rm:ForwardAllowed> 
+            <rm:ExportAllowed>0</rm:ExportAllowed> 
+            <rm:ModifyRecipientsAllowed>0</rm:ModifyRecipientsAllowed> 
+            <rm:TemplateID>cf5cf348-a8d7-40d5-91ef-a600b88a395d</rm:TemplateID> 
+            <rm:ExtractAllowed>0</rm:ExtractAllowed> 
+            <rm:TemplateDescription>Recipients can read this message, but they can't forward, 
+print, or copy content. The conversation owner has full permission to their message and all 
+replies.</rm:TemplateDescription> 
+            <rm:ContentExpiryDate>9999-12-30T23:59:59.999Z</rm:ContentExpiryDate> 
+            <rm:TemplateName>Do Not Forward</rm:TemplateName> 
+            <rm:PrintAllowed>0</rm:PrintAllowed> 
+            <rm:ProgrammaticAccessAllowed>0</rm:ProgrammaticAccessAllowed> 
+          </rm:RightsManagementLicense> 
+          <email2:IsDraft>0</email2:IsDraft> 
+        </Properties> 
+      </Result> 
+      <Range>0-0</Range> 
+      <Total>1</Total> 
+    </Store> 
+  </Response> 
+ </Search> 
+
+4.6 Fetch a Rights-Managed E-Mail Message by Using the ItemOperations Command 
+
+To fetch a rights-managed e-mail message, the client sends the ItemOperations command and 
+sets the RightsManagementSupport element to TRUE. 
+
+39 / 49 
+
+[MS-ASRM] - v20250520 
+Exchange ActiveSync: Rights Management Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+The response includes the rights-managed e-mail message. 
+
+Request 
+
+ <?xml version="1.0" encoding="utf-8"?> 
+ <ItemOperations xmlns:airsyncbase="AirSync:" xmlns:airsyncbase="AirSyncBase:" 
+xmlns="ItemOperations:" xmlns:rm="RightsManagement:"> 
+  <Fetch> 
+    <Store>Mailbox</Store> 
+    <airsyncbase:CollectionId>5</airsyncbase:CollectionId> 
+    <airsyncbase:ServerId>5:1</airsyncbase:ServerId> 
+    <Options> 
+      <airsyncbase:BodyPreference> 
+        <airsyncbase:Type>1</airsyncbase:Type> 
+        <airsyncbase:TruncationSize>1024</airsyncbase:TruncationSize> 
+      </airsyncbase:BodyPreference> 
+      <rm:RightsManagementSupport>1</rm:RightsManagementSupport> 
+    </Options> 
+  </Fetch> 
+ </ItemOperations> 
+
+Response 
+
+ <?xml version="1.0" encoding="utf-8"?> 
+ <ItemOperations xmlns:airsyncbase="AirSync:" xmlns:email="Email:" 
+xmlns:airsyncbase="AirSyncBase:" xmlns:rm="RightsManagement:" xmlns="ItemOperations:"> 
+  <Status>1</Status> 
+  <Response> 
+    <Fetch> 
+      <Status>1</Status> 
+      <airsyncbase:CollectionId>5</airsyncbase:CollectionId> 
+      <airsyncbase:ServerId>5:1</airsyncbase:ServerId> 
+      <airsyncbase:Class>Email</airsyncbase:Class> 
+      <Properties> 
+        <email:To>"T0SyncUser3" &lt;T0SyncUser3@contoso.com&gt;</email:To> 
+        <email:From>"T0SyncUser1" &lt;T0SyncUser1@contoso.com&gt;</email:From> 
+        <email:Subject>IRMEAS_Subj_Enc_DoNotForward_V141</email:Subject> 
+        <email:DateReceived>2010-06-30T23:44:31.053Z</email:DateReceived> 
+        <email:DisplayTo>T0SyncUser3</email:DisplayTo> 
+        <email:ThreadTopic>DoNotForward</email:ThreadTopic> 
+        <email:Importance>1</email:Importance> 
+        <email:Read>0</email:Read> 
+        <airsyncbase:Body> 
+          <airsyncbase:Type>1</airsyncbase:Type> 
+          <airsyncbase:EstimatedDataSize>64</airsyncbase:EstimatedDataSize> 
+          <airsyncbase:Data>This is a test message that we want to use.</airsyncbase:Data> 
+        </airsyncbase:Body> 
+        <email:MessageClass>IPM.Note</email:MessageClass> 
+        <email:InternetCPID>28591</email:InternetCPID> 
+        <email:Flag /> 
+        <email:ContentClass>urn:content-classes:message</email:ContentClass> 
+        <airsyncbase:NativeBodyType>1</airsyncbase:NativeBodyType> 
+        <email2:ConversationId>…</email2:ConversationId> 
+        <email2:ConversationIndex>…</email2:ConversationIndex> 
+        <rm:RightsManagementLicense> 
+          <rm:Owner>0</rm:Owner> 
+          <rm:ContentOwner>T0SyncUser1@contoso.com</rm:ContentOwner> 
+          <rm:ReplyAllAllowed>1</rm:ReplyAllAllowed> 
+          <rm:EditAllowed>1</rm:EditAllowed> 
+          <rm:ReplyAllowed>1</rm:ReplyAllowed> 
+          <rm:ForwardAllowed>0</rm:ForwardAllowed> 
+          <rm:ExportAllowed>0</rm:ExportAllowed> 
+          <rm:ModifyRecipientsAllowed>0</rm:ModifyRecipientsAllowed> 
+          <rm:TemplateID>cf5cf348-a8d7-40d5-91ef-a600b88a395d</rm:TemplateID> 
+          <rm:ExtractAllowed>0</rm:ExtractAllowed> 
+
+40 / 49 
+
+[MS-ASRM] - v20250520 
+Exchange ActiveSync: Rights Management Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+          <rm:TemplateDescription>Recipients can read this message, but they can't forward, 
+print, or copy content. The conversation owner has full permission to their message and all 
+replies.</rm:TemplateDescription> 
+          <rm:ContentExpiryDate>9999-12-30T23:59:59.999Z</rm:ContentExpiryDate> 
+          <rm:TemplateName>Do Not Forward</rm:TemplateName> 
+          <rm:PrintAllowed>0</rm:PrintAllowed> 
+          <rm:ProgrammaticAccessAllowed>0</rm:ProgrammaticAccessAllowed> 
+        </rm:RightsManagementLicense> 
+        <email2:IsDraft>0</email2:IsDraft> 
+      </Properties> 
+    </Fetch> 
+  </Response> 
+ </ItemOperations> 
+
+4.7 Remove IRM Protection by Using the ItemOperations Command 
+
+To remove IRM protection from a rights-managed e-mail message, the user first uses the Sync 
+command to sync the e-mail message to the client. The client then uses the ItemOperations 
+command to remove rights management protection. This section includes both successful and 
+unsuccessful ItemOperations responses. 
+
+ItemOperations Request 
+
+The ItemOperations command request includes the RemoveRightsManagementProtection 
+element to remove IRM protection from the e-mail message. 
+
+ <?xml version="1.0" encoding="utf-8"?> 
+ <ItemOperations xmlns:airsyncbase="AirSync:" xmlns:airsyncbase="AirSyncBase:" 
+xmlns="ItemOperations:" xmlns:rm="RightsManagement:"> 
+  <Fetch> 
+    <Store>Mailbox</Store> 
+    <airsyncbase:CollectionId>5</airsyncbase:CollectionId> 
+    <airsyncbase:ServerId>5:1</airsyncbase:ServerId> 
+    <Options> 
+      <airsyncbase:BodyPreference> 
+        <airsyncbase:Type>1</airsyncbase:Type> 
+        <airsyncbase:TruncationSize>1024</airsyncbase:TruncationSize> 
+      </airsyncbase:BodyPreference> 
+      <rm:RightsManagementSupport>1</rm:RightsManagementSupport> 
+    </Options> 
+    <rm:RemoveRightsManagementProtection/> 
+  </Fetch> 
+ </ItemOperations> 
+
+Successful ItemOperations Response 
+
+In this scenario, the ItemOperations command was successful because the ExportAllowed value 
+was set to TRUE for the rights policy template applied to the e-mail message. The e-mail message 
+included in the response has no IRM protection and includes the previously protected content in the 
+body of the message. 
+
+ <?xml version="1.0" encoding="utf-8"?> 
+ <ItemOperations xmlns:airsyncbase="AirSync:" xmlns:email="Email:" 
+xmlns:airsyncbase="AirSyncBase:" xmlns:email2="Email2:" xmlns="ItemOperations:"> 
+  <Status>1</Status> 
+  <Response> 
+    <Fetch> 
+      <Status>1</Status> 
+      <airsyncbase:CollectionId>5</airsyncbase:CollectionId> 
+      <airsyncbase:ServerId>5:1</airsyncbase:ServerId> 
+      <airsyncbase:Class>Email</airsyncbase:Class> 
+      <Properties> 
+
+41 / 49 
+
+[MS-ASRM] - v20250520 
+Exchange ActiveSync: Rights Management Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+        <email:To>"T0SyncUser3" &lt;T0SyncUser3@contoso.com&gt;</email:To> 
+        <email:From>"T0SyncUser1" &lt;T0SyncUser1@contoso.com&gt;</email:From> 
+        <email:Subject>Confidential</email:Subject> 
+        <email:DateReceived>2010-06-30T23:47:06.961Z</email:DateReceived> 
+        <email:DisplayTo>T0SyncUser3</email:DisplayTo> 
+        <email:ThreadTopic>Confidential</email:ThreadTopic> 
+        <email:Importance>1</email:Importance> 
+        <email:Read>0</email:Read> 
+        <airsyncbase:Body> 
+          <airsyncbase:Type>1</airsyncbase:Type> 
+          <airsyncbase:EstimatedDataSize>64</airsyncbase:EstimatedDataSize> 
+          <airsyncbase:Data>This is a test message that we want to use.</airsyncbase:Data> 
+        </airsyncbase:Body> 
+        <email:MessageClass>IPM.Note</email:MessageClass> 
+        <email:InternetCPID>28591</email:InternetCPID> 
+        <email:Flag /> 
+        <email:ContentClass>urn:content-classes:message</email:ContentClass> 
+        <airsyncbase:NativeBodyType>2</airsyncbase:NativeBodyType> 
+        <email2:ConversationId>…</email2:ConversationId> 
+        <email2:ConversationIndex>…</email2:ConversationIndex> 
+        <email2:IsDraft>0</email2:IsDraft> 
+      </Properties> 
+    </Fetch> 
+  </Response> 
+ </ItemOperations> 
+
+Unsuccessful ItemOperations Response 
+
+In this scenario, the ItemOperations command to remove rights management protection was not 
+successful because the ExportAllowed value was set to FALSE for the rights policy template applied 
+to the e-mail message. The ItemOperations command response includes the protected content in 
+the body of the message, but the message is still a rights-managed e-mail message and is using the 
+ViewOnly template to restrict editing, forwarding, replying, replying all, exporting, or extracting the 
+content. 
+
+ <?xml version="1.0" encoding="utf-8"?> 
+ <ItemOperations xmlns:airsync="AirSync:" xmlns:email="Email:" 
+xmlns:airsyncbase="AirSyncBase:" xmlns:rm="RightsManagement:" xmlns="ItemOperations:"> 
+  <Status>1</Status> 
+  <Response> 
+    <Fetch> 
+      <Status>1</Status> 
+      <airsync:CollectionId>5</airsync:CollectionId> 
+      <airsync:ServerId>5:1</airsync:ServerId> 
+      <airsync:Class>Email</airsync:Class> 
+      <Properties> 
+        <email:To>"T0SyncUser3" &lt;T0SyncUser3@contoso.com&gt;</email:To> 
+        <email:From>"T0SyncUser1" &lt;T0SyncUser1@contoso.com&gt;</email:From> 
+        <email:Subject>Confidential</email:Subject> 
+        <email:DateReceived>2010-06-30T23:47:06.961Z</email:DateReceived> 
+        <email:DisplayTo>T0SyncUser3</email:DisplayTo> 
+        <email:ThreadTopic>Confidential</email:ThreadTopic> 
+        <email:Importance>1</email:Importance> 
+        <email:Read>0</email:Read> 
+        <airsyncbase:Body> 
+          <airsyncbase:Type>1</airsyncbase:Type> 
+          <airsyncbase:EstimatedDataSize>64</airsyncbase:EstimatedDataSize> 
+          <airsyncbase:Data>This is a test message that we want to use.</airsyncbase:Data> 
+        </airsyncbase:Body> 
+        <email:MessageClass>IPM.Note</email:MessageClass> 
+        <email:InternetCPID>28591</email:InternetCPID> 
+        <email:Flag /> 
+        <email:ContentClass>urn:content-classes:message</email:ContentClass> 
+        <airsyncbase:NativeBodyType>2</airsyncbase:NativeBodyType> 
+        <email2:ConversationId>…</email2:ConversationId> 
+        <email2:ConversationIndex>…</email2:ConversationIndex> 
+
+42 / 49 
+
+[MS-ASRM] - v20250520 
+Exchange ActiveSync: Rights Management Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+        <rm:RightsManagementLicense> 
+          <rm:Owner>0</rm:Owner> 
+          <rm:ContentOwner>T0SyncUser1v14.1@contoso.com</rm:ContentOwner> 
+          <rm:ReplyAllAllowed>0</rm:ReplyAllAllowed> 
+          <rm:EditAllowed>0</rm:EditAllowed> 
+          <rm:ReplyAllowed>0</rm:ReplyAllowed> 
+          <rm:ForwardAllowed>0</rm:ForwardAllowed> 
+          <rm:ExportAllowed>0</rm:ExportAllowed> 
+          <rm:ModifyRecipientsAllowed>0</rm:ModifyRecipientsAllowed> 
+          <rm:TemplateID>e9225d21-a80e-4642-81eb-d5e9afe3f33a</rm:TemplateID> 
+          <rm:ExtractAllowed>0</rm:ExtractAllowed> 
+          <rm:TemplateDescription>Description for template 
+'ViewOnly'</rm:TemplateDescription> 
+          <rm:ContentExpiryDate>9999-12-30T23:59:59.999Z</rm:ContentExpiryDate> 
+          <rm:TemplateName>ViewOnly</rm:TemplateName> 
+          <rm:PrintAllowed>0</rm:PrintAllowed> 
+          <rm:ProgrammaticAccessAllowed>0</rm:ProgrammaticAccessAllowed> 
+        </rm:RightsManagementLicense> 
+        <email2:IsDraft>0</email2:IsDraft> 
+      </Properties> 
+    </Fetch> 
+  </Response> 
+ </ItemOperations> 
+
+43 / 49 
+
+[MS-ASRM] - v20250520 
+Exchange ActiveSync: Rights Management Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+5 Security 
+
+5.1 Security Considerations for Implementers 
+
+This protocol requires that communication between the client and server occurs over an HTTP 
+connection that uses Secure Sockets Layer (SSL), as described in [MS-ASHTTP] section 1.5, 
+2.2.1.1.2.2, and 5.1. 
+
+5.2 Index of Security Parameters 
+
+None. 
+
+44 / 49 
+
+[MS-ASRM] - v20250520 
+Exchange ActiveSync: Rights Management Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+6 Appendix A: Full XML Schema 
+
+For ease of implementation, this section contains the contents of the RightsManagement.xsd file, 
+which represents the full XML schema for this protocol. The additional file that this schema file 
+requires to operate correctly is listed in the following table. 
+
+File name Defining specification 
+
+AirSyncBase.xsd [MS-ASAIRS] section 6 
+
+ <?xml version="1.0" encoding="UTF-8"?> 
+ <xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:airsyncbase= 
+    "AirSyncBase" xmlns="RightsManagement" targetNamespace="RightsManagement"  
+    elementFormDefault="qualified" attributeFormDefault="unqualified"> 
+  <xs:import namespace="AirSyncBase" schemaLocation="AirSyncBase.xsd"/> 
+  <xs:simpleType name="NonEmptyStringType"> 
+    <xs:restriction base="xs:string"> 
+      <xs:minLength value="1"/> 
+    </xs:restriction> 
+  </xs:simpleType> 
+  <xs:element name="RightsManagementSupport" type="xs:boolean"/> 
+  <xs:element name="TemplateID" type="NonEmptyStringType"/> 
+  <xs:element name="RemoveRightsManagementProtection"  
+      type="airsyncbase:EmptyTag"/> 
+  <xs:element name="RightsManagementTemplates"> 
+    <xs:complexType> 
+      <xs:sequence> 
+        <xs:element name="RightsManagementTemplate" minOccurs="0" maxOccurs="20"> 
+          <xs:complexType> 
+            <xs:sequence> 
+              <xs:element ref="TemplateID"/> 
+              <xs:element name="TemplateName" type="NonEmptyStringType"/> 
+              <xs:element name="TemplateDescription"  
+                  type="NonEmptyStringType"/> 
+            </xs:sequence> 
+          </xs:complexType> 
+        </xs:element> 
+      </xs:sequence> 
+    </xs:complexType> 
+  </xs:element> 
+  <xs:element name="RightsManagementLicense"> 
+    <xs:complexType> 
+      <xs:all> 
+        <xs:element name="Owner" type="xs:boolean"/> 
+        <xs:element name="ContentOwner" type="NonEmptyStringType"/> 
+        <xs:element name="ReplyAllAllowed" type="xs:boolean"/> 
+        <xs:element name="EditAllowed" type="xs:boolean"/> 
+        <xs:element name="ReplyAllowed" type="xs:boolean"/> 
+        <xs:element name="ForwardAllowed" type="xs:boolean"/> 
+        <xs:element name="ExportAllowed" type="xs:boolean"/> 
+        <xs:element name="ModifyRecipientsAllowed" type="xs:boolean"/> 
+        <xs:element ref="TemplateID"/> 
+        <xs:element name="ExtractAllowed" type="xs:boolean"/> 
+        <xs:element name="TemplateDescription" type="NonEmptyStringType"/> 
+        <xs:element name="ContentExpiryDate" type="xs:dateTime"/> 
+        <xs:element name="TemplateName" type="NonEmptyStringType"/> 
+        <xs:element name="PrintAllowed" type="xs:boolean"/> 
+        <xs:element name="ProgrammaticAccessAllowed" type="xs:boolean"/> 
+      </xs:all> 
+    </xs:complexType> 
+  </xs:element> 
+ </xs:schema> 
+
+45 / 49 
+
+[MS-ASRM] - v20250520 
+Exchange ActiveSync: Rights Management Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+7 Appendix B: Product Behavior 
+
+The information in this specification is applicable to the following Microsoft products or supplemental 
+software. References to product versions include updates to those products. 
+
+ Microsoft Exchange Server 2010 Service Pack 1 (SP1) 
+
+ Microsoft Exchange Server 2013 
+
+ Microsoft Exchange Server 2016 
+
+ Microsoft Exchange Server 2019 
+
+ Microsoft Exchange Server Subscription Edition 
+
+Exceptions, if any, are noted in this section. If an update version, service pack or Knowledge Base 
+(KB) number appears with a product name, the behavior changed in that update. The new behavior 
+also applies to subsequent updates unless otherwise specified. If a product edition appears with the 
+product version, behavior is different in that product edition. 
+
+Unless otherwise specified, any statement of optional behavior in this specification that is prescribed 
+using the terms "SHOULD" or "SHOULD NOT" implies product behavior in accordance with the 
+SHOULD or SHOULD NOT prescription. Unless otherwise specified, the term "MAY" implies that the 
+product does not follow the prescription. 
+
+46 / 49 
+
+[MS-ASRM] - v20250520 
+Exchange ActiveSync: Rights Management Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+8 Change Tracking 
+
+This section identifies changes that were made to this document since the last release. Changes are 
+classified as Major, Minor, or None.  
+
+The revision class Major means that the technical content in the document was significantly revised. 
+Major changes affect protocol interoperability or implementation. Examples of major changes are: 
+
+ A document revision that incorporates changes to interoperability requirements. 
+ A document revision that captures changes to protocol functionality. 
+
+The revision class Minor means that the meaning of the technical content was clarified. Minor changes 
+do not affect protocol interoperability or implementation. Examples of minor changes are updates to 
+clarify ambiguity at the sentence, paragraph, or table level. 
+
+The revision class None means that no new technical changes were introduced. Minor editorial and 
+formatting changes may have been made, but the relevant technical content is identical to the last 
+released version. 
+
+The changes made to this document are listed in the following table. For more information, please 
+contact dochelp@microsoft.com. 
+
+Section Description Revision class 
+
+7 Appendix B: Product Behavior Updated list of supported products. Major 
+
+47 / 49 
+
+[MS-ASRM] - v20250520 
+Exchange ActiveSync: Rights Management Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+9 Index
+A F 
+  
+Abstract data model Fields - vendor-extensible 9 
+   client 28 Full XML schema 45 
+   server 29  
+Applicability 9 G 
+  
+C Glossary 6 
+  
+Capability negotiation 9 H 
+Change tracking 47  
+Client Higher-layer triggered events 
+   abstract data model 28    client 28 
+   higher-layer triggered events 28    server 29 
+   initialization 28  
+   message processing 29 I 
+   other local events 29  
+   sequencing rules 29 Implementer - security considerations 44 
+   timer events 29 Index of security parameters 44 
+   timers 28 Informative references 7 
+ Initialization 
+D    client 28 
+    server 29 
+Data model - abstract Introduction 6 
+   client 28  
+   server 29 M 
+  
+E Message processing 
+    client 29 
+Elements    server 30 
+   ContentExpiryDate 10 Messages 
+   ContentOwner 11    Namespaces 10 
+   EditAllowed 12    transport 10 
+   ExportAllowed 12  
+   ExtractAllowed 13 N 
+   ForwardAllowed 14  
+   ModifyRecipientsAllowed 15 Namespaces message 10 
+   Owner 15 Normative references 7 
+   PrintAllowed 16  
+   ProgrammaticAccessAllowed 16 O 
+   RemoveRightsManagementProtection 17  
+   ReplyAllAllowed 18 Other local events 
+   ReplyAllowed 18    client 29 
+   RightsManagementLicense 19    server 33 
+   RightsManagementSupport 20 Overview (synopsis) 7 
+   RightsManagementTemplate 21  
+   RightsManagementTemplates 21 
+
+P 
+   TemplateDescription 22 
+
+ 
+   TemplateID 23 
+
+Parameters - security index 44 
+   TemplateName 26 
+
+Preconditions 8 
+Examples 
+
+Prerequisites 8 
+   fetching a rights-managed e-mail 39 
+
+Product behavior 46 
+   removing IRM protection 41 
+
+ 
+   replying to a rights-managed e-mail 37 
+
+R 
+   requesting that the server decompress and decrypt 
+
+rights-managed e-mail 35  
+
+   requesting that the server not decompress and References 7 
+
+decrypt rights-managed e-mail 36    informative 7 
+
+   retrieving rights policy templates 34    normative 7 
+
+   searching for a rights-managed e-mail 38 Relationship to other protocols 8 
+
+  
+
+48 / 49 
+
+[MS-ASRM] - v20250520 
+Exchange ActiveSync: Rights Management Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+S 
+ 
+Security 
+   implementer considerations 44 
+   parameter index 44 
+Sequencing rules 
+   client 29 
+   server 30 
+Server 
+   abstract data model 29 
+   higher-layer triggered events 29 
+   initialization 29 
+   message processing 30 
+   other local events 33 
+   sequencing rules 30 
+   timer events 32 
+   timers 29 
+Standards assignments 9 
+ 
+T 
+ 
+Timer events 
+   client 29 
+   server 32 
+Timers 
+   client 28 
+   server 29 
+Tracking changes 47 
+Transport 10 
+Triggered events - higher-layer 
+   client 28 
+   server 29 
+ 
+V 
+ 
+Vendor-extensible fields 9 
+Versioning 9 
+ 
+X 
+ 
+XML schema 45 
+
+ 
+
+49 / 49 
+
+[MS-ASRM] - v20250520 
+Exchange ActiveSync: Rights Management Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025
