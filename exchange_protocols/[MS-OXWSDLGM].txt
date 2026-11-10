@@ -1,0 +1,3545 @@
+﻿[MS-OXWSDLGM]:  
+
+Delegate Access Management Web Service Protocol 
+
+ 
+
+Intellectual Property Rights Notice for Open Specifications Documentation 
+
+ Technical Documentation. Microsoft publishes Open Specifications documentation (“this 
+documentation”) for protocols, file formats, data portability, computer languages, and standards 
+support. Additionally, overview documents cover inter-protocol relationships and interactions.  
+
+ Copyrights. This documentation is covered by Microsoft copyrights. Regardless of any other 
+terms that are contained in the terms of use for the Microsoft website that hosts this 
+documentation, you can make copies of it in order to develop implementations of the technologies 
+that are described in this documentation and can distribute portions of it in your implementations 
+that use these technologies or in your documentation as necessary to properly document the 
+implementation. You can also distribute in your implementation, with or without modification, any 
+schemas, IDLs, or code samples that are included in the documentation. This permission also 
+applies to any documents that are referenced in the Open Specifications documentation.  
+
+ No Trade Secrets. Microsoft does not claim any trade secret rights in this documentation.  
+ Patents. Microsoft has patents that might cover your implementations of the technologies 
+
+described in the Open Specifications documentation. Neither this notice nor Microsoft's delivery of 
+this documentation grants any licenses under those patents or any other Microsoft patents. 
+However, a given Open Specifications document might be covered by the Microsoft Open 
+Specifications Promise or the Microsoft Community Promise. If you would prefer a written license, 
+or if the technologies described in this documentation are not covered by the Open Specifications 
+Promise or Community Promise, as applicable, patent licenses are available by contacting 
+iplg@microsoft.com.  
+
+ License Programs. To see all of the protocols in scope under a specific license program and the 
+associated patents, visit the Patent Map.  
+
+ Trademarks. The names of companies and products contained in this documentation might be 
+covered by trademarks or similar intellectual property rights. This notice does not grant any 
+licenses under those rights. For a list of Microsoft trademarks, visit 
+www.microsoft.com/trademarks.  
+
+ Fictitious Names. The example companies, organizations, products, domain names, email 
+addresses, logos, people, places, and events that are depicted in this documentation are fictitious. 
+No association with any real company, organization, product, domain name, email address, logo, 
+person, place, or event is intended or should be inferred. 
+
+Reservation of Rights. All other rights are reserved, and this notice does not grant any rights other 
+than as specifically described above, whether by implication, estoppel, or otherwise.  
+
+Tools. The Open Specifications documentation does not require the use of Microsoft programming 
+tools or programming environments in order for you to develop an implementation. If you have access 
+to Microsoft programming tools and environments, you are free to take advantage of them. Certain 
+Open Specifications documents are intended for use in conjunction with publicly available standards 
+specifications and network programming art and, as such, assume that the reader either is familiar 
+with the aforementioned material or has immediate access to it. 
+
+Support. For questions and support, please contact dochelp@microsoft.com.  
+
+1 / 55 
+
+[MS-OXWSDLGM] - v20250520 
+Delegate Access Management Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Revision Summary 
+
+Revision Revision 
+Date History Class Comments 
+
+7/15/2009 1.0 Major Initial Availability. 
+
+11/4/2009 1.1.0 Minor Updated the technical content. 
+
+2/10/2010 1.2.0 Minor Updated the technical content. 
+
+5/5/2010 1.2.1 Editorial Revised and edited the technical content. 
+
+8/4/2010 2.0 Major Significantly changed the technical content. 
+
+11/3/2010 3.0 Major Significantly changed the technical content. 
+
+3/18/2011 4.0 Major Significantly changed the technical content. 
+
+8/5/2011 4.1 Minor Clarified the meaning of the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+10/7/2011 4.1 None 
+
+technical content. 
+
+1/20/2012 5.0 Major Significantly changed the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+4/27/2012 5.0 None 
+
+technical content. 
+
+7/16/2012 5.1 Minor Clarified the meaning of the technical content. 
+
+10/8/2012 5.2 Minor Clarified the meaning of the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+2/11/2013 5.2 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+7/26/2013 5.2 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+11/18/2013 5.2 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+2/10/2014 5.2 None 
+
+technical content. 
+
+4/30/2014 5.3 Minor Clarified the meaning of the technical content. 
+
+7/31/2014 5.4 Minor Clarified the meaning of the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+10/30/2014 5.4 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+5/26/2015 5.4 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+9/14/2015 5.4 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+6/13/2016 5.4 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+9/14/2016 5.4 None 
+
+technical content. 
+
+12/15/2016 5.5 Minor Clarified the meaning of the technical content. 
+
+2 / 55 
+
+[MS-OXWSDLGM] - v20250520 
+Delegate Access Management Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Revision Revision 
+Date History Class Comments 
+
+7/24/2018 6.0 Major Significantly changed the technical content. 
+
+10/1/2018 7.0 Major Significantly changed the technical content. 
+
+5/20/2025 8.0 Major Significantly changed the technical content. 
+
+3 / 55 
+
+[MS-OXWSDLGM] - v20250520 
+Delegate Access Management Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Table of Contents 
+1 Introduction ............................................................................................................ 7 
+
+1.1 Glossary ........................................................................................................... 7 
+1.2 References ........................................................................................................ 8 
+
+1.2.1 Normative References ................................................................................... 9 
+1.2.2 Informative References ................................................................................. 9 
+
+1.3 Overview .......................................................................................................... 9 
+1.4 Relationship to Other Protocols .......................................................................... 10 
+1.5 Prerequisites/Preconditions ............................................................................... 10 
+1.6 Applicability Statement ..................................................................................... 10 
+1.7 Versioning and Capability Negotiation ................................................................. 10 
+1.8 Vendor-Extensible Fields ................................................................................... 11 
+1.9 Standards Assignments ..................................................................................... 11 
+
+2 Messages ............................................................................................................... 12 
+2.1 Transport ........................................................................................................ 12 
+2.2 Common Message Syntax ................................................................................. 12 
+
+2.2.1 Namespaces .............................................................................................. 12 
+2.2.2 Messages ................................................................................................... 12 
+2.2.3 Elements ................................................................................................... 12 
+2.2.4 Complex Types ........................................................................................... 13 
+
+2.2.4.1 m:ArrayOfDelegateUserResponseMessageType Complex Type .................... 13 
+2.2.4.2 m:BaseDelegateResponseMessageType Complex Type .............................. 14 
+2.2.4.3 m:BaseDelegateType Complex Type ........................................................ 14 
+2.2.4.4 m:DelegateUserResponseMessageType Complex Type ............................... 15 
+2.2.4.5 t:ArrayOfDelegateUserType Complex Type ............................................... 15 
+2.2.4.6 t:ArrayOfUserIdType Complex Type ........................................................ 16 
+2.2.4.7 t:DelegatePermissionsType Complex Type ............................................... 16 
+2.2.4.8 t:DelegateUserType Complex Type .......................................................... 17 
+
+2.2.5 Simple Types ............................................................................................. 18 
+2.2.5.1 t:DelegateFolderPermissionLevelType Simple Type .................................... 18 
+2.2.5.2 t:DeliverMeetingRequestsType Simple Type ............................................. 19 
+
+2.2.6 Attributes .................................................................................................. 20 
+2.2.7 Groups ...................................................................................................... 20 
+2.2.8 Attribute Groups ......................................................................................... 20 
+
+3 Protocol Details ..................................................................................................... 21 
+3.1 ExchangeServicePortType Server Details ............................................................. 21 
+
+3.1.1 Abstract Data Model .................................................................................... 21 
+3.1.2 Timers ...................................................................................................... 21 
+3.1.3 Initialization ............................................................................................... 21 
+3.1.4 Message Processing Events and Sequencing Rules .......................................... 21 
+
+3.1.4.1 AddDelegate Operation .......................................................................... 22 
+3.1.4.1.1 Messages ....................................................................................... 22 
+
+3.1.4.1.1.1 tns:AddDelegateSoapIn Message ................................................. 22 
+3.1.4.1.1.2 tns:AddDelegateSoapOut Message ............................................... 23 
+
+3.1.4.1.2 Elements ........................................................................................ 24 
+3.1.4.1.2.1 AddDelegate Element ................................................................. 24 
+3.1.4.1.2.2 AddDelegateResponse Element .................................................... 24 
+
+3.1.4.1.3 Complex Types ............................................................................... 24 
+3.1.4.1.3.1 m:AddDelegateResponseMessageType Complex Type ..................... 25 
+3.1.4.1.3.2 m:AddDelegateType Complex Type .............................................. 25 
+
+3.1.4.1.4 Simple Types .................................................................................. 25 
+3.1.4.1.5 Attributes ....................................................................................... 26 
+3.1.4.1.6 Groups ........................................................................................... 26 
+
+3.1.4.2 GetDelegate Operation .......................................................................... 26 
+
+4 / 55 
+
+[MS-OXWSDLGM] - v20250520 
+Delegate Access Management Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+3.1.4.2.1 Messages ....................................................................................... 26 
+3.1.4.2.1.1 tns:GetDelegateSoapIn Message.................................................. 26 
+3.1.4.2.1.2 tns:GetDelegateSoapOut Message ............................................... 27 
+
+3.1.4.2.2 Elements ........................................................................................ 28 
+3.1.4.2.2.1 GetDelegate Element .................................................................. 28 
+3.1.4.2.2.2 GetDelegateResponse Element .................................................... 28 
+
+3.1.4.2.3 Complex Types ............................................................................... 28 
+3.1.4.2.3.1 m:GetDelegateResponseMessageType Complex Type ..................... 28 
+3.1.4.2.3.2 m:GetDelegateType Complex Type .............................................. 29 
+
+3.1.4.2.4 Simple Types .................................................................................. 30 
+3.1.4.2.5 Attributes ....................................................................................... 30 
+3.1.4.2.6 Groups ........................................................................................... 30 
+
+3.1.4.3 RemoveDelegate Operation .................................................................... 30 
+3.1.4.3.1 Messages ....................................................................................... 30 
+
+3.1.4.3.1.1 tns:RemoveDelegateSoapIn Message ........................................... 31 
+3.1.4.3.1.2 tns:RemoveDelegateSoapOut Message ......................................... 31 
+
+3.1.4.3.2 Elements ........................................................................................ 32 
+3.1.4.3.2.1 RemoveDelegateResponse Element .............................................. 32 
+3.1.4.3.2.2 RemoveDelegate Element ........................................................... 32 
+
+3.1.4.3.3 Complex Types ............................................................................... 32 
+3.1.4.3.3.1 m:RemoveDelegateType Complex Type ........................................ 33 
+3.1.4.3.3.2 m:RemoveDelegateResponseMessageType Complex Type ............... 33 
+
+3.1.4.3.4 Simple Types .................................................................................. 33 
+3.1.4.3.5 Attributes ....................................................................................... 34 
+3.1.4.3.6 Groups ........................................................................................... 34 
+
+3.1.4.4 UpdateDelegate Operation ..................................................................... 34 
+3.1.4.4.1 Messages ....................................................................................... 34 
+
+3.1.4.4.1.1 tns:UpdateDelegateSoapIn Message............................................. 34 
+3.1.4.4.1.2 tns:UpdateDelegateSoapOut message .......................................... 35 
+
+3.1.4.4.2 Elements ........................................................................................ 36 
+3.1.4.4.2.1 UpdateDelegateResponse Element ............................................... 36 
+3.1.4.4.2.2 UpdateDelegate Element ............................................................. 36 
+
+3.1.4.4.3 Complex Types ............................................................................... 36 
+3.1.4.4.3.1 m:UpdateDelegateType Complex Type ......................................... 37 
+3.1.4.4.3.2 m:UpdateDelegateResponseMessageType Complex Type ................ 37 
+
+3.1.4.4.4 Simple Types .................................................................................. 38 
+3.1.4.4.5 Attributes ....................................................................................... 38 
+3.1.4.4.6 Groups ........................................................................................... 38 
+
+3.1.5 Timer Events .............................................................................................. 38 
+3.1.6 Other Local Events ...................................................................................... 38 
+
+4 Protocol Examples ................................................................................................. 39 
+4.1 AddDelegate Operation ..................................................................................... 39 
+4.2 GetDelegate Operation ..................................................................................... 40 
+4.3 RemoveDelegate Operation ............................................................................... 41 
+4.4 UpdateDelegate Operation ................................................................................ 42 
+
+5 Security ................................................................................................................. 44 
+5.1 Security Considerations for Implementers ........................................................... 44 
+5.2 Index of Security Parameters ............................................................................ 44 
+
+6 Appendix A: Full WSDL .......................................................................................... 45 
+
+7 Appendix B: Full XML Schema ................................................................................ 48 
+7.1 Messages Schema ............................................................................................ 48 
+7.2 Types Schema ................................................................................................. 50 
+
+8 Appendix C: Product Behavior ............................................................................... 52 
+
+9 Change Tracking .................................................................................................... 53 
+
+5 / 55 
+
+[MS-OXWSDLGM] - v20250520 
+Delegate Access Management Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+10 Index ..................................................................................................................... 54 
+
+ 
+
+6 / 55 
+
+[MS-OXWSDLGM] - v20250520 
+Delegate Access Management Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+1 Introduction 
+
+The Delegate Access Management Web Service Protocol is used to manage delegate access to mailbox 
+and calendar information that is stored on a server. 
+
+Sections 1.5, 1.8, 1.9, 2, and 3 of this specification are normative. All other sections and examples in 
+this specification are informative. 
+
+1.1 Glossary 
+
+This document uses the following terms: 
+
+Calendar folder: A Folder object that contains Calendar objects. 
+
+Contacts folder: A Folder object that contains Contact objects. 
+
+delegate: A user or resource that has permissions to act on behalf of another user or resource. 
+
+delegate access: The access that is granted by a delegator to a delegate and is used by the 
+delegate to access the delegator's account. 
+
+Deleted Items folder: A special folder that is the default location for objects that have been 
+deleted. 
+
+endpoint: A communication port that is exposed by an application server for a specific shared 
+service and to which messages can be addressed. 
+
+Hypertext Transfer Protocol (HTTP): An application-level protocol for distributed, collaborative, 
+hypermedia information systems (text, graphic images, sound, video, and other multimedia 
+files) on the World Wide Web. 
+
+Hypertext Transfer Protocol Secure (HTTPS): An extension of HTTP that securely encrypts and 
+decrypts web page requests. In some older protocols, "Hypertext Transfer Protocol over Secure 
+Sockets Layer" is still used (Secure Sockets Layer has been deprecated). For more information, 
+see [SSL3] and [RFC5246]. 
+
+Inbox folder: A special folder that is the default location for Message objects received by a user or 
+resource. 
+
+Journal folder: A Folder object that contains Journal objects. 
+
+mailbox: A message store that contains email, calendar items, and other Message objects for a 
+single recipient. 
+
+meeting request: An instance of a Meeting Request object. 
+
+Notes folder: A Folder object that contains Note objects. 
+
+permission: A rule that is associated with an object and that regulates which users can gain 
+access to the object and in what manner. See also rights. 
+
+security identifier (SID): An identifier for security principals that is used to identify an account 
+or a group. Conceptually, the SID is composed of an account authority portion (typically a 
+domain) and a smaller integer representing an identity relative to the account authority, termed 
+the relative identifier (RID). The SID format is specified in [MS-DTYP] section 2.4.2; a string 
+representation of SIDs is specified in [MS-DTYP] section 2.4.2 and [MS-AZOD] section 1.1.1.2. 
+
+SOAP: A lightweight protocol for exchanging structured information in a decentralized, distributed 
+environment. SOAP uses XML technologies to define an extensible messaging framework, 
+which provides a message construct that can be exchanged over a variety of underlying 
+
+7 / 55 
+
+[MS-OXWSDLGM] - v20250520 
+Delegate Access Management Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+protocols. The framework has been designed to be independent of any particular programming 
+model and other implementation-specific semantics. SOAP 1.2 supersedes SOAP 1.1. See 
+[SOAP1.2-1/2003]. 
+
+SOAP action: The HTTP request header field used to indicate the intent of the SOAP request, 
+using a URI value. See [SOAP1.1] section 6.1.1 for more information. 
+
+SOAP body: A container for the payload data being delivered by a SOAP message to its recipient. 
+See [SOAP1.2-1/2007] section 5.3 for more information. 
+
+SOAP header: A mechanism for implementing extensions to a SOAP message in a decentralized 
+manner without prior agreement between the communicating parties. See [SOAP1.2-1/2007] 
+section 5.2 for more information. 
+
+SOAP message: An XML document consisting of a mandatory SOAP envelope, an optional SOAP 
+header, and a mandatory SOAP body. See [SOAP1.2-1/2007] section 5 for more information. 
+
+Tasks folder: A Folder object that contains Task objects. 
+
+Uniform Resource Locator (URL): A string of characters in a standardized format that identifies 
+a document or resource on the World Wide Web. The format is as specified in [RFC1738]. 
+
+web server: A server computer that hosts websites and responds to requests from applications. 
+
+Web Services Description Language (WSDL): An XML format for describing network services 
+as a set of endpoints that operate on messages that contain either document-oriented or 
+procedure-oriented information. The operations and messages are described abstractly and are 
+bound to a concrete network protocol and message format in order to define an endpoint. 
+Related concrete endpoints are combined into abstract endpoints, which describe a network 
+service. WSDL is extensible, which allows the description of endpoints and their messages 
+regardless of the message formats or network protocols that are used. 
+
+WSDL message: An abstract, typed definition of the data that is communicated during a WSDL 
+operation [WSDL]. Also, an element that describes the data being exchanged between web 
+service providers and clients. 
+
+WSDL port type: A named set of logically-related, abstract Web Services Description 
+Language (WSDL) operations and messages. 
+
+XML: The Extensible Markup Language, as described in [XML1.0]. 
+
+XML namespace: A collection of names that is used to identify elements, types, and attributes in 
+XML documents identified in a URI reference [RFC3986]. A combination of XML namespace and 
+local name allows XML documents to use elements, types, and attributes that have the same 
+names but come from different sources. For more information, see [XMLNS-2ED]. 
+
+XML namespace prefix: An abbreviated form of an XML namespace, as described in [XML]. 
+
+XML schema: A description of a type of XML document that is typically expressed in terms of 
+constraints on the structure and content of documents of that type, in addition to the basic 
+syntax constraints that are imposed by XML itself. An XML schema provides a view of a 
+document type at a relatively high level of abstraction. 
+
+MAY, SHOULD, MUST, SHOULD NOT, MUST NOT: These terms (in all caps) are used as defined 
+in [RFC2119]. All statements of optional behavior use either MAY, SHOULD, or SHOULD NOT. 
+
+1.2 References 
+
+Links to a document in the Microsoft Open Specifications library point to the correct section in the 
+most recently published version of the referenced document. However, because individual documents 
+
+8 / 55 
+
+[MS-OXWSDLGM] - v20250520 
+Delegate Access Management Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+in the library are not updated at the same time, the section numbers in the documents may not 
+match. You can confirm the correct section numbering by checking the Errata.   
+
+1.2.1 Normative References 
+
+We conduct frequent surveys of the normative references to assure their continued availability. If you 
+have any issue with finding a normative reference, please contact dochelp@microsoft.com. We will 
+assist you in finding the relevant information.  
+
+[MS-OXWSCDATA] Microsoft Corporation, "Common Web Service Data Types". 
+
+[RFC2119] Bradner, S., "Key words for use in RFCs to Indicate Requirement Levels", BCP 14, RFC 
+2119, March 1997, https://www.rfc-editor.org/info/rfc2119 
+
+[RFC2616] Fielding, R., Gettys, J., Mogul, J., et al., "Hypertext Transfer Protocol -- HTTP/1.1", RFC 
+2616, June 1999, https://www.rfc-editor.org/info/rfc2616 
+
+[RFC2818] Rescorla, E., "HTTP Over TLS", RFC 2818, May 2000, https://www.rfc-
+editor.org/info/rfc2818 
+
+[RFC3066] Alvestrand, H., "Tags for the Identification of Languages", BCP 47, RFC 3066, January 
+2001, https://www.rfc-editor.org/info/rfc3066 
+
+[SOAP1.1] Box, D., Ehnebuske, D., Kakivaya, G., et al., "Simple Object Access Protocol (SOAP) 1.1", 
+W3C Note, May 2000, https://www.w3.org/TR/2000/NOTE-SOAP-20000508/ 
+
+[WSDL] Christensen, E., Curbera, F., Meredith, G., and Weerawarana, S., "Web Services Description 
+Language (WSDL) 1.1", W3C Note, March 2001, https://www.w3.org/TR/2001/NOTE-wsdl-20010315 
+
+[XMLNS] Bray, T., Hollander, D., Layman, A., et al., Eds., "Namespaces in XML 1.0 (Third Edition)", 
+W3C Recommendation, December 2009, https://www.w3.org/TR/2009/REC-xml-names-20091208/ 
+
+[XMLSCHEMA1] Thompson, H., Beech, D., Maloney, M., and Mendelsohn, N., Eds., "XML Schema Part 
+1: Structures", W3C Recommendation, May 2001, https://www.w3.org/TR/2001/REC-xmlschema-1-
+20010502/ 
+
+[XMLSCHEMA2] Biron, P.V., Ed. and Malhotra, A., Ed., "XML Schema Part 2: Datatypes", W3C 
+Recommendation, May 2001, https://www.w3.org/TR/2001/REC-xmlschema-2-20010502/ 
+
+1.2.2 Informative References 
+
+[MS-OXDSCLI] Microsoft Corporation, "Autodiscover Publishing and Lookup Protocol". 
+
+[MS-OXPROTO] Microsoft Corporation, "Exchange Server Protocols System Overview". 
+
+[MS-OXWSADISC] Microsoft Corporation, "Autodiscover Publishing and Lookup SOAP-Based Web 
+Service Protocol". 
+
+1.3 Overview 
+
+Delegates are mailbox owners who are authorized to act on behalf of other mailbox owners. Client 
+applications can use the Delegate Access Management Web Service Protocol to add, update, and 
+remove delegates, and to query the server to determine whether a specific delegate is authorized to 
+act on a specific mailbox.  
+
+9 / 55 
+
+[MS-OXWSDLGM] - v20250520 
+Delegate Access Management Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+1.4 Relationship to Other Protocols 
+
+A client that implements this protocol can use the Autodiscover Publishing and Lookup SOAP-Based 
+Web Service Protocol, as described in [MS-OXWSADISC], or the Autodiscover Publishing and Lookup 
+Protocol, as described in [MS-OXDSCLI], to identify the target endpoint to use for each operation. 
+
+This protocol uses the SOAP Protocol, as described in [SOAP1.1], to specify the structure information 
+exchanged between the client and server. This protocol uses the XML Protocol, as described in 
+[XMLSCHEMA1] and [XMLSCHEMA2], to describe the message content sent to and from the server. 
+
+This protocol uses SOAP over HTTP, as described in [RFC2616], and SOAP over HTTPS, as described 
+in [RFC2818], as shown in the following figure.  
+
+ 
+
+Figure 1: This protocol in relation to other protocols 
+
+For conceptual background information and overviews of the relationships and interactions between 
+this and other protocols, see [MS-OXPROTO]. 
+
+1.5 Prerequisites/Preconditions 
+
+The endpoint URL that is returned by either the Autodiscover Publishing Lookup SOAP-Based Web 
+Service Protocol, as described in [MS-OXWSADISC], or the Autodiscover Publishing and Lookup 
+Protocol, as described in [MS-OXDSCLI], is required to form the HTTP request to the web server that 
+hosts this protocol. The operations that this protocol defines cannot be accessed unless the correct 
+endpoint is identified in the HTTP Web requests that target this protocol. 
+
+1.6 Applicability Statement 
+
+This protocol is applicable to client applications that manage mailbox delegates on a server. 
+
+1.7 Versioning and Capability Negotiation 
+
+This document covers versioning issues in the following areas: 
+
+ Supported Transports: This protocol uses multiple transports with SOAP 1.1, as specified in 
+section 2.1. 
+
+ Protocol Versions: This protocol has only one WSDL port type version. The WSDL version of 
+the request is identified by using the t:RequestServerVersion element, as described in [MS-
+OXWSCDATA] section 2.2.3.9, and the version of the server responding to the request is identified 
+by using the t:ServerVersionInfo element, as described in [MS-OXWSCDATA] section 2.2.3.10. 
+
+ Security and Authentication Methods: This protocol relies on the web server that is hosting it 
+to perform authentication. 
+
+ Localization: This protocol includes text strings in various messages. Localization considerations 
+for such strings are specified in sections 2.2 and 3.1.4. 
+
+10 / 55 
+
+[MS-OXWSDLGM] - v20250520 
+Delegate Access Management Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+ Capability Negotiation: This protocol does not support version negotiation. 
+
+1.8 Vendor-Extensible Fields 
+
+None. 
+
+1.9 Standards Assignments 
+
+None. 
+
+11 / 55 
+
+[MS-OXWSDLGM] - v20250520 
+Delegate Access Management Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+2 Messages 
+
+In the following sections, the schema definition might differ from the processing rules imposed by the 
+protocol. The WSDL in this specification provides a base description of the protocol. The schema in 
+this specification provides a base description of the message syntax. The text that specifies the WSDL 
+and schema might specify restrictions that reflect actual protocol behavior. For example, the schema 
+definition might allow for an element to be empty, null, or not present but the behavior of the 
+protocol as specified restricts the same elements to being non-empty, not null, or present. 
+
+2.1 Transport 
+
+The SOAP version supported is SOAP 1.1. For details, see [SOAP1.1]. 
+
+This protocol relies on the web server that hosts the application to perform authentication. The 
+protocol MUST support SOAP over HTTP, as specified in [RFC2616]. The protocol SHOULD use secure 
+communications via HTTPS, as defined in [RFC2818]. 
+
+2.2 Common Message Syntax 
+
+This section contains common definitions that are used by this protocol. The syntax of the definitions 
+uses XML schema, as defined in [XMLSCHEMA1] and [XMLSCHEMA2], and WSDL, as defined in 
+[WSDL]. 
+
+2.2.1 Namespaces 
+
+This specification defines and references various XML namespaces using the mechanisms specified in 
+[XMLNS]. Although this specification associates a specific XML namespace prefix for each XML 
+namespace that is used, the choice of any particular XML namespace prefix is implementation-specific 
+and not significant for interoperability. 
+
+Prefix Namespace URI Reference 
+
+soap http://schemas.xmlsoap.org/wsdl/soap/ [SOAP1.1] 
+
+tns http://schemas.microsoft.com/exchange/services/2006/messages  
+
+wsdl http://schemas.xmlsoap.org/wsdl/ [WSDL] 
+
+t http://schemas.microsoft.com/exchange/services/2006/types  
+
+m http://schemas.microsoft.com/exchange/services/2006/messages  
+
+xs http://www.w3.org/2001/XMLSchema [XMLSCHEMA1] 
+
+ 
+
+2.2.2 Messages 
+
+This specification does not define any common WSDL message definitions. 
+
+2.2.3 Elements 
+
+This specification does not define any common XML schema element definitions. 
+
+12 / 55 
+
+[MS-OXWSDLGM] - v20250520 
+Delegate Access Management Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+2.2.4 Complex Types 
+
+The following table summarizes the set of common XML schema complex type definitions that are 
+defined by this specification. XML schema complex type definitions that are specific to a particular 
+operation are defined with the operation. 
+
+Complex type name Description 
+
+ArrayOfDelegateUserResponseMessageType Specifies one or more delegates for a mailbox. 
+
+BaseDelegateResponseMessageType Specifies the base type for all Delegate Access Management 
+Web Service Protocol response types. 
+
+BaseDelegateType Specifies the base type for derived types that specify all 
+delegate management requests. 
+
+DelegateUserResponseMessageType Specifies a response message for a single delegate. 
+
+ArrayOfDelegateUserType Specifies one or more responses from a Delegate Access 
+Management Web Service Protocol operation. 
+
+ArrayOfUserIdType Specifies one or more user identifiers. 
+
+DelegatePermissionsType Specifies the delegate permissions for a mailbox delegate. 
+
+DelegateUserType Specifies a single delegate to add or update in a mailbox, or a 
+delegate that is returned in a delegate management 
+response. 
+
+ 
+
+2.2.4.1 m:ArrayOfDelegateUserResponseMessageType Complex Type 
+
+The ArrayOfDelegateUserResponseMessageType complex type specifies one or more responses 
+from a Delegate Access Management Web Service Protocol operation. 
+
+ <xs:complexType name="ArrayOfDelegateUserResponseMessageType"> 
+  <xs:sequence> 
+    <xs:element name="DelegateUserResponseMessageType" 
+      type="m:DelegateUserResponseMessageType" 
+      maxOccurs="unbounded" 
+     /> 
+  </xs:sequence> 
+ </xs:complexType> 
+ 
+
+The following table lists the child elements of the ArrayOfDelegateUserResponseMessageType 
+complex type. 
+
+Element name Type Description 
+
+DelegateUserResponseMessageType m:DelegateUserResponseMessageType Specifies a response 
+(section 2.2.4.4). from a Delegate 
+
+Access Management 
+Web Service Protocol 
+operation. 
+
+The ArrayOfDelegateUserResponseMessageType complex type is used in the 
+BaseDelegateResponseMessageType complex type, as specified in section 2.2.4.2. 
+
+13 / 55 
+
+[MS-OXWSDLGM] - v20250520 
+Delegate Access Management Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+2.2.4.2 m:BaseDelegateResponseMessageType Complex Type 
+
+The BaseDelegateResponseMessageType complex type is the base type for all Delegate Access 
+Management Web Service Protocol response types. The BaseDelegateResponseMessageType 
+complex type extends the ResponseMessageType complex type, as specified in [MS-OXWSCDATA] 
+section 2.2.4.65. 
+
+ <xs:complexType name="BaseDelegateResponseMessageType" 
+  abstract="true" 
+ > 
+  <xs:complexContent> 
+    <xs:extension 
+      base="m:ResponseMessageType" 
+    > 
+      <xs:sequence> 
+        <xs:element name="ResponseMessages" 
+          type="m:ArrayOfDelegateUserResponseMessageType" minOccurs="0"/> 
+      </xs:sequence> 
+    </xs:extension> 
+  </xs:complexContent> 
+ </xs:complexType> 
+ 
+
+The following table lists the child elements of the BaseDelegateResponseMessageType complex 
+type. 
+
+Element name Type Description 
+
+ResponseMessages m:ArrayOfDelegateUserResponseMessageType Specifies one or more response 
+(section 2.2.4.1) messages from a Delegate 
+
+Access Management Web 
+Service Protocol operation. Can 
+be present. 
+
+ 
+
+2.2.4.3 m:BaseDelegateType Complex Type 
+
+The BaseDelegateType complex type specifies the base type for derived types that specify all 
+delegate management requests. The BaseDelegateType complex type extends the 
+BaseRequestType complex type, as specified in [MS-OXWSCDATA] section 2.2.4.17. 
+
+ <xs:complexType name="BaseDelegateType" 
+  abstract="true" 
+ > 
+  <xs:complexContent> 
+    <xs:extension 
+      base="m:BaseRequestType" 
+    > 
+      <xs:sequence> 
+        <xs:element name="Mailbox" 
+          type="t:EmailAddressType" 
+         /> 
+      </xs:sequence> 
+    </xs:extension> 
+  </xs:complexContent> 
+ </xs:complexType> 
+
+The following table lists the child elements of the BaseDelegateType complex type. 
+
+14 / 55 
+
+[MS-OXWSDLGM] - v20250520 
+Delegate Access Management Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Element 
+name Type Description 
+
+Mailbox t:EmailAddressType ([MS- Specifies an e-mail address that defines the target of 
+OXWSCDATA] section 2.2.4.31) the delegate management operation. 
+
+ 
+
+2.2.4.4 m:DelegateUserResponseMessageType Complex Type 
+
+The DelegateUserResponseMessageType complex type specifies a response message for a single 
+delegate. The DelegateUserResponseMessageType complex type extends the 
+ResponseMessageType complex type, as specified in [MS-OXWSCDATA] section 2.2.4.65. 
+
+ <xs:complexType name="DelegateUserResponseMessageType"> 
+  <xs:complexContent> 
+    <xs:extension 
+      base="m:ResponseMessageType"> 
+      <xs:sequence> 
+        <xs:element name="DelegateUser" 
+          type="t:DelegateUserType" minOccurs="0"/> 
+      </xs:sequence> 
+    </xs:extension> 
+  </xs:complexContent> 
+ </xs:complexType> 
+ 
+
+The following table lists the child elements of the DelegateUserResponseMessageType complex 
+type. 
+
+Element 
+name Type Description 
+
+DelegateUser t:DelegateUserType Specifies a single delegate that is associated with a mailbox 
+(section 2.2.4.8) that is returned by a delegate management operation. 
+
+ 
+
+2.2.4.5 t:ArrayOfDelegateUserType Complex Type 
+
+The ArrayOfDelegateUser complex type specifies one or more delegates for a mailbox. 
+
+ <xs:complexType name="ArrayOfDelegateUserType"> 
+  <xs:sequence> 
+    <xs:element name="DelegateUser" 
+      type="t:DelegateUserType" 
+      maxOccurs="unbounded" 
+     /> 
+  </xs:sequence> 
+ </xs:complexType> 
+ 
+
+The following table lists the child elements of the ArrayOfDelegateUser complex type. 
+
+Element name Type Description 
+
+DelegateUser t:DelegateUserType (section 2.2.4.8) Specifies one or more mailbox delegates. 
+
+15 / 55 
+
+[MS-OXWSDLGM] - v20250520 
+Delegate Access Management Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+ 
+
+2.2.4.6 t:ArrayOfUserIdType Complex Type 
+
+The ArrayOfUserIdType complex type specifies one or more user identifiers. 
+
+ <xs:complexType name="ArrayOfUserIdType"> 
+  <xs:sequence> 
+    <xs:element name="UserId" 
+      type="t:UserIdType" 
+      maxOccurs="unbounded" 
+     /> 
+  </xs:sequence> 
+ </xs:complexType> 
+ 
+
+The following table lists the child elements of the ArrayOfUserIdType complex type. 
+
+Element name Type Description 
+
+UserId t:UserIdType ([MS-OXWSCDATA] section 2.2.4.73) Specifies one user identifier. 
+
+ 
+
+2.2.4.7 t:DelegatePermissionsType Complex Type 
+
+The DelegatePermissionsType complex type specifies the delegate permissions for a mailbox 
+delegate. 
+
+ <xs:complexType name="DelegatePermissionsType"> 
+  <xs:sequence> 
+    <xs:element name="CalendarFolderPermissionLevel" 
+      type="t:DelegateFolderPermissionLevelType" 
+      minOccurs="0" 
+     /> 
+    <xs:element name="TasksFolderPermissionLevel" 
+      type="t:DelegateFolderPermissionLevelType" 
+      minOccurs="0" 
+     /> 
+    <xs:element name="InboxFolderPermissionLevel" 
+      type="t:DelegateFolderPermissionLevelType" 
+      minOccurs="0" 
+     /> 
+    <xs:element name="ContactsFolderPermissionLevel" 
+      type="t:DelegateFolderPermissionLevelType" 
+      minOccurs="0" 
+     /> 
+    <xs:element name="NotesFolderPermissionLevel" 
+      type="t:DelegateFolderPermissionLevelType" 
+      minOccurs="0" 
+     /> 
+    <xs:element name="JournalFolderPermissionLevel" 
+      type="t:DelegateFolderPermissionLevelType" 
+      minOccurs="0" 
+     /> 
+  </xs:sequence> 
+ </xs:complexType> 
+ 
+
+The following table lists the child elements of the DelegatePermissionsType complex type. 
+
+16 / 55 
+
+[MS-OXWSDLGM] - v20250520 
+Delegate Access Management Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Element name Type Description 
+
+CalendarFolderPermissionLevel t:DelegateFolderPermissionLevelType Specifies the delegate 
+
+(section 2.2.5.1) permissions for the default 
+Calendar folder. Can be 
+present. 
+
+TasksFolderPermissionLevel t:DelegateFolderPermissionLevelType Specifies the delegate 
+permissions for the default 
+Tasks folder. Can be present. 
+
+InboxFolderPermissionLevel t:DelegateFolderPermissionLevelType Specifies the delegate 
+permissions for the default 
+Inbox folder. Can be present. 
+
+ContactsFolderPermissionLevel t:DelegateFolderPermissionLevelType Specifies the delegate 
+permissions for the default 
+Contacts folder. Can be 
+present. 
+
+NotesFolderPermissionLevel t:DelegateFolderPermissionLevelType Specifies the delegate 
+permissions for the default 
+Notes folder. Can be present. 
+
+JournalFolderPermissionLevel t:DelegateFolderPermissionLevelType Specifies the delegate 
+permissions for the default 
+Journal folder. Can be 
+present. 
+
+ 
+
+2.2.4.8 t:DelegateUserType Complex Type 
+
+The DelegateUserType complex type specifies a single delegate to add or update in a mailbox, or 
+a delegate that is returned in a delegate management response. 
+
+ <xs:complexType name="DelegateUserType"> 
+  <xs:sequence> 
+    <xs:element name="UserId" 
+      type="t:UserIdType" 
+     /> 
+    <xs:element name="DelegatePermissions" 
+      type="t:DelegatePermissionsType" 
+      minOccurs="0" 
+     /> 
+    <xs:element name="ReceiveCopiesOfMeetingMessages" 
+      type="xs:boolean" 
+      minOccurs="0" 
+     /> 
+    <xs:element name="ViewPrivateItems" 
+      type="xs:boolean" 
+      minOccurs="0" 
+     /> 
+  </xs:sequence> 
+ </xs:complexType> 
+ 
+
+The following table lists the child elements of the DelegateUserType complex type. 
+
+Element name Type Description 
+
+UserId t:UserIdType ([MS- Specifies the user identifier for the 
+
+17 / 55 
+
+[MS-OXWSDLGM] - v20250520 
+Delegate Access Management Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Element name Type Description 
+
+OXWSCDATA] section 2.2.4.73) delegate user. 
+
+DelegatePermissions t:DelegatePermissionsType Specifies the delegate permissions 
+(section 2.2.4.7) for the delegate user. Can be 
+
+present. 
+
+ReceiveCopiesOfMeetingMessages xs:boolean [XMLSCHEMA2] Specifies a Boolean value that 
+indicates whether the delegate 
+receives copies of meeting-related 
+messages that are addressed to the 
+primary account. 
+
+ViewPrivateItems xs:boolean Specifies a Boolean value that 
+indicates whether the delegate can 
+view private calendar items on the 
+primary account's calendar. 
+
+ 
+
+2.2.5 Simple Types 
+
+The following table summarizes the set of common XML schema simple type definitions that are 
+defined by this specification. XML schema simple type definitions that are specific to a particular 
+operation are described with the operation. 
+
+Simple type name Description 
+
+DelegateFolderPermissionLevelType Specifies the permissions that are granted on a folder to a delegate. 
+
+DeliverMeetingRequestType Specifies whether a delegate receives meeting requests on behalf of 
+a primary account.  
+
+ 
+
+2.2.5.1 t:DelegateFolderPermissionLevelType Simple Type 
+
+The DelegateFolderPermissionLevelType simple type specifies the permissions that are granted 
+on a folder to a delegate. 
+
+ <xs:simpleType name="DelegateFolderPermissionLevelType"> 
+  <xs:restriction 
+    base="xs:string" 
+  > 
+    <xs:enumeration 
+      value="None" 
+     /> 
+    <xs:enumeration 
+      value="Editor" 
+     /> 
+    <xs:enumeration 
+      value="Reviewer" 
+     /> 
+    <xs:enumeration 
+      value="Author" 
+     /> 
+    <xs:enumeration 
+      value="Custom" 
+     /> 
+  </xs:restriction> 
+
+18 / 55 
+
+[MS-OXWSDLGM] - v20250520 
+Delegate Access Management Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+ </xs:simpleType> 
+ 
+
+The following table lists the values that are defined by the DelegateFolderPermissionLevelType 
+simple type. 
+
+Value Description 
+
+None Delegate has no permissions on the folder. 
+
+Editor Delegate can read, create, and modify items in the folder. 
+
+Reviewer Delegate can read items in the folder. 
+
+Author Delegate can read and create items in the folder. 
+
+Custom This setting is not applicable to this protocol. 
+
+ 
+
+2.2.5.2 t:DeliverMeetingRequestsType Simple Type 
+
+The DeliverMeetingRequestsType simple type specifies how meeting requests are handled 
+between the delegate and the primary account. 
+
+ <xs:simpleType name="DeliverMeetingRequestsType"> 
+  <xs:restriction 
+    base="xs:string" 
+  > 
+    <xs:enumeration 
+      value="DelegatesOnly" 
+     /> 
+    <xs:enumeration 
+      value="DelegatesAndMe" 
+     /> 
+    <xs:enumeration 
+      value="DelegatesAndSendInformationToMe" 
+     /> 
+    <xs:enumeration 
+      value="NoForward" 
+     /> 
+  </xs:restriction> 
+ </xs:simpleType> 
+ 
+
+The following table lists the values that are defined by the DeliverMeetingRequestsType simple 
+type. 
+
+Value Description 
+
+DelegatesOnly Specifies that meeting requests are forwarded to the delegate and moved 
+to the Deleted Items folder in the primary account's mailbox. 
+
+DelegatesAndMe Specifies that meeting requests are forwarded to the delegate and remain 
+in the Inbox folder in the primary account's mailbox. 
+
+DelegatesAndSendInformationToMe Specifies that meeting requests are forwarded to the delegate and remain 
+in the Inbox folder in the primary account's mailbox.  
+
+NoForward Specifies that meeting requests are not to be forwarded to delegates. <1> 
+
+19 / 55 
+
+[MS-OXWSDLGM] - v20250520 
+Delegate Access Management Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+ 
+
+2.2.6 Attributes 
+
+This specification does not define any common XML schema attribute definitions. 
+
+2.2.7 Groups 
+
+This specification does not define any common XML schema group definitions. 
+
+2.2.8 Attribute Groups 
+
+This specification does not define any common XML schema attribute group definitions. 
+
+20 / 55 
+
+[MS-OXWSDLGM] - v20250520 
+Delegate Access Management Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+3 Protocol Details 
+
+The client side of this protocol is simply a pass-through. That is, no additional timers or other state is 
+required on the client side of this protocol. Calls made by the higher-layer protocol or application are 
+passed directly to the transport, and the results that are returned by the transport are passed directly 
+back to the higher-layer protocol or application. 
+
+3.1 ExchangeServicePortType Server Details 
+
+The Delegate Access Management Web Service Protocol defines a single port type with four 
+operations. The operations enable client implementations to create, review, update, and delete 
+delegates for a primary account. 
+
+3.1.1 Abstract Data Model 
+
+This section describes a conceptual model of possible data organization that an implementation 
+maintains to participate in this protocol. The described organization is provided to facilitate the 
+explanation of how the protocol behaves. This document does not mandate that implementations 
+adhere to this model as long as their external behavior is consistent with that specified in this 
+document. 
+
+The Delegate Access Management Web Service Protocol is used to set, retrieve, update, and delete 
+delegate access permissions on a primary account's mailbox on the server. The server maintains the 
+delegate access permissions and modifies them as requested. 
+
+The client is not required to maintain the state of delegate access permissions on the server and can 
+retrieve the current set of permissions at any time. If more than one client is changing delegate 
+access permissions, there is no requirement that the server lock the existing set of permissions for 
+changes. 
+
+3.1.2 Timers 
+
+None. 
+
+3.1.3 Initialization 
+
+None. 
+
+3.1.4 Message Processing Events and Sequencing Rules 
+
+This protocol includes the operations that are listed in the following table. 
+
+Operation Description 
+
+AddDelegate Adds one or more delegates to a primary account's mailbox. 
+
+GetDelegate Gets the delegates that are associated with a primary account's mailbox, if any. 
+
+RemoveDelegate Removes one or more delegates from the primary account's mailbox. 
+
+UpdateDelegate Modifies one or more delegates. 
+
+ 
+
+21 / 55 
+
+[MS-OXWSDLGM] - v20250520 
+Delegate Access Management Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+3.1.4.1 AddDelegate Operation 
+
+The AddDelegate operation adds one or more delegates to a mailbox. 
+
+The following is the WSDL port type specification of the operation. 
+
+ <wsdl:operation name="AddDelegate"> 
+     <wsdl:input message="tns:AddDelegateSoapIn" /> 
+     <wsdl:output message="tns:AddDelegateSoapOut" /> 
+ </wsdl:operation> 
+
+The following is the WSDL binding specification of the operation. 
+
+ <wsdl:operation name="AddDelegate"> 
+   <soap:operation 
+soapAction="http://schemas.microsoft.com/exchange/services/2006/messages/AddDelegate" /> 
+   <wsdl:input> 
+      <soap:header message="tns:AddDelegateSoapIn" part="Impersonation" use="literal"/> 
+      <soap:header message="tns:AddDelegateSoapIn" part="MailboxCulture" use="literal"/> 
+      <soap:header message="tns:AddDelegateSoapIn" part="RequestVersion" use="literal"/> 
+      <soap:body parts="request" use="literal" /> 
+   </wsdl:input> 
+   <wsdl:output> 
+      <soap:body parts="AddDelegateResult" use="literal" /> 
+      <soap:header message="tns:AddDelegateSoapOut" part="ServerVersion" use="literal"/> 
+   </wsdl:output> 
+ </wsdl:operation> 
+
+ 
+
+3.1.4.1.1 Messages 
+
+The following table lists the WSDL message definitions that are specific to this operation. 
+
+Message name Description 
+
+AddDelegateSoapIn Specifies the SOAP message that adds one or more delegates to the mailbox. 
+
+AddDelegateSoapOut Specifies the SOAP message that is returned by the server in response. 
+
+ 
+
+3.1.4.1.1.1 tns:AddDelegateSoapIn Message 
+
+The AddDelegateSoapIn WSDL message specifies the AddDelegate operation request to add one 
+or more delegates to a mailbox.  
+
+ <wsdl:message name="AddDelegateSoapIn">  
+   <wsdl:part name="request" element="tns:AddDelegate" />  
+   <wsdl:part name="Impersonation" element="t:ExchangeImpersonation"/>  
+   <wsdl:part name="MailboxCulture" element="t:MailboxCulture"/>  
+   <wsdl:part name="RequestVersion" element="t:RequestServerVersion"/>  
+ </wsdl:message>  
+
+The AddDelegateSoapIn WSDL message is the input message for the SOAP action 
+http://schemas.microsoft.com/exchange/services/2006/messages/AddDelegate.  
+
+The parts of the AddDelegateSoapIn WSDL message are described in the following table. 
+
+22 / 55 
+
+[MS-OXWSDLGM] - v20250520 
+Delegate Access Management Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Part name Element/type Description 
+
+request tns:AddDelegate (section 3.1.4.1.2.1) Specifies the SOAP body of the request to add 
+one or more delegates to a mailbox. 
+
+Impersonation t:ExchangeImpersonation ([MS- Specifies a SOAP header that identifies the user 
+OXWSCDATA] section 2.2.3.3) whom the client application is impersonating. 
+
+MailboxCulture t:MailboxCulture ([MS-OXWSCDATA] Specifies a SOAP header that identifies the culture 
+section 2.2.3.6) to use for accessing the mailbox. The cultures are 
+
+defined by [RFC3066]. 
+
+RequestVersion t:RequestServerVersion ([MS- Specifies a SOAP header that identifies the 
+OXWSCDATA] section 2.2.3.9) schema version for the AddDelegate operation 
+
+request. 
+
+ 
+
+3.1.4.1.1.2 tns:AddDelegateSoapOut Message 
+
+The AddDelegateSoapOut WSDL message specifies the server response to the AddDelegate 
+operation request to add one or more delegates to a mailbox. 
+
+ <wsdl:message name="AddDelegateSoapOut">  
+   <wsdl:part name="AddDelegateResult" element="tns:AddDelegateResponse" />  
+   <wsdl:part name="ServerVersion" element="t:ServerVersionInfo"/>  
+ </wsdl:message>  
+
+The AddDelegateSoapOut WSDL message is the output message for the SOAP action 
+http://schemas.microsoft.com/exchange/services/2006/messages/AddDelegate. 
+
+The parts of the AddDelegateSoapOut WSDL message are described in the following table. 
+
+Part name Element/type Description 
+
+AddDelegateResult tns:AddDelegateResponse (section Specifies the SOAP body of the response 
+3.1.4.1.2.2) to an AddDelegate operation request. 
+
+ServerVersion t:ServerVersionInfo ([MS-OXWSCDATA] Specifies a SOAP header that identifies the 
+section 2.2.3.10) server version for the response. 
+
+The AddDelegate operation returns an AddDelegateResponse element with the ResponseClass 
+attribute set to "Success". The ResponseCode element of the AddDelegateResponse element is set 
+to "NoError".  
+
+The operation returns the ResponseMessages element of the AddDelegateResponse element. A 
+DelegateUserResponseMessageType element of the ResponseMessages element is returned for 
+each DelegateUser element in the AddDelegate request. If the delegate was added successfully, 
+the ResponseClass attribute of the DelegateUserResponseMessageType element is set to 
+"Success". The ResponseCode element of the DelegateUserResponseMessageType is set to 
+"NoError".   
+
+Each successful DelegateUserResponseMessageType element includes a DelegateUser element, 
+which includes a UserId element, a ReceiveCopiesOfMeetingRequests element, and a 
+ViewPrivateItems element. 
+
+If the delegate was not added successfully, the ResponseClass attribute of the 
+DelegateUserResponseMessageType element is set to "Error". The ResponseCode element of the 
+
+23 / 55 
+
+[MS-OXWSDLGM] - v20250520 
+Delegate Access Management Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+DelegateUserResponseMessageType can be one of the error values listed in the following table. 
+These errors and other common errors are defined in [MS-OXWSCDATA] section 2.2.5.24. 
+
+Error Value Description 
+
+ErrorAddDelegatesFailed Occurs when a list with added delegates cannot be saved. 
+
+ErrorDelegateAlreadyExists Occurs in an AddDelegate operation when the specified user already 
+exists in the list of delegates. 
+
+ErrorDelegateCannotAddOwner Occurs in an AddDelegate operation when the specified user to be added 
+is the owner of the mailbox. 
+
+ErrorDelegateValidationFailed Occurs in an AddDelegate operation when an added delegate user is not 
+valid. 
+
+ErrorInvalidDelegatePermission Specifies that the specified folder permissions are invalid. 
+
+ 
+
+3.1.4.1.2 Elements 
+
+The following table lists the XML schema element definitions that are specific to this operation. 
+
+Element name Description 
+
+AddDelegate Specifies a request to add one or more delegates to a mailbox. 
+
+AddDelegateResponse Specifies the response body content from a request to add one or more delegates to a 
+mailbox. 
+
+ 
+
+3.1.4.1.2.1 AddDelegate Element 
+
+The AddDelegate element specifies the request message for an AddDelegate operation. 
+
+ <xs:element name="AddDelegate" 
+  type="m:AddDelegateType" 
+ /> 
+ 
+
+3.1.4.1.2.2 AddDelegateResponse Element 
+
+The AddDelegateResponse element specifies the response message for an AddDelegate operation.  
+
+ <xs:element name="AddDelegateResponse" 
+  type="m:AddDelegateResponseMessageType" 
+ /> 
+ 
+
+3.1.4.1.3 Complex Types 
+
+The following table lists the XML schema complex type definitions that are specific to this operation. 
+
+Complex type name Description 
+
+AddDelegateResponseMessageType Specifies the response message for the AddDelegate operation. 
+
+24 / 55 
+
+[MS-OXWSDLGM] - v20250520 
+Delegate Access Management Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Complex type name Description 
+
+AddDelegateType Specifies the request message for the AddDelegate operation. 
+
+ 
+
+3.1.4.1.3.1 m:AddDelegateResponseMessageType Complex Type 
+
+The AddDelegateResponseMessageType complex type specifies the response message from the 
+AddDelegate operation. The AddDelegateResponseMessageType complex type extends the 
+BaseDelegateResponseMessageType complex type, as specified in section 2.2.4.2. 
+
+ <xs:complexType name="AddDelegateResponseMessageType"> 
+  <xs:complexContent> 
+    <xs:extension 
+      base="m:BaseDelegateResponseMessageType" 
+     /> 
+  </xs:complexContent> 
+ </xs:complexType> 
+ 
+
+3.1.4.1.3.2 m:AddDelegateType Complex Type 
+
+The AddDelegateType complex type specifies a request to add one or more delegates to a primary 
+account's mailbox by using the AddDelegate operation. The AddDelegateType complex type 
+extends the BaseDelegateType complex type, as specified in section 2.2.4.3. 
+
+ <xs:complexType name="AddDelegateType"> 
+  <xs:complexContent> 
+    <xs:extension 
+      base="m:BaseDelegateType" 
+    > 
+      <xs:sequence> 
+        <xs:element name="DelegateUsers" 
+          type="t:ArrayOfDelegateUserType" 
+         /> 
+        <xs:element name="DeliverMeetingRequests" 
+          type="t:DeliverMeetingRequestsType" minOccurs="0" 
+         /> 
+      </xs:sequence> 
+    </xs:extension> 
+  </xs:complexContent> 
+ </xs:complexType> 
+ 
+
+The following table lists the child elements of the AddDelegateType complex type. 
+
+Element name Type Description 
+
+DelegateUsers t:ArrayOfDelegateUserType (section Specifies the delegates to add to the 
+2.2.4.5) mailbox. 
+
+DeliverMeetingRequests t:DeliverMeetingRequestsType Specifies how meeting-related messages 
+(section 2.2.5.2) are handled between the delegate and 
+
+the primary account. 
+
+ 
+
+3.1.4.1.4 Simple Types 
+
+25 / 55 
+
+[MS-OXWSDLGM] - v20250520 
+Delegate Access Management Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+None. 
+
+3.1.4.1.5 Attributes 
+
+None. 
+
+3.1.4.1.6 Groups 
+
+None. 
+
+3.1.4.2 GetDelegate Operation 
+
+The GetDelegate operation gets one or more delegates that are assigned to a mailbox. 
+
+The following is the WSDL port type specification for the operation. 
+
+ <wsdl:operation name="GetDelegate"> 
+     <wsdl:input message="tns:GetDelegateSoapIn" /> 
+     <wsdl:output message="tns:GetDelegateSoapOut" /> 
+ </wsdl:operation> 
+
+The following is the WSDL binding specification for the operation. 
+
+ <wsdl:operation name="GetDelegate"> 
+   <soap:operation 
+soapAction="http://schemas.microsoft.com/exchange/services/2006/messages/GetDelegate" /> 
+   <wsdl:input> 
+      <soap:header message="tns:GetDelegateSoapIn" part="Impersonation" use="literal"/> 
+      <soap:header message="tns:GetDelegateSoapIn" part="MailboxCulture" use="literal"/> 
+      <soap:header message="tns:GetDelegateSoapIn" part="RequestVersion" use="literal"/> 
+      <soap:body parts="request" use="literal" /> 
+   </wsdl:input> 
+   <wsdl:output> 
+      <soap:body parts="GetDelegateResult" use="literal" /> 
+      <soap:header message="tns:GetDelegateSoapOut" part="ServerVersion" use="literal"/> 
+   </wsdl:output> 
+
+</wsdl:operation> 
+
+3.1.4.2.1 Messages 
+
+The following table lists the WSDL message definitions that are specific to this operation. 
+
+Message name Description 
+
+GetDelegateSoapIn Specifies the SOAP message that requests one or more delegates to the mailbox. 
+
+GetDelegateSoapOut Specifies the SOAP message that is returned by the server in response. 
+
+ 
+
+3.1.4.2.1.1 tns:GetDelegateSoapIn Message 
+
+The GetDelegateSoapIn WSDL message specifies the GetDelegate operation request to return 
+one or more delegates to a mailbox. 
+
+<wsdl:message name="GetDelegateSoapIn"> 
+   <wsdl:part name="request" element="tns:GetDelegate" /> 
+
+26 / 55 
+
+[MS-OXWSDLGM] - v20250520 
+Delegate Access Management Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+   <wsdl:part name="Impersonation" element="t:ExchangeImpersonation"/> 
+   <wsdl:part name="MailboxCulture" element="t:MailboxCulture"/> 
+   <wsdl:part name="RequestVersion" element="t:RequestServerVersion"/> 
+</wsdl:message> 
+
+The GetDelegateSoapIn WSDL message is the input message for the SOAP action 
+http://schemas.microsoft.com/exchange/services/2006/messages/GetDelegate. 
+
+The parts of the GetDelegateSoapIn WSDL message are described in the following table. 
+
+Part name Element/type Description 
+
+request tns:GetDelegate (section 3.1.4.2.2.1) Specifies the SOAP body of the request to return 
+one or more mailbox delegates. 
+
+Impersonation t:ExchangeImpersonation ([MS- Specifies a SOAP header that identifies the user 
+OXWSCDATA] section 2.2.3.3) whom the client application is impersonating. 
+
+MailboxCulture t:MailboxCulture ([MS-OXWSCDATA] Specifies a SOAP header that identifies the culture 
+section 2.2.3.6) to use for accessing the mailbox. The cultures are 
+
+specified by [RFC3066]. 
+
+RequestVersion t:RequestServerVersion ([MS- Specifies a SOAP header that identifies the 
+OXWSCDATA] section 2.2.3.9) schema version for the GetDelegate operation 
+
+request. 
+
+ 
+
+3.1.4.2.1.2 tns:GetDelegateSoapOut Message 
+
+The GetDelegateSoapOut WSDL message specifies the server response to the GetDelegate 
+operation request to return one or more mailbox delegates. 
+
+ <wsdl:message name="GetDelegateSoapOut">  
+   <wsdl:part name="GetDelegateResult" element="tns:GetDelegateResponse" />  
+   <wsdl:part name="ServerVersion" element="t:ServerVersionInfo"/>  
+ </wsdl:message> 
+
+The GetDelegateSoapOut WSDL message is the output message for the SOAP action 
+http://schemas.microsoft.com/exchange/services/2006/messages/GetDelegate. 
+
+The parts of the GetDelegateSoapOut WSDL message are described in the following table. 
+
+Part name Element/type Description 
+
+GetDelegateResult tns:GetDelegateResponse (section Specifies the SOAP body of the response to 
+3.1.4.2.2.2) a GetDelegate operation request. 
+
+ServerVersion t:ServerVersionInfo ([MS-OXWSCDATA] Specifies a SOAP header that identifies the 
+section 2.2.3.10) server version for the response. 
+
+The GetDelegate operation returns a GetDelegateResponse element with the ResponseClass 
+attribute set to "Success". The ResponseCode element of the GetDelegateResponse element is set 
+to "NoError".  
+
+If there are delegates assigned to the mailbox, the operation returns the ResponseMessages 
+element of the GetDelegateResponse element. A DelegateUserResponseMessageType element 
+of the ResponseMessages element is returned for each delegate returned. If a delegate was 
+
+27 / 55 
+
+[MS-OXWSDLGM] - v20250520 
+Delegate Access Management Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+retrieved successfully, the ResponseClass attribute of the DelegateUserResponseMessageType 
+element is set to "Success". The ResponseCode element of the 
+DelegateUserResponseMessageType is set to "NoError".  
+
+Each successful DelegateUserResponseMessageType element includes a UserId element, a 
+DelegatePermissions element, a RecceiveCopiesOfMeetingMessages element, and a 
+ViewPrivateItems element.  
+
+If the request was not successful, the ResponseClass attribute of the 
+DelegateUserResponseMessageType element is set to "Error". The ResponseCode element of the 
+DelegateUserResponseMessageType is set to a value of the ResponseCodeType simple type, as 
+specified in [MS-OXWSCDATA] section 2.2.5.24. 
+
+3.1.4.2.2 Elements 
+
+The following table lists the XML schema element definitions that are specific to this operation. 
+
+Element name Description 
+
+GetDelegate Specifies a request to get one or more delegates to a mailbox. 
+
+GetDelegateResponse Specifies the response body content from a request to get delegates to a mailbox. 
+
+ 
+
+3.1.4.2.2.1 GetDelegate Element 
+
+The GetDelegate element specifies the base element for a GetDelegate operation. 
+
+ <xs:element name="GetDelegate" 
+  type="m:GetDelegateType" 
+ /> 
+ 
+
+3.1.4.2.2.2 GetDelegateResponse Element 
+
+The GetDelegateResponse element specifies the response message for a GetDelegate operation. 
+
+ <xs:element name="GetDelegateResponse" 
+  type="m:GetDelegateResponseMessageType" 
+ /> 
+ 
+
+3.1.4.2.3 Complex Types 
+
+The following table lists the XML schema complex type definitions that are specific to this operation. 
+
+Complex type name Description 
+
+GetDelegateResponseMessageType Specifies the response message for the GetDelegate operation. 
+
+GetDelegateType Specifies the request message for the GetDelegate operation. 
+
+ 
+
+3.1.4.2.3.1 m:GetDelegateResponseMessageType Complex Type 
+
+28 / 55 
+
+[MS-OXWSDLGM] - v20250520 
+Delegate Access Management Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+The GetDelegateResponseMessageType complex type specifies the response message from the 
+GetDelegate operation. The GetDelegateResponseMessageType complex type extends the 
+BaseDelegateResponseMessageType complex type, as specified in section 2.2.4.2. 
+
+ <xs:complexType name="GetDelegateResponseMessageType"> 
+  <xs:complexContent> 
+    <xs:extension 
+      base="m:BaseDelegateResponseMessageType" 
+    > 
+      <xs:sequence> 
+        <xs:element name="DeliverMeetingRequests" 
+          type="t:DeliverMeetingRequestsType" 
+          minOccurs="0"  
+         /> 
+      </xs:sequence> 
+    </xs:extension> 
+  </xs:complexContent> 
+ </xs:complexType> 
+ 
+
+The following table lists the child elements of the GetDelegateResponseMessageType complex 
+type. 
+
+Element name Type Description 
+
+DeliverMeetingRequests t:DeliverMeetingRequestsType Specifies how meeting-related messages 
+(section 2.2.5.2) are handled between the delegates in the 
+
+response and the primary account. This 
+element can be present.<2> 
+
+ 
+
+3.1.4.2.3.2 m:GetDelegateType Complex Type 
+
+The GetDelegateType complex type specifies a request to return the delegates that are users 
+associated with a primary account's mailbox. The GetDelegateType complex type extends the 
+BaseDelegateType complex type, as specified in section 2.2.4.3. 
+
+ <xs:complexType name="GetDelegateType"> 
+  <xs:complexContent> 
+    <xs:extension 
+      base="m:BaseDelegateType" 
+    > 
+      <xs:sequence> 
+        <xs:element name="UserIds" 
+          type="t:ArrayOfUserIdType" 
+          minOccurs="0" 
+        /> 
+      </xs:sequence> 
+      <xs:attribute name="IncludePermissions"  
+        type="xs:boolean"  
+        use="required" 
+      /> 
+    </xs:extension> 
+  </xs:complexContent> 
+ </xs:complexType> 
+ 
+
+The following table lists the child elements of the GetDelegateType complex type. 
+
+29 / 55 
+
+[MS-OXWSDLGM] - v20250520 
+Delegate Access Management Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Element 
+name Type Description 
+
+UserIds t:ArrayOfUserIdType (section Specifies one or more user identifiers of the delegates to be 
+2.2.4.6) returned for the primary account's mailbox. 
+
+ 
+
+3.1.4.2.4 Simple Types 
+
+None. 
+
+3.1.4.2.5 Attributes 
+
+None. 
+
+3.1.4.2.6 Groups 
+
+None. 
+
+3.1.4.3 RemoveDelegate Operation 
+
+The RemoveDelegate operation removes one or more delegates from a mailbox. 
+
+The following is the WSDL port type specification of the operation. 
+
+ <wsdl:operation name="RemoveDelegate"> 
+     <wsdl:input message="tns:RemoveDelegateSoapIn" /> 
+     <wsdl:output message="tns:RemoveDelegateSoapOut" /> 
+ </wsdl:operation> 
+
+The following is the WSDL binding specification of the operation. 
+
+ <wsdl:operation name="RemoveDelegate"> 
+   <soap:operation 
+soapAction="http://schemas.microsoft.com/exchange/services/2006/messages/RemoveDelegate" /> 
+   <wsdl:input> 
+      <soap:header message="tns:RemoveDelegateSoapIn" part="Impersonation" use="literal"/> 
+      <soap:header message="tns:RemoveDelegateSoapIn" part="MailboxCulture" use="literal"/> 
+      <soap:header message="tns:RemoveDelegateSoapIn" part="RequestVersion" use="literal"/> 
+      <soap:body parts="request" use="literal" /> 
+   </wsdl:input> 
+   <wsdl:output> 
+      <soap:body parts="RemoveDelegateResult" use="literal" /> 
+      <soap:header message="tns:RemoveDelegateSoapOut" part="ServerVersion" use="literal"/> 
+   </wsdl:output> 
+ </wsdl:operation> 
+
+3.1.4.3.1 Messages 
+
+The following table lists the WSDL message definitions that are specific to this operation. 
+
+Message name Description 
+
+RemoveDelegateSoapIn Specifies the SOAP message that removes one or more delegates from the 
+mailbox. 
+
+RemoveDelegateSoapOut Specifies the SOAP message that is returned by the server in response. 
+
+30 / 55 
+
+[MS-OXWSDLGM] - v20250520 
+Delegate Access Management Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+ 
+
+3.1.4.3.1.1 tns:RemoveDelegateSoapIn Message 
+
+The RemoveDelegateSoapIn WSDL message specifies the RemoveDelegate operation request to 
+remove one or more delegates from a mailbox. 
+
+ <wsdl:message name="RemoveDelegateSoapIn"> 
+   <wsdl:part name="request" element="tns:RemoveDelegate" /> 
+   <wsdl:part name="Impersonation" element="t:ExchangeImpersonation"/> 
+   <wsdl:part name="MailboxCulture" element="t:MailboxCulture"/> 
+   <wsdl:part name="RequestVersion" element="t:RequestServerVersion"/> 
+ </wsdl:message> 
+
+The RemoveDelegateSoapIn WSDL message is the input message for the SOAP action 
+http://schemas.microsoft.com/exchange/services/2006/messages/RemoveDelegate. 
+
+The parts of the RemoveDelegateSoapIn WSDL message are described in the following table. 
+
+Part name Element/type Description 
+
+request tns:RemoveDelegate (section Specifies the SOAP body of the request to 
+3.1.4.3.2.2) remove one or more delegates from a mailbox. 
+
+Impersonation t:ExchangeImpersonation ([MS- Specifies a SOAP header that identifies the user 
+OXWSCDATA] section 2.2.3.3) whom the client application is impersonating. 
+
+MailboxCulture t:MailboxCulture ([MS-OXWSCDATA] Specifies a SOAP header that identifies the culture 
+section 2.2.3.6) to use for accessing the mailbox. The cultures are 
+
+defined by [RFC3066]. 
+
+RequestVersion t:RequestServerVersion ([MS- Specifies a SOAP header that identifies the schema 
+OXWSCDATA] section 2.2.3.9) version for the RemoveDelegate operation 
+
+request. 
+
+ 
+
+3.1.4.3.1.2 tns:RemoveDelegateSoapOut Message 
+
+The RemoveDelegateSoapOut WSDL message specifies the server response to the 
+RemoveDelegate operation request to remove one or more delegates from a mailbox. 
+
+ <wsdl:message name="RemoveDelegateSoapOut"> 
+   <wsdl:part name="RemoveDelegateResult" element="tns:RemoveDelegateResponse" /> 
+   <wsdl:part name="ServerVersion" element="t:ServerVersionInfo"/> 
+ </wsdl:message> 
+
+The RemoveDelegateSoapOut WSDL message is the output message for the SOAP action 
+http://schemas.microsoft.com/exchange/services/2006/messages/RemoveDelegate. 
+
+The parts of the RemoveDelegateSoapOut WSDL message are described in the following table. 
+
+Part name Element/type Description 
+
+RemoveDelegateResult tns:RemoveDelegateResponse (section Specifies the SOAP body of the 
+3.1.4.3.2.1) response to a RemoveDelegate 
+
+request. 
+
+ServerVersion t:ServerVersionInfo ([MS-OXWSCDATA] Specifies a SOAP header that 
+
+31 / 55 
+
+[MS-OXWSDLGM] - v20250520 
+Delegate Access Management Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Part name Element/type Description 
+
+section 2.2.3.10) identifies the server version for the 
+response. 
+
+The RemoveDelegate operation returns a RemoveDelegateResponse element with the 
+ResponseClass attribute set to "Success". The ResponseCode element of the 
+RemoveDelegateResponse element is set to "NoError".  
+
+The operation returns the ResponseMessages element of the RemoveDelegateResponse element. 
+A DelegateUserResponseMessageType element of the ResponseMessages element is returned 
+for each DelegateUser element in the RemoveDelegate request. If the delegate was removed 
+successfully, the ResponseClass attribute of the DelegateUserResponseMessageType element is 
+set to "Success". The ResponseCode element of the DelegateUserResponseMessageType is set 
+to "NoError".  
+
+If the delegate was not removed successfully, the ResponseClass attribute of the 
+DelegateUserResponseMessageType element is set to "Error". The ResponseCode element of the 
+DelegateUserResponseMessageType can be "ErrorRemoveDelegatesFailed".  This error and other 
+common errors are specified in [MS-OXWSCDATA] section 2.2.5.24. 
+
+3.1.4.3.2 Elements 
+
+The following table lists the XML schema element definitions that are specific to this operation. 
+
+Element name Description 
+
+RemoveDelegate Specifies a request to remove one or more delegates from a mailbox. 
+
+RemoveDelegateResponse Specifies the response body content from a request to remove delegates from a 
+mailbox. 
+
+ 
+
+3.1.4.3.2.1 RemoveDelegateResponse Element 
+
+The RemoveDelegateResponse element specifies the response message for a RemoveDelegate 
+operation. 
+
+ <xs:element name="RemoveDelegateResponse" 
+  type="m:RemoveDelegateResponseMessageType" 
+ /> 
+ 
+
+3.1.4.3.2.2 RemoveDelegate Element 
+
+The RemoveDelegate element specifies the base element for a RemoveDelegate operation. 
+
+ <xs:element name="RemoveDelegate" 
+  type="m:RemoveDelegateType" 
+ /> 
+ 
+
+3.1.4.3.3 Complex Types 
+
+The following table lists the XML schema complex type definitions that are specific to this operation. 
+
+32 / 55 
+
+[MS-OXWSDLGM] - v20250520 
+Delegate Access Management Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Complex type name Description 
+
+RemoveDelegateResponseMessageType Specifies the response message for the RemoveDelegate 
+operation. 
+
+RemoveDelegateType Specifies the request message for the RemoveDelegate 
+operation. 
+
+ 
+
+3.1.4.3.3.1 m:RemoveDelegateType Complex Type 
+
+The RemoveDelegateType complex type specifies a request to remove delegates from a primary 
+account's mailbox by using the RemoveDelegate operation. The RemoveDelegateType complex 
+type extends the BaseDelegateType complex type, as specified in section 2.2.4.3. 
+
+ <xs:complexType name="RemoveDelegateType"> 
+  <xs:complexContent> 
+    <xs:extension 
+      base="m:BaseDelegateType" 
+    > 
+      <xs:sequence> 
+        <xs:element name="UserIds" 
+          type="t:ArrayOfUserIdType" 
+         /> 
+      </xs:sequence> 
+    </xs:extension> 
+  </xs:complexContent> 
+ </xs:complexType> 
+ 
+
+The following table lists the child elements of the RemoveDelegateType complex type. 
+
+Element 
+name Type Description 
+
+UserIds t:ArrayOfUserIdType (section Specifies a list of user identifiers of the delegates to 
+2.2.4.6) remove from the mailbox. 
+
+ 
+
+3.1.4.3.3.2 m:RemoveDelegateResponseMessageType Complex Type 
+
+The RemoveDelegateResponseMessageType complex type specifies the response message from 
+the RemoveDelegate operation. The RemoveDelegateResponseMessageType complex type 
+extends the BaseDelegateResponseMessageType complex type, as specified in section 2.2.4.2. 
+
+ <xs:complexType name="RemoveDelegateResponseMessageType"> 
+  <xs:complexContent> 
+    <xs:extension 
+      base="m:BaseDelegateResponseMessageType" 
+     /> 
+  </xs:complexContent> 
+ </xs:complexType> 
+ 
+
+3.1.4.3.4 Simple Types 
+
+None. 
+
+33 / 55 
+
+[MS-OXWSDLGM] - v20250520 
+Delegate Access Management Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+3.1.4.3.5 Attributes 
+
+None. 
+
+3.1.4.3.6 Groups 
+
+None. 
+
+3.1.4.4 UpdateDelegate Operation 
+
+The UpdateDelegate operation updates one or more delegates to a mailbox. 
+
+The following is the WSDL port type specification of the operation. 
+
+ <wsdl:operation name="UpdateDelegate"> 
+     <wsdl:input message="tns:UpdateDelegateSoapIn" /> 
+     <wsdl:output message="tns:UpdateDelegateSoapOut" /> 
+ </wsdl:operation> 
+
+The following is the WSDL binding specification of the operation. 
+
+ <wsdl:operation name="UpdateDelegate"> 
+   <soap:operation 
+soapAction="http://schemas.microsoft.com/exchange/services/2006/messages/UpdateDelegate" /> 
+   <wsdl:input> 
+      <soap:header message="tns:UpdateDelegateSoapIn" part="Impersonation" use="literal"/> 
+      <soap:header message="tns:UpdateDelegateSoapIn" part="MailboxCulture" use="literal"/> 
+      <soap:header message="tns:UpdateDelegateSoapIn" part="RequestVersion" use="literal"/> 
+      <soap:body parts="request" use="literal" /> 
+   </wsdl:input> 
+   <wsdl:output> 
+      <soap:body parts="UpdateDelegateResult" use="literal" /> 
+      <soap:header message="tns:UpdateDelegateSoapOut" part="ServerVersion" use="literal"/> 
+   </wsdl:output> 
+ </wsdl:operation> 
+
+3.1.4.4.1 Messages 
+
+The following table lists the WSDL message definitions that are specific to this operation. 
+
+Message name Description 
+
+UpdateDelegateSoapIn Specifies the SOAP message that requests that one or more delegates to a 
+mailbox be updated. 
+
+UpdateDelegateSoapOut Specifies the SOAP message that is returned by the server in response. 
+
+ 
+
+3.1.4.4.1.1 tns:UpdateDelegateSoapIn Message 
+
+The UpdateDelegateSoapIn WSDL message specifies the UpdateDelegate operation request to 
+modify one or more delegates to a mailbox. 
+
+ <wsdl:message name="UpdateDelegateSoapIn"> 
+   <wsdl:part name="request" element="tns:UpdateDelegate" /> 
+   <wsdl:part name="Impersonation" element="t:ExchangeImpersonation"/> 
+   <wsdl:part name="MailboxCulture" element="t:MailboxCulture"/> 
+   <wsdl:part name="RequestVersion" element="t:RequestServerVersion"/> 
+
+34 / 55 
+
+[MS-OXWSDLGM] - v20250520 
+Delegate Access Management Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+ </wsdl:message> 
+
+The UpdateDelegateSoapIn WSDL message is the input message for the SOAP action 
+http://schemas.microsoft.com/exchange/services/2006/messages/UpdateDelegate. 
+
+The parts of the UpdateDelegateSoapIn WSDL message are described in the following table. 
+
+Part name Element/type Description 
+
+request tns:UpdateDelegate (section Specifies the SOAP body of the request to modify 
+3.1.4.4.2.2) one or more delegates to a mailbox. 
+
+Impersonation t:ExchangeImpersonation ([MS- Specifies a SOAP header that identifies the user 
+OXWSCDATA] section 2.2.3.3) whom the client application is impersonating. 
+
+MailboxCulture t:MailboxCulture ([MS-OXWSCDATA] Specifies a SOAP header that identifies the culture 
+section 2.2.3.6) to use for accessing the mailbox. The cultures are 
+
+defined by [RFC3066]. 
+
+RequestVersion t:RequestServerVersion ([MS- Specifies a SOAP header that identifies the 
+OXWSCDATA] section 2.2.3.9) schema version for the UpdateDelegate 
+
+operation request. 
+
+ 
+
+3.1.4.4.1.2 tns:UpdateDelegateSoapOut message 
+
+The UpdateDelegateSoapOut WSDL message specifies the server response to the 
+UpdateDelegate operation request to modify one or more delegates to a mailbox. 
+
+ <wsdl:message name="UpdateDelegateSoapOut"> 
+   <wsdl:part name="UpdateDelegateResult" element="tns:UpdateDelegateResponse" /> 
+   <wsdl:part name="ServerVersion" element="t:ServerVersionInfo"/> 
+ </wsdl:message> 
+
+The UpdateDelegateSoapOut WSDL message is the output message for the SOAP action 
+http://schemas.microsoft.com/exchange/services/2006/messages/UpdateDelegate. 
+
+The parts of the UpdateDelegateSoapOut WSDL message are described in the following table. 
+
+Part name Element/type Description 
+
+UpdateDelegateResult tns:UpdateDelegateResponse (section Specifies the SOAP body of the response 
+3.1.4.4.2.1) to the request to modify one or more 
+
+delegates to a mailbox. 
+
+ServerVersion t:ServerVersionInfo ([MS- Specifies a SOAP header that identifies 
+OXWSCDATA] section 2.2.3.10) the server version for the response. 
+
+The UpdateDelegate operation returns an UpdateDelegateResponse element with the 
+ResponseClass attribute set to "Success". The ResponseCode element of the 
+UpdateDelegateResponse element is set to "NoError".  
+
+The operation returns the ResponseMessages element of the UpdateDelegateResponse element. 
+A DelegateUserResponseMessageType element of the ResponseMessages element is returned 
+for each DelegateUser element in the UpdateDelegate request. If the delegate was updated 
+successfully, the ResponseClass attribute of the DelegateUserResponseMessageType element is 
+
+35 / 55 
+
+[MS-OXWSDLGM] - v20250520 
+Delegate Access Management Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+set to "Success". The ResponseCode element of the DelegateUserResponseMessageType is set 
+to "NoError".  
+
+Each successful DelegateUserResponseMessageType element includes a DelegateUser element, 
+which includes a UserId element, a ReceiveCopiesOfMeetingRequests element, and a 
+ViewPrivateItems element. 
+
+If the delegate was not updated successfully, the ResponseClass attribute of the 
+DelegateUserResponseMessageType element is set to "Error". The ResponseCode element of the 
+DelegateUserResponseMessageType can be one of the error values listed in the following table. 
+These errors and other common errors are specified in [MS-OXWSCDATA] section 2.2.5.24. 
+
+Error Value Description 
+
+ErrorInvalidDelegatePermission Specifies that the specified folder permissions are invalid. 
+
+ErrorUpdateDelegatesFailed Specifies that the delegate list failed to be saved after delegates were 
+updated. 
+
+ 
+
+3.1.4.4.2 Elements 
+
+The following table lists the XML schema element definitions that are specific to this operation. 
+
+Element name Description 
+
+UpdateDelegate Specifies a request to update one or more delegates to a mailbox. 
+
+UpdateDelegateResponse Specifies the response body content from a request to update delegates to a 
+mailbox. 
+
+ 
+
+3.1.4.4.2.1 UpdateDelegateResponse Element 
+
+The UpdateDelegateResponse element specifies the response message for an UpdateDelegate 
+operation.  
+
+ <xs:element name="UpdateDelegateResponse" 
+  type="m:UpdateDelegateResponseMessageType" 
+ /> 
+ 
+
+3.1.4.4.2.2 UpdateDelegate Element 
+
+The UpdateDelegate element specifies the base element for an UpdateDelegate operation request. 
+
+ <xs:element name="UpdateDelegate" 
+  type="m:UpdateDelegateType" 
+ /> 
+ 
+
+3.1.4.4.3 Complex Types 
+
+The following table lists the XML schema complex type definitions that are specific to this operation. 
+
+36 / 55 
+
+[MS-OXWSDLGM] - v20250520 
+Delegate Access Management Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Complex type name Description 
+
+UpdateDelegateResponseMessageType Specifies the response message for the UpdateDelegate 
+operation. 
+
+UpdateDelegateType Specifies the request message for the UpdateDelegate operation. 
+
+ 
+
+3.1.4.4.3.1 m:UpdateDelegateType Complex Type 
+
+The UpdateDelegateType complex type specifies a request to update delegates to a primary 
+account's mailbox by using the UpdateDelegate operation. The UpdateDelegateType complex 
+type extends the BaseDelegateType complex type, as specified in section 2.2.4.3. 
+
+ <xs:complexType name="UpdateDelegateType"> 
+  <xs:complexContent> 
+    <xs:extension 
+      base="m:BaseDelegateType" 
+    > 
+      <xs:sequence> 
+        <xs:element name="DelegateUsers" 
+          type="t:ArrayOfDelegateUserType" 
+          minOccurs="0" 
+         /> 
+        <xs:element name="DeliverMeetingRequests" 
+          type="t:DeliverMeetingRequestsType" 
+          minOccurs="0" 
+         /> 
+      </xs:sequence> 
+    </xs:extension> 
+  </xs:complexContent> 
+ </xs:complexType> 
+ 
+
+The following table lists the child elements of the UpdateDelegateType complex type. 
+
+Element name Type Description 
+
+DelegateUsers t:ArrayOfDelegateUserType Specifies the identities of the delegates to 
+(section 2.2.4.5) update on a mailbox. This element can be 
+
+present. 
+
+DeliverMeetingRequests t:DeliverMeetingRequestsType Specifies how meeting-related messages 
+(section 2.2.5.2) are handled between the delegate and the 
+
+primary account. This element can be 
+present. 
+
+ 
+
+3.1.4.4.3.2 m:UpdateDelegateResponseMessageType Complex Type 
+
+The UpdateDelegateResponseMessageType complex type specifies the response message from 
+the UpdateDelegate operation. The UpdateDelegateResponseMessageType complex type 
+extends the BaseDelegateResponseMessageType complex type, as specified in section 2.2.4.2. 
+
+ <xs:complexType name="UpdateDelegateResponseMessageType"> 
+  <xs:complexContent> 
+    <xs:extension 
+      base="m:BaseDelegateResponseMessageType" 
+     /> 
+
+37 / 55 
+
+[MS-OXWSDLGM] - v20250520 
+Delegate Access Management Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+  </xs:complexContent> 
+ </xs:complexType> 
+ 
+
+3.1.4.4.4 Simple Types 
+
+None. 
+
+3.1.4.4.5 Attributes 
+
+None. 
+
+3.1.4.4.6 Groups 
+
+None. 
+
+3.1.5 Timer Events 
+
+None. 
+
+3.1.6 Other Local Events 
+
+None. 
+
+38 / 55 
+
+[MS-OXWSDLGM] - v20250520 
+Delegate Access Management Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+4 Protocol Examples 
+
+The examples in section 4.1 through section 4.4 show the operations of this protocol. 
+
+4.1 AddDelegate Operation 
+
+The following example shows an AddDelegate request to give user1 delegate permissions on 
+folders that are owned by user2. User1 is given Author-level permissions to user2's Calendar folder 
+and Reviewer-level permissions to user2's Contacts folder. User1 will not receive copies of meeting 
+messages and will be unable to view private items in user2's mailbox. Meeting requests will be sent 
+to both user1 and user2. 
+
+ <?xml version="1.0" encoding="utf-8"?> 
+ <soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/" 
+               xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types"> 
+  <soap:Header> 
+    <t:RequestServerVersion Version="Exchange2013"/> 
+  </soap:Header> 
+  <soap:Body xmlns="http://schemas.microsoft.com/exchange/services/2006/messages"> 
+    <AddDelegate> 
+      <Mailbox> 
+        <t:EmailAddress>user2@example.com</t:EmailAddress> 
+      </Mailbox> 
+      <DelegateUsers> 
+        <t:DelegateUser> 
+          <t:UserId> 
+            <t:PrimarySmtpAddress>user1@example.com</t:PrimarySmtpAddress> 
+          </t:UserId> 
+          <t:DelegatePermissions> 
+            <t:CalendarFolderPermissionLevel>Author</t:CalendarFolderPermissionLevel> 
+            <t:ContactsFolderPermissionLevel>Reviewer</t:ContactsFolderPermissionLevel> 
+          </t:DelegatePermissions> 
+          <t:ReceiveCopiesOfMeetingMessages>false</t:ReceiveCopiesOfMeetingMessages> 
+          <t:ViewPrivateItems>false</t:ViewPrivateItems> 
+        </t:DelegateUser> 
+      </DelegateUsers> 
+      <DeliverMeetingRequests>DelegatesAndMe</DeliverMeetingRequests> 
+    </AddDelegate> 
+  </soap:Body> 
+ </soap:Envelope> 
+
+The following example shows a successful AddDelegate response to an AddDelegate request. 
+
+ <?xml version="1.0" encoding="utf-8"?> 
+ <soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"  
+               xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"  
+               xmlns:xsd="http://www.w3.org/2001/XMLSchema"> 
+  <soap:Header> 
+    <t:ServerVersionInfo MajorVersion="8"  
+             MinorVersion="1"  
+             MajorBuildNumber="206"  
+             MinorBuildNumber="0"  
+             Version="Exchange2013"  
+             xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types"/> 
+  </soap:Header> 
+  <soap:Body> 
+    <m:AddDelegateResponse 
+           xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types"  
+           ResponseClass="Success"  
+           xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages"> 
+      <m:ResponseCode>NoError</m:ResponseCode> 
+      <m:ResponseMessages> 
+        <m:DelegateUserResponseMessageType ResponseClass="Success"> 
+
+39 / 55 
+
+[MS-OXWSDLGM] - v20250520 
+Delegate Access Management Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+          <m:ResponseCode>NoError</m:ResponseCode> 
+          <m:DelegateUser> 
+              <t:UserId> 
+                <t:SID>S-1-5-21-1333220396-2200287332-232816053-1116</t:SID> 
+                <t:PrimarySmtpAddress>User1@example.com</t:PrimarySmtpAddress> 
+                <t:DisplayName>User1</t:DisplayName> 
+              </t:UserId> 
+              <t:ReceiveCopiesOfMeetingMessages>false</t:ReceiveCopiesOfMeetingMessages> 
+            <t:ViewPrivateItems>false</t:ViewPrivateItems> 
+            </m:DelegateUser> 
+        </m:DelegateUserResponseMessageType> 
+      </m:ResponseMessages> 
+    </m:AddDelegateResponse> 
+  </soap:Body> 
+ </soap:Envelope> 
+
+4.2 GetDelegate Operation 
+
+The following code example shows how to retrieve the delegate settings for all the delegates that are 
+set on user3's mailbox. All the permissions for each user are returned in the response. 
+
+ <?xml version="1.0" encoding="utf-8"?> 
+ <soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/" 
+               xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types"> 
+  <soap:Header> 
+    <t:RequestServerVersion Version="Exchange2013"/> 
+  </soap:Header> 
+  <soap:Body> 
+    <GetDelegate xmlns="http://schemas.microsoft.com/exchange/services/2006/messages" 
+                 xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types" 
+                 IncludePermissions="true"> 
+      <Mailbox> 
+        <t:EmailAddress>user3@example.com</t:EmailAddress> 
+      </Mailbox> 
+    </GetDelegate> 
+  </soap:Body> 
+ </soap:Envelope> 
+
+The following example of a GetDelegate response shows a successful response to a GetDelegate 
+request. The response contains information about the delegate access permissions, whether the 
+delegate can view private items, whether the delegate receives copies of meeting messages, and to 
+whom meeting requests were delivered. 
+
+ <?xml version="1.0" encoding="utf-8"?> 
+ <soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"  
+               xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"  
+               xmlns:xsd="http://www.w3.org/2001/XMLSchema"> 
+  <soap:Header> 
+    <t:ServerVersionInfo MajorVersion="8"  
+             MinorVersion="1"  
+             MajorBuildNumber="206"  
+             MinorBuildNumber="0"  
+             Version="Exchange2013"  
+             xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types"/> 
+  </soap:Header> 
+  <soap:Body> 
+    <m:GetDelegateResponse 
+           xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types"  
+           ResponseClass="Success"  
+           xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages"> 
+      <m:ResponseCode>NoError</m:ResponseCode> 
+      <m:ResponseMessages> 
+        <m:DelegateUserResponseMessageType ResponseClass="Success"> 
+
+40 / 55 
+
+[MS-OXWSDLGM] - v20250520 
+Delegate Access Management Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+          <m:ResponseCode>NoError</m:ResponseCode> 
+          <m:DelegateUser> 
+              <t:UserId> 
+                <t:SID>S-1-5-21-1333220396-2200287332-232816053-1116</t:SID> 
+                <t:PrimarySmtpAddress>User1@example.com</t:PrimarySmtpAddress> 
+                <t:DisplayName>User1</t:DisplayName> 
+              </t:UserId> 
+              <t:DelegatePermissions> 
+                <t:CalendarFolderPermissionLevel>Author</t:CalendarFolderPermissionLevel> 
+                <t:ContactsFolderPermissionLevel>Reviewer</t:ContactsFolderPermissionLevel> 
+              </t:DelegatePermissions> 
+              <t:ReceiveCopiesOfMeetingMessages>false</t:ReceiveCopiesOfMeetingMessages> 
+            <t:ViewPrivateItems>false</t:ViewPrivateItems> 
+            </m:DelegateUser> 
+          </m:DelegateUserResponseMessageType> 
+      </m:ResponseMessages> 
+      <m:DeliverMeetingRequests>DelegatesAndMe</m:DeliverMeetingRequests> 
+      </m:GetDelegateResponse> 
+  </soap:Body> 
+ </soap:Envelope> 
+
+4.3 RemoveDelegate Operation 
+
+The following code example shows how to remove two delegates from user1's mailbox. In this 
+example, one delegate is removed by using the delegate's primary SMTP address, and the other one is 
+removed by using the delegate's security identifier (SID). 
+
+ <?xml version="1.0" encoding="utf-8"?> 
+ <soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/" 
+               xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types"> 
+  <soap:Header> 
+    <t:RequestServerVersion Version="Exchange2013"/> 
+  </soap:Header> 
+  <soap:Body> 
+    <RemoveDelegate xmlns="http://schemas.microsoft.com/exchange/services/2006/messages" 
+                    xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types"> 
+      <Mailbox> 
+        <t:EmailAddress>user1@example.com</t:EmailAddress> 
+      </Mailbox> 
+      <UserIds> 
+        <t:UserId> 
+          <t:PrimarySmtpAddress>user2@example.com</t:PrimarySmtpAddress> 
+        </t:UserId> 
+        <t:UserId> 
+          <t:SID>S-1-5-21-1333220396-2200287332-232816053-1118</t:SID> 
+        </t:UserId> 
+      </UserIds> 
+    </RemoveDelegate> 
+  </soap:Body> 
+ </soap:Envelope> 
+
+The following example of a RemoveDelegate response shows a successful response to a 
+RemoveDelegate request. The response contains a DelegateUserResponseMessageType element 
+for each delegate that is removed from the mailbox. 
+
+ <?xml version="1.0" encoding="utf-8"?> 
+ <soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"  
+               xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"  
+               xmlns:xsd="http://www.w3.org/2001/XMLSchema"> 
+  <soap:Header> 
+    <t:ServerVersionInfo  
+             MajorVersion="8"  
+             MinorVersion="1"  
+
+41 / 55 
+
+[MS-OXWSDLGM] - v20250520 
+Delegate Access Management Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+             MajorBuildNumber="206"  
+             MinorBuildNumber="0"  
+             Version="Exchange2013"  
+             xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types"/> 
+  </soap:Header> 
+  <soap:Body> 
+    <m:RemoveDelegateResponse  
+           xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types"  
+           ResponseClass="Success"  
+           xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages"> 
+      <m:ResponseCode>NoError</m:ResponseCode> 
+      <m:ResponseMessages> 
+        <m:DelegateUserResponseMessageType ResponseClass="Success"> 
+          <m:ResponseCode>NoError</m:ResponseCode> 
+        </m:DelegateUserResponseMessageType> 
+        <m:DelegateUserResponseMessageType ResponseClass="Success"> 
+          <m:ResponseCode>NoError</m:ResponseCode> 
+        </m:DelegateUserResponseMessageType> 
+      </m:ResponseMessages> 
+    </m:RemoveDelegateResponse> 
+  </soap:Body> 
+ </soap:Envelope> 
+
+4.4 UpdateDelegate Operation 
+
+The following example of an UpdateDelegate request shows how to update delegate permissions 
+on user1's account. User2 is granted the None permission level for the Tasks folder and is granted 
+permission to view private items. User3 is granted Reviewer permissions for the Journal folder. 
+Meeting requests are sent to the delegates, and information about the request is sent to user1. 
+
+ <?xml version="1.0" encoding="utf-8"?> 
+ <soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/" 
+               xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" 
+               xmlns:xsd="http://www.w3.org/2001/XMLSchema"> 
+  <soap:Header> 
+    <t:ServerVersionInfo MajorVersion="8" 
+             MinorVersion="1" 
+             MajorBuildNumber="206" 
+             MinorBuildNumber="0" 
+             Version="Exchange2013" 
+             xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types"/> 
+  </soap:Header> 
+  <soap:Body> 
+    <m:UpdateDelegateResponse  
+           xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types" 
+           ResponseClass="Success" 
+           xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages"> 
+      <m:ResponseCode>NoError</m:ResponseCode> 
+      <m:ResponseMessages> 
+        <m:DelegateUserResponseMessageType ResponseClass="Success"> 
+          <m:ResponseCode>NoError</m:ResponseCode> 
+          <m:DelegateUser> 
+            <t:UserId> 
+              <t:SID>S-1-5-21-1333220396-2200287332-232816053-1117</t:SID> 
+              <t:PrimarySmtpAddress>User2@example.com</t:PrimarySmtpAddress> 
+              <t:DisplayName>User2</t:DisplayName> 
+            </t:UserId> 
+            <t:ReceiveCopiesOfMeetingMessages>true</t:ReceiveCopiesOfMeetingMessages> 
+            <t:ViewPrivateItems>true</t:ViewPrivateItems> 
+          </m:DelegateUser> 
+        </m:DelegateUserResponseMessageType> 
+        <m:DelegateUserResponseMessageType ResponseClass="Success"> 
+          <m:ResponseCode>NoError</m:ResponseCode> 
+          <m:DelegateUser> 
+            <t:UserId> 
+
+42 / 55 
+
+[MS-OXWSDLGM] - v20250520 
+Delegate Access Management Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+              <t:SID>S-1-5-21-1333220396-2200287332-232816053-1118</t:SID> 
+              <t:PrimarySmtpAddress>User3@example.com</t:PrimarySmtpAddress> 
+              <t:DisplayName>User3</t:DisplayName> 
+            </t:UserId> 
+            <t:ReceiveCopiesOfMeetingMessages>true</t:ReceiveCopiesOfMeetingMessages> 
+            <t:ViewPrivateItems>false</t:ViewPrivateItems> 
+          </m:DelegateUser> 
+        </m:DelegateUserResponseMessageType> 
+      </m:ResponseMessages> 
+    </m:UpdateDelegateResponse> 
+  </soap:Body> 
+ </soap:Envelope> 
+
+The following example shows a successful response to an UpdateDelegate operation. 
+
+ <?xml version="1.0" encoding="utf-8"?> 
+ <soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/" 
+               xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" 
+               xmlns:xsd="http://www.w3.org/2001/XMLSchema"> 
+  <soap:Header> 
+    <t:ServerVersionInfo MajorVersion="8" 
+             MinorVersion="1" 
+             MajorBuildNumber="206" 
+             MinorBuildNumber="0" 
+             Version="Exchange2013" 
+             xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types"/> 
+  </soap:Header> 
+  <soap:Body> 
+    <m:UpdateDelegateResponse  
+           xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types" 
+           ResponseClass="Success" 
+           xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages"> 
+      <m:ResponseCode>NoError</m:ResponseCode> 
+      <m:ResponseMessages> 
+        <m:DelegateUserResponseMessageType ResponseClass="Success"> 
+          <m:ResponseCode>NoError</m:ResponseCode> 
+          <m:DelegateUser> 
+            <t:UserId> 
+              <t:SID>S-1-5-21-1333220396-2200287332-232816053-1117</t:SID> 
+              <t:PrimarySmtpAddress>User2@example.com</t:PrimarySmtpAddress> 
+              <t:DisplayName>User2</t:DisplayName> 
+            </t:UserId> 
+            <t:ReceiveCopiesOfMeetingMessages>true</t:ReceiveCopiesOfMeetingMessages> 
+            <t:ViewPrivateItems>true</t:ViewPrivateItems> 
+          </m:DelegateUser> 
+        </m:DelegateUserResponseMessageType> 
+        <m:DelegateUserResponseMessageType ResponseClass="Success"> 
+          <m:ResponseCode>NoError</m:ResponseCode> 
+          <m:DelegateUser> 
+            <t:UserId> 
+              <t:SID>S-1-5-21-1333220396-2200287332-232816053-1118</t:SID> 
+              <t:PrimarySmtpAddress>User3@example.com</t:PrimarySmtpAddress> 
+              <t:DisplayName>User3</t:DisplayName> 
+            </t:UserId> 
+            <t:ReceiveCopiesOfMeetingMessages>true</t:ReceiveCopiesOfMeetingMessages> 
+            <t:ViewPrivateItems>false</t:ViewPrivateItems> 
+          </m:DelegateUser> 
+        </m:DelegateUserResponseMessageType> 
+      </m:ResponseMessages> 
+    </m:UpdateDelegateResponse> 
+  </soap:Body> 
+ </soap:Envelope> 
+
+43 / 55 
+
+[MS-OXWSDLGM] - v20250520 
+Delegate Access Management Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+5 Security 
+
+5.1 Security Considerations for Implementers 
+
+None. 
+
+5.2 Index of Security Parameters 
+
+None. 
+
+44 / 55 
+
+[MS-OXWSDLGM] - v20250520 
+Delegate Access Management Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+6 Appendix A: Full WSDL 
+
+The XML files that are listed in the following table are required in order to implement the functionality 
+specified in this document. The contents of each file are included in this section. 
+
+File name Description Section 
+
+MS-OXWSDLGM.wsdl Contains the WSDL for the implementation of this protocol. 6 
+
+MS-OXWSDLGM- Contains the XML schema message definitions that are used in this 7.1 
+messages.xsd protocol. 
+
+MS-OXWSDLGM-types.xsd Contains the XML schema type definitions that are used in this 7.2 
+protocol. 
+
+These files have to be placed in a common folder in order for the WSDL to validate and operate. Also, 
+any schema files that are included in or imported into the MS-OXWSDLGM-types.xsd or MS-
+OXWSDLGM-messages.xsd schemas have to be placed in the common folder along with these files.  
+
+This section contains the contents of the MS-OXWSDLGM.wsdl file. 
+
+ <?xml version="1.0" encoding="utf-8"?> 
+ <wsdl:definitions xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/" 
+xmlns:tns="http://schemas.microsoft.com/exchange/services/2006/messages" 
+xmlns:s="http://www.w3.org/2001/XMLSchema" xmlns:wsdl="http://schemas.xmlsoap.org/wsdl/" 
+xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types" 
+targetNamespace="http://schemas.microsoft.com/exchange/services/2006/messages"> 
+  <wsdl:types> 
+    <xs:schema id="messages" elementFormDefault="qualified" version="Exchange2016" 
+xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages" 
+xmlns:tns="http://schemas.microsoft.com/exchange/services/2006/messages" 
+xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types" 
+xmlns:xs="http://www.w3.org/2001/XMLSchema" 
+targetNamespace="http://schemas.microsoft.com/exchange/services/2006/messages" 
+xmlns="http://schemas.microsoft.com/exchange/services/2006/messages"> 
+      <xs:include schemaLocation="MS-OXWSDLGM-messages.xsd"/> 
+    </xs:schema> 
+    <xs:schema id="types" elementFormDefault="qualified" version="Exchange2016" 
+xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types" 
+targetNamespace="http://schemas.microsoft.com/exchange/services/2006/types" 
+xmlns="http://schemas.microsoft.com/exchange/services/2006/types" 
+xmlns:tns="http://schemas.microsoft.com/exchange/services/2006/types" 
+xmlns:xs="http://www.w3.org/2001/XMLSchema"> 
+      <xs:import namespace="http://www.w3.org/XML/1998/namespace"/> 
+    </xs:schema> 
+  </wsdl:types> 
+  <wsdl:message name="GetDelegateSoapIn"> 
+    <wsdl:part name="request" element="tns:GetDelegate" /> 
+    <wsdl:part name="Impersonation" element="t:ExchangeImpersonation"/> 
+    <wsdl:part name="MailboxCulture" element="t:MailboxCulture"/> 
+    <wsdl:part name="RequestVersion" element="t:RequestServerVersion"/> 
+  </wsdl:message> 
+  <wsdl:message name="GetDelegateSoapOut"> 
+    <wsdl:part name="GetDelegateResult" element="tns:GetDelegateResponse" /> 
+    <wsdl:part name="ServerVersion" element="t:ServerVersionInfo"/> 
+  </wsdl:message> 
+  <wsdl:message name="AddDelegateSoapIn"> 
+    <wsdl:part name="request" element="tns:AddDelegate" /> 
+    <wsdl:part name="Impersonation" element="t:ExchangeImpersonation"/> 
+    <wsdl:part name="MailboxCulture" element="t:MailboxCulture"/> 
+    <wsdl:part name="RequestVersion" element="t:RequestServerVersion"/> 
+  </wsdl:message> 
+  <wsdl:message name="AddDelegateSoapOut"> 
+    <wsdl:part name="AddDelegateResult" element="tns:AddDelegateResponse" /> 
+    <wsdl:part name="ServerVersion" element="t:ServerVersionInfo"/> 
+
+45 / 55 
+
+[MS-OXWSDLGM] - v20250520 
+Delegate Access Management Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+  </wsdl:message> 
+  <wsdl:message name="RemoveDelegateSoapIn"> 
+    <wsdl:part name="request" element="tns:RemoveDelegate" /> 
+    <wsdl:part name="Impersonation" element="t:ExchangeImpersonation"/> 
+    <wsdl:part name="MailboxCulture" element="t:MailboxCulture"/> 
+    <wsdl:part name="RequestVersion" element="t:RequestServerVersion"/> 
+  </wsdl:message> 
+  <wsdl:message name="RemoveDelegateSoapOut"> 
+    <wsdl:part name="RemoveDelegateResult" element="tns:RemoveDelegateResponse" /> 
+    <wsdl:part name="ServerVersion" element="t:ServerVersionInfo"/> 
+  </wsdl:message> 
+  <wsdl:message name="UpdateDelegateSoapIn"> 
+    <wsdl:part name="request" element="tns:UpdateDelegate" /> 
+    <wsdl:part name="Impersonation" element="t:ExchangeImpersonation"/> 
+    <wsdl:part name="MailboxCulture" element="t:MailboxCulture"/> 
+    <wsdl:part name="RequestVersion" element="t:RequestServerVersion"/> 
+  </wsdl:message> 
+  <wsdl:message name="UpdateDelegateSoapOut"> 
+    <wsdl:part name="UpdateDelegateResult" element="tns:UpdateDelegateResponse" /> 
+    <wsdl:part name="ServerVersion" element="t:ServerVersionInfo"/> 
+  </wsdl:message> 
+ 
+  <wsdl:portType name="ExchangeServicePortType"> 
+        <wsdl:operation name="GetDelegate"> 
+            <wsdl:input message="tns:GetDelegateSoapIn" /> 
+            <wsdl:output message="tns:GetDelegateSoapOut" /> 
+        </wsdl:operation> 
+        <wsdl:operation name="AddDelegate"> 
+            <wsdl:input message="tns:AddDelegateSoapIn" /> 
+            <wsdl:output message="tns:AddDelegateSoapOut" /> 
+        </wsdl:operation> 
+        <wsdl:operation name="RemoveDelegate"> 
+            <wsdl:input message="tns:RemoveDelegateSoapIn" /> 
+            <wsdl:output message="tns:RemoveDelegateSoapOut" /> 
+        </wsdl:operation> 
+        <wsdl:operation name="UpdateDelegate"> 
+            <wsdl:input message="tns:UpdateDelegateSoapIn" /> 
+            <wsdl:output message="tns:UpdateDelegateSoapOut" /> 
+        </wsdl:operation> 
+ 
+  </wsdl:portType> 
+  <wsdl:binding name="ExchangeServiceBinding" type="tns:ExchangeServicePortType"> 
+    <wsdl:documentation> 
+      <wsi:Claim conformsTo="http://ws-i.org/profiles/basic/1.0" xmlns:wsi="http://ws-
+i.org/schemas/conformanceClaim/"/> 
+    </wsdl:documentation> 
+    <soap:binding style="document" transport="http://schemas.xmlsoap.org/soap/http"/> 
+    <wsdl:operation name="GetDelegate"> 
+            <soap:operation 
+soapAction="http://schemas.microsoft.com/exchange/services/2006/messages/GetDelegate" /> 
+            <wsdl:input> 
+                <soap:header message="tns:GetDelegateSoapIn" part="Impersonation" 
+use="literal"/> 
+                <soap:header message="tns:GetDelegateSoapIn" part="MailboxCulture" 
+use="literal"/> 
+                <soap:header message="tns:GetDelegateSoapIn" part="RequestVersion" 
+use="literal"/> 
+                <soap:body parts="request" use="literal" /> 
+            </wsdl:input> 
+            <wsdl:output> 
+                <soap:body parts="GetDelegateResult" use="literal" /> 
+                <soap:header message="tns:GetDelegateSoapOut" part="ServerVersion" 
+use="literal"/> 
+            </wsdl:output> 
+        </wsdl:operation> 
+ 
+        <wsdl:operation name="AddDelegate"> 
+            <soap:operation 
+soapAction="http://schemas.microsoft.com/exchange/services/2006/messages/AddDelegate" /> 
+
+46 / 55 
+
+[MS-OXWSDLGM] - v20250520 
+Delegate Access Management Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+            <wsdl:input> 
+                <soap:header message="tns:AddDelegateSoapIn" part="Impersonation" 
+use="literal"/> 
+                <soap:header message="tns:AddDelegateSoapIn" part="MailboxCulture" 
+use="literal"/> 
+                <soap:header message="tns:AddDelegateSoapIn" part="RequestVersion" 
+use="literal"/> 
+                <soap:body parts="request" use="literal" /> 
+            </wsdl:input> 
+            <wsdl:output> 
+                <soap:body parts="AddDelegateResult" use="literal" /> 
+                <soap:header message="tns:AddDelegateSoapOut" part="ServerVersion" 
+use="literal"/> 
+            </wsdl:output> 
+        </wsdl:operation> 
+ 
+        <wsdl:operation name="RemoveDelegate"> 
+            <soap:operation 
+soapAction="http://schemas.microsoft.com/exchange/services/2006/messages/RemoveDelegate" /> 
+            <wsdl:input> 
+                <soap:header message="tns:RemoveDelegateSoapIn" part="Impersonation" 
+use="literal"/> 
+                <soap:header message="tns:RemoveDelegateSoapIn" part="MailboxCulture" 
+use="literal"/> 
+                <soap:header message="tns:RemoveDelegateSoapIn" part="RequestVersion" 
+use="literal"/> 
+                <soap:body parts="request" use="literal" /> 
+            </wsdl:input> 
+            <wsdl:output> 
+                <soap:body parts="RemoveDelegateResult" use="literal" /> 
+                <soap:header message="tns:RemoveDelegateSoapOut" part="ServerVersion" 
+use="literal"/> 
+            </wsdl:output> 
+        </wsdl:operation> 
+ 
+        <wsdl:operation name="UpdateDelegate"> 
+            <soap:operation 
+soapAction="http://schemas.microsoft.com/exchange/services/2006/messages/UpdateDelegate" /> 
+            <wsdl:input> 
+                <soap:header message="tns:UpdateDelegateSoapIn" part="Impersonation" 
+use="literal"/> 
+                <soap:header message="tns:UpdateDelegateSoapIn" part="MailboxCulture" 
+use="literal"/> 
+                <soap:header message="tns:UpdateDelegateSoapIn" part="RequestVersion" 
+use="literal"/> 
+                <soap:body parts="request" use="literal" /> 
+            </wsdl:input> 
+            <wsdl:output> 
+                <soap:body parts="UpdateDelegateResult" use="literal" /> 
+                <soap:header message="tns:UpdateDelegateSoapOut" part="ServerVersion" 
+use="literal"/> 
+            </wsdl:output> 
+        </wsdl:operation> 
+ 
+  </wsdl:binding> 
+ </wsdl:definitions> 
+
+47 / 55 
+
+[MS-OXWSDLGM] - v20250520 
+Delegate Access Management Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+7 Appendix B: Full XML Schema 
+
+For ease of implementation, the following sections provide the full XML schema for this protocol. 
+
+Schema name Prefix Section 
+
+Messages schema m: 7.1 
+
+Types schema t: 7.2 
+
+These files have to be placed in a common folder in order for the WSDL to validate and operate. Also, 
+any schema files that are included in or imported into the MS-OXWSDLGM-types.xsd or MS-
+OXWSDLGM-messages.xsd schemas have to be placed in the common folder along with the files listed 
+in the table. 
+
+7.1 Messages Schema 
+
+This section contains the contents of the MS-OXWSDLGM-messages.xsd file and information about 
+additional files that this schema file requires to operate correctly. 
+
+MS-OXWSDLGM-messages.xsd includes the file listed in the following table. For the schema file to 
+operate correctly, this file has to be in the folder that contains the WSDL, types schema, and 
+messages schema files for this protocol. 
+
+File name Defining specification 
+
+MS-OXWSCDATA-messages.xsd [MS-OXWSCDATA] section 7.1 
+
+ <?xml version="1.0" encoding="utf-8"?> 
+ <xs:schema xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages" 
+xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types" 
+xmlns:xs="http://www.w3.org/2001/XMLSchema" 
+targetNamespace="http://schemas.microsoft.com/exchange/services/2006/messages" 
+elementFormDefault="qualified" version="Exchange2016" id="messages"> 
+  <xs:include schemaLocation="MS-OXWSCDATA-messages.xsd"/> 
+  <xs:import namespace="http://schemas.microsoft.com/exchange/services/2006/types" 
+schemaLocation="MS-OXWSDLGM-types.xsd"/> 
+  <xs:complexType name="AddDelegateResponseMessageType"> 
+    <xs:complexContent> 
+      <xs:extension base="m:BaseDelegateResponseMessageType"/> 
+    </xs:complexContent> 
+  </xs:complexType> 
+  <xs:element name="AddDelegateResponse" type="m:AddDelegateResponseMessageType"/> 
+  <xs:complexType name="AddDelegateType"> 
+    <xs:complexContent> 
+      <xs:extension base="m:BaseDelegateType"> 
+        <xs:sequence> 
+          <xs:element name="DelegateUsers" type="t:ArrayOfDelegateUserType"/> 
+          <xs:element name="DeliverMeetingRequests" type="t:DeliverMeetingRequestsType" 
+minOccurs="0"/> 
+        </xs:sequence> 
+      </xs:extension> 
+    </xs:complexContent> 
+  </xs:complexType> 
+  <xs:element name="AddDelegate" type="m:AddDelegateType"/> 
+  <xs:complexType name="ArrayOfDelegateUserResponseMessageType"> 
+    <xs:sequence> 
+      <xs:element name="DelegateUserResponseMessageType" 
+type="m:DelegateUserResponseMessageType" maxOccurs="unbounded"/> 
+    </xs:sequence> 
+  </xs:complexType> 
+  <xs:complexType name="BaseDelegateResponseMessageType" abstract="true"> 
+    <xs:complexContent> 
+
+48 / 55 
+
+[MS-OXWSDLGM] - v20250520 
+Delegate Access Management Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+      <xs:extension base="m:ResponseMessageType"> 
+        <xs:sequence> 
+          <xs:element name="ResponseMessages" type="m:ArrayOfDelegateUserResponseMessageType" 
+minOccurs="0"/> 
+        </xs:sequence> 
+      </xs:extension> 
+    </xs:complexContent> 
+  </xs:complexType> 
+  <xs:complexType name="BaseDelegateType" abstract="true"> 
+    <xs:complexContent> 
+      <xs:extension base="m:BaseRequestType"> 
+        <xs:sequence> 
+          <xs:element name="Mailbox" type="t:EmailAddressType"/> 
+        </xs:sequence> 
+      </xs:extension> 
+    </xs:complexContent> 
+  </xs:complexType> 
+  <xs:complexType name="DelegateUserResponseMessageType"> 
+    <xs:complexContent> 
+      <xs:extension base="m:ResponseMessageType"> 
+        <xs:sequence> 
+          <xs:element name="DelegateUser" type="t:DelegateUserType" minOccurs="0"/> 
+        </xs:sequence> 
+      </xs:extension> 
+    </xs:complexContent> 
+  </xs:complexType> 
+  <xs:complexType name="GetDelegateType"> 
+    <xs:complexContent> 
+      <xs:extension base="m:BaseDelegateType"> 
+        <xs:sequence> 
+          <xs:element name="UserIds" type="t:ArrayOfUserIdType" minOccurs="0"/> 
+        </xs:sequence> 
+        <xs:attribute name="IncludePermissions" type="xs:boolean" use="required"/> 
+      </xs:extension> 
+    </xs:complexContent> 
+  </xs:complexType> 
+  <xs:element name="GetDelegateResponse" type="m:GetDelegateResponseMessageType"/> 
+  <xs:complexType name="GetDelegateResponseMessageType"> 
+    <xs:complexContent> 
+      <xs:extension base="m:BaseDelegateResponseMessageType"> 
+        <xs:sequence> 
+          <xs:element name="DeliverMeetingRequests" type="t:DeliverMeetingRequestsType" 
+minOccurs="0"/> 
+        </xs:sequence> 
+      </xs:extension> 
+    </xs:complexContent> 
+  </xs:complexType> 
+  <xs:element name="GetDelegate" type="m:GetDelegateType"/> 
+  <xs:complexType name="RemoveDelegateType"> 
+    <xs:complexContent> 
+      <xs:extension base="m:BaseDelegateType"> 
+        <xs:sequence> 
+          <xs:element name="UserIds" type="t:ArrayOfUserIdType"/> 
+        </xs:sequence> 
+      </xs:extension> 
+    </xs:complexContent> 
+  </xs:complexType> 
+  <xs:element name="RemoveDelegate" type="m:RemoveDelegateType"/> 
+  <xs:complexType name="RemoveDelegateResponseMessageType"> 
+    <xs:complexContent> 
+      <xs:extension base="m:BaseDelegateResponseMessageType"/> 
+    </xs:complexContent> 
+  </xs:complexType> 
+  <xs:element name="RemoveDelegateResponse" type="m:RemoveDelegateResponseMessageType"/> 
+  <xs:complexType name="UpdateDelegateType"> 
+    <xs:complexContent> 
+      <xs:extension base="m:BaseDelegateType"> 
+        <xs:sequence> 
+          <xs:element name="DelegateUsers" type="t:ArrayOfDelegateUserType" minOccurs="0"/> 
+
+49 / 55 
+
+[MS-OXWSDLGM] - v20250520 
+Delegate Access Management Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+          <xs:element name="DeliverMeetingRequests" type="t:DeliverMeetingRequestsType" 
+minOccurs="0"/> 
+        </xs:sequence> 
+      </xs:extension> 
+    </xs:complexContent> 
+  </xs:complexType> 
+  <xs:element name="UpdateDelegate" type="m:UpdateDelegateType"/> 
+  <xs:complexType name="UpdateDelegateResponseMessageType"> 
+    <xs:complexContent> 
+      <xs:extension base="m:BaseDelegateResponseMessageType"/> 
+    </xs:complexContent> 
+  </xs:complexType> 
+  <xs:element name="UpdateDelegateResponse" type="m:UpdateDelegateResponseMessageType"/> 
+ </xs:schema> 
+
+7.2 Types Schema 
+
+This section contains the contents of the MS-OXWSDLGM-types.xsd file and information about 
+additional files that this schema file requires to operate correctly. 
+
+MS-OXWSDLGM-types.xsd includes the file listed in the following table. For the schema file to operate 
+correctly, this file has to be present in the folder that contains the WSDL, types schema, and 
+messages schema files for this protocol. 
+
+File name Defining specification 
+
+MS-OXWSCDATA-types.xsd [MS-OXWSCDATA] section 7.2 
+
+ <?xml version="1.0" encoding="utf-8"?> 
+ <xs:schema xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types" 
+xmlns:xs="http://www.w3.org/2001/XMLSchema" 
+targetNamespace="http://schemas.microsoft.com/exchange/services/2006/types" 
+elementFormDefault="qualified" version="Exchange2016" id="types"> 
+  <xs:import namespace="http://www.w3.org/XML/1998/namespace"/> 
+ <xs:include schemaLocation="MS-OXWSCDATA-types.xsd" />   
+   
+  <xs:complexType name="ArrayOfDelegateUserType"> 
+    <xs:sequence> 
+      <xs:element name="DelegateUser" type="t:DelegateUserType" maxOccurs="unbounded"/> 
+    </xs:sequence> 
+  </xs:complexType> 
+  <xs:complexType name="ArrayOfUserIdType"> 
+    <xs:sequence> 
+      <xs:element name="UserId" type="t:UserIdType" maxOccurs="unbounded"/> 
+    </xs:sequence> 
+  </xs:complexType> 
+  <xs:simpleType name="DeliverMeetingRequestsType"> 
+    <xs:restriction base="xs:string"> 
+      <xs:enumeration value="DelegatesOnly"/> 
+      <xs:enumeration value="DelegatesAndMe"/> 
+      <xs:enumeration value="DelegatesAndSendInformationToMe"/> 
+      <xs:enumeration value="NoForward"/> 
+    </xs:restriction> 
+  </xs:simpleType> 
+  <xs:complexType name="DelegateUserType"> 
+    <xs:sequence> 
+      <xs:element name="UserId" type="t:UserIdType"/> 
+      <xs:element name="DelegatePermissions" type="t:DelegatePermissionsType" minOccurs="0"/> 
+      <xs:element name="ReceiveCopiesOfMeetingMessages" type="xs:boolean" minOccurs="0"/> 
+      <xs:element name="ViewPrivateItems" type="xs:boolean" minOccurs="0"/> 
+    </xs:sequence> 
+  </xs:complexType> 
+  <xs:complexType name="DelegatePermissionsType"> 
+    <xs:sequence> 
+
+50 / 55 
+
+[MS-OXWSDLGM] - v20250520 
+Delegate Access Management Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+      <xs:element name="CalendarFolderPermissionLevel" 
+type="t:DelegateFolderPermissionLevelType" minOccurs="0"/> 
+      <xs:element name="TasksFolderPermissionLevel" 
+type="t:DelegateFolderPermissionLevelType" minOccurs="0"/> 
+      <xs:element name="InboxFolderPermissionLevel" 
+type="t:DelegateFolderPermissionLevelType" minOccurs="0"/> 
+      <xs:element name="ContactsFolderPermissionLevel" 
+type="t:DelegateFolderPermissionLevelType" minOccurs="0"/> 
+      <xs:element name="NotesFolderPermissionLevel" 
+type="t:DelegateFolderPermissionLevelType" minOccurs="0"/> 
+      <xs:element name="JournalFolderPermissionLevel" 
+type="t:DelegateFolderPermissionLevelType" minOccurs="0"/> 
+    </xs:sequence> 
+  </xs:complexType> 
+  <xs:simpleType name="DelegateFolderPermissionLevelType"> 
+    <xs:restriction base="xs:string"> 
+      <xs:enumeration value="None"/> 
+      <xs:enumeration value="Editor"/> 
+      <xs:enumeration value="Reviewer"/> 
+      <xs:enumeration value="Author"/> 
+      <xs:enumeration value="Custom"/> 
+    </xs:restriction> 
+  </xs:simpleType> 
+ </xs:schema> 
+
+51 / 55 
+
+[MS-OXWSDLGM] - v20250520 
+Delegate Access Management Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+8 Appendix C: Product Behavior 
+
+The information in this specification is applicable to the following Microsoft products or supplemental 
+software. References to product versions include updates to those products. 
+
+ Microsoft Exchange Server 2007 Service Pack 1 (SP1) 
+
+ Microsoft Exchange Server 2010 
+
+ Microsoft Exchange Server 2013 
+
+ Microsoft Exchange Server 2016 
+
+ Microsoft Exchange Server 2019  
+
+ Microsoft Exchange Server Subscription Edition 
+
+Exceptions, if any, are noted in this section. If an update version, service pack or Knowledge Base 
+(KB) number appears with a product name, the behavior changed in that update. The new behavior 
+also applies to subsequent updates unless otherwise specified. If a product edition appears with the 
+product version, behavior is different in that product edition. 
+
+Unless otherwise specified, any statement of optional behavior in this specification that is prescribed 
+using the terms "SHOULD" or "SHOULD NOT" implies product behavior in accordance with the 
+SHOULD or SHOULD NOT prescription. Unless otherwise specified, the term "MAY" implies that the 
+product does not follow the prescription. 
+
+<1> Section 2.2.5.2: Exchange 2007 SP1 and Exchange 2010 do not use the "NoForward" 
+enumeration value. 
+
+<2> Section 3.1.4.2.3.1: When the DeliverMeetingRequests element is set to "NoForward" for a 
+delegate, Microsoft Exchange Server 2010 Service Pack 1 (SP1), Microsoft Exchange Server 2010 
+Service Pack 2 (SP2), Exchange 2013, Exchange 2016, and Exchange 2019 do not include the 
+DeliverMeetingRequests element in the response. 
+
+52 / 55 
+
+[MS-OXWSDLGM] - v20250520 
+Delegate Access Management Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+9 Change Tracking 
+
+This section identifies changes that were made to this document since the last release. Changes are 
+classified as Major, Minor, or None.  
+
+The revision class Major means that the technical content in the document was significantly revised. 
+Major changes affect protocol interoperability or implementation. Examples of major changes are: 
+
+ A document revision that incorporates changes to interoperability requirements. 
+ A document revision that captures changes to protocol functionality. 
+
+The revision class Minor means that the meaning of the technical content was clarified. Minor changes 
+do not affect protocol interoperability or implementation. Examples of minor changes are updates to 
+clarify ambiguity at the sentence, paragraph, or table level. 
+
+The revision class None means that no new technical changes were introduced. Minor editorial and 
+formatting changes may have been made, but the relevant technical content is identical to the last 
+released version. 
+
+The changes made to this document are listed in the following table. For more information, please 
+contact dochelp@microsoft.com. 
+
+Section Description Revision class 
+
+8 Appendix C: Product Behavior Updated list of supported products. Major 
+
+53 / 55 
+
+[MS-OXWSDLGM] - v20250520 
+Delegate Access Management Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+10 Index
+A Informative references 9 
+ Initialization 
+Abstract data model    server 21 
+   server 21 Introduction 7 
+AddDelegate operation example 39  
+Applicability 10 L 
+Attribute groups 20  
+Attributes 20 Local events 
+    server 38 
+C  
+ M 
+Capability negotiation 10  
+Change tracking 53 m:ArrayOfDelegateUserResponseMessageType 
+Complex types 13 Complex Type complex type 13 
+   m:ArrayOfDelegateUserResponseMessageType m:BaseDelegateResponseMessageType Complex 
+
+Complex Type 13 Type complex type 14 
+   m:BaseDelegateResponseMessageType Complex m:BaseDelegateType Complex Type complex type 14 
+
+Type 14 m:DelegateUserResponseMessageType Complex 
+   m:BaseDelegateType Complex Type 14 Type complex type 15 
+   m:DelegateUserResponseMessageType Complex Message processing 
+
+Type 15    server 21 
+   t:ArrayOfDelegateUserType Complex Type 15 Messages 
+   t:ArrayOfUserIdType Complex Type 16    attribute groups 20 
+   t:DelegatePermissionsType Complex Type 16    attributes 20 
+   t:DelegateUserType Complex Type 17    complex types 13 
+    elements 12 
+D    enumerated 12 
+    groups 20 
+Data model - abstract    m:ArrayOfDelegateUserResponseMessageType 
+   server 21 Complex Type complex type 13 
+    m:BaseDelegateResponseMessageType Complex 
+
+E Type complex type 14 
+
+    m:BaseDelegateType Complex Type complex type 
+
+Events 14 
+
+   local - server 38    m:DelegateUserResponseMessageType Complex 
+
+   timer - server 38 Type complex type 15 
+
+Examples    namespaces 12 
+
+   AddDelegate operation 39    simple types 18 
+
+   GetDelegate operation 40    syntax 12 
+
+   overview 39    t:ArrayOfDelegateUserType Complex Type complex 
+
+   RemoveDelegate operation 41 type 15 
+
+   UpdateDelegate operation 42    t:ArrayOfUserIdType Complex Type complex type 
+
+ 16 
+
+F    t:DelegateFolderPermissionLevelType Simple Type 
+
+ simple type 18 
+
+Fields - vendor-extensible 11    t:DelegatePermissionsType Complex Type complex 
+
+Full WSDL 45 type 16 
+
+Full XML schema 48    t:DelegateUserType Complex Type complex type 
+
+   Messages Schema 48 17 
+
+   Types Schema 50    t:DeliverMeetingRequestsType Simple Type simple 
+
+ type 19 
+   transport 12 
+
+G 
+ 
+
+ 
+N 
+
+GetDelegate operation example 40 
+Glossary 7  
+
+Groups 20 Namespaces 12 
+
+ Normative references 9 
+ 
+
+I 
+ O 
+
+Implementer - security considerations 44  
+
+Index of security parameters 44 Operations 
+
+54 / 55 
+
+[MS-OXWSDLGM] - v20250520 
+Delegate Access Management Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+   AddDelegate Operation 22    server 21 
+   GetDelegate Operation 26 Tracking changes 53 
+   RemoveDelegate Operation 30 Transport 12 
+   UpdateDelegate Operation 34 Types 
+Overview (synopsis) 9    complex 13 
+    simple 18 
+P  
+ U 
+Parameters - security index 44  
+Preconditions 10 UpdateDelegate operation example 42 
+Prerequisites 10  
+Product behavior 52 V 
+Protocol Details  
+   overview 21 Vendor-extensible fields 11 
+ Versioning 10 
+R  
+ W 
+References 8  
+   informative 9 WSDL 45 
+   normative 9  
+Relationship to other protocols 10 X 
+RemoveDelegate operation example 41  
+ XML schema 48 
+S    Messages Schema 48 
+    Types Schema 50 
+Security 
+   implementer considerations 44  
+   parameter index 44 
+Sequencing rules 
+   server 21 
+Server 
+   abstract data model 21 
+   AddDelegate Operation operation 22 
+   GetDelegate Operation operation 26 
+   initialization 21 
+   local events 38 
+   message processing 21 
+   RemoveDelegate Operation operation 30 
+   sequencing rules 21 
+   timer events 38 
+   timers 21 
+   UpdateDelegate Operation operation 34 
+Simple types 18 
+   t:DelegateFolderPermissionLevelType Simple Type 
+
+18 
+   t:DeliverMeetingRequestsType Simple Type 19 
+Standards assignments 11 
+Syntax 
+   messages - overview 12 
+ 
+T 
+ 
+t:ArrayOfDelegateUserType Complex Type complex 
+
+type 15 
+t:ArrayOfUserIdType Complex Type complex type 16 
+t:DelegateFolderPermissionLevelType Simple Type 
+
+simple type 18 
+t:DelegatePermissionsType Complex Type complex 
+
+type 16 
+t:DelegateUserType Complex Type complex type 17 
+t:DeliverMeetingRequestsType Simple Type simple 
+
+type 19 
+Timer events 
+   server 38 
+Timers 
+
+55 / 55 
+
+[MS-OXWSDLGM] - v20250520 
+Delegate Access Management Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025

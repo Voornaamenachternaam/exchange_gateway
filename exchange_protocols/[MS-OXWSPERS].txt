@@ -1,0 +1,3819 @@
+﻿[MS-OXWSPERS]:  
+
+Persona Web Service Protocol 
+
+ 
+
+Intellectual Property Rights Notice for Open Specifications Documentation 
+
+ Technical Documentation. Microsoft publishes Open Specifications documentation (“this 
+documentation”) for protocols, file formats, data portability, computer languages, and standards 
+support. Additionally, overview documents cover inter-protocol relationships and interactions.  
+
+ Copyrights. This documentation is covered by Microsoft copyrights. Regardless of any other 
+terms that are contained in the terms of use for the Microsoft website that hosts this 
+documentation, you can make copies of it in order to develop implementations of the technologies 
+that are described in this documentation and can distribute portions of it in your implementations 
+that use these technologies or in your documentation as necessary to properly document the 
+implementation. You can also distribute in your implementation, with or without modification, any 
+schemas, IDLs, or code samples that are included in the documentation. This permission also 
+applies to any documents that are referenced in the Open Specifications documentation.  
+
+ No Trade Secrets. Microsoft does not claim any trade secret rights in this documentation.  
+ Patents. Microsoft has patents that might cover your implementations of the technologies 
+
+described in the Open Specifications documentation. Neither this notice nor Microsoft's delivery of 
+this documentation grants any licenses under those patents or any other Microsoft patents. 
+However, a given Open Specifications document might be covered by the Microsoft Open 
+Specifications Promise or the Microsoft Community Promise. If you would prefer a written license, 
+or if the technologies described in this documentation are not covered by the Open Specifications 
+Promise or Community Promise, as applicable, patent licenses are available by contacting 
+iplg@microsoft.com.  
+
+ License Programs. To see all of the protocols in scope under a specific license program and the 
+associated patents, visit the Patent Map.  
+
+ Trademarks. The names of companies and products contained in this documentation might be 
+covered by trademarks or similar intellectual property rights. This notice does not grant any 
+licenses under those rights. For a list of Microsoft trademarks, visit 
+www.microsoft.com/trademarks.  
+
+ Fictitious Names. The example companies, organizations, products, domain names, email 
+addresses, logos, people, places, and events that are depicted in this documentation are fictitious. 
+No association with any real company, organization, product, domain name, email address, logo, 
+person, place, or event is intended or should be inferred. 
+
+Reservation of Rights. All other rights are reserved, and this notice does not grant any rights other 
+than as specifically described above, whether by implication, estoppel, or otherwise.  
+
+Tools. The Open Specifications documentation does not require the use of Microsoft programming 
+tools or programming environments in order for you to develop an implementation. If you have access 
+to Microsoft programming tools and environments, you are free to take advantage of them. Certain 
+Open Specifications documents are intended for use in conjunction with publicly available standards 
+specifications and network programming art and, as such, assume that the reader either is familiar 
+with the aforementioned material or has immediate access to it. 
+
+Support. For questions and support, please contact dochelp@microsoft.com.  
+
+1 / 58 
+
+[MS-OXWSPERS] - v20250520 
+Persona Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Revision Summary 
+
+Revision Revision 
+Date History Class Comments 
+
+7/16/2012 0.1 New Released new document. 
+
+10/8/2012 1.0 Major Significantly changed the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+2/11/2013 1.0 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+7/26/2013 1.0 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+11/18/2013 1.0 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+2/10/2014 1.0 None 
+
+technical content. 
+
+4/30/2014 1.1 Minor Clarified the meaning of the technical content. 
+
+7/31/2014 1.2 Minor Clarified the meaning of the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+10/30/2014 1.2 None 
+
+technical content. 
+
+5/26/2015 2.0 Major Significantly changed the technical content. 
+
+9/14/2015 3.0 Major Significantly changed the technical content. 
+
+6/13/2016 4.0 Major Significantly changed the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+9/14/2016 4.0 None 
+
+technical content. 
+
+7/24/2018 5.0 Major Significantly changed the technical content. 
+
+10/1/2018 6.0 Major Significantly changed the technical content. 
+
+12/11/2018 6.1 Minor Clarified the meaning of the technical content. 
+
+5/20/2025 7.0 Major Significantly changed the technical content. 
+
+2 / 58 
+
+[MS-OXWSPERS] - v20250520 
+Persona Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Table of Contents 
+1 Introduction ............................................................................................................ 5 
+
+1.1 Glossary ........................................................................................................... 5 
+1.2 References ........................................................................................................ 6 
+
+1.2.1 Normative References ................................................................................... 7 
+1.2.2 Informative References ................................................................................. 7 
+
+1.3 Overview .......................................................................................................... 8 
+1.4 Relationship to Other Protocols ............................................................................ 8 
+1.5 Prerequisites/Preconditions ................................................................................. 8 
+1.6 Applicability Statement ....................................................................................... 8 
+1.7 Versioning and Capability Negotiation ................................................................... 9 
+1.8 Vendor-Extensible Fields ..................................................................................... 9 
+1.9 Standards Assignments ....................................................................................... 9 
+
+2 Messages ............................................................................................................... 10 
+2.1 Transport ........................................................................................................ 10 
+2.2 Common Message Syntax ................................................................................. 10 
+
+2.2.1 Namespaces .............................................................................................. 10 
+2.2.2 Messages ................................................................................................... 10 
+2.2.3 Elements ................................................................................................... 10 
+2.2.4 Complex Types ........................................................................................... 11 
+
+2.2.4.1 ArrayOfBodyContentAttributedValuesType ................................................ 12 
+2.2.4.2 ArrayOfEmailAddressAttributedValuesType ............................................... 13 
+2.2.4.3 ArrayOfExtendedPropertyAttributedValueType .......................................... 13 
+2.2.4.4 ArrayOfFolderIdType ............................................................................. 13 
+2.2.4.5 ArrayOfPersonaAttributionsType ............................................................. 14 
+2.2.4.6 ArrayOfPhoneNumberAttributedValuesType .............................................. 14 
+2.2.4.7 ArrayOfPostalAddressAttributedValuesType .............................................. 14 
+2.2.4.8 ArrayOfStringArrayAttributedValuesType .................................................. 15 
+2.2.4.9 ArrayOfStringAttributedValuesType ......................................................... 15 
+2.2.4.10 ArrayOfStringValueType ......................................................................... 15 
+2.2.4.11 ArrayOfValueAttributionsType ................................................................. 15 
+2.2.4.12 BodyContentAttributedValueType ............................................................ 16 
+2.2.4.13 BodyContentType .................................................................................. 16 
+2.2.4.14 EmailAddressAttributedValueType ........................................................... 16 
+2.2.4.15 ExtendedPropertyAttributedValueType ..................................................... 17 
+2.2.4.16 PersonaAttributionType .......................................................................... 17 
+2.2.4.17 PersonaPhoneNumberType ..................................................................... 18 
+2.2.4.18 PersonaPostalAddressType ..................................................................... 18 
+2.2.4.19 PersonaType ........................................................................................ 19 
+2.2.4.20 PhoneNumberAttributedValueType .......................................................... 27 
+2.2.4.21 PostalAddressAttributedValueType .......................................................... 27 
+2.2.4.22 StringArrayAttributedValueType .............................................................. 28 
+2.2.4.23 StringAttributedValueType ..................................................................... 28 
+
+2.2.5 Simple Types ............................................................................................. 28 
+2.2.5.1 LocationSourceType .............................................................................. 29 
+
+2.2.6 Attributes .................................................................................................. 29 
+2.2.7 Groups ...................................................................................................... 29 
+2.2.8 Attribute Groups ......................................................................................... 29 
+
+3 Protocol Details ..................................................................................................... 30 
+3.1 ExchangeServicePortType Server Details ............................................................. 30 
+
+3.1.1 Abstract Data Model .................................................................................... 30 
+3.1.2 Timers ...................................................................................................... 30 
+3.1.3 Initialization ............................................................................................... 30 
+3.1.4 Message Processing Events and Sequencing Rules .......................................... 30 
+
+3 / 58 
+
+[MS-OXWSPERS] - v20250520 
+Persona Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+3.1.4.1 FindPeople ........................................................................................... 30 
+3.1.4.1.1 Messages ....................................................................................... 31 
+
+3.1.4.1.1.1 FindPeopleSoapIn ...................................................................... 31 
+3.1.4.1.1.2 FindPeopleSoapOut .................................................................... 32 
+
+3.1.4.1.2 Elements ........................................................................................ 32 
+3.1.4.1.2.1 FindPeople ................................................................................ 33 
+3.1.4.1.2.2 FindPeopleResponse ................................................................... 33 
+
+3.1.4.1.3 Complex Types ............................................................................... 33 
+3.1.4.1.3.1 FindPeopleType ......................................................................... 33 
+3.1.4.1.3.2 PersonaResponseShapeType ....................................................... 34 
+3.1.4.1.3.3 FindPeopleResponseMessageType ................................................ 35 
+3.1.4.1.3.4 ArrayOfPeopleType..................................................................... 35 
+3.1.4.1.3.5 ArrayOfContextProperty .............................................................. 36 
+3.1.4.1.3.6 ContextPropertyType .................................................................. 36 
+3.1.4.1.3.7 ArrayOfPeopleQuerySource ......................................................... 36 
+
+3.1.4.1.4 Simple Types .................................................................................. 36 
+3.1.4.1.5 Attributes ....................................................................................... 37 
+3.1.4.1.6 Groups ........................................................................................... 37 
+3.1.4.1.7 Attribute Groups.............................................................................. 37 
+
+3.1.4.2 GetPersona .......................................................................................... 37 
+3.1.4.2.1 Messages ....................................................................................... 37 
+
+3.1.4.2.1.1 GetPersonaSoapIn ..................................................................... 38 
+3.1.4.2.1.2 GetPersonaSoapOut ................................................................... 38 
+
+3.1.4.2.2 Elements ........................................................................................ 39 
+3.1.4.2.2.1 GetPersona ............................................................................... 39 
+3.1.4.2.2.2 GetPersonaResponseMessage ...................................................... 39 
+
+3.1.4.2.3 Complex Types ............................................................................... 39 
+3.1.4.2.3.1 GetPersonaType ........................................................................ 39 
+3.1.4.2.3.2 GetPersonaResponseMessageType ............................................... 40 
+
+3.1.4.2.4 Simple Types .................................................................................. 40 
+3.1.4.2.5 Attributes ....................................................................................... 40 
+3.1.4.2.6 Groups ........................................................................................... 40 
+3.1.4.2.7 Attribute Groups.............................................................................. 41 
+
+3.1.5 Timer Events .............................................................................................. 41 
+3.1.6 Other Local Events ...................................................................................... 41 
+
+4 Protocol Examples ................................................................................................. 42 
+
+5 Security ................................................................................................................. 44 
+5.1 Security Considerations for Implementers ........................................................... 44 
+5.2 Index of Security Parameters ............................................................................ 44 
+
+6 Appendix A: Full WSDL .......................................................................................... 45 
+
+7 Appendix B: Full XML Schema ................................................................................ 47 
+7.1 http://schemas.microsoft.com/exchange/services/2006/messages Schema ............ 47 
+7.2 http://schemas.microsoft.com/exchange/services/2006/types Schema ................... 48 
+
+8 Appendix C: Product Behavior ............................................................................... 55 
+
+9 Change Tracking .................................................................................................... 56 
+
+10 Index ..................................................................................................................... 57 
+
+ 
+
+4 / 58 
+
+[MS-OXWSPERS] - v20250520 
+Persona Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+1 Introduction 
+
+The Persona Web Service Protocol enables clients to use a web service to find and retrieve linked 
+contacts (2). 
+
+Sections 1.5, 1.8, 1.9, 2, and 3 of this specification are normative. All other sections and examples in 
+this specification are informative. 
+
+1.1 Glossary 
+
+This document uses the following terms: 
+
+contact: (1) A presence entity (presentity) whose presence information can be tracked.   
+
+(2) A person, company, or other entity that is stored in a directory and is associated with one or 
+more unique identifiers and attributes, such as an Internet message address or login name. 
+
+Contacts folder: A Folder object that contains Contact objects. 
+
+display name: A text string that is used to identify a principal or other object in the user interface. 
+Also referred to as title. 
+
+distribution list: A collection of users, computers, contacts, or other groups that is used only for 
+email distribution, and addressed as a single recipient. 
+
+email address: A string that identifies a user and enables the user to receive Internet messages. 
+
+endpoint: A communication port that is exposed by an application server for a specific shared 
+service and to which messages can be addressed. 
+
+Global Address List (GAL): An address list that conceptually represents the default address list 
+for an address book. 
+
+Hypertext Transfer Protocol (HTTP): An application-level protocol for distributed, collaborative, 
+hypermedia information systems (text, graphic images, sound, video, and other multimedia 
+files) on the World Wide Web. 
+
+Hypertext Transfer Protocol Secure (HTTPS): An extension of HTTP that securely encrypts and 
+decrypts web page requests. In some older protocols, "Hypertext Transfer Protocol over Secure 
+Sockets Layer" is still used (Secure Sockets Layer has been deprecated). For more information, 
+see [SSL3] and [RFC5246]. 
+
+instant messaging: A method of real-time communication over the Internet in which a sender 
+types a message to one or more recipients and the recipient immediately receives the message 
+in a pop-up window. 
+
+mailbox: A message store that contains email, calendar items, and other Message objects for a 
+single recipient. 
+
+message body: The main message text of an email message. A few properties of a Message 
+object represent its message body, with one property containing the text itself and others 
+defining its code page and its relationship to alternative body formats. 
+
+SOAP: A lightweight protocol for exchanging structured information in a decentralized, distributed 
+environment. SOAP uses XML technologies to define an extensible messaging framework, which 
+provides a message construct that can be exchanged over a variety of underlying protocols. The 
+framework has been designed to be independent of any particular programming model and 
+other implementation-specific semantics. SOAP 1.2 supersedes SOAP 1.1. See [SOAP1.2-
+1/2003]. 
+
+5 / 58 
+
+[MS-OXWSPERS] - v20250520 
+Persona Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+SOAP action: The HTTP request header field used to indicate the intent of the SOAP request, 
+using a URI value. See [SOAP1.1] section 6.1.1 for more information. 
+
+SOAP body: A container for the payload data being delivered by a SOAP message to its recipient. 
+See [SOAP1.2-1/2007] section 5.3 for more information. 
+
+SOAP header: A mechanism for implementing extensions to a SOAP message in a decentralized 
+manner without prior agreement between the communicating parties. See [SOAP1.2-1/2007] 
+section 5.2 for more information. 
+
+Uniform Resource Identifier (URI): A string that identifies a resource. The URI is an addressing 
+mechanism defined in Internet Engineering Task Force (IETF) Uniform Resource Identifier (URI): 
+Generic Syntax [RFC3986]. 
+
+web server: A server computer that hosts websites and responds to requests from applications. 
+
+web service: A unit of application logic that provides data and services to other applications and 
+can be called by using standard Internet transport protocols such as HTTP, Simple Mail Transfer 
+Protocol (SMTP), or File Transfer Protocol (FTP). Web services can perform functions that range 
+from simple requests to complicated business processes. 
+
+Web Services Description Language (WSDL): An XML format for describing network services 
+as a set of endpoints that operate on messages that contain either document-oriented or 
+procedure-oriented information. The operations and messages are described abstractly and are 
+bound to a concrete network protocol and message format in order to define an endpoint. 
+Related concrete endpoints are combined into abstract endpoints, which describe a network 
+service. WSDL is extensible, which allows the description of endpoints and their messages 
+regardless of the message formats or network protocols that are used. 
+
+WSDL message: An abstract, typed definition of the data that is communicated during a WSDL 
+operation [WSDL]. Also, an element that describes the data being exchanged between web 
+service providers and clients. 
+
+WSDL operation: A single action or function of a web service. The execution of a WSDL operation 
+typically requires the exchange of messages between the service requestor and the service 
+provider. 
+
+WSDL port type: A named set of logically-related, abstract Web Services Description 
+Language (WSDL) operations and messages. 
+
+XML namespace: A collection of names that is used to identify elements, types, and attributes in 
+XML documents identified in a URI reference [RFC3986]. A combination of XML namespace and 
+local name allows XML documents to use elements, types, and attributes that have the same 
+names but come from different sources. For more information, see [XMLNS-2ED]. 
+
+XML namespace prefix: An abbreviated form of an XML namespace, as described in [XML]. 
+
+XML schema: A description of a type of XML document that is typically expressed in terms of 
+constraints on the structure and content of documents of that type, in addition to the basic 
+syntax constraints that are imposed by XML itself. An XML schema provides a view of a 
+document type at a relatively high level of abstraction. 
+
+MAY, SHOULD, MUST, SHOULD NOT, MUST NOT: These terms (in all caps) are used as defined 
+in [RFC2119]. All statements of optional behavior use either MAY, SHOULD, or SHOULD NOT. 
+
+1.2 References 
+
+Links to a document in the Microsoft Open Specifications library point to the correct section in the 
+most recently published version of the referenced document. However, because individual documents 
+
+6 / 58 
+
+[MS-OXWSPERS] - v20250520 
+Persona Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+in the library are not updated at the same time, the section numbers in the documents may not 
+match. You can confirm the correct section numbering by checking the Errata.   
+
+1.2.1 Normative References 
+
+We conduct frequent surveys of the normative references to assure their continued availability. If you 
+have any issue with finding a normative reference, please contact dochelp@microsoft.com. We will 
+assist you in finding the relevant information.  
+
+[MS-OXDSCLI] Microsoft Corporation, "Autodiscover Publishing and Lookup Protocol". 
+
+[MS-OXWSADISC] Microsoft Corporation, "Autodiscover Publishing and Lookup SOAP-Based Web 
+Service Protocol". 
+
+[MS-OXWSCDATA] Microsoft Corporation, "Common Web Service Data Types". 
+
+[MS-OXWSCORE] Microsoft Corporation, "Core Items Web Service Protocol". 
+
+[MS-OXWSFOLD] Microsoft Corporation, "Folders and Folder Permissions Web Service Protocol". 
+
+[MS-OXWSSRCH] Microsoft Corporation, "Mailbox Search Web Service Protocol". 
+
+[MS-OXWSXPROP] Microsoft Corporation, "Extended Properties Structure". 
+
+[RFC2119] Bradner, S., "Key words for use in RFCs to Indicate Requirement Levels", BCP 14, RFC 
+2119, March 1997, https://www.rfc-editor.org/info/rfc2119 
+
+[RFC2616] Fielding, R., Gettys, J., Mogul, J., et al., "Hypertext Transfer Protocol -- HTTP/1.1", RFC 
+2616, June 1999, https://www.rfc-editor.org/info/rfc2616 
+
+[RFC2818] Rescorla, E., "HTTP Over TLS", RFC 2818, May 2000, https://www.rfc-
+editor.org/info/rfc2818 
+
+[SOAP1.1] Box, D., Ehnebuske, D., Kakivaya, G., et al., "Simple Object Access Protocol (SOAP) 1.1", 
+W3C Note, May 2000, https://www.w3.org/TR/2000/NOTE-SOAP-20000508/ 
+
+[WSDL] Christensen, E., Curbera, F., Meredith, G., and Weerawarana, S., "Web Services Description 
+Language (WSDL) 1.1", W3C Note, March 2001, https://www.w3.org/TR/2001/NOTE-wsdl-20010315 
+
+[WSIBASIC] Ballinger, K., Ehnebuske, D., Gudgin, M., et al., Eds., "Basic Profile Version 1.0", Final 
+Material, April 2004, http://www.ws-i.org/Profiles/BasicProfile-1.0-2004-04-16.html 
+
+[XMLNS] Bray, T., Hollander, D., Layman, A., et al., Eds., "Namespaces in XML 1.0 (Third Edition)", 
+W3C Recommendation, December 2009, https://www.w3.org/TR/2009/REC-xml-names-20091208/ 
+
+[XMLSCHEMA1/2] Thompson, H., Beech, D., Maloney, M., and Mendelsohn, N., Eds., "XML Schema 
+Part 1: Structures Second Edition", W3C Recommendation, October 2004, 
+https://www.w3.org/TR/2004/REC-xmlschema-1-20041028/ 
+
+[XMLSCHEMA2/2] Biron, P., and Malhotra, A., Eds., "XML Schema Part 2: Datatypes Second Edition", 
+W3C Recommendation, October 2004, https://www.w3.org/TR/2004/REC-xmlschema-2-20041028/ 
+
+1.2.2 Informative References 
+
+[MS-OXPROTO] Microsoft Corporation, "Exchange Server Protocols System Overview". 
+
+[MS-OXWSCOS] Microsoft Corporation, "Unified Contact Store Web Service Protocol". 
+
+[MS-OXWSMTGS] Microsoft Corporation, "Calendaring Web Service Protocol". 
+
+7 / 58 
+
+[MS-OXWSPERS] - v20250520 
+Persona Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+1.3 Overview 
+
+The Persona Web Service Protocol enables clients to link, search, browse, and retrieve information 
+about a person from multiple sources and organize that information into a single logical entity called a 
+persona. 
+
+Personas differ from contacts (2) in that a contact (2) is a collection of data from a single source that 
+is associated with an individual, whereas a persona is a collection of integrated data from various 
+sources. 
+
+1.4 Relationship to Other Protocols 
+
+A client that implements this protocol can use the Autodiscover Publishing and Lookup SOAP-Based 
+Web Service Protocol, as described in [MS-OXWSADISC], or the Autodiscover Publishing and Lookup 
+Protocol, as described in [MS-OXDSCLI], to identify the target endpoint to use for each operation. 
+
+This protocol uses SOAP , as described in [SOAP1.1], to specify the structure information that is 
+exchanged between the client and the server. This protocol uses the XML schema, as described in 
+[XMLSCHEMA1/2] and [XMLSCHEMA2/2], to describe the message content that is sent to and from the 
+server. 
+
+This protocol uses SOAP over HTTP, as described in [RFC2616], and SOAP over HTTPS, as described 
+in [RFC2818], as shown in the following layering diagram. 
+
+ 
+
+Figure 1: This protocol in relation to other protocols 
+
+The following protocols use the persona information provided by the common types defined in section 
+2.2.4.1 through section 2.2.5.1: 
+
+ Calendaring Web Service Protocol, as described in [MS-OXWSMTGS] 
+
+ Unified Contact Store Web Service Protocol, as described in [MS-OXWSCOS] 
+
+For conceptual background information and overviews of the relationships and interactions between 
+this and other protocols, see [MS-OXPROTO]. 
+
+1.5 Prerequisites/Preconditions 
+
+The operations that this protocol defines cannot be accessed unless the correct endpoint is identified 
+in the HTTP web requests that target this protocol. This endpoint URL is returned by either the 
+Autodiscover Publishing Lookup SOAP-Based Web Service Protocol, as specified in [MS-OXWSADISC], 
+or the Autodiscover Publishing and Lookup Protocol, as specified in [MS-OXDSCLI]. 
+
+1.6 Applicability Statement 
+This protocol is applicable to environments that use web services to implement personas. This 
+protocol is applicable to all SOAP-based clients, as described in [SOAP1.1]. 
+
+8 / 58 
+
+[MS-OXWSPERS] - v20250520 
+Persona Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+1.7 Versioning and Capability Negotiation 
+
+This document covers versioning issues in the following areas: 
+
+ Supported Transports: This protocol uses SOAP 1.1, as described in section 2.1. 
+
+ Protocol Versions: This protocol describes only one WSDL port type version. The 
+RequestServerVersion element, as described in [MS-OXWSCDATA] section 2.2.3.9, identifies 
+the WSDL port type version. The ServerVersionInfo element, as described in [MS-OXWSCDATA] 
+section 2.2.3.10, identifies the version of the server responding to the request. 
+
+ Security and Authentication Methods: This protocol relies on the web server that is hosting it 
+to perform authentication. 
+
+ Localization: This protocol includes date/time formats in the PersonaType complex type, as 
+described in section 2.2.4.19. 
+
+ Capability Negotiation: This protocol does not support version negotiation. 
+
+1.8 Vendor-Extensible Fields 
+
+None. 
+
+1.9 Standards Assignments 
+
+None. 
+
+9 / 58 
+
+[MS-OXWSPERS] - v20250520 
+Persona Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+2 Messages 
+
+In the following sections, the schema definition might differ from the processing rules imposed by the 
+protocol. The Web Services Description Language (WSDL) in this specification provides a base 
+description of the protocol. The schema in this specification provides a base description of the 
+message syntax. The text that specifies the WSDL and schema might specify restrictions that reflect 
+actual protocol behavior. For example, the schema definition might allow for an element to be empty, 
+null, or not present but the behavior of the protocol as specified restricts the same elements to being 
+non-empty, not null, or present. 
+
+2.1 Transport 
+
+This protocol uses SOAP 1.1, as specified in [SOAP1.1]. 
+
+This protocol MUST support SOAP over HTTP, as specified in [RFC2616]. The protocol SHOULD use 
+secure communications by means of HTTPS, as specified in [RFC2818]. 
+
+2.2 Common Message Syntax 
+
+This section contains common definitions that are used by this protocol. The syntax of the definitions 
+uses XML schema, as specified in [XMLSCHEMA1/2]  and [XMLSCHEMA2/2], and WSDL, as specified 
+in [WSDL]. 
+
+2.2.1 Namespaces 
+
+This specification defines and references various XML namespaces using the mechanisms specified in 
+[XMLNS]. Although this specification associates a specific XML namespace prefix for each XML 
+namespace that is used, the choice of any particular XML namespace prefix is implementation-specific 
+and not significant for interoperability. 
+
+Prefix Namespace URI Reference 
+
+soap http://schemas.xmlsoap.org/wsdl/soap/ [SOAP1.1] 
+
+t http://schemas.microsoft.com/exchange/services/2006/types  
+
+tns http://schemas.microsoft.com/exchange/services/2006/messages  
+
+wsdl http://schemas.xmlsoap.org/wsdl/ [WSDL] 
+
+wsi http://ws-i.org/schemas/conformanceClaim/ [WSIBASIC] 
+
+[XMLSCHEMA1/2] 
+xs http://www.w3.org/2001/XMLSchema 
+
+[XMLSCHEMA2/2] 
+
+ 
+
+2.2.2 Messages 
+
+This specification does not define any common WSDL message definitions. 
+
+2.2.3 Elements 
+
+This specification does not define any common XML schema element definitions. 
+
+10 / 58 
+
+[MS-OXWSPERS] - v20250520 
+Persona Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+2.2.4 Complex Types 
+
+The following table summarizes the set of common XML schema complex type definitions defined by 
+this specification. XML schema complex type definitions that are specific to a particular operation are 
+described with the operation. 
+
+Complex type Description 
+
+The ArrayOfBodyContentAttributedValuesType 
+ArrayOfBodyContentAttributedValuesType complex type specifies an array of 
+
+BodyContentAttributedValue elements. 
+
+The ArrayOfEmailAddressAttributedValuesType 
+ArrayOfEmailAddressAttributedValuesType complex type specifies an array of 
+
+EmailAddressAttributedValue elements. 
+
+The ArrayOfExtendedPropertyAttributedValueType 
+ArrayOfExtendedPropertyAttributedValueType complex type specifies an array of 
+
+ExtendedPropertyAttributedValue elements. 
+
+The ArrayOfFolderIdType complex type specifies an 
+ArrayOfFolderIdType 
+
+array of FolderId elements. 
+
+The ArrayOfPersonaAttributionsType complex type 
+ArrayOfPersonaAttributionsType 
+
+specifies an array of persona attributions. 
+
+The ArrayOfPhoneNumberAttributedValuesType 
+ArrayOfPhoneNumberAttributedValuesType complex type specifies an array of 
+
+PhoneNumberAttributedValue elements. 
+
+The ArrayOfPostalAddressAttributedValuesType 
+ArrayOfPostalAddressAttributedValuesType complex type specifies an array of 
+
+PostalAddressAttributedValue elements. 
+
+The ArrayOfStringArrayAttributedValuesType complex 
+ArrayOfStringArrayAttributedValuesType type specifies an array of StringArrayAttributedValue 
+
+elements. 
+
+The ArrayOfStringAttributedValuesType complex type 
+ArrayOfStringAttributedValuesType 
+
+specifies an array of StringAttributedValue elements. 
+
+The ArrayOfStringValueType complex type specifies an 
+ArrayOfStringValueType 
+
+array of strings. 
+
+The ArrayOfValueAttributionsType complex type 
+ArrayOfValueAttributionsType specifies an array of strings, where each string matches 
+
+one of the identifier values of the attributions of a persona. 
+
+The BodyContentAttributedValueType complex type 
+BodyContentAttributedValueType 
+
+specifies the attributions of the body content of an item. 
+
+The BodyContentType complex type specifies the body 
+BodyContentType 
+
+content and format of an item. 
+
+The EmailAddressAttributedValueType complex type 
+specifies an EmailAddressType element, as specified in 
+[MS-OXWSCDATA] section 2.2.4.31, and an 
+
+EmailAddressAttributedValueType ArrayOfValueAttributionsType complex type, as 
+specified in section 2.2.4.11, pair. This complex type 
+represents an email address paired with a list of the 
+attributions for the email address. 
+
+ExtendedPropertyAttributedValueType The ExtendedPropertyAttributedValueType complex 
+type specifies arrays of extended properties and 
+
+11 / 58 
+
+[MS-OXWSPERS] - v20250520 
+Persona Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Complex type Description 
+
+attributions for a persona. 
+
+The PersonaAttributionType complex type specifies the 
+type of one attribution of the persona, which represents 
+
+PersonaAttributionType 
+information about one of the underlying contacts (2) or 
+directory service recipients aggregated into the persona. 
+
+The PersonaPhoneNumberType complex type specifies a 
+PersonaPhoneNumberType phone number of for a PersonaType complex type, as 
+
+specified in section 2.2.4.19. 
+
+The PersonaPostalAddressType complex type specifies a 
+PersonaPostalAddressType postal address for a PersonaType complex type, as 
+
+specified in section 2.2.4.19. 
+
+The PersonaType complex type specifies the type of a 
+PersonaType 
+
+persona. 
+
+The PhoneNumberAttributedValueType complex type 
+specifies a PersonaPhoneNumberType, as defined in 
+section 2.2.4.17, and ArrayOfValueAttributionsType, as 
+
+PhoneNumberAttributedValueType 
+defined in section 2.2.4.11, complex type pair. This 
+complex type represents a phone number for a persona, 
+paired with a list of the attributions for the phone number. 
+
+The PostalAddressAttributedValueType complex type 
+specifies a pair of PersonaPostalAddressType, as 
+defined in section 2.2.4.18, and 
+
+PostalAddressAttributedValueType ArrayOfValueAttributionsType, as defined in section 
+2.2.4.11, complex types. This complex type specifies a 
+postal address for a persona, paired with a list of the 
+attributions for that address. 
+
+The StringArrayAttributedValueType complex type 
+specifies an ArrayOfStringValueType, as defined in 
+
+StringArrayAttributedValueType 
+section 2.2.4.10, and an ArrayOfValueAttributionsType, 
+as defined in section 2.2.4.11, complex type pair. 
+
+The StringAttributedValueType complex type 
+StringAttributedValueType encapsulates a string value and multiple attributions for the 
+
+value. 
+
+ 
+
+2.2.4.1 ArrayOfBodyContentAttributedValuesType 
+
+Namespace: http://schemas.microsoft.com/exchange/services/2006/types 
+
+The ArrayOfBodyContentAttributedValuesType complex type specifies an array of 
+BodyContentAttributedValue elements. 
+
+ <xs:complexType name="ArrayOfBodyContentAttributedValuesType" 
+xmlns:xs="http://www.w3.org/2001/XMLSchema"> 
+  <xs:sequence> 
+    <xs:element minOccurs="0" maxOccurs="unbounded" name="BodyContentAttributedValue" 
+type="t:BodyContentAttributedValueType"/> 
+  </xs:sequence> 
+ </xs:complexType> 
+
+12 / 58 
+
+[MS-OXWSPERS] - v20250520 
+Persona Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+BodyContentAttributedValue: An element of type BodyContentAttributedValueType, as defined 
+in section 2.2.4.12, that represents the source of the message body.  
+
+2.2.4.2 ArrayOfEmailAddressAttributedValuesType 
+
+Namespace: http://schemas.microsoft.com/exchange/services/2006/types 
+
+The ArrayOfEmailAddressAttributedValuesType complex type specifies an array of 
+EmailAddressAttributedValue elements. 
+
+ <xs:complexType name="ArrayOfEmailAddressAttributedValuesType" 
+xmlns:xs="http://www.w3.org/2001/XMLSchema"> 
+  <xs:sequence> 
+    <xs:element minOccurs="0" maxOccurs="unbounded" name="EmailAddressAttributedValue" 
+type="t:EmailAddressAttributedValueType"/> 
+  </xs:sequence> 
+ </xs:complexType> 
+
+EmailAddressAttributedValue: An element of type EmailAddressAttributedValueType, as 
+defined in section 2.2.4.14, that represents the email address of a persona. 
+
+2.2.4.3 ArrayOfExtendedPropertyAttributedValueType 
+
+Namespace: http://schemas.microsoft.com/exchange/services/2006/types 
+
+The ArrayOfExtendedPropertyAttributedValueType complex type specifies an array of 
+ExtendedPropertyAttributedValue elements. 
+
+ <xs:complexType name="ArrayOfExtendedPropertyAttributedValueType" 
+xmlns:xs="http://www.w3.org/2001/XMLSchema"> 
+  <xs:sequence> 
+    <xs:element minOccurs="0" maxOccurs="unbounded" name="ExtendedPropertyAttributedValue" 
+type="t:ExtendedPropertyAttributedValueType"/> 
+  </xs:sequence> 
+ </xs:complexType> 
+
+ExtendedPropertyAttributedValue: An element of type ExtendedPropertyAttributedValueType, 
+as defined in section 2.2.4.15, that represents extended properties and attributions for a persona. 
+
+2.2.4.4 ArrayOfFolderIdType 
+
+Namespace: http://schemas.microsoft.com/exchange/services/2006/types 
+
+The ArrayOfFolderIdType complex type specifies an array of FolderId elements. 
+
+ <xs:complexType name="ArrayOfFolderIdType" xmlns:xs="http://www.w3.org/2001/XMLSchema"> 
+  <xs:choice minOccurs="0" maxOccurs="unbounded"> 
+    <xs:element name="FolderId" type="t:FolderIdType"/> 
+  </xs:choice> 
+ </xs:complexType> 
+
+FolderId: An element of type FolderIdType, as defined in [MS-OXWSCDATA] section 2.2.4.35, that 
+represents the identifier of a folder. 
+
+13 / 58 
+
+[MS-OXWSPERS] - v20250520 
+Persona Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+2.2.4.5 ArrayOfPersonaAttributionsType 
+
+Namespace: http://schemas.microsoft.com/exchange/services/2006/types 
+
+The ArrayOfPersonaAttributionsType complex type specifies an array of persona attributions. 
+
+ <xs:complexType name="ArrayOfPersonaAttributionsType" 
+xmlns:xs="http://www.w3.org/2001/XMLSchema"> 
+  <xs:sequence> 
+    <xs:element minOccurs="1" maxOccurs="unbounded" name="Attribution" 
+type="t:PersonaAttributionType"/> 
+  </xs:sequence> 
+ </xs:complexType> 
+
+Attribution: An element of type PersonaAttributionType, as defined in section 2.2.4.16, that 
+represents a set of attributes for a PersonaType complex type, as specified in section 2.2.4.19. 
+
+2.2.4.6 ArrayOfPhoneNumberAttributedValuesType 
+
+Namespace: http://schemas.microsoft.com/exchange/services/2006/types 
+
+The ArrayOfPhoneNumberAttributedValuesType complex type specifies an array of 
+PhoneNumberAttributedValue elements. 
+
+ <xs:complexType name="ArrayOfPhoneNumberAttributedValuesType" 
+xmlns:xs="http://www.w3.org/2001/XMLSchema"> 
+  <xs:sequence> 
+    <xs:element minOccurs="0" maxOccurs="unbounded" name="PhoneNumberAttributedValue" 
+type="t:PhoneNumberAttributedValueType"/> 
+  </xs:sequence> 
+ </xs:complexType> 
+
+PhoneNumberAttributedValue: An element of type PhoneNumberAttributedValueType, as 
+defined in section 2.2.4.20, that represents an array of phone numbers and their associated 
+attributions. 
+
+2.2.4.7 ArrayOfPostalAddressAttributedValuesType 
+
+Namespace: http://schemas.microsoft.com/exchange/services/2006/types 
+
+The ArrayOfPostalAddressAttributedValuesType complex type specifies an array of 
+PostalAddressAttributedValue elements. 
+
+ <xs:complexType name="ArrayOfPostalAddressAttributedValuesType" 
+xmlns:xs="http://www.w3.org/2001/XMLSchema"> 
+  <xs:sequence> 
+    <xs:element minOccurs="0" maxOccurs="unbounded" name="PostalAddressAttributedValue" 
+type="t:PostalAddressAttributedValueType"/> 
+  </xs:sequence> 
+ </xs:complexType> 
+
+PostalAddressAttributedValue: An element of type PostalAddressAttributedValueType, as 
+defined in section 2.2.4.21, that represents an array of postal addresses and their associated 
+attributions. 
+
+14 / 58 
+
+[MS-OXWSPERS] - v20250520 
+Persona Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+2.2.4.8 ArrayOfStringArrayAttributedValuesType 
+
+Namespace: http://schemas.microsoft.com/exchange/services/2006/types 
+
+The ArrayOfStringArrayAttributedValuesType complex type specifies an array of 
+StringArrayAttributedValue elements. 
+
+ <xs:complexType name="ArrayOfStringArrayAttributedValuesType" 
+xmlns:xs="http://www.w3.org/2001/XMLSchema"> 
+  <xs:sequence> 
+    <xs:element minOccurs="0" maxOccurs="unbounded" name="StringArrayAttributedValue" 
+type="t:StringArrayAttributedValueType"/> 
+  </xs:sequence> 
+ </xs:complexType> 
+
+StringArrayAttributedValue: An element of type StringArrayAttributedValueType, as defined in 
+section 2.2.4.22, that represents an array of string data for a persona. 
+
+2.2.4.9 ArrayOfStringAttributedValuesType 
+
+Namespace: http://schemas.microsoft.com/exchange/services/2006/types 
+
+The ArrayOfStringAttributedValuesType complex type specifies an array of 
+StringAttributedValue elements. 
+
+ <xs:complexType name="ArrayOfStringAttributedValuesType" 
+xmlns:xs="http://www.w3.org/2001/XMLSchema"> 
+  <xs:sequence> 
+    <xs:element minOccurs="0" maxOccurs="unbounded" name="StringAttributedValue" 
+type="t:StringAttributedValueType"/> 
+  </xs:sequence> 
+ </xs:complexType> 
+
+StringAttributedValue: An element of type StringAttributedValueType, as defined in section 
+2.2.4.23, that represents an array of attributes associated with a persona. 
+
+2.2.4.10 ArrayOfStringValueType 
+
+Namespace: http://schemas.microsoft.com/exchange/services/2006/types 
+
+The ArrayOfStringValueType complex type specifies an array of strings. 
+
+ <xs:complexType name="ArrayOfStringValueType" xmlns:xs="http://www.w3.org/2001/XMLSchema"> 
+  <xs:sequence> 
+    <xs:element minOccurs="1" maxOccurs="unbounded" name="Value" type="xs:string"/> 
+  </xs:sequence> 
+ </xs:complexType> 
+
+Value:  An element of type string, as defined in [XMLSCHEMA2/2], that represents attributions data. 
+
+2.2.4.11 ArrayOfValueAttributionsType 
+
+Namespace: http://schemas.microsoft.com/exchange/services/2006/types 
+
+The ArrayOfValueAttributionsType complex type specifies an array of strings, where each string 
+matches one of the identifier values of the attributions of a persona. 
+
+15 / 58 
+
+[MS-OXWSPERS] - v20250520 
+Persona Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+ <xs:complexType name="ArrayOfValueAttributionsType" 
+xmlns:xs="http://www.w3.org/2001/XMLSchema"> 
+  <xs:sequence> 
+    <xs:element minOccurs="1" maxOccurs="unbounded" name="Attribution" type="xs:string"/> 
+  </xs:sequence> 
+ </xs:complexType> 
+
+Attribution: An element of type string, as defined in [XMLSCHEMA2/2], that identifies an attribution 
+for a persona. 
+
+2.2.4.12 BodyContentAttributedValueType 
+
+Namespace: http://schemas.microsoft.com/exchange/services/2006/types 
+
+The BodyContentAttributedValueType complex type specifies the attributions of the body content 
+of an item. 
+
+ <xs:complexType name="BodyContentAttributedValueType" 
+xmlns:xs="http://www.w3.org/2001/XMLSchema"> 
+  <xs:sequence> 
+    <xs:element minOccurs="1" maxOccurs="1" name="Value" type="t:BodyContentType"/> 
+    <xs:element minOccurs="1" maxOccurs="1" name="Attributions" 
+type="t:ArrayOfValueAttributionsType"/> 
+  </xs:sequence> 
+ </xs:complexType> 
+
+Value: An element of type BodyContentType, as defined in section 2.2.4.13, that specifies the body 
+content.  
+
+Attributions: An element of type ArrayOfValueAttributionsType, as defined in section 2.2.4.11, 
+that represents an array of attribution identifiers that are associated with the body content.  
+
+2.2.4.13 BodyContentType 
+
+Namespace: http://schemas.microsoft.com/exchange/services/2006/types 
+
+The BodyContentType complex type specifies the body content and format of an item. 
+
+ <xs:complexType name="BodyContentType" xmlns:xs="http://www.w3.org/2001/XMLSchema"> 
+  <xs:sequence> 
+    <xs:element minOccurs="1" maxOccurs="1" name="Value" type="xs:string"/> 
+    <xs:element minOccurs="1" maxOccurs="1" name="BodyType" type="t:BodyTypeType"/> 
+  </xs:sequence> 
+ </xs:complexType> 
+
+Value: An element of type string, as defined in [XMLSCHEMA2/2], that specifies the value of the 
+message body.  
+
+BodyType: An element of type BodyTypeType, as defined in [MS-OXWSCDATA] section 2.2.5.2, that 
+specifies the type of the text of the message body.  
+
+2.2.4.14 EmailAddressAttributedValueType 
+
+Namespace: http://schemas.microsoft.com/exchange/services/2006/types 
+
+The EmailAddressAttributedValueType complex type specifies an EmailAddressType element, as 
+specified in [MS-OXWSCDATA] section 2.2.4.31, and an ArrayOfValueAttributionsType complex 
+
+16 / 58 
+
+[MS-OXWSPERS] - v20250520 
+Persona Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+type, as specified in section 2.2.4.11, pair. This complex type represents an email address paired 
+with a list of the attributions for the email address. 
+
+ <xs:complexType name="EmailAddressAttributedValueType" 
+xmlns:xs="http://www.w3.org/2001/XMLSchema"> 
+  <xs:sequence> 
+    <xs:element minOccurs="1" maxOccurs="1" name="Value" type="t:EmailAddressType"/> 
+    <xs:element minOccurs="1" maxOccurs="1" name="Attributions" 
+type="t:ArrayOfValueAttributionsType"/> 
+  </xs:sequence> 
+ </xs:complexType> 
+
+Value: An element of type EmailAddressType, as defined in [MS-OXWSCDATA] section 2.2.4.31, 
+that represents an email address. 
+
+Attributions: An element of type ArrayOfValueAttributionsType, as defined in section 2.2.4.11, 
+that represents an array of attribution identifiers that are associated with an email address. 
+
+2.2.4.15 ExtendedPropertyAttributedValueType 
+
+Namespace: http://schemas.microsoft.com/exchange/services/2006/types 
+
+The ExtendedPropertyAttributedValueType complex type specifies arrays of extended properties 
+and attributions for a persona. 
+
+ <xs:complexType name="ExtendedPropertyAttributedValueType" 
+xmlns:xs="http://www.w3.org/2001/XMLSchema"> 
+  <xs:sequence> 
+    <xs:element minOccurs="1" maxOccurs="1" name="Value" type="t:ExtendedPropertyType"/> 
+    <xs:element minOccurs="1" maxOccurs="1" name="Attributions" 
+type="t:ArrayOfValueAttributionsType"/> 
+  </xs:sequence> 
+ </xs:complexType> 
+
+Value: An element of type ExtendedPropertyType, as defined in [MS-OXWSXPROP] section 2.1.5, 
+that contains an array of extended properties for a persona. 
+
+Attributions: An element of type ArrayOfValueAttributionsType, as defined in section 2.2.4.11, 
+that represents an array that contains a set of attributions for its associated Value element. 
+
+2.2.4.16 PersonaAttributionType 
+
+Namespace: http://schemas.microsoft.com/exchange/services/2006/types 
+
+The PersonaAttributionType complex type specifies the type of one attribution of the persona, 
+which represents information about one of the underlying contacts (2) or directory service recipients 
+aggregated into the persona. 
+
+ <xs:complexType name="PersonaAttributionType" xmlns:xs="http://www.w3.org/2001/XMLSchema"> 
+  <xs:sequence> 
+    <xs:element minOccurs="1" maxOccurs="1" name="Id" type="xs:string"/> 
+    <xs:element minOccurs="1" maxOccurs="1" name="SourceId" type="t:ItemIdType"/> 
+    <xs:element minOccurs="1" maxOccurs="1" name="DisplayName" type="xs:string"/> 
+    <xs:element minOccurs="0" maxOccurs="1" name="IsWritable" type="xs:boolean"/> 
+    <xs:element minOccurs="0" maxOccurs="1" name="IsQuickContact" type="xs:boolean"/> 
+    <xs:element minOccurs="0" maxOccurs="1" name="IsHidden" type="xs:boolean"/> 
+    <xs:element minOccurs="0" maxOccurs="1" name="FolderId" type="t:FolderIdType"/> 
+  </xs:sequence> 
+ </xs:complexType> 
+
+17 / 58 
+
+[MS-OXWSPERS] - v20250520 
+Persona Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Id: An element of type string, as defined in [XMLSCHEMA2/2], that identifies this attribution within 
+the persona. 
+
+SourceId: An element of type ItemIdType, as defined in [MS-OXWSCORE] section 2.2.4.25, that 
+represents the identifier of the contact (2) or directory service recipient. 
+
+DisplayName: An element of type string that contains the name for this attribution that is suitable 
+for display. 
+
+IsWritable: An element of type boolean, as defined in [XMLSCHEMA2/2], that indicates whether the 
+underlying contact (2) or directory service recipient can be written to. 
+
+IsQuickContact: An element of type boolean that indicates whether the underlying contact (2) or 
+directory service recipient is a quick contact. Quick contacts are contacts (2) that can be accessed and 
+collaborated by communication applications. 
+
+IsHidden: An element of type boolean that indicates whether the underlying contact (2) or directory 
+service recipient is displayed as part of the persona. 
+
+FolderId: An element of type FolderIdType, as defined in [MS-OXWSCDATA] section 2.2.4.35, that 
+represents the identifier of the folder for the underlying contact (2). 
+
+2.2.4.17 PersonaPhoneNumberType 
+
+Namespace: http://schemas.microsoft.com/exchange/services/2006/types 
+
+The PersonaPhoneNumberType complex type specifies a phone number of for a PersonaType 
+complex type, as specified in section 2.2.4.19. 
+
+ <xs:complexType name="PersonaPhoneNumberType" xmlns:xs="http://www.w3.org/2001/XMLSchema"> 
+  <xs:sequence> 
+    <xs:element minOccurs="1" maxOccurs="1" name="Number" type="xs:string"/> 
+    <xs:element minOccurs="1" maxOccurs="1" name="Type" type="xs:string"/> 
+  </xs:sequence> 
+ </xs:complexType> 
+
+Number: An element of type string, as defined in [XMLSCHEMA2/2], that contains a phone number. 
+
+Type: An element of type string that specifies the type of phone number (for example, Mobile, 
+Business, or Home) of an associated Number element value. 
+
+2.2.4.18 PersonaPostalAddressType 
+
+Namespace: http://schemas.microsoft.com/exchange/services/2006/types 
+
+The PersonaPostalAddressType complex type specifies a postal address for a PersonaType 
+complex type, as specified in section 2.2.4.19. 
+
+ <xs:complexType name="PersonaPostalAddressType" xmlns:xs="http://www.w3.org/2001/XMLSchema"> 
+  <xs:sequence> 
+    <xs:element minOccurs="0" maxOccurs="1" name="Street" type="xs:string"/> 
+    <xs:element minOccurs="0" maxOccurs="1" name="City" type="xs:string"/> 
+    <xs:element minOccurs="0" maxOccurs="1" name="State" type="xs:string"/> 
+    <xs:element minOccurs="0" maxOccurs="1" name="Country" type="xs:string"/> 
+    <xs:element minOccurs="0" maxOccurs="1" name="PostalCode" type="xs:string"/> 
+    <xs:element minOccurs="0" maxOccurs="1" name="PostOfficeBox" type="xs:string"/> 
+    <xs:element minOccurs="0" maxOccurs="1" name="Type" type="xs:string"/> 
+    <xs:element minOccurs="0" maxOccurs="1" name="Latitude" type="xs:double"/> 
+    <xs:element minOccurs="0" maxOccurs="1" name="Longitude" type="xs:double"/> 
+    <xs:element minOccurs="0" maxOccurs="1" name="Accuracy" type="xs:double"/> 
+
+18 / 58 
+
+[MS-OXWSPERS] - v20250520 
+Persona Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+    <xs:element minOccurs="0" maxOccurs="1" name="Altitude" type="xs:double"/> 
+    <xs:element minOccurs="0" maxOccurs="1" name="AltitudeAccuracy" type="xs:double"/> 
+    <xs:element minOccurs="0" maxOccurs="1" name="FormattedAddress" type="xs:string"/> 
+    <xs:element minOccurs="0" maxOccurs="1" name="LocationUri" type="xs:string"/> 
+    <xs:element minOccurs="0" maxOccurs="1" name="LocationSource" 
+type="t:LocationSourceType"/> 
+  </xs:sequence> 
+ </xs:complexType> 
+
+Street: An element of type string, as defined in [XMLSCHEMA2/2], that represents the street portion 
+of a postal address. 
+
+City: An element of type string that represents the city portion of a postal address. 
+
+State: An element of type string that represents the state portion of a postal address. 
+
+Country: An element of type string that represents the country/region portion of a postal address. 
+
+PostalCode: An element of type string that represents the postal code portion of a postal address. 
+
+PostOfficeBox: An element of type string that represents the post office box portion of a postal 
+address. 
+
+Type: An element of type string that specifies the type of postal address; for example, Home or 
+Business. 
+
+Latitude: An element of type double, as defined in [XMLSCHEMA2/2], that represents the latitude of 
+the location of the associated postal address. 
+
+Longitude: An element of type double that represents the longitude of the location of the associated 
+postal address. 
+
+Accuracy: An element of type double that represents the accuracy of the latitude and longitude of 
+the associated postal address. 
+
+Altitude: An element of type double that represents the altitude of the associated postal address. 
+
+AltitudeAccuracy: An element of type double  that represents the accuracy of the altitude of the 
+associated postal address. 
+
+FormattedAddress: An element of type string that specifies the formatted display value of the 
+associated postal address. 
+
+LocationUri: An element of type string that specifies a URI, for example for an Internet address, of 
+the associated postal address. 
+
+LocationSource: An element of type LocationSourceType, as defined in section 2.2.5.1, that 
+contains information about the origin of the associated postal address; for example, a contact (2) or 
+a telephone book. 
+
+2.2.4.19 PersonaType 
+
+Namespace: http://schemas.microsoft.com/exchange/services/2006/types 
+
+The PersonaType complex type specifies the type of a persona. 
+
+ <xs:complexType name="PersonaType" xmlns:xs="http://www.w3.org/2001/XMLSchema"> 
+  <xs:sequence> 
+    <xs:element minOccurs="1" maxOccurs="1" name="PersonaId" type="t:ItemIdType"/> 
+    <xs:element minOccurs="0" maxOccurs="1" name="PersonaType" type="xs:string"/> 
+
+19 / 58 
+
+[MS-OXWSPERS] - v20250520 
+Persona Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+    <xs:element minOccurs="0" maxOccurs="1" name="PersonaObjectStatus" type="xs:string"/> 
+    <xs:element minOccurs="0" maxOccurs="1" name="CreationTime" type="xs:dateTime"/> 
+    <xs:element minOccurs="0" name="Bodies" type="t:ArrayOfBodyContentAttributedValuesType"/> 
+    <xs:element minOccurs="0" maxOccurs="1" name="DisplayNameFirstLastSortKey" 
+type="xs:string"/> 
+    <xs:element minOccurs="0" maxOccurs="1" name="DisplayNameLastFirstSortKey" 
+type="xs:string"/> 
+    <xs:element minOccurs="0" maxOccurs="1" name="CompanyNameSortKey" type="xs:string"/> 
+    <xs:element minOccurs="0" maxOccurs="1" name="HomeCitySortKey" type="xs:string"/> 
+    <xs:element minOccurs="0" maxOccurs="1" name="WorkCitySortKey" type="xs:string"/> 
+    <xs:element minOccurs="0" maxOccurs="1" name="DisplayNameFirstLastHeader" 
+type="xs:string"/> 
+    <xs:element minOccurs="0" maxOccurs="1" name="DisplayNameLastFirstHeader" 
+type="xs:string"/> 
+    <xs:element minOccurs="0" maxOccurs="1" name="FileAsHeader" type="xs:string"/> 
+    <xs:element minOccurs="0" maxOccurs="1" name="DisplayName" type="xs:string"/> 
+    <xs:element minOccurs="0" maxOccurs="1" name="DisplayNameFirstLast" type="xs:string"/> 
+    <xs:element minOccurs="0" maxOccurs="1" name="DisplayNameLastFirst" type="xs:string"/> 
+    <xs:element minOccurs="0" maxOccurs="1" name="FileAs" type="xs:string"/> 
+    <xs:element minOccurs="0" maxOccurs="1" name="FileAsId" type="xs:string"/> 
+    <xs:element minOccurs="0" maxOccurs="1" name="DisplayNamePrefix" type="xs:string"/> 
+    <xs:element minOccurs="0" maxOccurs="1" name="GivenName" type="xs:string"/> 
+    <xs:element minOccurs="0" maxOccurs="1" name="MiddleName" type="xs:string"/> 
+    <xs:element minOccurs="0" maxOccurs="1" name="Surname" type="xs:string"/> 
+    <xs:element minOccurs="0" maxOccurs="1" name="Generation" type="xs:string"/> 
+    <xs:element minOccurs="0" maxOccurs="1" name="Nickname" type="xs:string"/> 
+    <xs:element minOccurs="0" maxOccurs="1" name="YomiCompanyName" type="xs:string"/> 
+    <xs:element minOccurs="0" maxOccurs="1" name="YomiFirstName" type="xs:string"/> 
+    <xs:element minOccurs="0" maxOccurs="1" name="YomiLastName" type="xs:string"/> 
+    <xs:element minOccurs="0" maxOccurs="1" name="Title" type="xs:string"/> 
+    <xs:element minOccurs="0" maxOccurs="1" name="Department" type="xs:string"/> 
+    <xs:element minOccurs="0" maxOccurs="1" name="CompanyName" type="xs:string"/> 
+    <xs:element minOccurs="0" maxOccurs="1" name="Location" type="xs:string"/> 
+    <xs:element minOccurs="0" maxOccurs="1" name="EmailAddress" type="t:EmailAddressType"/> 
+    <xs:element minOccurs="0" maxOccurs="1" name="EmailAddresses" 
+type="t:ArrayOfEmailAddressesType"/> 
+    <xs:element minOccurs="0" maxOccurs="1" name="PhoneNumber" 
+type="t:PersonaPhoneNumberType"/> 
+    <xs:element minOccurs="0" maxOccurs="1" name="ImAddress" type="xs:string"/> 
+    <xs:element minOccurs="0" maxOccurs="1" name="HomeCity" type="xs:string"/> 
+    <xs:element minOccurs="0" maxOccurs="1" name="WorkCity" type="xs:string"/> 
+    <xs:element minOccurs="0" maxOccurs="1" name="RelevanceScore" type="xs:int"/> 
+    <xs:element minOccurs="0" maxOccurs="1" name="FolderIds" type="t:ArrayOfFolderIdType"/> 
+    <xs:element minOccurs="0" maxOccurs="1" name="Attributions" 
+type="t:ArrayOfPersonaAttributionsType"/> 
+    <xs:element minOccurs="0" name="DisplayNames" 
+type="t:ArrayOfStringAttributedValuesType"/> 
+    <xs:element minOccurs="0" name="FileAses" type="t:ArrayOfStringAttributedValuesType"/> 
+    <xs:element minOccurs="0" name="FileAsIds" type="t:ArrayOfStringAttributedValuesType"/> 
+    <xs:element minOccurs="0" name="DisplayNamePrefixes" 
+type="t:ArrayOfStringAttributedValuesType"/> 
+    <xs:element minOccurs="0" name="GivenNames" type="t:ArrayOfStringAttributedValuesType"/> 
+    <xs:element minOccurs="0" name="MiddleNames" type="t:ArrayOfStringAttributedValuesType"/> 
+    <xs:element minOccurs="0" name="Surnames" type="t:ArrayOfStringAttributedValuesType"/> 
+    <xs:element minOccurs="0" name="Generations" type="t:ArrayOfStringAttributedValuesType"/> 
+    <xs:element minOccurs="0" name="Nicknames" type="t:ArrayOfStringAttributedValuesType"/> 
+    <xs:element minOccurs="0" name="Initials" type="t:ArrayOfStringAttributedValuesType"/> 
+    <xs:element minOccurs="0" name="YomiCompanyNames" 
+type="t:ArrayOfStringAttributedValuesType"/> 
+    <xs:element minOccurs="0" name="YomiFirstNames" 
+type="t:ArrayOfStringAttributedValuesType"/> 
+    <xs:element minOccurs="0" name="YomiLastNames" 
+type="t:ArrayOfStringAttributedValuesType"/> 
+    <xs:element minOccurs="0" name="BusinessPhoneNumbers" 
+type="t:ArrayOfPhoneNumberAttributedValuesType"/> 
+    <xs:element minOccurs="0" name="BusinessPhoneNumbers2" 
+type="t:ArrayOfPhoneNumberAttributedValuesType"/> 
+    <xs:element minOccurs="0" name="HomePhones" 
+type="t:ArrayOfPhoneNumberAttributedValuesType"/> 
+
+20 / 58 
+
+[MS-OXWSPERS] - v20250520 
+Persona Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+    <xs:element minOccurs="0" name="HomePhones2" 
+type="t:ArrayOfPhoneNumberAttributedValuesType"/> 
+    <xs:element minOccurs="0" name="MobilePhones" 
+type="t:ArrayOfPhoneNumberAttributedValuesType"/> 
+    <xs:element minOccurs="0" name="MobilePhones2" 
+type="t:ArrayOfPhoneNumberAttributedValuesType"/> 
+    <xs:element minOccurs="0" name="AssistantPhoneNumbers" 
+type="t:ArrayOfPhoneNumberAttributedValuesType"/> 
+    <xs:element minOccurs="0" name="CallbackPhones" 
+type="t:ArrayOfPhoneNumberAttributedValuesType"/> 
+    <xs:element minOccurs="0" name="CarPhones" 
+type="t:ArrayOfPhoneNumberAttributedValuesType"/> 
+    <xs:element minOccurs="0" name="HomeFaxes" 
+type="t:ArrayOfPhoneNumberAttributedValuesType"/> 
+    <xs:element minOccurs="0" name="OrganizationMainPhones" 
+type="t:ArrayOfPhoneNumberAttributedValuesType"/> 
+    <xs:element minOccurs="0" name="OtherFaxes" 
+type="t:ArrayOfPhoneNumberAttributedValuesType"/> 
+    <xs:element minOccurs="0" name="OtherTelephones" 
+type="t:ArrayOfPhoneNumberAttributedValuesType"/> 
+    <xs:element minOccurs="0" name="OtherPhones2" 
+type="t:ArrayOfPhoneNumberAttributedValuesType"/> 
+    <xs:element minOccurs="0" name="Pagers" type="t:ArrayOfPhoneNumberAttributedValuesType"/> 
+    <xs:element minOccurs="0" name="RadioPhones" 
+type="t:ArrayOfPhoneNumberAttributedValuesType"/> 
+    <xs:element minOccurs="0" name="TelexNumbers" 
+type="t:ArrayOfPhoneNumberAttributedValuesType"/> 
+    <xs:element minOccurs="0" name="TTYTDDPhoneNumbers" 
+type="t:ArrayOfPhoneNumberAttributedValuesType"/> 
+    <xs:element minOccurs="0" name="WorkFaxes" 
+type="t:ArrayOfPhoneNumberAttributedValuesType"/> 
+    <xs:element minOccurs="0" maxOccurs="1" name="Emails1" 
+type="t:ArrayOfEmailAddressAttributedValuesType"/> 
+    <xs:element minOccurs="0" maxOccurs="1" name="Emails2" 
+type="t:ArrayOfEmailAddressAttributedValuesType"/> 
+    <xs:element minOccurs="0" maxOccurs="1" name="Emails3" 
+type="t:ArrayOfEmailAddressAttributedValuesType"/> 
+    <xs:element minOccurs="0" name="BusinessHomePages" 
+type="t:ArrayOfStringAttributedValuesType"/> 
+    <xs:element minOccurs="0" name="PersonalHomePages" 
+type="t:ArrayOfStringAttributedValuesType"/> 
+    <xs:element minOccurs="0" name="OfficeLocations" 
+type="t:ArrayOfStringAttributedValuesType"/> 
+    <xs:element minOccurs="0" name="ImAddresses" type="t:ArrayOfStringAttributedValuesType"/> 
+    <xs:element minOccurs="0" name="ImAddresses2" 
+type="t:ArrayOfStringAttributedValuesType"/> 
+    <xs:element minOccurs="0" name="ImAddresses3" 
+type="t:ArrayOfStringAttributedValuesType"/> 
+    <xs:element minOccurs="0" maxOccurs="1" name="BusinessAddresses" 
+type="t:ArrayOfPostalAddressAttributedValuesType"/> 
+    <xs:element minOccurs="0" maxOccurs="1" name="HomeAddresses" 
+type="t:ArrayOfPostalAddressAttributedValuesType"/> 
+    <xs:element minOccurs="0" maxOccurs="1" name="OtherAddresses" 
+type="t:ArrayOfPostalAddressAttributedValuesType"/> 
+    <xs:element minOccurs="0" name="Titles" type="t:ArrayOfStringAttributedValuesType"/> 
+    <xs:element minOccurs="0" name="Departments" type="t:ArrayOfStringAttributedValuesType"/> 
+    <xs:element minOccurs="0" name="CompanyNames" 
+type="t:ArrayOfStringAttributedValuesType"/> 
+    <xs:element minOccurs="0" name="Managers" type="t:ArrayOfStringAttributedValuesType"/> 
+    <xs:element minOccurs="0" name="AssistantNames" 
+type="t:ArrayOfStringAttributedValuesType"/> 
+    <xs:element minOccurs="0" name="Professions" type="t:ArrayOfStringAttributedValuesType"/> 
+    <xs:element minOccurs="0" name="SpouseNames" type="t:ArrayOfStringAttributedValuesType"/> 
+    <xs:element minOccurs="0" name="Children" 
+type="t:ArrayOfStringArrayAttributedValuesType"/> 
+    <xs:element minOccurs="0" name="Schools" type="t:ArrayOfStringAttributedValuesType"/> 
+    <xs:element minOccurs="0" name="Hobbies" type="t:ArrayOfStringAttributedValuesType"/> 
+    <xs:element minOccurs="0" name="WeddingAnniversaries" 
+type="t:ArrayOfStringAttributedValuesType"/> 
+
+21 / 58 
+
+[MS-OXWSPERS] - v20250520 
+Persona Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+    <xs:element minOccurs="0" name="Birthdays" type="t:ArrayOfStringAttributedValuesType"/> 
+    <xs:element minOccurs="0" name="Locations" type="t:ArrayOfStringAttributedValuesType"/> 
+    <xs:element minOccurs="0" name="ExtendedProperties" 
+type="t:ArrayOfExtendedPropertyAttributedValueType"/> 
+  </xs:sequence> 
+ </xs:complexType> 
+
+PersonaId: An element of type ItemIdType, as defined in [MS-OXWSCORE] section 2.2.4.25, that 
+represents an item identifier that is associated with a persona. 
+
+PersonaType: An element of type string, as defined in [XMLSCHEMA2/2], that represents the type 
+of the associated persona; for example, a person or a distribution list. 
+
+PersonaObjectStatus: An element of type string that specifies whether the information in the 
+associated persona is complete or partial. This element will not be used and returned by server. 
+
+CreationTime: An element of type datetime, as defined in [XMLSCHEMA2/2], that specifies when 
+the associated persona was created. 
+
+Bodies: An element of type ArrayOfBodyContentAttributedValuesType, as defined in section 
+2.2.4.1, that represents an array of attributions for the content of the body.  
+
+DisplayNameFirstLastSortKey: An element of type string that represents the sort key for a 
+display name in first name, last name order. 
+
+DisplayNameLastFirstSortKey: An element of type string that represents the sort key for a display 
+name in last name, first name order. 
+
+CompanyNameSortKey: An element of type string that represents the sort key for a company 
+name. 
+
+HomeCitySortKey: An element of type string that represents the sort key for the home city. 
+
+WorkCitySortKey: An element of type string that represents the sort key for the work city. 
+
+DisplayNameFirstLastHeader: An element of type string that represents the header for a display 
+name in first name, last name order.  
+
+DisplayNameLastFirstHeader: An element of type string that represents the header for a display 
+name in last name, first name order.  
+
+FileAsHeader: An element of type string that contains the computed header, based on locale, of the 
+value in the FileAs element.  
+
+DisplayName: An element of type string that specifies the display name of the associated persona. 
+
+DisplayNameFirstLast: An element of type string that specifies the display name of the associated 
+persona in first name, last name order. 
+
+DisplayNameLastFirst: An element of type string that specifies the display name of the associated 
+persona in last name, first name order. 
+
+FileAs: An element of type string that specifies how the persona is to be filed. 
+
+FileAsId: An element of type string that specifies the FileAs element identifier. 
+
+DisplayNamePrefix: An element of type string that specifies the prefix of the display name of the 
+associated persona; for example, Mr., Ms., or Dr. 
+
+GivenName: An element of type string that specifies the given name of the associated persona. 
+
+22 / 58 
+
+[MS-OXWSPERS] - v20250520 
+Persona Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+MiddleName: An element of type string that specifies the middle name of the associated persona. 
+
+Surname: An element of type string that specifies the surname of the associated persona. 
+
+Generation: An element of type string that specifies the generation (Sr., Jr., III, and so on) of the 
+associated persona. 
+
+Nickname: An element of type string that specifies the nickname of the associated persona. 
+
+YomiCompanyName: An element of type string that specifies the phonetic Japanese company name 
+of the associated persona. 
+
+YomiFirstName: An element of type string that contains the phonetic Japanese first name of the 
+associated persona. 
+
+YomiLastName: An element of type xs:string that contains the phonetic Japanese last name of the 
+associated persona. 
+
+Title: An element of type string that specifies the job title of the associated persona. 
+
+Department: An element of type string that specifies the department name of the associated 
+persona. 
+
+CompanyName: An element of type string that specifies the company name of the associated 
+persona. 
+
+Location: An element of type string that specifies the location of the associated persona. 
+
+EmailAddress: An element of type EmailAddressType, as defined in [MS-OXWSCDATA] section 
+2.2.4.31, that contains the default email address of the associated persona. 
+
+EmailAddresses: An element of type ArrayOfEmailAddressesType, as defined in [MS-
+OXWSCDATA] section 2.2.4.7, that contains an array of all email addresses of the associated persona. 
+
+PhoneNumber: An element of type PersonaPhoneNumberType, as defined in section 2.2.4.17, 
+that contains the default phone number of the associated persona. 
+
+ImAddress: An element of type string that specifies the instant messaging address of the 
+associated persona. 
+
+HomeCity: An element of type string that specifies the city of the home address of the associated 
+persona. 
+
+WorkCity: An element of type string that specifies the city of the work address of the associated 
+persona. 
+
+RelevanceScore: An element of type int, as defined in [XMLSCHEMA2/2], that specifies how relevant 
+the associated persona is to the client. The smaller the value is, the more relevant it will be. 
+
+FolderIds: An element of type ArrayOfFolderIdType, as defined in section 2.2.4.4, that represents 
+the parent folders of all the contacts (2) aggregated into the associated persona. 
+
+Attributions: An element of type ArrayOfPersonaAttributionsType, as defined in section 2.2.4.5, 
+that contains attribution information for the associated persona. 
+
+DisplayNames: An element of type ArrayOfStringAttributedValuesType, as defined in section 
+2.2.4.8, that contains an array of display names and the identifiers of their source attributions for the 
+associated persona. 
+
+FileAses: An element of typeArrayOfStringAttributedValuesType that contains an array of FileAs 
+element values and the identifiers of their source attributions for the associated persona. 
+
+23 / 58 
+
+[MS-OXWSPERS] - v20250520 
+Persona Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+FileAsIds: An element of type ArrayOfStringAttributedValuesType  that contains an array of 
+FileAsId element values and the identifiers of their source attributions for the associated persona. 
+
+DisplayNamePrefixes: An element of type ArrayOfStringAttributedValuesType that contains an 
+array of display name prefixes and the identifiers of their source attributions for the associated 
+persona. 
+
+GivenNames: An element of type ArrayOfStringAttributedValuesType that contains an array of 
+given name values and the identifiers of their source attributions for the associated persona. 
+
+MiddleNames: An element of type ArrayOfStringAttributedValuesType that contains an array of 
+middle name values and the identifiers of their source attributions for the associated persona. 
+
+Surnames: An element of type ArrayOfStringAttributedValuesType that contains an array of 
+surname values and the identifiers of their source attributions for the associated persona. 
+
+Generations: An element of type ArrayOfStringAttributedValuesType that contains an array of 
+generation values and the identifiers of their source attributions for the associated persona. 
+
+Nicknames: An element of type ArrayOfStringAttributedValuesType that contains an array of 
+nickname values and the identifiers of their source attributions for the associated persona. 
+
+Initials: An element of type ArrayOfStringAttributedValuesType that contains an array of initials 
+values and the identifiers of their source attributions for the associated persona. 
+
+YomiCompanyNames: An element of type ArrayOfStringAttributedValuesType that contains an 
+array of phonetic Japanese company names and the identifiers of their source attributions for the 
+associated persona. 
+
+YomiFirstNames: An element of type ArrayOfStringAttributedValuesType that contains an array 
+of phonetic Japanese first names and the identifiers of their source attributions for the associated 
+persona. 
+
+YomiLastNames: An element of type ArrayOfStringAttributedValuesType that contains an array 
+of phonetic Japanese last names and the identifiers of their source attributions for the associated 
+persona. 
+
+BusinessPhoneNumbers: An element of type ArrayOfPhoneNumberAttributedValuesType, as 
+defined in section 2.2.4.6, that contains an array of business phone numbers and the identifiers of 
+their source attributions for the associated persona. 
+
+BusinessPhoneNumbers2: An element of type ArrayOfPhoneNumberAttributedValuesType that 
+contains an array of business phone numbers and the identifiers of their source attributions for the 
+associated persona. 
+
+HomePhones: An element of type ArrayOfPhoneNumberAttributedValuesType that contains an 
+array of home phone numbers and the identifiers of their source attributions for the associated 
+persona. 
+
+HomePhones2: An element of type ArrayOfPhoneNumberAttributedValuesType that contains an 
+array of phone numbers and the identifiers of their source attributions for the associated persona. 
+
+MobilePhones: An element of type ArrayOfPhoneNumberAttributedValuesType that contains an 
+array of mobile phone numbers and the identifiers of their source attributions for the associated 
+persona. 
+
+MobilePhones2: An element of type ArrayOfPhoneNumberAttributedValuesType that contains 
+an array of mobile phone numbers and the identifiers of their source attributions for the associated 
+persona. 
+
+24 / 58 
+
+[MS-OXWSPERS] - v20250520 
+Persona Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+AssistantPhoneNumbers: An element of type ArrayOfPhoneNumberAttributedValuesType that 
+contains an array of assistant phone numbers and the identifiers of their source attributions for the 
+associated persona. 
+
+CallbackPhones: An element of type ArrayOfPhoneNumberAttributedValuesType that contains 
+an array of call-back phone numbers and the identifiers of their source attributions for the associated 
+persona. 
+
+CarPhones: An element of type ArrayOfPhoneNumberAttributedValuesType that contains an 
+array of car phone numbers and the identifiers of their source attributions for the associated persona. 
+
+HomeFaxes: An element of type ArrayOfPhoneNumberAttributedValuesType that contains an 
+array of home fax numbers and the identifiers of their source attributions for the associated persona. 
+
+OrganizationMainPhones: An element of type ArrayOfPhoneNumberAttributedValuesType that 
+contains an array of the main phone numbers of an organization and the identifiers of their source 
+attributions for the associated persona. 
+
+OtherFaxes: An element of type ArrayOfPhoneNumberAttributedValuesType that contains an 
+array of fax numbers and the identifiers of their source attributions for the associated persona. 
+
+OtherTelephones: An element of type ArrayOfPhoneNumberAttributedValuesType that contains 
+an array of telephone numbers and the identifiers of their source attributions for the associated 
+persona. 
+
+OtherPhones2: An element of type ArrayOfPhoneNumberAttributedValuesType that contains an 
+array of telephone numbers and the identifiers of their source attributions for the associated persona. 
+
+Pagers: An element of type ArrayOfPhoneNumberAttributedValuesType that contains an array of 
+pager phone numbers and the identifiers of their source attributions for the associated persona. 
+
+RadioPhones: An element of type ArrayOfPhoneNumberAttributedValuesType that contains an 
+array of radio phone numbers and the identifiers of their source attributions for the associated 
+persona. 
+
+TelexNumbers: An element of type ArrayOfPhoneNumberAttributedValuesType that contains an 
+array of Telex numbers and the identifiers of their source attributions for the associated persona. 
+
+TTYTDDPhoneNumbers: An element of type ArrayOfPhoneNumberAttributedValuesType that 
+contains an array of Text Telephone/Telecommunications Device for the Deaf (TTY/TDD) text 
+telephone numbers and the identifiers of their source attributions for the associated persona. 
+
+WorkFaxes: An element of type ArrayOfPhoneNumberAttributedValuesType that contains an 
+array of work fax numbers and the identifiers of their source attributions for the associated persona. 
+
+Emails1: An element of type ArrayOfEmailAddressAttributedValuesType, as defined in section 
+2.2.4.2 that contains an array of email addresses and the identifiers of their source attributions for the 
+associated persona. 
+
+Emails2: An element of type ArrayOfEmailAddressAttributedValuesType that contains an array 
+of email addresses and the identifiers of their source attributions for the associated persona. 
+
+Emails3: An element of type ArrayOfEmailAddressAttributedValuesType that contains an array 
+of email addresses and the identifiers of their source attributions for the associated persona. 
+
+BusinessHomePages: An element of type ArrayOfStringAttributedValuesType, as defined in 
+section 2.2.4.9, that contains an array of business home page values and the identifiers of their 
+source attributions for the associated persona. 
+
+25 / 58 
+
+[MS-OXWSPERS] - v20250520 
+Persona Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+PersonalHomePages: An element of type ArrayOfStringAttributedValuesType that contains an 
+array of personal home page values and the identifiers of their source attributions for the associated 
+persona. 
+
+OfficeLocations: An element of type ArrayOfStringAttributedValuesType that contains an array 
+of office locations and the identifiers of their source attributions for the associated persona. 
+
+ImAddresses: An element of type ArrayOfStringAttributedValuesType that contains an array of 
+instant messaging addresses and the identifiers of their source attributions for the associated persona. 
+
+ImAddresses2: An element of type ArrayOfStringAttributedValuesType that contains an array of 
+instant messaging addresses and the identifiers of their source attributions for the associated persona. 
+
+ImAddresses3: An element of type ArrayOfStringAttributedValuesType that contains an array of 
+instant messaging addresses and the identifiers of their source attributions for the associated persona. 
+
+BusinessAddresses: An element of type ArrayOfPostalAddressAttributedValuesType, as defined 
+in section 2.2.4.7, that contains an array of business addresses and the identifiers of their source 
+attributions for the associated persona. 
+
+HomeAddresses: An element of type ArrayOfPostalAddressAttributedValuesType that contains 
+an array of home addresses and the identifiers of their source attributions for the associated persona. 
+
+OtherAddresses: An element of type ArrayOfPostalAddressAttributedValuesType that contains 
+an array of addresses and the identifiers of their source attributions for the associated persona.  
+
+Titles: An element of type ArrayOfStringAttributedValuesType, as defined in section 2.2.4.8, that 
+contains an array of job titles and the identifiers of their source attributions for the associated 
+persona. 
+
+Departments: An element of type ArrayOfStringAttributedValuesTypethat contains an array of 
+department names and the identifiers of their source attributions for the associated persona. 
+
+CompanyNames: An element of type ArrayOfStringAttributedValuesType that contains an array 
+of company names and the identifiers of their source attributions for the associated persona. 
+
+Managers: An element of type ArrayOfStringAttributedValuesType that contains an array of 
+manager names and the identifiers of their source attributions for the associated persona. 
+
+AssistantNames: An element of type ArrayOfStringAttributedValuesType that contains an array 
+of assistant names and the identifiers of their source attributions for the associated persona. 
+
+Professions: An element of type ArrayOfStringAttributedValuesType that contains an array of 
+profession values and the identifiers of their source attributions for the associated persona. 
+
+SpouseNames: An element of type ArrayOfStringAttributedValuesType that contains an array of 
+spouse/partner names and the identifiers of their source attributions for the associated persona. 
+
+Children: An element of type ArrayOfStringArrayAttributedValuesType that contains an array of 
+child names and identifiers of their source attributions for the associated persona. 
+
+Schools: An element of type ArrayOfStringAttributedValuesType that contains an array of school 
+names and the identifiers of their source attributions for the associated persona. 
+
+Hobbies: An element of type ArrayOfStringAttributedValuesType that contains an array of 
+hobbies and the identifiers of their source attributions for the associated persona. 
+
+WeddingAnniversaries: An element of type ArrayOfStringAttributedValuesType that contains an 
+array of wedding anniversary dates, stored as strings, and the identifiers of their source attributions 
+for the associated persona. 
+
+26 / 58 
+
+[MS-OXWSPERS] - v20250520 
+Persona Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Birthdays: An element of type ArrayOfStringAttributedValuesType that contains an array of 
+birthdays, stored as strings, and the identifiers of their source attributions for the associated persona. 
+
+Locations: An element of type ArrayOfStringAttributedValuesType that contains an array of 
+location values and the identifiers of their source attributions for the associated persona. 
+
+ExtendedProperties: An element of type ArrayOfExtendedPropertyAttributedValueType, as 
+defined in section 2.2.4.3, that contains an array of additional properties and the identifiers of their 
+source attributions for the associated persona. Extended properties are private properties on contacts 
+(2) that are used for application-specific functions. 
+
+2.2.4.20 PhoneNumberAttributedValueType 
+
+Namespace: http://schemas.microsoft.com/exchange/services/2006/types 
+
+The PhoneNumberAttributedValueType complex type specifies a PersonaPhoneNumberType, as 
+defined in section 2.2.4.17, and ArrayOfValueAttributionsType, as defined in section 2.2.4.11, 
+complex type pair. This complex type represents a phone number for a persona, paired with a list of 
+the attributions for the phone number. 
+
+ <xs:complexType name="PhoneNumberAttributedValueType" 
+xmlns:xs="http://www.w3.org/2001/XMLSchema"> 
+  <xs:sequence> 
+    <xs:element minOccurs="1" maxOccurs="1" name="Value" type="t:PersonaPhoneNumberType"/> 
+    <xs:element minOccurs="1" maxOccurs="1" name="Attributions" 
+type="t:ArrayOfValueAttributionsType"/> 
+  </xs:sequence> 
+ </xs:complexType> 
+
+Value: An element of type PersonalPhoneNumberType, as defined in section 2.2.4.17, that 
+contains a phone number and type information and is associated with a set of attributions. 
+
+Attributions: An element of type ArrayOfValueAttributionsType, as defined in section 2.2.4.11, 
+that contains an array of attribution identifiers associated with a phone number. 
+
+2.2.4.21 PostalAddressAttributedValueType 
+
+Namespace: http://schemas.microsoft.com/exchange/services/2006/types 
+
+The PostalAddressAttributedValueType complex type specifies a pair of 
+PersonaPostalAddressType, as defined in section 2.2.4.18, and ArrayOfValueAttributionsType, 
+as defined in section 2.2.4.11, complex types. This complex type specifies a postal address for a 
+persona, paired with a list of the attributions for that address. 
+
+ <xs:complexType name="PostalAddressAttributedValueType" 
+xmlns:xs="http://www.w3.org/2001/XMLSchema"> 
+  <xs:sequence> 
+    <xs:element minOccurs="1" maxOccurs="1" name="Value" type="t:PersonaPostalAddressType"/> 
+    <xs:element minOccurs="1" maxOccurs="1" name="Attributions" 
+type="t:ArrayOfValueAttributionsType"/> 
+  </xs:sequence> 
+ </xs:complexType> 
+
+Value: An element of type PersonalPostalAddressType, as defined in section 2.2.4.18, that 
+contains information associated with a postal address. 
+
+Attributions: An element of type ArrayOfValueAttributionsType, as defined in section 2.2.4.11, 
+that contains an array of attribution IDs that are associated with a postal address. 
+
+27 / 58 
+
+[MS-OXWSPERS] - v20250520 
+Persona Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+2.2.4.22 StringArrayAttributedValueType 
+
+Namespace: http://schemas.microsoft.com/exchange/services/2006/types 
+
+The StringArrayAttributedValueType complex type specifies an ArrayOfStringValueType, as 
+defined in section 2.2.4.10, and an ArrayOfValueAttributionsType, as defined in section 2.2.4.11, 
+complex type pair. 
+
+ <xs:complexType name="StringArrayAttributedValueType" 
+xmlns:xs="http://www.w3.org/2001/XMLSchema"> 
+  <xs:sequence> 
+    <xs:element minOccurs="1" maxOccurs="1" name="Values" type="t:ArrayOfStringValueType"/> 
+    <xs:element minOccurs="1" maxOccurs="1" name="Attributions" 
+type="t:ArrayOfValueAttributionsType"/> 
+  </xs:sequence> 
+ </xs:complexType> 
+
+Values: An element of type ArrayOfStringValueType, as defined in section 2.2.4.10, that 
+represents the values in an array of text values associated with the persona. 
+
+Attributions: An element of type ArrayOfValueAttributionsType, as defined in section 2.2.4.11, 
+that contains a list of attributions for the Values element that is associated with it. 
+
+2.2.4.23 StringAttributedValueType 
+
+Namespace: http://schemas.microsoft.com/exchange/services/2006/types 
+
+The StringAttributedValueType complex type encapsulates a string value and multiple attributions 
+for the value. 
+
+ <xs:complexType name="StringAttributedValueType" xmlns:xs="http://www.w3.org/2001/XMLSchema"> 
+  <xs:sequence> 
+    <xs:element minOccurs="1" maxOccurs="1" name="Value" type="xs:string"/> 
+    <xs:element minOccurs="1" maxOccurs="1" name="Attributions" 
+type="t:ArrayOfValueAttributionsType"/> 
+  </xs:sequence> 
+ </xs:complexType> 
+
+Value: An element of type string, as defined in [XMLSCHEMA2/2], that represents an instance of a 
+paired string and attributions array. 
+
+Attributions: An element of type ArrayOfValueAttributionsType, as defined in section 2.2.4.11, 
+that contains a set of attributions for the Value element that is associated with it. 
+
+2.2.5 Simple Types 
+
+The following table summarizes the set of common XML schema simple type definitions defined by 
+this specification. XML schema simple type definitions that are specific to a particular operation are 
+described with the operation. 
+
+Simple type Description 
+
+The LocationSourceType simple type specifies the source from which the resolution of 
+LocationSourceType 
+
+the location was derived. 
+
+ 
+
+28 / 58 
+
+[MS-OXWSPERS] - v20250520 
+Persona Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+2.2.5.1 LocationSourceType 
+
+Namespace: http://schemas.microsoft.com/exchange/services/2006/types 
+
+The LocationSourceType simple type specifies the source from which the resolution of the location 
+was derived. 
+
+ <xs:simpleType name="LocationSourceType" xmlns:xs="http://www.w3.org/2001/XMLSchema"> 
+  <xs:restriction base="xs:string"> 
+    <xs:enumeration value="None"/> 
+    <xs:enumeration value="LocationServices"/> 
+    <xs:enumeration value="PhonebookServices"/> 
+    <xs:enumeration value="Device"/> 
+    <xs:enumeration value="Contact"/> 
+    <xs:enumeration value="Resource"/> 
+  </xs:restriction> 
+ </xs:simpleType> 
+
+The following table specifies the allowable values for the LocationSourceType simple type. 
+
+Value Meaning 
+
+None Not resolved. 
+
+LocationServices Resolved by external location services, such as an Internet search engine. 
+
+PhonebookServices Resolved by external phone book services. 
+
+Device Resolved by a GPS-enabled device, such as a mobile phone. 
+
+Contact Sourced from a contact (2) card. 
+
+Resource Resolved by a resource mailbox, such as a conference room. 
+
+ 
+
+2.2.6 Attributes 
+
+This specification does not define any common XML schema attribute definitions. 
+
+2.2.7 Groups 
+
+This specification does not define any common XML schema group definitions. 
+
+2.2.8 Attribute Groups 
+
+This specification does not define any common XML schema attribute group definitions. 
+
+29 / 58 
+
+[MS-OXWSPERS] - v20250520 
+Persona Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+3 Protocol Details 
+
+The client side of this protocol is simply a pass-through. That is, no additional timers or other state is 
+required on the client side of this protocol. Calls made by the higher-layer protocol or application are 
+passed directly to the transport, and the results returned by the transport are passed directly back to 
+the higher-layer protocol or application. 
+
+In the following sections, the schema definition might be less restrictive than the processing rules 
+imposed by the protocol. The WSDL in this specification matches the WSDL that shipped with the 
+product and provides a base description of the schema. The text that introduces the WSDL specifies 
+additional restrictions that reflect actual Microsoft product behavior. For example, the schema 
+definition might allow for an element to be empty, null, or not present but the behavior of the protocol 
+as specified restricts the same elements to being non-empty, not null and present. 
+
+3.1 ExchangeServicePortType Server Details 
+
+This protocol describes a single WSDL port type with two operations that find and retrieve 
+information about a persona. 
+
+3.1.1 Abstract Data Model 
+
+None. 
+
+3.1.2 Timers 
+
+None. 
+
+3.1.3 Initialization 
+
+None. 
+
+3.1.4 Message Processing Events and Sequencing Rules 
+
+The following table summarizes the list of operations as defined by this specification. 
+
+Operation Description 
+
+The FindPeople WSDL operation returns all persona objects from a specified Contacts folder 
+FindPeople 
+
+or retrieves contacts (2) that match a specified query string. 
+
+GetPersona The GetPersona WSDL operation retrieves a persona. 
+
+ 
+
+3.1.4.1 FindPeople 
+
+The FindPeople WSDL operation returns all persona objects from a specified Contacts folder or 
+retrieves contacts (2) that match a specified query string. 
+
+The following is the WSDL port type specification of the FindPeople WSDL operation. 
+
+ <wsdl:operation name="FindPeople" xmlns:wsdl="http://schemas.xmlsoap.org/wsdl/"> 
+  <wsdl:input message="tns:FindPeopleSoapIn"/> 
+  <wsdl:output message="tns:FindPeopleSoapOut"/> 
+ </wsdl:operation> 
+
+30 / 58 
+
+[MS-OXWSPERS] - v20250520 
+Persona Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+The following is the WSDL binding specification of the FindPeople WSDL operation. 
+
+ <wsdl:operation name="FindPeople" xmlns:wsdl="http://schemas.xmlsoap.org/wsdl/"> 
+  <soap:operation 
+soapAction="http://schemas.microsoft.com/exchange/services/2006/messages/FindPeople" 
+xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/"/> 
+  <wsdl:input> 
+    <soap:body use="literal" parts="request" 
+xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/"/> 
+    <soap:header message="tns:FindPeopleSoapIn" part="RequestVersion" use="literal" 
+xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/"/> 
+    <soap:header message="tns:FindPeopleSoapIn" part="Impersonation" use="literal" 
+xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/"/> 
+  </wsdl:input> 
+  <wsdl:output> 
+    <soap:body use="literal" parts="FindPeopleResult" 
+xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/"/> 
+    <soap:header message="tns:FindPeopleSoapOut" part="ServerVersion" use="literal" 
+xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/"/> 
+  </wsdl:output> 
+ </wsdl:operation> 
+
+The FindPeople WSDL operation builds on the existing functionality of the RestrictionType complex 
+type, as defined in [MS-OXWSSRCH] section 2.2.4.30, and the DefaultShapeNamesType simple 
+type, as defined in [MS-OXWSCDATA] section 2.2.5.7, by adding an aggregation restriction and the 
+ability to return additional properties. By using a restriction, a client can specify filters such as "only 
+return results that have an instant messaging address". The default search behavior targets both 
+the specified user's personal mailbox and the Global Address List (GAL). 
+
+3.1.4.1.1 Messages 
+
+The following table summarizes the set of WSDL message definitions that are specific to this 
+operation. 
+
+Message Description 
+
+FindPeopleSoapIn Specifies the request to find people. 
+
+FindPeopleSoapOut Specifies the response to the FindPeopleSoapIn request WSDL message. 
+
+ 
+
+3.1.4.1.1.1 FindPeopleSoapIn 
+
+The FindPeopleSoapIn WSDL message specifies the request to find people. 
+The following is the FindPeopleSoapIn WSDL message specification. 
+
+ <wsdl:message name="FindPeopleSoapIn" xmlns:wsdl="http://schemas.xmlsoap.org/wsdl/"> 
+  <wsdl:part name="request" element="tns:FindPeople"/> 
+  <wsdl:part name="Impersonation" element="t:ExchangeImpersonation"/> 
+  <wsdl:part name="RequestVersion" element="t:RequestServerVersion"/> 
+ </wsdl:message> 
+
+The FindPeopleSoapIn WSDL message is the input message for the SOAP action 
+http://schemas.microsoft.com/exchange/services/2006/messages/FindPeople. 
+
+The parts of the FindPeopleSoapIn WSDL message are described in the following table. 
+
+31 / 58 
+
+[MS-OXWSPERS] - v20250520 
+Persona Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Part name Element/type Description 
+
+FindPeople 
+request Specifies the SOAP body of the request to find people. 
+
+ 
+
+ExchangeImpersonation 
+Specifies a SOAP header that identifies the user whom 
+
+Impersonation ([MS-OXWSCDATA] section the client is impersonating.  
+2.2.3.3) 
+
+RequestServerVersion 
+Specifies a SOAP header that identifies the schema version 
+
+RequestVersion ([MS-OXWSCDATA] section for the FindPeople WSDL operation request.  
+2.2.3.9) 
+
+ 
+
+3.1.4.1.1.2 FindPeopleSoapOut 
+
+The FindPeopleSoapOut WSDL message specifies the response to the FindPeopleSoapIn request 
+WSDL message. 
+The following is the FindPeopleSoapOut WSDL message specification. 
+
+ <wsdl:message name="FindPeopleSoapOut" xmlns:wsdl="http://schemas.xmlsoap.org/wsdl/"> 
+  <wsdl:part name="FindPeopleResult" element="tns:FindPeopleResponse"/> 
+  <wsdl:part name="ServerVersion" element="t:ServerVersionInfo"/> 
+ </wsdl:message> 
+
+The FindPeopleSoapOut WSDL message is the output message for the SOAP action 
+http://schemas.microsoft.com/exchange/services/2006/messages/FindPeople. 
+
+The parts of the FindPeopleSoapOut WSDL message are described in the following table. 
+
+Part name Element/type Description 
+
+FindPeopleResponse Specifies the SOAP body of the response that contains 
+FindPeopleResult 
+
+ the requested information. 
+
+ServerVersionInfo 
+Specifies a SOAP header that identifies the server 
+
+ServerVersion ([MS-OXWSCDATA] section version for the response. 
+2.2.3.10) 
+
+ 
+
+A successful FindPeople WSDL operation request returns a FindPeopleResponse element with the 
+ResponseClass (as specified in [MS-OXWSCDATA] section 2.2.4.65) attribute set to "Success". The 
+ResponseCode (as specified in [MS-OXWSCDATA] section 2.2.4.65) element of the 
+FindPeopleResponse element is set to "NoError". 
+
+If the FindPeople WSDL operation is not successful, it returns a FindPeopleResponse element with 
+the ResponseClass (as specified in [MS-OXWSCDATA] section 2.2.4.65) attribute set to "Error". The 
+ResponseCode (as specified in [MS-OXWSCDATA] section 2.2.4.65) element of the 
+FindPeopleResponse element is set to one of the common errors defined in [MS-OXWSCDATA] 
+section 2.2.5.24. 
+
+3.1.4.1.2 Elements 
+
+The following table summarizes the XML schema element definitions that are specific to this 
+operation. 
+
+32 / 58 
+
+[MS-OXWSPERS] - v20250520 
+Persona Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Element Description 
+
+FindPeople The input data for the FindPeople WSDL operation. 
+
+FindPeopleResponse The result data for the FindPeople WSDL operation. 
+
+ 
+
+3.1.4.1.2.1 FindPeople 
+
+The FindPeople element specifies the input data for the FindPeople WSDL operation. 
+
+ <xs:element name="FindPeople" type="tns:FindPeopleType" 
+xmlns:xs="http://www.w3.org/2001/XMLSchema"/> 
+
+3.1.4.1.2.2 FindPeopleResponse 
+
+The FindPeopleResponse element specifies the result data for the FindPeople WSDL operation. 
+
+ <xs:element name="FindPeopleResponse" type="tns:FindPeopleResponseMessageType" 
+xmlns:xs="http://www.w3.org/2001/XMLSchema"/> 
+
+3.1.4.1.3 Complex Types 
+
+The following table summarizes the XML schema complex type definitions that are specific to this 
+operation. 
+
+Complex type Description 
+
+ArrayOfContextProperty Specifies an array of ContextPropertyType complex types. 
+
+ArrayOfPeopleQuerySource Specifies an array of string where to direct the people search.  
+
+ArrayOfPeopleType Specifies an array of PersonaType complex types. 
+
+ContextPropertyType Specifies the context of a contact (2).  
+
+FindPeopleResponseMessageType Specifies the response message for a FindPeople WSDL operation. 
+
+FindPeopleType Specifies a request to find contacts (2). 
+
+Specifies the shape of the persona results from the FindPeople WSDL 
+PersonaResponseShapeType 
+
+operation. 
+
+ 
+
+3.1.4.1.3.1 FindPeopleType 
+
+Namespace: http://schemas.microsoft.com/exchange/services/2006/messages 
+
+The FindPeopleType complex type specifies a request to find contacts (2). The FindPeopleType 
+complex type extends the BaseRequestType complex type, as specified in [MS-OXWSCDATA] section 
+2.2.4.17. 
+
+ <xs:complexType name="FindPeopleType" xmlns:xs="http://www.w3.org/2001/XMLSchema"> 
+  <xs:complexContent mixed="false"> 
+    <xs:extension base="tns:BaseRequestType"> 
+      <xs:sequence> 
+
+33 / 58 
+
+[MS-OXWSPERS] - v20250520 
+Persona Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+        <xs:element minOccurs="0" name="PersonaShape" type="t:PersonaResponseShapeType"/> 
+        <xs:element name="IndexedPageItemView" type="t:IndexedPageViewType"/> 
+        <xs:element minOccurs="0" name="Restriction" type="t:RestrictionType"/> 
+        <xs:element minOccurs="0" name="AggregationRestriction" type="t:RestrictionType"/> 
+        <xs:element minOccurs="0" name="SortOrder" type="t:NonEmptyArrayOfFieldOrdersType"/> 
+        <xs:element minOccurs="0" name="ParentFolderId" type="t:TargetFolderIdType"/> 
+        <xs:element minOccurs="0" name="QueryString" type="xs:string"/> 
+        <xs:element minOccurs="0" maxOccurs="1" name="SearchPeopleSuggestionIndex" 
+type="xs:boolean"/> 
+        <xs:element minOccurs="0" maxOccurs="1" name="TopicQueryString" type="xs:string"/> 
+        <xs:element minOccurs="0" maxOccurs="1" name="Context" 
+type="t:ArrayOfContextProperty"/> 
+        <xs:element minOccurs="0" maxOccurs="1" name="QuerySources" 
+type="t:ArrayOfPeopleQuerySource"/> 
+      </xs:sequence> 
+    </xs:extension> 
+  </xs:complexContent> 
+ </xs:complexType> 
+
+PersonaShape: An element of type PersonaResponseShapeType that represents the persona 
+properties. 
+
+IndexedPageItemView: An element of type IndexedPageViewType, as defined in [MS-
+OXWSSRCH] section 2.2.4.16, that represents how paged item information is returned in the 
+response. 
+
+Restriction: An element of type RestrictionType, as defined in [MS-OXWSSRCH] section 2.2.4.30, 
+that represents a restriction definition that filters the results based on raw contact (2) properties. 
+
+AggregationRestriction: An element of type RestrictionType that represents a restriction definition 
+that filters the results based on aggregated persona properties. 
+
+SortOrder: An element of type NonEmptyArrayOfFieldOrdersType, as defined in [MS-OXWSSRCH] 
+section 3.1.4.2.3.8, that represents the sort order. 
+
+ParentFolderId: An element of type TargetFolderIdType, as defined in [MS-OXWSFOLD] section 
+2.2.4.16, that represents the identifier of the parent folder. 
+
+QueryString: An element of type string, as defined in [XMLSCHEMA2/2], that contains the query 
+string. 
+
+SearchPeopleSuggestionIndex: An element of type boolean, as defined in [XMLSCHEMA2/2] , that 
+is intended for internal use only. <1> 
+
+TopicQueryString: An element of type string that specifies the query string for topic searches.<2>  
+
+Context: An element of type ArrayOfContextProperty, as defined in section 3.1.4.1.3.5, that 
+specifies the context properties of the contact. <3> 
+
+QuerySources: An element of type ArrayOfPeopleQuerySource, as defined in section 3.1.4.1.3.7, 
+that specifies the source data for the query. <4>  
+
+3.1.4.1.3.2 PersonaResponseShapeType 
+
+Namespace: http://schemas.microsoft.com/exchange/services/2006/types 
+
+The PersonaResponseShapeType complex type specifies the shape for the persona results from the 
+FindPeople WSDL operation. It defines the set of persona properties to be returned for each 
+PersonaType complex type in the result set. 
+
+ <xs:complexType name="PersonaResponseShapeType" xmlns:xs="http://www.w3.org/2001/XMLSchema"> 
+
+34 / 58 
+
+[MS-OXWSPERS] - v20250520 
+Persona Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+  <xs:sequence> 
+    <xs:element name="BaseShape" type="t:DefaultShapeNamesType"/> 
+    <xs:element minOccurs="0" name="AdditionalProperties" 
+type="t:NonEmptyArrayOfPathsToElementType"/> 
+  </xs:sequence> 
+ </xs:complexType> 
+
+BaseShape: An element of type DefaultShapeNamesType, as defined in [MS-OXWSCDATA] section 
+2.2.5.7, that represents the base shape for the PersonaResponseShapeType complex type, as 
+defined in section 3.1.4.1.3.2. 
+
+AdditionalProperties: An element of type NonEmptyArrayOfPathsToElementType, as defined in 
+[MS-OXWSCDATA] section 2.2.4.48, that represents additional requested properties. 
+
+3.1.4.1.3.3 FindPeopleResponseMessageType 
+
+Namespace: http://schemas.microsoft.com/exchange/services/2006/messages 
+
+The FindPeopleResponseMessageType complex type specifies the response message for a 
+FindPeople WSDL operation. The FindPeopleResponseMessageType complex type extends the 
+ResponseMessageType complex type, as specified in [MS-OXWSCDATA] section 2.2.4.65. 
+
+ <xs:complexType name="FindPeopleResponseMessageType" 
+xmlns:xs="http://www.w3.org/2001/XMLSchema"> 
+  <xs:complexContent mixed="false"> 
+    <xs:extension base="tns:ResponseMessageType"> 
+      <xs:sequence> 
+        <xs:element minOccurs="0" name="People" type="t:ArrayOfPeopleType"/> 
+        <xs:element minOccurs="0" name="TotalNumberOfPeopleInView" type="xs:int"/> 
+        <xs:element minOccurs="0" name="FirstMatchingRowIndex" type="xs:int"/> 
+        <xs:element minOccurs="0" name="FirstLoadedRowIndex" type="xs:int"/> 
+      </xs:sequence> 
+    </xs:extension> 
+  </xs:complexContent> 
+ </xs:complexType> 
+
+People: An element of type ArrayOfPeopleType that represents an array of PersonaType complex 
+types. 
+
+TotalNumberOfPeopleInView: An element of type int, as defined in [XMLSCHEMA2/2], that 
+represents the number of contacts (2) that appear. 
+
+FirstMatchingRowIndex: For internal use only.  
+
+FirstLoadedRowIndex: For internal use only.  
+
+3.1.4.1.3.4 ArrayOfPeopleType 
+
+Namespace: http://schemas.microsoft.com/exchange/services/2006/types 
+
+The ArrayOfPeopleType complex type specifies an array of PersonaType complex types. 
+
+ <xs:complexType name="ArrayOfPeopleType" xmlns:xs="http://www.w3.org/2001/XMLSchema"> 
+  <xs:choice minOccurs="0" maxOccurs="unbounded"> 
+    <xs:element name="Persona" type="t:PersonaType"/> 
+  </xs:choice> 
+ </xs:complexType> 
+
+35 / 58 
+
+[MS-OXWSPERS] - v20250520 
+Persona Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Persona: An element of type PersonaType, as defined in section 2.2.4.19, that encapsulates a set of 
+contact (2) data from one or more sources linked by a common persona identifier. 
+
+3.1.4.1.3.5 ArrayOfContextProperty 
+
+Namespace: http://schemas.microsoft.com/exchange/services/2006/types 
+
+The ArrayOfContextProperty complex type specifies an array of ContextPropertyType complex 
+types.<5> 
+
+ <xs:complexType name="ArrayOfContextProperty" xmlns:xs="http://www.w3.org/2001/XMLSchema"> 
+  <xs:sequence> 
+    <xs:element minOccurs="1" maxOccurs="unbounded" name="ContextProperty" 
+type="t:ContextPropertyType"/> 
+  </xs:sequence> 
+ </xs:complexType> 
+
+ContextProperty: An element of type ContextPropertyType complex type, as defined in section 
+3.1.4.1.3.6, that specifies the context of a contact. 
+
+3.1.4.1.3.6 ContextPropertyType 
+
+Namespace: http://schemas.microsoft.com/exchange/services/2006/types 
+
+The ContextPropertyType complex type specifies the context of a contact.<6> 
+
+ <xs:complexType name="ContextPropertyType" xmlns:xs="http://www.w3.org/2001/XMLSchema"> 
+  <xs:sequence> 
+    <xs:element minOccurs="1" maxOccurs="1" name="Key" type="xs:string"/> 
+    <xs:element minOccurs="1" maxOccurs="1" name="Value" type="xs:string"/> 
+  </xs:sequence> 
+ </xs:complexType> 
+
+Key: An element of type string, as defined in [XMLSCHEMA2/2] , that specifies the key of the 
+context.  
+
+Value: An element of type string that specifies the value of the context.  
+
+3.1.4.1.3.7 ArrayOfPeopleQuerySource 
+
+Namespace: http://schemas.microsoft.com/exchange/services/2006/types 
+
+The ArrayOfPeopleQuerySource complex type specifies an array of string where to direct the 
+people search.<7> 
+
+ <xs:complexType name="ArrayOfPeopleQuerySource" xmlns:xs="http://www.w3.org/2001/XMLSchema"> 
+  <xs:sequence> 
+    <xs:element minOccurs="1" maxOccurs="unbounded" name="Source" type="xs:string"/> 
+  </xs:sequence> 
+ </xs:complexType> 
+
+Source: An element of type string that specifies where to direct the people search.  
+
+3.1.4.1.4 Simple Types 
+
+None. 
+
+36 / 58 
+
+[MS-OXWSPERS] - v20250520 
+Persona Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+3.1.4.1.5 Attributes 
+
+None. 
+
+3.1.4.1.6 Groups 
+
+None. 
+
+3.1.4.1.7 Attribute Groups 
+
+None. 
+
+3.1.4.2 GetPersona 
+
+The GetPersona WSDL operation retrieves a persona. 
+
+The following is the WSDL port type specification of the GetPersona WSDL operation. 
+
+ <wsdl:operation name="GetPersona" xmlns:wsdl="http://schemas.xmlsoap.org/wsdl/"> 
+  <wsdl:input message="tns:GetPersonaSoapIn"/> 
+  <wsdl:output message="tns:GetPersonaSoapOut"/> 
+ </wsdl:operation> 
+
+The following is the WSDL binding specification of the GetPersona WSDL operation. 
+
+ <wsdl:operation name="GetPersona" xmlns:wsdl="http://schemas.xmlsoap.org/wsdl/"> 
+  <soap:operation 
+soapAction="http://schemas.microsoft.com/exchange/services/2006/messages/GetPersona" 
+xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/"/> 
+  <wsdl:input> 
+    <soap:body use="literal" parts="request" 
+xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/"/> 
+    <soap:header message="tns:GetPersonaSoapIn" part="RequestVersion" use="literal" 
+xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/"/> 
+    <soap:header message="tns:GetPersonaSoapIn" part="Impersonation" use="literal" 
+xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/"/> 
+  </wsdl:input> 
+  <wsdl:output> 
+    <soap:body use="literal" parts="GetPersonaResult" 
+xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/"/> 
+    <soap:header message="tns:GetPersonaSoapOut" part="ServerVersion" use="literal" 
+xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/"/> 
+  </wsdl:output> 
+ </wsdl:operation> 
+
+The protocol client sends a GetPersonaSoapIn request WSDL message and the protocol server 
+responds with a GetPersonaSoapOut response. 
+
+3.1.4.2.1 Messages 
+
+The following table summarizes the set of WSDL message definitions that are specific to this 
+operation. 
+
+Message Description 
+
+GetPersonaSoapIn Specifies the request to retrieve a persona. 
+
+GetPersonaSoapOut Specifies the response to the GetPersonaSoapIn request WSDL message. 
+
+37 / 58 
+
+[MS-OXWSPERS] - v20250520 
+Persona Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+ 
+
+3.1.4.2.1.1 GetPersonaSoapIn 
+
+The GetPersonaSoapIn WSDL message specifies the request to retrieve a persona. 
+The following is the GetPersonaSoapIn WSDL message specification. 
+
+ <wsdl:message name="GetPersonaSoapIn" xmlns:wsdl="http://schemas.xmlsoap.org/wsdl/"> 
+  <wsdl:part name="request" element="tns:GetPersona"/> 
+  <wsdl:part name="Impersonation" element="t:ExchangeImpersonation"/> 
+  <wsdl:part name="RequestVersion" element="t:RequestServerVersion"/> 
+ </wsdl:message> 
+
+The GetPersonaSoapIn WSDL message is the input message for the SOAP action 
+http://schemas.microsoft.com/exchange/services/2006/messages/GetPersona. 
+
+The parts of the GetPersonaSoapIn WSDL message are described in the following table. 
+
+Part name Element/type Description 
+
+GetPersona 
+request Specifies the SOAP body of the request for a persona. 
+
+ 
+
+ExchangeImpersonation 
+Specifies a SOAP header that identifies the user whom 
+
+Impersonation ([MS-OXWSCDATA] section the client is impersonating.  
+2.2.3.3) 
+
+RequestServerVersion 
+Specifies a SOAP header that identifies the schema version 
+
+RequestVersion ([MS-OXWSCDATA] section for the GetPersona WSDL operation request.  
+2.2.3.9) 
+
+ 
+
+3.1.4.2.1.2 GetPersonaSoapOut 
+
+The GetPersonaSoapOut WSDL message specifies the response to the GetPersonaSoapIn 
+request WSDL message. 
+The following is the GetPersonaSoapOut WSDL message specification. 
+
+ <wsdl:message name="GetPersonaSoapOut" xmlns:wsdl="http://schemas.xmlsoap.org/wsdl/"> 
+  <wsdl:part name="GetPersonaResult" element="tns:GetPersonaResponseMessage"/> 
+  <wsdl:part name="ServerVersion" element="t:ServerVersionInfo"/> 
+ </wsdl:message> 
+
+The GetPersonaSoapOut WSDL message is the output message for the SOAP action 
+http://schemas.microsoft.com/exchange/services/2006/messages/GetPersona. 
+
+The parts of the GetPersonaSoapOut WSDL message are described in the following table. 
+
+Part name Element/type Description 
+
+GetPersonaResponseMessage Specifies the SOAP body of the response that 
+GetPersonaResult 
+
+ contains the requested information. 
+
+ServerVersionInfo 
+Specifies a SOAP header that identifies the server 
+
+ServerVersion ([MS-OXWSCDATA] section version for the response. 
+2.2.3.10) 
+
+38 / 58 
+
+[MS-OXWSPERS] - v20250520 
+Persona Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+ 
+
+A successful GetPersona WSDL operation request returns a GetPersonaResponseMessage 
+element with the ResponseClass (as specified in [MS-OXWSCDATA] section 2.2.4.65) attribute set to 
+"Success". The ResponseCode (as specified in [MS-OXWSCDATA] section 2.2.4.65) element of the 
+GetPersonaResponseMessage element is set to "NoError". 
+
+If the GetPersona operation is not successful, it returns a GetPersonaResponseMessage element 
+with the ResponseClass (as specified in [MS-OXWSCDATA] section 2.2.4.65) attribute set to "Error". 
+The ResponseCode (as specified in [MS-OXWSCDATA] section 2.2.4.65) element of the 
+GetPersonaResponseMessage is set to one of the common error codes defined in [MS-
+OXWSCDATA] section 2.2.5.24. 
+
+3.1.4.2.2 Elements 
+
+The following table summarizes the XML schema element definitions that are specific to this 
+operation. 
+
+Element Description 
+
+GetPersona The input data for the GetPersona WSDL operation. 
+
+GetPersonaResponseMessage The result data for the GetPersona WSDL operation. 
+
+ 
+
+3.1.4.2.2.1 GetPersona 
+
+The GetPersona element specifies the input data for the GetPersona WSDL operation. 
+
+ <xs:element name="GetPersona" type="tns:GetPersonaType" 
+xmlns:xs="http://www.w3.org/2001/XMLSchema"/> 
+
+3.1.4.2.2.2 GetPersonaResponseMessage 
+
+The GetPersonaResponseMessage element specifies the result data for the GetPersona WSDL 
+operation. 
+
+ <xs:element name="GetPersonaResponseMessage" type="tns:GetPersonaResponseMessageType" 
+xmlns:xs="http://www.w3.org/2001/XMLSchema"/> 
+
+3.1.4.2.3 Complex Types 
+
+The following table summarizes the XML schema complex type definitions that are specific to this 
+operation. 
+
+Complex type Description 
+
+GetPersonaResponseMessageType Specifies the response message for a GetPersona WSDL operation. 
+
+GetPersonaType Specifies a request to retrieve a persona. 
+
+ 
+
+3.1.4.2.3.1 GetPersonaType 
+
+39 / 58 
+
+[MS-OXWSPERS] - v20250520 
+Persona Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Namespace: http://schemas.microsoft.com/exchange/services/2006/messages 
+
+The GetPersonaType complex type specifies a request to retrieve a persona. The GetPersonaType 
+complex type extends the BaseRequestType complex type, as specified in [MS-OXWSCDATA] section 
+2.2.4.17. 
+
+ <xs:complexType name="GetPersonaType" xmlns:xs="http://www.w3.org/2001/XMLSchema"> 
+  <xs:complexContent mixed="false"> 
+    <xs:extension base="tns:BaseRequestType"> 
+      <xs:sequence> 
+        <xs:element minOccurs="0" maxOccurs="1" name="PersonaId" type="t:ItemIdType"/> 
+        <xs:element minOccurs="0" maxOccurs="1" name="EmailAddress" 
+type="t:EmailAddressType"/> 
+        <xs:element minOccurs="0" maxOccurs="1" name="ParentFolderId" 
+type="t:TargetFolderIdType"/> 
+      </xs:sequence> 
+    </xs:extension> 
+  </xs:complexContent> 
+ </xs:complexType> 
+
+PersonaId: An element of type ItemIdType, as defined in [MS-OXWSCORE] section 2.2.4.25, that 
+represents the identifier of a persona. 
+
+EmailAddress: An element of type EmailAddressType, as defined in [MS-OXWSCDATA] section 
+2.2.4.30 , that represents the email address of a persona. 
+
+ParentFolderId: An element of type TargetFolderIdType, as defined in [MS-OXWSFOLD] section 
+2.2.4.16, the represents the identifier of the parent folder<8> 
+
+3.1.4.2.3.2 GetPersonaResponseMessageType 
+
+Namespace: http://schemas.microsoft.com/exchange/services/2006/messages 
+
+The GetPersonaResponseMessageType complex type specifies the response message for a 
+GetPersona WSDL operation. The GetPersonaResponseMessageType complex type extends the 
+ResponseMessageType complex type, as specified in [MS-OXWSCDATA] section 2.2.4.65. 
+
+ <xs:complexType name="GetPersonaResponseMessageType" 
+xmlns:xs="http://www.w3.org/2001/XMLSchema"> 
+  <xs:complexContent mixed="false"> 
+    <xs:extension base="tns:ResponseMessageType"> 
+      <xs:sequence> 
+        <xs:element name="Persona" type="t:PersonaType"/> 
+      </xs:sequence> 
+    </xs:extension> 
+  </xs:complexContent> 
+ </xs:complexType> 
+
+Persona: An element of type PersonaType, as defined in section 2.2.4.19, that represents the 
+persona to be retrieved. 
+
+3.1.4.2.4 Simple Types 
+
+None. 
+
+3.1.4.2.5 Attributes 
+
+None. 
+
+3.1.4.2.6 Groups 
+
+40 / 58 
+
+[MS-OXWSPERS] - v20250520 
+Persona Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+None. 
+
+3.1.4.2.7 Attribute Groups 
+
+None. 
+
+3.1.5 Timer Events 
+
+None. 
+
+3.1.6 Other Local Events 
+
+None. 
+
+41 / 58 
+
+[MS-OXWSPERS] - v20250520 
+Persona Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+4 Protocol Examples 
+
+The following example of a FindPeople WSDL operation request shows how to return all contacts 
+(2) from the Contacts folder. 
+
+ <?xml version="1.0" encoding="UTF-8"?> 
+ <soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/" 
+               xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types" 
+               xmlns:tns="http://schemas.microsoft.com/exchange/services/2006/messages"> 
+   <soap:Header> 
+      <t:RequestServerVersion Version="Exchange2013" /> 
+   </soap:Header> 
+   <soap:Body > 
+      <m:FindPeople> 
+         <tns:IndexedPageItemView BasePoint="Beginning" MaxEntriesReturned="100" Offset="0"/> 
+         <tns:ParentFolderId> 
+            <t:DistinguishedFolderId Id="contacts"/> 
+         </tns:ParentFolderId> 
+      </tns:FindPeople> 
+   </soap:Body> 
+ </soap:Envelope> 
+
+The following example shows a successful response to a FindPeople WSDL operation request. 
+
+ <?xml version="1.0" encoding="utf-8"?><s:Envelope  
+   xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"> 
+  <s:Header> 
+    <h:ServerVersionInfo MajorVersion="15"  
+                         MinorVersion="0"  
+                         MajorBuildNumber="349"  
+                         MinorBuildNumber="0"  
+                         Version="Exchange2013"  
+                         xmlns="http://schemas.microsoft.com/exchange/services/2006/types"  
+                         xmlns:xsd="http://www.w3.org/2001/XMLSchema"  
+                         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"  
+                         xmlns:h="http://schemas.microsoft.com/exchange/services/2006/types" 
+/> 
+  </s:Header> 
+  <s:Body xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"  
+          xmlns:xsd="http://www.w3.org/2001/XMLSchema"> 
+    <FindPeopleResponse ResponseClass="Success"  
+                        xmlns="http://schemas.microsoft.com/exchange/services/2006/messages"> 
+      <ResponseCode>NoError</ResponseCode> 
+      <People> 
+        <Persona xmlns="http://schemas.microsoft.com/exchange/services/2006/types"> 
+          <PersonaId 
+Id="AAQkAGQ1MjJjMTBkLTc4Y2UtNDA5Ny04ZjU5LWI3MTYzNGNkZmRkYQAQAOjFqObcLmtOlzlRnHdXQjo=" /> 
+          <CreationTime>2012-01-11T22:25:37Z</CreationTime> 
+          <DisplayName>Terry Adams</DisplayName> 
+          <DisplayNameFirstLast>Terry Adams</DisplayNameFirstLast> 
+          <DisplayNameLastFirst>Adams Terry</DisplayNameLastFirst> 
+          <FileAs>Adams, Terry</FileAs> 
+          <GivenName>Terry</GivenName> 
+          <Surname>Adams</Surname> 
+          <EmailAddress> 
+            <Name>terry@litwareinc.com</Name> 
+            <EmailAddress>terry@litwareinc.com</EmailAddress> 
+            <RoutingType>SMTP</RoutingType> 
+          </EmailAddress> 
+          <EmailAddresses> 
+            <EmailAddress> 
+              <Name>terry@litwareinc.com</Name> 
+              <EmailAddress>terry@litwareinc.com</EmailAddress> 
+              <RoutingType>SMTP</RoutingType> 
+            </EmailAddress> 
+
+42 / 58 
+
+[MS-OXWSPERS] - v20250520 
+Persona Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+            <EmailAddress> 
+              <Name>tadams@contoso.com</Name> 
+              <EmailAddress>tadams@contoso.com</EmailAddress> 
+              <RoutingType>SMTP</RoutingType> 
+            </EmailAddress> 
+          </EmailAddresses> 
+          <RelevanceScore>2147483647</RelevanceScore> 
+        </Persona> 
+      </People> 
+      <TotalNumberOfPeopleInView>1</TotalNumberOfPeopleInView> 
+    </FindPeopleResponse> 
+  </s:Body> 
+ </s:Envelope> 
+
+43 / 58 
+
+[MS-OXWSPERS] - v20250520 
+Persona Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+5 Security 
+
+5.1 Security Considerations for Implementers 
+
+None. 
+
+5.2 Index of Security Parameters 
+
+None. 
+
+44 / 58 
+
+[MS-OXWSPERS] - v20250520 
+Persona Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+6 Appendix A: Full WSDL 
+
+The XML files that are listed in the following table are required in order to implement the functionality 
+specified in this document.  
+
+File name Description Section 
+
+MS-OXWSPERS.wsdl Contains the WSDL for the implementation of this protocol. 6 
+
+MS-OXWSPERS- Contains the XML schema message definitions that are used in 7.1 
+messages.xsd this protocol. 
+
+MS-OXWSPERS-types.xsd Contains the XML schema type definitions that are used in this 7.2 
+protocol. 
+
+These files have to be placed in a common folder in order for the WSDL to validate and operate. Also, 
+any schema files that are included in or imported into the MS-OXWSPERS-types.xsd or MS-
+OXWSPERS-messages.xsd schemas have to be placed in the common folder along with the files.  
+
+For ease of implementation, the full WSDL is provided in this appendix. 
+
+ <?xml version="1.0" encoding="UTF-8"?> 
+ <wsdl:definitions xmlns:tns="http://schemas.microsoft.com/exchange/services/2006/messages" 
+xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/" 
+xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types" 
+targetNamespace="http://schemas.microsoft.com/exchange/services/2006/messages" 
+xmlns:wsdl="http://schemas.xmlsoap.org/wsdl/"> 
+  <wsdl:types> 
+    <xs:schema elementFormDefault="qualified" 
+targetNamespace="http://schemas.microsoft.com/exchange/services/2006/messages" 
+version="Exchange2016" id="messages" xmlns:xs="http://www.w3.org/2001/XMLSchema"> 
+      <xs:include schemaLocation="MS-OXWSPERS-messages.xsd"/> 
+    </xs:schema> 
+  </wsdl:types> 
+  <wsdl:portType name="ExchangeServicePortType"> 
+    <wsdl:operation name="FindPeople"> 
+      <wsdl:input message="tns:FindPeopleSoapIn"/> 
+      <wsdl:output message="tns:FindPeopleSoapOut"/> 
+    </wsdl:operation> 
+    <wsdl:operation name="GetPersona"> 
+      <wsdl:input message="tns:GetPersonaSoapIn"/> 
+      <wsdl:output message="tns:GetPersonaSoapOut"/> 
+    </wsdl:operation> 
+  </wsdl:portType> 
+  <wsdl:binding name="ExchangeServiceBinding" type="tns:ExchangeServicePortType"> 
+    <wsdl:documentation> 
+      <wsi:Claim conformsTo="http://ws-i.org/profiles/basic/1.0" xmlns:wsi="http://ws-
+i.org/schemas/conformanceClaim/"/> 
+    </wsdl:documentation> 
+    <soap:binding transport="http://schemas.xmlsoap.org/soap/http"/> 
+    <wsdl:operation name="FindPeople"> 
+      <soap:operation 
+soapAction="http://schemas.microsoft.com/exchange/services/2006/messages/FindPeople"/> 
+      <wsdl:input> 
+        <soap:body use="literal" parts="request"/> 
+        <soap:header message="tns:FindPeopleSoapIn" part="RequestVersion" use="literal"/> 
+        <soap:header message="tns:FindPeopleSoapIn" part="Impersonation" use="literal"/> 
+      </wsdl:input> 
+      <wsdl:output> 
+        <soap:body use="literal" parts="FindPeopleResult"/> 
+        <soap:header message="tns:FindPeopleSoapOut" part="ServerVersion" use="literal"/> 
+      </wsdl:output> 
+    </wsdl:operation> 
+    <wsdl:operation name="GetPersona"> 
+
+45 / 58 
+
+[MS-OXWSPERS] - v20250520 
+Persona Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+      <soap:operation 
+soapAction="http://schemas.microsoft.com/exchange/services/2006/messages/GetPersona"/> 
+      <wsdl:input> 
+        <soap:body use="literal" parts="request"/> 
+        <soap:header message="tns:GetPersonaSoapIn" part="RequestVersion" use="literal"/> 
+        <soap:header message="tns:GetPersonaSoapIn" part="Impersonation" use="literal"/> 
+      </wsdl:input> 
+      <wsdl:output> 
+        <soap:body use="literal" parts="GetPersonaResult"/> 
+        <soap:header message="tns:GetPersonaSoapOut" part="ServerVersion" use="literal"/> 
+      </wsdl:output> 
+    </wsdl:operation> 
+  </wsdl:binding> 
+  <wsdl:message name="FindPeopleSoapIn"> 
+    <wsdl:part name="request" element="tns:FindPeople"/> 
+    <wsdl:part name="Impersonation" element="t:ExchangeImpersonation"/> 
+    <wsdl:part name="RequestVersion" element="t:RequestServerVersion"/> 
+  </wsdl:message> 
+  <wsdl:message name="FindPeopleSoapOut"> 
+    <wsdl:part name="FindPeopleResult" element="tns:FindPeopleResponse"/> 
+    <wsdl:part name="ServerVersion" element="t:ServerVersionInfo"/> 
+  </wsdl:message> 
+  <wsdl:message name="GetPersonaSoapIn"> 
+    <wsdl:part name="request" element="tns:GetPersona"/> 
+    <wsdl:part name="Impersonation" element="t:ExchangeImpersonation"/> 
+    <wsdl:part name="RequestVersion" element="t:RequestServerVersion"/> 
+  </wsdl:message> 
+  <wsdl:message name="GetPersonaSoapOut"> 
+    <wsdl:part name="GetPersonaResult" element="tns:GetPersonaResponseMessage"/> 
+    <wsdl:part name="ServerVersion" element="t:ServerVersionInfo"/> 
+  </wsdl:message> 
+ </wsdl:definitions> 
+
+46 / 58 
+
+[MS-OXWSPERS] - v20250520 
+Persona Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+7 Appendix B: Full XML Schema 
+
+Schema name Prefix Section 
+
+http://schemas.microsoft.com/exchange/services/2006/types t 7.2 
+
+http://schemas.microsoft.com/exchange/services/2006/messages tns 7.1 
+
+ 
+
+For ease of implementation, the following sections provide the full XML schema for this protocol. 
+
+7.1 http://schemas.microsoft.com/exchange/services/2006/messages Schema 
+
+This section contains the MS-OXWSPERS-messages.xsd and information about additional files that this 
+schema file requires to operate correctly. 
+
+MS-OXWSPERS-messages.xsd includes the files listed in the following table. To operate correctly, 
+these files have to be present in the folder that contains the WSDL, types schema, and messages 
+schema for this protocol. 
+
+File name Defining specification/section 
+
+MS-OXWSCDATA-messages.xsd [MS-OXWSCDATA] section 7.1 
+
+MS-OXWSPERS-types.xsd 7.2 
+
+. 
+
+ <?xml version="1.0" encoding="UTF-8"?> 
+ <xs:schema xmlns:tns="http://schemas.microsoft.com/exchange/services/2006/messages" 
+xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types" 
+elementFormDefault="qualified" 
+targetNamespace="http://schemas.microsoft.com/exchange/services/2006/messages" 
+version="Exchange2015" id="messages" xmlns:xs="http://www.w3.org/2001/XMLSchema"> 
+  <xs:import schemaLocation="MS-OXWSPERS-types.xsd" 
+namespace="http://schemas.microsoft.com/exchange/services/2006/types"/> 
+  <xs:include schemaLocation="MS-OXWSCDATA-messages.xsd"/> 
+  <xs:complexType name="FindPeopleType"> 
+    <xs:complexContent mixed="false"> 
+      <xs:extension base="tns:BaseRequestType"> 
+        <xs:sequence> 
+          <xs:element minOccurs="0" name="PersonaShape" type="t:PersonaResponseShapeType"/> 
+          <xs:element name="IndexedPageItemView" type="t:IndexedPageViewType"/> 
+          <xs:element minOccurs="0" name="Restriction" type="t:RestrictionType"/> 
+          <xs:element minOccurs="0" name="AggregationRestriction" type="t:RestrictionType"/> 
+          <xs:element minOccurs="0" name="SortOrder" 
+type="t:NonEmptyArrayOfFieldOrdersType"/> 
+          <xs:element minOccurs="0" name="ParentFolderId" type="t:TargetFolderIdType"/> 
+          <xs:element minOccurs="0" name="QueryString" type="xs:string"/> 
+          <xs:element minOccurs="0" maxOccurs="1" name="SearchPeopleSuggestionIndex" 
+type="xs:boolean"/> 
+          <xs:element minOccurs="0" maxOccurs="1" name="TopicQueryString" type="xs:string"/> 
+          <xs:element minOccurs="0" maxOccurs="1" name="Context" 
+type="t:ArrayOfContextProperty"/> 
+          <xs:element minOccurs="0" maxOccurs="1" name="QuerySources" 
+type="t:ArrayOfPeopleQuerySource"/> 
+        </xs:sequence> 
+      </xs:extension> 
+    </xs:complexContent> 
+  </xs:complexType> 
+  <xs:element name="FindPeople" type="tns:FindPeopleType"/> 
+  <xs:complexType name="FindPeopleResponseMessageType"> 
+
+47 / 58 
+
+[MS-OXWSPERS] - v20250520 
+Persona Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+    <xs:complexContent mixed="false"> 
+      <xs:extension base="tns:ResponseMessageType"> 
+        <xs:sequence> 
+          <xs:element minOccurs="0" name="People" type="t:ArrayOfPeopleType"/> 
+          <xs:element minOccurs="0" name="TotalNumberOfPeopleInView" type="xs:int"/> 
+          <xs:element minOccurs="0" name="FirstMatchingRowIndex" type="xs:int"/> 
+          <xs:element minOccurs="0" name="FirstLoadedRowIndex" type="xs:int"/> 
+        </xs:sequence> 
+      </xs:extension> 
+    </xs:complexContent> 
+  </xs:complexType> 
+  <xs:element name="FindPeopleResponse" type="tns:FindPeopleResponseMessageType"/> 
+  <xs:complexType name="GetPersonaType"> 
+    <xs:complexContent mixed="false"> 
+      <xs:extension base="tns:BaseRequestType"> 
+        <xs:sequence> 
+          <xs:element minOccurs="0" maxOccurs="1" name="PersonaId" type="t:ItemIdType"/> 
+          <xs:element minOccurs="0" maxOccurs="1" name="EmailAddress" 
+type="t:EmailAddressType"/> 
+          <xs:element minOccurs="0" maxOccurs="1" name="ParentFolderId" 
+type="t:TargetFolderIdType"/> 
+        </xs:sequence> 
+      </xs:extension> 
+    </xs:complexContent> 
+  </xs:complexType> 
+  <xs:element name="GetPersona" type="tns:GetPersonaType"/> 
+  <xs:complexType name="GetPersonaResponseMessageType"> 
+    <xs:complexContent mixed="false"> 
+      <xs:extension base="tns:ResponseMessageType"> 
+        <xs:sequence> 
+          <xs:element name="Persona" type="t:PersonaType"/> 
+        </xs:sequence> 
+      </xs:extension> 
+    </xs:complexContent> 
+  </xs:complexType> 
+  <xs:element name="GetPersonaResponseMessage" type="tns:GetPersonaResponseMessageType"/> 
+ </xs:schema> 
+
+7.2 http://schemas.microsoft.com/exchange/services/2006/types Schema 
+
+This section contains the MS-OXWSPERs-types.xsd and information about additional files that this 
+schema file requires to operate correctly. 
+
+MS-OXWSPERS-types.xsd includes the file listed in the following table. To operate correctly, this file 
+has to be present in the folder that contains the WSDL, types schema, and messages schema for this 
+protocol. 
+
+File name Defining specification/section 
+
+MS-OXWSCORE-types.xsd [MS-OXWSCORE] section 7.2 
+
+MS-OXWSCDATA-types.xsd [MS-OXWSCDATA] section 7.2 
+
+ 
+
+ <?xml version="1.0" encoding="UTF-8"?> 
+ <xs:schema xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types" 
+elementFormDefault="qualified" 
+targetNamespace="http://schemas.microsoft.com/exchange/services/2006/types" 
+version="Exchange2015" id="types" xmlns:xs="http://www.w3.org/2001/XMLSchema"> 
+  <xs:import namespace="http://www.w3.org/XML/1998/namespace"/> 
+  <xs:include schemaLocation="MS-OXWSCORE-types.xsd"/> 
+  <xs:complexType name="ArrayOfFolderIdType"> 
+    <xs:choice minOccurs="0" maxOccurs="unbounded"> 
+
+48 / 58 
+
+[MS-OXWSPERS] - v20250520 
+Persona Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+      <xs:element name="FolderId" type="t:FolderIdType"/> 
+    </xs:choice> 
+  </xs:complexType> 
+  <xs:complexType name="ArrayOfStringAttributedValuesType"> 
+    <xs:sequence> 
+      <xs:element minOccurs="0" maxOccurs="unbounded" name="StringAttributedValue" 
+type="t:StringAttributedValueType"/> 
+    </xs:sequence> 
+  </xs:complexType> 
+  <xs:complexType name="ArrayOfStringArrayAttributedValuesType"> 
+    <xs:sequence> 
+      <xs:element minOccurs="0" maxOccurs="unbounded" name="StringArrayAttributedValue" 
+type="t:StringArrayAttributedValueType"/> 
+    </xs:sequence> 
+  </xs:complexType> 
+  <xs:complexType name="ArrayOfEmailAddressAttributedValuesType"> 
+    <xs:sequence> 
+      <xs:element minOccurs="0" maxOccurs="unbounded" name="EmailAddressAttributedValue" 
+type="t:EmailAddressAttributedValueType"/> 
+    </xs:sequence> 
+  </xs:complexType> 
+  <xs:complexType name="ArrayOfPeopleQuerySource"> 
+    <xs:sequence> 
+      <xs:element minOccurs="1" maxOccurs="unbounded" name="Source" type="xs:string"/> 
+    </xs:sequence> 
+  </xs:complexType> 
+  <xs:complexType name="ArrayOfPeopleType"> 
+    <xs:choice minOccurs="0" maxOccurs="unbounded"> 
+      <xs:element name="Persona" type="t:PersonaType"/> 
+    </xs:choice> 
+  </xs:complexType> 
+  <xs:complexType name="ArrayOfPhoneNumberAttributedValuesType"> 
+    <xs:sequence> 
+      <xs:element minOccurs="0" maxOccurs="unbounded" name="PhoneNumberAttributedValue" 
+type="t:PhoneNumberAttributedValueType"/> 
+    </xs:sequence> 
+  </xs:complexType> 
+  <xs:complexType name="ArrayOfPostalAddressAttributedValuesType"> 
+    <xs:sequence> 
+      <xs:element minOccurs="0" maxOccurs="unbounded" name="PostalAddressAttributedValue" 
+type="t:PostalAddressAttributedValueType"/> 
+    </xs:sequence> 
+  </xs:complexType> 
+  <xs:complexType name="ArrayOfExtendedPropertyAttributedValueType"> 
+    <xs:sequence> 
+      <xs:element minOccurs="0" maxOccurs="unbounded" name="ExtendedPropertyAttributedValue" 
+type="t:ExtendedPropertyAttributedValueType"/> 
+    </xs:sequence> 
+  </xs:complexType> 
+  <xs:complexType name="ArrayOfPersonaAttributionsType"> 
+    <xs:sequence> 
+      <xs:element minOccurs="1" maxOccurs="unbounded" name="Attribution" 
+type="t:PersonaAttributionType"/> 
+    </xs:sequence> 
+  </xs:complexType> 
+  <xs:complexType name="ArrayOfValueAttributionsType"> 
+    <xs:sequence> 
+      <xs:element minOccurs="1" maxOccurs="unbounded" name="Attribution" type="xs:string"/> 
+    </xs:sequence> 
+  </xs:complexType> 
+  <xs:complexType name="ArrayOfStringValueType"> 
+    <xs:sequence> 
+      <xs:element minOccurs="1" maxOccurs="unbounded" name="Value" type="xs:string"/> 
+    </xs:sequence> 
+  </xs:complexType> 
+  <xs:complexType name="ArrayOfBodyContentAttributedValuesType"> 
+    <xs:sequence> 
+      <xs:element minOccurs="0" maxOccurs="unbounded" name="BodyContentAttributedValue" 
+type="t:BodyContentAttributedValueType"/> 
+
+49 / 58 
+
+[MS-OXWSPERS] - v20250520 
+Persona Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+    </xs:sequence> 
+  </xs:complexType> 
+  <xs:complexType name="BodyContentType"> 
+    <xs:sequence> 
+      <xs:element minOccurs="1" maxOccurs="1" name="Value" type="xs:string"/> 
+      <xs:element minOccurs="1" maxOccurs="1" name="BodyType" type="t:BodyTypeType"/> 
+    </xs:sequence> 
+  </xs:complexType> 
+  <xs:complexType name="BodyContentAttributedValueType"> 
+    <xs:sequence> 
+      <xs:element minOccurs="1" maxOccurs="1" name="Value" type="t:BodyContentType"/> 
+      <xs:element minOccurs="1" maxOccurs="1" name="Attributions" 
+type="t:ArrayOfValueAttributionsType"/> 
+    </xs:sequence> 
+  </xs:complexType> 
+  <xs:complexType name="EmailAddressAttributedValueType"> 
+    <xs:sequence> 
+      <xs:element minOccurs="1" maxOccurs="1" name="Value" type="t:EmailAddressType"/> 
+      <xs:element minOccurs="1" maxOccurs="1" name="Attributions" 
+type="t:ArrayOfValueAttributionsType"/> 
+    </xs:sequence> 
+  </xs:complexType> 
+  <xs:complexType name="ExtendedPropertyAttributedValueType"> 
+    <xs:sequence> 
+      <xs:element minOccurs="1" maxOccurs="1" name="Value" type="t:ExtendedPropertyType"/> 
+      <xs:element minOccurs="1" maxOccurs="1" name="Attributions" 
+type="t:ArrayOfValueAttributionsType"/> 
+    </xs:sequence> 
+  </xs:complexType> 
+  <xs:simpleType name="LocationSourceType"> 
+    <xs:restriction base="xs:string"> 
+      <xs:enumeration value="None"/> 
+      <xs:enumeration value="LocationServices"/> 
+      <xs:enumeration value="PhonebookServices"/> 
+      <xs:enumeration value="Device"/> 
+      <xs:enumeration value="Contact"/> 
+      <xs:enumeration value="Resource"/> 
+    </xs:restriction> 
+  </xs:simpleType> 
+  <xs:complexType name="PersonaAttributionType"> 
+    <xs:sequence> 
+      <xs:element minOccurs="1" maxOccurs="1" name="Id" type="xs:string"/> 
+      <xs:element minOccurs="1" maxOccurs="1" name="SourceId" type="t:ItemIdType"/> 
+      <xs:element minOccurs="1" maxOccurs="1" name="DisplayName" type="xs:string"/> 
+      <xs:element minOccurs="0" maxOccurs="1" name="IsWritable" type="xs:boolean"/> 
+      <xs:element minOccurs="0" maxOccurs="1" name="IsQuickContact" type="xs:boolean"/> 
+      <xs:element minOccurs="0" maxOccurs="1" name="IsHidden" type="xs:boolean"/> 
+      <xs:element minOccurs="0" maxOccurs="1" name="FolderId" type="t:FolderIdType"/> 
+    </xs:sequence> 
+  </xs:complexType> 
+  <xs:complexType name="PersonaPhoneNumberType"> 
+    <xs:sequence> 
+      <xs:element minOccurs="1" maxOccurs="1" name="Number" type="xs:string"/> 
+      <xs:element minOccurs="1" maxOccurs="1" name="Type" type="xs:string"/> 
+    </xs:sequence> 
+  </xs:complexType> 
+  <xs:complexType name="PersonaPostalAddressType"> 
+    <xs:sequence> 
+      <xs:element minOccurs="0" maxOccurs="1" name="Street" type="xs:string"/> 
+      <xs:element minOccurs="0" maxOccurs="1" name="City" type="xs:string"/> 
+      <xs:element minOccurs="0" maxOccurs="1" name="State" type="xs:string"/> 
+      <xs:element minOccurs="0" maxOccurs="1" name="Country" type="xs:string"/> 
+      <xs:element minOccurs="0" maxOccurs="1" name="PostalCode" type="xs:string"/> 
+      <xs:element minOccurs="0" maxOccurs="1" name="PostOfficeBox" type="xs:string"/> 
+      <xs:element minOccurs="0" maxOccurs="1" name="Type" type="xs:string"/> 
+      <xs:element minOccurs="0" maxOccurs="1" name="Latitude" type="xs:double"/> 
+      <xs:element minOccurs="0" maxOccurs="1" name="Longitude" type="xs:double"/> 
+      <xs:element minOccurs="0" maxOccurs="1" name="Accuracy" type="xs:double"/> 
+      <xs:element minOccurs="0" maxOccurs="1" name="Altitude" type="xs:double"/> 
+
+50 / 58 
+
+[MS-OXWSPERS] - v20250520 
+Persona Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+      <xs:element minOccurs="0" maxOccurs="1" name="AltitudeAccuracy" type="xs:double"/> 
+      <xs:element minOccurs="0" maxOccurs="1" name="FormattedAddress" type="xs:string"/> 
+      <xs:element minOccurs="0" maxOccurs="1" name="LocationUri" type="xs:string"/> 
+      <xs:element minOccurs="0" maxOccurs="1" name="LocationSource" 
+type="t:LocationSourceType"/> 
+    </xs:sequence> 
+  </xs:complexType> 
+  <xs:complexType name="PersonaResponseShapeType"> 
+    <xs:sequence> 
+      <xs:element name="BaseShape" type="t:DefaultShapeNamesType"/> 
+      <xs:element minOccurs="0" name="AdditionalProperties" 
+type="t:NonEmptyArrayOfPathsToElementType"/> 
+    </xs:sequence> 
+  </xs:complexType> 
+  <xs:complexType name="PersonaType"> 
+    <xs:sequence> 
+      <xs:element minOccurs="1" maxOccurs="1" name="PersonaId" type="t:ItemIdType"/> 
+      <xs:element minOccurs="0" maxOccurs="1" name="PersonaType" type="xs:string"/> 
+      <xs:element minOccurs="0" maxOccurs="1" name="PersonaObjectStatus" type="xs:string"/> 
+      <xs:element minOccurs="0" maxOccurs="1" name="CreationTime" type="xs:dateTime"/> 
+      <xs:element minOccurs="0" name="Bodies" 
+type="t:ArrayOfBodyContentAttributedValuesType"/> 
+      <xs:element minOccurs="0" maxOccurs="1" name="DisplayNameFirstLastSortKey" 
+type="xs:string"/> 
+      <xs:element minOccurs="0" maxOccurs="1" name="DisplayNameLastFirstSortKey" 
+type="xs:string"/> 
+      <xs:element minOccurs="0" maxOccurs="1" name="CompanyNameSortKey" type="xs:string"/> 
+      <xs:element minOccurs="0" maxOccurs="1" name="HomeCitySortKey" type="xs:string"/> 
+      <xs:element minOccurs="0" maxOccurs="1" name="WorkCitySortKey" type="xs:string"/> 
+      <xs:element minOccurs="0" maxOccurs="1" name="DisplayNameFirstLastHeader" 
+type="xs:string"/> 
+      <xs:element minOccurs="0" maxOccurs="1" name="DisplayNameLastFirstHeader" 
+type="xs:string"/> 
+      <xs:element minOccurs="0" maxOccurs="1" name="FileAsHeader" type="xs:string"/> 
+      <xs:element minOccurs="0" maxOccurs="1" name="DisplayName" type="xs:string"/> 
+      <xs:element minOccurs="0" maxOccurs="1" name="DisplayNameFirstLast" type="xs:string"/> 
+      <xs:element minOccurs="0" maxOccurs="1" name="DisplayNameLastFirst" type="xs:string"/> 
+      <xs:element minOccurs="0" maxOccurs="1" name="FileAs" type="xs:string"/> 
+      <xs:element minOccurs="0" maxOccurs="1" name="FileAsId" type="xs:string"/> 
+      <xs:element minOccurs="0" maxOccurs="1" name="DisplayNamePrefix" type="xs:string"/> 
+      <xs:element minOccurs="0" maxOccurs="1" name="GivenName" type="xs:string"/> 
+      <xs:element minOccurs="0" maxOccurs="1" name="MiddleName" type="xs:string"/> 
+      <xs:element minOccurs="0" maxOccurs="1" name="Surname" type="xs:string"/> 
+      <xs:element minOccurs="0" maxOccurs="1" name="Generation" type="xs:string"/> 
+      <xs:element minOccurs="0" maxOccurs="1" name="Nickname" type="xs:string"/> 
+      <xs:element minOccurs="0" maxOccurs="1" name="YomiCompanyName" type="xs:string"/> 
+      <xs:element minOccurs="0" maxOccurs="1" name="YomiFirstName" type="xs:string"/> 
+      <xs:element minOccurs="0" maxOccurs="1" name="YomiLastName" type="xs:string"/> 
+      <xs:element minOccurs="0" maxOccurs="1" name="Title" type="xs:string"/> 
+      <xs:element minOccurs="0" maxOccurs="1" name="Department" type="xs:string"/> 
+      <xs:element minOccurs="0" maxOccurs="1" name="CompanyName" type="xs:string"/> 
+      <xs:element minOccurs="0" maxOccurs="1" name="Location" type="xs:string"/> 
+      <xs:element minOccurs="0" maxOccurs="1" name="EmailAddress" type="t:EmailAddressType"/> 
+      <xs:element minOccurs="0" maxOccurs="1" name="EmailAddresses" 
+type="t:ArrayOfEmailAddressesType"/> 
+      <xs:element minOccurs="0" maxOccurs="1" name="PhoneNumber" 
+type="t:PersonaPhoneNumberType"/> 
+      <xs:element minOccurs="0" maxOccurs="1" name="ImAddress" type="xs:string"/> 
+      <xs:element minOccurs="0" maxOccurs="1" name="HomeCity" type="xs:string"/> 
+      <xs:element minOccurs="0" maxOccurs="1" name="WorkCity" type="xs:string"/> 
+      <xs:element minOccurs="0" maxOccurs="1" name="RelevanceScore" type="xs:int"/> 
+      <xs:element minOccurs="0" maxOccurs="1" name="FolderIds" type="t:ArrayOfFolderIdType"/> 
+      <xs:element minOccurs="0" maxOccurs="1" name="Attributions" 
+type="t:ArrayOfPersonaAttributionsType"/> 
+      <xs:element minOccurs="0" name="DisplayNames" 
+type="t:ArrayOfStringAttributedValuesType"/> 
+      <xs:element minOccurs="0" name="FileAses" type="t:ArrayOfStringAttributedValuesType"/> 
+      <xs:element minOccurs="0" name="FileAsIds" type="t:ArrayOfStringAttributedValuesType"/> 
+
+51 / 58 
+
+[MS-OXWSPERS] - v20250520 
+Persona Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+      <xs:element minOccurs="0" name="DisplayNamePrefixes" 
+type="t:ArrayOfStringAttributedValuesType"/> 
+      <xs:element minOccurs="0" name="GivenNames" 
+type="t:ArrayOfStringAttributedValuesType"/> 
+      <xs:element minOccurs="0" name="MiddleNames" 
+type="t:ArrayOfStringAttributedValuesType"/> 
+      <xs:element minOccurs="0" name="Surnames" type="t:ArrayOfStringAttributedValuesType"/> 
+      <xs:element minOccurs="0" name="Generations" 
+type="t:ArrayOfStringAttributedValuesType"/> 
+      <xs:element minOccurs="0" name="Nicknames" type="t:ArrayOfStringAttributedValuesType"/> 
+      <xs:element minOccurs="0" name="Initials" type="t:ArrayOfStringAttributedValuesType"/> 
+      <xs:element minOccurs="0" name="YomiCompanyNames" 
+type="t:ArrayOfStringAttributedValuesType"/> 
+      <xs:element minOccurs="0" name="YomiFirstNames" 
+type="t:ArrayOfStringAttributedValuesType"/> 
+      <xs:element minOccurs="0" name="YomiLastNames" 
+type="t:ArrayOfStringAttributedValuesType"/> 
+      <xs:element minOccurs="0" name="BusinessPhoneNumbers" 
+type="t:ArrayOfPhoneNumberAttributedValuesType"/> 
+      <xs:element minOccurs="0" name="BusinessPhoneNumbers2" 
+type="t:ArrayOfPhoneNumberAttributedValuesType"/> 
+      <xs:element minOccurs="0" name="HomePhones" 
+type="t:ArrayOfPhoneNumberAttributedValuesType"/> 
+      <xs:element minOccurs="0" name="HomePhones2" 
+type="t:ArrayOfPhoneNumberAttributedValuesType"/> 
+      <xs:element minOccurs="0" name="MobilePhones" 
+type="t:ArrayOfPhoneNumberAttributedValuesType"/> 
+      <xs:element minOccurs="0" name="MobilePhones2" 
+type="t:ArrayOfPhoneNumberAttributedValuesType"/> 
+      <xs:element minOccurs="0" name="AssistantPhoneNumbers" 
+type="t:ArrayOfPhoneNumberAttributedValuesType"/> 
+      <xs:element minOccurs="0" name="CallbackPhones" 
+type="t:ArrayOfPhoneNumberAttributedValuesType"/> 
+      <xs:element minOccurs="0" name="CarPhones" 
+type="t:ArrayOfPhoneNumberAttributedValuesType"/> 
+      <xs:element minOccurs="0" name="HomeFaxes" 
+type="t:ArrayOfPhoneNumberAttributedValuesType"/> 
+      <xs:element minOccurs="0" name="OrganizationMainPhones" 
+type="t:ArrayOfPhoneNumberAttributedValuesType"/> 
+      <xs:element minOccurs="0" name="OtherFaxes" 
+type="t:ArrayOfPhoneNumberAttributedValuesType"/> 
+      <xs:element minOccurs="0" name="OtherTelephones" 
+type="t:ArrayOfPhoneNumberAttributedValuesType"/> 
+      <xs:element minOccurs="0" name="OtherPhones2" 
+type="t:ArrayOfPhoneNumberAttributedValuesType"/> 
+      <xs:element minOccurs="0" name="Pagers" 
+type="t:ArrayOfPhoneNumberAttributedValuesType"/> 
+      <xs:element minOccurs="0" name="RadioPhones" 
+type="t:ArrayOfPhoneNumberAttributedValuesType"/> 
+      <xs:element minOccurs="0" name="TelexNumbers" 
+type="t:ArrayOfPhoneNumberAttributedValuesType"/> 
+      <xs:element minOccurs="0" name="TTYTDDPhoneNumbers" 
+type="t:ArrayOfPhoneNumberAttributedValuesType"/> 
+      <xs:element minOccurs="0" name="WorkFaxes" 
+type="t:ArrayOfPhoneNumberAttributedValuesType"/> 
+      <xs:element minOccurs="0" maxOccurs="1" name="Emails1" 
+type="t:ArrayOfEmailAddressAttributedValuesType"/> 
+      <xs:element minOccurs="0" maxOccurs="1" name="Emails2" 
+type="t:ArrayOfEmailAddressAttributedValuesType"/> 
+      <xs:element minOccurs="0" maxOccurs="1" name="Emails3" 
+type="t:ArrayOfEmailAddressAttributedValuesType"/> 
+      <xs:element minOccurs="0" name="BusinessHomePages" 
+type="t:ArrayOfStringAttributedValuesType"/> 
+      <xs:element minOccurs="0" name="PersonalHomePages" 
+type="t:ArrayOfStringAttributedValuesType"/> 
+      <xs:element minOccurs="0" name="OfficeLocations" 
+type="t:ArrayOfStringAttributedValuesType"/> 
+      <xs:element minOccurs="0" name="ImAddresses" 
+type="t:ArrayOfStringAttributedValuesType"/> 
+
+52 / 58 
+
+[MS-OXWSPERS] - v20250520 
+Persona Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+      <xs:element minOccurs="0" name="ImAddresses2" 
+type="t:ArrayOfStringAttributedValuesType"/> 
+      <xs:element minOccurs="0" name="ImAddresses3" 
+type="t:ArrayOfStringAttributedValuesType"/> 
+      <xs:element minOccurs="0" maxOccurs="1" name="BusinessAddresses" 
+type="t:ArrayOfPostalAddressAttributedValuesType"/> 
+      <xs:element minOccurs="0" maxOccurs="1" name="HomeAddresses" 
+type="t:ArrayOfPostalAddressAttributedValuesType"/> 
+      <xs:element minOccurs="0" maxOccurs="1" name="OtherAddresses" 
+type="t:ArrayOfPostalAddressAttributedValuesType"/> 
+      <xs:element minOccurs="0" name="Titles" type="t:ArrayOfStringAttributedValuesType"/> 
+      <xs:element minOccurs="0" name="Departments" 
+type="t:ArrayOfStringAttributedValuesType"/> 
+      <xs:element minOccurs="0" name="CompanyNames" 
+type="t:ArrayOfStringAttributedValuesType"/> 
+      <xs:element minOccurs="0" name="Managers" type="t:ArrayOfStringAttributedValuesType"/> 
+      <xs:element minOccurs="0" name="AssistantNames" 
+type="t:ArrayOfStringAttributedValuesType"/> 
+      <xs:element minOccurs="0" name="Professions" 
+type="t:ArrayOfStringAttributedValuesType"/> 
+      <xs:element minOccurs="0" name="SpouseNames" 
+type="t:ArrayOfStringAttributedValuesType"/> 
+      <xs:element minOccurs="0" name="Children" 
+type="t:ArrayOfStringArrayAttributedValuesType"/> 
+      <xs:element minOccurs="0" name="Schools" type="t:ArrayOfStringAttributedValuesType"/> 
+      <xs:element minOccurs="0" name="Hobbies" type="t:ArrayOfStringAttributedValuesType"/> 
+      <xs:element minOccurs="0" name="WeddingAnniversaries" 
+type="t:ArrayOfStringAttributedValuesType"/> 
+      <xs:element minOccurs="0" name="Birthdays" type="t:ArrayOfStringAttributedValuesType"/> 
+      <xs:element minOccurs="0" name="Locations" type="t:ArrayOfStringAttributedValuesType"/> 
+      <xs:element minOccurs="0" name="ExtendedProperties" 
+type="t:ArrayOfExtendedPropertyAttributedValueType"/> 
+    </xs:sequence> 
+  </xs:complexType> 
+  <xs:complexType name="PhoneNumberAttributedValueType"> 
+    <xs:sequence> 
+      <xs:element minOccurs="1" maxOccurs="1" name="Value" type="t:PersonaPhoneNumberType"/> 
+      <xs:element minOccurs="1" maxOccurs="1" name="Attributions" 
+type="t:ArrayOfValueAttributionsType"/> 
+    </xs:sequence> 
+  </xs:complexType> 
+  <xs:complexType name="PostalAddressAttributedValueType"> 
+    <xs:sequence> 
+      <xs:element minOccurs="1" maxOccurs="1" name="Value" 
+type="t:PersonaPostalAddressType"/> 
+      <xs:element minOccurs="1" maxOccurs="1" name="Attributions" 
+type="t:ArrayOfValueAttributionsType"/> 
+    </xs:sequence> 
+  </xs:complexType> 
+  <xs:complexType name="StringArrayAttributedValueType"> 
+    <xs:sequence> 
+      <xs:element minOccurs="1" maxOccurs="1" name="Values" type="t:ArrayOfStringValueType"/> 
+      <xs:element minOccurs="1" maxOccurs="1" name="Attributions" 
+type="t:ArrayOfValueAttributionsType"/> 
+    </xs:sequence> 
+  </xs:complexType> 
+  <xs:complexType name="StringAttributedValueType"> 
+    <xs:sequence> 
+      <xs:element minOccurs="1" maxOccurs="1" name="Value" type="xs:string"/> 
+      <xs:element minOccurs="1" maxOccurs="1" name="Attributions" 
+type="t:ArrayOfValueAttributionsType"/> 
+    </xs:sequence> 
+  </xs:complexType> 
+  <xs:complexType name="ContextPropertyType"> 
+    <xs:sequence> 
+      <xs:element minOccurs="1" maxOccurs="1" name="Key" type="xs:string"/> 
+      <xs:element minOccurs="1" maxOccurs="1" name="Value" type="xs:string"/> 
+    </xs:sequence> 
+  </xs:complexType> 
+
+53 / 58 
+
+[MS-OXWSPERS] - v20250520 
+Persona Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+  <xs:complexType name="ArrayOfContextProperty"> 
+    <xs:sequence> 
+      <xs:element minOccurs="1" maxOccurs="unbounded" name="ContextProperty" 
+type="t:ContextPropertyType"/> 
+    </xs:sequence> 
+  </xs:complexType> 
+ </xs:schema> 
+
+54 / 58 
+
+[MS-OXWSPERS] - v20250520 
+Persona Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+8 Appendix C: Product Behavior 
+
+The information in this specification is applicable to the following Microsoft products or supplemental 
+software. References to product versions include updates to those products. 
+
+ Microsoft Exchange Server 2013 
+
+ Microsoft Lync Client 2013/Skype for Business 
+
+ Microsoft Skype for Business 2016 
+
+ Microsoft Exchange Server 2016  
+
+ Microsoft Skype for Business 2019 
+
+ Microsoft Exchange Server 2019 
+
+ Microsoft Exchange Server Subscription Edition 
+
+Exceptions, if any, are noted in this section. If an update version, service pack or Knowledge Base 
+(KB) number appears with a product name, the behavior changed in that update. The new behavior 
+also applies to subsequent updates unless otherwise specified. If a product edition appears with the 
+product version, behavior is different in that product edition. 
+
+Unless otherwise specified, any statement of optional behavior in this specification that is prescribed 
+using the terms "SHOULD" or "SHOULD NOT" implies product behavior in accordance with the 
+SHOULD or SHOULD NOT prescription. Unless otherwise specified, the term "MAY" implies that the 
+product does not follow the prescription. 
+
+<1> Section 3.1.4.1.3.1:  Exchange 2013 does not use the SearchPeopleSuggestionIndex 
+element. 
+
+<2> Section 3.1.4.1.3.1:  Exchange 2013 does not use the TopicQueryString element. 
+
+<3> Section 3.1.4.1.3.1:  Exchange 2013 does not use the Context element. 
+
+<4> Section 3.1.4.1.3.1:  Exchange 2013 does not use the QuerySources element. 
+
+<5> Section 3.1.4.1.3.5:  Exchange 2013 does not support the ArrayOfContextProperty complex 
+type. 
+
+<6> Section 3.1.4.1.3.6:  Exchange 2013 does not use the ContextPropertyType complex type. 
+
+<7> Section 3.1.4.1.3.7:  Exchange 2013 does not use the ArrayOfPeopleQuerySource complex 
+type. 
+
+<8> Section 3.1.4.2.3.1:  Exchange 2013 does not support the ParentFolderId element. 
+
+55 / 58 
+
+[MS-OXWSPERS] - v20250520 
+Persona Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+9 Change Tracking 
+
+This section identifies changes that were made to this document since the last release. Changes are 
+classified as Major, Minor, or None.  
+
+The revision class Major means that the technical content in the document was significantly revised. 
+Major changes affect protocol interoperability or implementation. Examples of major changes are: 
+
+ A document revision that incorporates changes to interoperability requirements. 
+ A document revision that captures changes to protocol functionality. 
+
+The revision class Minor means that the meaning of the technical content was clarified. Minor changes 
+do not affect protocol interoperability or implementation. Examples of minor changes are updates to 
+clarify ambiguity at the sentence, paragraph, or table level. 
+
+The revision class None means that no new technical changes were introduced. Minor editorial and 
+formatting changes may have been made, but the relevant technical content is identical to the last 
+released version. 
+
+The changes made to this document are listed in the following table. For more information, please 
+contact dochelp@microsoft.com. 
+
+Section Description Revision class 
+
+8 Appendix C: Product Behavior Updated list of supported products. Major 
+
+56 / 58 
+
+[MS-OXWSPERS] - v20250520 
+Persona Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+10 Index
+A Data model - abstract 
+    server 30 
+Abstract data model  
+   server 30 E 
+Applicability 8  
+ArrayOfBodyContentAttributedValuesType complex EmailAddressAttributedValueType complex type 16 
+
+type 12 Events 
+ArrayOfEmailAddressAttributedValuesType complex    local - server 41 
+
+type 13    timer - server 41 
+ArrayOfExtendedPropertyAttributedValueType Examples 42 
+
+complex type 13 ExtendedPropertyAttributedValueType complex type 
+ArrayOfFolderIdType complex type 13 17 
+ArrayOfPersonaAttributionsType complex type 14  
+ArrayOfPhoneNumberAttributedValuesType complex F 
+
+type 14  
+ArrayOfPostalAddressAttributedValuesType complex Fields - vendor-extensible 9 
+
+type 14 Full WSDL 45 
+ArrayOfStringArrayAttributedValuesType complex Full XML schema 47 
+
+type 15    
+ArrayOfStringAttributedValuesType complex type 15 http://schemas.microsoft.com/exchange/service
+ArrayOfStringValueType complex type 15 s/2006/messages Schema 47 
+ArrayOfValueAttributionsType complex type 15    
+Attribute groups 29 http://schemas.microsoft.com/exchange/service
+Attributes 29 s/2006/types Schema 48 
+  
+B G 
+  
+BodyContentAttributedValueType complex type 16 Glossary 5 
+BodyContentType complex type 16 Groups 29 
+  
+C I 
+  
+Capability negotiation 9 Implementer - security considerations 44 
+Change tracking 56 Index of security parameters 44 
+Complex types 11 Informative references 7 
+   ArrayOfBodyContentAttributedValuesType 12 Initialization 
+   ArrayOfEmailAddressAttributedValuesType 13    server 30 
+   ArrayOfExtendedPropertyAttributedValueType 13 Introduction 5 
+   ArrayOfFolderIdType 13  
+   ArrayOfPersonaAttributionsType 14 L 
+   ArrayOfPhoneNumberAttributedValuesType 14  
+   ArrayOfPostalAddressAttributedValuesType 14 Local events 
+   ArrayOfStringArrayAttributedValuesType 15    server 41 
+   ArrayOfStringAttributedValuesType 15 LocationSourceType simple type 29 
+   ArrayOfStringValueType 15  
+   ArrayOfValueAttributionsType 15 M 
+   BodyContentAttributedValueType 16  
+   BodyContentType 16 Message processing 
+   EmailAddressAttributedValueType 16    server 30 
+   ExtendedPropertyAttributedValueType 17 Messages 
+   PersonaAttributionType 17    ArrayOfBodyContentAttributedValuesType complex 
+   PersonaPhoneNumberType 18 type 12 
+   PersonaPostalAddressType 18    ArrayOfEmailAddressAttributedValuesType complex 
+   PersonaType 19 type 13 
+   PhoneNumberAttributedValueType 27    ArrayOfExtendedPropertyAttributedValueType 
+   PostalAddressAttributedValueType 27 complex type 13 
+   StringArrayAttributedValueType 28    ArrayOfFolderIdType complex type 13 
+   StringAttributedValueType 28    ArrayOfPersonaAttributionsType complex type 14 
+    ArrayOfPhoneNumberAttributedValuesType 
+D complex type 14 
+ 
+
+57 / 58 
+
+[MS-OXWSPERS] - v20250520 
+Persona Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+   ArrayOfPostalAddressAttributedValuesType References 6 
+complex type 14    informative 7 
+
+   ArrayOfStringArrayAttributedValuesType complex    normative 7 
+type 15 Relationship to other protocols 8 
+
+   ArrayOfStringAttributedValuesType complex type  
+15 S 
+
+   ArrayOfStringValueType complex type 15  
+   ArrayOfValueAttributionsType complex type 15 Security 
+   attribute groups 29    implementer considerations 44 
+   attributes 29    parameter index 44 
+   BodyContentAttributedValueType complex type 16 Sequencing rules 
+   BodyContentType complex type 16    server 30 
+   complex types 11 Server 
+   elements 10    abstract data model 30 
+   EmailAddressAttributedValueType complex type 16    FindPeople operation 30 
+   enumerated 10    GetPersona operation 37 
+   ExtendedPropertyAttributedValueType complex    initialization 30 
+
+type 17    local events 41 
+   groups 29    message processing 30 
+   LocationSourceType simple type 29    sequencing rules 30 
+   namespaces 10    timer events 41 
+   PersonaAttributionType complex type 17    timers 30 
+   PersonaPhoneNumberType complex type 18 Simple types 28 
+   PersonaPostalAddressType complex type 18    LocationSourceType 29 
+   PersonaType complex type 19 Standards assignments 9 
+   PhoneNumberAttributedValueType complex type StringArrayAttributedValueType complex type 28 
+
+27 StringAttributedValueType complex type 28 
+   PostalAddressAttributedValueType complex type Syntax 
+
+27    messages - overview 10 
+   simple types 28  
+   StringArrayAttributedValueType complex type 28 T 
+   StringAttributedValueType complex type 28  
+   syntax 10 Timer events 
+   transport 10    server 41 
+ Timers 
+N    server 30 
+ Tracking changes 56 
+Namespaces 10 Transport 10 
+Normative references 7 Types 
+    complex 11 
+O    simple 28 
+  
+Operations V 
+   FindPeople 30  
+   GetPersona 37 Vendor-extensible fields 9 
+Overview (synopsis) 8 Versioning 9 
+  
+P W 
+  
+Parameters - security index 44 WSDL 45 
+PersonaAttributionType complex type 17  
+PersonaPhoneNumberType complex type 18 X 
+PersonaPostalAddressType complex type 18  
+PersonaType complex type 19 XML schema 47 
+PhoneNumberAttributedValueType complex type 27    
+PostalAddressAttributedValueType complex type 27 http://schemas.microsoft.com/exchange/service
+Preconditions 8 s/2006/messages Schema 47 
+Prerequisites 8    
+Product behavior 55 http://schemas.microsoft.com/exchange/service
+Protocol Details s/2006/types Schema 48 
+   overview 30 
+Protocol examples 42  
+ 
+R 
+ 
+
+58 / 58 
+
+[MS-OXWSPERS] - v20250520 
+Persona Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025

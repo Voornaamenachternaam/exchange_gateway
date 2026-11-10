@@ -1,0 +1,2195 @@
+﻿[MS-OXWSDLIST]:  
+
+Distribution List Creation and Usage Web Service Protocol 
+
+ 
+
+Intellectual Property Rights Notice for Open Specifications Documentation 
+
+ Technical Documentation. Microsoft publishes Open Specifications documentation (“this 
+documentation”) for protocols, file formats, data portability, computer languages, and standards 
+support. Additionally, overview documents cover inter-protocol relationships and interactions.  
+
+ Copyrights. This documentation is covered by Microsoft copyrights. Regardless of any other 
+terms that are contained in the terms of use for the Microsoft website that hosts this 
+documentation, you can make copies of it in order to develop implementations of the technologies 
+that are described in this documentation and can distribute portions of it in your implementations 
+that use these technologies or in your documentation as necessary to properly document the 
+implementation. You can also distribute in your implementation, with or without modification, any 
+schemas, IDLs, or code samples that are included in the documentation. This permission also 
+applies to any documents that are referenced in the Open Specifications documentation.  
+
+ No Trade Secrets. Microsoft does not claim any trade secret rights in this documentation.  
+ Patents. Microsoft has patents that might cover your implementations of the technologies 
+
+described in the Open Specifications documentation. Neither this notice nor Microsoft's delivery of 
+this documentation grants any licenses under those patents or any other Microsoft patents. 
+However, a given Open Specifications document might be covered by the Microsoft Open 
+Specifications Promise or the Microsoft Community Promise. If you would prefer a written license, 
+or if the technologies described in this documentation are not covered by the Open Specifications 
+Promise or Community Promise, as applicable, patent licenses are available by contacting 
+iplg@microsoft.com.  
+
+ License Programs. To see all of the protocols in scope under a specific license program and the 
+associated patents, visit the Patent Map.  
+
+ Trademarks. The names of companies and products contained in this documentation might be 
+covered by trademarks or similar intellectual property rights. This notice does not grant any 
+licenses under those rights. For a list of Microsoft trademarks, visit 
+www.microsoft.com/trademarks.  
+
+ Fictitious Names. The example companies, organizations, products, domain names, email 
+addresses, logos, people, places, and events that are depicted in this documentation are fictitious. 
+No association with any real company, organization, product, domain name, email address, logo, 
+person, place, or event is intended or should be inferred. 
+
+Reservation of Rights. All other rights are reserved, and this notice does not grant any rights other 
+than as specifically described above, whether by implication, estoppel, or otherwise.  
+
+Tools. The Open Specifications documentation does not require the use of Microsoft programming 
+tools or programming environments in order for you to develop an implementation. If you have access 
+to Microsoft programming tools and environments, you are free to take advantage of them. Certain 
+Open Specifications documents are intended for use in conjunction with publicly available standards 
+specifications and network programming art and, as such, assume that the reader either is familiar 
+with the aforementioned material or has immediate access to it. 
+
+Support. For questions and support, please contact dochelp@microsoft.com.  
+
+1 / 36 
+
+[MS-OXWSDLIST] - v20250520 
+Distribution List Creation and Usage Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Revision Summary 
+
+Revision Revision 
+Date History Class Comments 
+
+7/15/2009 1.0 Major Initial Availability. 
+
+11/4/2009 1.0.1 Editorial Revised and edited the technical content. 
+
+2/10/2010 2.0.0 Major Updated and revised the technical content. 
+
+5/5/2010 2.0.1 Editorial Revised and edited the technical content. 
+
+8/4/2010 2.1 Minor Clarified the meaning of the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+11/3/2010 2.1 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+3/18/2011 2.1 None 
+
+technical content. 
+
+8/5/2011 2.2 Minor Clarified the meaning of the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+10/7/2011 2.2 None 
+
+technical content. 
+
+1/20/2012 3.0 Major Significantly changed the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+4/27/2012 3.0 None 
+
+technical content. 
+
+7/16/2012 3.1 Minor Clarified the meaning of the technical content. 
+
+10/8/2012 3.2 Minor Clarified the meaning of the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+2/11/2013 3.2 None 
+
+technical content. 
+
+7/26/2013 4.0 Major Significantly changed the technical content. 
+
+11/18/2013 4.1 Minor Clarified the meaning of the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+2/10/2014 4.1 None 
+
+technical content. 
+
+4/30/2014 5.0 Major Significantly changed the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+7/31/2014 5.0 None 
+
+technical content. 
+
+10/30/2014 5.1 Minor Clarified the meaning of the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+5/26/2015 5.1 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+9/14/2015 5.1 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+6/13/2016 5.1 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+9/14/2016 5.1 None 
+
+technical content. 
+
+7/24/2018 6.0 Major Significantly changed the technical content. 
+
+2 / 36 
+
+[MS-OXWSDLIST] - v20250520 
+Distribution List Creation and Usage Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Revision Revision 
+Date History Class Comments 
+
+10/1/2018 7.0 Major Significantly changed the technical content. 
+
+5/20/2025 8.0 Major Significantly changed the technical content. 
+
+3 / 36 
+
+[MS-OXWSDLIST] - v20250520 
+Distribution List Creation and Usage Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Table of Contents 
+1 Introduction ............................................................................................................ 6 
+
+1.1 Glossary ........................................................................................................... 6 
+1.2 References ........................................................................................................ 7 
+
+1.2.1 Normative References ................................................................................... 7 
+1.2.2 Informative References ................................................................................. 8 
+
+1.3 Overview .......................................................................................................... 8 
+1.4 Relationship to Other Protocols ............................................................................ 8 
+1.5 Prerequisites/Preconditions ................................................................................. 9 
+1.6 Applicability Statement ....................................................................................... 9 
+1.7 Versioning and Capability Negotiation ................................................................... 9 
+1.8 Vendor-Extensible Fields ..................................................................................... 9 
+1.9 Standards Assignments ....................................................................................... 9 
+
+2 Messages ............................................................................................................... 10 
+2.1 Transport ........................................................................................................ 10 
+2.2 Common Message Syntax ................................................................................. 10 
+
+2.2.1 Namespaces .............................................................................................. 10 
+2.2.2 Messages ................................................................................................... 10 
+2.2.3 Elements ................................................................................................... 10 
+2.2.4 Complex Types ........................................................................................... 11 
+
+2.2.4.1 t:DistributionListType Complex Type ....................................................... 11 
+2.2.4.2 t:MembersListType Complex Type ........................................................... 12 
+2.2.4.3 t:MemberType Complex Type ................................................................. 12 
+
+2.2.5 Simple Types ............................................................................................. 13 
+2.2.5.1 t:MemberStatusType Simple Type ........................................................... 13 
+
+2.2.6 Attributes .................................................................................................. 14 
+2.2.7 Groups ...................................................................................................... 14 
+2.2.8 Attribute Groups ......................................................................................... 14 
+
+3 Protocol Details ..................................................................................................... 15 
+3.1 ExchangeServicePortType Server Details ............................................................. 15 
+
+3.1.1 Abstract Data Model .................................................................................... 15 
+3.1.2 Timers ...................................................................................................... 15 
+3.1.3 Initialization ............................................................................................... 15 
+3.1.4 Message Processing Events and Sequencing Rules .......................................... 15 
+
+3.1.4.1 ExpandDL ............................................................................................ 15 
+3.1.4.1.1 Complex Types ............................................................................... 16 
+
+3.1.4.1.1.1 m:ExpandDLResponseMessageType Complex Type ........................ 16 
+3.1.4.1.1.2 m:ExpandDLResponseType Complex Type .................................... 17 
+3.1.4.1.1.3 m:ExpandDLType Complex Type .................................................. 17 
+3.1.4.1.1.4 t:ArrayOfDLExpansionType Complex Type ..................................... 18 
+
+3.1.4.1.2 Elements ........................................................................................ 18 
+3.1.4.1.2.1 ExpandDL Element ..................................................................... 19 
+3.1.4.1.2.2 ExpandDLResponse Element ........................................................ 19 
+
+3.1.4.1.3 Messages ....................................................................................... 19 
+3.1.4.1.3.1 tns:ExpandDLSoapIn .................................................................. 19 
+3.1.4.1.3.2 tns:ExpandDLSoapOut ................................................................ 20 
+
+3.1.4.2 GetItem ............................................................................................... 20 
+3.1.4.3 DeleteItem ........................................................................................... 21 
+3.1.4.4 UpdateItem .......................................................................................... 21 
+3.1.4.5 MoveItem ............................................................................................ 22 
+3.1.4.6 CopyItem ............................................................................................. 23 
+3.1.4.7 CreateItem .......................................................................................... 23 
+
+3.1.5 Timer Events .............................................................................................. 24 
+3.1.6 Other Local Events ...................................................................................... 24 
+
+4 / 36 
+
+[MS-OXWSDLIST] - v20250520 
+Distribution List Creation and Usage Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+3.2 Client Details ................................................................................................... 24 
+3.2.1 Client Abstract Data Model ........................................................................... 24 
+3.2.2 Client Timers .............................................................................................. 24 
+3.2.3 Client Initialization ...................................................................................... 24 
+3.2.4 Client Message Processing Events and Sequencing .......................................... 24 
+3.2.5 Client Timer Events ..................................................................................... 24 
+3.2.6 Client Other Local Events ............................................................................. 24 
+
+4 Protocol Examples ................................................................................................. 25 
+
+5 Security ................................................................................................................. 26 
+5.1 Security Considerations for Implementers ........................................................... 26 
+5.2 Index of Security Parameters ............................................................................ 26 
+
+6 Appendix A: Full WSDL .......................................................................................... 27 
+6.1 WSDL ............................................................................................................. 27 
+6.2 Types Schema ................................................................................................. 31 
+6.3 Messages Schema ............................................................................................ 32 
+
+7 Appendix B: Product Behavior ............................................................................... 33 
+
+8 Change Tracking .................................................................................................... 34 
+
+9 Index ..................................................................................................................... 35 
+
+ 
+
+5 / 36 
+
+[MS-OXWSDLIST] - v20250520 
+Distribution List Creation and Usage Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+1 Introduction 
+
+The Distribution List Creation and Usage Web Service protocol enables clients to create, delete, get, 
+move, update, and copy and to expand a distribution list. 
+
+Sections 1.5, 1.8, 1.9, 2, and 3 of this specification are normative. All other sections and examples in 
+this specification are informative. 
+
+1.1 Glossary 
+
+This document uses the following terms: 
+
+distribution list: A collection of users, computers, contacts, or other groups that is used only for 
+email distribution, and addressed as a single recipient. 
+
+endpoint: A communication port that is exposed by an application server for a specific shared 
+service and to which messages can be addressed. 
+
+Hypertext Transfer Protocol (HTTP): An application-level protocol for distributed, collaborative, 
+hypermedia information systems (text, graphic images, sound, video, and other multimedia 
+files) on the World Wide Web. 
+
+Hypertext Transfer Protocol Secure (HTTPS): An extension of HTTP that securely encrypts and 
+decrypts web page requests. In some older protocols, "Hypertext Transfer Protocol over Secure 
+Sockets Layer" is still used (Secure Sockets Layer has been deprecated). For more information, 
+see [SSL3] and [RFC5246]. 
+
+mailbox: A message store that contains email, calendar items, and other Message objects for a 
+single recipient. 
+
+message store: A unit of containment for a single hierarchy of Folder objects, such as a mailbox 
+or public folders. 
+
+SOAP: A lightweight protocol for exchanging structured information in a decentralized, distributed 
+environment. SOAP uses XML technologies to define an extensible messaging framework, 
+which provides a message construct that can be exchanged over a variety of underlying 
+protocols. The framework has been designed to be independent of any particular programming 
+model and other implementation-specific semantics. SOAP 1.2 supersedes SOAP 1.1. See 
+[SOAP1.2-1/2003]. 
+
+SOAP message: An XML document consisting of a mandatory SOAP envelope, an optional SOAP 
+header, and a mandatory SOAP body. See [SOAP1.2-1/2007] section 5 for more information. 
+
+web server: A server computer that hosts websites and responds to requests from applications. 
+
+Web Services Description Language (WSDL): An XML format for describing network services 
+as a set of endpoints that operate on messages that contain either document-oriented or 
+procedure-oriented information. The operations and messages are described abstractly and are 
+bound to a concrete network protocol and message format in order to define an endpoint. 
+Related concrete endpoints are combined into abstract endpoints, which describe a network 
+service. WSDL is extensible, which allows the description of endpoints and their messages 
+regardless of the message formats or network protocols that are used. 
+
+WSDL message: An abstract, typed definition of the data that is communicated during a WSDL 
+operation [WSDL]. Also, an element that describes the data being exchanged between web 
+service providers and clients. 
+
+WSDL port type: A named set of logically-related, abstract Web Services Description 
+Language (WSDL) operations and messages. 
+
+6 / 36 
+
+[MS-OXWSDLIST] - v20250520 
+Distribution List Creation and Usage Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+XML: The Extensible Markup Language, as described in [XML1.0]. 
+
+XML namespace: A collection of names that is used to identify elements, types, and attributes in 
+XML documents identified in a URI reference [RFC3986]. A combination of XML namespace and 
+local name allows XML documents to use elements, types, and attributes that have the same 
+names but come from different sources. For more information, see [XMLNS-2ED]. 
+
+XML schema: A description of a type of XML document that is typically expressed in terms of 
+constraints on the structure and content of documents of that type, in addition to the basic 
+syntax constraints that are imposed by XML itself. An XML schema provides a view of a 
+document type at a relatively high level of abstraction. 
+
+MAY, SHOULD, MUST, SHOULD NOT, MUST NOT: These terms (in all caps) are used as defined 
+in [RFC2119]. All statements of optional behavior use either MAY, SHOULD, or SHOULD NOT. 
+
+1.2 References 
+
+Links to a document in the Microsoft Open Specifications library point to the correct section in the 
+most recently published version of the referenced document. However, because individual documents 
+in the library are not updated at the same time, the section numbers in the documents may not 
+match. You can confirm the correct section numbering by checking the Errata.   
+
+1.2.1 Normative References 
+
+We conduct frequent surveys of the normative references to assure their continued availability. If you 
+have any issue with finding a normative reference, please contact dochelp@microsoft.com. We will 
+assist you in finding the relevant information.  
+
+[MS-OXWSCDATA] Microsoft Corporation, "Common Web Service Data Types". 
+
+[MS-OXWSCONT] Microsoft Corporation, "Contacts Web Service Protocol". 
+
+[MS-OXWSCORE] Microsoft Corporation, "Core Items Web Service Protocol". 
+
+[MS-OXWSFOLD] Microsoft Corporation, "Folders and Folder Permissions Web Service Protocol". 
+
+[RFC2119] Bradner, S., "Key words for use in RFCs to Indicate Requirement Levels", BCP 14, RFC 
+2119, March 1997, https://www.rfc-editor.org/info/rfc2119 
+
+[RFC2616] Fielding, R., Gettys, J., Mogul, J., et al., "Hypertext Transfer Protocol -- HTTP/1.1", RFC 
+2616, June 1999, https://www.rfc-editor.org/info/rfc2616 
+
+[RFC2818] Rescorla, E., "HTTP Over TLS", RFC 2818, May 2000, https://www.rfc-
+editor.org/info/rfc2818 
+
+[RFC3066] Alvestrand, H., "Tags for the Identification of Languages", BCP 47, RFC 3066, January 
+2001, https://www.rfc-editor.org/info/rfc3066 
+
+[SOAP1.1] Box, D., Ehnebuske, D., Kakivaya, G., et al., "Simple Object Access Protocol (SOAP) 1.1", 
+W3C Note, May 2000, https://www.w3.org/TR/2000/NOTE-SOAP-20000508/ 
+
+[WSDL] Christensen, E., Curbera, F., Meredith, G., and Weerawarana, S., "Web Services Description 
+Language (WSDL) 1.1", W3C Note, March 2001, https://www.w3.org/TR/2001/NOTE-wsdl-20010315 
+
+[XMLNS] Bray, T., Hollander, D., Layman, A., et al., Eds., "Namespaces in XML 1.0 (Third Edition)", 
+W3C Recommendation, December 2009, https://www.w3.org/TR/2009/REC-xml-names-20091208/ 
+
+7 / 36 
+
+[MS-OXWSDLIST] - v20250520 
+Distribution List Creation and Usage Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+[XMLSCHEMA1] Thompson, H., Beech, D., Maloney, M., and Mendelsohn, N., Eds., "XML Schema Part 
+1: Structures", W3C Recommendation, May 2001, https://www.w3.org/TR/2001/REC-xmlschema-1-
+20010502/ 
+
+[XMLSCHEMA2] Biron, P.V., Ed. and Malhotra, A., Ed., "XML Schema Part 2: Datatypes", W3C 
+Recommendation, May 2001, https://www.w3.org/TR/2001/REC-xmlschema-2-20010502/ 
+
+1.2.2 Informative References 
+
+[MS-OXDSCLI] Microsoft Corporation, "Autodiscover Publishing and Lookup Protocol". 
+
+[MS-OXPROTO] Microsoft Corporation, "Exchange Server Protocols System Overview". 
+
+[MS-OXWSADISC] Microsoft Corporation, "Autodiscover Publishing and Lookup SOAP-Based Web 
+Service Protocol". 
+
+[MS-OXWSSRCH] Microsoft Corporation, "Mailbox Search Web Service Protocol". 
+
+1.3 Overview 
+
+The Distribution List Creation and Usage Web Service protocol provides clients with the ability to query 
+the server for distribution lists and to expand a distribution list into the constituent e-mail 
+addresses. In addition, it provides the capability to create, delete, get, move, update, and copy 
+distribution lists. 
+
+1.4 Relationship to Other Protocols 
+
+A client that implements this protocol can use the Autodiscover Publishing and Lookup SOAP-Based 
+Web Service Protocol, as described in [MS-OXWSADISC], or the Autodiscover Publishing and Lookup 
+Protocol, as described in [MS-OXDSCLI], to identify the target endpoint to use for each operation. 
+
+This protocol uses SOAP, as described in [SOAP1.1], to specify the structure information that is 
+exchanged between the client and the server. This protocol uses the XML schema, as described in 
+[XMLSCHEMA1] and [XMLSCHEMA2], to describe the message content that is sent to and from the 
+server. 
+
+This protocol uses SOAP over HTTP, as described in [RFC2616], and SOAP over HTTPS, as described 
+in [RFC2818], as shown in the following diagram. 
+
+ 
+
+Figure 1: This protocol in relation to other protocols 
+
+This protocol can use the Mailbox Search Web Service Protocol, as described in [MS-OXWSSRCH], to 
+search a distribution list. 
+
+This protocol uses the GetItem, DeleteItem, UpdateItem, MoveItem, CopyItem, and 
+CreateItem operations, as described in [MS-OXWSCORE], to manipulate distribution lists. 
+
+8 / 36 
+
+[MS-OXWSDLIST] - v20250520 
+Distribution List Creation and Usage Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+For conceptual background information and overviews of the relationships and interactions between 
+this and other protocols, see [MS-OXPROTO]. 
+
+1.5 Prerequisites/Preconditions 
+
+The endpoint URL that is returned by either the Autodiscover Publishing Lookup SOAP-Based Web 
+Service Protocol, as described in [MS-OXWSADISC]; the Autodiscover Publishing and Lookup Protocol, 
+as described in [MS-OXDSCLI]; or known by the protocol client, is required to form the HTTP request 
+to the web server that hosts this protocol. The operations that this protocol defines cannot be 
+accessed unless the correct endpoint is identified in the HTTP requests that target this protocol. 
+
+1.6 Applicability Statement 
+
+This protocol is applicable to client programs that use distribution lists for directing items to multiple 
+e-mail addresses.  
+
+1.7 Versioning and Capability Negotiation 
+
+This document covers versioning issues in the following areas: 
+
+ Supported Transports: This protocol uses SOAP 1.1, as specified in section 2.1. 
+
+ Protocol Versions: This protocol specifies only one WSDL port type version. 
+
+ Security and Authentication Methods: This protocol relies on the Web server that is hosting it 
+to perform authentication. 
+
+ Localization: This protocol includes text strings in various messages. Localization considerations 
+for such strings are specified in section 3.1.4. 
+
+ Capability Negotiation: None. 
+
+1.8 Vendor-Extensible Fields 
+
+None. 
+
+1.9 Standards Assignments 
+
+None. 
+
+9 / 36 
+
+[MS-OXWSDLIST] - v20250520 
+Distribution List Creation and Usage Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+2 Messages 
+
+In the following sections, the schema definition might differ from the processing rules imposed by the 
+protocol. The WSDL in this specification provides a base description of the protocol. The schema in 
+this specification provides a base description of the message syntax. The text that specifies the WSDL 
+and schema might specify restrictions that reflect actual protocol behavior. For example, the schema 
+definition might allow for an element to be empty, null, or not present but the behavior of the 
+protocol as specified restricts the same elements to being non-empty, not null, or present. 
+
+2.1 Transport 
+
+The SOAP version supported is SOAP 1.1, as specified in [SOAP1.1]. 
+
+The protocol server MUST support SOAP over HTTP, as defined in [RFC2616]. The protocol server 
+SHOULD additionally support SOAP over HTTPS, as defined in [RFC2818], for securing communication 
+with clients. 
+
+2.2 Common Message Syntax 
+
+This section contains common definitions that are used by this protocol. The syntax of the definitions 
+uses XML schema, as defined in [XMLSCHEMA1] and [XMLSCHEMA2], and Web Services 
+Description Language (WSDL), as defined in [WSDL]. 
+
+2.2.1 Namespaces 
+
+This specification defines and references various XML namespaces using the mechanisms specified in 
+[XMLNS]. Although this specification associates a specific XML namespace prefix for each XML 
+namespace that is used, the choice of any particular XML namespace prefix is implementation-specific 
+and not significant for interoperability. 
+
+Prefix Namespace URI Reference 
+
+soap http://schemas.xmlsoap.org/wsdl/soap/ [SOAP1.1] 
+
+tns http://schemas.microsoft.com/exchange/services/2006/messages  
+
+s http://www.w3.org/2001/XMLSchema [XMLSCHEMA2] 
+
+xs http://www.w3.org/2001/XMLSchema [XMLSCHEMA2] 
+
+wsdl http://schemas.xmlsoap.org/wsdl/ [WSDL] 
+
+t http://schemas.microsoft.com/exchange/services/2006/types  
+
+m http://schemas.microsoft.com/exchange/services/2006/messages  
+
+ 
+
+2.2.2 Messages 
+
+This specification does not define any common WSDL message definitions. 
+
+2.2.3 Elements 
+
+This specification does not define any common XML schema element definitions. 
+
+10 / 36 
+
+[MS-OXWSDLIST] - v20250520 
+Distribution List Creation and Usage Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+2.2.4 Complex Types 
+
+The following table summarizes the set of common XML schema complex type definitions that are 
+defined by this specification. XML schema complex type definitions that are specific to a particular 
+operation are defined with the operation. 
+
+Complex type Description 
+
+t:DistributionListType Represents a distribution list. 
+
+t:MembersListType Represents the member type. 
+
+t:MemberType Provides an identifier for a fully resolved e-mail address, and the status of that address 
+on the server. 
+
+ 
+
+2.2.4.1 t:DistributionListType Complex Type 
+
+The DistributionListType complex type represents a distribution list. The DistributionListType 
+complex type extends the ItemType complex type, as specified in [MS-OXWSCORE] section 2.2.4.6. 
+
+ <xs:complexType name="DistributionListType"> 
+  <xs:complexContent> 
+    <xs:extension 
+      base="t:ItemType" 
+    > 
+      <xs:sequence> 
+        <xs:element name="DisplayName" 
+          type="xs:string" 
+          minOccurs="0" 
+         /> 
+        <xs:element name="FileAs" 
+          type="xs:string" 
+          minOccurs="0" 
+         /> 
+        <xs:element name="ContactSource" 
+          type="t:ContactSourceType" 
+          minOccurs="0" 
+         /> 
+        <xs:element name="Members" 
+          type="t:MembersListType" 
+          minOccurs="0" 
+         /> 
+      </xs:sequence> 
+    </xs:extension> 
+  </xs:complexContent> 
+ </xs:complexType> 
+ 
+
+The following table lists the child elements of the DistributionListType complex type. 
+
+Element Type Description 
+
+DisplayName xs:string [XMLSCHEMA2] Contains the display name for the distribution list. 
+
+FileAs xs:string Represents how a distribution list is filed in the 
+Contacts folder. This element is read-only for the 
+client. 
+
+ContactSource t:ContactSourceType ([MS- Describes whether the distribution list is located in the 
+OXWSCONT] section 2.2.5.1) message store or in the directory service. 
+
+11 / 36 
+
+[MS-OXWSDLIST] - v20250520 
+Distribution List Creation and Usage Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Element Type Description 
+
+Members t:MembersListType (section 2.2.4.2) Contains a list of members in a distribution list. 
+
+ 
+
+2.2.4.2 t:MembersListType Complex Type 
+
+The MembersListType complex type represents the collection of distribution list members. 
+
+ <xs:complexType name="MembersListType"> 
+  <xs:sequence> 
+    <xs:element name="Member" 
+      type="t:MemberType" 
+      maxOccurs="unbounded" 
+      minOccurs="0" 
+     /> 
+  </xs:sequence> 
+ </xs:complexType> 
+ 
+
+The following table lists the child elements of the MembersListType complex type. 
+
+Element Type Description 
+
+Member t:MemberType (section Provides information about each member of the members 
+2.2.4.3) collection. 
+
+ 
+
+2.2.4.3 t:MemberType Complex Type 
+
+The MemberType complex type provides information about each member of the members collection 
+of the distribution list, containing a member’s mailbox address, status and optional member’s identifier 
+in the collection.  
+
+ <xs:complexType name="MemberType"> 
+  <xs:sequence> 
+    <xs:element name="Mailbox" 
+      type="t:EmailAddressType" 
+      minOccurs="0" 
+     /> 
+    <xs:element name="Status" 
+      type="t:MemberStatusType" 
+      minOccurs="0" 
+     /> 
+  </xs:sequence> 
+  <xs:attribute name="Key" 
+    type="xs:string" 
+    use="optional" 
+   /> 
+ </xs:complexType> 
+ 
+
+The following table lists the child elements of the MemberType complex type. 
+
+12 / 36 
+
+[MS-OXWSDLIST] - v20250520 
+Distribution List Creation and Usage Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Element Type Description 
+
+Mailbox t:EmailAddressType ([MS- Represents an e-mail address of a member. At least one of 
+OXWSCDATA] section 2.2.4.31) EmailAddress and ItemId in this element SHOULD be present. 
+
+Otherwise, ErrorInvalidMailbox ([MS-OXWSCDATA] section 
+2.2.5.24) will be returned. 
+
+Status t:MemberStatusType (section Provides information about the status of a distribution list member 
+2.2.5.1) in the members’ collection. 
+
+The following table lists the attributes of the MemberType complex type. 
+
+Name Type Description 
+
+Key xs:string Represents a unique identification of the member in the members 
+[XMLSCHEMA2] collection. 
+
+ 
+
+2.2.5 Simple Types 
+
+The following table summarizes the set of common XML schema simple type definitions defined by this 
+specification. XML schema simple type definitions that are specific to a particular operation are 
+described with the operation. 
+
+Simple Type Description 
+
+t:MemberStatusType Provides information as to the status of a distribution list member on the server. 
+
+ 
+
+2.2.5.1 t:MemberStatusType Simple Type 
+
+The MemberStatusType simple type provides information as to the status of a distribution list 
+member on the server. The MemberStatusType simple type extends the xs:string data type 
+([XMLSCHEMA2] section 3.2.1). 
+
+ <xs:simpleType name="MemberStatusType"> 
+  <xs:restriction 
+    base="xs:string" 
+  > 
+    <xs:enumeration 
+      value="Unrecognized" 
+     /> 
+    <xs:enumeration 
+      value="Normal" 
+     /> 
+    <xs:enumeration 
+      value="Demoted" 
+     /> 
+  </xs:restriction> 
+ </xs:simpleType> 
+ 
+
+Enumeration 
+
+The following values are defined by the MemberStatusType simple type. 
+
+13 / 36 
+
+[MS-OXWSDLIST] - v20250520 
+Distribution List Creation and Usage Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Value Description 
+
+Unrecognized Member information is invalid or unrecognized. 
+
+Normal Member information in a distribution list is in sync with the referenced object. 
+
+Demoted Referenced object is not available. 
+
+ 
+
+2.2.6 Attributes 
+
+This specification does not define any common XML schema attribute definitions. 
+
+2.2.7 Groups 
+
+This specification does not define any common XML schema group definitions. 
+
+2.2.8 Attribute Groups 
+
+This specification does not define any common XML schema attribute group definitions. 
+
+14 / 36 
+
+[MS-OXWSDLIST] - v20250520 
+Distribution List Creation and Usage Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+3 Protocol Details 
+
+The client side of this protocol is simply a pass-through. That is, no additional timers or other state is 
+required on the client side of this protocol. Calls made by the higher-layer protocol or application are 
+passed directly to the transport, and the results returned by the transport are passed directly back to 
+the higher-layer protocol or application. 
+
+3.1 ExchangeServicePortType Server Details 
+
+This protocol defines a single port type. 
+
+3.1.1 Abstract Data Model 
+
+This protocol is a stateless protocol. 
+
+3.1.2 Timers 
+
+None. 
+
+3.1.3 Initialization 
+
+None. 
+
+3.1.4 Message Processing Events and Sequencing Rules 
+
+This protocol includes the operations listed in the following table. 
+
+Operation Description 
+
+ExpandDL Expands a distribution list into the constituent email addresses. 
+
+GetItem Gets a distribution list on the server. 
+
+DeleteItem Deletes a distribution list on the server. 
+
+UpdateItem Updates a distribution list on the server. 
+
+MoveItem Moves a distribution list on the server. 
+
+CopyItem Copies a distribution list on the server. 
+
+CreateItem Creates a distribution list on the server. 
+
+ 
+
+3.1.4.1 ExpandDL 
+
+ExpandDL defines an operation to expand a distribution list. 
+
+The following is the WSDL port type specification for the ExpandDL operation. 
+
+       <wsdl:operation name="ExpandDL"> 
+            <wsdl:input message="tns:ExpandDLSoapIn" /> 
+            <wsdl:output message="tns:ExpandDLSoapOut" /> 
+        </wsdl:operation> 
+
+15 / 36 
+
+[MS-OXWSDLIST] - v20250520 
+Distribution List Creation and Usage Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+The following is the WSDL binding specification for the ExpandDL operation. 
+
+ <wsdl:operation name="ExpandDL"> 
+            <soap:operation 
+soapAction="http://schemas.microsoft.com/exchange/services/2006/messages/ExpandDL" /> 
+            <wsdl:input> 
+                <soap:header message="tns:ExpandDLSoapIn" part="Impersonation" 
+use="literal"/> 
+                <soap:header message="tns:ExpandDLSoapIn" part="MailboxCulture" 
+use="literal"/> 
+                <soap:header message="tns:ExpandDLSoapIn" part="RequestVersion" 
+use="literal"/> 
+                <soap:body parts="request" use="literal" /> 
+            </wsdl:input> 
+            <wsdl:output> 
+                <soap:body parts="ExpandDLResult" use="literal" /> 
+                <soap:header message="tns:ExpandDLSoapOut" part="ServerVersion" 
+use="literal"/> 
+            </wsdl:output> 
+        </wsdl:operation> 
+
+Request 
+
+Message format Description 
+
+tns:ExpandDLSoapIn Specifies the SOAP message that requests an expanded distribution list. 
+
+Response 
+
+Message format Description 
+
+tns:ExpandDLSoapOut Specifies the SOAP message returned by the server in response. 
+
+ 
+
+3.1.4.1.1 Complex Types 
+
+The following XML schema complex type definitions are specific to this operation. 
+
+Type Description 
+
+m:ExpandDLResponseMessageType Contains the status and result of a single ExpandDL request. 
+
+m:ExpandDLResponseType Defines a response to a request to expand a distribution list. 
+
+m:ExpandDLType Represents a request to expand a distribution list. 
+
+t:ArrayOfDLExpansionType Contains an array of mailboxes that are contained in a distribution list. 
+
+ 
+
+3.1.4.1.1.1 m:ExpandDLResponseMessageType Complex Type 
+
+The ExpandDLResponseMessageType complex type contains the status and result of a single 
+ExpandDL request. The ExpandDLResponseMessageType complex type extends the 
+ResponseMessageType complex type, as specified in [MS-OXWSCDATA] section 2.2.3.52. 
+ExpandDLResponseMessage is used in the sub-element of BaseResponseMessageType, which is 
+the base type of ExpandDLResponseType defined in section 3.1.4.1.1.2. 
+
+16 / 36 
+
+[MS-OXWSDLIST] - v20250520 
+Distribution List Creation and Usage Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+ <xs:complexType name="ExpandDLResponseMessageType"> 
+  <xs:complexContent> 
+    <xs:extension 
+      base="m:ResponseMessageType" 
+    > 
+      <xs:sequence> 
+        <xs:element name="DLExpansion" 
+          type="t:ArrayOfDLExpansionType" 
+          minOccurs="0" 
+         /> 
+      </xs:sequence> 
+      <xs:attributeGroup ref="t:FindResponsePagingAttributes"/> 
+    </xs:extension> 
+  </xs:complexContent> 
+ </xs:complexType> 
+ 
+
+The following table lists the child element of the ExpandDLResponseMessageType complex type. 
+
+Element Type Description 
+
+DLExpansion t:ArrayOfDLExpansionType (section Contains an array of mailboxes that are contained 
+3.1.4.1.1.4) in a distribution list. 
+
+The following table lists the attributes of the ExpandDLResponseMessageType complex type. 
+
+Name Description 
+
+t:FindResponsePagingAttributes ([MS- Specifies zero or more attributes that describe the result set. 
+OXWSCDATA] section 2.2.8.1) 
+
+ 
+
+3.1.4.1.1.2 m:ExpandDLResponseType Complex Type 
+
+The ExpandDLResponseType complex type defines a response to a request to expand a distribution 
+list. The ExpandDLResponseType complex type extends the BaseResponseMessageType complex 
+type, as specified in [MS-OXWSCDATA] section 2.2.3.15. 
+
+ <xs:complexType name="ExpandDLResponseType"> 
+  <xs:complexContent> 
+    <xs:extension 
+      base="m:BaseResponseMessageType" 
+     /> 
+  </xs:complexContent> 
+ </xs:complexType> 
+ 
+
+3.1.4.1.1.3 m:ExpandDLType Complex Type 
+
+The ExpandDLType complex type represents a request to expand a distribution list. The 
+ExpandDLType complex type extends the BaseRequestType complex type, as specified in [MS-
+OXWSCDATA] section 2.2.3.14. 
+
+ <xs:complexType name="ExpandDLType"> 
+  <xs:complexContent> 
+    <xs:extension 
+      base="m:BaseRequestType" 
+    > 
+      <xs:sequence> 
+
+17 / 36 
+
+[MS-OXWSDLIST] - v20250520 
+Distribution List Creation and Usage Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+        <xs:element name="Mailbox" 
+          type="t:EmailAddressType" 
+         /> 
+      </xs:sequence> 
+    </xs:extension> 
+  </xs:complexContent> 
+ </xs:complexType> 
+ 
+
+Child Elements 
+
+Element Type Description 
+
+Mailbox t:EmailAddressType ([MS-OXWSCDATA] section Represents an e-mail address of a distribution 
+2.2.4.31) list member.  
+
+ 
+
+3.1.4.1.1.4 t:ArrayOfDLExpansionType Complex Type 
+
+The ArrayOfDLExpansionType complex type contains an array of mailboxes that are contained in a 
+distribution list. 
+
+ <xs:complexType name="ArrayOfDLExpansionType"> 
+  <xs:sequence> 
+    <xs:element name="Mailbox" 
+      type="t:EmailAddressType" 
+      maxOccurs="unbounded" 
+      minOccurs="0" 
+     /> 
+  </xs:sequence> 
+  <xs:attributeGroup 
+    ref="t:FindResponsePagingAttributes" 
+   /> 
+ </xs:complexType> 
+ 
+
+The following table lists the child element of the ArrayOfDLExpansionType complex type. 
+
+Element Type Description 
+
+Mailbox t:EmailAddressType ([MS-OXWSCDATA] section 2.2.4.31) Represents an e-mail address. 
+
+The following table lists and describes the attributes of the ArrayOfDLExpansionType complex type. 
+
+Name Description 
+
+t:FindResponsePagingAttributes ([MS- Specifies zero or more attributes that describe the result set. 
+OXWSCDATA] section 2.2.8.1) 
+
+ 
+
+3.1.4.1.2 Elements 
+
+The following XML schema element definitions are specific to this operation. 
+
+18 / 36 
+
+[MS-OXWSDLIST] - v20250520 
+Distribution List Creation and Usage Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Element Description 
+
+tns:ExpandDL Contains a request to expand a distribution list. 
+
+tns:ExpandDLResponse Defines a response to a request to expand a distribution list. 
+
+ 
+
+3.1.4.1.2.1 ExpandDL Element 
+
+The ExpandDL element defines a request to expand a distribution list. 
+
+ <xs:element name="ExpandDL" 
+  type="m:ExpandDLType" 
+ /> 
+ 
+
+3.1.4.1.2.2 ExpandDLResponse Element 
+
+The ExpandDLResponse element defines a response to a request to expand a distribution list. 
+
+ <xs:element name="ExpandDLResponse" 
+  type="m:ExpandDLResponseType" 
+ /> 
+ 
+
+3.1.4.1.3 Messages 
+
+The following XML schema message definitions are specific to this operation. 
+
+Message Description 
+
+tns:ExpandDLSoapIn Contains the request information, the user whom the client application is 
+impersonating, the culture to use for accessing the mailbox, and the schema version 
+for the request. 
+
+tns:ExpandDLSoapOut Contains the response message and the schema version for the response message. 
+
+ 
+
+3.1.4.1.3.1 tns:ExpandDLSoapIn 
+
+The ExpandDLSoapIn WSDL message specifies the ExpandDL operation request to expand a 
+distribution list item into the constituent e-mail addresses.  
+
+    <wsdl:message name="ExpandDLSoapIn"> 
+        <wsdl:part name="Request" element="tns:ExpandDL" /> 
+        <wsdl:part name="Impersonation" element="t:ExchangeImpersonation"/> 
+        <wsdl:part name="MailboxCulture" element="t:MailboxCulture"/> 
+        <wsdl:part name="RequestVersion" element="t:RequestServerVersion"/> 
+ </wsdl:message> 
+
+The ExpandDLSoapIn WSDL message is the input message for the SOAP action 
+http://schemas.microsoft.com/exchange/services/2006/messages/ExpandDL. 
+
+The ExpandDLSoapIn message contains four parts, as described in the following table.  
+
+19 / 36 
+
+[MS-OXWSDLIST] - v20250520 
+Distribution List Creation and Usage Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Part Name Element/Type Description 
+
+Request tns:ExpandDL Specifies the request. 
+
+Impersonation t:ExchangeImpersonation ([MS- Specifies the user whom the client application is 
+OXWSCDATA] section 2.2.3.3) impersonating. 
+
+MailboxCulture t:MailboxCulture ([MS-OXWSCDATA] Specifies the culture to use for accessing the 
+section 2.2.3.6) mailbox. The cultures are defined by [RFC3066]. 
+
+RequestVersion t:RequestServerVersion ([MS- Specifies the schema version for the ExpandDL 
+OXWSCDATA] section 2.2.3.9) request. 
+
+ 
+
+3.1.4.1.3.2 tns:ExpandDLSoapOut 
+
+The ExpandDLSoapOut WSDL message specifies the server response to the ExpandDL operation 
+request to expand a distribution list item into the constituent e-mail addresses. 
+
+  <wsdl:message name="ExpandDLSoapOut"> 
+        <wsdl:part name="ExpandDLResult" element="tns:ExpandDLResponse" /> 
+        <wsdl:part name="ServerVersion" element="t:ServerVersionInfo"/> 
+ </wsdl:message> 
+
+The ExpandDLSoapOut WSDL message is the output message for the SOAP action 
+http://schemas.microsoft.com/exchange/services/2006/messages/ExpandDL. 
+
+The ExpandDLSoapOut message contains two parts, as described in the following table. 
+
+Part Name Element/Type Description 
+
+ExpandDLResult tns:ExpandDLResponse Specifies the response message. 
+
+ServerVersion t:ServerVersionInfo ([MS-OXWSCDATA] Specifies the schema version for the 
+section 2.2.3.10) tns:ExpandDLResponse message. 
+
+ 
+
+3.1.4.2 GetItem 
+
+This protocol uses the GetItem operation specified in [MS-OXWSCORE] section 3.1.4.4 to get a 
+distribution list. 
+
+  <wsdl:operation name="GetItem"> 
+            <wsdl:input message="tns:GetItemSoapIn" /> 
+            <wsdl:output message="tns:GetItemSoapOut" /> 
+  </wsdl:operation> 
+
+Request 
+
+Message Format Description 
+
+tns:GetItemSoapIn Specifies the SOAP message that defines the distribution list item to get. The 
+([MS-OXWSCORE] section GetItem ([MS-OXWSCORE] section 3.1.4.4.2.1) element that specifies the XML 
+3.1.4.4.1.1) request MUST contain the following elements: the ItemShape element ([MS-
+
+OXWSCORE] section 3.1.4.4.3.2), whose type is t:ItemResponseShapeType 
+([MS-OXWSCDATA] section 2.2.4.42) and the ItemIds ([MS-OXWSCORE] section 
+
+20 / 36 
+
+[MS-OXWSDLIST] - v20250520 
+Distribution List Creation and Usage Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Message Format Description 
+
+3.1.4.4.3.2) element, whose type is t:NonEmptyArrayOfBaseItemIdsType ([MS-
+OXWSCORE] section 2.2.4.9). The ItemIds element MUST contain one or more 
+ItemId elements with type t:ItemIdType ([MS-OXWSCORE] section 2.2.4.14). All 
+other elements of ItemIds MUST NOT be specified. 
+
+Response 
+
+Message Format Description 
+
+tns:GetItemSoapOut ([MS- Specifies the SOAP message returned by the server in response. The server 
+OXWSCORE] section 3.1.4.4.1.2) returns a GetItemResponseMessage  element that contains properties 
+
+associated with the distribution list item. 
+
+ 
+
+3.1.4.3 DeleteItem 
+
+This protocol uses the DeleteItem operation specified in [MS-OXWSCORE] section 3.1.4.3 to delete a 
+distribution list. 
+
+ <wsdl:operation name="DeleteItem"> 
+            <wsdl:input message="tns:DeleteItemSoapIn" /> 
+            <wsdl:output message="tns:DeleteItemSoapOut" /> 
+ </wsdl:operation> 
+
+Request 
+
+Message Format Description 
+
+tns:DeleteItemSoapIn ([MS- Specifies the SOAP message that defines the distribution list item to delete. 
+OXWSCORE] section The ItemIds child element of the DeleteItem ([MS-OXWSCORE] section 
+3.1.4.3.1.1) 3.1.4.3.2.1) element that specifies the XML request MUST contain one or more 
+
+ItemId elements of type t:ItemIdType ([MS-OXWSCORE] section 2.2.4.25). 
+All other elements of ItemIds MUST NOT be specified. 
+
+Response 
+
+Message Format Description 
+
+tns:DeleteItemSoapOut ([MS-OXWSCORE] section Specifies the SOAP message returned by the server 
+3.1.4.3.1.2) in response. 
+
+ 
+
+3.1.4.4 UpdateItem 
+
+This protocol uses the UpdateItem operation specified in [MS-OXWSCORE] section 3.1.4.9 to update 
+a distribution list. 
+
+ <wsdl:operation name="UpdateItem"> 
+    <wsdl:input message="tns:UpdateItemSoapIn" /> 
+    <wsdl:output message="tns:UpdateItemSoapOut" /> 
+ </wsdl:operation> 
+
+21 / 36 
+
+[MS-OXWSDLIST] - v20250520 
+Distribution List Creation and Usage Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Request 
+
+Message Format Description 
+
+tns:UpdateItemSoapIn  
+([MS-OXWSCORE] section The UpdateItem ([MS-OXWSCORE] section 3.1.4.9) element that specifies the 
+3.1.4.9.1.1) XML request MUST contain an ItemChanges ([MS-OXWSCORE] section 
+
+3.1.4.9.3.2) element with the t:NonEmptyArrayOfItemChangesType ([MS-
+OXWSCORE] section 3.1.4.9.3.9) type. The ItemChanges element MUST contain 
+one or more ItemChange elements with the t:ItemChangeType ([MS-
+OXWSCORE] section 3.1.4.9.3.7) type. The ItemChange element MUST contain 
+an ItemId element with the t:ItemIdType ([MS-OXWSCORE] section 2.2.4.25) 
+type and an Updates element with the 
+t:NonEmptyArrayOfItemChangeDescriptionsType ([MS-OXWSCORE] section 
+3.1.4.9.3.8) type. If the update is to append to an item or to set the item, the 
+AppendToItemField or SetItemField elements of Updates element MUST 
+contain a DistributionList element with the t:DistributionListType (section 
+2.2.4.1) type. All other elements of the elements AppendToItemField or 
+SetItemField MUST NOT be specified. 
+
+Response 
+
+Message Format Description 
+
+tns:UpdateItemSoapOut ([MS-OXWSCORE] section Specifies the SOAP message returned by the server 
+3.1.4.9.1.2) in response. 
+
+ 
+
+3.1.4.5 MoveItem 
+
+This protocol uses the MoveItem operation specified in [MS-OXWSCORE] section 3.1.4.7 to move a 
+distribution list. 
+
+ <wsdl:operation name="MoveItem"> 
+    <wsdl:input message="tns:MoveItemSoapIn" /> 
+    <wsdl:output message="tns:MoveItemSoapOut" /> 
+ </wsdl:operation> 
+
+Request 
+
+Message Format Description 
+
+tns:MoveItemSoapIn The MoveItem element ([MS-OXWSCORE] section 3.1.4.7) that specifies the XML 
+([MS-OXWSCORE] section request MUST contain the following elements: the ToFolderId element ([MS-
+3.1.4.7.1.1) OXWSCORE] section 2.2.4.16), whose type is t:TargetFolderIdType ([MS-
+
+OXWSFOLD] section 2.2.4.16), and the ItemIds element ([MS-OXWSCORE] 
+section 2.2.4.15), whose type is t:NonEmptyArrayOfBaseItemIdsType ([MS-
+OXWSCORE] section 2.2.4.31). The ItemIds element MUST contain one or more 
+ItemId elements with the t:ItemIdType type ([MS-OXWSCORE] section 
+2.2.4.25). All other elements of ItemIds MUST NOT be specified. 
+
+Response 
+
+Message Format Description 
+
+tns:MoveItemSoapOut ([MS-OXWSCORE] section Specifies the SOAP message returned by the server in 
+3.1.4.7.1.2) response. 
+
+22 / 36 
+
+[MS-OXWSDLIST] - v20250520 
+Distribution List Creation and Usage Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+ 
+
+3.1.4.6 CopyItem 
+
+This protocol uses the CopyItem operation specified in [MS-OXWSCORE] section 3.1.4.1 to copy a 
+distribution list. 
+
+ <wsdl:operation name="CopyItem"> 
+    <wsdl:input message="tns:CopyItemSoapIn" /> 
+    <wsdl:output message="tns:CopyItemSoapOut" /> 
+ </wsdl:operation> 
+
+Request 
+
+Message Format Description 
+
+tns:CopyItemSoapIn The CopyItem ([MS-OXWSCORE] section 3.1.4.1.2.1) element that specifies the 
+([MS-OXWSCORE] section XML request MUST contain the following elements: the ToFolderId ([MS-
+3.1.4.1.1.1) OXWSCORE] section 2.2.4.16) element, whose type is t:TargetFolderIdType 
+
+([MS-OXWSFOLD] section 2.2.4.16), and the ItemIds ([MS-OXWSCORE] section 
+3.1.4.4.3.2) element, whose type is t:NonEmptyArrayOfBaseItemIdsType 
+([MS-OXWSCORE] section 2.2.4.31). The ItemIds element MUST contain one or 
+more ItemId element with the t:ItemIdType ([MS-OXWSCORE] section 
+2.2.4.25) type. All other elements of ItemIds MUST NOT be specified. 
+
+Response 
+
+Message Format Description 
+
+tns:CopyItemSoapOut ([MS-OXWSCORE] section Specifies the SOAP message returned by the server in 
+3.1.4.1.1.2) response. 
+
+ 
+
+3.1.4.7 CreateItem 
+
+This protocol uses the CreateItem operation specified in [MS-OXWSCORE] section 3.1.4.2 to create a 
+distribution list.  
+
+ <wsdl:operation name="CreateItem"> 
+     <wsdl:input message="tns:CreateItemSoapIn" /> 
+     <wsdl:output message="tns:CreateItemSoapOut" /> 
+ </wsdl:operation> 
+
+Request 
+
+Message Format Description 
+
+tns:CreateItemSoapIn ([MS- Specifies the SOAP message that defines the distribution list item to create. 
+OXWSCORE] section The Items child element of the CreateItem child element that specifies the 
+3.1.4.2.1.1) XML request MUST contain one or more t:DistributionListType elements 
+
+(section 2.2.4.1). All other elements of Items MUST NOT be specified. 
+
+Response 
+
+23 / 36 
+
+[MS-OXWSDLIST] - v20250520 
+Distribution List Creation and Usage Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Message Format Description 
+
+tns:CreateItemSoapOut ([MS-OXWSCORE] section Specifies the SOAP message returned by the server 
+3.1.4.2.1.2) in response. 
+
+ 
+
+3.1.5 Timer Events 
+
+None. 
+
+3.1.6 Other Local Events 
+
+None. 
+
+3.2 Client Details 
+
+The client side of this protocol is simply a pass-through. That is, no additional timers or other state is 
+required on the client side of this protocol. Calls made by the higher-layer protocol or application are 
+passed directly to the transport, and the results returned by the transport are passed directly back to 
+the higher-layer protocol or application. 
+
+3.2.1 Client Abstract Data Model 
+
+None. 
+
+3.2.2 Client Timers 
+
+None. 
+
+3.2.3 Client Initialization 
+
+None. 
+
+3.2.4 Client Message Processing Events and Sequencing 
+
+None. 
+
+3.2.5 Client Timer Events 
+
+None. 
+
+3.2.6 Client Other Local Events 
+
+None. 
+
+24 / 36 
+
+[MS-OXWSDLIST] - v20250520 
+Distribution List Creation and Usage Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+4 Protocol Examples 
+
+None. 
+
+25 / 36 
+
+[MS-OXWSDLIST] - v20250520 
+Distribution List Creation and Usage Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+5 Security 
+
+5.1 Security Considerations for Implementers 
+
+This protocol does not use additional security mechanisms. 
+
+5.2 Index of Security Parameters 
+
+None. 
+
+26 / 36 
+
+[MS-OXWSDLIST] - v20250520 
+Distribution List Creation and Usage Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+6 Appendix A: Full WSDL 
+
+The following table lists the XML files that are required to implement the functionality that is specified 
+in this document. The contents of each file are included in this section. 
+
+File name Description Section 
+
+MS-OXWSDLIST.wsdl Contains the WSDL for the implementation of this protocol. 6.1 
+
+MS-OXWSDLIST-types.xsd Contains the XML schema type definitions that are used in this 6.2 
+protocol. 
+
+MS-OXWSDLIST- Contains the XML schema message definitions that are used in this 6.3 
+messages.xsd protocol. 
+
+These files need to be placed in a common folder for the WSDL to validate and operate. Also, any 
+schema files that are included in or imported into the MS-OXWSDLIST-types.xsd or MS-OXWSDLIST-
+messages.xsd schemas need to be placed in the common folder with these files.  
+
+For ease of implementation, the full WSDL and schemas are provided in the following sections. 
+
+6.1 WSDL 
+
+This section contains the contents of the MS-OXWSDLIST.wsdl file. 
+
+ <?xml version="1.0" encoding="utf-8"?> 
+ <wsdl:definitions xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/" 
+xmlns:tns="http://schemas.microsoft.com/exchange/services/2006/messages" 
+xmlns:s="http://www.w3.org/2001/XMLSchema" xmlns:wsdl="http://schemas.xmlsoap.org/wsdl/" 
+xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types" 
+targetNamespace="http://schemas.microsoft.com/exchange/services/2006/messages"> 
+  <wsdl:types> 
+    <xs:schema id="messages" elementFormDefault="qualified" version="Exchange2016" 
+xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages" 
+xmlns:tns="http://schemas.microsoft.com/exchange/services/2006/messages" 
+xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types" 
+xmlns:xs="http://www.w3.org/2001/XMLSchema" 
+targetNamespace="http://schemas.microsoft.com/exchange/services/2006/messages" 
+xmlns="http://schemas.microsoft.com/exchange/services/2006/messages"> 
+      <xs:import namespace="http://schemas.microsoft.com/exchange/services/2006/types" 
+schemaLocation="MS-OXWSCORE-types.xsd"/> 
+      <xs:include schemaLocation="MS-OXWSDLIST-messages.xsd"/> 
+       
+       
+       
+      <!-- Add global elements and types from messages.xsd --> 
+    </xs:schema> 
+    <xs:schema id="types" elementFormDefault="qualified" version="Exchange2016" 
+xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types" 
+targetNamespace="http://schemas.microsoft.com/exchange/services/2006/types" 
+xmlns="http://schemas.microsoft.com/exchange/services/2006/types" 
+xmlns:tns="http://schemas.microsoft.com/exchange/services/2006/types" 
+xmlns:xs="http://www.w3.org/2001/XMLSchema"> 
+      <xs:import namespace="http://www.w3.org/XML/1998/namespace"/> 
+      <!-- Add global elements and types from types.xsd --> 
+    </xs:schema> 
+
+  </wsdl:types> 
+    <wsdl:message name="ExpandDLSoapIn"> 
+        <wsdl:part name="request" element="tns:ExpandDL" /> 
+        <wsdl:part name="Impersonation" element="t:ExchangeImpersonation"/> 
+        <wsdl:part name="MailboxCulture" element="t:MailboxCulture"/> 
+        <wsdl:part name="RequestVersion" element="t:RequestServerVersion"/> 
+
+27 / 36 
+
+[MS-OXWSDLIST] - v20250520 
+Distribution List Creation and Usage Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+    </wsdl:message> 
+    <wsdl:message name="ExpandDLSoapOut"> 
+        <wsdl:part name="ExpandDLResult" element="tns:ExpandDLResponse" /> 
+        <wsdl:part name="ServerVersion" element="t:ServerVersionInfo"/> 
+    </wsdl:message>   
+  <wsdl:message name="GetItemSoapIn"> 
+    <wsdl:part name="request" element="tns:GetItem"/> 
+    <wsdl:part name="Impersonation" element="t:ExchangeImpersonation"/> 
+    <wsdl:part name="MailboxCulture" element="t:MailboxCulture"/> 
+    <wsdl:part name="RequestVersion" element="t:RequestServerVersion"/> 
+    <wsdl:part name="TimeZoneContext" element="t:TimeZoneContext"/> 
+  </wsdl:message> 
+  <wsdl:message name="GetItemSoapOut"> 
+    <wsdl:part name="GetItemResult" element="tns:GetItemResponse"/> 
+    <wsdl:part name="ServerVersion" element="t:ServerVersionInfo"/> 
+  </wsdl:message> 
+  <wsdl:message name="CreateItemSoapIn"> 
+    <wsdl:part name="request" element="tns:CreateItem"/> 
+    <wsdl:part name="Impersonation" element="t:ExchangeImpersonation"/> 
+    <wsdl:part name="MailboxCulture" element="t:MailboxCulture"/> 
+    <wsdl:part name="RequestVersion" element="t:RequestServerVersion"/> 
+    <wsdl:part name="TimeZoneContext" element="t:TimeZoneContext"/> 
+  </wsdl:message> 
+  <wsdl:message name="CreateItemSoapOut"> 
+    <wsdl:part name="CreateItemResult" element="tns:CreateItemResponse"/> 
+    <wsdl:part name="ServerVersion" element="t:ServerVersionInfo"/> 
+  </wsdl:message> 
+  <wsdl:message name="DeleteItemSoapIn"> 
+    <wsdl:part name="request" element="tns:DeleteItem"/> 
+    <wsdl:part name="Impersonation" element="t:ExchangeImpersonation"/> 
+    <wsdl:part name="MailboxCulture" element="t:MailboxCulture"/> 
+    <wsdl:part name="RequestVersion" element="t:RequestServerVersion"/> 
+  </wsdl:message> 
+  <wsdl:message name="DeleteItemSoapOut"> 
+    <wsdl:part name="DeleteItemResult" element="tns:DeleteItemResponse"/> 
+    <wsdl:part name="ServerVersion" element="t:ServerVersionInfo"/> 
+  </wsdl:message> 
+  <wsdl:message name="UpdateItemSoapIn"> 
+    <wsdl:part name="request" element="tns:UpdateItem"/> 
+    <wsdl:part name="Impersonation" element="t:ExchangeImpersonation"/> 
+    <wsdl:part name="MailboxCulture" element="t:MailboxCulture"/> 
+    <wsdl:part name="RequestVersion" element="t:RequestServerVersion"/> 
+    <wsdl:part name="TimeZoneContext" element="t:TimeZoneContext"/> 
+  </wsdl:message> 
+  <wsdl:message name="UpdateItemSoapOut"> 
+    <wsdl:part name="UpdateItemResult" element="tns:UpdateItemResponse"/> 
+    <wsdl:part name="ServerVersion" element="t:ServerVersionInfo"/> 
+  </wsdl:message> 
+  <wsdl:message name="MoveItemSoapIn"> 
+    <wsdl:part name="request" element="tns:MoveItem"/> 
+    <wsdl:part name="Impersonation" element="t:ExchangeImpersonation"/> 
+    <wsdl:part name="MailboxCulture" element="t:MailboxCulture"/> 
+
+    <wsdl:part name="RequestVersion" element="t:RequestServerVersion"/> 
+  </wsdl:message> 
+  <wsdl:message name="MoveItemSoapOut"> 
+    <wsdl:part name="MoveItemResult" element="tns:MoveItemResponse"/> 
+    <wsdl:part name="ServerVersion" element="t:ServerVersionInfo"/> 
+  </wsdl:message> 
+  <wsdl:message name="CopyItemSoapIn"> 
+    <wsdl:part name="request" element="tns:CopyItem"/> 
+    <wsdl:part name="Impersonation" element="t:ExchangeImpersonation"/> 
+    <wsdl:part name="MailboxCulture" element="t:MailboxCulture"/> 
+    <wsdl:part name="RequestVersion" element="t:RequestServerVersion"/> 
+  </wsdl:message> 
+  <wsdl:message name="CopyItemSoapOut"> 
+    <wsdl:part name="CopyItemResult" element="tns:CopyItemResponse"/> 
+    <wsdl:part name="ServerVersion" element="t:ServerVersionInfo"/> 
+
+28 / 36 
+
+[MS-OXWSDLIST] - v20250520 
+Distribution List Creation and Usage Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+  </wsdl:message> 
+  <wsdl:portType name="ExchangeServicePortType"> 
+        <wsdl:operation name="ExpandDL"> 
+            <wsdl:input message="tns:ExpandDLSoapIn" /> 
+            <wsdl:output message="tns:ExpandDLSoapOut" /> 
+        </wsdl:operation> 
+    <wsdl:operation name="GetItem"> 
+      <wsdl:input message="tns:GetItemSoapIn"/> 
+      <wsdl:output message="tns:GetItemSoapOut"/> 
+    </wsdl:operation> 
+    <wsdl:operation name="CreateItem"> 
+      <wsdl:input message="tns:CreateItemSoapIn"/> 
+      <wsdl:output message="tns:CreateItemSoapOut"/> 
+    </wsdl:operation> 
+    <wsdl:operation name="DeleteItem"> 
+      <wsdl:input message="tns:DeleteItemSoapIn"/> 
+      <wsdl:output message="tns:DeleteItemSoapOut"/> 
+    </wsdl:operation> 
+    <wsdl:operation name="UpdateItem"> 
+      <wsdl:input message="tns:UpdateItemSoapIn"/> 
+      <wsdl:output message="tns:UpdateItemSoapOut"/> 
+    </wsdl:operation> 
+    <wsdl:operation name="MoveItem"> 
+      <wsdl:input message="tns:MoveItemSoapIn"/> 
+      <wsdl:output message="tns:MoveItemSoapOut"/> 
+    </wsdl:operation> 
+    <wsdl:operation name="CopyItem"> 
+      <wsdl:input message="tns:CopyItemSoapIn"/> 
+      <wsdl:output message="tns:CopyItemSoapOut"/> 
+    </wsdl:operation> 
+  </wsdl:portType> 
+  <wsdl:binding name="ExchangeServiceBinding" type="tns:ExchangeServicePortType"> 
+    <wsdl:documentation> 
+      <wsi:Claim conformsTo="http://ws-i.org/profiles/basic/1.0" xmlns:wsi="http://ws-
+i.org/schemas/conformanceClaim/"/> 
+    </wsdl:documentation> 
+    <soap:binding style="document" transport="http://schemas.xmlsoap.org/soap/http"/> 
+    <wsdl:operation name="GetItem"> 
+      <soap:operation 
+soapAction="http://schemas.microsoft.com/exchange/services/2006/messages/GetItem"/> 
+      <wsdl:input> 
+        <soap:header message="tns:GetItemSoapIn" part="Impersonation" use="literal"/> 
+        <soap:header message="tns:GetItemSoapIn" part="MailboxCulture" use="literal"/> 
+        <soap:header message="tns:GetItemSoapIn" part="RequestVersion" use="literal"/> 
+        <soap:header message="tns:GetItemSoapIn" part="TimeZoneContext" use="literal"/> 
+        <soap:body parts="request" use="literal"/> 
+      </wsdl:input> 
+      <wsdl:output> 
+        <soap:body parts="GetItemResult" use="literal"/> 
+        <soap:header message="tns:GetItemSoapOut" part="ServerVersion" use="literal"/> 
+      </wsdl:output> 
+    </wsdl:operation> 
+    <wsdl:operation name="CreateItem"> 
+      <soap:operation 
+soapAction="http://schemas.microsoft.com/exchange/services/2006/messages/CreateItem"/> 
+      <wsdl:input> 
+        <soap:header message="tns:CreateItemSoapIn" part="Impersonation" use="literal"/> 
+        <soap:header message="tns:CreateItemSoapIn" part="MailboxCulture" use="literal"/> 
+        <soap:header message="tns:CreateItemSoapIn" part="RequestVersion" use="literal"/> 
+        <soap:header message="tns:CreateItemSoapIn" part="TimeZoneContext" use="literal"/> 
+        <soap:body parts="request" use="literal"/> 
+      </wsdl:input> 
+      <wsdl:output> 
+        <soap:body parts="CreateItemResult" use="literal"/> 
+        <soap:header message="tns:CreateItemSoapOut" part="ServerVersion" use="literal"/> 
+      </wsdl:output> 
+    </wsdl:operation> 
+    <wsdl:operation name="DeleteItem"> 
+
+29 / 36 
+
+[MS-OXWSDLIST] - v20250520 
+Distribution List Creation and Usage Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+      <soap:operation 
+soapAction="http://schemas.microsoft.com/exchange/services/2006/messages/DeleteItem"/> 
+      <wsdl:input> 
+        <soap:header message="tns:DeleteItemSoapIn" part="Impersonation" use="literal"/> 
+        <soap:header message="tns:DeleteItemSoapIn" part="MailboxCulture" use="literal"/> 
+        <soap:header message="tns:DeleteItemSoapIn" part="RequestVersion" use="literal"/> 
+        <soap:body parts="request" use="literal"/> 
+      </wsdl:input> 
+      <wsdl:output> 
+        <soap:body parts="DeleteItemResult" use="literal"/> 
+        <soap:header message="tns:DeleteItemSoapOut" part="ServerVersion" use="literal"/> 
+      </wsdl:output> 
+    </wsdl:operation> 
+    <wsdl:operation name="UpdateItem"> 
+      <soap:operation 
+soapAction="http://schemas.microsoft.com/exchange/services/2006/messages/UpdateItem"/> 
+      <wsdl:input> 
+        <soap:header message="tns:UpdateItemSoapIn" part="Impersonation" use="literal"/> 
+        <soap:header message="tns:UpdateItemSoapIn" part="MailboxCulture" use="literal"/> 
+        <soap:header message="tns:UpdateItemSoapIn" part="RequestVersion" use="literal"/> 
+        <soap:header message="tns:UpdateItemSoapIn" part="TimeZoneContext" use="literal"/> 
+        <soap:body parts="request" use="literal"/> 
+      </wsdl:input> 
+      <wsdl:output> 
+        <soap:body parts="UpdateItemResult" use="literal"/> 
+        <soap:header message="tns:UpdateItemSoapOut" part="ServerVersion" use="literal"/> 
+      </wsdl:output> 
+    </wsdl:operation> 
+    <wsdl:operation name="MoveItem"> 
+      <soap:operation 
+soapAction="http://schemas.microsoft.com/exchange/services/2006/messages/MoveItem"/> 
+      <wsdl:input> 
+        <soap:header message="tns:MoveItemSoapIn" part="Impersonation" use="literal"/> 
+        <soap:header message="tns:MoveItemSoapIn" part="MailboxCulture" use="literal"/> 
+        <soap:header message="tns:MoveItemSoapIn" part="RequestVersion" use="literal"/> 
+        <soap:body parts="request" use="literal"/> 
+      </wsdl:input> 
+      <wsdl:output> 
+        <soap:body parts="MoveItemResult" use="literal"/> 
+        <soap:header message="tns:MoveItemSoapOut" part="ServerVersion" use="literal"/> 
+      </wsdl:output> 
+    </wsdl:operation> 
+    <wsdl:operation name="CopyItem"> 
+      <soap:operation 
+soapAction="http://schemas.microsoft.com/exchange/services/2006/messages/CopyItem"/> 
+      <wsdl:input> 
+        <soap:header message="tns:CopyItemSoapIn" part="Impersonation" use="literal"/> 
+        <soap:header message="tns:CopyItemSoapIn" part="MailboxCulture" use="literal"/> 
+        <soap:header message="tns:CopyItemSoapIn" part="RequestVersion" use="literal"/> 
+        <soap:body parts="request" use="literal"/> 
+      </wsdl:input> 
+      <wsdl:output> 
+        <soap:body parts="CopyItemResult" use="literal"/> 
+        <soap:header message="tns:CopyItemSoapOut" part="ServerVersion" use="literal"/> 
+      </wsdl:output> 
+    </wsdl:operation> 
+            <wsdl:operation name="ExpandDL"> 
+            <soap:operation 
+soapAction="http://schemas.microsoft.com/exchange/services/2006/messages/ExpandDL" /> 
+            <wsdl:input> 
+                <soap:header message="tns:ExpandDLSoapIn" part="Impersonation" 
+use="literal"/> 
+                <soap:header message="tns:ExpandDLSoapIn" part="MailboxCulture" 
+use="literal"/> 
+                <soap:header message="tns:ExpandDLSoapIn" part="RequestVersion" 
+use="literal"/> 
+                <soap:body parts="request" use="literal" /> 
+            </wsdl:input> 
+            <wsdl:output> 
+
+30 / 36 
+
+[MS-OXWSDLIST] - v20250520 
+Distribution List Creation and Usage Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+                <soap:body parts="ExpandDLResult" use="literal" /> 
+                <soap:header message="tns:ExpandDLSoapOut" part="ServerVersion" 
+use="literal"/> 
+            </wsdl:output> 
+        </wsdl:operation> 
+  </wsdl:binding> 
+ </wsdl:definitions> 
+
+6.2 Types Schema 
+
+This section contains the contents of the MS-OXWSDLIST-types.xsd file and information about 
+additional files that this schema file requires to operate correctly. 
+
+For MS-OXWSDLIST-types.xsd to operate correctly the file shown in the following table needs to be 
+present in the folder that contains the WSDL, types schema and messages schema files for this 
+protocol. 
+
+Defining specification File name 
+
+[MS-OXWSCDATA] section 7.2 MS-OXWSCDATA-types.xsd 
+
+ <?xml version="1.0" encoding="utf-8"?> 
+ <xs:schema xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types" 
+xmlns:xs="http://www.w3.org/2001/XMLSchema" 
+targetNamespace="http://schemas.microsoft.com/exchange/services/2006/types" 
+elementFormDefault="qualified" version="Exchange2016" id="types"> 
+  <xs:import namespace="http://www.w3.org/XML/1998/namespace"/> 
+  <xs:include schemaLocation="MS-OXWSCDATA-types.xsd"/> 
+  <xs:complexType name="ArrayOfDLExpansionType"> 
+    <xs:sequence> 
+      <xs:element name="Mailbox" type="t:EmailAddressType" minOccurs="0" 
+maxOccurs="unbounded"/> 
+    </xs:sequence> 
+    <xs:attributeGroup ref="t:FindResponsePagingAttributes"/> 
+  </xs:complexType> 
+  <xs:complexType name="DistributionListType"> 
+    <xs:complexContent> 
+      <xs:extension base="t:ItemType"> 
+        <xs:sequence> 
+          <xs:element name="DisplayName" type="xs:string" minOccurs="0"/> 
+          <xs:element name="FileAs" type="xs:string" minOccurs="0"/> 
+          <xs:element name="ContactSource" type="t:ContactSourceType" minOccurs="0"/> 
+          <xs:element name="Members" type="t:MembersListType" minOccurs="0"/> 
+        </xs:sequence> 
+      </xs:extension> 
+    </xs:complexContent> 
+  </xs:complexType> 
+  <xs:simpleType name="MemberStatusType"> 
+    <xs:restriction base="xs:string"> 
+      <xs:enumeration value="Unrecognized"/> 
+      <xs:enumeration value="Normal"/> 
+      <xs:enumeration value="Demoted"/> 
+    </xs:restriction> 
+  </xs:simpleType> 
+  <xs:complexType name="MembersListType"> 
+    <xs:sequence> 
+      <xs:element name="Member" type="t:MemberType" minOccurs="0" maxOccurs="unbounded"/> 
+    </xs:sequence> 
+  </xs:complexType> 
+  <xs:complexType name="MemberType"> 
+    <xs:sequence> 
+      <xs:element name="Mailbox" type="t:EmailAddressType" minOccurs="0"/> 
+      <xs:element name="Status" type="t:MemberStatusType" minOccurs="0"/> 
+    </xs:sequence> 
+    <xs:attribute name="Key" type="xs:string" use="optional"/> 
+
+31 / 36 
+
+[MS-OXWSDLIST] - v20250520 
+Distribution List Creation and Usage Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+  </xs:complexType> 
+ </xs:schema> 
+
+6.3 Messages Schema 
+
+This section contains the contents of the MS-OXWSDLIST-messages.xsd file and information about 
+additional files that this schema file requires to operate correctly. 
+
+For MS-OXWSDLIST-messages.xsd to operate correctly the file shown in the following table needs to 
+be present in the folder that contains the WSDL, types schema and messages schema files for this 
+protocol. 
+
+Defining specification File name 
+
+[MS-OXWSCDATA] section 7.1 MS-OXWSCDATA-messages.xsd 
+
+ <?xml version="1.0" encoding="utf-8"?> 
+ <xs:schema xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages" 
+xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types" 
+xmlns:xs="http://www.w3.org/2001/XMLSchema" 
+targetNamespace="http://schemas.microsoft.com/exchange/services/2006/messages" 
+elementFormDefault="qualified" version="Exchange2016" id="messages"> 
+  <xs:include schemaLocation="MS-OXWSCDATA-messages.xsd"/> 
+  <xs:import namespace="http://schemas.microsoft.com/exchange/services/2006/types" 
+schemaLocation="MS-OXWSCDATA-types.xsd"/> 
+  <xs:complexType name="ExpandDLType"> 
+    <xs:complexContent> 
+      <xs:extension base="m:BaseRequestType"> 
+        <xs:sequence> 
+          <xs:element name="Mailbox" type="t:EmailAddressType"/> 
+        </xs:sequence> 
+      </xs:extension> 
+    </xs:complexContent> 
+  </xs:complexType> 
+  <xs:element name="ExpandDL" type="m:ExpandDLType"/> 
+  <xs:complexType name="ExpandDLResponseMessageType"> 
+    <xs:complexContent> 
+      <xs:extension base="m:ResponseMessageType"> 
+        <xs:sequence> 
+          <xs:element name="DLExpansion" type="t:ArrayOfDLExpansionType" minOccurs="0"/> 
+        </xs:sequence> 
+        <xs:attributeGroup ref="t:FindResponsePagingAttributes"/> 
+      </xs:extension> 
+    </xs:complexContent> 
+  </xs:complexType> 
+  <xs:complexType name="ExpandDLResponseType"> 
+    <xs:complexContent> 
+      <xs:extension base="m:BaseResponseMessageType"/> 
+    </xs:complexContent> 
+  </xs:complexType> 
+  <xs:element name="ExpandDLResponse" type="m:ExpandDLResponseType"/> 
+ </xs:schema> 
+
+32 / 36 
+
+[MS-OXWSDLIST] - v20250520 
+Distribution List Creation and Usage Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+7 Appendix B: Product Behavior 
+
+The information in this specification is applicable to the following Microsoft products or supplemental 
+software. References to product versions include updates to those products. 
+
+ Microsoft Exchange Server 2007 
+
+ Microsoft Exchange Server 2010 
+
+ Microsoft Exchange Server 2013 
+
+ Microsoft Exchange Server 2016 
+
+ Microsoft Exchange Server 2019  
+
+ Microsoft Exchange Server Subscription Edition 
+
+Exceptions, if any, are noted in this section. If an update version, service pack or Knowledge Base 
+(KB) number appears with a product name, the behavior changed in that update. The new behavior 
+also applies to subsequent updates unless otherwise specified. If a product edition appears with the 
+product version, behavior is different in that product edition. 
+
+Unless otherwise specified, any statement of optional behavior in this specification that is prescribed 
+using the terms "SHOULD" or "SHOULD NOT" implies product behavior in accordance with the 
+SHOULD or SHOULD NOT prescription. Unless otherwise specified, the term "MAY" implies that the 
+product does not follow the prescription. 
+
+33 / 36 
+
+[MS-OXWSDLIST] - v20250520 
+Distribution List Creation and Usage Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+8 Change Tracking 
+
+This section identifies changes that were made to this document since the last release. Changes are 
+classified as Major, Minor, or None.  
+
+The revision class Major means that the technical content in the document was significantly revised. 
+Major changes affect protocol interoperability or implementation. Examples of major changes are: 
+
+ A document revision that incorporates changes to interoperability requirements. 
+ A document revision that captures changes to protocol functionality. 
+
+The revision class Minor means that the meaning of the technical content was clarified. Minor changes 
+do not affect protocol interoperability or implementation. Examples of minor changes are updates to 
+clarify ambiguity at the sentence, paragraph, or table level. 
+
+The revision class None means that no new technical changes were introduced. Minor editorial and 
+formatting changes may have been made, but the relevant technical content is identical to the last 
+released version. 
+
+The changes made to this document are listed in the following table. For more information, please 
+contact dochelp@microsoft.com. 
+
+Section Description Revision class 
+
+7 Appendix B: Product Behavior Updated list of supported products. Major 
+
+34 / 36 
+
+[MS-OXWSDLIST] - v20250520 
+Distribution List Creation and Usage Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+9 Index
+A    server 15 
+ Introduction 6 
+Abstract data model  
+   client 24 L 
+   server 15  
+Applicability 9 Local events 
+Attribute groups 14    client 24 
+Attributes 14    server 24 
+  
+C M 
+  
+Capability negotiation 9 Message processing 
+Change tracking 34    server 15 
+Client Messages 
+   abstract data model 24    attribute groups 14 
+   ExchangeServicePortType    attributes 14 
+      Port type    complex types 11 
+         ExchangeServicePortType 24    elements 10 
+   initialization 24    enumerated 10 
+   local events 24    groups 14 
+   timer events 24    namespaces 10 
+   timers 24    simple types 13 
+Complex types 11    syntax 10 
+   t:DistributionListType Complex Type 11    t:DistributionListType Complex Type complex type 
+   t:MembersListType Complex Type 12 11 
+   t:MemberType Complex Type 12    t:MembersListType Complex Type complex type 12 
+    t:MemberStatusType Simple Type simple type 13 
+D    t:MemberType Complex Type complex type 12 
+    transport 10 
+Data model - abstract  
+   client 24 N 
+   server 15  
+ Namespaces 10 
+E Normative references 7 
+  
+Events O 
+   local - client 24  
+   local - server 24 Operations 
+   timer - client 24    CopyItem 23 
+   timer - server 24    CreateItem 23 
+    DeleteItem 21 
+F    ExpandDL 15 
+    GetItem 20 
+Fields - vendor-extensible 9    MoveItem 22 
+Full WSDL 27    UpdateItem 21 
+   Messages Schema 32 Overview (synopsis) 8 
+   Types Schema 31  
+   WSDL 27 P 
+  
+G Parameters - security index 26 
+ Preconditions 9 
+Glossary 6 Prerequisites 9 
+Groups 14 Product behavior 33 
+ Protocol Details 
+
+I    overview 15 
+
+  
+
+Implementer - security considerations 26 R 
+Index of security parameters 26  
+Informative references 8 References 7 
+Initialization    informative 8 
+   client 24    normative 7 
+
+35 / 36 
+
+[MS-OXWSDLIST] - v20250520 
+Distribution List Creation and Usage Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Relationship to other protocols 8 
+ 
+S 
+ 
+Security 
+   implementer considerations 26 
+   parameter index 26 
+Sequencing rules 
+   server 15 
+Server 
+   abstract data model 15 
+   CopyItem operation 23 
+   CreateItem operation 23 
+   DeleteItem operation 21 
+   ExchangeServicePortType port type 
+      Port type 
+         ExchangeServicePortType 15 
+   ExpandDL operation 15 
+   GetItem operation 20 
+   initialization 15 
+   local events 24 
+   message processing 15 
+   MoveItem operation 22 
+   sequencing rules 15 
+   timer events 24 
+   timers 15 
+   UpdateItem operation 21 
+Simple types 13 
+   t:MemberStatusType Simple Type 13 
+Standards assignments 9 
+Syntax 
+   messages - overview 10 
+ 
+T 
+ 
+t:DistributionListType Complex Type complex type 
+
+11 
+t:MembersListType Complex Type complex type 12 
+t:MemberStatusType Simple Type simple type 13 
+t:MemberType Complex Type complex type 12 
+Timer events 
+   client 24 
+   server 24 
+Timers 
+   client 24 
+   server 15 
+Tracking changes 34 
+Transport 10 
+Types 
+   complex 11 
+   simple 13 
+ 
+V 
+ 
+Vendor-extensible fields 9 
+Versioning 9 
+ 
+W 
+ 
+WSDL 27 
+   Messages Schema 32 
+   Types Schema 31 
+   WSDL 27 
+
+ 
+
+36 / 36 
+
+[MS-OXWSDLIST] - v20250520 
+Distribution List Creation and Usage Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025

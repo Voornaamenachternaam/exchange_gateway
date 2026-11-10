@@ -1,0 +1,4344 @@
+﻿[MS-OXWSOLPS]:  
+
+Online Personal Search Web Service Protocol 
+
+ 
+
+Intellectual Property Rights Notice for Open Specifications Documentation 
+
+ Technical Documentation. Microsoft publishes Open Specifications documentation (“this 
+documentation”) for protocols, file formats, data portability, computer languages, and standards 
+support. Additionally, overview documents cover inter-protocol relationships and interactions.  
+
+ Copyrights. This documentation is covered by Microsoft copyrights. Regardless of any other 
+terms that are contained in the terms of use for the Microsoft website that hosts this 
+documentation, you can make copies of it in order to develop implementations of the technologies 
+that are described in this documentation and can distribute portions of it in your implementations 
+that use these technologies or in your documentation as necessary to properly document the 
+implementation. You can also distribute in your implementation, with or without modification, any 
+schemas, IDLs, or code samples that are included in the documentation. This permission also 
+applies to any documents that are referenced in the Open Specifications documentation.  
+
+ No Trade Secrets. Microsoft does not claim any trade secret rights in this documentation.  
+ Patents. Microsoft has patents that might cover your implementations of the technologies 
+
+described in the Open Specifications documentation. Neither this notice nor Microsoft's delivery of 
+this documentation grants any licenses under those patents or any other Microsoft patents. 
+However, a given Open Specifications document might be covered by the Microsoft Open 
+Specifications Promise or the Microsoft Community Promise. If you would prefer a written license, 
+or if the technologies described in this documentation are not covered by the Open Specifications 
+Promise or Community Promise, as applicable, patent licenses are available by contacting 
+iplg@microsoft.com.  
+
+ License Programs. To see all of the protocols in scope under a specific license program and the 
+associated patents, visit the Patent Map.  
+
+ Trademarks. The names of companies and products contained in this documentation might be 
+covered by trademarks or similar intellectual property rights. This notice does not grant any 
+licenses under those rights. For a list of Microsoft trademarks, visit 
+www.microsoft.com/trademarks.  
+
+ Fictitious Names. The example companies, organizations, products, domain names, email 
+addresses, logos, people, places, and events that are depicted in this documentation are fictitious. 
+No association with any real company, organization, product, domain name, email address, logo, 
+person, place, or event is intended or should be inferred. 
+
+Reservation of Rights. All other rights are reserved, and this notice does not grant any rights other 
+than as specifically described above, whether by implication, estoppel, or otherwise.  
+
+Tools. The Open Specifications documentation does not require the use of Microsoft programming 
+tools or programming environments in order for you to develop an implementation. If you have access 
+to Microsoft programming tools and environments, you are free to take advantage of them. Certain 
+Open Specifications documents are intended for use in conjunction with publicly available standards 
+specifications and network programming art and, as such, assume that the reader either is familiar 
+with the aforementioned material or has immediate access to it. 
+
+Support. For questions and support, please contact dochelp@microsoft.com.  
+
+1 / 67 
+
+[MS-OXWSOLPS] - v20250520 
+Online Personal Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Revision Summary 
+
+Revision Revision 
+Date History Class Comments 
+
+9/14/2015 1.0 New Released new document. 
+
+No changes to the meaning, language, or formatting of the 
+6/13/2016 1.0 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+9/14/2016 1.0 None 
+
+technical content. 
+
+6/20/2017 2.0 Major Significantly changed the technical content. 
+
+9/19/2017 3.0 Major Significantly changed the technical content. 
+
+7/24/2018 3.1 Minor Clarified the meaning of the technical content. 
+
+10/1/2018 3.2 Minor Clarified the meaning of the technical content. 
+
+3/19/2019 3.3 Minor Clarified the meaning of the technical content. 
+
+5/20/2025 4.0 Major Significantly changed the technical content. 
+
+2 / 67 
+
+[MS-OXWSOLPS] - v20250520 
+Online Personal Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Table of Contents 
+1 Introduction ............................................................................................................ 6 
+
+1.1 Glossary ........................................................................................................... 6 
+1.2 References ........................................................................................................ 7 
+
+1.2.1 Normative References ................................................................................... 7 
+1.2.2 Informative References ................................................................................. 8 
+
+1.3 Overview .......................................................................................................... 8 
+1.4 Relationship to Other Protocols ............................................................................ 8 
+1.5 Prerequisites/Preconditions ................................................................................. 8 
+1.6 Applicability Statement ....................................................................................... 8 
+1.7 Versioning and Capability Negotiation ................................................................... 8 
+1.8 Vendor-Extensible Fields ..................................................................................... 8 
+1.9 Standards Assignments ....................................................................................... 8 
+
+2 Messages ................................................................................................................. 9 
+2.1 Transport .......................................................................................................... 9 
+2.2 Common Message Syntax ................................................................................... 9 
+
+2.2.1 Namespaces ................................................................................................ 9 
+2.2.2 Messages ..................................................................................................... 9 
+2.2.3 Elements ..................................................................................................... 9 
+2.2.4 Complex Types ............................................................................................. 9 
+
+2.2.4.1 SearchDiagnosticsType Complex Type ..................................................... 10 
+2.2.5 Simple Types ............................................................................................. 10 
+
+2.2.5.1 SuggestionKindType Simple Type ............................................................ 10 
+2.2.6 Attributes .................................................................................................. 11 
+2.2.7 Groups ...................................................................................................... 11 
+2.2.8 Attribute Groups ......................................................................................... 11 
+
+3 Protocol Details ..................................................................................................... 12 
+3.1 Common Details .............................................................................................. 12 
+
+3.1.1 Abstract Data Model .................................................................................... 12 
+3.1.2 Timers ...................................................................................................... 12 
+3.1.3 Initialization ............................................................................................... 12 
+3.1.4 Message Processing Events and Sequencing Rules .......................................... 12 
+
+3.1.4.1 EndSearchSession Operation .................................................................. 12 
+3.1.4.1.1 Messages ....................................................................................... 13 
+
+3.1.4.1.1.1 EndSearchSessionSoapIn Message ............................................... 13 
+3.1.4.1.1.2 EndSearchSessionSoapOut Message ............................................. 14 
+
+3.1.4.1.2 Elements ........................................................................................ 14 
+3.1.4.1.2.1 tns:EndSearchSession Element .................................................... 14 
+3.1.4.1.2.2 tns:EndSearchSessionResponse Element ...................................... 15 
+
+3.1.4.1.3 Complex Types ............................................................................... 15 
+3.1.4.1.3.1 EndSearchSession Complex Type ................................................. 15 
+3.1.4.1.3.2 EndSearchSessionResponseMessage Complex Type ........................ 15 
+
+3.1.4.1.4 Simple Types .................................................................................. 16 
+3.1.4.1.5 Attributes ....................................................................................... 16 
+3.1.4.1.6 Groups ........................................................................................... 16 
+3.1.4.1.7 Attribute Groups.............................................................................. 16 
+
+3.1.4.2 ExecuteSearch Operation ....................................................................... 16 
+3.1.4.2.1 Messages ....................................................................................... 16 
+
+3.1.4.2.1.1 ExecuteSearchSoapIn Message .................................................... 17 
+3.1.4.2.1.2 ExecuteSearchSoapOut Message .................................................. 17 
+
+3.1.4.2.2 Elements ........................................................................................ 18 
+3.1.4.2.2.1 tns:ExecuteSearch Element ......................................................... 18 
+3.1.4.2.2.2 tns:ExecuteSearchResponse Element ........................................... 18 
+
+3.1.4.2.3 Complex Types ............................................................................... 18 
+
+3 / 67 
+
+[MS-OXWSOLPS] - v20250520 
+Online Personal Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+3.1.4.2.3.1 AnalyzedQuery Complex Type ..................................................... 19 
+3.1.4.2.3.2 ArrayOfSearchScopeType Complex Type ....................................... 19 
+3.1.4.2.3.3 CustomSearchScopeType Complex Type ....................................... 20 
+3.1.4.2.3.4 DynamicRefinerQueryType Complex Type ..................................... 21 
+3.1.4.2.3.5 ExecuteSearch Complex Type ...................................................... 21 
+3.1.4.2.3.6 ExecuteSearchResponseMessage Complex Type............................. 23 
+3.1.4.2.3.7 GroupSearchScopeType Complex Type ......................................... 24 
+3.1.4.2.3.8 LargeArchiveSearchScopeType Complex Type ............................... 24 
+3.1.4.2.3.9 OneDriveSearchScopeType Complex Type ..................................... 25 
+3.1.4.2.3.10 PrimaryMailboxSearchScopeType Complex Type ............................ 25 
+3.1.4.2.3.11 SearchFolderScopeType Complex Type ......................................... 25 
+3.1.4.2.3.12 SearchRefinerType Complex Type ................................................ 26 
+3.1.4.2.3.13 SearchResultsType Complex Type ................................................ 26 
+3.1.4.2.3.14 SingleGroupSearchScopeType Complex Type................................. 28 
+3.1.4.2.3.15 SingleLargeArchiveSearchScopeType Complex Type ....................... 28 
+3.1.4.2.3.16 UnifiedGroupIdentity Complex Type ............................................. 29 
+
+3.1.4.2.4 Simple Types .................................................................................. 29 
+3.1.4.2.4.1 ItemTypesFilterType Simple Type ................................................ 29 
+3.1.4.2.4.2 OneDriveViewType Simple Type ................................................... 30 
+3.1.4.2.4.3 RefinerTypeType Simple Type ...................................................... 31 
+3.1.4.2.4.4 SearchApplicationIdType Simple Type .......................................... 31 
+3.1.4.2.4.5 SearchResultsPropertySetNameType Simple Type .......................... 32 
+3.1.4.2.4.6 SearchScopeArchivesType Simple Type ........................................ 32 
+3.1.4.2.4.7 SearchScopeGroupsType Simple Type .......................................... 32 
+3.1.4.2.4.8 UnifiedGroupIdentityType Simple Type ......................................... 33 
+
+3.1.4.2.5 Attributes ....................................................................................... 33 
+3.1.4.2.6 Groups ........................................................................................... 33 
+3.1.4.2.7 Attribute Groups.............................................................................. 33 
+
+3.1.4.3 GetSearchSuggestions Operation ............................................................ 34 
+3.1.4.3.1 Messages ....................................................................................... 34 
+
+3.1.4.3.1.1 GetSearchSuggestionsSoapIn Message ......................................... 34 
+3.1.4.3.1.2 GetSearchSuggestionsSoapOut Message ....................................... 35 
+
+3.1.4.3.2 Elements ........................................................................................ 35 
+3.1.4.3.2.1 tns:GetSearchSuggestions Element .............................................. 36 
+3.1.4.3.2.2 tns:GetSearchSuggestionsResponse Element ................................ 36 
+
+3.1.4.3.3 Complex Types ............................................................................... 36 
+3.1.4.3.3.1 GetSearchSuggestions Complex Type ........................................... 36 
+3.1.4.3.3.2 GetSearchSuggestionsResponseMessage Complex Type .................. 37 
+3.1.4.3.3.3 PeopleSuggestionType Complex Type ........................................... 38 
+3.1.4.3.3.4 SearchSuggestionsType Complex Type ......................................... 38 
+3.1.4.3.3.5 SuggestionType Complex Type .................................................... 39 
+
+3.1.4.3.4 Simple Types .................................................................................. 40 
+3.1.4.3.5 Attributes ....................................................................................... 40 
+3.1.4.3.6 Groups ........................................................................................... 40 
+3.1.4.3.7 Attribute Groups.............................................................................. 40 
+
+3.1.4.4 StartSearchSession Operation ................................................................ 40 
+3.1.4.4.1 Messages ....................................................................................... 41 
+
+3.1.4.4.1.1 StartSearchSessionSoapIn Message ............................................. 41 
+3.1.4.4.1.2 StartSearchSessionSoapOut Message ........................................... 41 
+
+3.1.4.4.2 Elements ........................................................................................ 42 
+3.1.4.4.2.1 tns:StartSearchSession Element .................................................. 42 
+3.1.4.4.2.2 tns:StartSearchSessionResponse Element ..................................... 42 
+
+3.1.4.4.3 Complex Types ............................................................................... 42 
+3.1.4.4.3.1 StartSearchSession Complex Type ............................................... 43 
+3.1.4.4.3.2 StartSearchSessionResponseMessage Complex Type ...................... 43 
+
+3.1.4.4.4 Simple Types .................................................................................. 44 
+3.1.4.4.4.1 WarmupOptionsType Simple Type ................................................ 44 
+
+3.1.4.4.5 Attributes ....................................................................................... 44 
+
+4 / 67 
+
+[MS-OXWSOLPS] - v20250520 
+Online Personal Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+3.1.4.4.6 Groups ........................................................................................... 45 
+3.1.4.4.7 Attribute Groups.............................................................................. 45 
+
+3.1.5 Timer Events .............................................................................................. 45 
+3.1.6 Other Local Events ...................................................................................... 45 
+
+4 Protocol Examples ................................................................................................. 46 
+4.1 Create a Search Session ................................................................................... 46 
+4.2 Get Suggestions for Searches ............................................................................ 47 
+
+4.2.1 Suggestions without User Input .................................................................... 47 
+4.2.2 Suggestions with User Input ........................................................................ 48 
+
+4.3 Search ............................................................................................................ 49 
+4.4 End a Search Session ....................................................................................... 51 
+
+5 Security ................................................................................................................. 53 
+5.1 Security Considerations for Implementers ........................................................... 53 
+5.2 Index of Security Parameters ............................................................................ 53 
+
+6 Appendix A: Full WSDL .......................................................................................... 54 
+
+7 Appendix B: Full XML Schema ................................................................................ 57 
+7.1 Messages Schema ............................................................................................ 57 
+7.2 Types Schema ................................................................................................. 59 
+
+8 Appendix C: Product Behavior ............................................................................... 64 
+
+9 Change Tracking .................................................................................................... 65 
+
+10 Index ..................................................................................................................... 66 
+
+ 
+
+5 / 67 
+
+[MS-OXWSOLPS] - v20250520 
+Online Personal Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+1 Introduction 
+
+The Online Personal Search Web Service Protocol is used to search the contents of one or more 
+servers, and return the results of that search. 
+
+Sections 1.5, 1.8, 1.9, 2, and 3 of this specification are normative. All other sections and examples in 
+this specification are informative. 
+
+1.1 Glossary 
+
+This document uses the following terms: 
+
+Hypertext Transfer Protocol (HTTP): An application-level protocol for distributed, collaborative, 
+hypermedia information systems (text, graphic images, sound, video, and other multimedia 
+files) on the World Wide Web. 
+
+Hypertext Transfer Protocol Secure (HTTPS): An extension of HTTP that securely encrypts and 
+decrypts web page requests. In some older protocols, "Hypertext Transfer Protocol over Secure 
+Sockets Layer" is still used (Secure Sockets Layer has been deprecated). For more information, 
+see [SSL3] and [RFC5246]. 
+
+Kerberos: An authentication system that enables two parties to exchange private information 
+across an otherwise open network by assigning a unique key (called a ticket) to each user that 
+logs on to the network and then embedding these tickets into messages sent by the users. For 
+more information, see [MS-KILE]. 
+
+mailbox: A message store that contains email, calendar items, and other Message objects for a 
+single recipient. 
+
+NT LAN Manager (NTLM) Authentication Protocol: A protocol using a challenge-response 
+mechanism for authentication in which clients are able to verify their identities without sending a 
+password to the server. It consists of three messages, commonly referred to as Type 1 
+(negotiation), Type 2 (challenge) and Type 3 (authentication). 
+
+Simple Mail Transfer Protocol (SMTP): A member of the TCP/IP suite of protocols that is used 
+to transport Internet messages, as described in [RFC5321]. 
+
+SOAP body: A container for the payload data being delivered by a SOAP message to its recipient. 
+See [SOAP1.2-1/2007] section 5.3 for more information. 
+
+SOAP header: A mechanism for implementing extensions to a SOAP message in a decentralized 
+manner without prior agreement between the communicating parties. See [SOAP1.2-1/2007] 
+section 5.2 for more information. 
+
+Web Services Description Language (WSDL): An XML format for describing network services 
+as a set of endpoints that operate on messages that contain either document-oriented or 
+procedure-oriented information. The operations and messages are described abstractly and are 
+bound to a concrete network protocol and message format in order to define an endpoint. 
+Related concrete endpoints are combined into abstract endpoints, which describe a network 
+service. WSDL is extensible, which allows the description of endpoints and their messages 
+regardless of the message formats or network protocols that are used. 
+
+WSDL operation: A single action or function of a web service. The execution of a WSDL operation 
+typically requires the exchange of messages between the service requestor and the service 
+provider. 
+
+WSDL port type: A named set of logically-related, abstract Web Services Description 
+Language (WSDL) operations and messages. 
+
+6 / 67 
+
+[MS-OXWSOLPS] - v20250520 
+Online Personal Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+XML schema: A description of a type of XML document that is typically expressed in terms of 
+constraints on the structure and content of documents of that type, in addition to the basic 
+syntax constraints that are imposed by XML itself. An XML schema provides a view of a 
+document type at a relatively high level of abstraction. 
+
+MAY, SHOULD, MUST, SHOULD NOT, MUST NOT: These terms (in all caps) are used as defined 
+in [RFC2119]. All statements of optional behavior use either MAY, SHOULD, or SHOULD NOT. 
+
+1.2 References 
+
+Links to a document in the Microsoft Open Specifications library point to the correct section in the 
+most recently published version of the referenced document. However, because individual documents 
+in the library are not updated at the same time, the section numbers in the documents may not 
+match. You can confirm the correct section numbering by checking the Errata.   
+
+1.2.1 Normative References 
+
+We conduct frequent surveys of the normative references to assure their continued availability. If you 
+have any issue with finding a normative reference, please contact dochelp@microsoft.com. We will 
+assist you in finding the relevant information.  
+
+[MS-KQL] Microsoft Corporation, "Keyword Query Language Structure Protocol". 
+
+[MS-OXWSCDATA] Microsoft Corporation, "Common Web Service Data Types". 
+
+[MS-OXWSCONV] Microsoft Corporation, "Conversations Web Service Protocol". 
+
+[MS-OXWSCORE] Microsoft Corporation, "Core Items Web Service Protocol". 
+
+[MS-OXWSCVTID] Microsoft Corporation, "Convert Item Identifier Web Service Protocol". 
+
+[MS-OXWSPERS] Microsoft Corporation, "Persona Web Service Protocol". 
+
+[MS-OXWSSRCH] Microsoft Corporation, "Mailbox Search Web Service Protocol". 
+
+[MS-OXWSXPROP] Microsoft Corporation, "Extended Properties Structure". 
+
+[RFC2119] Bradner, S., "Key words for use in RFCs to Indicate Requirement Levels", BCP 14, RFC 
+2119, March 1997, https://www.rfc-editor.org/info/rfc2119 
+
+[RFC3066] Alvestrand, H., "Tags for the Identification of Languages", BCP 47, RFC 3066, January 
+2001, https://www.rfc-editor.org/info/rfc3066 
+
+[RFC7230] Fielding, R., and Reschke, J., Eds., "Hypertext Transfer Protocol (HTTP/1.1): Message 
+Syntax and Routing", RFC 7230, June 2014, https://www.rfc-editor.org/info/rfc7230 
+
+[SOAP1.1] Box, D., Ehnebuske, D., Kakivaya, G., et al., "Simple Object Access Protocol (SOAP) 1.1", 
+W3C Note, May 2000, https://www.w3.org/TR/2000/NOTE-SOAP-20000508/ 
+
+[WSDL] Christensen, E., Curbera, F., Meredith, G., and Weerawarana, S., "Web Services Description 
+Language (WSDL) 1.1", W3C Note, March 2001, https://www.w3.org/TR/2001/NOTE-wsdl-20010315 
+
+[WSIBASIC] Ballinger, K., Ehnebuske, D., Gudgin, M., et al., Eds., "Basic Profile Version 1.0", Final 
+Material, April 2004, http://www.ws-i.org/Profiles/BasicProfile-1.0-2004-04-16.html 
+
+[XMLNS] Bray, T., Hollander, D., Layman, A., et al., Eds., "Namespaces in XML 1.0 (Third Edition)", 
+W3C Recommendation, December 2009, https://www.w3.org/TR/2009/REC-xml-names-20091208/ 
+
+7 / 67 
+
+[MS-OXWSOLPS] - v20250520 
+Online Personal Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+[XMLSCHEMA1/2] Thompson, H., Beech, D., Maloney, M., and Mendelsohn, N., Eds., "XML Schema 
+Part 1: Structures Second Edition", W3C Recommendation, October 2004, 
+https://www.w3.org/TR/2004/REC-xmlschema-1-20041028/ 
+
+[XMLSCHEMA2/2] Biron, P., and Malhotra, A., Eds., "XML Schema Part 2: Datatypes Second Edition", 
+W3C Recommendation, October 2004, https://www.w3.org/TR/2004/REC-xmlschema-2-20041028/ 
+
+1.2.2 Informative References 
+
+None. 
+
+1.3 Overview 
+
+This protocol enables a client to search a collection of items and return information about those items 
+(if any) that match. The client specifies search criteria as text. The criteria are interpreted by the 
+protocol server, which then attempts to find items that match. The set of items to be searched is also 
+specified by the client. A typical scenario for using this protocol is an e-mail client application that 
+enables users to find messages in their mailbox. 
+
+1.4 Relationship to Other Protocols 
+
+This protocol uses the Keyword Query Language, as described in [MS-KQL], as the syntax for 
+expressing the search criteria. 
+
+1.5 Prerequisites/Preconditions 
+
+This protocol operates between a protocol client and a protocol server that provides access to the 
+user’s documents (for example, email). The protocol requires that the client be able to form a URL 
+identifying the correct protocol server endpoint, and that it be able to authenticate against that 
+endpoint. 
+
+1.6 Applicability Statement 
+
+The protocol is designed for the execution of queries with no more than 20 OR clauses. 
+
+1.7 Versioning and Capability Negotiation 
+
+ Supported Transports: HTTP, HTTPS  
+
+ Protocol Versions: This protocol has only one WSDL port type version with a single set of 
+messages, but that WSDL port type has been extended by adding new operations. The use of 
+these operations is specified in section 3.1. 
+
+ Security and Authentication Methods: This protocol supports the following authentication methods: 
+NT LAN Manager Protocol (NTLM), NTLM, and Kerberos. These authentication methods are 
+described in section 3.1.4. 
+
+ Capability Negotiation: This protocol does not support version negotiation. 
+
+1.8 Vendor-Extensible Fields 
+
+None. 
+
+1.9 Standards Assignments 
+
+8 / 67 
+
+[MS-OXWSOLPS] - v20250520 
+Online Personal Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+2 Messages 
+
+In the following sections, the schema definition might differ from the processing rules imposed by the 
+protocol. The WSDL in this specification provides a base description of the protocol. The schema in 
+this specification provides a base description of the message syntax. The text that specifies the WSDL 
+and schema might specify restrictions that reflect actual protocol behavior. For example, the schema 
+definition might allow for an element to be empty, null, or not present, but the behavior of the 
+protocol as specified restricts the same elements to being non-empty, not null, or present. 
+
+2.1 Transport 
+
+Messages MUST be transported by using HTTP or HTTPS, as specified in [RFC7230]. 
+
+2.2 Common Message Syntax 
+
+This section contains common definitions that are used by this protocol. The syntax of the definitions 
+uses XML schema, as defined in [XMLSCHEMA1/2] and [XMLSCHEMA2/2], and Web Services 
+Description Language (WSDL), as defined in [WSDL]. 
+
+2.2.1 Namespaces 
+
+This specification defines and references various XML namespaces using the mechanisms specified in 
+[XMLNS]. Although this specification associates a specific XML namespace prefix for each XML 
+namespace that is used, the choice of any particular XML namespace prefix is implementation-specific 
+and not significant for interoperability. 
+
+Abbreviation Namespace Reference 
+
+soap http://schemas.xmlsoap.org/wsdl/soap/ [SOAP1.1] 
+
+wsdl http://schemas.xmlsoap.org/wsdl/ [WSDL] 
+
+t http://schemas.microsoft.com/exchange/services/2006/types  
+
+tns http://schemas.microsoft.com/exchange/services/2006/types  
+
+m http://schemas.microsoft.com/exchange/services/2006/messages  
+
+xs http://www.w3.org/2001/xmlschema [XMLSCHEMA2/2] 
+
+wsi http://ws-i.org/schemas/conformanceClaim/ [WSIBASIC] 
+
+ 
+
+2.2.2 Messages 
+
+This specification does not define any common WSDL message definitions. 
+
+2.2.3 Elements 
+
+This specification does not define any common XML schema element definitions. 
+
+9 / 67 
+
+[MS-OXWSOLPS] - v20250520 
+Online Personal Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+2.2.4 Complex Types 
+
+The following table summarizes the set of common XML schema complex type definitions defined by 
+this specification. XML schema complex type definitions that are specific to a particular operation are 
+described with the operation. 
+
+Complex Type Description 
+
+SearchDiagnosticsType For internal 
+use only. 
+
+ 
+
+2.2.4.1 SearchDiagnosticsType Complex Type 
+
+The SearchDiagnosticsType complex type is intended for internal use only. 
+
+  <xs:complexType name="SearchDiagnosticsType"> 
+  <xs:sequence> 
+      <xs:sequence> 
+        <xs:any namespace="##any" processContents="skip" minOccurs="0" 
+maxOccurs="unbounded"/> 
+      </xs:sequence> 
+    </xs:sequence> 
+  </xs:complexType> 
+
+The SearchDiagnosticsType complex type is used by the SearchResultsType complex type 
+(section 3.1.4.2.3.13), and the SearchSuggestionsType complex type (section 3.1.4.3.3.4). 
+
+2.2.5 Simple Types 
+
+The following table summarizes the set of common XML schema simple type definitions defined by this 
+specification. XML schema simple type definitions that are specific to a particular operation are 
+described with the operation. 
+
+Simple type Description 
+
+SuggestionKindType Specifies 
+the type(s) 
+of query 
+suggestions 
+that can be 
+requested. 
+
+ 
+
+2.2.5.1 SuggestionKindType Simple Type 
+
+The SuggestionKindType simple type specifies the type(s) of query suggestions that can be 
+requested. 
+
+  <xs:simpleType name="SuggestionKindType"> 
+    <xs:list> 
+      <xs:simpleType> 
+        <xs:restriction base="xs:string"> 
+          <xs:enumeration value="None"/> 
+          <xs:enumeration value="Keywords"/> 
+          <xs:enumeration value="People"/> 
+
+10 / 67 
+
+[MS-OXWSOLPS] - v20250520 
+Online Personal Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+          <xs:enumeration value="Hashtags"/> 
+          <xs:enumeration value="QueryHistory"/> 
+          <xs:enumeration value="OneDriveQueryHistory"/> 
+          <xs:enumeration value="All"/> 
+        </xs:restriction> 
+      </xs:simpleType> 
+    </xs:list> 
+  </xs:simpleType> 
+
+The SuggestionKindType simple type is used by the GetSearchSuggestions complex type (section 
+3.1.4.3.3.1). the SuggestionType complex type (section 3.1.4.3.3.5), and the StartSearchSession 
+complex type (section 3.1.4.4.3.1). 
+
+Value Meaning 
+
+None Nothing requested. 
+
+Keywords A keyword suggestion. This specifies query text that 
+doesn't identify a person. 
+
+People A people suggestion. This type attempts to match 
+characters with a name. 
+
+Hashtags A hashtag suggestion. 
+
+QueryHistory The search history. 
+
+OneDriveQueryHistory Not used. 
+
+All Specifies all suggested values. 
+
+ 
+
+2.2.6 Attributes 
+
+This specification does not define any common XML schema attribute definitions. 
+
+2.2.7 Groups 
+
+This specification does not define any common XML schema group definitions. 
+
+2.2.8 Attribute Groups 
+
+This specification does not define any common XML schema attribute group definitions. 
+
+11 / 67 
+
+[MS-OXWSOLPS] - v20250520 
+Online Personal Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+3 Protocol Details 
+
+The client side of this protocol is simply a pass-through. That is, no additional timers or other state is 
+required on the client side of this protocol. Calls made by the higher-layer protocol or application are 
+passed directly to the transport, and the results that are returned by the transport are passed directly 
+back to the higher-layer protocol or application. 
+
+In the following sections, the schema definition might be less restrictive than the processing rules 
+imposed by the protocol. The WSDL in this specification matches the WSDL that shipped with the 
+product and provides a base description of the schema. The text that introduces the WSDL specifies 
+additional restrictions that reflect actual Microsoft product behavior. For example, the schema 
+definition might allow for an element to be empty, null, or not present but the behavior of the protocol 
+as specified restricts the same elements to being non-empty, not null and present. 
+
+3.1 Common Details 
+
+This protocol defines a single WSDL port type with four operations. These operations enable client 
+applications to search for items in a user’s mailbox. 
+
+3.1.1 Abstract Data Model 
+
+None. 
+
+3.1.2 Timers 
+
+None. 
+
+3.1.3 Initialization 
+
+None. 
+
+3.1.4 Message Processing Events and Sequencing Rules 
+
+The following table summarizes the list of WSDL operations  as defined by this specification. 
+
+Operation Description 
+
+EndSearchSession Indicates to the protocol server that the client has finished searching. 
+
+ExecuteSearch The protocol client requests that the protocol server find and return information from 
+any items that match the specified query string. 
+
+GetSearchSuggestions The protocol client requests that the protocol server offer possible query strings, 
+based on some text provided. 
+
+StartSearchSession Indicates to the protocol server that the client is about to search. 
+
+ 
+
+3.1.4.1 EndSearchSession Operation 
+
+The EndSearchSession operation is a request to end a search session. The protocol client indicates 
+to the server that no queries will be sent until a new session is started. 
+
+The following is the WSDL port specification of the operation. 
+
+12 / 67 
+
+[MS-OXWSOLPS] - v20250520 
+Online Personal Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+    <wsdl:operation name="EndSearchSession"> 
+      <wsdl:input message="tns:EndSearchSessionSoapIn" /> 
+      <wsdl:output message="tns:EndSearchSessionSoapOut" /> 
+    </wsdl:operation> 
+
+The following is the WSDL binding specification of the operation. 
+
+    <wsdl:operation name="EndSearchSession"> 
+      <soap:operation 
+soapAction="http://schemas.microsoft.com/exchange/services/2006/messages/EndSearchSession" /> 
+      <wsdl:input> 
+        <soap:header message="tns:EndSearchSessionSoapIn" part="RequestVersion" 
+use="literal"/> 
+        <soap:header message="tns:EndSearchSessionSoapIn" part="MailboxCulture" 
+use="literal"/> 
+        <soap:body parts="request" use="literal" /> 
+      </wsdl:input> 
+      <wsdl:output> 
+        <soap:body parts="EndSearchSessionResult" use="literal" /> 
+        <soap:header message="tns:EndSearchSessionSoapOut" part="ServerVersion" 
+use="literal"/> 
+      </wsdl:output> 
+    </wsdl:operation> 
+
+3.1.4.1.1 Messages 
+
+The following table lists the WSDL message definitions that are specific to this operation. 
+
+Message Description 
+
+EndSearchSessionSoapIn Specifies the SOAP message that defines the end of the search 
+session. 
+
+EndSearchSessionSoapOut Specifies the SOAP message that is returned by the server in 
+response. 
+
+ 
+
+3.1.4.1.1.1 EndSearchSessionSoapIn Message 
+
+The EndSearchSessionSoapIn WSDL message carries the request to end the search session. 
+
+  <wsdl:message name="EndSearchSessionSoapIn"> 
+    <wsdl:part name="request" element="tns:EndSearchSession"/> 
+    <wsdl:part name="MailboxCulture" element="t:MailboxCulture"/> 
+    <wsdl:part name="RequestVersion" element="t:RequestServerVersion"/> 
+  </wsdl:message> 
+
+The EndSearchSessionSoapIn WSDL message is the input message for the EndSearchSession 
+operation (section 3.1.4.1). 
+
+The parts of the EndSearchSessionSoapIn WSDL message are described in the following table. 
+
+Part Element/type Description 
+
+request tns:EndSearchSession (section Specifies the SOAP body of the request. 
+3.1.4.1.2.1) 
+
+13 / 67 
+
+[MS-OXWSOLPS] - v20250520 
+Online Personal Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Part Element/type Description 
+
+MailboxCulture t:MailboxCulture ([MS- Specifies a SOAP header that identifies the culture 
+OXWSCDATA] section 2.2.3.6) to use for accessing the mailbox. The cultures are 
+
+defined by [RFC3066]. 
+
+RequestVersion t:RequestServerVersion ([MS- Specifies a SOAP header that identifies the schema 
+OXWSCDATA] section 2.2.3.9) version for the EndSearchSession operation 
+
+request. 
+
+ 
+
+3.1.4.1.1.2 EndSearchSessionSoapOut Message 
+
+The EndSearchSessionSoapOut WSDL message specifies the server response to the 
+EndSearchSession operation to end a search session. 
+
+  <wsdl:message name="EndSearchSessionSoapOut"> 
+    <wsdl:part name="EndSearchSessionResult" element="tns:EndSearchSessionResponse"/> 
+    <wsdl:part name="ServerVersion" element="t:ServerVersionInfo"/> 
+  </wsdl:message> 
+
+The EndSearchSessionSoapOut WSDL message is the output message for the EndSearchSession 
+operation (section 3.1.4.1). 
+
+The parts of the EndSearchSessionSoapOut WSDL message are described in the following table. 
+
+Part Element/type Description 
+
+EndSearchSessionResult tns:EndSearchSessionResponse Specifies the SOAP body of the 
+(section 3.1.4.1.2.2) response message to an 
+
+EndSearchSession operation request. 
+
+ServerVersion t:ServerVersionInfo ([MS- Specifies a SOAP header that 
+OXWSCDATA] section 2.2.3.10) identifies the server version for the 
+
+response. 
+
+ 
+
+3.1.4.1.2 Elements 
+
+The following table lists the XML schema element definitions that are specific to this operation. 
+
+Element Description 
+
+EndSearchSession Specifies the options required to end a search session. 
+
+EndSearchSessionResponse Specifies the response body from a request to end a search session. 
+
+ 
+
+3.1.4.1.2.1 tns:EndSearchSession Element 
+
+The EndSearchSession element specifies the base element for an EndSearchSession operation 
+(section 3.1.4.1) request. 
+
+  <xs:element name="EndSearchSession" type="m:EndSearchSession"/> 
+
+14 / 67 
+
+[MS-OXWSOLPS] - v20250520 
+Online Personal Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+3.1.4.1.2.2 tns:EndSearchSessionResponse Element 
+
+The EndSearchSessionResponse element specifies the response message for an 
+EndSearchSession operation (section 3.1.4.1). 
+
+  <xs:element name="EndSearchSessionResponse" type="m:EndSearchSessionResponseMessage"/> 
+
+3.1.4.1.3 Complex Types 
+
+The following table lists the XML schema complex type definitions that are specific to this operation. 
+
+Complex type Description 
+
+EndSearchSession Specifies the options required to end a search session. 
+
+EndSearchSessionResponseMessage Specifies the response from a request to end a search session. 
+
+ 
+
+3.1.4.1.3.1 EndSearchSession Complex Type 
+
+The EndSearchSession complex type specifies a request to end a search session. The protocol client 
+indicates to the server that other search-related requests will not follow for some unspecified time. 
+This can be used by the protocol server to release resources associated with the session. The 
+EndSearchSession complex type extends the BaseRequestType complex type, as specified by [MS-
+OXWSCDATA] section 2.2.4.17. 
+
+  <xs:complexType name="EndSearchSession"> 
+    <xs:complexContent> 
+      <xs:extension base="m:BaseRequestType"> 
+        <xs:sequence> 
+          <xs:element name="SearchSessionId" type="t:GuidType" minOccurs="1" maxOccurs="1" /> 
+        </xs:sequence> 
+      </xs:extension> 
+    </xs:complexContent> 
+  </xs:complexType> 
+
+The following table lists the child elements of the EndSearchSession complex type. 
+
+Element Type Description 
+
+SearchSessionId t:GuidType Uniquely identifies the session to be ended. 
+([MS-
+OXWSXPROP] 
+section 
+2.1.7) 
+
+ 
+
+3.1.4.1.3.2 EndSearchSessionResponseMessage Complex Type 
+
+The EndSearchSessionResponseMessage complex type extends the ResponseMessageType 
+complex type, as specified by [MS-OXWSCDATA] section 2.2.4.65. 
+
+  <xs:complexType name="EndSearchSessionResponseMessage"> 
+    <xs:complexContent> 
+      <xs:extension base="m:ResponseMessageType" /> 
+
+15 / 67 
+
+[MS-OXWSOLPS] - v20250520 
+Online Personal Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+    </xs:complexContent> 
+  </xs:complexType> 
+
+3.1.4.1.4 Simple Types 
+
+None. 
+
+3.1.4.1.5 Attributes 
+
+None. 
+
+3.1.4.1.6 Groups 
+
+None. 
+
+3.1.4.1.7 Attribute Groups 
+
+None. 
+
+3.1.4.2 ExecuteSearch Operation 
+
+The ExecuteSearch operation is a search for content matching a query string. 
+
+The following is the WSDL port specification of the operation. 
+
+    <wsdl:operation name="ExecuteSearch"> 
+      <wsdl:input message="tns:ExecuteSearchSoapIn" /> 
+      <wsdl:output message="tns:ExecuteSearchSoapOut" /> 
+    </wsdl:operation> 
+
+The following is the WSDL binding specification of the ExecuteSearch operation. 
+
+    <wsdl:operation name="ExecuteSearch"> 
+      <soap:operation 
+soapAction="http://schemas.microsoft.com/exchange/services/2006/messages/ExecuteSearch" /> 
+      <wsdl:input> 
+        <soap:header message="tns:ExecuteSearchSoapIn" part="RequestVersion" use="literal"/> 
+        <soap:header message="tns:ExecuteSearchSoapIn" part="MailboxCulture" use="literal"/> 
+        <soap:body parts="request" use="literal" /> 
+      </wsdl:input> 
+      <wsdl:output> 
+        <soap:body parts="ExecuteSearchResult" use="literal" /> 
+        <soap:header message="tns:ExecuteSearchSoapOut" part="ServerVersion" use="literal"/> 
+      </wsdl:output> 
+    </wsdl:operation> 
+
+3.1.4.2.1 Messages 
+
+The following table lists the WSDL message definitions that are specific to this operation. 
+
+Message Description 
+
+ExecuteSearchSoapIn Specifies the SOAP message that initiates the search. 
+
+ExecuteSearchSoapOut Specifies the SOAP message that is returned by the server in 
+response. 
+
+16 / 67 
+
+[MS-OXWSOLPS] - v20250520 
+Online Personal Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+ 
+
+3.1.4.2.1.1 ExecuteSearchSoapIn Message 
+
+The ExecuteSearchSoapIn WSDL message requests the server to search for and return items 
+matching a specified query. 
+
+  <wsdl:message name="ExecuteSearchSoapIn"> 
+    <wsdl:part name="request" element="tns:ExecuteSearch"/> 
+    <wsdl:part name="MailboxCulture" element="t:MailboxCulture"/> 
+    <wsdl:part name="RequestVersion" element="t:RequestServerVersion"/> 
+  </wsdl:message> 
+
+The ExecuteSearchSoapIn WSDL message is the input message for the ExecuteSearch operation 
+(section 3.1.4.2). 
+
+The parts of the ExecuteSearchSoapIn WSDL message are described in the following table. 
+
+Part Element/type Description 
+
+request tns:ExecuteSearch (section Specifies the SOAP body of the request. 
+3.1.4.2.2.1) 
+
+MailboxCulture t:MailboxCulture ([MS- Specifies a SOAP header that identifies the culture 
+OXWSCDATA] section 2.2.3.6) to use for accessing the mailbox. The cultures are 
+
+defined by [RFC3066]. 
+
+RequestVersion t:RequestServerVersion ([MS- Specifies a SOAP header that identifies the schema 
+OXWSCDATA] section 2.2.3.9) version for the ExecuteSearch operation request. 
+
+ 
+
+3.1.4.2.1.2 ExecuteSearchSoapOut Message 
+
+The ExecuteSearchSoapOut WSDL message specifies the server response to the ExecuteSearch 
+operation to search for items. 
+
+  <wsdl:message name="ExecuteSearchSoapOut"> 
+    <wsdl:part name="ExecuteSearchResult" element="tns:ExecuteSearchResponse"/> 
+    <wsdl:part name="ServerVersion" element="t:ServerVersionInfo"/> 
+  </wsdl:message> 
+
+The ExecuteSearchSoapOut WSDL message is the output message for the ExecuteSearch 
+operation (section 3.1.4.2). 
+
+The parts of the ExecuteSearchSoapOut WSDL message are described in the following table. 
+
+Part Element/type Description 
+
+ExecuteSearchResult tns:ExecuteSearchResponse (section Specifies the SOAP body of the response 
+3.1.4.2.2.2) message to an ExecuteSearch operation 
+
+request (section 3.1.4.2). 
+
+ServerVersion t:ServerVersionInfo ([MS- Specifies a SOAP header that identifies the 
+OXWSCDATA] section 2.2.3.10) server version for the response. 
+
+ 
+
+17 / 67 
+
+[MS-OXWSOLPS] - v20250520 
+Online Personal Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+3.1.4.2.2 Elements 
+
+The following table lists the XML schema element definitions that are specific to this operation. 
+
+Element Description 
+
+ExecuteSearch Requests that the server search for items matching a query string. 
+
+ExecuteSearchResponse Specifies the response body from a request to search. 
+
+ 
+
+3.1.4.2.2.1 tns:ExecuteSearch Element 
+
+The ExecuteSearch element specifies the base element for an ExecuteSearch operation (section 
+3.1.4.2) request. 
+
+  <xs:element name="ExecuteSearch" type="m:ExecuteSearch"/> 
+
+3.1.4.2.2.2 tns:ExecuteSearchResponse Element 
+
+The ExecuteSearchResponse element specifies the response message for an ExecuteSearch 
+operation (section 3.1.4.2). 
+
+  <xs:element name="ExecuteSearchResponse" type="m:ExecuteSearchResponseMessage"/> 
+
+3.1.4.2.3 Complex Types 
+
+The following table lists the XML schema complex type definitions that are specific to this operation. 
+
+Complex type Description 
+
+AnalyzedQuery For internal use only. 
+
+ArrayOfSearchScopeType Specifies the places in which the search will be 
+conducted. 
+
+CustomSearchScopeType Specifies the location of a search in a mailbox that 
+might not be the user’s primary mailbox. 
+
+DynamicRefinerQueryType Specifies a dynamic refiner that the client requests the 
+server to calculate over, and return with, the results of 
+a query. 
+
+ExecuteSearch Specifies the parameters required to conduct a search. 
+
+ExecuteSearchResponseMessage Specifies the response from a search. 
+
+GroupSearchScopeType Specifies a search of groups using the shortcut 
+MyGroups. 
+
+LargeArchiveSearchScopeType Specifies a search in the online archive mailbox for the 
+user's account. 
+
+OneDriveSearchScopeType For internal use only. 
+
+PrimaryMailboxSearchScopeType Specifies the location of a search within a user’s primary 
+mailbox. 
+
+18 / 67 
+
+[MS-OXWSOLPS] - v20250520 
+Online Personal Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Complex type Description 
+
+SearchFolderScopeType Specifies the location of a folder-based search. 
+
+SearchRefinerType Specifies a set of refinement (filter) definitions that are 
+to be applied to a query. 
+
+SearchResultsType Specifies a set of search results. 
+
+SingleGroupSearchScopeType Specifies a single group to search, using identifiers.  
+
+SingleLargeArchiveSearchScopeType For internal use only. 
+
+UnifiedGroupIdentity Identifies the group to search.  
+
+ 
+
+3.1.4.2.3.1 AnalyzedQuery Complex Type 
+
+The AnalyzedQuery complex type is intended for internal use only. 
+
+  <xs:complexType name="AnalyzedQuery"> 
+    <xs:sequence> 
+      <xs:element name="QueryLanguage" type="xs:string" minOccurs="1" maxOccurs="1"/> 
+      <xs:element name="SearchRestrictions" type="t:RestrictionType" minOccurs="1" 
+maxOccurs="1"/> 
+    </xs:sequence> 
+  </xs:complexType> 
+
+The following table lists the child elements of the AnalyzedQuery complex type. 
+
+Element name Type  Description 
+
+QueryLanguage xs:string ([XMLSCHEMA2/2]) For internal use only. 
+
+SearchRestrictions t:RestrictionType ([MS- For internal use only. 
+OXWSSRCH] section 2.2.4.30) 
+
+ 
+
+3.1.4.2.3.2 ArrayOfSearchScopeType Complex Type 
+
+The ArrayOfSearchScopeType complex type represents a specification for the scope of a query. 
+
+  <xs:complexType name="ArrayOfSearchScopeType"> 
+    <xs:sequence> 
+      <xs:element name="PrimaryMailboxSearchScope" type="t:PrimaryMailboxSearchScopeType" 
+minOccurs="0" maxOccurs="1"/> 
+      <xs:element name="LargeArchiveSearchScope" type="t:LargeArchiveSearchScopeType" 
+minOccurs="0" maxOccurs="1"/> 
+      <xs:element name="GroupSearchScope" type="t:GroupSearchScopeType" minOccurs="0" 
+maxOccurs="1"/> 
+      <xs:element name="CustomSearchScope" type="t:CustomSearchScopeType" minOccurs="0" 
+maxOccurs="4"/> 
+      <xs:element name="SingleGroupSearchScope" type="t:SingleGroupSearchScopeType" 
+minOccurs="0" maxOccurs="1"/> 
+      <xs:element name="OneDriveSearchScope" type="t:OneDriveSearchScopeType" minOccurs="0" 
+maxOccurs="1"/> 
+      <xs:element name="SingleLargeArchiveSearchScope" 
+type="t:SingleLargeArchiveSearchScopeType" minOccurs="0" maxOccurs="1"/> 
+    </xs:sequence> 
+
+19 / 67 
+
+[MS-OXWSOLPS] - v20250520 
+Online Personal Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+  </xs:complexType> 
+
+The following table lists the child elements of the ArrayOfSearchScopeType complex type. 
+
+Element name Type Description 
+
+PrimaryMailboxSearchScope t:PrimaryMailboxSearchScopeType Specifies that the user’s 
+(section 3.1.4.2.3.10) primary mailbox is searched. 
+
+LargeArchiveSearchScope t:LargeArchiveSearchScopeType Search in the online archive 
+(section 3.1.4.2.3.8) mailbox for the user's 
+
+account. 
+
+GroupSearchScope t:GroupSearchScopeType (section Search groups using shortcut 
+3.1.4.2.3.7) MyGroups. 
+
+CustomSearchScope t:CustomSearchScopeType (section Specifies other locations to be 
+3.1.4.2.3.3) searched. 
+
+SingleGroupSearchScope t:SingleGroupSearchScopeType Search a single group using 
+(section 3.1.4.2.3.14) group identifier. 
+
+OneDriveSearchScope t:OneDriveSearchScopeType (section Not used. 
+3.1.4.2.3.9) 
+
+SingleLargeArchiveSearchScope t:SingleLargeArchiveSearchScopeType For internal use only. 
+(section 3.1.4.2.3.15) 
+
+ 
+
+3.1.4.2.3.3 CustomSearchScopeType Complex Type 
+
+The CustomSearchScopeType complex type represents a specification for the location of a search in 
+a mailbox that might not be the user’s primary mailbox. 
+
+  <xs:complexType name="CustomSearchScopeType"> 
+    <xs:sequence> 
+      <xs:element name="MailboxGuid" type="t:GuidType"/> 
+      <xs:element name="FolderScope" type="t:SearchFolderScopeType" /> 
+      <xs:element name="IsDeepTraversal" type="xs:boolean"/> 
+    </xs:sequence> 
+  </xs:complexType> 
+
+The following table lists the elements of the CustomSearchScopeType complex type. 
+
+Element name Type Description 
+
+MailboxGuid t:GuidType ([MS- Specifies the mailbox to be searched. 
+OXWSXPROP] section 
+2.1.7) 
+
+FolderScope t:SearchFolderScopeType Specifies the folder to be searched. 
+(section 3.1.4.2.3.11) 
+
+IsDeepTraversal xs:boolean Specifies whether the search is to descend into subfolders. 
+([XMLSCHEMA2/2]) 
+
+ 
+
+20 / 67 
+
+[MS-OXWSOLPS] - v20250520 
+Online Personal Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+3.1.4.2.3.4 DynamicRefinerQueryType Complex Type 
+
+The DynamicRefinerQueryType complex type specifies a dynamic refiner that the client requests 
+the server to calculate over, and return with, the results of a query. 
+
+  <xs:complexType name="DynamicRefinerQueryType"> 
+    <xs:sequence> 
+      <xs:element name="RefinerQuery" type="xs:string" minOccurs="1" maxOccurs="1" /> 
+      <xs:element name="TDRefinerId" type="xs:int" minOccurs="1" maxOccurs="1" /> 
+    </xs:sequence> 
+  </xs:complexType> 
+
+The following table lists the child elements of the DynamicRefinerQueryType complex type. 
+
+Element 
+name Type Description 
+
+RefinerQuery xs:string Specifies the query syntax necessary to achieve a specific type of 
+([XMLSCHEMA2/2]) refinement (filtering) of the results set. 
+
+TDRefinerId xs:int On generation of a batch of dynamic refiners, this uniquely identifies the 
+([XMLSCHEMA2/2]) refiner within the batch. 
+
+ 
+
+3.1.4.2.3.5 ExecuteSearch Complex Type 
+
+The ExecuteSearch complex type specifies a search. This complex type extends the 
+BaseRequestType complex type, as specified by [MS-OXWSCDATA] section 2.2.4.17. 
+
+  <xs:complexType name="ExecuteSearch"> 
+    <xs:complexContent> 
+      <xs:extension base="m:BaseRequestType"> 
+        <xs:sequence> 
+          <xs:element name="ApplicationId" type="t:SearchApplicationIdType" minOccurs="1" 
+maxOccurs="1"/> 
+          <xs:element name="Scenario" type="xs:string" minOccurs="1" maxOccurs="1"/> 
+          <xs:element name="SearchSessionId" type="t:GuidType" minOccurs="1" maxOccurs="1" /> 
+          <xs:element name="SearchScope" type="t:ArrayOfSearchScopeType" minOccurs="1" 
+maxOccurs="1" /> 
+          <xs:element name="Query" type="xs:string" minOccurs="1" maxOccurs="1" /> 
+          <xs:element name="AnalyzedQuery" type="t:AnalyzedQuery" minOccurs="0" 
+maxOccurs="1"/> 
+          <xs:element name="ResultRowCount" type="xs:long" minOccurs="0" maxOccurs="1" /> 
+          <xs:element name="ResultRowOffset" type="xs:long" minOccurs="0" maxOccurs="1" /> 
+          <xs:element name="MaxResultsCountHint" type="xs:long" minOccurs="0" maxOccurs="1" 
+/> 
+          <xs:element name="MaxPreviewLength" type="xs:long" minOccurs="0" maxOccurs="1"/> 
+          <xs:element name="SearchRefiners" minOccurs="0" maxOccurs="1"> 
+            <xs:complexType> 
+              <xs:sequence> 
+                <xs:element name="SearchRefiner" type="t:DynamicRefinerQueryType" 
+minOccurs="0" maxOccurs="unbounded"/> 
+              </xs:sequence> 
+            </xs:complexType> 
+          </xs:element> 
+          <xs:element name="RetrieveRefiners" type="xs:boolean" minOccurs="0" maxOccurs="1" 
+/> 
+          <xs:element name="MaxRefinersCountPerRefinerType" type="xs:long" minOccurs="0" 
+maxOccurs="1" /> 
+          <xs:element name="IdFormat" type="t:IdFormatType" minOccurs="0" maxOccurs="1"/> 
+          <xs:element name="ItemTypes" type="t:ItemTypesFilterType" minOccurs="1" 
+maxOccurs="1" /> 
+
+21 / 67 
+
+[MS-OXWSOLPS] - v20250520 
+Online Personal Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+          <xs:element name="PropertySetName" type="t:SearchResultsPropertySetNameType" 
+minOccurs="0" maxOccurs="1"/> 
+          <xs:element name="SearchRestrictions" type="t:RestrictionType" minOccurs="0" 
+maxOccurs="1"/> 
+          <xs:element name="IncludeDeleted" type="xs:boolean" minOccurs="0" maxOccurs="1"/> 
+        </xs:sequence> 
+      </xs:extension> 
+    </xs:complexContent> 
+  </xs:complexType> 
+ 
+
+The following table lists the child elements of the ExecuteSearch complex type. 
+
+Element name Type Description 
+
+ApplicationId t:SearchApplicationIdType (section A name that identifies the 
+3.1.4.2.4.4) calling application. 
+
+Scenario xs:string ([XMLSCHEMA2/2]) An indication of the general 
+intent of the operation, for 
+example, "MailSearch". 
+
+SearchSessionId t:GuidType ([MS-OXWSXPROP] section Uniquely identifies this 
+2.1.7) session. This SHOULD have 
+
+been supplied to the 
+previous 
+StartSearchSession 
+operation (section 3.1.4.4). 
+
+SearchScope t:ArrayOfSearchScopeType (section Specifies the place(s) in 
+3.1.4.2.3.2) which the search is to be 
+
+made. 
+
+Query xs:string This specifies the text to be 
+matched. Keyword Query 
+Syntax (as specified in [MS-
+KQL]) is supported. 
+
+AnalyzedQuery t:AnalyzedQuery (section 3.1.4.2.3.1) For internal use only. 
+
+ResultRowCount xs:long ([XMLSCHEMA2/2]) The maximum number of 
+matching items (one per 
+"row" in the set returned) to 
+be returned from the 
+specified offset (see 
+ResultRowOffset). The 
+protocol server can return 
+fewer results than this if the 
+end of the results is 
+reached. 
+
+ResultRowOffset xs:long The offset within the results 
+set (1 = first) from which to 
+return the results. The 
+protocol client can use this, 
+in conjunction with 
+ResultRowCount, to 
+request "pages" of results 
+from the protocol server. 
+
+MaxResultsCountHint xs:long The maximum number of 
+results that the protocol 
+client is willing to display. 
+
+22 / 67 
+
+[MS-OXWSOLPS] - v20250520 
+Online Personal Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Element name Type Description 
+
+When passed with the 
+request for the first "page", 
+the protocol server can use 
+this to fix the number of 
+results that it will return for 
+subsequent requests for 
+results. The protocol server 
+can use a lower count than 
+the value provided. 
+
+MaxPreviewLength xs:long A value in the range 0 – 255 
+that specifies the maximum 
+number of characters 
+returned in the body 
+preview property on the 
+item found. If not specified, 
+a value of 255 is used. 
+
+SearchRefiners Sequence of If present, this specifies the 
+t:DynamicRefinerQueryType (section dynamic refiners that the 
+3.1.4.2.3.4) protocol server MUST apply 
+
+to the query before 
+returning results, if 
+RetrieveRefiners is true. 
+
+RetrieveRefiners xs:boolean ([XMLSCHEMA2/2]) A value of true means that 
+the server MUST return any 
+dynamic refiners, specified 
+by SearchRefiners, in its 
+response.  
+
+MaxRefinersCountPerRefinerType xs:long This indicates to the 
+protocol server that it MUST 
+NOT return more than the 
+specified number of 
+dynamic refiners of any 
+type. 
+
+IdFormat t:IdFormatType ([MS-OXWSCVTID] The format of the id of the 
+section 3.1.4.1.4.1) item returned. 
+
+ItemTypes t:ItemTypesFilterType (section Specifies the type(s) of the 
+3.1.4.2.4.1) items that the protocol 
+
+server MUST try to match to 
+the query. 
+
+PropertySetName t:SearchResultsPropertySetNameType For internal use only. 
+(section 3.1.4.2.4.5) 
+
+SearchRestrictions t:RestrictionType ([MS-OXWSSRCH] For internal use only. 
+section 2.2.4.30) 
+
+IncludeDeleted xs:boolean If true, search the Deleted 
+Items folder as part of a 
+whole mailbox search. 
+Otherwise, omit this folder 
+from the search. 
+
+ 
+
+3.1.4.2.3.6 ExecuteSearchResponseMessage Complex Type 
+
+23 / 67 
+
+[MS-OXWSOLPS] - v20250520 
+Online Personal Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+The ExecuteSearchResponseMessage complex type specifies a response to a search request. This 
+complex type extends the ResponseMessageType complex type, as specified by [MS-OXWSCDATA] 
+section 2.2.4.65. 
+
+  <xs:complexType name="ExecuteSearchResponseMessage"> 
+    <xs:complexContent> 
+      <xs:extension base="m:ResponseMessageType"> 
+        <xs:sequence> 
+          <xs:element name="SearchResults" type="t:SearchResultsType"/> 
+        </xs:sequence> 
+      </xs:extension> 
+    </xs:complexContent> 
+  </xs:complexType> 
+
+The following table lists the child element of the ExecuteSearchResponseMessage complex type. 
+
+Element 
+name Type Description 
+
+SearchResults t:SearchResultsType Items in scope that matched the query. 
+(section 3.1.4.2.3.13) 
+
+ 
+
+3.1.4.2.3.7 GroupSearchScopeType Complex Type 
+The GroupSearchScopeType complex type specifies a search of groups using the shortcut 
+MyGroups. 
+
+ <xs:complexType name="GroupSearchScopeType"> 
+  <xs:sequence> 
+    <xs:element name="GroupTypes" type="t:SearchScopeGroupsType"/> 
+  </xs:sequence> 
+ </xs:complexType>  
+
+The following table lists the child element of the GroupSearchScopeType complex type. 
+
+Element name Type Description 
+
+GroupTypes t:SearchScopeGroupsType Specifies the value indicating the 
+(section 3.1.4.2.4.7) group to search for. 
+
+ 
+
+3.1.4.2.3.8 LargeArchiveSearchScopeType Complex Type 
+
+The LargeArchiveSearchScopeType complex type specifies a search in the online archive mailbox 
+for the user's account. 
+
+ <xs:complexType name="LargeArchiveSearchScopeType"> 
+  <xs:sequence> 
+    <xs:element name="ArchiveTypes" type="t:SearchScopeArchivesType"/> 
+  </xs:sequence> 
+ </xs:complexType> 
+
+The following table lists the child element of the LargeArchiveSearchScopeType complex type. 
+
+24 / 67 
+
+[MS-OXWSOLPS] - v20250520 
+Online Personal Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Element name Type Description 
+
+ArchiveTypes t:SearchScopeArchivesType Specifies the archive to search. 
+(section 3.1.4.2.4.6) 
+
+ 
+
+3.1.4.2.3.9 OneDriveSearchScopeType Complex Type 
+
+The OneDriveSearchScopeType complex type is intended for internal use only. 
+
+ <xs:complexType name="OneDriveSearchScopeType"> 
+  <xs:sequence> 
+    <xs:element name="OneDriveView" type="t:OneDriveViewType" minOccurs="1" maxOccurs="1"/> 
+  </xs:sequence> 
+ </xs:complexType>  
+
+The following table lists the child element of the OneDriveSearchScopeType complex type. 
+
+Element name Type Description 
+
+OneDriveView t:OneDriveViewType (section Specifies the OneDrive view. 
+3.1.4.2.4.2) 
+
+ 
+
+3.1.4.2.3.10 PrimaryMailboxSearchScopeType Complex Type 
+
+The PrimaryMailboxSearchScopeType complex type represents a specification for the location of a 
+search within a user’s primary mailbox. 
+
+  <xs:complexType name="PrimaryMailboxSearchScopeType"> 
+    <xs:sequence> 
+      <xs:element name="FolderScope" type="t:SearchFolderScopeType" minOccurs="0" 
+maxOccurs="1"/> 
+      <xs:element name="IsDeepTraversal" type="xs:boolean" minOccurs="0" maxOccurs="1"/> 
+    </xs:sequence> 
+  </xs:complexType> 
+
+The following table lists the child elements of the PrimaryMailboxSearchScopeType complex type. 
+
+Element name Type Description 
+
+FolderScope t:SearchFolderScopeType Specifies the folder to be searched. 
+(section 3.1.4.2.3.11) 
+
+IsDeepTraversal xs:boolean Specifies whether the search includes subfolders. 
+([XMLSCHEMA2/2]) 
+
+ 
+
+3.1.4.2.3.11 SearchFolderScopeType Complex Type 
+
+The SearchFolderScopeType complex type represents the details of a specification for the location 
+of a folder-based search. 
+
+25 / 67 
+
+[MS-OXWSOLPS] - v20250520 
+Online Personal Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+  <xs:complexType name="SearchFolderScopeType"> 
+    <xs:choice> 
+      <xs:element name="FolderId" type="t:FolderIdType"/> 
+      <xs:element name="WellKnownFolder" type="t:DistinguishedFolderIdType"/> 
+    </xs:choice> 
+  </xs:complexType> 
+
+The following table lists the child elements of the SearchFolderScopeType complex type. 
+
+Element name Type Description 
+
+FolderId t:FolderIdType ([MS- Uniquely identifies the folder within the mailbox. 
+OXWSCDATA] section 2.2.4.35) 
+
+WellKnownFolder t:DistinguishedFolderIdType Identifies a "well known" folder (for example, Inbox) 
+([MS-OXWSCDATA] section within the mailbox. 
+2.2.4.27) 
+
+ 
+
+3.1.4.2.3.12 SearchRefinerType Complex Type 
+
+The SearchRefinerType complex type represents a set of refinement (filter) definitions that are to be 
+applied to a query. 
+
+  <xs:complexType name="SearchRefinerType"> 
+    <xs:sequence> 
+      <xs:element name="RefinerType" type="t:RefinerTypeType" minOccurs="1" maxOccurs="1"/> 
+      <xs:element name="Refiner" type="t:DynamicRefinerQueryType" minOccurs="1" 
+maxOccurs="1"/> 
+    </xs:sequence> 
+  </xs:complexType> 
+
+The following table lists the child elements of the SearchRefinerType complex type. 
+
+Element 
+name Type Description 
+
+RefinerType t:RefinerTypeType (section Specifies the type of refiner represented by the Refiner 
+3.1.4.2.4.3) element. 
+
+Refiner t:DynamicRefinerQueryType Specifies the refinement. 
+(section 3.1.4.2.3.4) 
+
+ 
+
+3.1.4.2.3.13 SearchResultsType Complex Type 
+
+The SearchResultsType complex type represents a set of search results. 
+
+  <xs:complexType name="SearchResultsType"> 
+    <xs:sequence> 
+      <xs:element name="Items" minOccurs="0" maxOccurs="1"> 
+        <xs:complexType> 
+          <xs:sequence> 
+            <xs:element name="Item" type="t:ItemType" minOccurs="0" maxOccurs="unbounded"/> 
+          </xs:sequence> 
+        </xs:complexType> 
+      </xs:element> 
+
+26 / 67 
+
+[MS-OXWSOLPS] - v20250520 
+Online Personal Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+      <xs:element name="Conversations" minOccurs="0" maxOccurs="1"> 
+        <xs:complexType> 
+          <xs:sequence> 
+            <xs:element name="Conversation" type="t:ConversationType" minOccurs="0" 
+maxOccurs="unbounded"/> 
+          </xs:sequence> 
+        </xs:complexType> 
+      </xs:element> 
+      <xs:element name="People" minOccurs="0" maxOccurs="1"> 
+        <xs:complexType> 
+          <xs:sequence> 
+            <xs:element name="Persona" type="t:PersonaType" minOccurs="0" 
+maxOccurs="unbounded"/> 
+          </xs:sequence> 
+        </xs:complexType> 
+      </xs:element> 
+      <xs:element name="MoreResultsAvailable" type="xs:boolean" minOccurs="1" maxOccurs="1" 
+/> 
+      <xs:element name="RefinerTelemetryBatchId" type="xs:int" minOccurs="1" maxOccurs="1"/> 
+      <xs:element name="SearchRefiners" minOccurs="0" maxOccurs="1"> 
+        <xs:complexType> 
+          <xs:sequence> 
+            <xs:element name="SearchRefiner" type="t:SearchRefinerType" minOccurs="1" 
+maxOccurs="unbounded"/> 
+          </xs:sequence> 
+        </xs:complexType> 
+      </xs:element> 
+      <xs:element name="DiagnosticsData" type="t:SearchDiagnosticsType" minOccurs="0" 
+maxOccurs="1"/> 
+      <xs:element name="SearchResultsCount" type="xs:int" minOccurs="0" maxOccurs="1" /> 
+      <xs:element name="TotalResultsCount" type="xs:int" minOccurs="0" maxOccurs="1" /> 
+      <xs:element name="SearchTerms" type="t:ArrayOfStringsType" minOccurs="0" 
+maxOccurs="1"/> 
+    </xs:sequence> 
+  </xs:complexType> 
+
+The following table lists the child elements of the SearchResultsType complex type. 
+
+Element name Type Description 
+
+Items Sequence of t:ItemType ([MS- Items that matched the query. 
+OXWSCORE] section 2.2.4.24) 
+
+Conversations Sequence of t:ConversationType Conversations that matched the query. 
+([MS-OXWSCONV] section 
+3.1.4.2.3.4) 
+
+People Sequence of t:PersonaType ([MS- People that matched the query. 
+OXWSPERS] section 2.2.4.19) 
+
+MoreResultsAvailable xs:boolean ([XMLSCHEMA2/2]) true if more results matched the query than 
+are contained in this set. 
+
+RefinerTelemetryBatchId xs:int ([XMLSCHEMA2/2]) For internal use only. 
+
+SearchRefiners Sequence of t:SearchRefinerType Dynamic refiners derived from the results. 
+(section 3.1.4.2.3.12) 
+
+DiagnosticsData t:SearchDiagnosticsType For internal use only. 
+(section 2.2.4.1) 
+
+SearchResultsCount xs:int The number of search results contained in 
+this response. 
+
+TotalResultsCount xs:int The number of search results matching the 
+
+27 / 67 
+
+[MS-OXWSOLPS] - v20250520 
+Online Personal Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Element name Type Description 
+
+query. 
+
+SearchTerms t:ArrayOfStringsType ([MS- Returns the actual terms used for the 
+OXWSCDATA] section 2.2.4.13) search, after word breaking and removal of 
+
+any syntax-related property names. 
+Intended for use by clients that wish to 
+perform hit highlighting 
+
+ 
+
+3.1.4.2.3.14 SingleGroupSearchScopeType Complex Type 
+
+The SingleGroupSearchScopeType complex type identifies a single group to search, using group 
+identifier. 
+
+ <xs:complexType name="SingleGroupSearchScopeType"> 
+  <xs:sequence> 
+    <xs:element name="GroupIdentity" type="t:UnifiedGroupIdentity"/> 
+  </xs:sequence> 
+ </xs:complexType> 
+
+The following table lists the child element of the SingleGroupSearchScopeType complex type. 
+
+Element name Type Description 
+
+GroupIdentity t:UnifiedGroupIdentity (section The group to search. 
+3.1.4.2.3.16) 
+
+ 
+
+3.1.4.2.3.15 SingleLargeArchiveSearchScopeType Complex Type 
+
+The SingleLargeArchiveSearchScopeType complex type is intended for internal use only. 
+
+ <xs:complexType name="SingleLargeArchiveSearchScopeType"> 
+  <xs:sequence> 
+    <xs:element name="MailboxGuid" type="t:GuidType" minOccurs="0" maxOccurs="1"/> 
+    <xs:element name="FolderScope" type="t:SearchFolderScopeType"/> 
+    <xs:element name="IsDeepTraversal" type="xs:boolean"/> 
+  </xs:sequence> 
+ </xs:complexType> 
+
+The following table lists the child elements of the SingleLargeArchiveSearchScopeType complex 
+type. 
+
+Element name Type Description 
+
+MailboxGuid t:GuidType ([MS-OXWSXPROP] For internal use only. 
+section 2.1.7) 
+
+FolderScope t:SearchFolderScopeType For internal use only. 
+(section 3.1.4.2.3.11) 
+
+IsDeepTraversal xs:boolean ([XMLSCHEMA2/2] ) For internal use only. 
+
+ 
+
+28 / 67 
+
+[MS-OXWSOLPS] - v20250520 
+Online Personal Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+3.1.4.2.3.16 UnifiedGroupIdentity Complex Type 
+
+The UnifiedGroupIdentity complex type identifies the group to search. 
+
+ <xs:complexType name="UnifiedGroupIdentity"> 
+  <xs:sequence> 
+    <xs:element name="Type" type="t:UnifiedGroupIdentityType" minOccurs="1" maxOccurs="1"/> 
+    <xs:element name="Value" type="xs:string" minOccurs="1" maxOccurs="1"/> 
+  </xs:sequence> 
+ </xs:complexType> 
+
+The following table lists the child elements of the UnifiedGroupIdentity complex type. 
+
+Element name Type Description 
+
+Type t:UnifiedGroupIdentityType The type of the group. 
+(section 3.1.4.2.4.8) 
+
+Value xs:string ([XMLSCHEMA2/2] ) Identifies the group. 
+
+ 
+
+3.1.4.2.4 Simple Types 
+
+The following table lists the XML schema simple type definitions that are specific to this operation. 
+
+Simple type Description 
+
+ItemTypesFilterType Specifies the type of items to be searched for. 
+
+OneDriveViewType Not used. 
+
+RefinerTypeType Specifies the type of refinement from the search that is required 
+
+SearchApplicationIdType For internal use only. 
+
+SearchResultsPropertySetNameType For internal use only. 
+
+SearchScopeArchivesType Specifies the archive to search. 
+
+SearchScopeGroupsType For internal use only. 
+
+UnifiedGroupIdentityType Specifies the identity type of a unified group. 
+
+ 
+
+3.1.4.2.4.1 ItemTypesFilterType Simple Type 
+
+The ItemTypesFilterType simple type describes the type(s) of items that are to be matched by a 
+search. 
+
+  <xs:simpleType name="ItemTypesFilterType"> 
+    <xs:list> 
+      <xs:simpleType> 
+        <xs:restriction base="xs:string"> 
+          <xs:enumeration value="None"/> 
+          <xs:enumeration value="MailItems"/> 
+
+29 / 67 
+
+[MS-OXWSOLPS] - v20250520 
+Online Personal Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+          <xs:enumeration value="MailConversations"/> 
+          <xs:enumeration value="CalendarItems"/> 
+          <xs:enumeration value="People"/> 
+          <xs:enumeration value="OneDriveItems"/> 
+          <xs:enumeration value="FileItems"/> 
+        </xs:restriction> 
+      </xs:simpleType> 
+    </xs:list> 
+  </xs:simpleType> 
+
+Value Meaning 
+
+None No refinement is required. 
+
+MailItems Filter the search results to include only email items. 
+
+MailConversations Filter the search results to include only mail conversation items. 
+
+CalendarItems Filter the search results to include only calendar items. 
+
+People Filter the search results to include only people. 
+
+OneDriveItems Not used. 
+
+FileItems Not used. 
+
+ 
+
+3.1.4.2.4.2 OneDriveViewType Simple Type 
+
+The OneDriveViewType simple type is not used. 
+
+ <xs:simpleType name="OneDriveViewType"> 
+  <xs:list> 
+    <xs:simpleType> 
+      <xs:restriction base="xs:string"> 
+        <xs:enumeration value="None"/> 
+        <xs:enumeration value="SharedWithMe"/> 
+        <xs:enumeration value="MyDocuments"/> 
+        <xs:enumeration value="RecycleBin"/> 
+      </xs:restriction> 
+    </xs:simpleType> 
+  </xs:list> 
+ </xs:simpleType> 
+
+Value Meaning 
+
+None Not 
+used. 
+
+SharedWithMe Not 
+used. 
+
+MyDocuments Not 
+used. 
+
+RecycleBin Not 
+used. 
+
+ 
+
+30 / 67 
+
+[MS-OXWSOLPS] - v20250520 
+Online Personal Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+3.1.4.2.4.3 RefinerTypeType Simple Type 
+
+The RefinerTypeType simple type represents the type of refinement of the search that is required. 
+
+  <xs:simpleType name="RefinerTypeType"> 
+    <xs:restriction base="xs:string"> 
+      <xs:enumeration value="None"/> 
+      <xs:enumeration value="To"/> 
+      <xs:enumeration value="From"/> 
+      <xs:enumeration value="Folder"/> 
+      <xs:enumeration value="HasAttachment"/> 
+      <xs:enumeration value="MailboxSource"/> 
+    </xs:restriction> 
+  </xs:simpleType> 
+
+Value Meaning 
+
+None No refinement is required. 
+
+To Refine according to the recipient of the item. 
+
+From Refine according to the originator of the item. 
+
+Folder Refine according to the folder in which the item is located. 
+
+HasAttachment Refine according to whether the item has at least one attachment, or not. 
+
+MailboxSource Refine according to the mailbox in which the item is located. 
+
+ 
+
+3.1.4.2.4.4 SearchApplicationIdType Simple Type 
+
+The SearchApplicationIdType simple type is intended for internal use only. 
+
+ <xs:simpleType name="SearchApplicationIdType"> 
+  <xs:restriction base="xs:string"> 
+    <xs:enumeration value="Outlook"/> 
+    <xs:enumeration value="Owa"/> 
+    <xs:enumeration value="Paw"/> 
+    <xs:enumeration value="Teamspace"/> 
+    <xs:enumeration value="OneDrive"/> 
+    <xs:enumeration value="Other"/> 
+  </xs:restriction> 
+ </xs:simpleType> 
+
+Value Meaning 
+
+Outlook For internal use only. 
+
+Owa For internal use only. 
+
+Paw For internal use only. 
+
+Teamspace For internal use only. 
+
+OneDrive For internal use only. 
+
+Other For internal use only. 
+
+31 / 67 
+
+[MS-OXWSOLPS] - v20250520 
+Online Personal Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+ 
+
+3.1.4.2.4.5 SearchResultsPropertySetNameType Simple Type 
+
+The SearchResultsPropertySetNameType simple type is intended for internal use only. 
+
+ <xs:simpleType name="SearchResultsPropertySetNameType"> 
+  <xs:restriction base="xs:string"> 
+    <xs:enumeration value="Default"/> 
+    <xs:enumeration value="Owa16"/> 
+    <xs:enumeration value="Outlook16"/> 
+  </xs:restriction> 
+ </xs:simpleType> 
+
+Value Description 
+
+Default For internal 
+use only. 
+
+Owa16 For internal 
+use only. 
+
+Outlook16 For internal 
+use only. 
+
+ 
+
+3.1.4.2.4.6 SearchScopeArchivesType Simple Type 
+
+The SearchScopeArchivesType simple type specifies the archive mailbox to search. 
+
+ <xs:simpleType name="SearchScopeArchivesType"> 
+  <xs:list> 
+    <xs:simpleType> 
+      <xs:restriction base="xs:string"> 
+        <xs:enumeration value="MainArchive"/> 
+        <xs:enumeration value="AuxArchive"/> 
+        <xs:enumeration value="All"/> 
+      </xs:restriction> 
+    </xs:simpleType> 
+  </xs:list> 
+ </xs:simpleType> 
+
+Value Meaning 
+
+MainArchive The main 
+archive 
+mailbox. 
+
+AuxArchive For 
+internal 
+use only. 
+
+All All archive 
+mailboxes. 
+
+ 
+
+3.1.4.2.4.7 SearchScopeGroupsType Simple Type 
+
+32 / 67 
+
+[MS-OXWSOLPS] - v20250520 
+Online Personal Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+The SearchScopeGroupsType simple type is intended for internal use only. 
+
+ <xs:simpleType name="SearchScopeGroupsType"> 
+  <xs:list> 
+    <xs:simpleType> 
+      <xs:restriction base="xs:string"> 
+        <xs:enumeration value="MyGroups"/> 
+      </xs:restriction> 
+    </xs:simpleType> 
+  </xs:list> 
+ </xs:simpleType> 
+
+Value Meaning 
+
+MyGroups For 
+internal 
+use only. 
+
+ 
+
+3.1.4.2.4.8 UnifiedGroupIdentityType Simple Type 
+
+The UnifiedGroupIdentityType simple type specifies the identity type of a unified group. 
+
+ <xs:simpleType name="UnifiedGroupIdentityType"> 
+  <xs:restriction base="xs:string"> 
+    <xs:enumeration value="SmtpAddress"/> 
+    <xs:enumeration value="LegacyDn"/> 
+    <xs:enumeration value="ExternalDirectoryObjectId"/> 
+  </xs:restriction> 
+ </xs:simpleType> 
+
+Value Meaning 
+
+SmtpAddress The SMTP address of the group. 
+
+LegacyDn The legacy name of the group. 
+
+ExternalDirectoryObjectId The external directory object id. 
+
+ 
+
+3.1.4.2.5 Attributes 
+
+None. 
+
+3.1.4.2.6 Groups 
+
+None. 
+
+3.1.4.2.7 Attribute Groups 
+
+None. 
+
+33 / 67 
+
+[MS-OXWSOLPS] - v20250520 
+Online Personal Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+3.1.4.3 GetSearchSuggestions Operation 
+
+The GetSearchSuggestions operation is a request for possible query strings, matching the provided 
+(possibly fragmentary) input.  
+
+The following is the WSDL port type specification of the operation. 
+
+    <wsdl:operation name="GetSearchSuggestions"> 
+      <wsdl:input message="tns:GetSearchSuggestionsSoapIn" /> 
+      <wsdl:output message="tns:GetSearchSuggestionsSoapOut" /> 
+    </wsdl:operation> 
+
+The following is the WSDL binding specification of the operation. 
+
+    <wsdl:operation name="GetSearchSuggestions"> 
+      <soap:operation 
+soapAction="http://schemas.microsoft.com/exchange/services/2006/messages/GetSearchSuggestions
+" /> 
+      <wsdl:input> 
+        <soap:header message="tns:GetSearchSuggestionsSoapIn" part="RequestVersion" 
+use="literal"/> 
+        <soap:header message="tns:GetSearchSuggestionsSoapIn" part="MailboxCulture" 
+use="literal"/> 
+        <soap:body parts="request" use="literal" /> 
+      </wsdl:input> 
+      <wsdl:output> 
+        <soap:body parts="GetSearchSuggestionsResult" use="literal" /> 
+        <soap:header message="tns:GetSearchSuggestionsSoapOut" part="ServerVersion" 
+use="literal"/> 
+      </wsdl:output> 
+    </wsdl:operation> 
+
+3.1.4.3.1 Messages 
+
+The following table lists the WSDL message definitions that are specific to this operation. 
+
+Message Description 
+
+GetSearchSuggestionsSoapIn Specifies the SOAP message that requests search suggestions. 
+
+GetSearchSuggestionsSoapOut Specifies the SOAP message that is returned by the server in 
+response. 
+
+ 
+
+3.1.4.3.1.1 GetSearchSuggestionsSoapIn Message 
+
+The GetSearchSuggestionsSoapIn WSDL message requests that the server provide search 
+suggestions based on some (possibly fragmentary) input. 
+
+  <wsdl:message name="GetSearchSuggestionsSoapIn"> 
+    <wsdl:part name="request" element="tns:GetSearchSuggestions"/> 
+    <wsdl:part name="MailboxCulture" element="t:MailboxCulture"/> 
+    <wsdl:part name="RequestVersion" element="t:RequestServerVersion"/> 
+  </wsdl:message> 
+
+The GetSearchSuggestionsSoapIn WSDL message is the input messages for the 
+GetSearchSuggestions operation (section 3.1.4.3).  
+
+34 / 67 
+
+[MS-OXWSOLPS] - v20250520 
+Online Personal Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+The parts of the GetSearchSuggestionsSoapIn WSDL message are described in the following table. 
+
+Part Element/type Description 
+
+request tns:GetSearchSuggestions (section Specifies the SOAP body of the request. 
+3.1.4.3.2.1) 
+
+MailboxCulture t:MailboxCulture ([MS- Specifies a SOAP header that identifies the culture 
+OXWSCDATA] section 2.2.3.6) to use for accessing the mailbox. The cultures are 
+
+defined by [RFC3066]. 
+
+RequestVersion t:RequestServerVersion ([MS- Specifies a SOAP header that identifies the schema 
+OXWSCDATA] section 2.2.3.9) version for the GetSearchSuggestions operation 
+
+request. 
+
+ 
+
+3.1.4.3.1.2 GetSearchSuggestionsSoapOut Message 
+
+The GetSearchSuggestionsSoapOut WSDL message specifies the server response to the 
+GetSearchSuggestions operation (section 3.1.4.3) to request search suggestions. 
+
+  <wsdl:message name="GetSearchSuggestionsSoapOut"> 
+    <wsdl:part name="GetSearchSuggestionsResult" element="tns:GetSearchSuggestionsResponse"/> 
+    <wsdl:part name="ServerVersion" element="t:ServerVersionInfo"/> 
+  </wsdl:message> 
+
+The GetSearchSuggestionsSoapOut message is the output message for the 
+GetSearchSuggestions operation. 
+
+The parts of the GetSearchSuggestionsSoapOut WSDL message are described in the following 
+table. 
+
+Part Element/type Description 
+
+GetSearchSuggestionsResult tns:GetSearchSuggestionsResponse Specifies the SOAP body of the 
+(section 3.1.4.3.2.2) response message to a 
+
+GetSearchSuggestions 
+operation request. 
+
+ServerVersion t:ServerVersionInfo ([MS-OXWSCDATA] Specifies a SOAP header that 
+section 2.2.3.10) identifies the server version for 
+
+the response. 
+
+If the request is successful, the GetSearchSuggestions operation returns a 
+GetSearchSuggestionsResponse element with the ResponseClass attribute of the 
+GetSearchSuggestionsResponse element set to "Success". The ResponseCode element of the 
+GetSearchSuggestionsResponse element is set to "NoError". 
+
+3.1.4.3.2 Elements 
+
+The following table lists the XML schema element definitions that are specific to this operation. 
+
+Element Description 
+
+GetSearchSuggestions Requests search suggestions. 
+
+GetSearchSuggestionsResponse Specifies the response body from a request for search suggestions. 
+
+35 / 67 
+
+[MS-OXWSOLPS] - v20250520 
+Online Personal Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+ 
+
+3.1.4.3.2.1 tns:GetSearchSuggestions Element 
+
+The GetSearchSuggestions element specifies the base element for a GetSearchSuggestions 
+operation (section 3.1.4.3) request. 
+
+  <xs:element name="GetSearchSuggestions" type="m:GetSearchSuggestions"/> 
+
+3.1.4.3.2.2 tns:GetSearchSuggestionsResponse Element 
+
+The GetSearchSuggestionsResponse element specifies the response message for a 
+GetSearchSuggestions operation (section 3.1.4.3). 
+
+  <xs:element name="GetSearchSuggestionsResponse" 
+type="m:GetSearchSuggestionsResponseMessage"/> 
+
+3.1.4.3.3 Complex Types 
+
+The following table lists the XML schema complex type definitions that are specific to this operation. 
+
+Complex type Description 
+
+GetSearchSuggestions Specifies the parameters required to request search suggestions. 
+
+GetSearchSuggestionsResponseMessage Specifies the response from a request for search suggestions. 
+
+SuggestionType A generic, single search suggestion. 
+
+PeopleSuggestionType A single people search suggestion. 
+
+SearchSuggestionsType A collection of search suggestions. 
+
+ 
+
+3.1.4.3.3.1 GetSearchSuggestions Complex Type 
+
+The GetSearchSuggestions complex type specifies a request for search suggestions. This complex 
+type extends the BaseRequestType complex type, as specified by .[MS-OXWSCDATA] section 
+2.2.4.17 
+
+  <xs:complexType name="GetSearchSuggestions"> 
+    <xs:complexContent> 
+      <xs:extension base="m:BaseRequestType"> 
+        <xs:sequence> 
+          <xs:element name="SearchSessionId" type="t:GuidType" minOccurs="1" maxOccurs="1" /> 
+          <xs:element name="Query" type="xs:string" minOccurs="0" maxOccurs="1" /> 
+          <xs:element name="SuggestionTypes" type="t:SuggestionKindType" minOccurs="0" 
+maxOccurs="1" /> 
+          <xs:element name="SuggestionsPrimer" type="xs:boolean" minOccurs="0" 
+maxOccurs="1"/> 
+          <xs:element name="MaxSuggestionsCountPerSuggestionType" type="xs:long" 
+minOccurs="0" maxOccurs="1" /> 
+        </xs:sequence> 
+      </xs:extension> 
+    </xs:complexContent> 
+  </xs:complexType> 
+
+36 / 67 
+
+[MS-OXWSOLPS] - v20250520 
+Online Personal Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+The following table lists the child elements of the GetSearchSuggestions complex type. 
+
+Element Type Description 
+
+SearchSessionId t:GuidType ([MS- Uniquely identifies this session. This 
+OXWSXPROP] section SHOULD have been supplied to the 
+2.1.7) StartSearchSession operation 
+
+(section 3.1.4.4). 
+
+Query xs:string A query, or query fragment: 
+([XMLSCHEMA2/2]) typically, the text that a user has 
+
+entered as the search term(s). The 
+server MUST try to match this 
+against its available data sources, 
+and return matching queries. The 
+client can omit this, in which case 
+the server will generate suggestions 
+based on criteria other than string 
+matching (for example, most recent 
+queries). 
+
+SuggestionTypes t:SuggestionKindType The type(s) of suggestions that are 
+(section 2.2.5.1) desired. 
+
+SuggestionsPrimer xs:boolean For internal use only. 
+([XMLSCHEMA2/2]) 
+
+MaxSuggestionsCountPerSuggestionType xs:long The greatest number of suggestions 
+([XMLSCHEMA2/2]) of any type (specified in the 
+
+SuggestionTypes element) that 
+the client wishes to receive. The 
+server MUST NOT return more 
+suggestions of any given type. 
+
+ 
+
+3.1.4.3.3.2 GetSearchSuggestionsResponseMessage Complex Type 
+
+The GetSearchSuggestionsResponseMessage complex type extends the ResponseMessageType 
+complex type. This complex type extends the ResponseMessageType complex type, as specified by 
+[MS-OXWSCDATA] section 2.2.4.65. 
+
+  <xs:complexType name="GetSearchSuggestionsResponseMessage"> 
+    <xs:complexContent> 
+      <xs:extension base="m:ResponseMessageType"> 
+        <xs:sequence> 
+          <xs:element name="SearchSuggestions" type="t:SearchSuggestionsType"/> 
+        </xs:sequence> 
+      </xs:extension> 
+    </xs:complexContent> 
+  </xs:complexType> 
+
+The following table lists the child elements of the GetSearchSuggestionsResponseMessage type. 
+
+Element Type Description 
+
+SearchSuggestions t:SearchSuggestionsType Search suggestions matching the query (fragment) 
+(section 3.1.4.3.3.4) provided in the GetSearchSuggestions operation 
+
+(section 3.1.4.3). 
+
+ 
+
+37 / 67 
+
+[MS-OXWSOLPS] - v20250520 
+Online Personal Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+3.1.4.3.3.3 PeopleSuggestionType Complex Type 
+
+The PeopleSuggestionType complex type represents a query suggestion that also identifies a mail-
+enabled person or group. It is an extension of the base SuggestionType complex type (section 
+3.1.4.3.3.5). 
+
+  <xs:complexType name="PeopleSuggestionType"> 
+    <xs:complexContent> 
+      <xs:extension base="t:SuggestionType"> 
+        <xs:sequence> 
+          <xs:element name="PrimarySmtpAddress" type="xs:string" minOccurs="1" 
+maxOccurs="1"/> 
+          <xs:element name="PersonType" type="xs:string" minOccurs="0" maxOccurs="1"/> 
+        </xs:sequence> 
+      </xs:extension> 
+    </xs:complexContent> 
+  </xs:complexType> 
+
+The following table lists the child elements of the PeopleSuggestionType complex type. 
+
+Element Type Description 
+
+PrimarySmtpAddress xs:string The email address of the suggested person or group. 
+([XMLSCHEMA2/2] 
+) 
+
+PersonType xs:string Describes the type of suggestion in more detail. One of the 
+following: 
+
+ "Unknown" 
+
+ "Person" 
+
+ "DistributionList" 
+
+ "Room" 
+
+ "Place" 
+
+ "ModernGroup" 
+
+ 
+
+3.1.4.3.3.4 SearchSuggestionsType Complex Type 
+
+The SearchSuggestionsType complex type represents a batch of query suggestions. The server can 
+generate zero, one, or multiple suggestions in response to a GetSearchSuggestions operation 
+(section 3.1.4.3), depending on the string to be matched and the contents of its suggestion data 
+sources. 
+
+  <xs:complexType name="SearchSuggestionsType"> 
+    <xs:sequence> 
+      <xs:element name="TDSuggestionsBatchId" type="xs:long" minOccurs="1" maxOccurs="1"/> 
+      <xs:element name="TDSuggestionsInstanceId" type="t:GuidType" minOccurs="1" 
+maxOccurs="1"/> 
+      <xs:element name="Suggestions" minOccurs="0" maxOccurs="1"> 
+        <xs:complexType> 
+          <xs:sequence> 
+            <xs:element name="Suggestion" type="t:SuggestionType" minOccurs="0" 
+maxOccurs="unbounded"/> 
+          </xs:sequence> 
+        </xs:complexType> 
+      </xs:element> 
+      <xs:element name="DiagnosticsData" type="t:SearchDiagnosticsType" minOccurs="0" 
+maxOccurs="1" /> 
+    </xs:sequence> 
+
+38 / 67 
+
+[MS-OXWSOLPS] - v20250520 
+Online Personal Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+  </xs:complexType> 
+
+The following table lists the child elements of the SearchSuggestionsType complex type. 
+
+Element Type Description 
+
+TDSuggestionsBatchId xs:long ([XMLSCHEMA2/2]) This identifies the batch of suggestions uniquely 
+as an instance (see the 
+TDSuggestionsInstanceId element). Servers 
+MUST number the batches such that the identities 
+increase monotonically through the batch. 
+
+TDSuggestionsInstanceId t:GuidType ([MS- This identifies a set of batches of suggestions 
+OXWSXPROP] section 2.1.7) corresponding to a single search session. If the 
+
+client invoked the StartSearchSession operation 
+(section 3.1.4.4) and provided a search session 
+identifier, the server MUST use this. Otherwise, 
+the server MUST generate a unique identifier that 
+can be used for correlation, in the same way. 
+
+Suggestions Sequence of If present, this carries the suggestion(s) in the 
+t:SuggestionType (section batch, one per element contained. 
+3.1.4.3.3.5) 
+
+DiagnosticsData t:SearchDiagnosticsType For internal use only. 
+(section 2.2.4.1) 
+
+ 
+
+3.1.4.3.3.5 SuggestionType Complex Type 
+
+The SuggestionType complex type represents a query suggestion. 
+
+  <xs:complexType name="SuggestionType"> 
+    <xs:sequence> 
+      <xs:element name="SuggestedQuery" type="xs:string" minOccurs="1" maxOccurs="1"/> 
+      <xs:element name="DisplayText" type="xs:string" minOccurs="1" maxOccurs="1"/> 
+      <xs:element name="SuggestionType" type="t:SuggestionKindType" minOccurs="1" 
+maxOccurs="1"/> 
+      <xs:element name="Trigger" type="xs:string" minOccurs="0" maxOccurs="1"/> 
+      <xs:element name="TDSuggestionId" type="xs:int"/> 
+      <xs:element name="IsDeletable" type="xs:boolean"/> 
+    </xs:sequence> 
+  </xs:complexType> 
+
+The following table lists the child elements of the SuggestionType complex type. 
+
+Element Type Description 
+
+SuggestedQuery xs:string The suggested query, which can be used as the Query element 
+([XMLSCHEMA2/2]) of the ExecuteSearch operation (section 3.1.4.2). 
+
+DisplayText xs:string A form of the suggested query that is suitable for display to the 
+user. This value can be the same as the value of the 
+SuggestedQuery element. This is not supposed to be used as 
+the Query element of the ExecuteSearch operation. 
+
+SuggestionType t:SuggestionKindType The type of the suggestion. This MUST be compatible with the 
+(section 2.2.5.1) SuggestionTypes specified in the GetSearchSuggestions 
+
+operation (section 3.1.4.3). 
+
+39 / 67 
+
+[MS-OXWSOLPS] - v20250520 
+Online Personal Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Element Type Description 
+
+Trigger xs:string The query (or fragment) that elicited this suggestion. 
+
+TDSuggestionId xs:int This identifies the suggestion uniquely within the batch of 
+([XMLSCHEMA2/2]) suggestions returned in the 
+
+GetSearchSuggestionsResponseMessage response (section 
+3.1.4.3.2.2). Servers MUST arrange the suggestions such that 
+the identities increase monotonically through the batch. Clients 
+SHOULD display suggestions in this order. 
+
+IsDeletable xs:boolean For internal use only. 
+([XMLSCHEMA2/2]) 
+
+ 
+
+3.1.4.3.4 Simple Types 
+
+None. 
+
+3.1.4.3.5 Attributes 
+
+None. 
+
+3.1.4.3.6 Groups 
+
+None. 
+
+3.1.4.3.7 Attribute Groups 
+
+None. 
+
+3.1.4.4 StartSearchSession Operation 
+
+This StartSearchSession operation is a request to begin a search session. The protocol client 
+indicates that the server SHOULD expect that other requests (including queries) will follow. This 
+information can be used by the protocol server to perform important optimizations such as cache 
+warming. 
+
+The following is the WSDL port type specification of the operation. 
+
+    <wsdl:operation name="StartSearchSession"> 
+      <wsdl:input message="tns:StartSearchSessionSoapIn" /> 
+      <wsdl:output message="tns:StartSearchSessionSoapOut" /> 
+    </wsdl:operation> 
+
+The following is the WSDL binding specification of the operation. 
+
+    <wsdl:operation name="StartSearchSession"> 
+      <soap:operation 
+soapAction="http://schemas.microsoft.com/exchange/services/2006/messages/StartSearchSession" 
+/> 
+      <wsdl:input> 
+        <soap:header message="tns:StartSearchSessionSoapIn" part="RequestVersion" 
+use="literal"/> 
+        <soap:header message="tns:StartSearchSessionSoapIn" part="MailboxCulture" 
+use="literal"/> 
+        <soap:body parts="request" use="literal" /> 
+      </wsdl:input> 
+
+40 / 67 
+
+[MS-OXWSOLPS] - v20250520 
+Online Personal Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+      <wsdl:output> 
+        <soap:body parts="StartSearchSessionResult" use="literal" /> 
+        <soap:header message="tns:StartSearchSessionSoapOut" part="ServerVersion" 
+use="literal"/> 
+      </wsdl:output> 
+    </wsdl:operation> 
+
+3.1.4.4.1 Messages 
+
+The following table lists the WSDL message definitions that are specific to this operation. 
+
+Message Description 
+
+StartSearchSessionSoapIn Specifies the SOAP message that defines the search session. 
+
+StartSearchSessionSoapOut Specifies the SOAP message that is returned by the server in 
+response. 
+
+ 
+
+3.1.4.4.1.1 StartSearchSessionSoapIn Message 
+
+The StartSearchSessionSoapIn WSDL message specifies the options that are to be applied by the 
+protocol server to the search session. 
+
+  <wsdl:message name="StartSearchSessionSoapIn"> 
+    <wsdl:part name="request" element="tns:StartSearchSession"/> 
+    <wsdl:part name="MailboxCulture" element="t:MailboxCulture"/> 
+    <wsdl:part name="RequestVersion" element="t:RequestServerVersion"/> 
+  </wsdl:message> 
+
+The StartSearchSessionSoapIn WSDL message is the input message for the StartSearchSession 
+operation (section 3.1.4.4). 
+
+The parts of the StartSearchSessionSoapIn WSDL message are described in the following table. 
+
+Part Element/type Description 
+
+request tns:StartSearchSession (section Specifies the SOAP body of the request. 
+3.1.4.4.2.1) 
+
+MailboxCulture t:MailboxCulture ([MS- Specifies a SOAP header that identifies the culture 
+OXWSCDATA] section 2.2.3.6) to use for accessing the mailbox. The cultures are 
+
+defined by [RFC3066]. 
+
+RequestVersion t:RequestServerVersion ([MS- Specifies a SOAP header that identifies the schema 
+OXWSCDATA] section 2.2.3.9) version for the StartSearchSession operation 
+
+request.  
+
+ 
+
+3.1.4.4.1.2 StartSearchSessionSoapOut Message 
+
+The StartSearchSessionSoapOut WSDL message specifies the server response to the 
+StartSearchSession operation (section 3.1.4.4) to create a search session. 
+
+  <wsdl:message name="StartSearchSessionSoapOut"> 
+    <wsdl:part name="StartSearchSessionResult" element="tns:StartSearchSessionResponse"/> 
+
+41 / 67 
+
+[MS-OXWSOLPS] - v20250520 
+Online Personal Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+    <wsdl:part name="ServerVersion" element="t:ServerVersionInfo"/> 
+  </wsdl:message> 
+
+The StartSearchSessionSoapOut WSDL message is the output message for the 
+StartSearchSession operation. 
+
+The parts of the StartSearchSessionSoapOut WSDL message are described in the following table. 
+
+Part Element/type Description 
+
+StartSearchSessionResult tns:StartSearchSessionResponse Specifies the SOAP body of the 
+(section 3.1.4.4.2.2) response message to a 
+
+StartSearchSession operation 
+request. 
+
+ServerVersion t:ServerVersionInfo ([MS- Specifies a SOAP header that 
+OXWSCDATA] section 2.2.3.10) identifies the server version for the 
+
+response. 
+
+If the request is successful, the StartSearchSession operation returns a 
+StartSearchSessionResponse element with the ResponseClass attribute of the 
+StartSearchSessionResponseMessage element set to "Success". The ResponseCode element of 
+the StartSearchSessionResponseMessage element is set to "NoError". 
+
+3.1.4.4.2 Elements 
+
+The following table lists the XML schema element definitions that are specific to this operation. 
+
+Element Description 
+
+StartSearchSession Specifies the options required to create a search session. 
+
+StartSearchSessionResponse Specifies the response body from a request to create a search session. 
+
+ 
+
+3.1.4.4.2.1 tns:StartSearchSession Element 
+
+The StartSearchSession element specifies the base element for a StartSearchSession operation 
+(section 3.1.4.4) request. 
+
+  <xs:element name="StartSearchSession" type="m:StartSearchSession"/> 
+
+3.1.4.4.2.2 tns:StartSearchSessionResponse Element 
+
+The StartSearchSessionResponse element specifies the response message for a 
+StartSearchSession operation (section 3.1.4.4). 
+
+  <xs:element name="StartSearchSessionResponse" 
+type="m:StartSearchSessionResponseMessage"/> 
+
+3.1.4.4.3 Complex Types 
+
+The following table lists the XML schema complex type definitions that are specific to this operation. 
+
+42 / 67 
+
+[MS-OXWSOLPS] - v20250520 
+Online Personal Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Complex type Description 
+
+StartSearchSession Specifies the options required to create a search session. 
+
+StartSearchSessionResponseMessage Specifies the response from a request to create a search session. 
+
+ 
+
+3.1.4.4.3.1 StartSearchSession Complex Type 
+
+The StartSearchSession complex type specifies a request to start a search session. The protocol 
+client indicates to the server that it SHOULD expect that other search-related requests will follow. This 
+can be used by the protocol server to perform important optimizations such as cache warming.  
+
+This complex type extends the BaseRequestType complex type, as specified by [MS-OXWSCDATA] 
+section 2.2.4.17. 
+
+  <xs:complexType name="StartSearchSession"> 
+    <xs:complexContent> 
+      <xs:extension base="m:BaseRequestType"> 
+        <xs:sequence> 
+          <xs:element name="SearchSessionId" type="t:GuidType" minOccurs="1" maxOccurs="1" /> 
+          <xs:element name="WarmupOptions" type="t:WarmupOptionsType" minOccurs="1" 
+maxOccurs="1" /> 
+          <xs:element name="SuggestionTypes" type="t:SuggestionKindType" minOccurs="1" 
+maxOccurs="1" /> 
+          <xs:element name="SearchScope" type="t:ArrayOfSearchScopeType" minOccurs="1" 
+maxOccurs="1" /> 
+          <xs:element name="IdFormat" type="t:IdFormatType" minOccurs="0" maxOccurs="1" /> 
+        </xs:sequence> 
+      </xs:extension> 
+    </xs:complexContent> 
+  </xs:complexType> 
+
+The following table lists the child elements of the StartSearchSession complex type. 
+
+Element Type Description 
+
+SearchSessionId t:GuidType ([MS-OXWSXPROP] Uniquely identifies this session. 
+section 2.1.7) 
+
+WarmupOptions t:WarmupOptionsType (section Specifies the type(s) of warm-up that are 
+3.1.4.4.4.1) appropriate. The appropriate value will depend on 
+
+the protocol client’s requirements and its anticipated 
+subsequent use of the protocol. 
+
+SuggestionTypes t:SuggestionKindType (section Specifies the type(s) of query suggestions that can 
+2.2.5.1) be requested later in the session. 
+
+SearchScope t:ArrayOfSearchScopeType Specifies the scope(s) of items that subsequent 
+(section 3.1.4.2.3.2) searches in the session will try to match. 
+
+IdFormat t:IdFormatType ([MS- Specifies the format in which the identifiers of 
+OXWSCVTID] section 3.1.4.1.4.1) matched items will be returned. If not specified, a 
+
+value of "EwsId" will be used. 
+
+ 
+
+3.1.4.4.3.2 StartSearchSessionResponseMessage Complex Type 
+
+43 / 67 
+
+[MS-OXWSOLPS] - v20250520 
+Online Personal Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+The StartSearchSessionResponseMessage complex type extends the ResponseMessageType 
+complex type. This complex type extends the ResponseMessageType complex type, as specified by 
+[MS-OXWSCDATA] section 2.2.4.65. 
+
+  <xs:complexType name="StartSearchSessionResponseMessage"> 
+    <xs:complexContent> 
+      <xs:extension base="m:ResponseMessageType"> 
+      </xs:extension> 
+    </xs:complexContent> 
+  </xs:complexType> 
+
+3.1.4.4.4 Simple Types 
+
+The following table lists the XML schema simple type definitions that are specific to this operation. 
+
+Simple type Description 
+
+WarmupOptionsType Specifies the kind(s) of warm up that the protocol server SHOULD 
+perform when creating a search session. "Warming up" refers to 
+initialization procedures that the protocol server can take on its 
+data structures to optimize the speed of its response to subsequent 
+requests. 
+
+ 
+
+3.1.4.4.4.1 WarmupOptionsType Simple Type 
+
+The WarmupOptionsType simple type specifies the kind(s) of warm up that the protocol server 
+SHOULD perform when creating a search session in the StartSearchSession operation. 
+
+  <xs:simpleType name="WarmupOptionsType"> 
+    <xs:list> 
+      <xs:simpleType> 
+      <xs:restriction base="xs:string"> 
+        <xs:enumeration value="None"/> 
+        <xs:enumeration value="Suggestions"/> 
+        <xs:enumeration value="Results"/> 
+        <xs:enumeration value="All"/> 
+      </xs:restriction> 
+      </xs:simpleType> 
+    </xs:list> 
+  </xs:simpleType> 
+
+Value Meaning 
+
+None No warm-up is required. 
+
+Suggestions Search suggestions data structures SHOULD be warmed up. 
+
+Results Query results data structures SHOULD be warmed up. 
+
+All All types of warm up SHOULD be performed. 
+
+ 
+
+3.1.4.4.5 Attributes 
+
+None. 
+
+44 / 67 
+
+[MS-OXWSOLPS] - v20250520 
+Online Personal Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+3.1.4.4.6 Groups 
+
+None. 
+
+3.1.4.4.7 Attribute Groups 
+
+None. 
+
+3.1.5 Timer Events 
+
+None. 
+
+3.1.6 Other Local Events 
+
+None. 
+
+45 / 67 
+
+[MS-OXWSOLPS] - v20250520 
+Online Personal Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+4 Protocol Examples 
+
+The following examples illustrate the usage of the protocol. The recommended pattern of usage is to 
+perform the following operations in this order: 
+
+1. Create a search session 
+
+2. Get Suggestions for Searches (optional) 
+
+3. Search 
+
+4. End the search session 
+
+Operations 2 and 3 can be repeated multiple times within a search session. 
+
+4.1 Create a Search Session 
+
+The most natural time for a protocol client to create a search session is when the user indicates that 
+they wish to search. They might do this, for example, by clicking on an element in the user interface, 
+such as an edit control into which they will type their query. 
+
+In this example, the protocol client constructs the following WSDL message: 
+
+ <?xml version="1.0" encoding="utf-8"?> 
+ <s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"> 
+  <s:Header> 
+    <RequestServerVersion Version="Exchange2015" 
+xmlns="http://schemas.microsoft.com/exchange/services/2006/types"/> 
+    <MailboxCulture xmlns="http://schemas.microsoft.com/exchange/services/2006/types">en-
+US</MailboxCulture> 
+  </s:Header> 
+  <s:Body> 
+    <StartSearchSession xmlns="http://schemas.microsoft.com/exchange/services/2006/messages"> 
+      <SearchSessionId>{5DEA5CFC-0515-4BA1-AF60-5550178C7D14}</SearchSessionId> 
+      <WarmupOptions>All</WarmupOptions> 
+      <SuggestionTypes>Keywords</SuggestionTypes> 
+      <SearchScope> 
+        <PrimaryMailboxSearchScope 
+xmlns="http://schemas.microsoft.com/exchange/services/2006/types"> 
+          <IsDeepTraversal>true</IsDeepTraversal> 
+        </PrimaryMailboxSearchScope> 
+      </SearchScope> 
+      <IdFormat>HexEntryId</IdFormat> 
+    </StartSearchSession> 
+  </s:Body> 
+ </s:Envelope> 
+
+ The following example shows a successful StartSearchSession response. 
+
+ <?xml version="1.0" encoding="utf-8"?> 
+ <s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"> 
+  <s:Header> 
+    <h:ServerVersionInfo MajorVersion="15" MinorVersion="1" MajorBuildNumber="1362" 
+MinorBuildNumber="8" Version="V2017_07_11" 
+xmlns:h="http://schemas.microsoft.com/exchange/services/2006/types" 
+xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-
+instance"/> 
+  </s:Header> 
+  <s:Body> 
+    <StartSearchSessionResponse ResponseClass="Success" 
+xmlns="http://schemas.microsoft.com/exchange/services/2006/messages" 
+
+46 / 67 
+
+[MS-OXWSOLPS] - v20250520 
+Online Personal Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-
+instance"> 
+      <ResponseCode>NoError</ResponseCode> 
+    </StartSearchSessionResponse> 
+  </s:Body> 
+ </s:Envelope> 
+
+4.2 Get Suggestions for Searches 
+
+Search suggestions are intended to make it easier for users to search, by providing completions of 
+partially typed queries. The protocol client is responsible for displaying such suggestions to the user, 
+and for using the suggestion to build a query string (and possibly execute it). 
+
+4.2.1 Suggestions without User Input 
+
+The most natural time for a protocol client to request search suggestions without user input is 
+immediately after creating a search session (section 4.1), and before the user has started typing a 
+query themselves. 
+
+In this example, the protocol client constructs the following WSDL message: 
+
+ <s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"> 
+  <s:Header> 
+    <RequestServerVersion Version="Exchange2015" 
+xmlns="http://schemas.microsoft.com/exchange/services/2006/types"/> 
+    <MailboxCulture xmlns="http://schemas.microsoft.com/exchange/services/2006/types">en-
+US</MailboxCulture> 
+  </s:Header> 
+  <s:Body> 
+    <GetSearchSuggestions 
+xmlns="http://schemas.microsoft.com/exchange/services/2006/messages"> 
+      <SearchSessionId>{5DEA5CFC-0515-4BA1-AF60-5550178C7D14}</SearchSessionId> 
+      <Query/> 
+      <SuggestionTypes>Keywords</SuggestionTypes> 
+      <MaxSuggestionsCountPerSuggestionType>6</MaxSuggestionsCountPerSuggestionType> 
+    </GetSearchSuggestions> 
+  </s:Body> 
+ </s:Envelope>  
+
+ The following example shows a successful GetSearchSuggestions response. 
+
+ <?xml version="1.0" encoding="utf-8"?> 
+ <s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"> 
+  <s:Header> 
+    <h:ServerVersionInfo MajorVersion="15" MinorVersion="1" MajorBuildNumber="1362" 
+MinorBuildNumber="8" Version="V2017_07_11" 
+xmlns:h="http://schemas.microsoft.com/exchange/services/2006/types" 
+xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-
+instance"/> 
+  </s:Header> 
+  <s:Body> 
+    <GetSearchSuggestionsResponse ResponseClass="Success" 
+xmlns="http://schemas.microsoft.com/exchange/services/2006/messages" 
+xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-
+instance"> 
+      <ResponseCode>NoError</ResponseCode> 
+      <SearchSuggestions> 
+        <TDSuggestionsBatchId 
+xmlns="http://schemas.microsoft.com/exchange/services/2006/types">1</TDSuggestionsBatchId> 
+        <TDSuggestionsInstanceId 
+xmlns="http://schemas.microsoft.com/exchange/services/2006/types">90c3aa53-9de8-40b2-a7b0-
+bfea12ca20c9</TDSuggestionsInstanceId> 
+
+47 / 67 
+
+[MS-OXWSOLPS] - v20250520 
+Online Personal Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+        <Suggestions xmlns="http://schemas.microsoft.com/exchange/services/2006/types"> 
+          <Suggestion> 
+            <SuggestedQuery>test</SuggestedQuery> 
+            <DisplayText>test</DisplayText> 
+            <SuggestionType>Keywords</SuggestionType> 
+            <Trigger/> 
+            <TDSuggestionId>1</TDSuggestionId> 
+          </Suggestion> 
+          <Suggestion> 
+            <SuggestedQuery>tests</SuggestedQuery> 
+            <DisplayText>tests</DisplayText> 
+            <SuggestionType>Keywords</SuggestionType> 
+            <Trigger/> 
+            <TDSuggestionId>2</TDSuggestionId> 
+          </Suggestion>           
+        </Suggestions>         
+      </SearchSuggestions> 
+    </GetSearchSuggestionsResponse> 
+  </s:Body> 
+ </s:Envelope> 
+
+4.2.2 Suggestions with User Input 
+
+Once the search session has been established and the user begins to type a query, the protocol client 
+can request search suggestions, as new input is provided. 
+
+In this example, the protocol client constructs the following WSDL message: 
+
+ <?xml version="1.0" encoding="utf-8"?> 
+ <s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"> 
+  <s:Header> 
+    <RequestServerVersion Version="Exchange2015" 
+xmlns="http://schemas.microsoft.com/exchange/services/2006/types"/> 
+    <MailboxCulture xmlns="http://schemas.microsoft.com/exchange/services/2006/types">en-
+US</MailboxCulture> 
+  </s:Header> 
+  <s:Body> 
+    <GetSearchSuggestions 
+xmlns="http://schemas.microsoft.com/exchange/services/2006/messages"> 
+      <SearchSessionId>{5DEA5CFC-0515-4BA1-AF60-5550178C7D14}</SearchSessionId> 
+      <Query>test</Query> 
+      <SuggestionTypes>Keywords</SuggestionTypes> 
+      <MaxSuggestionsCountPerSuggestionType>6</MaxSuggestionsCountPerSuggestionType> 
+    </GetSearchSuggestions> 
+  </s:Body> 
+ </s:Envelope> 
+
+ The following example shows a successful GetSearchSuggestions response. 
+
+ <?xml version="1.0" encoding="utf-8"?> 
+ <s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"> 
+  <s:Header> 
+    <h:ServerVersionInfo MajorVersion="15" MinorVersion="1" MajorBuildNumber="1362" 
+MinorBuildNumber="8" Version="V2017_07_11" 
+xmlns:h="http://schemas.microsoft.com/exchange/services/2006/types" 
+xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-
+instance"/> 
+  </s:Header> 
+  <s:Body> 
+    <GetSearchSuggestionsResponse ResponseClass="Success" 
+xmlns="http://schemas.microsoft.com/exchange/services/2006/messages" 
+xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-
+instance"> 
+
+48 / 67 
+
+[MS-OXWSOLPS] - v20250520 
+Online Personal Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+      <ResponseCode>NoError</ResponseCode> 
+      <SearchSuggestions> 
+        <TDSuggestionsBatchId 
+xmlns="http://schemas.microsoft.com/exchange/services/2006/types">4</TDSuggestionsBatchId> 
+        <TDSuggestionsInstanceId 
+xmlns="http://schemas.microsoft.com/exchange/services/2006/types">90cc7d58-3e7d-4afa-9a67-
+cb93727b96e5</TDSuggestionsInstanceId> 
+        <Suggestions xmlns="http://schemas.microsoft.com/exchange/services/2006/types"> 
+          <Suggestion> 
+            <SuggestedQuery>tester</SuggestedQuery> 
+            <DisplayText>tester</DisplayText> 
+            <SuggestionType>Keywords</SuggestionType> 
+            <Trigger>test</Trigger> 
+            <TDSuggestionId>1</TDSuggestionId> 
+          </Suggestion> 
+          <Suggestion> 
+            <SuggestedQuery>tests</SuggestedQuery> 
+            <DisplayText>tests</DisplayText> 
+            <SuggestionType>Keywords</SuggestionType> 
+            <Trigger>test</Trigger> 
+            <TDSuggestionId>2</TDSuggestionId> 
+          </Suggestion> 
+          <Suggestion> 
+            <SuggestedQuery>tested</SuggestedQuery> 
+            <DisplayText>tested</DisplayText> 
+            <SuggestionType>Keywords</SuggestionType> 
+            <Trigger>test</Trigger> 
+            <TDSuggestionId>3</TDSuggestionId> 
+          </Suggestion> 
+          <Suggestion> 
+            <SuggestedQuery>testing</SuggestedQuery> 
+            <DisplayText>testing</DisplayText> 
+            <SuggestionType>Keywords</SuggestionType> 
+            <Trigger>test</Trigger> 
+            <TDSuggestionId>4</TDSuggestionId> 
+          </Suggestion> 
+        </Suggestions> 
+      </SearchSuggestions> 
+    </GetSearchSuggestionsResponse> 
+  </s:Body> 
+
+</s:Envelope> 
+
+4.3 Search 
+
+Once a query string has been obtained, either from user input or from a suggestion (section 4.2), the 
+protocol client initiates the search operation, and waits for the response. 
+
+In this example, the protocol client constructs the following WSDL message:   
+
+ <?xml version="1.0" encoding="utf-8"?> 
+ <s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"> 
+  <s:Header> 
+    <RequestServerVersion Version="V2016_01_06" 
+xmlns="http://schemas.microsoft.com/exchange/services/2006/types"/> 
+    <MailboxCulture xmlns="http://schemas.microsoft.com/exchange/services/2006/types">en-
+US</MailboxCulture> 
+  </s:Header> 
+  <s:Body> 
+    <ExecuteSearch xmlns="http://schemas.microsoft.com/exchange/services/2006/messages"> 
+      <ApplicationId>Outlook</ApplicationId> 
+      <Scenario>MailSearch</Scenario> 
+      <SearchSessionId>{5DEA5CFC-0515-4BA1-AF60-5550178C7D14}</SearchSessionId> 
+      <SearchScope> 
+
+49 / 67 
+
+[MS-OXWSOLPS] - v20250520 
+Online Personal Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+        <PrimaryMailboxSearchScope 
+xmlns="http://schemas.microsoft.com/exchange/services/2006/types"> 
+          <IsDeepTraversal>true</IsDeepTraversal> 
+        </PrimaryMailboxSearchScope> 
+      </SearchScope> 
+      <Query>test</Query> 
+      <ResultRowCount>25</ResultRowCount> 
+      <MaxResultsCountHint>-1</MaxResultsCountHint> 
+      <IdFormat>HexEntryId</IdFormat> 
+      <ItemTypes>MailItems</ItemTypes> 
+    </ExecuteSearch> 
+  </s:Body> 
+ </s:Envelope> 
+
+ The following example shows a successful ExecuteSearch response. 
+
+ <?xml version="1.0" encoding="utf-8"?> 
+ <s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"> 
+  <s:Header> 
+    <h:ServerVersionInfo MajorVersion="15" MinorVersion="1" MajorBuildNumber="1362" 
+MinorBuildNumber="8" Version="V2017_07_11" 
+xmlns:h="http://schemas.microsoft.com/exchange/services/2006/types" 
+xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-
+instance"/> 
+  </s:Header> 
+  <s:Body> 
+    <ExecuteSearchResponse ResponseClass="Success" 
+xmlns="http://schemas.microsoft.com/exchange/services/2006/messages" 
+xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-
+instance"> 
+      <ResponseCode>NoError</ResponseCode> 
+      <SearchResults> 
+        <Items xmlns="http://schemas.microsoft.com/exchange/services/2006/types"> 
+          <Item xsi:type="Message"> 
+            <ItemId 
+Id="00000000BB32AF9FA3F10041A7EE5C543B1766F30700377AC501447DC646BFC441846246FD650000008577E00
+000FA7DD15124302A47BAB31B0F81344E0D0000486367920000"/> 
+            <ParentFolderId 
+Id="00000000BB32AF9FA1F10041A8EE5C543B1766F30100377AC501447DC646BFC441846246FD650000008577E00
+000"/> 
+            <ItemClass>IPM.Note</ItemClass> 
+            <Subject>Test Report</Subject> 
+            <Sensitivity>Normal</Sensitivity> 
+            <DateTimeReceived>2017-01-02T19:45:30+08:00</DateTimeReceived> 
+            <Size>126208</Size> 
+            <Importance>Normal</Importance> 
+            <IsDraft>false</IsDraft> 
+            <DateTimeSent>2017-01-02T19:45:22+08:00</DateTimeSent> 
+            <DateTimeCreated>2017-01-02T19:45:30+08:00</DateTimeCreated> 
+            <DisplayCc/> 
+            <DisplayTo>bob</DisplayTo> 
+            <HasAttachments>false</HasAttachments> 
+            <ExtendedProperty> 
+              <ExtendedFieldURI PropertyTag="0xf03" PropertyType="Binary"/> 
+              <Value>hBJvPz81akq1p0l1ohxXUw==</Value> 
+            </ExtendedProperty> 
+            <ExtendedProperty> 
+              <ExtendedFieldURI DistinguishedPropertySetId="Common" PropertyId="34064" 
+PropertyType="Integer"/> 
+              <Value>0</Value> 
+            </ExtendedProperty> 
+            <ExtendedProperty> 
+              <ExtendedFieldURI DistinguishedPropertySetId="Common" PropertyId="3613" 
+PropertyType="String"/> 
+              <Value>Test Report</Value> 
+            </ExtendedProperty> 
+            <LastModifiedTime>2017-01-02T19:45:30+08:00</LastModifiedTime> 
+
+50 / 67 
+
+[MS-OXWSOLPS] - v20250520 
+Online Personal Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+            <ConversationId Id="D339781C529843669D77C2C83C75DF2A"/> 
+            <Preview> 
+              Test Report 
+            </Preview> 
+            <IconIndex>Default</IconIndex> 
+            <SearchKey>bvZ/krKkPUWsnKVNYbnPDg==</SearchKey> 
+            <SortKey>636377895308298999</SortKey> 
+            <Sender> 
+              <Mailbox> 
+                <Name>alice</Name> 
+                <EmailAddress>alice@contoso.com</EmailAddress> 
+                <RoutingType>EX</RoutingType> 
+              </Mailbox> 
+            </Sender> 
+            
+<ConversationIndex>AdMQMSuY0zl4HFKYQ2add8LIPHXfKgACjNogAAAJeHA=</ConversationIndex> 
+            <ConversationTopic>Test Report</ConversationTopic> 
+            <From> 
+              <Mailbox> 
+                <Name>alice</Name> 
+                <EmailAddress>alice@contoso.com</EmailAddress> 
+                <RoutingType>EX</RoutingType> 
+              </Mailbox> 
+            </From> 
+            <IsRead>true</IsRead> 
+            <SenderSMTPAddress>alice@contoso.com</SenderSMTPAddress> 
+            <MailboxGuids> 
+              <MailboxGuid>db3ed717-3ed4-4d96-8934-1490528c0d49</MailboxGuid> 
+            </MailboxGuids> 
+          </Item>  
+        </Items> 
+        <MoreResultsAvailable 
+xmlns="http://schemas.microsoft.com/exchange/services/2006/types">true</MoreResultsAvailable> 
+        <SearchResultsCount 
+xmlns="http://schemas.microsoft.com/exchange/services/2006/types">1</SearchResultsCount> 
+        <TotalResultsCount 
+xmlns="http://schemas.microsoft.com/exchange/services/2006/types">1</TotalResultsCount> 
+        <SearchTerms xmlns="http://schemas.microsoft.com/exchange/services/2006/types"> 
+          <SearchTerm>test</SearchTerm> 
+        </SearchTerms> 
+      </SearchResults> 
+    </ExecuteSearchResponse> 
+  </s:Body> 
+ </s:Envelope> 
+
+4.4 End a Search Session 
+
+The most natural time for a protocol client to end a search session is when the user indicates that they 
+no longer wish to search. The mechanisms for doing so will vary, according to the user interface. 
+
+In this example, the protocol client constructs the following WSDL message:   
+
+<?xml version="1.0" encoding="utf-8"?> 
+
+ <s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"> 
+  <s:Header> 
+    <RequestServerVersion Version="Exchange2015" 
+xmlns="http://schemas.microsoft.com/exchange/services/2006/types"/> 
+    <MailboxCulture xmlns="http://schemas.microsoft.com/exchange/services/2006/types">en-
+US</MailboxCulture> 
+  </s:Header> 
+  <s:Body> 
+    <EndSearchSession xmlns="http://schemas.microsoft.com/exchange/services/2006/messages"> 
+      <SearchSessionId>{5DEA5CFC-0515-4BA1-AF60-5550178C7D14}</SearchSessionId> 
+    </EndSearchSession> 
+
+51 / 67 
+
+[MS-OXWSOLPS] - v20250520 
+Online Personal Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+  </s:Body> 
+ </s:Envelope> 
+
+The following example shows a successful EndSearchSession response. 
+
+<?xml version="1.0" encoding="utf-8"?> 
+
+ <s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"> 
+  <s:Header> 
+    <h:ServerVersionInfo MajorVersion="15" MinorVersion="1" MajorBuildNumber="1362" 
+MinorBuildNumber="8" Version="V2017_07_11" 
+xmlns:h="http://schemas.microsoft.com/exchange/services/2006/types" 
+xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-
+instance"/> 
+  </s:Header> 
+  <s:Body> 
+    <EndSearchSessionResponse ResponseClass="Success" 
+xmlns="http://schemas.microsoft.com/exchange/services/2006/messages" 
+xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-
+instance"> 
+      <ResponseCode>NoError</ResponseCode> 
+    </EndSearchSessionResponse> 
+  </s:Body> 
+ </s:Envelope> 
+
+52 / 67 
+
+[MS-OXWSOLPS] - v20250520 
+Online Personal Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+5 Security 
+
+5.1 Security Considerations for Implementers 
+
+None. 
+
+5.2 Index of Security Parameters 
+
+None. 
+
+53 / 67 
+
+[MS-OXWSOLPS] - v20250520 
+Online Personal Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+6 Appendix A: Full WSDL 
+
+The XML files that are listed in the following table are required in order to implement the functionality 
+specified in this document.  
+
+File name Description Section 
+
+MS-OXWSOLPS.wsdl Contains the WSDL for the implementation of this protocol. 6 
+
+MS-OXWSOLPS- Contains the XML schema message definitions that are used in this 7.1 
+messages.xsd protocol. 
+
+MS-OXWSOLPS-types.xsd Contains the XML schema type definitions that are used in this 7.2 
+protocol. 
+
+These files have to be placed in a common folder in order for the WSDL to validate and operate. Also, 
+any schema files that are included in or imported into the MS-OXWSOLPS-types.xsd or MS-
+OXWSOLPS-messages.xsd schemas have to be placed in the common folder along with the files.  
+
+This section contains the contents of the MS-OXWSOLPS.wsdl file.   
+
+ <?xml version="1.0" encoding="utf-8"?> 
+ <wsdl:definitions xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/" 
+xmlns:tns="http://schemas.microsoft.com/exchange/services/2006/messages" 
+xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:wsdl="http://schemas.xmlsoap.org/wsdl/" 
+xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types" 
+targetNamespace="http://schemas.microsoft.com/exchange/services/2006/messages"> 
+     <wsdl:types> 
+          <xs:schema id="messages" elementFormDefault="qualified" version="Exchange2016" 
+xmlns:xs="http://www.w3.org/2001/XMLSchema" 
+targetNamespace="http://schemas.microsoft.com/exchange/services/2006/messages"> 
+               <xs:include schemaLocation="MS-OXWSOLPS-messages.xsd"/> 
+          </xs:schema> 
+     </wsdl:types> 
+     <wsdl:portType name="ExchangeServicePortType"> 
+       <wsdl:operation name="EndSearchSession"> 
+         <wsdl:input message="tns:EndSearchSessionSoapIn" /> 
+         <wsdl:output message="tns:EndSearchSessionSoapOut" /> 
+       </wsdl:operation> 
+       <wsdl:operation name="ExecuteSearch"> 
+         <wsdl:input message="tns:ExecuteSearchSoapIn" /> 
+         <wsdl:output message="tns:ExecuteSearchSoapOut" /> 
+       </wsdl:operation> 
+       <wsdl:operation name="GetSearchSuggestions"> 
+         <wsdl:input message="tns:GetSearchSuggestionsSoapIn" /> 
+         <wsdl:output message="tns:GetSearchSuggestionsSoapOut" /> 
+       </wsdl:operation> 
+       <wsdl:operation name="StartSearchSession"> 
+         <wsdl:input message="tns:StartSearchSessionSoapIn" /> 
+         <wsdl:output message="tns:StartSearchSessionSoapOut" /> 
+       </wsdl:operation> 
+     </wsdl:portType> 
+     <wsdl:binding name="ExchangeServiceBinding" type="tns:ExchangeServicePortType"> 
+       <wsdl:documentation> 
+         <wsi:Claim conformsTo="http://ws-i.org/profiles/basic/1.0" xmlns:wsi="http://ws-
+i.org/schemas/conformanceClaim/"/> 
+       </wsdl:documentation> 
+       <soap:binding style="document" transport="http://schemas.xmlsoap.org/soap/http"/> 
+       <wsdl:operation name="EndSearchSession"> 
+         <soap:operation 
+soapAction="http://schemas.microsoft.com/exchange/services/2006/messages/EndSearchSession" /> 
+         <wsdl:input> 
+           <soap:header message="tns:EndSearchSessionSoapIn" part="RequestVersion" 
+use="literal"/> 
+
+54 / 67 
+
+[MS-OXWSOLPS] - v20250520 
+Online Personal Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+           <soap:header message="tns:EndSearchSessionSoapIn" part="MailboxCulture" 
+use="literal"/> 
+           <soap:body parts="request" use="literal" /> 
+         </wsdl:input> 
+         <wsdl:output> 
+           <soap:body parts="EndSearchSessionResult" use="literal" /> 
+           <soap:header message="tns:EndSearchSessionSoapOut" part="ServerVersion" 
+use="literal"/> 
+         </wsdl:output> 
+       </wsdl:operation> 
+       <wsdl:operation name="ExecuteSearch"> 
+         <soap:operation 
+soapAction="http://schemas.microsoft.com/exchange/services/2006/messages/ExecuteSearch" /> 
+         <wsdl:input> 
+           <soap:header message="tns:ExecuteSearchSoapIn" part="RequestVersion" 
+use="literal"/> 
+           <soap:header message="tns:ExecuteSearchSoapIn" part="MailboxCulture" 
+use="literal"/> 
+           <soap:body parts="request" use="literal" /> 
+         </wsdl:input> 
+         <wsdl:output> 
+           <soap:body parts="ExecuteSearchResult" use="literal" /> 
+           <soap:header message="tns:ExecuteSearchSoapOut" part="ServerVersion" 
+use="literal"/> 
+         </wsdl:output> 
+       </wsdl:operation> 
+       <wsdl:operation name="GetSearchSuggestions"> 
+         <soap:operation 
+soapAction="http://schemas.microsoft.com/exchange/services/2006/messages/GetSearchSuggestions
+" /> 
+         <wsdl:input> 
+           <soap:header message="tns:GetSearchSuggestionsSoapIn" part="RequestVersion" 
+use="literal"/> 
+           <soap:header message="tns:GetSearchSuggestionsSoapIn" part="MailboxCulture" 
+use="literal"/> 
+           <soap:body parts="request" use="literal" /> 
+         </wsdl:input> 
+         <wsdl:output> 
+           <soap:body parts="GetSearchSuggestionsResult" use="literal" /> 
+           <soap:header message="tns:GetSearchSuggestionsSoapOut" part="ServerVersion" 
+use="literal"/> 
+         </wsdl:output> 
+       </wsdl:operation> 
+       <wsdl:operation name="StartSearchSession"> 
+         <soap:operation 
+soapAction="http://schemas.microsoft.com/exchange/services/2006/messages/StartSearchSession" 
+/> 
+         <wsdl:input> 
+           <soap:header message="tns:StartSearchSessionSoapIn" part="RequestVersion" 
+use="literal"/> 
+           <soap:header message="tns:StartSearchSessionSoapIn" part="MailboxCulture" 
+use="literal"/> 
+           <soap:body parts="request" use="literal" /> 
+         </wsdl:input> 
+         <wsdl:output> 
+           <soap:body parts="StartSearchSessionResult" use="literal" /> 
+           <soap:header message="tns:StartSearchSessionSoapOut" part="ServerVersion" 
+use="literal"/> 
+         </wsdl:output> 
+       </wsdl:operation> 
+     </wsdl:binding> 
+     <wsdl:message name="EndSearchSessionSoapIn"> 
+       <wsdl:part name="request" element="tns:EndSearchSession"/> 
+       <wsdl:part name="MailboxCulture" element="t:MailboxCulture"/> 
+       <wsdl:part name="RequestVersion" element="t:RequestServerVersion"/> 
+     </wsdl:message> 
+     <wsdl:message name="EndSearchSessionSoapOut"> 
+       <wsdl:part name="EndSearchSessionResult" element="tns:EndSearchSessionResponse"/> 
+       <wsdl:part name="ServerVersion" element="t:ServerVersionInfo"/> 
+
+55 / 67 
+
+[MS-OXWSOLPS] - v20250520 
+Online Personal Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+     </wsdl:message> 
+     <wsdl:message name="ExecuteSearchSoapIn"> 
+       <wsdl:part name="request" element="tns:ExecuteSearch"/> 
+       <wsdl:part name="MailboxCulture" element="t:MailboxCulture"/> 
+       <wsdl:part name="RequestVersion" element="t:RequestServerVersion"/> 
+     </wsdl:message> 
+     <wsdl:message name="ExecuteSearchSoapOut"> 
+       <wsdl:part name="ExecuteSearchResult" element="tns:ExecuteSearchResponse"/> 
+       <wsdl:part name="ServerVersion" element="t:ServerVersionInfo"/> 
+     </wsdl:message> 
+     <wsdl:message name="GetSearchSuggestionsSoapIn"> 
+       <wsdl:part name="request" element="tns:GetSearchSuggestions"/> 
+       <wsdl:part name="MailboxCulture" element="t:MailboxCulture"/> 
+       <wsdl:part name="RequestVersion" element="t:RequestServerVersion"/> 
+     </wsdl:message> 
+     <wsdl:message name="GetSearchSuggestionsSoapOut"> 
+       <wsdl:part name="GetSearchSuggestionsResult" 
+element="tns:GetSearchSuggestionsResponse"/> 
+       <wsdl:part name="ServerVersion" element="t:ServerVersionInfo"/> 
+     </wsdl:message> 
+     <wsdl:message name="StartSearchSessionSoapIn"> 
+       <wsdl:part name="request" element="tns:StartSearchSession"/> 
+       <wsdl:part name="MailboxCulture" element="t:MailboxCulture"/> 
+       <wsdl:part name="RequestVersion" element="t:RequestServerVersion"/> 
+     </wsdl:message> 
+     <wsdl:message name="StartSearchSessionSoapOut"> 
+       <wsdl:part name="StartSearchSessionResult" element="tns:StartSearchSessionResponse"/> 
+       <wsdl:part name="ServerVersion" element="t:ServerVersionInfo"/> 
+     </wsdl:message> 
+ </wsdl:definitions> 
+ 
+
+56 / 67 
+
+[MS-OXWSOLPS] - v20250520 
+Online Personal Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+7 Appendix B: Full XML Schema 
+
+For ease of implementation, the following sections provide the full XML schema for this protocol. 
+
+Schema name Prefix Section 
+
+Messages schema m: 7.1 
+
+Types schema t: 7.2 
+
+These files have to be placed in a common folder in order for the WSDL to validate and operate. Also, 
+any schema files that are included in or imported into the MS-OXWSOLPS-types.xsd or MS-
+OXWSOLPS-messages.xsd schemas have to be placed in the common folder along with the files listed 
+in the table. 
+
+7.1 Messages Schema 
+
+This section contains the contents of the MS-OXWSOLPS-messages.xsd file and information about 
+additional files that this schema file requires to operate correctly. 
+
+MS-OXWSOLPS-messages.xsd includes the file listed in the following table. To operate correctly, this 
+file has to be present in the folder that contains the WSDL, types schema, and messages schema files 
+for this protocol. 
+
+File name Defining specification 
+
+MS-OXWSCDATA-messages.xsd [MS-OXWSCDATA] section 7.1 
+
+MS-OXWSOLPS-types.xsd 7.2 
+
+ 
+
+ <?xml version="1.0" encoding="utf-8"?> 
+ <xs:schema xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages" 
+xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types" 
+xmlns:xs="http://www.w3.org/2001/XMLSchema" 
+targetNamespace="http://schemas.microsoft.com/exchange/services/2006/messages" 
+elementFormDefault="qualified" version="Exchange2016" id="messages"> 
+  <xs:import namespace="http://schemas.microsoft.com/exchange/services/2006/types" 
+schemaLocation="MS-OXWSOLPS-types.xsd"/>  
+  <xs:include schemaLocation="MS-OXWSCDATA-messages.xsd"/>  
+  <xs:complexType name="EndSearchSession"> 
+    <xs:complexContent> 
+      <xs:extension base="m:BaseRequestType"> 
+        <xs:sequence> 
+          <xs:element name="SearchSessionId" type="t:GuidType" minOccurs="1" maxOccurs="1" /> 
+        </xs:sequence> 
+      </xs:extension> 
+    </xs:complexContent> 
+  </xs:complexType> 
+  <xs:element name="EndSearchSession" type="m:EndSearchSession"/> 
+  <xs:complexType name="EndSearchSessionResponseMessage"> 
+    <xs:complexContent> 
+      <xs:extension base="m:ResponseMessageType" /> 
+    </xs:complexContent> 
+  </xs:complexType> 
+  <xs:element name="EndSearchSessionResponse" type="m:EndSearchSessionResponseMessage"/> 
+  <xs:element name="ExecuteSearch" type="m:ExecuteSearch"/> 
+  <xs:complexType name="ExecuteSearch"> 
+    <xs:complexContent> 
+      <xs:extension base="m:BaseRequestType"> 
+        <xs:sequence> 
+
+57 / 67 
+
+[MS-OXWSOLPS] - v20250520 
+Online Personal Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+          <xs:element name="ApplicationId" type="t:SearchApplicationIdType" minOccurs="1" 
+maxOccurs="1"/> 
+          <xs:element name="Scenario" type="xs:string" minOccurs="1" maxOccurs="1"/> 
+          <xs:element name="SearchSessionId" type="t:GuidType" minOccurs="1" maxOccurs="1" /> 
+          <xs:element name="SearchScope" type="t:ArrayOfSearchScopeType" minOccurs="1" 
+maxOccurs="1" /> 
+          <xs:element name="Query" type="xs:string" minOccurs="1" maxOccurs="1" /> 
+          <xs:element name="AnalyzedQuery" type="t:AnalyzedQuery" minOccurs="0" 
+maxOccurs="1"/> 
+          <xs:element name="ResultRowCount" type="xs:long" minOccurs="0" maxOccurs="1" /> 
+          <xs:element name="ResultRowOffset" type="xs:long" minOccurs="0" maxOccurs="1" /> 
+          <xs:element name="MaxResultsCountHint" type="xs:long" minOccurs="0" maxOccurs="1" 
+/> 
+          <xs:element name="MaxPreviewLength" type="xs:long" minOccurs="0" maxOccurs="1"/> 
+          <xs:element name="SearchRefiners" minOccurs="0" maxOccurs="1"> 
+            <xs:complexType> 
+              <xs:sequence> 
+                <xs:element name="SearchRefiner" type="t:DynamicRefinerQueryType" 
+minOccurs="0" maxOccurs="unbounded"/> 
+              </xs:sequence> 
+            </xs:complexType> 
+          </xs:element> 
+          <xs:element name="RetrieveRefiners" type="xs:boolean" minOccurs="0" maxOccurs="1" 
+/> 
+          <xs:element name="MaxRefinersCountPerRefinerType" type="xs:long" minOccurs="0" 
+maxOccurs="1" /> 
+          <xs:element name="IdFormat" type="t:IdFormatType" minOccurs="0" maxOccurs="1"/> 
+          <xs:element name="ItemTypes" type="t:ItemTypesFilterType" minOccurs="1" 
+maxOccurs="1" /> 
+          <xs:element name="PropertySetName" type="t:SearchResultsPropertySetNameType" 
+minOccurs="0" maxOccurs="1"/> 
+          <xs:element name="SearchRestrictions" type="t:RestrictionType" minOccurs="0" 
+maxOccurs="1"/> 
+          <xs:element name="IncludeDeleted" type="xs:boolean" minOccurs="0" maxOccurs="1"/> 
+        </xs:sequence> 
+      </xs:extension> 
+    </xs:complexContent> 
+  </xs:complexType> 
+  <xs:complexType name="ExecuteSearchResponseMessage"> 
+    <xs:complexContent> 
+      <xs:extension base="m:ResponseMessageType"> 
+        <xs:sequence> 
+          <xs:element name="SearchResults" type="t:SearchResultsType"/> 
+        </xs:sequence> 
+      </xs:extension> 
+    </xs:complexContent> 
+  </xs:complexType> 
+  <xs:element name="ExecuteSearchResponse" type="m:ExecuteSearchResponseMessage"/> 
+  <xs:complexType name="GetSearchSuggestions"> 
+    <xs:complexContent> 
+      <xs:extension base="m:BaseRequestType"> 
+        <xs:sequence> 
+          <xs:element name="SearchSessionId" type="t:GuidType" minOccurs="1" maxOccurs="1" /> 
+          <xs:element name="Query" type="xs:string" minOccurs="0" maxOccurs="1" /> 
+          <xs:element name="SuggestionTypes" type="t:SuggestionKindType" minOccurs="0" 
+maxOccurs="1" /> 
+          <xs:element name="SuggestionsPrimer" type="xs:boolean" minOccurs="0" 
+maxOccurs="1"/> 
+          <xs:element name="MaxSuggestionsCountPerSuggestionType" type="xs:long" 
+minOccurs="0" maxOccurs="1" /> 
+        </xs:sequence> 
+      </xs:extension> 
+    </xs:complexContent> 
+  </xs:complexType> 
+  <xs:element name="GetSearchSuggestions" type="m:GetSearchSuggestions"/> 
+  <xs:complexType name="GetSearchSuggestionsResponseMessage"> 
+    <xs:complexContent> 
+      <xs:extension base="m:ResponseMessageType"> 
+        <xs:sequence> 
+
+58 / 67 
+
+[MS-OXWSOLPS] - v20250520 
+Online Personal Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+          <xs:element name="SearchSuggestions" type="t:SearchSuggestionsType"/> 
+        </xs:sequence> 
+      </xs:extension> 
+    </xs:complexContent> 
+  </xs:complexType> 
+  <xs:element name="GetSearchSuggestionsResponse" 
+type="m:GetSearchSuggestionsResponseMessage"/> 
+  <xs:complexType name="StartSearchSession"> 
+    <xs:complexContent> 
+      <xs:extension base="m:BaseRequestType"> 
+        <xs:sequence> 
+          <xs:element name="SearchSessionId" type="t:GuidType" minOccurs="1" maxOccurs="1" /> 
+          <xs:element name="WarmupOptions" type="t:WarmupOptionsType" minOccurs="1" 
+maxOccurs="1" /> 
+          <xs:element name="SuggestionTypes" type="t:SuggestionKindType" minOccurs="1" 
+maxOccurs="1" /> 
+          <xs:element name="SearchScope" type="t:ArrayOfSearchScopeType" minOccurs="1" 
+maxOccurs="1" /> 
+          <xs:element name="IdFormat" type="t:IdFormatType" minOccurs="0" maxOccurs="1" /> 
+        </xs:sequence> 
+      </xs:extension> 
+    </xs:complexContent> 
+  </xs:complexType> 
+  <xs:element name="StartSearchSession" type="m:StartSearchSession"/> 
+  <xs:complexType name="StartSearchSessionResponseMessage"> 
+    <xs:complexContent> 
+      <xs:extension base="m:ResponseMessageType"> 
+      </xs:extension> 
+    </xs:complexContent> 
+  </xs:complexType> 
+  <xs:element name="StartSearchSessionResponse" type="m:StartSearchSessionResponseMessage"/> 
+ </xs:schema> 
+
+7.2 Types Schema 
+
+This section contains the contents of the MS-OXWSOLPS-types.xsd file and information about 
+additional files that this schema file requires to operate correctly. 
+
+MS-OXWSOLPS-types.xsd includes the file shown in the following table. To operate correctly, this file 
+has to be present in the folder that contains the WSDL, types schema, and messages schema files for 
+this protocol. 
+
+File name Defining specification 
+
+MS-OXWSCDATA-types.xsd [MS-OXWSCDATA] section 7.2 
+
+MS-OXWSCONV-types.xsd [MS-OXWSCONV] section 7.2 
+
+MS-OXWSCORE-types.xsd [MS-OXWSCORE] section 7.2 
+
+MS-OXWSCVTID-types.xsd [MS-OXWSCVTID] section 7.2 
+
+MS-OXWSPERS-types.xsd [MS-OXWSPERS] section 7.2 
+
+MS-OXWSSRCH-types.xsd [MS-OXWSSRCH] section 7.2 
+
+MS-OXWSXPROP-types.xsd [MS-OXWSXPROP] section 5 
+
+ <?xml version="1.0" encoding="utf-8"?> 
+ <xs:schema xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types" 
+xmlns:xs="http://www.w3.org/2001/XMLSchema" 
+targetNamespace="http://schemas.microsoft.com/exchange/services/2006/types" 
+elementFormDefault="qualified" version="Exchange2016" id="types"> 
+  <xs:include schemaLocation="MS-OXWSCDATA-types.xsd"/> 
+
+59 / 67 
+
+[MS-OXWSOLPS] - v20250520 
+Online Personal Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+  <xs:include schemaLocation="MS-OXWSCONV-types.xsd"/> 
+  <xs:include schemaLocation="MS-OXWSCORE-types.xsd"/> 
+  <xs:include schemaLocation="MS-OXWSCVTID-types.xsd"/> 
+  <xs:include schemaLocation="MS-OXWSPERS-types.xsd"/> 
+  <xs:include schemaLocation="MS-OXWSSRCH-types.xsd"/> 
+  <xs:include schemaLocation="MS-OXWSXPROP-types.xsd"/> 
+  <xs:complexType name="AnalyzedQuery"> 
+    <xs:sequence> 
+      <xs:element name="QueryLanguage" type="xs:string" minOccurs="1" maxOccurs="1"/> 
+      <xs:element name="SearchRestrictions" type="t:RestrictionType" minOccurs="1" 
+maxOccurs="1"/> 
+    </xs:sequence> 
+  </xs:complexType> 
+  <xs:complexType name="ArrayOfSearchScopeType"> 
+    <xs:sequence> 
+      <xs:element name="PrimaryMailboxSearchScope" type="t:PrimaryMailboxSearchScopeType" 
+minOccurs="0" maxOccurs="1"/> 
+      <xs:element name="LargeArchiveSearchScope" type="t:LargeArchiveSearchScopeType" 
+minOccurs="0" maxOccurs="1"/> 
+      <xs:element name="GroupSearchScope" type="t:GroupSearchScopeType" minOccurs="0" 
+maxOccurs="1"/> 
+      <xs:element name="CustomSearchScope" type="t:CustomSearchScopeType" minOccurs="0" 
+maxOccurs="4"/> 
+      <xs:element name="SingleGroupSearchScope" type="t:SingleGroupSearchScopeType" 
+minOccurs="0" maxOccurs="1"/> 
+      <xs:element name="OneDriveSearchScope" type="t:OneDriveSearchScopeType" minOccurs="0" 
+maxOccurs="1"/> 
+      <xs:element name="SingleLargeArchiveSearchScope" 
+type="t:SingleLargeArchiveSearchScopeType" minOccurs="0" maxOccurs="1"/> 
+    </xs:sequence> 
+  </xs:complexType> 
+ <xs:complexType name="CustomSearchScopeType"> 
+    <xs:sequence> 
+      <xs:element name="MailboxGuid" type="t:GuidType"/> 
+      <xs:element name="FolderScope" type="t:SearchFolderScopeType" /> 
+      <xs:element name="IsDeepTraversal" type="xs:boolean"/> 
+    </xs:sequence> 
+  </xs:complexType> 
+  <xs:complexType name="DynamicRefinerQueryType"> 
+    <xs:sequence> 
+      <xs:element name="RefinerQuery" type="xs:string" minOccurs="1" maxOccurs="1" /> 
+      <xs:element name="TDRefinerId" type="xs:int" minOccurs="1" maxOccurs="1" /> 
+    </xs:sequence> 
+  </xs:complexType> 
+  <xs:complexType name="GroupSearchScopeType"> 
+    <xs:sequence> 
+      <xs:element name="GroupTypes" type="t:SearchScopeGroupsType"/> 
+    </xs:sequence> 
+  </xs:complexType>  
+  <xs:complexType name="LargeArchiveSearchScopeType"> 
+    <xs:sequence> 
+      <xs:element name="ArchiveTypes" type="t:SearchScopeArchivesType"/> 
+    </xs:sequence> 
+  </xs:complexType> 
+  <xs:complexType name="OneDriveSearchScopeType"> 
+    <xs:sequence> 
+      <xs:element name="OneDriveView" type="t:OneDriveViewType" minOccurs="1" maxOccurs="1"/> 
+    </xs:sequence> 
+  </xs:complexType>  
+  <xs:complexType name="PrimaryMailboxSearchScopeType"> 
+    <xs:sequence> 
+      <xs:element name="FolderScope" type="t:SearchFolderScopeType" minOccurs="0" 
+maxOccurs="1"/> 
+      <xs:element name="IsDeepTraversal" type="xs:boolean" minOccurs="0" maxOccurs="1"/> 
+    </xs:sequence> 
+  </xs:complexType> 
+  <xs:complexType name="SearchFolderScopeType"> 
+    <xs:choice> 
+      <xs:element name="FolderId" type="t:FolderIdType"/> 
+
+60 / 67 
+
+[MS-OXWSOLPS] - v20250520 
+Online Personal Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+      <xs:element name="WellKnownFolder" type="t:DistinguishedFolderIdType"/> 
+    </xs:choice> 
+  </xs:complexType> 
+  <xs:complexType name="SearchRefinerType"> 
+    <xs:sequence> 
+      <xs:element name="RefinerType" type="t:RefinerTypeType" minOccurs="1" maxOccurs="1"/> 
+      <xs:element name="Refiner" type="t:DynamicRefinerQueryType" minOccurs="1" 
+maxOccurs="1"/> 
+    </xs:sequence> 
+  </xs:complexType> 
+  <xs:complexType name="SearchResultsType"> 
+    <xs:sequence> 
+      <xs:element name="Items" minOccurs="0" maxOccurs="1"> 
+        <xs:complexType> 
+          <xs:sequence> 
+            <xs:element name="Item" type="t:ItemType" minOccurs="0" maxOccurs="unbounded"/> 
+          </xs:sequence> 
+        </xs:complexType> 
+      </xs:element> 
+      <xs:element name="Conversations" minOccurs="0" maxOccurs="1"> 
+        <xs:complexType> 
+          <xs:sequence> 
+            <xs:element name="Conversation" type="t:ConversationType" minOccurs="0" 
+maxOccurs="unbounded"/> 
+          </xs:sequence> 
+        </xs:complexType> 
+      </xs:element> 
+      <xs:element name="People" minOccurs="0" maxOccurs="1"> 
+        <xs:complexType> 
+          <xs:sequence> 
+            <xs:element name="Persona" type="t:PersonaType" minOccurs="0" 
+maxOccurs="unbounded"/> 
+          </xs:sequence> 
+        </xs:complexType> 
+      </xs:element> 
+      <xs:element name="MoreResultsAvailable" type="xs:boolean" minOccurs="1" maxOccurs="1" 
+/> 
+      <xs:element name="RefinerTelemetryBatchId" type="xs:int" minOccurs="1" maxOccurs="1"/> 
+      <xs:element name="SearchRefiners" minOccurs="0" maxOccurs="1"> 
+        <xs:complexType> 
+          <xs:sequence> 
+            <xs:element name="SearchRefiner" type="t:SearchRefinerType" minOccurs="1" 
+maxOccurs="unbounded"/> 
+          </xs:sequence> 
+        </xs:complexType> 
+      </xs:element> 
+      <xs:element name="DiagnosticsData" type="t:SearchDiagnosticsType" minOccurs="0" 
+maxOccurs="1"/> 
+      <xs:element name="SearchResultsCount" type="xs:int" minOccurs="0" maxOccurs="1" /> 
+      <xs:element name="TotalResultsCount" type="xs:int" minOccurs="0" maxOccurs="1" /> 
+      <xs:element name="SearchTerms" type="t:ArrayOfStringsType" minOccurs="0" 
+maxOccurs="1"/> 
+    </xs:sequence> 
+  </xs:complexType> 
+  <xs:complexType name="SingleGroupSearchScopeType"> 
+    <xs:sequence> 
+      <xs:element name="GroupIdentity" type="t:UnifiedGroupIdentity"/> 
+    </xs:sequence> 
+  </xs:complexType> 
+  <xs:complexType name="SingleLargeArchiveSearchScopeType"> 
+    <xs:sequence> 
+      <xs:element name="MailboxGuid" type="t:GuidType" minOccurs="0" maxOccurs="1"/> 
+      <xs:element name="FolderScope" type="t:SearchFolderScopeType"/> 
+      <xs:element name="IsDeepTraversal" type="xs:boolean"/> 
+    </xs:sequence> 
+  </xs:complexType> 
+  <xs:complexType name="UnifiedGroupIdentity"> 
+    <xs:sequence> 
+      <xs:element name="Type" type="t:UnifiedGroupIdentityType" minOccurs="1" maxOccurs="1"/> 
+
+61 / 67 
+
+[MS-OXWSOLPS] - v20250520 
+Online Personal Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+      <xs:element name="Value" type="xs:string" minOccurs="1" maxOccurs="1"/> 
+    </xs:sequence> 
+  </xs:complexType> 
+  <xs:simpleType name="ItemTypesFilterType"> 
+    <xs:list> 
+      <xs:simpleType> 
+        <xs:restriction base="xs:string"> 
+          <xs:enumeration value="None"/> 
+          <xs:enumeration value="MailItems"/> 
+          <xs:enumeration value="MailConversations"/> 
+          <xs:enumeration value="CalendarItems"/> 
+          <xs:enumeration value="People"/> 
+          <xs:enumeration value="OneDriveItems"/> 
+          <xs:enumeration value="FileItems"/> 
+        </xs:restriction> 
+      </xs:simpleType> 
+    </xs:list> 
+  </xs:simpleType> 
+  <xs:simpleType name="OneDriveViewType"> 
+    <xs:list> 
+      <xs:simpleType> 
+        <xs:restriction base="xs:string"> 
+          <xs:enumeration value="None"/> 
+          <xs:enumeration value="SharedWithMe"/> 
+          <xs:enumeration value="MyDocuments"/> 
+          <xs:enumeration value="RecycleBin"/> 
+        </xs:restriction> 
+      </xs:simpleType> 
+    </xs:list> 
+  </xs:simpleType> 
+  <xs:simpleType name="RefinerTypeType"> 
+    <xs:restriction base="xs:string"> 
+      <xs:enumeration value="None"/> 
+      <xs:enumeration value="To"/> 
+      <xs:enumeration value="From"/> 
+      <xs:enumeration value="Folder"/> 
+      <xs:enumeration value="HasAttachment"/> 
+      <xs:enumeration value="MailboxSource"/> 
+    </xs:restriction> 
+  </xs:simpleType> 
+  <xs:simpleType name="SearchApplicationIdType"> 
+    <xs:restriction base="xs:string"> 
+      <xs:enumeration value="Outlook"/> 
+      <xs:enumeration value="Owa"/> 
+      <xs:enumeration value="Paw"/> 
+      <xs:enumeration value="Teamspace"/> 
+      <xs:enumeration value="OneDrive"/> 
+      <xs:enumeration value="Other"/> 
+    </xs:restriction> 
+  </xs:simpleType> 
+  <xs:simpleType name="SearchResultsPropertySetNameType"> 
+    <xs:restriction base="xs:string"> 
+      <xs:enumeration value="Default"/> 
+      <xs:enumeration value="Owa16"/> 
+      <xs:enumeration value="Outlook16"/> 
+    </xs:restriction> 
+  </xs:simpleType> 
+  <xs:simpleType name="SearchScopeArchivesType"> 
+    <xs:list> 
+      <xs:simpleType> 
+        <xs:restriction base="xs:string"> 
+          <xs:enumeration value="MainArchive"/> 
+          <xs:enumeration value="AuxArchive"/> 
+          <xs:enumeration value="All"/> 
+        </xs:restriction> 
+      </xs:simpleType> 
+    </xs:list> 
+  </xs:simpleType> 
+  <xs:simpleType name="SearchScopeGroupsType"> 
+
+62 / 67 
+
+[MS-OXWSOLPS] - v20250520 
+Online Personal Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+    <xs:list> 
+      <xs:simpleType> 
+        <xs:restriction base="xs:string"> 
+          <xs:enumeration value="MyGroups"/> 
+        </xs:restriction> 
+      </xs:simpleType> 
+    </xs:list> 
+  </xs:simpleType> 
+  <xs:simpleType name="UnifiedGroupIdentityType"> 
+    <xs:restriction base="xs:string"> 
+      <xs:enumeration value="SmtpAddress"/> 
+      <xs:enumeration value="LegacyDn"/> 
+      <xs:enumeration value="ExternalDirectoryObjectId"/> 
+    </xs:restriction> 
+  </xs:simpleType> 
+ </xs:schema> 
+
+63 / 67 
+
+[MS-OXWSOLPS] - v20250520 
+Online Personal Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+8 Appendix C: Product Behavior 
+
+The information in this specification is applicable to the following Microsoft products or supplemental 
+software. References to product versions include updates to those products. 
+
+ Microsoft Exchange Server 2016 
+
+ Microsoft Exchange Server 2019 
+
+ Microsoft Exchange Server Subscription Edition 
+
+Exceptions, if any, are noted in this section. If an update version, service pack or Knowledge Base 
+(KB) number appears with a product name, the behavior changed in that update. The new behavior 
+also applies to subsequent updates unless otherwise specified. If a product edition appears with the 
+product version, behavior is different in that product edition. 
+
+Unless otherwise specified, any statement of optional behavior in this specification that is prescribed 
+using the terms "SHOULD" or "SHOULD NOT" implies product behavior in accordance with the 
+SHOULD or SHOULD NOT prescription. Unless otherwise specified, the term "MAY" implies that the 
+product does not follow the prescription. 
+
+64 / 67 
+
+[MS-OXWSOLPS] - v20250520 
+Online Personal Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+9 Change Tracking 
+
+This section identifies changes that were made to this document since the last release. Changes are 
+classified as Major, Minor, or None.  
+
+The revision class Major means that the technical content in the document was significantly revised. 
+Major changes affect protocol interoperability or implementation. Examples of major changes are: 
+
+ A document revision that incorporates changes to interoperability requirements. 
+ A document revision that captures changes to protocol functionality. 
+
+The revision class Minor means that the meaning of the technical content was clarified. Minor changes 
+do not affect protocol interoperability or implementation. Examples of minor changes are updates to 
+clarify ambiguity at the sentence, paragraph, or table level. 
+
+The revision class None means that no new technical changes were introduced. Minor editorial and 
+formatting changes may have been made, but the relevant technical content is identical to the last 
+released version. 
+
+The changes made to this document are listed in the following table. For more information, please 
+contact dochelp@microsoft.com. 
+
+Section Description Revision class 
+
+8 Appendix C: Product Behavior Updated list of supported products. Major 
+
+65 / 67 
+
+[MS-OXWSOLPS] - v20250520 
+Online Personal Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+10 Index
+A    SearchDiagnosticsType Complex Type complex 
+ type 10 
+Applicability 8    simple types 10 
+Attribute groups 11    SuggestionKindType Simple Type simple type 10 
+Attributes 11    syntax 9 
+    transport 9 
+
+C  
+
+ N 
+Capability negotiation 8  
+Change tracking 65 Namespaces 9 
+Complex types 9 Normative references 7 
+   SearchDiagnosticsType Complex Type 10  
+Create a search session example 46 O 
+  
+E Overview (synopsis) 8 
+  
+End a search session example 51 P 
+Examples  
+   create a search session 46 Parameters - security index 53 
+   end a search session 51 Port type 12 
+   get suggestions for searches 47 Preconditions 8 
+      with user input 48 Prerequisites 8 
+      without user input 47 Product behavior 64 
+   overview 46 Protocol Details 
+   search 49    overview 12 
+  
+F R 
+  
+Fields - vendor-extensible 8 References 7 
+Full WSDL 54    informative 8 
+Full XML schema 57    normative 7 
+   Messages Schema 57 Relationship to other protocols 8 
+   Types Schema 59  
+ S 
+G  
+ Search example 49 
+Get suggestions for searches example 47 SearchDiagnosticsType Complex Type complex type 
+   with user input 48 10 
+   without user input 47 Security 
+Glossary 6    implementer considerations 53 
+Groups 11    parameter index 53 
+ Sequencing rules 12 
+I Simple types 10 
+    SuggestionKindType Simple Type 10 
+Implementer - security considerations 53 SuggestionKindType Simple Type simple type 10 
+Index of security parameters 53 Syntax 
+Informative references 8    messages - overview 9 
+Introduction 6  
+ T 
+M  
+ Tracking changes 65 
+Message processing 12 Transport 9 
+Messages Types 
+   attribute groups 11    complex 9 
+   attributes 11    simple 10 
+   complex types 9  
+   elements 9 V 
+   enumerated 9  
+   groups 11 Vendor-extensible fields 8 
+   namespaces 9 Versioning 8 
+
+ 
+
+66 / 67 
+
+[MS-OXWSOLPS] - v20250520 
+Online Personal Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+W 
+ 
+WSDL 54 
+ 
+X 
+ 
+XML schema 57 
+   Messages Schema 57 
+   Types Schema 59 
+
+ 
+
+67 / 67 
+
+[MS-OXWSOLPS] - v20250520 
+Online Personal Search Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025

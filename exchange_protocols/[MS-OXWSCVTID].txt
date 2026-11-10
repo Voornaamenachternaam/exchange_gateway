@@ -1,0 +1,1971 @@
+﻿[MS-OXWSCVTID]:  
+
+Convert Item Identifier Web Service Protocol 
+
+ 
+
+Intellectual Property Rights Notice for Open Specifications Documentation 
+
+ Technical Documentation. Microsoft publishes Open Specifications documentation (“this 
+documentation”) for protocols, file formats, data portability, computer languages, and standards 
+support. Additionally, overview documents cover inter-protocol relationships and interactions.  
+
+ Copyrights. This documentation is covered by Microsoft copyrights. Regardless of any other 
+terms that are contained in the terms of use for the Microsoft website that hosts this 
+documentation, you can make copies of it in order to develop implementations of the technologies 
+that are described in this documentation and can distribute portions of it in your implementations 
+that use these technologies or in your documentation as necessary to properly document the 
+implementation. You can also distribute in your implementation, with or without modification, any 
+schemas, IDLs, or code samples that are included in the documentation. This permission also 
+applies to any documents that are referenced in the Open Specifications documentation.  
+
+ No Trade Secrets. Microsoft does not claim any trade secret rights in this documentation.  
+ Patents. Microsoft has patents that might cover your implementations of the technologies 
+
+described in the Open Specifications documentation. Neither this notice nor Microsoft's delivery of 
+this documentation grants any licenses under those patents or any other Microsoft patents. 
+However, a given Open Specifications document might be covered by the Microsoft Open 
+Specifications Promise or the Microsoft Community Promise. If you would prefer a written license, 
+or if the technologies described in this documentation are not covered by the Open Specifications 
+Promise or Community Promise, as applicable, patent licenses are available by contacting 
+iplg@microsoft.com.  
+
+ License Programs. To see all of the protocols in scope under a specific license program and the 
+associated patents, visit the Patent Map.  
+
+ Trademarks. The names of companies and products contained in this documentation might be 
+covered by trademarks or similar intellectual property rights. This notice does not grant any 
+licenses under those rights. For a list of Microsoft trademarks, visit 
+www.microsoft.com/trademarks.  
+
+ Fictitious Names. The example companies, organizations, products, domain names, email 
+addresses, logos, people, places, and events that are depicted in this documentation are fictitious. 
+No association with any real company, organization, product, domain name, email address, logo, 
+person, place, or event is intended or should be inferred. 
+
+Reservation of Rights. All other rights are reserved, and this notice does not grant any rights other 
+than as specifically described above, whether by implication, estoppel, or otherwise.  
+
+Tools. The Open Specifications documentation does not require the use of Microsoft programming 
+tools or programming environments in order for you to develop an implementation. If you have access 
+to Microsoft programming tools and environments, you are free to take advantage of them. Certain 
+Open Specifications documents are intended for use in conjunction with publicly available standards 
+specifications and network programming art and, as such, assume that the reader either is familiar 
+with the aforementioned material or has immediate access to it. 
+
+Support. For questions and support, please contact dochelp@microsoft.com.  
+
+1 / 33 
+
+[MS-OXWSCVTID] - v20250520 
+Convert Item Identifier Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Revision Summary 
+
+Revision Revision 
+Date History Class Comments 
+
+7/15/2009 1.0 Major Initial Availability. 
+
+11/4/2009 1.1.0 Minor Updated the technical content. 
+
+2/10/2010 1.2.0 Minor Updated the technical content. 
+
+5/5/2010 1.2.1 Editorial Revised and edited the technical content. 
+
+8/4/2010 2.0 Major Significantly changed the technical content. 
+
+11/3/2010 2.1 Minor Clarified the meaning of the technical content. 
+
+3/18/2011 3.0 Major Significantly changed the technical content. 
+
+8/5/2011 3.1 Minor Clarified the meaning of the technical content. 
+
+10/7/2011 4.0 Major Significantly changed the technical content. 
+
+1/20/2012 5.0 Major Significantly changed the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+4/27/2012 5.0 None 
+
+technical content. 
+
+7/16/2012 5.1 Minor Clarified the meaning of the technical content. 
+
+10/8/2012 6.0 Major Significantly changed the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+2/11/2013 6.0 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+7/26/2013 6.0 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+11/18/2013 6.0 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+2/10/2014 6.0 None 
+
+technical content. 
+
+4/30/2014 6.1 Minor Clarified the meaning of the technical content. 
+
+7/31/2014 6.2 Minor Clarified the meaning of the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+10/30/2014 6.2 None 
+
+technical content. 
+
+3/16/2015 7.0 Major Significantly changed the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+5/26/2015 7.0 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+9/14/2015 7.0 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+6/13/2016 7.0 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+9/14/2016 7.0 None 
+
+technical content. 
+
+2 / 33 
+
+[MS-OXWSCVTID] - v20250520 
+Convert Item Identifier Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Revision Revision 
+Date History Class Comments 
+
+7/24/2018 8.0 Major Significantly changed the technical content. 
+
+10/1/2018 9.0 Major Significantly changed the technical content. 
+
+4/22/2021 10.0 Major Significantly changed the technical content. 
+
+8/17/2021 11.0 Major Significantly changed the technical content. 
+
+8/20/2024 12.0 Major Significantly changed the technical content. 
+
+5/20/2025 13.0 Major Significantly changed the technical content. 
+
+3 / 33 
+
+[MS-OXWSCVTID] - v20250520 
+Convert Item Identifier Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Table of Contents 
+1 Introduction ............................................................................................................ 6 
+
+1.1 Glossary ........................................................................................................... 6 
+1.2 References ........................................................................................................ 7 
+
+1.2.1 Normative References ................................................................................... 7 
+1.2.2 Informative References ................................................................................. 8 
+
+1.3 Overview .......................................................................................................... 8 
+1.4 Relationship to Other Protocols ............................................................................ 8 
+1.5 Prerequisites/Preconditions ................................................................................. 9 
+1.6 Applicability Statement ....................................................................................... 9 
+1.7 Versioning and Capability Negotiation ................................................................... 9 
+1.8 Vendor-Extensible Fields ..................................................................................... 9 
+1.9 Standards Assignments ....................................................................................... 9 
+
+2 Messages ............................................................................................................... 10 
+2.1 Transport ........................................................................................................ 10 
+2.2 Common Message Syntax ................................................................................. 10 
+
+2.2.1 Namespaces .............................................................................................. 10 
+2.2.2 Messages ................................................................................................... 10 
+2.2.3 Elements ................................................................................................... 11 
+2.2.4 Complex Types ........................................................................................... 11 
+2.2.5 Simple Types ............................................................................................. 11 
+2.2.6 Attributes .................................................................................................. 11 
+2.2.7 Groups ...................................................................................................... 11 
+2.2.8 Attribute Groups ......................................................................................... 11 
+2.2.9 Common Data Structures ............................................................................ 11 
+
+3 Protocol Details ..................................................................................................... 12 
+3.1 ExchangeServicePortType Server Details ............................................................. 12 
+
+3.1.1 Abstract Data Model .................................................................................... 12 
+3.1.2 Timers ...................................................................................................... 12 
+3.1.3 Initialization ............................................................................................... 12 
+3.1.4 Message Processing Events and Sequencing Rules .......................................... 12 
+
+3.1.4.1 ConvertId ............................................................................................ 12 
+3.1.4.1.1 Messages ....................................................................................... 13 
+
+3.1.4.1.1.1 tns:ConvertIdSoapIn Message ..................................................... 13 
+3.1.4.1.1.2 tns:ConvertIdSoapOut ................................................................ 14 
+
+3.1.4.1.2 Elements ........................................................................................ 14 
+3.1.4.1.2.1 m:ConvertId Element ................................................................. 15 
+3.1.4.1.2.2 m:ConvertIdResponse Element .................................................... 15 
+
+3.1.4.1.3 Complex Types ............................................................................... 15 
+3.1.4.1.3.1 m:ConvertIdResponseMessageType Complex Type......................... 16 
+3.1.4.1.3.2 m:ConvertIdResponseType Complex Type .................................... 16 
+3.1.4.1.3.3 m:ConvertIdType Complex Type .................................................. 16 
+3.1.4.1.3.4 t:AlternateIdBaseType Complex Type ........................................... 17 
+3.1.4.1.3.5 t:AlternateIdType Complex Type .................................................. 17 
+3.1.4.1.3.6 t:AlternatePublicFolderIdType Complex Type ................................. 18 
+3.1.4.1.3.7 t:AlternatePublicFolderItemIdType Complex Type .......................... 19 
+3.1.4.1.3.8 t:NonEmptyArrayOfAlternateIdsType Complex Type ....................... 19 
+
+3.1.4.1.4 Simple Types .................................................................................. 20 
+3.1.4.1.4.1 t:IdFormatType Simple Type ....................................................... 20 
+
+3.1.4.1.5 Attributes ....................................................................................... 21 
+3.1.4.1.6 Groups ........................................................................................... 21 
+3.1.4.1.7 Attribute Groups.............................................................................. 21 
+
+3.1.5 Timer Events .............................................................................................. 21 
+3.1.6 Other Local Events ...................................................................................... 21 
+
+4 / 33 
+
+[MS-OXWSCVTID] - v20250520 
+Convert Item Identifier Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+4 Protocol Examples ................................................................................................. 22 
+
+5 Security ................................................................................................................. 24 
+5.1 Security Considerations for Implementers ........................................................... 24 
+5.2 Index of Security Parameters ............................................................................ 24 
+
+6 Appendix A: Full WSDL .......................................................................................... 25 
+
+7 Appendix B: Full XML Schema ................................................................................ 27 
+7.1 Messages Schema ............................................................................................ 27 
+7.2 Types Schema ................................................................................................. 28 
+
+8 Appendix C: Product Behavior ............................................................................... 30 
+
+9 Change Tracking .................................................................................................... 31 
+
+10 Index ..................................................................................................................... 32 
+
+ 
+
+5 / 33 
+
+[MS-OXWSCVTID] - v20250520 
+Convert Item Identifier Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+1 Introduction 
+
+The Convert Item Identifier Web Service Protocol enables a client to convert identifier formats that can 
+be used to locate items that are stored on the server. 
+
+Sections 1.5, 1.8, 1.9, 2, and 3 of this specification are normative. All other sections and examples in 
+this specification are informative. 
+
+1.1 Glossary 
+
+This document uses the following terms: 
+
+endpoint: A communication port that is exposed by an application server for a specific shared 
+service and to which messages can be addressed. 
+
+Hypertext Transfer Protocol (HTTP): An application-level protocol for distributed, collaborative, 
+hypermedia information systems (text, graphic images, sound, video, and other multimedia 
+files) on the World Wide Web. 
+
+Hypertext Transfer Protocol Secure (HTTPS): An extension of HTTP that securely encrypts and 
+decrypts web page requests. In some older protocols, "Hypertext Transfer Protocol over Secure 
+Sockets Layer" is still used (Secure Sockets Layer has been deprecated). For more information, 
+see [SSL3] and [RFC5246]. 
+
+mailbox: A message store that contains email, calendar items, and other Message objects for a 
+single recipient. 
+
+public folder: A Folder object that is stored in a location that is publicly available. 
+
+Simple Mail Transfer Protocol (SMTP): A member of the TCP/IP suite of protocols that is used 
+to transport Internet messages, as described in [RFC5321]. 
+
+SOAP: A lightweight protocol for exchanging structured information in a decentralized, distributed 
+environment. SOAP uses XML technologies to define an extensible messaging framework, 
+which provides a message construct that can be exchanged over a variety of underlying 
+protocols. The framework has been designed to be independent of any particular programming 
+model and other implementation-specific semantics. SOAP 1.2 supersedes SOAP 1.1. See 
+[SOAP1.2-1/2003]. 
+
+SOAP action: The HTTP request header field used to indicate the intent of the SOAP request, 
+using a URI value. See [SOAP1.1] section 6.1.1 for more information. 
+
+SOAP body: A container for the payload data being delivered by a SOAP message to its recipient. 
+See [SOAP1.2-1/2007] section 5.3 for more information. 
+
+SOAP header: A mechanism for implementing extensions to a SOAP message in a decentralized 
+manner without prior agreement between the communicating parties. See [SOAP1.2-1/2007] 
+section 5.2 for more information. 
+
+SOAP message: An XML document consisting of a mandatory SOAP envelope, an optional SOAP 
+header, and a mandatory SOAP body. See [SOAP1.2-1/2007] section 5 for more information. 
+
+Uniform Resource Locator (URL): A string of characters in a standardized format that identifies 
+a document or resource on the World Wide Web. The format is as specified in [RFC1738]. 
+
+web server: A server computer that hosts websites and responds to requests from applications. 
+
+Web Services Description Language (WSDL): An XML format for describing network services 
+as a set of endpoints that operate on messages that contain either document-oriented or 
+
+6 / 33 
+
+[MS-OXWSCVTID] - v20250520 
+Convert Item Identifier Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+procedure-oriented information. The operations and messages are described abstractly and are 
+bound to a concrete network protocol and message format in order to define an endpoint. 
+Related concrete endpoints are combined into abstract endpoints, which describe a network 
+service. WSDL is extensible, which allows the description of endpoints and their messages 
+regardless of the message formats or network protocols that are used. 
+
+WSDL message: An abstract, typed definition of the data that is communicated during a WSDL 
+operation [WSDL]. Also, an element that describes the data being exchanged between web 
+service providers and clients. 
+
+WSDL port type: A named set of logically-related, abstract Web Services Description 
+Language (WSDL) operations and messages. 
+
+XML: The Extensible Markup Language, as described in [XML1.0]. 
+
+XML namespace: A collection of names that is used to identify elements, types, and attributes in 
+XML documents identified in a URI reference [RFC3986]. A combination of XML namespace and 
+local name allows XML documents to use elements, types, and attributes that have the same 
+names but come from different sources. For more information, see [XMLNS-2ED]. 
+
+XML namespace prefix: An abbreviated form of an XML namespace, as described in [XML]. 
+
+XML schema: A description of a type of XML document that is typically expressed in terms of 
+constraints on the structure and content of documents of that type, in addition to the basic 
+syntax constraints that are imposed by XML itself. An XML schema provides a view of a 
+document type at a relatively high level of abstraction. 
+
+MAY, SHOULD, MUST, SHOULD NOT, MUST NOT: These terms (in all caps) are used as defined 
+in [RFC2119]. All statements of optional behavior use either MAY, SHOULD, or SHOULD NOT. 
+
+1.2 References 
+
+Links to a document in the Microsoft Open Specifications library point to the correct section in the 
+most recently published version of the referenced document. However, because individual documents 
+in the library are not updated at the same time, the section numbers in the documents may not 
+match. You can confirm the correct section numbering by checking the Errata.   
+
+1.2.1 Normative References 
+
+We conduct frequent surveys of the normative references to assure their continued availability. If you 
+have any issue with finding a normative reference, please contact dochelp@microsoft.com. We will 
+assist you in finding the relevant information.  
+
+[MS-OXPROPS] Microsoft Corporation, "Exchange Server Protocols Master Property List". 
+
+[MS-OXWSCDATA] Microsoft Corporation, "Common Web Service Data Types". 
+
+[RFC2119] Bradner, S., "Key words for use in RFCs to Indicate Requirement Levels", BCP 14, RFC 
+2119, March 1997, https://www.rfc-editor.org/info/rfc2119 
+
+[RFC2616] Fielding, R., Gettys, J., Mogul, J., et al., "Hypertext Transfer Protocol -- HTTP/1.1", RFC 
+2616, June 1999, https://www.rfc-editor.org/info/rfc2616 
+
+[RFC2818] Rescorla, E., "HTTP Over TLS", RFC 2818, May 2000, https://www.rfc-
+editor.org/info/rfc2818 
+
+[SOAP1.1] Box, D., Ehnebuske, D., Kakivaya, G., et al., "Simple Object Access Protocol (SOAP) 1.1", 
+W3C Note, May 2000, https://www.w3.org/TR/2000/NOTE-SOAP-20000508/ 
+
+7 / 33 
+
+[MS-OXWSCVTID] - v20250520 
+Convert Item Identifier Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+[WSDL] Christensen, E., Curbera, F., Meredith, G., and Weerawarana, S., "Web Services Description 
+Language (WSDL) 1.1", W3C Note, March 2001, https://www.w3.org/TR/2001/NOTE-wsdl-20010315 
+
+[XMLNS] Bray, T., Hollander, D., Layman, A., et al., Eds., "Namespaces in XML 1.0 (Third Edition)", 
+W3C Recommendation, December 2009, https://www.w3.org/TR/2009/REC-xml-names-20091208/ 
+
+[XMLSCHEMA1] Thompson, H., Beech, D., Maloney, M., and Mendelsohn, N., Eds., "XML Schema Part 
+1: Structures", W3C Recommendation, May 2001, https://www.w3.org/TR/2001/REC-xmlschema-1-
+20010502/ 
+
+[XMLSCHEMA2] Biron, P.V., Ed. and Malhotra, A., Ed., "XML Schema Part 2: Datatypes", W3C 
+Recommendation, May 2001, https://www.w3.org/TR/2001/REC-xmlschema-2-20010502/ 
+
+1.2.2 Informative References 
+
+[MS-OXDSCLI] Microsoft Corporation, "Autodiscover Publishing and Lookup Protocol". 
+
+[MS-OXPROTO] Microsoft Corporation, "Exchange Server Protocols System Overview". 
+
+[MS-OXWSADISC] Microsoft Corporation, "Autodiscover Publishing and Lookup SOAP-Based Web 
+Service Protocol". 
+
+1.3 Overview 
+
+The Convert Item Identifier Web Service protocol enables clients to convert between alternative 
+identifier formats for items that are stored by the server. Those identifiers can then be used to access 
+the stored items by using other protocols and programmatic interfaces that are available on the 
+server. 
+
+1.4 Relationship to Other Protocols 
+
+A client that implements this protocol can use the Autodiscover Publishing and Lookup SOAP-Based 
+Web Service Protocol, as described in [MS-OXWSADISC], or the Autodiscover Publishing and Lookup 
+Protocol, as described in [MS-OXDSCLI], to identify the target endpoint to use for each operation. 
+
+This protocol uses the SOAP Protocol, as described in [SOAP1.1], to specify the structure information 
+exchanged between the client and server. This protocol uses the XML Protocol, as described in 
+[XMLSCHEMA1] and [XMLSCHEMA2], to describe the message content sent to and from the server. 
+
+The Convert Item Identifier Web Service Protocol uses SOAP over HTTP, as described in [RFC2616], 
+and SOAP over HTTPS, as described in [RFC2818], as shown in the following figure.  
+
+ 
+
+Figure 1: This protocol in relation to other protocols 
+
+For conceptual background information and overviews of the relationships and interactions between 
+this and other protocols, see [MS-OXPROTO]. 
+
+8 / 33 
+
+[MS-OXWSCVTID] - v20250520 
+Convert Item Identifier Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+1.5 Prerequisites/Preconditions 
+
+The endpoint URL that is returned by either the Autodiscover Publishing Lookup SOAP-Based Web 
+Service Protocol, as described in [MS-OXWSADISC], or the Autodiscover Publishing and Lookup 
+Protocol, as described in [MS-OXDSCLI], is required to form the HTTP request to the web server that 
+hosts this protocol. The operations that this protocol defines cannot be accessed unless the correct 
+endpoint is identified in the HTTP web requests that target this protocol. 
+
+1.6 Applicability Statement 
+
+The Convert Item Identifier Web Service protocol is applicable to clients that must obtain alternative 
+identifiers to an item that is stored on the server, and then use those identifiers to utilize other 
+protocols or application programming interfaces to access the stored item. 
+
+1.7 Versioning and Capability Negotiation 
+
+This document covers versioning issues in the following areas: 
+
+ Supported Transports: This protocol uses SOAP 1.1, as specified in section 2.1. 
+
+ Protocol Versions: This protocol specifies only one WSDL port type version. The WSDL version 
+of the request is identified by using the RequestServerVersion element, as described in [MS-
+OXWSCDATA] section 2.2.3.9, and the version of the server responding to the request is identified 
+by using the ServerVersionInfo element, as described in [MS-OXWSCDATA] section 2.2.3.10. 
+
+ Security and Authentication Methods: This protocol relies on the web server that is hosting it 
+to perform authentication. 
+
+ Localization: This protocol includes text strings in various messages. Localization considerations 
+for such strings are specified in section 3.1.4. 
+
+ Capability Negotiation: None. 
+
+1.8 Vendor-Extensible Fields 
+
+None. 
+
+1.9 Standards Assignments 
+
+None. 
+
+9 / 33 
+
+[MS-OXWSCVTID] - v20250520 
+Convert Item Identifier Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+2 Messages 
+
+In the following sections, the schema definition might differ from the processing rules imposed by the 
+protocol. The WSDL in this specification provides a base description of the protocol. The schema in 
+this specification provides a base description of the message syntax. The text that specifies the WSDL 
+and schema might specify restrictions that reflect actual protocol behavior. For example, the schema 
+definition might allow for an element to be empty, null, or not present but the behavior of the 
+protocol as specified restricts the same elements to being non-empty, not null, or present. 
+
+2.1 Transport 
+
+The SOAP version supported is SOAP 1.1. For details, see [SOAP1.1]. 
+
+This protocol relies on the web server that hosts the application to perform authentication. This 
+protocol MUST support SOAP over HTTP, as specified in [RFC2616]. The protocol SHOULD use secure 
+communications via HTTPS, as defined in [RFC2818]. 
+
+2.2 Common Message Syntax 
+
+This section contains common definitions that are used by this protocol. The syntax of the definitions 
+uses XML schema as defined in [XMLSCHEMA1] and [XMLSCHEMA2], and Web Services 
+Description Language (WSDL) as defined in [WSDL]. 
+
+In the following sections, the schema definition might differ from the processing rules imposed by the 
+protocol. The WSDL in this specification provides a base description of the protocol. The schema in this 
+specification provides a base description of the message syntax. The text that specifies the WSDL and 
+schema might specify restrictions that reflect actual protocol behavior. For example, the schema 
+definition might allow for an element to be empty, null, or not present but the behavior of the protocol 
+as specified restricts the same elements to being non-empty, not null, or present. 
+
+2.2.1 Namespaces 
+
+This specification defines and references various XML namespaces by using the mechanisms 
+specified in [XMLNS]. Although this specification associates a specific XML namespace prefix with 
+each XML namespace that is used, the choice of any particular XML namespace prefix is 
+implementation-specific and is not significant for interoperability. 
+
+Prefix Namespace URI Reference 
+
+soap http://schemas.xmlsoap.org/wsdl/soap/ [SOAP1.1] 
+
+tns http://schemas.microsoft.com/exchange/services/2006/messages  
+
+xs http://www.w3.org/2001/XMLSchema [XMLSCHEMA1] [XMLSCHEMA2]  
+
+(none) http://schemas.microsoft.com/exchange/services/2006/messages  
+
+wsdl http://schemas.xmlsoap.org/wsdl/ [WSDL] 
+
+t http://schemas.microsoft.com/exchange/services/2006/types  
+
+m http://schemas.microsoft.com/exchange/services/2006/messages  
+
+ 
+
+10 / 33 
+
+[MS-OXWSCVTID] - v20250520 
+Convert Item Identifier Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+2.2.2 Messages 
+
+This specification does not define any common WSDL message definitions. 
+
+2.2.3 Elements 
+
+This specification does not define any common XML schema element definitions. 
+
+2.2.4 Complex Types 
+
+This specification does not define any common XML schema complex type definitions. 
+
+2.2.5 Simple Types 
+
+This specification does not define any common XML schema simple type definitions. 
+
+2.2.6 Attributes 
+
+This specification does not define any common XML schema attribute definitions. 
+
+2.2.7 Groups 
+
+This specification does not define any common XML schema group definitions. 
+
+2.2.8 Attribute Groups 
+
+This specification does not define any common XML schema attribute group definitions. 
+
+2.2.9 Common Data Structures 
+
+This specification does not define any common XML schema data structures. 
+
+11 / 33 
+
+[MS-OXWSCVTID] - v20250520 
+Convert Item Identifier Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+3 Protocol Details 
+
+The client side of this protocol is simply a pass-through. That is, no additional timers or other state is 
+required on the client side of this protocol. Calls made by the higher-layer protocol or application are 
+passed directly to the transport, and the results that are returned by the transport are passed directly 
+back to the higher-layer protocol or application. 
+
+In the following sections, the schema definition might differ from the processing rules imposed by the 
+protocol. The WSDL in this specification provides a base description of the protocol. The schema in this 
+specification provides a base description of the message syntax. The text that specifies the WSDL and 
+schema might specify restrictions that reflect actual protocol behavior. For example, the schema 
+definition might allow for an element to be empty, null, or not present but the behavior of the protocol 
+as specified restricts the same elements to being non-empty, not null, or present. 
+
+3.1 ExchangeServicePortType Server Details 
+
+     
+
+3.1.1 Abstract Data Model 
+
+The Convert Item Identifier Web Service Protocol is a stateless protocol. 
+
+3.1.2 Timers 
+
+None. 
+
+3.1.3 Initialization 
+
+None. 
+
+3.1.4 Message Processing Events and Sequencing Rules 
+
+This protocol includes the operation that is listed in the following table. 
+
+Operation name Description 
+
+ConvertId Converts the supplied item identifier into a different format.  
+
+ 
+
+3.1.4.1 ConvertId 
+
+The ConvertId operation SHOULD<1> convert the item identifier supplied by the client into a 
+different identifier format.  
+
+The following is the WS DL port type specification of the operation. 
+
+ 
+ <wsdl:operation name="ConvertId"> 
+    <wsdl:input message="tns:ConvertIdSoapIn"/> 
+    <wsdl:output message="tns:ConvertIdSoapOut"/> 
+ </wsdl:operation> 
+
+The following is the WSDL binding specification of the operation. 
+
+12 / 33 
+
+[MS-OXWSCVTID] - v20250520 
+Convert Item Identifier Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+ <wsdl:operation name="ConvertId"> 
+   <soap:operation 
+soapAction="http://schemas.microsoft.com/exchange/services/2006/messages/ConvertId" /> 
+   <wsdl:input> 
+       <soap:header message="tns:ConvertIdSoapIn" part="Impersonation" use="literal"/> 
+       <soap:header message="tns:ConvertIdSoapIn" part="RequestVersion" use="literal"/> 
+       <soap:body parts="request" use="literal" /> 
+   </wsdl:input> 
+   <wsdl:output> 
+       <soap:body parts="ConvertIdResult" use="literal" /> 
+       <soap:header message="tns:ConvertIdSoapOut" part="ServerVersion" use="literal"/> 
+   </wsdl:output> 
+ </wsdl:operation> 
+
+Servers that implement this protocol SHOULD<2> give clients the option to implement the 
+Impersonation SOAP header. 
+
+ 
+
+3.1.4.1.1 Messages 
+
+The following table lists the WSDL message definitions that are specific to this operation. 
+
+Message name Description 
+
+ConvertIdSoapIn Specifies the SOAP message that requests the conversion of one or more identifiers. 
+
+ConvertIdSoapOut Specifies the SOAP message that is returned by the server in response to a request to 
+convert identifiers. 
+
+ 
+
+3.1.4.1.1.1 tns:ConvertIdSoapIn Message 
+
+The ConvertIdSoapIn WSDL message specifies the SOAP message that requests the conversion 
+of one or more identifiers. 
+
+The following is the WSDL message specification of the ConvertIdSoapIn message.  
+
+ <wsdl:message name="ConvertIdSoapIn"> 
+  <wsdl:part name="request" element="tns:ConvertId"/> 
+  <wsdl:part name="Impersonation" element="t:ExchangeImpersonation"/> 
+  <wsdl:part name="RequestVersion" element="t:RequestServerVersion"/> 
+ </wsdl:message> 
+
+Servers that implement this protocol SHOULD<3> give clients the option to implement the 
+Impersonation part.  
+
+The ConvertIdSoapIn WSDL message is the input message for the SOAP action 
+http://schemas.microsoft.com/exchange/services/2006/messages/ConvertId. 
+
+The parts of the ConvertIdSoapIn WSDL message are described in the following table. 
+
+Part name Element/type Description 
+
+request tns:ConvertId (section 3.1.4.1.2.1) Specifies the SOAP body of the request to 
+convert identifiers. 
+
+13 / 33 
+
+[MS-OXWSCVTID] - v20250520 
+Convert Item Identifier Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Part name Element/type Description 
+
+Impersonation t:ExchangeImpersonation ([MS- Specifies a SOAP header that identifies the user 
+OXWSCDATA] section 2.2.3.3)  whom the client application is impersonating. 
+
+This part is optional. 
+
+RequestVersion t:RequestServerVersion ([MS- Specifies a SOAP header that identifies the 
+OXWSCDATA] section 2.2.3.9) schema version for the ConvertId operation 
+
+request. 
+
+ 
+
+3.1.4.1.1.2 tns:ConvertIdSoapOut 
+
+The ConvertIdSoapOut WSDL message specifies the SOAP message that is returned in response 
+to a request to convert one or more identifiers  
+
+The following is the WSDL message specification of the ConvertIdSoapOut message. 
+
+ <wsdl:message name="ConvertIdSoapOut"> 
+  <wsdl:part name="ConvertIdResult" element="tns:ConvertIdResponse"/> 
+  <wsdl:part name="ServerVersion" element="t:ServerVersionInfo"/> 
+ </wsdl:message> 
+
+The ConvertIdSoapOut WSDL message is the output message for the SOAP action 
+http://schemas.microsoft.com/exchange/services/2006/messages/ConvertId. 
+
+The parts of the ConvertIdSoapOut WSDL message are specified in the following table. 
+
+Part name Element/type Description 
+
+ConvertIdResult tns:ConvertIdResponse (section Specifies the SOAP body of the response to a 
+3.1.4.1.2.2) ConvertId request. 
+
+ServerVersion t:ServerVersionInfo ([MS-OXWSCDATA] Specifies a SOAP header that identifies the 
+section 2.2.3.10) server version for the response. 
+
+A successful ConvertId WSDL operation request returns a ConvertIdResponseMessage element 
+with the ResponseClass (as specified in [MS-OXWSCDATA] section 2.2.4.65) attribute set to 
+"Success". The ResponseCode (as specified in [MS-OXWSCDATA] section 2.2.4.65) element of the 
+ConvertIdResponseMessage element is set to "NoError". 
+
+If the ConvertId WSDL operation is not successful, it returns a ConvertIdResponseMessage 
+element with the ResponseClass (as specified in [MS-OXWSCDATA] section 2.2.4.65) attribute set to 
+"Error". The ResponseCode (as specified in [MS-OXWSCDATA] section 2.2.4.65) element of the 
+ConvertIdResponseMessage element is set to one of the common errors defined in [MS-
+OXWSCDATA] section 2.2.5.24. 
+
+3.1.4.1.2 Elements 
+
+The following table lists the XML schema element definitions that are specific to this operation. 
+
+Element name Description 
+
+ConvertId Specifies a request to convert a supplied list of source 
+item identifiers into the requested destination format. 
+
+14 / 33 
+
+[MS-OXWSCVTID] - v20250520 
+Convert Item Identifier Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Element name Description 
+
+ConvertIdResponse Specifies a response from the server, and contains the 
+alternate item identifiers for the supplied items in the 
+requested format. 
+
+ 
+
+3.1.4.1.2.1 m:ConvertId Element 
+
+The ConvertId element defines a request to convert a supplied list of source item identifiers into the 
+requested destination format. The ConvertId element is of type ConvertIdType, as specified in 
+section 3.1.4.1.3.3. 
+
+ <xs:element name="ConvertId" 
+  type="m:ConvertIdType" 
+ /> 
+ 
+
+3.1.4.1.2.2 m:ConvertIdResponse Element 
+
+The ConvertIdResponse element specifies a response from the server, and contains the alternate 
+item identifiers for the supplied items in the requested format. The ConvertIdResponse element is of 
+type ConvertIdResponseType, as specified in section 3.1.4.1.3.2. 
+
+ <xs:element name="ConvertIdResponse" 
+  type="m:ConvertIdResponseType" 
+ /> 
+ 
+
+3.1.4.1.3 Complex Types 
+
+The following table summarizes the XML schema complex type definitions that are specific to this 
+operation. 
+
+Complex type name Description 
+
+ConvertIdResponseMessageType Specifies the status and result of a ConvertId 
+operation request. 
+
+ConvertIdResponseType Specifies the contents of a response to a ConvertId 
+operation request. 
+
+ConvertIdType Specifies the contents of a ConvertId operation 
+request. 
+
+AlternateIdBaseType Specifies the base container type for the attributes that 
+specify information about the returned item identifier. 
+
+AlternateIdType Specifies the information that is provided with a 
+returned mailbox folder or mailbox item identifier. 
+
+AlternatePublicFolderIdType Specifies the information that is provided with a 
+returned public folder item identifier. 
+
+AlternatePublicFolderItemIdType Specifies the information that is provided with a 
+returned item that is located in a public folder. 
+
+NonEmptyArrayOfAlternateIdsType Specifies a container for one or more item identifiers. 
+
+ 
+
+15 / 33 
+
+[MS-OXWSCVTID] - v20250520 
+Convert Item Identifier Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+3.1.4.1.3.1 m:ConvertIdResponseMessageType Complex Type 
+
+The ConvertIdResponseMessageType complex type specifies the status and result of a ConvertId 
+operation request. The ConvertIdResponseMessageType complex type extends the 
+ResponseMessageType complex type, as specified in [MS-OXWSCDATA] section 2.2.4.65. 
+
+ <xs:complexType name="ConvertIdResponseMessageType"> 
+  <xs:complexContent> 
+    <xs:extension 
+      base="m:ResponseMessageType" 
+    > 
+      <xs:sequence> 
+        <xs:element name="AlternateId" 
+          type="t:AlternateIdBaseType" 
+          maxOccurs="1" 
+          minOccurs="0" 
+         /> 
+      </xs:sequence> 
+    </xs:extension> 
+  </xs:complexContent> 
+ </xs:complexType> 
+ 
+
+The following table lists the child elements of the ConvertIdResponseMessageType complex type. 
+
+Element 
+name Type Description 
+
+AlternateId t:AlternateIdBaseType (section Specifies a converted identifier in the 
+3.1.4.1.3.4)  response. 
+
+ 
+
+3.1.4.1.3.2 m:ConvertIdResponseType Complex Type 
+
+The ConvertIdResponseType complex type specifies the contents of a response to a ConvertId 
+operation request. The ConvertIdResponseType complex type extends the 
+BaseResponseMessageType complex type, as specified in [MS-OXWSCDATA] section 2.2.4.18. 
+
+ <xs:complexType name="ConvertIdResponseType"> 
+  <xs:complexContent> 
+    <xs:extension 
+      base="m:BaseResponseMessageType" 
+     /> 
+  </xs:complexContent> 
+ </xs:complexType> 
+ 
+
+3.1.4.1.3.3 m:ConvertIdType Complex Type 
+
+The ConvertIdType complex type specifies the contents of a ConvertId operation request. The 
+ConvertIdType complex type extends the BaseRequestType complex type, as specified in [MS-
+OXWSCDATA] section 2.2.4.17. 
+
+ <xs:complexType name="ConvertIdType"> 
+  <xs:complexContent> 
+    <xs:extension 
+      base="m:BaseRequestType" 
+    > 
+      <xs:sequence> 
+
+16 / 33 
+
+[MS-OXWSCVTID] - v20250520 
+Convert Item Identifier Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+        <xs:element name="SourceIds" 
+          type="t:NonEmptyArrayOfAlternateIdsType" 
+         /> 
+      </xs:sequence> 
+      <xs:attribute name="DestinationFormat" 
+        type="t:IdFormatType" 
+        use="required" 
+       /> 
+    </xs:extension> 
+  </xs:complexContent> 
+ </xs:complexType> 
+ 
+
+The following table lists the child elements of the ConvertIdType complex type. 
+
+Element name Type Description 
+
+SourceIds t:NonEmptyArrayOfAlternateIdsType Specifies the source identifiers to convert. 
+(section 3.1.4.1.3.8).   
+
+The following table lists the attributes of the ConvertIdType complex type. 
+
+Attribute name Type Description 
+
+DestinationFormat t:IdFormatType (section 3.1.4.1.4.1).  Specifies the identifier format that 
+will be returned for all the 
+converted identifiers. 
+
+ 
+
+3.1.4.1.3.4 t:AlternateIdBaseType Complex Type 
+
+The AlternateIdBaseType complex type specifies the base container type for the attributes that 
+specify information about the returned item identifier. 
+
+ <xs:complexType name="AlternateIdBaseType" 
+  abstract="true" 
+ > 
+  <xs:attribute name="Format" 
+    type="t:IdFormatType" 
+    use="required" 
+   /> 
+ </xs:complexType> 
+ 
+
+The following table lists the attributes of the AlternateIdBaseType complex type. 
+
+Attribute name Type Description 
+
+Format t:IdFormatType (section 3.1.4.1.4.1). Specifies the identifier format. 
+
+ 
+
+3.1.4.1.3.5 t:AlternateIdType Complex Type 
+
+The AlternateIdType complex type specifies the information that is provided with a returned 
+mailbox folder or mailbox item identifier. The AlternateIdType complex type extends the 
+AlternateIdBaseType complex type, as specified in section 3.1.4.1.3.4. 
+
+17 / 33 
+
+[MS-OXWSCVTID] - v20250520 
+Convert Item Identifier Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+ <xs:complexType name="AlternateIdType"> 
+  <xs:complexContent> 
+    <xs:extension 
+      base="t:AlternateIdBaseType" 
+    > 
+      <xs:attribute name="Id" 
+        type="xs:string" 
+        use="required" 
+       /> 
+      <xs:attribute name="Mailbox" 
+        type="t:NonEmptyStringType" 
+        use="required" 
+       /> 
+      <xs:attribute name="IsArchive" 
+        type="xs:boolean" 
+       /> 
+    </xs:extension> 
+  </xs:complexContent> 
+ </xs:complexType> 
+ 
+
+The following table lists the attributes of the AlternateIdType complex type. 
+
+Attribute 
+name Type Description 
+
+Id xs:string [XMLSCHEMA2]  Specifies the source identifier in a request and the destination 
+identifier in a response. This attribute MUST be present. The 
+maximum length is 512 bytes after base64 decoding. 
+
+Mailbox t:NonEmptyStringType ([MS- Specifies the mailbox primary SMTP address of the identifier 
+OXWSCDATA] section 2.2.5.20) to convert. This attribute MUST be present. 
+
+IsArchive xs:boolean [XMLSCHEMA2]  Specifies whether the identifier represents an archived item. 
+This attribute MUST be present if the item is an archived item. 
+Otherwise, this attribute is optional.<4> If this attribute is not 
+present, the value is assumed to equal "false". 
+
+ 
+
+3.1.4.1.3.6 t:AlternatePublicFolderIdType Complex Type 
+
+The AlternatePublicFolderIdType complex type specifies the information that is provided with a 
+returned public folder item identifier. The AlternatePublicFolderIdType complex type extends the 
+AlternateIdBaseType complex type, as specified in section 3.1.4.1.3.4. 
+
+ <xs:complexType name="AlternatePublicFolderIdType"> 
+  <xs:complexContent> 
+    <xs:extension 
+      base="t:AlternateIdBaseType" 
+    > 
+      <xs:attribute name="FolderId" 
+        type="xs:string" 
+        use="required" 
+       /> 
+    </xs:extension> 
+  </xs:complexContent> 
+ </xs:complexType> 
+ 
+
+The following table lists the attributes of the AlternatePublicFolderIdType complex type. 
+
+18 / 33 
+
+[MS-OXWSCVTID] - v20250520 
+Convert Item Identifier Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Attribute 
+name Type Description 
+
+FolderId xs:string [XMLSCHEMA2] Specifies the identifier of a folder to convert. The maximum length 
+is 512 bytes after base64 decoding. 
+
+ 
+
+3.1.4.1.3.7 t:AlternatePublicFolderItemIdType Complex Type 
+
+The AlternatePublicFolderItemIdType complex type specifies the information that is provided with 
+a returned item that is located in a public folder. The AlternatePublicFolderItemIdType complex 
+type extends the AlternatePublicFolderIdType complex type, as specified in section 3.1.4.1.3.6. 
+
+ <xs:complexType name="AlternatePublicFolderItemIdType"> 
+  <xs:complexContent> 
+    <xs:extension 
+      base="t:AlternatePublicFolderIdType" 
+    > 
+      <xs:attribute name="ItemId" 
+        type="xs:string" 
+        use="required" 
+       /> 
+    </xs:extension> 
+  </xs:complexContent> 
+ </xs:complexType> 
+ 
+
+The following table lists the attributes of the AlternatePublicFolderItemIdType complex type. 
+
+Attribute 
+name Type Description 
+
+ItemId xs:string [XMLSCHEMA2] Specifies the public folder item identifier to convert. The maximum 
+length is 512 bytes after base64 decoding. 
+
+ 
+
+3.1.4.1.3.8 t:NonEmptyArrayOfAlternateIdsType Complex Type 
+
+The NonEmptyArrayOfAlternateIdsType complex type specifies a container for one or more item 
+identifiers. Each individual identifier MUST be an AlternateIdType complex type, as specified in 
+section 3.1.4.1.3.5, an AlternatePublicFolderIdType complex type, as specified in section 
+3.1.4.1.3.6, or an AlternatePublicFolderItemIdType complex type, as specified in section 
+3.1.4.1.3.7. The NonEmptyArrayOfAlternateIdsType complex type does not extend any other 
+complex type. 
+
+ <xs:complexType name="NonEmptyArrayOfAlternateIdsType"> 
+  <xs:choice 
+    maxOccurs="unbounded" 
+  > 
+    <xs:element name="AlternateId" 
+      type="t:AlternateIdType" 
+     /> 
+    <xs:element name="AlternatePublicFolderId" 
+      type="t:AlternatePublicFolderIdType" 
+     /> 
+    <xs:element name="AlternatePublicFolderItemId" 
+      type="t:AlternatePublicFolderItemIdType" 
+     /> 
+
+19 / 33 
+
+[MS-OXWSCVTID] - v20250520 
+Convert Item Identifier Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+  </xs:choice> 
+ </xs:complexType> 
+ 
+
+The following table lists the child elements of the NonEmptyArrayOfAlternateIdsType complex 
+type. 
+
+Element name Type Description 
+
+AlternateId t:AlternateIdType (section 3.1.4.1.3.5) Specifies an item or folder 
+identifier to convert. 
+
+AlternatePublicFolderId t:AlternatePublicFolderIdType (section Specifies a public folder 
+3.1.4.1.3.6) identifier to convert. 
+
+AlternatePublicFolderItemId t:AlternatePublicFolderItemIdType (section Specifies a public folder 
+3.1.4.1.3.7) item identifier to convert. 
+
+ 
+
+3.1.4.1.4 Simple Types 
+
+The following table summarizes the XML schema simple type definitions that are specific to this 
+operation. 
+
+Simple type name Description 
+
+IdFormatType Specifies the item identifier format in both the client 
+request and for each returned identifier. 
+
+ 
+
+3.1.4.1.4.1 t:IdFormatType Simple Type 
+
+The IdFormatType simple type specifies the item identifier format in both the client request and for 
+each returned identifier. 
+
+ <xs:simpleType name="IdFormatType"> 
+  <xs:restriction 
+    base="xs:string" 
+  > 
+    <xs:enumeration 
+      value="EwsLegacyId" 
+     /> 
+    <xs:enumeration 
+      value="EwsId" 
+     /> 
+    <xs:enumeration 
+      value="EntryId" 
+     /> 
+    <xs:enumeration 
+      value="HexEntryId" 
+     /> 
+    <xs:enumeration 
+      value="StoreId" 
+     /> 
+    <xs:enumeration 
+      value="OwaId" 
+     /> 
+  </xs:restriction> 
+ </xs:simpleType> 
+
+20 / 33 
+
+[MS-OXWSCVTID] - v20250520 
+Convert Item Identifier Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+ 
+
+The following table lists the values that are defined by the IdFormatType simple type. 
+
+Value Meaning 
+
+EwsLegacyId Specifies that the identifier is in the format that is used by the legacy version of the protocol. 
+MAY<5> be present. 
+
+EwsId Specifies that the identifier is in the format that is used by the current version of the protocol. 
+
+EntryId Specifies that the identifier is in the format that can be used with the PidTagEntryId property, 
+as specified in [MS-OXPROPS] section 2.684. 
+
+HexEntryId Specifies that the identifier is a hexadecimal-encoded representation of the format that can be 
+used with the PidTagEntryId property.  
+
+StoreId Specifies that the identifier is in a format that is recognized only by the server. 
+
+OwaId Specifies that the identifier is in a format that is used by the web-based client capability of the 
+server, if one exists. 
+
+ 
+
+3.1.4.1.5 Attributes 
+
+None. 
+
+3.1.4.1.6 Groups 
+
+None. 
+
+3.1.4.1.7 Attribute Groups 
+
+None. 
+
+3.1.5 Timer Events 
+
+None. 
+
+3.1.6 Other Local Events 
+
+None. 
+
+21 / 33 
+
+[MS-OXWSCVTID] - v20250520 
+Convert Item Identifier Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+4 Protocol Examples 
+
+In this example, the protocol client constructs the following SOAP message to request the conversion 
+of an OwaId to an EwsId.  
+
+ 
+
+ 
+
+<?xml version="1.0" encoding="utf-8"?> 
+
+<soap:Envelope xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" 
+xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages" 
+xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types" 
+xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">  
+
+  <soap:Header> 
+
+    <t:RequestServerVersion Version="Exchange2010_SP1" />  
+
+  </soap:Header>  
+
+  <soap:Body>  
+
+    <m:ConvertId DestinationFormat="EwsId">  
+
+      <m:SourceIds>  
+
+        <t:AlternateId Format="OwaId" 
+Id="RgAAAAAzFgecVl%2fWTo7NTrcPscM3BwDHxFWht3DVTrtUQ 
+kRbTXDCAAAAMUgfAADHxFWht3DVTrtUQkRbTXDCAAAAMW98AAAJ" Mailbox="user1@example.com" />  
+
+      </m:SourceIds> 
+
+    </m:ConvertId> 
+
+  </soap:Body> 
+
+</soap:Envelope> 
+
+The protocol server responds with the converted identifier. 
+
+<?xml version="1.0" encoding="utf-8"?> 
+
+<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">  
+
+  <s:Header>  
+
+    <h:ServerVersionInfo MajorVersion="14" MinorVersion="1" MajorBuildNumber="218" 
+MinorBuildNumber="12" Version="Exchange2010_SP1" 
+xmlns:h="http://schemas.microsoft.com/exchange/services/2006/types" 
+xmlns="http://schemas.microsoft.com/exchange/services/2006/types" 
+xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" 
+xmlns:xsd="http://www.w3.org/2001/XMLSchema" />  
+
+  </s:Header>  
+
+  <s:Body xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" 
+xmlns:xsd="http://www.w3.org/2001/XMLSchema"> 
+
+    <m:ConvertIdResponse 
+xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages" 
+xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types">  
+
+22 / 33 
+
+[MS-OXWSCVTID] - v20250520 
+Convert Item Identifier Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+      <m:ResponseMessages>  
+
+        <m:ConvertIdResponseMessage ResponseClass="Success">  
+
+          <m:ResponseCode>NoError</m:ResponseCode>  
+
+          <m:AlternateId xsi:type="t:AlternateIdType" Format="EwsId" 
+Id="AAMkAGE4NTY1YWNjLT 
+JkNmMtNGIwYy1hZWFhLTcwNjYzMDNjYjlkZQBGAAAAAAAzFgecVl/WTo7NTrcPscM3 
+BwDHxFWht3DVTrtUQkRbTXDCAAAAMUgfAADHxFWht3DVTrtUQkRbTXDCAAAAMW98AAA=" 
+Mailbox="User1@example.com" /> 
+
+        </m:ConvertIdResponseMessage>  
+
+      </m:ResponseMessages>  
+
+    </m:ConvertIdResponse>  
+
+  </s:Body> 
+
+</s:Envelope> 
+
+23 / 33 
+
+[MS-OXWSCVTID] - v20250520 
+Convert Item Identifier Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+5 Security 
+
+5.1 Security Considerations for Implementers 
+
+The Convert Item Identifier Web Service Protocol does not use any additional security mechanisms. 
+
+5.2 Index of Security Parameters 
+
+None. 
+
+24 / 33 
+
+[MS-OXWSCVTID] - v20250520 
+Convert Item Identifier Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+6 Appendix A: Full WSDL 
+
+The following table lists the XML files that are required to implement the functionality that is specified 
+in this document. 
+
+File name Description Section 
+
+MS-OXWSCVTID.wsdl Contains the WSDL for the implementation of this protocol. 6 
+
+MS-OXWSCVTID- Contains the XML schema message definitions that are used in this 7.1 
+messages.xsd protocol. 
+
+MS-OXWSCVTID-types.xsd Contains the XML schema type definitions that are used in this 7.2 
+protocol. 
+
+These files have to be placed in a common folder for the WSDL to validate and operate. Also, any 
+schema files that are included in or imported into the MS-OXWSCVTID-types.xsd or MS-OXWSCVTID-
+messages.xsd schemas have to be placed in the common folder along with the files.  
+
+This section contains the contents of the MS-OXWSCVTID.wsdl file. 
+
+ <?xml version="1.0" encoding="utf-8"?> 
+ <wsdl:definitions xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/" 
+xmlns:tns="http://schemas.microsoft.com/exchange/services/2006/messages" 
+xmlns:s="http://www.w3.org/2001/XMLSchema" xmlns:wsdl="http://schemas.xmlsoap.org/wsdl/" 
+xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types" 
+targetNamespace="http://schemas.microsoft.com/exchange/services/2006/messages"> 
+  <wsdl:types> 
+    <xs:schema id="messages" elementFormDefault="qualified" version="Exchange2016" 
+xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages" 
+xmlns:tns="http://schemas.microsoft.com/exchange/services/2006/messages" 
+xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types" 
+xmlns:xs="http://www.w3.org/2001/XMLSchema" 
+targetNamespace="http://schemas.microsoft.com/exchange/services/2006/messages"> 
+      <xs:include schemaLocation="MS-OXWSCVTID-messages.xsd"/> 
+    </xs:schema> 
+    <xs:schema id="types" elementFormDefault="qualified" version="Exchange2016" 
+xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types" 
+targetNamespace="http://schemas.microsoft.com/exchange/services/2006/types" 
+xmlns:tns="http://schemas.microsoft.com/exchange/services/2006/types" 
+xmlns:xs="http://www.w3.org/2001/XMLSchema"> 
+      <xs:include schemaLocation="MS-OXWSCVTID-types.xsd"/> 
+    </xs:schema> 
+  </wsdl:types> 
+  <wsdl:message name="ConvertIdSoapIn" xmlns:wsdl="http://schemas.xmlsoap.org/wsdl/"> 
+    <wsdl:part name="request" element="tns:ConvertId"/> 
+    <wsdl:part name="Impersonation" element="t:ExchangeImpersonation"/> 
+    <wsdl:part name="RequestVersion" element="t:RequestServerVersion"/> 
+  </wsdl:message> 
+  <wsdl:message name="ConvertIdSoapOut" xmlns:wsdl="http://schemas.xmlsoap.org/wsdl/"> 
+    <wsdl:part name="ConvertIdResult" element="tns:ConvertIdResponse"/> 
+    <wsdl:part name="ServerVersion" element="t:ServerVersionInfo"/> 
+  </wsdl:message> 
+  <wsdl:portType name="ExchangeServicePortType"> 
+    <wsdl:operation name="ConvertId" xmlns:wsdl="http://schemas.xmlsoap.org/wsdl/"> 
+      <wsdl:input message="tns:ConvertIdSoapIn"/> 
+      <wsdl:output message="tns:ConvertIdSoapOut"/> 
+    </wsdl:operation> 
+  </wsdl:portType> 
+  <wsdl:binding name="ExchangeServiceBinding" type="tns:ExchangeServicePortType"> 
+    <wsdl:documentation xmlns:wsdl="http://schemas.xmlsoap.org/wsdl/"> 
+      <wsi:Claim conformsTo="http://ws-i.org/profiles/basic/1.0" xmlns:wsi="http://ws-
+i.org/schemas/conformanceClaim/"/> 
+    </wsdl:documentation> 
+
+25 / 33 
+
+[MS-OXWSCVTID] - v20250520 
+Convert Item Identifier Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+    <soap:binding style="document" transport="http://schemas.xmlsoap.org/soap/http" 
+xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/"/> 
+    <wsdl:operation name="ConvertId" xmlns:wsdl="http://schemas.xmlsoap.org/wsdl/"> 
+      <soap:operation 
+soapAction="http://schemas.microsoft.com/exchange/services/2006/messages/ConvertId" 
+xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/"/> 
+      <wsdl:input> 
+        <soap:header message="tns:ConvertIdSoapIn" part="RequestVersion" use="literal" 
+xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/"/> 
+        <soap:header message="tns:ConvertIdSoapIn" part="Impersonation" use="literal"/>         
+        <soap:body parts="request" use="literal" 
+xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/"/> 
+      </wsdl:input> 
+      <wsdl:output> 
+        <soap:body parts="ConvertIdResult" use="literal" 
+xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/"/> 
+        <soap:header message="tns:ConvertIdSoapOut" part="ServerVersion" use="literal" 
+xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/"/> 
+      </wsdl:output> 
+    </wsdl:operation> 
+  </wsdl:binding> 
+ </wsdl:definitions> 
+
+26 / 33 
+
+[MS-OXWSCVTID] - v20250520 
+Convert Item Identifier Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+7 Appendix B: Full XML Schema 
+
+For ease of implementation, the following sections provide the full XML schema for this protocol. 
+
+Schema name Prefix Section 
+
+Messages schema m: 7.1 
+
+Types schema t: 7.2 
+
+These files have to be placed in a common folder in order for the WSDL to validate and operate. Also, 
+any schema files that are included in or imported into the MS-OXWSCVTID-types.xsd or MS-
+OXWSCVTID-messages.xsd schemas have to be placed in the common folder along with the files listed 
+in the table. 
+
+7.1 Messages Schema 
+
+This section contains the contents of the MS-OXWSCVTID-messages.xsd file and information about 
+additional files that this schema file requires to operate correctly. 
+
+MS-OXWSCVTID-messages.xsd includes or imports the files listed in the following table. For the 
+schema file to operate correctly, these files have to be in the folder that contains the WSDL, types 
+schema, and messages schema files for this protocol. 
+
+File name Defining specification/section 
+
+MS-OXWSCDATA-messages.xsd [MS-OXWSCDATA] section 7.1 
+
+MS-OXWSCVTID-types.xsd 7.2 
+
+ <?xml version="1.0" encoding="utf-8"?> 
+ <xs:schema xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages" 
+xmlns:tns="http://schemas.microsoft.com/exchange/services/2006/messages" 
+xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types" 
+xmlns:xs="http://www.w3.org/2001/XMLSchema" 
+targetNamespace="http://schemas.microsoft.com/exchange/services/2006/messages" 
+elementFormDefault="qualified" version="Exchange2016" id="messages"> 
+  <xs:import namespace="http://schemas.microsoft.com/exchange/services/2006/types" 
+schemaLocation="MS-OXWSCVTID-types.xsd"/> 
+  <xs:include schemaLocation="MS-OXWSCDATA-messages.xsd"/> 
+  <xs:complexType name="ConvertIdResponseMessageType" 
+xmlns:xs="http://www.w3.org/2001/XMLSchema"> 
+    <xs:complexContent> 
+      <xs:extension base="m:ResponseMessageType"> 
+        <xs:sequence> 
+          <xs:element name="AlternateId" type="t:AlternateIdBaseType" minOccurs="0" 
+maxOccurs="1"/> 
+        </xs:sequence> 
+      </xs:extension> 
+    </xs:complexContent> 
+  </xs:complexType> 
+  <xs:complexType name="ConvertIdResponseType" xmlns:xs="http://www.w3.org/2001/XMLSchema"> 
+    <xs:complexContent> 
+      <xs:extension base="m:BaseResponseMessageType"/> 
+    </xs:complexContent> 
+  </xs:complexType> 
+  <xs:complexType name="ConvertIdType" xmlns:xs="http://www.w3.org/2001/XMLSchema"> 
+    <xs:complexContent> 
+      <xs:extension base="m:BaseRequestType"> 
+        <xs:sequence> 
+          <xs:element name="SourceIds" type="t:NonEmptyArrayOfAlternateIdsType" minOccurs="1" 
+maxOccurs="1"/> 
+        </xs:sequence> 
+
+27 / 33 
+
+[MS-OXWSCVTID] - v20250520 
+Convert Item Identifier Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+        <xs:attribute name="DestinationFormat" type="t:IdFormatType" use="required"/> 
+      </xs:extension> 
+    </xs:complexContent> 
+  </xs:complexType> 
+  <xs:element name="ConvertId" type="m:ConvertIdType" 
+xmlns:xs="http://www.w3.org/2001/XMLSchema"/> 
+  <xs:element name="ConvertIdResponse" type="m:ConvertIdResponseType" 
+xmlns:xs="http://www.w3.org/2001/XMLSchema"/> 
+ </xs:schema> 
+
+7.2 Types Schema 
+
+This section contains the contents of the MS-OXWSCVTID-types.xsd file and information about 
+additional files that this schema file requires to operate correctly. 
+
+MS-OXWSCVTID-types.xsd includes the file listed in the following table. For the schema file to operate 
+correctly, this file has to be in the folder that contains the WSDL, types schema, and messages 
+schema files for this protocol. 
+
+File name Defining specification/section 
+
+MS-OXWSCDATA-types.xsd [MS-OXWSCDATA] section 7.2 
+
+ <?xml version="1.0" encoding="utf-8"?> 
+ <xs:schema xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types"  
+           xmlns:tns="http://schemas.microsoft.com/exchange/services/2006/types"  
+           xmlns:xs="http://www.w3.org/2001/XMLSchema"  
+           targetNamespace="http://schemas.microsoft.com/exchange/services/2006/types"  
+           elementFormDefault="qualified"  
+           version="Exchange2016"  
+           id="types"> 
+  <xs:import namespace="http://www.w3.org/XML/1998/namespace"/> 
+  <xs:include schemaLocation="MS-OXWSCDATA-types.xsd"/> 
+  <xs:complexType name="AlternateIdBaseType" abstract="true" 
+xmlns:xs="http://www.w3.org/2001/XMLSchema"> 
+    <xs:attribute name="Format" type="t:IdFormatType" use="required"/> 
+  </xs:complexType> 
+  <xs:complexType name="AlternateIdType" xmlns:xs="http://www.w3.org/2001/XMLSchema"> 
+    <xs:complexContent> 
+      <xs:extension base="t:AlternateIdBaseType"> 
+        <xs:attribute name="Id" type="xs:string" use="required"/> 
+        <xs:attribute name="Mailbox" type="t:NonEmptyStringType" use="required"/> 
+        <xs:attribute name="IsArchive" type="xs:boolean" use="optional"/> 
+      </xs:extension> 
+    </xs:complexContent> 
+  </xs:complexType> 
+  <xs:complexType name="AlternatePublicFolderIdType" 
+xmlns:xs="http://www.w3.org/2001/XMLSchema"> 
+    <xs:complexContent> 
+      <xs:extension base="t:AlternateIdBaseType"> 
+        <xs:attribute name="FolderId" type="xs:string" use="required"/> 
+      </xs:extension> 
+    </xs:complexContent> 
+  </xs:complexType> 
+  <xs:complexType name="AlternatePublicFolderItemIdType" 
+xmlns:xs="http://www.w3.org/2001/XMLSchema"> 
+    <xs:complexContent> 
+      <xs:extension base="t:AlternatePublicFolderIdType"> 
+        <xs:attribute name="ItemId" type="xs:string" use="required"/> 
+      </xs:extension> 
+    </xs:complexContent> 
+  </xs:complexType> 
+  <xs:simpleType name="IdFormatType" xmlns:xs="http://www.w3.org/2001/XMLSchema"> 
+    <xs:restriction base="xs:string"> 
+      <xs:enumeration value="EwsLegacyId"/> 
+
+28 / 33 
+
+[MS-OXWSCVTID] - v20250520 
+Convert Item Identifier Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+      <xs:enumeration value="EwsId"/> 
+      <xs:enumeration value="EntryId"/> 
+      <xs:enumeration value="HexEntryId"/> 
+      <xs:enumeration value="StoreId"/> 
+      <xs:enumeration value="OwaId"/> 
+    </xs:restriction> 
+  </xs:simpleType> 
+  <xs:complexType name="NonEmptyArrayOfAlternateIdsType" 
+xmlns:xs="http://www.w3.org/2001/XMLSchema"> 
+    <xs:choice minOccurs="1" maxOccurs="unbounded"> 
+      <xs:element name="AlternateId" type="t:AlternateIdType"/> 
+      <xs:element name="AlternatePublicFolderId" type="t:AlternatePublicFolderIdType"/> 
+      <xs:element name="AlternatePublicFolderItemId" 
+type="t:AlternatePublicFolderItemIdType"/> 
+    </xs:choice> 
+  </xs:complexType> 
+ </xs:schema> 
+
+29 / 33 
+
+[MS-OXWSCVTID] - v20250520 
+Convert Item Identifier Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+8 Appendix C: Product Behavior 
+
+The information in this specification is applicable to the following Microsoft products or supplemental 
+software. References to product versions include updates to those products. 
+
+ Microsoft Exchange Server 2007 Service Pack 1 (SP1) 
+
+ Microsoft Exchange Server 2007 Service Pack 2 (SP2) 
+
+ Microsoft Exchange Server 2010 
+
+ Microsoft Exchange Server 2013 
+
+ Microsoft Exchange Server 2016  
+
+ Microsoft Exchange Server 2019  
+
+ Microsoft Outlook 2010 
+
+ Microsoft Outlook 2013 
+
+ Microsoft Outlook 2016 
+
+ Microsoft Outlook 2019  
+
+ Microsoft Outlook 2021 
+
+ Microsoft Outlook LTSC 2024 
+
+ Microsoft Exchange Server Subscription Edition 
+
+Exceptions, if any, are noted in this section. If an update version, service pack or Knowledge Base 
+(KB) number appears with a product name, the behavior changed in that update. The new behavior 
+also applies to subsequent updates unless otherwise specified. If a product edition appears with the 
+product version, behavior is different in that product edition. 
+
+Unless otherwise specified, any statement of optional behavior in this specification that is prescribed 
+using the terms "SHOULD" or "SHOULD NOT" implies product behavior in accordance with the 
+SHOULD or SHOULD NOT prescription. Unless otherwise specified, the term "MAY" implies that the 
+product does not follow the prescription. 
+
+<1> Section 3.1.4.1: Microsoft Outlook 2010, Outlook 2013, Outlook 2016, and Outlook 2019 and use 
+the ConvertId operation to convert an "EntryId" value to an "EwsId" value. 
+
+<2> Section 3.1.4.1:  Exchange 2007 SP1, Exchange 2010, and Microsoft Exchange Server 2010 
+Service Pack 1 (SP1) do not implement the Impersonation SOAP header. The Impersonation 
+header was introduced in Microsoft Exchange Server 2010 Service Pack 2 (SP2). 
+
+<3> Section 3.1.4.1.1.1:  Exchange 2007 SP1, Exchange 2010, and Exchange 2010 SP1 do not 
+implement the Impersonation header. The Impersonation header was introduced in Exchange 
+2010 SP2. 
+
+<4> Section 3.1.4.1.3.5: Exchange 2007 SP1 and Exchange 2010 do not include the IsArchive 
+attribute. 
+
+<5> Section 3.1.4.1.4.1:  The "EwsLegacyId" value is applicable for identifiers created by Microsoft 
+Exchange Server 2007. 
+
+30 / 33 
+
+[MS-OXWSCVTID] - v20250520 
+Convert Item Identifier Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+9 Change Tracking 
+
+This section identifies changes that were made to this document since the last release. Changes are 
+classified as Major, Minor, or None.  
+
+The revision class Major means that the technical content in the document was significantly revised. 
+Major changes affect protocol interoperability or implementation. Examples of major changes are: 
+
+ A document revision that incorporates changes to interoperability requirements. 
+ A document revision that captures changes to protocol functionality. 
+
+The revision class Minor means that the meaning of the technical content was clarified. Minor changes 
+do not affect protocol interoperability or implementation. Examples of minor changes are updates to 
+clarify ambiguity at the sentence, paragraph, or table level. 
+
+The revision class None means that no new technical changes were introduced. Minor editorial and 
+formatting changes may have been made, but the relevant technical content is identical to the last 
+released version. 
+
+The changes made to this document are listed in the following table. For more information, please 
+contact dochelp@microsoft.com. 
+
+Section Description Revision class 
+
+8 Appendix C: Product Behavior Updated list of supported products. Major 
+
+31 / 33 
+
+[MS-OXWSCVTID] - v20250520 
+Convert Item Identifier Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+10 Index
+A    attribute groups 11 
+    attributes 11 
+Abstract data model    common data structures 11 
+   server 12    complex types 11 
+Applicability 9    elements 11 
+Attribute groups 11    enumerated 10 
+Attributes 11    groups 11 
+    namespaces 10 
+
+C    simple types 11 
+
+    syntax 10 
+
+Capability negotiation 9    transport 10 
+
+Change tracking 31  
+
+Common data structures 11 N 
+Complex types 11  
+ Namespaces 10 
+
+D Normative references 7 
+
+  
+
+Data model - abstract O 
+   server 12  
+ Operations 
+
+E    ConvertId 12 
+
+ Overview (synopsis) 8 
+
+Events  
+
+   local - server 21 P 
+   timer - server 21  
+Examples Parameters - security index 24 
+   overview 22 Preconditions 9 
+ Prerequisites 9 
+
+F Product behavior 30 
+
+ Protocol Details 
+
+Fields - vendor-extensible 9    overview 12 
+
+Full WSDL 25  
+
+Full XML schema 27 R 
+   Messages Schema 27  
+   Types Schema 28 References 7 
+    informative 8 
+
+G    normative 7 
+
+ Relationship to other protocols 8 
+
+Glossary 6  
+
+Groups 11 S 
+  
+
+I Security 
+
+    implementer considerations 24 
+
+Implementer - security considerations 24    parameter index 24 
+
+Index of security parameters 24 Sequencing rules 
+
+Informative references 8    server 12 
+
+Initialization Server 
+
+   server 12    abstract data model 12 
+
+Introduction 6    ConvertId operation 12 
+
+    initialization 12 
+
+L    local events 21 
+
+    message processing 12 
+
+Local events    sequencing rules 12 
+
+   server 21    timer events 21 
+
+    timers 12 
+Simple types 11 
+
+M 
+Standards assignments 9 
+
+ 
+Syntax 
+
+Message processing 
+   messages - overview 10 
+
+   server 12 
+ 
+
+Messages 
+T 
+
+32 / 33 
+
+[MS-OXWSCVTID] - v20250520 
+Convert Item Identifier Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+ 
+Timer events 
+   server 21 
+Timers 
+   server 12 
+Tracking changes 31 
+Transport 10 
+Types 
+   complex 11 
+   simple 11 
+ 
+V 
+ 
+Vendor-extensible fields 9 
+Versioning 9 
+ 
+W 
+ 
+WSDL 25 
+ 
+X 
+ 
+XML schema 27 
+   Messages Schema 27 
+   Types Schema 28 
+
+ 
+
+33 / 33 
+
+[MS-OXWSCVTID] - v20250520 
+Convert Item Identifier Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025

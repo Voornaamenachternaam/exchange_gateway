@@ -1,0 +1,967 @@
+﻿[MS-OXPHISH]:  
+
+Phishing Warning Protocol 
+
+ 
+
+Intellectual Property Rights Notice for Open Specifications Documentation 
+
+ Technical Documentation. Microsoft publishes Open Specifications documentation (“this 
+documentation”) for protocols, file formats, data portability, computer languages, and standards 
+support. Additionally, overview documents cover inter-protocol relationships and interactions.  
+
+ Copyrights. This documentation is covered by Microsoft copyrights. Regardless of any other 
+terms that are contained in the terms of use for the Microsoft website that hosts this 
+documentation, you can make copies of it in order to develop implementations of the technologies 
+that are described in this documentation and can distribute portions of it in your implementations 
+that use these technologies or in your documentation as necessary to properly document the 
+implementation. You can also distribute in your implementation, with or without modification, any 
+schemas, IDLs, or code samples that are included in the documentation. This permission also 
+applies to any documents that are referenced in the Open Specifications documentation.  
+
+ No Trade Secrets. Microsoft does not claim any trade secret rights in this documentation.  
+ Patents. Microsoft has patents that might cover your implementations of the technologies 
+
+described in the Open Specifications documentation. Neither this notice nor Microsoft's delivery of 
+this documentation grants any licenses under those patents or any other Microsoft patents. 
+However, a given Open Specifications document might be covered by the Microsoft Open 
+Specifications Promise or the Microsoft Community Promise. If you would prefer a written license, 
+or if the technologies described in this documentation are not covered by the Open Specifications 
+Promise or Community Promise, as applicable, patent licenses are available by contacting 
+iplg@microsoft.com.  
+
+ License Programs. To see all of the protocols in scope under a specific license program and the 
+associated patents, visit the Patent Map.  
+
+ Trademarks. The names of companies and products contained in this documentation might be 
+covered by trademarks or similar intellectual property rights. This notice does not grant any 
+licenses under those rights. For a list of Microsoft trademarks, visit 
+www.microsoft.com/trademarks.  
+
+ Fictitious Names. The example companies, organizations, products, domain names, email 
+addresses, logos, people, places, and events that are depicted in this documentation are fictitious. 
+No association with any real company, organization, product, domain name, email address, logo, 
+person, place, or event is intended or should be inferred. 
+
+Reservation of Rights. All other rights are reserved, and this notice does not grant any rights other 
+than as specifically described above, whether by implication, estoppel, or otherwise.  
+
+Tools. The Open Specifications documentation does not require the use of Microsoft programming 
+tools or programming environments in order for you to develop an implementation. If you have access 
+to Microsoft programming tools and environments, you are free to take advantage of them. Certain 
+Open Specifications documents are intended for use in conjunction with publicly available standards 
+specifications and network programming art and, as such, assume that the reader either is familiar 
+with the aforementioned material or has immediate access to it. 
+
+Support. For questions and support, please contact dochelp@microsoft.com.  
+
+1 / 17 
+
+[MS-OXPHISH] - v20250520 
+Phishing Warning Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Revision Summary 
+
+Revision Revision 
+Date History Class Comments 
+
+4/4/2008 0.1 New Initial Availability. 
+
+Revised and updated property names and other technical 
+4/25/2008 0.2 Minor 
+
+content. 
+
+6/27/2008 1.0 Major Initial Release. 
+
+8/6/2008 1.01 Minor Revised and edited technical content. 
+
+9/3/2008 1.02 Minor Updated references. 
+
+12/3/2008 1.03 Minor Updated IP notice. 
+
+2/4/2009 1.04 Minor Revised and edited technical content. 
+
+3/4/2009 1.05 Minor Revised and edited technical content. 
+
+4/10/2009 2.0 Major Updated applicable product releases. 
+
+7/15/2009 3.0 Major Revised and edited for technical content. 
+
+11/4/2009 3.0.1 Editorial Revised and edited the technical content. 
+
+2/10/2010 4.0.0 Major Updated and revised the technical content. 
+
+5/5/2010 4.1.0 Minor Updated the technical content. 
+
+8/4/2010 4.2 Minor Clarified the meaning of the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+11/3/2010 4.2 None 
+
+technical content. 
+
+3/18/2011 5.0 Major Significantly changed the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+8/5/2011 5.0 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+10/7/2011 5.0 None 
+
+technical content. 
+
+1/20/2012 6.0 Major Significantly changed the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+4/27/2012 6.0 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+7/16/2012 6.0 None 
+
+technical content. 
+
+10/8/2012 6.1 Minor Clarified the meaning of the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+2/11/2013 6.1 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+7/26/2013 6.1 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+11/18/2013 6.1 None 
+
+technical content. 
+
+2/10/2014 6.1 None No changes to the meaning, language, or formatting of the 
+
+2 / 17 
+
+[MS-OXPHISH] - v20250520 
+Phishing Warning Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Revision Revision 
+Date History Class Comments 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+4/30/2014 6.1 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+7/31/2014 6.1 None 
+
+technical content. 
+
+10/30/2014 7.0 Major Significantly changed the technical content. 
+
+3/16/2015 8.0 Major Significantly changed the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+5/26/2015 8.0 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+9/14/2015 8.0 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+6/13/2016 8.0 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+9/14/2016 8.0 None 
+
+technical content. 
+
+7/24/2018 9.0 Major Significantly changed the technical content. 
+
+10/1/2018 10.0 Major Significantly changed the technical content. 
+
+4/22/2021 11.0 Major Significantly changed the technical content. 
+
+8/17/2021 12.0 Major Significantly changed the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+2/15/2022 12.0 None 
+
+technical content. 
+
+8/20/2024 13.0 Major Significantly changed the technical content. 
+
+5/20/2025 14.0 Major Significantly changed the technical content. 
+
+3 / 17 
+
+[MS-OXPHISH] - v20250520 
+Phishing Warning Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Table of Contents 
+1 Introduction ............................................................................................................ 5 
+
+1.1 Glossary ........................................................................................................... 5 
+1.2 References ........................................................................................................ 5 
+
+1.2.1 Normative References ................................................................................... 5 
+1.2.2 Informative References ................................................................................. 6 
+
+1.3 Overview .......................................................................................................... 6 
+1.4 Relationship to Other Protocols ............................................................................ 6 
+1.5 Prerequisites/Preconditions ................................................................................. 6 
+1.6 Applicability Statement ....................................................................................... 6 
+1.7 Versioning and Capability Negotiation ................................................................... 7 
+1.8 Vendor-Extensible Fields ..................................................................................... 7 
+1.9 Standards Assignments ....................................................................................... 7 
+
+2 Messages ................................................................................................................. 8 
+2.1 Transport .......................................................................................................... 8 
+2.2 Message Syntax ................................................................................................. 8 
+
+2.2.1 Phishing Warning Protocol Properties .............................................................. 8 
+2.2.1.1 PidNamePhishingStamp ........................................................................... 8 
+
+3 Protocol Details ....................................................................................................... 9 
+3.1 Client Details ..................................................................................................... 9 
+
+3.1.1 Abstract Data Model ...................................................................................... 9 
+3.1.2 Timers ........................................................................................................ 9 
+3.1.3 Initialization ................................................................................................. 9 
+3.1.4 Higher-Layer Triggered Events ....................................................................... 9 
+
+3.1.4.1 Client Receives a New Message ................................................................. 9 
+3.1.4.2 End User Opens a Message ...................................................................... 9 
+
+3.1.5 Message Processing Events and Sequencing Rules .......................................... 10 
+3.1.6 Timer Events .............................................................................................. 10 
+3.1.7 Other Local Events ...................................................................................... 10 
+
+4 Protocol Examples ................................................................................................. 11 
+4.1 Setting the PidNamePhishingStamp Property ....................................................... 11 
+4.2 Evaluating the PidNamePhishingStamp Property................................................... 11 
+
+4.2.1 No PidNamePhishingStamp Property ............................................................. 11 
+4.2.2 PidNamePhishingStamp Property Mismatch .................................................... 11 
+4.2.3 PidTagJunkPhishingEnableLinks Property Set to True ....................................... 11 
+4.2.4 Phishing Message Functionality Not Enabled By the User ................................. 11 
+4.2.5 Phishing Message Functionality Enabled By the User ....................................... 12 
+
+4.3 Sample Properties on a Phishing Message ........................................................... 12 
+
+5 Security ................................................................................................................. 13 
+5.1 Security Considerations for Implementers ........................................................... 13 
+5.2 Index of Security Parameters ............................................................................ 13 
+
+6 Appendix A: Product Behavior ............................................................................... 14 
+
+7 Change Tracking .................................................................................................... 15 
+
+8 Index ..................................................................................................................... 16 
+
+ 
+
+4 / 17 
+
+[MS-OXPHISH] - v20250520 
+Phishing Warning Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+1 Introduction 
+
+The Phishing Warning Protocol enables clients to identify and mark e-mail messages that are designed 
+to trick recipients into divulging sensitive information (such as passwords and other personal 
+information) to a source that is not trustworthy. 
+
+Sections 1.5, 1.8, 1.9, 2, and 3 of this specification are normative. All other sections and examples in 
+this specification are informative. 
+
+1.1 Glossary 
+
+This document uses the following terms: 
+
+handle: Any token that can be used to identify and access an object such as a device, file, or a 
+window. 
+
+Message object: A set of properties that represents an email message, appointment, contact, or 
+other type of personal-information-management object. In addition to its own properties, a 
+Message object contains recipient properties that represent the addressees to which it is 
+addressed, and an attachments table that represents any files and other Message objects that 
+are attached to it. 
+
+named property: A property that is identified by both a GUID and either a string name or a 32-bit 
+identifier. 
+
+phishing: The luring of sensitive information, such as passwords or other personal information, 
+from a recipient by masquerading as someone who is trustworthy and has a real need for such 
+information. 
+
+phishing message: An email message that is designed to trick a recipient into divulging sensitive 
+information, such as passwords or other personal information, to a non-trustworthy source. 
+
+property ID: A 16-bit numeric identifier of a specific attribute. A property ID does not include any 
+property type information. 
+
+remote operation (ROP): An operation that is invoked against a server. Each ROP represents an 
+action, such as delete, send, or query. A ROP is contained in a ROP buffer for transmission over 
+the wire. 
+
+MAY, SHOULD, MUST, SHOULD NOT, MUST NOT: These terms (in all caps) are used as defined 
+in [RFC2119]. All statements of optional behavior use either MAY, SHOULD, or SHOULD NOT. 
+
+1.2 References 
+
+Links to a document in the Microsoft Open Specifications library point to the correct section in the 
+most recently published version of the referenced document. However, because individual documents 
+in the library are not updated at the same time, the section numbers in the documents may not 
+match. You can confirm the correct section numbering by checking the Errata.   
+
+1.2.1 Normative References 
+
+We conduct frequent surveys of the normative references to assure their continued availability. If you 
+have any issue with finding a normative reference, please contact dochelp@microsoft.com. We will 
+assist you in finding the relevant information.  
+
+[MS-OXCDATA] Microsoft Corporation, "Data Structures". 
+
+[MS-OXCMSG] Microsoft Corporation, "Message and Attachment Object Protocol". 
+
+5 / 17 
+
+[MS-OXPHISH] - v20250520 
+Phishing Warning Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+[MS-OXCROPS] Microsoft Corporation, "Remote Operations (ROP) List and Encoding Protocol". 
+
+[MS-OXCSPAM] Microsoft Corporation, "Spam Confidence Level Protocol". 
+
+[MS-OXPROPS] Microsoft Corporation, "Exchange Server Protocols Master Property List". 
+
+[RFC2119] Bradner, S., "Key words for use in RFCs to Indicate Requirement Levels", BCP 14, RFC 
+2119, March 1997, https://www.rfc-editor.org/info/rfc2119 
+
+1.2.2 Informative References 
+
+[MS-OXCPRPT] Microsoft Corporation, "Property and Stream Object Protocol". 
+
+[MS-OXOMSG] Microsoft Corporation, "Email Object Protocol". 
+
+[MS-OXPROTO] Microsoft Corporation, "Exchange Server Protocols System Overview". 
+
+1.3 Overview 
+
+This protocol enables the client to identify and mark e-mail messages that are likely to be phishing 
+messages. When an e-mail message is delivered to a messaging client, the client examines the 
+properties of the Message object to determine the likelihood of it being a phishing message. If the 
+examination determines that the message is likely to be a phishing message, the client modifies a 
+property on the Message object to mark it as suspicious. A messaging client's user interface can use 
+this property value to identify a potential phishing message and display a warning to the end user. 
+
+This protocol does not specify the algorithm that determines the likelihood of a message being a 
+phishing message; it only specifies how the Message object is changed to indicate the result of the 
+algorithm. 
+
+1.4 Relationship to Other Protocols 
+
+The Phishing Warning Protocol uses a property on the Message object as a means of identifying and 
+marking messages that are likely to be phishing messages. Therefore, this protocol relies on the 
+following: 
+
+ An understanding of the Message object, as described in [MS-OXOMSG]. 
+
+ An understanding of getting and setting properties, as described in [MS-OXCMSG]. 
+
+For conceptual background information and overviews of the relationships and interactions between 
+this and other protocols, see [MS-OXPROTO]. 
+
+1.5 Prerequisites/Preconditions 
+
+This protocol assumes that the client has previously logged on to the server and has acquired a 
+handle to the Message object for which it has to identify or designate phishing status. 
+
+1.6 Applicability Statement 
+
+A client can use this protocol to identify or mark messages that are likely to be phishing message. 
+This protocol does not specify the algorithm that determines the likelihood of a message to be a 
+phishing message; it only specifies how the Message object is changed to indicate the result of such 
+analysis. 
+
+6 / 17 
+
+[MS-OXPHISH] - v20250520 
+Phishing Warning Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+1.7 Versioning and Capability Negotiation 
+
+None. 
+
+1.8 Vendor-Extensible Fields 
+
+None. 
+
+1.9 Standards Assignments 
+
+None. 
+
+7 / 17 
+
+[MS-OXPHISH] - v20250520 
+Phishing Warning Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+2 Messages 
+
+2.1 Transport 
+
+Message object properties are transported between the client and server, as specified in [MS-
+OXCMSG]. 
+
+2.2 Message Syntax 
+
+Before sending requests to the server, the client MUST obtain a handle to the Message object used 
+in property operations. 
+
+2.2.1 Phishing Warning Protocol Properties 
+
+The following property is specific to the Phishing Warning Protocol. 
+
+2.2.1.1 PidNamePhishingStamp 
+
+Type: PtypInteger32 ([MS-OXCDATA] section 2.11.1) 
+
+The PidNamePhishingStamp property ([MS-OXPROPS] section 2.470) indicates whether a message 
+is likely to be a phishing message. 
+
+The value of this named property is a 32-bit field. The structure is specified as follows.  
+
+1 2 3 
+0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 
+
+STAMP E X 
+
+ 
+
+STAMP (28 bits): This field is obtained from the fifth value of the PidTagAdditionalRenEntryIds 
+property ([MS-OXPROPS] section 2.509). 
+
+E - ENABLED (1 bit): If the value of this field is 1, the user has enabled functionality (such as 
+hyperlinks, reply, and attachments) within the message. The default value for this field is zero (0), 
+which indicates that the user has not enabled functionality. 
+
+X (3 bits): Unused. These bits SHOULD be set to zero (0) by the client and ignored by the server. 
+
+8 / 17 
+
+[MS-OXPHISH] - v20250520 
+Phishing Warning Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+3 Protocol Details 
+
+3.1 Client Details 
+
+The role of the client is to determine whether a message is a phishing message and to update the 
+PidNamePhishingStamp property (section 2.2.1.1), as specified in section 3.1.5, to indicate the 
+results of such analysis. The client then checks the value of the PidNamePhishingStamp property 
+when the message is opened and conveys a warning to the end user for any message that is likely to 
+be a phishing message. 
+
+3.1.1 Abstract Data Model 
+
+None. 
+
+3.1.2 Timers 
+
+None. 
+
+3.1.3 Initialization 
+
+Before matching the PidNamePhishingStamp property (section 2.2.1.1) on the message, as 
+specified in section 3.1.4.2, the existence of the fifth value of PidTagAdditionalRenEntryIds ([MS-
+OXPROPS] section 2.509) MUST be ensured. If it is not present, the value MUST be created, as 
+specified in [MS-OXCSPAM] section 3.2.4.1.2. 
+
+3.1.4 Higher-Layer Triggered Events 
+
+3.1.4.1 Client Receives a New Message 
+
+When the client receives a new message, the client determines whether the message is likely to be a 
+phishing message. When the message is delivered, if the client determines that the message is 
+likely to be a phishing message, the client sets the PidNamePhishingStamp property (section 
+2.2.1.1) on the Message object, as specified in section 3.1.5. 
+
+3.1.4.2 End User Opens a Message 
+
+:end user opens a message" When an end user opens a message, the client tries to retrieve the value 
+of the PidNamePhishingStamp property (section 2.2.1.1). If the property is present, its STAMP 
+field, as specified in section 2.2.1.1, is compared against the fifth value of the multivalued property 
+PidTagAdditionalRenEntryIds ([MS-OXPROPS] section 2.509). If this comparison does not result in 
+a match, the PidNamePhishingStamp property SHOULD be ignored. If the comparison results in a 
+match, the client considers the message to be a phishing message. If the value of the ENABLED 
+field, as specified in section 2.2.1.1, in the PidNamePhishingStamp property is 1, the user has 
+enabled the functionality and the client SHOULD display the message as a normal message. If the 
+value of the ENABLED field in the PidNamePhishingStamp property is zero (0), the client SHOULD 
+disable the functionality of the message. The functionality that the client disables (according to the 
+value of the ENABLED field in the PidNamePhishingStamp property) is implementation-dependent. 
+
+The user has the option to enable all functionality within a message by interacting with the user 
+interface. If the user enables functionality within a message, the value of the ENABLED field of the 
+PidNamePhishingStamp property on that message is set to 1. 
+
+The functionality is also enabled when the PidTagJunkPhishingEnableLinks property ([MS-
+OXPROPS] section 2.762) is set to TRUE. 
+
+9 / 17 
+
+[MS-OXPHISH] - v20250520 
+Phishing Warning Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+3.1.5 Message Processing Events and Sequencing Rules 
+
+The client SHOULD set the PidNamePhishingStamp property (section 2.2.1.1) if the client 
+determines that the message is likely to be a phishing message, as specified in section 
+3.1.4.2.  
+
+Once the client determines that a message is a phishing message, it uses the 
+RopGetPropertyIDsFromNames remote operation (ROP) ([MS-OXCROPS] section 
+2.2.8.1) to map the PidNamePhishingStamp named property to a property ID. The 
+client then updates the value of the PidNamePhishingStamp property (section 2.2.1.1) to 
+indicate that the message is likely to be a phishing message. The client SHOULD use the 
+value of this property to warn the user when a message is likely to be a phishing message. 
+
+The value of the PidNamePhishingStamp property is calculated as follows: 
+
+ A query for the fifth value in the PidTagAdditionalRenEntryIds property ([MS-OXPROPS] 
+section 2.509) is performed. Let the queried value be called QueriedValue_FromEntryID. 
+
+ The mask (0x0FFFFFFF) is then applied to QueriedValue_FromEntryID. That is, the bitwise 
+operation (0x0FFFFFFF AND QueriedValue_FromEntryID) is performed to produce the STAMP field 
+(section 2.2.1.1) of the PidNamePhishingStamp property. 
+
+ If the user has not enabled functionality on the message, the value of the ENABLED 
+field (section 2.2.1.1) is zero (0) and the final property value is the same as the value of 
+the STAMP field. If the user determines that the message is not a phishing message 
+and indicates as such by interaction with the user interface, the final 
+PidNamePhishingStamp property value with ENABLED field 1 is produced by applying 
+the bitwise operation (STAMP OR 0x10000000). 
+
+If the user enables the functionality of the phishing message, the PidNamePhishingStamp 
+property value is changed and the client uses the RopSetProperties ROP ([MS-OXCROPS] 
+section 2.2.8.6) to transmit the new value to the server. The client then uses the 
+RopSaveChangesMessage ROP ([MS-OXCROPS] section 2.2.6.3) to commit the property 
+to the server. 
+
+3.1.6 Timer Events 
+
+None. 
+
+3.1.7 Other Local Events 
+
+None. 
+
+10 / 17 
+
+[MS-OXPHISH] - v20250520 
+Phishing Warning Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+4 Protocol Examples 
+
+4.1 Setting the PidNamePhishingStamp Property 
+
+When the client receives a new message, the client determines whether the message is likely to be a 
+phishing message. If the client determines that the message is likely to be a phishing message, the 
+client sets the PidNamePhishingStamp property (section 2.2.1.1) on the message, as described in 
+section 3.1.5, on message delivery. The client calculates the PidNamePhishingStamp property value 
+as described in the following example: 
+
+If the fifth value queried from the PidTagAdditionalRenEntryIds property ([MS-OXPROPS] section 
+2.509) is 0xAE241D99, the client begins calculating the PidNamePhishingStamp property by setting 
+the STAMP field, as specified in section 2.2.1.1,  as follows: (0xAE241D99 AND 0x0FFFFFFF) = 
+0x0E241D99. 
+
+The value of the ENABLED field, as specified in section 2.2.1.1, of the PidNamePhishingStamp 
+property can be either zero (0), if the user has not enabled the functionality of the message, or 1, if 
+the user has enabled the functionality of the message. If the value of the ENABLED field is zero (0), 
+the final value of the PidNamePhishingStamp property is 0x0E241D99. If the value of the 
+ENABLED field is 1, the final PidNamePhishingStamp property value is the result of the bitwise 
+operation (0x0E241D99 OR 0x10000000) = 0x1E241D99. 
+
+4.2 Evaluating the PidNamePhishingStamp Property 
+
+:overview" For purposes of the examples in this section, let the fifth value queried from the 
+PidTagAdditionalRenEntryIds property ([MS-OXPROPS] section 2.509) be called PhishingTagValue. 
+
+4.2.1 No PidNamePhishingStamp Property 
+
+PidNamePhishingStamp property example:no PidNamePhishingStamp property" Examples:evaluating 
+the PidNamePhishingStamp property:no PidNamePhishingStamp property" If the 
+PidNamePhishingStamp property (section 2.2.1.1) is absent from a message, the client will treat 
+the message as a message that is not a phishing message. 
+
+4.2.2 PidNamePhishingStamp Property Mismatch 
+
+If the PidNamePhishingStamp property (section 2.2.1.1) is present, the client will compare its 
+STAMP field, as specified in section 2.2.1.1, with the least significant 28 bits of the PhishingTagValue 
+value. If the PidNamePhishingStamp property value is 0x0EAE2103 and the PhishingTagValue value 
+is 0xAE241D99, the comparison does not result in a match. Therefore, the client ignores the 
+PidNamePhishingStamp property, resulting in enabled message functionality and no added 
+phishing-related user interface elements. 
+
+4.2.3 PidTagJunkPhishingEnableLinks Property Set to True 
+
+If the PidTagJunkPhishingEnableLinks property ([MS-OXPROPS] section 2.762) is present and is 
+set to TRUE, the client will ignore the PidNamePhishingStamp property ([MS-OXPROPS] section 
+2.470) and will treat the message as a message that is not a phishing message. 
+
+4.2.4 Phishing Message Functionality Not Enabled By the User 
+
+If the PidNamePhishingStamp property ([MS-OXPROPS] section 2.470) is present, the client will 
+compare its STAMP field, as specified in section 2.2.1.1, with the least significant 28 bits of the 
+PhishingTagValue value. If the PidNamePhishingStamp property value is 0x0E241D99, and the 
+PhishingTagValue value is 0xAE241D99, the comparison results in a match, indicating that the 
+
+11 / 17 
+
+[MS-OXPHISH] - v20250520 
+Phishing Warning Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+message is likely to be a phishing message. If the value of the ENABLED field, as specified in 
+section 2.2.1.1, of the PidNamePhishingStamp property (section 2.2.1.1) is zero (0), the user has 
+not enabled functionality within the message. Therefore, the client will disable functionality within the 
+message, display a warning to the user, and add phishing-related user interface elements that allow 
+the user to enable message functionality. 
+
+4.2.5 Phishing Message Functionality Enabled By the User 
+
+If the PidNamePhishingStamp property ([MS-OXPROPS] section 2.470) is present, the client will 
+compare its STAMP field, as specified in section 2.2.1.1, with the least significant 28 bits of the 
+PhishingTagValue value. If the PidNamePhishingStamp property value is 0x1E241D99 and the 
+PhishingTagValue value is 0xAE241D99, the comparison results in a match, which indicates that the 
+message is likely to be a phishing message. Because the value of the ENABLED field, as specified in 
+section 2.2.1.1, of the PidNamePhishingStamp property is 1, the user has enabled functionality 
+within the message. Therefore, the client will treat the message as though it is not a phishing 
+message. 
+
+4.3 Sample Properties on a Phishing Message 
+
+The following is a description of what a client does to stamp the message that has been identified as a 
+phishing message and the responses that a server returns. The ROP input and responses are 
+summarized in this section; for information about how to set properties by using the 
+RopSetProperties ROP ([MS-OXCROPS] section 2.2.8.6), see [MS-OXCPRPT] section 2.2.5. 
+
+Because the PidNamePhishingStamp property (section 2.2.1.1) is a named property, the client 
+asks the server to perform mapping from named properties to property IDs by using the 
+RopGetPropertyIDsFromNames ROP ([MS-OXCROPS] section 2.2.8.1). 
+
+Property name Property set GUID Name 
+
+PidNamePhishingStamp  {00020329-0000-0000- http://schemas.microsoft.com/outlook/phishingstamp 
+C000-000000000046} 
+
+The server returns the following property IDs in response to the RopGetPropertyIDsFromNames 
+ROP. 
+
+Property name Property ID 
+
+PidNamePhishingStamp  0x831F 
+
+After determining the value of the property, the client uses the RopSetProperties ROP to transmit 
+the data to the server. 
+
+Property name Property ID Property type Value 
+
+PidNamePhishingStamp 0x831F 0x0003(PT_LONG) 0x0A73AE09 
+
+If the user enables the functionality of the phishing message, the property value is changed and the 
+client uses the RopSetProperties ROP to transmit the new value to the server. 
+
+Property name Property ID Property type Value 
+
+PidNamePhishingStamp 0x831F 0x0003(PT_LONG) 0x1A73AE09 
+
+The client then uses the RopSaveChangesMessage ROP ([MS-OXCROPS] section 2.2.6.3) to commit 
+the properties to the server. 
+
+12 / 17 
+
+[MS-OXPHISH] - v20250520 
+Phishing Warning Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+5 Security 
+
+5.1 Security Considerations for Implementers 
+
+When the message is delivered, the presence of the PidNamePhishingStamp property ([MS-
+OXPROPS] section 2.470) with a successful match of the STAMP field, as specified in section 2.2.1.1, 
+signals the client that the message has already been evaluated for phishing and does not have to be 
+filtered again. Therefore, care has to be taken while setting the PidNamePhishingStamp property on 
+the message, and all precautions for evaluation of the fifth value of PidTagAdditionalRenEntryIds 
+([MS-OXPROPS] section 2.509) have to be followed (as described in [MS-OXCMSG]). 
+
+5.2 Index of Security Parameters 
+
+None. 
+
+13 / 17 
+
+[MS-OXPHISH] - v20250520 
+Phishing Warning Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+6 Appendix A: Product Behavior 
+
+The information in this specification is applicable to the following Microsoft products or supplemental 
+software. References to product versions include updates to those products. 
+
+ Microsoft Exchange Server 2007 
+
+ Microsoft Exchange Server 2010 
+
+ Microsoft Exchange Server 2013 
+
+ Microsoft Exchange Server 2016 
+
+ Microsoft Office Outlook 2007 
+
+ Microsoft Outlook 2010 
+
+ Microsoft Outlook 2013 
+
+ Microsoft Outlook 2016 
+
+ Microsoft Exchange Server 2019 
+
+ Microsoft Outlook 2019 
+
+ Microsoft Outlook 2021 
+
+ Microsoft Outlook LTSC 2024 
+
+ Microsoft Exchange Server Subscription Edition 
+
+Exceptions, if any, are noted in this section. If an update version, service pack or Knowledge Base 
+(KB) number appears with a product name, the behavior changed in that update. The new behavior 
+also applies to subsequent updates unless otherwise specified. If a product edition appears with the 
+product version, behavior is different in that product edition. 
+
+Unless otherwise specified, any statement of optional behavior in this specification that is prescribed 
+using the terms "SHOULD" or "SHOULD NOT" implies product behavior in accordance with the 
+SHOULD or SHOULD NOT prescription. Unless otherwise specified, the term "MAY" implies that the 
+product does not follow the prescription. 
+
+14 / 17 
+
+[MS-OXPHISH] - v20250520 
+Phishing Warning Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+7 Change Tracking 
+
+This section identifies changes that were made to this document since the last release. Changes are 
+classified as Major, Minor, or None.  
+
+The revision class Major means that the technical content in the document was significantly revised. 
+Major changes affect protocol interoperability or implementation. Examples of major changes are: 
+
+ A document revision that incorporates changes to interoperability requirements. 
+ A document revision that captures changes to protocol functionality. 
+
+The revision class Minor means that the meaning of the technical content was clarified. Minor changes 
+do not affect protocol interoperability or implementation. Examples of minor changes are updates to 
+clarify ambiguity at the sentence, paragraph, or table level. 
+
+The revision class None means that no new technical changes were introduced. Minor editorial and 
+formatting changes may have been made, but the relevant technical content is identical to the last 
+released version. 
+
+The changes made to this document are listed in the following table. For more information, please 
+contact dochelp@microsoft.com. 
+
+Section Description Revision class 
+
+6 Appendix A: Product Behavior Updated list of supported products. Major 
+
+15 / 17 
+
+[MS-OXPHISH] - v20250520 
+Phishing Warning Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+8 Index
+A H 
+  
+Abstract data model Higher-layer triggered events 
+   client 9    client receives a new message 9 
+Applicability 6  
+ I 
+C  
+ Implementer - security considerations 13 
+Capability negotiation 7 Index of security parameters 13 
+Change tracking 15 Informative references 6 
+Client Initialization 
+   abstract data model 9    client 9 
+   initialization 9 Introduction 5 
+   message processing 10  
+   other local events 10 M 
+   overview 9  
+   sequencing rules 10 Message processing 
+   timer events 10    client 10 
+   timers 9 Messages 
+Client - higher layer triggered events    Phishing Warning Protocol Properties 8 
+   client receives a new message 9    transport 8 
+   end user opens a message 9  
+ N 
+D  
+ Normative references 5 
+Data model - abstract  
+   client 9 O 
+  
+E Other local events 
+    client 10 
+Evaluating the PidNamePhishingStamp property Overview (synopsis) 6 
+
+example  
+   phishing message functionality enabled by the user P 
+
+12  
+   phishing message functionality not enabled by the Parameters - security index 13 
+
+user 11 Phishing Warning Protocol Properties message 8 
+   PidNamePhishingStamp property mismatch 11 PidNamePhishingStamp property 8 
+   PidTagJunkPhishingEnableLinks property set to Preconditions 6 
+
+true 11 Prerequisites 6 
+   sample properties on a phishing message 12 Product behavior 14 
+Examples Properties - PidNamePhishingStamp 8 
+   evaluating the PidNamePhishingStamp property  
+      overview 11 R 
+      phishing message functionality enabled by the  
+
+user 12 References 5 
+      phishing message functionality not enabled by    informative 6 
+
+the user 11    normative 5 
+      PidNamePhishingStamp property mismatch 11 Relationship to other protocols 6 
+      PidTagJunkPhishingEnableLinks property set to  
+
+true 11 
+S 
+
+      sample properties on a phishing message 12 
+ 
+
+   setting the PidNamePhishingStamp property 11 
+Security 
+
+ 
+   implementer considerations 13 
+
+F    parameter index 13 
+ Sequencing rules 
+Fields - vendor-extensible 7    client 10 
+ Setting the PidNamePhishingStamp property 
+G example 11 
+ Standards assignments 7 
+Glossary 5  
+ 
+
+16 / 17 
+
+[MS-OXPHISH] - v20250520 
+Phishing Warning Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+T 
+ 
+Timer events 
+   client 10 
+Timers 
+   client 9 
+Tracking changes 15 
+Transport 8 
+Triggered events - client 
+   client receives a new message 9 
+   end user opens a message 9 
+ 
+V 
+ 
+Vendor-extensible fields 7 
+Versioning 7 
+
+ 
+
+17 / 17 
+
+[MS-OXPHISH] - v20250520 
+Phishing Warning Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025

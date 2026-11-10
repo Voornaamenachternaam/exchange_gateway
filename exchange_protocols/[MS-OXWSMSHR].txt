@@ -1,0 +1,2822 @@
+﻿[MS-OXWSMSHR]:  
+
+Folder Sharing Web Service Protocol 
+
+ 
+
+Intellectual Property Rights Notice for Open Specifications Documentation 
+
+ Technical Documentation. Microsoft publishes Open Specifications documentation (“this 
+documentation”) for protocols, file formats, data portability, computer languages, and standards 
+support. Additionally, overview documents cover inter-protocol relationships and interactions.  
+
+ Copyrights. This documentation is covered by Microsoft copyrights. Regardless of any other 
+terms that are contained in the terms of use for the Microsoft website that hosts this 
+documentation, you can make copies of it in order to develop implementations of the technologies 
+that are described in this documentation and can distribute portions of it in your implementations 
+that use these technologies or in your documentation as necessary to properly document the 
+implementation. You can also distribute in your implementation, with or without modification, any 
+schemas, IDLs, or code samples that are included in the documentation. This permission also 
+applies to any documents that are referenced in the Open Specifications documentation.  
+
+ No Trade Secrets. Microsoft does not claim any trade secret rights in this documentation.  
+ Patents. Microsoft has patents that might cover your implementations of the technologies 
+
+described in the Open Specifications documentation. Neither this notice nor Microsoft's delivery of 
+this documentation grants any licenses under those patents or any other Microsoft patents. 
+However, a given Open Specifications document might be covered by the Microsoft Open 
+Specifications Promise or the Microsoft Community Promise. If you would prefer a written license, 
+or if the technologies described in this documentation are not covered by the Open Specifications 
+Promise or Community Promise, as applicable, patent licenses are available by contacting 
+iplg@microsoft.com.  
+
+ License Programs. To see all of the protocols in scope under a specific license program and the 
+associated patents, visit the Patent Map.  
+
+ Trademarks. The names of companies and products contained in this documentation might be 
+covered by trademarks or similar intellectual property rights. This notice does not grant any 
+licenses under those rights. For a list of Microsoft trademarks, visit 
+www.microsoft.com/trademarks.  
+
+ Fictitious Names. The example companies, organizations, products, domain names, email 
+addresses, logos, people, places, and events that are depicted in this documentation are fictitious. 
+No association with any real company, organization, product, domain name, email address, logo, 
+person, place, or event is intended or should be inferred. 
+
+Reservation of Rights. All other rights are reserved, and this notice does not grant any rights other 
+than as specifically described above, whether by implication, estoppel, or otherwise.  
+
+Tools. The Open Specifications documentation does not require the use of Microsoft programming 
+tools or programming environments in order for you to develop an implementation. If you have access 
+to Microsoft programming tools and environments, you are free to take advantage of them. Certain 
+Open Specifications documents are intended for use in conjunction with publicly available standards 
+specifications and network programming art and, as such, assume that the reader either is familiar 
+with the aforementioned material or has immediate access to it. 
+
+Support. For questions and support, please contact dochelp@microsoft.com.  
+
+1 / 44 
+
+[MS-OXWSMSHR] - v20250520 
+Folder Sharing Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Revision Summary 
+
+Revision Revision 
+Date History Class Comments 
+
+11/4/2009 1.0 Major Initial availability. 
+
+2/10/2010 1.1.0 Minor Updated the technical content. 
+
+5/5/2010 1.1.1 Editorial Revised and edited the technical content. 
+
+8/4/2010 2.0 Major Significantly changed the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+11/3/2010 2.0 None 
+
+technical content. 
+
+3/18/2011 3.0 Major Significantly changed the technical content. 
+
+8/5/2011 3.1 Minor Clarified the meaning of the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+10/7/2011 3.1 None 
+
+technical content. 
+
+1/20/2012 4.0 Major Significantly changed the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+4/27/2012 4.0 None 
+
+technical content. 
+
+7/16/2012 4.1 Minor Clarified the meaning of the technical content. 
+
+10/8/2012 4.2 Minor Clarified the meaning of the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+2/11/2013 4.2 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+7/26/2013 4.2 None 
+
+technical content. 
+
+11/18/2013 5.0 Major Significantly changed the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+2/10/2014 5.0 None 
+
+technical content. 
+
+4/30/2014 5.1 Minor Clarified the meaning of the technical content. 
+
+7/31/2014 5.2 Minor Clarified the meaning of the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+10/30/2014 5.2 None 
+
+technical content. 
+
+3/16/2015 6.0 Major Significantly changed the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+5/26/2015 6.0 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+9/14/2015 6.0 None 
+
+technical content. 
+
+6/13/2016 7.0 Major Significantly changed the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+9/14/2016 7.0 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+9/19/2017 7.0 None 
+
+technical content. 
+
+2 / 44 
+
+[MS-OXWSMSHR] - v20250520 
+Folder Sharing Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Revision Revision 
+Date History Class Comments 
+
+7/24/2018 8.0 Major Significantly changed the technical content. 
+
+10/1/2018 9.0 Major Significantly changed the technical content. 
+
+4/22/2021 10.0 Major Significantly changed the technical content. 
+
+8/17/2021 11.0 Major Significantly changed the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+2/15/2022 11.0 None 
+
+technical content. 
+
+5/17/2022 11.1 Minor Clarified the meaning of the technical content. 
+
+5/21/2024 12.0 Major Significantly changed the technical content. 
+
+5/20/2025 13.0 Major Significantly changed the technical content. 
+
+3 / 44 
+
+[MS-OXWSMSHR] - v20250520 
+Folder Sharing Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Table of Contents 
+1 Introduction ............................................................................................................ 6 
+
+1.1 Glossary ........................................................................................................... 6 
+1.2 References ........................................................................................................ 7 
+
+1.2.1 Normative References ................................................................................... 7 
+1.2.2 Informative References ................................................................................. 8 
+
+1.3 Overview .......................................................................................................... 8 
+1.4 Relationship to Other Protocols ............................................................................ 8 
+1.5 Prerequisites/Preconditions ................................................................................. 9 
+1.6 Applicability Statement ....................................................................................... 9 
+1.7 Versioning and Capability Negotiation ................................................................... 9 
+1.8 Vendor-Extensible Fields ..................................................................................... 9 
+1.9 Standards Assignments ....................................................................................... 9 
+
+2 Messages ............................................................................................................... 10 
+2.1 Transport ........................................................................................................ 10 
+2.2 Common Message Syntax ................................................................................. 10 
+
+2.2.1 Namespaces .............................................................................................. 10 
+2.2.2 Messages ................................................................................................... 10 
+2.2.3 Elements ................................................................................................... 10 
+2.2.4 Complex Types ........................................................................................... 10 
+
+2.2.4.1 m:GetSharingFolderResponseMessageType Complex Type ......................... 11 
+2.2.4.2 m:GetSharingMetadataResponseMessageType Complex Type ..................... 12 
+2.2.4.3 m:RefreshSharingFolderResponseMessageType Complex Type .................... 12 
+2.2.4.4 t:ArrayOfEncryptedSharedFolderDataType Complex Type ........................... 13 
+2.2.4.5 t:ArrayOfInvalidRecipientsType Complex Type .......................................... 13 
+2.2.4.6 t:EncryptedDataContainerType Complex Type .......................................... 14 
+2.2.4.7 t:EncryptedSharedFolderDataType Complex Type ..................................... 14 
+2.2.4.8 t:InvalidRecipientType Complex Type ...................................................... 14 
+
+2.2.5 Simple Types ............................................................................................. 15 
+2.2.5.1 t:SharingDataType Simple Type .............................................................. 15 
+2.2.5.2 t:InvalidRecipientResponseCodeType Simple Type .................................... 16 
+
+2.2.6 Attributes .................................................................................................. 16 
+2.2.7 Groups ...................................................................................................... 17 
+2.2.8 Attribute Groups ......................................................................................... 17 
+
+3 Protocol Details ..................................................................................................... 18 
+3.1 ExchangeServicePortType Server Details ............................................................. 18 
+
+3.1.1 Abstract Data Model .................................................................................... 18 
+3.1.2 Timers ...................................................................................................... 19 
+3.1.3 Initialization ............................................................................................... 19 
+3.1.4 Message Processing Events and Sequencing Rules .......................................... 19 
+
+3.1.4.1 CreateItem Operation ............................................................................ 19 
+3.1.4.2 GetFolder Operation .............................................................................. 20 
+3.1.4.3 GetSharingFolder Operation ................................................................... 20 
+
+3.1.4.3.1 Messages ....................................................................................... 20 
+3.1.4.3.1.1 tns:GetSharingFolderSoapIn Message........................................... 21 
+3.1.4.3.1.2 tns:GetSharingFolderSoapOut Message ........................................ 21 
+
+3.1.4.3.2 Elements ........................................................................................ 21 
+3.1.4.3.2.1 GetSharingFolderResponse Element ............................................. 22 
+3.1.4.3.2.2 GetSharingFolder Element ........................................................... 22 
+
+3.1.4.3.3 Complex Types ............................................................................... 22 
+3.1.4.3.3.1 t:GetSharingFolderType Complex Type ......................................... 22 
+
+3.1.4.4 GetSharingMetadata Operation ............................................................... 23 
+3.1.4.4.1 Messages ....................................................................................... 24 
+
+3.1.4.4.1.1 tns:GetSharingMetadataSoapIn Message ...................................... 24 
+
+4 / 44 
+
+[MS-OXWSMSHR] - v20250520 
+Folder Sharing Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+3.1.4.4.1.2 tns:GetSharingMetadataSoapOut Message .................................... 24 
+3.1.4.4.2 Elements ........................................................................................ 25 
+
+3.1.4.4.2.1 GetSharingMetadata Element ...................................................... 25 
+3.1.4.4.2.2 GetSharingMetadataResponse Element ......................................... 25 
+
+3.1.4.4.3 Complex Types ............................................................................... 25 
+3.1.4.4.3.1 t:ArrayOfSmtpAddressType Complex Type .................................... 26 
+3.1.4.4.3.2 m:GetSharingMetadataType Complex Type ................................... 26 
+
+3.1.4.5 RefreshSharingFolder Operation .............................................................. 27 
+3.1.4.5.1 Messages ....................................................................................... 27 
+
+3.1.4.5.1.1 tns:RefreshSharingFolderSoapIn Message ..................................... 27 
+3.1.4.5.1.2 tns:RefreshSharingFolderSoapOut Message ................................... 28 
+
+3.1.4.5.2 Elements ........................................................................................ 28 
+3.1.4.5.2.1 RefreshSharingFolder Element ..................................................... 29 
+3.1.4.5.2.2 RefreshSharingFolderResponse Element ........................................ 29 
+
+3.1.4.5.3 Complex Types ............................................................................... 29 
+3.1.4.5.3.1 m:RefreshSharingFolderType Complex Type .................................. 29 
+
+3.1.4.6 UpdateFolder Operation ......................................................................... 30 
+3.1.5 Timer Events .............................................................................................. 30 
+3.1.6 Other Local Events ...................................................................................... 30 
+
+4 Protocol Examples ................................................................................................. 31 
+4.1 GetSharingMetadata Request ............................................................................. 31 
+4.2 GetSharingMetadata Response........................................................................... 31 
+
+5 Security ................................................................................................................. 33 
+5.1 Security Considerations for Implementers ........................................................... 33 
+5.2 Index of Security Parameters ............................................................................ 33 
+
+6 Appendix A: Full WSDL .......................................................................................... 34 
+
+7 Appendix B: Full XML Schema ................................................................................ 38 
+7.1 Messages Schema ............................................................................................ 38 
+7.2 Types Schema ................................................................................................. 39 
+
+8 Appendix C: Product Behavior ............................................................................... 41 
+
+9 Change Tracking .................................................................................................... 42 
+
+10 Index ..................................................................................................................... 43 
+
+ 
+
+5 / 44 
+
+[MS-OXWSMSHR] - v20250520 
+Folder Sharing Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+1 Introduction 
+
+The Folder Sharing Web Service Protocol is responsible for managing calendars that are shared 
+among users in separate organizations. Clients use the Folder Sharing Web Service Protocol to share 
+calendar appointments, get appointments, and update appointments.  
+
+Sections 1.5, 1.8, 1.9, 2, and 3 of this specification are normative. All other sections and examples in 
+this specification are informative. 
+
+1.1 Glossary 
+
+This document uses the following terms: 
+
+calendar: A date range that shows availability, meetings, and appointments for one or more users 
+or resources. See also Calendar object. 
+
+Hypertext Transfer Protocol Secure (HTTPS): An extension of HTTP that securely encrypts and 
+decrypts web page requests. In some older protocols, "Hypertext Transfer Protocol over Secure 
+Sockets Layer" is still used (Secure Sockets Layer has been deprecated). For more information, 
+see [SSL3] and [RFC5246]. 
+
+mailbox: A message store that contains email, calendar items, and other Message objects for a 
+single recipient. 
+
+recipient: An entity that is in an address list, can receive email messages, and contains a set of 
+attributes. Each attribute has a set of associated values. 
+
+security token service (STS): A web service that issues claims and packages them in encrypted 
+security tokens. 
+
+shared folder: A folder for which a sharing relationship has been created to share items in the 
+folder between two servers. 
+
+Simple Mail Transfer Protocol (SMTP): A member of the TCP/IP suite of protocols that is used 
+to transport Internet messages, as described in [RFC5321]. 
+
+SOAP: A lightweight protocol for exchanging structured information in a decentralized, distributed 
+environment. SOAP uses XML technologies to define an extensible messaging framework, 
+which provides a message construct that can be exchanged over a variety of underlying 
+protocols. The framework has been designed to be independent of any particular programming 
+model and other implementation-specific semantics. SOAP 1.2 supersedes SOAP 1.1. See 
+[SOAP1.2-1/2003]. 
+
+SOAP action: The HTTP request header field used to indicate the intent of the SOAP request, 
+using a URI value. See [SOAP1.1] section 6.1.1 for more information. 
+
+SOAP body: A container for the payload data being delivered by a SOAP message to its recipient. 
+See [SOAP1.2-1/2007] section 5.3 for more information. 
+
+SOAP header: A mechanism for implementing extensions to a SOAP message in a decentralized 
+manner without prior agreement between the communicating parties. See [SOAP1.2-1/2007] 
+section 5.2 for more information. 
+
+SOAP message: An XML document consisting of a mandatory SOAP envelope, an optional SOAP 
+header, and a mandatory SOAP body. See [SOAP1.2-1/2007] section 5 for more information. 
+
+web server: A server computer that hosts websites and responds to requests from applications. 
+
+6 / 44 
+
+[MS-OXWSMSHR] - v20250520 
+Folder Sharing Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Web Services Description Language (WSDL): An XML format for describing network services 
+as a set of endpoints that operate on messages that contain either document-oriented or 
+procedure-oriented information. The operations and messages are described abstractly and are 
+bound to a concrete network protocol and message format in order to define an endpoint. 
+Related concrete endpoints are combined into abstract endpoints, which describe a network 
+service. WSDL is extensible, which allows the description of endpoints and their messages 
+regardless of the message formats or network protocols that are used. 
+
+WSDL message: An abstract, typed definition of the data that is communicated during a WSDL 
+operation [WSDL]. Also, an element that describes the data being exchanged between web 
+service providers and clients. 
+
+WSDL port type: A named set of logically-related, abstract Web Services Description 
+Language (WSDL) operations and messages. 
+
+XML: The Extensible Markup Language, as described in [XML1.0]. 
+
+XML namespace: A collection of names that is used to identify elements, types, and attributes in 
+XML documents identified in a URI reference [RFC3986]. A combination of XML namespace and 
+local name allows XML documents to use elements, types, and attributes that have the same 
+names but come from different sources. For more information, see [XMLNS-2ED]. 
+
+XML namespace prefix: An abbreviated form of an XML namespace, as described in [XML]. 
+
+XML schema: A description of a type of XML document that is typically expressed in terms of 
+constraints on the structure and content of documents of that type, in addition to the basic 
+syntax constraints that are imposed by XML itself. An XML schema provides a view of a 
+document type at a relatively high level of abstraction. 
+
+MAY, SHOULD, MUST, SHOULD NOT, MUST NOT: These terms (in all caps) are used as defined 
+in [RFC2119]. All statements of optional behavior use either MAY, SHOULD, or SHOULD NOT. 
+
+1.2 References 
+
+Links to a document in the Microsoft Open Specifications library point to the correct section in the 
+most recently published version of the referenced document. However, because individual documents 
+in the library are not updated at the same time, the section numbers in the documents may not 
+match. You can confirm the correct section numbering by checking the Errata.   
+
+1.2.1 Normative References 
+
+We conduct frequent surveys of the normative references to assure their continued availability. If you 
+have any issue with finding a normative reference, please contact dochelp@microsoft.com. We will 
+assist you in finding the relevant information.  
+
+[MS-OXSHRMSG] Microsoft Corporation, "Sharing Message Attachment Schema". 
+
+[MS-OXWSCDATA] Microsoft Corporation, "Common Web Service Data Types". 
+
+[MS-OXWSCORE] Microsoft Corporation, "Core Items Web Service Protocol". 
+
+[MS-OXWSFOLD] Microsoft Corporation, "Folders and Folder Permissions Web Service Protocol". 
+
+[RFC2119] Bradner, S., "Key words for use in RFCs to Indicate Requirement Levels", BCP 14, RFC 
+2119, March 1997, https://www.rfc-editor.org/info/rfc2119 
+
+[RFC2818] Rescorla, E., "HTTP Over TLS", RFC 2818, May 2000, https://www.rfc-
+editor.org/info/rfc2818 
+
+7 / 44 
+
+[MS-OXWSMSHR] - v20250520 
+Folder Sharing Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+[SOAP1.1] Box, D., Ehnebuske, D., Kakivaya, G., et al., "Simple Object Access Protocol (SOAP) 1.1", 
+W3C Note, May 2000, https://www.w3.org/TR/2000/NOTE-SOAP-20000508/ 
+
+[WSDL] Christensen, E., Curbera, F., Meredith, G., and Weerawarana, S., "Web Services Description 
+Language (WSDL) 1.1", W3C Note, March 2001, https://www.w3.org/TR/2001/NOTE-wsdl-20010315 
+
+[XMLNS] Bray, T., Hollander, D., Layman, A., et al., Eds., "Namespaces in XML 1.0 (Third Edition)", 
+W3C Recommendation, December 2009, https://www.w3.org/TR/2009/REC-xml-names-20091208/ 
+
+[XMLSCHEMA1] Thompson, H., Beech, D., Maloney, M., and Mendelsohn, N., Eds., "XML Schema Part 
+1: Structures", W3C Recommendation, May 2001, https://www.w3.org/TR/2001/REC-xmlschema-1-
+20010502/ 
+
+[XMLSCHEMA2] Biron, P.V., Ed. and Malhotra, A., Ed., "XML Schema Part 2: Datatypes", W3C 
+Recommendation, May 2001, https://www.w3.org/TR/2001/REC-xmlschema-2-20010502/ 
+
+1.2.2 Informative References 
+
+[MS-OXPROTO] Microsoft Corporation, "Exchange Server Protocols System Overview". 
+
+[MS-OXWSLVID] Microsoft Corporation, "Federated Internet Authentication Web Service Protocol". 
+
+[MS-OXWSSYNC] Microsoft Corporation, "Mailbox Contents Synchronization Web Service Protocol". 
+
+1.3 Overview 
+
+The Folder Sharing Web Service Protocol specifies data types and operations that enable client 
+applications to manage cross-organization sharing of folder items. This sharing enables a client in one 
+organization to access information from another organization, such as calendar free/busy information. 
+This protocol is applicable to person-to-person sharing scenarios; it does not address organizations 
+sharing information on behalf of the entire organization. The protocol defines operations that are used 
+to create an opaque data structure that authorizes sharing, getting shared folder information, and 
+initiating synchronization of shared folders. 
+
+1.4 Relationship to Other Protocols 
+
+The Folder Sharing Web Service Protocol uses SOAP over HTTPS, as described in [RFC2818], as 
+shown in the following layering diagram.  
+
+ 
+
+Figure 1: This protocol in relation to other protocols 
+
+Clients that implement this protocol use operations from the protocols listed in the following table to 
+perform work. 
+
+8 / 44 
+
+[MS-OXWSMSHR] - v20250520 
+Folder Sharing Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Protocol Description 
+
+Core Items Web Service Subscribing clients can use the CreateItem operation ([MS-OXWSCORE] 
+Protocol ([MS-OXWSCORE]) section 3.1.4.2) to create the local shared folder. 
+
+Federated Internet Servers can use Federated Internet Authentication Web Service Protocol client 
+Authentication Web Service operations to obtain authentication tokens to establish sharing relationships 
+Protocol ([MS-OXWSLVID]) among users. 
+
+Folders and Folder Permissions Clients can use the GetFolder operation ([MS-OXWSFOLD] section 3.1.4.6) to 
+Web Service Protocol ([MS- retrieve information about folders to be shared, and they can use the 
+OXWSFOLD]) UpdateFolder operation ([MS-OXWSFOLD] section 3.1.4.8) to update 
+
+permissions on shared folders. 
+
+Mailbox Contents Clients can use Mailbox Contents Synchronization Web Service Protocol 
+Synchronization Web Service operations to synchronize the local shared folder on the server with the client's 
+Protocol ([MS-OXWSSYNC]) local data store. 
+
+For conceptual background information and overviews of the relationships and interactions between 
+this and other protocols, see [MS-OXPROTO]. 
+
+This protocol uses the XML protocols presented in [XMLSCHEMA1] and [XMLSCHEMA2], to describe 
+the message content sent to and from the server. 
+
+1.5 Prerequisites/Preconditions 
+
+None. 
+
+1.6 Applicability Statement 
+
+The Folder Sharing Web Service Protocol is applicable to SOAP-based clients, as described in 
+[SOAP1.1]. 
+
+1.7 Versioning and Capability Negotiation 
+
+This document covers versioning in the following areas: 
+
+ Supported Transports: This protocol uses SOAP 1.1 over HTTPS, as described in section 2.1 
+and in [SOAP1.1]. 
+
+ Protocol Versions: This protocol specifies only one WSDL port type version. The WSDL version 
+of the request is identified by using the t:RequestServerVersion element, as described in [MS-
+OXWSCDATA] section 2.2.3.9, and the version of the server responding to the request is identified 
+by using the t:SesrverVersionInfo element, as described in [MS-OXWSCDATA] section 2.2.3.10. 
+
+ Security and Authentication Methods: This protocol relies on the web server that is hosting it 
+to perform authentication. 
+
+ Capability Negotiation: This protocol does not support version negotiation. 
+
+1.8 Vendor-Extensible Fields 
+
+None. 
+
+1.9 Standards Assignments 
+
+None. 
+
+9 / 44 
+
+[MS-OXWSMSHR] - v20250520 
+Folder Sharing Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+2 Messages 
+
+In the following sections, the schema definition might differ from the processing rules imposed by the 
+protocol. The WSDL in this specification provides a base description of the protocol. The schema in 
+this specification provides a base description of the message syntax. The text that specifies the WSDL 
+and schema might specify restrictions that reflect actual protocol behavior. For example, the schema 
+definition might allow for an element to be empty, null, or not present but the behavior of the 
+protocol as specified restricts the same elements to being non-empty, not null, or present. 
+
+2.1 Transport 
+
+The SOAP version supported is SOAP 1.1. For details, see [SOAP1.1]. This protocol MUST support 
+SOAP over HTTPS, as defined in [RFC2818]. 
+
+2.2 Common Message Syntax 
+
+This section contains common definitions that are used by this protocol. The syntax of the definitions 
+uses XML schema, as defined in [XMLSCHEMA1] and [XMLSCHEMA2], and Web Services 
+Description Language (WSDL), as defined in [WSDL]. 
+
+2.2.1 Namespaces 
+
+This specification defines and references various XML namespaces by using the mechanisms 
+specified in [XMLNS]. Although this specification associates a specific XML namespace prefix for 
+each XML namespace that is used, the choice of any particular XML namespace prefix is 
+implementation-specific and not significant for interoperability. 
+
+Prefix Namespace URI Reference 
+
+soap http://schemas.xmlsoap.org/wsdl/soap/ [SOAP1.1] 
+
+tns http://schemas.microsoft.com/exchange/services/2006/messages  
+
+xs http://www.w3.org/2001/XMLSchema [XMLSCHEMA1], [XMLSCHEMA2] 
+
+wsdl http://schemas.xmlsoap.org/wsdl/ [WSDL] 
+
+t http://schemas.microsoft.com/exchange/services/2006/types  
+
+m http://schemas.microsoft.com/exchange/services/2006/messages  
+
+ 
+
+2.2.2 Messages 
+
+This specification does not define any common WSDL message definitions. 
+
+2.2.3 Elements 
+
+This specification does not define any common XML schema element definitions. 
+
+2.2.4 Complex Types 
+
+The following table summarizes the set of common XML schema complex type definitions that are 
+defined by this specification. XML schema complex type definitions that are specific to a particular 
+operation are defined with the operation. 
+
+10 / 44 
+
+[MS-OXWSMSHR] - v20250520 
+Folder Sharing Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Complex type Description 
+
+GetSharingFolderResponseMessageType  Specifies the response from the GetSharingFolder 
+operation (section 3.1.4.3). 
+
+GetSharingMetadataResponseMessageType  Specifies the response message from the 
+GetSharingMetadata operation (section 3.1.4.4). 
+
+RefreshSharingFolderResponseMessageType  Specifies the response message from the 
+RefreshSharingFolder operation (section 3.1.4.5). 
+
+ArrayOfEncryptedSharedFolderDataType  Specifies an array of encrypted folder data that is passed 
+between servers by the client. 
+
+ArrayOfInvalidRecipientsType  Specifies a list of sharing request recipients with whom a 
+sharing relationship could not be created. 
+
+EncryptedDataContainerType  Specifies an opaque container for encrypted data passed 
+between servers by the client. 
+
+EncryptedSharedFolderDataType  Specifies encrypted folder information that is passed between 
+servers by the client. 
+
+InvalidRecipientType  Specifies a recipient with whom a sharing relationship could 
+not be created. 
+
+ 
+
+2.2.4.1 m:GetSharingFolderResponseMessageType Complex Type 
+
+The GetSharingFolderResponseMessageType complex type specifies the response message from 
+the GetSharingFolder operation, as specified in section 3.1.4.3. The 
+GetSharingFolderResponseMessageType complex type extends the ResponseMessageType 
+complex type, as specified in [MS-OXWSCDATA] section 2.2.4.65. 
+
+ <xs:complexType name="GetSharingFolderResponseMessageType"> 
+  <xs:complexContent> 
+    <xs:extension 
+      base="m:ResponseMessageType" 
+    > 
+      <xs:sequence 
+        minOccurs="0" 
+      > 
+        <xs:element name="SharingFolderId" 
+          type="t:FolderIdType" 
+         /> 
+      </xs:sequence> 
+    </xs:extension> 
+  </xs:complexContent> 
+ </xs:complexType> 
+ 
+
+Prefix Namespace URI Reference 
+
+m http://schemas.microsoft.com/exchange/services/2006/messages  
+
+The following table lists the child elements of the GetSharingFolderResponseMessageType 
+complex type. 
+
+11 / 44 
+
+[MS-OXWSMSHR] - v20250520 
+Folder Sharing Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Element name Type Description 
+
+SharingFolderId t:FolderIdType ([MS-OXWSCDATA] section Specifies the local folder identifier for a 
+2.2.4.35) shared folder. 
+
+ 
+
+2.2.4.2 m:GetSharingMetadataResponseMessageType Complex Type 
+
+The GetSharingMetadataResponseMessageType complex type specifies the response message 
+from the GetSharingMetadata operation, as specified in section 3.1.4.4. The 
+GetSharingMetadataResponseMessageType complex type extends the ResponseMessageType 
+complex type, as specified in [MS-OXWSCDATA] section 2.2.4.65. 
+
+ <xs:complexType name="GetSharingMetadataResponseMessageType"> 
+  <xs:complexContent> 
+    <xs:extension 
+      base="m:ResponseMessageType" 
+    > 
+      <xs:sequence 
+        minOccurs="0" 
+      > 
+        <xs:element name="EncryptedSharedFolderDataCollection" 
+          type="t:ArrayOfEncryptedSharedFolderDataType" 
+         /> 
+        <xs:element name="InvalidRecipients" 
+          type="t:ArrayOfInvalidRecipientsType" 
+         /> 
+      </xs:sequence> 
+    </xs:extension> 
+  </xs:complexContent> 
+ </xs:complexType> 
+ 
+
+The following table lists the child elements of the GetSharingMetadataResponseMessageType 
+complex type. 
+
+Element name Type Description 
+
+EncryptedSharedFolderDataCollection t:ArrayOfEncryptedSharedFolderDataType Specifies an 
+(section 2.2.4.4) encrypted 
+
+payload from the 
+server. 
+
+InvalidRecipients t:ArrayOfInvalidRecipientsType (section Specifies 
+2.2.4.5) recipients that 
+
+belong to an 
+organization that 
+does not enable 
+sharing.  
+
+ 
+
+2.2.4.3 m:RefreshSharingFolderResponseMessageType Complex Type 
+
+The RefreshSharingFolderResponseMessageType complex type specifies the response from the 
+RefreshSharingFolder operation, as specified in section 3.1.4.5. The 
+RefreshSharingFolderResponseMessageType complex type extends the ResponseMessageType 
+complex type, as specified in [MS-OXWSCDATA] section 2.2.4.65. 
+
+12 / 44 
+
+[MS-OXWSMSHR] - v20250520 
+Folder Sharing Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+ <xs:complexType name="RefreshSharingFolderResponseMessageType"> 
+  <xs:complexContent> 
+    <xs:extension 
+      base="m:ResponseMessageType" 
+     /> 
+  </xs:complexContent> 
+ </xs:complexType> 
+ 
+
+2.2.4.4 t:ArrayOfEncryptedSharedFolderDataType Complex Type 
+
+The ArrayOfEncryptedSharedFolderDataType complex type specifies an array of encrypted folder 
+data that is passed between servers by the client. 
+
+ <xs:complexType name="t:ArrayOfEncryptedSharedFolderDataType"> 
+  <xs:choice 
+    maxOccurs="unbounded" 
+    minOccurs="0" 
+  > 
+    <xs:element name="EncryptedSharedFolderData" 
+      type="t:EncryptedSharedFolderDataType" 
+     /> 
+  </xs:choice> 
+ </xs:complexType> 
+ 
+
+The following table lists the child elements of the ArrayOfEncryptedSharedFolderDataType 
+complex type. 
+
+Element name Type Description 
+
+EncryptedSharedFolderData t:EncryptedSharedFolderDataType Specifies zero or more 
+(section 2.2.4.7) encrypted shared folder data 
+
+items. 
+
+ 
+
+2.2.4.5 t:ArrayOfInvalidRecipientsType Complex Type 
+
+The ArrayOfInvalidRecipientsType complex type specifies a list of sharing request recipients with 
+whom a sharing relationship could not be created. 
+
+ <xs:complexType name="ArrayOfInvalidRecipientsType"> 
+  <xs:choice minOccurs="0" 
+    maxOccurs="unbounded" 
+  > 
+    <xs:element name="InvalidRecipient" 
+      type="t:InvalidRecipientType" 
+     /> 
+  </xs:choice> 
+ </xs:complexType> 
+ 
+
+The following table lists the child elements of the ArrayOfInvalidRecipientsType complex type. 
+
+Element Type Description 
+
+InvalidRecipient t:InvalidRecipientType (section Specifies a recipient whose organization is not 
+
+13 / 44 
+
+[MS-OXWSMSHR] - v20250520 
+Folder Sharing Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Element Type Description 
+
+2.2.4.8) enabled for folder sharing. 
+
+ 
+
+2.2.4.6 t:EncryptedDataContainerType Complex Type 
+
+The EncryptedDataContainerType complex type specifies an opaque container for encrypted data 
+that is passed between servers by the client. 
+
+ <xs:complexType name="EncryptedDataContainerType"> 
+  <xs:sequence> 
+    <xs:any 
+      process_contents="skip" 
+     /> 
+  </xs:sequence> 
+ </xs:complexType> 
+ 
+
+2.2.4.7 t:EncryptedSharedFolderDataType Complex Type 
+
+The EncryptedSharedFolderDataType complex type specifies encrypted folder information that is 
+passed between servers by the client. 
+
+ <xs:complexType name="EncryptedSharedFolderDataType"> 
+  <xs:sequence> 
+    <xs:element name="Token" 
+      type="t:EncryptedDataContainerType" 
+     /> 
+    <xs:element name="Data" 
+      type="t:EncryptedDataContainerType" 
+     /> 
+  </xs:sequence> 
+ </xs:complexType> 
+ 
+
+The following table lists the child elements of the EncryptedSharedFolderDataType complex type. 
+
+Element Type Description 
+
+Token t:EncryptedDataContainerType (section 2.2.4.6) Specifies an identification token. 
+
+Data t:EncryptedDataContainerType Specifies the encrypted data. 
+
+ 
+
+2.2.4.8 t:InvalidRecipientType Complex Type 
+
+The InvalidRecipientType complex type specifies a recipient with whom a sharing relationship 
+could not be created. 
+
+ <xs:complexType name="InvalidRecipientType"> 
+  <xs:sequence> 
+    <xs:element name="SmtpAddress" 
+      type="t:NonEmptyStringType" 
+     /> 
+
+14 / 44 
+
+[MS-OXWSMSHR] - v20250520 
+Folder Sharing Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+    <xs:element name="ResponseCode" 
+      type="t:InvalidRecipientResponseCodeType" 
+     /> 
+    <xs:element name="MessageText" 
+      type="xs:string" 
+      minOccurs="0" 
+     /> 
+  </xs:sequence> 
+ </xs:complexType> 
+ 
+
+The following table lists the child elements of the InvalidRecipientType complex type. 
+
+Element Type Description 
+
+SmtpAddress t:NonEmptyStringType ([MS-OXWSCDATA] Specifies the SMTP e-mail address of 
+section 2.2.5.20) the recipient. 
+
+ResponseCode t:InvalidRecipientResponseCodeType (section Specifies the reason why the recipient 
+2.2.5.2) is invalid. 
+
+MessageText xs:string ([XMLSCHEMA2]) Specifies the text of an error message. 
+This element can be present. 
+
+ 
+
+2.2.5 Simple Types 
+
+The following table summarizes the set of common XML schema simple type definitions that are 
+defined by this specification. XML schema simple type definitions that are specific to a particular 
+operation are described with the operation. 
+
+Simple Type Description 
+
+SharingDataType Specifies the type of data that is shared by a shared folder. 
+
+InvalidRecipientResponseCodeType  Specifies the reason why a recipient of a folder sharing request was 
+invalid. 
+
+ 
+
+2.2.5.1 t:SharingDataType Simple Type 
+
+The SharingDataType simple type specifies the type of data that is shared by the shared folder. 
+
+ <xs:simpleType> 
+  <xs:restriction 
+    base="xs:string" 
+  > 
+    <xs:enumeration 
+      value="Calendar" 
+     /> 
+    <xs:enumeration 
+      value="Contacts" 
+     /> 
+  </xs:restriction> 
+ </xs:simpleType> 
+ 
+
+15 / 44 
+
+[MS-OXWSMSHR] - v20250520 
+Folder Sharing Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+The following values are defined by the SharingDataType simple type: 
+
+Value Description 
+
+Calendar Specifies that the shared folder contains calendar information. 
+
+Contacts Specifies that the shared folder contains contact information. 
+
+ 
+
+2.2.5.2 t:InvalidRecipientResponseCodeType Simple Type 
+
+The InvalidRecipientResponseCodeType simple type specifies the reason why a recipient of a 
+folder sharing request was invalid. 
+
+ <xs:simpleType name="InvalidRecipientResponseCodeType"> 
+  <xs:restriction 
+    base="xs:string" 
+  > 
+    <xs:enumeration 
+      value="CannotObtainTokenFromSTS" 
+     /> 
+    <xs:enumeration 
+      value="RecipientOrganizationNotFederated" 
+     /> 
+    <xs:enumeration 
+      value="SystemPolicyBlocksSharingWithThisRecipient" 
+     /> 
+    <xs:enumeration value="RecipientOrganizationFederatedWithUnknownTokenIssuer"/> 
+  </xs:restriction> 
+ </xs:simpleType> 
+
+The following values are defined by the InvalidRecipientResponseCodeType simple type: 
+
+Value Description 
+
+CannotObtainTokenFromSTS Specifies that there was a problem obtaining 
+a security token from the security token 
+service (STS). 
+
+RecipientOrganizationNotFederated Specifies that a sharing relationship is not 
+available with the organization specified in 
+the recipient's SMTP e-mail address. 
+
+SystemPolicyBlocksSharingWithThisRecipient Specifies that the system administrator has 
+set a system policy that blocks sharing with 
+the specified recipient.  
+
+RecipientOrganizationFederatedWithUnknownTokenIssuer Specifies that the security token service 
+(STS) that is used by the specified recipient is 
+unknown. 
+
+ 
+
+2.2.6 Attributes 
+
+This specification does not define any common XML schema attribute definitions. 
+
+16 / 44 
+
+[MS-OXWSMSHR] - v20250520 
+Folder Sharing Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+2.2.7 Groups 
+
+This specification does not define any common XML schema group definitions. 
+
+2.2.8 Attribute Groups 
+
+This specification does not define any common XML schema attribute group definitions. 
+
+17 / 44 
+
+[MS-OXWSMSHR] - v20250520 
+Folder Sharing Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+3 Protocol Details 
+
+The client side of this protocol is simply a pass-through. That is, no additional timers or other state is 
+required on the client side of this protocol. Calls made by the higher-layer protocol or application are 
+passed directly to the transport, and the results that are returned by the transport are passed directly 
+back to the higher-layer protocol or application. 
+
+3.1 ExchangeServicePortType Server Details 
+
+This protocol defines a single port type with three operations. In addition, this protocol uses one 
+operation, CreateItem, specified in [MS-OXWSCORE] and two operations, GetFolder and 
+UpdateFolder, specified in [MS-OXWSFOLD]. These operations enable client implementations to 
+establish a sharing relationship between two servers and to manage the folders necessary for that 
+sharing relationship. 
+
+3.1.1 Abstract Data Model 
+
+This protocol uses a sharing message, as defined in [MS-OXSHRMSG], to establish folder sharing. The 
+GetSharingMetadata operation, as specified in section 3.1.4.4, gets the 
+EncryptedSharedFolderDataType complex type elements, as specified in section 2.2.4.7, that are 
+required to populate the SharingMessage element in the XML sharing message, as specified in [MS-
+OXSHRMSG] section 2.1.11. 
+
+This protocol requires two clients: a publishing client that is sharing information on behalf of a user, 
+and a subscribing client that is accessing the shared information. To establish the relationship, the two 
+clients perform the following actions. 
+
+Publisher actions: 
+
+ Call the GetSharingMetadata operation to get an opaque authentication token that identifies the 
+sharing invitation. 
+
+ Construct a Sharing Message Attachment XML document, as specified in [MS-OXSHRMSG], from 
+the response from the GetSharingMetadata operation. The 
+EncryptedSharedFolderDataCollection element of the GetSharingMetaDataResponse 
+element, as specified in section 3.1.4.4.2.2, is inserted into the Sharing Message Attachment XML 
+document as the EncryptedSharedFolderDataCollection element of the ProviderType 
+element, as specified in [MS-OXSHRMSG] section 2.1.8. 
+
+ Use the GetFolder operation, as specified in [MS-OXWSFOLD] section 3.1.4.6, to get the 
+permission list for the shared folder. 
+
+ Use the UpdateFolder operation, as specified in [MS-OXWSFOLD] section 3.1.4.8, to add the new 
+subscriber to the permission list. 
+
+ Send the Sharing Message Attachment XML document to the subscriber as an attachment on an e-
+mail message. The attachment requires the following headers: 
+
+ Content-Type: application/x-sharing-metadata-xml;                 
+
+ Content-Disposition: attachment; filename="sharing_metadata.xml"                 
+
+Subscriber actions: 
+
+ Call the CreateItem operation, as specified in [MS-OXWSCORE] section 3.1.4.2, with an 
+AcceptSharingInvitationType element, as specified in [MS-OXWSCDATA] section 2.2.4.3. 
+
+18 / 44 
+
+[MS-OXWSMSHR] - v20250520 
+Folder Sharing Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+ Get the local sharing folder identifier by calling the GetSharingFolder operation, as specified in 
+section 3.1.4.3. The local sharing folder is created by the previous call to the CreateItem 
+operation. 
+
+Start synchronizing the local sharing folder on the server by calling the RefreshSharingFolder 
+operation, as specified in section 3.1.4.5, with the local sharing folder identifier that is returned by the 
+GetSharingFolder operation.  
+
+3.1.2 Timers 
+
+None. 
+
+3.1.3 Initialization 
+
+None. 
+
+3.1.4 Message Processing Events and Sequencing Rules 
+
+This protocol specifies the operations that are listed in the following table. 
+
+Operation Description 
+
+GetSharingFolder  Gets the folder identifier of a specified shared folder. 
+
+GetSharingMetadata  Requests an encrypted XML payload that identifies the participants in a shared folder 
+exchange. 
+
+RefreshSharingFolder  Requests that the server update shared folder information. 
+
+This protocol uses the operations that are listed in the following table. 
+
+Operation Specified in Description 
+
+CreateItem  [MS-OXWSCORE] section Creates a folder sharing response message. 
+3.1.4.2 
+
+GetFolder  [MS-OXWSFOLD] section Gets a specified folder so that the access permissions can be 
+3.1.4.6 changed. 
+
+UpdateFolder  [MS-OXWSFOLD] section Updates the access permissions on the specified folder to enable 
+3.1.4.8 folder sharing. 
+
+ 
+
+3.1.4.1 CreateItem Operation 
+
+The CreateItem operation, as specified in [MS-OXWSCORE] section 3.1.4.2, creates 
+AcceptSharingInvitationType complex type elements, as specified in [MS-OXWSCDATA] section 
+2.2.4.3. 
+
+ <wsdl:operation name="CreateItem"> 
+     <wsdl:input message="tns:CreateItemSoapIn" /> 
+     <wsdl:output message="tns:CreateItemSoapOut" /> 
+ </wsdl:operation> 
+
+19 / 44 
+
+[MS-OXWSMSHR] - v20250520 
+Folder Sharing Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+The Items child element of the CreateItem child element, as specified in [MS-OXWSCORE] section 
+3.1.4.2.2.1, that specifies the XML request MUST contain one AcceptSharingInvitationType 
+complex type element. All other elements MUST be empty. 
+
+3.1.4.2 GetFolder Operation 
+
+The GetFolder operation, as specified in [MS-OXWSFOLD] section 3.1.4.6, gets a shared folder so 
+that the access permissions on a shared folder can be modified. 
+
+ <wsdl:operation name="GetFolder"> 
+   <wsdl:input message="tns:GetFolderSoapIn" /> 
+   <wsdl:output message="tns:GetFolderSoapOut" /> 
+ </wsdl:operation> 
+
+3.1.4.3 GetSharingFolder Operation 
+
+The GetSharingFolder operation gets the local folder identifier of a specified shared folder. 
+
+The following is the WSDL port type specification for this operation. 
+
+ <wsdl:operation name="GetSharingFolder"> 
+     <wsdl:input message="tns:GetSharingFolderSoapIn"/> 
+     <wsdl:output message="tns:GetSharingFolderSoapOut"/> 
+ </wsdl:operation> 
+ 
+
+The following is the WSDL binding specification for this operation. 
+
+ <wsdl:operation name="GetSharingFolder"> 
+   <soap:operation 
+soapAction="http://schemas.microsoft.com/exchange/services/2006/messages/GetSharingFolder"/> 
+   <wsdl:input> 
+      <soap:body parts="request" use="literal"/> 
+      <soap:header message="tns:GetSharingFolderSoapIn" part="RequestVersion" use="literal"/> 
+   </wsdl:input> 
+   <wsdl:output> 
+      <soap:body parts="GetSharingFolderResult" use="literal"/> 
+      <soap:header message="tns:GetSharingFolderSoapOut" part="ServerVersion" use="literal"/> 
+   </wsdl:output> 
+ </wsdl:operation> 
+
+The GetSharingFolder operation returns the local folder identifier of a specified shared folder. After 
+the local folder identifier is returned, the RefreshSharingFolder operation, as specified in section 
+3.1.4.5, is used to request that the server synchronize the shared folder information. 
+
+3.1.4.3.1 Messages 
+
+The WSDL message definitions listed in the following table are specific to this operation. 
+
+Message name Description 
+
+GetSharingFolderSoapIn Specifies the SOAP message that requests the local 
+identifier of a shared folder. 
+
+GetSharingFolderSoapOut Specifies the SOAP message that is returned in 
+response. 
+
+ 
+
+20 / 44 
+
+[MS-OXWSMSHR] - v20250520 
+Folder Sharing Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+3.1.4.3.1.1 tns:GetSharingFolderSoapIn Message 
+
+The GetSharingFolderSoapIn WSDL message specifies a request to the GetSharingFolder 
+operation. 
+
+ <wsdl:message name="GetSharingFolderSoapIn"> 
+   <wsdl:part name="request" element="tns:GetSharingFolder"/> 
+   <wsdl:part name="RequestVersion" element="t:RequestServerVersion"/> 
+ </wsdl:message> 
+
+The GetSharingFolderSoapIn WSDL message is the input message for the SOAP action 
+http://schemas.microsoft.com/exchange/services/2006/messages/GetSharingFolder. 
+
+The parts of the GetSharingFolderSoapIn WSDL message are listed and described in the following 
+table. 
+
+Part name Element/type Description 
+
+request tns:GetSharingFolder (section Specifies the SOAP body of the request for a local 
+3.1.4.3.2.2) identifier of a shared folder. 
+
+RequestVersion t:RequestServerVersion ([MS- Specifies a SOAP header that identifies the 
+OXWSCDATA] section 2.2.3.9) schema version for the GetSharingFolder 
+
+operation request. 
+
+ 
+
+3.1.4.3.1.2 tns:GetSharingFolderSoapOut Message 
+
+The GetSharingFolderSoapOut WSDL message specifies the server response to the 
+GetSharingFolder operation request to return the local identifier of a shared folder. 
+
+ <wsdl:message name="GetSharingFolderSoapOut"> 
+   <wsdl:part name="GetSharingFolderResult" element="tns:GetSharingFolderResponse"/> 
+   <wsdl:part name="ServerVersion" element="t:ServerVersionInfo"/> 
+ </wsdl:message> 
+
+The GetSharingFolderSoapOut WSDL message is the output message for the SOAP action 
+http://schemas.microsoft.com/exchange/services/2006/messages/GetSharingFolder. 
+
+The parts of the GetSharingFolderSoapOut WSDL message are listed and described in the following 
+table. 
+
+Part name Element/type Description 
+
+GetSharingFolderResult tns:GetSharingFolderResponse Specifies the SOAP body of the 
+(section 3.1.4.3.2.1) response to a GetSharingFolder 
+
+operation request. 
+
+ServerVersion t:ServerVersionInfo ([MS- Specifies a SOAP header that 
+OXWSCDATA] section 2.2.3.10) identifies the server version for the 
+
+response. 
+
+ 
+
+3.1.4.3.2 Elements 
+
+The XML schema element definitions listed in the following table are specific to this operation. 
+
+21 / 44 
+
+[MS-OXWSMSHR] - v20250520 
+Folder Sharing Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Element name Description 
+
+GetSharingFolder Specifies the base request element for the 
+GetSharingFolder operation. 
+
+GetSharingFolderResponse Specifies the response message from the 
+GetSharingFolder operation. 
+
+ 
+
+3.1.4.3.2.1 GetSharingFolderResponse Element 
+
+The GetSharingFolderResponse element specifies the response message from the 
+GetSharingFolder operation.  
+
+ <xs:element name="GetSharingFolderResponse" 
+  type="m:GetSharingFolderResponseMessageType" 
+ /> 
+ 
+
+3.1.4.3.2.2 GetSharingFolder Element 
+
+The GetSharingFolder element specifies the base request element for the GetSharingFolder 
+operation. 
+
+ <xs:element name="GetSharingFolder" 
+  type="m:GetSharingFolderType" 
+ /> 
+ 
+
+3.1.4.3.3 Complex Types 
+
+The XML schema complex type definitions listed in the following table are specific to this operation. 
+
+Complex type name Description 
+
+GetSharingFolderType Specifies the shared folder to be returned from the 
+GetSharingFolder operation. 
+
+ 
+
+3.1.4.3.3.1 t:GetSharingFolderType Complex Type 
+
+The GetSharingFolderType complex type specifies the shared folder to be returned from the 
+GetSharingFolder operation. 
+
+ <xs:complexType name="GetSharingFolderType"> 
+  <xs:complexContent> 
+    <xs:extension 
+      base="m:BaseRequestType" 
+    > 
+      <xs:sequence> 
+        <xs:element name="SmtpAddress" 
+          type="t:NonEmptyStringType" 
+         /> 
+        <xs:element name="DataType" 
+          type="t:SharingDataType" 
+          minOccurs="0" 
+         /> 
+
+22 / 44 
+
+[MS-OXWSMSHR] - v20250520 
+Folder Sharing Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+        <xs:element name="SharedFolderId" 
+          type="t:NonEmptyStringType" 
+          minOccurs="0" 
+         /> 
+      </xs:sequence> 
+    </xs:extension> 
+  </xs:complexContent> 
+ </xs:complexType> 
+ 
+
+The following table lists the child elements of the GetSharingFolderType complex type. 
+
+Element Type Description 
+
+SmtpAddress t:NonEmptyStringType ([MS- Specifies the SMTP e-mail address of the other 
+OXWSCDATA] section 2.2.5.20) party in the sharing relationship. 
+
+DataType t:SharingDataType (section 2.2.5.1) Specifies the type of folder to be returned. This 
+element can be present. 
+
+SharedFolderId t:NonEmptyStringType Specifies the identifier of the shared folder for 
+which the local folder is to be returned. This 
+element can be present. 
+
+A GetSharingFolderType element MUST include either the SmtpAddress and DataType elements, 
+or the SharedFolderId element. The GetSharingFolderType element MUST NOT contain all of those 
+elements. 
+
+3.1.4.4 GetSharingMetadata Operation 
+
+The GetSharingMetadata operation gets an encrypted XML payload that identifies the participants in 
+a shared folder exchange.  
+
+The following is the WSDL port type specification for this operation. 
+
+ <wsdl:operation name="GetSharingMetadata"> 
+     <wsdl:input message="tns:GetSharingMetadataSoapIn"/> 
+     <wsdl:output message="tns:GetSharingMetadataSoapOut"/> 
+ </wsdl:operation> 
+ 
+
+The following is the WSDL binding specification for this operation. 
+
+ <wsdl:operation name="GetSharingMetadata"> 
+   <soap:operation 
+soapAction="http://schemas.microsoft.com/exchange/services/2006/messages/GetSharingMetadata"/
+> 
+   <wsdl:input> 
+      <soap:body parts="request" use="literal"/> 
+      <soap:header message="tns:GetSharingMetadataSoapIn" part="RequestVersion" 
+use="literal"/> 
+   </wsdl:input> 
+   <wsdl:output> 
+      <soap:body parts="GetSharingMetadataResult" use="literal"/> 
+      <soap:header message="tns:GetSharingMetadataSoapOut" part="ServerVersion" 
+use="literal"/> 
+   </wsdl:output> 
+ </wsdl:operation> 
+
+23 / 44 
+
+[MS-OXWSMSHR] - v20250520 
+Folder Sharing Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+3.1.4.4.1 Messages 
+
+The WSDL message definitions listed in the following table are specific to this operation. 
+
+Message name Description 
+
+GetSharingMetadataSoapIn Specifies the SOAP message that requests encrypted 
+sharing data from the server. 
+
+GetSharingMetadataSoapOut Specifies the SOAP message that is returned by the 
+server in response. 
+
+ 
+
+3.1.4.4.1.1 tns:GetSharingMetadataSoapIn Message 
+
+The GetSharingMetadataSoapIn WSDL message specifies the request for an encrypted XML 
+message that identifies the participants in a shared folder exchange. 
+
+ <wsdl:message name="GetSharingMetadataSoapIn"> 
+   <wsdl:part name="request" element="tns:GetSharingMetadata"/> 
+   <wsdl:part name="RequestVersion" element="t:RequestServerVersion"/> 
+ </wsdl:message> 
+
+The GetSharingMetadataSoapIn WSDL message is the input message for the SOAP action 
+http://schemas.microsoft.com/exchange/services/2006/messages/GetSharingMetadata. 
+
+The parts of the GetSharingMetadataSoapIn WSDL message are listed and described in the 
+following table. 
+
+Part name Element/type Description 
+
+request tns:GetSharingMetadata (section Specifies the SOAP body of the request for folder 
+3.1.4.4.2.1) sharing data. 
+
+RequestVersion t:RequestServerVersion ([MS- Specifies a SOAP header that identifies the 
+OXWSCDATA] section 2.2.3.9) schema version for the GetSharingMetadata 
+
+operation request. 
+
+ 
+
+3.1.4.4.1.2 tns:GetSharingMetadataSoapOut Message 
+
+The GetSharingMetadataSoapOut WSDL message specifies the server response to the 
+GetSharingMetadata operation. 
+
+ <wsdl:message name="GetSharingMetadataSoapOut"> 
+   <wsdl:part name="GetSharingMetadataResult" element="tns:GetSharingMetadataResponse"/> 
+   <wsdl:part name="ServerVersion" element="t:ServerVersionInfo"/> 
+ </wsdl:message> 
+
+The GetSharingMetadataSoapOut WSDL message is the output message for the SOAP action 
+http://schemas.microsoft.com/exchange/services/2006/messages/GetSharingMetadata. 
+
+The parts of the GetSharingMetadataSoapOut WSDL message are listed and described in the 
+following table. 
+
+24 / 44 
+
+[MS-OXWSMSHR] - v20250520 
+Folder Sharing Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Part name Element/type Description 
+
+GetSharingMetadataResult tns:GetSharingMetadataResponse Specifies the SOAP body of the 
+(section 3.1.4.4.2.2) response. 
+
+ServerVersion t:ServerVersionInfo ([MS-OXWSCDATA] Specifies SOAP header that 
+section 2.2.3.10) identifies the server version for 
+
+the response. 
+
+ 
+
+3.1.4.4.2 Elements 
+
+The XML schema element definitions listed in the following table are specific to this operation. 
+
+Element name Description 
+
+GetSharingMetadata Specifies the base request for the 
+GetSharingMetadata operation. 
+
+GetSharingMetadataResponse Specifies the response from the GetSharingMetadata 
+operation. 
+
+ 
+
+3.1.4.4.2.1 GetSharingMetadata Element 
+
+The GetSharingMetadata element specifies the base request for the GetSharingMetadata 
+operation. 
+
+ <xs:element name="GetSharingMetadata" 
+  type="m:GetSharingMetadataType" 
+ /> 
+ 
+
+3.1.4.4.2.2 GetSharingMetadataResponse Element 
+
+The GetSharingMetadataResponse element specifies the response from the GetSharingMetadata 
+operation. 
+
+ <xs:element name="GetSharingMetadataResponse" 
+  type="m:GetSharingMetadataResponseMessageType" 
+ /> 
+ 
+
+3.1.4.4.3 Complex Types 
+
+The XML schema complex type definitions listed in the following table are specific to this operation. 
+
+Complex type name Description 
+
+ArrayOfSmtpAddressType Specifies an array of SMTP e-mail addresses. 
+
+GetSharingMetadataType Specifies the sharing folder and recipients for the 
+GetSharingMetadata operation. 
+
+ 
+
+25 / 44 
+
+[MS-OXWSMSHR] - v20250520 
+Folder Sharing Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+3.1.4.4.3.1 t:ArrayOfSmtpAddressType Complex Type 
+
+The ArrayOfSmtpAddressType complex type specifies an array of SMTP e-mail addresses. 
+
+ <xs:complexType name="ArrayOfSmtpAddressType"> 
+  <xs:choice 
+    maxOccurs="unbounded" 
+  > 
+    <xs:element name="SmtpAddress" 
+      type="t:NonEmptyStringType" 
+     /> 
+  </xs:choice> 
+ </xs:complexType> 
+ 
+
+The following table lists the child elements of the ArrayOfSmtpAddressType complex type. 
+
+Element Type Description 
+
+SmtpAddress t:NonEmptyStringType ([MS-OXWSCDATA] section Specifies an SMTP e-mail 
+2.2.5.20) address. 
+
+ 
+
+3.1.4.4.3.2 m:GetSharingMetadataType Complex Type 
+
+The GetSharingMetadataType complex type specifies the sharing folder and recipients for the 
+GetSharingMetadata operation. The GetSharingMetadataType complex type extends the 
+BaseRequestType complex type, as specified in [MS-OXWSCDATA] section 2.2.4.17. 
+
+ <xs:complexType name="GetSharingMetadataType"> 
+  <xs:complexContent> 
+    <xs:extension 
+      base="m:BaseRequestType" 
+    > 
+      <xs:sequence> 
+        <xs:element name="IdOfFolderToShare" 
+          type="t:FolderIdType" 
+         /> 
+        <xs:element name="SenderSmtpAddress" 
+          type="t:NonEmptyStringType" 
+         /> 
+        <xs:element name="Recipients" 
+          type="t:ArrayOfSmtpAddressType" 
+         /> 
+      </xs:sequence> 
+    </xs:extension> 
+  </xs:complexContent> 
+ </xs:complexType> 
+ 
+
+The following table lists the child elements of the GetSharingMetadataType complex type. 
+
+Element Type Description 
+
+IdOfFolderToShare t:FolderIdType ([MS-OXWSCDATA] Specifies the identifier for an existing folder on 
+section 2.2.4.35) the server that will be shared.  
+
+SenderSmtpAddress t:NonEmptyStringType ([MS- Specifies a user e-mail address. The address 
+OXWSCDATA] section 2.2.5.20) MUST correspond to the mailbox that contains 
+
+the folder that is identified in the 
+
+26 / 44 
+
+[MS-OXWSMSHR] - v20250520 
+Folder Sharing Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Element Type Description 
+
+IdOfFolderToShare element. 
+
+Recipients t:ArrayOfSmtpAddressType Specifies the e-mail addresses of one or more 
+(section 3.1.4.4.3.1) entities that will be granted access to the 
+
+mailbox folder.  
+
+ 
+
+3.1.4.5 RefreshSharingFolder Operation 
+
+The RefreshSharingFolder operation requests that the server synchronize shared folder 
+information to the local sharing folder. 
+
+The following is the WSDL port type specification for this operation. 
+
+ <wsdl:operation name="RefreshSharingFolder"> 
+     <wsdl:input message="tns:RefreshSharingFolderSoapIn"/> 
+     <wsdl:output message="tns:RefreshSharingFolderSoapOut"/> 
+ </wsdl:operation> 
+ 
+
+The following is the WSDL binding specification for this operation. 
+
+ <wsdl:operation name="RefreshSharingFolder"> 
+   <soap:operation 
+soapAction="http://schemas.microsoft.com/exchange/services/2006/messages/RefreshSharingFolder
+"/> 
+   <wsdl:input> 
+      <soap:body parts="request" use="literal"/> 
+      <soap:header message="tns:RefreshSharingFolderSoapIn" part="RequestVersion" 
+use="literal"/> 
+      </wsdl:input> 
+   <wsdl:output> 
+      <soap:body parts="RefreshSharingFolderResult" use="literal"/> 
+      <soap:header message="tns:RefreshSharingFolderSoapOut" part="ServerVersion" 
+use="literal"/> 
+   </wsdl:output> 
+ </wsdl:operation> 
+
+3.1.4.5.1 Messages 
+
+The WSDL message definitions listed in the following table are specific to this operation. 
+
+Message name Description 
+
+RefreshSharingFolderSoapIn Specifies the SOAP message that requests that a 
+local shared folder be synchronized with the remote 
+server. 
+
+RefreshSharingFolderSoapOut Specifies the SOAP message that is returned by the 
+server in response. 
+
+ 
+
+3.1.4.5.1.1 tns:RefreshSharingFolderSoapIn Message 
+
+27 / 44 
+
+[MS-OXWSMSHR] - v20250520 
+Folder Sharing Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+The RefreshSharingFolderSoapIn WSDL message specifies a request to synchronize a shared 
+folder with a remote server. 
+
+ <wsdl:message name="RefreshSharingFolderSoapIn"> 
+   <wsdl:part name="request" element="tns:RefreshSharingFolder"/> 
+   <wsdl:part name="RequestVersion" element="t:RequestServerVersion"/> 
+ </wsdl:message> 
+
+The RefreshSharingFolderSoapIn WSDL message is the input message for the SOAP action 
+http://schemas.microsoft.com/exchange/services/2006/messages/RefreshSharingFolder. 
+
+The parts of the RefreshSharingFolderSoapIn WSDL message are listed and described in the 
+following table. 
+
+Part name Element/type Description 
+
+request tns:RefreshSharingFolder (section Specifies the SOAP body of the request to 
+3.1.4.5.2.1) synchronize a shared folder. 
+
+RequestVersion t:RequestServerVersion ([MS- Specifies a SOAP header that identifies the 
+OXWSCDATA] section 2.2.3.9) schema version for the RefreshSharingFolder 
+
+operation request. 
+
+ 
+
+3.1.4.5.1.2 tns:RefreshSharingFolderSoapOut Message 
+
+The RefreshSharingFolderSoapOut WSDL message specifies the server response to the 
+RefreshSharingFolder operation. 
+
+ <wsdl:message name="RefreshSharingFolderSoapOut"> 
+   <wsdl:part name="RefreshSharingFolderResult"     
+       element="tns:RefreshSharingFolderResponse"/> 
+   <wsdl:part name="ServerVersion" element="t:ServerVersionInfo"/> 
+ </wsdl:message> 
+
+The RefreshSharingFolderSoapOut WSDL message is the output message for the SOAP action 
+http://schemas.microsoft.com/exchange/services/2006/messages/RefreshSharingFolder. 
+
+The parts of the RefreshSharingFolderSoapOut WSDL message are listed and described in the 
+following table. 
+
+Part name Element/type Description 
+
+RefreshSharingFolderResult tns:RefreshSharingFolderResponse Specifies the SOAP body of the 
+(section 3.1.4.5.2.2) response to the 
+
+RefreshSharingFolder 
+operation. 
+
+ServerVersion t:ServerVersionInfo ([MS-OXWSCDATA] Specifies a SOAP header that 
+section 2.2.3.10) identifies the server version for 
+
+the response. 
+
+ 
+
+3.1.4.5.2 Elements 
+
+The XML schema element definitions listed in the following table are specific to this operation. 
+
+28 / 44 
+
+[MS-OXWSMSHR] - v20250520 
+Folder Sharing Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Element name Description 
+
+RefreshSharingFolder Specifies the base request for the 
+RefreshSharingFolder operation. 
+
+RefreshSharingFolderResponse Specifies the response from the 
+RefreshSharingFolder operation. 
+
+ 
+
+3.1.4.5.2.1 RefreshSharingFolder Element 
+
+The RefreshSharingFolder element specifies the base request for the RefreshSharingFolder 
+operation. 
+
+ <xs:element name="RefreshSharingFolder" 
+  type="m:RefreshSharingFolderType" 
+ /> 
+ 
+
+3.1.4.5.2.2 RefreshSharingFolderResponse Element 
+
+The RefreshSharingFolderResponse element specifies the response from the 
+RefreshSharingFolder operation. 
+
+ <xs:element name="RefreshSharingFolderResponse" 
+  type="m:RefreshSharingFolderResponseMessageType" 
+ /> 
+ 
+
+3.1.4.5.3 Complex Types 
+
+The XML schema complex type definitions listed in the following table are specific to this operation. 
+
+Complex type name Description 
+
+RefreshSharingFolderType Specifies the base request for the 
+RefreshSharingFolder operation. 
+
+ 
+
+3.1.4.5.3.1 m:RefreshSharingFolderType Complex Type 
+
+The RefreshSharingFolderType complex type specifies the request for the RefreshSharingFolder 
+operation. The RefreshSharingFolderType complex type extends the BaseRequestType complex 
+type, as specified in [MS-OXWSCDATA] section 2.2.4.17. 
+
+ <xs:complexType name="RefreshSharingFolderType"> 
+  <xs:complexContent> 
+    <xs:extension 
+      base="m:BaseRequestType" 
+    > 
+      <xs:sequence> 
+        <xs:element name="SharingFolderId" 
+          type="t:FolderIdType" 
+         /> 
+      </xs:sequence> 
+    </xs:extension> 
+
+29 / 44 
+
+[MS-OXWSMSHR] - v20250520 
+Folder Sharing Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+  </xs:complexContent> 
+ </xs:complexType> 
+ 
+
+The following table lists the child elements of the RefreshSharingFolder complex type. 
+
+Element Type Description 
+
+SharingFolderId t:FolderIdType ([MS-OXWSCDATA] Specifies the local identifier of the shared folder to 
+section 2.2.4.35) refresh from the associated server. 
+
+ 
+
+3.1.4.6 UpdateFolder Operation 
+
+The UpdateFolder operation, as specified in [MS-OXWSFOLD] section 3.1.4.8, updates the access 
+permissions on a shared folder when a sharing relationship is created. 
+
+ <wsdl:operation name="UpdateFolder"> 
+     <wsdl:input message="tns:UpdateFolderSoapIn"/> 
+     <wsdl:output message="tns:UpdateFolderSoapOut"/> 
+ </wsdl:operation> 
+
+3.1.5 Timer Events 
+
+None. 
+
+3.1.6 Other Local Events 
+
+None. 
+
+30 / 44 
+
+[MS-OXWSMSHR] - v20250520 
+Folder Sharing Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+4 Protocol Examples 
+
+4.1 GetSharingMetadata Request 
+
+The following XML example is a request to the GetSharingMetadata operation, as described in 
+section 3.1.4.4. The Id attribute of the IdOfFolderToShare element has been shortened for 
+readability. 
+
+ <q:Envelope xmlns:ext="http://schemas.microsoft.com/exchange/services/2006/types"  
+   xmlns:exm="http://schemas.microsoft.com/exchange/services/2006/messages"  
+   xmlns:q="http://schemas.xmlsoap.org/soap/envelope/"> 
+  <q:Header> 
+    <ext:RequestServerVersion Version="Exchange2010"></ext:RequestServerVersion> 
+  </q:Header> 
+  <q:Body> 
+    <exm:GetSharingMetadata> 
+      <exm:IdOfFolderToShare Id="AAMkADc1YjI="/> 
+      <exm:SenderSmtpAddress>user1@contoso.com</exm:SenderSmtpAddress> 
+      <exm:Recipients> 
+        <ext:SmtpAddress>user2@contoso.com</ext:SmtpAddress> 
+      </exm:Recipients> 
+    </exm:GetSharingMetadata> 
+  </q:Body> 
+ </q:Envelope> 
+ 
+
+4.2 GetSharingMetadata Response 
+
+The following XML example is the response from the GetSharingMetadata operation, as described in 
+section 3.1.4.4. The contents of the KeyIdentifier, CypherValue, and CypherData elements has 
+been shortened for readability. 
+
+ <s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"> 
+  <s:Header> 
+    <h:ServerVersionInfo MajorVersion="14" MinorVersion="1" MajorBuildNumber="225" 
+MinorBuildNumber="45" Version="Exchange2010_SP1" 
+xmlns:h="http://schemas.microsoft.com/exchange/services/2006/types" 
+xmlns="http://schemas.microsoft.com/exchange/services/2006/types" 
+xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" 
+xmlns:xsd="http://www.w3.org/2001/XMLSchema"/> 
+  </s:Header> 
+  <s:Body xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" 
+xmlns:xsd="http://www.w3.org/2001/XMLSchema"> 
+    <GetSharingMetadataResponse ResponseClass="Success" 
+xmlns="http://schemas.microsoft.com/exchange/services/2006/messages"> 
+      <ResponseCode>NoError</ResponseCode> 
+      <EncryptedSharedFolderDataCollection> 
+        <EncryptedSharedFolderData 
+xmlns="http://schemas.microsoft.com/exchange/services/2006/types"> 
+          <Token> 
+            <EncryptedData Id="Assertion0" Type="http://www.w3.org/2001/04/xmlenc#Element" 
+xmlns="http://www.w3.org/2001/04/xmlenc#"> 
+              <EncryptionMethod Algorithm="http://www.w3.org/2001/04/xmlenc#tripledes-
+cbc"></EncryptionMethod> 
+              <ds:KeyInfo xmlns:ds="http://www.w3.org/2000/09/xmldsig#"> 
+                <EncryptedKey> 
+                  <EncryptionMethod Algorithm="http://www.w3.org/2001/04/xmlenc#rsa-oaep-
+mgf1p"></EncryptionMethod> 
+                  <ds:KeyInfo Id="keyinfo"> 
+                    <wsse:SecurityTokenReference xmlns:wsse="http://docs.oasis-
+open.org/wss/2004/01/oasis-200401-wss-wssecurity-secext-1.0.xsd"> 
+                      <wsse:KeyIdentifier  
+                         EncodingType="http://docs.oasis- 
+
+31 / 44 
+
+[MS-OXWSMSHR] - v20250520 
+Folder Sharing Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+                                       open.org/wss/2004/01/oasis-200401-wss-soap- 
+                                       message-security-1.0#Base64Binary"  
+                         ValueType="http://docs.oasis-open.org/wss/2004/01/oasis- 
+                                    200401-wss-x509-token-profile-                          
+                                    1.0#X509SubjectKeyIdentifier"> 
+                          nR+jNSYQR9eSkgOpEog/xQ==</wsse:KeyIdentifier> 
+                    </wsse:SecurityTokenReference> 
+                  </ds:KeyInfo> 
+                  <CipherData> 
+                    <CipherValue>arNGOQ+nYwa/…==</CipherValue> 
+                  </CipherData> 
+                </EncryptedKey> 
+              </ds:KeyInfo> 
+              <CipherData> 
+                <CipherValue>KhP6tqH4…=</CipherValue> 
+              </CipherData> 
+            </EncryptedData> 
+          </Token> 
+          <Data> 
+            <EncryptedData Type="http://www.w3.org/2001/04/xmlenc#Element" 
+                           xmlns="http://www.w3.org/2001/04/xmlenc#"> 
+              <EncryptionMethod  
+                Algorithm="http://www.w3.org/2001/04/xmlenc#aes256-cbc"/> 
+              <KeyInfo xmlns="http://www.w3.org/2000/09/xmldsig#"> 
+                <EncryptedKey xmlns="http://www.w3.org/2001/04/xmlenc#"> 
+                  <EncryptionMethod  
+                    Algorithm="http://www.w3.org/2001/04/xmlenc#kw-tripledes"/> 
+                  <KeyInfo xmlns="http://www.w3.org/2000/09/xmldsig#"> 
+                    <KeyName>key</KeyName> 
+                  </KeyInfo> 
+                  <CipherData> 
+                    <CipherValue> 
+                     SqPZz6UU… 
+                    </CipherValue> 
+                  </CipherData> 
+                </EncryptedKey> 
+              </KeyInfo> 
+              <CipherData> 
+                <CipherValue>+QXPTi49k…=</CipherValue> 
+              </CipherData> 
+            </EncryptedData> 
+          </Data> 
+        </EncryptedSharedFolderData> 
+      </EncryptedSharedFolderDataCollection> 
+      <InvalidRecipients/> 
+    </GetSharingMetadataResponse> 
+  </s:Body> 
+ </s:Envelope> 
+
+32 / 44 
+
+[MS-OXWSMSHR] - v20250520 
+Folder Sharing Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+5 Security 
+
+5.1 Security Considerations for Implementers 
+
+This protocol does not use any additional security mechanisms. 
+
+5.2 Index of Security Parameters 
+
+None. 
+
+33 / 44 
+
+[MS-OXWSMSHR] - v20250520 
+Folder Sharing Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+6 Appendix A: Full WSDL 
+
+The following table lists the XML files that are required to implement the functionality that is specified 
+in this document. The contents of each file are included in this section. 
+
+File name Description Section 
+
+MS-OXWSMSHR.wsdl Contains the WSDL for the implementation of this 6 
+protocol. 
+
+MS-OXWSMSHR- Contains the XML schema message definitions that are 7.1 
+messages.xsd used in this protocol. 
+
+MS-OXWSMSHR- Contains the XML schema type definitions that are used in 7.2 
+types.xsd this protocol. 
+
+MS-OXWSCORE- Contains XML schema message definitions that are [MS-OXWSCORE] 
+messages.xsd referred to by this protocol. section 7.1 
+
+MS-OXWSFOLD-types.xsd Contains XML schema type definitions that are referred to [MS-OXWSFOLD] 
+by this protocol. section 7.2 
+
+These files have to be placed in a common folder in order for the WSDL to validate and operate. Also, 
+any schema files that are referenced in XML include or import elements by the MS-OXWSMSHR-
+types.xsd or MS-OXWSMSHR-messages.xsd schemas have to be placed in the common folder.  
+
+This section contains the contents of the MS-OXWSMSHR.wsdl file. 
+
+ <?xml version="1.0" encoding="utf-8"?> 
+ <wsdl:definitions xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/" 
+xmlns:tns="http://schemas.microsoft.com/exchange/services/2006/messages" 
+xmlns:s="http://www.w3.org/2001/XMLSchema" xmlns:wsdl="http://schemas.xmlsoap.org/wsdl/" 
+xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types" 
+targetNamespace="http://schemas.microsoft.com/exchange/services/2006/messages"> 
+  <wsdl:types> 
+    <xs:schema id="messages" elementFormDefault="qualified" version="Exchange2015" 
+xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages" 
+xmlns:tns="http://schemas.microsoft.com/exchange/services/2006/messages" 
+xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types" 
+xmlns:xs="http://www.w3.org/2001/XMLSchema" 
+targetNamespace="http://schemas.microsoft.com/exchange/services/2006/messages" 
+xmlns="http://schemas.microsoft.com/exchange/services/2006/messages"> 
+ <!-- 
+      <xs:import namespace="http://schemas.microsoft.com/exchange/services/2006/types" 
+schemaLocation="MS-OXWSMSHR-types.xsd"/>--> 
+      <!-- Add global elements and types from messages.xsd --> 
+        <xs:include schemaLocation="MS-OXWSMSHR-messages.xsd"/> 
+        <xs:include schemaLocation="MS-OXWSCORE-messages.xsd"/> 
+        <xs:include schemaLocation="MS-OXWSFOLD-messages.xsd"/> 
+       
+    </xs:schema> 
+    <xs:schema id="types" elementFormDefault="qualified" version="Exchange2015" 
+xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types" 
+targetNamespace="http://schemas.microsoft.com/exchange/services/2006/types" 
+xmlns="http://schemas.microsoft.com/exchange/services/2006/types" 
+xmlns:tns="http://schemas.microsoft.com/exchange/services/2006/types" 
+xmlns:xs="http://www.w3.org/2001/XMLSchema"> 
+      <xs:import namespace="http://www.w3.org/XML/1998/namespace"/> 
+      <!-- Add global elements and types from types.xsd --> 
+    </xs:schema> 
+  </wsdl:types> 
+  <wsdl:portType name="ExchangeServicePortType"> 
+    <wsdl:operation name="GetSharingMetadata"> 
+      <wsdl:input message="tns:GetSharingMetadataSoapIn"/> 
+
+34 / 44 
+
+[MS-OXWSMSHR] - v20250520 
+Folder Sharing Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+      <wsdl:output message="tns:GetSharingMetadataSoapOut"/> 
+    </wsdl:operation> 
+    <wsdl:operation name="RefreshSharingFolder"> 
+      <wsdl:input message="tns:RefreshSharingFolderSoapIn"/> 
+      <wsdl:output message="tns:RefreshSharingFolderSoapOut"/> 
+    </wsdl:operation> 
+    <wsdl:operation name="GetSharingFolder"> 
+      <wsdl:input message="tns:GetSharingFolderSoapIn"/> 
+      <wsdl:output message="tns:GetSharingFolderSoapOut"/> 
+    </wsdl:operation> 
+    <wsdl:operation name="CreateItem"> 
+      <wsdl:input message="tns:CreateItemSoapIn"/> 
+      <wsdl:output message="tns:CreateItemSoapOut"/> 
+    </wsdl:operation> 
+    <wsdl:operation name="UpdateFolder"> 
+      <wsdl:input message="tns:UpdateFolderSoapIn"/> 
+      <wsdl:output message="tns:UpdateFolderSoapOut"/> 
+    </wsdl:operation> 
+  </wsdl:portType> 
+  <wsdl:binding name="ExchangeServiceBinding" type="tns:ExchangeServicePortType"> 
+    <wsdl:documentation> 
+      <wsi:Claim conformsTo="http://ws-i.org/profiles/basic/1.0" xmlns:wsi="http://ws-
+i.org/schemas/conformanceClaim/"/> 
+    </wsdl:documentation> 
+    <soap:binding style="document" transport="http://schemas.xmlsoap.org/soap/http"/> 
+    <wsdl:operation name="GetSharingMetadata"> 
+      <soap:operation 
+soapAction="http://schemas.microsoft.com/exchange/services/2006/messages/GetSharingMetadata"/
+> 
+      <wsdl:input> 
+        <soap:body parts="request" use="literal"/> 
+        <soap:header message="tns:GetSharingMetadataSoapIn" part="RequestVersion" 
+use="literal"/> 
+      </wsdl:input> 
+      <wsdl:output> 
+        <soap:body parts="GetSharingMetadataResult" use="literal"/> 
+        <soap:header message="tns:GetSharingMetadataSoapOut" part="ServerVersion" 
+use="literal"/> 
+      </wsdl:output> 
+    </wsdl:operation> 
+    <!-- RefreshSharingFolder --> 
+    <wsdl:operation name="RefreshSharingFolder"> 
+      <soap:operation 
+soapAction="http://schemas.microsoft.com/exchange/services/2006/messages/RefreshSharingFolder
+"/> 
+      <wsdl:input> 
+        <soap:body parts="request" use="literal"/> 
+        <soap:header message="tns:RefreshSharingFolderSoapIn" part="RequestVersion" 
+use="literal"/> 
+      </wsdl:input> 
+      <wsdl:output> 
+        <soap:body parts="RefreshSharingFolderResult" use="literal"/> 
+        <soap:header message="tns:RefreshSharingFolderSoapOut" part="ServerVersion" 
+use="literal"/> 
+      </wsdl:output> 
+    </wsdl:operation> 
+    <!-- GetSharingFolder --> 
+    <wsdl:operation name="GetSharingFolder"> 
+      <soap:operation 
+soapAction="http://schemas.microsoft.com/exchange/services/2006/messages/GetSharingFolder"/> 
+      <wsdl:input> 
+        <soap:body parts="request" use="literal"/> 
+        <soap:header message="tns:GetSharingFolderSoapIn" part="RequestVersion" 
+use="literal"/> 
+      </wsdl:input> 
+      <wsdl:output> 
+        <soap:body parts="GetSharingFolderResult" use="literal"/> 
+        <soap:header message="tns:GetSharingFolderSoapOut" part="ServerVersion" 
+use="literal"/> 
+
+35 / 44 
+
+[MS-OXWSMSHR] - v20250520 
+Folder Sharing Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+      </wsdl:output> 
+    </wsdl:operation> 
+    <wsdl:operation name="CreateItem"> 
+      <soap:operation 
+soapAction="http://schemas.microsoft.com/exchange/services/2006/messages/CreateItem"/> 
+      <wsdl:input> 
+        <soap:header message="tns:CreateItemSoapIn" part="Impersonation" use="literal"/> 
+        <soap:header message="tns:CreateItemSoapIn" part="MailboxCulture" use="literal"/> 
+        <soap:header message="tns:CreateItemSoapIn" part="RequestVersion" use="literal"/> 
+        <soap:header message="tns:CreateItemSoapIn" part="TimeZoneContext" use="literal"/> 
+        <soap:body parts="request" use="literal"/> 
+      </wsdl:input> 
+      <wsdl:output> 
+        <soap:body parts="CreateItemResult" use="literal"/> 
+        <soap:header message="tns:CreateItemSoapOut" part="ServerVersion" use="literal"/> 
+      </wsdl:output> 
+    </wsdl:operation> 
+    <wsdl:operation name="UpdateFolder"> 
+      <soap:operation 
+soapAction="http://schemas.microsoft.com/exchange/services/2006/messages/UpdateFolder"/> 
+      <wsdl:input> 
+        <soap:header message="tns:UpdateFolderSoapIn" part="Impersonation" use="literal"/> 
+        <soap:header message="tns:UpdateFolderSoapIn" part="MailboxCulture" use="literal"/> 
+        <soap:header message="tns:UpdateFolderSoapIn" part="RequestVersion" use="literal"/> 
+        <soap:header message="tns:UpdateFolderSoapIn" part="TimeZoneContext" use="literal"/> 
+        <soap:body parts="request" use="literal"/> 
+      </wsdl:input> 
+      <wsdl:output> 
+        <soap:body parts="UpdateFolderResult" use="literal"/> 
+        <soap:header message="tns:UpdateFolderSoapOut" part="ServerVersion" use="literal"/> 
+      </wsdl:output> 
+    </wsdl:operation> 
+  </wsdl:binding> 
+  <wsdl:message name="UpdateFolderSoapIn"> 
+    <wsdl:part name="request" element="tns:UpdateFolder"/> 
+    <wsdl:part name="Impersonation" element="t:ExchangeImpersonation"/> 
+    <wsdl:part name="MailboxCulture" element="t:MailboxCulture"/> 
+    <wsdl:part name="RequestVersion" element="t:RequestServerVersion"/> 
+    <wsdl:part name="TimeZoneContext" element="t:TimeZoneContext"/> 
+  </wsdl:message> 
+  <wsdl:message name="UpdateFolderSoapOut"> 
+    <wsdl:part name="UpdateFolderResult" element="tns:UpdateFolderResponse"/> 
+    <wsdl:part name="ServerVersion" element="t:ServerVersionInfo"/> 
+  </wsdl:message> 
+  <wsdl:message name="CreateItemSoapIn"> 
+    <wsdl:part name="request" element="tns:CreateItem"/> 
+    <wsdl:part name="Impersonation" element="t:ExchangeImpersonation"/> 
+    <wsdl:part name="MailboxCulture" element="t:MailboxCulture"/> 
+    <wsdl:part name="RequestVersion" element="t:RequestServerVersion"/> 
+    <wsdl:part name="TimeZoneContext" element="t:TimeZoneContext"/> 
+  </wsdl:message> 
+  <wsdl:message name="CreateItemSoapOut"> 
+    <wsdl:part name="CreateItemResult" element="tns:CreateItemResponse"/> 
+    <wsdl:part name="ServerVersion" element="t:ServerVersionInfo"/> 
+  </wsdl:message> 
+  <wsdl:message name="GetSharingMetadataSoapIn"> 
+    <wsdl:part name="request" element="tns:GetSharingMetadata"/> 
+    <wsdl:part name="RequestVersion" element="t:RequestServerVersion"/> 
+  </wsdl:message> 
+  <wsdl:message name="GetSharingMetadataSoapOut"> 
+    <wsdl:part name="GetSharingMetadataResult" element="tns:GetSharingMetadataResponse"/> 
+    <wsdl:part name="ServerVersion" element="t:ServerVersionInfo"/> 
+  </wsdl:message> 
+  <wsdl:message name="RefreshSharingFolderSoapIn"> 
+    <wsdl:part name="request" element="tns:RefreshSharingFolder"/> 
+    <wsdl:part name="RequestVersion" element="t:RequestServerVersion"/> 
+  </wsdl:message> 
+  <wsdl:message name="RefreshSharingFolderSoapOut"> 
+    <wsdl:part name="RefreshSharingFolderResult" element="tns:RefreshSharingFolderResponse"/> 
+
+36 / 44 
+
+[MS-OXWSMSHR] - v20250520 
+Folder Sharing Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+    <wsdl:part name="ServerVersion" element="t:ServerVersionInfo"/> 
+  </wsdl:message> 
+  <wsdl:message name="GetSharingFolderSoapIn"> 
+    <wsdl:part name="request" element="tns:GetSharingFolder"/> 
+    <wsdl:part name="RequestVersion" element="t:RequestServerVersion"/> 
+  </wsdl:message> 
+  <wsdl:message name="GetSharingFolderSoapOut"> 
+    <wsdl:part name="GetSharingFolderResult" element="tns:GetSharingFolderResponse"/> 
+    <wsdl:part name="ServerVersion" element="t:ServerVersionInfo"/> 
+  </wsdl:message> 
+ </wsdl:definitions> 
+
+37 / 44 
+
+[MS-OXWSMSHR] - v20250520 
+Folder Sharing Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+7 Appendix B: Full XML Schema 
+
+For ease of implementation, the following sections provide the full XML schema for this protocol. 
+
+Schema name Prefix Section 
+
+Messages schema m: 7.1 
+
+Types schema t: 7.2 
+
+These files have to be placed in a common folder in order for the WSDL to validate and operate. Also, 
+any schema files that are included in or imported into the MS-OXWSMSHR-types.xsd or MS-
+OXWSMSHR-messages.xsd schemas have to be placed in the common folder along with the files listed 
+in the table. 
+
+7.1 Messages Schema 
+
+This section contains the contents of the MS-OXWSMSHR-messages.xsd file and information about 
+additional files that this schema file requires to operate correctly. 
+
+MS-OXWSMSHR-messages.xsd references the files listed in the following table. For the schema file to 
+operate correctly, these files have to be in the folder that contains the WSDL, types schema, and 
+messages schema files for this protocol. 
+
+File name Defined in 
+
+MS-OXWSCDATA-messages.xsd [MS-OXWSCDATA] section 7.1 
+
+MS-OXWSMSHR-types.xsd 7.2 
+
+ <?xml version="1.0" encoding="utf-8"?> 
+ <xs:schema xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages" 
+xmlns:tns="http://schemas.microsoft.com/exchange/services/2006/messages" 
+xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types" 
+xmlns:xs="http://www.w3.org/2001/XMLSchema" 
+targetNamespace="http://schemas.microsoft.com/exchange/services/2006/messages" 
+elementFormDefault="qualified" version="Exchange2015" id="messages"> 
+ 
+  <xs:import namespace="http://schemas.microsoft.com/exchange/services/2006/types"  
+schemaLocation="MS-OXWSMSHR-types.xsd"/> 
+ <xs:include schemaLocation="MS-OXWSCDATA-messages.xsd"/>   
+   
+  <xs:complexType name="GetSharingFolderType"> 
+    <xs:complexContent> 
+      <xs:extension base="m:BaseRequestType"> 
+        <xs:sequence> 
+          <xs:element name="SmtpAddress" type="t:NonEmptyStringType"/> 
+          <xs:element name="DataType" type="t:SharingDataType" minOccurs="0"/> 
+          <xs:element name="SharedFolderId" type="t:NonEmptyStringType" minOccurs="0"/> 
+        </xs:sequence> 
+      </xs:extension> 
+    </xs:complexContent> 
+  </xs:complexType> 
+  <xs:element name="GetSharingFolder" type="m:GetSharingFolderType"/> 
+  <xs:complexType name="GetSharingFolderResponseMessageType"> 
+    <xs:complexContent> 
+      <xs:extension base="m:ResponseMessageType"> 
+        <xs:sequence minOccurs="0"> 
+          <xs:element name="SharingFolderId" type="t:FolderIdType"/> 
+        </xs:sequence> 
+      </xs:extension> 
+    </xs:complexContent> 
+  </xs:complexType> 
+
+38 / 44 
+
+[MS-OXWSMSHR] - v20250520 
+Folder Sharing Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+  <xs:element name="GetSharingFolderResponse" type="m:GetSharingFolderResponseMessageType"/> 
+  <xs:complexType name="GetSharingMetadataType"> 
+    <xs:complexContent> 
+      <xs:extension base="m:BaseRequestType"> 
+        <xs:sequence> 
+          <xs:element name="IdOfFolderToShare" type="t:FolderIdType"/> 
+          <xs:element name="SenderSmtpAddress" type="t:NonEmptyStringType"/> 
+          <xs:element name="Recipients" type="t:ArrayOfSmtpAddressType"/> 
+        </xs:sequence> 
+      </xs:extension> 
+    </xs:complexContent> 
+  </xs:complexType> 
+  <xs:element name="GetSharingMetadata" type="m:GetSharingMetadataType"/> 
+  <xs:complexType name="GetSharingMetadataResponseMessageType"> 
+    <xs:complexContent> 
+      <xs:extension base="m:ResponseMessageType"> 
+        <xs:sequence minOccurs="0"> 
+          <xs:element name="EncryptedSharedFolderDataCollection" 
+type="t:ArrayOfEncryptedSharedFolderDataType"/> 
+          <xs:element name="InvalidRecipients" type="t:ArrayOfInvalidRecipientsType"/> 
+        </xs:sequence> 
+      </xs:extension> 
+    </xs:complexContent> 
+  </xs:complexType> 
+  <xs:element name="GetSharingMetadataResponse" 
+type="m:GetSharingMetadataResponseMessageType"/> 
+  <xs:complexType name="RefreshSharingFolderType"> 
+    <xs:complexContent> 
+      <xs:extension base="m:BaseRequestType"> 
+        <xs:sequence> 
+          <xs:element name="SharingFolderId" type="t:FolderIdType"/> 
+        </xs:sequence> 
+      </xs:extension> 
+    </xs:complexContent> 
+  </xs:complexType> 
+  <xs:element name="RefreshSharingFolder" type="m:RefreshSharingFolderType"/> 
+  <xs:complexType name="RefreshSharingFolderResponseMessageType"> 
+    <xs:complexContent> 
+      <xs:extension base="m:ResponseMessageType"/> 
+    </xs:complexContent> 
+  </xs:complexType> 
+  <xs:element name="RefreshSharingFolderResponse" 
+type="m:RefreshSharingFolderResponseMessageType"/> 
+ </xs:schema> 
+
+7.2 Types Schema 
+
+This section contains the contents of the MS-OXWSMSHR-types.xsd file and information about 
+additional files that this schema file requires to operate correctly. 
+
+MS-OXWSMSHR-types.xsd references the file listed in the following table. For the schema file to 
+operate correctly, this file has to be present in the folder that contains the WSDL, types schema, and 
+messages schema files for this protocol. 
+
+File name Defining specification 
+
+MS-OXWSCDATA-types.xsd [MS-OXWSCDATA] section 7.2 
+
+ <?xml version="1.0" encoding="utf-8"?> 
+ <xs:schema xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types" 
+xmlns:tns="http://schemas.microsoft.com/exchange/services/2006/types" 
+xmlns:xs="http://www.w3.org/2001/XMLSchema" 
+targetNamespace="http://schemas.microsoft.com/exchange/services/2006/types" 
+elementFormDefault="qualified" version="Exchange2015" id="types"> 
+  <xs:import namespace="http://www.w3.org/XML/1998/namespace"/> 
+
+39 / 44 
+
+[MS-OXWSMSHR] - v20250520 
+Folder Sharing Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+  <xs:include schemaLocation="MS-OXWSCDATA-types.xsd"/> 
+  <xs:complexType name="ArrayOfSmtpAddressType"> 
+    <xs:choice maxOccurs="unbounded"> 
+      <xs:element name="SmtpAddress" type="t:NonEmptyStringType"/> 
+    </xs:choice> 
+  </xs:complexType> 
+  <xs:complexType name="ArrayOfEncryptedSharedFolderDataType"> 
+    <xs:choice minOccurs="0" maxOccurs="unbounded"> 
+      <xs:element name="EncryptedSharedFolderData" type="t:EncryptedSharedFolderDataType"/> 
+    </xs:choice> 
+  </xs:complexType> 
+  <xs:complexType name="EncryptedSharedFolderDataType"> 
+    <xs:sequence> 
+      <xs:element name="Token" type="t:EncryptedDataContainerType"/> 
+      <xs:element name="Data" type="t:EncryptedDataContainerType"/> 
+    </xs:sequence> 
+  </xs:complexType> 
+  <xs:complexType name="EncryptedDataContainerType"> 
+    <xs:sequence> 
+      <xs:any namespace="##other" processContents="skip"/> 
+    </xs:sequence> 
+  </xs:complexType> 
+  <xs:complexType name="ArrayOfInvalidRecipientsType"> 
+    <xs:choice minOccurs="0" maxOccurs="unbounded"> 
+      <xs:element name="InvalidRecipient" type="t:InvalidRecipientType"/> 
+    </xs:choice> 
+  </xs:complexType> 
+  <xs:complexType name="InvalidRecipientType"> 
+    <xs:sequence> 
+      <xs:element name="SmtpAddress" type="t:NonEmptyStringType"/> 
+      <xs:element name="ResponseCode" type="t:InvalidRecipientResponseCodeType"/> 
+      <xs:element name="MessageText" type="xs:string" minOccurs="0"/> 
+    </xs:sequence> 
+  </xs:complexType> 
+  <xs:simpleType name="InvalidRecipientResponseCodeType"> 
+    <xs:restriction base="xs:string"> 
+      <xs:enumeration value="RecipientOrganizationNotFederated"/> 
+      <xs:enumeration value="CannotObtainTokenFromSTS"/> 
+      <xs:enumeration value="SystemPolicyBlocksSharingWithThisRecipient"/> 
+      <xs:enumeration value="RecipientOrganizationFederatedWithUnknownTokenIssuer"/> 
+    </xs:restriction> 
+  </xs:simpleType> 
+  <xs:element name="SharingSecurity" type="t:EncryptedDataContainerType"/> 
+  <xs:simpleType name="SharingDataType"> 
+    <xs:restriction base="xs:string"> 
+      <xs:enumeration value="Calendar"/> 
+      <xs:enumeration value="Contacts"/> 
+    </xs:restriction> 
+  </xs:simpleType> 
+ </xs:schema> 
+
+40 / 44 
+
+[MS-OXWSMSHR] - v20250520 
+Folder Sharing Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+8 Appendix C: Product Behavior 
+
+The information in this specification is applicable to the following Microsoft products or supplemental 
+software. References to product versions include updates to those products. 
+
+ Microsoft Exchange Server 2010 
+
+ Microsoft Exchange Server 2013 
+
+ Microsoft Exchange Server 2016 
+
+ Microsoft Outlook 2010 
+
+ Microsoft Outlook 2013 
+
+ Microsoft Outlook 2016 
+
+ Microsoft Exchange Server 2019 
+
+ Microsoft Outlook 2019 
+
+ Microsoft Outlook 2021 
+
+ Microsoft Outlook LTSC 2024  
+
+ Microsoft Exchange Server Subscription Edition 
+
+Exceptions, if any, are noted in this section. If an update version, service pack or Knowledge Base 
+(KB) number appears with a product name, the behavior changed in that update. The new behavior 
+also applies to subsequent updates unless otherwise specified. If a product edition appears with the 
+product version, behavior is different in that product edition. 
+
+Unless otherwise specified, any statement of optional behavior in this specification that is prescribed 
+using the terms "SHOULD" or "SHOULD NOT" implies product behavior in accordance with the 
+SHOULD or SHOULD NOT prescription. Unless otherwise specified, the term "MAY" implies that the 
+product does not follow the prescription. 
+
+41 / 44 
+
+[MS-OXWSMSHR] - v20250520 
+Folder Sharing Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+9 Change Tracking 
+
+This section identifies changes that were made to this document since the last release. Changes are 
+classified as Major, Minor, or None.  
+
+The revision class Major means that the technical content in the document was significantly revised. 
+Major changes affect protocol interoperability or implementation. Examples of major changes are: 
+
+ A document revision that incorporates changes to interoperability requirements. 
+ A document revision that captures changes to protocol functionality. 
+
+The revision class Minor means that the meaning of the technical content was clarified. Minor changes 
+do not affect protocol interoperability or implementation. Examples of minor changes are updates to 
+clarify ambiguity at the sentence, paragraph, or table level. 
+
+The revision class None means that no new technical changes were introduced. Minor editorial and 
+formatting changes may have been made, but the relevant technical content is identical to the last 
+released version. 
+
+The changes made to this document are listed in the following table. For more information, please 
+contact dochelp@microsoft.com. 
+
+Section Description Revision class 
+
+8 Appendix C: Product Behavior Updated list of supported products. Major 
+
+42 / 44 
+
+[MS-OXWSMSHR] - v20250520 
+Folder Sharing Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+10 Index
+A Initialization 
+    server 19 
+Abstract data model Introduction 6 
+   server 18  
+Applicability 9 L 
+Attribute groups 17  
+Attributes 16 Local events 
+    server 30 
+C  
+ M 
+Capability negotiation 9  
+Change tracking 42 m:GetSharingFolderResponseMessageType Complex 
+Complex types 10 Type complex type 11 
+   m:GetSharingFolderResponseMessageType m:GetSharingMetadataResponseMessageType 
+
+Complex Type 11 Complex Type complex type 12 
+   m:GetSharingMetadataResponseMessageType m:RefreshSharingFolderResponseMessageType 
+
+Complex Type 12 Complex Type complex type 12 
+   m:RefreshSharingFolderResponseMessageType Message processing 
+
+Complex Type 12    server 19 
+   t:ArrayOfEncryptedSharedFolderDataType Complex Messages 
+
+Type 13    attribute groups 17 
+   t:ArrayOfInvalidRecipientsType Complex Type 13    attributes 16 
+   t:EncryptedDataContainerType Complex Type 14    complex types 10 
+   t:EncryptedSharedFolderDataType Complex Type    elements 10 
+
+14    enumerated 10 
+   t:InvalidRecipientType Complex Type 14    groups 17 
+    m:GetSharingFolderResponseMessageType 
+D Complex Type complex type 11 
+    m:GetSharingMetadataResponseMessageType 
+Data model - abstract Complex Type complex type 12 
+   server 18    m:RefreshSharingFolderResponseMessageType 
+ Complex Type complex type 12 
+
+E    namespaces 10 
+
+    simple types 15 
+
+Events    syntax 10 
+
+   local - server 30    t:ArrayOfEncryptedSharedFolderDataType Complex 
+
+   timer - server 30 Type complex type 13 
+
+Examples    t:ArrayOfInvalidRecipientsType Complex Type 
+
+   GetSharingMetadata request 31 complex type 13 
+
+   GetSharingMetadata response 31    t:EncryptedDataContainerType Complex Type 
+
+ complex type 14 
+
+F    t:EncryptedSharedFolderDataType Complex Type 
+
+ complex type 14 
+
+Fields - vendor-extensible 9    t:InvalidRecipientResponseCodeType Simple Type 
+
+Full WSDL 34 simple type 16 
+
+Full XML schema 38    t:InvalidRecipientType Complex Type complex type 
+
+   Messages Schema 38 14 
+
+   Types Schema 39    t:SharingDataType Simple Type simple type 15 
+
+    transport 10 
+ 
+
+G 
+N 
+
+ 
+GetSharingMetadata request example 31  
+
+GetSharingMetadata response example 31 Namespaces 10 
+
+Glossary 6 Normative references 7 
+
+Groups 17  
+
+ O 
+
+I  
+
+ Operations 
+
+Implementer - security considerations 33    CreateItem Operation 19 
+
+Index of security parameters 33    GetFolder Operation 20 
+
+Informative references 8    GetSharingFolder Operation 20 
+
+43 / 44 
+
+[MS-OXWSMSHR] - v20250520 
+Folder Sharing Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+   GetSharingMetadata Operation 23 Timer events 
+   RefreshSharingFolder Operation 27    server 30 
+   UpdateFolder Operation 30 Timers 
+Overview (synopsis) 8    server 19 
+ Tracking changes 42 
+P Transport 10 
+ Types 
+Parameters - security index 33    complex 10 
+Preconditions 9    simple 15 
+Prerequisites 9  
+Product behavior 41 V 
+Protocol Details  
+   overview 18 Vendor-extensible fields 9 
+ Versioning 9 
+R  
+ W 
+References 7  
+   informative 8 WSDL 34 
+   normative 7  
+Relationship to other protocols 8 X 
+  
+S XML schema 38 
+    Messages Schema 38 
+Security    Types Schema 39 
+   implementer considerations 33 
+   parameter index 33  
+
+Sequencing rules 
+   server 19 
+Server 
+   abstract data model 18 
+   CreateItem Operation operation 19 
+   GetFolder Operation operation 20 
+   GetSharingFolder Operation operation 20 
+   GetSharingMetadata Operation operation 23 
+   initialization 19 
+   local events 30 
+   message processing 19 
+   RefreshSharingFolder Operation operation 27 
+   sequencing rules 19 
+   timer events 30 
+   timers 19 
+   UpdateFolder Operation operation 30 
+Simple types 15 
+   t:InvalidRecipientResponseCodeType Simple Type 
+
+16 
+   t:SharingDataType Simple Type 15 
+Standards assignments 9 
+Syntax 
+   messages - overview 10 
+ 
+T 
+ 
+t:ArrayOfEncryptedSharedFolderDataType Complex 
+
+Type complex type 13 
+t:ArrayOfInvalidRecipientsType Complex Type 
+
+complex type 13 
+t:EncryptedDataContainerType Complex Type 
+
+complex type 14 
+t:EncryptedSharedFolderDataType Complex Type 
+
+complex type 14 
+t:InvalidRecipientResponseCodeType Simple Type 
+
+simple type 16 
+t:InvalidRecipientType Complex Type complex type 
+
+14 
+t:SharingDataType Simple Type simple type 15 
+
+44 / 44 
+
+[MS-OXWSMSHR] - v20250520 
+Folder Sharing Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025

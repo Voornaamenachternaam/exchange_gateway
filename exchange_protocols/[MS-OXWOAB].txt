@@ -1,0 +1,1002 @@
+﻿[MS-OXWOAB]:  
+
+Offline Address Book (OAB) Retrieval File Format 
+
+ 
+
+Intellectual Property Rights Notice for Open Specifications Documentation 
+
+ Technical Documentation. Microsoft publishes Open Specifications documentation (“this 
+documentation”) for protocols, file formats, data portability, computer languages, and standards 
+support. Additionally, overview documents cover inter-protocol relationships and interactions.  
+
+ Copyrights. This documentation is covered by Microsoft copyrights. Regardless of any other 
+terms that are contained in the terms of use for the Microsoft website that hosts this 
+documentation, you can make copies of it in order to develop implementations of the technologies 
+that are described in this documentation and can distribute portions of it in your implementations 
+that use these technologies or in your documentation as necessary to properly document the 
+implementation. You can also distribute in your implementation, with or without modification, any 
+schemas, IDLs, or code samples that are included in the documentation. This permission also 
+applies to any documents that are referenced in the Open Specifications documentation.  
+
+ No Trade Secrets. Microsoft does not claim any trade secret rights in this documentation.  
+ Patents. Microsoft has patents that might cover your implementations of the technologies 
+
+described in the Open Specifications documentation. Neither this notice nor Microsoft's delivery of 
+this documentation grants any licenses under those patents or any other Microsoft patents. 
+However, a given Open Specifications document might be covered by the Microsoft Open 
+Specifications Promise or the Microsoft Community Promise. If you would prefer a written license, 
+or if the technologies described in this documentation are not covered by the Open Specifications 
+Promise or Community Promise, as applicable, patent licenses are available by contacting 
+iplg@microsoft.com.  
+
+ License Programs. To see all of the protocols in scope under a specific license program and the 
+associated patents, visit the Patent Map.  
+
+ Trademarks. The names of companies and products contained in this documentation might be 
+covered by trademarks or similar intellectual property rights. This notice does not grant any 
+licenses under those rights. For a list of Microsoft trademarks, visit 
+www.microsoft.com/trademarks.  
+
+ Fictitious Names. The example companies, organizations, products, domain names, email 
+addresses, logos, people, places, and events that are depicted in this documentation are fictitious. 
+No association with any real company, organization, product, domain name, email address, logo, 
+person, place, or event is intended or should be inferred. 
+
+Reservation of Rights. All other rights are reserved, and this notice does not grant any rights other 
+than as specifically described above, whether by implication, estoppel, or otherwise.  
+
+Tools. The Open Specifications documentation does not require the use of Microsoft programming 
+tools or programming environments in order for you to develop an implementation. If you have access 
+to Microsoft programming tools and environments, you are free to take advantage of them. Certain 
+Open Specifications documents are intended for use in conjunction with publicly available standards 
+specifications and network programming art and, as such, assume that the reader either is familiar 
+with the aforementioned material or has immediate access to it. 
+
+Support. For questions and support, please contact dochelp@microsoft.com.  
+
+1 / 18 
+
+[MS-OXWOAB] - v20250520 
+Offline Address Book (OAB) Retrieval File Format 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Revision Summary 
+
+Revision Revision 
+Date History Class Comments 
+
+4/4/2008 0.1 New Initial Availability. 
+
+6/27/2008 1.0 Major Initial Release. 
+
+8/6/2008 1.01 Minor Revised and edited technical content. 
+
+9/3/2008 1.02 Minor Revised and edited technical content. 
+
+12/3/2008 1.03 Minor Updated IP notice. 
+
+3/4/2009 1.04 Minor Revised and edited technical content. 
+
+4/10/2009 2.0 Major Updated technical content and applicable product releases. 
+
+7/15/2009 3.0 Major Revised and edited for technical content. 
+
+11/4/2009 3.1.0 Minor Updated the technical content. 
+
+2/10/2010 3.2.0 Minor Updated the technical content. 
+
+5/5/2010 3.2.1 Editorial Revised and edited the technical content. 
+
+8/4/2010 3.3 Minor Clarified the meaning of the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+11/3/2010 3.3 None 
+
+technical content. 
+
+3/18/2011 4.0 Major Significantly changed the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+8/5/2011 4.0 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+10/7/2011 4.0 None 
+
+technical content. 
+
+1/20/2012 5.0 Major Significantly changed the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+4/27/2012 5.0 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+7/16/2012 5.0 None 
+
+technical content. 
+
+10/8/2012 5.1 Minor Clarified the meaning of the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+2/11/2013 5.1 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+7/26/2013 5.1 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+11/18/2013 5.1 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+2/10/2014 5.1 None 
+
+technical content. 
+
+4/30/2014 6.0 Major Significantly changed the technical content. 
+
+7/31/2014 6.0 None No changes to the meaning, language, or formatting of the 
+
+2 / 18 
+
+[MS-OXWOAB] - v20250520 
+Offline Address Book (OAB) Retrieval File Format 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Revision Revision 
+Date History Class Comments 
+
+technical content. 
+
+10/30/2014 6.1 Minor Clarified the meaning of the technical content. 
+
+3/16/2015 7.0 Major Significantly changed the technical content. 
+
+5/26/2015 7.1 Minor Clarified the meaning of the technical content. 
+
+9/14/2015 7.2 Minor Clarified the meaning of the technical content. 
+
+6/13/2016 7.3 Minor Clarified the meaning of the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+9/14/2016 7.3 None 
+
+technical content. 
+
+7/24/2018 8.0 Major Significantly changed the technical content. 
+
+10/1/2018 9.0 Major Significantly changed the technical content. 
+
+4/22/2021 10.0 Major Significantly changed the technical content. 
+
+8/17/2021 11.0 Major Significantly changed the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+2/15/2022 11.0 None 
+
+technical content. 
+
+8/20/2024 12.0 Major Significantly changed the technical content. 
+
+5/20/2025 13.0 Major Significantly changed the technical content. 
+
+3 / 18 
+
+[MS-OXWOAB] - v20250520 
+Offline Address Book (OAB) Retrieval File Format 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Table of Contents 
+1 Introduction ............................................................................................................ 5 
+
+1.1 Glossary ........................................................................................................... 5 
+1.2 References ........................................................................................................ 6 
+
+1.2.1 Normative References ................................................................................... 6 
+1.2.2 Informative References ................................................................................. 7 
+
+1.3 Overview .......................................................................................................... 7 
+1.4 Relationship to Other Protocols ............................................................................ 7 
+1.5 Prerequisites/Preconditions ................................................................................. 7 
+1.6 Applicability Statement ....................................................................................... 7 
+1.7 Versioning and Capability Negotiation ................................................................... 7 
+1.8 Vendor-Extensible Fields ..................................................................................... 7 
+1.9 Standards Assignments ....................................................................................... 8 
+
+2 Messages ................................................................................................................. 9 
+2.1 Transport .......................................................................................................... 9 
+2.2 Message Syntax ................................................................................................. 9 
+
+3 Protocol Details ..................................................................................................... 10 
+3.1 Client Details ................................................................................................... 10 
+
+3.1.1 Abstract Data Model .................................................................................... 10 
+3.1.2 Timers ...................................................................................................... 10 
+3.1.3 Initialization ............................................................................................... 10 
+3.1.4 Higher-Layer Triggered Events ..................................................................... 10 
+3.1.5 Message Processing Events and Sequencing Rules .......................................... 10 
+
+3.1.5.1 Manifest File Structure ........................................................................... 10 
+3.1.6 Timer Events .............................................................................................. 13 
+3.1.7 Other Local Events ...................................................................................... 13 
+
+4 Protocol Examples ................................................................................................. 14 
+
+5 Security ................................................................................................................. 15 
+5.1 Security Considerations for Implementers ........................................................... 15 
+5.2 Index of Security Parameters ............................................................................ 15 
+
+6 Appendix A: Product Behavior ............................................................................... 16 
+
+7 Change Tracking .................................................................................................... 17 
+
+8 Index ..................................................................................................................... 18 
+
+ 
+
+4 / 18 
+
+[MS-OXWOAB] - v20250520 
+Offline Address Book (OAB) Retrieval File Format 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+1 Introduction 
+
+The Offline Address Book (OAB) Retrieval File Format enables a client to retrieve an address book from 
+the server for local storage when the server is offline. A server can represent properties of known 
+recipients and make them available in an address book to its clients. When the client cannot reach 
+the server because the server is offline or there is a high network cost to access it, the client can use 
+the OAB retrieval file format to keep a local copy of the address book. The offline address book 
+(OAB) version 4 Web-based retrieval mechanism is a way of delivering an offline address book from 
+the server to the client. 
+
+As part of OAB Web distribution, the server publishes an OAB manifest document. The format of 
+that manifest is detailed in this document. 
+
+Sections 1.5, 1.8, 1.9, 2, and 3 of this specification are normative. All other sections and examples in 
+this specification are informative. 
+
+1.1 Glossary 
+
+This document uses the following terms: 
+
+address book: A collection of Address Book objects, each of which are contained in any number of 
+address lists. 
+
+address list: A collection of distinct Address Book objects. 
+
+Augmented Backus-Naur Form (ABNF): A modified version of Backus-Naur Form (BNF), 
+commonly used by Internet specifications. ABNF notation balances compactness and simplicity 
+with reasonable representational power. ABNF differs from standard BNF in its definitions and 
+uses of naming rules, repetition, alternatives, order-independence, and value ranges. For more 
+information, see [RFC5234]. 
+
+distinguished name (DN): A name that uniquely identifies an object by using the relative 
+distinguished name (RDN) for the object, and the names of container objects and domains that 
+contain the object. The distinguished name (DN) identifies the object and its location in a tree. 
+
+globally unique identifier (GUID): A term used interchangeably with universally unique 
+identifier (UUID) in Microsoft protocol technical documents (TDs). Interchanging the usage of 
+these terms does not imply or require a specific algorithm or mechanism to generate the value. 
+Specifically, the use of this term does not imply or require that the algorithms described in 
+[RFC4122] or [C706] have to be used for generating the GUID. See also universally unique 
+identifier (UUID). 
+
+Hypertext Transfer Protocol (HTTP): An application-level protocol for distributed, collaborative, 
+hypermedia information systems (text, graphic images, sound, video, and other multimedia 
+files) on the World Wide Web. 
+
+Hypertext Transfer Protocol Secure (HTTPS): An extension of HTTP that securely encrypts and 
+decrypts web page requests. In some older protocols, "Hypertext Transfer Protocol over Secure 
+Sockets Layer" is still used (Secure Sockets Layer has been deprecated). For more information, 
+see [SSL3] and [RFC5246]. 
+
+OAB manifest: A file that contains information about data files in a version 4 OAB and has a 
+fixed, well-known name "oab.xml". By discovering the Web Distribution Point (WDP) URI and 
+downloading the manifest, a client application can receive all the information that is necessary 
+to download any published data file in a specific WDP, as necessary. 
+
+OAB web distribution: A distribution mechanism that is specific to offline address book (OAB) 
+version 4 and is used to publish OAB data files and an OAB manifest as a collection of files that a 
+client application can download by using the HTTP/1.1 protocol, as described in [RFC2616]. 
+
+5 / 18 
+
+[MS-OXWOAB] - v20250520 
+Offline Address Book (OAB) Retrieval File Format 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+OAL data sequence number: An integer that is associated with offline address list (OAL) data 
+that represents the generation number of this data. The value of the initial sequence number is 
+"1". Each subsequent data generation process that produces a data set that is not identical to 
+the previous data set is incremented by one. 
+
+offline address book (OAB): A collection of address lists that are stored in a format that a 
+client can save and use locally. 
+
+offline address book (OAB) data file: A file that contains offline address book (OAB) version 
+4–specific data, as described in [MS-OXOAB]. 
+
+offline address list (OAL): A portion of data that is in an offline address book (OAB) and is 
+related to a single address list. 
+
+recipient: An entity that is in an address list, can receive email messages, and contains a set of 
+attributes. Each attribute has a set of associated values. 
+
+Uniform Resource Identifier (URI): A string that identifies a resource. The URI is an addressing 
+mechanism defined in Internet Engineering Task Force (IETF) Uniform Resource Identifier (URI): 
+Generic Syntax [RFC3986]. 
+
+Web Distribution Point (WDP): A location on a server where offline address book (OAB) files 
+are published for web distribution. A client can discover the URI of a WDP by using the 
+Autodiscover Publishing and Lookup Protocol, as described in [MS-OXDSCLI]. 
+
+XML: The Extensible Markup Language, as described in [XML1.0]. 
+
+MAY, SHOULD, MUST, SHOULD NOT, MUST NOT: These terms (in all caps) are used as defined 
+in [RFC2119]. All statements of optional behavior use either MAY, SHOULD, or SHOULD NOT. 
+
+1.2 References 
+
+Links to a document in the Microsoft Open Specifications library point to the correct section in the 
+most recently published version of the referenced document. However, because individual documents 
+in the library are not updated at the same time, the section numbers in the documents may not 
+match. You can confirm the correct section numbering by checking the Errata.   
+
+1.2.1 Normative References 
+
+We conduct frequent surveys of the normative references to assure their continued availability. If you 
+have any issue with finding a normative reference, please contact dochelp@microsoft.com. We will 
+assist you in finding the relevant information.  
+
+[FIPS180] FIPS PUBS, "Secure Hash Standard", FIPS PUB 180-1, April 1995, 
+https://www.niatec.iri.isu.edu/GetFile.aspx?pid=63 
+
+[MS-LCID] Microsoft Corporation, "Windows Language Code Identifier (LCID) Reference". 
+
+[MS-OXDSCLI] Microsoft Corporation, "Autodiscover Publishing and Lookup Protocol". 
+
+[MS-OXOABK] Microsoft Corporation, "Address Book Object Protocol". 
+
+[MS-OXOAB] Microsoft Corporation, "Offline Address Book (OAB) File Format and Schema". 
+
+[RFC2119] Bradner, S., "Key words for use in RFCs to Indicate Requirement Levels", BCP 14, RFC 
+2119, March 1997, https://www.rfc-editor.org/info/rfc2119 
+
+[RFC2616] Fielding, R., Gettys, J., Mogul, J., et al., "Hypertext Transfer Protocol -- HTTP/1.1", RFC 
+2616, June 1999, https://www.rfc-editor.org/info/rfc2616 
+
+6 / 18 
+
+[MS-OXWOAB] - v20250520 
+Offline Address Book (OAB) Retrieval File Format 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+[RFC2818] Rescorla, E., "HTTP Over TLS", RFC 2818, May 2000, https://www.rfc-
+editor.org/info/rfc2818 
+
+[RFC5234] Crocker, D., Ed., and Overell, P., "Augmented BNF for Syntax Specifications: ABNF", STD 
+68, RFC 5234, January 2008, https://www.rfc-editor.org/info/rfc5234 
+
+[XML10] World Wide Web Consortium, "Extensible Markup Language (XML) 1.0 (Third Edition)", 
+February 2004, http://www.w3.org/TR/2004/REC-xml-20040204/ 
+
+1.2.2 Informative References 
+
+[MS-OXPROTO] Microsoft Corporation, "Exchange Server Protocols System Overview". 
+
+1.3 Overview 
+
+Clients use the OAB manifest to identify the current version of data published by the server and build 
+the URIs of data files to download. The format of the OAB manifest is XML, and the manifest contains 
+one entry for each data file in the OAB. The entries are organized hierarchically. 
+
+1.4 Relationship to Other Protocols 
+
+ Clients discover the URI of the WDP by using the Autodiscover Publishing and Lookup Protocol 
+[MS-OXDSCLI].  
+
+ From the WDP URI, clients construct the manifest URI and use the HTTP /1.1 protocol [RFC2616] 
+to retrieve the manifest file. 
+
+ Based on data in the manifest, clients use the Offline Address Book (OAB) Retrieval File Format to 
+retrieve and consume OAB data files that are generated as described in [MS-OXOAB]. 
+
+ This file format relies on the HTTP 1.1 protocol, as described in [RFC2616], to deliver the manifest 
+and data OAB files from the server to the client. It also relies on HTTPS , as described in 
+[RFC2818], for data protection services.  
+
+For conceptual background information and overviews of the relationships and interactions between 
+this and other protocols, see [MS-OXPROTO]. 
+
+1.5 Prerequisites/Preconditions 
+
+None. 
+
+1.6 Applicability Statement 
+
+Before the OAB Web distribution mechanism specified in this document can be used, a set of OAB 
+files has to be generated in the format specified in [MS-OXOAB], the files have to be published on an 
+HTTP 1.1 server, and the URI of the WDP has to be published by means of the Autodiscover 
+Publishing and Lookup Protocol, as specified in [MS-OXDSCLI]. 
+
+1.7 Versioning and Capability Negotiation 
+
+The Offline Address Book (OAB) Retrieval File Format has only one version. 
+
+1.8 Vendor-Extensible Fields 
+
+None. 
+
+7 / 18 
+
+[MS-OXWOAB] - v20250520 
+Offline Address Book (OAB) Retrieval File Format 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+1.9 Standards Assignments 
+
+None. 
+
+8 / 18 
+
+[MS-OXWOAB] - v20250520 
+Offline Address Book (OAB) Retrieval File Format 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+2 Messages 
+
+2.1 Transport 
+
+The client retrieves the manifest file by using the standard HTTP/1.1 protocol, as specified in 
+[RFC2616]. 
+
+2.2 Message Syntax 
+
+9 / 18 
+
+[MS-OXWOAB] - v20250520 
+Offline Address Book (OAB) Retrieval File Format 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+3 Protocol Details 
+
+3.1 Client Details 
+
+3.1.1 Abstract Data Model 
+
+3.1.2 Timers 
+
+3.1.3 Initialization 
+
+3.1.4 Higher-Layer Triggered Events 
+
+3.1.5 Message Processing Events and Sequencing Rules 
+
+The client uses the Autodiscover Publishing and Lookup Protocol, as specified in [MS-OXDSCLI], to 
+discover the Web Distribution Point (WDP) URI, and then it constructs a manifest URI by 
+appending the well-known name "oab.xml", as specified in the following ABNF: 
+
+ manifestURI    = wdpUri "/oab.xml" 
+
+The client then retrieves the manifest file by using the standard HTTP/1.1 protocol, as specified in 
+[RFC2616]. The manifest file contains information about the OAL data sequence number and the 
+names of the data files that are published to a given WDP. The detailed structure of the manifest file is 
+specified in the next section. 
+
+After the client retrieves and parses the manifest file, it ascertains what OALs are associated with this 
+OAB. The client can retrieve each OAL in the OAB independently. 
+
+For each file that has to be retrieved, the client constructs the URI according to the following 
+definition, and then it retrieves each of those URIs by using the HTTP/1.1 protocol [RFC2616], as 
+follows: 
+
+ dataFileURI = wdpUri "/" file 
+
+3.1.5.1 Manifest File Structure 
+
+The manifest file structure is a well-formed XML document, as specified in [XML10], and has the 
+following ABNF structure, as per the specification of Augmented Backus-Naur Form (ABNF) semantics 
+[RFC5234]. 
+
+ manifestDocument    = prolog oabElement 
+ prolog              = "<?xml" VersionInfo UTF8EncodingDecl "?>" *S 
+ VersionInfo         = S "version" Eq (XMLQUOTE VersionNum XMLQUOTE) 
+ VersionNum          = "1.0" 
+ Eq                  = "=" 
+ UTF8EncodingDecl    = S "encoding" Eq XMLQUOTE "UTF-8" XMLQUOTE  
+ oabElement          = oabSTag oabContent oabETag 
+ oabSTag             = "<OAB>" *S 
+ oabETag             = "</OAB>" *S 
+ oabContent          = 1* oalElement 
+ oalElement          = oalSTag S oalAttributes *S ">" *S oalContent oalETag 
+ oalSTag             = "<OAL"  
+
+10 / 18 
+
+[MS-OXWOAB] - v20250520 
+Offline Address Book (OAB) Retrieval File Format 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+ oalETag             = "</OAL>" *S 
+ oalAttributes       = idAttribute S dnAttribute S nameAttribute 
+ idAttribute         = "id=" XMLQUOTE guidString XMLQUOTE 
+ dnAttribute         = "dn=" XMLQUOTE addresslist-legacy-dn XMLQUOTE 
+ nameAttribute       = "name=" XMLQUOTE nestedUnicodeRdn XMLQUOTE 
+ guidString          = 8HEX "-" 4HEX "-"4HEX "-" 4HEX "-" 12HEX  
+ nestedUnicodeRdn    = 1*16 ( "\" unicodeRdn )     
+ ; the total length is limited to  
+ ; 1024 characters 
+ unicodeRdn         = 1*1023 (NON-ZERO-OCTET) 
+ NON-ZERO-OCTET     = %x01-FF    ; Any octet (8-bit data unit) except for 0 
+ oalContent         = fullElement 1*templateElement *diffElement 
+ fullElement        =  "<Full" S seq S ver S size S uncompressedsize S SHA ">" *S         file 
+*S "</Full>" 
+ templateElement    = "<Template" S seq S ver S size S uncompressedsize S SHA S                     
+langid S type ">" *S file *S "</Template>" 
+ diffElement        = "<Diff" S seq S ver S size S uncompressedsize S SHA ">" *S                     
+file *S "</Diff>" 
+ seq                = "seq=" XMLQUOTE 1*DIGIT XMLQUOTE 
+                    ; limited to values from 0 to 2147483648 
+ ver                = "ver=" XMLQUOTE 1*DIGIT XMLQUOTE 
+                    ; limited to values from 0 to 2147483648 
+ size               = "size=" XMLQUOTE 1*DIGIT XMLQUOTE 
+ uncompressedsize   = "uncompressedsize=" XMLQUOTE 1*DIGIT XMLQUOTE 
+ SHA                = "SHA=" XMLQUOTE 40HEX XMLQUOTE 
+ langid             = "langid=" XMLQUOTE 1*HEX XMLQUOTE 
+ type               = "type=" XMLQUOTE ("mac" / "windows") XMLQUOTE 
+ file               = *( NONDOT / DOT) 1* NONDOT 
+ compressedfile     = file ".lzx" 
+ addresslist-legacy-dn = "/guid=" 32(HEX) / "/" / legacy-dn 
+ legacy-dn          = org org-unit 1*13(container) object-rdn 
+                     ; legacy-dns are limited to 16 levels 
+ org                = "/o=" rdn 
+ org-unit           = "/ou=" rdn 
+ container          = "/cn=" rdn 
+ object-rdn         = "/cn=" rdn 
+ rdn                = ( non-space-teletex ) /  
+                    ( non-space-teletex *62(teletex-char) 
+                    non-space-teletex ) 
+                    ; rdn values are limited to 64 characters and 
+                    ; the number of rdns is limited to 16 but the 
+                    ; total cumulative length of rdn characters in 
+                    ; a legacy-dn is limited to 256. 
+ 
+ teletex-char        = " " / non-space-teletex 
+ non-space-teletex     = "!" / XMLQUOTE / "%" / "&" / "\" / "(" / ")" /  
+             "*" / "+" / "," / "-" / "." / "0" / "1" /  
+             "2" / "3" / "4" / "5" / "6" / "7" / "8" / 
+             "9" / ":" / "<" / "=" / ">" / "?" / "@" / 
+             "A" / "B" / "C" / "D" / "E" / "F" / "G" /  
+             "H" / "I" / "J" / "K" / "L" / "M" / "N" /  
+             "O" / "P" / "Q" / "R" / "S" / "T" / "U" /  
+             "V" / "W" / "X" / "Y" / "Z" / "[" / "]" / 
+             "_" / "a" / "b" / "c" / "d" / "e" / "f" / 
+             "g" / "h" / "i" / "j" / "k" / "l" / "m" / 
+             "n" / "o" / "p" / "q" / "r" / "s" / "t" / 
+             "u" / "v" / "w" / "x" / "y" / "z" / "|" 
+ 
+ DIGIT            =  %x30-39  
+ HEX              = DIGIT  
+ / "A" / "B" / "C" / "D" / "E" / "F" 
+ / "a" / "b" / "c" / "d" / "e" / "f" 
+ S                = 1*(%x20 / %x09 / %x0D / %x0A) 
+ ALPHA            =  %x41-5A / %x61-7A   ; A-Z / a-z 
+ XMLQUOTE         = DQUOTE / "'" 
+ DOT              = "." 
+ NONDOT           = DIGIT / ALPHA / "-" 
+ DQUOTE           = %x22 
+
+11 / 18 
+
+[MS-OXWOAB] - v20250520 
+Offline Address Book (OAB) Retrieval File Format 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+                    ; " (Double Quote) 
+
+oabElement: The oabElement element in the document structure represents a top-level container in 
+the hierarchy of the XML document, and it MUST contain one or more oalElement entities. The 
+oabElement element does not have any attributes. 
+
+oalElement: The oalElement element is a container in the hierarchy of the XML document that 
+contains the XML child elements fullElement, templateElement, and diffElement, and it represents 
+an OAL that is part of the OAB. For an example of the XML structure, see section 4. The oalElement 
+MUST have the following attributes: 
+
+ id (as specified in the idAttribute attribute): A string representation of randomly chosen GUIDs 
+that uniquely represents the current OAL. This id remains the same through all subsequent OAB 
+generations. 
+
+ dn (as specified in the dnAttribute element): The distinguished name (DN) of the OAL. 
+
+ name (as specified in the nameAttribute element): The name of the address list, prepended 
+with "\". 
+
+For details about address lists, see [MS-OXOABK]. 
+
+fullElement: Each oalElement element MUST contain exactly one fullElement element. The 
+fullElement element provides information about the compressed full details file, as specified in [MS-
+OXOAB] section 2.11. The following attributes MUST be specified: 
+
+ seq –The OAL data sequence number. 
+
+ ver – The version of the data file, as specified in [MS-OXOAB]. 
+
+ size – The size (in bytes) of the data file on the WDP. 
+
+ uncompressedsize – The size (in bytes) of the data file after decompression. 
+
+ SHA – The SHA1 checksum of the compressed file, calculated as specified in [FIPS180].  
+
+ file – The name of the data file on WDP. Although this file is not actually an element, it can be 
+found in the XML content within the <Full> and </Full> tags. 
+
+templateElement: Each oalElement element MUST contain at least one templateElement 
+element. The templateElement element provides information about the uncompressed display 
+template file, as specified in [MS-OXOAB] section 2.2. The following attributes MUST be specified: 
+
+ seq – The OAL data sequence number. This is kept in sync with the sequence number of the 
+fullElement element. 
+
+ ver – The version of the data file, as specified in [MS-OXOAB]. 
+
+ size – The size (in bytes) of the data file on WDP. 
+
+ uncompressedsize – The size (in bytes) of the data file after decompression. 
+
+ SHA – The SHA1 checksum of the compressed file, calculated as specified in [FIPS180]. 
+
+ langid – The template language identifier, as specified in [MS-LCID]. 
+
+ type – A string representing the client platform, which is currently "windows" or "mac". 
+
+ file – The name of the data file on WDP. Although this file is not actually an element, it can be 
+found in the XML content within the <Template> and </Template> tags. 
+
+12 / 18 
+
+[MS-OXWOAB] - v20250520 
+Offline Address Book (OAB) Retrieval File Format 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+diffElement: Each oalElement element MUST contain zero or more diffElements element. The 
+diffElement element provides information about the OAB v4 differential patch file, as specified in 
+[MS-OXOAB] section 2.10. The following attributes MUST be specified: 
+
+ seq – The OAL data sequence number. 
+
+ ver – The version of the resulting data file that will be produced by applying this differential file. 
+
+ size – The size (in bytes) of data file on WDP. 
+
+ uncompressedsize – The size (in bytes) of data file after decompression. 
+
+ SHA – The SHA1 checksum of the compressed file, calculated as specified in [FIPS180]. 
+
+ file – The name of the data file on WDP. Although this file is not actually an element, it can be 
+found in the XML content within the <Diff> and </Diff> tags. 
+
+seq attribute: Each fullElement, templateElement, and diffElement element contains a seq 
+attribute, which enables the optimizations for the client that are described in this section. 
+
+The client can internally maintain an integer value to store the sequence number of the last 
+successfully downloaded OAL data. This enables the client to determine whether the server has any 
+data that is newer than the data that is available on the client side. This internal value is referred to as 
+clientSequenceNumber. If the client implementation maintains the clientSequenceNumber value, 
+the client also has to store the OAL id to identify the OAL in future versions of the manifest. 
+Additionally, the client has to store the last downloaded full details file so that it can build a new 
+version of the data file by applying differential files to the older file. 
+
+As a result of parsing the manifest, the client finds the sequence number of the full OAL data file that 
+is available on the server. This value is referred to as serverSequenceNumber. If 
+serverSequenceNumber >= 2, there are zero or more differential details files with sequential 
+sequence numbers from M to serverSequenceNumber, where 2<= M<=serverSequenceNumber. 
+The number of differential details files depends on the server implementation. 
+
+If, for a particular OAL, the client has a copy of the full details file with the data sequence number 
+clientSequenceNumber, and the manifest has differential details files from 
+clientSequenceNumber to serverSequenceNumber, the client can download the differential detail 
+files from clientSequenceNumber +1 to serverSequenceNumber and apply them to the 
+previously downloaded full details file to get to the latest version. Otherwise, the client can download a 
+single full details file serverSequenceNumber value to bring itself up to date. 
+
+3.1.6 Timer Events 
+
+3.1.7 Other Local Events 
+
+13 / 18 
+
+[MS-OXWOAB] - v20250520 
+Offline Address Book (OAB) Retrieval File Format 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+4 Protocol Examples 
+
+The following is an example of the manifest file and corresponding WDP content. The OAB contains 
+two address lists: "Global Address List," represented by the second OAL element, and "All Rooms," 
+represented by the first OAL element. Both address lists include two templates, both with the 
+language id value set to "0409" (English). Both OALs have a full details data file and a differential 
+details files. Note that the first OAL has the data sequence number 2 and only one differential file, 
+whereas the second OAL has data sequence number 4 and three differential files. 
+
+ <?xml version="1.0" encoding="UTF-8"?> 
+ <OAB> 
+    <OAL id='f867b9e0-d01e-43e3-8708-ba86a1c77dff' 
+dn='/guid=F8E7206B268E404B9519453F0F184D24' name='\All Rooms'> 
+        <Full seq='2' ver='32' size='554' uncompressedsize='1165' 
+SHA='d626d8d782332b7e8d689eea266ee315c31f19da'> 
+            f867b9e0-d01e-43e3-8708-ba86a1c77dff-data-2.lzx 
+        </Full> 
+        <Template seq='2' ver='7' size='5794' uncompressedsize='25620' 
+SHA='53fb16d6dcdf1a559b8649e9b269eee84b85c91b' langid='0409' type='windows'> 
+            f867b9e0-d01e-43e3-8708-ba86a1c77dff-lng0409-2.lzx 
+        </Template> 
+        <Template seq='2' ver='7' size='5794' uncompressedsize='25620' 
+SHA='53fb16d6dcdf1a559b8649e9b269eee84b85c91b' langid='0409' type='mac'> 
+            f867b9e0-d01e-43e3-8708-ba86a1c77dff-mac0409-2.lzx 
+        </Template> 
+        <Diff seq='2' ver='32' size='132' uncompressedsize='1165' 
+SHA='f53ec568b6fc3e4adce0e7d7dfd51ace604a9234'> 
+            f867b9e0-d01e-43e3-8708-ba86a1c77dff-binpatch-2.lzx 
+        </Diff> 
+    </OAL> 
+    <OAL id='2e3eaccd-85a0-4abe-84f8-603a49801bb6' dn='/' name='\Global Address List'> 
+        <Full seq='4' ver='32' size='574' uncompressedsize='1872' 
+SHA='91c1d0fa378dc961f9e8aafb17a9569767e21c73'> 
+            2e3eaccd-85a0-4abe-84f8-603a49801bb6-data-4.lzx 
+        </Full> 
+        <Template seq='4' ver='7' size='5794' uncompressedsize='25620' 
+SHA='53fb16d6dcdf1a559b8649e9b269eee84b85c91b' langid='0409' type='windows'> 
+            2e3eaccd-85a0-4abe-84f8-603a49801bb6-lng0409-4.lzx 
+        </Template> 
+        <Template seq='4' ver='7' size='5794' uncompressedsize='25620' 
+SHA='53fb16d6dcdf1a559b8649e9b269eee84b85c91b' langid='0409' type='mac'> 
+            2e3eaccd-85a0-4abe-84f8-603a49801bb6-mac0409-4.lzx 
+        </Template> 
+        <Diff seq='4' ver='32' size='132' uncompressedsize='1872' 
+SHA='49d0d0c8185dd93ba7df0fbc6b532049ba5a29c5'> 
+            2e3eaccd-85a0-4abe-84f8-603a49801bb6-binpatch-4.lzx 
+        </Diff> 
+        <Diff seq='2' ver='32' size='136' uncompressedsize='1197' 
+SHA='7e391a3fd934310489f87576ad6b6e1fd6fc1590'> 
+            2e3eaccd-85a0-4abe-84f8-603a49801bb6-binpatch-2.lzx 
+        </Diff> 
+        <Diff seq='3' ver='32' size='138' uncompressedsize='1544' 
+SHA='3eb5108d87e366681eb27be395f3ef7d9525c63f'> 
+            2e3eaccd-85a0-4abe-84f8-603a49801bb6-binpatch-3.lzx 
+        </Diff> 
+    </OAL> 
+ </OAB> 
+
+14 / 18 
+
+[MS-OXWOAB] - v20250520 
+Offline Address Book (OAB) Retrieval File Format 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+5 Security 
+
+5.1 Security Considerations for Implementers 
+
+The manifest file contains the results of the SHA-1 hashing calculation. Note, however, that the SHA-1 
+hash value is used as an optional means of checksum verification of the downloaded file, and it should 
+not be used as a security feature. In particular, it does not prevent deliberate data tampering. 
+
+5.2 Index of Security Parameters 
+
+None. 
+
+15 / 18 
+
+[MS-OXWOAB] - v20250520 
+Offline Address Book (OAB) Retrieval File Format 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+6 Appendix A: Product Behavior 
+
+The information in this specification is applicable to the following Microsoft products or supplemental 
+software. References to product versions include updates to those products. 
+
+ Microsoft Exchange Server 2007 
+
+ Microsoft Exchange Server 2010 
+
+ Microsoft Exchange Server 2013 
+
+ Microsoft Exchange Server 2016 
+
+ Microsoft Office Outlook 2007 
+
+ Microsoft Outlook 2010 
+
+ Microsoft Outlook 2013 
+
+ Microsoft Outlook 2016 
+
+ Microsoft Exchange Server 2019 
+
+ Microsoft Outlook 2019 
+
+ Microsoft Outlook 2021 
+
+ Microsoft Outlook LTSC 2024  
+
+ Microsoft Exchange Server Subscription Edition 
+
+Exceptions, if any, are noted in this section. If an update version, service pack or Knowledge Base 
+(KB) number appears with a product name, the behavior changed in that update. The new behavior 
+also applies to subsequent updates unless otherwise specified. If a product edition appears with the 
+product version, behavior is different in that product edition. 
+
+Unless otherwise specified, any statement of optional behavior in this specification that is prescribed 
+using the terms "SHOULD" or "SHOULD NOT" implies product behavior in accordance with the 
+SHOULD or SHOULD NOT prescription. Unless otherwise specified, the term "MAY" implies that the 
+product does not follow the prescription. 
+
+16 / 18 
+
+[MS-OXWOAB] - v20250520 
+Offline Address Book (OAB) Retrieval File Format 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+7 Change Tracking 
+
+This section identifies changes that were made to this document since the last release. Changes are 
+classified as Major, Minor, or None.  
+
+The revision class Major means that the technical content in the document was significantly revised. 
+Major changes affect protocol interoperability or implementation. Examples of major changes are: 
+
+ A document revision that incorporates changes to interoperability requirements. 
+ A document revision that captures changes to protocol functionality. 
+
+The revision class Minor means that the meaning of the technical content was clarified. Minor changes 
+do not affect protocol interoperability or implementation. Examples of minor changes are updates to 
+clarify ambiguity at the sentence, paragraph, or table level. 
+
+The revision class None means that no new technical changes were introduced. Minor editorial and 
+formatting changes may have been made, but the relevant technical content is identical to the last 
+released version. 
+
+The changes made to this document are listed in the following table. For more information, please 
+contact dochelp@microsoft.com. 
+
+Section Description Revision class 
+
+6 Appendix A: Product Behavior Updated list of supported products. Major 
+
+17 / 18 
+
+[MS-OXWOAB] - v20250520 
+Offline Address Book (OAB) Retrieval File Format 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+8 Index
+A  
+ S 
+Applicability 7  
+ Security 
+C    implementer considerations 15 
+    parameter index 15 
+Capability negotiation 7 Sequencing rules 
+Change tracking 17    client 10 
+Client Standards assignments 8 
+   message processing 10  
+   sequencing rules 10 T 
+  
+E Tracking changes 17 
+ Transport 9 
+Examples  
+   overview 14 V 
+  
+F Vendor-extensible fields 7 
+ Versioning 7 
+Fields - vendor-extensible 7 
+  
+
+G 
+ 
+Glossary 5 
+ 
+I 
+ 
+Implementer - security considerations 15 
+Index of security parameters 15 
+Informative references 7 
+Introduction 5 
+ 
+M 
+ 
+Message processing 
+   client 10 
+Messages 
+   transport 9 
+ 
+N 
+ 
+Normative references 6 
+ 
+O 
+ 
+Overview (synopsis) 7 
+ 
+P 
+ 
+Parameters - security index 15 
+Preconditions 7 
+Prerequisites 7 
+Product behavior 16 
+ 
+R 
+ 
+References 6 
+   informative 7 
+   normative 6 
+Relationship to other protocols 7 
+
+18 / 18 
+
+[MS-OXWOAB] - v20250520 
+Offline Address Book (OAB) Retrieval File Format 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025

@@ -1,0 +1,4973 @@
+﻿[MS-OXWSEDISC]:  
+
+Electronic Discovery (eDiscovery) Web Service Protocol 
+
+ 
+
+Intellectual Property Rights Notice for Open Specifications Documentation 
+
+ Technical Documentation. Microsoft publishes Open Specifications documentation (“this 
+documentation”) for protocols, file formats, data portability, computer languages, and standards 
+support. Additionally, overview documents cover inter-protocol relationships and interactions.  
+
+ Copyrights. This documentation is covered by Microsoft copyrights. Regardless of any other 
+terms that are contained in the terms of use for the Microsoft website that hosts this 
+documentation, you can make copies of it in order to develop implementations of the technologies 
+that are described in this documentation and can distribute portions of it in your implementations 
+that use these technologies or in your documentation as necessary to properly document the 
+implementation. You can also distribute in your implementation, with or without modification, any 
+schemas, IDLs, or code samples that are included in the documentation. This permission also 
+applies to any documents that are referenced in the Open Specifications documentation.  
+
+ No Trade Secrets. Microsoft does not claim any trade secret rights in this documentation.  
+ Patents. Microsoft has patents that might cover your implementations of the technologies 
+
+described in the Open Specifications documentation. Neither this notice nor Microsoft's delivery of 
+this documentation grants any licenses under those patents or any other Microsoft patents. 
+However, a given Open Specifications document might be covered by the Microsoft Open 
+Specifications Promise or the Microsoft Community Promise. If you would prefer a written license, 
+or if the technologies described in this documentation are not covered by the Open Specifications 
+Promise or Community Promise, as applicable, patent licenses are available by contacting 
+iplg@microsoft.com.  
+
+ License Programs. To see all of the protocols in scope under a specific license program and the 
+associated patents, visit the Patent Map.  
+
+ Trademarks. The names of companies and products contained in this documentation might be 
+covered by trademarks or similar intellectual property rights. This notice does not grant any 
+licenses under those rights. For a list of Microsoft trademarks, visit 
+www.microsoft.com/trademarks.  
+
+ Fictitious Names. The example companies, organizations, products, domain names, email 
+addresses, logos, people, places, and events that are depicted in this documentation are fictitious. 
+No association with any real company, organization, product, domain name, email address, logo, 
+person, place, or event is intended or should be inferred. 
+
+Reservation of Rights. All other rights are reserved, and this notice does not grant any rights other 
+than as specifically described above, whether by implication, estoppel, or otherwise.  
+
+Tools. The Open Specifications documentation does not require the use of Microsoft programming 
+tools or programming environments in order for you to develop an implementation. If you have access 
+to Microsoft programming tools and environments, you are free to take advantage of them. Certain 
+Open Specifications documents are intended for use in conjunction with publicly available standards 
+specifications and network programming art and, as such, assume that the reader either is familiar 
+with the aforementioned material or has immediate access to it. 
+
+Support. For questions and support, please contact dochelp@microsoft.com.  
+
+1 / 74 
+
+[MS-OXWSEDISC] - v20250520 
+Electronic Discovery (eDiscovery) Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Revision Summary 
+
+Revision Revision 
+Date History Class Comments 
+
+7/16/2012 0.1 New Released new document. 
+
+10/8/2012 1.0 Major Significantly changed the technical content. 
+
+2/11/2013 2.0 Major Significantly changed the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+7/26/2013 2.0 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+11/18/2013 2.0 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+2/10/2014 2.0 None 
+
+technical content. 
+
+4/30/2014 2.1 Minor Clarified the meaning of the technical content. 
+
+7/31/2014 2.2 Minor Clarified the meaning of the technical content. 
+
+10/30/2014 2.3 Minor Clarified the meaning of the technical content. 
+
+5/26/2015 3.0 Major Significantly changed the technical content. 
+
+9/14/2015 4.0 Major Significantly changed the technical content. 
+
+6/13/2016 5.0 Major Significantly changed the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+9/14/2016 5.0 None 
+
+technical content. 
+
+7/24/2018 6.0 Major Significantly changed the technical content. 
+
+10/1/2018 7.0 Major Significantly changed the technical content. 
+
+5/17/2022 8.0 Major Significantly changed the technical content. 
+
+5/20/2025 9.0 Major Significantly changed the technical content. 
+
+2 / 74 
+
+[MS-OXWSEDISC] - v20250520 
+Electronic Discovery (eDiscovery) Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Table of Contents 
+1 Introduction ............................................................................................................ 6 
+
+1.1 Glossary ........................................................................................................... 6 
+1.2 References ........................................................................................................ 7 
+
+1.2.1 Normative References ................................................................................... 8 
+1.2.2 Informative References ................................................................................. 8 
+
+1.3 Overview .......................................................................................................... 9 
+1.4 Relationship to Other Protocols ............................................................................ 9 
+1.5 Prerequisites/Preconditions ................................................................................. 9 
+1.6 Applicability Statement ....................................................................................... 9 
+1.7 Versioning and Capability Negotiation ................................................................. 10 
+1.8 Vendor-Extensible Fields ................................................................................... 10 
+1.9 Standards Assignments ..................................................................................... 10 
+
+2 Messages ............................................................................................................... 11 
+2.1 Transport ........................................................................................................ 11 
+2.2 Common Message Syntax ................................................................................. 11 
+
+2.2.1 Namespaces .............................................................................................. 11 
+2.2.2 Messages ................................................................................................... 11 
+2.2.3 Elements ................................................................................................... 11 
+2.2.4 Complex Types ........................................................................................... 12 
+
+2.2.4.1 ArrayOfFailedSearchMailboxesType ......................................................... 12 
+2.2.4.2 ArrayOfMailboxHoldStatusType ............................................................... 12 
+2.2.4.3 ArrayOfSearchableMailboxesType ............................................................ 13 
+2.2.4.4 FailedSearchMailboxType ....................................................................... 13 
+2.2.4.5 MailboxHoldResultType .......................................................................... 13 
+2.2.4.6 MailboxHoldStatusType .......................................................................... 14 
+2.2.4.7 SearchableMailboxType.......................................................................... 14 
+
+2.2.5 Simple Types ............................................................................................. 15 
+2.2.5.1 HoldStatusType .................................................................................... 15 
+
+2.2.6 Attributes .................................................................................................. 16 
+2.2.7 Groups ...................................................................................................... 16 
+2.2.8 Attribute Groups ......................................................................................... 16 
+
+3 Protocol Details ..................................................................................................... 17 
+3.1 ExchangeServicePortType Server Details ............................................................. 17 
+
+3.1.1 Abstract Data Model .................................................................................... 17 
+3.1.2 Timers ...................................................................................................... 17 
+3.1.3 Initialization ............................................................................................... 17 
+3.1.4 Message Processing Events and Sequencing Rules .......................................... 17 
+
+3.1.4.1 GetDiscoverySearchConfiguration ........................................................... 18 
+3.1.4.1.1 Messages ....................................................................................... 18 
+
+3.1.4.1.1.1 GetDiscoverySearchConfigurationSoapIn ...................................... 18 
+3.1.4.1.1.2 GetDiscoverySearchConfigurationSoapOut .................................... 19 
+
+3.1.4.1.2 Elements ........................................................................................ 20 
+3.1.4.1.2.1 GetDiscoverySearchConfiguration ................................................ 20 
+3.1.4.1.2.2 GetDiscoverySearchConfigurationResponse ................................... 20 
+
+3.1.4.1.3 Complex Types ............................................................................... 21 
+3.1.4.1.3.1 GetDiscoverySearchConfigurationType.......................................... 21 
+3.1.4.1.3.2 GetDiscoverySearchConfigurationResponseMessageType ................ 21 
+3.1.4.1.3.3 ArrayOfDiscoverySearchConfigurationType .................................... 22 
+3.1.4.1.3.4 DiscoverySearchConfigurationType .............................................. 22 
+
+3.1.4.1.4 Simple Types .................................................................................. 23 
+3.1.4.1.5 Attributes ....................................................................................... 23 
+3.1.4.1.6 Groups ........................................................................................... 23 
+3.1.4.1.7 Attribute Groups.............................................................................. 23 
+
+3 / 74 
+
+[MS-OXWSEDISC] - v20250520 
+Electronic Discovery (eDiscovery) Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+3.1.4.2 GetHoldOnMailboxes ............................................................................. 23 
+3.1.4.2.1 Messages ....................................................................................... 24 
+
+3.1.4.2.1.1 GetHoldOnMailboxesSoapIn ........................................................ 24 
+3.1.4.2.1.2 GetHoldOnMailboxesSoapOut ...................................................... 25 
+
+3.1.4.2.2 Elements ........................................................................................ 25 
+3.1.4.2.2.1 GetHoldOnMailboxes .................................................................. 25 
+3.1.4.2.2.2 GetHoldOnMailboxesResponse ..................................................... 26 
+
+3.1.4.2.3 Complex Types ............................................................................... 26 
+3.1.4.2.3.1 GetHoldOnMailboxesType ............................................................ 26 
+3.1.4.2.3.2 GetHoldOnMailboxesResponseMessageType .................................. 26 
+
+3.1.4.2.4 Simple Types .................................................................................. 27 
+3.1.4.2.5 Attributes ....................................................................................... 27 
+3.1.4.2.6 Groups ........................................................................................... 27 
+3.1.4.2.7 Attribute Groups.............................................................................. 27 
+
+3.1.4.3 GetSearchableMailboxes ........................................................................ 27 
+3.1.4.3.1 Messages ....................................................................................... 28 
+
+3.1.4.3.1.1 GetSearchableMailboxesSoapIn ................................................... 28 
+3.1.4.3.1.2 GetSearchableMailboxesSoapOut ................................................. 29 
+
+3.1.4.3.2 Elements ........................................................................................ 29 
+3.1.4.3.2.1 GetSearchableMailboxes ............................................................. 30 
+3.1.4.3.2.2 GetSearchableMailboxesResponse ................................................ 30 
+
+3.1.4.3.3 Complex Types ............................................................................... 30 
+3.1.4.3.3.1 GetSearchableMailboxesType ...................................................... 30 
+3.1.4.3.3.2 GetSearchableMailboxesResponseMessageType ............................. 31 
+
+3.1.4.3.4 Simple Types .................................................................................. 31 
+3.1.4.3.5 Attributes ....................................................................................... 31 
+3.1.4.3.6 Groups ........................................................................................... 31 
+3.1.4.3.7 Attribute Groups.............................................................................. 31 
+
+3.1.4.4 SearchMailboxes ................................................................................... 32 
+3.1.4.4.1 Messages ....................................................................................... 32 
+
+3.1.4.4.1.1 SearchMailboxesSoapIn .............................................................. 32 
+3.1.4.4.1.2 SearchMailboxesSoapOut ............................................................ 33 
+
+3.1.4.4.2 Elements ........................................................................................ 34 
+3.1.4.4.2.1 SearchMailboxes ........................................................................ 34 
+3.1.4.4.2.2 SearchMailboxesResponse ........................................................... 34 
+
+3.1.4.4.3 Complex Types ............................................................................... 34 
+3.1.4.4.3.1 SearchMailboxesType ................................................................. 35 
+3.1.4.4.3.2 NonEmptyArrayOfMailboxQueriesType .......................................... 36 
+3.1.4.4.3.3 MailboxQueryType ..................................................................... 36 
+3.1.4.4.3.4 NonEmptyArrayOfMailboxSearchScopesType ................................. 37 
+3.1.4.4.3.5 MailboxSearchScopeType ............................................................ 37 
+3.1.4.4.3.6 PreviewItemResponseShapeType ................................................. 37 
+3.1.4.4.3.7 NonEmptyArrayOfExtendedFieldURIsType ..................................... 38 
+3.1.4.4.3.8 SearchMailboxesResponseType .................................................... 38 
+3.1.4.4.3.9 SearchMailboxesResponseMessageType ........................................ 38 
+3.1.4.4.3.10 SearchMailboxesResultType ........................................................ 39 
+3.1.4.4.3.11 ArrayOfKeywordStatisticsSearchResultsType ................................. 40 
+3.1.4.4.3.12 KeywordStatisticsSearchResultType ............................................. 40 
+3.1.4.4.3.13 ArrayOfSearchPreviewItemsType ................................................. 40 
+3.1.4.4.3.14 SearchPreviewItemType ............................................................. 41 
+3.1.4.4.3.15 PreviewItemMailboxType ............................................................ 42 
+3.1.4.4.3.16 ArrayOfSearchRefinerItemsType .................................................. 43 
+3.1.4.4.3.17 SearchRefinerItemType .............................................................. 43 
+3.1.4.4.3.18 ArrayOfMailboxStatisticsItemsType .............................................. 43 
+3.1.4.4.3.19 MailboxStatisticsItemType........................................................... 44 
+3.1.4.4.3.20 ArrayOfExtendedAttributesType ................................................... 44 
+3.1.4.4.3.21 ExtendedAttributeType ............................................................... 44 
+
+3.1.4.4.4 Simple Types .................................................................................. 45 
+
+4 / 74 
+
+[MS-OXWSEDISC] - v20250520 
+Electronic Discovery (eDiscovery) Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+3.1.4.4.4.1 MailboxSearchLocationType ......................................................... 45 
+3.1.4.4.4.2 SearchResultType ...................................................................... 45 
+3.1.4.4.4.3 PreviewItemBaseShapeType ........................................................ 46 
+3.1.4.4.4.4 SearchPageDirectionType ............................................................ 46 
+
+3.1.4.4.5 Attributes ....................................................................................... 46 
+3.1.4.4.6 Groups ........................................................................................... 47 
+3.1.4.4.7 Attribute Groups.............................................................................. 47 
+
+3.1.4.5 SetHoldOnMailboxes .............................................................................. 47 
+3.1.4.5.1 Messages ....................................................................................... 47 
+
+3.1.4.5.1.1 SetHoldOnMailboxesSoapIn ......................................................... 48 
+3.1.4.5.1.2 SetHoldOnMailboxesSoapOut ....................................................... 48 
+
+3.1.4.5.2 Elements ........................................................................................ 49 
+3.1.4.5.2.1 SetHoldOnMailboxes ................................................................... 49 
+3.1.4.5.2.2 SetHoldOnMailboxesResponse ..................................................... 49 
+
+3.1.4.5.3 Complex Types ............................................................................... 49 
+3.1.4.5.3.1 SetHoldOnMailboxesType ............................................................ 50 
+3.1.4.5.3.2 SetHoldOnMailboxesResponseMessageType ................................... 51 
+
+3.1.4.5.4 Simple Types .................................................................................. 51 
+3.1.4.5.4.1 HoldActionType.......................................................................... 51 
+
+3.1.4.5.5 Attributes ....................................................................................... 52 
+3.1.4.5.6 Groups ........................................................................................... 52 
+3.1.4.5.7 Attribute Groups.............................................................................. 52 
+
+3.1.5 Timer Events .............................................................................................. 52 
+3.1.6 Other Local Events ...................................................................................... 52 
+
+4 Protocol Examples ................................................................................................. 53 
+4.1 Setting Holds On Mailboxes ............................................................................... 53 
+4.2 Getting Mailboxes With Holds ............................................................................ 54 
+4.3 Getting Searchable Mailboxes ............................................................................ 55 
+4.4 Searching Mailboxes ......................................................................................... 57 
+
+5 Security ................................................................................................................. 59 
+5.1 Security Considerations for Implementers ........................................................... 59 
+5.2 Index of Security Parameters ............................................................................ 59 
+
+6 Appendix A: Full WSDL .......................................................................................... 60 
+
+7 Appendix B: Full XML Schema ................................................................................ 63 
+7.1 http://schemas.microsoft.com/exchange/services/2006/messages Schema ............ 63 
+7.2 http://schemas.microsoft.com/exchange/services/2006/types Schema ................... 65 
+
+8 Appendix C: Product Behavior ............................................................................... 71 
+
+9 Change Tracking .................................................................................................... 72 
+
+10 Index ..................................................................................................................... 73 
+
+ 
+
+5 / 74 
+
+[MS-OXWSEDISC] - v20250520 
+Electronic Discovery (eDiscovery) Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+1 Introduction 
+
+The Electronic Discovery (eDiscovery) Web Service Protocol enables clients to use a web service to 
+implement legal compliance holds, get user hold settings, and search for mailboxes. 
+
+Sections 1.5, 1.8, 1.9, 2, and 3 of this specification are normative. All other sections and examples in 
+this specification are informative. 
+
+1.1 Glossary 
+
+This document uses the following terms: 
+
+display name: A text string that is used to identify a principal or other object in the user interface. 
+Also referred to as title. 
+
+distinguished name (DN): In the Active Directory directory service, the unique identifier of an 
+object in Active Directory, as described in [MS-ADTS] and [RFC2251]. 
+
+distribution list: A collection of users, computers, contacts, or other groups that is used only for 
+email distribution, and addressed as a single recipient. 
+
+electronic discovery (eDiscovery): A type of legal discovery that focuses on electronic 
+(computer) communications and files. 
+
+email address: A string that identifies a user and enables the user to receive Internet messages. 
+
+endpoint: A communication port that is exposed by an application server for a specific shared 
+service and to which messages can be addressed. 
+
+globally unique identifier (GUID): A term used interchangeably with universally unique 
+identifier (UUID) in Microsoft protocol technical documents (TDs). Interchanging the usage of 
+these terms does not imply or require a specific algorithm or mechanism to generate the value. 
+Specifically, the use of this term does not imply or require that the algorithms described in 
+[RFC4122] or [C706] have to be used for generating the GUID. See also universally unique 
+identifier (UUID). 
+
+Hypertext Transfer Protocol (HTTP): An application-level protocol for distributed, collaborative, 
+hypermedia information systems (text, graphic images, sound, video, and other multimedia 
+files) on the World Wide Web. 
+
+Hypertext Transfer Protocol Secure (HTTPS): An extension of HTTP that securely encrypts and 
+decrypts web page requests. In some older protocols, "Hypertext Transfer Protocol over Secure 
+Sockets Layer" is still used (Secure Sockets Layer has been deprecated). For more information, 
+see [SSL3] and [RFC5246]. 
+
+mailbox: A message store that contains email, calendar items, and other Message objects for a 
+single recipient. 
+
+recipient: An entity that can receive email messages.   
+
+Simple Mail Transfer Protocol (SMTP): A member of the TCP/IP suite of protocols that is used 
+to transport Internet messages, as described in [RFC5321]. 
+
+SOAP: A lightweight protocol for exchanging structured information in a decentralized, distributed 
+environment. SOAP uses XML technologies to define an extensible messaging framework, which 
+provides a message construct that can be exchanged over a variety of underlying protocols. The 
+framework has been designed to be independent of any particular programming model and 
+other implementation-specific semantics. SOAP 1.2 supersedes SOAP 1.1. See [SOAP1.2-
+1/2003]. 
+
+6 / 74 
+
+[MS-OXWSEDISC] - v20250520 
+Electronic Discovery (eDiscovery) Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+SOAP action: The HTTP request header field used to indicate the intent of the SOAP request, 
+using a URI value. See [SOAP1.1] section 6.1.1 for more information. 
+
+SOAP body: A container for the payload data being delivered by a SOAP message to its recipient. 
+See [SOAP1.2-1/2007] section 5.3 for more information. 
+
+SOAP header: A mechanism for implementing extensions to a SOAP message in a decentralized 
+manner without prior agreement between the communicating parties. See [SOAP1.2-1/2007] 
+section 5.2 for more information. 
+
+Uniform Resource Locator (URL): A string of characters in a standardized format that identifies 
+a document or resource on the World Wide Web. The format is as specified in [RFC1738]. 
+
+web server: A server computer that hosts websites and responds to requests from applications. 
+
+web service: A unit of application logic that provides data and services to other applications and 
+can be called by using standard Internet transport protocols such as HTTP, Simple Mail 
+Transfer Protocol (SMTP), or File Transfer Protocol (FTP). Web services can perform functions 
+that range from simple requests to complicated business processes. 
+
+Web Services Description Language (WSDL): An XML format for describing network services 
+as a set of endpoints that operate on messages that contain either document-oriented or 
+procedure-oriented information. The operations and messages are described abstractly and are 
+bound to a concrete network protocol and message format in order to define an endpoint. 
+Related concrete endpoints are combined into abstract endpoints, which describe a network 
+service. WSDL is extensible, which allows the description of endpoints and their messages 
+regardless of the message formats or network protocols that are used. 
+
+WSDL message: An abstract, typed definition of the data that is communicated during a WSDL 
+operation [WSDL]. Also, an element that describes the data being exchanged between web 
+service providers and clients. 
+
+WSDL operation: A single action or function of a web service. The execution of a WSDL operation 
+typically requires the exchange of messages between the service requestor and the service 
+provider. 
+
+WSDL port type: A named set of logically-related, abstract Web Services Description 
+Language (WSDL) operations and messages. 
+
+XML namespace: A collection of names that is used to identify elements, types, and attributes in 
+XML documents identified in a URI reference [RFC3986]. A combination of XML namespace and 
+local name allows XML documents to use elements, types, and attributes that have the same 
+names but come from different sources. For more information, see [XMLNS-2ED]. 
+
+XML namespace prefix: An abbreviated form of an XML namespace, as described in [XML]. 
+
+XML schema: A description of a type of XML document that is typically expressed in terms of 
+constraints on the structure and content of documents of that type, in addition to the basic 
+syntax constraints that are imposed by XML itself. An XML schema provides a view of a 
+document type at a relatively high level of abstraction. 
+
+MAY, SHOULD, MUST, SHOULD NOT, MUST NOT: These terms (in all caps) are used as defined 
+in [RFC2119]. All statements of optional behavior use either MAY, SHOULD, or SHOULD NOT. 
+
+1.2 References 
+
+Links to a document in the Microsoft Open Specifications library point to the correct section in the 
+most recently published version of the referenced document. However, because individual documents 
+in the library are not updated at the same time, the section numbers in the documents may not 
+match. You can confirm the correct section numbering by checking the Errata.   
+
+7 / 74 
+
+[MS-OXWSEDISC] - v20250520 
+Electronic Discovery (eDiscovery) Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+1.2.1 Normative References 
+
+We conduct frequent surveys of the normative references to assure their continued availability. If you 
+have any issue with finding a normative reference, please contact dochelp@microsoft.com. We will 
+assist you in finding the relevant information.  
+
+[MS-OXWSCDATA] Microsoft Corporation, "Common Web Service Data Types". 
+
+[MS-OXWSCORE] Microsoft Corporation, "Core Items Web Service Protocol". 
+
+[MS-OXWSMSHR] Microsoft Corporation, "Folder Sharing Web Service Protocol". 
+
+[MS-OXWSSRCH] Microsoft Corporation, "Mailbox Search Web Service Protocol". 
+
+[MS-OXWSXPROP] Microsoft Corporation, "Extended Properties Structure". 
+
+[RFC2119] Bradner, S., "Key words for use in RFCs to Indicate Requirement Levels", BCP 14, RFC 
+2119, March 1997, https://www.rfc-editor.org/info/rfc2119 
+
+[RFC2616] Fielding, R., Gettys, J., Mogul, J., et al., "Hypertext Transfer Protocol -- HTTP/1.1", RFC 
+2616, June 1999, https://www.rfc-editor.org/info/rfc2616 
+
+[RFC2818] Rescorla, E., "HTTP Over TLS", RFC 2818, May 2000, https://www.rfc-
+editor.org/info/rfc2818 
+
+[SOAP1.1] Box, D., Ehnebuske, D., Kakivaya, G., et al., "Simple Object Access Protocol (SOAP) 1.1", 
+W3C Note, May 2000, https://www.w3.org/TR/2000/NOTE-SOAP-20000508/ 
+
+[WSDL] Christensen, E., Curbera, F., Meredith, G., and Weerawarana, S., "Web Services Description 
+Language (WSDL) 1.1", W3C Note, March 2001, https://www.w3.org/TR/2001/NOTE-wsdl-20010315 
+
+[WSIBASIC] Ballinger, K., Ehnebuske, D., Gudgin, M., et al., Eds., "Basic Profile Version 1.0", Final 
+Material, April 2004, http://www.ws-i.org/Profiles/BasicProfile-1.0-2004-04-16.html 
+
+[XMLNS] Bray, T., Hollander, D., Layman, A., et al., Eds., "Namespaces in XML 1.0 (Third Edition)", 
+W3C Recommendation, December 2009, https://www.w3.org/TR/2009/REC-xml-names-20091208/ 
+
+[XMLSCHEMA1/2] Thompson, H., Beech, D., Maloney, M., and Mendelsohn, N., Eds., "XML Schema 
+Part 1: Structures Second Edition", W3C Recommendation, October 2004, 
+https://www.w3.org/TR/2004/REC-xmlschema-1-20041028/ 
+
+[XMLSCHEMA1] Thompson, H., Beech, D., Maloney, M., and Mendelsohn, N., Eds., "XML Schema Part 
+1: Structures", W3C Recommendation, May 2001, https://www.w3.org/TR/2001/REC-xmlschema-1-
+20010502/ 
+
+[XMLSCHEMA2/2] Biron, P., and Malhotra, A., Eds., "XML Schema Part 2: Datatypes Second Edition", 
+W3C Recommendation, October 2004, https://www.w3.org/TR/2004/REC-xmlschema-2-20041028/ 
+
+[XMLSCHEMA2] Biron, P.V., Ed. and Malhotra, A., Ed., "XML Schema Part 2: Datatypes", W3C 
+Recommendation, May 2001, https://www.w3.org/TR/2001/REC-xmlschema-2-20010502/ 
+
+1.2.2 Informative References 
+
+[MS-OXDSCLI] Microsoft Corporation, "Autodiscover Publishing and Lookup Protocol". 
+
+[MS-OXPROTO] Microsoft Corporation, "Exchange Server Protocols System Overview". 
+
+[MS-OXWSADISC] Microsoft Corporation, "Autodiscover Publishing and Lookup SOAP-Based Web 
+Service Protocol". 
+
+8 / 74 
+
+[MS-OXWSEDISC] - v20250520 
+Electronic Discovery (eDiscovery) Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+[MS-OXWSGNI] Microsoft Corporation, "Nonindexable Item Web Service Protocol". 
+
+1.3 Overview 
+
+The eDiscovery Web Service Protocol is a federated query web service that enables external 
+applications to query mailbox data. 
+
+Discovery consists of several phases, including identifying and preserving key data, reducing the 
+amount of data, reviewing the data, and producing data in court. Electronic discovery 
+(eDiscovery) queries facilitate the discovery process by providing a single discovery workflow. 
+
+1.4 Relationship to Other Protocols 
+
+A client that implements this protocol can use the Autodiscover Publishing and Lookup SOAP-Based 
+Web Service Protocol, as described in [MS-OXWSADISC], or the Autodiscover Publishing and Lookup 
+Protocol, as described in [MS-OXDSCLI], to identify the target endpoint to use for each operation. 
+
+This protocol uses SOAP, as described in [SOAP1.1], to specify the structure information that is 
+exchanged between the client and the server. This protocol uses the XML schema, as described in 
+[XMLSCHEMA1] and [XMLSCHEMA2], to describe the message content that is sent to and from the 
+server. 
+
+This protocol uses SOAP over HTTP, as described in [RFC2616], and SOAP over HTTPS, as described 
+in [RFC2818], as shown in the following layering diagram. 
+
+ 
+
+Figure 1: This protocol in relation to other protocols 
+
+The Nonindexable Item Web Service Protocol, as described in [MS-OXWSGNI], uses the mailbox 
+search and mailbox hold information provided by this protocol. 
+
+For conceptual background information and overviews of the relationships and interactions between 
+this and other protocols, see [MS-OXPROTO]. 
+
+1.5 Prerequisites/Preconditions 
+
+The operations that this protocol defines cannot be accessed unless the correct endpoint is identified 
+in the HTTP web requests that target this protocol. This endpoint URL is returned by either the 
+Autodiscover Publishing Lookup SOAP-Based Web Service Protocol, as specified in [MS-OXWSADISC], 
+or the Autodiscover Publishing and Lookup Protocol, as specified in [MS-OXDSCLI].  
+
+1.6 Applicability Statement 
+This protocol is applicable to environments that use web services to implement electronic discovery 
+from a user's mailbox. This protocol is applicable to all SOAP-based clients, as described in 
+[SOAP1.1].  
+
+9 / 74 
+
+[MS-OXWSEDISC] - v20250520 
+Electronic Discovery (eDiscovery) Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+1.7 Versioning and Capability Negotiation 
+
+This document covers versioning issues in the following areas: 
+
+ Supported Transports: This protocol uses SOAP 1.1, as specified in section 2.1. 
+
+ Protocol Versions: This protocol specifies only one WSDL port type version. The 
+RequestServerVersion element, as described in [MS-OXWSCDATA] section 2.2.3.9, identifies 
+the Web Services Description Language (WSDL) version of the request. The 
+ServerVersionInfo element, as described in [MS-OXWSCDATA] section 2.2.3.10, identifies the 
+version of the server responding to the request. 
+
+ Security and Authentication Methods: This protocol relies on the web server that is hosting it 
+to perform authentication. 
+
+ Localization: This protocol includes date and time formats in various elements, as specified in 
+section 3.1.4.  
+
+ Capability Negotiation: This protocol does not support version negotiation. 
+
+1.8 Vendor-Extensible Fields 
+
+None. 
+
+1.9 Standards Assignments 
+
+None. 
+
+10 / 74 
+
+[MS-OXWSEDISC] - v20250520 
+Electronic Discovery (eDiscovery) Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+2 Messages 
+
+In the following sections, the schema definition might differ from the processing rules imposed by the 
+protocol. The WSDL in this specification provides a base description of the protocol. The schema in 
+this specification provides a base description of the message syntax. The text that specifies the WSDL 
+and schema might specify restrictions that reflect actual protocol behavior. For example, the schema 
+definition might allow for an element to be empty, null, or not present but the behavior of the protocol 
+as specified restricts the same elements to being non-empty, not null, or present. 
+
+2.1 Transport 
+
+This protocol uses the Simple Object Access Protocol (SOAP) 1.1, as specified in [SOAP1.1]. 
+
+This protocol MUST support SOAP over HTTP, as specified in [RFC2616]. The protocol SHOULD use 
+secure communications by means of HTTPS, as defined in [RFC2818]. 
+
+2.2 Common Message Syntax 
+
+This section contains common definitions that are used by this protocol. The syntax of the definitions 
+uses XML schema, as defined in [XMLSCHEMA1] and [XMLSCHEMA2], and WSDL, as defined in 
+[WSDL]. 
+
+2.2.1 Namespaces 
+
+This specification defines and references various XML namespaces using the mechanisms specified in 
+[XMLNS]. Although this specification associates a specific XML namespace prefix for each XML 
+namespace that is used, the choice of any particular XML namespace prefix is implementation-specific 
+and not significant for interoperability. 
+
+Prefix Namespace URI Reference 
+
+soap http://schemas.xmlsoap.org/wsdl/soap/ [SOAP1.1] 
+
+t http://schemas.microsoft.com/exchange/services/2006/types  
+
+tns http://schemas.microsoft.com/exchange/services/2006/messages  
+
+wsdl http://schemas.xmlsoap.org/wsdl/ [WSDL] 
+
+wsi http://ws-i.org/schemas/conformanceClaim/ [WSIBASIC] 
+
+[XMLSCHEMA1/2] 
+xs http://www.w3.org/2001/XMLSchema 
+
+[XMLSCHEMA2/2] 
+
+ 
+
+2.2.2 Messages 
+
+This specification does not define any common WSDL message definitions. 
+
+2.2.3 Elements 
+
+This specification does not define any common XML schema element definitions. 
+
+11 / 74 
+
+[MS-OXWSEDISC] - v20250520 
+Electronic Discovery (eDiscovery) Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+2.2.4 Complex Types 
+
+The following table summarizes the set of common XML schema complex type definitions defined by 
+this specification. XML schema complex type definitions that are specific to a particular operation are 
+described with the operation. 
+
+Complex type Description 
+
+The ArrayOfFailedSearchMailboxesType complex type specifies an 
+ArrayOfFailedSearchMailboxesType 
+
+array of failed searches. 
+
+The ArrayOfMailboxHoldStatusType complex type specifies an array 
+ArrayOfMailboxHoldStatusType 
+
+of mailbox hold statuses. 
+
+The ArrayOfSearchableMailboxesType complex type specifies an 
+ArrayOfSearchableMailboxesType array of mailbox entities returned from the GetSearchableMailboxes 
+
+operation. 
+
+The FailedSearchMailboxType complex type represents a failed 
+FailedSearchMailboxType 
+
+search of a mailbox. 
+
+The MailboxHoldResultType complex type specifies the result of a 
+MailboxHoldResultType 
+
+mailbox hold. 
+
+The MailboxHoldStatusType complex type specifies the status of a 
+MailboxHoldStatusType 
+
+mailbox hold. 
+
+The SearchableMailboxType complex type specifies the mailbox 
+SearchableMailboxType entity returned from the GetSearchableMailboxes operation specified 
+
+in section 3.1.4.3. 
+
+ 
+
+2.2.4.1 ArrayOfFailedSearchMailboxesType 
+
+Namespace: http://schemas.microsoft.com/exchange/services/2006/types 
+
+The ArrayOfFailedSearchMailboxesType complex type specifies an array of failed searches. 
+
+ <xs:complexType name="ArrayOfFailedSearchMailboxesType" 
+xmlns:xs="http://www.w3.org/2001/XMLSchema"> 
+  <xs:sequence> 
+    <xs:element minOccurs="0" maxOccurs="unbounded" name="FailedMailbox" 
+type="t:FailedSearchMailboxType"/> 
+  </xs:sequence> 
+ </xs:complexType> 
+
+FailedMailbox: An element of type FailedSearchMailboxType, as defined in section 2.2.4.4, that 
+specifies a failed search. 
+
+2.2.4.2 ArrayOfMailboxHoldStatusType 
+
+Namespace: http://schemas.microsoft.com/exchange/services/2006/types 
+
+The ArrayOfMailboxHoldStatusType complex type specifies an array of mailbox hold statuses. 
+
+ <xs:complexType name="ArrayOfMailboxHoldStatusType" 
+xmlns:xs="http://www.w3.org/2001/XMLSchema"> 
+  <xs:sequence> 
+
+12 / 74 
+
+[MS-OXWSEDISC] - v20250520 
+Electronic Discovery (eDiscovery) Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+    <xs:element minOccurs="0" maxOccurs="unbounded" name="MailboxHoldStatus" 
+type="t:MailboxHoldStatusType"/> 
+  </xs:sequence> 
+ </xs:complexType> 
+
+MailboxHoldStatus: An element of type MailboxHoldStatusType, as defined in section 2.2.4.6, 
+that specifies the hold status of the mailbox. 
+
+2.2.4.3 ArrayOfSearchableMailboxesType 
+
+Namespace: http://schemas.microsoft.com/exchange/services/2006/types 
+
+The ArrayOfSearchableMailboxesType complex type specifies an array of mailbox entities 
+returned from the GetSearchableMailboxes operation. 
+
+ <xs:complexType name="ArrayOfSearchableMailboxesType" 
+xmlns:xs="http://www.w3.org/2001/XMLSchema"> 
+  <xs:sequence> 
+    <xs:element minOccurs="0" maxOccurs="unbounded" name="SearchableMailbox" 
+type="t:SearchableMailboxType"/> 
+  </xs:sequence> 
+ </xs:complexType> 
+
+SearchableMailbox: An element of type SearchableMailboxType, as defined in section 2.2.4.7, 
+that represents the distribution list or mailbox entity returned from the GetSearchableMailboxes 
+operation.  
+
+2.2.4.4 FailedSearchMailboxType 
+
+Namespace: http://schemas.microsoft.com/exchange/services/2006/types 
+
+The FailedSearchMailboxType complex type represents a failed search of a mailbox. 
+
+ <xs:complexType name="FailedSearchMailboxType" xmlns:xs="http://www.w3.org/2001/XMLSchema"> 
+  <xs:sequence> 
+    <xs:element minOccurs="1" maxOccurs="1" name="Mailbox" type="xs:string"/> 
+    <xs:element minOccurs="1" maxOccurs="1" name="ErrorCode" type="xs:int"/> 
+    <xs:element minOccurs="1" maxOccurs="1" name="ErrorMessage" type="xs:string"/> 
+    <xs:element minOccurs="1" maxOccurs="1" name="IsArchive" type="xs:boolean"/> 
+  </xs:sequence> 
+ </xs:complexType> 
+
+Mailbox:  An element of type string, as defined in [XMLSCHEMA2] section 3.2.1, that contains an 
+identifier for the mailbox.  
+
+ErrorCode: An element of type int, as defined in [XMLSCHEMA2] section 3.3.17, that contains the 
+error code of the failed search.<1> 
+
+ErrorMessage: An element of type string that contains the error message of the failed search.  
+
+IsArchive: An element of type boolean, as defined in [XMLSCHEMA2] section 3.2.2, that indicates 
+whether the mailbox is an archive mailbox. 
+
+2.2.4.5 MailboxHoldResultType 
+
+Namespace: http://schemas.microsoft.com/exchange/services/2006/types 
+
+13 / 74 
+
+[MS-OXWSEDISC] - v20250520 
+Electronic Discovery (eDiscovery) Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+The MailboxHoldResultType complex type specifies the result of a mailbox hold. 
+
+ <xs:complexType name="MailboxHoldResultType" xmlns:xs="http://www.w3.org/2001/XMLSchema"> 
+  <xs:sequence> 
+    <xs:element name="HoldId" type="xs:string"/> 
+    <xs:element minOccurs="0" name="Query" type="xs:string"/> 
+    <xs:element name="MailboxHoldStatuses" type="t:ArrayOfMailboxHoldStatusType"/> 
+  </xs:sequence> 
+ </xs:complexType> 
+
+HoldId: An element of type string, as defined in [XMLSCHEMA2] 3.2.1, that represents the hold 
+identifier. 
+
+Query: An element of type string that represents a search query. 
+
+MailboxHoldStatuses: An element of type ArrayOfMailboxHoldStatusType, as defined in section 
+2.2.4.2, that contains an array of mailbox hold statuses. 
+
+2.2.4.6 MailboxHoldStatusType 
+
+Namespace: http://schemas.microsoft.com/exchange/services/2006/types 
+
+The MailboxHoldStatusType complex type specifies the status of a mailbox hold. 
+
+ <xs:complexType name="MailboxHoldStatusType" xmlns:xs="http://www.w3.org/2001/XMLSchema"> 
+  <xs:sequence> 
+    <xs:element minOccurs="1" maxOccurs="1" name="Mailbox" type="xs:string"/> 
+    <xs:element minOccurs="1" maxOccurs="1" name="Status" type="t:HoldStatusType"/> 
+    <xs:element minOccurs="0" maxOccurs="1" name="AdditionalInfo" type="xs:string"/> 
+  </xs:sequence> 
+ </xs:complexType> 
+
+Mailbox: An element of type string, as defined in [XMLSCHEMA2] section 3.2.1., that contains an 
+identifier for the mailbox. 
+
+Status: An element of type HoldStatusType, as defined in section 2.2.5.1, that contains the hold 
+status for a mailbox. 
+
+AdditionalInfo: An element of type string that represents additional information. 
+
+2.2.4.7 SearchableMailboxType 
+
+Namespace: http://schemas.microsoft.com/exchange/services/2006/types 
+
+The SearchableMailboxType complex type specifies the mailbox entity returned from the 
+GetSearchableMailboxes operation specified in section 3.1.4.3. 
+
+ <xs:complexType name="SearchableMailboxType" xmlns:xs="http://www.w3.org/2001/XMLSchema"> 
+  <xs:sequence> 
+    <xs:element minOccurs="1" maxOccurs="1" name="Guid" type="t:GuidType"/> 
+    <xs:element minOccurs="1" maxOccurs="1" name="PrimarySmtpAddress" type="xs:string"/> 
+    <xs:element minOccurs="1" maxOccurs="1" name="IsExternalMailbox" type="xs:boolean"/> 
+    <xs:element minOccurs="1" maxOccurs="1" name="ExternalEmailAddress" type="xs:string"/> 
+    <xs:element minOccurs="1" maxOccurs="1" name="DisplayName" type="xs:string"/> 
+    <xs:element minOccurs="1" maxOccurs="1" name="IsMembershipGroup" type="xs:boolean"/> 
+    <xs:element minOccurs="1" maxOccurs="1" name="ReferenceId" type="xs:string"/> 
+  </xs:sequence> 
+ </xs:complexType> 
+
+14 / 74 
+
+[MS-OXWSEDISC] - v20250520 
+Electronic Discovery (eDiscovery) Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Guid: An element of type GuidType, as defined in [MS-OXWSXPROP] section 2.1.7, that contains the 
+GUID of the mailbox. 
+
+PrimarySmtpAddress: An element of type string, as defined in [XMLSCHEMA2] section 3.2.1, that 
+represents the primary Simple Mail Transfer Protocol (SMTP) address of the mailbox. 
+
+IsExternalMailbox: An element of type boolean, as defined in [XMLSCHEMA2] section 3.2.2, that 
+indicates whether the mailbox is an external mailbox.  
+
+ExternalEmailAddress: An element of type string that contains the external email address of the 
+mailbox.  
+
+DisplayName: An element of type string that specifies the name of the mailbox. 
+
+IsMembershipGroup: An element of type boolean that indicates whether the entity is a mailbox or 
+a distribution list. True indicates a distribution list; otherwise, false. 
+
+ReferenceId: An element of type string that contains the reference identifier for the mailbox. 
+
+2.2.5 Simple Types 
+
+The following table summarizes the set of common XML schema simple type definitions defined by 
+this specification. XML schema simple type definitions that are specific to a particular operation are 
+described with the operation. 
+
+Simple type Description 
+
+HoldStatusType The HoldStatusType simple type specifies the hold status. 
+
+ 
+
+2.2.5.1 HoldStatusType 
+
+Namespace: http://schemas.microsoft.com/exchange/services/2006/types 
+
+The HoldStatusType simple type specifies the hold status. 
+
+ <xs:simpleType name="HoldStatusType" xmlns:xs="http://www.w3.org/2001/XMLSchema"> 
+  <xs:restriction base="xs:string"> 
+    <xs:enumeration value="NotOnHold"/> 
+    <xs:enumeration value="Pending"/> 
+    <xs:enumeration value="OnHold"/> 
+    <xs:enumeration value="PartialHold"/> 
+    <xs:enumeration value="Failed"/> 
+  </xs:restriction> 
+ </xs:simpleType> 
+
+The following table specifies the allowable values for the HoldStatusType simple type. 
+
+Value Meaning 
+
+NotOnHold The mailbox is not on hold. 
+
+Pending Placing or releasing a hold is in progress. 
+
+OnHold The hold was successfully applied to the mailbox. 
+
+PartialHold The hold was successfully applied to some mailboxes but not to all mailboxes. 
+
+15 / 74 
+
+[MS-OXWSEDISC] - v20250520 
+Electronic Discovery (eDiscovery) Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Value Meaning 
+
+Failed The hold failed to apply to the mailbox. 
+
+ 
+
+2.2.6 Attributes 
+
+This specification does not define any common XML schema attribute definitions. 
+
+2.2.7 Groups 
+
+This specification does not define any common XML schema group definitions. 
+
+2.2.8 Attribute Groups 
+
+This specification does not define any common XML schema attribute group definitions. 
+
+16 / 74 
+
+[MS-OXWSEDISC] - v20250520 
+Electronic Discovery (eDiscovery) Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+3 Protocol Details 
+
+The client side of this protocol is simply a pass-through. That is, no additional timers or other state is 
+required on the client side of this protocol. Calls made by the higher-layer protocol or application are 
+passed directly to the transport, and the results returned by the transport are passed directly back to 
+the higher-layer protocol or application. 
+
+In the following sections, the schema definition might be less restrictive than the processing rules 
+imposed by the protocol. The WSDL in this specification matches the WSDL that shipped with the 
+product and provides a base description of the schema. The text that introduces the WSDL specifies 
+additional restrictions that reflect actual Microsoft product behavior. For example, the schema 
+definition might allow for an element to be empty, null, or not present but the behavior of the protocol 
+as specified restricts the same elements to being non-empty, not null and present. 
+
+3.1 ExchangeServicePortType Server Details 
+
+This protocol defines a single WSDL port type, the ExchangeServicePortType, and a set of operations 
+that enable clients to perform eDiscovery searches of mailboxes and to get and set holds on 
+mailboxes. 
+
+3.1.1 Abstract Data Model 
+
+None. 
+
+3.1.2 Timers 
+
+None. 
+
+3.1.3 Initialization 
+
+None. 
+
+3.1.4 Message Processing Events and Sequencing Rules 
+
+The following table summarizes the list of operations as defined by this specification. 
+
+Operation Description 
+
+The GetDiscoverySearchConfiguration operation retrieves a search 
+GetDiscoverySearchConfiguration 
+
+configuration for eDiscovery. 
+
+The GetHoldOnMailboxes operation retrieves the status of a query-
+based hold, which is set by using the SetHoldOnMailboxes operation, 
+
+GetHoldOnMailboxes 
+as specified in section 3.1.4.5. A query-based hold is used to preserve 
+items based on specified query parameters. 
+
+The GetSearchableMailboxes operation retrieves a list of mailboxes 
+GetSearchableMailboxes 
+
+on which the client has permission to search or to perform eDiscovery. 
+
+The SearchMailboxes operation searches for items in the specified 
+SearchMailboxes 
+
+mailboxes that match query keywords. 
+
+The SetHoldOnMailboxes operation sets a query-based hold on 
+SetHoldOnMailboxes 
+
+mailboxes. 
+
+ 
+
+17 / 74 
+
+[MS-OXWSEDISC] - v20250520 
+Electronic Discovery (eDiscovery) Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+3.1.4.1 GetDiscoverySearchConfiguration 
+
+The GetDiscoverySearchConfiguration operation retrieves a search configuration for eDiscovery. 
+
+The following is the WSDL port type specification of the GetDiscoverySearchConfiguration WSDL 
+operation. 
+
+ <wsdl:operation name="GetDiscoverySearchConfiguration" 
+xmlns:wsdl="http://schemas.xmlsoap.org/wsdl/"> 
+  <wsdl:input message="tns:GetDiscoverySearchConfigurationSoapIn"/> 
+  <wsdl:output message="tns:GetDiscoverySearchConfigurationSoapOut"/> 
+ </wsdl:operation> 
+
+The following is the WSDL binding specification of the GetDiscoverySearchConfiguration operation. 
+
+ <wsdl:operation name="GetDiscoverySearchConfiguration" 
+xmlns:wsdl="http://schemas.xmlsoap.org/wsdl/"> 
+  <soap:operation 
+soapAction="http://schemas.microsoft.com/exchange/services/2006/messages/GetDiscoverySearchCo
+nfiguration" xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/"/> 
+  <wsdl:input> 
+    <soap:header message="tns:GetDiscoverySearchConfigurationSoapIn" part="RequestVersion" 
+use="literal" xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/"/> 
+    <soap:header message="tns:GetDiscoverySearchConfigurationSoapIn" part="ManagementRole" 
+use="literal" xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/"/> 
+    <soap:body use="literal" parts="request" 
+xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/"/> 
+  </wsdl:input> 
+  <wsdl:output> 
+    <soap:body use="literal" parts="GetDiscoverySearchConfigurationResult" 
+xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/"/> 
+    <soap:header message="tns:GetDiscoverySearchConfigurationSoapOut" part="ServerVersion" 
+use="literal" xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/"/> 
+  </wsdl:output> 
+ </wsdl:operation> 
+
+The client sends a GetDiscoverySearchConfigurationSoapIn request WSDL message, as 
+specified in section 3.1.4.1.1.1, and the server responds with a 
+GetDiscoverySearchConfigurationSoapOut response, as specified in section 3.1.4.1.1.2. 
+
+3.1.4.1.1 Messages 
+
+The following table summarizes the set of WSDL message definitions that are specific to this 
+operation. 
+
+Message Description 
+
+GetDiscoverySearchConfigurationSoapIn Specifies the request to retrieve the search configuration. 
+
+Specifies the response to the 
+GetDiscoverySearchConfigurationSoapOut GetDiscoverySearchConfigurationSoapIn request message 
+
+(section 3.1.4.1.1.1). 
+
+ 
+
+3.1.4.1.1.1 GetDiscoverySearchConfigurationSoapIn 
+
+The GetDiscoverySearchConfigurationSoapIn WSDL message specifies the request to retrieve 
+the search configuration. 
+
+18 / 74 
+
+[MS-OXWSEDISC] - v20250520 
+Electronic Discovery (eDiscovery) Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+The following is the GetDiscoverySearchConfigurationSoapIn WSDL message specification. 
+
+ <wsdl:message name="GetDiscoverySearchConfigurationSoapIn" 
+xmlns:wsdl="http://schemas.xmlsoap.org/wsdl/"> 
+  <wsdl:part name="request" element="tns:GetDiscoverySearchConfiguration"/> 
+  <wsdl:part name="RequestVersion" element="t:RequestServerVersion"/> 
+  <wsdl:part name="ManagementRole" element="t:ManagementRole"/> 
+ </wsdl:message> 
+
+The GetDiscoverySearchConfigurationSoapIn WSDL message is the input message for the SOAP 
+action 
+http://schemas.microsoft.com/exchange/services/2006/messages/GetDiscoverySearchConfiguration. 
+
+The parts of the GetDiscoverySearchConfigurationSoapIn WSDL message are described in the 
+following table. 
+
+Part name Element/type Description 
+
+GetDiscoverySearchConfiguration Specifies the SOAP body of the request for the 
+request 
+
+ search configuration. 
+
+Specifies a SOAP header that identifies the 
+RequestServerVersion schema version for the 
+
+RequestVersion 
+([MS-OXWSCDATA] section 2.2.3.9) GetDiscoverySearchConfigurationSoapIn 
+
+WSDL message. 
+
+ManagementRole Specifies a SOAP header that identifies a user or 
+ManagementRole 
+
+([MS-OXWSCDATA] section 2.2.3.7) application role. 
+
+ 
+
+3.1.4.1.1.2 GetDiscoverySearchConfigurationSoapOut 
+
+The GetDiscoverySearchConfigurationSoapOut WSDL message specifies the response to the 
+GetDiscoverySearchConfigurationSoapIn request message specified in section 3.1.4.1.1.1. 
+
+The following is the GetDiscoverySearchConfigurationSoapOut WSDL message specification. 
+
+ <wsdl:message name="GetDiscoverySearchConfigurationSoapOut" 
+xmlns:wsdl="http://schemas.xmlsoap.org/wsdl/"> 
+  <wsdl:part name="GetDiscoverySearchConfigurationResult" 
+element="tns:GetDiscoverySearchConfigurationResponse"/> 
+  <wsdl:part name="ServerVersion" element="t:ServerVersionInfo"/> 
+ </wsdl:message> 
+
+The GetDiscoverySearchConfigurationSoapOut WSDL message is the output message for the 
+SOAP action 
+http://schemas.microsoft.com/exchange/services/2006/messages/GetDiscoverySearchConfiguration. 
+
+The parts of the GetDiscoverySearchConfigurationSoapOut WSDL message are described in the 
+following table. 
+
+Part name Element/type Description 
+
+Specifies the 
+GetDiscoverySearchConfigurationResponse 
+
+GetDiscoverySearchConfigurationResult SOAP body of 
+ the response 
+
+that contains 
+
+19 / 74 
+
+[MS-OXWSEDISC] - v20250520 
+Electronic Discovery (eDiscovery) Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Part name Element/type Description 
+
+the requested 
+configuration. 
+
+Specifies a 
+SOAP header 
+
+ServerVersionInfo that identifies 
+ServerVersion 
+
+([MS-OXWSCDATA] section 2.2.3.10) the server 
+version for the 
+response. 
+
+ 
+
+A successful GetDiscoverySearchConfiguration request, as specified in section 3.1.4.1.2.1 returns 
+a GetDiscoverySearchConfigurationResponse element with the ResponseClass (as specified in 
+[MS-OXWSCDATA] section 2.2.4.65) attribute set to "Success". The ResponseCode (as specified in 
+[MS-OXWSCDATA] section 2.2.4.65) element of the GetDiscoverySearchConfigurationResponse 
+element is set to "NoError". 
+
+If the GetDiscoverySearchConfiguration request is not successful, it returns a 
+GetDiscoverySearchConfigurationResponse element with the ResponseClass (as specified in 
+[MS-OXWSCDATA] section 2.2.4.65) attribute set to "Error". The ResponseCode (as specified in [MS-
+OXWSCDATA] section 2.2.4.65) element of the GetDiscoverySearchConfigurationResponse 
+element is set to one of the common errors defined in [MS-OXWSCDATA] section 2.2.5.24. 
+
+3.1.4.1.2 Elements 
+
+The following table summarizes the XML schema element definitions that are specific to this 
+operation. 
+
+Element Description 
+
+The input data for the GetDiscoverySearchConfiguration 
+GetDiscoverySearchConfiguration 
+
+WSDL operation. 
+
+The result data for the GetDiscoverySearchConfiguration 
+GetDiscoverySearchConfigurationResponse 
+
+WSDL operation. 
+
+ 
+
+3.1.4.1.2.1 GetDiscoverySearchConfiguration 
+
+The GetDiscoverySearchConfiguration element specifies the input data for the 
+GetDiscoverySearchConfiguration WSDL operation. 
+
+ <xs:element name="GetDiscoverySearchConfiguration" 
+type="tns:GetDiscoverySearchConfigurationType" xmlns:xs="http://www.w3.org/2001/XMLSchema"/> 
+
+3.1.4.1.2.2 GetDiscoverySearchConfigurationResponse 
+
+The GetDiscoverySearchConfigurationResponse element specifies the result data for the 
+GetDiscoverySearchConfiguration WSDL operation. 
+
+ <xs:element name="GetDiscoverySearchConfigurationResponse" 
+type="tns:GetDiscoverySearchConfigurationResponseMessageType" 
+xmlns:xs="http://www.w3.org/2001/XMLSchema"/> 
+
+20 / 74 
+
+[MS-OXWSEDISC] - v20250520 
+Electronic Discovery (eDiscovery) Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+3.1.4.1.3 Complex Types 
+
+The following table summarizes the XML schema complex type definitions that are specific to this 
+operation. 
+
+Complex type Description 
+
+Specifies an array of 
+DiscoverySearchConfigurationType complex 
+
+ArrayOfDiscoverySearchConfigurationType 
+types (section 3.1.4.1.3.4) returned from the 
+GetDiscoverySearchConfiguration operation. 
+
+Specifies the search configuration returned from 
+DiscoverySearchConfigurationType the GetDiscoverySearchConfiguration 
+
+operation. 
+
+Specifies the response message for a 
+GetDiscoverySearchConfigurationResponseMessageType GetDiscoverySearchConfiguration operation 
+
+(section 3.1.4.1). 
+
+Specifies a request to retrieve the search 
+GetDiscoverySearchConfigurationType 
+
+configuration. 
+
+ 
+
+3.1.4.1.3.1 GetDiscoverySearchConfigurationType 
+
+Namespace: http://schemas.microsoft.com/exchange/services/2006/messages 
+
+The GetDiscoverySearchConfigurationType complex type specifies a request to retrieve the search 
+configuration. This type extends the BaseRequestType complex type, as described in [MS-
+OXWSCDATA] section 2.2.4.17. 
+
+ <xs:complexType name="GetDiscoverySearchConfigurationType" 
+xmlns:xs="http://www.w3.org/2001/XMLSchema"> 
+  <xs:complexContent mixed="false"> 
+    <xs:extension base="tns:BaseRequestType"> 
+      <xs:sequence> 
+        <xs:element minOccurs="0" name="SearchId" type="xs:string"/> 
+        <xs:element minOccurs="0" name="ExpandGroupMembership" type="xs:boolean"/> 
+        <xs:element minOccurs="0" name="InPlaceHoldConfigurationOnly" type="xs:boolean"/> 
+      </xs:sequence> 
+    </xs:extension> 
+  </xs:complexContent> 
+ </xs:complexType> 
+
+SearchId:  An element of type string, as defined in [XMLSCHEMA2] section 3.2.1, that represents 
+the identifier of the search.  
+
+ExpandGroupMembership:  An element of type boolean, as defined in [XMLSCHEMA2] section 
+3.2.2, that specifies whether to expand the group membership. The value "true" specifies extending 
+the group membership. 
+
+InPlaceHoldConfigurationOnly: An element of type boolean that specifies whether to include the 
+in-place hold configuration. An in-place hold preserves all mailbox content, including deleted items and 
+original versions of modified items. The value "true" specifies that the in-place hold configuration is 
+included. 
+
+3.1.4.1.3.2 GetDiscoverySearchConfigurationResponseMessageType 
+
+Namespace: http://schemas.microsoft.com/exchange/services/2006/messages 
+
+21 / 74 
+
+[MS-OXWSEDISC] - v20250520 
+Electronic Discovery (eDiscovery) Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+The GetDiscoverySearchConfigurationResponseMessageType complex type specifies the 
+response message for a GetDiscoverySearchConfiguration operation, as specified in section 
+3.1.4.1. This type extends the ResponseMessageType complex type, as specified by [MS-
+OXWSCDATA] section 2.2.4.65. 
+
+ <xs:complexType name="GetDiscoverySearchConfigurationResponseMessageType" 
+xmlns:xs="http://www.w3.org/2001/XMLSchema"> 
+  <xs:complexContent mixed="false"> 
+    <xs:extension base="tns:ResponseMessageType"> 
+      <xs:sequence> 
+        <xs:element name="DiscoverySearchConfigurations" 
+type="t:ArrayOfDiscoverySearchConfigurationType"/> 
+      </xs:sequence> 
+    </xs:extension> 
+  </xs:complexContent> 
+ </xs:complexType> 
+
+DiscoverySearchConfigurations: An element of type 
+ArrayOfDiscoverySearchConfigurationType, as defined in section 3.1.4.1.3.3, that contains an 
+array of search configurations.  
+
+3.1.4.1.3.3 ArrayOfDiscoverySearchConfigurationType 
+
+Namespace: http://schemas.microsoft.com/exchange/services/2006/types 
+
+The ArrayOfDiscoverySearchConfigurationType complex type specifies an array of 
+DiscoverySearchConfigurationType complex types, as specified in section 3.1.4.1.3.4, returned 
+from the GetDiscoverySearchConfiguration operation specified in section 3.1.4.1. 
+
+ <xs:complexType name="ArrayOfDiscoverySearchConfigurationType" 
+xmlns:xs="http://www.w3.org/2001/XMLSchema"> 
+  <xs:sequence> 
+    <xs:element minOccurs="0" maxOccurs="unbounded" name="DiscoverySearchConfiguration" 
+type="t:DiscoverySearchConfigurationType"/> 
+  </xs:sequence> 
+ </xs:complexType> 
+
+DiscoverySearchConfiguration: An element of type DiscoverySearchConfigurationType, as 
+defined in section 3.1.4.1.3.4, that represents the search configuration returned from the 
+GetDiscoverySearchConfiguration operation specified in section 3.1.4.1. 
+
+3.1.4.1.3.4 DiscoverySearchConfigurationType 
+
+Namespace: http://schemas.microsoft.com/exchange/services/2006/types 
+
+The DiscoverySearchConfigurationType complex type specifies the search configuration returned 
+from the GetDiscoverySearchConfiguration operation specified in section 3.1.4.1. 
+
+ <xs:complexType name="DiscoverySearchConfigurationType" 
+xmlns:xs="http://www.w3.org/2001/XMLSchema"> 
+  <xs:sequence> 
+    <xs:element minOccurs="1" maxOccurs="1" name="SearchId" type="xs:string"/> 
+    <xs:element minOccurs="1" maxOccurs="1" name="SearchQuery" type="xs:string"/> 
+    <xs:element minOccurs="0" maxOccurs="1" name="SearchableMailboxes" 
+type="t:ArrayOfSearchableMailboxesType"/> 
+    <xs:element minOccurs="0" maxOccurs="1" name="InPlaceHoldIdentity" type="xs:string"/> 
+    <xs:element minOccurs="0" maxOccurs="1" name="ManagedByOrganization" type="xs:string"/> 
+    <xs:element minOccurs="0" maxOccurs="1" name="Language" type="xs:string"/> 
+  </xs:sequence> 
+
+22 / 74 
+
+[MS-OXWSEDISC] - v20250520 
+Electronic Discovery (eDiscovery) Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+ </xs:complexType> 
+
+SearchId: An element of type string, as defined in [XMLSCHEMA2] section 3.2.1, that represents the 
+search identifier.  
+
+SearchQuery: An element of type string that represents the search query.  
+
+SearchableMailboxes: An element of type ArrayOfSearchableMailboxesType, as defined in 
+section 2.2.4.3, that specifies the list of searchable mailboxes. 
+
+InPlaceHoldIdentity: An element of type string that specifies the identity of the in-place hold.  
+
+ManagedByOrganization: An element of type string that specifies the managing organization.  
+
+Language: An element of type string that specifies the language of the search.  
+
+3.1.4.1.4 Simple Types 
+
+None. 
+
+3.1.4.1.5 Attributes 
+
+None. 
+
+3.1.4.1.6 Groups 
+
+None. 
+
+3.1.4.1.7 Attribute Groups 
+
+None. 
+
+3.1.4.2 GetHoldOnMailboxes 
+
+The GetHoldOnMailboxes operation retrieves the status of a query-based hold, which is set by using 
+the SetHoldOnMailboxes operation, as specified in section 3.1.4.5. A query-based hold is used to 
+preserve items based on specified query parameters. 
+
+The following is the WSDL port type specification of the GetHoldOnMailboxes WSDL operation. 
+
+ <wsdl:operation name="GetHoldOnMailboxes" xmlns:wsdl="http://schemas.xmlsoap.org/wsdl/"> 
+  <wsdl:input message="tns:GetHoldOnMailboxesSoapIn"/> 
+  <wsdl:output message="tns:GetHoldOnMailboxesSoapOut"/> 
+ </wsdl:operation> 
+
+The following is the WSDL binding specification of the GetHoldOnMailboxes operation. 
+
+ <wsdl:operation name="GetHoldOnMailboxes" xmlns:wsdl="http://schemas.xmlsoap.org/wsdl/"> 
+  <soap:operation 
+soapAction="http://schemas.microsoft.com/exchange/services/2006/messages/GetHoldOnMailboxes" 
+xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/"/> 
+  <wsdl:input> 
+    <soap:header message="tns:GetHoldOnMailboxesSoapIn" part="RequestVersion" use="literal" 
+xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/"/> 
+    <soap:header message="tns:GetHoldOnMailboxesSoapIn" part="ManagementRole" use="literal" 
+xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/"/> 
+    <soap:body use="literal" parts="request" 
+xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/"/> 
+
+23 / 74 
+
+[MS-OXWSEDISC] - v20250520 
+Electronic Discovery (eDiscovery) Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+  </wsdl:input> 
+  <wsdl:output> 
+    <soap:body use="literal" parts="GetHoldOnMailboxesResult" 
+xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/"/> 
+    <soap:header message="tns:GetHoldOnMailboxesSoapOut" part="ServerVersion" use="literal" 
+xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/"/> 
+  </wsdl:output> 
+ </wsdl:operation> 
+
+The client sends a GetHoldOnMailboxesSoapIn request WSDL message, as specified in section 
+3.1.4.2.1.1 and the server responds with a GetHoldOnMailboxesSoapOut response, as specified in 
+section 3.1.4.2.1.2. 
+
+3.1.4.2.1 Messages 
+
+The following table summarizes the set of WSDL message definitions that are specific to this 
+operation. 
+
+Message Description 
+
+GetHoldOnMailboxesSoapIn Specifies the request to retrieve the status of a query-based hold. 
+
+Specifies the response to the GetHoldOnMailboxesSoapIn request specified 
+GetHoldOnMailboxesSoapOut 
+
+in section 3.1.4.2.1.1. 
+
+ 
+
+3.1.4.2.1.1 GetHoldOnMailboxesSoapIn 
+
+The GetHoldOnMailboxesSoapIn WSDL message specifies the request to retrieve the status of a 
+query-based hold. 
+
+The following is the GetHoldOnMailboxesSoapIn WSDL message specification. 
+
+ <wsdl:message name="GetHoldOnMailboxesSoapIn" xmlns:wsdl="http://schemas.xmlsoap.org/wsdl/"> 
+  <wsdl:part name="request" element="tns:GetHoldOnMailboxes"/> 
+  <wsdl:part name="RequestVersion" element="t:RequestServerVersion"/> 
+  <wsdl:part name="ManagementRole" element="t:ManagementRole"/> 
+ </wsdl:message> 
+
+The GetHoldOnMailboxesSoapIn WSDL message is the input message for the SOAP action 
+http://schemas.microsoft.com/exchange/services/2006/messages/GetHoldOnMailboxes. 
+
+The parts of the GetHoldOnMailboxesSoapIn WSDL message are described in the following table. 
+
+Part name Element/type Description 
+
+GetHoldOnMailboxes Specifies the SOAP body of the request to get the status of 
+request 
+
+ a query-based hold. 
+
+RequestServerVersion 
+Specifies a SOAP header that identifies the schema version 
+
+RequestVersion ([MS-OXWSCDATA] section for the GetHoldOnMailboxesSoapIn WSDL message.  
+2.2.3.9) 
+
+ManagementRole 
+Specifies a SOAP header that identifies a user or application 
+
+ManagementRole ([MS-OXWSCDATA] section role. 
+2.2.3.7) 
+
+24 / 74 
+
+[MS-OXWSEDISC] - v20250520 
+Electronic Discovery (eDiscovery) Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+ 
+
+3.1.4.2.1.2 GetHoldOnMailboxesSoapOut 
+
+The GetHoldOnMailboxesSoapOut WSDL message specifies the response to the 
+GetHoldOnMailboxesSoapIn request specified in section 3.1.4.2.1.1. 
+
+The following is the GetHoldOnMailboxesSoapOut WSDL message specification. 
+
+ <wsdl:message name="GetHoldOnMailboxesSoapOut" xmlns:wsdl="http://schemas.xmlsoap.org/wsdl/"> 
+  <wsdl:part name="GetHoldOnMailboxesResult" element="tns:GetHoldOnMailboxesResponse"/> 
+  <wsdl:part name="ServerVersion" element="t:ServerVersionInfo"/> 
+ </wsdl:message> 
+
+The GetHoldOnMailboxesSoapOut WSDL message is the output message for the SOAP action 
+http://schemas.microsoft.com/exchange/services/2006/messages/GetHoldOnMailboxes. 
+
+The parts of the GetHoldOnMailboxesSoapOut WSDL message are described in the following table. 
+
+Part name Element/type Description 
+
+GetHoldOnMailboxesResponse Specifies the SOAP body of the response 
+GetHoldOnMailboxesResult 
+
+ that contains the result of the request. 
+
+ServerVersionInfo 
+Specifies a SOAP header that identifies 
+
+ServerVersion ([MS-OXWSCDATA] section the server version for the response. 
+2.2.3.10) 
+
+ 
+
+A successful GetHoldOnMailboxes request, as specified in section 3.1.4.2.2.1, returns a 
+GetHoldOnMailboxesResponse element with the ResponseClass (as specified in [MS-
+OXWSCDATA] section 2.2.4.65) attribute set to "Success". ResponseCode (as specified in [MS-
+OXWSCDATA] section 2.2.4.65) element of the GetHoldOnMailboxesResponse element is set to 
+"NoError". 
+
+If the GetHoldOnMailboxes request is not successful, it returns a GetHoldOnMailboxesResponse 
+element with the ResponseClass (as specified in [MS-OXWSCDATA] section 2.2.4.65) attribute set to 
+"Error". The ResponseCode (as specified in [MS-OXWSCDATA] section 2.2.4.65) element of the 
+GetHoldOnMailboxesResponse element is set to one of the common errors defined in [MS-
+OXWSCDATA] section 2.2.5.24. 
+
+3.1.4.2.2 Elements 
+
+The following table summarizes the XML schema element definitions that are specific to this 
+operation. 
+
+Element Description 
+
+GetHoldOnMailboxes The input data for the GetHoldOnMailboxes WSDL operation. 
+
+GetHoldOnMailboxesResponse The result data for the GetHoldOnMailboxes WSDL operation. 
+
+ 
+
+3.1.4.2.2.1 GetHoldOnMailboxes 
+
+25 / 74 
+
+[MS-OXWSEDISC] - v20250520 
+Electronic Discovery (eDiscovery) Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+The GetHoldOnMailboxes element specifies the input data for the GetHoldOnMailboxes WSDL 
+operation. 
+
+ <xs:element name="GetHoldOnMailboxes" type="tns:GetHoldOnMailboxesType" 
+xmlns:xs="http://www.w3.org/2001/XMLSchema"/> 
+
+3.1.4.2.2.2 GetHoldOnMailboxesResponse 
+
+The GetHoldOnMailboxesResponse element specifies the result data for the GetHoldOnMailboxes 
+WSDL operation. 
+
+ <xs:element name="GetHoldOnMailboxesResponse" 
+type="tns:GetHoldOnMailboxesResponseMessageType" 
+xmlns:xs="http://www.w3.org/2001/XMLSchema"/> 
+
+3.1.4.2.3 Complex Types 
+
+The following table summarizes the XML schema complex type definitions that are specific to this 
+operation. 
+
+Complex type Description 
+
+Specifies the response message for a GetHoldOnMailboxes 
+GetHoldOnMailboxesResponseMessageType 
+
+operation, as specified in section 3.1.4.2. 
+
+Specifies a request to retrieve the status of a query-based 
+GetHoldOnMailboxesType 
+
+hold. 
+
+ 
+
+3.1.4.2.3.1 GetHoldOnMailboxesType 
+
+Namespace: http://schemas.microsoft.com/exchange/services/2006/messages 
+
+The GetHoldOnMailboxesType complex type specifies a request to retrieve the status of query-
+based holds on mailboxes. The GetHoldOnMailboxesType complex type extends the 
+BaseRequestType complex type, as described in [MS-OXWSCDATA] section 2.2.4.17. 
+
+ <xs:complexType name="GetHoldOnMailboxesType" xmlns:xs="http://www.w3.org/2001/XMLSchema"> 
+  <xs:complexContent mixed="false"> 
+    <xs:extension base="tns:BaseRequestType"> 
+      <xs:sequence> 
+        <xs:element minOccurs="1" name="HoldId" type="xs:string"/> 
+      </xs:sequence> 
+    </xs:extension> 
+  </xs:complexContent> 
+ </xs:complexType> 
+
+HoldId:  An element of type string, as defined in [XMLSCHEMA2] section 3.2.1, that represents the 
+identifier of the hold to be queried. 
+
+3.1.4.2.3.2 GetHoldOnMailboxesResponseMessageType 
+
+Namespace: http://schemas.microsoft.com/exchange/services/2006/messages 
+
+26 / 74 
+
+[MS-OXWSEDISC] - v20250520 
+Electronic Discovery (eDiscovery) Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+The GetHoldOnMailboxesResponseMessageType complex type specifies the response message for 
+a GetHoldOnMailboxes operation, as specified in section 3.1.4.2. This type extends the 
+ResponseMessageType complex type, as specified in [MS-OXWSCDATA] section 2.2.4.65. 
+
+ <xs:complexType name="GetHoldOnMailboxesResponseMessageType" 
+xmlns:xs="http://www.w3.org/2001/XMLSchema"> 
+  <xs:complexContent mixed="false"> 
+    <xs:extension base="tns:ResponseMessageType"> 
+      <xs:sequence> 
+        <xs:element minOccurs="0" name="MailboxHoldResult" type="t:MailboxHoldResultType"/> 
+      </xs:sequence> 
+    </xs:extension> 
+  </xs:complexContent> 
+ </xs:complexType> 
+
+MailboxHoldResult: An element of type MailboxHoldResultType, as defined in section 2.2.4.5, 
+that represents the object that contains the hold result information. 
+
+3.1.4.2.4 Simple Types 
+
+None. 
+
+3.1.4.2.5 Attributes 
+
+None. 
+
+3.1.4.2.6 Groups 
+
+None. 
+
+3.1.4.2.7 Attribute Groups 
+
+None. 
+
+3.1.4.3 GetSearchableMailboxes 
+
+The GetSearchableMailboxes operation retrieves a list of mailboxes on which the client has 
+permission to search or to perform eDiscovery. 
+
+The following is the WSDL port type specification of the GetSearchableMailboxes WSDL 
+operation. 
+
+ <wsdl:operation name="GetSearchableMailboxes" xmlns:wsdl="http://schemas.xmlsoap.org/wsdl/"> 
+  <wsdl:input message="tns:GetSearchableMailboxesSoapIn"/> 
+  <wsdl:output message="tns:GetSearchableMailboxesSoapOut"/> 
+ </wsdl:operation> 
+
+The following is the WSDL binding specification of the GetSearchableMailboxes operation. 
+
+ <wsdl:operation name="GetSearchableMailboxes" xmlns:wsdl="http://schemas.xmlsoap.org/wsdl/"> 
+  <soap:operation 
+soapAction="http://schemas.microsoft.com/exchange/services/2006/messages/GetSearchableMailbox
+es" xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/"/> 
+  <wsdl:input> 
+    <soap:header message="tns:GetSearchableMailboxesSoapIn" part="RequestVersion" 
+use="literal" xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/"/> 
+    <soap:header message="tns:GetSearchableMailboxesSoapIn" part="ManagementRole" 
+use="literal" xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/"/> 
+
+27 / 74 
+
+[MS-OXWSEDISC] - v20250520 
+Electronic Discovery (eDiscovery) Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+    <soap:body use="literal" parts="request" 
+xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/"/> 
+  </wsdl:input> 
+  <wsdl:output> 
+    <soap:body use="literal" parts="GetSearchableMailboxesResult" 
+xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/"/> 
+    <soap:header message="tns:GetSearchableMailboxesSoapOut" part="ServerVersion" 
+use="literal" xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/"/> 
+  </wsdl:output> 
+ </wsdl:operation> 
+
+The client sends a GetSearchableMailboxesSoapIn request WSDL message, as specified in 
+section 3.1.4.3.1.1, and the server responds with GetSearchableMailboxesSoapOut response, as 
+specified in section 3.1.4.3.1.2. 
+
+3.1.4.3.1 Messages 
+
+The following table summarizes the set of WSDL message definitions that are specific to this 
+operation. 
+
+Message Description 
+
+GetSearchableMailboxesSoapIn Specifies the request to retrieve searchable mailboxes. 
+
+GetSearchableMailboxesSoapOut Specifies the response to the GetSearchableMailboxesSoapIn request. 
+
+ 
+
+3.1.4.3.1.1 GetSearchableMailboxesSoapIn 
+
+The GetSearchableMailboxesSoapIn WSDL message specifies the request to retrieve searchable 
+mailboxes. 
+
+The following is the GetSearchableMailboxesSoapIn WSDL message specification. 
+
+ <wsdl:message name="GetSearchableMailboxesSoapIn" 
+xmlns:wsdl="http://schemas.xmlsoap.org/wsdl/"> 
+  <wsdl:part name="request" element="tns:GetSearchableMailboxes"/> 
+  <wsdl:part name="RequestVersion" element="t:RequestServerVersion"/> 
+  <wsdl:part name="ManagementRole" element="t:ManagementRole"/> 
+ </wsdl:message> 
+
+The GetSearchableMailboxesSoapIn WSDL message is the input message for the SOAP action 
+http://schemas.microsoft.com/exchange/services/2006/messages/GetSearchableMailboxes. 
+
+The parts of the GetSearchableMailboxesSoapIn WSDL message are described in the following 
+table. 
+
+Part name Element/type Description 
+
+GetSearchableMailboxes Specifies the SOAP body of the request to retrieve 
+request 
+
+ searchable mailboxes. 
+
+RequestServerVersion Specifies a SOAP header that identifies the schema 
+RequestVersion ([MS-OXWSCDATA] section version for the GetSearchableMailboxesSoapIn WSDL 
+
+2.2.3.9) message.  
+
+ManagementRole ManagementRole Specifies a SOAP header that identifies a user or 
+
+28 / 74 
+
+[MS-OXWSEDISC] - v20250520 
+Electronic Discovery (eDiscovery) Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Part name Element/type Description 
+
+([MS-OXWSCDATA] section application role. 
+2.2.3.7) 
+
+ 
+
+3.1.4.3.1.2 GetSearchableMailboxesSoapOut 
+
+The GetSearchableMailboxesSoapOut WSDL message specifies the response to the 
+GetSearchableMailboxesSoapIn request specified in section 3.1.4.3.1.1. 
+
+The following is the GetSearchableMailboxesSoapOut WSDL message specification. 
+
+ <wsdl:message name="GetSearchableMailboxesSoapOut" 
+xmlns:wsdl="http://schemas.xmlsoap.org/wsdl/"> 
+  <wsdl:part name="GetSearchableMailboxesResult" 
+element="tns:GetSearchableMailboxesResponse"/> 
+  <wsdl:part name="ServerVersion" element="t:ServerVersionInfo"/> 
+ </wsdl:message> 
+
+The GetSearchableMailboxesSoapOut WSDL message is the output message for the SOAP action 
+http://schemas.microsoft.com/exchange/services/2006/messages/GetSearchableMailboxes. 
+
+The parts of the GetSearchableMailboxesSoapOut WSDL message are described in the following 
+table. 
+
+Part name Element/type Description 
+
+GetSearchableMailboxesResponse Specifies the SOAP body of the 
+GetSearchableMailboxesResult response that contains the 
+
+ requested information. 
+
+ServerVersionInfo Specifies a SOAP header that 
+ServerVersion identifies the server version for the 
+
+([MS-OXWSCDATA] section 2.2.3.10) response. 
+
+ 
+
+A successful GetSearchableMailboxes request, as specified in section 3.1.4.3.2.1, returns a 
+GetSearchableMailboxesResponse element with the ResponseClass (as specified in [MS-
+OXWSCDATA] section 2.2.4.65) attribute set to "Success". The ResponseCode (as specified in [MS-
+OXWSCDATA] section 2.2.4.65) element of the GetSearchableMailboxesResponse element is set to 
+"NoError". 
+
+If the GetSearchableMailboxes request is not successful, it returns a 
+GetSearchableMailboxesResponse element with the ResponseClass (as specified in [MS-
+OXWSCDATA] section 2.2.4.65) attribute set to "Error". The ResponseCode (as specified in [MS-
+OXWSCDATA] section 2.2.4.65) element of the GetSearchableMailboxesResponse element is set to 
+one of the common errors defined in [MS-OXWSCDATA] section 2.2.5.24. 
+
+3.1.4.3.2 Elements 
+
+The following table summarizes the XML schema element definitions that are specific to this 
+operation. 
+
+29 / 74 
+
+[MS-OXWSEDISC] - v20250520 
+Electronic Discovery (eDiscovery) Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Element Description 
+
+GetSearchableMailboxes The input data for the GetSearchableMailboxes WSDL operation. 
+
+GetSearchableMailboxesResponse The result data for the GetSearchableMailboxes WSDL operation. 
+
+ 
+
+3.1.4.3.2.1 GetSearchableMailboxes 
+
+The GetSearchableMailboxes element specifies the input data for the GetSearchableMailboxes 
+WSDL operation. 
+
+ <xs:element name="GetSearchableMailboxes" type="tns:GetSearchableMailboxesType" 
+xmlns:xs="http://www.w3.org/2001/XMLSchema"/> 
+
+3.1.4.3.2.2 GetSearchableMailboxesResponse 
+
+The GetSearchableMailboxesResponse element specifies the result data for the 
+GetSearchableMailboxes WSDL operation. 
+
+ <xs:element name="GetSearchableMailboxesResponse" 
+type="tns:GetSearchableMailboxesResponseMessageType" 
+xmlns:xs="http://www.w3.org/2001/XMLSchema"/> 
+
+3.1.4.3.3 Complex Types 
+
+The following table summarizes the XML schema complex type definitions that are specific to this 
+operation. 
+
+Complex type Description 
+
+Specifies the response for a GetSearchableMailboxes 
+GetSearchableMailboxesResponseMessageType 
+
+operation, as specified in section 3.1.4.3. 
+
+GetSearchableMailboxesType Specifies a request to retrieve searchable mailboxes. 
+
+ 
+
+3.1.4.3.3.1 GetSearchableMailboxesType 
+
+Namespace: http://schemas.microsoft.com/exchange/services/2006/messages 
+
+The GetSearchableMailboxesType complex type specifies a request to retrieve mailboxes that the 
+client has permission to search or perform eDiscovery on. 
+
+ <xs:complexType name="GetSearchableMailboxesType" 
+xmlns:xs="http://www.w3.org/2001/XMLSchema"> 
+  <xs:complexContent mixed="false"> 
+    <xs:extension base="tns:BaseRequestType"> 
+      <xs:sequence> 
+        <xs:element minOccurs="0" name="SearchFilter" type="xs:string"/> 
+        <xs:element minOccurs="0" name="ExpandGroupMembership" type="xs:boolean"/> 
+      </xs:sequence> 
+    </xs:extension> 
+  </xs:complexContent> 
+ </xs:complexType> 
+
+30 / 74 
+
+[MS-OXWSEDISC] - v20250520 
+Electronic Discovery (eDiscovery) Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+SearchFilter:  An element of type string, as defined in [XMLSCHEMA2] section 3.2.1, that represents 
+a search filter. This element can be empty or contain a specific email address, display name, or 
+other property of the mailbox. 
+
+ExpandGroupMembership:  An element of type boolean, as defined in [XMLSCHEMA2] section 
+3.2.2, that indicates whether to expand the group membership if the instance is a distribution list. 
+The value "true" specifies expanding the membership. 
+
+If the SearchFilter element is a distribution group and if the value of the ExpandGroupMembership 
+element is "false", the search results will return the mailbox information for the distribution group. If 
+the SearchFilter element is a distribution group and the value of the ExpandGroupMembership 
+element is "true", then the search results will return the distribution group member information. The 
+distribution group can also take the user name of a single user. 
+
+If the GetSearchableMailboxes element is empty, the response will contain all searchable 
+mailboxes. This is the same as having an empty SearchFilter element and the 
+ExpandGroupMembership element set to "false". 
+
+3.1.4.3.3.2 GetSearchableMailboxesResponseMessageType 
+
+Namespace: http://schemas.microsoft.com/exchange/services/2006/messages 
+
+The GetSearchableMailboxesResponseMessageType complex type specifies the response for a 
+GetSearchableMailboxes operation specified in section 3.1.4.3. This type extends the 
+ResponseMessageType complex type, as specified in [MS-OXWSCDATA] section 2.2.4.65. 
+
+ <xs:complexType name="GetSearchableMailboxesResponseMessageType" 
+xmlns:xs="http://www.w3.org/2001/XMLSchema"> 
+  <xs:complexContent mixed="false"> 
+    <xs:extension base="tns:ResponseMessageType"> 
+      <xs:sequence> 
+        <xs:element name="SearchableMailboxes" type="t:ArrayOfSearchableMailboxesType"/> 
+        <xs:element minOccurs="0" name="FailedMailboxes" 
+type="t:ArrayOfFailedSearchMailboxesType"/> 
+      </xs:sequence> 
+    </xs:extension> 
+  </xs:complexContent> 
+ </xs:complexType> 
+
+SearchableMailboxes: An element of type ArrayOfSearchableMailboxesType, as defined in 
+section 2.2.4.3, that represents the object that contains the mailboxes or distribution list that 
+match the search filter. 
+
+FailedMailboxes: An element of type ArrayOfFailedSearchMailboxesType, as defined in section 
+2.2.4.1, that contains a list of mailboxes that failed the query.  
+
+3.1.4.3.4 Simple Types 
+
+None. 
+
+3.1.4.3.5 Attributes 
+
+None. 
+
+3.1.4.3.6 Groups 
+
+None. 
+
+3.1.4.3.7 Attribute Groups 
+
+31 / 74 
+
+[MS-OXWSEDISC] - v20250520 
+Electronic Discovery (eDiscovery) Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+None. 
+
+3.1.4.4 SearchMailboxes 
+
+The SearchMailboxes operation searches for items in the specified mailboxes that match query 
+keywords. 
+
+The following is the WSDL port type specification of the SearchMailboxes WSDL operation. 
+
+ <wsdl:operation name="SearchMailboxes" xmlns:wsdl="http://schemas.xmlsoap.org/wsdl/"> 
+  <wsdl:input message="tns:SearchMailboxesSoapIn"/> 
+  <wsdl:output message="tns:SearchMailboxesSoapOut"/> 
+ </wsdl:operation> 
+
+The following is the WSDL binding specification of the SearchMailboxes operation. 
+
+ <wsdl:operation name="SearchMailboxes" xmlns:wsdl="http://schemas.xmlsoap.org/wsdl/"> 
+  <soap:operation 
+soapAction="http://schemas.microsoft.com/exchange/services/2006/messages/SearchMailboxes" 
+xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/"/> 
+  <wsdl:input> 
+    <soap:header message="tns:SearchMailboxesSoapIn" part="RequestVersion" use="literal" 
+xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/"/> 
+    <soap:header message="tns:SearchMailboxesSoapIn" part="ManagementRole" use="literal" 
+xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/"/> 
+    <soap:body use="literal" parts="request" 
+xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/"/> 
+  </wsdl:input> 
+  <wsdl:output> 
+    <soap:body use="literal" parts="SearchMailboxesResult" 
+xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/"/> 
+    <soap:header message="tns:SearchMailboxesSoapOut" part="ServerVersion" use="literal" 
+xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/"/> 
+  </wsdl:output> 
+ </wsdl:operation> 
+
+The client sends a SearchMailboxesSoapIn request WSDL message, as specified in section 
+3.1.4.4.1.1, and the server responds with a SearchMailboxesSoapOut response, as specified in 
+section 3.1.4.4.1.2. 
+
+3.1.4.4.1 Messages 
+
+The following table summarizes the set of WSDL message definitions that are specific to this 
+operation. 
+
+Message Description 
+
+SearchMailboxesSoapIn Specifies the request to search mailboxes. 
+
+SearchMailboxesSoapOut Specifies the response to the SearchMailboxesSoapIn request. 
+
+ 
+
+3.1.4.4.1.1 SearchMailboxesSoapIn 
+
+The SearchMailboxesSoapIn WSDL message specifies the request to search mailboxes. 
+
+The following is the SearchMailboxesSoapIn WSDL message specification. 
+
+32 / 74 
+
+[MS-OXWSEDISC] - v20250520 
+Electronic Discovery (eDiscovery) Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+ <wsdl:message name="SearchMailboxesSoapIn" xmlns:wsdl="http://schemas.xmlsoap.org/wsdl/"> 
+  <wsdl:part name="request" element="tns:SearchMailboxes"/> 
+  <wsdl:part name="RequestVersion" element="t:RequestServerVersion"/> 
+  <wsdl:part name="ManagementRole" element="t:ManagementRole"/> 
+ </wsdl:message> 
+
+The SearchMailboxesSoapIn WSDL message is the input message for the SOAP action 
+http://schemas.microsoft.com/exchange/services/2006/messages/SearchMailboxes. 
+
+The parts of the SearchMailboxesSoapIn WSDL message are described in the following table. 
+
+Part name Element/type Description 
+
+SearchMailboxes Specifies the SOAP body of the request to search 
+request 
+
+ mailboxes. 
+
+RequestServerVersion 
+Specifies a SOAP header that identifies the schema 
+
+RequestVersion ([MS-OXWSCDATA] section version for the SearchMailboxesSoapIn WSDL message. 
+2.2.3.9) 
+
+ManagementRole 
+Specifies a SOAP header that identifies a user or application 
+
+ManagementRole ([MS-OXWSCDATA] section role. 
+2.2.3.7) 
+
+ 
+
+3.1.4.4.1.2 SearchMailboxesSoapOut 
+
+The SearchMailboxesSoapOut WSDL message specifies the response to the 
+SearchMailboxesSoapIn request specified in section 3.1.4.3.1.1. 
+
+The following is the SearchMailboxesSoapOut WSDL message specification. 
+
+ <wsdl:message name="SearchMailboxesSoapOut" xmlns:wsdl="http://schemas.xmlsoap.org/wsdl/"> 
+  <wsdl:part name="SearchMailboxesResult" element="tns:SearchMailboxesResponse"/> 
+  <wsdl:part name="ServerVersion" element="t:ServerVersionInfo"/> 
+ </wsdl:message> 
+
+The SearchMailboxesSoapOut WSDL message is the output message for the SOAP action 
+http://schemas.microsoft.com/exchange/services/2006/messages/SearchMailboxes. 
+
+The parts of the SearchMailboxesSoapOut WSDL message are described in the following table. 
+
+Part name Element/type Description 
+
+SearchMailboxesResponse Specifies the SOAP body of the response that 
+SearchMailboxesResult 
+
+ contains the requested search information. 
+
+ServerVersionInfo 
+Specifies a SOAP header that identifies the 
+
+ServerVersion ([MS-OXWSCDATA] section server version for the response. 
+2.2.3.10) 
+
+ 
+
+A successful SearchMailboxes request, as specified in section 3.1.4.4.2.1, returns a 
+SearchMailboxesResponse element with the ResponseClass (as specified in [MS-OXWSCDATA] 
+
+33 / 74 
+
+[MS-OXWSEDISC] - v20250520 
+Electronic Discovery (eDiscovery) Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+section 2.2.4.65) attribute set to "Success". The ResponseCode (as specified in [MS-OXWSCDATA] 
+section 2.2.4.65) element of the SearchMailboxesResponse element is set to "NoError". 
+
+If the SearchMailboxes request is not successful, it returns a SearchMailboxesResponse element 
+with the ResponseClass (as specified in [MS-OXWSCDATA] section 2.2.4.65) attribute set to "Error". 
+The ResponseCode (as specified in [MS-OXWSCDATA] section 2.2.4.65) element of the 
+SearchMailboxesResponse element is set to one of the common errors defined in [MS-
+OXWSCDATA] section 2.2.5.24. 
+
+3.1.4.4.2 Elements 
+
+The following table summarizes the XML schema element definitions that are specific to this 
+operation. 
+
+Element Description 
+
+SearchMailboxes The input data for the SearchMailboxes WSDL operation. 
+
+SearchMailboxesResponse The result data for the SearchMailboxes WSDL operation. 
+
+ 
+
+3.1.4.4.2.1 SearchMailboxes 
+
+The SearchMailboxes element specifies the input data for the SearchMailboxes WSDL operation. 
+
+ <xs:element name="SearchMailboxes" type="tns:SearchMailboxesType" 
+xmlns:xs="http://www.w3.org/2001/XMLSchema"/> 
+
+3.1.4.4.2.2 SearchMailboxesResponse 
+
+The SearchMailboxesResponse element specifies the result data for the SearchMailboxes WSDL 
+operation. 
+
+ <xs:element name="SearchMailboxesResponse" type="tns:SearchMailboxesResponseType" 
+xmlns:xs="http://www.w3.org/2001/XMLSchema"/> 
+
+3.1.4.4.3 Complex Types 
+
+The following table summarizes the XML schema complex type definitions that are specific to this 
+operation. 
+
+Complex type Description 
+
+ArrayOfExtendedAttributesType For internal use only. 
+
+ArrayOfKeywordStatisticsSearchResultsType Specifies an array of keyword statistics in the search result. 
+
+ArrayOfMailboxStatisticsItemsType Specifies an array of mailbox statistics. 
+
+ArrayOfSearchPreviewItemsType Specifies an array of search preview items. 
+
+ArrayOfSearchRefinerItemsType Specifies an array of search refiner items. 
+
+ExtendedAttributeType For internal use only. 
+
+KeywordStatisticsSearchResultType Specifies a keyword statistics search result. 
+
+34 / 74 
+
+[MS-OXWSEDISC] - v20250520 
+Electronic Discovery (eDiscovery) Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Complex type Description 
+
+MailboxQueryType Specifies the type of the mailbox query. 
+
+MailboxSearchScopeType Specifies a mailbox search scope. 
+
+MailboxStatisticsItemType Specifies a mailbox statistic. 
+
+NonEmptyArrayOfExtendedFieldURIsType Specifies an array of extended property names. 
+
+NonEmptyArrayOfMailboxQueriesType Specifies an array of mailbox queries. 
+
+NonEmptyArrayOfMailboxSearchScopesType Specifies an array of mailbox search scopes. 
+
+PreviewItemMailboxType Specifies the mailbox information in a preview item. 
+
+Specifies the response format of a preview item, that is, the 
+PreviewItemResponseShapeType 
+
+base shape plus properties. 
+
+Specifies a response message for the SearchMailboxes 
+SearchMailboxesResponseMessageType 
+
+operation specified in section 3.1.4.4. 
+
+SearchMailboxesResponseType Specifies the response for a SearchMailboxes operation. 
+
+SearchMailboxesResultType Specifies the result from the SearchMailboxes operation. 
+
+SearchMailboxesType Specifies the format and content of the query response. 
+
+SearchPreviewItemType Specifies a search preview item. 
+
+SearchRefinerItemType Specifies a search refiner item. 
+
+ 
+
+3.1.4.4.3.1 SearchMailboxesType 
+
+Namespace: http://schemas.microsoft.com/exchange/services/2006/messages 
+
+The SearchMailboxesType complex type specifies the content and format of the result. This type 
+extends the BaseRequestType complex type, as specified in [MS-OXWSCDATA] section 2.2.4.17. 
+
+ <xs:complexType name="SearchMailboxesType" xmlns:xs="http://www.w3.org/2001/XMLSchema"> 
+  <xs:complexContent mixed="false"> 
+    <xs:extension base="tns:BaseRequestType"> 
+      <xs:sequence> 
+        <xs:element minOccurs="1" name="SearchQueries" 
+type="t:NonEmptyArrayOfMailboxQueriesType"/> 
+        <xs:element minOccurs="1" name="ResultType" type="t:SearchResultType"/> 
+        <xs:element minOccurs="0" name="PreviewItemResponseShape" 
+type="t:PreviewItemResponseShapeType"/> 
+        <xs:element minOccurs="0" name="SortBy" type="t:FieldOrderType"/> 
+        <xs:element minOccurs="0" name="Language" type="xs:string"/> 
+        <xs:element minOccurs="0" name="Deduplication" type="xs:boolean"/> 
+        <xs:element minOccurs="0" name="PageSize" type="xs:int"/> 
+        <xs:element minOccurs="0" name="PageItemReference" type="xs:string"/> 
+        <xs:element minOccurs="0" name="PageDirection" type="t:SearchPageDirectionType"/> 
+      </xs:sequence> 
+    </xs:extension> 
+  </xs:complexContent> 
+ </xs:complexType> 
+
+SearchQueries: An element of type NonEmptyArrayOfMailboxQueriesType, as defined in section 
+3.1.4.4.3.2, that represents a set of mailbox search scopes. 
+
+35 / 74 
+
+[MS-OXWSEDISC] - v20250520 
+Electronic Discovery (eDiscovery) Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+ResultType: An element of type SearchResultType, as defined in section 3.1.4.4.4.2, that 
+represents an enumeration type to indicate the type of search result. 
+
+PreviewItemResponseShape: An element of type PreviewItemResponseShapeType, as defined 
+in section 3.1.4.4.3.6, that represents what properties are returned for the preview search result. 
+
+SortBy: An element of type FieldOrderType, as defined in [MS-OXWSSRCH] section 3.1.4.2.3.6, 
+that specifies a single field by which to sort results and specifies the direction of the sort. 
+
+Language: An element of type string, as defined in [XMLSCHEMA2] section 3.2.1, that represents 
+the query language, for example, "en-us". 
+
+Deduplication: An element of type boolean, as defined in [XMLSCHEMA2] section 3.2.2, that 
+indicates whether to remove duplicates from the search result. 
+
+PageSize: An element of type int, as defined in [XMLSCHEMA2] section 3.3.17, that represents the 
+total number of items shown on a preview page. 
+
+PageItemReference: An element of type string that is used for paging implementation. For the first 
+call, this element should be null. For subsequent calls, set this value to the SortValue of the last 
+preview item in the response. SortValue is defined in section 3.1.4.4.3.14. 
+
+PageDirection: An element of type SearchPageDirectionType, as defined in section 3.1.4.4.4.4, 
+that represents the paging direction; for example, "previous" or "next". 
+
+3.1.4.4.3.2 NonEmptyArrayOfMailboxQueriesType 
+
+Namespace: http://schemas.microsoft.com/exchange/services/2006/types 
+
+The NonEmptyArrayOfMailboxQueriesType complex type specifies an array of mailbox queries. 
+
+ <xs:complexType name="NonEmptyArrayOfMailboxQueriesType" 
+xmlns:xs="http://www.w3.org/2001/XMLSchema"> 
+  <xs:sequence> 
+    <xs:element minOccurs="1" maxOccurs="unbounded" name="MailboxQuery" 
+type="t:MailboxQueryType"/> 
+  </xs:sequence> 
+ </xs:complexType> 
+
+MailboxQuery: An element of type MailboxQueryType, as defined in section 3.1.4.4.3.3, that 
+represents a combination of a query and a list of search scopes. 
+
+3.1.4.4.3.3 MailboxQueryType 
+
+Namespace: http://schemas.microsoft.com/exchange/services/2006/types 
+
+The MailboxQueryType complex type specifies the type of the mailbox query. 
+
+ <xs:complexType name="MailboxQueryType" xmlns:xs="http://www.w3.org/2001/XMLSchema"> 
+  <xs:sequence> 
+    <xs:element minOccurs="1" maxOccurs="1" name="Query" type="xs:string"/> 
+    <xs:element minOccurs="1" maxOccurs="1" name="MailboxSearchScopes" 
+type="t:NonEmptyArrayOfMailboxSearchScopesType"/> 
+  </xs:sequence> 
+ </xs:complexType> 
+
+Query: An element of type string, as defined in [XMLSCHEMA2] section 3.2.1, that identifies a search 
+query. 
+
+36 / 74 
+
+[MS-OXWSEDISC] - v20250520 
+Electronic Discovery (eDiscovery) Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+MailboxSearchScopes: An element of type NonEmptyArrayOfMailboxSearchScopesType, as 
+defined in section 3.1.4.4.3.4, that contains a list of one or more MailboxSearchScopeType complex 
+types, as defined in section 3.1.4.4.3.5. 
+
+3.1.4.4.3.4 NonEmptyArrayOfMailboxSearchScopesType 
+
+Namespace: http://schemas.microsoft.com/exchange/services/2006/types 
+
+The NonEmptyArrayOfMailboxSearchScopesType complex type specifies an array of mailbox 
+search scopes. 
+
+ <xs:complexType name="NonEmptyArrayOfMailboxSearchScopesType" 
+xmlns:xs="http://www.w3.org/2001/XMLSchema"> 
+  <xs:sequence> 
+    <xs:element minOccurs="1" maxOccurs="unbounded" name="MailboxSearchScope" 
+type="t:MailboxSearchScopeType"/> 
+  </xs:sequence> 
+ </xs:complexType> 
+
+MailboxSearchScope: An element of type MailboxSearchScopeType, as defined in section 
+3.1.4.4.3.5, that represents a combination of a mailbox and a search scope. 
+
+3.1.4.4.3.5 MailboxSearchScopeType 
+
+Namespace: http://schemas.microsoft.com/exchange/services/2006/types 
+
+The MailboxSearchScopeType complex type specifies a query and a set of mailboxes. 
+
+ <xs:complexType name="MailboxSearchScopeType" xmlns:xs="http://www.w3.org/2001/XMLSchema"> 
+  <xs:sequence> 
+    <xs:element minOccurs="1" maxOccurs="1" name="Mailbox" type="xs:string"/> 
+    <xs:element minOccurs="1" maxOccurs="1" name="SearchScope" 
+type="t:MailboxSearchLocationType"/> 
+    <xs:element minOccurs="0" maxOccurs="1" name="ExtendedAttributes" 
+type="t:ArrayOfExtendedAttributesType"/> 
+  </xs:sequence> 
+ </xs:complexType> 
+
+Mailbox: An element of type string, as defined in [XMLSCHEMA2] section 3.2.1, that contains an 
+identifier for the mailbox. 
+
+SearchScope: An element of type MailboxSearchLocationType, as defined in section 3.1.4.4.4.1, 
+that represents the search scope. 
+
+ExtendedAttributes: For internal use only. <2> 
+
+3.1.4.4.3.6 PreviewItemResponseShapeType 
+
+Namespace: http://schemas.microsoft.com/exchange/services/2006/types 
+
+The PreviewItemResponseShapeType complex type specifies the response format of a preview 
+item; that is, the base shape plus properties. 
+
+ <xs:complexType name="PreviewItemResponseShapeType" 
+xmlns:xs="http://www.w3.org/2001/XMLSchema"> 
+  <xs:sequence> 
+    <xs:element minOccurs="1" maxOccurs="1" name="BaseShape" 
+type="t:PreviewItemBaseShapeType"/> 
+
+37 / 74 
+
+[MS-OXWSEDISC] - v20250520 
+Electronic Discovery (eDiscovery) Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+    <xs:element minOccurs="0" maxOccurs="1" name="AdditionalProperties" 
+type="t:NonEmptyArrayOfExtendedFieldURIsType"/> 
+  </xs:sequence> 
+ </xs:complexType> 
+
+BaseShape: An element of type PreviewItemBaseShapeType, as defined in section 3.1.4.4.4.3, 
+that represents either the default preview with all properties returned or a compact preview with fewer 
+properties returned. 
+
+AdditionalProperties: An element of type NonEmptyArrayOfExtendedFieldURIsType, as defined 
+in section 3.1.4.4.3.7, that represents additional item properties to be returned. 
+
+3.1.4.4.3.7 NonEmptyArrayOfExtendedFieldURIsType 
+
+Namespace: http://schemas.microsoft.com/exchange/services/2006/types 
+
+The NonEmptyArrayOfExtendedFieldURIsType complex type specifies an array of extended 
+property names. 
+
+ <xs:complexType name="NonEmptyArrayOfExtendedFieldURIsType" 
+xmlns:xs="http://www.w3.org/2001/XMLSchema"> 
+  <xs:choice maxOccurs="unbounded"> 
+    <xs:element name="ExtendedFieldURI" type="t:PathToExtendedFieldType"/> 
+  </xs:choice> 
+ </xs:complexType> 
+
+ExtendedFieldURI: An element of type PathToExtendedFieldType, as defined in [MS-
+OXWSXPROP] section 2.1.6, that represents the extended property name. 
+
+3.1.4.4.3.8 SearchMailboxesResponseType 
+
+Namespace: http://schemas.microsoft.com/exchange/services/2006/messages 
+
+The SearchMailboxesResponseType complex type specifies a response for a SearchMailboxes 
+operation, as specified in section 3.1.4.4. This type extends the BaseResponseMessageType 
+complex type, as specified in [MS-OXWSCDATA] section 2.2.4.18. 
+
+ <xs:complexType name="SearchMailboxesResponseType" 
+xmlns:xs="http://www.w3.org/2001/XMLSchema"> 
+  <xs:complexContent mixed="false"> 
+    <xs:extension base="tns:BaseResponseMessageType"/> 
+  </xs:complexContent> 
+ </xs:complexType> 
+
+3.1.4.4.3.9 SearchMailboxesResponseMessageType 
+
+Namespace: http://schemas.microsoft.com/exchange/services/2006/messages 
+
+The SearchMailboxesResponseMessageType complex type specifies a response message for the 
+SearchMailboxes operation specified in section 3.1.4.4. This type extends the 
+ResponseMessageType complex type, as specified in [MS-OXWSCDATA] section 2.2.4.65. 
+
+ <xs:complexType name="SearchMailboxesResponseMessageType" 
+xmlns:xs="http://www.w3.org/2001/XMLSchema"> 
+  <xs:complexContent mixed="false"> 
+    <xs:extension base="tns:ResponseMessageType"> 
+      <xs:sequence> 
+
+38 / 74 
+
+[MS-OXWSEDISC] - v20250520 
+Electronic Discovery (eDiscovery) Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+        <xs:element minOccurs="0" name="SearchMailboxesResult" 
+type="t:SearchMailboxesResultType"/> 
+      </xs:sequence> 
+    </xs:extension> 
+  </xs:complexContent> 
+ </xs:complexType> 
+
+SearchMailboxesResult: An element of type SearchMailboxesResultType, as defined in section 
+3.1.4.4.3.10, that represents the result of a SearchMailboxes operation, as specified in section 
+3.1.4.4. 
+
+3.1.4.4.3.10 SearchMailboxesResultType 
+
+Namespace: http://schemas.microsoft.com/exchange/services/2006/types 
+
+The SearchMailboxesResultType complex type specifies the result from the SearchMailboxes 
+operation specified in section 3.1.4.4. 
+
+ <xs:complexType name="SearchMailboxesResultType" xmlns:xs="http://www.w3.org/2001/XMLSchema"> 
+  <xs:sequence> 
+    <xs:element minOccurs="1" name="SearchQueries" 
+type="t:NonEmptyArrayOfMailboxQueriesType"/> 
+    <xs:element minOccurs="1" name="ResultType" type="t:SearchResultType"/> 
+    <xs:element minOccurs="1" name="ItemCount" type="xs:long"/> 
+    <xs:element minOccurs="1" name="Size" type="xs:long"/> 
+    <xs:element minOccurs="1" name="PageItemCount" type="xs:int"/> 
+    <xs:element minOccurs="1" name="PageItemSize" type="xs:long"/> 
+    <xs:element minOccurs="0" name="KeywordStats" 
+type="t:ArrayOfKeywordStatisticsSearchResultsType"/> 
+    <xs:element minOccurs="0" name="Items" type="t:ArrayOfSearchPreviewItemsType"/> 
+    <xs:element minOccurs="0" name="FailedMailboxes" 
+type="t:ArrayOfFailedSearchMailboxesType"/> 
+    <xs:element minOccurs="0" name="Refiners" type="t:ArrayOfSearchRefinerItemsType"/> 
+    <xs:element minOccurs="0" name="MailboxStats" 
+type="t:ArrayOfMailboxStatisticsItemsType"/> 
+  </xs:sequence> 
+ </xs:complexType> 
+
+SearchQueries: An element of type NonEmptyArrayOfMailboxQueriesType complex, as defined 
+in section 3.1.4.4.3.2, that contains a list of mailboxes plus the query to be searched. 
+
+ResultType: An element of type SearchResultType, as defined in section 3.1.4.4.4.2, that contains 
+the type of search, either statistics only or preview only. 
+
+ItemCount: An element of type long, as defined in [XMLSCHEMA2] section 3.3.16, that contains a 
+value for the total number of items in a search result. 
+
+Size:  An element of type long that contains the total size of the search result. 
+
+PageItemCount:  An element of type int, as defined in [XMLSCHEMA2] section 3.3.17, that contains 
+the number of pages returned in a search result pagination. 
+
+PageItemSize:  An element of type long that contains the number of items to return in a search 
+result pagination. 
+
+KeywordStats: An element of type ArrayOfKeywordStatisticsSearchResultsType, as defined in 
+section 3.1.4.4.3.11, that contains a list of one or more KeywordStat elements. 
+
+Items: An element of type ArrayOfSearchPreviewItemsType, as defined in section 3.1.4.4.3.13, 
+that contains a list of items available for preview. 
+
+39 / 74 
+
+[MS-OXWSEDISC] - v20250520 
+Electronic Discovery (eDiscovery) Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+FailedMailboxes: An element of type ArrayOfFailedSearchMailboxesType, as defined in section 
+2.2.4.1, that contains a list of mailboxes that failed the search. 
+
+Refiners: An element of type ArrayOfSearchRefinerItemsType, as defined in section 3.1.4.4.3.16, 
+that contains a list of one or more Refiner elements. 
+
+MailboxStats: An element of type ArrayOfMailboxStatisticsItemsType, as defined in section 
+3.1.4.4.3.18, that contains a list of one or more mailbox statistics. 
+
+3.1.4.4.3.11 ArrayOfKeywordStatisticsSearchResultsType 
+
+Namespace: http://schemas.microsoft.com/exchange/services/2006/types 
+
+The ArrayOfKeywordStatisticsSearchResultsType complex type specifies an array of keyword 
+statistics in the search result. 
+
+ <xs:complexType name="ArrayOfKeywordStatisticsSearchResultsType" 
+xmlns:xs="http://www.w3.org/2001/XMLSchema"> 
+  <xs:sequence> 
+    <xs:element minOccurs="0" maxOccurs="unbounded" name="KeywordStat" 
+type="t:KeywordStatisticsSearchResultType"/> 
+  </xs:sequence> 
+ </xs:complexType> 
+
+KeywordStat: An element of type KeywordStatisticsSearchResultType, as defined in section 
+3.1.4.4.3.12, that represents keyword statistics information. 
+
+3.1.4.4.3.12 KeywordStatisticsSearchResultType 
+
+Namespace: http://schemas.microsoft.com/exchange/services/2006/types 
+
+The KeywordStatisticsSearchResultType complex type specifies a keyword statistics search result. 
+
+ <xs:complexType name="KeywordStatisticsSearchResultType" 
+xmlns:xs="http://www.w3.org/2001/XMLSchema"> 
+  <xs:sequence> 
+    <xs:element minOccurs="1" maxOccurs="1" name="Keyword" type="xs:string"/> 
+    <xs:element minOccurs="1" maxOccurs="1" name="ItemHits" type="xs:int"/> 
+    <xs:element minOccurs="1" maxOccurs="1" name="Size" type="xs:long"/> 
+  </xs:sequence> 
+ </xs:complexType> 
+
+Keyword: An element of type string, as defined in [XMLSCHEMA2] section 3.2.1, that represents the 
+word to be searched for. 
+
+ItemHits: An element of type int, as defined in [XMLSCHEMA2] section 3.3.17, that represents the 
+number of times that an item appears. 
+
+Size: An element of type long, as defined in [XMLSCHEMA2] section 3.3.16, that represents the total 
+number of items that have the keyword. 
+
+3.1.4.4.3.13 ArrayOfSearchPreviewItemsType 
+
+Namespace: http://schemas.microsoft.com/exchange/services/2006/types 
+
+The ArrayOfSearchPreviewItemsType complex type specifies an array of search preview items. 
+
+40 / 74 
+
+[MS-OXWSEDISC] - v20250520 
+Electronic Discovery (eDiscovery) Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+ <xs:complexType name="ArrayOfSearchPreviewItemsType" 
+xmlns:xs="http://www.w3.org/2001/XMLSchema"> 
+
+  <xs:sequence> 
+    <xs:element minOccurs="0" maxOccurs="unbounded" name="SearchPreviewItem" 
+type="t:SearchPreviewItemType"/> 
+  </xs:sequence> 
+ </xs:complexType> 
+
+SearchPreviewItem: An element of type SearchPreviewItemType, as defined in section 
+3.1.4.4.3.14, that represents a search preview item. 
+
+3.1.4.4.3.14 SearchPreviewItemType 
+
+Namespace: http://schemas.microsoft.com/exchange/services/2006/types 
+
+The SearchPreviewItemType complex type specifies a search preview item. 
+
+ <xs:complexType name="SearchPreviewItemType" xmlns:xs="http://www.w3.org/2001/XMLSchema"> 
+  <xs:sequence> 
+    <xs:element minOccurs="1" maxOccurs="1" name="Id" type="t:ItemIdType"/> 
+    <xs:element minOccurs="0" maxOccurs="1" name="Mailbox" type="t:PreviewItemMailboxType"/> 
+    <xs:element minOccurs="0" maxOccurs="1" name="ParentId" type="t:ItemIdType"/> 
+    <xs:element minOccurs="0" maxOccurs="1" name="ItemClass" type="t:ItemClassType"/> 
+    <xs:element minOccurs="0" maxOccurs="1" name="UniqueHash" type="xs:string"/> 
+    <xs:element minOccurs="0" maxOccurs="1" name="SortValue" type="xs:string"/> 
+    <xs:element minOccurs="0" maxOccurs="1" name="OwaLink" type="xs:string"/> 
+    <xs:element minOccurs="0" maxOccurs="1" name="Sender" type="xs:string"/> 
+    <xs:element minOccurs="0" maxOccurs="1" name="ToRecipients" 
+type="t:ArrayOfSmtpAddressType"/> 
+    <xs:element minOccurs="0" maxOccurs="1" name="CcRecipients" 
+type="t:ArrayOfSmtpAddressType"/> 
+    <xs:element minOccurs="0" maxOccurs="1" name="BccRecipients" 
+type="t:ArrayOfSmtpAddressType"/> 
+    <xs:element minOccurs="0" maxOccurs="1" name="CreatedTime" type="xs:dateTime"/> 
+    <xs:element minOccurs="0" maxOccurs="1" name="ReceivedTime" type="xs:dateTime"/> 
+    <xs:element minOccurs="0" maxOccurs="1" name="SentTime" type="xs:dateTime"/> 
+    <xs:element minOccurs="0" maxOccurs="1" name="Subject" type="xs:string"/> 
+    <xs:element minOccurs="0" maxOccurs="1" name="Size" type="xs:long"/> 
+    <xs:element minOccurs="0" maxOccurs="1" name="Preview" type="xs:string"/> 
+    <xs:element minOccurs="0" maxOccurs="1" name="Importance" 
+type="t:ImportanceChoicesType"/> 
+    <xs:element minOccurs="0" maxOccurs="1" name="Read" type="xs:boolean"/> 
+    <xs:element minOccurs="0" maxOccurs="1" name="HasAttachment" type="xs:boolean"/> 
+    <xs:element minOccurs="0" maxOccurs="1" name="ExtendedProperties" 
+type="t:NonEmptyArrayOfExtendedPropertyType"/> 
+  </xs:sequence> 
+ </xs:complexType> 
+
+Id: An element of type ItemIdType, as defined in [MS-OXWSCORE] section 2.2.4.25, that represents 
+the item identifier. 
+
+Mailbox: An element of the PreviewItemMailboxType complex type, as defined in section 
+3.1.4.4.3.15, that contains an identifier for the mailbox. 
+
+ParentId: An element of type ItemIdType that contains the identifier of the parent of the item. 
+
+ItemClass: An element of type ItemClassType, as defined in [MS-OXWSCORE] section 2.2.5.4, that 
+contains the message class of the item.  
+
+UniqueHash: An element of type string, as defined in [XMLSCHEMA2] section 3.2.1, that contains a 
+unique hash value used to identify and eliminate duplicates. 
+
+41 / 74 
+
+[MS-OXWSEDISC] - v20250520 
+Electronic Discovery (eDiscovery) Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+SortValue: An element of type string that contains a value used for sorting. Preview items are 
+returned ordered by this SortValue. To fetch the next page of results, a subsequent call should be 
+made with the SortValue of the last item as the PageItemReference of the next request. 
+
+OwaLink: An element of type string that contains the link to preview the item. 
+
+Sender: An element of type string that contains the address of the person who sent the item. 
+
+ToRecipients: An element of type ArrayOfSmtpAddressType, as defined in [MS-OXWSMSHR] 
+section 3.1.4.4.3.1, that contains a list of recipients to whom the item was sent. 
+
+CcRecipients: An element of type ArrayOfSmtpAddressType that contains a list of recipients who 
+are carbon copied for the item. 
+
+BccRecipients: An element of type ArrayOfSmtpAddressType that contains a list of recipients who 
+are blind carbon copied for the item. 
+
+CreatedTime: An element of type dateTime, as defined in [XMLSCHEMA2] section 3.2.7, that 
+contains the time at which the item was created. 
+
+ReceivedTime: An element of type dateTime that contains the time at which the item was received. 
+
+SentTime: An element of type dateTime that contains the time at which the item was sent. 
+
+Subject: An element of type string that contains the subject of a message item. 
+
+Size: An element of type long, as defined in [XMLSCHEMA2] section 3.3.16, that contains the size of 
+the item. 
+
+Preview: An element of type string that is not used and always returns an empty string. 
+
+Importance: An element of type ImportanceChoicesType, as defined in [MS-OXWSCORE] section 
+2.2.5.3, that indicates the urgency of the item. The possible values are "High", "Normal", and "Low". 
+
+Read: An element of type boolean, as defined in [XMLSCHEMA2] section 3.2.2, that indicates 
+whether an item has been read. 
+
+HasAttachment: An element of type boolean that indicates whether the item has attachments. 
+
+ExtendedProperties: A element of type NonEmptyArrayOfExtendedPropertyType, as defined in 
+[MS-OXWSXPROP] section 2.1.3, that contains an array of additional properties. 
+
+3.1.4.4.3.15 PreviewItemMailboxType 
+
+Namespace: http://schemas.microsoft.com/exchange/services/2006/types 
+
+The PreviewItemMailboxType complex type specifies the mailbox information in a preview item. 
+
+ <xs:complexType name="PreviewItemMailboxType" xmlns:xs="http://www.w3.org/2001/XMLSchema"> 
+  <xs:sequence> 
+    <xs:element minOccurs="1" maxOccurs="1" name="MailboxId" type="xs:string"/> 
+    <xs:element minOccurs="1" maxOccurs="1" name="PrimarySmtpAddress" type="xs:string"/> 
+  </xs:sequence> 
+ </xs:complexType> 
+
+MailboxId: An element of type string, as defined in [XMLSCHEMA2] section 3.2.1, that contains an 
+identifier for the mailbox. 
+
+PrimarySmtpAddress: An element of type string that represents the primary SMTP address of the 
+mailbox. 
+
+42 / 74 
+
+[MS-OXWSEDISC] - v20250520 
+Electronic Discovery (eDiscovery) Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+3.1.4.4.3.16 ArrayOfSearchRefinerItemsType 
+
+Namespace: http://schemas.microsoft.com/exchange/services/2006/types 
+
+The ArrayOfSearchRefinerItemsType complex type specifies an array of search refiner items. 
+
+ <xs:complexType name="ArrayOfSearchRefinerItemsType" 
+xmlns:xs="http://www.w3.org/2001/XMLSchema"> 
+  <xs:sequence> 
+    <xs:element minOccurs="0" maxOccurs="unbounded" name="Refiner" 
+type="t:SearchRefinerItemType"/> 
+  </xs:sequence> 
+ </xs:complexType> 
+
+Refiner: An element of the SearchRefinerItemType complex type, as defined in section 
+3.1.4.4.3.17, that represents a search refiner. 
+
+3.1.4.4.3.17 SearchRefinerItemType 
+
+Namespace: http://schemas.microsoft.com/exchange/services/2006/types 
+
+The SearchRefinerItemType complex type specifies a search refiner item. 
+
+ <xs:complexType name="SearchRefinerItemType" xmlns:xs="http://www.w3.org/2001/XMLSchema"> 
+  <xs:sequence> 
+    <xs:element minOccurs="1" maxOccurs="1" name="Name" type="xs:string"/> 
+    <xs:element minOccurs="1" maxOccurs="1" name="Value" type="xs:string"/> 
+    <xs:element minOccurs="1" maxOccurs="1" name="Count" type="xs:long"/> 
+    <xs:element minOccurs="1" maxOccurs="1" name="Token" type="xs:string"/> 
+  </xs:sequence> 
+ </xs:complexType> 
+
+Name: An element of type string, as defined in [XMLSCHEMA2] section 3.2.1, that represents the 
+name of the search refiner. 
+
+Value:  An element of type string that represents the search refiner value. 
+
+Count:  An element of type long, as defined in [XMLSCHEMA2] section 3.3.16, that represents the 
+item count in the search refiner. 
+
+Token:  An element of type string that represents the search refiner token. 
+
+3.1.4.4.3.18 ArrayOfMailboxStatisticsItemsType 
+
+Namespace: http://schemas.microsoft.com/exchange/services/2006/types 
+
+The ArrayOfMailboxStatisticsItemsType complex type specifies an array of mailbox statistics. 
+
+ <xs:complexType name="ArrayOfMailboxStatisticsItemsType" 
+xmlns:xs="http://www.w3.org/2001/XMLSchema"> 
+  <xs:sequence> 
+    <xs:element minOccurs="0" maxOccurs="unbounded" name="MailboxStat" 
+type="t:MailboxStatisticsItemType"/> 
+  </xs:sequence> 
+ </xs:complexType> 
+
+MailboxStat: A element of type MailboxStatisticsItemType, as defined in section 3.1.4.4.3.19, 
+that contains a value for the mailbox statistic. 
+
+43 / 74 
+
+[MS-OXWSEDISC] - v20250520 
+Electronic Discovery (eDiscovery) Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+3.1.4.4.3.19 MailboxStatisticsItemType 
+
+Namespace: http://schemas.microsoft.com/exchange/services/2006/types 
+
+The MailboxStatisticsItemType complex type specifies a mailbox statistic. 
+
+ <xs:complexType name="MailboxStatisticsItemType" xmlns:xs="http://www.w3.org/2001/XMLSchema"> 
+  <xs:sequence> 
+    <xs:element minOccurs="1" maxOccurs="1" name="MailboxId" type="xs:string"/> 
+    <xs:element minOccurs="1" maxOccurs="1" name="DisplayName" type="xs:string"/> 
+    <xs:element minOccurs="1" maxOccurs="1" name="ItemCount" type="xs:long"/> 
+    <xs:element minOccurs="1" maxOccurs="1" name="Size" type="xs:long"/> 
+  </xs:sequence> 
+ </xs:complexType> 
+
+MailboxId: An element of type string, as defined in [XMLSCHEMA2] section 3.2.1, that contains an 
+identifier for the mailbox. 
+
+DisplayName: An element of type string that specifies the name of the mailbox. 
+
+ItemCount: An element of type long, as defined in [XMLSCHEMA2] section 3.3.16, that contains the 
+total number of items in a search result. 
+
+Size: An element of type long that contains the size, in bytes, of the mailbox items returned from a 
+search. 
+
+3.1.4.4.3.20 ArrayOfExtendedAttributesType 
+
+Namespace: http://schemas.microsoft.com/exchange/services/2006/types 
+
+The ArrayOfExtendedAttributesType complex type is intended for internal use only.<3> 
+
+ <xs:complexType name="ArrayOfExtendedAttributesType" 
+xmlns:xs="http://www.w3.org/2001/XMLSchema"> 
+  <xs:sequence> 
+    <xs:element minOccurs="0" maxOccurs="unbounded" name="ExtendedAttribute" 
+type="t:ExtendedAttributeType"/> 
+  </xs:sequence> 
+ </xs:complexType> 
+
+ExtendedAttribute: For internal use only.  
+
+3.1.4.4.3.21 ExtendedAttributeType 
+
+Namespace: http://schemas.microsoft.com/exchange/services/2006/types 
+
+The ExtendedAttributeType complex type is intended for internal use only. <4> 
+
+ <xs:complexType name="ExtendedAttributeType" xmlns:xs="http://www.w3.org/2001/XMLSchema"> 
+  <xs:sequence> 
+    <xs:element minOccurs="1" maxOccurs="1" name="Name" type="xs:string"/> 
+    <xs:element minOccurs="1" maxOccurs="1" name="Value" type="xs:string"/> 
+  </xs:sequence> 
+ </xs:complexType> 
+
+Name: For internal use only.  
+
+Value: For internal use only.  
+
+44 / 74 
+
+[MS-OXWSEDISC] - v20250520 
+Electronic Discovery (eDiscovery) Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+3.1.4.4.4 Simple Types 
+
+The following table summarizes the XML schema simple type definitions that are specific to this 
+operation. 
+
+Simple type Description 
+
+MailboxSearchLocationType Specifies the location to be searched. 
+
+Specifies whether an item is previewed with all its properties or it is 
+PreviewItemBaseShapeType 
+
+compacted. 
+
+SearchPageDirectionType Specifies the direction in which to search. 
+
+SearchResultType Specifies a search result. 
+
+ 
+
+3.1.4.4.4.1 MailboxSearchLocationType 
+
+Namespace: http://schemas.microsoft.com/exchange/services/2006/types 
+
+The MailboxSearchLocationType simple type specifies the location to be searched. 
+
+ <xs:simpleType name="MailboxSearchLocationType" xmlns:xs="http://www.w3.org/2001/XMLSchema"> 
+  <xs:restriction base="xs:string"> 
+    <xs:enumeration value="PrimaryOnly"/> 
+    <xs:enumeration value="ArchiveOnly"/> 
+    <xs:enumeration value="All"/> 
+  </xs:restriction> 
+ </xs:simpleType> 
+
+The following table specifies the allowable values for the MailboxSearchLocationType simple type. 
+
+Value Meaning 
+
+PrimaryOnly Search in primary mailbox only. 
+
+ArchiveOnly Search in archive mailbox only. 
+
+All Search in all mailboxes. 
+
+ 
+
+3.1.4.4.4.2 SearchResultType 
+
+Namespace: http://schemas.microsoft.com/exchange/services/2006/types 
+
+The SearchResultType simple type specifies a search result. 
+
+ <xs:simpleType name="SearchResultType" xmlns:xs="http://www.w3.org/2001/XMLSchema"> 
+  <xs:restriction base="xs:string"> 
+    <xs:enumeration value="StatisticsOnly"/> 
+    <xs:enumeration value="PreviewOnly"/> 
+  </xs:restriction> 
+ </xs:simpleType> 
+
+The following table specifies the allowable values for the SearchResultType simple type. 
+
+45 / 74 
+
+[MS-OXWSEDISC] - v20250520 
+Electronic Discovery (eDiscovery) Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Value Meaning 
+
+StatisticsOnly Perform statistics search only. 
+
+PreviewOnly Perform preview search only. 
+
+ 
+
+3.1.4.4.4.3 PreviewItemBaseShapeType 
+
+Namespace: http://schemas.microsoft.com/exchange/services/2006/types 
+
+The PreviewItemBaseShapeType simple type specifies whether an item is previewed with all its 
+properties or it is compacted. 
+
+ <xs:simpleType name="PreviewItemBaseShapeType" xmlns:xs="http://www.w3.org/2001/XMLSchema"> 
+  <xs:restriction base="xs:string"> 
+    <xs:enumeration value="Default"/> 
+    <xs:enumeration value="Compact"/> 
+  </xs:restriction> 
+ </xs:simpleType> 
+
+The following table specifies the allowable values for the PreviewItemBaseShapeType simple type. 
+
+Value Meaning 
+
+Default Indicates the default view with all properties for the item preview. 
+
+Compact Indicates a compact view with only a few properties for the item preview. 
+
+ 
+
+3.1.4.4.4.4 SearchPageDirectionType 
+
+Namespace: http://schemas.microsoft.com/exchange/services/2006/types 
+
+The SearchPageDirectionType simple type specifies the direction in which to search. 
+
+ <xs:simpleType name="SearchPageDirectionType" xmlns:xs="http://www.w3.org/2001/XMLSchema"> 
+  <xs:restriction base="xs:string"> 
+    <xs:enumeration value="Previous"/> 
+    <xs:enumeration value="Next"/> 
+  </xs:restriction> 
+ </xs:simpleType> 
+
+The following table specifies the allowable values for the SearchPageDirectionType simple type. 
+
+Value Meaning 
+
+Previous Navigate to the previous page. 
+
+Next Navigate to the next page. 
+
+ 
+
+3.1.4.4.5 Attributes 
+
+None. 
+
+46 / 74 
+
+[MS-OXWSEDISC] - v20250520 
+Electronic Discovery (eDiscovery) Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+3.1.4.4.6 Groups 
+
+None. 
+
+3.1.4.4.7 Attribute Groups 
+
+None. 
+
+3.1.4.5 SetHoldOnMailboxes 
+
+The SetHoldOnMailboxes operation sets a query-based hold on mailboxes. 
+
+The following is the WSDL port type specification of the SetHoldOnMailboxes WSDL operation. 
+
+ <wsdl:operation name="SetHoldOnMailboxes" xmlns:wsdl="http://schemas.xmlsoap.org/wsdl/"> 
+  <wsdl:input message="tns:SetHoldOnMailboxesSoapIn"/> 
+  <wsdl:output message="tns:SetHoldOnMailboxesSoapOut"/> 
+ </wsdl:operation> 
+
+The following is the WSDL binding specification of the SetHoldOnMailboxes operation. 
+
+ <wsdl:operation name="SetHoldOnMailboxes" xmlns:wsdl="http://schemas.xmlsoap.org/wsdl/"> 
+  <soap:operation 
+soapAction="http://schemas.microsoft.com/exchange/services/2006/messages/SetHoldOnMailboxes" 
+xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/"/> 
+  <wsdl:input> 
+    <soap:header message="tns:SetHoldOnMailboxesSoapIn" part="RequestVersion" use="literal" 
+xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/"/> 
+    <soap:header message="tns:SetHoldOnMailboxesSoapIn" part="ManagementRole" use="literal" 
+xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/"/> 
+    <soap:body use="literal" parts="request" 
+xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/"/> 
+  </wsdl:input> 
+  <wsdl:output> 
+    <soap:body use="literal" parts="SetHoldOnMailboxesResult" 
+xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/"/> 
+    <soap:header message="tns:SetHoldOnMailboxesSoapOut" part="ServerVersion" use="literal" 
+xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/"/> 
+  </wsdl:output> 
+ </wsdl:operation> 
+
+The client sends a SetHoldOnMailboxesSoapIn request WSDL message, as specified in section 
+3.1.4.5.1.1, and the server responds with a SetHoldOnMailboxesSoapOut response, as specified in 
+section 3.1.4.5.1.2. 
+
+3.1.4.5.1 Messages 
+
+The following table summarizes the set of WSDL message definitions that are specific to this 
+operation. 
+
+Message Description 
+
+SetHoldOnMailboxesSoapIn Specifies the request to set a query-based hold on mailboxes. 
+
+Specifies the response to the SetHoldOnMailboxesSoapIn request specified 
+SetHoldOnMailboxesSoapOut 
+
+in section 3.1.4.5.1.1. 
+
+ 
+
+47 / 74 
+
+[MS-OXWSEDISC] - v20250520 
+Electronic Discovery (eDiscovery) Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+3.1.4.5.1.1 SetHoldOnMailboxesSoapIn 
+
+The SetHoldOnMailboxesSoapIn WSDL message specifies the request to set a query-based hold 
+on mailboxes. 
+
+The following is the SetHoldOnMailboxesSoapIn WSDL message specification. 
+
+ <wsdl:message name="SetHoldOnMailboxesSoapIn" xmlns:wsdl="http://schemas.xmlsoap.org/wsdl/"> 
+  <wsdl:part name="request" element="tns:SetHoldOnMailboxes"/> 
+  <wsdl:part name="RequestVersion" element="t:RequestServerVersion"/> 
+  <wsdl:part name="ManagementRole" element="t:ManagementRole"/> 
+ </wsdl:message> 
+
+The SetHoldOnMailboxesSoapIn WSDL message is the input message for the SOAP action 
+http://schemas.microsoft.com/exchange/services/2006/messages/SetHoldOnMailboxes. 
+
+The parts of the SetHoldOnMailboxesSoapIn WSDL message are described in the following table. 
+
+Part name Element/type Description 
+
+SetHoldOnMailboxes Specifies the SOAP body of the request to set a query-
+request 
+
+ based hold on mailboxes. 
+
+RequestServerVersion 
+Specifies a SOAP header that identifies the schema version 
+
+RequestVersion ([MS-OXWSCDATA] section for the SetHoldOnMailboxesSoapIn WSDL message.  
+2.2.3.9) 
+
+ManagementRole 
+Specifies a SOAP header that identifies a user or application 
+
+ManagementRole ([MS-OXWSCDATA] section role. 
+2.2.3.7) 
+
+ 
+
+3.1.4.5.1.2 SetHoldOnMailboxesSoapOut 
+
+The SetHoldOnMailboxesSoapOut WSDL message specifies the response to the 
+SetHoldOnMailboxesSoapIn request specified in section 3.1.4.5.1.1. 
+
+The following is the SetHoldOnMailboxesSoapOut WSDL message specification. 
+
+ <wsdl:message name="SetHoldOnMailboxesSoapOut" xmlns:wsdl="http://schemas.xmlsoap.org/wsdl/"> 
+  <wsdl:part name="SetHoldOnMailboxesResult" element="tns:SetHoldOnMailboxesResponse"/> 
+  <wsdl:part name="ServerVersion" element="t:ServerVersionInfo"/> 
+ </wsdl:message> 
+
+The SetHoldOnMailboxesSoapOut WSDL message is the output message for the SOAP action 
+http://schemas.microsoft.com/exchange/services/2006/messages/SetHoldOnMailboxes. 
+
+The parts of the SetHoldOnMailboxesSoapOut WSDL message are described in the following table. 
+
+Part name Element/type Description 
+
+SetHoldOnMailboxesResponse Specifies the SOAP body of the response 
+SetHoldOnMailboxesResult 
+
+ that contains the result of the request. 
+
+ServerVersionInfo Specifies a SOAP header that identifies 
+ServerVersion 
+
+([MS-OXWSCDATA] section the server version for the response. 
+
+48 / 74 
+
+[MS-OXWSEDISC] - v20250520 
+Electronic Discovery (eDiscovery) Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Part name Element/type Description 
+
+2.2.3.10) 
+
+ 
+
+A successful SetHoldOnMailboxes request, as specified in section 3.1.4.5.2.1, returns a 
+SetHoldOnMailboxesResponse element with the ResponseClass (as specified in [MS-
+OXWSCDATA] section 2.2.4.65) attribute set to "Success". The ResponseCode (as specified in [MS-
+OXWSCDATA] section 2.2.4.65) element of the SetHoldOnMailboxesResponse element is set to 
+"NoError". 
+
+If the SetHoldOnMailboxes request is not successful, it returns a SetHoldOnMailboxesResponse 
+element with the ResponseClass (as specified in [MS-OXWSCDATA] section 2.2.4.65) attribute set to 
+"Error". The ResponseCode (as specified in [MS-OXWSCDATA] section 2.2.4.65) element of the 
+SetHoldOnMailboxesResponse element is set to one of the common errors defined in [MS-
+OXWSCDATA] section 2.2.5.24. 
+
+3.1.4.5.2 Elements 
+
+The following table summarizes the XML schema element definitions that are specific to this 
+operation. 
+
+Element Description 
+
+SetHoldOnMailboxes The input data for the SetHoldOnMailboxes WSDL operation. 
+
+SetHoldOnMailboxesResponse The result data for the SetHoldOnMailboxes WSDL operation. 
+
+ 
+
+3.1.4.5.2.1 SetHoldOnMailboxes 
+
+The SetHoldOnMailboxes element specifies the input data for the SetHoldOnMailboxes WSDL 
+operation. 
+
+ <xs:element name="SetHoldOnMailboxes" type="tns:SetHoldOnMailboxesType" 
+xmlns:xs="http://www.w3.org/2001/XMLSchema"/> 
+
+3.1.4.5.2.2 SetHoldOnMailboxesResponse 
+
+The SetHoldOnMailboxesResponse element specifies the result data for the SetHoldOnMailboxes 
+WSDL operation. 
+
+ <xs:element name="SetHoldOnMailboxesResponse" 
+type="tns:SetHoldOnMailboxesResponseMessageType" 
+xmlns:xs="http://www.w3.org/2001/XMLSchema"/> 
+
+3.1.4.5.3 Complex Types 
+
+The following table summarizes the XML schema complex type definitions that are specific to this 
+operation. 
+
+Complex type Description 
+
+SetHoldOnMailboxesResponseMessageType Specifies the response message for a SetHoldOnMailboxes 
+
+49 / 74 
+
+[MS-OXWSEDISC] - v20250520 
+Electronic Discovery (eDiscovery) Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Complex type Description 
+
+operation, as specified in section 3.1.4.5. 
+
+SetHoldOnMailboxesType Specifies a request to set a query-based hold on mailboxes. 
+
+ 
+
+3.1.4.5.3.1 SetHoldOnMailboxesType 
+
+Namespace: http://schemas.microsoft.com/exchange/services/2006/messages 
+
+The SetHoldOnMailboxesType complex type specifies a request to set a query-based hold on 
+mailboxes. This type extends the BaseRequestType complex type, as described in [MS-
+OXWSCDATA] section 2.2.4.17. 
+
+ <xs:complexType name="SetHoldOnMailboxesType" xmlns:xs="http://www.w3.org/2001/XMLSchema"> 
+  <xs:complexContent mixed="false"> 
+    <xs:extension base="tns:BaseRequestType"> 
+      <xs:sequence> 
+        <xs:element minOccurs="1" name="ActionType" type="t:HoldActionType"/> 
+        <xs:element minOccurs="1" name="HoldId" type="xs:string"/> 
+        <xs:element minOccurs="1" name="Query" type="xs:string"/> 
+        <xs:element minOccurs="0" name="Mailboxes" type="t:ArrayOfStringsType"/> 
+        <xs:element minOccurs="0" name="Language" type="xs:string"/> 
+        <xs:element minOccurs="0" name="IncludeNonIndexableItems" type="xs:boolean"/> 
+        <xs:element minOccurs="0" name="Deduplication" type="xs:boolean"/> 
+        <xs:element minOccurs="0" name="InPlaceHoldIdentity" type="xs:string"/> 
+        <xs:element minOccurs="0" name="ItemHoldPeriod" type="xs:string"/> 
+      </xs:sequence> 
+    </xs:extension> 
+  </xs:complexContent> 
+ </xs:complexType> 
+
+ActionType: An element of type HoldActionType , as defined in section 3.1.4.5.4.1 that represents 
+the type of action. 
+
+HoldId: An element of type string, as defined in [XMLSCHEMA2] section 3.2.1, that represents the 
+identifier of the hold. 
+
+Query:  An element of type string that represents a query. 
+
+Mailboxes: An element of type ArrayOfStringsType, as defined in [MS-OXWSCDATA] section 
+2.2.4.13, contains a set of distinguished names (DN) that represent the mailboxes to which the 
+query-based hold will apply. 
+
+Language: An element of type string that represents the language of the query, for example, "en-
+us".<5> 
+
+IncludeNonIndexableItems: An element of type boolean, as defined in [XMLSCHEMA2] section 
+3.2.2, that indicates whether to include items that cannot be indexed. 
+
+Deduplication: An element of type boolean that indicates whether to remove duplicates from the 
+search result. 
+
+InPlaceHoldIdentity: An element of type string that specifies the identity of a hold that preserves 
+the mailbox items.  
+
+ItemHoldPeriod: An element of type string that specifies the time period for the hold.  
+
+3.1.4.5.3.2 SetHoldOnMailboxesResponseMessageType 
+
+50 / 74 
+
+[MS-OXWSEDISC] - v20250520 
+Electronic Discovery (eDiscovery) Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Namespace: http://schemas.microsoft.com/exchange/services/2006/messages 
+
+The SetHoldOnMailboxesResponseMessageType complex type specifies the response message for 
+a SetHoldOnMailboxes operation, as specified in section 3.1.4.5. This type extends the 
+ResponseMessageType complex type, as described in [MS-OXWSCDATA] section 2.2.4.65. 
+
+ <xs:complexType name="SetHoldOnMailboxesResponseMessageType" 
+xmlns:xs="http://www.w3.org/2001/XMLSchema"> 
+  <xs:complexContent mixed="false"> 
+    <xs:extension base="tns:ResponseMessageType"> 
+      <xs:sequence> 
+        <xs:element minOccurs="0" name="MailboxHoldResult" type="t:MailboxHoldResultType"/> 
+      </xs:sequence> 
+    </xs:extension> 
+  </xs:complexContent> 
+ </xs:complexType> 
+
+MailboxHoldResult: An element of type MailboxHoldResultType complex type, as defined in 
+section 2.2.4.5, that represents the result of a SetHoldOnMailboxes operation, as specified in 
+section 3.1.4.5. 
+
+3.1.4.5.4 Simple Types 
+
+The following table summarizes the XML schema simple type definitions that are specific to this 
+operation. 
+
+Simple type Description 
+
+HoldActionType Specifies a hold action. 
+
+ 
+
+3.1.4.5.4.1 HoldActionType 
+
+Namespace: http://schemas.microsoft.com/exchange/services/2006/types 
+
+The HoldActionType simple type specifies a hold action. 
+
+ <xs:simpleType name="HoldActionType" xmlns:xs="http://www.w3.org/2001/XMLSchema"> 
+  <xs:restriction base="xs:string"> 
+    <xs:enumeration value="Create"/> 
+    <xs:enumeration value="Update"/> 
+    <xs:enumeration value="Remove"/> 
+  </xs:restriction> 
+ </xs:simpleType> 
+
+The following table specifies the allowable values for the HoldActionType simple type. 
+
+Value Meaning 
+
+Create The action is placing a hold. 
+
+Update The action is updating a hold. 
+
+Remove The action is releasing a hold. 
+
+ 
+
+51 / 74 
+
+[MS-OXWSEDISC] - v20250520 
+Electronic Discovery (eDiscovery) Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+3.1.4.5.5 Attributes 
+
+None. 
+
+3.1.4.5.6 Groups 
+
+None. 
+
+3.1.4.5.7 Attribute Groups 
+
+None. 
+
+3.1.5 Timer Events 
+
+None. 
+
+3.1.6 Other Local Events 
+
+None. 
+
+52 / 74 
+
+[MS-OXWSEDISC] - v20250520 
+Electronic Discovery (eDiscovery) Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+4 Protocol Examples 
+
+4.1 Setting Holds On Mailboxes 
+
+This example of the SetHoldOnMailboxes operation, as defined in section 3.1.4.5, shows how the 
+client requests the server to set holds on mailboxes. In this example, the client requests holds on 
+two mailboxes and assigns the hold ID "HoldId2". 
+
+ <?xml version="1.0" encoding="UTF-8"?> 
+ <soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/" 
+          xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types" 
+          xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages"> 
+  <soap:Header> 
+    <t:RequestServerVersion Version="Exchange2013" /> 
+  </soap:Header> 
+  <soap:Body > 
+    <m:SetHoldOnMailboxes> 
+      <m:ActionType>Create</m:ActionType> 
+      <m:HoldId>HoldId2</m:HoldId> 
+      <m:Query>test</m:Query> 
+      <m:Mailboxes> 
+        <t:String>/o=First Organization/ou=Exchange Administrative Group 
+(FYDIBOHF23SPDLT)/cn=Recipients/cn=1fa841ff5e4749ba93ecc0fd98c2cadf-Willi</t:String> 
+         <t:String>/o=First Organization/ou=Exchange Administrative Group 
+(FYDIBOHF23SPDLT)/cn=Recipients/cn=aed2146adaa24ffc9f0f279917e8de95-Micha</t:String> 
+      </m:Mailboxes> 
+      <m:Language>English</m:Language> 
+      <m:IncludeNonIndexableItems>false</m:IncludeNonIndexableItems> 
+      <m:Deduplication>true</m:Deduplication> 
+    </m:SetHoldOnMailboxes> 
+  </soap:Body> 
+ </soap:Envelope> 
+
+The server returns the following successful response to the client. 
+
+ <?xml version="1.0" encoding="utf-8"?> 
+ <s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"> 
+  <s:Header> 
+    <h:ServerVersionInfo MajorVersion="15"  
+                         MinorVersion="0"  
+                         MajorBuildNumber="526"  
+                         MinorBuildNumber="0"  
+                         Version="Exchange2013"  
+            xmlns:h="http://schemas.microsoft.com/exchange/services/2006/types"  
+            xmlns="http://schemas.microsoft.com/exchange/services/2006/types"  
+            xmlns:xsd="http://www.w3.org/2001/XMLSchema"  
+            xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"/> 
+  </s:Header> 
+  <s:Body xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"  
+          xmlns:xsd="http://www.w3.org/2001/XMLSchema"> 
+    <SetHoldOnMailboxesResponse ResponseClass="Success"  
+          xmlns="http://schemas.microsoft.com/exchange/services/2006/messages"> 
+      <ResponseCode>NoError</ResponseCode> 
+      <MailboxHoldResult> 
+        <HoldId 
+xmlns="http://schemas.microsoft.com/exchange/services/2006/types">HoldId2</HoldId> 
+        <Query xmlns="http://schemas.microsoft.com/exchange/services/2006/types">test</Query> 
+        <MailboxHoldStatuses 
+xmlns="http://schemas.microsoft.com/exchange/services/2006/types"> 
+          <MailboxHoldStatus> 
+            <Mailbox>/o=First Organization/ou=Exchange Administrative Group 
+(FYDIBOHF23SPDLT)/cn=Recipients/cn=1fa841ff5e4749ba93ecc0fd98c2cadf-Willi</Mailbox> 
+            <Status>Pending</Status> 
+            <AdditionalInfo/> 
+
+53 / 74 
+
+[MS-OXWSEDISC] - v20250520 
+Electronic Discovery (eDiscovery) Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+          </MailboxHoldStatus> 
+          <MailboxHoldStatus> 
+            <Mailbox>/o=First Organization/ou=Exchange Administrative Group 
+(FYDIBOHF23SPDLT)/cn=Recipients/cn=aed2146adaa24ffc9f0f279917e8de95-Micha</Mailbox> 
+            <Status>Pending</Status> 
+            <AdditionalInfo/> 
+          </MailboxHoldStatus> 
+        </MailboxHoldStatuses> 
+      </MailboxHoldResult> 
+    </SetHoldOnMailboxesResponse> 
+  </s:Body> 
+ </s:Envelope> 
+
+4.2 Getting Mailboxes With Holds 
+
+This example of the GetHoldOnMailboxes operation, as defined in section 3.1.4.2, shows how the 
+client sends a request to the server to get all mailboxes with hold ID "HoldId2". 
+
+ <?xml version="1.0" encoding="UTF-8"?> 
+ <soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/" 
+          xmlns:t=http://schemas.microsoft.com/exchange/services/2006/types 
+          xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages"> 
+  <soap:Header> 
+    <t:RequestServerVersion Version="Exchange2013" /> 
+  </soap:Header> 
+  <soap:Body > 
+    <m:GetHoldOnMailboxes> 
+      <m:HoldId>HoldId2</m:HoldId> 
+    </m:GetHoldOnMailboxes> 
+  </soap:Body> 
+ </soap:Envelope> 
+
+The server sends the following successful response to the client. This response returns two mailboxes. 
+
+ <?xml version="1.0" encoding="utf-8"?> 
+ <s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"> 
+  <s:Header> 
+    <h:ServerVersionInfo MajorVersion="15"  
+                         MinorVersion="0"  
+                         MajorBuildNumber="526"  
+                         MinorBuildNumber="0"  
+                         Version="Exchange2013"  
+             xmlns:h="http://schemas.microsoft.com/exchange/services/2006/types"  
+             xmlns="http://schemas.microsoft.com/exchange/services/2006/types"  
+             xmlns:xsd="http://www.w3.org/2001/XMLSchema"  
+             xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"/> 
+  </s:Header> 
+  <s:Body xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"  
+          xmlns:xsd="http://www.w3.org/2001/XMLSchema"> 
+    <GetHoldOnMailboxesResponse ResponseClass="Success"  
+        xmlns="http://schemas.microsoft.com/exchange/services/2006/messages"> 
+      <ResponseCode>NoError</ResponseCode> 
+        <MailboxHoldResult> 
+          <HoldId 
+xmlns="http://schemas.microsoft.com/exchange/services/2006/types">HoldId2</HoldId> 
+          <Query 
+xmlns="http://schemas.microsoft.com/exchange/services/2006/types">test</Query> 
+          <MailboxHoldStatuses 
+xmlns="http://schemas.microsoft.com/exchange/services/2006/types"> 
+          <MailboxHoldStatus> 
+            <Mailbox>/o=First Organization/ou=Exchange Administrative Group 
+(FYDIBOHF23SPDLT)/cn=Recipients/cn=1fa841ff5e4749ba93ecc0fd98c2cadf-Willi</Mailbox> 
+            <Status>OnHold</Status> 
+            <AdditionalInfo/> 
+
+54 / 74 
+
+[MS-OXWSEDISC] - v20250520 
+Electronic Discovery (eDiscovery) Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+          </MailboxHoldStatus> 
+          <MailboxHoldStatus> 
+            <Mailbox>/o=First Organization/ou=Exchange Administrative Group 
+(FYDIBOHF23SPDLT)/cn=Recipients/cn=aed2146adaa24ffc9f0f279917e8de95-Micha</Mailbox> 
+            <Status>OnHold</Status> 
+            <AdditionalInfo/> 
+          </MailboxHoldStatus> 
+        </MailboxHoldStatuses> 
+      </MailboxHoldResult> 
+    </GetHoldOnMailboxesResponse> 
+  </s:Body> 
+ </s:Envelope> 
+
+4.3 Getting Searchable Mailboxes 
+
+This example of the GetSearchableMailboxes operation, as defined in section 3.1.4.3, shows a 
+request from the client to get searchable mailboxes.  
+
+ <?xml version="1.0" encoding="UTF-8"?> 
+ <soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/" 
+          xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types" 
+          xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages"> 
+  <soap:Header> 
+    <t:RequestServerVersion Version="Exchange2013" /> 
+  </soap:Header> 
+  <soap:Body > 
+    <m:GetSearchableMailboxes> 
+      <m:SearchFilter>lolgroup</m:SearchFilter> 
+      <m:ExpandGroupMembership>true</m:ExpandGroupMembership> 
+    </m:GetSearchableMailboxes> 
+  </soap:Body> 
+ </soap:Envelope> 
+
+This server sends the following successful response for an unexpanded distribution group. 
+
+ <?xml version="1.0" encoding="utf-8"?> 
+ <s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"> 
+  <s:Header> 
+    <h:ServerVersionInfo MajorVersion="15"  
+                           MinorVersion="0"  
+                           MajorBuildNumber="526"  
+                           MinorBuildNumber="0"  
+                           Version="Exchange2013"  
+              xmlns:h="http://schemas.microsoft.com/exchange/services/2006/types"  
+              xmlns="http://schemas.microsoft.com/exchange/services/2006/types"  
+              xmlns:xsd="http://www.w3.org/2001/XMLSchema"  
+              xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"/> 
+  </s:Header> 
+  <s:Body xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"  
+          xmlns:xsd="http://www.w3.org/2001/XMLSchema"> 
+    <GetSearchableMailboxesResponse ResponseClass="Success"  
+          xmlns="http://schemas.microsoft.com/exchange/services/2006/messages"> 
+      <ResponseCode>NoError</ResponseCode> 
+      <SearchableMailboxes> 
+        <SearchableMailbox xmlns="http://schemas.microsoft.com/exchange/services/2006/types"> 
+          <Guid>33a408fe-1574-4e3b-99f5-6e1e001f3035</Guid> 
+          <PrimarySmtpAddress>LOLgroup@exhb-
+93591dom.extest.microsoft.com</PrimarySmtpAddress> 
+          <IsExternalMailbox>false</IsExternalMailbox> 
+          <ExternalEmailAddress/> 
+          <DisplayName>LOLgroup</DisplayName> 
+          <IsMembershipGroup>true</IsMembershipGroup> 
+          <ReferenceId>/o=First Organization/ou=Exchange Administrative Group 
+(FYDIBOHF23SPDLT)/cn=Recipients/cn=85793b958a0b4295b13b8f02b81bf9cc-LOLgroup</ReferenceId> 
+
+55 / 74 
+
+[MS-OXWSEDISC] - v20250520 
+Electronic Discovery (eDiscovery) Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+        </SearchableMailbox> 
+      </SearchableMailboxes> 
+    </GetSearchableMailboxesResponse> 
+  </s:Body> 
+ </s:Envelope> 
+
+The server sends the following response for an expanded distribution group. 
+
+ <?xml version="1.0" encoding="utf-8"?> 
+ <s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"> 
+  <s:Header> 
+    <h:ServerVersionInfo MajorVersion="15" 
+                         MinorVersion="0"  
+                         MajorBuildNumber="526" 
+                         MinorBuildNumber="0"  
+                         Version="Exchange2013" 
+               xmlns:h="http://schemas.microsoft.com/exchange/services/2006/types"  
+               xmlns="http://schemas.microsoft.com/exchange/services/2006/types"  
+               xmlns:xsd="http://www.w3.org/2001/XMLSchema"  
+               xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"/> 
+  </s:Header> 
+  <s:Body xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"  
+             xmlns:xsd="http://www.w3.org/2001/XMLSchema"> 
+    <GetSearchableMailboxesResponse ResponseClass="Success"  
+             xmlns="http://schemas.microsoft.com/exchange/services/2006/messages"> 
+      <ResponseCode>NoError</ResponseCode>  
+      <SearchableMailboxes> 
+        <SearchableMailbox  
+             xmlns="http://schemas.microsoft.com/exchange/services/2006/types"> 
+          <Guid>e5d42cdf-a027-4ec6-986b-6fa0ecadb9f5</Guid> 
+          <PrimarySmtpAddress>JSmith@exhb- 
+               93591dom.extest.microsoft.com</PrimarySmtpAddress> 
+          <IsExternalMailbox>false</IsExternalMailbox> 
+          <ExternalEmailAddress/> 
+          <DisplayName>Julia Smith</DisplayName> 
+          <IsMembershipGroup>false</IsMembershipGroup> 
+          <ReferenceId>/o=First Organization/ou=Exchange Administrative Group 
+(FYDIBOHF23SPDLT)/cn=Recipients/cn=0a4fc86f888246159405d60956dd02d7-Julia</ReferenceId> 
+        </SearchableMailbox> 
+        <SearchableMailbox xmlns="http://schemas.microsoft.com/exchange/services/2006/types"> 
+          <Guid>45d0fffb-5013-459a-a34c-52453b30e9ca</Guid> 
+          <PrimarySmtpAddress>LMoore@exhb-93591dom.extest.microsoft.com</PrimarySmtpAddress> 
+          <IsExternalMailbox>false</IsExternalMailbox> 
+          <ExternalEmailAddress/> 
+          <DisplayName>Laura Moore</DisplayName> 
+          <IsMembershipGroup>false</IsMembershipGroup> 
+          <ReferenceId>/o=First Organization/ou=Exchange Administrative Group 
+(FYDIBOHF23SPDLT)/cn=Recipients/cn=2910d8f8222f4374bbf9338d8f9d714b-Laura</ReferenceId> 
+        </SearchableMailbox> 
+        <SearchableMailbox xmlns="http://schemas.microsoft.com/exchange/services/2006/types"> 
+          <Guid>3c620d04-8b33-435e-95be-5b9351599576</Guid> 
+          <PrimarySmtpAddress>SBrown@exhb-93591dom.extest.microsoft.com</PrimarySmtpAddress> 
+          <IsExternalMailbox>false</IsExternalMailbox> 
+          <ExternalEmailAddress/> 
+          <DisplayName>Steven Brown</DisplayName> 
+          <IsMembershipGroup>false</IsMembershipGroup> 
+          <ReferenceId>/o=First Organization/ou=Exchange Administrative Group 
+(FYDIBOHF23SPDLT)/cn=Recipients/cn=35181a742f0e47e392c8201a60d13ecf-Steve</ReferenceId> 
+        </SearchableMailbox> 
+      </SearchableMailboxes> 
+    </GetSearchableMailboxesResponse> 
+  </s:Body> 
+ </s:Envelope> --> 
+
+56 / 74 
+
+[MS-OXWSEDISC] - v20250520 
+Electronic Discovery (eDiscovery) Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+4.4 Searching Mailboxes 
+
+This example of the SearchMailboxes operation, as defined in section 3.1.4.4, shows a request from 
+the client to the server to search the specified mailboxes. 
+
+ <?xml version="1.0" encoding="UTF-8"?> 
+ <soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/" 
+          xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types" 
+          xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages"> 
+  <soap:Header> 
+    <t:RequestServerVersion Version="Exchange2013" /> 
+  </soap:Header> 
+  <soap:Body > 
+    <m:SearchMailboxes> 
+      <m:SearchQueries> 
+         <t:MailboxQuery> 
+           <t:Query>Test Item</t:Query> 
+             <t:MailboxSearchScopes> 
+               <t:MailboxSearchScope> 
+                 <t:Mailbox>/o=First Organization/ou=Exchange Administrative Group 
+(FYDIBOHF23SPDLT)/cn=Recipients/cn=35181a742f0e47e392c8201a60d13ecf-Steve</t:Mailbox> 
+                 <t:SearchScope>All</t:SearchScope> 
+               </t:MailboxSearchScope> 
+               <t:MailboxSearchScope> 
+                 <t:Mailbox>/o=First Organization/ou=Exchange Administrative Group 
+(FYDIBOHF23SPDLT)/cn=Recipients/cn=f00c9f70539844beb04001d8f40c572e-Antho</t:Mailbox> 
+                 <t:SearchScope>PrimaryOnly</t:SearchScope> 
+               </t:MailboxSearchScope> 
+             </t:MailboxSearchScopes> 
+          </t:MailboxQuery> 
+          <t:MailboxQuery> 
+            <t:Query></t:Query> 
+              <t:MailboxSearchScopes> 
+                <t:MailboxSearchScope> 
+                  <t:Mailbox>/o=First Organization/ou=Exchange Administrative Group 
+(FYDIBOHF23SPDLT)/cn=Recipients/cn=accba4fd5ddf4356b8a0e82ce1645f4e-Danie</t:Mailbox> 
+                <t:SearchScope>ArchiveOnly</t:SearchScope> 
+              </t:MailboxSearchScope> 
+            </t:MailboxSearchScopes> 
+          </t:MailboxQuery> 
+        </m:SearchQueries> 
+      <m:ResultType>StatisticsOnly</m:ResultType> 
+    </m:SearchMailboxes> 
+  </soap:Body> 
+ </soap:Envelope> 
+ 
+
+The server sends the following successful response to the client. 
+
+ <?xml version="1.0" encoding="utf-8"?> 
+ <s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"> 
+  <s:Header> 
+    <h:ServerVersionInfo MajorVersion="15"  
+                         MinorVersion="0"  
+                         MajorBuildNumber="526"  
+                         MinorBuildNumber="0"  
+                         Version="Exchange2013"  
+             xmlns:h="http://schemas.microsoft.com/exchange/services/2006/types"  
+             xmlns="http://schemas.microsoft.com/exchange/services/2006/types"  
+             xmlns:xsd="http://www.w3.org/2001/XMLSchema"  
+             xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"/> 
+  </s:Header> 
+  <s:Body xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"  
+          xmlns:xsd="http://www.w3.org/2001/XMLSchema"> 
+    <m:SearchMailboxesResponse 
+xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages"  
+
+57 / 74 
+
+[MS-OXWSEDISC] - v20250520 
+Electronic Discovery (eDiscovery) Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+                                 
+xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types"> 
+      <m:ResponseMessages> 
+        <m:SearchMailboxesResponseMessage ResponseClass="Success"> 
+          <m:ResponseCode>NoError</m:ResponseCode> 
+            <m:SearchMailboxesResult>    
+              <t:SearchQueries> 
+                <t:MailboxQuery> 
+                  <t:Query>Test Item</t:Query> 
+                    <t:MailboxSearchScopes> 
+                      <t:MailboxSearchScope> 
+                         <t:Mailbox>/o=First Organization/ou=Exchange Administrative Group 
+FYDIBOHF23SPDLT)/cn=Recipients/cn=35181a742f0e47e392c8201a60d13ecf-Steve</t:Mailbox> 
+                           <t:SearchScope>All</t:SearchScope> 
+
+                       </t:MailboxSearchScope> 
+                       <t:MailboxSearchScope> 
+                         <t:Mailbox>/o=First Organization/ou=Exchange Administrative Group 
+(FYDIBOHF23SPDLT)/cn=Recipients/cn=f00c9f70539844beb04001d8f40c572e-Antho</t:Mailbox> 
+                         <t:SearchScope>PrimaryOnly</t:SearchScope> 
+                       </t:MailboxSearchScope> 
+                     </t:MailboxSearchScopes> 
+                   </t:MailboxQuery> 
+                  </t:SearchQueries> 
+                  <t:ResultType>StatisticsOnly</t:ResultType> 
+                  <t:ItemCount>2</t:ItemCount> 
+                  <t:Size>20206</t:Size> 
+                  <t:PageItemCount>0</t:PageItemCount> 
+                  <t:PageItemSize>0</t:PageItemSize> 
+                  <t:KeywordStats> 
+                     <t:KeywordStat> 
+                        <t:Keyword>Test Item</t:Keyword> 
+                        <t:ItemHits>2</t:ItemHits> 
+                        <t:Size>20206</t:Size> 
+                     </t:KeywordStat> 
+                  </t:KeywordStats> 
+                  <t:FailedMailboxes> 
+                    <t:FailedMailbox> 
+                       <t:Mailbox>/o=First Organization/ou=Exchange Administrative Group 
+(FYDIBOHF23SPDLT)/cn=Recipients/cn=accba4fd5ddf4356b8a0e82ce1645f4e-Danie</t:Mailbox> 
+                       <t:ErrorCode>0</t:ErrorCode> 
+                       <t:ErrorMessage>The search query can't be empty.</t:ErrorMessage> 
+                      <t:IsArchive>true</t:IsArchive> 
+                    </t:FailedMailbox> 
+                 </t:FailedMailboxes> 
+              </m:SearchMailboxesResult> 
+           </m:SearchMailboxesResponseMessage> 
+        </m:ResponseMessages> 
+     </m:SearchMailboxesResponse> 
+  </s:Body> 
+ </s:Envelope> 
+
+58 / 74 
+
+[MS-OXWSEDISC] - v20250520 
+Electronic Discovery (eDiscovery) Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+5 Security 
+
+5.1 Security Considerations for Implementers 
+
+None. 
+
+5.2 Index of Security Parameters 
+
+None. 
+
+59 / 74 
+
+[MS-OXWSEDISC] - v20250520 
+Electronic Discovery (eDiscovery) Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+6 Appendix A: Full WSDL 
+
+For ease of implementation, the full WSDL is provided in this appendix. 
+
+ <?xml version="1.0" encoding="UTF-8"?> 
+ <wsdl:definitions xmlns:tns="http://schemas.microsoft.com/exchange/services/2006/messages" 
+xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/" 
+xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types" 
+targetNamespace="http://schemas.microsoft.com/exchange/services/2006/messages" 
+xmlns:wsdl="http://schemas.xmlsoap.org/wsdl/"> 
+  <wsdl:types> 
+    <xs:schema elementFormDefault="qualified" 
+targetNamespace="http://schemas.microsoft.com/exchange/services/2006/messages" 
+version="Exchange2016" id="messages" xmlns:xs="http://www.w3.org/2001/XMLSchema"> 
+      <xs:include schemaLocation="MS-OXWSEDISC-messages.xsd"/> 
+    </xs:schema> 
+  </wsdl:types> 
+  <wsdl:portType name="ExchangeServicePortType"> 
+    <wsdl:operation name="GetDiscoverySearchConfiguration"> 
+      <wsdl:input message="tns:GetDiscoverySearchConfigurationSoapIn"/> 
+      <wsdl:output message="tns:GetDiscoverySearchConfigurationSoapOut"/> 
+    </wsdl:operation> 
+    <wsdl:operation name="GetHoldOnMailboxes"> 
+      <wsdl:input message="tns:GetHoldOnMailboxesSoapIn"/> 
+      <wsdl:output message="tns:GetHoldOnMailboxesSoapOut"/> 
+    </wsdl:operation> 
+    <wsdl:operation name="GetSearchableMailboxes"> 
+      <wsdl:input message="tns:GetSearchableMailboxesSoapIn"/> 
+      <wsdl:output message="tns:GetSearchableMailboxesSoapOut"/> 
+    </wsdl:operation> 
+    <wsdl:operation name="SearchMailboxes"> 
+      <wsdl:input message="tns:SearchMailboxesSoapIn"/> 
+      <wsdl:output message="tns:SearchMailboxesSoapOut"/> 
+    </wsdl:operation> 
+    <wsdl:operation name="SetHoldOnMailboxes"> 
+      <wsdl:input message="tns:SetHoldOnMailboxesSoapIn"/> 
+      <wsdl:output message="tns:SetHoldOnMailboxesSoapOut"/> 
+    </wsdl:operation> 
+  </wsdl:portType> 
+  <wsdl:binding name="ExchangeServiceBinding" type="tns:ExchangeServicePortType"> 
+    <wsdl:documentation> 
+      <wsi:Claim conformsTo="http://ws-i.org/profiles/basic/1.0" xmlns:wsi="http://ws-
+i.org/schemas/conformanceClaim/"/> 
+    </wsdl:documentation> 
+    <soap:binding transport="http://schemas.xmlsoap.org/soap/http"/> 
+    <wsdl:operation name="GetDiscoverySearchConfiguration"> 
+      <soap:operation 
+soapAction="http://schemas.microsoft.com/exchange/services/2006/messages/GetDiscoverySearchCo
+nfiguration"/> 
+      <wsdl:input> 
+        <soap:header message="tns:GetDiscoverySearchConfigurationSoapIn" 
+part="RequestVersion" use="literal"/> 
+        <soap:header message="tns:GetDiscoverySearchConfigurationSoapIn" 
+part="ManagementRole" use="literal"/> 
+        <soap:body use="literal" parts="request"/> 
+      </wsdl:input> 
+      <wsdl:output> 
+        <soap:body use="literal" parts="GetDiscoverySearchConfigurationResult"/> 
+        <soap:header message="tns:GetDiscoverySearchConfigurationSoapOut" 
+part="ServerVersion" use="literal"/> 
+      </wsdl:output> 
+    </wsdl:operation> 
+    <wsdl:operation name="GetHoldOnMailboxes"> 
+      <soap:operation 
+soapAction="http://schemas.microsoft.com/exchange/services/2006/messages/GetHoldOnMailboxes"/
+> 
+      <wsdl:input> 
+
+60 / 74 
+
+[MS-OXWSEDISC] - v20250520 
+Electronic Discovery (eDiscovery) Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+        <soap:header message="tns:GetHoldOnMailboxesSoapIn" part="RequestVersion" 
+use="literal"/> 
+        <soap:header message="tns:GetHoldOnMailboxesSoapIn" part="ManagementRole" 
+use="literal"/> 
+        <soap:body use="literal" parts="request"/> 
+      </wsdl:input> 
+      <wsdl:output> 
+        <soap:body use="literal" parts="GetHoldOnMailboxesResult"/> 
+        <soap:header message="tns:GetHoldOnMailboxesSoapOut" part="ServerVersion" 
+use="literal"/> 
+      </wsdl:output> 
+    </wsdl:operation> 
+    <wsdl:operation name="GetSearchableMailboxes"> 
+      <soap:operation 
+soapAction="http://schemas.microsoft.com/exchange/services/2006/messages/GetSearchableMailbox
+es"/> 
+      <wsdl:input> 
+        <soap:header message="tns:GetSearchableMailboxesSoapIn" part="RequestVersion" 
+use="literal"/> 
+        <soap:header message="tns:GetSearchableMailboxesSoapIn" part="ManagementRole" 
+use="literal"/> 
+        <soap:body use="literal" parts="request"/> 
+      </wsdl:input> 
+      <wsdl:output> 
+        <soap:body use="literal" parts="GetSearchableMailboxesResult"/> 
+        <soap:header message="tns:GetSearchableMailboxesSoapOut" part="ServerVersion" 
+use="literal"/> 
+      </wsdl:output> 
+    </wsdl:operation> 
+    <wsdl:operation name="SearchMailboxes"> 
+      <soap:operation 
+soapAction="http://schemas.microsoft.com/exchange/services/2006/messages/SearchMailboxes"/> 
+      <wsdl:input> 
+        <soap:header message="tns:SearchMailboxesSoapIn" part="RequestVersion" 
+use="literal"/> 
+        <soap:header message="tns:SearchMailboxesSoapIn" part="ManagementRole" 
+use="literal"/> 
+        <soap:body use="literal" parts="request"/> 
+      </wsdl:input> 
+      <wsdl:output> 
+        <soap:body use="literal" parts="SearchMailboxesResult"/> 
+        <soap:header message="tns:SearchMailboxesSoapOut" part="ServerVersion" 
+use="literal"/> 
+      </wsdl:output> 
+    </wsdl:operation> 
+    <wsdl:operation name="SetHoldOnMailboxes"> 
+      <soap:operation 
+soapAction="http://schemas.microsoft.com/exchange/services/2006/messages/SetHoldOnMailboxes"/
+> 
+      <wsdl:input> 
+        <soap:header message="tns:SetHoldOnMailboxesSoapIn" part="RequestVersion" 
+use="literal"/> 
+        <soap:header message="tns:SetHoldOnMailboxesSoapIn" part="ManagementRole" 
+use="literal"/> 
+        <soap:body use="literal" parts="request"/> 
+      </wsdl:input> 
+      <wsdl:output> 
+        <soap:body use="literal" parts="SetHoldOnMailboxesResult"/> 
+        <soap:header message="tns:SetHoldOnMailboxesSoapOut" part="ServerVersion" 
+use="literal"/> 
+      </wsdl:output> 
+    </wsdl:operation> 
+  </wsdl:binding> 
+  <wsdl:message name="GetDiscoverySearchConfigurationSoapIn"> 
+    <wsdl:part name="request" element="tns:GetDiscoverySearchConfiguration"/> 
+    <wsdl:part name="RequestVersion" element="t:RequestServerVersion"/> 
+    <wsdl:part name="ManagementRole" element="t:ManagementRole"/> 
+  </wsdl:message> 
+  <wsdl:message name="GetDiscoverySearchConfigurationSoapOut"> 
+
+61 / 74 
+
+[MS-OXWSEDISC] - v20250520 
+Electronic Discovery (eDiscovery) Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+    <wsdl:part name="GetDiscoverySearchConfigurationResult" 
+element="tns:GetDiscoverySearchConfigurationResponse"/> 
+    <wsdl:part name="ServerVersion" element="t:ServerVersionInfo"/> 
+  </wsdl:message> 
+  <wsdl:message name="GetHoldOnMailboxesSoapIn"> 
+    <wsdl:part name="request" element="tns:GetHoldOnMailboxes"/> 
+    <wsdl:part name="RequestVersion" element="t:RequestServerVersion"/> 
+    <wsdl:part name="ManagementRole" element="t:ManagementRole"/> 
+  </wsdl:message> 
+  <wsdl:message name="GetHoldOnMailboxesSoapOut"> 
+    <wsdl:part name="GetHoldOnMailboxesResult" element="tns:GetHoldOnMailboxesResponse"/> 
+    <wsdl:part name="ServerVersion" element="t:ServerVersionInfo"/> 
+  </wsdl:message> 
+  <wsdl:message name="GetSearchableMailboxesSoapIn"> 
+    <wsdl:part name="request" element="tns:GetSearchableMailboxes"/> 
+    <wsdl:part name="RequestVersion" element="t:RequestServerVersion"/> 
+    <wsdl:part name="ManagementRole" element="t:ManagementRole"/> 
+  </wsdl:message> 
+  <wsdl:message name="GetSearchableMailboxesSoapOut"> 
+    <wsdl:part name="GetSearchableMailboxesResult" 
+element="tns:GetSearchableMailboxesResponse"/> 
+    <wsdl:part name="ServerVersion" element="t:ServerVersionInfo"/> 
+  </wsdl:message> 
+  <wsdl:message name="SearchMailboxesSoapIn"> 
+    <wsdl:part name="request" element="tns:SearchMailboxes"/> 
+    <wsdl:part name="RequestVersion" element="t:RequestServerVersion"/> 
+    <wsdl:part name="ManagementRole" element="t:ManagementRole"/> 
+  </wsdl:message> 
+  <wsdl:message name="SearchMailboxesSoapOut"> 
+    <wsdl:part name="SearchMailboxesResult" element="tns:SearchMailboxesResponse"/> 
+    <wsdl:part name="ServerVersion" element="t:ServerVersionInfo"/> 
+  </wsdl:message> 
+  <wsdl:message name="SetHoldOnMailboxesSoapIn"> 
+    <wsdl:part name="request" element="tns:SetHoldOnMailboxes"/> 
+    <wsdl:part name="RequestVersion" element="t:RequestServerVersion"/> 
+    <wsdl:part name="ManagementRole" element="t:ManagementRole"/> 
+  </wsdl:message> 
+  <wsdl:message name="SetHoldOnMailboxesSoapOut"> 
+    <wsdl:part name="SetHoldOnMailboxesResult" element="tns:SetHoldOnMailboxesResponse"/> 
+    <wsdl:part name="ServerVersion" element="t:ServerVersionInfo"/> 
+  </wsdl:message> 
+ </wsdl:definitions> 
+
+62 / 74 
+
+[MS-OXWSEDISC] - v20250520 
+Electronic Discovery (eDiscovery) Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+7 Appendix B: Full XML Schema 
+
+Schema name Prefix Section 
+
+http://schemas.microsoft.com/exchange/services/2006/types t 7.2 
+
+http://schemas.microsoft.com/exchange/services/2006/messages tns 7.1 
+
+ 
+
+For ease of implementation, the following sections provide the full XML schema for this protocol. 
+
+7.1 http://schemas.microsoft.com/exchange/services/2006/messages Schema 
+
+This section contains the contents of the MS-OXWSEDISC-messages.xsd file and information about 
+additional files that this schema file requires to operate correctly. 
+
+MS-OXWSEDISC-messages.xsd includes the files listed in the following table. For the schema file to 
+operate correctly, these files have to be present in the folder that contains the WSDL, types schema, 
+and messages schema files for this protocol. 
+
+File name Defining specification 
+
+MS-OXWSCDATA-messages.xsd [MS-OXWSCDATA] section 7.1 
+
+MS-OXWSWDISC-types.xsd 7.2 
+
+ 
+
+ <?xml version="1.0" encoding="UTF-8"?> 
+ <xs:schema xmlns:tns="http://schemas.microsoft.com/exchange/services/2006/messages" 
+xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types" 
+elementFormDefault="qualified" 
+targetNamespace="http://schemas.microsoft.com/exchange/services/2006/messages" 
+version="Exchange2016" id="messages" xmlns:xs="http://www.w3.org/2001/XMLSchema"> 
+  <xs:import schemaLocation="MS-OXWSEDISC-types.xsd" 
+namespace="http://schemas.microsoft.com/exchange/services/2006/types"/> 
+  <xs:include schemaLocation="MS-OXWSCDATA-messages.xsd"/> 
+  <xs:element name="GetHoldOnMailboxes" type="tns:GetHoldOnMailboxesType"/> 
+  <xs:element name="GetHoldOnMailboxesResponse" 
+type="tns:GetHoldOnMailboxesResponseMessageType"/> 
+  <xs:complexType name="GetDiscoverySearchConfigurationType"> 
+    <xs:complexContent mixed="false"> 
+      <xs:extension base="tns:BaseRequestType"> 
+        <xs:sequence> 
+          <xs:element minOccurs="0" name="SearchId" type="xs:string"/> 
+          <xs:element minOccurs="0" name="ExpandGroupMembership" type="xs:boolean"/> 
+          <xs:element minOccurs="0" name="InPlaceHoldConfigurationOnly" type="xs:boolean"/> 
+        </xs:sequence> 
+      </xs:extension> 
+    </xs:complexContent> 
+  </xs:complexType> 
+  <xs:element name="GetDiscoverySearchConfiguration" 
+type="tns:GetDiscoverySearchConfigurationType"/> 
+  <xs:complexType name="GetDiscoverySearchConfigurationResponseMessageType"> 
+    <xs:complexContent mixed="false"> 
+      <xs:extension base="tns:ResponseMessageType"> 
+        <xs:sequence> 
+          <xs:element name="DiscoverySearchConfigurations" 
+type="t:ArrayOfDiscoverySearchConfigurationType"/> 
+        </xs:sequence> 
+      </xs:extension> 
+    </xs:complexContent> 
+
+63 / 74 
+
+[MS-OXWSEDISC] - v20250520 
+Electronic Discovery (eDiscovery) Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+  </xs:complexType> 
+  <xs:element name="GetDiscoverySearchConfigurationResponse" 
+type="tns:GetDiscoverySearchConfigurationResponseMessageType"/> 
+  <xs:complexType name="GetHoldOnMailboxesResponseMessageType"> 
+    <xs:complexContent mixed="false"> 
+      <xs:extension base="tns:ResponseMessageType"> 
+        <xs:sequence> 
+          <xs:element minOccurs="0" name="MailboxHoldResult" type="t:MailboxHoldResultType"/> 
+        </xs:sequence> 
+      </xs:extension> 
+    </xs:complexContent> 
+  </xs:complexType> 
+  <xs:complexType name="GetHoldOnMailboxesType"> 
+    <xs:complexContent mixed="false"> 
+      <xs:extension base="tns:BaseRequestType"> 
+        <xs:sequence> 
+          <xs:element minOccurs="1" name="HoldId" type="xs:string"/> 
+        </xs:sequence> 
+      </xs:extension> 
+    </xs:complexContent> 
+  </xs:complexType> 
+  <xs:complexType name="GetSearchableMailboxesType"> 
+    <xs:complexContent mixed="false"> 
+      <xs:extension base="tns:BaseRequestType"> 
+        <xs:sequence> 
+          <xs:element minOccurs="0" name="SearchFilter" type="xs:string"/> 
+          <xs:element minOccurs="0" name="ExpandGroupMembership" type="xs:boolean"/> 
+        </xs:sequence> 
+      </xs:extension> 
+    </xs:complexContent> 
+  </xs:complexType> 
+  <xs:element name="GetSearchableMailboxes" type="tns:GetSearchableMailboxesType"/> 
+  <xs:complexType name="GetSearchableMailboxesResponseMessageType"> 
+    <xs:complexContent mixed="false"> 
+      <xs:extension base="tns:ResponseMessageType"> 
+        <xs:sequence> 
+          <xs:element name="SearchableMailboxes" type="t:ArrayOfSearchableMailboxesType"/> 
+          <xs:element minOccurs="0" name="FailedMailboxes" 
+type="t:ArrayOfFailedSearchMailboxesType"/> 
+        </xs:sequence> 
+      </xs:extension> 
+    </xs:complexContent> 
+  </xs:complexType> 
+  <xs:element name="GetSearchableMailboxesResponse" 
+type="tns:GetSearchableMailboxesResponseMessageType"/> 
+  <xs:complexType name="SearchMailboxesType"> 
+    <xs:complexContent mixed="false"> 
+      <xs:extension base="tns:BaseRequestType"> 
+        <xs:sequence> 
+          <xs:element minOccurs="1" name="SearchQueries" 
+type="t:NonEmptyArrayOfMailboxQueriesType"/> 
+          <xs:element minOccurs="1" name="ResultType" type="t:SearchResultType"/> 
+          <xs:element minOccurs="0" name="PreviewItemResponseShape" 
+type="t:PreviewItemResponseShapeType"/> 
+          <xs:element minOccurs="0" name="SortBy" type="t:FieldOrderType"/> 
+          <xs:element minOccurs="0" name="Language" type="xs:string"/> 
+          <xs:element minOccurs="0" name="Deduplication" type="xs:boolean"/> 
+          <xs:element minOccurs="0" name="PageSize" type="xs:int"/> 
+          <xs:element minOccurs="0" name="PageItemReference" type="xs:string"/> 
+          <xs:element minOccurs="0" name="PageDirection" type="t:SearchPageDirectionType"/> 
+        </xs:sequence> 
+      </xs:extension> 
+    </xs:complexContent> 
+  </xs:complexType> 
+  <xs:element name="SearchMailboxes" type="tns:SearchMailboxesType"/> 
+  <xs:complexType name="SearchMailboxesResponseType"> 
+    <xs:complexContent mixed="false"> 
+      <xs:extension base="tns:BaseResponseMessageType"/> 
+    </xs:complexContent> 
+
+64 / 74 
+
+[MS-OXWSEDISC] - v20250520 
+Electronic Discovery (eDiscovery) Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+  </xs:complexType> 
+  <xs:element name="SearchMailboxesResponse" type="tns:SearchMailboxesResponseType"/> 
+  <xs:complexType name="SearchMailboxesResponseMessageType"> 
+    <xs:complexContent mixed="false"> 
+      <xs:extension base="tns:ResponseMessageType"> 
+        <xs:sequence> 
+          <xs:element minOccurs="0" name="SearchMailboxesResult" 
+type="t:SearchMailboxesResultType"/> 
+        </xs:sequence> 
+      </xs:extension> 
+    </xs:complexContent> 
+  </xs:complexType> 
+  <xs:complexType name="SetHoldOnMailboxesType"> 
+    <xs:complexContent mixed="false"> 
+      <xs:extension base="tns:BaseRequestType"> 
+        <xs:sequence> 
+          <xs:element minOccurs="1" name="ActionType" type="t:HoldActionType"/> 
+          <xs:element minOccurs="1" name="HoldId" type="xs:string"/> 
+          <xs:element minOccurs="1" name="Query" type="xs:string"/> 
+          <xs:element minOccurs="0" name="Mailboxes" type="t:ArrayOfStringsType"/> 
+          <xs:element minOccurs="0" name="Language" type="xs:string"/> 
+          <xs:element minOccurs="0" name="IncludeNonIndexableItems" type="xs:boolean"/> 
+          <xs:element minOccurs="0" name="Deduplication" type="xs:boolean"/> 
+          <xs:element minOccurs="0" name="InPlaceHoldIdentity" type="xs:string"/> 
+          <xs:element minOccurs="0" name="ItemHoldPeriod" type="xs:string"/> 
+        </xs:sequence> 
+      </xs:extension> 
+    </xs:complexContent> 
+  </xs:complexType> 
+  <xs:element name="SetHoldOnMailboxes" type="tns:SetHoldOnMailboxesType"/> 
+  <xs:complexType name="SetHoldOnMailboxesResponseMessageType"> 
+    <xs:complexContent mixed="false"> 
+      <xs:extension base="tns:ResponseMessageType"> 
+        <xs:sequence> 
+          <xs:element minOccurs="0" name="MailboxHoldResult" type="t:MailboxHoldResultType"/> 
+        </xs:sequence> 
+      </xs:extension> 
+    </xs:complexContent> 
+  </xs:complexType> 
+  <xs:element name="SetHoldOnMailboxesResponse" 
+type="tns:SetHoldOnMailboxesResponseMessageType"/> 
+ </xs:schema> 
+
+7.2 http://schemas.microsoft.com/exchange/services/2006/types Schema 
+
+This section contains the contents of the MS-OXWSEDISC-types.xsd file and information about 
+additional files that this schema file requires to operate correctly. 
+
+MS-OXWSEDISC-types.xsd includes the files listed in the following table. For the schema file to 
+operate correctly, these files have to be present in the folder that contains the WSDL, types schema, 
+and messages schema files for this protocol. 
+
+File name Defining specification 
+
+MS-OXWSXPROP-types.xsd [MS-OXWSXPROP] section 2.1 
+
+MS-OXWSMSHR-types.xsd [MS-OXWSMSHR] section 7.2 
+
+ 
+
+ <?xml version="1.0" encoding="UTF-8"?> 
+ <xs:schema xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types" 
+elementFormDefault="qualified" 
+
+65 / 74 
+
+[MS-OXWSEDISC] - v20250520 
+Electronic Discovery (eDiscovery) Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+targetNamespace="http://schemas.microsoft.com/exchange/services/2006/types" 
+version="Exchange2016" id="types" xmlns:xs="http://www.w3.org/2001/XMLSchema"> 
+  <xs:import namespace="http://www.w3.org/XML/1998/namespace"/> 
+  <xs:include schemaLocation="MS-OXWSXPROP-types.xsd"/> 
+  <xs:include schemaLocation="MS-OXWSMSHR-types.xsd"/> 
+  <xs:complexType name="ArrayOfDiscoverySearchConfigurationType"> 
+    <xs:sequence> 
+      <xs:element minOccurs="0" maxOccurs="unbounded" name="DiscoverySearchConfiguration" 
+type="t:DiscoverySearchConfigurationType"/> 
+    </xs:sequence> 
+  </xs:complexType> 
+  <xs:complexType name="ArrayOfFailedSearchMailboxesType"> 
+    <xs:sequence> 
+      <xs:element minOccurs="0" maxOccurs="unbounded" name="FailedMailbox" 
+type="t:FailedSearchMailboxType"/> 
+    </xs:sequence> 
+  </xs:complexType> 
+  <xs:complexType name="ArrayOfKeywordStatisticsSearchResultsType"> 
+    <xs:sequence> 
+      <xs:element minOccurs="0" maxOccurs="unbounded" name="KeywordStat" 
+type="t:KeywordStatisticsSearchResultType"/> 
+    </xs:sequence> 
+  </xs:complexType> 
+  <xs:complexType name="ArrayOfMailboxHoldStatusType"> 
+    <xs:sequence> 
+      <xs:element minOccurs="0" maxOccurs="unbounded" name="MailboxHoldStatus" 
+type="t:MailboxHoldStatusType"/> 
+    </xs:sequence> 
+  </xs:complexType> 
+  <xs:complexType name="ArrayOfMailboxStatisticsItemsType"> 
+    <xs:sequence> 
+      <xs:element minOccurs="0" maxOccurs="unbounded" name="MailboxStat" 
+type="t:MailboxStatisticsItemType"/> 
+    </xs:sequence> 
+  </xs:complexType> 
+  <xs:complexType name="ArrayOfSearchableMailboxesType"> 
+    <xs:sequence> 
+      <xs:element minOccurs="0" maxOccurs="unbounded" name="SearchableMailbox" 
+type="t:SearchableMailboxType"/> 
+    </xs:sequence> 
+  </xs:complexType> 
+  <xs:complexType name="ArrayOfSearchPreviewItemsType"> 
+    <xs:sequence> 
+      <xs:element minOccurs="0" maxOccurs="unbounded" name="SearchPreviewItem" 
+type="t:SearchPreviewItemType"/> 
+    </xs:sequence> 
+  </xs:complexType> 
+  <xs:complexType name="ArrayOfSearchRefinerItemsType"> 
+    <xs:sequence> 
+      <xs:element minOccurs="0" maxOccurs="unbounded" name="Refiner" 
+type="t:SearchRefinerItemType"/> 
+    </xs:sequence> 
+  </xs:complexType> 
+  <xs:complexType name="DiscoverySearchConfigurationType"> 
+    <xs:sequence> 
+      <xs:element minOccurs="1" maxOccurs="1" name="SearchId" type="xs:string"/> 
+      <xs:element minOccurs="1" maxOccurs="1" name="SearchQuery" type="xs:string"/> 
+      <xs:element minOccurs="0" maxOccurs="1" name="SearchableMailboxes" 
+type="t:ArrayOfSearchableMailboxesType"/> 
+      <xs:element minOccurs="0" maxOccurs="1" name="InPlaceHoldIdentity" type="xs:string"/> 
+      <xs:element minOccurs="0" maxOccurs="1" name="ManagedByOrganization" type="xs:string"/> 
+      <xs:element minOccurs="0" maxOccurs="1" name="Language" type="xs:string"/> 
+    </xs:sequence> 
+  </xs:complexType> 
+  <xs:complexType name="FailedSearchMailboxType"> 
+    <xs:sequence> 
+      <xs:element minOccurs="1" maxOccurs="1" name="Mailbox" type="xs:string"/> 
+      <xs:element minOccurs="1" maxOccurs="1" name="ErrorCode" type="xs:int"/> 
+      <xs:element minOccurs="1" maxOccurs="1" name="ErrorMessage" type="xs:string"/> 
+      <xs:element minOccurs="1" maxOccurs="1" name="IsArchive" type="xs:boolean"/> 
+
+66 / 74 
+
+[MS-OXWSEDISC] - v20250520 
+Electronic Discovery (eDiscovery) Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+    </xs:sequence> 
+  </xs:complexType> 
+  <xs:simpleType name="HoldActionType"> 
+    <xs:restriction base="xs:string"> 
+      <xs:enumeration value="Create"/> 
+      <xs:enumeration value="Update"/> 
+      <xs:enumeration value="Remove"/> 
+    </xs:restriction> 
+  </xs:simpleType> 
+  <xs:simpleType name="HoldStatusType"> 
+    <xs:restriction base="xs:string"> 
+      <xs:enumeration value="NotOnHold"/> 
+      <xs:enumeration value="Pending"/> 
+      <xs:enumeration value="OnHold"/> 
+      <xs:enumeration value="PartialHold"/> 
+      <xs:enumeration value="Failed"/> 
+    </xs:restriction> 
+  </xs:simpleType> 
+  <xs:complexType name="KeywordStatisticsSearchResultType"> 
+    <xs:sequence> 
+      <xs:element minOccurs="1" maxOccurs="1" name="Keyword" type="xs:string"/> 
+      <xs:element minOccurs="1" maxOccurs="1" name="ItemHits" type="xs:int"/> 
+      <xs:element minOccurs="1" maxOccurs="1" name="Size" type="xs:long"/> 
+    </xs:sequence> 
+  </xs:complexType> 
+  <xs:complexType name="MailboxStatisticsSearchResultType"> 
+    <xs:sequence> 
+      <xs:element minOccurs="1" maxOccurs="1" name="UserMailbox" type="t:UserMailboxType"/> 
+      <xs:element minOccurs="0" maxOccurs="1" name="KeywordStatisticsSearchResult" 
+type="t:KeywordStatisticsSearchResultType"/> 
+    </xs:sequence> 
+  </xs:complexType> 
+  <xs:complexType name="MailboxHoldResultType"> 
+    <xs:sequence> 
+      <xs:element name="HoldId" type="xs:string"/> 
+      <xs:element minOccurs="0" name="Query" type="xs:string"/> 
+      <xs:element name="MailboxHoldStatuses" type="t:ArrayOfMailboxHoldStatusType"/> 
+    </xs:sequence> 
+  </xs:complexType> 
+  <xs:complexType name="MailboxHoldStatusType"> 
+    <xs:sequence> 
+      <xs:element minOccurs="1" maxOccurs="1" name="Mailbox" type="xs:string"/> 
+      <xs:element minOccurs="1" maxOccurs="1" name="Status" type="t:HoldStatusType"/> 
+      <xs:element minOccurs="0" maxOccurs="1" name="AdditionalInfo" type="xs:string"/> 
+    </xs:sequence> 
+  </xs:complexType> 
+  <xs:complexType name="MailboxQueryType"> 
+    <xs:sequence> 
+      <xs:element minOccurs="1" maxOccurs="1" name="Query" type="xs:string"/> 
+      <xs:element minOccurs="1" maxOccurs="1" name="MailboxSearchScopes" 
+type="t:NonEmptyArrayOfMailboxSearchScopesType"/> 
+    </xs:sequence> 
+  </xs:complexType> 
+  <xs:simpleType name="MailboxSearchLocationType"> 
+    <xs:restriction base="xs:string"> 
+      <xs:enumeration value="PrimaryOnly"/> 
+      <xs:enumeration value="ArchiveOnly"/> 
+      <xs:enumeration value="All"/> 
+    </xs:restriction> 
+  </xs:simpleType> 
+  <xs:complexType name="ExtendedAttributeType"> 
+    <xs:sequence> 
+      <xs:element minOccurs="1" maxOccurs="1" name="Name" type="xs:string"/> 
+      <xs:element minOccurs="1" maxOccurs="1" name="Value" type="xs:string"/> 
+    </xs:sequence> 
+  </xs:complexType> 
+  <xs:complexType name="ArrayOfExtendedAttributesType"> 
+    <xs:sequence> 
+
+67 / 74 
+
+[MS-OXWSEDISC] - v20250520 
+Electronic Discovery (eDiscovery) Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+      <xs:element minOccurs="0" maxOccurs="unbounded" name="ExtendedAttribute" 
+type="t:ExtendedAttributeType"/> 
+    </xs:sequence> 
+  </xs:complexType> 
+  <xs:complexType name="MailboxSearchScopeType"> 
+    <xs:sequence> 
+      <xs:element minOccurs="1" maxOccurs="1" name="Mailbox" type="xs:string"/> 
+      <xs:element minOccurs="1" maxOccurs="1" name="SearchScope" 
+type="t:MailboxSearchLocationType"/> 
+      <xs:element minOccurs="0" maxOccurs="1" name="ExtendedAttributes" 
+type="t:ArrayOfExtendedAttributesType"/> 
+    </xs:sequence> 
+  </xs:complexType> 
+  <xs:complexType name="MailboxStatisticsItemType"> 
+    <xs:sequence> 
+      <xs:element minOccurs="1" maxOccurs="1" name="MailboxId" type="xs:string"/> 
+      <xs:element minOccurs="1" maxOccurs="1" name="DisplayName" type="xs:string"/> 
+      <xs:element minOccurs="1" maxOccurs="1" name="ItemCount" type="xs:long"/> 
+      <xs:element minOccurs="1" maxOccurs="1" name="Size" type="xs:long"/> 
+    </xs:sequence> 
+  </xs:complexType> 
+  <xs:complexType name="NonEmptyArrayOfExtendedFieldURIsType"> 
+    <xs:choice maxOccurs="unbounded"> 
+      <xs:element name="ExtendedFieldURI" type="t:PathToExtendedFieldType"/> 
+    </xs:choice> 
+  </xs:complexType> 
+  <xs:complexType name="NonEmptyArrayOfMailboxSearchScopesType"> 
+    <xs:sequence> 
+      <xs:element minOccurs="1" maxOccurs="unbounded" name="MailboxSearchScope" 
+type="t:MailboxSearchScopeType"/> 
+    </xs:sequence> 
+  </xs:complexType> 
+  <xs:complexType name="NonEmptyArrayOfMailboxQueriesType"> 
+    <xs:sequence> 
+      <xs:element minOccurs="1" maxOccurs="unbounded" name="MailboxQuery" 
+type="t:MailboxQueryType"/> 
+    </xs:sequence> 
+  </xs:complexType> 
+  <xs:simpleType name="PreviewItemBaseShapeType"> 
+    <xs:restriction base="xs:string"> 
+      <xs:enumeration value="Default"/> 
+      <xs:enumeration value="Compact"/> 
+    </xs:restriction> 
+  </xs:simpleType> 
+  <xs:complexType name="PreviewItemMailboxType"> 
+    <xs:sequence> 
+      <xs:element minOccurs="1" maxOccurs="1" name="MailboxId" type="xs:string"/> 
+      <xs:element minOccurs="1" maxOccurs="1" name="PrimarySmtpAddress" type="xs:string"/> 
+    </xs:sequence> 
+  </xs:complexType> 
+  <xs:complexType name="PreviewItemResponseShapeType"> 
+    <xs:sequence> 
+      <xs:element minOccurs="1" maxOccurs="1" name="BaseShape" 
+type="t:PreviewItemBaseShapeType"/> 
+      <xs:element minOccurs="0" maxOccurs="1" name="AdditionalProperties" 
+type="t:NonEmptyArrayOfExtendedFieldURIsType"/> 
+    </xs:sequence> 
+  </xs:complexType> 
+  <xs:complexType name="SearchableMailboxType"> 
+    <xs:sequence> 
+      <xs:element minOccurs="1" maxOccurs="1" name="Guid" type="t:GuidType"/> 
+      <xs:element minOccurs="1" maxOccurs="1" name="PrimarySmtpAddress" type="xs:string"/> 
+      <xs:element minOccurs="1" maxOccurs="1" name="IsExternalMailbox" type="xs:boolean"/> 
+      <xs:element minOccurs="1" maxOccurs="1" name="ExternalEmailAddress" type="xs:string"/> 
+      <xs:element minOccurs="1" maxOccurs="1" name="DisplayName" type="xs:string"/> 
+      <xs:element minOccurs="1" maxOccurs="1" name="IsMembershipGroup" type="xs:boolean"/> 
+      <xs:element minOccurs="1" maxOccurs="1" name="ReferenceId" type="xs:string"/> 
+    </xs:sequence> 
+  </xs:complexType> 
+
+68 / 74 
+
+[MS-OXWSEDISC] - v20250520 
+Electronic Discovery (eDiscovery) Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+  <xs:complexType name="SearchMailboxesResultType"> 
+    <xs:sequence> 
+      <xs:element minOccurs="1" name="SearchQueries" 
+type="t:NonEmptyArrayOfMailboxQueriesType"/> 
+      <xs:element minOccurs="1" name="ResultType" type="t:SearchResultType"/> 
+      <xs:element minOccurs="1" name="ItemCount" type="xs:long"/> 
+      <xs:element minOccurs="1" name="Size" type="xs:long"/> 
+      <xs:element minOccurs="1" name="PageItemCount" type="xs:int"/> 
+      <xs:element minOccurs="1" name="PageItemSize" type="xs:long"/> 
+      <xs:element minOccurs="0" name="KeywordStats" 
+type="t:ArrayOfKeywordStatisticsSearchResultsType"/> 
+      <xs:element minOccurs="0" name="Items" type="t:ArrayOfSearchPreviewItemsType"/> 
+      <xs:element minOccurs="0" name="FailedMailboxes" 
+type="t:ArrayOfFailedSearchMailboxesType"/> 
+      <xs:element minOccurs="0" name="Refiners" type="t:ArrayOfSearchRefinerItemsType"/> 
+      <xs:element minOccurs="0" name="MailboxStats" 
+type="t:ArrayOfMailboxStatisticsItemsType"/> 
+    </xs:sequence> 
+  </xs:complexType> 
+  <xs:simpleType name="SearchPageDirectionType"> 
+    <xs:restriction base="xs:string"> 
+      <xs:enumeration value="Previous"/> 
+      <xs:enumeration value="Next"/> 
+    </xs:restriction> 
+  </xs:simpleType> 
+  <xs:complexType name="SearchPreviewItemType"> 
+    <xs:sequence> 
+      <xs:element minOccurs="1" maxOccurs="1" name="Id" type="t:ItemIdType"/> 
+      <xs:element minOccurs="0" maxOccurs="1" name="Mailbox" 
+type="t:PreviewItemMailboxType"/> 
+      <xs:element minOccurs="0" maxOccurs="1" name="ParentId" type="t:ItemIdType"/> 
+      <xs:element minOccurs="0" maxOccurs="1" name="ItemClass" type="t:ItemClassType"/> 
+      <xs:element minOccurs="0" maxOccurs="1" name="UniqueHash" type="xs:string"/> 
+      <xs:element minOccurs="0" maxOccurs="1" name="SortValue" type="xs:string"/> 
+      <xs:element minOccurs="0" maxOccurs="1" name="OwaLink" type="xs:string"/> 
+      <xs:element minOccurs="0" maxOccurs="1" name="Sender" type="xs:string"/> 
+      <xs:element minOccurs="0" maxOccurs="1" name="ToRecipients" 
+type="t:ArrayOfSmtpAddressType"/> 
+      <xs:element minOccurs="0" maxOccurs="1" name="CcRecipients" 
+type="t:ArrayOfSmtpAddressType"/> 
+      <xs:element minOccurs="0" maxOccurs="1" name="BccRecipients" 
+type="t:ArrayOfSmtpAddressType"/> 
+      <xs:element minOccurs="0" maxOccurs="1" name="CreatedTime" type="xs:dateTime"/> 
+      <xs:element minOccurs="0" maxOccurs="1" name="ReceivedTime" type="xs:dateTime"/> 
+      <xs:element minOccurs="0" maxOccurs="1" name="SentTime" type="xs:dateTime"/> 
+      <xs:element minOccurs="0" maxOccurs="1" name="Subject" type="xs:string"/> 
+      <xs:element minOccurs="0" maxOccurs="1" name="Size" type="xs:long"/> 
+      <xs:element minOccurs="0" maxOccurs="1" name="Preview" type="xs:string"/> 
+      <xs:element minOccurs="0" maxOccurs="1" name="Importance" 
+type="t:ImportanceChoicesType"/> 
+      <xs:element minOccurs="0" maxOccurs="1" name="Read" type="xs:boolean"/> 
+      <xs:element minOccurs="0" maxOccurs="1" name="HasAttachment" type="xs:boolean"/> 
+      <xs:element minOccurs="0" maxOccurs="1" name="ExtendedProperties" 
+type="t:NonEmptyArrayOfExtendedPropertyType"/> 
+    </xs:sequence> 
+  </xs:complexType> 
+  <xs:complexType name="SearchRefinerItemType"> 
+    <xs:sequence> 
+      <xs:element minOccurs="1" maxOccurs="1" name="Name" type="xs:string"/> 
+      <xs:element minOccurs="1" maxOccurs="1" name="Value" type="xs:string"/> 
+      <xs:element minOccurs="1" maxOccurs="1" name="Count" type="xs:long"/> 
+      <xs:element minOccurs="1" maxOccurs="1" name="Token" type="xs:string"/> 
+    </xs:sequence> 
+  </xs:complexType> 
+  <xs:simpleType name="SearchResultType"> 
+    <xs:restriction base="xs:string"> 
+      <xs:enumeration value="StatisticsOnly"/> 
+      <xs:enumeration value="PreviewOnly"/> 
+    </xs:restriction> 
+
+69 / 74 
+
+[MS-OXWSEDISC] - v20250520 
+Electronic Discovery (eDiscovery) Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+  </xs:simpleType> 
+  <xs:complexType name="UserMailboxType"> 
+    <xs:attribute name="Id" type="xs:string" use="required"/> 
+    <xs:attribute name="IsArchive" type="xs:boolean" use="required"/> 
+  </xs:complexType> 
+ </xs:schema> 
+
+70 / 74 
+
+[MS-OXWSEDISC] - v20250520 
+Electronic Discovery (eDiscovery) Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+8 Appendix C: Product Behavior 
+
+The information in this specification is applicable to the following Microsoft products or supplemental 
+software. References to product versions include updates to those products. 
+
+ Microsoft Exchange Server 2013 
+
+ Microsoft SharePoint Server 2013 
+
+ Microsoft Exchange Server 2016  
+
+ Microsoft Exchange Server 2019  
+
+ Microsoft SharePoint Server 2016  
+
+ Microsoft Exchange Server Subscription Edition 
+
+Exceptions, if any, are noted in this section. If an update version, service pack or Knowledge Base 
+(KB) number appears with a product name, the behavior changed in that update. The new behavior 
+also applies to subsequent updates unless otherwise specified. If a product edition appears with the 
+product version, behavior is different in that product edition. 
+
+Unless otherwise specified, any statement of optional behavior in this specification that is prescribed 
+using the terms "SHOULD" or "SHOULD NOT" implies product behavior in accordance with the 
+SHOULD or SHOULD NOT prescription. Unless otherwise specified, the term "MAY" implies that the 
+product does not follow the prescription. 
+
+<1> Section 2.2.4.4:  Exchange 2013, Exchange 2016, and Exchange 2019 do not use the ErrorCode 
+element. This value is always 0. 
+
+<2> Section 3.1.4.4.3.5:  Microsoft Exchange Server 2007, Microsoft Exchange Server 2010, and the 
+initial release of Exchange 2013 do not support the ExtendedAttributes element. This element was 
+introduced in Microsoft Exchange Server 2013 Service Pack 1 (SP1). 
+
+<3> Section 3.1.4.4.3.20:  Exchange 2007, Exchange 2010, and the initial release of Exchange 2013 
+do not support the ArrayOfExtendedAttributesType complex type. This type was introduced in 
+Exchange 2013 SP1. 
+
+<4> Section 3.1.4.4.3.21:  Exchange 2007, Exchange 2010, and the initial release Exchange 2013 do 
+not support the ExtendedAttributeType complex type. This type was introduced in Exchange 2013 
+SP1. 
+
+<5> Section 3.1.4.5.3.1:  Exchange 2013, Exchange 2016, and Exchange 2019 do not use the 
+Language element; it can be set to any value. 
+
+71 / 74 
+
+[MS-OXWSEDISC] - v20250520 
+Electronic Discovery (eDiscovery) Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+9 Change Tracking 
+
+This section identifies changes that were made to this document since the last release. Changes are 
+classified as Major, Minor, or None.  
+
+The revision class Major means that the technical content in the document was significantly revised. 
+Major changes affect protocol interoperability or implementation. Examples of major changes are: 
+
+ A document revision that incorporates changes to interoperability requirements. 
+ A document revision that captures changes to protocol functionality. 
+
+The revision class Minor means that the meaning of the technical content was clarified. Minor changes 
+do not affect protocol interoperability or implementation. Examples of minor changes are updates to 
+clarify ambiguity at the sentence, paragraph, or table level. 
+
+The revision class None means that no new technical changes were introduced. Minor editorial and 
+formatting changes may have been made, but the relevant technical content is identical to the last 
+released version. 
+
+The changes made to this document are listed in the following table. For more information, please 
+contact dochelp@microsoft.com. 
+
+Section Description Revision class 
+
+8 Appendix C: Product Behavior Updated list of supported products. Major 
+
+72 / 74 
+
+[MS-OXWSEDISC] - v20250520 
+Electronic Discovery (eDiscovery) Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+10 Index
+A Groups 16 
+  
+Abstract data model H 
+   server 17  
+Applicability 9 HoldStatusType simple type 15 
+ArrayOfFailedSearchMailboxesType complex type 12  
+ArrayOfMailboxHoldStatusType complex type 12 I 
+ArrayOfSearchableMailboxesType complex type 13  
+Attribute groups 16 Implementer - security considerations 59 
+Attributes 16 Index of security parameters 59 
+ Informative references 8 
+C Initialization 
+    server 17 
+Capability negotiation 10 Introduction 6 
+Change tracking 72  
+Client L 
+   overview 17  
+Complex types 12 Local events 
+   ArrayOfFailedSearchMailboxesType 12    server 52 
+   ArrayOfMailboxHoldStatusType 12  
+   ArrayOfSearchableMailboxesType 13 M 
+   FailedSearchMailboxType 13  
+   MailboxHoldResultType 13 MailboxHoldResultType complex type 13 
+   MailboxHoldStatusType 14 MailboxHoldStatusType complex type 14 
+   SearchableMailboxType 14 Message processing 
+    server 17 
+D Messages 
+    ArrayOfFailedSearchMailboxesType complex type 
+Data model - abstract 12 
+   server 17    ArrayOfMailboxHoldStatusType complex type 12 
+    ArrayOfSearchableMailboxesType complex type 13 
+E    attribute groups 16 
+    attributes 16 
+Events    complex types 12 
+   local - server 52    elements 11 
+   timer - server 52    enumerated 11 
+Examples    FailedSearchMailboxType complex type 13 
+   getting mailboxes with holds 54    groups 16 
+   getting searchable mailboxes 55    HoldStatusType simple type 15 
+   searching mailboxes 57    MailboxHoldResultType complex type 13 
+   setting holds on mailboxes 53    MailboxHoldStatusType complex type 14 
+ExchangeServicePortType port type 17    namespaces 11 
+    SearchableMailboxType complex type 14 
+F    simple types 15 
+    syntax 11 
+FailedSearchMailboxType complex type 13    transport 11 
+Fields - vendor-extensible 10  
+Full WSDL 60 N 
+Full XML schema 63  
+   Namespaces 11 
+
+http://schemas.microsoft.com/exchange/service Normative references 8 
+s/2006/messages Schema 63  
+
+   O 
+http://schemas.microsoft.com/exchange/service  
+s/2006/types Schema 65 Operations 
+
+    GetDiscoverySearchConfiguration 18 
+G    GetHoldOnMailboxes 23 
+    GetSearchableMailboxes 27 
+Getting mailboxes with holds example 54    SearchMailboxes 32 
+Getting searchable mailboxes example 55    SetHoldOnMailboxes 47 
+Glossary 6 Overview (synopsis) 9 
+
+73 / 74 
+
+[MS-OXWSEDISC] - v20250520 
+Electronic Discovery (eDiscovery) Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+ Vendor-extensible fields 10 
+P Versioning 10 
+  
+Parameters - security index 59 W 
+Port types  
+   ExchangeServicePortType 17 WSDL 60 
+Preconditions 9  
+Prerequisites 9 X 
+Product behavior 71  
+Protocol Details XML schema 63 
+   overview 17    
+ http://schemas.microsoft.com/exchange/service
+R s/2006/messages Schema 63 
+    
+References 7 http://schemas.microsoft.com/exchange/service
+   informative 8 s/2006/types Schema 65 
+   normative 8 
+Relationship to other protocols 9  
+
+ 
+S 
+ 
+SearchableMailboxType complex type 14 
+Searching mailboxes example 57 
+Security 
+   implementer considerations 59 
+   parameter index 59 
+Sequencing rules 
+   server 17 
+Server 
+   abstract data model 17 
+   ExchangeServicePortType port type 17 
+   GetDiscoverySearchConfiguration operation 18 
+   GetHoldOnMailboxes operation 23 
+   GetSearchableMailboxes operation 27 
+   initialization 17 
+   local events 52 
+   message processing 17 
+   overview 17 
+   SearchMailboxes operation 32 
+   sequencing rules 17 
+   SetHoldOnMailboxes operation 47 
+   timer events 52 
+   timers 17 
+Setting holds on mailboxes example 53 
+Simple types 15 
+   HoldStatusType 15 
+Standards assignments 10 
+Syntax 
+   messages - overview 11 
+ 
+T 
+ 
+Timer events 
+   server 52 
+Timers 
+   server 17 
+Tracking changes 72 
+Transport 11 
+Types 
+   complex 12 
+   simple 15 
+ 
+V 
+ 
+
+74 / 74 
+
+[MS-OXWSEDISC] - v20250520 
+Electronic Discovery (eDiscovery) Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025

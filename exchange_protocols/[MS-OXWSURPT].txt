@@ -1,0 +1,1966 @@
+﻿[MS-OXWSURPT]:  
+
+Retention Tag Web Service Protocol 
+
+ 
+
+Intellectual Property Rights Notice for Open Specifications Documentation 
+
+ Technical Documentation. Microsoft publishes Open Specifications documentation (“this 
+documentation”) for protocols, file formats, data portability, computer languages, and standards 
+support. Additionally, overview documents cover inter-protocol relationships and interactions.  
+
+ Copyrights. This documentation is covered by Microsoft copyrights. Regardless of any other 
+terms that are contained in the terms of use for the Microsoft website that hosts this 
+documentation, you can make copies of it in order to develop implementations of the technologies 
+that are described in this documentation and can distribute portions of it in your implementations 
+that use these technologies or in your documentation as necessary to properly document the 
+implementation. You can also distribute in your implementation, with or without modification, any 
+schemas, IDLs, or code samples that are included in the documentation. This permission also 
+applies to any documents that are referenced in the Open Specifications documentation.  
+
+ No Trade Secrets. Microsoft does not claim any trade secret rights in this documentation.  
+ Patents. Microsoft has patents that might cover your implementations of the technologies 
+
+described in the Open Specifications documentation. Neither this notice nor Microsoft's delivery of 
+this documentation grants any licenses under those patents or any other Microsoft patents. 
+However, a given Open Specifications document might be covered by the Microsoft Open 
+Specifications Promise or the Microsoft Community Promise. If you would prefer a written license, 
+or if the technologies described in this documentation are not covered by the Open Specifications 
+Promise or Community Promise, as applicable, patent licenses are available by contacting 
+iplg@microsoft.com.  
+
+ License Programs. To see all of the protocols in scope under a specific license program and the 
+associated patents, visit the Patent Map.  
+
+ Trademarks. The names of companies and products contained in this documentation might be 
+covered by trademarks or similar intellectual property rights. This notice does not grant any 
+licenses under those rights. For a list of Microsoft trademarks, visit 
+www.microsoft.com/trademarks.  
+
+ Fictitious Names. The example companies, organizations, products, domain names, email 
+addresses, logos, people, places, and events that are depicted in this documentation are fictitious. 
+No association with any real company, organization, product, domain name, email address, logo, 
+person, place, or event is intended or should be inferred. 
+
+Reservation of Rights. All other rights are reserved, and this notice does not grant any rights other 
+than as specifically described above, whether by implication, estoppel, or otherwise.  
+
+Tools. The Open Specifications documentation does not require the use of Microsoft programming 
+tools or programming environments in order for you to develop an implementation. If you have access 
+to Microsoft programming tools and environments, you are free to take advantage of them. Certain 
+Open Specifications documents are intended for use in conjunction with publicly available standards 
+specifications and network programming art and, as such, assume that the reader either is familiar 
+with the aforementioned material or has immediate access to it. 
+
+Support. For questions and support, please contact dochelp@microsoft.com.  
+
+1 / 33 
+
+[MS-OXWSURPT] - v20250520 
+Retention Tag Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Revision Summary 
+
+Revision Revision 
+Date History Class Comments 
+
+7/16/2012 0.1 New Released new document. 
+
+10/8/2012 1.0 Major Significantly changed the technical content. 
+
+2/11/2013 2.0 Major Significantly changed the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+7/26/2013 2.0 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+11/18/2013 2.0 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+2/10/2014 2.0 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+4/30/2014 2.0 None 
+
+technical content. 
+
+7/31/2014 2.1 Minor Clarified the meaning of the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+10/30/2014 2.1 None 
+
+technical content. 
+
+5/26/2015 3.0 Major Significantly changed the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+9/14/2015 3.0 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+6/13/2016 3.0 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+9/14/2016 3.0 None 
+
+technical content. 
+
+7/24/2018 4.0 Major Significantly changed the technical content. 
+
+10/1/2018 5.0 Major Significantly changed the technical content. 
+
+12/11/2018 5.1 Minor Clarified the meaning of the technical content. 
+
+5/20/2025 6.0 Major Significantly changed the technical content. 
+
+2 / 33 
+
+[MS-OXWSURPT] - v20250520 
+Retention Tag Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Table of Contents 
+1 Introduction ............................................................................................................ 5 
+
+1.1 Glossary ........................................................................................................... 5 
+1.2 References ........................................................................................................ 7 
+
+1.2.1 Normative References ................................................................................... 7 
+1.2.2 Informative References ................................................................................. 7 
+
+1.3 Overview .......................................................................................................... 8 
+1.4 Relationship to Other Protocols ............................................................................ 8 
+1.5 Prerequisites/Preconditions ................................................................................. 9 
+1.6 Applicability Statement ....................................................................................... 9 
+1.7 Versioning and Capability Negotiation ................................................................... 9 
+1.8 Vendor-Extensible Fields ..................................................................................... 9 
+1.9 Standards Assignments ....................................................................................... 9 
+
+2 Messages ............................................................................................................... 10 
+2.1 Transport ........................................................................................................ 10 
+2.2 Common Message Syntax ................................................................................. 10 
+
+2.2.1 Namespaces .............................................................................................. 10 
+2.2.2 Messages ................................................................................................... 10 
+2.2.3 Elements ................................................................................................... 10 
+2.2.4 Complex Types ........................................................................................... 11 
+
+2.2.4.1 RetentionTagType ................................................................................. 11 
+2.2.5 Simple Types ............................................................................................. 11 
+
+2.2.5.1 RetentionType ...................................................................................... 11 
+2.2.6 Attributes .................................................................................................. 12 
+2.2.7 Groups ...................................................................................................... 12 
+2.2.8 Attribute Groups ......................................................................................... 12 
+
+3 Protocol Details ..................................................................................................... 13 
+3.1 ExchangeServicePortType Server Details ............................................................. 13 
+
+3.1.1 Abstract Data Model .................................................................................... 13 
+3.1.2 Timers ...................................................................................................... 13 
+3.1.3 Initialization ............................................................................................... 13 
+3.1.4 Message Processing Events and Sequencing Rules .......................................... 13 
+
+3.1.4.1 GetUserRetentionPolicyTags ................................................................... 13 
+3.1.4.1.1 Messages ....................................................................................... 14 
+
+3.1.4.1.1.1 GetUserRetentionPolicyTagsSoapIn .............................................. 14 
+3.1.4.1.1.2 GetUserRetentionPolicyTagsSoapOut ............................................ 15 
+
+3.1.4.1.2 Elements ........................................................................................ 15 
+3.1.4.1.2.1 GetUserRetentionPolicyTags ........................................................ 16 
+3.1.4.1.2.2 GetUserRetentionPolicyTagsResponse ........................................... 16 
+
+3.1.4.1.3 Complex Types ............................................................................... 16 
+3.1.4.1.3.1 ArrayOfRetentionPolicyTagsType .................................................. 16 
+3.1.4.1.3.2 GetUserRetentionPolicyTagsResponseMessageType ........................ 17 
+3.1.4.1.3.3 GetUserRetentionPolicyTagsType ................................................. 17 
+3.1.4.1.3.4 RetentionPolicyTagType .............................................................. 17 
+
+3.1.4.1.4 Simple Types .................................................................................. 18 
+3.1.4.1.4.1 ElcFolderType ............................................................................ 18 
+3.1.4.1.4.2 RetentionActionType .................................................................. 20 
+
+3.1.4.1.5 Attributes ....................................................................................... 20 
+3.1.4.1.6 Groups ........................................................................................... 20 
+3.1.4.1.7 Attribute Groups.............................................................................. 20 
+
+3.1.5 Timer Events .............................................................................................. 20 
+3.1.6 Other Local Events ...................................................................................... 20 
+
+4 Protocol Examples ................................................................................................. 21 
+
+3 / 33 
+
+[MS-OXWSURPT] - v20250520 
+Retention Tag Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+5 Security ................................................................................................................. 24 
+5.1 Security Considerations for Implementers ........................................................... 24 
+5.2 Index of Security Parameters ............................................................................ 24 
+
+6 Appendix A: Full WSDL .......................................................................................... 25 
+
+7 Appendix B: Full XML Schema ................................................................................ 26 
+7.1 http://schemas.microsoft.com/exchange/services/2006/messages Schema ............ 26 
+7.2 http://schemas.microsoft.com/exchange/services/2006/types Schema ................... 26 
+
+8 Appendix C: Product Behavior ............................................................................... 29 
+
+9 Change Tracking .................................................................................................... 30 
+
+10 Index ..................................................................................................................... 31 
+
+ 
+
+4 / 33 
+
+[MS-OXWSURPT] - v20250520 
+Retention Tag Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+1 Introduction 
+
+The Retention Tag Web Service Protocol enables clients to use a web service to retrieve retention 
+policy information for items in a mailbox. 
+
+Sections 1.5, 1.8, 1.9, 2, and 3 of this specification are normative. All other sections and examples in 
+this specification are informative. 
+
+1.1 Glossary 
+
+This document uses the following terms: 
+
+Calendar folder: A Folder object that contains Calendar objects. 
+
+Contacts folder: A Folder object that contains Contact objects. 
+
+Deleted Items folder: A special folder that is the default location for objects that have been 
+deleted. 
+
+Drafts folder: A special folder that is the default location for Message objects that have been 
+saved but not sent. 
+
+endpoint: A communication port that is exposed by an application server for a specific shared 
+service and to which messages can be addressed. 
+
+Hypertext Transfer Protocol (HTTP): An application-level protocol for distributed, collaborative, 
+hypermedia information systems (text, graphic images, sound, video, and other multimedia 
+files) on the World Wide Web. 
+
+Hypertext Transfer Protocol Secure (HTTPS): An extension of HTTP that securely encrypts and 
+decrypts web page requests. In some older protocols, "Hypertext Transfer Protocol over Secure 
+Sockets Layer" is still used (Secure Sockets Layer has been deprecated). For more information, 
+see [SSL3] and [RFC5246]. 
+
+Inbox folder: A special folder that is the default location for Message objects received by a user or 
+resource. 
+
+Inter-Personal Mail (IPM): Typical user messaging items, such as email and calendar items. 
+
+Journal folder: A Folder object that contains Journal objects. 
+
+Junk Email folder: A special folder that is the default location for Message objects that are 
+determined to be junk email by a Junk Email rule. 
+
+mailbox: A message store that contains email, calendar items, and other Message objects for a 
+single recipient. 
+
+Notes folder: A Folder object that contains Note objects. 
+
+Outbox folder: A special folder that contains Message objects that are submitted to be sent. 
+
+retention policy: A policy that specifies the length of time during which data, documents, and 
+other records have to be available for recovery. 
+
+retention tag: An element that contains information about the retention policy of a Message 
+object or folder. 
+
+Sent Items folder: A special folder that is the default location for storing copies of Message 
+objects after they are submitted or sent. 
+
+5 / 33 
+
+[MS-OXWSURPT] - v20250520 
+Retention Tag Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+SOAP: A lightweight protocol for exchanging structured information in a decentralized, distributed 
+environment. SOAP uses XML technologies to define an extensible messaging framework, which 
+provides a message construct that can be exchanged over a variety of underlying protocols. The 
+framework has been designed to be independent of any particular programming model and 
+other implementation-specific semantics. SOAP 1.2 supersedes SOAP 1.1. See [SOAP1.2-
+1/2003]. 
+
+SOAP action: The HTTP request header field used to indicate the intent of the SOAP request, 
+using a URI value. See [SOAP1.1] section 6.1.1 for more information. 
+
+SOAP body: A container for the payload data being delivered by a SOAP message to its recipient. 
+See [SOAP1.2-1/2007] section 5.3 for more information. 
+
+SOAP header: A mechanism for implementing extensions to a SOAP message in a decentralized 
+manner without prior agreement between the communicating parties. See [SOAP1.2-1/2007] 
+section 5.2 for more information. 
+
+Tasks folder: A Folder object that contains Task objects. 
+
+web server: A server computer that hosts websites and responds to requests from applications. 
+
+web service: A unit of application logic that provides data and services to other applications and 
+can be called by using standard Internet transport protocols such as HTTP, Simple Mail Transfer 
+Protocol (SMTP), or File Transfer Protocol (FTP). Web services can perform functions that range 
+from simple requests to complicated business processes. 
+
+Web Services Description Language (WSDL): An XML format for describing network services 
+as a set of endpoints that operate on messages that contain either document-oriented or 
+procedure-oriented information. The operations and messages are described abstractly and are 
+bound to a concrete network protocol and message format in order to define an endpoint. 
+Related concrete endpoints are combined into abstract endpoints, which describe a network 
+service. WSDL is extensible, which allows the description of endpoints and their messages 
+regardless of the message formats or network protocols that are used. 
+
+WSDL message: An abstract, typed definition of the data that is communicated during a WSDL 
+operation [WSDL]. Also, an element that describes the data being exchanged between web 
+service providers and clients. 
+
+WSDL operation: A single action or function of a web service. The execution of a WSDL operation 
+typically requires the exchange of messages between the service requestor and the service 
+provider. 
+
+WSDL port type: A named set of logically-related, abstract Web Services Description 
+Language (WSDL) operations and messages. 
+
+XML namespace: A collection of names that is used to identify elements, types, and attributes in 
+XML documents identified in a URI reference [RFC3986]. A combination of XML namespace and 
+local name allows XML documents to use elements, types, and attributes that have the same 
+names but come from different sources. For more information, see [XMLNS-2ED]. 
+
+XML namespace prefix: An abbreviated form of an XML namespace, as described in [XML]. 
+
+XML schema: A description of a type of XML document that is typically expressed in terms of 
+constraints on the structure and content of documents of that type, in addition to the basic 
+syntax constraints that are imposed by XML itself. An XML schema provides a view of a 
+document type at a relatively high level of abstraction. 
+
+MAY, SHOULD, MUST, SHOULD NOT, MUST NOT: These terms (in all caps) are used as defined 
+in [RFC2119]. All statements of optional behavior use either MAY, SHOULD, or SHOULD NOT. 
+
+6 / 33 
+
+[MS-OXWSURPT] - v20250520 
+Retention Tag Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+1.2 References 
+
+Links to a document in the Microsoft Open Specifications library point to the correct section in the 
+most recently published version of the referenced document. However, because individual documents 
+in the library are not updated at the same time, the section numbers in the documents may not 
+match. You can confirm the correct section numbering by checking the Errata.   
+
+1.2.1 Normative References 
+
+We conduct frequent surveys of the normative references to assure their continued availability. If you 
+have any issue with finding a normative reference, please contact dochelp@microsoft.com. We will 
+assist you in finding the relevant information.  
+
+[MS-OXWSCDATA] Microsoft Corporation, "Common Web Service Data Types". 
+
+[MS-OXWSXPROP] Microsoft Corporation, "Extended Properties Structure". 
+
+[RFC2119] Bradner, S., "Key words for use in RFCs to Indicate Requirement Levels", BCP 14, RFC 
+2119, March 1997, https://www.rfc-editor.org/info/rfc2119 
+
+[RFC2616] Fielding, R., Gettys, J., Mogul, J., et al., "Hypertext Transfer Protocol -- HTTP/1.1", RFC 
+2616, June 1999, https://www.rfc-editor.org/info/rfc2616 
+
+[RFC2818] Rescorla, E., "HTTP Over TLS", RFC 2818, May 2000, https://www.rfc-
+editor.org/info/rfc2818 
+
+[SOAP1.1] Box, D., Ehnebuske, D., Kakivaya, G., et al., "Simple Object Access Protocol (SOAP) 1.1", 
+W3C Note, May 2000, https://www.w3.org/TR/2000/NOTE-SOAP-20000508/ 
+
+[WSDL] Christensen, E., Curbera, F., Meredith, G., and Weerawarana, S., "Web Services Description 
+Language (WSDL) 1.1", W3C Note, March 2001, https://www.w3.org/TR/2001/NOTE-wsdl-20010315 
+
+[WSIBASIC] Ballinger, K., Ehnebuske, D., Gudgin, M., et al., Eds., "Basic Profile Version 1.0", Final 
+Material, April 2004, http://www.ws-i.org/Profiles/BasicProfile-1.0-2004-04-16.html 
+
+[XMLNS] Bray, T., Hollander, D., Layman, A., et al., Eds., "Namespaces in XML 1.0 (Third Edition)", 
+W3C Recommendation, December 2009, https://www.w3.org/TR/2009/REC-xml-names-20091208/ 
+
+[XMLSCHEMA1/2] Thompson, H., Beech, D., Maloney, M., and Mendelsohn, N., Eds., "XML Schema 
+Part 1: Structures Second Edition", W3C Recommendation, October 2004, 
+https://www.w3.org/TR/2004/REC-xmlschema-1-20041028/ 
+
+[XMLSCHEMA2/2] Biron, P., and Malhotra, A., Eds., "XML Schema Part 2: Datatypes Second Edition", 
+W3C Recommendation, October 2004, https://www.w3.org/TR/2004/REC-xmlschema-2-20041028/ 
+
+1.2.2 Informative References 
+
+[MS-OXDSCLI] Microsoft Corporation, "Autodiscover Publishing and Lookup Protocol". 
+
+[MS-OXPROTO] Microsoft Corporation, "Exchange Server Protocols System Overview". 
+
+[MS-OXWSADISC] Microsoft Corporation, "Autodiscover Publishing and Lookup SOAP-Based Web 
+Service Protocol". 
+
+[MS-OXWSCONV] Microsoft Corporation, "Conversations Web Service Protocol". 
+
+[MS-OXWSCORE] Microsoft Corporation, "Core Items Web Service Protocol". 
+
+7 / 33 
+
+[MS-OXWSURPT] - v20250520 
+Retention Tag Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+[MS-OXWSFOLD] Microsoft Corporation, "Folders and Folder Permissions Web Service Protocol". 
+
+1.3 Overview 
+
+This protocol defines retention policies that are applied to folders, mailboxes, or individual items 
+such as email and voice-mail messages. 
+
+There are three types of retention tags: 
+
+ Default policy tags that apply to mailbox items that have no other type of retention tag applied. 
+
+ System folder policy tags that are applied to default folders, such as the Inbox folder. 
+
+ Personal tags that users can apply to folders that they create or to individual items. 
+
+Only one retention policy can be assigned to a mailbox, but the policy can have one or more retention 
+tags of various types linked to it. Retention tags can be linked to or unlinked from a retention policy at 
+any time. This protocol provides an operation that lists all the retention tags that are associated with a 
+user. These include retention tags linked to the retention policy applied on the user and retention tags 
+that were selected by the user. 
+
+1.4 Relationship to Other Protocols 
+
+A client that implements this protocol can use the Autodiscover Publishing and Lookup SOAP-Based 
+Web Service Protocol, as described in [MS-OXWSADISC], or the Autodiscover Publishing and Lookup 
+Protocol, as described in [MS-OXDSCLI], to identify the target endpoint to use for each operation. 
+
+This protocol uses SOAP, as described in [SOAP1.1], to specify the structure information that is 
+exchanged between the client and the server. This protocol uses the XML schema, as described in 
+[XMLSCHEMA1/2] and [XMLSCHEMA2/2], to describe the message content that is sent to and from the 
+server. 
+
+This protocol uses SOAP over HTTP, as described in [RFC2616], and SOAP over HTTPS, as described 
+in [RFC2818], as shown in the following layering diagram. 
+
+  
+
+Figure 1: This protocol in relation to other protocols 
+
+The following protocols use the retention tag and retention action information provided by this 
+protocol: 
+
+ Conversations Web Service Protocol, as described in [MS-OXWSCONV] 
+
+ Core Items Web Service Protocol, as described in [MS-OXWSCORE] 
+
+ Folders and Folder Permissions Web Service Protocol, as described in [MS-OXWSFOLD] 
+
+8 / 33 
+
+[MS-OXWSURPT] - v20250520 
+Retention Tag Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+For conceptual background information and overviews of the relationships and interactions between 
+this and other protocols, see [MS-OXPROTO]. 
+
+1.5 Prerequisites/Preconditions 
+
+The endpoint URL that is returned by either the Autodiscover Publishing Lookup SOAP-Based Web 
+Service Protocol, as specified in [MS-OXWSADISC], or the Autodiscover Publishing and Lookup 
+Protocol, as specified in [MS-OXDSCLI], forms the HTTP request to the web server that hosts this 
+protocol. The operations that this protocol defines cannot be accessed unless the correct endpoint is 
+identified in the HTTP web requests that target this protocol. 
+
+1.6 Applicability Statement 
+This protocol is applicable to environments that use web services to implement retention policies 
+for a user's mailbox. This protocol is applicable to all SOAP-based clients, as described in [SOAP1.1]. 
+
+1.7 Versioning and Capability Negotiation 
+
+This document covers versioning issues in the following areas: 
+
+ Supported Transports: This protocol uses SOAP 1.1, as described in section 2.1. 
+
+ Protocol Versions: This protocol describes only one WSDL port type version. The 
+RequestServerVersion element, as described in [MS-OXWSCDATA] section 2.2.3.9, identifies 
+the WSDL port type version of the request. The ServerVersionInfo element, as described in 
+[MS-OXWSCDATA] section 2.2.3.10, identifies the version of the server responding to the request. 
+
+ Security and Authentication Methods: This protocol relies on the web server that is hosting it 
+to perform authentication. 
+
+ Capability Negotiation: This protocol does not support version negotiation. 
+
+1.8 Vendor-Extensible Fields 
+
+None. 
+
+1.9 Standards Assignments 
+
+None. 
+
+9 / 33 
+
+[MS-OXWSURPT] - v20250520 
+Retention Tag Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+2 Messages 
+
+In the following sections, the schema definition might differ from the processing rules imposed by the 
+protocol. The Web Services Description Language (WSDL) in this specification provides a base 
+description of the protocol. The schema in this specification provides a base description of the 
+message syntax. The text that specifies the WSDL and schema might specify restrictions that reflect 
+actual protocol behavior. For example, the schema definition might allow for an element to be empty, 
+null, or not present but the behavior of the protocol as specified restricts the same elements to being 
+non-empty, not null, or present. 
+
+2.1 Transport 
+
+This protocol uses SOAP 1.1, as specified in [SOAP1.1]. 
+
+This protocol MUST use SOAP over HTTP, as specified in [RFC2616]. The protocol SHOULD use 
+secure communications by means of HTTPS, as specified in [RFC2818]. 
+
+2.2 Common Message Syntax 
+
+This section contains common definitions that are used by this protocol. The syntax of the definitions 
+uses XML schema, as defined in [XMLSCHEMA1/2] and [XMLSCHEMA2/2], and WSDL, as defined in 
+[WSDL]. 
+
+2.2.1 Namespaces 
+
+This specification defines and references various XML namespaces using the mechanisms specified in 
+[XMLNS]. Although this specification associates a specific XML namespace prefix for each XML 
+namespace that is used, the choice of any particular XML namespace prefix is implementation-specific 
+and not significant for interoperability. 
+
+Prefix Namespace URI Reference 
+
+soap http://schemas.xmlsoap.org/wsdl/soap/ [SOAP1.1] 
+
+t http://schemas.microsoft.com/exchange/services/2006/types  
+
+tns http://schemas.microsoft.com/exchange/services/2006/messages  
+
+wsdl http://schemas.xmlsoap.org/wsdl/ [WSDL] 
+
+wsi http://ws-i.org/schemas/conformanceClaim/ [WSIBASIC] 
+
+[XMLSCHEMA1/2] 
+xs http://www.w3.org/2001/XMLSchema 
+
+[XMLSCHEMA2/2] 
+
+ 
+
+2.2.2 Messages 
+
+This specification does not define any common WSDL message definitions. 
+
+2.2.3 Elements 
+
+This specification does not define any common XML schema element definitions. 
+
+10 / 33 
+
+[MS-OXWSURPT] - v20250520 
+Retention Tag Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+2.2.4 Complex Types 
+
+The following table summarizes the set of common XML schema complex type definitions defined by 
+this specification. XML schema complex type definitions that are specific to a particular operation are 
+described with the operation. 
+
+Complex type Description 
+
+The RetentionTagType complex type specifies the retention policy tag applied to a 
+RetentionTagType folder or an item. This type extends the GuidType simple type, as specified by [MS-
+
+OXWSXPROP] section 2.1.7. 
+
+ 
+
+2.2.4.1 RetentionTagType 
+
+Namespace: http://schemas.microsoft.com/exchange/services/2006/types 
+
+The RetentionTagType complex type specifies the retention policy tag applied to a folder or an 
+item. This type extends the GuidType simple type, as specified by [MS-OXWSXPROP] section 2.1.7. 
+
+ <xs:complexType name="RetentionTagType" xmlns:xs="http://www.w3.org/2001/XMLSchema"> 
+  <xs:simpleContent> 
+    <xs:extension base="t:GuidType"> 
+      <xs:attribute name="IsExplicit" type="xs:boolean" use="required"/> 
+    </xs:extension> 
+  </xs:simpleContent> 
+ </xs:complexType> 
+
+IsExplicit: An attribute of type boolean, as defined in [XMLSCHEMA2/2], that indicates whether the 
+retention policy tag associated with a folder or an item was applied explicitly. 
+
+2.2.5 Simple Types 
+
+The following table summarizes the set of common XML schema simple type definitions defined by 
+this specification. XML schema simple type definitions that are specific to a particular operation are 
+described with the operation. 
+
+Simple type Description 
+
+RetentionType The RetentionType simple type specifies the type of the retention action. 
+
+ 
+
+2.2.5.1 RetentionType 
+
+Namespace: http://schemas.microsoft.com/exchange/services/2006/types 
+
+The RetentionType simple type specifies the type of the retention action. 
+
+ <xs:simpleType name="RetentionType" xmlns:xs="http://www.w3.org/2001/XMLSchema"> 
+  <xs:restriction base="xs:string"> 
+    <xs:enumeration value="Delete"/> 
+    <xs:enumeration value="Archive"/> 
+  </xs:restriction> 
+ </xs:simpleType> 
+
+11 / 33 
+
+[MS-OXWSURPT] - v20250520 
+Retention Tag Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+The following table specifies the allowable values for the RetentionType simple type. 
+
+Value Meaning 
+
+Delete Specifies deletion. 
+
+Archive Specifies archiving. 
+
+ 
+
+2.2.6 Attributes 
+
+This specification does not define any common XML schema attribute definitions. 
+
+2.2.7 Groups 
+
+This specification does not define any common XML schema group definitions. 
+
+2.2.8 Attribute Groups 
+
+This specification does not define any common XML schema attribute group definitions. 
+
+12 / 33 
+
+[MS-OXWSURPT] - v20250520 
+Retention Tag Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+3 Protocol Details 
+
+The client side of this protocol is simply a pass-through. That is, no additional timers or other state is 
+required on the client side of this protocol. Calls made by the higher-layer protocol or application are 
+passed directly to the transport, and the results returned by the transport are passed directly back to 
+the higher-layer protocol or application.  
+
+In the following sections, the schema definition might be less restrictive than the processing rules 
+imposed by the protocol. The WSDL in this specification matches the WSDL that shipped with the 
+product and provides a base description of the schema. The text that introduces the WSDL specifies 
+additional restrictions that reflect actual Microsoft product behavior. For example, the schema 
+definition might allow for an element to be empty, null, or not present but the behavior of the protocol 
+as specified restricts the same elements to being non-empty, not null and present. 
+
+3.1 ExchangeServicePortType Server Details 
+
+This protocol defines a single WSDL port type, ExchangeServicePortType. This port type has one 
+operation, the GetUserRetentionPolicyTags operation, which retrieves retention policy tags. 
+
+3.1.1 Abstract Data Model 
+
+None. 
+
+3.1.2 Timers 
+
+None. 
+
+3.1.3 Initialization 
+
+None. 
+
+3.1.4 Message Processing Events and Sequencing Rules 
+
+The following table summarizes the list of operations as defined by this specification. 
+
+Operation Description 
+
+The GetUserRetentionPolicyTags operation retrieves a list of all default, 
+GetUserRetentionPolicyTags system folder, and personal tags that are associated with a user by means of a 
+
+system policy or that were applied by the user. 
+
+ 
+
+3.1.4.1 GetUserRetentionPolicyTags 
+
+The GetUserRetentionPolicyTags operation retrieves a list of all default, system folder, and 
+personal tags that are associated with a user by means of a system policy or that were applied by the 
+user. 
+
+The following is the WSDL port type specification of the GetUserRetentionPolicyTags WSDL 
+operation. 
+
+ <wsdl:operation name="GetUserRetentionPolicyTags" 
+xmlns:wsdl="http://schemas.xmlsoap.org/wsdl/"> 
+  <wsdl:input message="tns:GetUserRetentionPolicyTagsSoapIn"/> 
+
+13 / 33 
+
+[MS-OXWSURPT] - v20250520 
+Retention Tag Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+  <wsdl:output message="tns:GetUserRetentionPolicyTagsSoapOut"/> 
+ </wsdl:operation> 
+
+The following is the WSDL binding specification of the GetUserRetentionPolicyTags operation. 
+
+ <wsdl:operation name="GetUserRetentionPolicyTags" 
+xmlns:wsdl="http://schemas.xmlsoap.org/wsdl/"> 
+  <soap:operation 
+soapAction="http://schemas.microsoft.com/exchange/services/2006/messages/GetUserRetentionPoli
+cyTags" xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/"/> 
+  <wsdl:input> 
+    <soap:header message="tns:GetUserRetentionPolicyTagsSoapIn" part="RequestVersion" 
+use="literal" xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/"/> 
+    <soap:body use="literal" parts="request" 
+xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/"/> 
+  </wsdl:input> 
+  <wsdl:output> 
+    <soap:body use="literal" parts="GetUserRetentionPolicyTagsResult" 
+xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/"/> 
+    <soap:header message="tns:GetUserRetentionPolicyTagsSoapOut" part="ServerVersion" 
+use="literal" xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/"/> 
+  </wsdl:output> 
+ </wsdl:operation> 
+
+The protocol client sends a GetUserRetentionPolicyTagsSoapIn request WSDL message and the 
+protocol server responds with a GetUserRetentionPolicyTagsSoapOut response. 
+
+3.1.4.1.1 Messages 
+
+The following table summarizes the set of WSDL message definitions that are specific to this 
+operation. 
+
+Message Description 
+
+GetUserRetentionPolicyTagsSoapIn Specifies the request to retrieve user retention policy tags. 
+
+Specifies the response to the GetUserRetentionPolicyTagsSoapIn 
+GetUserRetentionPolicyTagsSoapOut 
+
+request. 
+
+ 
+
+3.1.4.1.1.1 GetUserRetentionPolicyTagsSoapIn 
+
+The GetUserRetentionPolicyTagsSoapIn WSDL message specifies the request to retrieve user 
+retention policy tags. 
+The following is the GetUserRetentionPolicyTagsSoapIn WSDL message specification. 
+
+ <wsdl:message name="GetUserRetentionPolicyTagsSoapIn" 
+xmlns:wsdl="http://schemas.xmlsoap.org/wsdl/"> 
+  <wsdl:part name="request" element="tns:GetUserRetentionPolicyTags"/> 
+  <wsdl:part name="RequestVersion" element="t:RequestServerVersion"/> 
+ </wsdl:message> 
+
+The GetUserRetentionPolicyTagsSoapIn WSDL message is the input message for the SOAP 
+action 
+http://schemas.microsoft.com/exchange/services/2006/messages/GetUserRetentionPolicyTags. 
+
+14 / 33 
+
+[MS-OXWSURPT] - v20250520 
+Retention Tag Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+The parts of the GetUserRetentionPolicyTagsSoapIn WSDL message are described in the following 
+table. 
+
+Part name Element/type Description 
+
+GetUserRetentionPolicyTags Specifies the SOAP body of the request to retrieve 
+request 
+
+(section 3.1.4.1.2.1) retention policy tags. 
+
+RequestServerVersion Specifies a SOAP header that identifies the schema 
+RequestVersion ([MS-OXWSCDATA] section version for the GetUserRetentionPolicyTags operation 
+
+2.2.3.9) request. 
+
+ 
+
+3.1.4.1.1.2 GetUserRetentionPolicyTagsSoapOut 
+
+The GetUserRetentionPolicyTagsSoapOut WSDL message specifies the response to the 
+GetUserRetentionPolicyTagsSoapIn request. 
+The following is the GetUserRetentionPolicyTagsSoapOut WSDL message specification. 
+
+ <wsdl:message name="GetUserRetentionPolicyTagsSoapOut" 
+xmlns:wsdl="http://schemas.xmlsoap.org/wsdl/"> 
+  <wsdl:part name="GetUserRetentionPolicyTagsResult" 
+element="tns:GetUserRetentionPolicyTagsResponse"/> 
+  <wsdl:part name="ServerVersion" element="t:ServerVersionInfo"/> 
+ </wsdl:message> 
+
+The GetUserRetentionPolicyTagsSoapOut WSDL message is the output message for the SOAP 
+action 
+http://schemas.microsoft.com/exchange/services/2006/messages/GetUserRetentionPolicyTags. 
+
+The parts of the GetUserRetentionPolicyTagsSoapOut WSDL message are described in the 
+following table. 
+
+Part name Element/type Description 
+
+Specifies the SOAP body 
+GetUserRetentionPolicyTagsResponse of the response that 
+
+GetUserRetentionPolicyTagsResult 
+(section 3.1.4.1.2.2) contains the requested 
+
+information. 
+
+ServerVersionInfo Specifies a SOAP header 
+ServerVersion that identifies the server 
+
+([MS-OXWSCDATA] section 2.2.3.10) version for the response. 
+
+ 
+
+A successful GetUserRetentionPolicyTags operation request returns a 
+GetUserRetentionPolicyTagsResponse element with the ResponseClass attribute, as defined in 
+[MS-OXWSCDATA] section 2.2.4.65, set to "Success". The ResponseCode element of the 
+GetUserRetentionPolicyTagsResponse element, as defined in [MS-OXWSCDATA] section 2.2.4.65, 
+is set to "NoError". 
+
+If the GetUserRetentionPolicyTags operation is not successful, the operation returns a 
+GetUserRetentionPolicyTagsResponse element with the ResponseClass attribute set to "Error". 
+The ResponseCode element of the GetUserRetentionPolicyTagsResponse element is set to one 
+of the common errors defined in [MS-OXWSCDATA] section 2.2.5.24. 
+
+15 / 33 
+
+[MS-OXWSURPT] - v20250520 
+Retention Tag Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+3.1.4.1.2 Elements 
+
+The following table summarizes the XML schema element definitions that are specific to this 
+operation. 
+
+Element Description 
+
+The input data for the GetUserRetentionPolicyTags WSDL 
+GetUserRetentionPolicyTags 
+
+operation. 
+
+The result data for the GetUserRetentionPolicyTags WSDL 
+GetUserRetentionPolicyTagsResponse 
+
+operation. 
+
+ 
+
+3.1.4.1.2.1 GetUserRetentionPolicyTags 
+
+The GetUserRetentionPolicyTags element specifies the input data for the 
+GetUserRetentionPolicyTags WSDL operation. 
+
+ <xs:element name="GetUserRetentionPolicyTags" type="tns:GetUserRetentionPolicyTagsType" 
+xmlns:xs="http://www.w3.org/2001/XMLSchema"/> 
+
+3.1.4.1.2.2 GetUserRetentionPolicyTagsResponse 
+
+The GetUserRetentionPolicyTagsResponse element specifies the result data for the 
+GetUserRetentionPolicyTags WSDL operation. 
+
+ <xs:element name="GetUserRetentionPolicyTagsResponse" 
+type="tns:GetUserRetentionPolicyTagsResponseMessageType" 
+xmlns:xs="http://www.w3.org/2001/XMLSchema"/> 
+
+3.1.4.1.3 Complex Types 
+
+The following table summarizes the XML schema complex type definitions that are specific to this 
+operation. 
+
+Complex type Description 
+
+Specifies an array of retention policy tags that are 
+ArrayOfRetentionPolicyTagsType returned by the GetUserRetentionPolicyTags 
+
+operation. 
+
+Specifies a response message for the 
+GetUserRetentionPolicyTagsResponseMessageType 
+
+GetUserRetentionPolicyTags operation. 
+
+Specifies a request to retrieve user retention policy 
+GetUserRetentionPolicyTagsType 
+
+tags. 
+
+RetentionPolicyTagType Specifies a retention policy tag. 
+
+ 
+
+3.1.4.1.3.1 ArrayOfRetentionPolicyTagsType 
+
+Namespace: http://schemas.microsoft.com/exchange/services/2006/types 
+
+16 / 33 
+
+[MS-OXWSURPT] - v20250520 
+Retention Tag Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+The ArrayOfRetentionPolicyTagsType complex type specifies an array of retention policy tags 
+that are returned by the GetUserRetentionPolicyTags operation. 
+
+ <xs:complexType name="ArrayOfRetentionPolicyTagsType" 
+xmlns:xs="http://www.w3.org/2001/XMLSchema"> 
+  <xs:sequence> 
+    <xs:element minOccurs="0" maxOccurs="unbounded" name="RetentionPolicyTag" 
+type="t:RetentionPolicyTagType"/> 
+  </xs:sequence> 
+ </xs:complexType> 
+
+RetentionPolicyTag: An element of type RetentionPolicyTagType, as defined in section 
+3.1.4.1.3.4, that represents a single retention policy tag. 
+
+3.1.4.1.3.2 GetUserRetentionPolicyTagsResponseMessageType 
+
+Namespace: http://schemas.microsoft.com/exchange/services/2006/messages 
+
+The GetUserRetentionPolicyTagsResponseMessageType complex type specifies a response 
+message for the GetUserRetentionPolicyTags operation. This complex type extends the 
+ResponseMessageType complex type, as specified in [MS-OXWSCDATA] section 2.2.4.65. 
+
+ <xs:complexType name="GetUserRetentionPolicyTagsResponseMessageType" 
+xmlns:xs="http://www.w3.org/2001/XMLSchema"> 
+  <xs:complexContent mixed="false"> 
+    <xs:extension base="tns:ResponseMessageType"> 
+      <xs:sequence> 
+        <xs:element name="RetentionPolicyTags" type="t:ArrayOfRetentionPolicyTagsType"/> 
+      </xs:sequence> 
+    </xs:extension> 
+  </xs:complexContent> 
+ </xs:complexType> 
+
+RetentionPolicyTags: An element that is of the ArrayOfRetentionPolicyTagsType complex type, 
+as defined in section 3.1.4.1.3.1, that represents an array of retention policy tags. 
+
+3.1.4.1.3.3 GetUserRetentionPolicyTagsType 
+
+Namespace: http://schemas.microsoft.com/exchange/services/2006/messages 
+
+The GetUserRetentionPolicyTagsType complex type specifies a request to retrieve user retention 
+policy tags. This complex type extends the BaseRequestType complex type, as specified in [MS-
+OXWSCDATA] section 2.2.4.17. 
+
+ <xs:complexType name="GetUserRetentionPolicyTagsType" 
+xmlns:xs="http://www.w3.org/2001/XMLSchema"> 
+  <xs:complexContent mixed="false"> 
+    <xs:extension base="tns:BaseRequestType"/> 
+  </xs:complexContent> 
+ </xs:complexType> 
+
+3.1.4.1.3.4 RetentionPolicyTagType 
+
+Namespace: http://schemas.microsoft.com/exchange/services/2006/types 
+
+The RetentionPolicyTagType complex type specifies a retention policy tag. 
+
+ <xs:complexType name="RetentionPolicyTagType" xmlns:xs="http://www.w3.org/2001/XMLSchema"> 
+
+17 / 33 
+
+[MS-OXWSURPT] - v20250520 
+Retention Tag Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+  <xs:sequence> 
+    <xs:element minOccurs="1" maxOccurs="1" name="DisplayName" type="xs:string"/> 
+    <xs:element minOccurs="1" maxOccurs="1" name="RetentionId" type="t:GuidType"/> 
+    <xs:element minOccurs="1" maxOccurs="1" name="RetentionPeriod" type="xs:int"/> 
+    <xs:element minOccurs="1" maxOccurs="1" name="Type" type="t:ElcFolderType"/> 
+    <xs:element minOccurs="1" maxOccurs="1" name="RetentionAction" 
+type="t:RetentionActionType"/> 
+    <xs:element minOccurs="0" maxOccurs="1" name="Description" type="xs:string"/> 
+    <xs:element minOccurs="1" maxOccurs="1" name="IsVisible" type="xs:boolean"/> 
+    <xs:element minOccurs="1" maxOccurs="1" name="OptedInto" type="xs:boolean"/> 
+    <xs:element minOccurs="1" maxOccurs="1" name="IsArchive" type="xs:boolean"/> 
+  </xs:sequence> 
+ </xs:complexType> 
+
+DisplayName: An element of type string, as defined in [XMLSCHEMA2/2] section 3.2.1, that 
+specifies the name of the retention policy. 
+
+RetentionId: An element of type GuidType, as defined in [MS-OXWSXPROP] section 2.1.7, that 
+contains the retention tag identifier. 
+
+RetentionPeriod: An element of type int, as defined in [XMLSCHEMA2/2] section 3.3.17, that 
+contains the number of days the retention is in effect. 
+
+Type: An element of type ElcFolderType, as defined in section 3.1.4.1.4.1, that indicates the type of 
+the folder being used in a retention policy. 
+
+RetentionAction: An element that is of the RetentionActionType simple type, as defined in section 
+3.1.4.1.4.2, that contains the action performed by the retention tag. 
+
+Description:  An element of type string that contains the descriptive text for the retention policy. 
+
+IsVisible: An element of type boolean, as defined in [XMLSCHEMA2/2] section 3.2.2, that indicates 
+whether the retention policy is visible to users. 
+
+OptedInto: An element of type boolean that indicates whether the user opted in to the retention 
+policy. 
+
+IsArchive: An element of type boolean that indicates whether this is a move to archive the tag. 
+
+3.1.4.1.4 Simple Types 
+
+The following table summarizes the XML schema simple type definitions that are specific to this 
+operation. 
+
+Simple type Description 
+
+Identifies folders that accept messaging records management (MRM) policies. MRM is a 
+ElcFolderType records management technology that helps organizations manage email lifecycle and 
+
+reduce the legal risks associated with email. 
+
+RetentionActionType Identifies retention actions. 
+
+ 
+
+3.1.4.1.4.1 ElcFolderType 
+
+Namespace: http://schemas.microsoft.com/exchange/services/2006/types 
+
+The ElcFolderType enumeration identifies folders that accept messaging records management (MRM) 
+policies. In a retention policy tag, this indicates which folder to apply the policy to. 
+
+18 / 33 
+
+[MS-OXWSURPT] - v20250520 
+Retention Tag Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+ <xs:simpleType name="ElcFolderType" xmlns:xs="http://www.w3.org/2001/XMLSchema"> 
+  <xs:restriction base="xs:string"> 
+    <xs:enumeration value="Calendar"/> 
+    <xs:enumeration value="Contacts"/> 
+    <xs:enumeration value="DeletedItems"/> 
+    <xs:enumeration value="Drafts"/> 
+    <xs:enumeration value="Inbox"/> 
+    <xs:enumeration value="JunkEmail"/> 
+    <xs:enumeration value="Journal"/> 
+    <xs:enumeration value="Notes"/> 
+    <xs:enumeration value="Outbox"/> 
+    <xs:enumeration value="SentItems"/> 
+    <xs:enumeration value="Tasks"/> 
+    <xs:enumeration value="All"/> 
+    <xs:enumeration value="ManagedCustomFolder"/> 
+    <xs:enumeration value="RssSubscriptions"/> 
+    <xs:enumeration value="SyncIssues"/> 
+    <xs:enumeration value="ConversationHistory"/> 
+    <xs:enumeration value="Personal"/> 
+    <xs:enumeration value="RecoverableItems"/> 
+    <xs:enumeration value="NonIpmRoot"/> 
+  </xs:restriction> 
+ </xs:simpleType> 
+
+The following table specifies the allowable values for the ElcFolderType simple type. 
+
+Value Meaning 
+
+Calendar Calendar folder. 
+
+Contacts Contacts folder. 
+
+DeletedItems Deleted Items folder. 
+
+Drafts Drafts folder. 
+
+Inbox Inbox folder. 
+
+JunkEmail Junk Email folder. 
+
+Journal Journal folder. 
+
+Notes Notes folder. 
+
+Outbox Outbox folder. 
+
+SentItems Sent Items folder. 
+
+Tasks Tasks folder. 
+
+All All folders. This indicates the default policy tag. 
+
+ManagedCustomFolder Managed custom folder. 
+
+RssSubscriptions RSS subscriptions folder. 
+
+SyncIssues Synchronization issues folder. 
+
+ConversationHistory Conversation history folder. 
+
+Personal Personal folder. This is folder created by the user. 
+
+RecoverableItems Recoverable items folder. 
+
+19 / 33 
+
+[MS-OXWSURPT] - v20250520 
+Retention Tag Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Value Meaning 
+
+NonIpmRoot Root folder that is not an Inter-Personal Mail (IPM) folder. 
+
+ 
+
+3.1.4.1.4.2 RetentionActionType 
+
+Namespace: http://schemas.microsoft.com/exchange/services/2006/types 
+
+The RetentionActionType enumeration identifies the action for expired items. 
+
+ <xs:simpleType name="RetentionActionType" xmlns:xs="http://www.w3.org/2001/XMLSchema"> 
+  <xs:restriction base="xs:string"> 
+    <xs:enumeration value="None"/> 
+    <xs:enumeration value="MoveToDeletedItems"/> 
+    <xs:enumeration value="MoveToFolder"/> 
+    <xs:enumeration value="DeleteAndAllowRecovery"/> 
+    <xs:enumeration value="PermanentlyDelete"/> 
+    <xs:enumeration value="MarkAsPastRetentionLimit"/> 
+    <xs:enumeration value="MoveToArchive"/> 
+  </xs:restriction> 
+ </xs:simpleType> 
+
+The following table specifies the allowable values for the RetentionActionType simple type. 
+
+Value Meaning 
+
+None No action. 
+
+MoveToDeletedItems The expired item is moved to the Deleted Items folder. 
+
+MoveToFolder The expired item is moved to a folder. 
+
+DeleteAndAllowRecovery The expired item is deleted but can be recovered. 
+
+PermanentlyDelete The expired item is permanently deleted. 
+
+MarkAsPastRetentionLimit The expired item is marked as expired. 
+
+MoveToArchive The expired item is moved to the archive mailbox. 
+
+ 
+
+3.1.4.1.5 Attributes 
+
+None. 
+
+3.1.4.1.6 Groups 
+
+None. 
+
+3.1.4.1.7 Attribute Groups 
+
+None. 
+
+3.1.5 Timer Events 
+
+None. 
+
+20 / 33 
+
+[MS-OXWSURPT] - v20250520 
+Retention Tag Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+3.1.6 Other Local Events 
+
+None. 
+
+21 / 33 
+
+[MS-OXWSURPT] - v20250520 
+Retention Tag Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+4 Protocol Examples 
+
+In this example, the client sends a request to retrieve user retention policy tags. 
+
+ <?xml version="1.0" encoding="utf-8" ?> 
+ <soap:Envelope xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" 
+xmlns:xsd="http://www.w3.org/2001/XMLSchema" 
+xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/" 
+xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types" 
+xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages"> 
+  <soap:Header> 
+    <t:RequestServerVersion Version="Exchange2013"/> 
+    <t:TimeZoneContext> 
+      <t:TimeZoneDefinition Id="Pacific Standard Time"/> 
+    </t:TimeZoneContext> 
+  </soap:Header> 
+  <soap:Body> 
+    <m:GetUserRetentionPolicyTags/> 
+  </soap:Body> 
+ </soap:Envelope> 
+
+In this response example, the server responds with all personal, system, and default retention tags. 
+
+ <?xml version="1.0" encoding="utf-8"?> 
+ <s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"> 
+  <s:Header> 
+    <h:ServerVersionInfo MajorVersion="15" MinorVersion="0" MajorBuildNumber="430" 
+MinorBuildNumber="0" Version="Exchange2013" 
+xmlns:h="http://schemas.microsoft.com/exchange/services/2006/types" 
+xmlns="http://schemas.microsoft.com/exchange/services/2006/types" 
+xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-
+instance"/> 
+  </s:Header> 
+  <s:Body xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" 
+xmlns:xsd="http://www.w3.org/2001/XMLSchema"> 
+    <GetUserRetentionPolicyTagsResponse ResponseClass="Success" 
+xmlns="http://schemas.microsoft.com/exchange/services/2006/types> 
+      <ResponseCode>NoError</ResponseCode> 
+      <RetentionPolicyTags> 
+        <RetentionPolicyTag xmlns="http://schemas.microsoft.com/exchange/services/2006/types> 
+          <DisplayName>Recoverable Items 14 days move to archive</DisplayName> 
+          <RetentionId>80feb2e9-8e6f-4f67-06ae585982</RetentionId> 
+          <RetentionPeriod>14</RetentionPeriod> 
+          <Type>Personal</Type> 
+          <RetentionAction>MoveToArchive</RetentionAction> 
+          <IsVisible>false</IsVisible> 
+          <OptedInto>false</OptedInto> 
+          <IsArchive>true</IsArchive> 
+        </RetentionPolicyTag> 
+        <RetentionPolicyTag xmlns="http://schemas.microsoft.com/exchange/services/2006/types" 
+> 
+          <DisplayName>Never Delete</DisplayName> 
+          <RetentionId>414c6a14-3ed5-432e-620a8278f0</RetentionId> 
+          <RetentionPeriod>0</RetentionPeriod> 
+          <Type>Personal</Type> 
+          <RetentionAction>None</RetentionAction> 
+          <IsVisible>true</IsVisible> 
+          <OptedInto>false</OptedInto> 
+          <IsArchive>false</IsArchive> 
+        </RetentionPolicyTag> 
+        <RetentionPolicyTag 
+xmlns="http://schemas.microsoft.com/exchange/services/2006/types"> 
+          <DisplayName>5 Year Delete</DisplayName> 
+          <RetentionId>1d128b50-14f2-4417-cb7d015fd7</RetentionId> 
+          <RetentionPeriod>1825</RetentionPeriod> 
+
+22 / 33 
+
+[MS-OXWSURPT] - v20250520 
+Retention Tag Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+          <Type>Personal</Type> 
+          <RetentionAction>DeleteAndAllowRecovery</RetentionAction> 
+          <IsVisible>true</IsVisible> 
+          <OptedInto>false</OptedInto> 
+          <IsArchive>false</IsArchive> 
+        </RetentionPolicyTag> 
+        <RetentionPolicyTag 
+xmlns="http://schemas.microsoft.com/exchange/services/2006/types"> 
+          <DisplayName>1 Year Delete</DisplayName> 
+          <RetentionId>9a3c36dd-c0eb-424a-8bd17f855</RetentionId> 
+          <RetentionPeriod>365</RetentionPeriod> 
+          <Type>Personal</Type> 
+          <RetentionAction>DeleteAndAllowRecovery</RetentionAction> 
+          <IsVisible>true</IsVisible> 
+          <OptedInto>false</OptedInto> 
+          <IsArchive>false</IsArchive> 
+        </RetentionPolicyTag> 
+        <RetentionPolicyTag 
+xmlns="http://schemas.microsoft.com/exchange/services/2006/types"> 
+          <DisplayName>6 Month Delete</DisplayName> 
+          <RetentionId>d94993b5-e987-4275-2057cfb2b8</RetentionId> 
+          <RetentionPeriod>180</RetentionPeriod> 
+          <Type>Personal</Type> 
+          <RetentionAction>DeleteAndAllowRecovery</RetentionAction> 
+          <IsVisible>true</IsVisible> 
+          <OptedInto>false</OptedInto> 
+          <IsArchive>false</IsArchive> 
+        </RetentionPolicyTag> 
+        <RetentionPolicyTag 
+xmlns="http://schemas.microsoft.com/exchange/services/2006/types"> 
+          <DisplayName>1 Month Delete</DisplayName> 
+          <RetentionId>fc92a703-51e3-411f-966668ee49c</RetentionId> 
+          <RetentionPeriod>30</RetentionPeriod> 
+          <Type>Personal</Type> 
+          <RetentionAction>DeleteAndAllowRecovery</RetentionAction> 
+          <IsVisible>true</IsVisible> 
+          <OptedInto>false</OptedInto> 
+          <IsArchive>false</IsArchive> 
+        </RetentionPolicyTag> 
+        <RetentionPolicyTag 
+xmlns="http://schemas.microsoft.com/exchange/services/2006/types"> 
+          <DisplayName>1 Week Delete</DisplayName> 
+          <RetentionId>2d26745c-8566-4dc3-88f56443b7b</RetentionId> 
+          <RetentionPeriod>7</RetentionPeriod> 
+          <Type>Personal</Type> 
+          <RetentionAction>DeleteAndAllowRecovery</RetentionAction> 
+          <IsVisible>true</IsVisible> 
+          <OptedInto>false</OptedInto> 
+          <IsArchive>false</IsArchive> 
+        </RetentionPolicyTag> 
+        <RetentionPolicyTag 
+xmlns="http://schemas.microsoft.com/exchange/services/2006/types"> 
+          <DisplayName>Personal never move to archive</DisplayName> 
+          <RetentionId>c6c9ad12-9e46-053-e1ea189ab0cc</RetentionId> 
+          <RetentionPeriod>0</RetentionPeriod> 
+          <Type>Personal</Type> 
+          <RetentionAction>None</RetentionAction> 
+          <IsVisible>true</IsVisible> 
+          <OptedInto>false</OptedInto> 
+          <IsArchive>true</IsArchive> 
+        </RetentionPolicyTag> 
+        <RetentionPolicyTag 
+xmlns="http://schemas.microsoft.com/exchange/services/2006/types"> 
+          <DisplayName>Personal 5 year move to archive</DisplayName> 
+          <RetentionId>790300f2-2ffd-4380-2daadc05c8</RetentionId> 
+          <RetentionPeriod>1825</RetentionPeriod> 
+          <Type>Personal</Type> 
+          <RetentionAction>MoveToArchive</RetentionAction> 
+          <IsVisible>true</IsVisible> 
+
+23 / 33 
+
+[MS-OXWSURPT] - v20250520 
+Retention Tag Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+          <OptedInto>false</OptedInto> 
+          <IsArchive>true</IsArchive> 
+        </RetentionPolicyTag> 
+        <RetentionPolicyTag 
+xmlns="http://schemas.microsoft.com/exchange/services/2006/types"> 
+          <DisplayName>Personal 1 year move to archive</DisplayName> 
+          <RetentionId>66904d6f-bf73-4460-fad894a0f</RetentionId> 
+          <RetentionPeriod>365</RetentionPeriod> 
+          <Type>Personal</Type> 
+          <RetentionAction>MoveToArchive</RetentionAction> 
+          <IsVisible>true</IsVisible> 
+          <OptedInto>false</OptedInto> 
+          <IsArchive>true</IsArchive> 
+        </RetentionPolicyTag> 
+        <RetentionPolicyTag 
+xmlns="http://schemas.microsoft.com/exchange/services/2006/types"> 
+          <DisplayName>Default 2 year move to archive</DisplayName> 
+          <RetentionId>9acbb441-faf8-b3867bdf399c</RetentionId> 
+          <RetentionPeriod>730</RetentionPeriod> 
+          <Type>All</Type> 
+          <RetentionAction>MoveToArchive</RetentionAction> 
+          <IsVisible>false</IsVisible> 
+          <OptedInto>false</OptedInto> 
+          <IsArchive>true</IsArchive> 
+        </RetentionPolicyTag> 
+      </RetentionPolicyTags> 
+    </GetUserRetentionPolicyTagsResponse> 
+  </s:Body> 
+ </s:Envelope> 
+
+24 / 33 
+
+[MS-OXWSURPT] - v20250520 
+Retention Tag Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+5 Security 
+
+5.1 Security Considerations for Implementers 
+
+None. 
+
+5.2 Index of Security Parameters 
+
+None. 
+
+25 / 33 
+
+[MS-OXWSURPT] - v20250520 
+Retention Tag Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+6 Appendix A: Full WSDL 
+
+For ease of implementation, the full WSDL is provided in this appendix. 
+
+ <?xml version="1.0" encoding="UTF-8"?> 
+ <wsdl:definitions xmlns:tns="http://schemas.microsoft.com/exchange/services/2006/messages" 
+xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/" 
+xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types" 
+targetNamespace="http://schemas.microsoft.com/exchange/services/2006/messages" 
+xmlns:wsdl="http://schemas.xmlsoap.org/wsdl/"> 
+  <wsdl:types> 
+    <xs:schema elementFormDefault="qualified" 
+targetNamespace="http://schemas.microsoft.com/exchange/services/2006/messages" 
+version="Exchange2016" id="messages" xmlns:xs="http://www.w3.org/2001/XMLSchema"> 
+      <xs:include schemaLocation="MS-OXWSURPT-messages.xsd"/> 
+    </xs:schema> 
+  </wsdl:types> 
+  <wsdl:portType name="ExchangeServicePortType"> 
+    <wsdl:operation name="GetUserRetentionPolicyTags"> 
+      <wsdl:input message="tns:GetUserRetentionPolicyTagsSoapIn"/> 
+      <wsdl:output message="tns:GetUserRetentionPolicyTagsSoapOut"/> 
+    </wsdl:operation> 
+  </wsdl:portType> 
+  <wsdl:binding name="ExchangeServiceBinding" type="tns:ExchangeServicePortType"> 
+    <wsdl:documentation> 
+      <wsi:Claim conformsTo="http://ws-i.org/profiles/basic/1.0" xmlns:wsi="http://ws-
+i.org/schemas/conformanceClaim/"/> 
+    </wsdl:documentation> 
+    <soap:binding transport="http://schemas.xmlsoap.org/soap/http"/> 
+    <wsdl:operation name="GetUserRetentionPolicyTags"> 
+      <soap:operation 
+soapAction="http://schemas.microsoft.com/exchange/services/2006/messages/GetUserRetentionPoli
+cyTags"/> 
+      <wsdl:input> 
+        <soap:header message="tns:GetUserRetentionPolicyTagsSoapIn" part="RequestVersion" 
+use="literal"/> 
+        <soap:body use="literal" parts="request"/> 
+      </wsdl:input> 
+      <wsdl:output> 
+        <soap:body use="literal" parts="GetUserRetentionPolicyTagsResult"/> 
+        <soap:header message="tns:GetUserRetentionPolicyTagsSoapOut" part="ServerVersion" 
+use="literal"/> 
+      </wsdl:output> 
+    </wsdl:operation> 
+  </wsdl:binding> 
+  <wsdl:message name="GetUserRetentionPolicyTagsSoapIn"> 
+    <wsdl:part name="request" element="tns:GetUserRetentionPolicyTags"/> 
+    <wsdl:part name="RequestVersion" element="t:RequestServerVersion"/> 
+  </wsdl:message> 
+  <wsdl:message name="GetUserRetentionPolicyTagsSoapOut"> 
+    <wsdl:part name="GetUserRetentionPolicyTagsResult" 
+element="tns:GetUserRetentionPolicyTagsResponse"/> 
+    <wsdl:part name="ServerVersion" element="t:ServerVersionInfo"/> 
+  </wsdl:message> 
+ </wsdl:definitions> 
+
+26 / 33 
+
+[MS-OXWSURPT] - v20250520 
+Retention Tag Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+7 Appendix B: Full XML Schema 
+
+Schema name Prefix Section 
+
+http://schemas.microsoft.com/exchange/services/2006/types t 7.2 
+
+http://schemas.microsoft.com/exchange/services/2006/messages tns 7.1 
+
+ 
+
+For ease of implementation, the following sections provide the full XML schema for this protocol. 
+
+7.1 http://schemas.microsoft.com/exchange/services/2006/messages Schema 
+
+This section contains the contents of the MS-OXWSURPT-messages.xsd file and information about 
+additional files that this schema file requires to operate correctly. 
+
+MS-OXWSURPT-messages.xsd includes the files listed in the following table. To operate correctly, 
+these files have to be present in the folder that contains the WSDL, types schema, and messages 
+schema for this protocol. 
+
+File name Defining specification/section 
+
+MS-OXWSCDATA-messages.xsd [MS-OXWSCDATA] section 7.1 
+
+MS-OXWSURPT-types.xsd 7.2 
+
+ 
+
+ <?xml version="1.0" encoding="UTF-8"?> 
+ <xs:schema xmlns:tns="http://schemas.microsoft.com/exchange/services/2006/messages" 
+xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types" 
+elementFormDefault="qualified" 
+targetNamespace="http://schemas.microsoft.com/exchange/services/2006/messages" 
+version="Exchange2016" id="messages" xmlns:xs="http://www.w3.org/2001/XMLSchema"> 
+  <xs:import schemaLocation="MS-OXWSURPT-types.xsd" 
+namespace="http://schemas.microsoft.com/exchange/services/2006/types"/> 
+  <xs:include schemaLocation="MS-OXWSCDATA-messages.xsd"/> 
+  <xs:complexType name="GetUserRetentionPolicyTagsType"> 
+    <xs:complexContent mixed="false"> 
+      <xs:extension base="tns:BaseRequestType"/> 
+    </xs:complexContent> 
+  </xs:complexType> 
+  <xs:element name="GetUserRetentionPolicyTags" type="tns:GetUserRetentionPolicyTagsType"/> 
+  <xs:complexType name="GetUserRetentionPolicyTagsResponseMessageType"> 
+    <xs:complexContent mixed="false"> 
+      <xs:extension base="tns:ResponseMessageType"> 
+        <xs:sequence> 
+          <xs:element name="RetentionPolicyTags" type="t:ArrayOfRetentionPolicyTagsType"/> 
+        </xs:sequence> 
+      </xs:extension> 
+    </xs:complexContent> 
+  </xs:complexType> 
+  <xs:element name="GetUserRetentionPolicyTagsResponse" 
+type="tns:GetUserRetentionPolicyTagsResponseMessageType"/> 
+ </xs:schema> 
+
+7.2 http://schemas.microsoft.com/exchange/services/2006/types Schema 
+
+This section contains the contents of the MS-OXWSURPT-types.xsd file and information about 
+additional files that this schema file requires to operate correctly. 
+
+27 / 33 
+
+[MS-OXWSURPT] - v20250520 
+Retention Tag Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+MS-OXWSURPT-types.xsd includes the file listed in the following table. To operate correctly, this file 
+has to be present in the folder that contains the WSDL, types schema, and messages schema for this 
+protocol. 
+
+ 
+
+File name Defining specification/section 
+
+MS-OXWSXPROP-types.xsd [MS-OXWSXPROP] section 2.1 
+
+ 
+
+ <?xml version="1.0" encoding="UTF-8"?> 
+ <xs:schema xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types" 
+elementFormDefault="qualified" 
+targetNamespace="http://schemas.microsoft.com/exchange/services/2006/types" 
+version="Exchange2016" id="types" xmlns:xs="http://www.w3.org/2001/XMLSchema"> 
+  <xs:import namespace="http://www.w3.org/XML/1998/namespace"/> 
+  <xs:include schemaLocation="MS-OXWSXPROP-types.xsd"/> 
+  <xs:complexType name="ArrayOfRetentionPolicyTagsType"> 
+    <xs:sequence> 
+      <xs:element minOccurs="0" maxOccurs="unbounded" name="RetentionPolicyTag" 
+type="t:RetentionPolicyTagType"/> 
+    </xs:sequence> 
+  </xs:complexType> 
+  <xs:simpleType name="ElcFolderType"> 
+    <xs:restriction base="xs:string"> 
+      <xs:enumeration value="Calendar"/> 
+      <xs:enumeration value="Contacts"/> 
+      <xs:enumeration value="DeletedItems"/> 
+      <xs:enumeration value="Drafts"/> 
+      <xs:enumeration value="Inbox"/> 
+      <xs:enumeration value="JunkEmail"/> 
+      <xs:enumeration value="Journal"/> 
+      <xs:enumeration value="Notes"/> 
+      <xs:enumeration value="Outbox"/> 
+      <xs:enumeration value="SentItems"/> 
+      <xs:enumeration value="Tasks"/> 
+      <xs:enumeration value="All"/> 
+      <xs:enumeration value="ManagedCustomFolder"/> 
+      <xs:enumeration value="RssSubscriptions"/> 
+      <xs:enumeration value="SyncIssues"/> 
+      <xs:enumeration value="ConversationHistory"/> 
+      <xs:enumeration value="Personal"/> 
+      <xs:enumeration value="RecoverableItems"/> 
+      <xs:enumeration value="NonIpmRoot"/> 
+    </xs:restriction> 
+  </xs:simpleType> 
+  <xs:simpleType name="RetentionActionType"> 
+    <xs:restriction base="xs:string"> 
+      <xs:enumeration value="None"/> 
+      <xs:enumeration value="MoveToDeletedItems"/> 
+      <xs:enumeration value="MoveToFolder"/> 
+      <xs:enumeration value="DeleteAndAllowRecovery"/> 
+      <xs:enumeration value="PermanentlyDelete"/> 
+      <xs:enumeration value="MarkAsPastRetentionLimit"/> 
+      <xs:enumeration value="MoveToArchive"/> 
+    </xs:restriction> 
+  </xs:simpleType> 
+  <xs:complexType name="RetentionPolicyTagType"> 
+    <xs:sequence> 
+      <xs:element minOccurs="1" maxOccurs="1" name="DisplayName" type="xs:string"/> 
+      <xs:element minOccurs="1" maxOccurs="1" name="RetentionId" type="t:GuidType"/> 
+      <xs:element minOccurs="1" maxOccurs="1" name="RetentionPeriod" type="xs:int"/> 
+      <xs:element minOccurs="1" maxOccurs="1" name="Type" type="t:ElcFolderType"/> 
+      <xs:element minOccurs="1" maxOccurs="1" name="RetentionAction" 
+type="t:RetentionActionType"/> 
+
+28 / 33 
+
+[MS-OXWSURPT] - v20250520 
+Retention Tag Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+      <xs:element minOccurs="0" maxOccurs="1" name="Description" type="xs:string"/> 
+      <xs:element minOccurs="1" maxOccurs="1" name="IsVisible" type="xs:boolean"/> 
+      <xs:element minOccurs="1" maxOccurs="1" name="OptedInto" type="xs:boolean"/> 
+      <xs:element minOccurs="1" maxOccurs="1" name="IsArchive" type="xs:boolean"/> 
+    </xs:sequence> 
+  </xs:complexType> 
+  <xs:complexType name="RetentionTagType"> 
+    <xs:simpleContent> 
+      <xs:extension base="t:GuidType"> 
+        <xs:attribute name="IsExplicit" type="xs:boolean" use="required"/> 
+      </xs:extension> 
+    </xs:simpleContent> 
+  </xs:complexType> 
+  <xs:simpleType name="RetentionType"> 
+    <xs:restriction base="xs:string"> 
+      <xs:enumeration value="Delete"/> 
+      <xs:enumeration value="Archive"/> 
+    </xs:restriction> 
+  </xs:simpleType> 
+ </xs:schema> 
+
+29 / 33 
+
+[MS-OXWSURPT] - v20250520 
+Retention Tag Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+8 Appendix C: Product Behavior 
+
+The information in this specification is applicable to the following Microsoft products or supplemental 
+software. References to product versions include updates to those products. 
+
+ Microsoft Exchange Server 2013 
+
+ Microsoft Exchange Server 2016 
+
+ Microsoft Exchange Server 2019 
+
+ Microsoft Exchange Server Subscription Edition 
+
+Exceptions, if any, are noted in this section. If an update version, service pack or Knowledge Base 
+(KB) number appears with a product name, the behavior changed in that update. The new behavior 
+also applies to subsequent updates unless otherwise specified. If a product edition appears with the 
+product version, behavior is different in that product edition. 
+
+Unless otherwise specified, any statement of optional behavior in this specification that is prescribed 
+using the terms "SHOULD" or "SHOULD NOT" implies product behavior in accordance with the 
+SHOULD or SHOULD NOT prescription. Unless otherwise specified, the term "MAY" implies that the 
+product does not follow the prescription. 
+
+30 / 33 
+
+[MS-OXWSURPT] - v20250520 
+Retention Tag Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+9 Change Tracking 
+
+This section identifies changes that were made to this document since the last release. Changes are 
+classified as Major, Minor, or None.  
+
+The revision class Major means that the technical content in the document was significantly revised. 
+Major changes affect protocol interoperability or implementation. Examples of major changes are: 
+
+ A document revision that incorporates changes to interoperability requirements. 
+ A document revision that captures changes to protocol functionality. 
+
+The revision class Minor means that the meaning of the technical content was clarified. Minor changes 
+do not affect protocol interoperability or implementation. Examples of minor changes are updates to 
+clarify ambiguity at the sentence, paragraph, or table level. 
+
+The revision class None means that no new technical changes were introduced. Minor editorial and 
+formatting changes may have been made, but the relevant technical content is identical to the last 
+released version. 
+
+The changes made to this document are listed in the following table. For more information, please 
+contact dochelp@microsoft.com. 
+
+Section Description Revision class 
+
+8 Appendix C: Product Behavior Updated list of supported products. Major 
+
+31 / 33 
+
+[MS-OXWSURPT] - v20250520 
+Retention Tag Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+10 Index
+A M 
+  
+Abstract data model Message processing 
+   server 13    server 13 
+Applicability 9 Messages 
+Attribute groups 12    attribute groups 12 
+Attributes 12    attributes 12 
+    complex types 11 
+C    elements 10 
+    enumerated 10 
+Capability negotiation 9    groups 12 
+Change tracking 30    namespaces 10 
+Client    overview 10 
+   overview 13    RetentionTagType complex type 11 
+Complex types 11    RetentionType simple type 11 
+   RetentionTagType 11    simple types 11 
+    syntax 10 
+
+D    transport 10 
+
+  
+
+Data model - abstract N 
+   server 13  
+ Namespaces 10 
+
+E Normative references 7 
+
+  
+
+Events O 
+   local - server 20  
+   timer - server 20 Operations 
+ExchangeServicePortType port type 13    GetUserRetentionPolicyTags 13 
+ Overview (synopsis) 8 
+
+F  
+
+ P 
+Fields - vendor-extensible 9  
+Full WSDL 25 Parameters - security index 24 
+Full XML schema 26 Port types 
+      ExchangeServicePortType 13 
+
+http://schemas.microsoft.com/exchange/service Preconditions 9 
+s/2006/messages Schema 26 Prerequisites 9 
+
+   Product behavior 29 
+http://schemas.microsoft.com/exchange/service Protocol Details 
+s/2006/types Schema 26    overview 13 
+
+  
+
+G R 
+  
+Glossary 5 References 7 
+Groups 12    informative 7 
+    normative 7 
+
+I Relationship to other protocols 8 
+
+ RetentionTagType complex type 11 
+
+Implementer - security considerations 24 RetentionType simple type 11 
+
+Index of security parameters 24  
+
+Informative references 7 S 
+Initialization  
+   server 13 Security 
+Introduction 5    implementer considerations 24 
+    parameter index 24 
+
+L Sequencing rules 
+
+    server 13 
+
+Local events Server 
+
+   server 20    abstract data model 13 
+
+    ExchangeServicePortType port type 13 
+   GetUserRetentionPolicyTags operation 13 
+
+32 / 33 
+
+[MS-OXWSURPT] - v20250520 
+Retention Tag Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+   initialization 13 
+   local events 20 
+   message processing 13 
+   overview 13 
+   sequencing rules 13 
+   timer events 20 
+   timers 13 
+Simple types 11 
+   RetentionType 11 
+Standards assignments 9 
+Syntax 
+   messages - overview 10 
+ 
+T 
+ 
+Timer events 
+   server 20 
+Timers 
+   server 13 
+Tracking changes 30 
+Transport 10 
+Types 
+   complex 11 
+   simple 11 
+ 
+V 
+ 
+Vendor-extensible fields 9 
+Versioning 9 
+ 
+W 
+ 
+WSDL 25 
+ 
+X 
+ 
+XML schema 26 
+   
+
+http://schemas.microsoft.com/exchange/service
+s/2006/messages Schema 26 
+
+   
+http://schemas.microsoft.com/exchange/service
+s/2006/types Schema 26 
+
+ 
+
+33 / 33 
+
+[MS-OXWSURPT] - v20250520 
+Retention Tag Web Service Protocol 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025
