@@ -1,0 +1,1006 @@
+﻿[MS-XJRNL]:  
+
+Journal Record Message File Format 
+
+ 
+
+Intellectual Property Rights Notice for Open Specifications Documentation 
+
+ Technical Documentation. Microsoft publishes Open Specifications documentation (“this 
+documentation”) for protocols, file formats, data portability, computer languages, and standards 
+support. Additionally, overview documents cover inter-protocol relationships and interactions.  
+
+ Copyrights. This documentation is covered by Microsoft copyrights. Regardless of any other 
+terms that are contained in the terms of use for the Microsoft website that hosts this 
+documentation, you can make copies of it in order to develop implementations of the technologies 
+that are described in this documentation and can distribute portions of it in your implementations 
+that use these technologies or in your documentation as necessary to properly document the 
+implementation. You can also distribute in your implementation, with or without modification, any 
+schemas, IDLs, or code samples that are included in the documentation. This permission also 
+applies to any documents that are referenced in the Open Specifications documentation.  
+
+ No Trade Secrets. Microsoft does not claim any trade secret rights in this documentation.  
+ Patents. Microsoft has patents that might cover your implementations of the technologies 
+
+described in the Open Specifications documentation. Neither this notice nor Microsoft's delivery of 
+this documentation grants any licenses under those patents or any other Microsoft patents. 
+However, a given Open Specifications document might be covered by the Microsoft Open 
+Specifications Promise or the Microsoft Community Promise. If you would prefer a written license, 
+or if the technologies described in this documentation are not covered by the Open Specifications 
+Promise or Community Promise, as applicable, patent licenses are available by contacting 
+iplg@microsoft.com.  
+
+ License Programs. To see all of the protocols in scope under a specific license program and the 
+associated patents, visit the Patent Map.  
+
+ Trademarks. The names of companies and products contained in this documentation might be 
+covered by trademarks or similar intellectual property rights. This notice does not grant any 
+licenses under those rights. For a list of Microsoft trademarks, visit 
+www.microsoft.com/trademarks.  
+
+ Fictitious Names. The example companies, organizations, products, domain names, email 
+addresses, logos, people, places, and events that are depicted in this documentation are fictitious. 
+No association with any real company, organization, product, domain name, email address, logo, 
+person, place, or event is intended or should be inferred. 
+
+Reservation of Rights. All other rights are reserved, and this notice does not grant any rights other 
+than as specifically described above, whether by implication, estoppel, or otherwise.  
+
+Tools. The Open Specifications documentation does not require the use of Microsoft programming 
+tools or programming environments in order for you to develop an implementation. If you have access 
+to Microsoft programming tools and environments, you are free to take advantage of them. Certain 
+Open Specifications documents are intended for use in conjunction with publicly available standards 
+specifications and network programming art and, as such, assume that the reader either is familiar 
+with the aforementioned material or has immediate access to it. 
+
+Support. For questions and support, please contact dochelp@microsoft.com.  
+
+1 / 17 
+
+[MS-XJRNL] - v20250520 
+Journal Record Message File Format 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Revision Summary 
+
+Revision Revision 
+Date History Class Comments 
+
+4/4/2008 0.1 New Initial Availability. 
+
+Revised and updated property names and other technical 
+4/25/2008 0.2 Minor 
+
+content. 
+
+6/27/2008 1.0 Major Initial Release. 
+
+8/6/2008 1.01 Minor Revised and edited technical content. 
+
+9/3/2008 1.02 Minor Revised and edited technical content. 
+
+12/3/2008 1.03 Minor Updated IP notice. 
+
+4/10/2009 2.0 Major Updated technical content and applicable product releases. 
+
+7/15/2009 3.0 Major Revised and edited for technical content. 
+
+11/4/2009 3.1.0 Minor Updated the technical content. 
+
+2/10/2010 3.2.0 Minor Updated the technical content. 
+
+5/5/2010 3.2.1 Editorial Revised and edited the technical content. 
+
+8/4/2010 4.0 Major Significantly changed the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+11/3/2010 4.0 None 
+
+technical content. 
+
+No changes to the meaning, language, and formatting of the 
+3/18/2011 4.0 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+8/5/2011 4.0 None 
+
+technical content. 
+
+10/7/2011 4.1 Minor Clarified the meaning of the technical content. 
+
+1/20/2012 5.0 Major Significantly changed the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+4/27/2012 5.0 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+7/16/2012 5.0 None 
+
+technical content. 
+
+10/8/2012 6.0 Major Significantly changed the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+2/11/2013 6.0 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+7/26/2013 6.0 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+11/18/2013 6.0 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+2/10/2014 6.0 None 
+
+technical content. 
+
+4/30/2014 6.1 Minor Clarified the meaning of the technical content. 
+
+2 / 17 
+
+[MS-XJRNL] - v20250520 
+Journal Record Message File Format 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Revision Revision 
+Date History Class Comments 
+
+7/31/2014 6.2 Minor Clarified the meaning of the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+10/30/2014 6.2 None 
+
+technical content. 
+
+3/16/2015 7.0 Major Significantly changed the technical content. 
+
+5/26/2015 8.0 Major Significantly changed the technical content. 
+
+No changes to the meaning, language, or formatting of the 
+9/14/2015 8.0 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+6/13/2016 8.0 None 
+
+technical content. 
+
+No changes to the meaning, language, or formatting of the 
+9/14/2016 8.0 None 
+
+technical content. 
+
+7/24/2018 9.0 Major Significantly changed the technical content. 
+
+10/1/2018 10.0 Major Significantly changed the technical content. 
+
+4/22/2021 11.0 Major Significantly changed the technical content. 
+
+8/17/2021 12.0 Major Significantly changed the technical content. 
+
+8/20/2024 13.0 Major Significantly changed the technical content. 
+
+5/20/2025 14.0 Major Significantly changed the technical content. 
+
+3 / 17 
+
+[MS-XJRNL] - v20250520 
+Journal Record Message File Format 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+Table of Contents 
+1 Introduction ............................................................................................................ 5 
+
+1.1 Glossary ........................................................................................................... 5 
+1.2 References ........................................................................................................ 6 
+
+1.2.1 Normative References ................................................................................... 6 
+1.2.2 Informative References ................................................................................. 7 
+
+1.3 Overview .......................................................................................................... 7 
+1.3.1 Body Text of the Journal Record Message ........................................................ 7 
+1.3.2 Original Message .......................................................................................... 7 
+
+1.4 Relationship to Protocols and Other Structures ...................................................... 7 
+1.5 Applicability Statement ....................................................................................... 8 
+1.6 Versioning and Localization ................................................................................. 8 
+1.7 Vendor-Extensible Fields ..................................................................................... 8 
+
+2 Structures ............................................................................................................... 9 
+2.1 Envelope-Part Structure ...................................................................................... 9 
+
+2.1.1 sender Field ................................................................................................. 9 
+2.1.2 subject Field ................................................................................................ 9 
+2.1.3 message-id Field ........................................................................................ 10 
+2.1.4 recipient-specification Field .......................................................................... 10 
+
+2.1.4.1 recipient-p2-type Field ........................................................................... 10 
+2.1.4.2 forward-path Field ................................................................................. 10 
+2.1.4.3 redirection-type Field............................................................................. 10 
+
+2.1.4.3.1 Expanded Value .............................................................................. 10 
+2.1.4.3.2 Forwarded Value ............................................................................. 10 
+
+2.1.4.4 original-forward-path Field ..................................................................... 11 
+2.1.5 label Field .................................................................................................. 11 
+2.1.6 sent-on-behalf Field .................................................................................... 11 
+2.1.7 mailbox-owner Field .................................................................................... 11 
+2.1.8 sent-time Field ........................................................................................... 11 
+2.1.9 received-time Field ..................................................................................... 12 
+
+2.2 Original-Message-Part Structure ........................................................................ 12 
+
+3 Structure Examples ............................................................................................... 13 
+
+4 Security ................................................................................................................. 14 
+4.1 Security Considerations for Implementers ........................................................... 14 
+4.2 Index of Security Fields .................................................................................... 14 
+
+5 Appendix A: Product Behavior ............................................................................... 15 
+
+6 Change Tracking .................................................................................................... 16 
+
+7 Index ..................................................................................................................... 17 
+
+ 
+
+4 / 17 
+
+[MS-XJRNL] - v20250520 
+Journal Record Message File Format 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+1 Introduction 
+
+The Journal Record Message File Format is used to format information about an email message that is 
+sent through the server. The Journal Record Message File Format extends the protocols specified in 
+[RFC2045] and [RFC2046]. 
+
+Sections 1.7 and 2 of this specification are normative. All other sections and examples in this 
+specification are informative. 
+
+1.1 Glossary 
+
+This document uses the following terms: 
+
+ASCII: The American Standard Code for Information Interchange (ASCII) is an 8-bit character-
+encoding scheme based on the English alphabet. ASCII codes represent text in computers, 
+communications equipment, and other devices that work with text. ASCII refers to a single 8-bit 
+ASCII character or an array of 8-bit ASCII characters with the high bit of each character set to 
+zero. 
+
+Augmented Backus-Naur Form (ABNF): A modified version of Backus-Naur Form (BNF), 
+commonly used by Internet specifications. ABNF notation balances compactness and simplicity 
+with reasonable representational power. ABNF differs from standard BNF in its definitions and 
+uses of naming rules, repetition, alternatives, order-independence, and value ranges. For more 
+information, see [RFC5234]. 
+
+blind carbon copy (Bcc) recipient: An addressee on a Message object that is not visible to 
+recipients of the Message object. 
+
+body: The contents of a body part or an entire message that contains several body parts, as 
+described in [RFC2045]. 
+
+body part: A part of an Internet message, as described in [RFC2045]. 
+
+carbon copy (Cc) recipient: An address on a Message object that is visible to recipients of the 
+Message object but is not necessarily expected to take any action. 
+
+character set: A mapping between the characters of a written language and the values that are 
+used to represent those characters to a computer.  
+
+Coordinated Universal Time (UTC): A high-precision atomic time standard that approximately 
+tracks Universal Time (UT). It is the basis for legal, civil time all over the Earth. Time zones 
+around the world are expressed as positive and negative offsets from UTC. In this role, it is also 
+referred to as Zulu time (Z) and Greenwich Mean Time (GMT). In these specifications, all 
+references to UTC refer to the time at UTC-0 (or GMT). 
+
+distinguished name (DN): A name that uniquely identifies an object by using the relative 
+distinguished name (RDN) for the object, and the names of container objects and domains that 
+contain the object. The distinguished name (DN) identifies the object and its location in a tree. 
+
+distribution list: A collection of users, computers, contacts, or other groups that is used only for 
+email distribution, and addressed as a single recipient. 
+
+email address: A string that identifies a user and enables the user to receive Internet messages. 
+
+encoding: A process that specifies a Content-Transfer-Encoding for transforming character data 
+from one form to another. 
+
+header: A name-value pair that supplies structured data in an Internet email message or MIME 
+entity. 
+
+5 / 17 
+
+[MS-XJRNL] - v20250520 
+Journal Record Message File Format 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+mailbox: A message store that contains email, calendar items, and other Message objects for a 
+single recipient. 
+
+MIME attachment: A body part that is in a MIME message, for example, an email message or a 
+file that is attached to an email message. 
+
+MIME content-type: A content type that is as described in [RFC2045], [RFC2046], and 
+[RFC2047]. 
+
+MIME message: A message that is as described in [RFC2045], [RFC2046], and [RFC2047]. 
+
+Multipurpose Internet Mail Extensions (MIME): A set of extensions that redefines and 
+expands support for various types of content in email messages, as described in [RFC2045], 
+[RFC2046], and [RFC2047]. 
+
+recipient: An entity that can receive email messages.   
+
+recipient forwarding: A feature that enables a message to be redirected to a different email 
+address, which is referred to as the "forwarded address," from the address to which it is sent 
+originally. Depending on the implementation, a message can be redirected to the forwarded 
+address without sending a copy to the original email address, or the original email address can 
+additionally receive a copy of the message. 
+
+Simple Mail Transfer Protocol (SMTP): A member of the TCP/IP suite of protocols that is used 
+to transport Internet messages, as described in [RFC5321]. 
+
+To recipient: See primary recipient. 
+
+MAY, SHOULD, MUST, SHOULD NOT, MUST NOT: These terms (in all caps) are used as defined 
+in [RFC2119]. All statements of optional behavior use either MAY, SHOULD, or SHOULD NOT. 
+
+1.2 References 
+
+Links to a document in the Microsoft Open Specifications library point to the correct section in the 
+most recently published version of the referenced document. However, because individual documents 
+in the library are not updated at the same time, the section numbers in the documents may not 
+match. You can confirm the correct section numbering by checking the Errata.   
+
+1.2.1 Normative References 
+
+We conduct frequent surveys of the normative references to assure their continued availability. If you 
+have any issue with finding a normative reference, please contact dochelp@microsoft.com. We will 
+assist you in finding the relevant information.  
+
+[MS-OXMSG] Microsoft Corporation, "Outlook Item (.msg) File Format". 
+
+[MS-OXOABK] Microsoft Corporation, "Address Book Object Protocol". 
+
+[RFC2045] Freed, N., and Borenstein, N., "Multipurpose Internet Mail Extensions (MIME) Part One: 
+Format of Internet Message Bodies", RFC 2045, November 1996, https://www.rfc-
+editor.org/info/rfc2045 
+
+[RFC2046] Freed, N., and Borenstein, N., "Multipurpose Internet Mail Extensions (MIME) Part Two: 
+Media Types", RFC 2046, November 1996, https://www.rfc-editor.org/info/rfc2046 
+
+[RFC2119] Bradner, S., "Key words for use in RFCs to Indicate Requirement Levels", BCP 14, RFC 
+2119, March 1997, https://www.rfc-editor.org/info/rfc2119 
+
+6 / 17 
+
+[MS-XJRNL] - v20250520 
+Journal Record Message File Format 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+[RFC2821] Klensin, J., "Simple Mail Transfer Protocol", RFC 2821, April 2001, https://www.rfc-
+editor.org/info/rfc2821 
+
+[RFC2822] Resnick, P., Ed., "Internet Message Format", RFC 2822, April 2001, https://www.rfc-
+editor.org/info/rfc2822 
+
+[RFC5234] Crocker, D., Ed., and Overell, P., "Augmented BNF for Syntax Specifications: ABNF", STD 
+68, RFC 5234, January 2008, https://www.rfc-editor.org/info/rfc5234 
+
+1.2.2 Informative References 
+
+[MS-OXPROTO] Microsoft Corporation, "Exchange Server Protocols System Overview". 
+
+[MSFT-WPXTJ] Microsoft Corporation, "White Paper: Exchange 2007 Transport Journaling", September 
+2007, http://technet.microsoft.com/en-us/library/bb738122(EXCHG.80).aspx 
+
+1.3 Overview 
+
+Journal record messages are MIME messages produced by the server that capture information about 
+other (non-journal record) messages sent through the server. These non-journal record messages are 
+referred to as original messages. Metadata about the original message is contained in the Envelope-
+Part structure (section 2.1) in the Journal Record Message File Format. This format allows an 
+administrator, for example, to log and review the recipient of every outgoing message. 
+
+For background information about how journaling works, see [MSFT-WPXTJ]. 
+
+1.3.1 Body Text of the Journal Record Message 
+
+The body text of the journal record message lists the email addresses of the sender and recipients 
+of the original message, the subject, the Internet Message-ID field (section 2.1.3), and certain other 
+metadata about the original message. The body text is referred to as the Envelope-Part structure of 
+the journal record message. 
+
+1.3.2 Original Message 
+
+The original message is attached as a MIME attachment to the Envelope-Part structure. This is 
+referred to as the Original-Message-Part structure (section 2.2) of the journal record message. How 
+the Original-Message-Part structure is attached to the Envelope-Part structure is fully described in 
+[RFC2045] and [RFC2046]. 
+
+1.4 Relationship to Protocols and Other Structures 
+
+The journal record MIME message conforms to [RFC2045] and [RFC2046]. [RFC2045] describes how 
+messages with a MIME content-type of message/rfc822 might be nested recursively as MIME 
+attachments. The outermost message/rfc822 body part of the journal record message contains the 
+Envelope-Part structure as the body. 
+
+The Envelope-Part structure is encoded using the mechanisms described in [RFC2045], such as the 
+Content-Transfer-Encoding mechanism, which specifies details such as the character set and 
+encoding used for the data in the Envelope-Part structure. The mechanism for decoding the 
+Envelope-Part structure is described in [RFC2045] section 6.  
+
+The following figure shows how the Envelope-Part structure is placed in relation to the various other 
+structures in the journal record MIME message. 
+
+7 / 17 
+
+[MS-XJRNL] - v20250520 
+Journal Record Message File Format 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+ 
+
+Figure 1: MIME structure of a journal record message 
+
+For conceptual background information and overviews of the relationships and interactions between 
+this and other protocols, see [MS-OXPROTO]. 
+
+1.5 Applicability Statement 
+
+Applications can use this format to create and consume journal record messages. 
+
+1.6 Versioning and Localization 
+
+None. 
+
+1.7 Vendor-Extensible Fields 
+
+None. 
+
+8 / 17 
+
+[MS-XJRNL] - v20250520 
+Journal Record Message File Format 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+2 Structures 
+
+The Journal Record Message File Format extends the structures defined in [RFC2045] and [RFC2046] 
+by defining a structure called the Envelope-Part structure, which is embedded within the MIME 
+message. 
+
+2.1 Envelope-Part Structure 
+
+The Envelope-Part structure is the body text of the journal record message. The Envelope-Part 
+structure contains metadata about the original message. The format of the Envelope-Part structure 
+is specified by using the Augmented Backus-Naur Form (ABNF) notation, as specified in 
+[RFC5234]. The format is a series of field/value pairs on CRLF-terminated lines. The format, prior to 
+the application of any MIME encoding, is as follows. 
+
+ <Envelope-Part>           = <sender> CRLF 
+                            [<sent-on-behalf> CRLF] 
+                            (<subject> CRLF <message-id> CRLF) / (<message-id> CRLF 
+<subject> CRLF) 
+                            [<label> CRLF] 
+                            [<mailbox-owner> CRLF] 
+                            1*<recipient-specification>  
+                            [<sent-time> CRLF] 
+                            [<received-time> CRLF] 
+ 
+ <sender>                  = "Sender:" SP <reverse-path> 
+ <sent-on-behalf>          = "On-Behalf-Of:" SP <on-behalf-path> 
+ <subject>                 = "Subject:" SP <subject-string> 
+ <message-id>              = "Message-ID:" SP <msg-id> 
+ <label>                   = "Label:" SP 1*255CHAR 
+ <mailbox-owner>           = "Mailbox:" SP <mailbox-owner-address> 
+ <recipient-specification> = <recipient-p2-type> ":" SP <forward-path>  
+                            ["," SP <redirection-type> ":" SP <original-forward-
+path>] CRLF 
+ <sent-time>               = "SentUtc:" SP <sent-time-string> 
+ <received-time>           = "ReceivedUtc:" SP <received-time-string> 
+ 
+ <recipient-p2-type>       = "Bcc" / "To" / "Cc" / "Recipient" 
+ <redirection-type>        = "Expanded" / "Forwarded"  
+
+2.1.1 sender Field 
+
+Within the sender field, the reverse-path field MUST be set to the email address of the sender of 
+the original message. The reverse-path field MUST be formatted as one of the following: 
+
+ A Simple Mail Transfer Protocol (SMTP) email address, as specified in [RFC2821]. 
+
+ A distinguished name (DN) address formatted according to the following ABNF notation. The 
+format for x500-dn is specified in [MS-OXOABK] section 2.2.1.1. 
+
+<distinguished-name-address> = "[EX:" x500-dn "]" 
+
+2.1.2 subject Field 
+
+Within the subject field, the subject-string field MUST contain the data from the "Subject" header 
+of the original message. This header is specified in [RFC2822]. 
+
+9 / 17 
+
+[MS-XJRNL] - v20250520 
+Journal Record Message File Format 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+The value of the subject-string field can consist of characters outside the ASCII character set 
+range, as specified in [RFC2045] and [RFC2046]. The MIME content-type header of the respective 
+body part in which the Envelope-Part structure is embedded MUST specify the character set to use 
+to interpret the value of the subject-string field in accordance with the MIME specifications 
+[RFC2045] and [RFC2046]. 
+
+2.1.3 message-id Field 
+
+Within the message-id field, the msg-id field MUST contain the value of the Message-ID field, as 
+specified in [RFC2822] section 3.6.4, of the original message. 
+
+2.1.4 recipient-specification Field 
+
+The recipient-specification field contains information about the recipients of the original message. 
+This field can have one or more occurrences. 
+
+2.1.4.1 recipient-p2-type Field 
+
+The recipient-p2-type field MUST be set with a value from the following table. 
+
+Value Meaning 
+
+Bcc The recipient listed in the forward-path field is addressed as a blind carbon copy (Bcc) 
+recipient. 
+
+To The recipient listed in the forward-path field is addressed as a To recipient. 
+
+Cc The recipient listed in the forward-path field is addressed as a carbon copy (Cc) recipient. 
+
+Recipient The server is unable to determine how the recipient is addressed. 
+
+ 
+
+2.1.4.2 forward-path Field 
+
+The forward-path field MUST be set to the email address of a recipient of the original message. 
+This address MUST be formatted in one of the following formats: 
+
+ An SMTP email address, as specified in [RFC2821]. 
+
+ A DN address, as specified in section 2.1.1.<1> 
+
+Neither format is preferred over the other. The choice of format is left to the implementation. 
+
+2.1.4.3 redirection-type Field 
+
+The value of the redirection-type field MUST be set to either "Expanded" or "Forwarded". 
+
+2.1.4.3.1 Expanded Value 
+
+The redirection-type field, when set to "Expanded", indicates that the sender of the message sent it 
+originally to the address specified by the value of the original-forward-path field (section 2.1.4.4), 
+which was the address of a distribution list. This distribution list was then expanded to one or more 
+recipients, perhaps expanding nested recipients repeatedly until all recipients were non-distribution 
+list recipients. Each of these expanded recipients is listed in the forward-path field of an occurrence 
+of the recipient-specification field. 
+
+10 / 17 
+
+[MS-XJRNL] - v20250520 
+Journal Record Message File Format 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+2.1.4.3.2 Forwarded Value 
+
+The redirection-type field, when set to "Forwarded", indicates that the recipient indicated by the 
+original-forward-path field was configured for recipient forwarding. The message was forwarded 
+to the recipient indicated by the forward-path field. 
+
+2.1.4.4 original-forward-path Field 
+
+The original-forward-path field contains the email address of the recipient that was redirected to 
+the address contained in the forward-path field. The address contained in the original-forward-
+path field MUST be formatted in one of the following formats:  
+
+ An SMTP email address, as specified in [RFC2821]. 
+
+ A DN address, as specified in section 2.1.1.<2> 
+
+Neither format is preferred over the other. The choice of format is left to the implementation. 
+
+The original-forward-path field, although syntactically identical to the forward-path field, has 
+different semantics. The appearance of the redirection-type and original-forward-path fields in an 
+occurrence of the recipient-specification field indicates that the original message was sent to the 
+recipient with the address contained in the original-forward-path field and the server did one of the 
+following: 
+
+ Changed the recipient address to the address contained in the forward-path field. 
+
+ Added a new recipient with the address contained in the forward-path field due to the recipient 
+with the address contained in the original-forward-path field being present. 
+
+If the redirection-type and original-forward-path fields are omitted, the server did not have 
+information about what type of forwarding or expansion was done on the recipient when it generated 
+the journal record message. 
+
+2.1.5 label Field 
+
+The label field is optional. If present, this field MUST contain a text value, the contents of which are 
+implementation-specific. 
+
+2.1.6 sent-on-behalf Field 
+
+The sent-on-behalf field is optional. If this field is present, it contains the email address of the 
+sending mailbox owner. This email address MUST be different from the address contained in the 
+reverse-path field. This address MUST be formatted in one of the following formats: 
+
+ An SMTP email address, as specified in [RFC2821]. 
+
+ A DN address, as specified in section 2.1.1. 
+
+Neither format is preferred over the other. The choice of format is left to the implementation. 
+
+2.1.7 mailbox-owner Field 
+
+The mailbox-owner field is optional. If this field is present, the mailbox-owner-address field 
+contains the SMTP email address of the sending mailbox owner. 
+
+11 / 17 
+
+[MS-XJRNL] - v20250520 
+Journal Record Message File Format 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+2.1.8 sent-time Field 
+
+The sent-time field is optional. If this field is present, it contains the sent-time-string field, which 
+contains a string that indicates the date and time, in Coordinated Universal Time (UTC), that the 
+original message was sent. The exact format of the string contained in the sent-time-string field is 
+left to the implementation. 
+
+The sent-time field can begin with either "SentUtc" or "Sent".<3> The meaning is the same 
+regardless of which string is used. 
+
+2.1.9 received-time Field 
+
+The received-time field is optional. If this field is present, it contains the received-time-string field, 
+which contains a string that indicates the date and time, in UTC, that the original message was 
+received. The exact format of the string contained in the received-time-string field is left to the 
+implementation. 
+
+The received-time field can begin with either "ReceivedUtc" or "Received".<4> The meaning is the 
+same regardless of which string is used. 
+
+2.2 Original-Message-Part Structure 
+
+The Original-Message-Part structure MUST contain one of the following: 
+
+ A MIME attachment of type message/rfc822. 
+
+ A .msg file, as specified in [MS-OXMSG]. 
+
+Neither format is preferred over the other. The choice of format is left to the implementation. 
+
+12 / 17 
+
+[MS-XJRNL] - v20250520 
+Journal Record Message File Format 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+3 Structure Examples 
+
+The following is an example of the Envelope-Part structure contained in a journal record message, 
+followed by an explanation of the various syntax elements. Note that the line numbers are not present 
+in the actual Envelope-Part structure but are shown here so that the structure can be discussed line 
+by line.  
+
+ 1 Sender: sender@contoso.com 
+ 2 Subject: Sample Message 
+ 3 Message-ID: <12345@contoso.com> 
+ 4 To: dl-to-member1@contoso.com, Expanded: dl-to@contoso.com 
+ 5 To: dl-to-member2@contoso.com, Expanded: dl-to@contoso.com 
+ 6 Cc: fwd@contoso.com, Forwarded: user@contoso.com 
+ 7 Bcc: dl-bcc-member@contoso.com, Expanded: dl-bcc@contoso.com 
+ 8 Bcc: fwd2@contoso.com, Forwarded: user2@contoso.com 
+ 9 Recipient: user-unk@contoso.com 
+
+1. The sender of the original message was sender@contoso.com. 
+
+2. The subject of the original message was "Sample Message". 
+
+3. The value of the Message-ID field, as specified in [RFC2822] section 3.6.4, of the original 
+message was "12345@contoso.com". 
+
+4. The original message was sent to dl-to@contoso.com as a To recipient, which is a distribution 
+list that was expanded to dl-to-member1@contoso.com and dl-to-member2@contoso.com 
+(captured in line 5) by the server. 
+
+5. See (4). 
+
+6. The original message was sent to user@contoso.com as a Cc recipient, which was changed by 
+the email server to fwd@contoso.com because recipient forwarding was configured. 
+user@contoso.com did not receive a copy of the message because there is no occurrence of the 
+recipient-specification field where user@contoso.com was listed in the forward-path field. 
+
+7. The original message was sent by the mail client to dl-bcc@contoso.com as a Bcc recipient, 
+which is a distribution list that was expanded to dl-bcc-member@contoso.com. 
+
+8. The original message was sent to user2@contoso.com as a Bcc recipient, which was rewritten by 
+the email server to fwd2@contoso.com because recipient forwarding was configured. 
+user2@contoso.com did not receive a copy of the message because there is no occurrence of the 
+recipient-specification field where user2@contoso.com was listed in the forward-path field. 
+
+9. Finally, there is no information about whether user-unk@contoso.com was sent the original 
+message as a To recipient, Cc recipient, or Bcc recipient. It is also not known whether this 
+recipient received the message due to distribution list expansion, recipient forwarding, or being 
+directly addressed by the sender. The value of the recipient field indicates that the server was 
+only able to capture that user-unk@contoso.com was a recipient of the message and no further 
+recipient metadata was available. 
+
+13 / 17 
+
+[MS-XJRNL] - v20250520 
+Journal Record Message File Format 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+4 Security 
+
+4.1 Security Considerations for Implementers 
+
+This format does not implement or concern itself with security but relies on the underlying email 
+transport software and email storage software to provide security as applicable. 
+
+4.2 Index of Security Fields 
+
+None. 
+
+14 / 17 
+
+[MS-XJRNL] - v20250520 
+Journal Record Message File Format 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+5 Appendix A: Product Behavior 
+
+The information in this specification is applicable to the following Microsoft products or supplemental 
+software. References to product versions include updates to those products. 
+
+ Microsoft Exchange Server 2007 
+
+ Microsoft Exchange Server 2010 
+
+ Microsoft Exchange Server 2013 
+
+ Microsoft Exchange Server 2016  
+
+ Microsoft Exchange Server 2019  
+
+ Microsoft Office Outlook 2007 
+
+ Microsoft Outlook 2010 
+
+ Microsoft Outlook 2013 
+
+ Microsoft Outlook 2016 
+
+ Microsoft Outlook 2019  
+
+ Microsoft Outlook 2021 
+
+ Microsoft Outlook LTSC 2024  
+
+ Microsoft Exchange Server Subscription Edition 
+
+Exceptions, if any, are noted in this section. If an update version, service pack or Knowledge Base 
+(KB) number appears with a product name, the behavior changed in that update. The new behavior 
+also applies to subsequent updates unless otherwise specified. If a product edition appears with the 
+product version, behavior is different in that product edition. 
+
+Unless otherwise specified, any statement of optional behavior in this specification that is prescribed 
+using the terms "SHOULD" or "SHOULD NOT" implies product behavior in accordance with the 
+SHOULD or SHOULD NOT prescription. Unless otherwise specified, the term "MAY" implies that the 
+product does not follow the prescription. 
+
+<1> Section 2.1.4.2:  Exchange 2007 does not support the DN address format for the forward-path 
+field. 
+
+<2> Section 2.1.4.4:  Exchange 2007 does not support the DN address format for the original-
+forward-path field. 
+
+<3> Section 2.1.8:  Exchange 2007 begins the sent-time field with "Sent". Exchange 2010, 
+Exchange 2013, Exchange 2016, and Exchange 2019 begin the sent-time field with "SentUtc". 
+
+<4> Section 2.1.9:  Exchange 2007 begins the received-time field with "Received". Exchange 2010, 
+Exchange 2013, Exchange 2016, and Exchange 2019 begin the received-time field with 
+"ReceivedUtc". 
+
+15 / 17 
+
+[MS-XJRNL] - v20250520 
+Journal Record Message File Format 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+6 Change Tracking 
+
+This section identifies changes that were made to this document since the last release. Changes are 
+classified as Major, Minor, or None.  
+
+The revision class Major means that the technical content in the document was significantly revised. 
+Major changes affect protocol interoperability or implementation. Examples of major changes are: 
+
+ A document revision that incorporates changes to interoperability requirements. 
+ A document revision that captures changes to protocol functionality. 
+
+The revision class Minor means that the meaning of the technical content was clarified. Minor changes 
+do not affect protocol interoperability or implementation. Examples of minor changes are updates to 
+clarify ambiguity at the sentence, paragraph, or table level. 
+
+The revision class None means that no new technical changes were introduced. Minor editorial and 
+formatting changes may have been made, but the relevant technical content is identical to the last 
+released version. 
+
+The changes made to this document are listed in the following table. For more information, please 
+contact dochelp@microsoft.com. 
+
+Section Description Revision class 
+
+5 Appendix A: Product Behavior Updated list of supported products. Major 
+
+16 / 17 
+
+[MS-XJRNL] - v20250520 
+Journal Record Message File Format 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025 
+
+
+
+7 Index
+A  
+ N 
+Applicability 8  
+ Normative references 6 
+B  
+ O 
+Body text of the journal record message 7  
+ Original message 7 
+C original-forward-path field 11 
+ Original-Message-Part structure 12 
+Change tracking 16 Overview 
+Common data types and fields 9    body text of the journal record message 7 
+    original message 7 
+
+D Overview (synopsis) 7 
+
+  
+
+Data types and fields - common 9 P 
+Details  
+   common data types and fields 9 Product behavior 15 
+  
+
+E R 
+  
+Envelope-Part structure received-time field 12 
+   label field 11 recipient-p2-type field 10 
+   mailbox-owner field 11 recipient-specification field 
+   message-id field 10    forward-path field 10 
+   overview 9    original-forward-path field 11 
+   received-time field 12    overview 10 
+   recipient-specification field 10    recipient-p2-type field 10 
+   sender field 9    redirection-type field 10 
+   sent-on-behalf field 11 redirection-type field 10 
+   sent-time field 11 References 6 
+   subject field 9    informative 7 
+Examples 13    normative 6 
+ Relationship to protocols and other structures 7 
+
+F  
+
+ S 
+Fields - security index 14  
+Fields - vendor-extensible 8 Security 
+forward-path field 10    field index 14 
+    implementer considerations 14 
+
+G sender field 9 
+
+ sent-on-behalf field 11 
+
+Glossary 5 sent-time field 11 
+
+ Structures 
+
+I    Envelope-Part structure 9 
+
+    Original-Message-Part structure 12 
+
+Implementer - security considerations 14    overview 9 
+
+Index of security fields 14 subject field 9 
+
+Informative references 7  
+
+Introduction 5 T 
+  
+
+L Tracking changes 16 
+
+  
+
+label field 11 V 
+Localization 8  
+
+ Vendor-extensible fields 8 
+
+M Versioning 8 
+
+ 
+ 
+
+mailbox-owner field 11 
+message-id field 10 
+
+17 / 17 
+
+[MS-XJRNL] - v20250520 
+Journal Record Message File Format 
+Copyright © 2025 Microsoft Corporation 
+Release: May 20, 2025
