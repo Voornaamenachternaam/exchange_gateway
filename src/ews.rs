@@ -2095,7 +2095,7 @@ async fn load_current_calendar_items(
         // Batch fetch events. As above, fall back to CalDAV on failure so a
         // healthy CalDAV backend is still serviced.
         let event_map = match jmap
-            .get_calendar_events(&account_id, &event_ids, owner, &password_secret)
+            .get_calendar_events(&account_id, &event_ids, None, owner, &password_secret)
             .await
         {
             Ok(m) => m,

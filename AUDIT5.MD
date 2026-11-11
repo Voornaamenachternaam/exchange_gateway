@@ -137,19 +137,34 @@ gateway restarts and surface in `FolderSync`/`GetHierarchy`.
   change without leaving the mailbox (mark read/flagged, ...) never appears in
   its `added`/`removed` lists and would otherwise be dropped by both the EAS
   and EWS email deltas. The EAS delta now keeps a per-collection **keyword
-  baseline** (`email_keyword_baseline`, a JSON map of JMAP Email id to sorted
-  keyword list) captured on every initial sync and refreshed on every delta
-  that delivers a change, and diffs the live mailbox
-  (`JmapClient::list_email_ids_with_keywords`, a lightweight
-  `Email/query` + `Email/get` of `keywords` only, no body fetch) against it,
-  emitting a `<Change>` for each id whose keyword set changed and was not
-  already queued. The baseline advances only after the whole change set is
-  delivered, so a crash re-reports rather than swallows an update. A backend
-  hiccup during the scan degrades to serving the query-feed changes without
-  advancing the baseline. `has_more_changes` on the query feed is set when a
-  page returns at the `maxChanges` cap, so the drain loop and the EWS
-  `IncludesLastItemInRange` reflect a genuinely clipped page instead of a fixed
-  `false`.
+  baseline** (`email_keyword_baseline`, one row per JMAP Email id holding its
+  sorted keyword list) captured at the start of every initial sync — the
+  snapshot is taken before the first window is fetched, so a flag edit during
+  pagination is still reported as a `<Change>` by the first delta rather than
+  being folded into the baseline as already-synchronized; the capture is
+  best-effort (a backend hiccup leaves the previous baseline, and the first
+  delta then captures it without reporting the intervening edits). The delta
+  then diffs the live mailbox against this baseline, emitting a `<Change>` for
+  each id whose keyword set changed and was not already queued. The diff is
+  **bounded per delta**: the scan walks at most a fixed number of pages
+  (`KEYWORD_SCAN_MAX_PAGES`) from a per-collection rotating position persisted
+  in `email_keyword_scan` (wrapping to the top at the end), so a delta never
+  pays O(mailbox) in JMAP calls — every message is re-examined once per sweep,
+  with the sweep's cost amortized across deltas. The observed baseline rows,
+  the rows for messages the feed reported as having left the mailbox (they can
+  never be observed by a later scan page, so they are pruned rather than
+  leaking), and the next position are persisted only after the whole change set
+  is delivered, so a crash re-scans the same window rather than swallowing an
+  update; an overflowed delta (the change set exceeds the EAS window) persists
+  them when the remainder is durably queued, so the drain and every later delta
+  do not re-queue the same flag change. A backend hiccup during the scan
+  degrades to serving the query-feed changes without persisting that page's
+  rows.
+  `Email/queryChanges` has no `hasMoreChanges` field (RFC 8620 §5.6), so
+  `has_more_changes` is a heuristic — set when a page returns exactly at the
+  `maxChanges` cap — and the drain loop plus the EWS
+  `IncludesLastItemInRange` reflect a *possibly* clipped page (one extra page
+  is fetched to confirm the feed drained) rather than a fixed `false`.
 
 **Status codes.** Per [MS-ASCMD] §2.2.3.177.8 / §6.10–§6.19: 1 success,
 2 invalid/duplicate or special system folder, 3 special system folder

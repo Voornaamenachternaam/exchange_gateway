@@ -3102,114 +3102,112 @@ impl JmapClient {
         Ok(out)
     }
 
-    /// The `(jmap_id, sorted keyword names)` pair for every message currently
-    /// in `mailbox_id`, using a lightweight `Email/query` + `Email/get`
-    /// (`properties: ["keywords"]` only — no body fetch). Used by the email
-    /// delta to detect a message whose flags changed without changing its
-    /// mailbox membership, which `Email/queryChanges` cannot report (it tracks
-    /// only query-set membership).
-    pub async fn list_email_ids_with_keywords(
+    /// The `(jmap_id, sorted keyword names)` pair for up to `limit` messages
+    /// currently in `mailbox_id`, starting at query `position`. A lightweight
+    /// `Email/query` + `Email/get` (`properties: ["keywords"]` only — no body
+    /// fetch), used by the email delta's flag-only change detector. Callers
+    /// page with the returned `position`/`total`/`more` so a delta never scans
+    /// the whole mailbox in one shot.
+    ///
+    /// Returns `(entries, position, total, more)`: `position` is the next query
+    /// position to resume at, `total` the mailbox size, and `more` whether a
+    /// further page exists.
+    pub async fn list_email_ids_with_keywords_page(
         &self,
         account_id: &str,
         mailbox_id: &str,
+        position: u64,
+        limit: u64,
         username: &str,
         password: &SecretString,
-    ) -> Result<Vec<(String, Vec<String>)>> {
+    ) -> Result<(Vec<(String, Vec<String>)>, u64, u64, bool)> {
         let session = self.get_session(username, password).await?;
         let api_url = &session.api_url;
-        // Page through the mailbox until it is fully drained (same paging
-        // contract as `list_email_ids_in_mailbox`).
-        const PAGE: u64 = 500;
+        let calls = vec![
+            (
+                "Email/query",
+                json!({
+                    "accountId": account_id,
+                    "filter": { "inMailbox": mailbox_id },
+                    "sort": [{ "property": "receivedAt", "isAscending": false }],
+                    "position": position,
+                    "limit": limit.max(1),
+                    "calculateTotal": true,
+                }),
+                "q0",
+            ),
+            (
+                "Email/get",
+                json!({
+                    "accountId": account_id,
+                    "#ids": {
+                        "resultOf": "q0",
+                        "name": "Email/query",
+                        "path": "/ids",
+                    },
+                    "properties": ["keywords"],
+                }),
+                "g0",
+            ),
+        ];
+        let response = self
+            .api_call(
+                api_url,
+                &["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:mail"],
+                calls,
+                username,
+                password,
+            )
+            .await?;
         let mut out: Vec<(String, Vec<String>)> = Vec::new();
-        let mut position: u64 = 0;
-        loop {
-            let calls = vec![
-                (
-                    "Email/query",
-                    json!({
-                        "accountId": account_id,
-                        "filter": { "inMailbox": mailbox_id },
-                        "sort": [{ "property": "receivedAt", "isAscending": false }],
-                        "position": position,
-                        "limit": PAGE,
-                        "calculateTotal": true,
-                    }),
-                    "q0",
-                ),
-                (
-                    "Email/get",
-                    json!({
-                        "accountId": account_id,
-                        "#ids": {
-                            "resultOf": "q0",
-                            "name": "Email/query",
-                            "path": "/ids",
-                        },
-                        "properties": ["keywords"],
-                    }),
-                    "g0",
-                ),
-            ];
-            let response = self
-                .api_call(
-                    api_url,
-                    &["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:mail"],
-                    calls,
-                    username,
-                    password,
-                )
-                .await?;
-            let mut total: u64 = 0;
-            let mut fetched: u64 = 0;
-            let mut saw_query = false;
-            for (method, data, _) in response.method_responses {
-                if method == "error" {
-                    return Err(anyhow!("Email/query error: {}", data));
-                }
-                if method == "Email/query" {
-                    saw_query = true;
-                    total = data.get("total").and_then(|v| v.as_u64()).unwrap_or(0);
-                    fetched = data
-                        .get("ids")
-                        .and_then(|v| v.as_array())
-                        .map(|a| a.len() as u64)
-                        .unwrap_or(0);
-                } else if method == "Email/get" {
-                    let list = data
-                        .get("list")
-                        .and_then(|v| v.as_array())
-                        .cloned()
+        let mut total: u64 = 0;
+        let mut fetched: u64 = 0;
+        let mut saw_query = false;
+        for (method, data, _) in response.method_responses {
+            if method == "error" {
+                return Err(anyhow!("Email/query error: {}", data));
+            }
+            if method == "Email/query" {
+                saw_query = true;
+                total = data.get("total").and_then(|v| v.as_u64()).unwrap_or(0);
+                fetched = data
+                    .get("ids")
+                    .and_then(|v| v.as_array())
+                    .map(|a| a.len() as u64)
+                    .unwrap_or(0);
+            } else if method == "Email/get" {
+                let list = data
+                    .get("list")
+                    .and_then(|v| v.as_array())
+                    .cloned()
+                    .unwrap_or_default();
+                for item in list {
+                    let Some(id) = item.get("id").and_then(|v| v.as_str()) else {
+                        continue;
+                    };
+                    let mut keywords: Vec<String> = item
+                        .get("keywords")
+                        .and_then(|v| v.as_object())
+                        .map(|m| {
+                            m.iter()
+                                .filter(|(_, v)| v.as_bool().unwrap_or(false))
+                                .map(|(n, _)| n.clone())
+                                .collect()
+                        })
                         .unwrap_or_default();
-                    for item in list {
-                        let Some(id) = item.get("id").and_then(|v| v.as_str()) else {
-                            continue;
-                        };
-                        let mut keywords: Vec<String> = item
-                            .get("keywords")
-                            .and_then(|v| v.as_object())
-                            .map(|m| {
-                                m.iter()
-                                    .filter(|(_, v)| v.as_bool().unwrap_or(false))
-                                    .map(|(n, _)| n.clone())
-                                    .collect()
-                            })
-                            .unwrap_or_default();
-                        keywords.sort();
-                        out.push((id.to_string(), keywords));
-                    }
+                    keywords.sort();
+                    out.push((id.to_string(), keywords));
                 }
-            }
-            if !saw_query {
-                return Err(anyhow!(
-                    "Email/query returned no method response while listing mailbox keywords"
-                ));
-            }
-            position += fetched;
-            if fetched < PAGE || position >= total {
-                break;
             }
         }
-        Ok(out)
+        if !saw_query {
+            return Err(anyhow!(
+                "Email/query returned no method response while listing mailbox keywords"
+            ));
+        }
+        let next_position = position + fetched;
+        let more = fetched > 0 && next_position < total;
+        Ok((out, next_position, total, more))
     }
 
     /// Move emails from their current mailbox(es) to a target mailbox by
@@ -5560,6 +5558,12 @@ impl JmapClient {
     /// Batch fetch multiple calendar events by IDs via CalendarEvent/get.
     /// Returns a HashMap mapping event ID to (ics, etag).
     ///
+    /// When `calendar_id` is `Some`, only events that belong to that calendar
+    /// (its `calendarIds` map carries the id) are returned. The JMAP
+    /// `CalendarEvent/changes` feed is account-wide, so a scoped EAS calendar
+    /// folder must filter the delta's fetched events by its own calendar id —
+    /// otherwise events from every other calendar are delivered into it.
+    ///
     /// The explicit `ids` array is chunked at the session's `maxObjectsInGet`
     /// (RFC 8620 §2): Stalwart rejects an over-cap explicit id list whole with
     /// `requestTooLarge`, so a large delta (the sync path unions every
@@ -5568,6 +5572,7 @@ impl JmapClient {
         &self,
         account_id: &str,
         event_ids: &[String],
+        calendar_id: Option<&str>,
         username: &str,
         password: &SecretString,
     ) -> Result<HashMap<String, (String, String)>> {
@@ -5617,6 +5622,18 @@ impl JmapClient {
                         if let Some(id) = event.id.clone()
                             && !id.is_empty()
                         {
+                            // A scoped folder receives only its own calendar's
+                            // events: skip a fetched event whose `calendarIds`
+                            // does not carry the requested calendar. An event
+                            // object that carries no `calendarIds` map is left
+                            // in (defensive — the filter must not drop data a
+                            // server omitted).
+                            if let Some(cal_id) = calendar_id
+                                && let Some(ids) = event.calendar_ids.as_ref()
+                                && !ids.contains_key(cal_id)
+                            {
+                                continue;
+                            }
                             let ics = event.to_ics().ok_or_else(|| {
                                 anyhow!("failed to convert CalendarEvent {id} to iCalendar")
                             })?;
@@ -8546,7 +8563,9 @@ mod tests {
         let client = JmapClient::new(&base).unwrap();
         let pw = SecretString::from("pw");
         let ids = vec!["e1".to_string()];
-        let result = client.get_calendar_events("acct", &ids, "u", &pw).await;
+        let result = client
+            .get_calendar_events("acct", &ids, None, "u", &pw)
+            .await;
         assert!(result.is_err(), "unconvertible batch event must be Err");
     }
 
@@ -9139,7 +9158,7 @@ mod tests {
         let pw = SecretString::from("pw");
         let ids: Vec<String> = (0..5).map(|i| format!("e{i}")).collect();
         let map = client
-            .get_calendar_events("acct", &ids, "u", &pw)
+            .get_calendar_events("acct", &ids, None, "u", &pw)
             .await
             .expect("chunked calendar get must succeed");
         assert_eq!(map.len(), 5, "every event must be delivered");
@@ -9160,7 +9179,9 @@ mod tests {
         let client = JmapClient::new(&base).unwrap();
         let pw = SecretString::from("pw");
         let ids: Vec<String> = (0..5).map(|i| format!("e{i}")).collect();
-        let result = client.get_calendar_events("acct", &ids, "u", &pw).await;
+        let result = client
+            .get_calendar_events("acct", &ids, None, "u", &pw)
+            .await;
         assert!(
             result.is_err(),
             "a method-level error on any chunk must surface as Err"

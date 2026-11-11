@@ -146,20 +146,37 @@ CREATE TABLE IF NOT EXISTS email_sync_pending (
     UNIQUE(owner, collection_id)
 );
 
--- Per-collection baseline of every message's sorted keyword (flag) list, as a
--- JSON object `{"<jmap email id>": ["$seen", "$flagged", …], …}`.
+-- EAS email delta-sync flag (keyword) baseline, per collection.
 --
--- `Email/queryChanges` (RFC 8620 §5.6) reports only membership of the query
--- result set, so a flag edit that leaves a message in the mailbox (mark read,
--- flag, …) never appears in its `added`/`removed` lists. The email delta diffs
--- the live mailbox against this baseline to emit the `<Change>` operations the
--- query feed cannot report. The baseline is refreshed on every delta that
--- delivers a change and on every initial sync.
+-- `Email/queryChanges` reports only query-set membership (RFC 8620 §5.6), so a
+-- message whose keywords change WITHOUT entering or leaving the mailbox (mark
+-- read/flagged, ...) never appears in its added/removed lists. The EAS delta
+-- diffs the live mailbox's keyword state against this baseline to recover those
+-- as `<Change>`. One row per message (`email_id` is the JMAP Email id) so a
+-- delta upserts only the ids it observed in its bounded scan (see
+-- `email_keyword_scan`).
 CREATE TABLE IF NOT EXISTS email_keyword_baseline (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     owner TEXT NOT NULL,
     collection_id TEXT NOT NULL,
-    baseline_json TEXT NOT NULL,
+    email_id TEXT NOT NULL,
+    keywords_json TEXT NOT NULL,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(owner, collection_id, email_id)
+);
+
+-- Rotating cursor for the bounded per-delta flag (keyword) scan.
+--
+-- The scan that detects flag-only edits is bounded per delta: it walks the
+-- mailbox in pages from `position`, examines at most a fixed number of pages,
+-- and stores the next `position` here. It wraps to 0 once it reaches the end,
+-- so every message is re-examined once per sweep without the delta ever
+-- paying O(mailbox) in JMAP calls.
+CREATE TABLE IF NOT EXISTS email_keyword_scan (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner TEXT NOT NULL,
+    collection_id TEXT NOT NULL,
+    position INTEGER NOT NULL DEFAULT 0,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(owner, collection_id)
 );

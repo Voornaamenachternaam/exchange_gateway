@@ -513,12 +513,17 @@ pub async fn delete_folder(
                     .await
                 {
                     Ok(true) => {}
+                    // The mailbox is already gone (JMAP reports it under
+                    // `notFound`, RFC 8620 §5.3). This is a completed step, not
+                    // a failure: a subtree delete that removed some mailboxes
+                    // before failing on a later one must be resumable, and a
+                    // retry otherwise re-walks the same subtree and fails here
+                    // forever, leaving the remaining descendants stuck.
                     Ok(false) => {
-                        tracing::warn!(
+                        tracing::debug!(
                             server_id = %folder.server_id,
-                            "FolderDelete: Mailbox/set reported no destroy for the mailbox"
+                            "FolderDelete: mailbox already absent; treating as deleted"
                         );
-                        return FolderMutationResult::status(6);
                     }
                     Err(e) => {
                         tracing::warn!(error = %e, "FolderDelete: JMAP Mailbox/set destroy failed");
@@ -1557,7 +1562,7 @@ mod tests {
         record_hierarchy_change(&state, "u@example.com", "mb-b", "folder-add").await;
         let all = state
             .storage
-            .list_folder_journal_since("u@example.com", 0)
+            .list_folder_journal_since("u@example.com", 0, i64::MAX)
             .await
             .unwrap();
         assert_eq!(all.len(), 2);
@@ -1565,10 +1570,20 @@ mod tests {
         let first_id = all[0].id;
         let after = state
             .storage
-            .list_folder_journal_since("u@example.com", first_id)
+            .list_folder_journal_since("u@example.com", first_id, i64::MAX)
             .await
             .unwrap();
         assert_eq!(after.len(), 1);
         assert_eq!(after[0].server_id, "mb-b");
+        // An upper bound excludes changes journaled after the head was captured:
+        // a row with `id > until` is not part of the rendered window, so the
+        // acknowledged watermark can never skip it.
+        let bounded = state
+            .storage
+            .list_folder_journal_since("u@example.com", 0, first_id)
+            .await
+            .unwrap();
+        assert_eq!(bounded.len(), 1);
+        assert_eq!(bounded[0].server_id, "mb-a");
     }
 }

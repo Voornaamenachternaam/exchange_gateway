@@ -598,6 +598,85 @@ impl Storage {
             .await
             .map_err(|e| GatewayError::Storage(format!("Migration error: {}", e)))?;
         }
+        // `email_keyword_baseline` was introduced with a one-row-per-collection
+        // shape (`baseline_json`), but the bounded flag scan needs one row per
+        // message (`email_id`, `keywords_json`). `CREATE TABLE IF NOT EXISTS`
+        // cannot reshape an existing table, so a database created before this
+        // change still carries the old columns and every baseline query would
+        // fail. Detect the old shape and rebuild it, expanding each stored JSON
+        // map into per-message rows.
+        let kw_columns = sqlx::query("PRAGMA table_info(email_keyword_baseline)")
+            .fetch_all(self.pool.as_ref())
+            .await
+            .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))?;
+        let kw_names: Vec<String> = kw_columns
+            .iter()
+            .map(|c| c.get::<String, _>("name"))
+            .collect();
+        let old_shape = !kw_names.is_empty()
+            && kw_names.iter().any(|n| n == "baseline_json")
+            && !kw_names.iter().any(|n| n == "email_id");
+        if old_shape {
+            let legacy = sqlx::query(
+                "SELECT owner, collection_id, baseline_json FROM email_keyword_baseline",
+            )
+            .fetch_all(self.pool.as_ref())
+            .await
+            .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))?;
+            let mut tx = self
+                .pool
+                .begin()
+                .await
+                .map_err(|e| GatewayError::Storage(format!("Migration error: {}", e)))?;
+            sqlx::query(
+                "CREATE TABLE email_keyword_baseline_new (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    owner TEXT NOT NULL,
+                    collection_id TEXT NOT NULL,
+                    email_id TEXT NOT NULL,
+                    keywords_json TEXT NOT NULL,
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(owner, collection_id, email_id)
+                )",
+            )
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| GatewayError::Storage(format!("Migration error: {}", e)))?;
+            for row in legacy {
+                let owner: String = row.get(0);
+                let collection_id: String = row.get(1);
+                let baseline_json: String = row.get(2);
+                let map: std::collections::BTreeMap<String, Vec<String>> =
+                    serde_json::from_str(&baseline_json).unwrap_or_default();
+                for (email_id, keywords) in map {
+                    let json =
+                        serde_json::to_string(&keywords).unwrap_or_else(|_| "[]".to_string());
+                    sqlx::query(
+                        "INSERT INTO email_keyword_baseline_new
+                            (owner, collection_id, email_id, keywords_json)
+                         VALUES (?1, ?2, ?3, ?4)",
+                    )
+                    .bind(&owner)
+                    .bind(&collection_id)
+                    .bind(&email_id)
+                    .bind(json)
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(|e| GatewayError::Storage(format!("Migration error: {}", e)))?;
+                }
+            }
+            sqlx::query("DROP TABLE email_keyword_baseline")
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| GatewayError::Storage(format!("Migration error: {}", e)))?;
+            sqlx::query("ALTER TABLE email_keyword_baseline_new RENAME TO email_keyword_baseline")
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| GatewayError::Storage(format!("Migration error: {}", e)))?;
+            tx.commit()
+                .await
+                .map_err(|e| GatewayError::Storage(format!("Migration error: {}", e)))?;
+        }
         Ok(())
     }
 
@@ -1324,30 +1403,78 @@ impl Storage {
         Ok(())
     }
 
-    /// Persist the mailbox keyword baseline for an email collection: a JSON
-    /// object mapping each JMAP Email id currently in the mailbox to its sorted
-    /// flag (keyword) list. The delta diffs the live mailbox against this to
-    /// detect a flag change that `Email/queryChanges` cannot report (it tracks
-    /// only query-set membership).
-    pub async fn set_email_keyword_baseline(
+    /// Upsert the sorted keyword set for one message in a collection's flag
+    /// baseline. `set_email_keyword_baseline` replaces the whole baseline;
+    /// this incremental form lets a delta persist only the ids it actually
+    /// observed, so a bounded scan never has to rewrite the full map.
+    pub async fn upsert_email_keyword(
         &self,
         owner: &str,
         collection_id: &str,
-        baseline_json: &str,
+        email_id: &str,
+        keywords: &[String],
     ) -> Result<()> {
+        let json = serde_json::to_string(keywords)
+            .map_err(|e| GatewayError::Storage(format!("serialize keywords: {e}")))?;
         sqlx::query(
-            "INSERT INTO email_keyword_baseline (owner, collection_id, baseline_json)
-             VALUES (?1, ?2, ?3)
-             ON CONFLICT(owner, collection_id) DO UPDATE
-             SET baseline_json = ?3, updated_at = CURRENT_TIMESTAMP",
+            "INSERT INTO email_keyword_baseline (owner, collection_id, email_id, keywords_json)
+             VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(owner, collection_id, email_id) DO UPDATE
+             SET keywords_json = ?4",
         )
         .bind(owner)
         .bind(collection_id)
-        .bind(baseline_json)
+        .bind(email_id)
+        .bind(json)
         .execute(self.pool.as_ref())
         .await
         .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
         Ok(())
+    }
+
+    /// Drop a message's row from a collection's flag baseline (it left the
+    /// mailbox or was destroyed).
+    pub async fn delete_email_keyword(
+        &self,
+        owner: &str,
+        collection_id: &str,
+        email_id: &str,
+    ) -> Result<()> {
+        sqlx::query(
+            "DELETE FROM email_keyword_baseline
+             WHERE owner = ?1 AND collection_id = ?2 AND email_id = ?3",
+        )
+        .bind(owner)
+        .bind(collection_id)
+        .bind(email_id)
+        .execute(self.pool.as_ref())
+        .await
+        .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+        Ok(())
+    }
+
+    /// Read one message's keyword set from a collection's flag baseline.
+    /// `None` when the id has no recorded baseline row.
+    pub async fn get_email_keyword(
+        &self,
+        owner: &str,
+        collection_id: &str,
+        email_id: &str,
+    ) -> Result<Option<Vec<String>>> {
+        let row = sqlx::query(
+            "SELECT keywords_json FROM email_keyword_baseline
+             WHERE owner = ?1 AND collection_id = ?2 AND email_id = ?3",
+        )
+        .bind(owner)
+        .bind(collection_id)
+        .bind(email_id)
+        .fetch_optional(self.pool.as_ref())
+        .await
+        .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))?;
+        Ok(row.and_then(|r| {
+            let s: String = r.get(0);
+            serde_json::from_str(&s).ok()
+        }))
     }
 
     /// Read the mailbox keyword baseline for an email collection. `None` when
@@ -1358,16 +1485,114 @@ impl Storage {
         owner: &str,
         collection_id: &str,
     ) -> Result<Option<String>> {
-        let row = sqlx::query(
-            "SELECT baseline_json FROM email_keyword_baseline
+        let rows = sqlx::query(
+            "SELECT email_id, keywords_json FROM email_keyword_baseline
              WHERE owner = ?1 AND collection_id = ?2",
+        )
+        .bind(owner)
+        .bind(collection_id)
+        .fetch_all(self.pool.as_ref())
+        .await
+        .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))?;
+        if rows.is_empty() {
+            return Ok(None);
+        }
+        let mut map: std::collections::BTreeMap<String, Vec<String>> =
+            std::collections::BTreeMap::new();
+        for r in rows {
+            let id: String = r.get(0);
+            let json: String = r.get(1);
+            let keywords: Vec<String> = serde_json::from_str(&json).unwrap_or_default();
+            map.insert(id, keywords);
+        }
+        serde_json::to_string(&map)
+            .map(Some)
+            .map_err(|e| GatewayError::Storage(format!("serialize baseline: {e}")))
+    }
+
+    /// Replace a collection's entire flag baseline with `baseline_json` (a JSON
+    /// map of email id to sorted keyword list) in one transaction. Used to
+    /// capture the baseline after a full mailbox sweep; the incremental
+    /// `upsert_email_keyword` / `delete_email_keyword` forms are used by the
+    /// bounded per-delta scan.
+    pub async fn set_email_keyword_baseline(
+        &self,
+        owner: &str,
+        collection_id: &str,
+        baseline_json: &str,
+    ) -> Result<()> {
+        let map: std::collections::BTreeMap<String, Vec<String>> =
+            serde_json::from_str(baseline_json).unwrap_or_default();
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+        sqlx::query("DELETE FROM email_keyword_baseline WHERE owner = ?1 AND collection_id = ?2")
+            .bind(owner)
+            .bind(collection_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+        for (id, keywords) in map {
+            let json = serde_json::to_string(&keywords)
+                .map_err(|e| GatewayError::Storage(format!("serialize keywords: {e}")))?;
+            sqlx::query(
+                "INSERT INTO email_keyword_baseline (owner, collection_id, email_id, keywords_json)
+                 VALUES (?1, ?2, ?3, ?4)",
+            )
+            .bind(owner)
+            .bind(collection_id)
+            .bind(&id)
+            .bind(json)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+        }
+        tx.commit()
+            .await
+            .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+        Ok(())
+    }
+
+    /// Read the rotating scan position for a collection's bounded flag scan.
+    /// `0` when none has been stored (a fresh sweep starts at the top).
+    pub async fn get_email_keyword_scan_position(
+        &self,
+        owner: &str,
+        collection_id: &str,
+    ) -> Result<u64> {
+        let row = sqlx::query(
+            "SELECT position FROM email_keyword_scan WHERE owner = ?1 AND collection_id = ?2",
         )
         .bind(owner)
         .bind(collection_id)
         .fetch_optional(self.pool.as_ref())
         .await
         .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))?;
-        Ok(row.map(|r| r.get(0)))
+        Ok(row.map(|r| r.get::<i64, _>(0).max(0) as u64).unwrap_or(0))
+    }
+
+    /// Store the rotating scan position for a collection's bounded flag scan.
+    pub async fn set_email_keyword_scan_position(
+        &self,
+        owner: &str,
+        collection_id: &str,
+        position: u64,
+    ) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO email_keyword_scan (owner, collection_id, position)
+             VALUES (?1, ?2, ?3)
+             ON CONFLICT(owner, collection_id) DO UPDATE
+             SET position = ?3, updated_at = CURRENT_TIMESTAMP",
+        )
+        .bind(owner)
+        .bind(collection_id)
+        .bind(position as i64)
+        .execute(self.pool.as_ref())
+        .await
+        .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+        Ok(())
     }
 
     /// Persist the gateway-local (Tasks/Notes) initial-sync keyset cursor:
@@ -2878,19 +3103,23 @@ impl Storage {
         Ok(())
     }
 
-    /// Journal ids of folder-hierarchy changes (`resource_href = 'folder'`)
-    /// with `id > since`, in id ASC order.
+    /// Folder-hierarchy journal rows with `since < id <= until`. `until` is the
+    /// journal head captured BEFORE the hierarchy is rendered, so a mutation
+    /// journaled while rendering is never folded into the window the caller
+    /// then acknowledges as its watermark.
     pub async fn list_folder_journal_since(
         &self,
         owner: &str,
         since: i64,
+        until: i64,
     ) -> Result<Vec<JournalRow>> {
         sqlx::query_as::<_, JournalRow>(
             "SELECT id, server_id, op, resource_href FROM change_journal \
-             WHERE owner = ?1 AND id > ?2 AND resource_href = 'folder' ORDER BY id ASC",
+             WHERE owner = ?1 AND id > ?2 AND id <= ?3 AND resource_href = 'folder' ORDER BY id ASC",
         )
         .bind(owner)
         .bind(since)
+        .bind(until)
         .fetch_all(self.pool.as_ref())
         .await
         .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))
@@ -3871,6 +4100,205 @@ mod tests {
                 "{table} must have the uid index: {indexes:?}"
             );
         }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn email_keyword_baseline_rows_roundtrip_and_scan_position() {
+        let storage = Storage::new("sqlite::memory:").await.expect("open db");
+        storage.init_schema().await.expect("schema init");
+        let owner = "u@example.com";
+        let coll = "2::dev-1";
+
+        // No rows yet: baseline absent, position starts at 0.
+        assert!(
+            storage
+                .get_email_keyword_baseline(owner, coll)
+                .await
+                .expect("baseline read")
+                .is_none()
+        );
+        assert_eq!(
+            storage
+                .get_email_keyword_scan_position(owner, coll)
+                .await
+                .expect("position read"),
+            0
+        );
+
+        // Incremental upserts land as one row per message.
+        storage
+            .upsert_email_keyword(owner, coll, "m1", &["$seen".to_string()])
+            .await
+            .expect("upsert m1");
+        storage
+            .upsert_email_keyword(owner, coll, "m2", &[])
+            .await
+            .expect("upsert m2");
+        assert_eq!(
+            storage
+                .get_email_keyword(owner, coll, "m1")
+                .await
+                .expect("get m1"),
+            Some(vec!["$seen".to_string()])
+        );
+        // Upsert replaces rather than duplicating.
+        storage
+            .upsert_email_keyword(
+                owner,
+                coll,
+                "m1",
+                &["$seen".to_string(), "$flagged".to_string()],
+            )
+            .await
+            .expect("re-upsert m1");
+        assert_eq!(
+            storage
+                .get_email_keyword(owner, coll, "m1")
+                .await
+                .expect("get m1 again"),
+            Some(vec!["$seen".to_string(), "$flagged".to_string()])
+        );
+
+        // The JSON baseline view assembles the per-message rows.
+        let json = storage
+            .get_email_keyword_baseline(owner, coll)
+            .await
+            .expect("baseline read")
+            .expect("baseline present");
+        let map: std::collections::BTreeMap<String, Vec<String>> =
+            serde_json::from_str(&json).expect("baseline json");
+        assert_eq!(map.len(), 2);
+        assert_eq!(
+            map.get("m1").map(Vec::as_slice),
+            Some(["$seen".to_string(), "$flagged".to_string()].as_slice())
+        );
+
+        // Whole-baseline replace clears dropped ids.
+        storage
+            .set_email_keyword_baseline(owner, coll, "{\"m3\":[\"$seen\"]}")
+            .await
+            .expect("replace baseline");
+        assert!(
+            storage
+                .get_email_keyword(owner, coll, "m1")
+                .await
+                .expect("get m1 after replace")
+                .is_none()
+        );
+        assert_eq!(
+            storage
+                .get_email_keyword(owner, coll, "m3")
+                .await
+                .expect("get m3"),
+            Some(vec!["$seen".to_string()])
+        );
+
+        // Incremental delete drops a single row.
+        storage
+            .delete_email_keyword(owner, coll, "m3")
+            .await
+            .expect("delete m3");
+        assert!(
+            storage
+                .get_email_keyword(owner, coll, "m3")
+                .await
+                .expect("get m3 after delete")
+                .is_none()
+        );
+
+        // The rotating scan position round-trips and is collection-scoped.
+        storage
+            .set_email_keyword_scan_position(owner, coll, 1500)
+            .await
+            .expect("set position");
+        assert_eq!(
+            storage
+                .get_email_keyword_scan_position(owner, coll)
+                .await
+                .expect("position read"),
+            1500
+        );
+        assert_eq!(
+            storage
+                .get_email_keyword_scan_position(owner, "2::dev-2")
+                .await
+                .expect("other collection position"),
+            0,
+            "scan position is scoped per collection"
+        );
+    }
+
+    #[tokio::test]
+    async fn init_schema_migrates_pre_bounded_keyword_baseline() {
+        // Databases created before the bounded flag scan stored the keyword
+        // baseline as one JSON blob per collection (`baseline_json`). Opening
+        // them must reshape the table to one row per message and expand each
+        // stored map, so the delta's per-id upsert path works afterwards.
+        let dir = std::env::temp_dir().join(format!(
+            "gateway-storage-keyword-migrate-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let db = dir.join("gateway.db");
+        let url = format!("sqlite://{}?mode=rwc", db.display());
+
+        {
+            let pool = sqlx::SqlitePool::connect(&url).await.expect("raw pool");
+            sqlx::query(
+                "CREATE TABLE email_keyword_baseline (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    owner TEXT NOT NULL,
+                    collection_id TEXT NOT NULL,
+                    baseline_json TEXT NOT NULL,
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(owner, collection_id)
+                )",
+            )
+            .execute(&pool)
+            .await
+            .expect("legacy baseline table");
+            sqlx::query(
+                "INSERT INTO email_keyword_baseline (owner, collection_id, baseline_json)
+                 VALUES ('o@example.com', '2::dev-1', '{\"m1\":[\"$seen\"],\"m2\":[]}')",
+            )
+            .execute(&pool)
+            .await
+            .expect("legacy baseline row");
+            pool.close().await;
+        }
+
+        let storage = Storage::new(&url).await.expect("open db");
+        storage.init_schema().await.expect("schema init migrates");
+        storage.init_schema().await.expect("re-init idempotent");
+
+        // The legacy map expanded into per-message rows.
+        assert_eq!(
+            storage
+                .get_email_keyword("o@example.com", "2::dev-1", "m1")
+                .await
+                .expect("get m1"),
+            Some(vec!["$seen".to_string()])
+        );
+        assert_eq!(
+            storage
+                .get_email_keyword("o@example.com", "2::dev-1", "m2")
+                .await
+                .expect("get m2"),
+            Some(Vec::<String>::new())
+        );
+        // The new per-id upsert path works on the migrated table.
+        storage
+            .upsert_email_keyword("o@example.com", "2::dev-1", "m3", &["$flagged".to_string()])
+            .await
+            .expect("upsert after migration");
+        assert_eq!(
+            storage
+                .get_email_keyword("o@example.com", "2::dev-1", "m3")
+                .await
+                .expect("get m3"),
+            Some(vec!["$flagged".to_string()])
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 

@@ -118,15 +118,26 @@ async fn collection_folder_href(
 ) -> Option<String> {
     // Callers may pass either the visible CollectionId (the calendar Sync
     // path) or its device-scoped form `{visible}::{device}` (the client-mutation
-    // path); `folder_map` is keyed by the visible id.
-    let visible = collection_id
-        .split_once("::")
-        .map(|(v, _)| v)
-        .unwrap_or(collection_id);
-    if crate::eas_folders::is_system_folder_id(visible) {
+    // path); `folder_map` is keyed by the visible id. A CalDAV collection href
+    // is a valid CollectionId that may itself contain `::`, so the COMPLETE id
+    // is looked up first and the device suffix is stripped only when that
+    // fails — otherwise `Foo::Bar/` would resolve to `Foo`.
+    if let Some(href) = folder_caldav_href(state, owner, collection_id).await {
+        return Some(href);
+    }
+    match collection_id.rsplit_once("::") {
+        Some((visible, _)) => folder_caldav_href(state, owner, visible).await,
+        None => None,
+    }
+}
+
+/// The CalDAV collection href a `folder_map` row backs, or `None` for a system
+/// folder or an unmapped id.
+async fn folder_caldav_href(state: &Arc<AppState>, owner: &str, server_id: &str) -> Option<String> {
+    if crate::eas_folders::is_system_folder_id(server_id) {
         return None;
     }
-    match state.storage.get_folder(owner, visible).await {
+    match state.storage.get_folder(owner, server_id).await {
         Ok(Some(row)) if row.backend_kind == "caldav" => Some(row.backend_id),
         _ => None,
     }
@@ -1637,6 +1648,7 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
                                         .get_calendar_events(
                                             &account_id,
                                             &all_ids,
+                                            scoped_calendar_id,
                                             params.username,
                                             &password_secret,
                                         )
@@ -1644,29 +1656,46 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
                                     {
                                         Ok(event_map) => {
                                             for id in all_ids {
-                                                match event_map.get(&id).and_then(|(ics, etag)| {
-                                                    parse_ics_event(ics).map(|item| {
-                                                        (ics.clone(), etag.clone(), item)
-                                                    })
-                                                }) {
-                                                    Some((ics, etag, item)) => {
-                                                        events.push(EventItem {
-                                                            href: format!(
-                                                                "jmap://calendar/{}/{}",
-                                                                account_id, id
-                                                            ),
-                                                            etag,
-                                                            ics,
-                                                            item,
-                                                        });
-                                                    }
+                                                match event_map.get(&id) {
+                                                    Some((ics, etag)) => match parse_ics_event(ics)
+                                                    {
+                                                        Some(item) => {
+                                                            events.push(EventItem {
+                                                                href: format!(
+                                                                    "jmap://calendar/{}/{}",
+                                                                    account_id, id
+                                                                ),
+                                                                etag: etag.clone(),
+                                                                ics: ics.clone(),
+                                                                item,
+                                                            });
+                                                        }
+                                                        None => {
+                                                            conversion_failed = true;
+                                                            tracing::warn!(
+                                                                target: "sync",
+                                                                event_id = %id,
+                                                                "changed JMAP calendar event could not be parsed; not advancing sync state"
+                                                            );
+                                                        }
+                                                    },
                                                     None => {
-                                                        conversion_failed = true;
-                                                        tracing::warn!(
-                                                            target: "sync",
-                                                            event_id = %id,
-                                                            "changed JMAP calendar event could not be fetched/converted/parsed; not advancing sync state"
-                                                        );
+                                                        // A scoped folder's delta is
+                                                        // the account-wide change feed;
+                                                        // an id belonging to another
+                                                        // calendar is filtered out by
+                                                        // `get_calendar_events` and is
+                                                        // not a failure for this folder.
+                                                        // Only an unscoped fetch treats
+                                                        // an absent id as a fetch failure.
+                                                        if scoped_calendar_id.is_none() {
+                                                            conversion_failed = true;
+                                                            tracing::warn!(
+                                                                target: "sync",
+                                                                event_id = %id,
+                                                                "changed JMAP calendar event could not be fetched; not advancing sync state"
+                                                            );
+                                                        }
                                                     }
                                                 }
                                             }
@@ -1824,6 +1853,16 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
         } else {
             jmap_failed = true;
         }
+    } else {
+        // Two cases reach here and BOTH must fall back to CalDAV:
+        //  * CalDAV-only mode (`prefer_jmap_calendar` false) — JMAP is not the
+        //    calendar backend;
+        //  * a custom folder whose calendar scope could not be resolved
+        //    (`scope_unresolved`) — serving an empty snapshot instead would be
+        //    marked authoritative and the tombstone sweep below would delete
+        //    every stored calendar event. Falling back queries the folder's own
+        //    CalDAV collection (when known) or the default calendar.
+        jmap_failed = true;
     }
     // Fallback to CalDAV only if JMAP Calendar failed (not if it returned zero events)
     // Zero events is a valid JMAP result; falling back would cause unnecessary
@@ -2612,8 +2651,10 @@ mod tests {
     }
 
     impl CalStub {
-        fn with_calendars(mut self, calendars: Vec<Value>) -> Self {
-            self.calendars = std::sync::Arc::new(Mutex::new(calendars));
+        fn with_calendars(self, calendars: Vec<Value>) -> Self {
+            // Mutate the shared `Calendar/get` list in place: the router holds a
+            // clone of this stub, so replacing the `Arc` would not reach it.
+            *self.calendars.lock().unwrap() = calendars;
             self
         }
     }
@@ -2682,11 +2723,32 @@ mod tests {
                         responses.push(json!(["CalendarEvent/changes", page, id]));
                     }
                     "CalendarEvent/query" => {
+                        // Honour `filter.inCalendarIds` (draft-ietf-jmap-
+                        // calendars §5.11.1) so a scoped query sees only its
+                        // own calendar's events, matching a real backend.
+                        let want_cal: Vec<String> = args
+                            .get("filter")
+                            .and_then(|f| f.get("inCalendarIds"))
+                            .and_then(|v| v.as_array())
+                            .map(|a| {
+                                a.iter()
+                                    .filter_map(|v| v.as_str())
+                                    .map(String::from)
+                                    .collect()
+                            })
+                            .unwrap_or_default();
                         let mut ids: Vec<String> = s
                             .events
                             .lock()
                             .unwrap()
                             .iter()
+                            .filter(|e| {
+                                want_cal.is_empty()
+                                    || e.get("calendarIds")
+                                        .and_then(|v| v.as_object())
+                                        .map(|m| want_cal.iter().any(|c| m.contains_key(c)))
+                                        .unwrap_or(false)
+                            })
                             .filter_map(|e| e.get("id").and_then(|v| v.as_str()).map(String::from))
                             .collect();
                         ids.sort();
@@ -2851,6 +2913,14 @@ mod tests {
         })
     }
 
+    /// A stub event carrying an explicit `calendarIds` membership, so the
+    /// scoped prime/delta paths can filter by calendar.
+    fn scoped_event(id: &str, uid: &str, title: &str, calendar_id: &str) -> Value {
+        let mut event = stub_event(id, uid, title);
+        event["calendarIds"] = json!({ calendar_id: true });
+        event
+    }
+
     async fn calendar_sync_state(jmap_base: &str) -> Arc<AppState> {
         use crate::models::AppState;
         let storage = crate::storage::Storage::new("sqlite::memory:")
@@ -2889,6 +2959,18 @@ mod tests {
     }
 
     async fn run_calendar_sync(state: &Arc<AppState>, incoming_sync_key: &str) -> String {
+        run_calendar_sync_for(state, "calendar", "calendar", incoming_sync_key).await
+    }
+
+    /// Drive a calendar `Sync` for an explicit `collection_id` /
+    /// `state_collection_id` (a custom calendar-family folder uses its CalDAV
+    /// href as the CollectionId and a device-scoped state key).
+    async fn run_calendar_sync_for(
+        state: &Arc<AppState>,
+        collection_id: &str,
+        state_collection_id: &str,
+        incoming_sync_key: &str,
+    ) -> String {
         let opts = SyncOptions {
             window_size: 100,
             get_changes: true,
@@ -2898,8 +2980,8 @@ mod tests {
         perform_sync(&PerformSyncParams {
             state: state.clone(),
             owner: "user@example.com",
-            collection_id: "calendar",
-            state_collection_id: "calendar",
+            collection_id,
+            state_collection_id,
             incoming_sync_key,
             content_class: "Calendar",
             opts,
@@ -3676,6 +3758,79 @@ mod tests {
         assert!(
             puts.iter().any(|p| p.contains("Side%20Project")),
             "the PUT must target the folder's own collection, got {puts:?}"
+        );
+    }
+
+    /// A user-created calendar-family folder must sync ONLY its own calendar:
+    /// the prime resolves the folder's CalDAV href to its JMAP calendar id and
+    /// scopes the query to it, so events from other calendars never reach the
+    /// folder.
+    #[tokio::test]
+    async fn calendar_scoped_folder_prime_only_delivers_its_own_calendar() {
+        let stub = spawn_calendar_stub(
+            vec![],
+            vec![
+                scoped_event("e-mine", "uid-mine", "Mine", "cal-side"),
+                scoped_event("e-other", "uid-other", "Other", "cal-default"),
+            ],
+            "query-s",
+            "get-s",
+            None,
+        )
+        .await
+        .with_calendars(vec![json!({
+            "id": "cal-side",
+            "name": "Side Project",
+            "href": "/dav/cal/user@example.com/Side%20Project/"
+        })]);
+        let state = calendar_mutation_state(&stub.base).await;
+        let owner = "user@example.com";
+        let folder_href = "/dav/cal/user@example.com/Side%20Project/";
+        state
+            .storage
+            .upsert_folder(crate::storage::FolderUpsertParams {
+                owner,
+                server_id: folder_href,
+                parent_id: "0",
+                display_name: "Side Project",
+                folder_type: 13,
+                backend_kind: "caldav",
+                backend_id: folder_href,
+            })
+            .await
+            .unwrap();
+
+        let xml =
+            run_calendar_sync_for(&state, folder_href, &format!("{folder_href}::dev1"), "0").await;
+        assert!(
+            xml.contains("uid-mine"),
+            "the folder's own event must be delivered:\n{xml}"
+        );
+
+        // The scoped prime must issue its `CalendarEvent/query` with
+        // `filter.inCalendarIds` naming ONLY the folder's own calendar, so a
+        // real backend never returns another calendar's events. (The stub does
+        // not resolve the `#ids` back-reference, so the wire query is the
+        // assertion target.)
+        let scoped = stub.recorded.lock().unwrap().iter().any(|body| {
+            body.get("methodCalls")
+                .and_then(|c| c.as_array())
+                .map(|calls| {
+                    calls.iter().any(|c| {
+                        c.get(0).and_then(|v| v.as_str()) == Some("CalendarEvent/query")
+                            && c.get(1)
+                                .and_then(|a| a.get("filter"))
+                                .and_then(|f| f.get("inCalendarIds"))
+                                .and_then(|v| v.as_array())
+                                .map(|ids| ids.iter().any(|i| i.as_str() == Some("cal-side")))
+                                .unwrap_or(false)
+                    })
+                })
+                .unwrap_or(false)
+        });
+        assert!(
+            scoped,
+            "the folder's prime must scope the query to its own calendar id"
         );
     }
 }

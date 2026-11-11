@@ -150,8 +150,12 @@ EAS specs v20250520 (16.1); older EAS compat NOT needed.
   drive the mailbox-scoped `Email/queryChanges` feed (`filter.inMailbox` +
   the prime's `receivedAt` sort), never the account-wide `Email/changes`, so a
   single collection never receives another folder's mail; a `queryChanges`
-  membership feed misses in-place flag edits, so a per-collection keyword
-  baseline diff recovers them as `<Change>`. Tests: `src/eas_folders.rs` (a
+  membership feed misses in-place flag edits, so the EAS delta's per-collection
+  keyword baseline diff recovers them as `<Change>` — the diff is bounded per
+  delta (a rotating per-collection scan position in `email_keyword_scan` walks
+  at most `KEYWORD_SCAN_MAX_PAGES` pages, wrapping at the end), so a delta
+  never pays O(mailbox) in JMAP calls (the EWS email delta has no baseline and
+  still misses flag-only edits). Tests: `src/eas_folders.rs` (a
   combined JMAP+CalDAV axum stub records the exact wire calls; session apiUrl
   must equal the base origin so the client POSTs to `/`, and CalDAV paths are
   percent-encoded by reqwest's Url::join) plus the `src/sync.rs` and `src/eas.rs`

@@ -802,6 +802,64 @@ struct RopContext<'a> {
     push_registry: &'a std::sync::Arc<crate::jmap_push::PushMonitorRegistry>,
 }
 
+/// `RopDeleteFolder` `DeleteFolderFlags` bits ([MS-OXCFOLD] §2.2.1.3.1).
+const DEL_MESSAGES: u8 = 0x01;
+const DEL_FOLDERS: u8 = 0x04;
+
+/// BFS over `Mailbox/get` starting at `root_id`, returning the subtree
+/// deepest-first (children before parents). `RopDeleteFolder` with
+/// `DEL_FOLDERS` uses this so a destroy never hits a parent that still has a
+/// child (JMAP rejects that with `mailboxHasChild`). An empty vector means the
+/// root mailbox is not present in the account.
+async fn mailbox_subtree_deepest_first(
+    jmap: &crate::jmap::JmapClient,
+    root_id: &str,
+    username: &str,
+    password: &secrecy::SecretString,
+) -> Result<Vec<String>, ()> {
+    let result = jmap
+        .query_mailboxes(username, password)
+        .await
+        .map_err(|e| {
+            tracing::warn!(error = %e, "RopDeleteFolder: Mailbox/get failed");
+        })?;
+    let mut children: std::collections::HashMap<&str, Vec<&str>> = std::collections::HashMap::new();
+    let mut present = false;
+    for mb in &result.mailboxes {
+        let Some(id) = mb.id.as_deref() else {
+            continue;
+        };
+        if id == root_id {
+            present = true;
+        }
+        if let Some(parent) = mb.parent_id.as_deref() {
+            children.entry(parent).or_default().push(id);
+        }
+    }
+    if !present {
+        return Ok(Vec::new());
+    }
+    let mut out: Vec<String> = Vec::new();
+    let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    let mut worklist: Vec<(&str, bool)> = vec![(root_id, false)];
+    while let Some((id, expanded)) = worklist.pop() {
+        if expanded {
+            out.push(id.to_string());
+            continue;
+        }
+        if !seen.insert(id) {
+            continue;
+        }
+        worklist.push((id, true));
+        if let Some(kids) = children.get(id) {
+            for kid in kids {
+                worklist.push((kid, false));
+            }
+        }
+    }
+    Ok(out)
+}
+
 /// Dispatch one ROP, writing its response bytes into `out`. The cursor
 /// `cur` is positioned just past the RopId byte on entry.
 async fn execute_one_rop(
@@ -5074,9 +5132,12 @@ async fn execute_one_rop(
             .encode(out);
         }
         RopId::ROP_DELETE_FOLDER => {
-            // MS-OXCROPS §2.2.4.4.1: destroy the mailbox the input handle
-            // indexes. The folder_id is echoed but the live handle is the
-            // authoritative backend id.
+            // MS-OXCROPS §2.2.4.3.1 / MS-OXCFOLD §2.2.1.3: delete the mailbox
+            // the input handle indexes. `DeleteFolderFlags` controls how: by
+            // default only an empty folder may be deleted; `DEL_MESSAGES`
+            // (0x01) also removes its messages and `DEL_FOLDERS` (0x04) its
+            // subfolders. The `folder_id` is echoed by the handle ack but the
+            // live handle is the authoritative backend id.
             let req = RopDeleteFolderRequest::decode(cur)?;
             let backend = sessions
                 .with_handle(session_id, req.input_handle_index, |h| match h {
@@ -5087,7 +5148,7 @@ async fn execute_one_rop(
                     _ => String::new(),
                 })
                 .unwrap_or_default();
-            let outcome: RopErrorCode;
+            let mut outcome: RopErrorCode;
             match (jmap, password, &backend) {
                 (_, _, b) if b.is_empty() => outcome = RopErrorCode::NoSupport,
                 (None, _, _) => outcome = RopErrorCode::NotFound,
@@ -5101,15 +5162,65 @@ async fn execute_one_rop(
                     if account_id.is_empty() {
                         outcome = RopErrorCode::NotFound;
                     } else {
-                        match jc
-                            .destroy_mailbox(&account_id, backend, false, username, pw)
-                            .await
-                        {
-                            Ok(true) => outcome = RopErrorCode::Success,
-                            Ok(false) => outcome = RopErrorCode::NotFound,
-                            Err(e) => {
-                                tracing::warn!(error = %e, "JMAP Mailbox/set destroy failed");
-                                outcome = RopErrorCode::DiskError;
+                        // The subtree to destroy: just the folder unless
+                        // DEL_FOLDERS asks for its descendants too (deepest
+                        // first so a parent is never destroyed while it still
+                        // has a child).
+                        let subtree = if req.delete_flags & DEL_FOLDERS != 0 {
+                            match mailbox_subtree_deepest_first(jc, backend, username, pw).await {
+                                Ok(ids) if !ids.is_empty() => ids,
+                                Ok(_) => {
+                                    outcome = RopErrorCode::NotFound;
+                                    crate::mapi::rops::RopHandleAckSuccess {
+                                        rop_id,
+                                        input_handle_index: req.input_handle_index,
+                                        return_value: outcome,
+                                    }
+                                    .encode(out);
+                                    return Ok(());
+                                }
+                                Err(()) => {
+                                    outcome = RopErrorCode::NetworkError;
+                                    crate::mapi::rops::RopHandleAckSuccess {
+                                        rop_id,
+                                        input_handle_index: req.input_handle_index,
+                                        return_value: outcome,
+                                    }
+                                    .encode(out);
+                                    return Ok(());
+                                }
+                            }
+                        } else {
+                            vec![backend.clone()]
+                        };
+                        // DEL_MESSAGES permits destroying a non-empty folder
+                        // (JMAP's `onDestroyRemoveEmails`); without it an
+                        // unset flag leaves the default empty-folder rule, so
+                        // JMAP rejects a non-empty destroy with
+                        // `mailboxHasEmail` and the ROP fails as before.
+                        let remove_emails = req.delete_flags & DEL_MESSAGES != 0;
+                        outcome = RopErrorCode::Success;
+                        for mb in &subtree {
+                            match jc
+                                .destroy_mailbox(&account_id, mb, remove_emails, username, pw)
+                                .await
+                            {
+                                Ok(true) => {}
+                                // A mailbox already gone is a completed step
+                                // (RFC 8620 §5.3 reports it under `notFound`),
+                                // so a retry after a partial subtree delete
+                                // resumes rather than failing forever.
+                                Ok(false) => {
+                                    tracing::warn!(
+                                        mailbox = %mb,
+                                        "RopDeleteFolder: mailbox already absent; treating as deleted"
+                                    );
+                                }
+                                Err(e) => {
+                                    tracing::warn!(error = %e, "JMAP Mailbox/set destroy failed");
+                                    outcome = RopErrorCode::DiskError;
+                                    break;
+                                }
                             }
                         }
                     }
@@ -11064,6 +11175,240 @@ mod tests {
         assert!(
             res.is_ok(),
             "read span with interleaved cell must still parse: {res:?}"
+        );
+    }
+
+    // ---- RopDeleteFolder DeleteFolderFlags ([MS-OXCFOLD] §2.2.1.3) ---------
+
+    #[derive(Clone)]
+    struct DeleteStubCtl {
+        base: String,
+        children: Vec<(String, String)>,
+        calls: std::sync::Arc<tokio::sync::Mutex<Vec<(String, bool)>>>,
+    }
+
+    /// Spawn a stub JMAP server whose `Mailbox/get` reports `parent -> [child]`
+    /// pairs and whose `Mailbox/set destroy` records each requested id with its
+    /// `onDestroyRemoveEmails` value. Returns `(base_url, recorded)`.
+    async fn spawn_delete_folder_stub(
+        children: Vec<(&'static str, &'static str)>,
+    ) -> (
+        String,
+        std::sync::Arc<tokio::sync::Mutex<Vec<(String, bool)>>>,
+    ) {
+        use axum::response::Response;
+        use axum::routing::{get, post};
+
+        async fn session(
+            axum::Extension(ctl): axum::Extension<DeleteStubCtl>,
+        ) -> axum::Json<serde_json::Value> {
+            use serde_json::json;
+            axum::Json(json!({
+                "apiUrl": ctl.base,
+                "downloadUrl": format!("{}/download/{{accountId}}/{{blobId}}", ctl.base),
+                "uploadUrl": format!("{}/upload/{{accountId}}", ctl.base),
+                "eventSourceUrl": format!("{}/eventsource", ctl.base),
+                "state": "s",
+                "username": "u",
+                "accounts": {"a": {"name": "u", "isPersonal": true, "isReadOnly": false, "accountCapabilities": {}}},
+                "primaryAccounts": {"urn:ietf:params:jmap:mail": "a"},
+                "capabilities": {}
+            }))
+        }
+
+        async fn api(
+            axum::Extension(ctl): axum::Extension<DeleteStubCtl>,
+            body: String,
+        ) -> Response {
+            use serde_json::{Value, json};
+            let req: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
+            let calls = req
+                .get("methodCalls")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default();
+            let mut responses = Vec::new();
+            for call in calls {
+                let name = call.get(0).and_then(|v| v.as_str()).unwrap_or("");
+                let args = call.get(1).cloned().unwrap_or(Value::Null);
+                let call_id = call.get(2).and_then(|v| v.as_str()).unwrap_or("c0");
+                let result = match name {
+                    "Mailbox/get" => {
+                        // Emit every id referenced as a parent or child so the
+                        // subtree walk finds the requested root `present`.
+                        let mut ids: Vec<&str> = Vec::new();
+                        for (parent, child) in &ctl.children {
+                            if !ids.contains(&parent.as_str()) {
+                                ids.push(parent);
+                            }
+                            if !ids.contains(&child.as_str()) {
+                                ids.push(child);
+                            }
+                        }
+                        let parent_of = |id: &str| -> Option<String> {
+                            ctl.children
+                                .iter()
+                                .find(|(_, c)| c == id)
+                                .map(|(p, _)| p.clone())
+                        };
+                        let list: Vec<Value> = ids
+                            .iter()
+                            .map(|id| {
+                                json!({
+                                    "id": id,
+                                    "name": id,
+                                    "parentId": parent_of(id),
+                                })
+                            })
+                            .collect();
+                        json!({"accountId": "a", "list": list})
+                    }
+                    "Mailbox/set" => {
+                        let destroy = args
+                            .get("destroy")
+                            .and_then(|v| v.as_array())
+                            .cloned()
+                            .unwrap_or_default();
+                        let remove = args
+                            .get("onDestroyRemoveEmails")
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(false);
+                        for id in &destroy {
+                            if let Some(s) = id.as_str() {
+                                ctl.calls.lock().await.push((s.to_string(), remove));
+                            }
+                        }
+                        json!({"accountId": "a", "destroyed": destroy})
+                    }
+                    _ => json!({"accountId": "a"}),
+                };
+                responses.push(json!([name, result, call_id]));
+            }
+            let resp = json!({"methodResponses": responses, "sessionState": "s"});
+            Response::builder()
+                .status(200)
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(serde_json::to_vec(&resp).unwrap()))
+                .unwrap()
+        }
+
+        let calls = std::sync::Arc::new(tokio::sync::Mutex::new(Vec::new()));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let base = format!("http://127.0.0.1:{port}");
+        let ctl = DeleteStubCtl {
+            base: base.clone(),
+            children: children
+                .into_iter()
+                .map(|(p, c)| (p.to_string(), c.to_string()))
+                .collect(),
+            calls: calls.clone(),
+        };
+        let app = axum::Router::new()
+            .route("/session", get(session))
+            .route("/", post(api))
+            .layer(axum::Extension(ctl));
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        (base, calls)
+    }
+
+    /// Drive one `RopDeleteFolder` through the Execute dispatcher against a
+    /// stub JMAP backend and return the decoded `ReturnValue`.
+    async fn run_delete_folder_rop(base: &str, backend_id: &str, delete_flags: u8) -> RopErrorCode {
+        let mut cfg = Config::test_with_mail_domain("example.com");
+        cfg.mapi_enabled = true;
+        cfg.jmap_base = base.to_string();
+        cfg.email_enabled = true;
+        let state = MapiState::new(
+            cfg,
+            std::sync::Arc::new(AuthVerifier::new(&Config::default())),
+        );
+        let sid = state
+            .sessions
+            .create(crate::mapi::session::SessionPrincipal {
+                email: "u@example.com".into(),
+                basic_auth: true,
+            });
+        const INPUT_HANDLE: u8 = 3;
+        state.sessions.with_session_mut(&sid, |s| {
+            s.set_handle(
+                INPUT_HANDLE,
+                crate::mapi::session::Handle::Folder {
+                    backend_id: backend_id.into(),
+                    kind: crate::mapi::session::FolderKind::Mail,
+                },
+            );
+        });
+        // Wire: RopId(0x1D) · LogonId(0) · InputHandle(3) · FolderId(8) ·
+        // DeleteFolderFlags(1).
+        let mut body: Vec<u8> = vec![0x1D, 0, INPUT_HANDLE];
+        body.extend(0u64.to_le_bytes());
+        body.push(delete_flags);
+        let req = MapiRequest {
+            kind: RpcKind::Mailbox(MapiRequestType::Execute),
+            request_id: "{G}:1".into(),
+            client_application: None,
+            client_info: Some(format!("{{{}}}:0", sid.as_hyphenated())),
+            username: None,
+            password: Some("pw".into()),
+            cookies: Vec::new(),
+            body,
+        };
+        let resp = handle(req, &state).await;
+        assert_eq!(resp.code, ResponseCode::Success, "Execute must succeed");
+        let (_status, _h, _ct, body_out) = resp.render();
+        let payload = &body_out[4..];
+        assert_eq!(payload[0], 0x1D, "echoed RopId");
+        assert_eq!(payload[1], INPUT_HANDLE, "input handle echoed");
+        let rv = u32::from_le_bytes([payload[2], payload[3], payload[4], payload[5]]);
+        RopErrorCode::from_u32(rv)
+    }
+
+    /// `DEL_MESSAGES` (0x01) must set `onDestroyRemoveEmails` so a non-empty
+    /// folder can be deleted (otherwise JMAP rejects it with `mailboxHasEmail`).
+    #[tokio::test]
+    async fn rop_delete_folder_del_messages_sets_on_destroy_remove_emails() {
+        let (base, calls) = spawn_delete_folder_stub(vec![]).await;
+        let rv = run_delete_folder_rop(&base, "mb-1", DEL_MESSAGES).await;
+        assert_eq!(rv, RopErrorCode::Success);
+        let rec = calls.lock().await.clone();
+        assert_eq!(rec, vec![("mb-1".to_string(), true)]);
+    }
+
+    /// With no `DEL_MESSAGES` the removal flag stays false (an empty-folder
+    /// destroy only), preserving the default rule.
+    #[tokio::test]
+    async fn rop_delete_folder_without_flags_keeps_remove_emails_false() {
+        let (base, calls) = spawn_delete_folder_stub(vec![]).await;
+        let rv = run_delete_folder_rop(&base, "mb-1", 0).await;
+        assert_eq!(rv, RopErrorCode::Success);
+        let rec = calls.lock().await.clone();
+        assert_eq!(rec, vec![("mb-1".to_string(), false)]);
+    }
+
+    /// `DEL_FOLDERS` (0x04) must destroy the whole subtree deepest-first so a
+    /// parent is never destroyed while a child still exists.
+    #[tokio::test]
+    async fn rop_delete_folder_del_folders_destroys_subtree_deepest_first() {
+        let (base, calls) = spawn_delete_folder_stub(vec![
+            ("root", "child-a"),
+            ("child-a", "grandchild"),
+            ("other", "unrelated"),
+        ])
+        .await;
+        let rv = run_delete_folder_rop(&base, "root", DEL_FOLDERS).await;
+        assert_eq!(rv, RopErrorCode::Success);
+        let rec = calls.lock().await.clone();
+        let ids: Vec<&str> = rec.iter().map(|(id, _)| id.as_str()).collect();
+        // The root is destroyed last; both descendants before it.
+        assert_eq!(ids.last().copied(), Some("root"));
+        assert!(ids.contains(&"child-a"));
+        assert!(ids.contains(&"grandchild"));
+        assert!(
+            !ids.contains(&"unrelated"),
+            "a sibling subtree must not be touched: {ids:?}"
         );
     }
 }

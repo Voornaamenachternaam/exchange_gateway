@@ -1889,6 +1889,21 @@ async fn handle_folder_sync(
             return xml_or_wbxml_response(wbxml, as_wbxml, xml, request_id);
         }
     }
+    // Capture the journal head BEFORE rendering the hierarchy. A folder
+    // mutation journaled while the response is being built must NOT be folded
+    // into the watermark this request acknowledges: it was not part of the
+    // rendered change set, so advancing past it would drop its
+    // Add/Update/Delete forever. The rendered journal window is bounded to this
+    // head (`render_until`) and the stored watermark is exactly this head — the
+    // pre-render read is fail-closed (an error answers Status 6 rather than
+    // persisting a watermark of 0 that would replay the whole journal).
+    let render_until = match state.storage.get_latest_change_seq().await {
+        Ok(seq) => seq,
+        Err(e) => {
+            tracing::warn!(error = %e, "FolderSync: failed to read journal head");
+            return folder_sync_error_response(wbxml, as_wbxml, request_id);
+        }
+    };
     let new_sync_key = Uuid::new_v4().simple().to_string();
     let changes = if incoming == "0" {
         // Per MS-ASCMD §2.2.3.186.3 (FolderSync Type), the default-folder Type
@@ -1942,7 +1957,7 @@ async fn handle_folder_sync(
         // since the client's stored watermark, so a client that already primed
         // the hierarchy is told about FolderCreate/Update/Delete mutations
         // ([MS-ASCMD] §2.2.3.25).
-        match render_folder_hierarchy_changes(state, owner, stored_since).await {
+        match render_folder_hierarchy_changes(state, owner, stored_since, render_until).await {
             Ok(changes) => changes,
             Err(e) => {
                 tracing::warn!(error = %e, "FolderSync: failed to render folder-hierarchy changes");
@@ -1950,17 +1965,13 @@ async fn handle_folder_sync(
             }
         }
     };
-    // Advance the watermark only after the change set rendered successfully, so
-    // a read failure never acknowledges an empty delta and skips past changes.
-    // A failure to read the journal head is fail-closed: answer an error rather
-    // than persisting a watermark of 0 that would replay the whole journal.
-    let latest_seq = match state.storage.get_latest_change_seq().await {
-        Ok(seq) => seq,
-        Err(e) => {
-            tracing::warn!(error = %e, "FolderSync: failed to read journal head");
-            return folder_sync_error_response(wbxml, as_wbxml, request_id);
-        }
-    };
+    // The watermark is exactly the head captured BEFORE rendering, so the
+    // acknowledged sequence never includes a row the response did not carry.
+    let latest_seq = render_until;
+    // A failure to persist the new SyncKey must NOT be acknowledged with
+    // Status 1: the client would store a key the gateway never wrote and every
+    // follow-up request would be rejected as an invalid SyncKey. Answer the
+    // server-error response so the client retries instead.
     if let Err(e) = state
         .storage
         .set_sync_key(
@@ -1972,6 +1983,7 @@ async fn handle_folder_sync(
         .await
     {
         tracing::warn!(error = %e, "FolderSync: failed to persist new sync key");
+        return folder_sync_error_response(wbxml, as_wbxml, request_id);
     }
     // Also record the watermark through the journal-watermark API so Ping /
     // GetItemEstimate (which read the `journal_seq` column) see the folder
@@ -2025,8 +2037,10 @@ async fn render_user_folders_add(
 }
 
 /// Render the incremental FolderSync `<Changes>` for folder-hierarchy journal
-/// rows with `id > since`. A delete wins over a prior add/update for the same
-/// ServerId (latest op in journal order), and each ServerId is emitted once.
+/// rows with `since < id <= until`. A delete wins over a prior add/update for
+/// the same ServerId (latest op in journal order), and each ServerId is emitted
+/// once. `until` is the head captured before rendering (see the caller), so the
+/// window never includes a row the caller has not acknowledged.
 ///
 /// Fail-closed: a journal or folder-map read error is propagated rather than
 /// collapsed to an empty delta, so the caller answers an error instead of
@@ -2036,10 +2050,11 @@ async fn render_folder_hierarchy_changes(
     state: &Arc<AppState>,
     owner: &str,
     since: i64,
+    until: i64,
 ) -> crate::error::Result<String> {
     let rows = state
         .storage
-        .list_folder_journal_since(owner, since)
+        .list_folder_journal_since(owner, since, until)
         .await?;
     if rows.is_empty() {
         return Ok(r#"<Changes><Count>0</Count></Changes>"#.to_string());
@@ -7227,6 +7242,20 @@ fn collapse_email_ops(ops: Vec<PendingEmailOp>) -> Vec<PendingEmailOp> {
 /// next Sync's diff, so nothing is lost.
 const MAX_EMAIL_CHANGE_ACCUMULATION: usize = 5000;
 
+/// Per-delta bound on the flag (keyword) baseline scan.
+///
+/// `Email/queryChanges` cannot report a flag-only edit (mark read/flagged, ...),
+/// so the delta diffs the live mailbox's keywords against a persisted baseline.
+/// A full-mailbox sweep on every delta would cost O(mailbox size) in JMAP calls
+/// even when nothing changed, so the scan is bounded: each delta examines at
+/// most `KEYWORD_SCAN_MAX_PAGES` pages from a rotating position (persisted per
+/// collection) and the next delta resumes where it stopped, wrapping to the top
+/// once it reaches the end. Every message is therefore re-examined once per
+/// sweep, and a sweep's cost is amortized across deltas instead of paid in one.
+const KEYWORD_SCAN_MAX_PAGES: u32 = 8;
+/// Page size of one flag-scan `Email/query` + `Email/get` round trip.
+const KEYWORD_SCAN_PAGE: u64 = 500;
+
 /// Classify one `Email/queryChanges` page into EAS operations.
 ///
 /// `added` ids are `<Add>` (newly in this mailbox); `removed` ids are
@@ -7298,7 +7327,7 @@ struct AccumulateEmailChangesCtx<'a> {
 /// loop forever.
 async fn accumulate_email_changes(
     ctx: &AccumulateEmailChangesCtx<'_>,
-) -> anyhow::Result<(Vec<PendingEmailOp>, String, Option<String>)> {
+) -> anyhow::Result<(Vec<PendingEmailOp>, String, KeywordScanOutcome)> {
     let AccumulateEmailChangesCtx {
         state,
         jmap,
@@ -7329,57 +7358,245 @@ async fn accumulate_email_changes(
     }
     let mut ops = collapse_email_ops(ops);
 
-    // 2) Diff the live mailbox's keyword (flag) baseline. `Email/queryChanges`
-    //    reports only query-set membership, so a flag edit that leaves a
-    //    message in the mailbox (mark read/flagged, …) never appears in its
-    //    `added`/`removed` lists; the baseline diff recovers those as
-    //    `<Change>` operations. The new baseline is returned for the caller to
-    //    persist AFTER it commits the delivered change set, so a crash cannot
-    //    advance the baseline past updates the client never received.
-    let mut new_baseline: Option<String> = None;
-    match jmap
-        .list_email_ids_with_keywords(account_id, mailbox_id, username, password)
-        .await
-    {
-        Ok(current) => {
-            let current_map: std::collections::BTreeMap<String, Vec<String>> =
-                current.into_iter().collect();
-            let previous = state
-                .storage
-                .get_email_keyword_baseline(username, state_collection_id)
-                .await
-                .ok()
-                .flatten()
-                .and_then(|json| {
-                    serde_json::from_str::<std::collections::BTreeMap<String, Vec<String>>>(&json)
-                        .ok()
-                });
-            if let Some(previous) = previous {
-                let queued: HashSet<String> = ops.iter().map(|o| o.id.clone()).collect();
-                for (id, keywords) in &current_map {
-                    if queued.contains(id.as_str()) {
-                        continue;
-                    }
-                    if previous.get(id).is_some_and(|prev| prev != keywords) {
-                        ops.push(PendingEmailOp::change(id.clone()));
-                    }
-                }
-            }
-            match serde_json::to_string(&current_map) {
-                Ok(json) => new_baseline = Some(json),
-                Err(e) => tracing::warn!(error = %e, "Failed to serialize email keyword baseline"),
-            }
-        }
-        Err(e) => {
-            // A backend hiccup here must not lose the membership changes already
-            // accumulated: keep the old baseline and deliver the query-feed ops.
-            tracing::warn!(
-                error = %e,
-                "Email keyword baseline scan failed; serving query-feed changes only"
-            );
+    // 2) Bounded scan of the live mailbox's keyword (flag) baseline.
+    //    `Email/queryChanges` reports only query-set membership, so a flag edit
+    //    that leaves a message in the mailbox (mark read/flagged, …) never
+    //    appears in its `added`/`removed` lists; the baseline diff recovers
+    //    those as `<Change>` operations. The scan is bounded per delta and
+    //    resumes from a rotating position (see `scan_email_keyword_changes`);
+    //    the baseline writes and the next position are returned for the caller
+    //    to persist AFTER it commits the delivered change set, so a crash
+    //    cannot advance the baseline past updates the client never received.
+    let queued: HashSet<String> = ops.iter().map(|o| o.id.clone()).collect();
+    let scan = scan_email_keyword_changes(
+        &KeywordScanCtx {
+            state,
+            jmap,
+            account_id,
+            mailbox_id,
+            username,
+            password,
+            state_collection_id,
+        },
+        &queued,
+        &mut ops,
+    )
+    .await;
+    Ok((ops, since, scan))
+}
+
+/// The result of one bounded flag (keyword) scan: the baseline rows the caller
+/// must persist (upserts for observed messages, deletes for messages that left
+/// the mailbox) and the rotating position to resume the next sweep from. All of
+/// it is applied only after the delta's change set is delivered.
+struct KeywordScanOutcome {
+    upserts: Vec<(String, Vec<String>)>,
+    deletes: Vec<String>,
+    position: u64,
+}
+
+/// Persist a completed flag scan: the observed baseline rows, the rows for
+/// messages that left the mailbox, and the rotating position. Called after the
+/// delta's change set is durably delivered (or queued), so a crash re-reports
+/// rather than swallows a flag change.
+async fn persist_keyword_scan(
+    state: &Arc<AppState>,
+    owner: &str,
+    collection_id: &str,
+    outcome: &KeywordScanOutcome,
+) {
+    for (id, keywords) in &outcome.upserts {
+        if let Err(e) = state
+            .storage
+            .upsert_email_keyword(owner, collection_id, id, keywords)
+            .await
+        {
+            tracing::warn!(error = %e, "Failed to persist email keyword baseline row");
         }
     }
-    Ok((ops, since, new_baseline))
+    for id in &outcome.deletes {
+        if let Err(e) = state
+            .storage
+            .delete_email_keyword(owner, collection_id, id)
+            .await
+        {
+            tracing::warn!(error = %e, "Failed to prune email keyword baseline row");
+        }
+    }
+    if let Err(e) = state
+        .storage
+        .set_email_keyword_scan_position(owner, collection_id, outcome.position)
+        .await
+    {
+        tracing::warn!(error = %e, "Failed to persist email keyword scan position");
+    }
+}
+
+/// Request-scoped inputs for [`scan_email_keyword_changes`]. Grouped so the
+/// scanner's argument count stays within the clippy limit.
+struct KeywordScanCtx<'a> {
+    state: &'a Arc<AppState>,
+    jmap: &'a Arc<JmapClient>,
+    account_id: &'a str,
+    mailbox_id: &'a str,
+    username: &'a str,
+    password: &'a SecretString,
+    state_collection_id: &'a str,
+}
+
+/// Run one bounded page of the flag (keyword) baseline scan for a collection.
+///
+/// Walks at most `KEYWORD_SCAN_MAX_PAGES` pages from the collection's persisted
+/// rotating `position`, comparing each observed message's keyword set against
+/// its baseline row and emitting a `<Change>` op for every id whose flags
+/// changed (and which the query feed did not already queue). The observed rows
+/// and the next position are RETURNED (not persisted) so the caller applies them
+/// only after the delta's change set is delivered — a crash then re-scans the
+/// same window instead of swallowing a flag change.
+///
+/// Best-effort: a backend hiccup stops the scan where it is; the caller still
+/// serves the query-feed changes.
+async fn scan_email_keyword_changes(
+    ctx: &KeywordScanCtx<'_>,
+    queued: &HashSet<String>,
+    ops: &mut Vec<PendingEmailOp>,
+) -> KeywordScanOutcome {
+    let KeywordScanCtx {
+        state,
+        jmap,
+        account_id,
+        mailbox_id,
+        username,
+        password,
+        state_collection_id,
+    } = *ctx;
+    let mut outcome = KeywordScanOutcome {
+        upserts: Vec::new(),
+        // A message the feed reported as leaving the mailbox can never be seen
+        // by a later scan page (it is out of the query result), so its baseline
+        // row is pruned now instead of leaking forever. A re-sorted id (in BOTH
+        // `added` and `removed`) collapsed to a `<Change>` op, not a delete, so
+        // it is correctly excluded.
+        deletes: ops
+            .iter()
+            .filter(|o| o.is_delete())
+            .map(|o| o.id.clone())
+            .collect(),
+        position: 0,
+    };
+    let mut position = match state
+        .storage
+        .get_email_keyword_scan_position(username, state_collection_id)
+        .await
+    {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::warn!(error = %e, "Failed to read email keyword scan position");
+            0
+        }
+    };
+    for _ in 0..KEYWORD_SCAN_MAX_PAGES {
+        let (entries, next_position, _total, more) = match jmap
+            .list_email_ids_with_keywords_page(
+                account_id,
+                mailbox_id,
+                position,
+                KEYWORD_SCAN_PAGE,
+                username,
+                password,
+            )
+            .await
+        {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!(error = %e, "Email keyword baseline scan failed; serving query-feed changes only");
+                outcome.position = position;
+                return outcome;
+            }
+        };
+        if entries.is_empty() {
+            position = 0;
+            break;
+        }
+        for (id, keywords) in entries {
+            let previous = state
+                .storage
+                .get_email_keyword(username, state_collection_id, &id)
+                .await
+                .ok()
+                .flatten();
+            if let Some(previous) = previous
+                && previous != keywords
+                && !queued.contains(id.as_str())
+            {
+                ops.push(PendingEmailOp::change(id.clone()));
+            }
+            outcome.upserts.push((id, keywords));
+        }
+        position = next_position;
+        if !more {
+            position = 0;
+            break;
+        }
+    }
+    outcome.position = position;
+    outcome
+}
+
+/// Snapshot the whole mailbox's keyword (flag) state into the per-collection
+/// baseline, so a later delta can detect flag-only edits that
+/// `Email/queryChanges` cannot report. Best-effort: a failed scan or write
+/// leaves the previous baseline in place (a later delta then captures it
+/// without reporting intervening edits).
+async fn capture_email_keyword_baseline(
+    state: &Arc<AppState>,
+    jmap: &Arc<JmapClient>,
+    account_id: &str,
+    mailbox_id: &str,
+    username: &str,
+    password: &SecretString,
+    state_collection_id: &str,
+) {
+    let mut entries: Vec<(String, Vec<String>)> = Vec::new();
+    let mut position: u64 = 0;
+    loop {
+        match jmap
+            .list_email_ids_with_keywords_page(
+                account_id,
+                mailbox_id,
+                position,
+                KEYWORD_SCAN_PAGE,
+                username,
+                password,
+            )
+            .await
+        {
+            Ok((mut page, next, _total, more)) => {
+                entries.append(&mut page);
+                position = next;
+                if !more {
+                    break;
+                }
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "Failed to capture email keyword baseline");
+                return;
+            }
+        }
+    }
+    let map: std::collections::BTreeMap<String, Vec<String>> = entries.into_iter().collect();
+    match serde_json::to_string(&map) {
+        Ok(json) => {
+            if let Err(e) = state
+                .storage
+                .set_email_keyword_baseline(username, state_collection_id, &json)
+                .await
+            {
+                tracing::warn!(error = %e, "Failed to persist email keyword baseline");
+            }
+        }
+        Err(e) => tracing::warn!(error = %e, "Failed to serialize email keyword baseline"),
+    }
 }
 
 /// Render the EAS `<ApplicationData>` payload for a queued email op.
@@ -7834,7 +8051,7 @@ async fn handle_email_initial_sync(
         options,
         conversation_mode,
         mailbox_id: _,
-        delta_mailbox_id: _,
+        delta_mailbox_id,
     } = *ctx;
     // A previous initial sync may have left a resume cursor (window filled
     // before the mailbox drained). Spec-wise the client follows up with the
@@ -7854,6 +8071,28 @@ async fn handle_email_initial_sync(
         .await
         .unwrap_or(None)
         .unwrap_or((0, None));
+
+    // Capture the keyword (flag) baseline at the START of the initial sync,
+    // BEFORE the first window is fetched. `Email/queryChanges` cannot report a
+    // flag-only edit, so the baseline diff is the only signal for it. Capturing
+    // it only after the mailbox drained would fold a flag edit that happened
+    // during pagination into the baseline as "already synchronized" and the
+    // edit would never be sent as a `<Change>`. A continuation page
+    // (`start_position > 0`) keeps the baseline the first page captured.
+    if start_position == 0
+        && let Some(mailbox_id) = delta_mailbox_id
+    {
+        capture_email_keyword_baseline(
+            state,
+            jmap,
+            account_id,
+            mailbox_id,
+            username,
+            password,
+            state_collection_id,
+        )
+        .await;
+    }
 
     // Fetch emails from JMAP for the requested mailbox, one window at a time.
     let fetch_limit = window.max(1) as u64;
@@ -7994,28 +8233,6 @@ async fn handle_email_initial_sync(
         .await
     {
         tracing::warn!(error = %e, "Failed to clear email initial-sync cursor");
-    }
-    // Capture the keyword baseline so the first delta can detect flag edits
-    // (which `Email/queryChanges` cannot report). Best-effort: a failure just
-    // means the next delta captures the baseline without reporting updates.
-    if let Some(mailbox_id) = ctx.delta_mailbox_id
-        && let Ok(entries) = jmap
-            .list_email_ids_with_keywords(account_id, mailbox_id, username, password)
-            .await
-    {
-        let map: std::collections::BTreeMap<String, Vec<String>> = entries.into_iter().collect();
-        match serde_json::to_string(&map) {
-            Ok(json) => {
-                if let Err(e) = state
-                    .storage
-                    .set_email_keyword_baseline(username, state_collection_id, &json)
-                    .await
-                {
-                    tracing::warn!(error = %e, "Failed to persist initial email keyword baseline");
-                }
-            }
-            Err(e) => tracing::warn!(error = %e, "Failed to serialize email keyword baseline"),
-        }
     }
     if let Some(token) = base_state_token.as_deref() {
         if let Err(e) = state
@@ -8193,7 +8410,7 @@ async fn handle_email_delta_sync(ctx: &EmailSyncCtx<'_>) -> anyhow::Result<Strin
     };
     let mailbox_id = delta_mailbox_id.expect("filtered above");
 
-    let (ops, final_state, new_baseline) = match accumulate_email_changes(
+    let (ops, final_state, keyword_scan) = match accumulate_email_changes(
         &AccumulateEmailChangesCtx {
             state,
             jmap,
@@ -8291,6 +8508,13 @@ async fn handle_email_delta_sync(ctx: &EmailSyncCtx<'_>) -> anyhow::Result<Strin
         {
             tracing::warn!(error = %e, "Failed to set email sync key while truncating delta");
         }
+        // The full change set has been computed and its undelivered remainder
+        // is now durably queued, so the flag-scan baseline rows and rotating
+        // position may advance here even though the window clipped. The
+        // queue-drain branch returns before the fresh-diff block below, so
+        // without this the same flag change would be re-queued on every later
+        // delta — never converging when the change set exceeds the window.
+        persist_keyword_scan(state, username, state_collection_id, &keyword_scan).await;
         tracing::info!(
             user = %username,
             collection_id,
@@ -8322,17 +8546,10 @@ async fn handle_email_delta_sync(ctx: &EmailSyncCtx<'_>) -> anyhow::Result<Strin
         tracing::warn!(error = %e, "Failed to update email sync key with JMAP state");
     }
     // The whole change set (membership + keyword updates) has now been
-    // delivered, so the keyword baseline may advance. Persisting it only here
-    // guarantees a crash before this point re-reports the same updates rather
-    // than swallowing them.
-    if let Some(baseline) = new_baseline.as_deref()
-        && let Err(e) = state
-            .storage
-            .set_email_keyword_baseline(username, state_collection_id, baseline)
-            .await
-    {
-        tracing::warn!(error = %e, "Failed to persist email keyword baseline");
-    }
+    // delivered, so the flag-scan baseline rows and rotating position may
+    // advance. Persisting them only here guarantees a crash before this point
+    // re-scans the same window rather than swallowing the updates.
+    persist_keyword_scan(state, username, state_collection_id, &keyword_scan).await;
 
     tracing::info!(
         user = %username,
@@ -11190,6 +11407,234 @@ mod tests {
         assert!(
             baseline.contains("\"m1\""),
             "baseline keyed by email id: {baseline}"
+        );
+    }
+
+    /// The per-delta flag scan must be BOUNDED: it walks at most
+    /// `KEYWORD_SCAN_MAX_PAGES` pages per delta from a rotating position and
+    /// persists where it stopped, so a delta never pays O(mailbox) in JMAP
+    /// calls even on a huge mailbox.
+    #[tokio::test]
+    async fn test_email_keyword_scan_is_bounded_and_rotates_position() {
+        use crate::models::AppState;
+        use axum::routing::{get, post};
+        use serde_json::{Value, json};
+        use std::sync::Arc as StdArc;
+
+        #[derive(Clone)]
+        struct Ctl {
+            base: String,
+            positions: std::sync::Arc<tokio::sync::Mutex<Vec<u64>>>,
+        }
+
+        async fn session(axum::Extension(ctl): axum::Extension<Ctl>) -> axum::Json<Value> {
+            axum::Json(json!({
+                "apiUrl": ctl.base,
+                "downloadUrl": format!("{}/download/{{accountId}}/{{blobId}}", ctl.base),
+                "uploadUrl": format!("{}/upload/{{accountId}}", ctl.base),
+                "eventSourceUrl": format!("{}/eventsource", ctl.base),
+                "state": "s",
+                "username": "u",
+                "accounts": {"a": {"name": "u", "isPersonal": true, "isReadOnly": false, "accountCapabilities": {}}},
+                "primaryAccounts": {"urn:ietf:params:jmap:mail": "a"},
+                "capabilities": {"urn:ietf:params:jmap:core": {"maxObjectsInGet": 500}}
+            }))
+        }
+
+        async fn api(
+            axum::Extension(ctl): axum::Extension<Ctl>,
+            body: String,
+        ) -> axum::response::Response {
+            let req: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
+            let mut responses = Vec::new();
+            // The scan issues `Email/get` with a `#ids` back-reference to the
+            // preceding `Email/query`; the stub resolves it by remembering the
+            // ids that query returned.
+            let mut last_query_ids: Vec<String> = Vec::new();
+            for call in req
+                .get("methodCalls")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default()
+            {
+                let name = call.get(0).and_then(|v| v.as_str()).unwrap_or("");
+                let args = call.get(1).cloned().unwrap_or(Value::Null);
+                let cid = call.get(2).and_then(|v| v.as_str()).unwrap_or("c0");
+                let result = match name {
+                    // Quiet membership feed EXCEPT a departure, so the test can
+                    // assert the departing id's baseline row is pruned.
+                    "Email/queryChanges" => json!({
+                        "accountId": "a",
+                        "oldQueryState": "S0",
+                        "newQueryState": "S1",
+                        "added": [],
+                        "removed": ["gone-1"],
+                    }),
+                    "Email/query" => {
+                        // Only the flag scan issues Email/query here (the delta
+                        // never renders bodies for a change). Record the
+                        // requested position so the test can assert the sweep
+                        // advances in bounded steps.
+                        let position = args.get("position").and_then(|v| v.as_u64()).unwrap_or(0);
+                        ctl.positions.lock().await.push(position);
+                        last_query_ids = (0..500).map(|i| format!("m{}", position + i)).collect();
+                        json!({
+                            "accountId": "a",
+                            "queryState": "S1",
+                            "ids": last_query_ids,
+                            "total": 100_000,
+                            "position": position,
+                        })
+                    }
+                    "Email/get" => {
+                        let list: Vec<Value> = last_query_ids
+                            .iter()
+                            .map(|id| json!({"id": id, "keywords": {}}))
+                            .collect();
+                        json!({"accountId": "a", "state": "S1", "list": list})
+                    }
+                    _ => json!({"accountId": "a"}),
+                };
+                responses.push(json!([name, result, cid]));
+            }
+            let resp = json!({"methodResponses": responses, "sessionState": "s"});
+            axum::response::Response::builder()
+                .status(200)
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(serde_json::to_vec(&resp).unwrap()))
+                .unwrap()
+        }
+
+        let positions = std::sync::Arc::new(tokio::sync::Mutex::new(Vec::new()));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
+        let ctl = Ctl {
+            base: base.clone(),
+            positions: positions.clone(),
+        };
+        let app = axum::Router::new()
+            .route("/session", get(session))
+            .route("/", post(api))
+            .layer(axum::Extension(ctl));
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let storage = crate::storage::Storage::new("sqlite::memory:")
+            .await
+            .unwrap();
+        storage.init_schema().await.unwrap();
+        let cfg = crate::config::Config {
+            jmap_base: base.clone(),
+            email_enabled: true,
+            mail_domain: "example.com".to_string(),
+            hmac_secret: SecretString::from("a".repeat(32)),
+            ..Default::default()
+        };
+        let state = StdArc::new(AppState::new(cfg, StdArc::new(storage)));
+
+        let owner = "u@example.com";
+        let scoped = scoped_collection_id("2", "dev-1");
+        let jmap = state.jmap_client.as_ref().unwrap().clone();
+        let password = SecretString::from("pw");
+        let options = crate::eas_sync_options::EasSyncCollectionOptions::default();
+
+        // Seed a baseline row for a message that has since left the mailbox; a
+        // delta that reports it as `removed` must prune the row.
+        state
+            .storage
+            .upsert_email_keyword(owner, &scoped, "gone-1", &["$seen".to_string()])
+            .await
+            .unwrap();
+
+        async fn run_delta(
+            state: &Arc<AppState>,
+            jmap: &Arc<JmapClient>,
+            scoped: &str,
+            key: &str,
+            owner: &str,
+            password: &SecretString,
+            options: &crate::eas_sync_options::EasSyncCollectionOptions,
+        ) {
+            state
+                .storage
+                .set_sync_key(owner, scoped, key, Some("S0"))
+                .await
+                .unwrap();
+            handle_email_delta_sync(&EmailSyncCtx {
+                state,
+                jmap,
+                account_id: "a",
+                username: owner,
+                password,
+                collection_id: "2",
+                state_collection_id: scoped,
+                window: 512,
+                options,
+                conversation_mode: false,
+                mailbox_id: None,
+                delta_mailbox_id: Some("mbx-inbox"),
+            })
+            .await
+            .unwrap();
+        }
+
+        run_delta(&state, &jmap, &scoped, "key-1", owner, &password, &options).await;
+        let first = positions.lock().await.clone();
+        assert_eq!(
+            first.len() as u32,
+            KEYWORD_SCAN_MAX_PAGES,
+            "one delta must issue exactly the bounded number of scan pages: {first:?}"
+        );
+        assert_eq!(
+            first.first().copied(),
+            Some(0),
+            "the first delta starts the sweep at the top: {first:?}"
+        );
+        // The sweep advanced by one page per query and stopped at the bound.
+        for (i, p) in first.iter().enumerate() {
+            assert_eq!(
+                *p,
+                (i as u64) * KEYWORD_SCAN_PAGE,
+                "contiguous paging: {first:?}"
+            );
+        }
+        let stopped = state
+            .storage
+            .get_email_keyword_scan_position(owner, &scoped)
+            .await
+            .unwrap();
+        assert_eq!(
+            stopped,
+            KEYWORD_SCAN_MAX_PAGES as u64 * KEYWORD_SCAN_PAGE,
+            "the next sweep resumes where this one stopped"
+        );
+
+        // The next delta resumes from the stored position instead of restarting.
+        positions.lock().await.clear();
+        run_delta(&state, &jmap, &scoped, "key-2", owner, &password, &options).await;
+        let second = positions.lock().await.clone();
+        assert_eq!(
+            second.first().copied(),
+            Some(stopped),
+            "the second delta resumes the rotating sweep: {second:?}"
+        );
+        assert_eq!(
+            second.len() as u32,
+            KEYWORD_SCAN_MAX_PAGES,
+            "each delta stays bounded: {second:?}"
+        );
+
+        // A message the feed reported as leaving the mailbox has its baseline
+        // row pruned (it can never be observed by a later scan page).
+        assert!(
+            state
+                .storage
+                .get_email_keyword(owner, &scoped, "gone-1")
+                .await
+                .unwrap()
+                .is_none(),
+            "a departing message's baseline row must be pruned"
         );
     }
 
