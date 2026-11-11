@@ -140,26 +140,33 @@ gateway restarts and surface in `FolderSync`/`GetHierarchy`.
   baseline** (`email_keyword_baseline`, one row per JMAP Email id holding its
   sorted keyword list) captured at the start of every initial sync — the
   snapshot is taken before the first window is fetched, so a flag edit during
-  pagination is still reported as a `<Change>` by the first delta rather than
-  being folded into the baseline as already-synchronized; the capture is
-  best-effort (a backend hiccup leaves the previous baseline, and the first
-  delta then captures it without reporting the intervening edits). The delta
-  then diffs the live mailbox against this baseline, emitting a `<Change>` for
-  each id whose keyword set changed and was not already queued. The diff is
+  pagination is not folded into the baseline as already-synchronized and is
+  reported as a `<Change>` once the rotating scan window reaches that message
+  (the scan is bounded, so a large mailbox may take several sweeps to reach it);
+  the capture is best-effort (a backend hiccup leaves the previous baseline, and
+  the first delta then captures it without reporting the intervening edits). The
+  delta then diffs the live mailbox against this baseline, emitting a `<Change>`
+  for each id whose keyword set changed and was not already queued. A delivered
+  `<Add>` seeds its own baseline row at delivery time, so a flag edit before the
+  rotating scan reaches the message is still detected (a missing row on the
+  scan's first observation is recorded without a `<Change>` — the Add already
+  carries the current flags). The diff is
   **bounded per delta**: the scan walks at most a fixed number of pages
   (`KEYWORD_SCAN_MAX_PAGES`) from a per-collection rotating position persisted
   in `email_keyword_scan` (wrapping to the top at the end), so a delta never
-  pays O(mailbox) in JMAP calls — every message is re-examined once per sweep,
-  with the sweep's cost amortized across deltas. The observed baseline rows,
-  the rows for messages the feed reported as having left the mailbox (they can
-  never be observed by a later scan page, so they are pruned rather than
-  leaking), and the next position are persisted only after the whole change set
-  is delivered, so a crash re-scans the same window rather than swallowing an
-  update; an overflowed delta (the change set exceeds the EAS window) persists
-  them when the remainder is durably queued, so the drain and every later delta
-  do not re-queue the same flag change. A backend hiccup during the scan
-  degrades to serving the query-feed changes without persisting that page's
-  rows.
+  pays O(mailbox) in JMAP calls — every message present for a whole sweep is
+  re-examined once per sweep, with the sweep's cost amortized across deltas. The
+  observed baseline rows, the rows for messages the feed reported as having left
+  the mailbox (they can never be observed by a later scan page, so they are
+  pruned rather than leaking), and the next position are persisted only after the
+  whole change set is delivered, so a crash re-scans the same window rather than
+  swallowing an update; the rotating position advances only when every baseline
+  row was written, so a failed write holds the cursor and the next sweep
+  re-examines the same window instead of skipping the change; an overflowed delta
+  (the change set exceeds the EAS window) persists them when the remainder is
+  durably queued, so the drain and every later delta do not re-queue the same
+  flag change. A backend hiccup during the scan degrades to serving the
+  query-feed changes without persisting that page's rows.
   `Email/queryChanges` has no `hasMoreChanges` field (RFC 8620 §5.6), so
   `has_more_changes` is a heuristic — set when a page returns exactly at the
   `maxChanges` cap — and the drain loop plus the EWS

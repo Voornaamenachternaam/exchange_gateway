@@ -512,18 +512,21 @@ pub async fn delete_folder(
                     .destroy_mailbox(&account_id, &folder.backend_id, true, owner, password)
                     .await
                 {
-                    Ok(true) => {}
-                    // The mailbox is already gone (JMAP reports it under
-                    // `notFound`, RFC 8620 §5.3). This is a completed step, not
-                    // a failure: a subtree delete that removed some mailboxes
-                    // before failing on a later one must be resumable, and a
-                    // retry otherwise re-walks the same subtree and fails here
-                    // forever, leaving the remaining descendants stuck.
-                    Ok(false) => {
-                        tracing::debug!(
+                    Ok(
+                        crate::jmap::MailboxDestroyOutcome::Destroyed
+                        | crate::jmap::MailboxDestroyOutcome::AlreadyGone,
+                    ) => {}
+                    // The server refused the destroy (e.g. `mailboxHasEmail`
+                    // because a child was recreated, or `forbidden`). This is a
+                    // failure: pruning the mirror here would resurrect the
+                    // folder on the next reconcile, so abort and let the client
+                    // retry.
+                    Ok(crate::jmap::MailboxDestroyOutcome::Refused) => {
+                        tracing::warn!(
                             server_id = %folder.server_id,
-                            "FolderDelete: mailbox already absent; treating as deleted"
+                            "FolderDelete: Mailbox/set refused the destroy"
                         );
+                        return FolderMutationResult::status(6);
                     }
                     Err(e) => {
                         tracing::warn!(error = %e, "FolderDelete: JMAP Mailbox/set destroy failed");
@@ -940,6 +943,11 @@ mod tests {
         base: String,
         jmap_calls: StdArc<TokioMutex<Vec<Value>>>,
         dav_calls: StdArc<TokioMutex<Vec<(String, String)>>>,
+        /// Scripts the `Mailbox/set destroy` reply so the outcome mapping can be
+        /// exercised: `None` = success, `Some("notfound")` = `notDestroyed`
+        /// `notFound`, `Some("refused")` = `notDestroyed` `mailboxHasEmail`,
+        /// `Some("error")` = a method-level `error` response.
+        destroy_mode: Option<String>,
     }
 
     async fn spawn_backend_stub() -> (
@@ -947,9 +955,22 @@ mod tests {
         StdArc<TokioMutex<Vec<Value>>>,
         StdArc<TokioMutex<Vec<(String, String)>>>,
     ) {
+        spawn_backend_stub_with(None).await
+    }
+
+    /// As [`spawn_backend_stub`] but scripts the `Mailbox/set destroy` reply
+    /// (see [`Ctl::destroy_mode`]).
+    async fn spawn_backend_stub_with(
+        destroy_mode: Option<&str>,
+    ) -> (
+        StdArc<AppState>,
+        StdArc<TokioMutex<Vec<Value>>>,
+        StdArc<TokioMutex<Vec<(String, String)>>>,
+    ) {
         use axum::response::Response;
         use axum::routing::{any, get, post};
 
+        let destroy_mode = destroy_mode.map(str::to_string);
         let jmap_calls: StdArc<TokioMutex<Vec<Value>>> = StdArc::new(TokioMutex::new(Vec::new()));
         let dav_calls: StdArc<TokioMutex<Vec<(String, String)>>> =
             StdArc::new(TokioMutex::new(Vec::new()));
@@ -1023,10 +1044,34 @@ mod tests {
                             )
                         } else if let Some(destroy) = args.get("destroy").and_then(|v| v.as_array())
                         {
-                            (
-                                "Mailbox/set",
-                                json!({"accountId": "a", "destroyed": destroy}),
-                            )
+                            match ctl.destroy_mode.as_deref() {
+                                None => (
+                                    "Mailbox/set",
+                                    json!({"accountId": "a", "destroyed": destroy}),
+                                ),
+                                Some("notfound") => {
+                                    let nd: serde_json::Map<String, Value> = destroy
+                                        .iter()
+                                        .filter_map(|v| v.as_str())
+                                        .map(|id| (id.to_string(), json!({"type": "notFound"})))
+                                        .collect();
+                                    ("Mailbox/set", json!({"accountId": "a", "notDestroyed": nd}))
+                                }
+                                Some("refused") => {
+                                    let nd: serde_json::Map<String, Value> = destroy
+                                        .iter()
+                                        .filter_map(|v| v.as_str())
+                                        .map(|id| {
+                                            (id.to_string(), json!({"type": "mailboxHasEmail"}))
+                                        })
+                                        .collect();
+                                    ("Mailbox/set", json!({"accountId": "a", "notDestroyed": nd}))
+                                }
+                                Some(_) => (
+                                    "error",
+                                    json!({"type": "serverFail", "description": "scripted"}),
+                                ),
+                            }
                         } else {
                             ("Mailbox/set", json!({"accountId": "a"}))
                         }
@@ -1070,6 +1115,7 @@ mod tests {
             base: base.clone(),
             jmap_calls: jmap_calls.clone(),
             dav_calls: dav_calls.clone(),
+            destroy_mode,
         };
         let app = axum::Router::new()
             .route("/session", get(session))
@@ -1461,6 +1507,102 @@ mod tests {
                 .unwrap()
                 .is_empty(),
             "child folder must be removed with its parent"
+        );
+    }
+
+    /// A `notFound` destroy reply (RFC 8620 §5.3) means the mailbox is already
+    /// gone — a completed step, so the delete succeeds and prunes the mirror.
+    #[tokio::test]
+    async fn delete_folder_treats_notfound_as_completed() {
+        let (state, _, _) = spawn_backend_stub_with(Some("notfound")).await;
+        state
+            .storage
+            .upsert_folder(crate::storage::FolderUpsertParams {
+                owner: "u@example.com",
+                server_id: "mb-x",
+                parent_id: "0",
+                display_name: "Old",
+                folder_type: 12,
+                backend_kind: "jmap",
+                backend_id: "mb-x",
+            })
+            .await
+            .unwrap();
+        let r = delete_folder(&state, "u@example.com", &pw(), "mb-x").await;
+        assert_eq!(
+            r.status, 1,
+            "an already-absent mailbox is a completed delete"
+        );
+        assert!(
+            state
+                .storage
+                .get_folder("u@example.com", "mb-x")
+                .await
+                .unwrap()
+                .is_none(),
+            "the mirror row must be pruned"
+        );
+    }
+
+    /// A refusal (`mailboxHasEmail`) means the mailbox still exists; pruning the
+    /// mirror would resurrect it on the next reconcile, so the delete fails with
+    /// Status 6 and the row survives.
+    #[tokio::test]
+    async fn delete_folder_refusal_is_status_6_and_keeps_row() {
+        let (state, _, _) = spawn_backend_stub_with(Some("refused")).await;
+        state
+            .storage
+            .upsert_folder(crate::storage::FolderUpsertParams {
+                owner: "u@example.com",
+                server_id: "mb-x",
+                parent_id: "0",
+                display_name: "Old",
+                folder_type: 12,
+                backend_kind: "jmap",
+                backend_id: "mb-x",
+            })
+            .await
+            .unwrap();
+        let r = delete_folder(&state, "u@example.com", &pw(), "mb-x").await;
+        assert_eq!(r.status, 6);
+        assert!(
+            state
+                .storage
+                .get_folder("u@example.com", "mb-x")
+                .await
+                .unwrap()
+                .is_some(),
+            "a refused delete must keep the mirror row"
+        );
+    }
+
+    /// A JMAP method-level `error` is a hard failure (Status 6), never a
+    /// completed delete.
+    #[tokio::test]
+    async fn delete_folder_method_error_is_status_6() {
+        let (state, _, _) = spawn_backend_stub_with(Some("error")).await;
+        state
+            .storage
+            .upsert_folder(crate::storage::FolderUpsertParams {
+                owner: "u@example.com",
+                server_id: "mb-x",
+                parent_id: "0",
+                display_name: "Old",
+                folder_type: 12,
+                backend_kind: "jmap",
+                backend_id: "mb-x",
+            })
+            .await
+            .unwrap();
+        let r = delete_folder(&state, "u@example.com", &pw(), "mb-x").await;
+        assert_eq!(r.status, 6);
+        assert!(
+            state
+                .storage
+                .get_folder("u@example.com", "mb-x")
+                .await
+                .unwrap()
+                .is_some()
         );
     }
 

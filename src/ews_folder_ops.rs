@@ -1040,11 +1040,25 @@ pub(crate) async fn handle_delete_folder(
             {
                 return internal_error(action, "Email/set destroy failed", &e);
             }
-            if let Err(e) = jmap
+            match jmap
                 .destroy_mailbox(&account_id, cb_id, false, &auth.username, &auth.password)
                 .await
             {
-                return internal_error(action, "Mailbox/set destroy failed", &e);
+                Ok(
+                    crate::jmap::MailboxDestroyOutcome::Destroyed
+                    | crate::jmap::MailboxDestroyOutcome::AlreadyGone,
+                ) => {}
+                Ok(crate::jmap::MailboxDestroyOutcome::Refused) => {
+                    return operation_error_response(
+                        &action,
+                        "ErrorCannotDeleteObject",
+                        "The folder could not be deleted",
+                        StatusCode::OK,
+                    );
+                }
+                Err(e) => {
+                    return internal_error(action, "Mailbox/set destroy failed", &e);
+                }
             }
         }
     }

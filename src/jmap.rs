@@ -376,6 +376,23 @@ impl JmapEmail {
             .map(|k| k.keys().filter(|k| !k.starts_with('$')).cloned().collect())
             .unwrap_or_default()
     }
+
+    /// The email's active keywords (those set to `true`), sorted — the same
+    /// canonical form the EAS flag baseline stores (`list_email_ids_with_keywords_page`).
+    pub fn sorted_active_keywords(&self) -> Vec<String> {
+        let mut keywords: Vec<String> = self
+            .keywords
+            .as_ref()
+            .map(|m| {
+                m.iter()
+                    .filter(|(_, v)| **v)
+                    .map(|(k, _)| k.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
+        keywords.sort();
+        keywords
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -498,6 +515,19 @@ pub struct CalendarChangesResult {
 pub struct MailboxListResult {
     pub mailboxes: Vec<JmapMailbox>,
     pub total: u64,
+}
+
+/// Outcome of a JMAP `Mailbox/set` `destroy` (RFC 8621 §2.5). Distinguishes the
+/// three cases a caller must react to differently: the mailbox is gone
+/// (`Destroyed`), the mailbox was already absent so the desired end state holds
+/// (`AlreadyGone`, RFC 8620 §5.3 `notFound`), or the server refused the destroy
+/// for another reason (`Refused`: `mailboxHasEmail`, `mailboxHasChild`,
+/// `forbidden`, …).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MailboxDestroyOutcome {
+    Destroyed,
+    AlreadyGone,
+    Refused,
 }
 
 /// Parameters for querying emails via JMAP.
@@ -3564,14 +3594,22 @@ impl JmapClient {
         Err(anyhow!("Mailbox/set response missing update outcome"))
     }
 
-    /// Destroy a mailbox via JMAP `Mailbox/set` `destroy` (RFC 8621 §5.2).
-    /// Backs `RopDeleteFolder`. Returns true when the mailbox was destroyed.
+    /// Destroy a mailbox via JMAP `Mailbox/set` `destroy` (RFC 8621 §2.5).
+    /// Backs `RopDeleteFolder` and the EAS/EWS folder-delete paths.
     ///
     /// `remove_emails` sets `onDestroyRemoveEmails` (RFC 8621 §2.5): without it
     /// the server rejects destroying a mailbox that still contains emails with
     /// `mailboxHasEmail`. The EAS `FolderDelete` semantics remove the folder and
     /// its contents, so the EAS path passes `true`; a caller that must not
     /// destroy mail passes `false`.
+    ///
+    /// Returns a [`MailboxDestroyOutcome`] so a caller can tell an already-absent
+    /// mailbox (RFC 8620 §5.3 `notFound` SetError — the desired end state) from a
+    /// refusal (`mailboxHasEmail`/`mailboxHasChild`/`forbidden`/…) and from a
+    /// backend failure. A JMAP method-level `error` response, a missing
+    /// `Mailbox/set` response, and a missing/malformed `destroyed` field are all
+    /// returned as `Err` (fail-closed) rather than being mistaken for a
+    /// completed destroy.
     pub async fn destroy_mailbox(
         &self,
         account_id: &str,
@@ -3579,7 +3617,7 @@ impl JmapClient {
         remove_emails: bool,
         username: &str,
         password: &SecretString,
-    ) -> Result<bool> {
+    ) -> Result<MailboxDestroyOutcome> {
         let session = self.get_session(username, password).await?;
         let api_url = &session.api_url;
         let calls = vec![(
@@ -3602,33 +3640,44 @@ impl JmapClient {
             .await?;
 
         for (method, data, _) in resp.method_responses {
+            // RFC 8620 §3.6.2: a method-level error is a separate `error`
+            // response, not a `Mailbox/set` result. Reject it rather than
+            // falling through to a success outcome.
+            if method == "error" {
+                return Err(anyhow!(
+                    "Mailbox/set destroy returned method error: {}",
+                    data
+                ));
+            }
             if method != "Mailbox/set" {
                 continue;
             }
-            if let Some(err) = data.get("error").filter(|v| !v.is_null()) {
-                let desc = err
-                    .get("description")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("Mailbox/set method rejected");
-                return Err(anyhow!("Mailbox/set destroy rejected: {desc}"));
-            }
+            // A per-id SetError (RFC 8620 §5.3): a `notFound` type means the id
+            // is already gone (the desired end state); any other type is a
+            // refusal the caller must not report as a completed delete.
             if let Some(not_destroyed) = data.get("notDestroyed")
                 && !not_destroyed.is_null()
                 && let Some(obj) = not_destroyed.as_object()
-                && obj.contains_key(mailbox_id)
+                && let Some(entry) = obj.get(mailbox_id)
             {
-                let desc = obj
-                    .get(mailbox_id)
-                    .and_then(|v| v.get("description"))
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("unknown");
-                return Err(anyhow!("Mailbox/set destroy failed: {desc}"));
+                if entry.get("type").and_then(|v| v.as_str()) == Some("notFound") {
+                    return Ok(MailboxDestroyOutcome::AlreadyGone);
+                }
+                return Ok(MailboxDestroyOutcome::Refused);
             }
-            if let Some(destroyed) = data.get("destroyed").and_then(|v| v.as_array()) {
-                return Ok(destroyed.iter().any(|v| v.as_str() == Some(mailbox_id)));
-            }
+            let destroyed = data
+                .get("destroyed")
+                .and_then(|v| v.as_array())
+                .ok_or_else(|| anyhow!("Mailbox/set destroy response missing `destroyed`"))?;
+            return Ok(
+                if destroyed.iter().any(|v| v.as_str() == Some(mailbox_id)) {
+                    MailboxDestroyOutcome::Destroyed
+                } else {
+                    MailboxDestroyOutcome::Refused
+                },
+            );
         }
-        Ok(false)
+        Err(anyhow!("Mailbox/set response missing destroy outcome"))
     }
 
     /// Replace a mailbox's `shareWith` map (JMAP sharing, persisted via
@@ -4374,6 +4423,124 @@ impl JmapClient {
         Err(anyhow!(
             "Unexpected JMAP response structure for Mailbox/get"
         ))
+    }
+
+    /// Page size for [`Self::query_all_mailboxes`]'s `Mailbox/query` walk.
+    const MAILBOX_QUERY_PAGE: u64 = 500;
+
+    /// Enumerate **every** mailbox of the primary account, paging
+    /// `Mailbox/query` by `position`/`limit` until the full list is drained.
+    ///
+    /// `query_mailboxes` issues a single unpaged `Mailbox/query`; a server may
+    /// clamp `limit` (RFC 8620 §5.5) and return only a prefix, so a caller that
+    /// needs the complete set (the subtree walks behind `RopDeleteFolder` and
+    /// EWS `DeleteFolder` hard delete) must paginate — otherwise a large
+    /// hierarchy leaves descendants unvisited and the parent destroy fails with
+    /// `mailboxHasChild`.
+    pub async fn query_all_mailboxes(
+        &self,
+        username: &str,
+        password: &SecretString,
+    ) -> Result<MailboxListResult> {
+        let session = self.get_session(username, password).await?;
+        let api_url = &session.api_url;
+        let account_id = session
+            .primary_accounts
+            .get("urn:ietf:params:jmap:mail")
+            .ok_or_else(|| anyhow!("No primary mail account found in JMAP session"))?;
+
+        let mut all: Vec<JmapMailbox> = Vec::new();
+        let mut position: u64 = 0;
+        loop {
+            let method_calls = vec![
+                (
+                    "Mailbox/query",
+                    json!({
+                        "accountId": account_id,
+                        "position": position,
+                        "limit": Self::MAILBOX_QUERY_PAGE,
+                        "calculateTotal": true,
+                    }),
+                    "mq0",
+                ),
+                (
+                    "Mailbox/get",
+                    json!({
+                        "accountId": account_id,
+                        "#ids": {
+                            "resultOf": "mq0",
+                            "name": "Mailbox/query",
+                            "path": "/ids",
+                        },
+                        "properties": [
+                            "id", "name", "parentId", "role", "sortOrder",
+                            "totalEmails", "unreadEmails", "totalThreads", "unreadThreads",
+                            "isSubscribed", "shareWith"
+                        ],
+                    }),
+                    "mg0",
+                ),
+            ];
+            let response = self
+                .api_call(
+                    api_url,
+                    &["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:mail"],
+                    method_calls,
+                    username,
+                    password,
+                )
+                .await?;
+
+            let mut page_len: u64 = 0;
+            let mut total: Option<u64> = None;
+            let mut saw_get = false;
+            for (method, data, _) in response.method_responses {
+                if method == "error" {
+                    return Err(anyhow!("Mailbox/query returned method error: {}", data));
+                }
+                if method == "Mailbox/query" {
+                    page_len = data
+                        .get("ids")
+                        .and_then(|v| v.as_array())
+                        .map(|a| a.len() as u64)
+                        .unwrap_or(0);
+                    total = data.get("total").and_then(|v| v.as_u64());
+                } else if method == "Mailbox/get" {
+                    saw_get = true;
+                    let mut list: Vec<JmapMailbox> = data
+                        .get("list")
+                        .and_then(|v| serde_json::from_value(v.clone()).ok())
+                        .unwrap_or_default();
+                    all.append(&mut list);
+                }
+            }
+            if !saw_get {
+                return Err(anyhow!(
+                    "Unexpected JMAP response structure for Mailbox/get"
+                ));
+            }
+            // A zero-length page means the walk is complete. Otherwise advance
+            // by the page's actual length and stop once the requested `total`
+            // (calculateTotal) is reached. Using the server's own `total` rather
+            // than a "short page" heuristic keeps the walk correct even when the
+            // server clamps `limit` below `MAILBOX_QUERY_PAGE` — a short page
+            // then does NOT mean the mailbox set is exhausted.
+            if page_len == 0 {
+                break;
+            }
+            position += page_len;
+            if let Some(t) = total
+                && all.len() as u64 >= t
+            {
+                break;
+            }
+        }
+
+        let total = all.len() as u64;
+        Ok(MailboxListResult {
+            mailboxes: all,
+            total,
+        })
     }
 
     /// Get the primary mail account ID from the JMAP session.
@@ -9466,5 +9633,258 @@ mod tests {
             .expect("query must succeed");
         assert_eq!(result.state, "get-9", "the data-type state, not queryState");
         assert_eq!(result.query_state, "query-7");
+    }
+
+    /// Spawn a stub JMAP server whose `Mailbox/set` `destroy` reply is the
+    /// supplied scripted `methodResponses` entry, so the `destroy_mailbox`
+    /// outcome mapping can be driven directly.
+    async fn spawn_mailbox_set_stub(api_response: Value) -> String {
+        spawn_stub_jmap_api_server(api_response).await
+    }
+
+    #[tokio::test]
+    async fn destroy_mailbox_reports_destroyed() {
+        let response = json!({
+            "methodResponses": [
+                ["Mailbox/set", { "accountId": "a", "destroyed": ["mb-1"] }, "ms2"]
+            ]
+        });
+        let base = spawn_mailbox_set_stub(response).await;
+        let client = JmapClient::new(&base).unwrap();
+        let pw = SecretString::from("pw");
+        let outcome = client
+            .destroy_mailbox("a", "mb-1", true, "u", &pw)
+            .await
+            .unwrap();
+        assert_eq!(outcome, MailboxDestroyOutcome::Destroyed);
+    }
+
+    #[tokio::test]
+    async fn destroy_mailbox_maps_notfound_to_already_gone() {
+        // RFC 8620 §5.3: a destroy of an id that cannot be found is rejected
+        // with the `notFound` SetError. That is the desired end state, so the
+        // outcome is `AlreadyGone`, not an error and not a refusal.
+        let response = json!({
+            "methodResponses": [
+                ["Mailbox/set", {
+                    "accountId": "a",
+                    "notDestroyed": { "mb-1": { "type": "notFound" } }
+                }, "ms2"]
+            ]
+        });
+        let base = spawn_mailbox_set_stub(response).await;
+        let client = JmapClient::new(&base).unwrap();
+        let pw = SecretString::from("pw");
+        let outcome = client
+            .destroy_mailbox("a", "mb-1", true, "u", &pw)
+            .await
+            .unwrap();
+        assert_eq!(outcome, MailboxDestroyOutcome::AlreadyGone);
+    }
+
+    #[tokio::test]
+    async fn destroy_mailbox_maps_mailbox_has_email_to_refused() {
+        // RFC 8621 §2.5: a non-empty mailbox without `onDestroyRemoveEmails`
+        // is rejected with `mailboxHasEmail`. That is a refusal — the mailbox
+        // still exists — and must not be mistaken for a completed delete.
+        let response = json!({
+            "methodResponses": [
+                ["Mailbox/set", {
+                    "accountId": "a",
+                    "notDestroyed": { "mb-1": { "type": "mailboxHasEmail" } }
+                }, "ms2"]
+            ]
+        });
+        let base = spawn_mailbox_set_stub(response).await;
+        let client = JmapClient::new(&base).unwrap();
+        let pw = SecretString::from("pw");
+        let outcome = client
+            .destroy_mailbox("a", "mb-1", false, "u", &pw)
+            .await
+            .unwrap();
+        assert_eq!(outcome, MailboxDestroyOutcome::Refused);
+    }
+
+    #[tokio::test]
+    async fn destroy_mailbox_errors_on_method_error() {
+        // RFC 8620 §3.6.2: a method-level error is a separate `error` response.
+        // It must be a hard error, never `Ok(false)`.
+        let response = json!({
+            "methodResponses": [
+                ["error", { "type": "serverFail", "description": "boom" }, "ms2"]
+            ]
+        });
+        let base = spawn_mailbox_set_stub(response).await;
+        let client = JmapClient::new(&base).unwrap();
+        let pw = SecretString::from("pw");
+        let err = client
+            .destroy_mailbox("a", "mb-1", true, "u", &pw)
+            .await
+            .expect_err("a method-level error must be a hard error");
+        assert!(err.to_string().contains("method error"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn destroy_mailbox_errors_when_destroyed_missing() {
+        // A `Mailbox/set` result without a `destroyed` array is malformed and
+        // must be a hard error rather than silently reported as not-destroyed.
+        let response = json!({
+            "methodResponses": [
+                ["Mailbox/set", { "accountId": "a" }, "ms2"]
+            ]
+        });
+        let base = spawn_mailbox_set_stub(response).await;
+        let client = JmapClient::new(&base).unwrap();
+        let pw = SecretString::from("pw");
+        let err = client
+            .destroy_mailbox("a", "mb-1", true, "u", &pw)
+            .await
+            .expect_err("a missing `destroyed` must be a hard error");
+        assert!(err.to_string().contains("missing `destroyed`"), "{err}");
+    }
+
+    /// Spawn a stub JMAP server whose `Mailbox/query` honours `position`/`limit`
+    /// over a fixed id list (clamped to `page_cap`) so `query_all_mailboxes`
+    /// pagination can be exercised, and whose `Mailbox/get` echoes the queried
+    /// ids with a `parentId` derived from the id suffix.
+    async fn spawn_paged_mailbox_stub(
+        total: usize,
+        page_cap: usize,
+    ) -> (String, std::sync::Arc<tokio::sync::Mutex<Vec<u64>>>) {
+        use axum::routing::{get, post};
+
+        #[derive(Clone)]
+        struct PagedCtl {
+            base: String,
+            total: usize,
+            page_cap: usize,
+            queries: std::sync::Arc<tokio::sync::Mutex<Vec<u64>>>,
+        }
+
+        async fn session(axum::Extension(ctl): axum::Extension<PagedCtl>) -> axum::Json<Value> {
+            let mut s = session_json(&ctl.base);
+            s["primaryAccounts"] = json!({ "urn:ietf:params:jmap:mail": "a" });
+            axum::Json(s)
+        }
+
+        async fn api(
+            axum::Extension(ctl): axum::Extension<PagedCtl>,
+            body: String,
+        ) -> axum::Json<Value> {
+            let req: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
+            let mut responses = Vec::new();
+            let mut last_query_ids: Vec<String> = Vec::new();
+            for call in req
+                .get("methodCalls")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default()
+            {
+                let name = call.get(0).and_then(|v| v.as_str()).unwrap_or("");
+                let args = call.get(1).cloned().unwrap_or(Value::Null);
+                let cid = call.get(2).and_then(|v| v.as_str()).unwrap_or("c0");
+                let result = match name {
+                    "Mailbox/query" => {
+                        let position =
+                            args.get("position").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+                        let limit =
+                            args.get("limit").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+                        ctl.queries.lock().await.push(position as u64);
+                        // The server clamps the requested limit to its own cap.
+                        let eff = limit.min(ctl.page_cap).max(1);
+                        let end = (position + eff).min(ctl.total);
+                        last_query_ids = (position..end).map(|i| format!("mb-{i}")).collect();
+                        json!({
+                            "accountId": "a",
+                            "ids": last_query_ids,
+                            "total": ctl.total,
+                            "position": position,
+                        })
+                    }
+                    "Mailbox/get" => {
+                        let list: Vec<Value> = last_query_ids
+                            .iter()
+                            .map(|id| json!({ "id": id, "name": id, "parentId": Value::Null }))
+                            .collect();
+                        json!({ "accountId": "a", "list": list })
+                    }
+                    _ => json!({ "accountId": "a" }),
+                };
+                responses.push(json!([name, result, cid]));
+            }
+            axum::Json(json!({ "methodResponses": responses, "sessionState": "s" }))
+        }
+
+        let queries = std::sync::Arc::new(tokio::sync::Mutex::new(Vec::new()));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let base = format!("http://127.0.0.1:{port}");
+        let ctl = PagedCtl {
+            base: base.clone(),
+            total,
+            page_cap,
+            queries: queries.clone(),
+        };
+        let app = axum::Router::new()
+            .route("/session", get(session))
+            .route("/", post(api))
+            .layer(axum::Extension(ctl));
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        (base, queries)
+    }
+
+    #[tokio::test]
+    async fn query_all_mailboxes_pages_until_exhausted() {
+        // 1200 mailboxes with a server page cap of 500: the walk must issue
+        // three pages (0, 500, 1000) and return every mailbox.
+        let (base, queries) = spawn_paged_mailbox_stub(1200, 500).await;
+        let client = JmapClient::new(&base).unwrap();
+        let pw = SecretString::from("pw");
+        let result = client
+            .query_all_mailboxes("u", &pw)
+            .await
+            .expect("paged walk must succeed");
+        assert_eq!(result.mailboxes.len(), 1200);
+        assert_eq!(result.total, 1200);
+        assert_eq!(
+            *queries.lock().await,
+            vec![0, 500, 1000],
+            "the walk must page at the server's effective limit"
+        );
+    }
+
+    #[tokio::test]
+    async fn query_all_mailboxes_single_page_when_under_cap() {
+        let (base, queries) = spawn_paged_mailbox_stub(10, 500).await;
+        let client = JmapClient::new(&base).unwrap();
+        let pw = SecretString::from("pw");
+        let result = client
+            .query_all_mailboxes("u", &pw)
+            .await
+            .expect("single-page walk must succeed");
+        assert_eq!(result.mailboxes.len(), 10);
+        assert_eq!(*queries.lock().await, vec![0], "one page suffices");
+    }
+
+    #[tokio::test]
+    async fn query_all_mailboxes_pages_when_server_clamps_limit() {
+        // The server clamps every page to 200 (< the requested 500). A "short
+        // page means done" heuristic would stop after one page; the walk must
+        // instead use the requested `total` and page until it is reached.
+        let (base, queries) = spawn_paged_mailbox_stub(1200, 200).await;
+        let client = JmapClient::new(&base).unwrap();
+        let pw = SecretString::from("pw");
+        let result = client
+            .query_all_mailboxes("u", &pw)
+            .await
+            .expect("clamped walk must succeed");
+        assert_eq!(result.mailboxes.len(), 1200);
+        assert_eq!(
+            *queries.lock().await,
+            vec![0, 200, 400, 600, 800, 1000],
+            "the walk must not stop at the first short page"
+        );
     }
 }

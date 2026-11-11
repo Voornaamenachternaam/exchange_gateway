@@ -7399,12 +7399,18 @@ struct KeywordScanOutcome {
 /// messages that left the mailbox, and the rotating position. Called after the
 /// delta's change set is durably delivered (or queued), so a crash re-reports
 /// rather than swallows a flag change.
+///
+/// The rotating position advances ONLY when every baseline row was written: a
+/// failed write leaves the position where it was, so the next sweep re-examines
+/// the same window and re-reports the affected flag change instead of skipping
+/// it forever.
 async fn persist_keyword_scan(
     state: &Arc<AppState>,
     owner: &str,
     collection_id: &str,
     outcome: &KeywordScanOutcome,
 ) {
+    let mut all_written = true;
     for (id, keywords) in &outcome.upserts {
         if let Err(e) = state
             .storage
@@ -7412,6 +7418,7 @@ async fn persist_keyword_scan(
             .await
         {
             tracing::warn!(error = %e, "Failed to persist email keyword baseline row");
+            all_written = false;
         }
     }
     for id in &outcome.deletes {
@@ -7421,7 +7428,13 @@ async fn persist_keyword_scan(
             .await
         {
             tracing::warn!(error = %e, "Failed to prune email keyword baseline row");
+            all_written = false;
         }
+    }
+    if !all_written {
+        // Hold the cursor: a later delta re-scans this window so no baseline
+        // row is left stale relative to the position the sweep advanced past.
+        return;
     }
     if let Err(e) = state
         .storage
@@ -7525,10 +7538,25 @@ async fn scan_email_keyword_changes(
                 .await
                 .ok()
                 .flatten();
-            if let Some(previous) = previous
-                && previous != keywords
-                && !queued.contains(id.as_str())
-            {
+            // A row is written only when the baseline is missing or the live
+            // keywords differ: re-upserting an unchanged row on every sweep
+            // would issue up to `KEYWORD_SCAN_MAX_PAGES * KEYWORD_SCAN_PAGE`
+            // pointless writes per delta.
+            let differs = previous.as_ref() != Some(&keywords);
+            if !differs {
+                continue;
+            }
+            // A `<Change>` is emitted only when a baseline row already existed
+            // and its keywords differ: that is a flag edit the `queryChanges`
+            // feed cannot report. A MISSING row is a first observation (the
+            // bounded scan had not yet reached a message delivered before this
+            // collection's baseline was seeded) — record it without reporting a
+            // change, since a delivered `<Add>` seeds its own row and a message
+            // observed before delivery is covered by the `<Add>` this delta or
+            // the overflow queue already carries. A queued id is delivered by
+            // this delta and already carries its current flags.
+            let changed_since_baseline = previous.is_some();
+            if changed_since_baseline && !queued.contains(id.as_str()) {
                 ops.push(PendingEmailOp::change(id.clone()));
             }
             outcome.upserts.push((id, keywords));
@@ -7653,6 +7681,24 @@ async fn render_pending_email_op(ctx: &EmailSyncCtx<'_>, op: &PendingEmailOp) ->
     };
     let jmap_id = email.id.as_deref().unwrap_or_default();
     let server_id = crate::email::email_server_id_from_jmap_id(jmap_id);
+    // Seed the flag baseline for a delivered `<Add>`: the bounded rotating scan
+    // may not reach this message before the user edits its flags, and without a
+    // baseline row `scan_email_keyword_changes` would treat the first
+    // observation as a fresh capture (recording the new keywords) instead of
+    // reporting the edit — the `queryChanges` feed cannot report it either, so
+    // the client's flag would stay stale until the next full sweep. Writing the
+    // baseline at delivery makes the very next scan report any change.
+    if op.op == "add" {
+        let keywords = email.sorted_active_keywords();
+        if let Err(e) = ctx
+            .state
+            .storage
+            .upsert_email_keyword(ctx.username, ctx.state_collection_id, jmap_id, &keywords)
+            .await
+        {
+            tracing::warn!(error = %e, "Failed to seed email keyword baseline for delivered Add");
+        }
+    }
     let app_data = crate::email::render_jmap_email_as_eas_application_data_with_options(
         &email,
         &server_id,
@@ -11407,6 +11453,174 @@ mod tests {
         assert!(
             baseline.contains("\"m1\""),
             "baseline keyed by email id: {baseline}"
+        );
+    }
+
+    /// A delivered `<Add>` must seed the flag baseline for the new message, so a
+    /// flag edit before the rotating scan reaches it is still reported (the
+    /// `queryChanges` feed cannot report it, and without a baseline row the
+    /// first observation would be recorded as a fresh capture).
+    #[tokio::test]
+    async fn test_email_delta_seeds_baseline_for_delivered_add() {
+        use crate::models::AppState;
+        use axum::routing::{get, post};
+        use serde_json::{Value, json};
+        use std::sync::Arc as StdArc;
+
+        #[derive(Clone)]
+        struct Ctl {
+            base: String,
+        }
+
+        async fn session(axum::Extension(ctl): axum::Extension<Ctl>) -> axum::Json<Value> {
+            axum::Json(json!({
+                "apiUrl": ctl.base,
+                "downloadUrl": format!("{}/download/{{accountId}}/{{blobId}}", ctl.base),
+                "uploadUrl": format!("{}/upload/{{accountId}}", ctl.base),
+                "eventSourceUrl": format!("{}/eventsource", ctl.base),
+                "state": "s",
+                "username": "u",
+                "accounts": {"a": {"name": "u", "isPersonal": true, "isReadOnly": false, "accountCapabilities": {}}},
+                "primaryAccounts": {"urn:ietf:params:jmap:mail": "a"},
+                "capabilities": {"urn:ietf:params:jmap:core": {"maxObjectsInGet": 500}}
+            }))
+        }
+
+        async fn api(
+            axum::Extension(_ctl): axum::Extension<Ctl>,
+            body: String,
+        ) -> axum::response::Response {
+            let req: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
+            let mut responses = Vec::new();
+            for call in req
+                .get("methodCalls")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default()
+            {
+                let name = call.get(0).and_then(|v| v.as_str()).unwrap_or("");
+                let cid = call.get(2).and_then(|v| v.as_str()).unwrap_or("c0");
+                let email = json!({
+                    "id": "m2",
+                    "blobId": "b2",
+                    "threadId": "t2",
+                    "mailboxIds": {"mbx-inbox": true},
+                    "keywords": {"$seen": true},
+                    "subject": "fresh",
+                    "from": [{"name": "S", "email": "s@example.com"}],
+                    "to": [{"name": "R", "email": "r@example.com"}],
+                    "receivedAt": "2026-11-10T12:00:00Z",
+                    "sentAt": "2026-11-10T12:00:00Z",
+                    "size": 10,
+                    "preview": "hi",
+                    "hasAttachment": false
+                });
+                let result = match name {
+                    // The new message entered the mailbox: it is an Add.
+                    "Email/queryChanges" => json!({
+                        "accountId": "a",
+                        "oldQueryState": "S0",
+                        "newQueryState": "S1",
+                        "added": [{"id": "m2", "index": 0}],
+                        "removed": [],
+                    }),
+                    // The rotating scan window starts past the new message, so
+                    // it is never observed by the scan in this delta.
+                    "Email/query" => json!({
+                        "accountId": "a",
+                        "queryState": "S1",
+                        "ids": [],
+                        "total": 0,
+                        "position": 0,
+                    }),
+                    "Email/get" => json!({
+                        "accountId": "a",
+                        "state": "S1",
+                        "list": [email],
+                    }),
+                    _ => json!({"accountId": "a"}),
+                };
+                responses.push(json!([name, result, cid]));
+            }
+            let resp = json!({"methodResponses": responses, "sessionState": "s"});
+            axum::response::Response::builder()
+                .status(200)
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(serde_json::to_vec(&resp).unwrap()))
+                .unwrap()
+        }
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
+        let ctl = Ctl { base: base.clone() };
+        let app = axum::Router::new()
+            .route("/session", get(session))
+            .route("/", post(api))
+            .layer(axum::Extension(ctl));
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let storage = crate::storage::Storage::new("sqlite::memory:")
+            .await
+            .unwrap();
+        storage.init_schema().await.unwrap();
+        let cfg = crate::config::Config {
+            jmap_base: base.clone(),
+            email_enabled: true,
+            mail_domain: "example.com".to_string(),
+            hmac_secret: SecretString::from("a".repeat(32)),
+            ..Default::default()
+        };
+        let state = StdArc::new(AppState::new(cfg, StdArc::new(storage)));
+
+        let owner = "u@example.com";
+        let scoped = scoped_collection_id("2", "dev-1");
+        state
+            .storage
+            .set_sync_key(owner, &scoped, "oldkey", Some("S0"))
+            .await
+            .unwrap();
+        // An empty baseline exists, but no row for the new message m2.
+        state
+            .storage
+            .set_email_keyword_baseline(owner, &scoped, "{}")
+            .await
+            .unwrap();
+
+        let jmap = state.jmap_client.as_ref().unwrap().clone();
+        let password = SecretString::from("pw");
+        let options = crate::eas_sync_options::EasSyncCollectionOptions::default();
+        let xml = handle_email_delta_sync(&EmailSyncCtx {
+            state: &state,
+            jmap: &jmap,
+            account_id: "a",
+            username: owner,
+            password: &password,
+            collection_id: "2",
+            state_collection_id: &scoped,
+            window: 512,
+            options: &options,
+            conversation_mode: false,
+            mailbox_id: None,
+            delta_mailbox_id: Some("mbx-inbox"),
+        })
+        .await
+        .unwrap();
+
+        assert!(
+            xml.contains("<Add><ServerId>"),
+            "m2 must be delivered: {xml}"
+        );
+        let row = state
+            .storage
+            .get_email_keyword(owner, &scoped, "m2")
+            .await
+            .unwrap();
+        assert_eq!(
+            row,
+            Some(vec!["$seen".to_string()]),
+            "a delivered Add must seed the flag baseline for the new message"
         );
     }
 

@@ -161,6 +161,36 @@ EAS specs v20250520 (16.1); older EAS compat NOT needed.
   percent-encoded by reqwest's Url::join) plus the `src/sync.rs` and `src/eas.rs`
   delta/scoping tests. clippy 0 (`-D warnings`), rustfmt clean on ALL touched
   files, release warning-free.
+- AUDIT5.MD §2 PR-review hardening (delivered). `JmapClient::destroy_mailbox`
+  returns a typed `MailboxDestroyOutcome` (`Destroyed`/`AlreadyGone`/`Refused`):
+  a JMAP method-level `error` and a `Mailbox/set` result with no `destroyed`
+  array are hard `Err`s, a `notDestroyed` `notFound` entry is `AlreadyGone`
+  (RFC 8620 §5.3 — the desired end state, so an EAS FolderDelete/EWS/MAPI
+  subtree retry after a partial delete resumes), and any other `notDestroyed`
+  type is `Refused` (the mailbox still exists — the mirror must NOT be pruned,
+  else the next reconcile resurrects it). Callers (eas_folders, ews_folder_ops,
+  mapi handler) match the typed outcome. `query_all_mailboxes` pages
+  `Mailbox/query` at `MAILBOX_QUERY_PAGE` (500) and stops on the requested
+  `total` (calculateTotal), NOT a "short page means done" heuristic — a server
+  that clamps `limit` below 500 would otherwise truncate the subtree walk.
+  MAPI `RopDeleteFolder` ([MS-OXCFOLD] §2.2.1.3) now rejects any
+  `DeleteFolderFlags` bit outside 0x01|0x04|0x10 (ecInvalidParam, store
+  untouched), accepts 0x10 as a valid no-op bit, and reports
+  `PartialCompletion` (new `RopDeleteFolderResponse`, MS-OXCROPS §2.2.4.3.2)
+  when it succeeds for only a subset of the subtree. The EAS email delta's
+  keyword baseline seeds a row for every delivered `<Add>` (`render_pending_email_op`)
+  so a flag edit before the rotating scan reaches the message is still reported
+  — a missing row on the scan's first observation is recorded WITHOUT a
+  `<Change>` (the Add already carried the current flags; emitting a Change there
+  fired for messages the client never received). DECLINED (thread reply
+  pending): cubic's sync.rs P2 (4537721615) — tombstoning a scoped folder's
+  moved-out events — because `item_map` is owner-global (no collection column)
+  and calendar-event hrefs are account-scoped (`jmap://calendar/{account}/{id}`)
+  while a scoped folder's delta is the ACCOUNT-wide feed, so tombstoning the
+  scoped-filtered ids would delete every OTHER calendar's events from the shared
+  rows. The residual (an event moved OUT of the folder's calendar lingers until
+  a client resync) is bounded and cross-calendar-safe; a correct fix needs a
+  per-collection calendar scope on `item_map`.
 - AUDIT.md §10 (EAS Sync wire-exactness) is COMPLETE and its section now
   documents the delivered behavior — keep it accurate when touching Sync.
 - AUDIT.md §11 (WBXML conformance hardening) is COMPLETE (commit 7b7d242):

@@ -805,12 +805,18 @@ struct RopContext<'a> {
 /// `RopDeleteFolder` `DeleteFolderFlags` bits ([MS-OXCFOLD] §2.2.1.3.1).
 const DEL_MESSAGES: u8 = 0x01;
 const DEL_FOLDERS: u8 = 0x04;
+const DELETE_HARD_DELETE: u8 = 0x10;
+/// Every bit [MS-OXCFOLD] §2.2.1.3.1 defines; any other bit is invalid.
+const VALID_DELETE_FOLDER_FLAGS: u8 = DEL_MESSAGES | DEL_FOLDERS | DELETE_HARD_DELETE;
 
 /// BFS over `Mailbox/get` starting at `root_id`, returning the subtree
 /// deepest-first (children before parents). `RopDeleteFolder` with
 /// `DEL_FOLDERS` uses this so a destroy never hits a parent that still has a
-/// child (JMAP rejects that with `mailboxHasChild`). An empty vector means the
-/// root mailbox is not present in the account.
+/// child (JMAP rejects that with `mailboxHasChild`). The full mailbox set is
+/// enumerated by paging `Mailbox/query` (`query_all_mailboxes`), so a large
+/// hierarchy is walked completely rather than leaving descendants behind on a
+/// clamped first page. An empty vector means the root mailbox is not present in
+/// the account.
 async fn mailbox_subtree_deepest_first(
     jmap: &crate::jmap::JmapClient,
     root_id: &str,
@@ -818,10 +824,10 @@ async fn mailbox_subtree_deepest_first(
     password: &secrecy::SecretString,
 ) -> Result<Vec<String>, ()> {
     let result = jmap
-        .query_mailboxes(username, password)
+        .query_all_mailboxes(username, password)
         .await
         .map_err(|e| {
-            tracing::warn!(error = %e, "RopDeleteFolder: Mailbox/get failed");
+            tracing::warn!(error = %e, "RopDeleteFolder: Mailbox/query failed");
         })?;
     let mut children: std::collections::HashMap<&str, Vec<&str>> = std::collections::HashMap::new();
     let mut present = false;
@@ -5135,9 +5141,10 @@ async fn execute_one_rop(
             // MS-OXCROPS §2.2.4.3.1 / MS-OXCFOLD §2.2.1.3: delete the mailbox
             // the input handle indexes. `DeleteFolderFlags` controls how: by
             // default only an empty folder may be deleted; `DEL_MESSAGES`
-            // (0x01) also removes its messages and `DEL_FOLDERS` (0x04) its
-            // subfolders. The `folder_id` is echoed by the handle ack but the
-            // live handle is the authoritative backend id.
+            // (0x01) also removes its messages, `DEL_FOLDERS` (0x04) its
+            // subfolders and `DELETE_HARD_DELETE` (0x10) selects a permanent
+            // removal over a soft delete. The `folder_id` is echoed by the
+            // handle ack but the live handle is the authoritative backend id.
             let req = RopDeleteFolderRequest::decode(cur)?;
             let backend = sessions
                 .with_handle(session_id, req.input_handle_index, |h| match h {
@@ -5149,10 +5156,17 @@ async fn execute_one_rop(
                 })
                 .unwrap_or_default();
             let mut outcome: RopErrorCode;
+            let mut partial: u8 = 0;
             match (jmap, password, &backend) {
                 (_, _, b) if b.is_empty() => outcome = RopErrorCode::NoSupport,
                 (None, _, _) => outcome = RopErrorCode::NotFound,
                 (_, None, _) => outcome = RopErrorCode::AccessDenied,
+                // [MS-OXCFOLD] §2.2.1.3.1: "The client MUST NOT set any other
+                // bits"; §3.2.5.3 says an invalid bit SHOULD fail the ROP with
+                // ecInvalidParam. Reject before touching the store.
+                (Some(_), Some(_), _) if req.delete_flags & !VALID_DELETE_FOLDER_FLAGS != 0 => {
+                    outcome = RopErrorCode::InvalidParameter;
+                }
                 (Some(jc), Some(pw), backend) => {
                     let account_id = jc
                         .get_account_id(username, pw)
@@ -5171,20 +5185,20 @@ async fn execute_one_rop(
                                 Ok(ids) if !ids.is_empty() => ids,
                                 Ok(_) => {
                                     outcome = RopErrorCode::NotFound;
-                                    crate::mapi::rops::RopHandleAckSuccess {
-                                        rop_id,
+                                    crate::mapi::rops::RopDeleteFolderResponse {
                                         input_handle_index: req.input_handle_index,
                                         return_value: outcome,
+                                        partial_completion: 0,
                                     }
                                     .encode(out);
                                     return Ok(());
                                 }
                                 Err(()) => {
                                     outcome = RopErrorCode::NetworkError;
-                                    crate::mapi::rops::RopHandleAckSuccess {
-                                        rop_id,
+                                    crate::mapi::rops::RopDeleteFolderResponse {
                                         input_handle_index: req.input_handle_index,
                                         return_value: outcome,
+                                        partial_completion: 0,
                                     }
                                     .encode(out);
                                     return Ok(());
@@ -5197,24 +5211,32 @@ async fn execute_one_rop(
                         // (JMAP's `onDestroyRemoveEmails`); without it an
                         // unset flag leaves the default empty-folder rule, so
                         // JMAP rejects a non-empty destroy with
-                        // `mailboxHasEmail` and the ROP fails as before.
+                        // `mailboxHasEmail` — the ROP then succeeds for no
+                        // target and reports PartialCompletion.
                         let remove_emails = req.delete_flags & DEL_MESSAGES != 0;
+                        // DELETE_HARD_DELETE is accepted but does not change
+                        // the outcome: the gateway's folder model has no
+                        // soft-deleted state (a mailbox is either present or
+                        // gone), so both soft and hard deletes map to a
+                        // permanent JMAP `Mailbox/set destroy`. The bit is
+                        // validated above with the rest of the mask.
                         outcome = RopErrorCode::Success;
+                        let mut destroyed_count = 0usize;
                         for mb in &subtree {
                             match jc
                                 .destroy_mailbox(&account_id, mb, remove_emails, username, pw)
                                 .await
                             {
-                                Ok(true) => {}
-                                // A mailbox already gone is a completed step
-                                // (RFC 8620 §5.3 reports it under `notFound`),
-                                // so a retry after a partial subtree delete
-                                // resumes rather than failing forever.
-                                Ok(false) => {
+                                Ok(
+                                    crate::jmap::MailboxDestroyOutcome::Destroyed
+                                    | crate::jmap::MailboxDestroyOutcome::AlreadyGone,
+                                ) => destroyed_count += 1,
+                                Ok(crate::jmap::MailboxDestroyOutcome::Refused) => {
                                     tracing::warn!(
                                         mailbox = %mb,
-                                        "RopDeleteFolder: mailbox already absent; treating as deleted"
+                                        "RopDeleteFolder: Mailbox/set refused the destroy"
                                     );
+                                    break;
                                 }
                                 Err(e) => {
                                     tracing::warn!(error = %e, "JMAP Mailbox/set destroy failed");
@@ -5223,13 +5245,21 @@ async fn execute_one_rop(
                                 }
                             }
                         }
+                        // The ROP succeeded for only some (or none) of the
+                        // targets — a non-empty folder with DEL_MESSAGES unset,
+                        // or a child refused mid-walk — so report
+                        // PartialCompletion rather than a hard failure
+                        // ([MS-OXCFOLD] §2.2.1.3.2).
+                        if outcome == RopErrorCode::Success && destroyed_count < subtree.len() {
+                            partial = 1;
+                        }
                     }
                 }
             }
-            crate::mapi::rops::RopHandleAckSuccess {
-                rop_id,
+            crate::mapi::rops::RopDeleteFolderResponse {
                 input_handle_index: req.input_handle_index,
                 return_value: outcome,
+                partial_completion: partial,
             }
             .encode(out);
         }
@@ -6012,23 +6042,40 @@ async fn execute_one_rop(
                         // failures there too.
                         let mut subfolders_ok = true;
                         if rop_id == RopId::ROP_HARD_DELETE_MESSAGES_AND_SUBFOLDERS {
-                            match jc.query_mailboxes(username, pw).await {
+                            match jc.query_all_mailboxes(username, pw).await {
                                 Ok(mailboxes) => {
                                     for mbx in mailboxes.mailboxes {
-                                        if mbx.parent_id.as_deref() == Some(backend)
-                                            && let Some(child_id) = mbx.id.clone()
-                                            && jc
-                                                .destroy_mailbox(
-                                                    &account_id,
-                                                    &child_id,
-                                                    false,
-                                                    username,
-                                                    pw,
-                                                )
-                                                .await
-                                                .is_err()
+                                        if mbx.parent_id.as_deref() != Some(backend) {
+                                            continue;
+                                        }
+                                        let Some(child_id) = mbx.id.clone() else {
+                                            continue;
+                                        };
+                                        match jc
+                                            .destroy_mailbox(
+                                                &account_id,
+                                                &child_id,
+                                                false,
+                                                username,
+                                                pw,
+                                            )
+                                            .await
                                         {
-                                            subfolders_ok = false;
+                                            Ok(
+                                                crate::jmap::MailboxDestroyOutcome::Destroyed
+                                                | crate::jmap::MailboxDestroyOutcome::AlreadyGone,
+                                            ) => {}
+                                            Ok(crate::jmap::MailboxDestroyOutcome::Refused) => {
+                                                tracing::warn!(
+                                                    mailbox = %child_id,
+                                                    "JMAP Mailbox/set refused subfolder destroy"
+                                                );
+                                                subfolders_ok = false;
+                                            }
+                                            Err(e) => {
+                                                tracing::warn!(error = %e, "JMAP Mailbox/set subfolder destroy failed");
+                                                subfolders_ok = false;
+                                            }
                                         }
                                     }
                                 }
@@ -11185,6 +11232,12 @@ mod tests {
         base: String,
         children: Vec<(String, String)>,
         calls: std::sync::Arc<tokio::sync::Mutex<Vec<(String, bool)>>>,
+        /// When set, every `Mailbox/set destroy` is rejected with this SetError
+        /// type (e.g. `mailboxHasEmail`), so the refusal path can be driven.
+        refuse_with: Option<String>,
+        /// When set, every `Mailbox/set destroy` is answered with a
+        /// method-level `error` response of this type.
+        method_error: Option<String>,
     }
 
     /// Spawn a stub JMAP server whose `Mailbox/get` reports `parent -> [child]`
@@ -11192,6 +11245,19 @@ mod tests {
     /// `onDestroyRemoveEmails` value. Returns `(base_url, recorded)`.
     async fn spawn_delete_folder_stub(
         children: Vec<(&'static str, &'static str)>,
+    ) -> (
+        String,
+        std::sync::Arc<tokio::sync::Mutex<Vec<(String, bool)>>>,
+    ) {
+        spawn_delete_folder_stub_with(children, None, None).await
+    }
+
+    /// As [`spawn_delete_folder_stub`] but lets the caller script a refusal
+    /// (`refuse_with`, a `notDestroyed` SetError type) or a method-level error.
+    async fn spawn_delete_folder_stub_with(
+        children: Vec<(&'static str, &'static str)>,
+        refuse_with: Option<&'static str>,
+        method_error: Option<&'static str>,
     ) -> (
         String,
         std::sync::Arc<tokio::sync::Mutex<Vec<(String, bool)>>>,
@@ -11233,6 +11299,20 @@ mod tests {
                 let args = call.get(1).cloned().unwrap_or(Value::Null);
                 let call_id = call.get(2).and_then(|v| v.as_str()).unwrap_or("c0");
                 let result = match name {
+                    "Mailbox/query" => {
+                        let ids: Vec<&str> = ctl
+                            .children
+                            .iter()
+                            .flat_map(|(p, c)| [p.as_str(), c.as_str()])
+                            .collect();
+                        let mut uniq: Vec<&str> = Vec::new();
+                        for id in ids {
+                            if !uniq.contains(&id) {
+                                uniq.push(id);
+                            }
+                        }
+                        json!({"accountId": "a", "ids": uniq, "total": uniq.len()})
+                    }
                     "Mailbox/get" => {
                         // Emit every id referenced as a parent or child so the
                         // subtree walk finds the requested root `present`.
@@ -11278,11 +11358,27 @@ mod tests {
                                 ctl.calls.lock().await.push((s.to_string(), remove));
                             }
                         }
-                        json!({"accountId": "a", "destroyed": destroy})
+                        if let Some(t) = &ctl.method_error {
+                            json!({"type": t, "description": "scripted"})
+                        } else if let Some(t) = &ctl.refuse_with {
+                            let mut nd = serde_json::Map::new();
+                            for id in &destroy {
+                                if let Some(s) = id.as_str() {
+                                    nd.insert(s.to_string(), json!({"type": t}));
+                                }
+                            }
+                            json!({"accountId": "a", "notDestroyed": nd})
+                        } else {
+                            json!({"accountId": "a", "destroyed": destroy})
+                        }
                     }
                     _ => json!({"accountId": "a"}),
                 };
-                responses.push(json!([name, result, call_id]));
+                if name == "Mailbox/set" && ctl.method_error.is_some() {
+                    responses.push(json!(["error", result, call_id]));
+                } else {
+                    responses.push(json!([name, result, call_id]));
+                }
             }
             let resp = json!({"methodResponses": responses, "sessionState": "s"});
             Response::builder()
@@ -11303,6 +11399,8 @@ mod tests {
                 .map(|(p, c)| (p.to_string(), c.to_string()))
                 .collect(),
             calls: calls.clone(),
+            refuse_with: refuse_with.map(str::to_string),
+            method_error: method_error.map(str::to_string),
         };
         let app = axum::Router::new()
             .route("/session", get(session))
@@ -11317,6 +11415,19 @@ mod tests {
     /// Drive one `RopDeleteFolder` through the Execute dispatcher against a
     /// stub JMAP backend and return the decoded `ReturnValue`.
     async fn run_delete_folder_rop(base: &str, backend_id: &str, delete_flags: u8) -> RopErrorCode {
+        run_delete_folder_rop_full(base, backend_id, delete_flags)
+            .await
+            .0
+    }
+
+    /// As [`run_delete_folder_rop`] but also returns the decoded
+    /// `PartialCompletion` byte of the `RopDeleteFolder` response
+    /// ([MS-OXCROPS] §2.2.4.3.2).
+    async fn run_delete_folder_rop_full(
+        base: &str,
+        backend_id: &str,
+        delete_flags: u8,
+    ) -> (RopErrorCode, u8) {
         let mut cfg = Config::test_with_mail_domain("example.com");
         cfg.mapi_enabled = true;
         cfg.jmap_base = base.to_string();
@@ -11363,7 +11474,8 @@ mod tests {
         assert_eq!(payload[0], 0x1D, "echoed RopId");
         assert_eq!(payload[1], INPUT_HANDLE, "input handle echoed");
         let rv = u32::from_le_bytes([payload[2], payload[3], payload[4], payload[5]]);
-        RopErrorCode::from_u32(rv)
+        let partial = payload[6];
+        (RopErrorCode::from_u32(rv), partial)
     }
 
     /// `DEL_MESSAGES` (0x01) must set `onDestroyRemoveEmails` so a non-empty
@@ -11410,5 +11522,54 @@ mod tests {
             !ids.contains(&"unrelated"),
             "a sibling subtree must not be touched: {ids:?}"
         );
+    }
+
+    /// [MS-OXCFOLD] §2.2.1.3.1: `DeleteFolderFlags` defines only 0x01, 0x04 and
+    /// 0x10; any other bit MUST be rejected. The ROP fails with
+    /// `ecInvalidParam` and no mailbox is destroyed.
+    #[tokio::test]
+    async fn rop_delete_folder_rejects_invalid_flag_bits() {
+        let (base, calls) = spawn_delete_folder_stub(vec![]).await;
+        let (rv, _partial) = run_delete_folder_rop_full(&base, "mb-1", 0x02).await;
+        assert_eq!(rv, RopErrorCode::InvalidParameter);
+        assert!(
+            calls.lock().await.is_empty(),
+            "an invalid flag must not touch the store"
+        );
+    }
+
+    /// `DELETE_HARD_DELETE` (0x10) is a valid bit and must be accepted (the
+    /// gateway maps both soft and hard deletes to a permanent JMAP destroy).
+    #[tokio::test]
+    async fn rop_delete_folder_accepts_delete_hard_delete_bit() {
+        let (base, calls) = spawn_delete_folder_stub(vec![]).await;
+        let (rv, partial) = run_delete_folder_rop_full(&base, "mb-1", DELETE_HARD_DELETE).await;
+        assert_eq!(rv, RopErrorCode::Success);
+        assert_eq!(partial, 0);
+        assert_eq!(
+            calls.lock().await.clone(),
+            vec![("mb-1".to_string(), false)]
+        );
+    }
+
+    /// When the store refuses every target (`mailboxHasEmail` with
+    /// `DEL_MESSAGES` unset), the ROP succeeds for no target and reports
+    /// `PartialCompletion` rather than a hard failure ([MS-OXCFOLD] §2.2.1.3.2).
+    #[tokio::test]
+    async fn rop_delete_folder_refusal_sets_partial_completion() {
+        let (base, _calls) =
+            spawn_delete_folder_stub_with(vec![], Some("mailboxHasEmail"), None).await;
+        let (rv, partial) = run_delete_folder_rop_full(&base, "mb-1", 0).await;
+        assert_eq!(rv, RopErrorCode::Success);
+        assert_eq!(partial, 1, "a refused destroy is a partial completion");
+    }
+
+    /// A JMAP method-level `error` on `Mailbox/set` is a hard failure, never a
+    /// silent success.
+    #[tokio::test]
+    async fn rop_delete_folder_method_error_is_disk_error() {
+        let (base, _calls) = spawn_delete_folder_stub_with(vec![], None, Some("serverFail")).await;
+        let (rv, _partial) = run_delete_folder_rop_full(&base, "mb-1", 0).await;
+        assert_eq!(rv, RopErrorCode::DiskError);
     }
 }
