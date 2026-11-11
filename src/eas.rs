@@ -10260,6 +10260,114 @@ mod tests {
         );
     }
 
+    /// AUDIT5 §2 / PR #2046: incremental FolderSync must compact each
+    /// ServerId's journal entries relative to the CLIENT's starting state. A
+    /// folder created and then renamed before a second device's first
+    /// incremental FolderSync must reach that device as an `<Add>` carrying the
+    /// latest DisplayName — never an `<Update>` for a folder it never received.
+    #[tokio::test]
+    async fn test_folder_sync_create_then_rename_reaches_new_device_as_add() {
+        let state = test_sync_state().await;
+        let owner = "hierarchy-two-device@example.com";
+        let device = "device-b";
+
+        // A folder that already existed when the device primed.
+        state
+            .storage
+            .upsert_folder(crate::storage::FolderUpsertParams {
+                owner,
+                server_id: "mbx-pre",
+                parent_id: "0",
+                display_name: "Pre-existing",
+                folder_type: 12,
+                backend_kind: "jmap",
+                backend_id: "mbx-pre",
+            })
+            .await
+            .expect("persist pre-existing folder");
+        state
+            .storage
+            .record_folder_hierarchy_change(owner, "mbx-pre", "folder-add")
+            .await
+            .expect("journal pre-existing add");
+
+        // Device B primes the hierarchy (SyncKey 0) — this stores its watermark
+        // at the current head and returns the key its next call must carry.
+        let wbxml = Wbxml::new();
+        let prime_req = EasRequest {
+            command: "FolderSync".to_string(),
+            device_id: Some(device.to_string()),
+            sync_key: Some("0".to_string()),
+            ..Default::default()
+        };
+        let prime_text = response_text(
+            handle_folder_sync(&state, owner, &prime_req, &wbxml, false, "prime").await,
+        )
+        .await;
+        assert!(
+            prime_text.contains("<Status>1</Status>"),
+            "prime must succeed, got: {prime_text}"
+        );
+        assert!(
+            prime_text.contains("<ServerId>mbx-pre</ServerId>"),
+            "prime must list the pre-existing folder, got: {prime_text}"
+        );
+        let key = extract_first_tag_text(&prime_text, b"SyncKey")
+            .expect("prime must return a SyncKey")
+            .to_string();
+
+        // Create-then-rename between device B's syncs: the same ServerId gets a
+        // `folder-add` followed by a `folder-update`.
+        state
+            .storage
+            .upsert_folder(crate::storage::FolderUpsertParams {
+                owner,
+                server_id: "mbx-1",
+                parent_id: "0",
+                display_name: "Renamed",
+                folder_type: 12,
+                backend_kind: "jmap",
+                backend_id: "mbx-1",
+            })
+            .await
+            .expect("persist created folder");
+        state
+            .storage
+            .record_folder_hierarchy_change(owner, "mbx-1", "folder-add")
+            .await
+            .expect("journal add");
+        state
+            .storage
+            .record_folder_hierarchy_change(owner, "mbx-1", "folder-update")
+            .await
+            .expect("journal update");
+
+        let delta_req = EasRequest {
+            command: "FolderSync".to_string(),
+            device_id: Some(device.to_string()),
+            sync_key: Some(key),
+            ..Default::default()
+        };
+        let text = response_text(
+            handle_folder_sync(&state, owner, &delta_req, &wbxml, false, "delta").await,
+        )
+        .await;
+        assert!(
+            text.contains("<Status>1</Status>"),
+            "incremental FolderSync must succeed, got: {text}"
+        );
+        assert!(
+            text.contains(
+                "<Add><ServerId>mbx-1</ServerId><ParentId>0</ParentId><DisplayName>Renamed</DisplayName><Type>12</Type></Add>"
+            ),
+            "create-then-rename must reach a new device as an Add with the latest name, got: {text}"
+        );
+        assert!(
+            !text.contains("<Update><ServerId>mbx-1</ServerId>"),
+            "a folder the device never received must not be an Update, got: {text}"
+        );
+    }
+
     /// §16: GetItemEstimate against a stale watermark reports the invalid-key
     /// status (4) rather than a wrong count the client would resume from.
     #[tokio::test]
