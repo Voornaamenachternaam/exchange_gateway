@@ -160,6 +160,11 @@ rendering + a WBXML round-trip of the FolderHierarchy-rooted responses, and
 end-to-end create/delete/update against a combined JMAP+CalDAV stub asserting
 the exact `Mailbox/set`/`MKCALENDAR`/`DELETE`/`PROPPATCH` wire calls and the
 persisted `folder_map` rows, plus the hierarchy-change journal watermark). The
+`eas::tests::test_folder_sync_create_then_rename_reaches_new_device_as_add`
+test drives a real `handle_folder_sync` prime + delta to pin the
+create-then-rename compaction (a folder added and then renamed before a second
+device's first incremental FolderSync reaches it as an `<Add>` with the latest
+DisplayName, never an `<Update>` for a folder it never received). The
 email-delta scoping adds `eas::tests::test_classify_query_change_ops_maps_add_remove_and_in_place`
 (pure classification) and
 `eas::tests::test_email_delta_sync_uses_mailbox_scoped_query_changes` (an
