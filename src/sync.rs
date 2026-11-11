@@ -108,6 +108,30 @@ pub fn invalid_sync_key_response(collection_id: &str, content_class: &str) -> St
     )
 }
 
+/// Resolve the CalDAV collection href backing a user-created calendar-family
+/// EAS folder from its `CollectionId`, or `None` for a system folder (which
+/// keeps the default-calendar behavior).
+async fn collection_folder_href(
+    state: &Arc<AppState>,
+    owner: &str,
+    collection_id: &str,
+) -> Option<String> {
+    // Callers may pass either the visible CollectionId (the calendar Sync
+    // path) or its device-scoped form `{visible}::{device}` (the client-mutation
+    // path); `folder_map` is keyed by the visible id.
+    let visible = collection_id
+        .split_once("::")
+        .map(|(v, _)| v)
+        .unwrap_or(collection_id);
+    if crate::eas_folders::is_system_folder_id(visible) {
+        return None;
+    }
+    match state.storage.get_folder(owner, visible).await {
+        Ok(Some(row)) if row.backend_kind == "caldav" => Some(row.backend_id),
+        _ => None,
+    }
+}
+
 pub async fn apply_client_sync_mutations(
     state: Arc<AppState>,
     owner: &str,
@@ -122,11 +146,21 @@ pub async fn apply_client_sync_mutations(
     }
 
     let caldav = CaldavClient::new(&state.cfg)?;
-    let calendars = caldav.find_user_calendars(username, password).await?;
-    let collection_href = calendars
-        .first()
-        .ok_or_else(|| anyhow!("no calendars found"))?
-        .clone();
+    // Scope mutations to the folder the client is syncing: a custom
+    // calendar-family folder ([MS-ASCMD] §2.2.3.186.2 Types 13/15/16/17) has
+    // its CalDAV collection href as its CollectionId, so an Add there must land
+    // in that collection, not the first calendar returned. A system Calendar
+    // folder (CollectionId "1") keeps the default-calendar behavior.
+    let collection_href = match collection_folder_href(&state, owner, collection_id).await {
+        Some(href) => caldav.absolute_url(&href)?,
+        None => {
+            let calendars = caldav.find_user_calendars(username, password).await?;
+            calendars
+                .first()
+                .ok_or_else(|| anyhow!("no calendars found"))?
+                .clone()
+        }
+    };
     let mut results = Vec::new();
 
     for mutation in mutations {
@@ -1278,6 +1312,7 @@ const PRIME_QUERY_PAGE_SIZE: u64 = 100;
 async fn query_all_calendar_events(
     jmap: &crate::jmap::JmapClient,
     account_id: &str,
+    calendar_id: Option<&str>,
     start: &str,
     end: &str,
     username: &str,
@@ -1286,7 +1321,7 @@ async fn query_all_calendar_events(
     let first = jmap
         .query_calendar_events(crate::jmap::QueryCalendarEventsParams {
             account_id,
-            calendar_id: None,
+            calendar_id,
             start,
             end,
             position: 0,
@@ -1306,7 +1341,7 @@ async fn query_all_calendar_events(
         let page = jmap
             .query_calendar_events(crate::jmap::QueryCalendarEventsParams {
                 account_id,
-                calendar_id: None,
+                calendar_id,
                 start,
                 end,
                 position: events.len() as u64,
@@ -1490,7 +1525,37 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
     let prime_cursor: Option<String> =
         prime_cursor_from_token(previous_state.as_ref().and_then(|(_, t)| t.as_deref()));
 
-    if params.state.cfg.prefer_jmap_calendar {
+    // Folder scoping: a user-created calendar-family folder (Types 13/15/16/17,
+    // [MS-ASCMD] §2.2.3.186.2) has its CalDAV collection href as its EAS
+    // CollectionId. Without scoping, the Calendar Sync path would query with
+    // `calendar_id: None` (every calendar) and the CalDAV fallback would use
+    // the FIRST calendar returned, so the client would receive events from
+    // other calendars. Resolve the href to its JMAP calendar id and scope both
+    // backends to it. `Some(None)` marks a custom folder whose calendar could
+    // not be resolved: serve an empty collection rather than leaking the
+    // default calendar's events.
+    let mut scoped_calendar_href: Option<String> = None;
+    let calendar_scope: Option<Option<String>> =
+        match collection_folder_href(&params.state, params.owner, params.collection_id).await {
+            None => None,
+            Some(href) => {
+                let resolved = match &params.state.jmap_client {
+                    Some(jmap) => {
+                        let pw = SecretString::from(params.password.to_string());
+                        jmap.resolve_calendar_id_for_href(params.username, &pw, &href)
+                            .await
+                            .unwrap_or(None)
+                    }
+                    None => None,
+                };
+                scoped_calendar_href = Some(href);
+                Some(resolved)
+            }
+        };
+    let scoped_calendar_id: Option<&str> = calendar_scope.as_ref().and_then(|s| s.as_deref());
+    let scope_unresolved = matches!(calendar_scope, Some(None));
+
+    if params.state.cfg.prefer_jmap_calendar && !scope_unresolved {
         if let Some(jmap) = &params.state.jmap_client {
             let password_secret = SecretString::from(params.password.to_string());
             if jmap
@@ -1658,6 +1723,7 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
                         match query_all_calendar_events(
                             jmap,
                             &account_id,
+                            scoped_calendar_id,
                             &start,
                             &end,
                             params.username,
@@ -1769,13 +1835,23 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
         calendar_delta_partial = false;
         jmap_destroyed_server_ids.clear();
         let caldav = CaldavClient::new(&params.state.cfg)?;
-        let calendars = caldav
-            .find_user_calendars(params.username, params.password)
-            .await?;
-        let collection_href = calendars
-            .first()
-            .ok_or_else(|| anyhow!("no calendars found"))?
-            .clone();
+        // Prefer the folder's own collection (resolved from its stored href)
+        // over the first calendar returned: a custom calendar folder must sync
+        // only its own collection. `absolute_url` keeps the configured base
+        // path, so the stored href resolves to the collection that
+        // `ensure_calendar_collection` created.
+        let collection_href = match scoped_calendar_href.as_deref() {
+            Some(href) => caldav.absolute_url(href)?,
+            None => {
+                let calendars = caldav
+                    .find_user_calendars(params.username, params.password)
+                    .await?;
+                calendars
+                    .first()
+                    .ok_or_else(|| anyhow!("no calendars found"))?
+                    .clone()
+            }
+        };
         let start = params
             .opts
             .filter_start
@@ -2528,6 +2604,18 @@ mod tests {
         /// real backend (paging a sorted id list), instead of returning the
         /// whole list on every call.
         honour_position: std::sync::Arc<AtomicBool>,
+        /// Calendar objects returned by `Calendar/get`, used by the folder
+        /// scoping path (`resolve_calendar_id_for_href`).
+        calendars: std::sync::Arc<Mutex<Vec<Value>>>,
+        /// CalDAV surface calls (method, path) recorded by the fallback route.
+        dav_calls: std::sync::Arc<Mutex<Vec<(String, String)>>>,
+    }
+
+    impl CalStub {
+        fn with_calendars(mut self, calendars: Vec<Value>) -> Self {
+            self.calendars = std::sync::Arc::new(Mutex::new(calendars));
+            self
+        }
     }
 
     async fn spawn_calendar_stub(
@@ -2537,7 +2625,8 @@ mod tests {
         get_state: &str,
         changes_error: Option<String>,
     ) -> CalStub {
-        use axum::routing::{get, post};
+        use axum::response::Response;
+        use axum::routing::{any, get, post};
 
         async fn session(axum::Extension(s): axum::Extension<CalStub>) -> axum::Json<Value> {
             axum::Json(json!({
@@ -2651,10 +2740,72 @@ mod tests {
                             id
                         ]));
                     }
+                    "Calendar/get" => {
+                        let list = s.calendars.lock().unwrap().clone();
+                        responses.push(json!([
+                            "Calendar/get",
+                            { "accountId": "acct", "state": "cs", "list": list },
+                            id
+                        ]));
+                    }
                     _ => {}
                 }
             }
             axum::Json(json!({ "methodResponses": responses }))
+        }
+
+        /// CalDAV fallback surface: records PUT/PROPFIND and answers PROPFIND
+        /// with the collections `find_user_calendars` expects.
+        async fn dav(
+            axum::Extension(s): axum::Extension<CalStub>,
+            method: axum::http::Method,
+            uri: axum::http::Uri,
+            body: String,
+        ) -> Response {
+            s.dav_calls
+                .lock()
+                .unwrap()
+                .push((method.as_str().to_string(), uri.path().to_string()));
+            if method.as_str() == "PROPFIND" {
+                let names: Vec<String> = s
+                    .calendars
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .filter_map(|c| c.get("id").and_then(|v| v.as_str()).map(String::from))
+                    .collect();
+                let mut responses = String::new();
+                for name in names {
+                    responses.push_str(&format!(
+                        "<D:response><D:href>{}/{}/</D:href><D:propstat><D:prop>\
+<D:resourcetype><D:collection/><C:calendar/></D:resourcetype>\
+<D:displayname>{name}</D:displayname></D:prop><D:status>HTTP/1.1 200 OK</D:status>\
+</D:propstat></D:response>",
+                        uri.path().trim_end_matches('/'),
+                        name
+                    ));
+                }
+                let body = format!(
+                    "<?xml version=\"1.0\" encoding=\"utf-8\"?>\
+<D:multistatus xmlns:D=\"DAV:\" xmlns:C=\"urn:ietf:params:xml:ns:caldav\">{responses}</D:multistatus>"
+                );
+                return Response::builder()
+                    .status(207)
+                    .header("content-type", "application/xml; charset=utf-8")
+                    .body(axum::body::Body::from(body))
+                    .unwrap();
+            }
+            if method.as_str() == "PUT" {
+                return Response::builder()
+                    .status(201)
+                    .header("etag", "\"dav-etag\"")
+                    .body(axum::body::Body::from(body))
+                    .unwrap();
+            }
+            Response::builder()
+                .status(200)
+                .body(axum::body::Body::empty())
+                .unwrap()
         }
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -2671,10 +2822,13 @@ mod tests {
             changes_error: std::sync::Arc::new(changes_error),
             query_total: std::sync::Arc::new(AtomicUsize::new(0)),
             honour_position: std::sync::Arc::new(AtomicBool::new(false)),
+            calendars: std::sync::Arc::new(Mutex::new(Vec::new())),
+            dav_calls: std::sync::Arc::new(Mutex::new(Vec::new())),
         };
         let app = axum::Router::new()
             .route("/session", get(session))
             .route("/", post(api))
+            .fallback(any(dav))
             .layer(axum::Extension(stub.clone()));
         tokio::spawn(async move {
             axum::serve(listener, app).await.unwrap();
@@ -2705,6 +2859,26 @@ mod tests {
         storage.init_schema().await.expect("schema init");
         let cfg = crate::config::Config {
             jmap_base: jmap_base.to_string(),
+            email_enabled: true,
+            prefer_jmap_calendar: true,
+            mail_domain: "example.com".to_string(),
+            hmac_secret: SecretString::from("a".repeat(32)),
+            ..Default::default()
+        };
+        Arc::new(AppState::new(cfg, Arc::new(storage)))
+    }
+
+    /// State whose CalDAV base points at the same stub, for the client-mutation
+    /// path (which writes through CalDAV).
+    async fn calendar_mutation_state(base: &str) -> Arc<AppState> {
+        use crate::models::AppState;
+        let storage = crate::storage::Storage::new("sqlite::memory:")
+            .await
+            .expect("in-memory storage");
+        storage.init_schema().await.expect("schema init");
+        let cfg = crate::config::Config {
+            jmap_base: base.to_string(),
+            caldav_base: base.to_string(),
             email_enabled: true,
             prefer_jmap_calendar: true,
             mail_domain: "example.com".to_string(),
@@ -3434,6 +3608,74 @@ mod tests {
                 .iter()
                 .any(|r| r.server_id == sid_e9),
             "the row must be removed after its Delete is emitted"
+        );
+    }
+
+    /// A client Add into a user-created calendar-family folder must land in
+    /// THAT folder's CalDAV collection, resolved from the folder's stored
+    /// href. The mutation path receives the device-scoped CollectionId
+    /// (`{visible}::{device}`), so the href lookup must strip that suffix.
+    #[tokio::test]
+    async fn calendar_add_scopes_put_to_the_folders_own_collection() {
+        let stub = spawn_calendar_stub(vec![], vec![], "query-s", "get-s", None)
+            .await
+            .with_calendars(vec![json!({
+                "id": "cal-side",
+                "name": "Side Project",
+                "href": "/dav/cal/user@example.com/Side%20Project/"
+            })]);
+        let state = calendar_mutation_state(&stub.base).await;
+        let owner = "user@example.com";
+        let folder_href = "/dav/cal/user@example.com/Side%20Project/";
+        state
+            .storage
+            .upsert_folder(crate::storage::FolderUpsertParams {
+                owner,
+                server_id: folder_href,
+                parent_id: "0",
+                display_name: "Side Project",
+                folder_type: 13,
+                backend_kind: "caldav",
+                backend_id: folder_href,
+            })
+            .await
+            .unwrap();
+
+        let xml = "<Sync><Collections><Collection><Class>Calendar</Class>\
+<CollectionId>/dav/cal/user@example.com/Side%20Project/</CollectionId>\
+<Add><ClientId>c1</ClientId><ApplicationData>\
+<Calendar:Subject>Scoped</Calendar:Subject>\
+<Calendar:StartTime>2026-01-05T09:00:00Z</Calendar:StartTime>\
+<Calendar:EndTime>2026-01-05T10:00:00Z</Calendar:EndTime>\
+</ApplicationData></Add></Collection></Collections></Sync>";
+        let results = apply_client_sync_mutations(
+            state.clone(),
+            owner,
+            &crate::eas::scoped_collection_id(folder_href, "dev1"),
+            owner,
+            "pw",
+            xml,
+        )
+        .await
+        .expect("mutations apply");
+        assert!(
+            matches!(
+                results.as_slice(),
+                [ClientMutationResult::Add { status: "1", .. }]
+            ),
+            "the Add must succeed: {results:?}"
+        );
+        let puts: Vec<String> = stub
+            .dav_calls
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(m, _)| m == "PUT")
+            .map(|(_, p)| p.clone())
+            .collect();
+        assert!(
+            puts.iter().any(|p| p.contains("Side%20Project")),
+            "the PUT must target the folder's own collection, got {puts:?}"
         );
     }
 }

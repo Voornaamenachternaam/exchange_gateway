@@ -248,6 +248,33 @@ impl CaldavClient {
         components: &[&str],
         displayname: &str,
     ) -> Result<()> {
+        // 405 (already exists) is tolerated: Tasks/Notes reuse a fixed
+        // collection name and a re-run must be idempotent.
+        let _ = self
+            .create_calendar_collection(
+                username,
+                password,
+                collection_name,
+                components,
+                displayname,
+            )
+            .await?;
+        Ok(())
+    }
+
+    /// Create a calendar collection, reporting whether it was newly created.
+    /// Returns `Ok(true)` on 201/200/207 (created) and `Ok(false)` on 405 (the
+    /// collection already existed). The EAS `FolderCreate` path uses the
+    /// distinction to reject a name that would adopt a pre-existing collection,
+    /// whereas the fixed-name Tasks/Notes path treats both as success.
+    pub async fn create_calendar_collection(
+        &self,
+        username: &str,
+        password: &str,
+        collection_name: &str,
+        components: &[&str],
+        displayname: &str,
+    ) -> Result<bool> {
         let home = format!("{}/cal/{}/", self.base.trim_end_matches('/'), username);
         // Trailing slash so MKCALENDAR targets the same collection URI that
         // tasks/notes_collection_href and the follow-up REPORTs/mutations use;
@@ -284,10 +311,10 @@ impl CaldavClient {
         match status {
             // 201 Created, or a 200/207 from servers answering MKCALENDAR with
             // a multistatus propstat, mean the collection was created.
-            200 | 201 | 207 => Ok(()),
+            200 | 201 | 207 => Ok(true),
             // 405: the collection already exists (or is not a collection — the
             // follow-up calendar-query decides which).
-            405 => Ok(()),
+            405 => Ok(false),
             // 301/302 redirects: resolve like a browser would be wrong; treat
             // as an error unless the later query succeeds.
             _ => {
@@ -436,19 +463,11 @@ impl CaldavClient {
         username: &str,
         password: &str,
     ) -> Result<()> {
-        let url = self.absolute_url(collection_href)?;
-        let resp = self
-            .client
-            .delete(url)
-            .basic_auth(username, Some(password))
-            .send()
-            .await?;
-        let status = resp.status();
-        // 404 is a benign no-op: the collection is already gone.
-        if status.is_success() || status == reqwest::StatusCode::NOT_FOUND {
-            return Ok(());
-        }
-        Err(anyhow!("failed to delete collection: {}", status))
+        // A collection is a calendar resource; reuse the tolerant DELETE
+        // (404 = already gone) so the logic lives in one place.
+        self.delete_calendar_resource_if_absent(collection_href, username, password)
+            .await
+            .map(|_| ())
     }
 
     /// Set a calendar collection's `<D:displayname>` via PROPPATCH
@@ -479,10 +498,27 @@ impl CaldavClient {
             .send()
             .await?;
         let status = resp.status();
-        if status.is_success() {
-            return Ok(());
+        if !status.is_success() {
+            return Err(anyhow!("PROPPATCH displayname returned {}", status));
         }
-        Err(anyhow!("PROPPATCH displayname returned {}", status))
+        // RFC 4918 §9.2: a PROPPATCH reports 207 Multi-Status even when it
+        // rejected the property, so the per-property outcome must be read from
+        // the body's `<D:propstat>`. A rejected displayname is a failure, not a
+        // silent success.
+        if status.as_u16() == 207 {
+            let body = resp.text().await.unwrap_or_default();
+            if !multistatus_displayname_ok(&body) {
+                return Err(anyhow!(
+                    "PROPPATCH displayname rejected: {}",
+                    if body.len() > 300 {
+                        "response truncated"
+                    } else {
+                        &body
+                    }
+                ));
+            }
+        }
+        Ok(())
     }
 
     /// GET a calendar object resource, distinguishing "not found" (Ok(None))
@@ -915,7 +951,7 @@ impl CaldavClient {
         Ok(())
     }
 
-    fn absolute_url(&self, href: &str) -> Result<String> {
+    pub(crate) fn absolute_url(&self, href: &str) -> Result<String> {
         if href.starts_with("http://") || href.starts_with("https://") {
             return Ok(href.to_string());
         }
@@ -1133,6 +1169,76 @@ fn parse_etag_from_multistatus(xml_body: &str) -> Option<String> {
         buf.clear();
     }
     None
+}
+
+/// Whether a PROPPATCH 207 Multi-Status reports the `displayname` property as
+/// applied. RFC 4918 §9.2: the per-property outcome is in `<D:propstat>`; the
+/// property succeeded only if a `propstat` containing `displayname` carries a
+/// 2xx `<D:status>`. A body with no `propstat` (some servers answer 207 with
+/// an empty body) is treated as success, since a non-2xx there would still
+/// carry the failing status.
+fn multistatus_displayname_ok(xml_body: &str) -> bool {
+    let mut reader = quick_xml::Reader::from_str(xml_body);
+    reader.config_mut().trim_text(true);
+    let mut buf = Vec::new();
+    // Per-propstat state: does the current propstat mention displayname, and
+    // what status did it carry?
+    let mut in_propstat = false;
+    let mut propstat_has_displayname = false;
+    let mut propstat_status = String::new();
+    let mut in_status = false;
+    let mut saw_propstat = false;
+    let mut any_ok = false;
+
+    macro_rules! flush {
+        () => {
+            if propstat_has_displayname {
+                saw_propstat = true;
+                if propstat_status.starts_with('2') {
+                    any_ok = true;
+                }
+            }
+            propstat_has_displayname = false;
+            propstat_status.clear();
+        };
+    }
+
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(quick_xml::events::Event::Start(ref e)) => match e.name().local_name().as_ref() {
+                "propstat" => {
+                    in_propstat = true;
+                    propstat_has_displayname = false;
+                    propstat_status.clear();
+                }
+                "displayname" if in_propstat => propstat_has_displayname = true,
+                "status" if in_propstat => in_status = true,
+                _ => {}
+            },
+            Ok(quick_xml::events::Event::Empty(ref e)) => {
+                if e.name().local_name().as_ref() == "displayname" && in_propstat {
+                    propstat_has_displayname = true;
+                }
+            }
+            Ok(quick_xml::events::Event::Text(ref t)) if in_status => {
+                propstat_status.push_str(t.as_ref());
+            }
+            Ok(quick_xml::events::Event::End(ref e)) => match e.name().local_name().as_ref() {
+                "status" => in_status = false,
+                "propstat" => {
+                    flush!();
+                    in_propstat = false;
+                }
+                _ => {}
+            },
+            Ok(quick_xml::events::Event::Eof) | Err(_) => break,
+            _ => {}
+        }
+        buf.clear();
+    }
+    // Success when the displayname propstat is 2xx; a body with no propstat at
+    // all is accepted (nothing to contradict the 2xx status line).
+    any_ok || !saw_propstat
 }
 
 /// Normalize an etag string to its internal (unquoted) representation.

@@ -899,8 +899,16 @@ impl Storage {
     }
 
     pub async fn list_journal_since_seq(&self, owner: &str, since: i64) -> Result<Vec<JournalRow>> {
+        // Exclude folder-hierarchy rows (`resource_href = 'folder'`): those are
+        // consumed only by FolderSync. Leaking them into the EWS calendar
+        // SyncFolderItems item-delta feed would emit a spurious `<t:Delete>`
+        // for the folder's ServerId (the `Ok(None)` arm treats any unknown id
+        // as purged) and consume a `MaxChangesReturned` slot.
         sqlx::query_as::<_, JournalRow>(
-            "SELECT id, server_id, op, resource_href FROM change_journal WHERE owner = ?1 AND id > ?2 ORDER BY id ASC"
+            "SELECT id, server_id, op, resource_href FROM change_journal \
+             WHERE owner = ?1 AND id > ?2 \
+               AND (resource_href IS NULL OR resource_href <> 'folder') \
+             ORDER BY id ASC",
         )
         .bind(owner)
         .bind(since)
@@ -1314,6 +1322,52 @@ impl Storage {
             .await
             .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
         Ok(())
+    }
+
+    /// Persist the mailbox keyword baseline for an email collection: a JSON
+    /// object mapping each JMAP Email id currently in the mailbox to its sorted
+    /// flag (keyword) list. The delta diffs the live mailbox against this to
+    /// detect a flag change that `Email/queryChanges` cannot report (it tracks
+    /// only query-set membership).
+    pub async fn set_email_keyword_baseline(
+        &self,
+        owner: &str,
+        collection_id: &str,
+        baseline_json: &str,
+    ) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO email_keyword_baseline (owner, collection_id, baseline_json)
+             VALUES (?1, ?2, ?3)
+             ON CONFLICT(owner, collection_id) DO UPDATE
+             SET baseline_json = ?3, updated_at = CURRENT_TIMESTAMP",
+        )
+        .bind(owner)
+        .bind(collection_id)
+        .bind(baseline_json)
+        .execute(self.pool.as_ref())
+        .await
+        .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+        Ok(())
+    }
+
+    /// Read the mailbox keyword baseline for an email collection. `None` when
+    /// no baseline has been captured yet (the next delta captures one without
+    /// reporting updates).
+    pub async fn get_email_keyword_baseline(
+        &self,
+        owner: &str,
+        collection_id: &str,
+    ) -> Result<Option<String>> {
+        let row = sqlx::query(
+            "SELECT baseline_json FROM email_keyword_baseline
+             WHERE owner = ?1 AND collection_id = ?2",
+        )
+        .bind(owner)
+        .bind(collection_id)
+        .fetch_optional(self.pool.as_ref())
+        .await
+        .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))?;
+        Ok(row.map(|r| r.get(0)))
     }
 
     /// Persist the gateway-local (Tasks/Notes) initial-sync keyset cursor:
@@ -2857,7 +2911,7 @@ pub struct FolderUpsertParams<'a> {
 
 /// A persisted user-created EAS folder ([MS-ASCMD] §2.2.1.3/§2.2.1.6),
 /// mapping the EAS ServerId the client sees to its backend identity.
-#[derive(FromRow, Clone, Debug)]
+#[derive(FromRow, Clone)]
 pub struct FolderRow {
     pub server_id: String,
     pub parent_id: String,
@@ -2868,6 +2922,17 @@ pub struct FolderRow {
     pub backend_kind: String,
     /// Backend identity: the JMAP mailbox id or the CalDAV collection href.
     pub backend_id: String,
+}
+
+impl SafeDebug for FolderRow {
+    fn safe_debug(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("FolderRow")
+            .field("server_id", &self.server_id)
+            .field("parent_id", &self.parent_id)
+            .field("folder_type", &self.folder_type)
+            .field("backend_kind", &self.backend_kind)
+            .finish_non_exhaustive()
+    }
 }
 
 /// Row of the gateway-local S/MIME certificate store.

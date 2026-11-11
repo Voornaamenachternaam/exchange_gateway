@@ -5101,7 +5101,10 @@ async fn execute_one_rop(
                     if account_id.is_empty() {
                         outcome = RopErrorCode::NotFound;
                     } else {
-                        match jc.destroy_mailbox(&account_id, backend, username, pw).await {
+                        match jc
+                            .destroy_mailbox(&account_id, backend, false, username, pw)
+                            .await
+                        {
                             Ok(true) => outcome = RopErrorCode::Success,
                             Ok(false) => outcome = RopErrorCode::NotFound,
                             Err(e) => {
@@ -5907,6 +5910,7 @@ async fn execute_one_rop(
                                                 .destroy_mailbox(
                                                     &account_id,
                                                     &child_id,
+                                                    false,
                                                     username,
                                                     pw,
                                                 )

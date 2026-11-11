@@ -23,11 +23,14 @@ use crate::models::AppState;
 use crate::storage::FolderRow;
 use crate::util::xml_escape;
 
-/// A folder mutation's outcome: the spec Status code plus an optional
-/// ServerId (`FolderCreate` success) to render.
+/// A folder mutation's outcome: the spec Status code, an optional ServerId
+/// (`FolderCreate` success) to render, and the ServerIds a `FolderDelete`
+/// removed (the target plus its descendants) so the caller can journal a
+/// Delete for each.
 pub struct FolderMutationResult {
     pub status: u16,
     pub server_id: Option<String>,
+    pub removed_server_ids: Vec<String>,
 }
 
 impl FolderMutationResult {
@@ -35,6 +38,7 @@ impl FolderMutationResult {
         Self {
             status,
             server_id: None,
+            removed_server_ids: Vec::new(),
         }
     }
 
@@ -42,6 +46,7 @@ impl FolderMutationResult {
         Self {
             status: 1,
             server_id: Some(server_id),
+            removed_server_ids: Vec::new(),
         }
     }
 }
@@ -78,12 +83,20 @@ fn caldav_components_for_type(t: i64) -> Option<&'static [&'static str]> {
     }
 }
 
+/// Whether an EAS user-created folder Type is unsupported by every backend the
+/// gateway can write to. Type 14 (Contacts) lives on CardDAV, for which the
+/// gateway cannot create collections, so `FolderCreate` must reject it rather
+/// than silently backing a "Contacts" folder with a JMAP mail mailbox.
+fn is_unsupported_folder_type(t: i64) -> bool {
+    t == 14
+}
+
 /// Map an EAS user-created folder Type to the backend that hosts it.
 fn backend_for_type(t: i64) -> FolderBackend {
     match t {
         13 | 15 | 16 | 17 => FolderBackend::Caldav,
         // 1 (generic), 12 (user mail) and anything unrecognised default to a
-        // mail folder.
+        // mail folder. Type 14 (Contacts) is rejected before this point.
         _ => FolderBackend::Jmap,
     }
 }
@@ -98,7 +111,20 @@ struct CalCollection {
     href: String,
 }
 
+impl CalCollection {
+    /// The configured CalDAV base path (e.g. `/dav` for
+    /// `http://stalwart:8080/dav`), or `None` when `caldav_base` is not a
+    /// parseable absolute URL. Used to build a stored href that resolves back
+    /// to the same collection the client created.
+    fn base_path_of(cfg: &crate::config::Config) -> Option<String> {
+        reqwest::Url::parse(&cfg.caldav_base)
+            .ok()
+            .map(|u| u.path().trim_end_matches('/').to_string())
+    }
+}
+
 fn caldav_collection_for(
+    base_path: &str,
     username: &str,
     display_name: &str,
     folder_type: i64,
@@ -108,7 +134,17 @@ fn caldav_collection_for(
     if name.is_empty() {
         return None;
     }
-    let href = format!("/cal/{}/{}/", username, name);
+    // Keep the configured base path (e.g. `/dav`) so the stored href resolves,
+    // through `CaldavClient::absolute_url`, to the SAME collection that
+    // `ensure_calendar_collection` (which builds `{base}/cal/{user}/{name}/`)
+    // created. A root-relative href would discard the base path on join and
+    // make FolderDelete/FolderUpdate target the wrong URL.
+    let href = format!(
+        "{}/cal/{}/{}/",
+        base_path.trim_end_matches('/'),
+        username,
+        name
+    );
     Some(CalCollection {
         name,
         components,
@@ -117,13 +153,15 @@ fn caldav_collection_for(
 }
 
 /// Sanitize a CalDAV collection path segment: drop anything that could escape
-/// the calendar home (`/`, `\`) and control characters.
+/// the calendar home (`/`, `\`), control characters, and the URL path
+/// delimiters `?`/`#`/`%` that would otherwise truncate or corrupt the href
+/// when it is joined back into an absolute URL.
 fn sanitize_collection_name(display_name: &str) -> String {
     let cleaned: String = display_name
         .trim()
         .chars()
         .map(|c| match c {
-            '/' | '\\' => '_',
+            '/' | '\\' | '?' | '#' | '%' => '_',
             c if c.is_control() => '_',
             c => c,
         })
@@ -189,21 +227,62 @@ pub async fn create_folder(
     if is_default_folder_type(folder_type) {
         return FolderMutationResult::status(10);
     }
+    // Contacts (14) live on CardDAV, which the gateway cannot create
+    // collections for; reject rather than back a "Contacts" folder with a JMAP
+    // mail mailbox.
+    if is_unsupported_folder_type(folder_type) {
+        return FolderMutationResult::status(10);
+    }
     if is_system_folder_name(display_name) {
         return FolderMutationResult::status(2);
     }
-    // The EAS ServerId must be ≤64 chars (§6.13); a CalDAV href that exceeds
-    // it cannot be represented, so reject such a name up front.
+    // The EAS ServerId must be ≤64 chars (§6.13). A mail folder's ServerId is
+    // its JMAP mailbox id (short); a calendar-family folder's is the full
+    // collection href, so the *href* — not just the display name — must fit.
+    // `create_caldav_folder` performs the exact href check; this is the shared
+    // display-name bound for the mail path.
     if display_name.chars().count() > 64 {
         return FolderMutationResult::status(10);
     }
 
-    // Reject a duplicate DisplayName under the same parent.
+    // Reject a duplicate DisplayName under the same parent, and (for
+    // calendar-family folders) a display name that sanitizes to a collection
+    // href already owned by another folder — distinct names such as `Foo/Bar`
+    // and `Foo_Bar` map to the same collection and must not clobber it.
+    let caldav_href = if backend_for_type(folder_type) == FolderBackend::Caldav {
+        // Calendar-family folders are top-level only: the gateway models a
+        // single collection per type, so a nested calendar folder is not
+        // representable.
+        if parent_id != "0" {
+            return FolderMutationResult::status(5);
+        }
+        let Some(base_path) = CalCollection::base_path_of(&state.cfg) else {
+            return FolderMutationResult::status(6);
+        };
+        let Some(coll) = caldav_collection_for(&base_path, owner, display_name, folder_type) else {
+            return FolderMutationResult::status(10);
+        };
+        if coll.href.chars().count() > 64 {
+            return FolderMutationResult::status(10);
+        }
+        Some(coll)
+    } else {
+        None
+    };
     match state.storage.list_folders(owner).await {
         Ok(rows) => {
             if rows.iter().any(|r| {
                 r.parent_id == parent_id && r.display_name.eq_ignore_ascii_case(display_name)
             }) {
+                return FolderMutationResult::status(2);
+            }
+            if let Some(coll) = caldav_href.as_ref()
+                && rows.iter().any(|r| {
+                    r.backend_kind == "caldav"
+                        && r.backend_id == coll.href
+                        && !r.display_name.eq_ignore_ascii_case(display_name)
+                })
+            {
                 return FolderMutationResult::status(2);
             }
         }
@@ -217,9 +296,12 @@ pub async fn create_folder(
         FolderBackend::Jmap => {
             create_mail_folder(state, owner, password, parent_id, display_name, folder_type).await
         }
-        FolderBackend::Caldav => {
-            create_caldav_folder(state, owner, password, parent_id, display_name, folder_type).await
-        }
+        FolderBackend::Caldav => match caldav_href {
+            Some(coll) => {
+                create_caldav_folder(state, owner, password, display_name, folder_type, coll).await
+            }
+            None => FolderMutationResult::status(6),
+        },
     }
 }
 
@@ -304,23 +386,18 @@ async fn create_caldav_folder(
     state: &Arc<AppState>,
     owner: &str,
     password: &SecretString,
-    parent_id: &str,
     display_name: &str,
     folder_type: i64,
+    coll: CalCollection,
 ) -> FolderMutationResult {
-    // Calendar-family folders are top-level only: the gateway models a single
-    // collection per type, so a nested calendar folder is not representable.
-    if parent_id != "0" {
-        return FolderMutationResult::status(5);
-    }
     let Ok(caldav) = CaldavClient::new(&state.cfg) else {
         return FolderMutationResult::status(6);
     };
-    let Some(coll) = caldav_collection_for(owner, display_name, folder_type) else {
-        return FolderMutationResult::status(10);
-    };
-    if let Err(e) = caldav
-        .ensure_calendar_collection(
+    // A 405 means the collection already exists; adopting it as a "new" folder
+    // would clobber whatever the existing collection is (or another folder's
+    // mapping). Reject it as a conflict.
+    match caldav
+        .create_calendar_collection(
             owner,
             password.expose_secret(),
             &coll.name,
@@ -329,8 +406,18 @@ async fn create_caldav_folder(
         )
         .await
     {
-        tracing::warn!(error = %e, "FolderCreate: MKCALENDAR failed");
-        return FolderMutationResult::status(6);
+        Ok(true) => {}
+        Ok(false) => {
+            tracing::warn!(
+                collection = %coll.name,
+                "FolderCreate: calendar collection already exists"
+            );
+            return FolderMutationResult::status(2);
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "FolderCreate: MKCALENDAR failed");
+            return FolderMutationResult::status(6);
+        }
     }
     if let Err(e) = state
         .storage
@@ -385,79 +472,133 @@ pub async fn delete_folder(
     if is_system_folder_id(server_id) {
         return FolderMutationResult::status(3);
     }
-    let row = match state.storage.get_folder(owner, server_id).await {
-        Ok(Some(row)) => row,
+    match state.storage.get_folder(owner, server_id).await {
+        Ok(Some(_)) => {}
         Ok(None) => return FolderMutationResult::status(4),
         Err(e) => {
             tracing::warn!(error = %e, "FolderDelete: folder lookup failed");
             return FolderMutationResult::status(6);
         }
+    }
+
+    // Collect the folder and every descendant, deepest-first, so a parent is
+    // never destroyed while it still has children (JMAP rejects that with
+    // `mailboxHasChild`).
+    let subtree = match collect_folder_subtree(state, owner, server_id).await {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!(error = %e, "FolderDelete: failed to enumerate descendants");
+            return FolderMutationResult::status(6);
+        }
     };
 
-    match row.backend_kind.as_str() {
-        "jmap" => {
-            let Some(jmap) = state.jmap_client.clone() else {
-                return FolderMutationResult::status(6);
-            };
-            let account_id = match jmap.get_account_id(owner, password).await {
-                Ok(id) => id,
-                Err(e) => {
-                    tracing::warn!(error = %e, "FolderDelete: JMAP account lookup failed");
+    // Destroy the backend objects deepest-first, ABORTING on the first failure
+    // so the mirror is never pruned ahead of the system of record (that would
+    // resurrect the folder on the next reconcile).
+    for folder in &subtree {
+        match folder.backend_kind.as_str() {
+            "jmap" => {
+                let Some(jmap) = state.jmap_client.clone() else {
+                    return FolderMutationResult::status(6);
+                };
+                let account_id = match jmap.get_account_id(owner, password).await {
+                    Ok(id) => id,
+                    Err(e) => {
+                        tracing::warn!(error = %e, "FolderDelete: JMAP account lookup failed");
+                        return FolderMutationResult::status(6);
+                    }
+                };
+                match jmap
+                    .destroy_mailbox(&account_id, &folder.backend_id, true, owner, password)
+                    .await
+                {
+                    Ok(true) => {}
+                    Ok(false) => {
+                        tracing::warn!(
+                            server_id = %folder.server_id,
+                            "FolderDelete: Mailbox/set reported no destroy for the mailbox"
+                        );
+                        return FolderMutationResult::status(6);
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "FolderDelete: JMAP Mailbox/set destroy failed");
+                        return FolderMutationResult::status(6);
+                    }
+                }
+            }
+            "caldav" => {
+                let Ok(caldav) = CaldavClient::new(&state.cfg) else {
+                    return FolderMutationResult::status(6);
+                };
+                if let Err(e) = caldav
+                    .delete_collection(&folder.backend_id, owner, password.expose_secret())
+                    .await
+                {
+                    tracing::warn!(error = %e, "FolderDelete: CalDAV collection delete failed");
                     return FolderMutationResult::status(6);
                 }
-            };
-            if let Err(e) = jmap
-                .destroy_mailbox(&account_id, &row.backend_id, owner, password)
-                .await
-            {
-                tracing::warn!(error = %e, "FolderDelete: JMAP Mailbox/set destroy failed");
-                return FolderMutationResult::status(6);
             }
+            _ => return FolderMutationResult::status(4),
         }
-        "caldav" => {
-            let Ok(caldav) = CaldavClient::new(&state.cfg) else {
-                return FolderMutationResult::status(6);
-            };
-            if let Err(e) = caldav
-                .delete_collection(&row.backend_id, owner, password.expose_secret())
-                .await
-            {
-                tracing::warn!(error = %e, "FolderDelete: CalDAV collection delete failed");
-                return FolderMutationResult::status(6);
-            }
-        }
-        _ => return FolderMutationResult::status(4),
     }
 
-    // Remove the folder and any descendants (a mail folder tree can nest).
-    if let Err(e) = delete_folder_subtree(state, owner, server_id).await {
-        tracing::warn!(error = %e, "FolderDelete: failed to remove folder mapping");
-        return FolderMutationResult::status(6);
+    // Backend objects are gone; prune the mirror and return the removed
+    // ServerIds so the caller can journal a Delete for each one.
+    let removed_ids: Vec<String> = subtree.iter().map(|f| f.server_id.clone()).collect();
+    for id in &removed_ids {
+        if let Err(e) = state.storage.delete_folder(owner, id).await {
+            tracing::warn!(error = %e, "FolderDelete: failed to remove folder mapping");
+            return FolderMutationResult::status(6);
+        }
     }
-    FolderMutationResult::status(1)
+    FolderMutationResult {
+        status: 1,
+        server_id: None,
+        removed_server_ids: removed_ids,
+    }
 }
 
-async fn delete_folder_subtree(
+/// The target folder and every descendant, ordered deepest-first (children
+/// before parents) so a backend destroy never hits a parent that still has a
+/// child.
+async fn collect_folder_subtree(
     state: &Arc<AppState>,
     owner: &str,
     root_server_id: &str,
-) -> crate::error::Result<()> {
+) -> crate::error::Result<Vec<FolderRow>> {
     let rows = state.storage.list_folders(owner).await?;
-    // Breadth-first: collect the target plus every descendant.
-    let mut to_delete = vec![root_server_id.to_string()];
-    let mut frontier = vec![root_server_id.to_string()];
-    while let Some(parent) = frontier.pop() {
-        for row in &rows {
-            if row.parent_id == parent && !to_delete.contains(&row.server_id) {
-                to_delete.push(row.server_id.clone());
-                frontier.push(row.server_id.clone());
+    let by_id: std::collections::HashMap<&str, &FolderRow> =
+        rows.iter().map(|r| (r.server_id.as_str(), r)).collect();
+    let mut children: std::collections::HashMap<&str, Vec<&str>> = std::collections::HashMap::new();
+    for row in &rows {
+        children
+            .entry(row.parent_id.as_str())
+            .or_default()
+            .push(row.server_id.as_str());
+    }
+    // Depth-first post-order (children before their parent) via an explicit
+    // worklist of `(id, expanded)` entries.
+    let mut out: Vec<FolderRow> = Vec::new();
+    let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    let mut worklist: Vec<(&str, bool)> = vec![(root_server_id, false)];
+    while let Some((id, expanded)) = worklist.pop() {
+        if expanded {
+            if let Some(row) = by_id.get(id) {
+                out.push((*row).clone());
+            }
+            continue;
+        }
+        if !seen.insert(id) {
+            continue;
+        }
+        worklist.push((id, true));
+        if let Some(kids) = children.get(id) {
+            for kid in kids {
+                worklist.push((kid, false));
             }
         }
     }
-    for id in to_delete {
-        state.storage.delete_folder(owner, &id).await?;
-    }
-    Ok(())
+    Ok(out)
 }
 
 // ---------------------------------------------------------------------------
@@ -496,12 +637,43 @@ pub async fn update_folder(
         parent_id.trim().to_string()
     };
 
+    // Apply the same name validation FolderCreate enforces: a rename must not
+    // adopt a reserved system-folder name, exceed the §6.13 length, or collide
+    // with a sibling's DisplayName under the same parent.
+    if is_system_folder_name(display_name) {
+        return FolderMutationResult::status(2);
+    }
+    if display_name.chars().count() > 64 {
+        return FolderMutationResult::status(10);
+    }
+    match state.storage.list_folders(owner).await {
+        Ok(rows) => {
+            if rows.iter().any(|r| {
+                r.server_id != row.server_id
+                    && r.parent_id == parent_id
+                    && r.display_name.eq_ignore_ascii_case(display_name)
+            }) {
+                return FolderMutationResult::status(2);
+            }
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "FolderUpdate: failed to list existing folders");
+            return FolderMutationResult::status(6);
+        }
+    }
+
     match row.backend_kind.as_str() {
         "jmap" => update_mail_folder(state, owner, password, &row, &parent_id, display_name).await,
         // A CalDAV collection rename keeps the stored ServerId (href) stable and
         // only refreshes the collection's own displayname plus the persisted
-        // DisplayName.
-        "caldav" => rename_caldav_folder(state, owner, password, &row, display_name).await,
+        // DisplayName. CalDAV collections are top-level only, so a requested
+        // move to a different parent is rejected rather than silently ignored.
+        "caldav" => {
+            if parent_id != row.parent_id {
+                return FolderMutationResult::status(5);
+            }
+            rename_caldav_folder(state, owner, password, &row, display_name).await
+        }
         _ => FolderMutationResult::status(4),
     }
 }
@@ -547,7 +719,11 @@ async fn update_mail_folder(
             },
         }
     };
-    let rename = (!row.display_name.eq_ignore_ascii_case(display_name)).then_some(display_name);
+    // A rename is sent whenever the name differs at all — including a
+    // case-only change (`Foo` → `foo`), which `eq_ignore_ascii_case` would
+    // swallow while the local map still recorded the new name, desynchronizing
+    // the stored DisplayName from the backend mailbox name.
+    let rename = (row.display_name != display_name).then_some(display_name);
     match jmap
         .update_mailbox(
             &account_id,
@@ -559,7 +735,7 @@ async fn update_mail_folder(
         )
         .await
     {
-        Ok(_) => {
+        Ok(true) => {
             if let Err(e) = state
                 .storage
                 .upsert_folder(crate::storage::FolderUpsertParams {
@@ -577,6 +753,12 @@ async fn update_mail_folder(
                 return FolderMutationResult::status(6);
             }
             FolderMutationResult::status(1)
+        }
+        Ok(false) => {
+            // The backend did not report the mailbox as updated; do not persist
+            // the requested name/parent as though it had been applied.
+            tracing::warn!("FolderUpdate: Mailbox/set reported no update for the mailbox");
+            FolderMutationResult::status(6)
         }
         Err(e) => {
             tracing::warn!(error = %e, "FolderUpdate: JMAP Mailbox/set update failed");
@@ -681,6 +863,42 @@ pub async fn current_hierarchy_sync_key(
         Ok(Some((key, _))) => key,
         _ => "0".to_string(),
     }
+}
+
+/// After a successful folder mutation, rotate the mutating device's
+/// folder-hierarchy SyncKey and advance its watermark to the latest journal
+/// entry, so its next FolderSync (which carries that key) does not re-report the
+/// change it just made. Other devices keep their own keys and watermarks and
+/// still receive the change. Returns the new key; on a persistence failure the
+/// previous key is returned so the client can still make progress.
+pub async fn rotate_hierarchy_sync_key(
+    state: &Arc<AppState>,
+    owner: &str,
+    device_id: &str,
+) -> String {
+    let collection_id = crate::eas::scoped_collection_id("folderhierarchy", device_id);
+    let latest_seq = match state.storage.get_latest_change_seq().await {
+        Ok(seq) => seq,
+        Err(e) => {
+            tracing::warn!(error = %e, "FolderSync: failed to read latest change seq for key rotation");
+            return current_hierarchy_sync_key(state, owner, device_id).await;
+        }
+    };
+    let new_key = uuid::Uuid::new_v4().simple().to_string();
+    if let Err(e) = state
+        .storage
+        .set_sync_key(
+            owner,
+            &collection_id,
+            &new_key,
+            Some(&format!("seq:{}", latest_seq)),
+        )
+        .await
+    {
+        tracing::warn!(error = %e, "FolderSync: failed to persist rotated hierarchy sync key");
+        return current_hierarchy_sync_key(state, owner, device_id).await;
+    }
+    new_key
 }
 
 /// Journal a folder-hierarchy change so an already-primed FolderSync reports

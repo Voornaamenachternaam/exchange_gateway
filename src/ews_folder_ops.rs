@@ -1041,7 +1041,7 @@ pub(crate) async fn handle_delete_folder(
                 return internal_error(action, "Email/set destroy failed", &e);
             }
             if let Err(e) = jmap
-                .destroy_mailbox(&account_id, cb_id, &auth.username, &auth.password)
+                .destroy_mailbox(&account_id, cb_id, false, &auth.username, &auth.password)
                 .await
             {
                 return internal_error(action, "Mailbox/set destroy failed", &e);

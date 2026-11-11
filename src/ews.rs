@@ -4753,8 +4753,26 @@ async fn handle_sync_email_folder_items(
         let emails = result.emails;
         // The delta drives `Email/queryChanges`, which resumes from a
         // `queryState`, so the opaque `SyncState` stored here must be the
-        // query's state — not the `Email/get` data-type state.
+        // query's state — not the `Email/get` data-type state. An empty state
+        // (a transient Stalwart error, an unrecognised role, or an empty
+        // mailbox lookup) must NOT be stored as a successful empty folder: the
+        // client would treat the next request as another initial sync. Report a
+        // retryable server error instead. The Outbox has no JMAP mailbox and
+        // legitimately yields an empty state.
         let new_state = result.query_state.clone();
+        if new_state.is_empty() && mailbox_role != "outbox" {
+            tracing::error!(
+                folder_id = %folder_id,
+                mailbox_role,
+                "JMAP initial email sync produced no query state; reporting server busy"
+            );
+            return operation_error_response(
+                &EwsAction::SyncFolderItems,
+                "ErrorServerBusy",
+                "Failed to establish an email sync state",
+                StatusCode::SERVICE_UNAVAILABLE,
+            );
+        }
 
         let mut changes_xml = String::new();
         for email in &emails {
@@ -4788,11 +4806,25 @@ async fn handle_sync_email_folder_items(
     // Resolve the concrete JMAP mailbox id backing this EWS folder, for the
     // mailbox-scoped `Email/queryChanges` delta feed. The account-wide
     // `Email/changes` would leak every other folder's mail into this folder.
-    let resolved_mailbox_id: Option<String> = jmap
+    // A backend/transport failure must NOT be collapsed into "no mailbox" (that
+    // would answer ErrorFolderNotFound, which a client may treat as a
+    // permanent, non-retryable condition); only a successful empty lookup is a
+    // missing folder.
+    let resolved_mailbox_id: Option<String> = match jmap
         .get_mailbox_ids_for_role(&account_id, mailbox_role, &auth.username, &auth.password)
         .await
-        .ok()
-        .and_then(|ids| ids.into_iter().next());
+    {
+        Ok(ids) => ids.into_iter().next(),
+        Err(e) => {
+            tracing::error!(error = %e, "JMAP mailbox lookup failed for EWS email delta");
+            return operation_error_response(
+                &EwsAction::SyncFolderItems,
+                "ErrorServerBusy",
+                "Failed to resolve the mailbox for this folder",
+                StatusCode::SERVICE_UNAVAILABLE,
+            );
+        }
+    };
 
     // Subsequent sync: drive the mailbox-scoped `Email/queryChanges` feed with
     // the stored query state. `Email/changes` is account-wide and would leak
@@ -4848,8 +4880,18 @@ async fn handle_sync_email_folder_items(
 
     let mut changes_xml = String::new();
 
+    // An id present in BOTH lists is an in-place move within the mailbox
+    // (Stalwart reports a reorder as added+removed); render it as an Update
+    // below, NOT as a Create (a client would reject a Create for an item it
+    // already holds).
+    let overlap: std::collections::HashSet<&str> =
+        changes.destroyed.iter().map(String::as_str).collect();
+
     // Render an arrival (newly in this mailbox) as a Create.
     for email_id in &changes.created {
+        if overlap.contains(email_id.as_str()) {
+            continue;
+        }
         if let Ok(Some(email)) = jmap
             .get_email(&account_id, email_id, &auth.username, &auth.password, true)
             .await
@@ -4900,12 +4942,10 @@ async fn handle_sync_email_folder_items(
     }
 
     // A page that reported no change is the end of the change set; a page that
-    // advanced the state while reporting nothing was clipped by `maxChanges`,
-    // so more changes remain behind the returned state.
-    let includes_last = if changes.created.is_empty()
-        && changes.destroyed.is_empty()
-        && changes.new_state != old_state_token
-    {
+    // came back at the `maxChanges` cap (`has_more_changes`) was clipped, so
+    // more changes remain behind the returned state and the client must
+    // continue from it.
+    let includes_last = if changes.has_more_changes {
         "false"
     } else {
         "true"

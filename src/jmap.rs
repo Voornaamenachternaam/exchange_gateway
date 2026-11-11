@@ -2413,11 +2413,10 @@ impl JmapClient {
     /// `inMailbox` filter is immutable (RFC 8620 §5.6), so the server can
     /// answer it from its change log.
     ///
-    /// Returns the ordered operation list plus the new query state. The
-    /// response is ordered: every `removed` id precedes the `added` ids in
-    /// result order (RFC 8620 §5.6 guarantees this, and Stalwart emits it),
-    /// so a windowed delivery never applies an add before its preceding
-    /// remove of the same id.
+    /// Returns the added and removed id lists plus the new query state. The
+    /// `removed` ids precede the `added` ids in the response (RFC 8620 §5.6
+    /// guarantees this, and Stalwart emits it), so a windowed delivery never
+    /// applies an add before its preceding remove of the same id.
     pub async fn query_email_changes(
         &self,
         account_id: &str,
@@ -2434,7 +2433,13 @@ impl JmapClient {
             "Email/queryChanges",
             json!({
                 "accountId": account_id,
+                // RFC 8620 §5.6: the `filter` and `sort` MUST be identical to
+                // those of the query that produced `since_state`, or the server
+                // may reject the state. The initial prime runs `Email/query`
+                // with the `receivedAt` descending default, so the delta must
+                // repeat it.
                 "filter": { "inMailbox": mailbox_id },
+                "sort": [{ "property": "receivedAt", "isAscending": false }],
                 "sinceQueryState": since_state,
                 "maxChanges": max_changes.unwrap_or(crate::jmap::DEFAULT_EMAIL_CHANGES_MAX),
                 "calculateTotal": false,
@@ -2456,20 +2461,34 @@ impl JmapClient {
             // RFC 8620 §3.6.2: a method-level error is reported as a separate
             // `error` response, NOT as a field on the method's own response.
             if method == "error" {
-                // `cannotCalculateChanges` (RFC 8620 §5.6) means the server
-                // cannot answer this query delta. Stalwart reports an
-                // unresumable `sinceQueryState` as `invalidArguments`
-                // ("invalid JMAP State", observed against v1.1.0) rather than
-                // `cannotCalculateChanges`; treat it the same way — the only
-                // per-request input here is the opaque state we stored, and a
-                // re-prime is self-healing whereas a frozen delta is not.
-                // Both downcast to `CannotCalculateChanges` so the caller
-                // re-primes from a full snapshot instead of storing a state
-                // that would silently skip changes.
+                // RFC 8620 §5.6 method errors, all mapped to the typed
+                // `CannotCalculateChanges` so the caller re-primes from a full
+                // snapshot rather than storing a state that would silently skip
+                // changes:
+                //  * `cannotCalculateChanges` — the server cannot compute the
+                //    delta.
+                //  * `tooManyChanges` — more than `maxChanges` changes are
+                //    pending. RFC 8620 §5.6 defines no `hasMoreChanges` flag for
+                //    this method, so there is no page to advance; the client may
+                //    only retry with a higher `maxChanges` or invalidate its
+                //    cache. Re-priming is the recoverable choice (an
+                //    unbounded `maxChanges` is not), and it keeps the Ping probe
+                //    waking the folder instead of silently deferring.
+                //  * `invalidArguments` — Stalwart reports an unresumable
+                //    `sinceQueryState` as this ("invalid JMAP State", observed
+                //    against v1.1.0) rather than `cannotCalculateChanges`. A
+                //    re-prime is self-healing whereas a frozen delta is not, so
+                //    it is a deliberate choice to treat the rejection of our
+                //    stored opaque state as a re-prime trigger.
                 match data.get("type").and_then(|v| v.as_str()) {
                     Some("cannotCalculateChanges") => {
                         return Err(anyhow::Error::new(CannotCalculateChanges(format!(
                             "Email/queryChanges cannot calculate changes from {since_state}"
+                        ))));
+                    }
+                    Some("tooManyChanges") => {
+                        return Err(anyhow::Error::new(CannotCalculateChanges(format!(
+                            "Email/queryChanges from {since_state} exceeds maxChanges"
                         ))));
                     }
                     Some("invalidArguments") => {
@@ -2510,14 +2529,15 @@ impl JmapClient {
                     })
                     .unwrap_or_default();
 
-                // RFC 8620 §5.6: a `cannotCalculateChanges` error (mapped
-                // above) means the server cannot answer this query delta; the
-                // caller re-primes from a full snapshot.
+                // A response without a `newQueryState` cannot advance the
+                // delta: treat it like `cannotCalculateChanges` (as
+                // `changes_calendar_events` does for a missing `newState`) so
+                // the caller re-primes instead of storing a state that would
+                // replay or skip changes.
                 if new_state.is_empty() {
-                    return Err(anyhow!(
-                        "Email/queryChanges returned no newQueryState (oldState {})",
-                        old_state
-                    ));
+                    return Err(anyhow::Error::new(CannotCalculateChanges(format!(
+                        "Email/queryChanges returned no newQueryState (oldState {old_state})"
+                    ))));
                 }
 
                 debug!(
@@ -2529,14 +2549,19 @@ impl JmapClient {
                     "Email query changes synced"
                 );
 
+                // `Email/queryChanges` has no `hasMoreChanges` flag (RFC 8620
+                // §5.6); a page that came back exactly at the `maxChanges` cap
+                // was almost certainly clipped, so signal the caller to
+                // re-query from `newQueryState` to drain the remainder.
+                let page_len = added.len() + removed.len();
+                let has_more_changes = page_len
+                    >= max_changes.unwrap_or(crate::jmap::DEFAULT_EMAIL_CHANGES_MAX) as usize;
                 return Ok(EmailChangesResult {
                     created: added,
                     updated: Vec::new(),
                     destroyed: removed,
                     new_state,
-                    // Email/queryChanges is bounded by `maxChanges` but reports
-                    // no `hasMoreChanges` flag; the caller re-queries to drain.
-                    has_more_changes: false,
+                    has_more_changes,
                 });
             }
         }
@@ -3077,6 +3102,116 @@ impl JmapClient {
         Ok(out)
     }
 
+    /// The `(jmap_id, sorted keyword names)` pair for every message currently
+    /// in `mailbox_id`, using a lightweight `Email/query` + `Email/get`
+    /// (`properties: ["keywords"]` only — no body fetch). Used by the email
+    /// delta to detect a message whose flags changed without changing its
+    /// mailbox membership, which `Email/queryChanges` cannot report (it tracks
+    /// only query-set membership).
+    pub async fn list_email_ids_with_keywords(
+        &self,
+        account_id: &str,
+        mailbox_id: &str,
+        username: &str,
+        password: &SecretString,
+    ) -> Result<Vec<(String, Vec<String>)>> {
+        let session = self.get_session(username, password).await?;
+        let api_url = &session.api_url;
+        // Page through the mailbox until it is fully drained (same paging
+        // contract as `list_email_ids_in_mailbox`).
+        const PAGE: u64 = 500;
+        let mut out: Vec<(String, Vec<String>)> = Vec::new();
+        let mut position: u64 = 0;
+        loop {
+            let calls = vec![
+                (
+                    "Email/query",
+                    json!({
+                        "accountId": account_id,
+                        "filter": { "inMailbox": mailbox_id },
+                        "sort": [{ "property": "receivedAt", "isAscending": false }],
+                        "position": position,
+                        "limit": PAGE,
+                        "calculateTotal": true,
+                    }),
+                    "q0",
+                ),
+                (
+                    "Email/get",
+                    json!({
+                        "accountId": account_id,
+                        "#ids": {
+                            "resultOf": "q0",
+                            "name": "Email/query",
+                            "path": "/ids",
+                        },
+                        "properties": ["keywords"],
+                    }),
+                    "g0",
+                ),
+            ];
+            let response = self
+                .api_call(
+                    api_url,
+                    &["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:mail"],
+                    calls,
+                    username,
+                    password,
+                )
+                .await?;
+            let mut total: u64 = 0;
+            let mut fetched: u64 = 0;
+            let mut saw_query = false;
+            for (method, data, _) in response.method_responses {
+                if method == "error" {
+                    return Err(anyhow!("Email/query error: {}", data));
+                }
+                if method == "Email/query" {
+                    saw_query = true;
+                    total = data.get("total").and_then(|v| v.as_u64()).unwrap_or(0);
+                    fetched = data
+                        .get("ids")
+                        .and_then(|v| v.as_array())
+                        .map(|a| a.len() as u64)
+                        .unwrap_or(0);
+                } else if method == "Email/get" {
+                    let list = data
+                        .get("list")
+                        .and_then(|v| v.as_array())
+                        .cloned()
+                        .unwrap_or_default();
+                    for item in list {
+                        let Some(id) = item.get("id").and_then(|v| v.as_str()) else {
+                            continue;
+                        };
+                        let mut keywords: Vec<String> = item
+                            .get("keywords")
+                            .and_then(|v| v.as_object())
+                            .map(|m| {
+                                m.iter()
+                                    .filter(|(_, v)| v.as_bool().unwrap_or(false))
+                                    .map(|(n, _)| n.clone())
+                                    .collect()
+                            })
+                            .unwrap_or_default();
+                        keywords.sort();
+                        out.push((id.to_string(), keywords));
+                    }
+                }
+            }
+            if !saw_query {
+                return Err(anyhow!(
+                    "Email/query returned no method response while listing mailbox keywords"
+                ));
+            }
+            position += fetched;
+            if fetched < PAGE || position >= total {
+                break;
+            }
+        }
+        Ok(out)
+    }
+
     /// Move emails from their current mailbox(es) to a target mailbox by
     /// patching `mailboxIds`: `add {target: true}` and `remove` every current
     /// mailbox id. RFC 8621 §4.5 `Email/set` `update` semantics. Returns the
@@ -3433,10 +3568,17 @@ impl JmapClient {
 
     /// Destroy a mailbox via JMAP `Mailbox/set` `destroy` (RFC 8621 §5.2).
     /// Backs `RopDeleteFolder`. Returns true when the mailbox was destroyed.
+    ///
+    /// `remove_emails` sets `onDestroyRemoveEmails` (RFC 8621 §2.5): without it
+    /// the server rejects destroying a mailbox that still contains emails with
+    /// `mailboxHasEmail`. The EAS `FolderDelete` semantics remove the folder and
+    /// its contents, so the EAS path passes `true`; a caller that must not
+    /// destroy mail passes `false`.
     pub async fn destroy_mailbox(
         &self,
         account_id: &str,
         mailbox_id: &str,
+        remove_emails: bool,
         username: &str,
         password: &SecretString,
     ) -> Result<bool> {
@@ -3447,6 +3589,7 @@ impl JmapClient {
             json!({
                 "accountId": account_id,
                 "destroy": [mailbox_id],
+                "onDestroyRemoveEmails": remove_emails,
             }),
             "ms2",
         )];
@@ -5200,6 +5343,43 @@ impl JmapClient {
             .first()
             .and_then(|c| c.id.clone())
             .ok_or_else(|| anyhow!("No calendars found for user"))
+    }
+
+    /// Resolve a JMAP calendar id from a stored CalDAV collection href.
+    ///
+    /// A user-created calendar-family EAS folder (Types 13/15/16/17) is backed
+    /// by a CalDAV collection whose href is stored in `folder_map` and used as
+    /// the folder's EAS ServerId; when a client Syncs that folder, its
+    /// `CollectionId` is that href. Stalwart exposes the same collection to JMAP
+    /// as a `Calendar` whose `href` property ends with the collection path, so
+    /// matching on a path-suffix basis scopes `CalendarEvent/query` to exactly
+    /// that collection. Returns `None` when no calendar matches (an
+    /// unknown/foreign href), so the caller can decline to serve rather than
+    /// leak every calendar's events.
+    pub async fn resolve_calendar_id_for_href(
+        &self,
+        username: &str,
+        password: &SecretString,
+        href: &str,
+    ) -> Result<Option<String>> {
+        let wanted = href.trim_end_matches('/');
+        if wanted.is_empty() {
+            return Ok(None);
+        }
+        let result = self.query_calendars(username, password).await?;
+        Ok(result
+            .calendars
+            .into_iter()
+            .find(|c| {
+                c.href
+                    .as_deref()
+                    .map(|h| {
+                        let h = h.trim_end_matches('/');
+                        h == wanted || h.ends_with(wanted)
+                    })
+                    .unwrap_or(false)
+            })
+            .and_then(|c| c.id))
     }
 
     /// Query calendar events in a time range via CalendarEvent/query
@@ -8236,6 +8416,47 @@ mod tests {
         base
     }
 
+    /// Like [`spawn_stub_jmap_api_server`] but the session advertises the
+    /// calendar capability with a primary calendar account, so calls that read
+    /// `primaryAccounts[urn:ietf:params:jmap:calendars]` (e.g.
+    /// `query_calendars`) work.
+    async fn spawn_stub_calendar_jmap_server(api_response: Value) -> String {
+        use axum::routing::{get, post};
+
+        async fn session(axum::Extension(base): axum::Extension<String>) -> axum::Json<Value> {
+            axum::Json(json!({
+                "apiUrl": base,
+                "downloadUrl": format!("{base}/download/{{accountId}}/{{blobId}}"),
+                "uploadUrl": format!("{base}/upload/{{accountId}}"),
+                "eventSourceUrl": format!("{base}/eventsource"),
+                "state": "s",
+                "username": "u",
+                "accounts": {},
+                "primaryAccounts": { JMAP_CAL_CAPABILITY: "acct-cal" },
+                "capabilities": {
+                    "urn:ietf:params:jmap:core": {},
+                    JMAP_CAL_CAPABILITY: {}
+                }
+            }))
+        }
+        async fn api(axum::Extension(response): axum::Extension<Value>) -> axum::Json<Value> {
+            axum::Json(response)
+        }
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let base = format!("http://127.0.0.1:{port}");
+        let app = axum::Router::new()
+            .route("/session", get(session))
+            .route("/", post(api))
+            .layer(axum::Extension(api_response))
+            .layer(axum::Extension(base.clone()));
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        base
+    }
+
     #[tokio::test]
     async fn query_calendar_events_counts_unparseable_objects() {
         let response = json!({
@@ -8265,6 +8486,36 @@ mod tests {
             .expect("query result");
         assert_eq!(result.events.len(), 1);
         assert_eq!(result.unparseable, 1, "skip count must reach the caller");
+    }
+
+    #[tokio::test]
+    async fn resolve_calendar_id_for_href_matches_by_path_suffix() {
+        // A user-created calendar folder's CollectionId is the stored CalDAV
+        // collection href; Stalwart reports the same collection to JMAP with a
+        // path-suffixed `href`. Resolution must map the href to the calendar id
+        // (scoping the Sync query) and must NOT resolve an unknown href to an
+        // arbitrary calendar.
+        let response = json!({
+            "methodResponses": [
+                ["Calendar/get", { "list": [
+                    { "id": "cal-default", "name": "Default", "href": "/dav/cal/u%40example.com/default/" },
+                    { "id": "cal-projects", "name": "Projects", "href": "/dav/cal/u%40example.com/Projects/" }
+                ] }, "cg0"]
+            ]
+        });
+        let base = spawn_stub_calendar_jmap_server(response).await;
+        let client = JmapClient::new(&base).unwrap();
+        let pw = SecretString::from("pw");
+        let hit = client
+            .resolve_calendar_id_for_href("u", &pw, "/dav/cal/u%40example.com/Projects/")
+            .await
+            .expect("query ok");
+        assert_eq!(hit.as_deref(), Some("cal-projects"));
+        let miss = client
+            .resolve_calendar_id_for_href("u", &pw, "/dav/cal/u%40example.com/Ghost/")
+            .await
+            .expect("query ok");
+        assert_eq!(miss, None, "an unknown href must not resolve to a calendar");
     }
 
     #[tokio::test]

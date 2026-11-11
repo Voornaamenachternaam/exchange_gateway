@@ -72,8 +72,8 @@ gateway restarts and surface in `FolderSync`/`GetHierarchy`.
   Type 12/1 (mail) → JMAP `Mailbox/set`; Type 13 (Calendar) → CalDAV
   `MKCALENDAR` with `VEVENT`; Type 15 (Tasks) → `VTODO`; Type 16/17
   (Journal/Notes) → `VJOURNAL`. Type 14 (Contacts) is not creatable (CardDAV
-  collection creation is unsupported), so it maps to the mail backend and is
-  rejected by the backend as needed.
+  collection creation is unsupported): `FolderCreate` rejects it up front with
+  Status 10 rather than backing a "Contacts" folder with a JMAP mail mailbox.
 - **`FolderCreate`** (§2.2.1.3): validates the request (missing DisplayName/
   ParentId → 10; a reserved *default* Type 2–11/19 → 10; a DisplayName that
   collides with a system folder or an existing sibling → 2; DisplayName > 64
@@ -117,17 +117,39 @@ gateway restarts and surface in `FolderSync`/`GetHierarchy`.
   a user folder's EAS ServerId *is* the mailbox id; a system role resolves via
   its JMAP role) and pages `queryChanges` until the feed drains. An id that
   Stalwart reports in **both** `added` and `removed` (an in-place reorder — a
-  flag edit re-sorting a keyword-sorted query) is classified as a `<Change>`,
+  flag edit re-sorting a keyword-sorted query) is classified as a single `<Change>`,
   not an Add+Delete (`classify_query_change_ops`). The initial sync now stores
-  the **query state** (`Email/query` `queryState`) as the delta base rather
-  than the `Email/get` data-type state, since `queryChanges` resumes from the
-  former. A state the backend can no longer compute — Stalwart returns
+  the **first window's query state** (`Email/query` `queryState`) as the delta
+  base and keeps it across continuation pages rather than replacing it with
+  each page's state: a base taken from the first window makes the delta
+  re-report anything that arrived mid-prime (a duplicate Add the client
+  resolves by ServerId), whereas a base taken from a later window would
+  silently skip a message that arrived during paging and was never delivered. A state the backend can no longer compute — Stalwart returns
   `invalidArguments` ("invalid JMAP State"), not `cannotCalculateChanges` — is
   mapped to the typed `CannotCalculateChanges`, so the delta forces a clean
   re-prime (EAS SyncKey 0 / Status 3; EWS `ErrorInvalidSyncStateData`) instead
   of freezing the feed. The Ping email-folder probe uses the same
   mailbox-scoped feed. The push monitor keeps the account-wide `Email/changes`
   deliberately — it must observe every mailbox to wake the right folder.
+
+- **Email property (flag) updates.** `Email/queryChanges` reports only
+  membership of the query result set (RFC 8620 §5.6), so a message whose flags
+  change without leaving the mailbox (mark read/flagged, ...) never appears in
+  its `added`/`removed` lists and would otherwise be dropped by both the EAS
+  and EWS email deltas. The EAS delta now keeps a per-collection **keyword
+  baseline** (`email_keyword_baseline`, a JSON map of JMAP Email id to sorted
+  keyword list) captured on every initial sync and refreshed on every delta
+  that delivers a change, and diffs the live mailbox
+  (`JmapClient::list_email_ids_with_keywords`, a lightweight
+  `Email/query` + `Email/get` of `keywords` only, no body fetch) against it,
+  emitting a `<Change>` for each id whose keyword set changed and was not
+  already queued. The baseline advances only after the whole change set is
+  delivered, so a crash re-reports rather than swallows an update. A backend
+  hiccup during the scan degrades to serving the query-feed changes without
+  advancing the baseline. `has_more_changes` on the query feed is set when a
+  page returns at the `maxChanges` cap, so the drain loop and the EWS
+  `IncludesLastItemInRange` reflect a genuinely clipped page instead of a fixed
+  `false`.
 
 **Status codes.** Per [MS-ASCMD] §2.2.3.177.8 / §6.10–§6.19: 1 success,
 2 invalid/duplicate or special system folder, 3 special system folder
@@ -150,6 +172,16 @@ the typed `CannotCalculateChanges`).
 **Operator change list.** None required for Cloudflare or Stalwart: the new
 commands use the already-configured JMAP and CalDAV endpoints. No new
 environment variables.
+
+**Upgrade note (expected one-time re-prime).** Before this change the stored
+email delta token was the `Email/get` data-type state; the new delta passes it
+to `Email/queryChanges` as `sinceQueryState`, which Stalwart rejects with
+`invalidArguments` (mapped to `CannotCalculateChanges`). Every already-synced
+email collection therefore answers EAS `Sync` with Status 3 (SyncKey 0) and
+EWS `SyncFolderItems` with `ErrorInvalidSyncStateData` exactly once, then
+re-downloads its mailbox from a clean prime. This is self-healing and needs no
+operator action, but the first Sync after the upgrade is heavier than steady
+state.
 
 
 ### 3. Autodiscover hostname pairing is only a startup warning, not enforced

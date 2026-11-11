@@ -146,6 +146,24 @@ CREATE TABLE IF NOT EXISTS email_sync_pending (
     UNIQUE(owner, collection_id)
 );
 
+-- Per-collection baseline of every message's sorted keyword (flag) list, as a
+-- JSON object `{"<jmap email id>": ["$seen", "$flagged", …], …}`.
+--
+-- `Email/queryChanges` (RFC 8620 §5.6) reports only membership of the query
+-- result set, so a flag edit that leaves a message in the mailbox (mark read,
+-- flag, …) never appears in its `added`/`removed` lists. The email delta diffs
+-- the live mailbox against this baseline to emit the `<Change>` operations the
+-- query feed cannot report. The baseline is refreshed on every delta that
+-- delivers a change and on every initial sync.
+CREATE TABLE IF NOT EXISTS email_keyword_baseline (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner TEXT NOT NULL,
+    collection_id TEXT NOT NULL,
+    baseline_json TEXT NOT NULL,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(owner, collection_id)
+);
+
 -- EAS gateway-local (Tasks/Notes) initial-sync keyset continuation
 -- (MS-ASCMD §2.2.3.199 WindowSize / §2.2.3.116 MoreAvailable).
 --
@@ -626,8 +644,6 @@ CREATE TABLE IF NOT EXISTS folder_map (
 );
 
 CREATE INDEX IF NOT EXISTS idx_folder_map_owner ON folder_map(owner);
-CREATE INDEX IF NOT EXISTS idx_folder_map_backend
-    ON folder_map(owner, backend_kind, backend_id);
 
 INSERT OR IGNORE INTO schema_version (version, description)
 VALUES (9, 'v9: meeting_rsvp idempotence table for MeetingResponse/iMIP integrity');
@@ -637,3 +653,6 @@ VALUES (10, 'v10: journal_prune_state tracks the pruned-through journal id per o
 
 INSERT OR IGNORE INTO schema_version (version, description)
 VALUES (11, 'v11: folder_map persists user-created EAS folders (JMAP Mailbox / CalDAV collection) across restarts');
+
+INSERT OR IGNORE INTO schema_version (version, description)
+VALUES (12, 'v12: email_keyword_baseline tracks per-collection message keyword (flag) state so email deltas emit <Change> for in-place flag edits');

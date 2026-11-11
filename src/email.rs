@@ -1756,11 +1756,8 @@ pub async fn fetch_emails_jmap(
 ) -> anyhow::Result<crate::jmap::EmailListResult> {
     let account_id = params.account_id;
     let mailbox_role = params.mailbox_role;
-    let position = params.position;
-    let limit = params.limit;
     let username = params.username;
     let password = params.password;
-    let search_filter = params.search_filter.as_ref();
     let explicit_mailbox = params.mailbox_id;
     let jmap = state
         .jmap_client
@@ -1834,31 +1831,10 @@ pub async fn fetch_emails_jmap(
                     "Multiple mailbox IDs found for role; using first"
                 );
             }
-            let in_mailbox = serde_json::json!({ "inMailbox": mailbox_ids[0] });
-            let filter = match search_filter {
-                // Combine the mailbox scope with the search conditions under
-                // a single AND so a search is always confined to this mailbox.
-                Some(search) => Some(
-                    crate::ews_search::combine_with_in_mailbox(
-                        &mailbox_ids[0],
-                        Some(search.clone()),
-                    )
-                    .unwrap_or(in_mailbox),
-                ),
-                None => Some(in_mailbox),
-            };
-            let result = jmap
-                .query_emails(crate::jmap::QueryEmailsParams {
-                    account_id,
-                    filter,
-                    sort: None,
-                    position,
-                    limit,
-                    username,
-                    password,
-                })
-                .await?;
-            Ok(result)
+            // Resolve the role to its concrete mailbox id, then reuse the
+            // mailbox-scoped query (inMailbox + search combination) so that
+            // logic lives in one place.
+            fetch_emails_in_mailbox(jmap, params, &mailbox_ids[0]).await
         }
         Ok(_) => {
             // No mailbox for that role — return empty result.
