@@ -31,6 +31,7 @@ use quick_xml::events::Event;
 use roxmltree::Document;
 use secrecy::{ExposeSecret, SecretString};
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::fmt::Write as FmtWrite;
 use std::num::NonZeroUsize;
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
@@ -1370,7 +1371,7 @@ fn parse_request(query: &HashMap<String, String>, xml: &str, headers: &HeaderMap
     }
 }
 
-fn scoped_collection_id(visible_collection_id: &str, device_id: &str) -> String {
+pub(crate) fn scoped_collection_id(visible_collection_id: &str, device_id: &str) -> String {
     format!("{visible_collection_id}::{device_id}")
 }
 
@@ -1895,8 +1896,14 @@ async fn handle_folder_sync(
             ""
         };
 
-        // Calendar(1) + Tasks(1) + Notes(1) [+ Contacts(1)] [+ 6 email folders].
-        let count = 3 + usize::from(can_read_contacts) + if can_read_email { 6 } else { 0 };
+        // User-created folders persisted by FolderCreate ([MS-ASCMD] §2.2.1.3).
+        let user_folders = render_user_folders_add(state, owner).await;
+        let user_count = user_folders.matches("<Add>").count();
+
+        // Calendar(1) + Tasks(1) + Notes(1) [+ Contacts(1)] [+ 6 email folders]
+        // [+ user-created folders].
+        let count =
+            3 + usize::from(can_read_contacts) + if can_read_email { 6 } else { 0 } + user_count;
         format!(
             r#"<Changes><Count>{count}</Count>
 <Add><ServerId>1</ServerId><ParentId>0</ParentId><DisplayName>Calendar</DisplayName><Type>8</Type></Add>
@@ -1904,10 +1911,21 @@ async fn handle_folder_sync(
 <Add><ServerId>10</ServerId><ParentId>0</ParentId><DisplayName>Notes</DisplayName><Type>10</Type></Add>
 {contacts_folder}
 {email_folders}
+{user_folders}
 </Changes>"#
         )
     } else {
-        r#"<Changes><Count>0</Count></Changes>"#.to_string()
+        // Incremental FolderSync: report the folder-hierarchy changes journaled
+        // since the client's stored watermark, so a client that already primed
+        // the hierarchy is told about FolderCreate/Update/Delete mutations
+        // ([MS-ASCMD] §2.2.3.25).
+        let since = stored
+            .as_ref()
+            .and_then(|(_, token)| token.as_deref())
+            .and_then(|t| t.strip_prefix("seq:"))
+            .and_then(|v| v.parse::<i64>().ok())
+            .unwrap_or(0);
+        render_folder_hierarchy_changes(state, owner, since).await
     };
     let resp_xml = format!(
         r#"<?xml version="1.0" encoding="utf-8"?><FolderSync xmlns="FolderHierarchy:"><Status>1</Status><SyncKey>{}</SyncKey>{}</FolderSync>"#,
@@ -1919,6 +1937,88 @@ async fn handle_folder_sync(
             .insert("X-MS-RP", HeaderValue::from_static("1"));
     }
     r
+}
+
+/// Render the `<Add>` entries for every user-created folder owned by `owner`.
+async fn render_user_folders_add(state: &Arc<AppState>, owner: &str) -> String {
+    let rows = state.storage.list_folders(owner).await.unwrap_or_default();
+    let mut xml = String::new();
+    for row in rows {
+        let (server_id, parent_id, display_name, folder_type) =
+            crate::eas_folders::folder_wire_tuple(&row);
+        xml.push_str(&format!(
+            "<Add><ServerId>{}</ServerId><ParentId>{}</ParentId><DisplayName>{}</DisplayName><Type>{}</Type></Add>",
+            xml_escape(&server_id),
+            xml_escape(&parent_id),
+            xml_escape(&display_name),
+            folder_type,
+        ));
+    }
+    xml
+}
+
+/// Render the incremental FolderSync `<Changes>` for folder-hierarchy journal
+/// rows with `id > since`. A delete wins over a prior add/update for the same
+/// ServerId (latest op in journal order), and each ServerId is emitted once.
+async fn render_folder_hierarchy_changes(state: &Arc<AppState>, owner: &str, since: i64) -> String {
+    let rows = state
+        .storage
+        .list_folder_journal_since(owner, since)
+        .await
+        .unwrap_or_default();
+    if rows.is_empty() {
+        return r#"<Changes><Count>0</Count></Changes>"#.to_string();
+    }
+    // Latest op per ServerId, in first-seen order.
+    let mut order: Vec<String> = Vec::new();
+    let mut ops: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    for row in &rows {
+        if !ops.contains_key(&row.server_id) {
+            order.push(row.server_id.clone());
+        }
+        ops.insert(row.server_id.clone(), row.op.clone());
+    }
+    let folders = state.storage.list_folders(owner).await.unwrap_or_default();
+    let by_id: std::collections::HashMap<&str, &crate::storage::FolderRow> =
+        folders.iter().map(|f| (f.server_id.as_str(), f)).collect();
+
+    let mut changes = String::new();
+    let mut count = 0usize;
+    for server_id in &order {
+        let op = ops.get(server_id).map(String::as_str).unwrap_or("");
+        match op {
+            "folder-delete" => {
+                changes.push_str(&format!(
+                    "<Delete><ServerId>{}</ServerId></Delete>",
+                    xml_escape(server_id)
+                ));
+                count += 1;
+            }
+            "folder-add" | "folder-update" => {
+                let Some(row) = by_id.get(server_id.as_str()) else {
+                    // The folder vanished before this delta was built; report a
+                    // delete rather than a stale add.
+                    changes.push_str(&format!(
+                        "<Delete><ServerId>{}</ServerId></Delete>",
+                        xml_escape(server_id)
+                    ));
+                    count += 1;
+                    continue;
+                };
+                let tag = if op == "folder-add" { "Add" } else { "Update" };
+                changes.push_str(&format!(
+                    "<{tag}><ServerId>{}</ServerId><ParentId>{}</ParentId><DisplayName>{}</DisplayName><Type>{}</Type></{tag}>",
+                    xml_escape(&row.server_id),
+                    xml_escape(&row.parent_id),
+                    xml_escape(&row.display_name),
+                    row.folder_type,
+                ));
+                count += 1;
+            }
+            _ => {}
+        }
+    }
+    format!("<Changes><Count>{count}</Count>{changes}</Changes>")
 }
 
 /// Everything a Ping invocation needs beyond the response encoder, grouped
@@ -1958,12 +2058,39 @@ fn ping_superseded_response(wbxml: &Wbxml, as_wbxml: bool, request_id: &str) -> 
     xml_or_wbxml_response(wbxml, as_wbxml, xml, request_id)
 }
 
-/// Per-folder `Email/changes` probe: returns the pinged email folders whose
-/// stored JMAP state token no longer matches the server's. Run at Ping start
-/// (to catch changes that landed while no Ping was in flight), on every
-/// owner-matching push event (to pinpoint exactly which folders changed
-/// instead of over-reporting), and after a lagged broadcast (to recover from
-/// dropped push events, since the monitor does not write to the journal).
+/// Resolve the concrete JMAP mailbox id backing an EAS email CollectionId, for
+/// the mailbox-scoped `Email/queryChanges` feed. A user-created folder's EAS
+/// ServerId *is* the mailbox id; a system role (Inbox, Drafts, …) resolves
+/// through its JMAP role. `None` when the collection has no mailbox (Outbox,
+/// or a resolution failure), in which case the caller scopes to nothing rather
+/// than diffing the account-wide `Email/changes`.
+async fn resolve_email_mailbox_id(
+    state: &Arc<AppState>,
+    jmap: &Arc<JmapClient>,
+    account_id: &str,
+    owner: &str,
+    password: &SecretString,
+    collection_id: &str,
+) -> Option<String> {
+    if let Ok(Some(row)) = state.storage.get_folder(owner, collection_id).await
+        && row.backend_kind == "jmap"
+    {
+        return Some(row.backend_id);
+    }
+    let role = crate::email::eas_collection_id_to_mailbox_role(collection_id)?;
+    jmap.get_mailbox_ids_for_role(account_id, role, owner, password)
+        .await
+        .ok()
+        .and_then(|ids| ids.into_iter().next())
+}
+
+/// Per-folder mailbox-scoped `Email/queryChanges` probe: returns the pinged
+/// email folders whose stored JMAP query state no longer matches the server's.
+/// Run at Ping start (to catch changes that landed while no Ping was in
+/// flight), on every owner-matching push event (to pinpoint exactly which
+/// folders changed instead of over-reporting), and after a lagged broadcast (to
+/// recover from dropped push events, since the monitor does not write to the
+/// journal).
 async fn probe_email_folder_changes(
     state: &Arc<AppState>,
     owner: &str,
@@ -1990,13 +2117,20 @@ async fn probe_email_folder_changes(
         let Some(since) = jmap_state else {
             continue;
         };
+        // Probe the SAME mailbox-scoped feed the delta uses; the account-wide
+        // `Email/changes` would report every other folder's mail and wake this
+        // folder spuriously.
+        let Some(mailbox_id) =
+            resolve_email_mailbox_id(state, jmap, account_id, owner, password, folder_id).await
+        else {
+            continue;
+        };
         match jmap
-            .sync_email_changes(account_id, &since, owner, password, None)
+            .query_email_changes(account_id, &mailbox_id, &since, owner, password, Some(1))
             .await
         {
             Ok(changes) => {
                 if !changes.created.is_empty()
-                    || !changes.updated.is_empty()
                     || !changes.destroyed.is_empty()
                     || changes.new_state != since
                 {
@@ -2004,11 +2138,21 @@ async fn probe_email_folder_changes(
                 }
             }
             Err(e) => {
-                tracing::debug!(
-                    request_id = %request_id,
-                    error = %e,
-                    "EAS Ping Email/changes probe failed; deferring to push/journal checks"
-                );
+                // A state the backend can no longer compute means the delta
+                // will re-prime; wake the folder so the client Syncs now. Any
+                // other error is transient and deferred to the push/journal
+                // checks.
+                if e.downcast_ref::<crate::jmap::CannotCalculateChanges>()
+                    .is_some()
+                {
+                    changed.push(folder_id.clone());
+                } else {
+                    tracing::debug!(
+                        request_id = %request_id,
+                        error = %e,
+                        "EAS Ping Email/queryChanges probe failed; deferring to push/journal checks"
+                    );
+                }
             }
         }
     }
@@ -3583,18 +3727,33 @@ fn multipart_requested(headers: &HeaderMap) -> bool {
         .is_some_and(|v| v.trim().eq_ignore_ascii_case("T"))
 }
 
-#[allow(clippy::too_many_arguments)] // irreducible EAS request params
-async fn handle_item_operations(
-    state: &Arc<AppState>,
-    username: &str,
-    password: SecretString,
-    xml: &str,
-    wbxml: &Wbxml,
+/// Request-scoped inputs for an `ItemOperations` command ([MS-ASCMD]
+/// §2.2.1.10). Grouped so the handler stays under clippy's argument-count
+/// threshold (mirrors [`SyncCtx`]/[`FolderCmdCtx`]).
+struct ItemOperationsCtx<'a> {
+    state: &'a Arc<AppState>,
+    username: &'a str,
+    password: &'a SecretString,
+    xml: &'a str,
+    wbxml: &'a Wbxml,
     as_wbxml: bool,
-    request_id: &str,
-    device_id: &str,
+    request_id: &'a str,
+    device_id: &'a str,
     multipart: bool,
-) -> Response {
+}
+
+async fn handle_item_operations(ctx: &ItemOperationsCtx<'_>) -> Response {
+    let ItemOperationsCtx {
+        state,
+        username,
+        password,
+        xml,
+        wbxml,
+        as_wbxml,
+        request_id,
+        device_id,
+        multipart,
+    } = *ctx;
     let fetches = parse_item_operations_fetches(xml);
     if fetches.is_empty() {
         return bad_request_response(request_id, "ItemOperations requires at least one Fetch");
@@ -3770,7 +3929,7 @@ async fn handle_item_operations(
                             return Err(3);
                         };
                         handle_email_attachment_fetch(
-                            &jmap, username, &password, file_ref, byte_range, max_bytes,
+                            &jmap, username, password, file_ref, byte_range, max_bytes,
                         )
                         .await
                         .map(|outcome| (outcome, false))
@@ -3858,7 +4017,7 @@ async fn handle_item_operations(
             let properties = match handle_email_item_fetch(
                 state,
                 username,
-                &password,
+                password,
                 &resolved_fetch_options,
                 &server_id,
             )
@@ -3977,7 +4136,7 @@ async fn handle_item_operations(
                 let account_id = parts[0];
                 let event_id = parts[1];
                 match jmap
-                    .get_calendar_event(account_id, event_id, &owner_lower, &password)
+                    .get_calendar_event(account_id, event_id, &owner_lower, password)
                     .await
                 {
                     Ok((ics, _event_id, _etag)) => {
@@ -4928,91 +5087,121 @@ fn wbxml_response(xml: &str, as_wbxml: bool, wbxml: &Wbxml, request_id: &str) ->
     xml_or_wbxml_response(wbxml, as_wbxml, xml, request_id)
 }
 
-/// JMAP-first folder creation. Email folders map onto JMAP `Mailbox/set`
-/// create; calendar/tasks/notes/contacts folders are Filesystem-in-mind
-/// (CalDAV collection). The gateway's system folders (inbox etc.) are
-/// virtual; user-created folders are stored in the `item_map` as
-/// synthetic server ids and mirrored to the backend when reachable.
-/// Legacy EAS folder-mutation commands (AUDIT4 §5).
-///
-/// These commands mutate folder state, but the gateway exposes no
-/// persisted folder store: the hierarchy is the fixed system-folder
-/// set rendered by FolderSync/GetHierarchy, and no JMAP `Mailbox/set`
-/// or CalDAV collection mutation path is implemented. Returning
-/// success with a fabricated ServerId would make clients believe the
-/// folder exists while the server never stored it. The honest answer
-/// is the spec's unimplemented status for each command (Status 6,
-/// "An error occurred on the server") until the mutations are
-/// persisted; a missing required child is Status 10 (malformed).
-fn folder_command_status_xml(root: &str, status: u16) -> String {
-    format!(
-        r#"<?xml version="1.0" encoding="utf-8"?><{root} xmlns="FolderHierarchy:"><Status>{status}</Status></{root}>"#,
-    )
+/// Request-scoped context for the EAS folder-mutation commands
+/// (`FolderCreate`/`FolderDelete`/`FolderUpdate`) and `GetHierarchy`. Bundled
+/// so each handler stays under clippy's argument-count threshold.
+#[derive(Clone, Copy)]
+struct FolderCmdCtx<'a> {
+    state: &'a Arc<AppState>,
+    owner: &'a str,
+    password: &'a SecretString,
+    device_id: &'a str,
+    xml: &'a str,
+    wbxml: &'a Wbxml,
+    as_wbxml: bool,
+    request_id: &'a str,
 }
 
-async fn handle_folder_create(
-    state: &Arc<AppState>,
-    owner: &str,
-    password: &SecretString,
-    xml: &str,
-    wbxml: &Wbxml,
-    as_wbxml: bool,
-    request_id: &str,
-) -> Response {
-    let _ = (state, owner, password);
+/// `FolderCreate` ([MS-ASCMD] §2.2.1.3). Backed by JMAP `Mailbox/set` for mail
+/// folders and CalDAV `MKCALENDAR` for calendar-family folders; the mapping is
+/// persisted so the folder survives restarts and appears in FolderSync.
+async fn handle_folder_create(ctx: &FolderCmdCtx<'_>) -> Response {
+    let FolderCmdCtx {
+        state,
+        owner,
+        password,
+        device_id,
+        xml,
+        wbxml,
+        as_wbxml,
+        request_id,
+    } = *ctx;
     let parent_id = extract_first_tag_text(xml, b"ParentId")
         .map(|s| s.trim().to_string())
         .unwrap_or_default();
     let display_name = extract_first_tag_text(xml, b"DisplayName")
         .map(|s| s.trim().to_string())
         .unwrap_or_default();
-    if parent_id.is_empty() || display_name.is_empty() {
-        let body = folder_command_status_xml("FolderCreate", 10);
-        return wbxml_response(&body, as_wbxml, wbxml, request_id);
+    let folder_type = extract_first_tag_text(xml, b"Type")
+        .and_then(|s| s.trim().parse::<i64>().ok())
+        .unwrap_or(12);
+    let result = crate::eas_folders::create_folder(
+        state,
+        owner,
+        password,
+        &parent_id,
+        &display_name,
+        folder_type,
+    )
+    .await;
+    if result.status == 1 {
+        let server_id = result.server_id.clone().unwrap_or_default();
+        crate::eas_folders::record_hierarchy_change(state, owner, &server_id, "folder-add").await;
     }
-    let body = folder_command_status_xml("FolderCreate", 6);
+    let sync_key = crate::eas_folders::current_hierarchy_sync_key(state, owner, device_id).await;
+    let body = crate::eas_folders::render_create_response(&result, &sync_key);
     wbxml_response(&body, as_wbxml, wbxml, request_id)
 }
 
-async fn handle_folder_delete(
-    state: &Arc<AppState>,
-    owner: &str,
-    password: &SecretString,
-    xml: &str,
-    wbxml: &Wbxml,
-    as_wbxml: bool,
-    request_id: &str,
-) -> Response {
-    let _ = (state, owner, password);
+async fn handle_folder_delete(ctx: &FolderCmdCtx<'_>) -> Response {
+    let FolderCmdCtx {
+        state,
+        owner,
+        password,
+        device_id,
+        xml,
+        wbxml,
+        as_wbxml,
+        request_id,
+    } = *ctx;
     let server_id = extract_first_tag_text(xml, b"ServerId")
         .map(|s| s.trim().to_string())
         .unwrap_or_default();
-    if server_id.is_empty() {
-        let body = folder_command_status_xml("FolderDelete", 10);
-        return wbxml_response(&body, as_wbxml, wbxml, request_id);
+    let result = crate::eas_folders::delete_folder(state, owner, password, &server_id).await;
+    if result.status == 1 {
+        crate::eas_folders::record_hierarchy_change(state, owner, &server_id, "folder-delete")
+            .await;
     }
-    let body = folder_command_status_xml("FolderDelete", 6);
+    let sync_key = crate::eas_folders::current_hierarchy_sync_key(state, owner, device_id).await;
+    let body = crate::eas_folders::render_status_response("FolderDelete", &result, &sync_key);
     wbxml_response(&body, as_wbxml, wbxml, request_id)
 }
 
-async fn handle_folder_update(
-    state: &Arc<AppState>,
-    owner: &str,
-    password: &SecretString,
-    xml: &str,
-    wbxml: &Wbxml,
-    as_wbxml: bool,
-    request_id: &str,
-) -> Response {
-    let _ = (state, owner, password);
+async fn handle_folder_update(ctx: &FolderCmdCtx<'_>) -> Response {
+    let FolderCmdCtx {
+        state,
+        owner,
+        password,
+        device_id,
+        xml,
+        wbxml,
+        as_wbxml,
+        request_id,
+    } = *ctx;
     let server_id = extract_first_tag_text(xml, b"ServerId")
         .map(|s| s.trim().to_string())
         .unwrap_or_default();
-    if server_id.is_empty() {
-        let body = folder_command_status_xml("FolderUpdate", 10);
-        return wbxml_response(&body, as_wbxml, wbxml, request_id);
+    let parent_id = extract_first_tag_text(xml, b"ParentId")
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default();
+    let display_name = extract_first_tag_text(xml, b"DisplayName")
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default();
+    let result = crate::eas_folders::update_folder(
+        state,
+        owner,
+        password,
+        &server_id,
+        &parent_id,
+        &display_name,
+    )
+    .await;
+    if result.status == 1 {
+        crate::eas_folders::record_hierarchy_change(state, owner, &server_id, "folder-update")
+            .await;
     }
-    let body = folder_command_status_xml("FolderUpdate", 6);
+    let sync_key = crate::eas_folders::current_hierarchy_sync_key(state, owner, device_id).await;
+    let body = crate::eas_folders::render_status_response("FolderUpdate", &result, &sync_key);
     wbxml_response(&body, as_wbxml, wbxml, request_id)
 }
 
@@ -5020,15 +5209,15 @@ async fn handle_folder_update(
 /// versions 2.5/12.0/12.1; 14.0+ clients use FolderSync for the same list.
 /// Renders the §6.19 response schema: `<Folders>` with `<Folder>` children
 /// in DisplayName/ServerId/Type/ParentId order, listing email folders only.
-async fn handle_get_hierarchy(
-    state: &Arc<AppState>,
-    owner: &str,
-    password: &SecretString,
-    wbxml: &Wbxml,
-    as_wbxml: bool,
-    request_id: &str,
-) -> Response {
-    let _ = (owner, password);
+async fn handle_get_hierarchy(ctx: &FolderCmdCtx<'_>) -> Response {
+    let FolderCmdCtx {
+        state,
+        owner,
+        wbxml,
+        as_wbxml,
+        request_id,
+        ..
+    } = *ctx;
     if !state.can_read_email() {
         let body = r#"<?xml version="1.0" encoding="utf-8"?><GetHierarchy xmlns="FolderHierarchy:"><Folders></Folders></GetHierarchy>"#;
         return wbxml_response(body, as_wbxml, wbxml, request_id);
@@ -5048,10 +5237,34 @@ async fn handle_get_hierarchy(
             "<Folder><DisplayName>{display_name}</DisplayName><ServerId>{id}</ServerId><Type>{folder_type}</Type><ParentId>{parent_id}</ParentId></Folder>"
         ));
     }
+    // User-created folders persisted by FolderCreate ([MS-ASCMD] §2.2.1.3).
+    for row in state.storage.list_folders(owner).await.unwrap_or_default() {
+        folders.push_str(&format!(
+            "<Folder><DisplayName>{}</DisplayName><ServerId>{}</ServerId><Type>{}</Type><ParentId>{}</ParentId></Folder>",
+            xml_escape(&row.display_name),
+            xml_escape(&row.server_id),
+            row.folder_type,
+            xml_escape(&row.parent_id),
+        ));
+    }
     let body = format!(
         r#"<?xml version="1.0" encoding="utf-8"?><GetHierarchy xmlns="FolderHierarchy:"><Folders>{folders}</Folders></GetHierarchy>"#
     );
     wbxml_response(&body, as_wbxml, wbxml, request_id)
+}
+
+/// Request-scoped inputs for a legacy `GetAttachment` command
+/// ([MS-ASCMD] §2.2.1.7). Grouped so the handler stays under clippy's
+/// argument-count threshold.
+struct GetAttachmentCtx<'a> {
+    state: &'a Arc<AppState>,
+    owner: &'a str,
+    password: &'a SecretString,
+    xml: &'a str,
+    attachment_name: Option<&'a str>,
+    wbxml: &'a Wbxml,
+    as_wbxml: bool,
+    request_id: &'a str,
 }
 
 /// Legacy GetAttachment ([MS-ASCMD] §2.2.1.7). The request carries the
@@ -5062,17 +5275,17 @@ async fn handle_get_hierarchy(
 /// 14.0+ uses ItemOperations Fetch. A missing name is Status 2
 /// ("Invalid/incomplete request"), a missing attachment is the spec's
 /// HTTP 500, and an empty attachment is the same 500.
-#[allow(clippy::too_many_arguments)]
-async fn handle_get_attachment(
-    state: &Arc<AppState>,
-    owner: &str,
-    password: &SecretString,
-    xml: &str,
-    attachment_name: Option<&str>,
-    wbxml: &Wbxml,
-    as_wbxml: bool,
-    request_id: &str,
-) -> Response {
+async fn handle_get_attachment(ctx: &GetAttachmentCtx<'_>) -> Response {
+    let GetAttachmentCtx {
+        state,
+        owner,
+        password,
+        xml,
+        attachment_name,
+        wbxml,
+        as_wbxml,
+        request_id,
+    } = *ctx;
     let file_ref = attachment_name
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
@@ -5715,17 +5928,17 @@ async fn handle_sync_collections(ctx: &SyncCtx<'_>, collections: &[SyncCollectio
                 } else {
                     String::new()
                 };
-                match handle_email_sync(
+                match handle_email_sync(&EmailSyncRequestCtx {
                     state,
                     username,
                     password,
                     collection_id,
-                    &state_collection_id,
-                    incoming_key,
-                    effective_collection_window,
-                    resolved_options.as_ref(),
-                    coll.conversation_mode,
-                )
+                    state_collection_id: &state_collection_id,
+                    incoming_sync_key: incoming_key,
+                    window: effective_collection_window,
+                    options: resolved_options.as_ref(),
+                    conversation_mode: coll.conversation_mode,
+                })
                 .await
                 {
                     Ok(xml_str) => crate::email::inject_collection_responses(
@@ -6889,19 +7102,59 @@ fn collapse_email_ops(ops: Vec<PendingEmailOp>) -> Vec<PendingEmailOp> {
 /// next Sync's diff, so nothing is lost.
 const MAX_EMAIL_CHANGE_ACCUMULATION: usize = 5000;
 
-/// Accumulate every email change between `old_state` and the backend's
-/// current state by chaining `Email/changes` while it reports
-/// `hasMoreChanges` (RFC 8621 §4.4).
+/// Classify one `Email/queryChanges` page into EAS operations.
 ///
-/// Returns the ordered operation list plus the state token that follows the
-/// last delivered change (`base_state`). Callers that do not advance their
+/// `added` ids are `<Add>` (newly in this mailbox); `removed` ids are
+/// `<Delete>` (left this mailbox) — EXCEPT an id present in BOTH lists, which
+/// Stalwart emits when the message merely moved within the mailbox (a keyword
+/// edit re-sorts a keyword-sorted query): that is an in-place update, so it is
+/// delivered as a `<Change>`.
+fn classify_query_change_ops(added: &[String], removed: &[String]) -> Vec<PendingEmailOp> {
+    let added_set: HashSet<&str> = added.iter().map(String::as_str).collect();
+    let mut ops = Vec::with_capacity(added.len() + removed.len());
+    for id in added {
+        ops.push(PendingEmailOp::add(id.clone()));
+    }
+    for id in removed {
+        if added_set.contains(id.as_str()) {
+            ops.push(PendingEmailOp::change(id.clone()));
+        } else {
+            ops.push(PendingEmailOp::delete(id.clone()));
+        }
+    }
+    ops
+}
+
+/// Accumulate every email change between `old_state` and the backend's
+/// current state for ONE mailbox, by paging `Email/queryChanges` (RFC 8620
+/// §5.6) until it stops reporting additions/removals.
+///
+/// `Email/changes` reports changes account-wide; driving a single EAS
+/// collection with it would leak every other folder's mail into the
+/// collection. `Email/queryChanges` with an `inMailbox` filter (immutable per
+/// RFC 8620 §5.6) reports only the ids that entered or left *this* mailbox:
+///
+/// * an id in `added` is an EAS `<Add>` — a message newly in this mailbox
+///   (delivered here, or moved in from another folder).
+/// * an id in `removed` is an EAS `<Delete>` — the message left this mailbox
+///   (deleted, or moved elsewhere). Stalwart also lists an id in *both* lists
+///   when its position within the mailbox changed (a flag edit re-sorts a
+///   keyword-sorted query), so a `removed` id that also appears in `added` is
+///   an in-place update, delivered as an EAS `<Change>`.
+///
+/// Returns the ordered operation list plus the query state that follows the
+/// last delivered page (`base_state`). Callers that do not advance their
 /// stored token past `base_state` never lose or duplicate a change.
 ///
-/// Operations are collapsed to one per id before returning: chained batches
-/// can repeat an id (see `collapse_email_ops`).
+/// `Email/queryChanges` carries no `hasMoreChanges` flag (RFC 8620 §5.6); the
+/// server caps each page at `maxChanges` and the only way to drain a larger
+/// change set is to re-query from the returned state until it goes quiet.
+/// `MAX_EMAIL_CHANGE_ACCUMULATION` bounds a pathological backend so it cannot
+/// loop forever.
 async fn accumulate_email_changes(
     jmap: &Arc<JmapClient>,
     account_id: &str,
+    mailbox_id: &str,
     old_state: &str,
     username: &str,
     password: &SecretString,
@@ -6910,19 +7163,15 @@ async fn accumulate_email_changes(
     let mut since = old_state.to_string();
     loop {
         let batch = jmap
-            .sync_email_changes(account_id, &since, username, password, None)
+            .query_email_changes(account_id, mailbox_id, &since, username, password, None)
             .await?;
-        for id in batch.created {
-            ops.push(PendingEmailOp::add(id));
-        }
-        for id in batch.updated {
-            ops.push(PendingEmailOp::change(id));
-        }
-        for id in batch.destroyed {
-            ops.push(PendingEmailOp::delete(id));
-        }
+        ops.extend(classify_query_change_ops(&batch.created, &batch.destroyed));
+        let page_empty = batch.created.is_empty() && batch.destroyed.is_empty();
         since = batch.new_state;
-        if !batch.has_more_changes || ops.len() >= MAX_EMAIL_CHANGE_ACCUMULATION {
+        // A clipped page (`maxChanges`) is always full, so an empty page means
+        // the change set is drained — stop. The accumulation bound is a
+        // backstop against a pathological backend.
+        if page_empty || ops.len() >= MAX_EMAIL_CHANGE_ACCUMULATION {
             break;
         }
     }
@@ -7054,14 +7303,15 @@ fn route_email_sync(incoming_sync_key: &str, cursor_present: bool) -> EmailSyncR
 /// up exactly where this window stopped:
 ///
 /// * **Initial sync** pages JMAP `Email/query` by `position`; the resume
-///   position and the `state` token captured at the start are persisted in
+///   position and the query state captured at the start are persisted in
 ///   `email_sync_cursor`. A follow-up Sync whose key was issued by a clipped
 ///   initial window is routed back to the initial path by cursor presence,
 ///   and a fresh SyncKey "0" prime clears the cursor and the overflow queue
 ///   so a re-provisioned device restarts from zero.
-/// * **Delta sync** accumulates `Email/changes` (chaining `hasMoreChanges`);
+/// * **Delta sync** accumulates the mailbox-scoped `Email/queryChanges` feed
+///   (RFC 8620 §5.6, filtered to this collection's mailbox);
 ///   when the accumulated ops exceed the window, the remainder is persisted
-///   in `email_sync_pending` together with the state token that follows the
+///   in `email_sync_pending` together with the query state that follows the
 ///   full change set. The stored sync-state token is not advanced while the
 ///   queue is non-empty, so nothing is re-delivered and nothing is lost.
 ///
@@ -7118,18 +7368,34 @@ async fn apply_email_client_mutations(
     Ok(crate::email::render_eas_email_mutation_responses(&results))
 }
 
-#[allow(clippy::too_many_arguments)] // irreducible request inputs; mirrors SyncCtx below
-async fn handle_email_sync(
-    state: &Arc<AppState>,
-    username: &str,
-    password: &SecretString,
-    collection_id: &str,
-    state_collection_id: &str,
-    incoming_sync_key: &str,
+/// Request-scoped inputs for one email-collection Sync
+/// ([MS-ASCMD] §2.2.2.1). Grouped so the entry point stays under clippy's
+/// argument-count threshold; it resolves the collection's mailbox and then
+/// hands the [`EmailSyncCtx`] to the initial/delta handlers.
+struct EmailSyncRequestCtx<'a> {
+    state: &'a Arc<AppState>,
+    username: &'a str,
+    password: &'a SecretString,
+    collection_id: &'a str,
+    state_collection_id: &'a str,
+    incoming_sync_key: &'a str,
     window: usize,
-    options: Option<&crate::eas_sync_options::EasSyncCollectionOptions>,
+    options: Option<&'a crate::eas_sync_options::EasSyncCollectionOptions>,
     conversation_mode: bool,
-) -> anyhow::Result<String> {
+}
+
+async fn handle_email_sync(ctx: &EmailSyncRequestCtx<'_>) -> anyhow::Result<String> {
+    let EmailSyncRequestCtx {
+        state,
+        username,
+        password,
+        collection_id,
+        state_collection_id,
+        incoming_sync_key,
+        window,
+        options,
+        conversation_mode,
+    } = *ctx;
     // Sticky <Options> ([MS-ASCMD] §2.2.3.125.6) resolve in
     // handle_sync_collections before dispatch; an absent block falls back
     // to the negotiation defaults (native body, untruncated).
@@ -7141,23 +7407,38 @@ async fn handle_email_sync(
     // return them under CollectionId "2", violating the ActiveSync protocol.
     // Use the raw collection_id (e.g. "2"), NOT the scoped state_collection_id
     // (e.g. "2::deviceid") — the scoped form would never match any role.
+    //
+    // A user-created mail folder ([MS-ASCMD] §2.2.1.3) has no JMAP role; its
+    // EAS ServerId IS the JMAP mailbox id, so it is queried directly.
+    let mut explicit_mailbox_id: Option<String> = None;
     let mailbox_role = match crate::email::eas_collection_id_to_mailbox_role(collection_id) {
         Some(role) => role,
         None => {
-            // CollectionId has no JMAP mailbox (e.g. Outbox "6").
-            // Return empty sync response — no emails to sync.
-            let new_sync_key = Uuid::new_v4().simple().to_string();
-            if let Err(e) = state
-                .storage
-                .set_sync_key(username, state_collection_id, &new_sync_key, None)
-                .await
-            {
-                tracing::warn!(error = %e, "Failed to set email sync key");
+            // Not a system email CollectionId. It may be a user-created mail
+            // folder persisted by FolderCreate, or a folder with no JMAP
+            // mailbox at all (e.g. Outbox "6").
+            match state.storage.get_folder(username, collection_id).await {
+                Ok(Some(row)) if row.backend_kind == "jmap" => {
+                    explicit_mailbox_id = Some(row.backend_id.clone());
+                    "user"
+                }
+                _ => {
+                    // CollectionId has no JMAP mailbox (e.g. Outbox "6").
+                    // Return empty sync response — no emails to sync.
+                    let new_sync_key = Uuid::new_v4().simple().to_string();
+                    if let Err(e) = state
+                        .storage
+                        .set_sync_key(username, state_collection_id, &new_sync_key, None)
+                        .await
+                    {
+                        tracing::warn!(error = %e, "Failed to set email sync key");
+                    }
+                    return Ok(format!(
+                        "<Collection><Class>Email</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>1</Status></Collection>",
+                        new_sync_key, collection_id
+                    ));
+                }
             }
-            return Ok(format!(
-                "<Collection><Class>Email</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>1</Status></Collection>",
-                new_sync_key, collection_id
-            ));
         }
     };
 
@@ -7190,6 +7471,23 @@ async fn handle_email_sync(
                 new_sync_key, collection_id
             ));
         }
+    };
+
+    // Resolve the concrete JMAP mailbox id backing this collection. The delta
+    // path drives it through the mailbox-scoped `Email/queryChanges` feed
+    // (RFC 8620 §5.6); the account-wide `Email/changes` would leak mail from
+    // every other folder into this collection. A user-created folder carries
+    // the id directly (its EAS ServerId *is* the mailbox id); a system role
+    // resolves through its JMAP role. `None` (a role with no mailbox, or a
+    // resolution failure) scopes to nothing, so the delta answers empty rather
+    // than leaking.
+    let resolved_mailbox_id: Option<String> = match explicit_mailbox_id.as_deref() {
+        Some(id) => Some(id.to_string()),
+        None => jmap
+            .get_mailbox_ids_for_role(&account_id, mailbox_role, username, password)
+            .await
+            .ok()
+            .and_then(|ids| ids.into_iter().next()),
     };
 
     // For initial sync (sync_key="0"), fetch all emails and store JMAP state token.
@@ -7236,6 +7534,8 @@ async fn handle_email_sync(
                     window,
                     options: resolved_collection_options,
                     conversation_mode,
+                    mailbox_id: explicit_mailbox_id.as_deref(),
+                    delta_mailbox_id: resolved_mailbox_id.as_deref(),
                 },
                 mailbox_role,
             )
@@ -7254,6 +7554,8 @@ async fn handle_email_sync(
                     window,
                     options: resolved_collection_options,
                     conversation_mode,
+                    mailbox_id: explicit_mailbox_id.as_deref(),
+                    delta_mailbox_id: resolved_mailbox_id.as_deref(),
                 },
                 mailbox_role,
             )
@@ -7271,6 +7573,8 @@ async fn handle_email_sync(
                 window,
                 options: resolved_collection_options,
                 conversation_mode,
+                mailbox_id: explicit_mailbox_id.as_deref(),
+                delta_mailbox_id: resolved_mailbox_id.as_deref(),
             })
             .await
         }
@@ -7294,6 +7598,17 @@ struct EmailSyncCtx<'a> {
     options: &'a crate::eas_sync_options::EasSyncCollectionOptions,
     /// `<airsync:ConversationMode>` for this collection ([MS-ASCMD] §2.2.3.36.2).
     conversation_mode: bool,
+    /// Concrete JMAP mailbox id for a user-created mail folder, whose EAS
+    /// ServerId *is* the mailbox id (such folders have no JMAP role). When
+    /// `Some`, the mailbox is queried directly instead of by role.
+    mailbox_id: Option<&'a str>,
+    /// Concrete JMAP mailbox id resolved for the *delta* path's mailbox-scoped
+    /// `Email/queryChanges` feed, for BOTH a user-created folder (its ServerId)
+    /// and a system role (resolved from the role). `None` when the collection
+    /// has no mailbox at all, in which case the delta answers empty rather than
+    /// diffing the account-wide `Email/changes` (which would leak every other
+    /// folder's mail into this collection).
+    delta_mailbox_id: Option<&'a str>,
 }
 
 /// Initial email sync (EAS SyncKey "0"): page the mailbox by `position`,
@@ -7314,6 +7629,8 @@ async fn handle_email_initial_sync(
         window,
         options,
         conversation_mode,
+        mailbox_id: _,
+        delta_mailbox_id: _,
     } = *ctx;
     // A previous initial sync may have left a resume cursor (window filled
     // before the mailbox drained). Spec-wise the client follows up with the
@@ -7346,6 +7663,7 @@ async fn handle_email_initial_sync(
             username,
             password,
             search_filter: None,
+            mailbox_id: ctx.mailbox_id,
         },
     )
     .await
@@ -7378,14 +7696,16 @@ async fn handle_email_initial_sync(
         .total
         .saturating_sub(start_position.saturating_add(delivered));
 
-    // The `state` token captured here (or carried over from the cursor) is
-    // the delta base once the initial sync drains. `fetch_emails_jmap` only
-    // fills `state` for roles backed by a JMAP mailbox, so keep the cursor's
-    // token when this page could not supply one.
-    let state_token = if result.state.is_empty() {
+    // The query state captured here (or carried over from the cursor) is the
+    // delta base once the initial sync drains: the delta drives
+    // `Email/queryChanges`, which resumes from a `queryState`, NOT the
+    // `Email/get` data-type state. `fetch_emails_jmap` only fills `query_state`
+    // for roles backed by a JMAP mailbox, so keep the cursor's token when this
+    // page could not supply one.
+    let state_token = if result.query_state.is_empty() {
         cursor_state.clone()
     } else {
-        Some(result.state.clone())
+        Some(result.query_state.clone())
     };
 
     let mut commands_xml = String::new();
@@ -7460,7 +7780,7 @@ async fn handle_email_initial_sync(
         return Ok(response);
     }
 
-    // Mailbox drained: drop the cursor, persist the state token for deltas.
+    // Mailbox drained: drop the cursor, persist the query state for deltas.
     if let Err(e) = state
         .storage
         .clear_email_sync_cursor(username, state_collection_id)
@@ -7468,14 +7788,14 @@ async fn handle_email_initial_sync(
     {
         tracing::warn!(error = %e, "Failed to clear email initial-sync cursor");
     }
-    if !result.state.is_empty() {
+    if !result.query_state.is_empty() {
         if let Err(e) = state
             .storage
             .set_sync_key(
                 username,
                 state_collection_id,
                 &new_sync_key,
-                Some(&result.state),
+                Some(&result.query_state),
             )
             .await
         {
@@ -7506,7 +7826,8 @@ async fn handle_email_initial_sync(
 }
 
 /// Delta email sync (EAS SyncKey != "0"): drain a persisted overflow queue
-/// first, then diff `Email/changes` from the stored state token, honoring the
+/// first, then diff the mailbox-scoped `Email/queryChanges` feed from the
+/// stored query state, honoring the
 /// response window with `<MoreAvailable/>` (MS-ASCMD §2.2.3.199).
 async fn handle_email_delta_sync(ctx: &EmailSyncCtx<'_>) -> anyhow::Result<String> {
     let EmailSyncCtx {
@@ -7518,6 +7839,7 @@ async fn handle_email_delta_sync(ctx: &EmailSyncCtx<'_>) -> anyhow::Result<Strin
         collection_id,
         state_collection_id,
         window,
+        delta_mailbox_id,
         ..
     } = *ctx;
     let new_sync_key = Uuid::new_v4().simple().to_string();
@@ -7627,10 +7949,14 @@ async fn handle_email_delta_sync(ctx: &EmailSyncCtx<'_>) -> anyhow::Result<Strin
     }
 
     // ---- 2) Fresh diff from the stored JMAP state token. ---------------
-    let Some(old_state) = jmap_state_token.clone() else {
+    let Some(old_state) = jmap_state_token
+        .clone()
+        .filter(|_| delta_mailbox_id.is_some())
+    else {
         // No usable state token yet (e.g. the initial sync never captured
-        // one because the role had no JMAP mailbox). Keep the client's
-        // progress valid and let the next initial sync establish a base.
+        // one because the role had no JMAP mailbox), or the collection has no
+        // mailbox at all. Keep the client's progress valid and let the next
+        // initial sync establish a base.
         if let Err(e) = state
             .storage
             .set_sync_key(username, state_collection_id, &new_sync_key, None)
@@ -7643,15 +7969,42 @@ async fn handle_email_delta_sync(ctx: &EmailSyncCtx<'_>) -> anyhow::Result<Strin
             new_sync_key, collection_id
         ));
     };
+    let mailbox_id = delta_mailbox_id.expect("filtered above");
 
     let (ops, final_state) = match accumulate_email_changes(
-        jmap, account_id, &old_state, username, password,
+        jmap, account_id, mailbox_id, &old_state, username, password,
     )
     .await
     {
         Ok(v) => v,
         Err(e) => {
-            tracing::warn!(error = %e, "JMAP Email/changes failed; deferring delta sync");
+            // The stored query state is no longer valid on the backend (the
+            // change log was trimmed, or the mailbox was recreated): force the
+            // client to re-prime with SyncKey 0, which re-establishes a base.
+            // This is not a transient hiccup, so it is not answered with an
+            // empty success window.
+            if e.downcast_ref::<crate::jmap::CannotCalculateChanges>()
+                .is_some()
+            {
+                tracing::info!(
+                    user = %username,
+                    collection_id,
+                    error = %e,
+                    "Email delta state no longer calculable; forcing re-prime"
+                );
+                if let Err(e) = state
+                    .storage
+                    .set_sync_key(username, state_collection_id, "0", None)
+                    .await
+                {
+                    tracing::warn!(error = %e, "Failed to reset email sync key for re-prime");
+                }
+                return Ok(format!(
+                    "<Collection><Class>Email</Class><SyncKey>0</SyncKey><CollectionId>{}</CollectionId><Status>3</Status></Collection>",
+                    collection_id
+                ));
+            }
+            tracing::warn!(error = %e, "JMAP Email/queryChanges failed; deferring delta sync");
             if let Err(e) = state
                 .storage
                 .set_sync_key(
@@ -7881,6 +8234,17 @@ pub async fn handle(
         );
     }
 
+    let folder_ctx = FolderCmdCtx {
+        state: &state,
+        owner: &username,
+        password: &password,
+        device_id: &device_id,
+        xml: &xml,
+        wbxml: &wbxml,
+        as_wbxml: wants_wbxml,
+        request_id: &request_id,
+    };
+
     match req.command.as_str() {
         "FolderSync" => {
             handle_folder_sync(&state, &username, &req, &wbxml, wants_wbxml, &request_id).await
@@ -7973,17 +8337,17 @@ pub async fn handle(
             handle_settings(&state, &username, &wbxml, wants_wbxml, &request_id, &xml).await
         }
         "ItemOperations" => {
-            handle_item_operations(
-                &state,
-                &username,
-                password,
-                &xml,
-                &wbxml,
-                wants_wbxml,
-                &request_id,
-                &device_id,
-                multipart_requested(&headers),
-            )
+            handle_item_operations(&ItemOperationsCtx {
+                state: &state,
+                username: &username,
+                password: &password,
+                xml: &xml,
+                wbxml: &wbxml,
+                as_wbxml: wants_wbxml,
+                request_id: &request_id,
+                device_id: &device_id,
+                multipart: multipart_requested(&headers),
+            })
             .await
         }
         "Search" => {
@@ -8059,64 +8423,21 @@ pub async fn handle(
             )
             .await
         }
-        "FolderCreate" => {
-            handle_folder_create(
-                &state,
-                &username,
-                &password,
-                &xml,
-                &wbxml,
-                wants_wbxml,
-                &request_id,
-            )
-            .await
-        }
-        "FolderDelete" => {
-            handle_folder_delete(
-                &state,
-                &username,
-                &password,
-                &xml,
-                &wbxml,
-                wants_wbxml,
-                &request_id,
-            )
-            .await
-        }
-        "FolderUpdate" => {
-            handle_folder_update(
-                &state,
-                &username,
-                &password,
-                &xml,
-                &wbxml,
-                wants_wbxml,
-                &request_id,
-            )
-            .await
-        }
-        "GetHierarchy" => {
-            handle_get_hierarchy(
-                &state,
-                &username,
-                &password,
-                &wbxml,
-                wants_wbxml,
-                &request_id,
-            )
-            .await
-        }
+        "FolderCreate" => handle_folder_create(&folder_ctx).await,
+        "FolderDelete" => handle_folder_delete(&folder_ctx).await,
+        "FolderUpdate" => handle_folder_update(&folder_ctx).await,
+        "GetHierarchy" => handle_get_hierarchy(&folder_ctx).await,
         "GetAttachment" => {
-            handle_get_attachment(
-                &state,
-                &username,
-                &password,
-                &xml,
-                value_from_query(&query, "AttachmentName").as_deref(),
-                &wbxml,
-                wants_wbxml,
-                &request_id,
-            )
+            handle_get_attachment(&GetAttachmentCtx {
+                state: &state,
+                owner: &username,
+                password: &password,
+                xml: &xml,
+                attachment_name: value_from_query(&query, "AttachmentName").as_deref(),
+                wbxml: &wbxml,
+                as_wbxml: wants_wbxml,
+                request_id: &request_id,
+            })
             .await
         }
         "Find" => {
@@ -10001,6 +10322,208 @@ mod tests {
     }
 
     #[test]
+    fn test_classify_query_change_ops_maps_add_remove_and_in_place() {
+        use PendingEmailOp as P;
+        let s = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+
+        // A pure arrival is an Add; a pure departure is a Delete.
+        assert_eq!(
+            classify_query_change_ops(&s(&["m1"]), &[]),
+            vec![P::add("m1".into())]
+        );
+        assert_eq!(
+            classify_query_change_ops(&[], &s(&["m2"])),
+            vec![P::delete("m2".into())]
+        );
+
+        // An id in BOTH lists is an in-place reorder (a flag edit re-sorting a
+        // keyword-sorted query): an Add (from `added`) plus a Change (from
+        // `removed`), which `collapse_email_ops` folds to a single Add.
+        assert_eq!(
+            classify_query_change_ops(&s(&["m3"]), &s(&["m3"])),
+            vec![P::add("m3".into()), P::change("m3".into())]
+        );
+        assert_eq!(
+            collapse_email_ops(classify_query_change_ops(&s(&["m3"]), &s(&["m3"]))),
+            vec![P::add("m3".into())]
+        );
+
+        // Mixed page: adds then deletes, each id classified independently.
+        assert_eq!(
+            classify_query_change_ops(&s(&["a", "b"]), &s(&["b", "c"])),
+            vec![
+                P::add("a".into()),
+                P::add("b".into()),
+                P::change("b".into()),
+                P::delete("c".into()),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_email_delta_sync_uses_mailbox_scoped_query_changes() {
+        use crate::models::AppState;
+        use axum::routing::{get, post};
+        use serde_json::{Value, json};
+        use std::sync::Arc as StdArc;
+        use tokio::sync::Mutex as TokioMutex;
+
+        #[derive(Clone)]
+        struct Ctl {
+            base: String,
+            calls: StdArc<TokioMutex<Vec<Value>>>,
+        }
+
+        async fn session(axum::Extension(ctl): axum::Extension<Ctl>) -> axum::Json<Value> {
+            axum::Json(json!({
+                "apiUrl": ctl.base,
+                "downloadUrl": format!("{}/download/{{accountId}}/{{blobId}}", ctl.base),
+                "uploadUrl": format!("{}/upload/{{accountId}}", ctl.base),
+                "eventSourceUrl": format!("{}/eventsource", ctl.base),
+                "state": "s",
+                "username": "u",
+                "accounts": {"a": {"name": "u", "isPersonal": true, "isReadOnly": false, "accountCapabilities": {}}},
+                "primaryAccounts": {"urn:ietf:params:jmap:mail": "a"},
+                "capabilities": {"urn:ietf:params:jmap:core": {"maxObjectsInGet": 500}}
+            }))
+        }
+
+        async fn api(
+            axum::Extension(ctl): axum::Extension<Ctl>,
+            body: String,
+        ) -> axum::response::Response {
+            let req: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
+            let mut responses = Vec::new();
+            for call in req
+                .get("methodCalls")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default()
+            {
+                let name = call.get(0).and_then(|v| v.as_str()).unwrap_or("");
+                let args = call.get(1).cloned().unwrap_or(Value::Null);
+                let cid = call.get(2).and_then(|v| v.as_str()).unwrap_or("c0");
+                ctl.calls
+                    .lock()
+                    .await
+                    .push(json!({"method": name, "args": args.clone()}));
+                let result = match name {
+                    "Email/queryChanges" => json!({
+                        "accountId": "a",
+                        "oldQueryState": "S0",
+                        "newQueryState": "S1",
+                        "added": [{"id": "m1", "index": 0}],
+                        "removed": ["m2"],
+                    }),
+                    "Email/get" => json!({
+                        "accountId": "a",
+                        "state": "S1",
+                        "list": [{
+                            "id": "m1",
+                            "blobId": "b1",
+                            "threadId": "t1",
+                            "mailboxIds": {"a": true},
+                            "keywords": {},
+                            "subject": "hello",
+                            "from": [{"name": "S", "email": "s@example.com"}],
+                            "to": [{"name": "R", "email": "r@example.com"}],
+                            "receivedAt": "2026-11-10T12:00:00Z",
+                            "sentAt": "2026-11-10T12:00:00Z",
+                            "size": 10,
+                            "preview": "hi",
+                            "hasAttachment": false
+                        }],
+                    }),
+                    _ => json!({"accountId": "a"}),
+                };
+                responses.push(json!([name, result, cid]));
+            }
+            let resp = json!({"methodResponses": responses, "sessionState": "s"});
+            axum::response::Response::builder()
+                .status(200)
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(serde_json::to_vec(&resp).unwrap()))
+                .unwrap()
+        }
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
+        let calls: StdArc<TokioMutex<Vec<Value>>> = StdArc::new(TokioMutex::new(Vec::new()));
+        let ctl = Ctl {
+            base: base.clone(),
+            calls: calls.clone(),
+        };
+        let app = axum::Router::new()
+            .route("/session", get(session))
+            .route("/", post(api))
+            .layer(axum::Extension(ctl));
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let storage = crate::storage::Storage::new("sqlite::memory:")
+            .await
+            .unwrap();
+        storage.init_schema().await.unwrap();
+        let cfg = crate::config::Config {
+            jmap_base: base.clone(),
+            email_enabled: true,
+            mail_domain: "example.com".to_string(),
+            hmac_secret: SecretString::from("a".repeat(32)),
+            ..Default::default()
+        };
+        let state = StdArc::new(AppState::new(cfg, StdArc::new(storage)));
+
+        let owner = "u@example.com";
+        let scoped = scoped_collection_id("2", "dev-1");
+        state
+            .storage
+            .set_sync_key(owner, &scoped, "oldkey", Some("S0"))
+            .await
+            .unwrap();
+
+        let jmap = state.jmap_client.as_ref().unwrap().clone();
+        let password = SecretString::from("pw");
+        let options = crate::eas_sync_options::EasSyncCollectionOptions::default();
+        let xml = handle_email_delta_sync(&EmailSyncCtx {
+            state: &state,
+            jmap: &jmap,
+            account_id: "a",
+            username: owner,
+            password: &password,
+            collection_id: "2",
+            state_collection_id: &scoped,
+            window: 512,
+            options: &options,
+            conversation_mode: false,
+            mailbox_id: None,
+            delta_mailbox_id: Some("mbx-inbox"),
+        })
+        .await
+        .unwrap();
+
+        let recorded = calls.lock().await.clone();
+        let qc = recorded
+            .iter()
+            .find(|c| c.get("method").and_then(|m| m.as_str()) == Some("Email/queryChanges"))
+            .expect("delta must issue Email/queryChanges");
+        assert_eq!(
+            qc["args"]["filter"]["inMailbox"], "mbx-inbox",
+            "delta must scope the feed to the collection's own mailbox"
+        );
+        assert!(
+            recorded
+                .iter()
+                .all(|c| c.get("method").and_then(|m| m.as_str()) != Some("Email/changes")),
+            "the account-wide Email/changes must never drive a single collection"
+        );
+        assert!(
+            xml.contains("<Add><ServerId>") && xml.contains("<Delete><ServerId>"),
+            "an arrival renders as Add and a departure as Delete: {xml}"
+        );
+    }
+
+    #[test]
     fn test_route_email_sync_keys_off_cursor_presence() {
         // SyncKey "0" always primes from scratch, even with a leftover cursor.
         assert_eq!(route_email_sync("0", false), EmailSyncRoute::Initial);
@@ -11470,17 +11993,17 @@ mod tests {
         let request = format!(
             r#"<?xml version="1.0" encoding="utf-8"?><ItemOperations xmlns="ItemOperations:" xmlns:AirSyncBase="AirSyncBase:"><Fetch><Store>Mailbox</Store><AirSyncBase:FileReference>{attachment_id}</AirSyncBase:FileReference></Fetch></ItemOperations>"#
         );
-        let response = handle_item_operations(
-            &state,
-            owner,
-            SecretString::from("pw"),
-            &request,
-            &wbxml,
-            false,
-            "req-cal-att",
-            "test-device",
-            false,
-        )
+        let response = handle_item_operations(&ItemOperationsCtx {
+            state: &state,
+            username: owner,
+            password: &SecretString::from("pw"),
+            xml: &request,
+            wbxml: &wbxml,
+            as_wbxml: false,
+            request_id: "req-cal-att",
+            device_id: "test-device",
+            multipart: false,
+        })
         .await;
         let body = axum::body::to_bytes(response.into_body(), 1024 * 1024)
             .await
@@ -11508,17 +12031,17 @@ mod tests {
         let request = format!(
             r#"<?xml version="1.0" encoding="utf-8"?><ItemOperations xmlns="ItemOperations:" xmlns:AirSyncBase="AirSyncBase:"><Fetch><Store>Mailbox</Store><AirSyncBase:FileReference>{attachment_id}</AirSyncBase:FileReference><Options><Range>200-400</Range></Options></Fetch></ItemOperations>"#
         );
-        let response = handle_item_operations(
-            &state,
-            owner,
-            SecretString::from("pw"),
-            &request,
-            &wbxml,
-            false,
-            "req-cal-att-range",
-            "test-device",
-            false,
-        )
+        let response = handle_item_operations(&ItemOperationsCtx {
+            state: &state,
+            username: owner,
+            password: &SecretString::from("pw"),
+            xml: &request,
+            wbxml: &wbxml,
+            as_wbxml: false,
+            request_id: "req-cal-att-range",
+            device_id: "test-device",
+            multipart: false,
+        })
         .await;
         let body = axum::body::to_bytes(response.into_body(), 1024 * 1024)
             .await
@@ -11543,17 +12066,17 @@ mod tests {
         let request = format!(
             r#"<?xml version="1.0" encoding="utf-8"?><ItemOperations xmlns="ItemOperations:" xmlns:AirSyncBase="AirSyncBase:"><Fetch><Store>Mailbox</Store><AirSyncBase:FileReference>{attachment_id}</AirSyncBase:FileReference></Fetch></ItemOperations>"#
         );
-        let response = handle_item_operations(
-            &state,
-            owner,
-            SecretString::from("pw"),
-            &request,
-            &wbxml,
-            true,
-            "req-cal-att-mp",
-            "test-device",
-            true,
-        )
+        let response = handle_item_operations(&ItemOperationsCtx {
+            state: &state,
+            username: owner,
+            password: &SecretString::from("pw"),
+            xml: &request,
+            wbxml: &wbxml,
+            as_wbxml: true,
+            request_id: "req-cal-att-mp",
+            device_id: "test-device",
+            multipart: true,
+        })
         .await;
         assert_eq!(
             response
@@ -11667,17 +12190,17 @@ mod tests {
                 r#"<?xml version="1.0" encoding="utf-8"?><ItemOperations xmlns="ItemOperations:" xmlns:AirSyncBase="AirSyncBase:">{}</ItemOperations>"#,
                 fetch_bodies.join("")
             );
-            let response = handle_item_operations(
+            let response = handle_item_operations(&ItemOperationsCtx {
                 state,
-                owner,
-                SecretString::from("pw"),
-                &request,
-                &Wbxml::new(),
+                username: owner,
+                password: &SecretString::from("pw"),
+                xml: &request,
+                wbxml: &Wbxml::new(),
                 as_wbxml,
-                "req-budget",
-                "test-device",
+                request_id: "req-budget",
+                device_id: "test-device",
                 multipart,
-            )
+            })
             .await;
             axum::body::to_bytes(response.into_body(), 1024 * 1024)
                 .await
@@ -11773,17 +12296,17 @@ mod tests {
             )
         };
         async fn run(state: &Arc<crate::models::AppState>, owner: &str, request: &str) -> String {
-            let response = handle_item_operations(
+            let response = handle_item_operations(&ItemOperationsCtx {
                 state,
-                owner,
-                SecretString::from("pw"),
-                request,
-                &Wbxml::new(),
-                false,
-                "req-status-map",
-                "test-device",
-                false,
-            )
+                username: owner,
+                password: &SecretString::from("pw"),
+                xml: request,
+                wbxml: &Wbxml::new(),
+                as_wbxml: false,
+                request_id: "req-status-map",
+                device_id: "test-device",
+                multipart: false,
+            })
             .await;
             let body = axum::body::to_bytes(response.into_body(), 1024 * 1024)
                 .await

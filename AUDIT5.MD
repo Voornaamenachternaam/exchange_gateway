@@ -54,35 +54,103 @@ DEPLOY_RUNBOOK.md, CLOUDFLARED_SETUP.md, and the compose comments to state
 v1.1.0 as the validated backend. Do NOT change the gateway image tag — the
 operator pulls it from their registry.
 
-### 2. EAS folder-management commands return failure statuses (not implemented)
+### 2. EAS folder-management commands return failure statuses — DELIVERED
 
-`FolderCreate`, `FolderDelete`, `FolderUpdate` return Status 6 ("An error
-occurred on the server") — they are stubs with no persisted folder store and
-no JMAP `Mailbox/set` or CalDAV collection mutation path. `GetAttachment`
-returns Status 2 / HTTP 500 (no attachment fetch). `GetHierarchy` returns a
-hard-coded fixed system-folder list only (no user-created folders). `Find`
-routes GAL/mailbox criteria to Search paths but is a legacy command (removed
-in 14.0).
+**Original gap.** `FolderCreate`, `FolderDelete`, `FolderUpdate` returned
+Status 6 ("An error occurred on the server") — they were stubs with no
+persisted folder store and no JMAP `Mailbox/set` or CalDAV collection mutation
+path. `GetAttachment` returned Status 2 / HTTP 500 (no attachment fetch).
+`GetHierarchy` returned a hard-coded fixed system-folder list only (no
+user-created folders).
 
-Outlook for Windows and Outlook Android both issue folder management
-(`FolderCreate` for new folders, `FolderSync` for hierarchy, `ItemOperations
-Fetch` for attachments). While `FolderSync` and `ItemOperations` are
-implemented, the missing folder-mutation and attachment-fetch commands cause
-client friction and can stall account setup.
+**Delivered.** A new module `src/eas_folders.rs` implements the three
+folder-mutation commands against Stalwart as the system of record, plus a
+persisted `folder_map` store (schema **v11**) so user-created folders survive
+gateway restarts and surface in `FolderSync`/`GetHierarchy`.
 
-**Fix (ladder 1→4):**
-- Implement `FolderCreate`/`FolderDelete`/`FolderUpdate` backed by JMAP
-  `Mailbox/set` (existing `reqwest` + `serde_json` deps) for email folders,
-  CalDAV collection create/delete/update for calendar/tasks/notes/contacts
-  folders, persisting mappings in `storage.rs` (`item_map` / a new
-  `folder_map` table) so user-created folders survive restarts and surface in
-  `FolderSync`/`GetHierarchy`.
-- Implement `GetAttachment` via `JmapClient::download_blob_range` (existing
-  dep, already used by ItemOperations Fetch) streaming the attachment bytes
-  as the response body with `Content-Type`, per [MS-ASHTTP] §2.2.1.7.
-- Keep `Find` as the legacy compatibility shape (route GAL → GAL search,
-  mailbox → mailbox search, rendered in `Find:` envelope) — low risk since
-  14.0+ clients use `Search` instead.
+- **Backend selection** ([MS-ASCMD] §2.2.3.186.2 user-created Types):
+  Type 12/1 (mail) → JMAP `Mailbox/set`; Type 13 (Calendar) → CalDAV
+  `MKCALENDAR` with `VEVENT`; Type 15 (Tasks) → `VTODO`; Type 16/17
+  (Journal/Notes) → `VJOURNAL`. Type 14 (Contacts) is not creatable (CardDAV
+  collection creation is unsupported), so it maps to the mail backend and is
+  rejected by the backend as needed.
+- **`FolderCreate`** (§2.2.1.3): validates the request (missing DisplayName/
+  ParentId → 10; a reserved *default* Type 2–11/19 → 10; a DisplayName that
+  collides with a system folder or an existing sibling → 2; DisplayName > 64
+  chars → 10). On success the JMAP mailbox id (or the CalDAV collection href)
+  becomes the EAS ServerId, is persisted in `folder_map`, and the response is
+  `<Status>1</Status><SyncKey>…</SyncKey><ServerId>…</ServerId>` (§6.10).
+- **`FolderDelete`** (§2.2.1.4): a system-folder ServerId → 3 ("The specified
+  folder is a special system folder"); an unknown ServerId → 4; otherwise the
+  backing mailbox (`Mailbox/set destroy`) or CalDAV collection (`DELETE`) is
+  removed first, then the `folder_map` row (and every descendant row) is
+  dropped. Response is `<Status>` + `<SyncKey>`.
+- **`FolderUpdate`** (§2.2.1.6): rename and/or move. A system folder → 2; an
+  unknown folder → 4; otherwise JMAP `Mailbox/set update` (patch `name` and/or
+  `parentId`) or a CalDAV `PROPPATCH` `<D:displayname>`; the CalDAV collection
+  href (ServerId) is kept stable across a rename.
+- **`GetHierarchy`** (§2.2.1.8) now lists user-created folders after the fixed
+  system set, in the §6.19 `<Folders>/<Folder>` shape.
+- **`FolderSync`** (§2.2.1.5): a prime (`SyncKey 0`) lists the system set plus
+  every persisted user-created folder; an incremental call reports the
+  folder-hierarchy changes journaled since the client's watermark
+  (`change_journal` rows with `resource_href = 'folder'`), so a
+  FolderCreate/Update/Delete mutation reaches an already-primed client as an
+  `<Add>`/`<Update>`/`<Delete>` rather than a stale `<Count>0</Count>`.
+- **`GetAttachment`** (§2.2.1.7): the file reference (from the
+  `AttachmentName` command parameter or an `AttachmentName`/`FileReference`
+  body element) is streamed through `JmapClient::download_blob_range` and
+  returned as the response BODY with the blob's `Content-Type`; a missing name
+  → Status 2, a missing/empty attachment → the spec's HTTP 500.
+- **`Find`** (§2.2.1.2, removed in 14.0): kept as the legacy compatibility
+  shape — GAL criteria route to the GAL search path and mailbox criteria to
+  the mailbox search path, rendered in the `Find:` envelope. 14.0+ clients use
+  `Search` instead.
+- **Email delta sync scoping (correctness).** The EAS email delta
+  (`handle_email_delta_sync`) and the EWS `SyncFolderItems` email delta now
+  drive the **mailbox-scoped** `Email/queryChanges` feed (RFC 8620 §5.6,
+  `filter.inMailbox`) instead of the account-wide `Email/changes`. The latter
+  reports changes across *every* mailbox, so a single EAS/EWS collection would
+  receive `<Add>`/`<Delete>` for messages belonging to other folders —
+  corruption on the wire and spurious Ping wakes. `accumulate_email_changes`
+  resolves the collection's concrete JMAP mailbox id (`resolve_email_mailbox_id`:
+  a user folder's EAS ServerId *is* the mailbox id; a system role resolves via
+  its JMAP role) and pages `queryChanges` until the feed drains. An id that
+  Stalwart reports in **both** `added` and `removed` (an in-place reorder — a
+  flag edit re-sorting a keyword-sorted query) is classified as a `<Change>`,
+  not an Add+Delete (`classify_query_change_ops`). The initial sync now stores
+  the **query state** (`Email/query` `queryState`) as the delta base rather
+  than the `Email/get` data-type state, since `queryChanges` resumes from the
+  former. A state the backend can no longer compute — Stalwart returns
+  `invalidArguments` ("invalid JMAP State"), not `cannotCalculateChanges` — is
+  mapped to the typed `CannotCalculateChanges`, so the delta forces a clean
+  re-prime (EAS SyncKey 0 / Status 3; EWS `ErrorInvalidSyncStateData`) instead
+  of freezing the feed. The Ping email-folder probe uses the same
+  mailbox-scoped feed. The push monitor keeps the account-wide `Email/changes`
+  deliberately — it must observe every mailbox to wake the right folder.
+
+**Status codes.** Per [MS-ASCMD] §2.2.3.177.8 / §6.10–§6.19: 1 success,
+2 invalid/duplicate or special system folder, 3 special system folder
+(delete), 4 not found, 5 invalid parent, 6 server error, 10 malformed request.
+
+**Tests.** 26 in `src/eas_folders.rs` (classification helpers, response
+rendering + a WBXML round-trip of the FolderHierarchy-rooted responses, and
+end-to-end create/delete/update against a combined JMAP+CalDAV stub asserting
+the exact `Mailbox/set`/`MKCALENDAR`/`DELETE`/`PROPPATCH` wire calls and the
+persisted `folder_map` rows, plus the hierarchy-change journal watermark). The
+email-delta scoping adds `eas::tests::test_classify_query_change_ops_maps_add_remove_and_in_place`
+(pure classification) and
+`eas::tests::test_email_delta_sync_uses_mailbox_scoped_query_changes` (an
+end-to-end delta against a JMAP stub asserting the wire call carries
+`filter.inMailbox`, never `Email/changes`, and renders Add/Delete), plus three
+`jmap::tests::query_email_changes_*` tests (mailbox scoping + classification,
+`cannotCalculateChanges` and Stalwart `invalidArguments` both downcasting to
+the typed `CannotCalculateChanges`).
+
+**Operator change list.** None required for Cloudflare or Stalwart: the new
+commands use the already-configured JMAP and CalDAV endpoints. No new
+environment variables.
+
 
 ### 3. Autodiscover hostname pairing is only a startup warning, not enforced
 
@@ -518,7 +586,7 @@ No `@` (root) CNAME. Both must be Proxied from the start.
 | # | Sev | Area | Defect | Fix ladder |
 |---|-----|------|--------|------------|
 | 1 | P0 | Backend version | Code/docs validated vs Stalwart v1.0.x; operator runs v1.1.0 | docs + live re-verify (1→3) |
-| 2 | P0 | EAS | FolderCreate/Delete/Update/GetAttachment/Find unimplemented (Status 5/6) | handlers + JMAP Mailbox/set + CalDAV collections (1→4) |
+| 2 | P0 | EAS | ~~FolderCreate/Delete/Update/GetAttachment/Find unimplemented~~ **DELIVERED** (`eas_folders.rs` + `folder_map` v11) | handlers + JMAP Mailbox/set + CalDAV collections (1→4) |
 | 3 | P0 | Autodiscover | Hostname pairing is warning-only; placeholders not enforced | make fatal at startup (1) |
 | 4 | P0 | SMTP/Autodiscover | `GATEWAY_MAIL_HOST` vs `GATEWAY_SMTP_HOST` TLS/hostname mismatch risk | startup validation of internal vs public hosts (1) |
 | 5 | P0 | HTTP/TLS | Plain HTTP only; `x-forwarded-proto` enforcement inconsistent | centralized proxy-header middleware (1) |

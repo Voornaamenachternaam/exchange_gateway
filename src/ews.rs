@@ -2714,6 +2714,7 @@ async fn handle_find_email_item(
             username: &auth.username,
             password: &auth.password,
             search_filter,
+            mailbox_id: None,
         },
     )
     .await
@@ -4648,12 +4649,13 @@ fn parse_sync_state_marker(marker: Option<String>) -> Result<(i64, i64), ()> {
     }
 }
 
-/// Handle SyncFolderItems for email folders by delegating to JMAP Email/changes.
+/// Handle SyncFolderItems for email folders by delegating to the mailbox-scoped
+/// JMAP `Email/queryChanges` feed.
 ///
 /// This maps the EWS SyncFolderItems pattern (cursor-based, with Create/Update/Delete
-/// change entries) to JMAP Email/changes (RFC 8621 §4.4).
+/// change entries) to JMAP `Email/queryChanges` (RFC 8620 §5.6).
 ///
-/// The JMAP `state` token is stored as the EWS `SyncState` value.
+/// The JMAP `queryState` token is stored as the EWS `SyncState` value.
 async fn handle_sync_email_folder_items(
     state: &Arc<AppState>,
     auth: &AuthContext,
@@ -4718,9 +4720,9 @@ async fn handle_sync_email_folder_items(
     };
 
     if is_initial {
-        // Initial sync: JMAP Email/changes requires a valid sinceState token.
-        // Use Email/query + Email/get (batched) to fetch current emails and
-        // obtain the current data state token for subsequent /changes calls.
+        // Initial sync: JMAP queryChanges requires a valid sinceQueryState
+        // token. Use Email/query + Email/get (batched) to fetch current emails
+        // and capture the query's state token for subsequent deltas.
         let result = match crate::email::fetch_emails_jmap(
             state,
             &crate::email::FetchEmailsParams {
@@ -4731,6 +4733,7 @@ async fn handle_sync_email_folder_items(
                 username: &auth.username,
                 password: &auth.password,
                 search_filter: None,
+                mailbox_id: None,
             },
         )
         .await
@@ -4748,21 +4751,10 @@ async fn handle_sync_email_folder_items(
         };
 
         let emails = result.emails;
-        let new_state = if result.state.is_empty() {
-            // Fallback: fetch state token separately if batched get didn't return it
-            match jmap
-                .get_email_state(&account_id, &auth.username, &auth.password)
-                .await
-            {
-                Ok(s) => s,
-                Err(e) => {
-                    tracing::warn!(error = %e, "Failed to get JMAP email state token; using empty state");
-                    String::new()
-                }
-            }
-        } else {
-            result.state
-        };
+        // The delta drives `Email/queryChanges`, which resumes from a
+        // `queryState`, so the opaque `SyncState` stored here must be the
+        // query's state — not the `Email/get` data-type state.
+        let new_state = result.query_state.clone();
 
         let mut changes_xml = String::new();
         for email in &emails {
@@ -4793,13 +4785,34 @@ async fn handle_sync_email_folder_items(
         return soap_ok(response);
     }
 
-    // Subsequent sync: call JMAP Email/changes with the stored state token.
-    // The client's MaxChangesReturned bounds each batch; hasMoreChanges flows
-    // into IncludesLastItemInRange so the client re-syncs from the new
-    // SyncState for the remainder (MS-OXWSSYNC).
+    // Resolve the concrete JMAP mailbox id backing this EWS folder, for the
+    // mailbox-scoped `Email/queryChanges` delta feed. The account-wide
+    // `Email/changes` would leak every other folder's mail into this folder.
+    let resolved_mailbox_id: Option<String> = jmap
+        .get_mailbox_ids_for_role(&account_id, mailbox_role, &auth.username, &auth.password)
+        .await
+        .ok()
+        .and_then(|ids| ids.into_iter().next());
+
+    // Subsequent sync: drive the mailbox-scoped `Email/queryChanges` feed with
+    // the stored query state. `Email/changes` is account-wide and would leak
+    // every other folder's mail into this folder's sync. `maxChanges` bounds
+    // each page; a page that still advanced the state without reporting
+    // anything (the server clipped it) keeps `IncludesLastItemInRange` false so
+    // the client re-syncs from the returned state to drain the remainder.
+    let Some(mailbox_id) = resolved_mailbox_id.clone() else {
+        return operation_error_response(
+            &EwsAction::SyncFolderItems,
+            "ErrorFolderNotFound",
+            "No mailbox backing this email folder",
+            StatusCode::OK,
+        );
+    };
+
     let changes_result = jmap
-        .sync_email_changes(
+        .query_email_changes(
             &account_id,
+            &mailbox_id,
             &old_state_token,
             &auth.username,
             &auth.password,
@@ -4810,7 +4823,20 @@ async fn handle_sync_email_folder_items(
     let changes = match changes_result {
         Ok(r) => r,
         Err(e) => {
-            tracing::error!(error = %e, "JMAP Email/changes failed");
+            // The stored state is no longer valid on the backend: force the
+            // client to re-prime with a null SyncState.
+            if e.downcast_ref::<crate::jmap::CannotCalculateChanges>()
+                .is_some()
+            {
+                tracing::info!(error = %e, "EWS email delta state invalid; forcing re-prime");
+                return operation_error_response(
+                    &EwsAction::SyncFolderItems,
+                    "ErrorInvalidSyncStateData",
+                    "Sync state is no longer valid; re-sync from a null SyncState",
+                    StatusCode::OK,
+                );
+            }
+            tracing::error!(error = %e, "JMAP Email/queryChanges failed");
             return operation_error_response(
                 &EwsAction::SyncFolderItems,
                 "ErrorInternalServerError",
@@ -4822,7 +4848,7 @@ async fn handle_sync_email_folder_items(
 
     let mut changes_xml = String::new();
 
-    // Fetch and render created emails
+    // Render an arrival (newly in this mailbox) as a Create.
     for email_id in &changes.created {
         if let Ok(Some(email)) = jmap
             .get_email(&account_id, email_id, &auth.username, &auth.password, true)
@@ -4837,31 +4863,34 @@ async fn handle_sync_email_folder_items(
         }
     }
 
-    // Fetch and render updated emails
-    for email_id in &changes.updated {
-        if let Ok(Some(email)) = jmap
-            .get_email(&account_id, email_id, &auth.username, &auth.password, true)
-            .await
-        {
-            let server_id = email_server_id_from_jmap_id(email_id);
-            let change_key = server_id.clone();
+    // Render a departure (left this mailbox) as a Delete, EXCEPT an id present
+    // in BOTH lists — Stalwart reports that when the message merely moved
+    // within the mailbox (a flag edit re-sorting a keyword-sorted query), which
+    // is an in-place Update, not a Delete.
+    let added_set: std::collections::HashSet<&str> =
+        changes.created.iter().map(String::as_str).collect();
+    for email_id in &changes.destroyed {
+        let server_id = email_server_id_from_jmap_id(email_id);
+        if added_set.contains(email_id.as_str()) {
+            if let Ok(Some(email)) = jmap
+                .get_email(&account_id, email_id, &auth.username, &auth.password, true)
+                .await
+            {
+                let change_key = server_id.clone();
+                changes_xml.push_str(&format!(
+                    r#"<t:Update>{}</t:Update>"#,
+                    render_jmap_email_as_ews_message(&email, &server_id, &change_key)
+                ));
+            }
+        } else {
             changes_xml.push_str(&format!(
-                r#"<t:Update>{}</t:Update>"#,
-                render_jmap_email_as_ews_message(&email, &server_id, &change_key)
+                r#"<t:Delete><t:ItemId Id="{}" /></t:Delete>"#,
+                xml_escape(&server_id)
             ));
         }
     }
 
-    // Render deleted emails
-    for email_id in &changes.destroyed {
-        let server_id = email_server_id_from_jmap_id(email_id);
-        changes_xml.push_str(&format!(
-            r#"<t:Delete><t:ItemId Id="{}" /></t:Delete>"#,
-            xml_escape(&server_id)
-        ));
-    }
-
-    // Store the new sync state
+    // Store the new sync state.
     if let Err(e) = state
         .storage
         .set_ews_sync_state(owner, &folder_id, &changes.new_state)
@@ -4870,7 +4899,13 @@ async fn handle_sync_email_folder_items(
         tracing::warn!(folder_id = %folder_id, error = %e, "Failed to set EWS email sync state");
     }
 
-    let includes_last = if changes.has_more_changes {
+    // A page that reported no change is the end of the change set; a page that
+    // advanced the state while reporting nothing was clipped by `maxChanges`,
+    // so more changes remain behind the returned state.
+    let includes_last = if changes.created.is_empty()
+        && changes.destroyed.is_empty()
+        && changes.new_state != old_state_token
+    {
         "false"
     } else {
         "true"

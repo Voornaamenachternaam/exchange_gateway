@@ -1037,7 +1037,6 @@ pub fn render_jmap_email_as_eas_application_data(
 /// ([MS-ASWBXML]: AttMethod 0x0A is followed by Body 0x0C). Its only EAS
 /// definition is in the Find namespace (§2.2.3.87). Attachment presence is
 /// conveyed by the `<AirSyncBase:Attachments>` roster below.
-#[allow(clippy::too_many_arguments)]
 pub fn render_jmap_email_as_eas_application_data_with_options(
     email: &JmapEmail,
     server_id: &str,
@@ -1738,6 +1737,12 @@ pub struct FetchEmailsParams<'a> {
     /// `AND` operator, so a mailbox-scoped search never leaks results from
     /// other mailboxes.
     pub search_filter: Option<serde_json::Value>,
+    /// Optional concrete JMAP mailbox id that overrides role resolution.
+    ///
+    /// User-created mail folders have no JMAP role, so their EAS ServerId *is*
+    /// the JMAP mailbox id and role lookup cannot find them. When set, this id
+    /// scopes the `Email/query` directly and `mailbox_role` is only a label.
+    pub mailbox_id: Option<&'a str>,
 }
 
 /// Fetch emails from JMAP for a specific folder.
@@ -1756,10 +1761,18 @@ pub async fn fetch_emails_jmap(
     let username = params.username;
     let password = params.password;
     let search_filter = params.search_filter.as_ref();
+    let explicit_mailbox = params.mailbox_id;
     let jmap = state
         .jmap_client
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("JMAP is not configured; email reading is unavailable"))?;
+
+    // A concrete mailbox id (a user-created folder whose EAS ServerId is the
+    // JMAP mailbox id) bypasses role resolution entirely: such folders have no
+    // JMAP role, and role lookup would return the wrong (or no) mailbox.
+    if let Some(mb) = explicit_mailbox {
+        return fetch_emails_in_mailbox(jmap, params, mb).await;
+    }
 
     // Map mailbox role to JMAP filter.
     // "outbox" returns empty result — JMAP has no outbox role; outbound email
@@ -1870,6 +1883,33 @@ pub async fn fetch_emails_jmap(
             })
         }
     }
+}
+
+/// Query a concrete JMAP mailbox id (used for user-created folders, whose EAS
+/// ServerId *is* the mailbox id and which have no JMAP role).
+async fn fetch_emails_in_mailbox(
+    jmap: &Arc<crate::jmap::JmapClient>,
+    params: &FetchEmailsParams<'_>,
+    mailbox_id: &str,
+) -> anyhow::Result<crate::jmap::EmailListResult> {
+    let in_mailbox = serde_json::json!({ "inMailbox": mailbox_id });
+    let filter = match params.search_filter.as_ref() {
+        Some(search) => {
+            crate::ews_search::combine_with_in_mailbox(mailbox_id, Some(search.clone()))
+                .unwrap_or(in_mailbox)
+        }
+        None => in_mailbox,
+    };
+    jmap.query_emails(crate::jmap::QueryEmailsParams {
+        account_id: params.account_id,
+        filter: Some(filter),
+        sort: None,
+        position: params.position,
+        limit: params.limit,
+        username: params.username,
+        password: params.password,
+    })
+    .await
 }
 
 /// EAS folder type constants per MS-ASCMD §2.2.3.186.3.

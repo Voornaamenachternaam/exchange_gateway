@@ -428,6 +428,63 @@ impl CaldavClient {
         )
     }
 
+    /// Delete a calendar collection (RFC 4791 §5.3.3). Used by the EAS
+    /// `FolderDelete` path for a user-created calendar-family folder.
+    pub async fn delete_collection(
+        &self,
+        collection_href: &str,
+        username: &str,
+        password: &str,
+    ) -> Result<()> {
+        let url = self.absolute_url(collection_href)?;
+        let resp = self
+            .client
+            .delete(url)
+            .basic_auth(username, Some(password))
+            .send()
+            .await?;
+        let status = resp.status();
+        // 404 is a benign no-op: the collection is already gone.
+        if status.is_success() || status == reqwest::StatusCode::NOT_FOUND {
+            return Ok(());
+        }
+        Err(anyhow!("failed to delete collection: {}", status))
+    }
+
+    /// Set a calendar collection's `<D:displayname>` via PROPPATCH
+    /// (RFC 4918 §9.2). Used by the EAS `FolderUpdate` rename path.
+    pub async fn set_collection_displayname(
+        &self,
+        collection_href: &str,
+        displayname: &str,
+        username: &str,
+        password: &str,
+    ) -> Result<()> {
+        let url = self.absolute_url(collection_href)?;
+        let body = format!(
+            r#"<?xml version="1.0" encoding="utf-8" ?>
+<D:propertyupdate xmlns:D="DAV:">
+  <D:set>
+    <D:prop><D:displayname>{}</D:displayname></D:prop>
+  </D:set>
+</D:propertyupdate>"#,
+            xml_escape_text(displayname).as_ref()
+        );
+        let resp = self
+            .client
+            .request(reqwest::Method::from_bytes(b"PROPPATCH")?, &url)
+            .basic_auth(username, Some(password))
+            .header("Content-Type", "application/xml; charset=utf-8")
+            .body(body)
+            .send()
+            .await?;
+        let status = resp.status();
+        if status.is_success() {
+            return Ok(());
+        }
+        Err(anyhow!("PROPPATCH displayname returned {}", status))
+    }
+
     /// GET a calendar object resource, distinguishing "not found" (Ok(None))
     /// from transport/server failures (Err) so callers can treat a vanished
     /// VTODO/VJOURNAL as a delete rather than an outage.

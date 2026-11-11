@@ -599,8 +599,41 @@ CREATE TABLE IF NOT EXISTS meeting_rsvp (
 
 CREATE INDEX IF NOT EXISTS idx_meeting_rsvp_owner ON meeting_rsvp(owner);
 
+-- Persisted user-created folder registry for the EAS folder-mutation commands
+-- ([MS-ASCMD] §2.2.1.3 FolderCreate, §2.2.1.4 FolderDelete, §2.2.1.6
+-- FolderUpdate). Stalwart remains the system of record: mail folders are JMAP
+-- `Mailbox` objects and calendar/tasks/notes/contacts folders are CalDAV
+-- collections. This table is the authoritative mapping from the EAS ServerId
+-- the client sees to the backend identity, so user-created folders survive
+-- gateway restarts and surface in FolderSync/GetHierarchy.
+--
+-- `server_id` is the EAS ServerId (== the JMAP mailbox id for mail folders, or
+-- the CalDAV collection href for calendar-family folders); `backend_kind` is
+-- 'jmap' or 'caldav'; `backend_id` is the backend identity (JMAP mailbox id or
+-- CalDAV collection href). `parent_id` is the EAS ParentId ('0' = root).
+CREATE TABLE IF NOT EXISTS folder_map (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner TEXT NOT NULL,
+    server_id TEXT NOT NULL,
+    parent_id TEXT NOT NULL DEFAULT '0',
+    display_name TEXT NOT NULL,
+    folder_type INTEGER NOT NULL DEFAULT 12,
+    backend_kind TEXT NOT NULL DEFAULT 'jmap',
+    backend_id TEXT NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(owner, server_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_folder_map_owner ON folder_map(owner);
+CREATE INDEX IF NOT EXISTS idx_folder_map_backend
+    ON folder_map(owner, backend_kind, backend_id);
+
 INSERT OR IGNORE INTO schema_version (version, description)
 VALUES (9, 'v9: meeting_rsvp idempotence table for MeetingResponse/iMIP integrity');
 
 INSERT OR IGNORE INTO schema_version (version, description)
 VALUES (10, 'v10: journal_prune_state tracks the pruned-through journal id per owner for stale-watermark forced resync');
+
+INSERT OR IGNORE INTO schema_version (version, description)
+VALUES (11, 'v11: folder_map persists user-created EAS folders (JMAP Mailbox / CalDAV collection) across restarts');

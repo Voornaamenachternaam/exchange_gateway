@@ -2743,6 +2743,131 @@ impl Storage {
         .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))?;
         Ok(rows)
     }
+
+    /// Insert or replace a user-created folder mapping ([MS-ASCMD] §2.2.1.3).
+    pub async fn upsert_folder(&self, p: FolderUpsertParams<'_>) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO folder_map \
+             (owner, server_id, parent_id, display_name, folder_type, backend_kind, backend_id) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) \
+             ON CONFLICT(owner, server_id) DO UPDATE SET \
+                 parent_id = ?3, display_name = ?4, folder_type = ?5, \
+                 backend_kind = ?6, backend_id = ?7, updated_at = CURRENT_TIMESTAMP",
+        )
+        .bind(p.owner)
+        .bind(p.server_id)
+        .bind(p.parent_id)
+        .bind(p.display_name)
+        .bind(p.folder_type)
+        .bind(p.backend_kind)
+        .bind(p.backend_id)
+        .execute(self.pool.as_ref())
+        .await
+        .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+        Ok(())
+    }
+
+    /// All user-created folders owned by `owner`, stable by ServerId.
+    pub async fn list_folders(&self, owner: &str) -> Result<Vec<FolderRow>> {
+        sqlx::query_as::<_, FolderRow>(
+            "SELECT server_id, parent_id, display_name, folder_type, backend_kind, backend_id \
+             FROM folder_map WHERE owner = ?1 ORDER BY display_name ASC, server_id ASC",
+        )
+        .bind(owner)
+        .fetch_all(self.pool.as_ref())
+        .await
+        .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))
+    }
+
+    /// One user-created folder by its EAS ServerId.
+    pub async fn get_folder(&self, owner: &str, server_id: &str) -> Result<Option<FolderRow>> {
+        sqlx::query_as::<_, FolderRow>(
+            "SELECT server_id, parent_id, display_name, folder_type, backend_kind, backend_id \
+             FROM folder_map WHERE owner = ?1 AND server_id = ?2",
+        )
+        .bind(owner)
+        .bind(server_id)
+        .fetch_optional(self.pool.as_ref())
+        .await
+        .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))
+    }
+
+    /// Remove a user-created folder mapping ([MS-ASCMD] §2.2.1.4).
+    pub async fn delete_folder(&self, owner: &str, server_id: &str) -> Result<()> {
+        sqlx::query("DELETE FROM folder_map WHERE owner = ?1 AND server_id = ?2")
+            .bind(owner)
+            .bind(server_id)
+            .execute(self.pool.as_ref())
+            .await
+            .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+        Ok(())
+    }
+
+    /// Journal a folder-hierarchy change so an already-primed FolderSync is
+    /// told the hierarchy changed (rather than a stale `<Count>0</Count>`).
+    /// `op` is `folder-add`, `folder-update` or `folder-delete`.
+    pub async fn record_folder_hierarchy_change(
+        &self,
+        owner: &str,
+        server_id: &str,
+        op: &str,
+    ) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO change_journal (owner, server_id, op, resource_href) VALUES (?1, ?2, ?3, 'folder')",
+        )
+        .bind(owner)
+        .bind(server_id)
+        .bind(op)
+        .execute(self.pool.as_ref())
+        .await
+        .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+        Ok(())
+    }
+
+    /// Journal ids of folder-hierarchy changes (`resource_href = 'folder'`)
+    /// with `id > since`, in id ASC order.
+    pub async fn list_folder_journal_since(
+        &self,
+        owner: &str,
+        since: i64,
+    ) -> Result<Vec<JournalRow>> {
+        sqlx::query_as::<_, JournalRow>(
+            "SELECT id, server_id, op, resource_href FROM change_journal \
+             WHERE owner = ?1 AND id > ?2 AND resource_href = 'folder' ORDER BY id ASC",
+        )
+        .bind(owner)
+        .bind(since)
+        .fetch_all(self.pool.as_ref())
+        .await
+        .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))
+    }
+}
+
+/// Parameters for [`Storage::upsert_folder`]. Grouped so the call site stays
+/// under clippy's argument-count threshold.
+pub struct FolderUpsertParams<'a> {
+    pub owner: &'a str,
+    pub server_id: &'a str,
+    pub parent_id: &'a str,
+    pub display_name: &'a str,
+    pub folder_type: i64,
+    pub backend_kind: &'a str,
+    pub backend_id: &'a str,
+}
+
+/// A persisted user-created EAS folder ([MS-ASCMD] §2.2.1.3/§2.2.1.6),
+/// mapping the EAS ServerId the client sees to its backend identity.
+#[derive(FromRow, Clone, Debug)]
+pub struct FolderRow {
+    pub server_id: String,
+    pub parent_id: String,
+    pub display_name: String,
+    pub folder_type: i64,
+    /// Backend family: `"jmap"` (a JMAP Mailbox) or `"caldav"` (a CalDAV
+    /// collection).
+    pub backend_kind: String,
+    /// Backend identity: the JMAP mailbox id or the CalDAV collection href.
+    pub backend_id: String,
 }
 
 /// Row of the gateway-local S/MIME certificate store.

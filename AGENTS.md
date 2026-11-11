@@ -127,6 +127,28 @@ EAS specs v20250520 (16.1); older EAS compat NOT needed.
   (default 5 MiB, floor 1024).
 
 ## Session notes
+- AUDIT5.MD §2 (EAS folder-management commands) is COMPLETE and its section
+  documents the delivered behavior. New module `src/eas_folders.rs` (schema
+  v11 `folder_map`) implements `FolderCreate`/`FolderDelete`/`FolderUpdate`
+  against Stalwart as the system of record: mail folders → JMAP `Mailbox/set`
+  (create/update/destroy), calendar-family folders (Types 13/15/16/17) →
+  CalDAV `MKCALENDAR`/`DELETE`/`PROPPATCH` displayname, persisting the mapping
+  in `folder_map` so user-created folders survive restarts and surface in
+  `FolderSync`/`GetHierarchy`. The EAS ServerId of a mail folder is the JMAP
+  mailbox id itself; a CalDAV folder's is its collection href (kept stable
+  across a rename). `GetHierarchy` now appends user-created folders; the
+  incremental `FolderSync` reports folder-hierarchy changes journaled in
+  `change_journal` (`resource_href='folder'`) so a mutation reaches an
+  already-primed client as Add/Update/Delete. `GetAttachment` streams the blob
+  through `JmapClient::download_blob_range` as the response body + blob
+  Content-Type (missing name → Status 2; missing/empty → HTTP 500). `Find`
+  stays the legacy GAL/mailbox compatibility shape. Status codes per
+  [MS-ASCMD] §2.2.3.177.8/§6.10–§6.19 (1/2/3/4/5/6/10). Tests: 26 in
+  `src/eas_folders.rs` (a combined JMAP+CalDAV axum stub records the exact
+  wire calls; session apiUrl must equal the base origin so the client POSTs to
+  `/`, and CalDAV paths are percent-encoded by reqwest's Url::join). Suite:
+  1246 lib + 7 bin + 22 fixtures + 11 snapshots + 5 deploy + 1 doc, clippy 0
+  (`-D warnings`), rustfmt clean on ALL touched files, release warning-free.
 - AUDIT.md §10 (EAS Sync wire-exactness) is COMPLETE and its section now
   documents the delivered behavior — keep it accurate when touching Sync.
 - AUDIT.md §11 (WBXML conformance hardening) is COMPLETE (commit 7b7d242):

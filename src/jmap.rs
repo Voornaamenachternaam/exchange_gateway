@@ -557,6 +557,18 @@ pub const JMAP_SIEVE_CAPABILITY: &str = "urn:ietf:params:jmap:sieve";
 /// JMAP capability URN for contacts (RFC 9610).
 pub const JMAP_CONTACTS_CAPABILITY: &str = "urn:ietf:params:jmap:contacts";
 
+/// Request-scoped inputs for a verified calendar-probe destroy
+/// ([`JmapClient::probe_destroy_confirmed`]). Grouping them keeps the helper
+/// under clippy's argument-count threshold.
+struct DestroyProbeCtx<'a> {
+    session: &'a JmapSession,
+    method: &'a str,
+    account_id: &'a str,
+    ids: &'a [String],
+    username: &'a str,
+    password: &'a SecretString,
+}
+
 /// Result of the deploy-time JMAP Calendars capability verification
 /// (`JmapClient::verify_calendar_capability_deploy`).
 #[derive(Clone, Debug, Default)]
@@ -2388,6 +2400,149 @@ impl JmapClient {
 
         Err(anyhow!(
             "Unexpected JMAP response structure for Email/changes"
+        ))
+    }
+
+    /// Mailbox-scoped email change feed via `Email/queryChanges`
+    /// (RFC 8620 §5.6).
+    ///
+    /// `Email/changes` reports changes account-wide, so using it to drive one
+    /// EAS collection would leak mail from every folder into a folder-scoped
+    /// Sync. `Email/queryChanges` re-runs the mailbox query at `since_state`
+    /// and returns only the ids added to or removed from *that* mailbox. The
+    /// `inMailbox` filter is immutable (RFC 8620 §5.6), so the server can
+    /// answer it from its change log.
+    ///
+    /// Returns the ordered operation list plus the new query state. The
+    /// response is ordered: every `removed` id precedes the `added` ids in
+    /// result order (RFC 8620 §5.6 guarantees this, and Stalwart emits it),
+    /// so a windowed delivery never applies an add before its preceding
+    /// remove of the same id.
+    pub async fn query_email_changes(
+        &self,
+        account_id: &str,
+        mailbox_id: &str,
+        since_state: &str,
+        username: &str,
+        password: &SecretString,
+        max_changes: Option<u32>,
+    ) -> Result<EmailChangesResult> {
+        let session = self.get_session(username, password).await?;
+        let api_url = &session.api_url;
+
+        let method_calls = vec![(
+            "Email/queryChanges",
+            json!({
+                "accountId": account_id,
+                "filter": { "inMailbox": mailbox_id },
+                "sinceQueryState": since_state,
+                "maxChanges": max_changes.unwrap_or(crate::jmap::DEFAULT_EMAIL_CHANGES_MAX),
+                "calculateTotal": false,
+            }),
+            "qc0",
+        )];
+
+        let response = self
+            .api_call(
+                api_url,
+                &["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:mail"],
+                method_calls,
+                username,
+                password,
+            )
+            .await?;
+
+        for (method, data, _) in response.method_responses {
+            // RFC 8620 §3.6.2: a method-level error is reported as a separate
+            // `error` response, NOT as a field on the method's own response.
+            if method == "error" {
+                // `cannotCalculateChanges` (RFC 8620 §5.6) means the server
+                // cannot answer this query delta. Stalwart reports an
+                // unresumable `sinceQueryState` as `invalidArguments`
+                // ("invalid JMAP State", observed against v1.1.0) rather than
+                // `cannotCalculateChanges`; treat it the same way — the only
+                // per-request input here is the opaque state we stored, and a
+                // re-prime is self-healing whereas a frozen delta is not.
+                // Both downcast to `CannotCalculateChanges` so the caller
+                // re-primes from a full snapshot instead of storing a state
+                // that would silently skip changes.
+                match data.get("type").and_then(|v| v.as_str()) {
+                    Some("cannotCalculateChanges") => {
+                        return Err(anyhow::Error::new(CannotCalculateChanges(format!(
+                            "Email/queryChanges cannot calculate changes from {since_state}"
+                        ))));
+                    }
+                    Some("invalidArguments") => {
+                        return Err(anyhow::Error::new(CannotCalculateChanges(format!(
+                            "Email/queryChanges rejected the query state {since_state}: {data}"
+                        ))));
+                    }
+                    _ => {}
+                }
+                return Err(anyhow!("Email/queryChanges error: {}", data));
+            }
+            if method == "Email/queryChanges" {
+                let old_state = data
+                    .get("oldQueryState")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let new_state = data
+                    .get("newQueryState")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let removed: Vec<String> = data
+                    .get("removed")
+                    .and_then(|v| serde_json::from_value(v.clone()).ok())
+                    .unwrap_or_default();
+                // `added` is a list of `{id, index}` objects (RFC 8620 §5.6);
+                // preserve result order.
+                let added: Vec<String> = data
+                    .get("added")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|item| {
+                                item.get("id").and_then(|v| v.as_str()).map(String::from)
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+
+                // RFC 8620 §5.6: a `cannotCalculateChanges` error (mapped
+                // above) means the server cannot answer this query delta; the
+                // caller re-primes from a full snapshot.
+                if new_state.is_empty() {
+                    return Err(anyhow!(
+                        "Email/queryChanges returned no newQueryState (oldState {})",
+                        old_state
+                    ));
+                }
+
+                debug!(
+                    target: "jmap",
+                    since = %since_state,
+                    new_state = %new_state,
+                    added = added.len(),
+                    removed = removed.len(),
+                    "Email query changes synced"
+                );
+
+                return Ok(EmailChangesResult {
+                    created: added,
+                    updated: Vec::new(),
+                    destroyed: removed,
+                    new_state,
+                    // Email/queryChanges is bounded by `maxChanges` but reports
+                    // no `hasMoreChanges` flag; the caller re-queries to drain.
+                    has_more_changes: false,
+                });
+            }
+        }
+
+        Err(anyhow!(
+            "Unexpected JMAP response structure for Email/queryChanges"
         ))
     }
 
@@ -4707,24 +4862,28 @@ impl JmapClient {
         let to_destroy: Vec<String> = [id1, id2].into_iter().flatten().collect();
         if !to_destroy.is_empty() {
             self.probe_destroy_confirmed(
-                session,
-                "CalendarEvent/set",
-                account_id,
-                &to_destroy,
-                username,
-                password,
+                DestroyProbeCtx {
+                    session,
+                    method: "CalendarEvent/set",
+                    account_id,
+                    ids: &to_destroy,
+                    username,
+                    password,
+                },
                 report,
             )
             .await;
         }
         let calendar_leftover = !self
             .probe_destroy_confirmed(
-                session,
-                "Calendar/set",
-                account_id,
-                std::slice::from_ref(&probe_calendar_id),
-                username,
-                password,
+                DestroyProbeCtx {
+                    session,
+                    method: "Calendar/set",
+                    account_id,
+                    ids: std::slice::from_ref(&probe_calendar_id),
+                    username,
+                    password,
+                },
                 report,
             )
             .await;
@@ -4742,17 +4901,19 @@ impl JmapClient {
     /// retrying transient failures. Returns true when every id was
     /// confirmed destroyed; otherwise records a report issue naming the
     /// ids that remain on the server.
-    #[allow(clippy::too_many_arguments)]
     async fn probe_destroy_confirmed(
         &self,
-        session: &JmapSession,
-        method: &str,
-        account_id: &str,
-        ids: &[String],
-        username: &str,
-        password: &SecretString,
+        ctx: DestroyProbeCtx<'_>,
         report: &mut CalendarCapabilityReport,
     ) -> bool {
+        let DestroyProbeCtx {
+            session,
+            method,
+            account_id,
+            ids,
+            username,
+            password,
+        } = ctx;
         let using = ["urn:ietf:params:jmap:core", JMAP_CAL_CAPABILITY];
         let mut remaining: Vec<String> = ids.to_vec();
         let mut last_error = String::new();
@@ -8929,6 +9090,76 @@ mod tests {
             err.downcast_ref::<CannotCalculateChanges>().is_some(),
             "must be typed CannotCalculateChanges: {err:?}"
         );
+    }
+
+    /// A Stalwart `Email/queryChanges` method error is a SEPARATE `error`
+    /// response (RFC 8620 §3.6.2), not a field on the method's own response.
+    /// An unresumable `sinceQueryState` comes back as `invalidArguments`; it
+    /// must downcast to `CannotCalculateChanges` so the EAS/EWS delta re-primes
+    /// from a full snapshot instead of freezing the feed.
+    #[tokio::test]
+    async fn query_email_changes_invalid_arguments_surfaces_cannot_calculate() {
+        let err_page = json!({ "methodResponses": [
+            ["error", { "type": "invalidArguments", "description": "invalid JMAP State" }, "qc0"]
+        ]});
+        let (base, _rec) = spawn_recording_stub(vec![err_page]).await;
+        let client = JmapClient::new(&base).unwrap();
+        let pw = SecretString::from("pw");
+        let err = client
+            .query_email_changes("acct", "mbx", "stale", "u", &pw, None)
+            .await
+            .expect_err("invalidArguments must surface as Err");
+        assert!(
+            err.downcast_ref::<CannotCalculateChanges>().is_some(),
+            "must be typed CannotCalculateChanges: {err:?}"
+        );
+    }
+
+    /// A `cannotCalculateChanges` method error maps the same way.
+    #[tokio::test]
+    async fn query_email_changes_cannot_calculate_surfaces_typed_error() {
+        let err_page = json!({ "methodResponses": [
+            ["error", { "type": "cannotCalculateChanges", "description": "too old" }, "qc0"]
+        ]});
+        let (base, _rec) = spawn_recording_stub(vec![err_page]).await;
+        let client = JmapClient::new(&base).unwrap();
+        let pw = SecretString::from("pw");
+        let err = client
+            .query_email_changes("acct", "mbx", "stale", "u", &pw, None)
+            .await
+            .expect_err("cannotCalculateChanges must surface as Err");
+        assert!(
+            err.downcast_ref::<CannotCalculateChanges>().is_some(),
+            "must be typed CannotCalculateChanges: {err:?}"
+        );
+    }
+
+    /// A successful mailbox-scoped page: `added` → created, `removed` →
+    /// destroyed, and the wire call carries the `inMailbox` filter and the
+    /// caller's `maxChanges`.
+    #[tokio::test]
+    async fn query_email_changes_scopes_to_mailbox_and_classifies() {
+        let page = json!({ "methodResponses": [
+            ["Email/queryChanges", {
+                "accountId": "acct", "oldQueryState": "s0", "newQueryState": "s1",
+                "added": [{"id": "m1", "index": 0}], "removed": ["m2"]
+            }, "qc0"]
+        ]});
+        let (base, rec) = spawn_recording_stub(vec![page]).await;
+        let client = JmapClient::new(&base).unwrap();
+        let pw = SecretString::from("pw");
+        let result = client
+            .query_email_changes("acct", "mbx-inbox", "s0", "u", &pw, Some(25))
+            .await
+            .expect("queryChanges must succeed");
+        assert_eq!(result.created, vec!["m1"]);
+        assert_eq!(result.destroyed, vec!["m2"]);
+        assert_eq!(result.new_state, "s1");
+        let sent = rec.lock().unwrap();
+        let args = &sent[0]["methodCalls"][0][1];
+        assert_eq!(args["filter"]["inMailbox"], "mbx-inbox");
+        assert_eq!(args["sinceQueryState"], "s0");
+        assert_eq!(args["maxChanges"], 25);
     }
 
     /// The initial prime captures the `CalendarEvent/get` data-type `state` —
