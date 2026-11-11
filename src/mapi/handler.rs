@@ -827,7 +827,7 @@ async fn mailbox_subtree_deepest_first(
         .query_all_mailboxes(username, password)
         .await
         .map_err(|e| {
-            tracing::warn!(error = %e, "RopDeleteFolder: Mailbox/query failed");
+            tracing::warn!(error = %e, "Mailbox/query failed while walking the mailbox subtree");
         })?;
     let mut children: std::collections::HashMap<&str, Vec<&str>> = std::collections::HashMap::new();
     let mut present = false;
@@ -6037,25 +6037,31 @@ async fn execute_one_rop(
                                     }
                                 };
                         }
-                        // Subfolder clause: destroy child mailboxes when the
-                        // ROP is HardDeleteMessagesAndSubfolders. Propagate
-                        // failures there too.
+                        // Subfolder clause: destroy the mailbox's WHOLE
+                        // descendant subtree when the ROP is
+                        // HardDeleteMessagesAndSubfolders. A hard delete removes
+                        // the children's mail too (`remove_emails = true`), and
+                        // the walk is deepest-first so a parent is never
+                        // destroyed while a child still exists (JMAP rejects
+                        // that with `mailboxHasChild`). Only direct children
+                        // would leave grandchildren behind, and a child that
+                        // still holds mail would be refused, so the subtree is
+                        // walked completely. The root folder itself is NOT
+                        // deleted ([MS-OXCFOLD] §2.2.1.10: "without deleting the
+                        // folder itself"); its own messages were destroyed
+                        // above.
                         let mut subfolders_ok = true;
                         if rop_id == RopId::ROP_HARD_DELETE_MESSAGES_AND_SUBFOLDERS {
-                            match jc.query_all_mailboxes(username, pw).await {
-                                Ok(mailboxes) => {
-                                    for mbx in mailboxes.mailboxes {
-                                        if mbx.parent_id.as_deref() != Some(backend) {
-                                            continue;
-                                        }
-                                        let Some(child_id) = mbx.id.clone() else {
-                                            continue;
-                                        };
+                            match mailbox_subtree_deepest_first(jc, backend, username, pw).await {
+                                Ok(subtree) => {
+                                    for child_id in
+                                        subtree.iter().filter(|id| id.as_str() != backend)
+                                    {
                                         match jc
                                             .destroy_mailbox(
                                                 &account_id,
-                                                &child_id,
-                                                false,
+                                                child_id,
+                                                true,
                                                 username,
                                                 pw,
                                             )
@@ -6079,8 +6085,8 @@ async fn execute_one_rop(
                                         }
                                     }
                                 }
-                                Err(e) => {
-                                    tracing::warn!(error = %e, "JMAP Mailbox/query for subfolders failed");
+                                Err(()) => {
+                                    tracing::warn!("JMAP Mailbox/query for subfolders failed");
                                     subfolders_ok = false;
                                 }
                             }
@@ -11571,5 +11577,96 @@ mod tests {
         let (base, _calls) = spawn_delete_folder_stub_with(vec![], None, Some("serverFail")).await;
         let (rv, _partial) = run_delete_folder_rop_full(&base, "mb-1", 0).await;
         assert_eq!(rv, RopErrorCode::DiskError);
+    }
+
+    /// Drive one `RopHardDeleteMessagesAndSubfolders` (0x92) through the
+    /// Execute dispatcher and return the decoded `ReturnValue`.
+    async fn run_hard_delete_subfolders_rop(base: &str, backend_id: &str) -> RopErrorCode {
+        let mut cfg = Config::test_with_mail_domain("example.com");
+        cfg.mapi_enabled = true;
+        cfg.jmap_base = base.to_string();
+        cfg.email_enabled = true;
+        let state = MapiState::new(
+            cfg,
+            std::sync::Arc::new(AuthVerifier::new(&Config::default())),
+        );
+        let sid = state
+            .sessions
+            .create(crate::mapi::session::SessionPrincipal {
+                email: "u@example.com".into(),
+                basic_auth: true,
+            });
+        const INPUT_HANDLE: u8 = 3;
+        state.sessions.with_session_mut(&sid, |s| {
+            s.set_handle(
+                INPUT_HANDLE,
+                crate::mapi::session::Handle::Folder {
+                    backend_id: backend_id.into(),
+                    kind: crate::mapi::session::FolderKind::Mail,
+                },
+            );
+        });
+        // Wire: RopId(0x92) · LogonId(0) · InputHandle(3) ·
+        // WantAsynchronous(0) · WantDeleteAssociated(0).
+        let body: Vec<u8> = vec![0x92, 0, INPUT_HANDLE, 0, 0];
+        let req = MapiRequest {
+            kind: RpcKind::Mailbox(MapiRequestType::Execute),
+            request_id: "{G}:1".into(),
+            client_application: None,
+            client_info: Some(format!("{{{}}}:0", sid.as_hyphenated())),
+            username: None,
+            password: Some("pw".into()),
+            cookies: Vec::new(),
+            body,
+        };
+        let resp = handle(req, &state).await;
+        assert_eq!(resp.code, ResponseCode::Success, "Execute must succeed");
+        let (_status, _h, _ct, body_out) = resp.render();
+        let payload = &body_out[4..];
+        assert_eq!(payload[0], 0x92, "echoed RopId");
+        assert_eq!(payload[1], INPUT_HANDLE, "input handle echoed");
+        let rv = u32::from_le_bytes([payload[2], payload[3], payload[4], payload[5]]);
+        RopErrorCode::from_u32(rv)
+    }
+
+    /// [MS-OXCFOLD] §2.2.1.10: a hard delete removes the folder's messages AND
+    /// its subfolders (the folder itself survives). Each child destroy must set
+    /// `onDestroyRemoveEmails` (a child that still holds mail would otherwise be
+    /// refused), and the walk must be deepest-first so a parent is never
+    /// destroyed while a child still exists.
+    #[tokio::test]
+    async fn rop_hard_delete_subfolders_removes_emails_and_walks_deepest_first() {
+        let (base, calls) = spawn_delete_folder_stub(vec![
+            ("root", "child-a"),
+            ("child-a", "grandchild"),
+            ("other", "unrelated"),
+        ])
+        .await;
+        let rv = run_hard_delete_subfolders_rop(&base, "root").await;
+        assert_eq!(rv, RopErrorCode::Success);
+        let rec = calls.lock().await.clone();
+        let ids: Vec<&str> = rec.iter().map(|(id, _)| id.as_str()).collect();
+        // The root folder itself is NOT deleted; its whole subtree is, and every
+        // child destroy removes its emails.
+        assert!(
+            !ids.contains(&"root"),
+            "the folder itself must survive a hard delete: {ids:?}"
+        );
+        assert!(ids.contains(&"child-a"));
+        assert!(ids.contains(&"grandchild"));
+        assert!(
+            !ids.contains(&"unrelated"),
+            "a sibling subtree must not be touched: {ids:?}"
+        );
+        assert!(
+            rec.iter().all(|(_, remove)| *remove),
+            "every child destroy must remove emails: {rec:?}"
+        );
+        // Deepest-first: the grandchild is destroyed before its parent.
+        let pos = |id: &str| ids.iter().position(|x| *x == id).unwrap();
+        assert!(
+            pos("grandchild") < pos("child-a"),
+            "grandchild must be destroyed before its parent: {ids:?}"
+        );
     }
 }

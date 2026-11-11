@@ -182,15 +182,34 @@ EAS specs v20250520 (16.1); older EAS compat NOT needed.
   so a flag edit before the rotating scan reaches the message is still reported
   — a missing row on the scan's first observation is recorded WITHOUT a
   `<Change>` (the Add already carried the current flags; emitting a Change there
-  fired for messages the client never received). DECLINED (thread reply
-  pending): cubic's sync.rs P2 (4537721615) — tombstoning a scoped folder's
-  moved-out events — because `item_map` is owner-global (no collection column)
-  and calendar-event hrefs are account-scoped (`jmap://calendar/{account}/{id}`)
-  while a scoped folder's delta is the ACCOUNT-wide feed, so tombstoning the
-  scoped-filtered ids would delete every OTHER calendar's events from the shared
-  rows. The residual (an event moved OUT of the folder's calendar lingers until
-  a client resync) is bounded and cross-calendar-safe; a correct fix needs a
-  per-collection calendar scope on `item_map`.
+  fired for messages the client never received). A scoped folder's delta is the
+  account-wide calendar feed, so an event moved OUT of that folder's calendar
+  lingers on the device until a client resync; tombstoning the scoped-filtered
+  ids is NOT done because `item_map` is owner-global (no collection column) and
+  calendar-event hrefs are account-scoped
+  (`jmap://calendar/{account}/{id}`), so tombstoning them would delete every
+  OTHER calendar's events from the shared rows. The residual is bounded and
+  cross-calendar-safe; a correct fix needs a per-collection calendar scope on
+  `item_map`. Folder mutations journal atomically with the mapping:
+  `Storage::upsert_folder_journaled` (folder-add/folder-update) and
+  `delete_folders_journaled` write the `folder_map` row(s) AND the
+  `change_journal` row(s) in ONE transaction, so a FolderSync success is
+  returned only once an already-primed device can learn about the change (the
+  old separate `record_hierarchy_change` calls could ack a create/delete whose
+  journal row was never written). MAPI
+  `RopHardDeleteMessagesAndSubfolders` ([MS-OXCFOLD] §2.2.1.10) removes the
+  folder's messages AND its whole descendant subtree (the folder itself
+  survives), walking it deepest-first with `onDestroyRemoveEmails` set on every
+  child destroy (a child that still holds mail is otherwise refused). The EAS
+  keyword baseline's rotating scan holds its position (does not advance past
+  the window) when a baseline ROW READ fails — `Storage::get_email_keyword`
+  propagates a decode error as `Err` rather than treating it as a missing row,
+  so a flag change is never silently swallowed; and the per-delta scan's
+  upserts SKIP ids delivered as an `<Add>` this delta, so the Add's fresh seed
+  wins over the older scan snapshot (no duplicate flag `<Change>` next delta).
+  The overflow branch persists the keyword baseline ONLY once the undelivered
+  remainder is durably queued (a failed queue write holds the baseline too, so
+  the re-diff re-derives the discarded flag changes).
 - AUDIT.md §10 (EAS Sync wire-exactness) is COMPLETE and its section now
   documents the delivered behavior — keep it accurate when touching Sync.
 - AUDIT.md §11 (WBXML conformance hardening) is COMPLETE (commit 7b7d242):

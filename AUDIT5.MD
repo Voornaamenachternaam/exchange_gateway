@@ -163,10 +163,13 @@ gateway restarts and surface in `FolderSync`/`GetHierarchy`.
   swallowing an update; the rotating position advances only when every baseline
   row was written, so a failed write holds the cursor and the next sweep
   re-examines the same window instead of skipping the change; an overflowed delta
-  (the change set exceeds the EAS window) persists them when the remainder is
-  durably queued, so the drain and every later delta do not re-queue the same
-  flag change. A backend hiccup during the scan degrades to serving the
-  query-feed changes without persisting that page's rows.
+  (the change set exceeds the EAS window) persists them ONLY once the remainder
+  is durably queued — if persisting the queue fails the baseline is held too
+  (the stored token still sits at the pre-delta state, so the re-diff re-derives
+  the discarded flag changes rather than swallowing them), and the drain and
+  every later delta do not re-queue the same flag change. A backend hiccup
+  during the scan degrades to serving the query-feed changes without persisting
+  that page's rows.
   `Email/queryChanges` has no `hasMoreChanges` field (RFC 8620 §5.6), so
   `has_more_changes` is a heuristic — set when a page returns exactly at the
   `maxChanges` cap — and the drain loop plus the EWS
@@ -199,6 +202,23 @@ the typed `CannotCalculateChanges`).
 **Operator change list.** None required for Cloudflare or Stalwart: the new
 commands use the already-configured JMAP and CalDAV endpoints. No new
 environment variables.
+
+**PR-review hardening.** (a) Folder mutations journal ATOMICALLY with the
+mapping: `Storage::upsert_folder_journaled` (folder-add/folder-update) and
+`delete_folders_journaled` write the `folder_map` row(s) AND the
+`change_journal` row(s) in one transaction, so a FolderCreate/Update/Delete is
+acknowledged only once an already-primed device can learn about it (the previous
+separate `record_hierarchy_change` calls could ack a mutation whose journal row
+was never written). (b) MAPI `RopHardDeleteMessagesAndSubfolders`
+([MS-OXCFOLD] §2.2.1.10) removes the folder's messages AND its whole descendant
+subtree (the folder itself survives), walking it deepest-first with
+`onDestroyRemoveEmails` set on every child destroy. (c) The rotating keyword
+scan HOLDS its position (does not advance past the window) when a baseline row
+read fails — `Storage::get_email_keyword` propagates a decode error as `Err`
+instead of treating it as a missing row, so a flag change is never silently
+swallowed — and the per-delta scan's upserts SKIP ids delivered as an `<Add>`
+this delta, so the Add's fresh seed wins over the older scan snapshot (no
+duplicate flag `<Change>` on the next delta).
 
 **Upgrade note (expected one-time re-prime).** Before this change the stored
 email delta token was the `Email/get` data-type state; the new delta passes it

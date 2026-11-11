@@ -356,18 +356,24 @@ async fn create_mail_folder(
     {
         Ok(mailbox_id) => {
             // The JMAP mailbox id is the EAS ServerId (stable and usable
-            // directly in Email/query).
+            // directly in Email/query). The mapping and its folder-hierarchy
+            // journal row are written in ONE transaction, so success is
+            // returned only once an already-primed device can learn about the
+            // new folder.
             if let Err(e) = state
                 .storage
-                .upsert_folder(crate::storage::FolderUpsertParams {
-                    owner,
-                    server_id: &mailbox_id,
-                    parent_id,
-                    display_name,
-                    folder_type,
-                    backend_kind: "jmap",
-                    backend_id: &mailbox_id,
-                })
+                .upsert_folder_journaled(
+                    crate::storage::FolderUpsertParams {
+                        owner,
+                        server_id: &mailbox_id,
+                        parent_id,
+                        display_name,
+                        folder_type,
+                        backend_kind: "jmap",
+                        backend_id: &mailbox_id,
+                    },
+                    "folder-add",
+                )
                 .await
             {
                 tracing::warn!(error = %e, "FolderCreate: failed to persist folder mapping");
@@ -421,15 +427,18 @@ async fn create_caldav_folder(
     }
     if let Err(e) = state
         .storage
-        .upsert_folder(crate::storage::FolderUpsertParams {
-            owner,
-            server_id: &coll.href,
-            parent_id: "0",
-            display_name,
-            folder_type,
-            backend_kind: "caldav",
-            backend_id: &coll.href,
-        })
+        .upsert_folder_journaled(
+            crate::storage::FolderUpsertParams {
+                owner,
+                server_id: &coll.href,
+                parent_id: "0",
+                display_name,
+                folder_type,
+                backend_kind: "caldav",
+                backend_id: &coll.href,
+            },
+            "folder-add",
+        )
         .await
     {
         tracing::warn!(error = %e, "FolderCreate: failed to persist folder mapping");
@@ -516,7 +525,7 @@ pub async fn delete_folder(
                         crate::jmap::MailboxDestroyOutcome::Destroyed
                         | crate::jmap::MailboxDestroyOutcome::AlreadyGone,
                     ) => {}
-                    // The server refused the destroy (e.g. `mailboxHasEmail`
+                    // The server refused the destroy (e.g. `mailboxHasChild`
                     // because a child was recreated, or `forbidden`). This is a
                     // failure: pruning the mirror here would resurrect the
                     // folder on the next reconcile, so abort and let the client
@@ -550,14 +559,18 @@ pub async fn delete_folder(
         }
     }
 
-    // Backend objects are gone; prune the mirror and return the removed
-    // ServerIds so the caller can journal a Delete for each one.
+    // Backend objects are gone; prune the mirror and journal a Delete for each
+    // removed ServerId in ONE transaction. Success is returned only once every
+    // journal row is durable, so an already-primed device can always learn
+    // about the removal.
     let removed_ids: Vec<String> = subtree.iter().map(|f| f.server_id.clone()).collect();
-    for id in &removed_ids {
-        if let Err(e) = state.storage.delete_folder(owner, id).await {
-            tracing::warn!(error = %e, "FolderDelete: failed to remove folder mapping");
-            return FolderMutationResult::status(6);
-        }
+    if let Err(e) = state
+        .storage
+        .delete_folders_journaled(owner, &removed_ids)
+        .await
+    {
+        tracing::warn!(error = %e, "FolderDelete: failed to prune folder mappings");
+        return FolderMutationResult::status(6);
     }
     FolderMutationResult {
         status: 1,
@@ -746,15 +759,18 @@ async fn update_mail_folder(
         Ok(true) => {
             if let Err(e) = state
                 .storage
-                .upsert_folder(crate::storage::FolderUpsertParams {
-                    owner,
-                    server_id: &row.server_id,
-                    parent_id,
-                    display_name,
-                    folder_type: row.folder_type,
-                    backend_kind: "jmap",
-                    backend_id: &row.backend_id,
-                })
+                .upsert_folder_journaled(
+                    crate::storage::FolderUpsertParams {
+                        owner,
+                        server_id: &row.server_id,
+                        parent_id,
+                        display_name,
+                        folder_type: row.folder_type,
+                        backend_kind: "jmap",
+                        backend_id: &row.backend_id,
+                    },
+                    "folder-update",
+                )
                 .await
             {
                 tracing::warn!(error = %e, "FolderUpdate: failed to persist folder mapping");
@@ -799,15 +815,18 @@ async fn rename_caldav_folder(
     }
     if let Err(e) = state
         .storage
-        .upsert_folder(crate::storage::FolderUpsertParams {
-            owner,
-            server_id: &row.server_id,
-            parent_id: &row.parent_id,
-            display_name,
-            folder_type: row.folder_type,
-            backend_kind: "caldav",
-            backend_id: &row.backend_id,
-        })
+        .upsert_folder_journaled(
+            crate::storage::FolderUpsertParams {
+                owner,
+                server_id: &row.server_id,
+                parent_id: &row.parent_id,
+                display_name,
+                folder_type: row.folder_type,
+                backend_kind: "caldav",
+                backend_id: &row.backend_id,
+            },
+            "folder-update",
+        )
         .await
     {
         tracing::warn!(error = %e, "FolderUpdate: failed to persist folder mapping");
@@ -909,24 +928,6 @@ pub async fn rotate_hierarchy_sync_key(
     new_key
 }
 
-/// Journal a folder-hierarchy change so an already-primed FolderSync reports
-/// the change (rather than a stale `<Count>0</Count>`). `op` is one of
-/// `folder-add`, `folder-update`, `folder-delete`.
-pub async fn record_hierarchy_change(
-    state: &Arc<AppState>,
-    owner: &str,
-    server_id: &str,
-    op: &str,
-) {
-    if let Err(e) = state
-        .storage
-        .record_folder_hierarchy_change(owner, server_id, op)
-        .await
-    {
-        tracing::warn!(error = %e, "Failed to record folder-hierarchy change");
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -945,7 +946,7 @@ mod tests {
         dav_calls: StdArc<TokioMutex<Vec<(String, String)>>>,
         /// Scripts the `Mailbox/set destroy` reply so the outcome mapping can be
         /// exercised: `None` = success, `Some("notfound")` = `notDestroyed`
-        /// `notFound`, `Some("refused")` = `notDestroyed` `mailboxHasEmail`,
+        /// `notFound`, `Some("refused")` = `notDestroyed` `mailboxHasChild`,
         /// `Some("error")` = a method-level `error` response.
         destroy_mode: Option<String>,
     }
@@ -1062,7 +1063,7 @@ mod tests {
                                         .iter()
                                         .filter_map(|v| v.as_str())
                                         .map(|id| {
-                                            (id.to_string(), json!({"type": "mailboxHasEmail"}))
+                                            (id.to_string(), json!({"type": "mailboxHasChild"}))
                                         })
                                         .collect();
                                     ("Mailbox/set", json!({"accountId": "a", "notDestroyed": nd}))
@@ -1544,7 +1545,7 @@ mod tests {
         );
     }
 
-    /// A refusal (`mailboxHasEmail`) means the mailbox still exists; pruning the
+    /// A refusal (`mailboxHasChild`) means the mailbox still exists; pruning the
     /// mirror would resurrect it on the next reconcile, so the delete fails with
     /// Status 6 and the row survives.
     #[tokio::test]
@@ -1698,10 +1699,18 @@ mod tests {
     // ---- hierarchy journal ---------------------------------------------
 
     #[tokio::test]
-    async fn record_hierarchy_change_is_listed_since_watermark() {
+    async fn folder_hierarchy_journal_is_listed_since_watermark() {
         let (state, _, _) = spawn_backend_stub().await;
-        record_hierarchy_change(&state, "u@example.com", "mb-a", "folder-add").await;
-        record_hierarchy_change(&state, "u@example.com", "mb-b", "folder-add").await;
+        state
+            .storage
+            .record_folder_hierarchy_change("u@example.com", "mb-a", "folder-add")
+            .await
+            .unwrap();
+        state
+            .storage
+            .record_folder_hierarchy_change("u@example.com", "mb-b", "folder-add")
+            .await
+            .unwrap();
         let all = state
             .storage
             .list_folder_journal_since("u@example.com", 0, i64::MAX)

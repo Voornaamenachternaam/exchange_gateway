@@ -1471,10 +1471,16 @@ impl Storage {
         .fetch_optional(self.pool.as_ref())
         .await
         .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))?;
-        Ok(row.and_then(|r| {
-            let s: String = r.get(0);
-            serde_json::from_str(&s).ok()
-        }))
+        let Some(r) = row else {
+            return Ok(None);
+        };
+        // A decode failure is a READ ERROR, not a missing row: the caller must
+        // not mistake it for "no baseline yet" (which would record the current
+        // keywords as a fresh capture and swallow a flag change).
+        let s: String = r
+            .try_get(0)
+            .map_err(|e| GatewayError::Storage(format!("Decode error: {}", e)))?;
+        Ok(serde_json::from_str(&s).ok())
     }
 
     /// Read the mailbox keyword baseline for an email collection. `None` when
@@ -3103,6 +3109,85 @@ impl Storage {
         Ok(())
     }
 
+    /// Persist a user-created folder mapping AND its folder-hierarchy journal
+    /// row in ONE transaction, so a mutation is acknowledged only once its
+    /// journal row is durable. If the journal insert fails the whole
+    /// transaction rolls back: the mapping is not written and the caller
+    /// reports failure instead of returning a success an already-primed device
+    /// could never learn about. `op` is `folder-add` or `folder-update`.
+    pub async fn upsert_folder_journaled(&self, p: FolderUpsertParams<'_>, op: &str) -> Result<()> {
+        let mut tx = sqlx::Acquire::begin(self.pool.as_ref())
+            .await
+            .map_err(|e| GatewayError::Storage(format!("Transaction error: {}", e)))?;
+
+        sqlx::query(
+            "INSERT INTO folder_map \
+             (owner, server_id, parent_id, display_name, folder_type, backend_kind, backend_id) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) \
+             ON CONFLICT(owner, server_id) DO UPDATE SET \
+                 parent_id = ?3, display_name = ?4, folder_type = ?5, \
+                 backend_kind = ?6, backend_id = ?7, updated_at = CURRENT_TIMESTAMP",
+        )
+        .bind(p.owner)
+        .bind(p.server_id)
+        .bind(p.parent_id)
+        .bind(p.display_name)
+        .bind(p.folder_type)
+        .bind(p.backend_kind)
+        .bind(p.backend_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+
+        sqlx::query(
+            "INSERT INTO change_journal (owner, server_id, op, resource_href) VALUES (?1, ?2, ?3, 'folder')",
+        )
+        .bind(p.owner)
+        .bind(p.server_id)
+        .bind(op)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+
+        tx.commit()
+            .await
+            .map_err(|e| GatewayError::Storage(format!("Commit error: {}", e)))?;
+        Ok(())
+    }
+
+    /// Remove one or more user-created folder mappings AND journal a
+    /// `folder-delete` row for each in ONE transaction, so a delete is
+    /// acknowledged only once every journal row is durable. If any statement
+    /// fails the whole transaction rolls back and the caller reports failure.
+    pub async fn delete_folders_journaled(&self, owner: &str, server_ids: &[String]) -> Result<()> {
+        let mut tx = sqlx::Acquire::begin(self.pool.as_ref())
+            .await
+            .map_err(|e| GatewayError::Storage(format!("Transaction error: {}", e)))?;
+
+        for server_id in server_ids {
+            sqlx::query("DELETE FROM folder_map WHERE owner = ?1 AND server_id = ?2")
+                .bind(owner)
+                .bind(server_id)
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+
+            sqlx::query(
+                "INSERT INTO change_journal (owner, server_id, op, resource_href) VALUES (?1, ?2, 'folder-delete', 'folder')",
+            )
+            .bind(owner)
+            .bind(server_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+        }
+
+        tx.commit()
+            .await
+            .map_err(|e| GatewayError::Storage(format!("Commit error: {}", e)))?;
+        Ok(())
+    }
+
     /// Folder-hierarchy journal rows with `since < id <= until`. `until` is the
     /// journal head captured BEFORE the hierarchy is rendered, so a mutation
     /// journaled while rendering is never folded into the window the caller
@@ -4227,6 +4312,123 @@ mod tests {
             0,
             "scan position is scoped per collection"
         );
+    }
+
+    /// A decode failure on a baseline row is a READ ERROR, not a missing row:
+    /// `get_email_keyword` must return `Err`, so the caller cannot mistake it
+    /// for "no baseline yet" and swallow a flag change.
+    #[tokio::test]
+    async fn get_email_keyword_propagates_decode_errors() {
+        let storage = mem_storage().await;
+        let owner = "decode@example.com";
+        let coll = "2::dev-1";
+        // A BLOB in the TEXT-affinity column cannot decode as `String`; SQLite
+        // preserves BLOBs, so this reliably triggers the decode error.
+        sqlx::query(
+            "INSERT INTO email_keyword_baseline (owner, collection_id, email_id, keywords_json) \
+             VALUES (?1, ?2, 'm1', x'00ff')",
+        )
+        .bind(owner)
+        .bind(coll)
+        .execute(storage.pool())
+        .await
+        .expect("seed blob row");
+        assert!(
+            storage.get_email_keyword(owner, coll, "m1").await.is_err(),
+            "a decode failure must surface as Err, never a missing row"
+        );
+    }
+
+    /// `upsert_folder_journaled` writes the folder mapping AND its
+    /// folder-hierarchy journal row in ONE transaction, so an already-primed
+    /// FolderSync can always learn about a create/rename. The atomic
+    /// `delete_folders_journaled` mirrors this for deletes.
+    #[tokio::test]
+    async fn folder_mutations_journal_atomically_with_the_mapping() {
+        let storage = mem_storage().await;
+        let owner = "folders@example.com";
+
+        storage
+            .upsert_folder_journaled(
+                FolderUpsertParams {
+                    owner,
+                    server_id: "mb-1",
+                    parent_id: "0",
+                    display_name: "Inbox sub",
+                    folder_type: 1,
+                    backend_kind: "jmap",
+                    backend_id: "mb-1",
+                },
+                "folder-add",
+            )
+            .await
+            .expect("journaled upsert");
+        let row = storage
+            .get_folder(owner, "mb-1")
+            .await
+            .expect("get folder")
+            .expect("folder row present");
+        assert_eq!(row.display_name, "Inbox sub");
+        let journal = storage
+            .list_folder_journal_since(owner, 0, i64::MAX)
+            .await
+            .expect("folder journal");
+        assert_eq!(journal.len(), 1, "one folder-add journal row");
+        assert_eq!(journal[0].op, "folder-add");
+        assert_eq!(journal[0].server_id, "mb-1");
+
+        // A rename journals a folder-update row alongside the mapping rewrite.
+        storage
+            .upsert_folder_journaled(
+                FolderUpsertParams {
+                    owner,
+                    server_id: "mb-1",
+                    parent_id: "0",
+                    display_name: "Renamed",
+                    folder_type: 1,
+                    backend_kind: "jmap",
+                    backend_id: "mb-1",
+                },
+                "folder-update",
+            )
+            .await
+            .expect("journaled update");
+        assert_eq!(
+            storage
+                .get_folder(owner, "mb-1")
+                .await
+                .expect("get folder")
+                .expect("folder row")
+                .display_name,
+            "Renamed"
+        );
+        let journal = storage
+            .list_folder_journal_since(owner, 0, i64::MAX)
+            .await
+            .expect("folder journal");
+        assert_eq!(journal.len(), 2);
+        assert_eq!(journal[1].op, "folder-update");
+
+        // The atomic delete removes the mapping AND journals every removed id.
+        storage
+            .delete_folders_journaled(owner, &["mb-1".to_string()])
+            .await
+            .expect("journaled delete");
+        assert!(
+            storage
+                .get_folder(owner, "mb-1")
+                .await
+                .expect("get folder")
+                .is_none(),
+            "the mapping is gone"
+        );
+        let journal = storage
+            .list_folder_journal_since(owner, 0, i64::MAX)
+            .await
+            .expect("folder journal");
+        assert_eq!(journal.len(), 3);
+        assert_eq!(journal[2].op, "folder-delete");
+        assert_eq!(journal[2].server_id, "mb-1");
     }
 
     #[tokio::test]

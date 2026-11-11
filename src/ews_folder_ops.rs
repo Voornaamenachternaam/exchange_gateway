@@ -1049,6 +1049,10 @@ pub(crate) async fn handle_delete_folder(
                     | crate::jmap::MailboxDestroyOutcome::AlreadyGone,
                 ) => {}
                 Ok(crate::jmap::MailboxDestroyOutcome::Refused) => {
+                    tracing::warn!(
+                        mailbox = %cb_id,
+                        "EWS DeleteFolder: Mailbox/set refused the destroy"
+                    );
                     return operation_error_response(
                         &action,
                         "ErrorCannotDeleteObject",
