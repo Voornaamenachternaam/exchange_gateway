@@ -1479,6 +1479,8 @@ pub(crate) async fn handle_find_conversation(
                 ]),
                 position: cursor,
                 limit: batch,
+                anchor: None,
+                anchor_offset: 0,
                 username: &auth.username,
                 password: &auth.password,
             })

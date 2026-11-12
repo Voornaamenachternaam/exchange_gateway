@@ -6892,6 +6892,8 @@ async fn find_jmap_email_id(
             sort: None,
             position,
             limit: PAGE,
+            anchor: None,
+            anchor_offset: 0,
             username,
             password,
         };
@@ -7054,6 +7056,8 @@ async fn fetch_email_rows(
             sort: None,
             position,
             limit,
+            anchor: None,
+            anchor_offset: 0,
             username,
             password,
         };

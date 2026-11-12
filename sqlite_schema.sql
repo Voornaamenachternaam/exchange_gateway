@@ -121,6 +121,12 @@ CREATE TABLE IF NOT EXISTS email_sync_cursor (
     collection_id TEXT NOT NULL,
     position INTEGER NOT NULL,
     state_token TEXT,
+    -- The id of the LAST message delivered by the first initial-sync window.
+    -- A continuation re-queries with RFC 8620 §5.5 `anchor`/`anchorOffset` on
+    -- it so a message deleted from the mailbox during paging cannot shift the
+    -- tail below the numeric `position` and be skipped forever (`position`
+    -- remains the fallback for when the anchor itself is gone).
+    anchor_id TEXT,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(owner, collection_id)
 );

@@ -530,6 +530,24 @@ impl Storage {
             .await
             .map_err(|e| GatewayError::Storage(format!("Migration error: {}", e)))?;
         }
+        // Same probe for the `anchor_id` column of `email_sync_cursor`:
+        // databases created before anchor-based initial-sync paging resume the
+        // continuation by numeric `position` only (the fallback path); the
+        // column lets the next initial sync pin its page with an RFC 8620 §5.5
+        // query anchor.
+        let email_cursor_columns = sqlx::query("PRAGMA table_info(email_sync_cursor)")
+            .fetch_all(self.pool.as_ref())
+            .await
+            .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))?;
+        let has_anchor_id = email_cursor_columns
+            .iter()
+            .any(|c| c.get::<String, _>("name") == "anchor_id");
+        if !has_anchor_id {
+            sqlx::query("ALTER TABLE email_sync_cursor ADD COLUMN anchor_id TEXT")
+                .execute(self.pool.as_ref())
+                .await
+                .map_err(|e| GatewayError::Storage(format!("Migration error: {}", e)))?;
+        }
         // Same probe for the `sequence` column of `meeting_rsvp`: databases
         // created between the v9 table's introduction and the SEQUENCE-aware
         // idempotence key need the column added — the recorded REPLY answers a
@@ -1293,17 +1311,19 @@ impl Storage {
         collection_id: &str,
         position: u64,
         state_token: Option<&str>,
+        anchor_id: Option<&str>,
     ) -> Result<()> {
         sqlx::query(
-            "INSERT INTO email_sync_cursor (owner, collection_id, position, state_token)
-             VALUES (?1, ?2, ?3, ?4)
+            "INSERT INTO email_sync_cursor (owner, collection_id, position, state_token, anchor_id)
+             VALUES (?1, ?2, ?3, ?4, ?5)
              ON CONFLICT(owner, collection_id) DO UPDATE
-             SET position = ?3, state_token = ?4, updated_at = CURRENT_TIMESTAMP",
+             SET position = ?3, state_token = ?4, anchor_id = ?5, updated_at = CURRENT_TIMESTAMP",
         )
         .bind(owner)
         .bind(collection_id)
         .bind(position as i64)
         .bind(state_token)
+        .bind(anchor_id)
         .execute(self.pool.as_ref())
         .await
         .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
@@ -1311,14 +1331,16 @@ impl Storage {
     }
 
     /// Read the EAS email initial-sync paging cursor for a collection, if a
-    /// partially-delivered initial sync left one behind.
+    /// partially-delivered initial sync left one behind. The returned
+    /// `anchor_id` is the last delivered message id the continuation pins its
+    /// page on (RFC 8620 §5.5 `anchor`); `None` falls back to `position`.
     pub async fn get_email_sync_cursor(
         &self,
         owner: &str,
         collection_id: &str,
-    ) -> Result<Option<(u64, Option<String>)>> {
+    ) -> Result<Option<(u64, Option<String>, Option<String>)>> {
         let row = sqlx::query(
-            "SELECT position, state_token FROM email_sync_cursor
+            "SELECT position, state_token, anchor_id FROM email_sync_cursor
              WHERE owner = ?1 AND collection_id = ?2",
         )
         .bind(owner)
@@ -1328,7 +1350,7 @@ impl Storage {
         .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))?;
         Ok(row.map(|r| {
             let position: i64 = r.get(0);
-            (position.max(0) as u64, r.get(1))
+            (position.max(0) as u64, r.get(1), r.get(2))
         }))
     }
 

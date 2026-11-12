@@ -488,6 +488,26 @@ pub struct EmailListResult {
     /// Current state of the Email data type (from Email/get response).
     /// Used as `sinceState` for subsequent `Email/changes` calls.
     pub state: String,
+    /// RFC 8620 §5.5 `anchorNotFound`: the query carried an `anchor` that no
+    /// longer exists in the result set. The result is empty; the caller falls
+    /// back to numeric `position` paging.
+    pub anchor_not_found: bool,
+}
+
+impl EmailListResult {
+    /// An empty result (no emails, no state) for a folder that cannot be
+    /// queried — an unmapped role, an Outbox, or a mailbox lookup that found
+    /// nothing.
+    pub fn empty() -> Self {
+        EmailListResult {
+            emails: Vec::new(),
+            total: 0,
+            can_calculate_changes: false,
+            query_state: String::new(),
+            state: String::new(),
+            anchor_not_found: false,
+        }
+    }
 }
 
 /// Result of an Email/changes call
@@ -537,6 +557,17 @@ pub struct QueryEmailsParams<'a> {
     pub sort: Option<Vec<Value>>,
     pub position: u64,
     pub limit: u64,
+    /// RFC 8620 §5.5 `anchor`: an id at which the window starts instead of the
+    /// numeric `position`. A caller resuming a paged walk pins the last item it
+    /// delivered so a concurrent deletion cannot shift the tail below a stale
+    /// numeric offset and skip a message. When set, `position` is ignored by
+    /// the server (RFC 8620 §5.5) and a not-found anchor surfaces as
+    /// [`EmailListResult::anchor_not_found`] so the caller can fall back.
+    pub anchor: Option<&'a str>,
+    /// RFC 8620 §5.5 `anchorOffset`: the index of the first result relative to
+    /// the anchor. `0` includes the anchor itself; `1` starts immediately
+    /// after it. Only meaningful when `anchor` is set.
+    pub anchor_offset: i32,
     pub username: &'a str,
     pub password: &'a SecretString,
 }
@@ -2085,21 +2116,27 @@ impl JmapClient {
 
         let properties = json!(Self::mail_properties());
 
+        // RFC 8620 §5.5: an `anchor` (with `anchorOffset`) pins the window to
+        // an item instead of a numeric offset; `position` is then ignored by
+        // the server. A `null` anchor is the server default and must not be
+        // sent, and `anchorOffset` is only meaningful alongside an anchor.
+        let mut query_args = json!({
+            "accountId": params.account_id,
+            "filter": filter_val,
+            "sort": sort_val,
+            "position": params.position,
+            "limit": params.limit,
+            "calculateTotal": true,
+        });
+        if let Some(anchor) = params.anchor {
+            query_args["anchor"] = json!(anchor);
+            query_args["anchorOffset"] = json!(params.anchor_offset);
+        }
+
         // Batch Email/query + Email/get in a single request (RFC 8621 §3.6).
         // The Email/get ids are a back-reference to Email/query's /ids result.
         let method_calls = vec![
-            (
-                "Email/query",
-                json!({
-                    "accountId": params.account_id,
-                    "filter": filter_val,
-                    "sort": sort_val,
-                    "position": params.position,
-                    "limit": params.limit,
-                    "calculateTotal": true,
-                }),
-                "q0",
-            ),
+            ("Email/query", query_args, "q0"),
             (
                 "Email/get",
                 json!({
@@ -2139,6 +2176,7 @@ impl JmapClient {
         let mut can_calc = false;
         let mut emails: Vec<JmapEmail> = Vec::new();
         let mut state = String::new();
+        let mut method_errors: Vec<Value> = Vec::new();
 
         for (method, data, _) in response.method_responses {
             if method == "Email/query" {
@@ -2162,7 +2200,22 @@ impl JmapClient {
                     .and_then(|v| v.as_str())
                     .unwrap_or("")
                     .to_string();
+            } else if method == "error" {
+                method_errors.push(data);
             }
+        }
+
+        // RFC 8620 §5.5: an `anchor` no longer in the result set is a distinct,
+        // recoverable condition — the caller falls back to numeric `position`.
+        // A failed `q0` also fails the `Email/get` that back-references it
+        // (RFC 8620 §3.7), so when the anchor is the cause BOTH calls carry an
+        // error; that cascade must not mask the recoverable case. Any other
+        // method error still propagates.
+        let anchor_not_found = method_errors
+            .iter()
+            .any(|e| e.get("type").and_then(|v| v.as_str()) == Some("anchorNotFound"));
+        if !anchor_not_found && let Some(err) = method_errors.into_iter().next() {
+            return Err(anyhow!("Email/query returned method error: {}", err));
         }
 
         Ok(EmailListResult {
@@ -2171,6 +2224,7 @@ impl JmapClient {
             can_calculate_changes: can_calc,
             query_state,
             state,
+            anchor_not_found,
         })
     }
 
@@ -2192,14 +2246,21 @@ impl JmapClient {
 
         let method_calls = vec![(
             "Email/query",
-            json!({
-                "accountId": params.account_id,
-                "filter": filter_val,
-                "sort": sort_val,
-                "position": params.position,
-                "limit": params.limit,
-                "calculateTotal": false,
-            }),
+            {
+                let mut args = json!({
+                    "accountId": params.account_id,
+                    "filter": filter_val,
+                    "sort": sort_val,
+                    "position": params.position,
+                    "limit": params.limit,
+                    "calculateTotal": false,
+                });
+                if let Some(anchor) = params.anchor {
+                    args["anchor"] = json!(anchor);
+                    args["anchorOffset"] = json!(params.anchor_offset);
+                }
+                args
+            },
             "q0",
         )];
 
@@ -2903,6 +2964,8 @@ impl JmapClient {
                 sort: None,
                 position,
                 limit: PAGE,
+                anchor: None,
+                anchor_offset: 0,
                 username,
                 password,
             };
@@ -3106,6 +3169,8 @@ impl JmapClient {
                 sort: None,
                 position,
                 limit: PAGE,
+                anchor: None,
+                anchor_offset: 0,
                 username,
                 password,
             };

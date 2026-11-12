@@ -5140,6 +5140,8 @@ async fn handle_search(
             sort: None,
             position: range_start as u64,
             limit,
+            anchor: None,
+            anchor_offset: 0,
             username,
             password: &password,
         })
@@ -5620,6 +5622,8 @@ async fn handle_find_mailbox(
             sort: None,
             position: range_start as u64,
             limit: window as u64,
+            anchor: None,
+            anchor_offset: 0,
             username: owner,
             password,
         })
@@ -7626,9 +7630,15 @@ async fn scan_email_keyword_changes(
 
 /// Snapshot the whole mailbox's keyword (flag) state into the per-collection
 /// baseline, so a later delta can detect flag-only edits that
-/// `Email/queryChanges` cannot report. Best-effort: a failed scan or write
-/// leaves the previous baseline in place (a later delta then captures it
-/// without reporting intervening edits).
+/// `Email/queryChanges` cannot report.
+///
+/// The capture is MANDATORY: `Email/queryChanges` never reports a flag-only
+/// edit, and the delta's bounded scan records a first observation without a
+/// `<Change>`, so an absent baseline would silently drop a flag edit made
+/// before the scan first reaches the message. A page-fetch or write failure
+/// therefore propagates so the initial prime fails closed (retryable) instead
+/// of proceeding without a baseline. The capture is idempotent (it replaces the
+/// whole baseline), so a retry re-captures cleanly.
 async fn capture_email_keyword_baseline(
     state: &Arc<AppState>,
     jmap: &Arc<JmapClient>,
@@ -7637,7 +7647,7 @@ async fn capture_email_keyword_baseline(
     username: &str,
     password: &SecretString,
     state_collection_id: &str,
-) {
+) -> anyhow::Result<()> {
     let mut entries: Vec<(String, Vec<String>)> = Vec::new();
     let mut position: u64 = 0;
     loop {
@@ -7660,24 +7670,21 @@ async fn capture_email_keyword_baseline(
                 }
             }
             Err(e) => {
-                tracing::warn!(error = %e, "Failed to capture email keyword baseline");
-                return;
+                return Err(anyhow::anyhow!(
+                    "failed to capture email keyword baseline: {e}"
+                ));
             }
         }
     }
     let map: std::collections::BTreeMap<String, Vec<String>> = entries.into_iter().collect();
-    match serde_json::to_string(&map) {
-        Ok(json) => {
-            if let Err(e) = state
-                .storage
-                .set_email_keyword_baseline(username, state_collection_id, &json)
-                .await
-            {
-                tracing::warn!(error = %e, "Failed to persist email keyword baseline");
-            }
-        }
-        Err(e) => tracing::warn!(error = %e, "Failed to serialize email keyword baseline"),
-    }
+    let json = serde_json::to_string(&map)
+        .map_err(|e| anyhow::anyhow!("failed to serialize email keyword baseline: {e}"))?;
+    state
+        .storage
+        .set_email_keyword_baseline(username, state_collection_id, &json)
+        .await
+        .map_err(|e| anyhow::anyhow!("failed to persist email keyword baseline: {e}"))?;
+    Ok(())
 }
 
 /// Render the EAS `<ApplicationData>` payload for a queued email op.
@@ -7971,6 +7978,17 @@ async fn handle_email_sync(ctx: &EmailSyncRequestCtx<'_>) -> anyhow::Result<Stri
                     explicit_mailbox_id = Some(row.backend_id.clone());
                     "user"
                 }
+                // A transient storage read failure must NOT be conflated with
+                // an unmapped collection: answering Status 1 with no cursor
+                // and no query state would make every later non-zero Sync take
+                // the empty-state path and skip the folder's existing mail
+                // until a manual re-prime. Propagate so the caller answers a
+                // retryable Status 6.
+                Err(e) => {
+                    return Err(anyhow::anyhow!(
+                        "failed to read folder mapping for collection {collection_id}: {e}"
+                    ));
+                }
                 _ => {
                     // CollectionId has no JMAP mailbox (e.g. Outbox "6").
                     // Return empty sync response — no emails to sync.
@@ -8207,19 +8225,20 @@ async fn handle_email_initial_sync(
     // new SyncKey, and this is the request that must continue, not restart.
     //
     // Paging note: `Email/query` sorts `receivedAt` descending (newest
-    // first), so mail that arrives while the initial sync paginates inserts
-    // BEFORE the resume position and shifts the tail backward — the next
-    // window re-delivers the boundary item (a duplicate Add, which clients
-    // resolve by ServerId) and never skips past one. A message destroyed in
-    // the undelivered region is simply never needed; one destroyed after
-    // delivery is reported by the delta diff. Position paging is therefore
-    // stable-with-duplicates under concurrent arrival, not lossy.
-    let (start_position, cursor_state) = state
+    // first). The continuation is pinned to the LAST message the first window
+    // delivered via an RFC 8620 §5.5 `anchor` (`anchorOffset: 1` starts the
+    // window immediately after it), because numeric `position` paging skips a
+    // message whenever a concurrent deletion shifts the tail below the stored
+    // offset. A deleted anchor is reported as `anchorNotFound` and falls back
+    // to the numeric position (which, with the anchor gone, is the best
+    // remaining estimate). Mail that arrives during paging sorts before the
+    // anchor and is re-reported by the delta from the first window's state.
+    let (start_position, cursor_state, cursor_anchor) = state
         .storage
         .get_email_sync_cursor(username, state_collection_id)
         .await
         .unwrap_or(None)
-        .unwrap_or((0, None));
+        .unwrap_or((0, None, None));
 
     // Capture the keyword (flag) baseline at the START of the initial sync,
     // BEFORE the first window is fetched. `Email/queryChanges` cannot report a
@@ -8240,26 +8259,54 @@ async fn handle_email_initial_sync(
             password,
             state_collection_id,
         )
-        .await;
+        .await?;
     }
 
     // Fetch emails from JMAP for the requested mailbox, one window at a time.
     let fetch_limit = window.max(1) as u64;
-    let result = match crate::email::fetch_emails_jmap(
+    let anchor: Option<&str> = cursor_anchor.as_deref();
+    let mut result = crate::email::fetch_emails_jmap(
         state,
         &crate::email::FetchEmailsParams {
             account_id,
             mailbox_role,
             position: start_position,
             limit: fetch_limit,
+            anchor,
+            anchor_offset: 1,
             username,
             password,
             search_filter: None,
             mailbox_id: ctx.mailbox_id,
         },
     )
-    .await
-    {
+    .await;
+    // A vanished anchor is recoverable (RFC 8620 §5.5 `anchorNotFound`): fall
+    // back to the numeric position so the continuation still makes progress.
+    if anchor.is_some() && matches!(&result, Ok(r) if r.anchor_not_found) {
+        tracing::info!(
+            user = %username,
+            collection_id,
+            "Initial email sync anchor no longer exists; falling back to numeric position"
+        );
+        result = crate::email::fetch_emails_jmap(
+            state,
+            &crate::email::FetchEmailsParams {
+                account_id,
+                mailbox_role,
+                position: start_position,
+                limit: fetch_limit,
+                anchor: None,
+                anchor_offset: 0,
+                username,
+                password,
+                search_filter: None,
+                mailbox_id: ctx.mailbox_id,
+            },
+        )
+        .await;
+    }
+    let result = match result {
         Ok(r) => r,
         Err(e) => {
             tracing::warn!(error = %e, "Failed to fetch emails from JMAP for initial sync");
@@ -8280,13 +8327,23 @@ async fn handle_email_initial_sync(
 
     let new_sync_key = Uuid::new_v4().simple().to_string();
 
-    // JMAP reports the full mailbox size in `total`; the delivered page is
-    // `emails.len()`. The window is exhausted while content remains when
-    // `start_position + delivered < total`.
+    // More content remains when the mailbox holds more than we have delivered
+    // so far (`position` is the cumulative count delivered across the windows).
+    // A page that delivered NOTHING is the end of the walk: with the anchor
+    // continuation a page that returns zero items means the anchor was the
+    // oldest match, so `total` growing (mail arriving mid-sync) must not spin a
+    // fresh empty window forever — the delta from the first window's state
+    // delivers anything that arrived during pagination. A non-empty page with
+    // `total` still larger (the server clipped its own limit below our window)
+    // continues.
     let delivered = result.emails.len() as u64;
-    let remaining = result
-        .total
-        .saturating_sub(start_position.saturating_add(delivered));
+    let remaining = if delivered > 0 {
+        result
+            .total
+            .saturating_sub(start_position.saturating_add(delivered))
+    } else {
+        0
+    };
 
     // The query state captured at the START of the initial sync is the delta
     // base: `Email/queryChanges` resumes from a `queryState`, and a base taken
@@ -8334,9 +8391,23 @@ async fn handle_email_initial_sync(
     );
 
     if remaining > 0 {
+        // The continuation is pinned to the last delivered message (RFC 8620
+        // §5.5 anchor), with the numeric position kept as the fallback for a
+        // deleted anchor. `position` advances by this window's delivered count
+        // (not the stale absolute offset) so the fallback stays a sane estimate.
+        let last_delivered_id = result.emails.last().and_then(|e| e.id.clone());
+
         // Persist the resume point; the stored JMAP state token stays at the
         // initial-sync value so the delta diff starts from a stable base once
         // the cursor drains.
+        //
+        // The cursor write is MANDATORY before acknowledging a clipped window.
+        // If it fails, the next non-zero Sync finds no cursor and routes to the
+        // DELTA path from the first page's query state — a state that already
+        // includes the messages on later pages, so they would never be sent.
+        // Fail closed (retryable) instead: the client re-sends SyncKey 0, the
+        // re-prime restarts from position 0, and the first window is
+        // re-delivered (clients resolve the duplicate Adds by ServerId).
         if let Err(e) = state
             .storage
             .set_email_sync_cursor(
@@ -8344,11 +8415,18 @@ async fn handle_email_initial_sync(
                 state_collection_id,
                 start_position + delivered,
                 base_state_token.as_deref(),
+                last_delivered_id.as_deref(),
             )
             .await
         {
-            tracing::warn!(error = %e, "Failed to persist email initial-sync cursor");
+            tracing::warn!(error = %e, "Failed to persist email initial-sync cursor; refusing to acknowledge clipped window");
+            return Err(anyhow::anyhow!(
+                "failed to persist email initial-sync cursor for collection {state_collection_id}"
+            ));
         }
+        // A failed SyncKey write is NOT lossy: the client's next request
+        // carries the key returned below, and cursor presence (already stored)
+        // routes it to the continuation path regardless of the stored key.
         if let Err(e) = state
             .storage
             .set_sync_key(
@@ -15625,6 +15703,767 @@ mod tests {
         assert!(
             text.contains("<Status>11</Status>"),
             "DocumentLibrary search must return status 11, got: {text}"
+        );
+    }
+
+    /// A clipped initial sync whose resume-cursor write fails must FAIL CLOSED:
+    /// the next non-zero Sync would otherwise find no cursor, route to the
+    /// DELTA path from the first page's query state, and never deliver the
+    /// messages on the later pages.
+    #[tokio::test]
+    async fn test_email_initial_sync_fails_closed_when_cursor_persist_fails() {
+        use crate::models::AppState;
+        use axum::routing::{get, post};
+        use serde_json::{Value, json};
+        use std::sync::Arc as StdArc;
+
+        #[derive(Clone)]
+        struct Ctl {
+            base: String,
+        }
+
+        async fn session(axum::Extension(ctl): axum::Extension<Ctl>) -> axum::Json<Value> {
+            axum::Json(json!({
+                "apiUrl": ctl.base,
+                "downloadUrl": format!("{}/download/{{accountId}}/{{blobId}}", ctl.base),
+                "uploadUrl": format!("{}/upload/{{accountId}}", ctl.base),
+                "eventSourceUrl": format!("{}/eventsource", ctl.base),
+                "state": "s",
+                "username": "u",
+                "accounts": {"a": {"name": "u", "isPersonal": true, "isReadOnly": false, "accountCapabilities": {}}},
+                "primaryAccounts": {"urn:ietf:params:jmap:mail": "a"},
+                "capabilities": {"urn:ietf:params:jmap:core": {"maxObjectsInGet": 500}}
+            }))
+        }
+
+        async fn api(
+            axum::Extension(_ctl): axum::Extension<Ctl>,
+            body: String,
+        ) -> axum::response::Response {
+            let req: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
+            let mut responses = Vec::new();
+            for call in req
+                .get("methodCalls")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default()
+            {
+                let name = call.get(0).and_then(|v| v.as_str()).unwrap_or("");
+                let cid = call.get(2).and_then(|v| v.as_str()).unwrap_or("c0");
+                let result = match name {
+                    "Mailbox/query" => json!({"accountId":"a","ids":["mbx-inbox"],"total":1}),
+                    "Email/query" => {
+                        json!({"accountId":"a","queryState":"QS0","ids":["m1","m2"],"total":3,"position":0})
+                    }
+                    "Email/get" => json!({"accountId":"a","state":"D0","list":[
+                        {"id":"m1","mailboxIds":{"mbx-inbox":true},"keywords":{},"subject":"s1","receivedAt":"2026-01-01T00:00:00Z"},
+                        {"id":"m2","mailboxIds":{"mbx-inbox":true},"keywords":{},"subject":"s2","receivedAt":"2026-01-01T00:00:00Z"}
+                    ]}),
+                    _ => json!({"accountId":"a"}),
+                };
+                responses.push(json!([name, result, cid]));
+            }
+            let resp = json!({"methodResponses": responses, "sessionState": "s"});
+            axum::response::Response::builder()
+                .status(200)
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(serde_json::to_vec(&resp).unwrap()))
+                .unwrap()
+        }
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
+        let ctl = Ctl { base: base.clone() };
+        let app = axum::Router::new()
+            .route("/session", get(session))
+            .route("/", post(api))
+            .layer(axum::Extension(ctl));
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let storage = crate::storage::Storage::new("sqlite::memory:")
+            .await
+            .unwrap();
+        storage.init_schema().await.unwrap();
+        let cfg = crate::config::Config {
+            jmap_base: base.clone(),
+            email_enabled: true,
+            mail_domain: "example.com".to_string(),
+            hmac_secret: SecretString::from("a".repeat(32)),
+            ..Default::default()
+        };
+        let state = StdArc::new(AppState::new(cfg, StdArc::new(storage)));
+
+        let owner = "u@example.com";
+        let scoped = scoped_collection_id("2", "dev-1");
+        // Poison the cursor write so a clipped prime cannot persist its resume
+        // point. The mailbox (total 3) exceeds the window (2), so the prime is
+        // clipped and MUST persist the cursor before acknowledging.
+        sqlx::query(
+            "CREATE TRIGGER poison_cursor BEFORE INSERT ON email_sync_cursor \
+             BEGIN SELECT RAISE(ABORT, 'poisoned'); END;",
+        )
+        .execute(state.storage.pool())
+        .await
+        .unwrap();
+
+        let password = SecretString::from("pw");
+        let options = crate::eas_sync_options::EasSyncCollectionOptions::default();
+        let result = handle_email_sync(&EmailSyncRequestCtx {
+            state: &state,
+            username: owner,
+            password: &password,
+            collection_id: "2",
+            state_collection_id: &scoped,
+            incoming_sync_key: "0",
+            window: 2,
+            options: Some(&options),
+            conversation_mode: false,
+        })
+        .await;
+
+        assert!(
+            result.is_err(),
+            "a failed cursor write on a clipped prime must fail closed: {result:?}"
+        );
+        assert!(
+            state
+                .storage
+                .get_email_sync_cursor(owner, &scoped)
+                .await
+                .unwrap()
+                .is_none(),
+            "no cursor row may exist when the persist failed"
+        );
+    }
+
+    /// A failed keyword-baseline capture must FAIL CLOSED the initial prime:
+    /// `Email/queryChanges` cannot report a flag-only edit, so a prime that
+    /// proceeds without a baseline would silently drop a flag edit made before
+    /// the rotating scan first reaches the message.
+    #[tokio::test]
+    async fn test_email_initial_sync_fails_closed_when_baseline_capture_fails() {
+        use crate::models::AppState;
+        use axum::routing::{get, post};
+        use serde_json::{Value, json};
+        use std::sync::Arc as StdArc;
+
+        #[derive(Clone)]
+        struct Ctl {
+            base: String,
+        }
+
+        async fn session(axum::Extension(ctl): axum::Extension<Ctl>) -> axum::Json<Value> {
+            axum::Json(json!({
+                "apiUrl": ctl.base,
+                "downloadUrl": format!("{}/download/{{accountId}}/{{blobId}}", ctl.base),
+                "uploadUrl": format!("{}/upload/{{accountId}}", ctl.base),
+                "eventSourceUrl": format!("{}/eventsource", ctl.base),
+                "state": "s",
+                "username": "u",
+                "accounts": {"a": {"name": "u", "isPersonal": true, "isReadOnly": false, "accountCapabilities": {}}},
+                "primaryAccounts": {"urn:ietf:params:jmap:mail": "a"},
+                "capabilities": {"urn:ietf:params:jmap:core": {"maxObjectsInGet": 500}}
+            }))
+        }
+
+        async fn api(
+            axum::Extension(_ctl): axum::Extension<Ctl>,
+            body: String,
+        ) -> axum::response::Response {
+            let req: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
+            let mut responses = Vec::new();
+            for call in req
+                .get("methodCalls")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default()
+            {
+                let name = call.get(0).and_then(|v| v.as_str()).unwrap_or("");
+                let cid = call.get(2).and_then(|v| v.as_str()).unwrap_or("c0");
+                let result = match name {
+                    "Mailbox/query" => json!({"accountId":"a","ids":["mbx-inbox"],"total":1}),
+                    "Email/query" => {
+                        json!({"accountId":"a","queryState":"QS0","ids":["m1"],"total":1,"position":0})
+                    }
+                    "Email/get" => json!({"accountId":"a","state":"D0","list":[
+                        {"id":"m1","mailboxIds":{"mbx-inbox":true},"keywords":{},"subject":"s1","receivedAt":"2026-01-01T00:00:00Z"}
+                    ]}),
+                    _ => json!({"accountId":"a"}),
+                };
+                responses.push(json!([name, result, cid]));
+            }
+            let resp = json!({"methodResponses": responses, "sessionState": "s"});
+            axum::response::Response::builder()
+                .status(200)
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(serde_json::to_vec(&resp).unwrap()))
+                .unwrap()
+        }
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
+        let ctl = Ctl { base: base.clone() };
+        let app = axum::Router::new()
+            .route("/session", get(session))
+            .route("/", post(api))
+            .layer(axum::Extension(ctl));
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let storage = crate::storage::Storage::new("sqlite::memory:")
+            .await
+            .unwrap();
+        storage.init_schema().await.unwrap();
+        let cfg = crate::config::Config {
+            jmap_base: base.clone(),
+            email_enabled: true,
+            mail_domain: "example.com".to_string(),
+            hmac_secret: SecretString::from("a".repeat(32)),
+            ..Default::default()
+        };
+        let state = StdArc::new(AppState::new(cfg, StdArc::new(storage)));
+
+        let owner = "u@example.com";
+        let scoped = scoped_collection_id("2", "dev-1");
+        sqlx::query(
+            "CREATE TRIGGER poison_kw BEFORE INSERT ON email_keyword_baseline \
+             BEGIN SELECT RAISE(ABORT, 'poisoned'); END;",
+        )
+        .execute(state.storage.pool())
+        .await
+        .unwrap();
+
+        let password = SecretString::from("pw");
+        let options = crate::eas_sync_options::EasSyncCollectionOptions::default();
+        let result = handle_email_sync(&EmailSyncRequestCtx {
+            state: &state,
+            username: owner,
+            password: &password,
+            collection_id: "2",
+            state_collection_id: &scoped,
+            incoming_sync_key: "0",
+            window: 512,
+            options: Some(&options),
+            conversation_mode: false,
+        })
+        .await;
+
+        assert!(
+            result.is_err(),
+            "a failed keyword-baseline capture must fail the prime closed: {result:?}"
+        );
+        assert!(
+            state
+                .storage
+                .get_email_sync_cursor(owner, &scoped)
+                .await
+                .unwrap()
+                .is_none(),
+            "the prime must not acknowledge (no cursor) when the baseline capture failed"
+        );
+    }
+
+    /// A continuation of a clipped initial sync must pin its page on the last
+    /// delivered message with an RFC 8620 §5.5 `anchor` (+`anchorOffset: 1`),
+    /// not a numeric `position` — a concurrent deletion would otherwise shift
+    /// the tail below the stale offset and skip a message forever.
+    #[tokio::test]
+    async fn test_email_initial_sync_continuation_uses_anchor() {
+        use crate::models::AppState;
+        use axum::routing::{get, post};
+        use serde_json::{Value, json};
+        use std::sync::Arc as StdArc;
+
+        #[derive(Clone)]
+        struct Ctl {
+            base: String,
+            queries: StdArc<std::sync::Mutex<Vec<Value>>>,
+        }
+
+        async fn session(axum::Extension(ctl): axum::Extension<Ctl>) -> axum::Json<Value> {
+            axum::Json(json!({
+                "apiUrl": ctl.base,
+                "downloadUrl": format!("{}/download/{{accountId}}/{{blobId}}", ctl.base),
+                "uploadUrl": format!("{}/upload/{{accountId}}", ctl.base),
+                "eventSourceUrl": format!("{}/eventsource", ctl.base),
+                "state": "s",
+                "username": "u",
+                "accounts": {"a": {"name": "u", "isPersonal": true, "isReadOnly": false, "accountCapabilities": {}}},
+                "primaryAccounts": {"urn:ietf:params:jmap:mail": "a"},
+                "capabilities": {"urn:ietf:params:jmap:core": {"maxObjectsInGet": 500}}
+            }))
+        }
+
+        async fn api(
+            axum::Extension(ctl): axum::Extension<Ctl>,
+            body: String,
+        ) -> axum::response::Response {
+            let req: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
+            let mut responses = Vec::new();
+            for call in req
+                .get("methodCalls")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default()
+            {
+                let name = call.get(0).and_then(|v| v.as_str()).unwrap_or("");
+                let cid = call.get(2).and_then(|v| v.as_str()).unwrap_or("c0");
+                if name == "Email/query" {
+                    ctl.queries
+                        .lock()
+                        .unwrap()
+                        .push(call.get(1).cloned().unwrap_or(Value::Null));
+                }
+                let result = match name {
+                    "Mailbox/query" => json!({"accountId":"a","ids":["mbx-inbox"],"total":1}),
+                    "Email/query" => {
+                        json!({"accountId":"a","queryState":"QS1","ids":["m3"],"total":5,"position":3})
+                    }
+                    "Email/get" => json!({"accountId":"a","state":"D1","list":[
+                        {"id":"m3","mailboxIds":{"mbx-inbox":true},"keywords":{},"subject":"s3","receivedAt":"2026-01-01T00:00:00Z"}
+                    ]}),
+                    _ => json!({"accountId":"a"}),
+                };
+                responses.push(json!([name, result, cid]));
+            }
+            let resp = json!({"methodResponses": responses, "sessionState": "s"});
+            axum::response::Response::builder()
+                .status(200)
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(serde_json::to_vec(&resp).unwrap()))
+                .unwrap()
+        }
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
+        let ctl = Ctl {
+            base: base.clone(),
+            queries: StdArc::new(std::sync::Mutex::new(Vec::new())),
+        };
+        let app = axum::Router::new()
+            .route("/session", get(session))
+            .route("/", post(api))
+            .layer(axum::Extension(ctl.clone()));
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let storage = crate::storage::Storage::new("sqlite::memory:")
+            .await
+            .unwrap();
+        storage.init_schema().await.unwrap();
+        let cfg = crate::config::Config {
+            jmap_base: base.clone(),
+            email_enabled: true,
+            mail_domain: "example.com".to_string(),
+            hmac_secret: SecretString::from("a".repeat(32)),
+            ..Default::default()
+        };
+        let state = StdArc::new(AppState::new(cfg, StdArc::new(storage)));
+
+        let owner = "u@example.com";
+        let scoped = scoped_collection_id("2", "dev-1");
+        // A clipped prime left a cursor pinned on m2 (the last delivered id).
+        state
+            .storage
+            .set_email_sync_cursor(owner, &scoped, 2, Some("QS0"), Some("m2"))
+            .await
+            .unwrap();
+
+        let password = SecretString::from("pw");
+        let options = crate::eas_sync_options::EasSyncCollectionOptions::default();
+        let xml = handle_email_sync(&EmailSyncRequestCtx {
+            state: &state,
+            username: owner,
+            password: &password,
+            collection_id: "2",
+            state_collection_id: &scoped,
+            incoming_sync_key: "contkey",
+            window: 2,
+            options: Some(&options),
+            conversation_mode: false,
+        })
+        .await
+        .expect("continuation sync");
+
+        assert!(
+            xml.contains("<Add><ServerId>em-m3</ServerId>"),
+            "the continuation must deliver the next message: {xml}"
+        );
+        let queries = ctl.queries.lock().unwrap().clone();
+        let anchored = queries.iter().any(|q| {
+            q.get("anchor").and_then(|v| v.as_str()) == Some("m2")
+                && q.get("anchorOffset").and_then(|v| v.as_i64()) == Some(1)
+        });
+        assert!(
+            anchored,
+            "the continuation must pin its page on the last delivered id via anchor/anchorOffset: {queries:?}"
+        );
+    }
+
+    /// When the anchor no longer exists the server answers `anchorNotFound`;
+    /// the continuation must recover by falling back to numeric `position`
+    /// rather than stalling the mailbox forever.
+    #[tokio::test]
+    async fn test_email_initial_sync_anchor_not_found_falls_back_to_position() {
+        use crate::models::AppState;
+        use axum::routing::{get, post};
+        use serde_json::{Value, json};
+        use std::sync::Arc as StdArc;
+
+        #[derive(Clone)]
+        struct Ctl {
+            base: String,
+        }
+
+        async fn session(axum::Extension(ctl): axum::Extension<Ctl>) -> axum::Json<Value> {
+            axum::Json(json!({
+                "apiUrl": ctl.base,
+                "downloadUrl": format!("{}/download/{{accountId}}/{{blobId}}", ctl.base),
+                "uploadUrl": format!("{}/upload/{{accountId}}", ctl.base),
+                "eventSourceUrl": format!("{}/eventsource", ctl.base),
+                "state": "s",
+                "username": "u",
+                "accounts": {"a": {"name": "u", "isPersonal": true, "isReadOnly": false, "accountCapabilities": {}}},
+                "primaryAccounts": {"urn:ietf:params:jmap:mail": "a"},
+                "capabilities": {"urn:ietf:params:jmap:core": {"maxObjectsInGet": 500}}
+            }))
+        }
+
+        async fn api(
+            axum::Extension(_ctl): axum::Extension<Ctl>,
+            body: String,
+        ) -> axum::response::Response {
+            let req: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
+            let calls = req
+                .get("methodCalls")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default();
+            // Stalwart rejects the whole request when the anchor is gone: BOTH
+            // the Email/query and the Email/get that back-references it carry
+            // the `anchorNotFound` error (RFC 8620 §5.5/§3.7).
+            let request_has_gone_anchor = calls.iter().any(|c| {
+                c.get(1)
+                    .and_then(|a| a.get("anchor"))
+                    .and_then(|v| v.as_str())
+                    == Some("gone")
+            });
+            let mut responses = Vec::new();
+            for call in calls {
+                let name = call.get(0).and_then(|v| v.as_str()).unwrap_or("");
+                let cid = call.get(2).and_then(|v| v.as_str()).unwrap_or("c0");
+                let result = if request_has_gone_anchor {
+                    json!({"type":"anchorNotFound"})
+                } else {
+                    match name {
+                        "Mailbox/query" => json!({"accountId":"a","ids":["mbx-inbox"],"total":1}),
+                        "Email/query" => {
+                            json!({"accountId":"a","queryState":"QS1","ids":["m3"],"total":5,"position":2})
+                        }
+                        "Email/get" => json!({"accountId":"a","state":"D1","list":[
+                            {"id":"m3","mailboxIds":{"mbx-inbox":true},"keywords":{},"subject":"s3","receivedAt":"2026-01-01T00:00:00Z"}
+                        ]}),
+                        _ => json!({"accountId":"a"}),
+                    }
+                };
+                let method = if request_has_gone_anchor {
+                    "error".to_string()
+                } else {
+                    name.to_string()
+                };
+                responses.push(json!([method, result, cid]));
+            }
+            let resp = json!({"methodResponses": responses, "sessionState": "s"});
+            axum::response::Response::builder()
+                .status(200)
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(serde_json::to_vec(&resp).unwrap()))
+                .unwrap()
+        }
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
+        let ctl = Ctl { base: base.clone() };
+        let app = axum::Router::new()
+            .route("/session", get(session))
+            .route("/", post(api))
+            .layer(axum::Extension(ctl));
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let storage = crate::storage::Storage::new("sqlite::memory:")
+            .await
+            .unwrap();
+        storage.init_schema().await.unwrap();
+        let cfg = crate::config::Config {
+            jmap_base: base.clone(),
+            email_enabled: true,
+            mail_domain: "example.com".to_string(),
+            hmac_secret: SecretString::from("a".repeat(32)),
+            ..Default::default()
+        };
+        let state = StdArc::new(AppState::new(cfg, StdArc::new(storage)));
+
+        let owner = "u@example.com";
+        let scoped = scoped_collection_id("2", "dev-1");
+        // The pinned anchor was deleted from the mailbox meanwhile.
+        state
+            .storage
+            .set_email_sync_cursor(owner, &scoped, 2, Some("QS0"), Some("gone"))
+            .await
+            .unwrap();
+
+        let password = SecretString::from("pw");
+        let options = crate::eas_sync_options::EasSyncCollectionOptions::default();
+        let xml = handle_email_sync(&EmailSyncRequestCtx {
+            state: &state,
+            username: owner,
+            password: &password,
+            collection_id: "2",
+            state_collection_id: &scoped,
+            incoming_sync_key: "contkey",
+            window: 2,
+            options: Some(&options),
+            conversation_mode: false,
+        })
+        .await
+        .expect("continuation sync");
+
+        assert!(
+            xml.contains("<Add><ServerId>em-m3</ServerId>"),
+            "a vanished anchor must fall back to numeric position and still deliver: {xml}"
+        );
+    }
+
+    /// An anchored continuation page that returns NO items terminates the walk
+    /// even when `total` has grown (mail arriving mid-sync). Without this the
+    /// `position + delivered < total` test would spin a fresh empty window
+    /// forever; the messages that arrived are delivered by the delta from the
+    /// first window's state instead.
+    #[tokio::test]
+    async fn test_email_initial_sync_empty_anchored_page_terminates() {
+        use crate::models::AppState;
+        use axum::routing::{get, post};
+        use serde_json::{Value, json};
+        use std::sync::Arc as StdArc;
+
+        #[derive(Clone)]
+        struct Ctl {
+            base: String,
+        }
+
+        async fn session(axum::Extension(ctl): axum::Extension<Ctl>) -> axum::Json<Value> {
+            axum::Json(json!({
+                "apiUrl": ctl.base,
+                "downloadUrl": format!("{}/download/{{accountId}}/{{blobId}}", ctl.base),
+                "uploadUrl": format!("{}/upload/{{accountId}}", ctl.base),
+                "eventSourceUrl": format!("{}/eventsource", ctl.base),
+                "state": "s",
+                "username": "u",
+                "accounts": {"a": {"name": "u", "isPersonal": true, "isReadOnly": false, "accountCapabilities": {}}},
+                "primaryAccounts": {"urn:ietf:params:jmap:mail": "a"},
+                "capabilities": {"urn:ietf:params:jmap:core": {"maxObjectsInGet": 500}}
+            }))
+        }
+
+        async fn api(
+            axum::Extension(_ctl): axum::Extension<Ctl>,
+            body: String,
+        ) -> axum::response::Response {
+            let req: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
+            let mut responses = Vec::new();
+            for call in req
+                .get("methodCalls")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default()
+            {
+                let name = call.get(0).and_then(|v| v.as_str()).unwrap_or("");
+                let cid = call.get(2).and_then(|v| v.as_str()).unwrap_or("c0");
+                let result = match name {
+                    "Mailbox/query" => json!({"accountId":"a","ids":["mbx-inbox"],"total":1}),
+                    // The anchor was the oldest match: zero items, but `total`
+                    // grew to 5 from mail that arrived during pagination.
+                    "Email/query" => {
+                        json!({"accountId":"a","queryState":"QS1","ids":[],"total":5,"position":5})
+                    }
+                    "Email/get" => json!({"accountId":"a","state":"D1","list":[]}),
+                    _ => json!({"accountId":"a"}),
+                };
+                responses.push(json!([name, result, cid]));
+            }
+            let resp = json!({"methodResponses": responses, "sessionState": "s"});
+            axum::response::Response::builder()
+                .status(200)
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(serde_json::to_vec(&resp).unwrap()))
+                .unwrap()
+        }
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
+        let ctl = Ctl { base: base.clone() };
+        let app = axum::Router::new()
+            .route("/session", get(session))
+            .route("/", post(api))
+            .layer(axum::Extension(ctl));
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let storage = crate::storage::Storage::new("sqlite::memory:")
+            .await
+            .unwrap();
+        storage.init_schema().await.unwrap();
+        let cfg = crate::config::Config {
+            jmap_base: base.clone(),
+            email_enabled: true,
+            mail_domain: "example.com".to_string(),
+            hmac_secret: SecretString::from("a".repeat(32)),
+            ..Default::default()
+        };
+        let state = StdArc::new(AppState::new(cfg, StdArc::new(storage)));
+
+        let owner = "u@example.com";
+        let scoped = scoped_collection_id("2", "dev-1");
+        state
+            .storage
+            .set_email_sync_cursor(owner, &scoped, 5, Some("QS0"), Some("m5"))
+            .await
+            .unwrap();
+
+        let password = SecretString::from("pw");
+        let options = crate::eas_sync_options::EasSyncCollectionOptions::default();
+        let xml = handle_email_sync(&EmailSyncRequestCtx {
+            state: &state,
+            username: owner,
+            password: &password,
+            collection_id: "2",
+            state_collection_id: &scoped,
+            incoming_sync_key: "contkey",
+            window: 2,
+            options: Some(&options),
+            conversation_mode: false,
+        })
+        .await
+        .expect("continuation sync");
+
+        assert!(xml.contains("<Status>1</Status>"), "sync succeeds: {xml}");
+        assert!(
+            !xml.contains("<MoreAvailable/>"),
+            "an empty anchored page must terminate the walk, not spin forever: {xml}"
+        );
+        assert!(
+            state
+                .storage
+                .get_email_sync_cursor(owner, &scoped)
+                .await
+                .unwrap()
+                .is_none(),
+            "the drained cursor must be cleared"
+        );
+    }
+
+    /// A transient `get_folder` failure while resolving a non-system
+    /// CollectionId must FAIL CLOSED (Status 6), not be conflated with an
+    /// unmapped collection — answering Status 1 with no cursor/query state
+    /// would make every later non-zero Sync take the empty-state path and skip
+    /// the folder's existing mail until a manual re-prime.
+    #[tokio::test]
+    async fn test_email_sync_fails_closed_when_folder_read_fails() {
+        use crate::models::AppState;
+        use axum::routing::{get, post};
+        use serde_json::{Value, json};
+        use std::sync::Arc as StdArc;
+
+        #[derive(Clone)]
+        struct Ctl {
+            base: String,
+        }
+
+        async fn session(axum::Extension(ctl): axum::Extension<Ctl>) -> axum::Json<Value> {
+            axum::Json(json!({
+                "apiUrl": ctl.base,
+                "downloadUrl": format!("{}/download/{{accountId}}/{{blobId}}", ctl.base),
+                "uploadUrl": format!("{}/upload/{{accountId}}", ctl.base),
+                "eventSourceUrl": format!("{}/eventsource", ctl.base),
+                "state": "s",
+                "username": "u",
+                "accounts": {"a": {"name": "u", "isPersonal": true, "isReadOnly": false, "accountCapabilities": {}}},
+                "primaryAccounts": {"urn:ietf:params:jmap:mail": "a"},
+                "capabilities": {"urn:ietf:params:jmap:core": {"maxObjectsInGet": 500}}
+            }))
+        }
+
+        async fn api(
+            axum::Extension(_ctl): axum::Extension<Ctl>,
+            _body: String,
+        ) -> axum::response::Response {
+            // The folder read fails before any JMAP call; answer generically.
+            let resp = json!({"methodResponses": [], "sessionState": "s"});
+            axum::response::Response::builder()
+                .status(200)
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(serde_json::to_vec(&resp).unwrap()))
+                .unwrap()
+        }
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
+        let ctl = Ctl { base: base.clone() };
+        let app = axum::Router::new()
+            .route("/session", get(session))
+            .route("/", post(api))
+            .layer(axum::Extension(ctl));
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let storage = crate::storage::Storage::new("sqlite::memory:")
+            .await
+            .unwrap();
+        storage.init_schema().await.unwrap();
+        let cfg = crate::config::Config {
+            jmap_base: base.clone(),
+            email_enabled: true,
+            mail_domain: "example.com".to_string(),
+            hmac_secret: SecretString::from("a".repeat(32)),
+            ..Default::default()
+        };
+        let state = StdArc::new(AppState::new(cfg, StdArc::new(storage)));
+
+        let owner = "u@example.com";
+        // A user-created folder CollectionId (not a system id) forces the
+        // folder_map read; poison it so the read errors.
+        let scoped = scoped_collection_id("f-user-1", "dev-1");
+        sqlx::query("DROP TABLE folder_map")
+            .execute(state.storage.pool())
+            .await
+            .unwrap();
+
+        let password = SecretString::from("pw");
+        let options = crate::eas_sync_options::EasSyncCollectionOptions::default();
+        let result = handle_email_sync(&EmailSyncRequestCtx {
+            state: &state,
+            username: owner,
+            password: &password,
+            collection_id: "f-user-1",
+            state_collection_id: &scoped,
+            incoming_sync_key: "0",
+            window: 512,
+            options: Some(&options),
+            conversation_mode: false,
+        })
+        .await;
+
+        assert!(
+            result.is_err(),
+            "a folder-read failure must fail the Sync closed, not answer empty: {result:?}"
         );
     }
 }

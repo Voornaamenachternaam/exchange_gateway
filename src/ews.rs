@@ -2715,6 +2715,8 @@ async fn handle_find_email_item(
             password: &auth.password,
             search_filter,
             mailbox_id: None,
+            anchor: None,
+            anchor_offset: 0,
         },
     )
     .await
@@ -4734,6 +4736,8 @@ async fn handle_sync_email_folder_items(
                 password: &auth.password,
                 search_filter: None,
                 mailbox_id: None,
+                anchor: None,
+                anchor_offset: 0,
             },
         )
         .await
@@ -4887,21 +4891,43 @@ async fn handle_sync_email_folder_items(
     let overlap: std::collections::HashSet<&str> =
         changes.destroyed.iter().map(String::as_str).collect();
 
-    // Render an arrival (newly in this mailbox) as a Create.
+    // Render an arrival (newly in this mailbox) as a Create. A transient
+    // `Email/get` failure must NOT be swallowed: storing `new_state` below
+    // would make the delta skip this id permanently, because
+    // `Email/queryChanges` never offers it again. Fail the whole call closed
+    // (retryable) so the client retries from the same `SyncState`. A genuinely
+    // vanished id (`Ok(None)`) is skipped instead: a later delta reports its
+    // destruction, and re-adding a vanished id is a client-side error.
     for email_id in &changes.created {
         if overlap.contains(email_id.as_str()) {
             continue;
         }
-        if let Ok(Some(email)) = jmap
+        match jmap
             .get_email(&account_id, email_id, &auth.username, &auth.password, true)
             .await
         {
-            let server_id = email_server_id_from_jmap_id(email_id);
-            let change_key = server_id.clone();
-            changes_xml.push_str(&format!(
-                r#"<t:Create>{}</t:Create>"#,
-                render_jmap_email_as_ews_message(&email, &server_id, &change_key)
-            ));
+            Ok(Some(email)) => {
+                let server_id = email_server_id_from_jmap_id(email_id);
+                let change_key = server_id.clone();
+                changes_xml.push_str(&format!(
+                    r#"<t:Create>{}</t:Create>"#,
+                    render_jmap_email_as_ews_message(&email, &server_id, &change_key)
+                ));
+            }
+            Ok(None) => {}
+            Err(e) => {
+                tracing::error!(
+                    error = %e,
+                    email_id = %email_id,
+                    "JMAP Email/get failed rendering an EWS email Create; failing closed"
+                );
+                return operation_error_response(
+                    &EwsAction::SyncFolderItems,
+                    "ErrorInternalServerError",
+                    "Failed to fetch a changed message",
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                );
+            }
         }
     }
 
@@ -4914,15 +4940,31 @@ async fn handle_sync_email_folder_items(
     for email_id in &changes.destroyed {
         let server_id = email_server_id_from_jmap_id(email_id);
         if added_set.contains(email_id.as_str()) {
-            if let Ok(Some(email)) = jmap
+            match jmap
                 .get_email(&account_id, email_id, &auth.username, &auth.password, true)
                 .await
             {
-                let change_key = server_id.clone();
-                changes_xml.push_str(&format!(
-                    r#"<t:Update>{}</t:Update>"#,
-                    render_jmap_email_as_ews_message(&email, &server_id, &change_key)
-                ));
+                Ok(Some(email)) => {
+                    let change_key = server_id.clone();
+                    changes_xml.push_str(&format!(
+                        r#"<t:Update>{}</t:Update>"#,
+                        render_jmap_email_as_ews_message(&email, &server_id, &change_key)
+                    ));
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    tracing::error!(
+                        error = %e,
+                        email_id = %email_id,
+                        "JMAP Email/get failed rendering an EWS email Update; failing closed"
+                    );
+                    return operation_error_response(
+                        &EwsAction::SyncFolderItems,
+                        "ErrorInternalServerError",
+                        "Failed to fetch a changed message",
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                    );
+                }
             }
         } else {
             changes_xml.push_str(&format!(
@@ -9517,6 +9559,8 @@ async fn handle_get_conversation_items(
                 })]),
                 position: 0,
                 limit: max_items as u64,
+                anchor: None,
+                anchor_offset: 0,
                 username: &auth.username,
                 password: &auth.password,
             })
@@ -10717,6 +10761,8 @@ async fn collect_jmap_category_labels(state: &Arc<AppState>, auth: &AuthContext)
             sort: None,
             position: 0,
             limit: 200,
+            anchor: None,
+            anchor_offset: 0,
             username: &auth.username,
             password: &auth.password,
         })
@@ -13763,6 +13809,132 @@ mod tests {
                 .await
                 .expect("db")
                 .is_none()
+        );
+    }
+
+    /// A transient `Email/get` failure while rendering an EWS email delta
+    /// `Create` must FAIL CLOSED: storing the advanced `SyncState` would make
+    /// `Email/queryChanges` never offer the id again, so the message would be
+    /// lost forever. A genuinely vanished id (`Ok(None)`) is still skipped.
+    #[tokio::test]
+    async fn sync_email_folder_items_fails_closed_on_transient_get_error() {
+        use axum::routing::{get, post};
+        use serde_json::{Value, json};
+        use std::sync::Arc as StdArc;
+
+        #[derive(Clone)]
+        struct Ctl {
+            base: String,
+        }
+
+        async fn session(axum::Extension(ctl): axum::Extension<Ctl>) -> axum::Json<Value> {
+            axum::Json(json!({
+                "apiUrl": ctl.base,
+                "downloadUrl": format!("{}/download/{{accountId}}/{{blobId}}", ctl.base),
+                "uploadUrl": format!("{}/upload/{{accountId}}", ctl.base),
+                "eventSourceUrl": format!("{}/eventsource", ctl.base),
+                "state": "s",
+                "username": "u",
+                "accounts": {"a": {"name": "u", "isPersonal": true, "isReadOnly": false, "accountCapabilities": {}}},
+                "primaryAccounts": {"urn:ietf:params:jmap:mail": "a"},
+                "capabilities": {"urn:ietf:params:jmap:core": {"maxObjectsInGet": 500}}
+            }))
+        }
+
+        async fn api(
+            axum::Extension(_ctl): axum::Extension<Ctl>,
+            body: String,
+        ) -> axum::response::Response {
+            let req: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
+            let calls = req
+                .get("methodCalls")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default();
+            let has_get = calls
+                .iter()
+                .any(|c| c.get(0).and_then(|v| v.as_str()) == Some("Email/get"));
+            if has_get {
+                // Transient backend failure fetching the changed message.
+                return axum::response::Response::builder()
+                    .status(500)
+                    .body(axum::body::Body::from("backend down"))
+                    .unwrap();
+            }
+            let mut responses = Vec::new();
+            for call in calls {
+                let name = call.get(0).and_then(|v| v.as_str()).unwrap_or("");
+                let cid = call.get(2).and_then(|v| v.as_str()).unwrap_or("c0");
+                let result = match name {
+                    "Mailbox/query" => json!({"accountId":"a","ids":["mbx-inbox"],"total":1}),
+                    "Email/queryChanges" => json!({
+                        "accountId":"a",
+                        "oldQueryState":"S0",
+                        "newQueryState":"S1",
+                        "added":[{"id":"m2","index":0}],
+                        "removed":[],
+                    }),
+                    _ => json!({"accountId":"a"}),
+                };
+                responses.push(json!([name, result, cid]));
+            }
+            let resp = json!({"methodResponses": responses, "sessionState": "s"});
+            axum::response::Response::builder()
+                .status(200)
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(serde_json::to_vec(&resp).unwrap()))
+                .unwrap()
+        }
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
+        let ctl = Ctl { base: base.clone() };
+        let app = axum::Router::new()
+            .route("/session", get(session))
+            .route("/", post(api))
+            .layer(axum::Extension(ctl));
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let storage = crate::storage::Storage::new("sqlite::memory:")
+            .await
+            .unwrap();
+        storage.init_schema().await.unwrap();
+        let cfg = crate::config::Config {
+            jmap_base: base.clone(),
+            email_enabled: true,
+            mail_domain: "example.com".to_string(),
+            hmac_secret: SecretString::from("a".repeat(32)),
+            ..Default::default()
+        };
+        let state = StdArc::new(crate::models::AppState::new(cfg, StdArc::new(storage)));
+
+        let owner = owner_from_username("user@example.com");
+        let folder_id = folder_id_for(owner, DistinguishedFolder::Inbox);
+        // A persisted delta state: the request is a follow-up, not a prime.
+        state
+            .storage
+            .set_ews_sync_state(owner, &folder_id, "S0")
+            .await
+            .expect("persist delta state");
+
+        let body = r#"<m:SyncFolderItems><m:ItemShape/><m:SyncFolderId><t:DistinguishedFolderId Id="inbox"/></m:SyncFolderId><m:SyncState>S0</m:SyncState><m:MaxChangesReturned>100</m:MaxChangesReturned></m:SyncFolderItems>"#;
+        let resp = handle_sync_folder_items(&state, &meeting_auth(), body).await;
+        let text = response_body(resp).await;
+        assert!(
+            text.contains("ErrorInternalServerError"),
+            "a transient Email/get failure must fail the delta closed: {text}"
+        );
+        assert_eq!(
+            state
+                .storage
+                .get_ews_sync_state(owner, &folder_id)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("S0"),
+            "the stored SyncState must be untouched so the id is re-offered"
         );
     }
 }

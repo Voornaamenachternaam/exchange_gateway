@@ -1743,6 +1743,14 @@ pub struct FetchEmailsParams<'a> {
     /// the JMAP mailbox id and role lookup cannot find them. When set, this id
     /// scopes the `Email/query` directly and `mailbox_role` is only a label.
     pub mailbox_id: Option<&'a str>,
+    /// RFC 8620 §5.5 query `anchor`: the id the window starts from. Used by
+    /// the EAS initial-sync continuation so a message deleted during paging
+    /// cannot shift the tail below a stale numeric `position` and be skipped.
+    /// `None` uses numeric `position` paging.
+    pub anchor: Option<&'a str>,
+    /// RFC 8620 §5.5 `anchorOffset` (only meaningful with `anchor`). `0` starts
+    /// the window immediately after the anchor.
+    pub anchor_offset: i32,
 }
 
 /// Fetch emails from JMAP for a specific folder.
@@ -1776,13 +1784,7 @@ pub async fn fetch_emails_jmap(
     // is handled via EmailSubmission/set. Return early with empty result.
     let mailbox_role_lower = mailbox_role.to_lowercase();
     if mailbox_role_lower == "outbox" {
-        return Ok(crate::jmap::EmailListResult {
-            emails: Vec::new(),
-            total: 0,
-            can_calculate_changes: false,
-            query_state: String::new(),
-            state: String::new(),
-        });
+        return Ok(crate::jmap::EmailListResult::empty());
     }
 
     // Normalize role to JMAP standard role name
@@ -1793,23 +1795,11 @@ pub async fn fetch_emails_jmap(
         "junkemail" | "junk" => "junk",
         "deleteditems" | "trash" => "trash",
         "outbox" => {
-            return Ok(crate::jmap::EmailListResult {
-                emails: Vec::new(),
-                total: 0,
-                can_calculate_changes: false,
-                query_state: String::new(),
-                state: String::new(),
-            });
+            return Ok(crate::jmap::EmailListResult::empty());
         }
         _ => {
             tracing::warn!(role = %mailbox_role, "Unrecognised mailbox role; returning empty email list");
-            return Ok(crate::jmap::EmailListResult {
-                emails: Vec::new(),
-                total: 0,
-                can_calculate_changes: false,
-                query_state: String::new(),
-                state: String::new(),
-            });
+            return Ok(crate::jmap::EmailListResult::empty());
         }
     };
 
@@ -1839,24 +1829,12 @@ pub async fn fetch_emails_jmap(
         Ok(_) => {
             // No mailbox for that role — return empty result.
             tracing::info!(role = %normalized_role, "No mailbox found for role; returning empty email list");
-            Ok(crate::jmap::EmailListResult {
-                emails: Vec::new(),
-                total: 0,
-                can_calculate_changes: false,
-                query_state: String::new(),
-                state: String::new(),
-            })
+            Ok(crate::jmap::EmailListResult::empty())
         }
         Err(e) => {
             // Log the error but still return empty result to maintain sync stability.
             tracing::warn!(error = %e, role = %normalized_role, "Failed to fetch mailbox IDs for role");
-            Ok(crate::jmap::EmailListResult {
-                emails: Vec::new(),
-                total: 0,
-                can_calculate_changes: false,
-                query_state: String::new(),
-                state: String::new(),
-            })
+            Ok(crate::jmap::EmailListResult::empty())
         }
     }
 }
@@ -1882,6 +1860,8 @@ async fn fetch_emails_in_mailbox(
         sort: None,
         position: params.position,
         limit: params.limit,
+        anchor: params.anchor,
+        anchor_offset: params.anchor_offset,
         username: params.username,
         password: params.password,
     })
