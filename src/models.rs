@@ -292,7 +292,8 @@ impl AppState {
                 subscription_manager.clone(),
             )
             .with_attachment_manager(attachment_manager.clone())
-            .with_push_registry(push_registry.clone());
+            .with_push_registry(push_registry.clone())
+            .with_storage(storage.clone());
             // Wire the operator-configured directory so the NSPI address-book
             // surface (`/mapi/nspi`) serves a real GAL rather than the
             // caller-only minimal stub (audit gap §2d). When no JMAP-backed

@@ -137,6 +137,13 @@ pub struct MapiState {
     /// `JmapClient`, and credentials are all wired, none of which the fixtures
     /// provide.
     pub push_registry: std::sync::Arc<crate::jmap_push::PushMonitorRegistry>,
+    /// Optional gateway SQLite store. Wired in production so the MAPI folder
+    /// write paths that mirror EAS state — `RopDeleteFolder` (and
+    /// `RopHardDeleteMessagesAndSubfolders`) — can prune the `folder_map` rows
+    /// and journal the matching `folder-delete` entries for any EAS-created
+    /// mailbox they destroy, keeping EAS FolderSync/GetHierarchy consistent.
+    /// `None` in unit-test fixtures keeps them free of a live SQLite handle.
+    pub storage: Option<std::sync::Arc<crate::storage::Storage>>,
 }
 
 impl MapiState {
@@ -150,6 +157,7 @@ impl MapiState {
             directory: None,
             gal_cache: None,
             push_registry: std::sync::Arc::new(crate::jmap_push::PushMonitorRegistry::new()),
+            storage: None,
         }
     }
 
@@ -170,7 +178,17 @@ impl MapiState {
             directory: None,
             gal_cache: None,
             push_registry: std::sync::Arc::new(crate::jmap_push::PushMonitorRegistry::new()),
+            storage: None,
         }
+    }
+
+    /// Wire the gateway SQLite store onto the MAPI state. Called by the
+    /// production `AppState` builder so MAPI folder deletion can prune the
+    /// `folder_map` mirror and journal `folder-delete` entries for EAS-created
+    /// folders it destroys.
+    pub fn with_storage(mut self, storage: std::sync::Arc<crate::storage::Storage>) -> Self {
+        self.storage = Some(storage);
+        self
     }
 
     /// Wire the gateway attachment store onto the MAPI state. Called by the
@@ -732,6 +750,7 @@ async fn handle_execute(req: MapiRequest, state: &MapiState) -> MapiResponse {
         subscription_manager: state.subscription_manager.as_ref(),
         attachment_manager: state.attachment_manager.as_ref(),
         push_registry: &state.push_registry,
+        storage: state.storage.as_ref(),
     };
 
     // ROP-chain loop: each iteration decodes one RopId plus the surrounding
@@ -800,6 +819,7 @@ struct RopContext<'a> {
     subscription_manager: Option<&'a std::sync::Arc<crate::notifications::SubscriptionManager>>,
     attachment_manager: Option<&'a std::sync::Arc<crate::attachment::AttachmentManager>>,
     push_registry: &'a std::sync::Arc<crate::jmap_push::PushMonitorRegistry>,
+    storage: Option<&'a std::sync::Arc<crate::storage::Storage>>,
 }
 
 /// `RopDeleteFolder` `DeleteFolderFlags` bits ([MS-OXCFOLD] §2.2.1.3.1).
@@ -886,6 +906,7 @@ async fn execute_one_rop(
         subscription_manager,
         attachment_manager,
         push_registry,
+        storage,
     } = *ctx;
     // Each ROP variant reads its own logon-id + handle indices per its spec
     // header shape, so the dispatch is per-variant rather than a uniform
@@ -5222,6 +5243,12 @@ async fn execute_one_rop(
                         // validated above with the rest of the mask.
                         outcome = RopErrorCode::Success;
                         let mut destroyed_count = 0usize;
+                        // Backend mailbox ids that were actually destroyed.
+                        // MAPI folder ids for user-created folders ARE the JMAP
+                        // mailbox ids (see the folder-hierarchy projection), so
+                        // these are exactly the `folder_map` ServerIds an
+                        // EAS-created folder would carry.
+                        let mut destroyed_ids: Vec<String> = Vec::new();
                         for mb in &subtree {
                             match jc
                                 .destroy_mailbox(&account_id, mb, remove_emails, username, pw)
@@ -5230,7 +5257,10 @@ async fn execute_one_rop(
                                 Ok(
                                     crate::jmap::MailboxDestroyOutcome::Destroyed
                                     | crate::jmap::MailboxDestroyOutcome::AlreadyGone,
-                                ) => destroyed_count += 1,
+                                ) => {
+                                    destroyed_count += 1;
+                                    destroyed_ids.push(mb.clone());
+                                }
                                 Ok(crate::jmap::MailboxDestroyOutcome::Refused) => {
                                     tracing::warn!(
                                         mailbox = %mb,
@@ -5244,6 +5274,25 @@ async fn execute_one_rop(
                                     break;
                                 }
                             }
+                        }
+                        // Mirror the destroyed mailboxes into the EAS folder
+                        // store: prune any `folder_map` row whose ServerId is a
+                        // destroyed mailbox and journal a `folder-delete`, so an
+                        // EAS-created folder removed here is no longer advertised
+                        // by FolderSync/GetHierarchy and already-primed devices
+                        // receive its Delete. `delete_folders_journaled` is a
+                        // no-op for ids with no mapping row (e.g. a system
+                        // folder, whose ServerId is never a JMAP mailbox id).
+                        if !destroyed_ids.is_empty()
+                            && let Some(storage) = storage
+                            && let Err(e) = storage
+                                .delete_folders_journaled(username, &destroyed_ids)
+                                .await
+                        {
+                            tracing::warn!(
+                                error = %e,
+                                "RopDeleteFolder: failed to prune EAS folder map for destroyed mailboxes"
+                            );
                         }
                         // The ROP succeeded for only some (or none) of the
                         // targets — a non-empty folder with DEL_MESSAGES unset,
@@ -6051,6 +6100,11 @@ async fn execute_one_rop(
                         // folder itself"); its own messages were destroyed
                         // above.
                         let mut subfolders_ok = true;
+                        // Child mailboxes actually destroyed here; their EAS
+                        // `folder_map` rows (if any) are pruned below so the
+                        // EAS surface stops advertising them. The root folder is
+                        // not deleted, so it is never in this set.
+                        let mut destroyed_ids: Vec<String> = Vec::new();
                         if rop_id == RopId::ROP_HARD_DELETE_MESSAGES_AND_SUBFOLDERS {
                             match mailbox_subtree_deepest_first(jc, backend, username, pw).await {
                                 Ok(subtree) => {
@@ -6070,7 +6124,7 @@ async fn execute_one_rop(
                                             Ok(
                                                 crate::jmap::MailboxDestroyOutcome::Destroyed
                                                 | crate::jmap::MailboxDestroyOutcome::AlreadyGone,
-                                            ) => {}
+                                            ) => destroyed_ids.push(child_id.clone()),
                                             Ok(crate::jmap::MailboxDestroyOutcome::Refused) => {
                                                 tracing::warn!(
                                                     mailbox = %child_id,
@@ -6090,6 +6144,20 @@ async fn execute_one_rop(
                                     subfolders_ok = false;
                                 }
                             }
+                        }
+                        // Keep the EAS folder mirror consistent with the
+                        // destroyed subfolders (see `RopDeleteFolder`). A
+                        // no-op for ids with no mapping row.
+                        if !destroyed_ids.is_empty()
+                            && let Some(storage) = storage
+                            && let Err(e) = storage
+                                .delete_folders_journaled(username, &destroyed_ids)
+                                .await
+                        {
+                            tracing::warn!(
+                                error = %e,
+                                "HardDelete: failed to prune EAS folder map for destroyed subfolders"
+                            );
                         }
                         outcome = if destroyed_ok && subfolders_ok {
                             RopErrorCode::Success
@@ -9112,6 +9180,7 @@ mod tests {
             subscription_manager: None,
             attachment_manager: None,
             push_registry: &std::sync::Arc::new(crate::jmap_push::PushMonitorRegistry::new()),
+            storage: None,
         };
         execute_one_rop(
             crate::mapi::rops::RopId::ROP_SET_COLUMNS,
@@ -9145,6 +9214,7 @@ mod tests {
                 subscription_manager: None,
                 attachment_manager: None,
                 push_registry: &std::sync::Arc::new(crate::jmap_push::PushMonitorRegistry::new()),
+                storage: None,
             },
         )
         .await
@@ -9254,6 +9324,7 @@ mod tests {
                 subscription_manager: None,
                 attachment_manager: None,
                 push_registry: &std::sync::Arc::new(crate::jmap_push::PushMonitorRegistry::new()),
+                storage: None,
             },
         )
         .await
@@ -9937,6 +10008,7 @@ mod tests {
                 subscription_manager: None,
                 attachment_manager: None,
                 push_registry: &std::sync::Arc::new(crate::jmap_push::PushMonitorRegistry::new()),
+                storage: None,
             },
         )
         .await
@@ -11434,14 +11506,29 @@ mod tests {
         backend_id: &str,
         delete_flags: u8,
     ) -> (RopErrorCode, u8) {
+        run_delete_folder_rop_full_storage(base, backend_id, delete_flags, None).await
+    }
+
+    /// As [`run_delete_folder_rop_full`] but with an optional gateway storage
+    /// wired onto the MAPI state, so the EAS `folder_map` mirroring of the
+    /// destroy can be asserted.
+    async fn run_delete_folder_rop_full_storage(
+        base: &str,
+        backend_id: &str,
+        delete_flags: u8,
+        storage: Option<std::sync::Arc<crate::storage::Storage>>,
+    ) -> (RopErrorCode, u8) {
         let mut cfg = Config::test_with_mail_domain("example.com");
         cfg.mapi_enabled = true;
         cfg.jmap_base = base.to_string();
         cfg.email_enabled = true;
-        let state = MapiState::new(
+        let mut state = MapiState::new(
             cfg,
             std::sync::Arc::new(AuthVerifier::new(&Config::default())),
         );
+        if let Some(storage) = storage {
+            state = state.with_storage(storage);
+        }
         let sid = state
             .sessions
             .create(crate::mapi::session::SessionPrincipal {
@@ -11577,6 +11664,86 @@ mod tests {
         let (base, _calls) = spawn_delete_folder_stub_with(vec![], None, Some("serverFail")).await;
         let (rv, _partial) = run_delete_folder_rop_full(&base, "mb-1", 0).await;
         assert_eq!(rv, RopErrorCode::DiskError);
+    }
+
+    /// A mailbox created through EAS (so it has a `folder_map` row keyed on its
+    /// JMAP mailbox id) that is later destroyed through MAPI must have its
+    /// mirror pruned and a `folder-delete` journaled, or EAS FolderSync /
+    /// GetHierarchy keep advertising the deleted folder and already-primed
+    /// devices never receive its Delete.
+    #[tokio::test]
+    async fn rop_delete_folder_prunes_eas_folder_map_and_journals() {
+        let storage = std::sync::Arc::new(
+            crate::storage::Storage::new("sqlite::memory:")
+                .await
+                .unwrap(),
+        );
+        storage.init_schema().await.unwrap();
+        let owner = "u@example.com";
+        storage
+            .upsert_folder_journaled(
+                crate::storage::FolderUpsertParams {
+                    owner,
+                    server_id: "mb-1",
+                    parent_id: "0",
+                    display_name: "Projects",
+                    folder_type: 12,
+                    backend_kind: "jmap",
+                    backend_id: "mb-1",
+                },
+                "folder-add",
+            )
+            .await
+            .unwrap();
+
+        let (base, _calls) = spawn_delete_folder_stub(vec![]).await;
+        let (rv, partial) =
+            run_delete_folder_rop_full_storage(&base, "mb-1", 0, Some(storage.clone())).await;
+        assert_eq!(rv, RopErrorCode::Success);
+        assert_eq!(partial, 0);
+
+        assert!(
+            storage.get_folder(owner, "mb-1").await.unwrap().is_none(),
+            "the destroyed mailbox's folder_map row must be pruned"
+        );
+        let journal = storage
+            .list_folder_journal_since(owner, 0, i64::MAX)
+            .await
+            .unwrap();
+        assert!(
+            journal
+                .iter()
+                .any(|r| r.server_id == "mb-1" && r.op == "folder-delete"),
+            "a folder-delete must be journaled for the destroyed mailbox"
+        );
+    }
+
+    /// A destroyed mailbox with no `folder_map` row (e.g. a system folder,
+    /// whose EAS ServerId is never a JMAP mailbox id) leaves the map untouched
+    /// and journals nothing.
+    #[tokio::test]
+    async fn rop_delete_folder_without_mapping_row_journals_nothing() {
+        let storage = std::sync::Arc::new(
+            crate::storage::Storage::new("sqlite::memory:")
+                .await
+                .unwrap(),
+        );
+        storage.init_schema().await.unwrap();
+        let owner = "u@example.com";
+
+        let (base, _calls) = spawn_delete_folder_stub(vec![]).await;
+        let (rv, _partial) =
+            run_delete_folder_rop_full_storage(&base, "unmapped-mb", 0, Some(storage.clone()))
+                .await;
+        assert_eq!(rv, RopErrorCode::Success);
+        assert!(
+            storage
+                .list_folder_journal_since(owner, 0, i64::MAX)
+                .await
+                .unwrap()
+                .is_empty(),
+            "an unmapped mailbox destroy must journal nothing"
+        );
     }
 
     /// Drive one `RopHardDeleteMessagesAndSubfolders` (0x92) through the

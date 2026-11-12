@@ -70,10 +70,13 @@ gateway restarts and surface in `FolderSync`/`GetHierarchy`.
 
 - **Backend selection** ([MS-ASCMD] §2.2.3.186.2 user-created Types):
   Type 12/1 (mail) → JMAP `Mailbox/set`; Type 13 (Calendar) → CalDAV
-  `MKCALENDAR` with `VEVENT`; Type 15 (Tasks) → `VTODO`; Type 16/17
-  (Journal/Notes) → `VJOURNAL`. Type 14 (Contacts) is not creatable (CardDAV
-  collection creation is unsupported): `FolderCreate` rejects it up front with
-  Status 10 rather than backing a "Contacts" folder with a JMAP mail mailbox.
+  `MKCALENDAR` with `VEVENT`. Types 14–17 are **not creatable** and
+  `FolderCreate` rejects them up front with Status 10: Type 14 (Contacts) lives
+  on CardDAV (collection creation is unsupported), and Types 15/16/17
+  (Tasks/Journal/Notes) map to the gateway's single *gateway-local*
+  Tasks/Notes collections, which EAS Sync reaches by content class rather than
+  by the folder's mapping — a custom folder of those types would sync the wrong
+  collection and write the client's mutations to the default one.
 - **`FolderCreate`** (§2.2.1.3): validates the request (missing DisplayName/
   ParentId → 10; a reserved *default* Type 2–11/19 → 10; a DisplayName that
   collides with a system folder or an existing sibling → 2; DisplayName > 64
@@ -85,6 +88,14 @@ gateway restarts and surface in `FolderSync`/`GetHierarchy`.
   backing mailbox (`Mailbox/set destroy`) or CalDAV collection (`DELETE`) is
   removed first, then the `folder_map` row (and every descendant row) is
   dropped. Response is `<Status>` + `<SyncKey>`.
+- **MAPI mirror consistency.** A mailbox an EAS client created (so it has a
+  `folder_map` row keyed on its JMAP mailbox id) that is later destroyed through
+  MAPI — `RopDeleteFolder` or `RopHardDeleteMessagesAndSubfolders` — has its
+  `folder_map` row pruned and a `folder-delete` journaled for every mailbox the
+  ROP actually destroyed, so EAS `FolderSync`/`GetHierarchy` stop advertising it
+  and already-primed devices receive its Delete. `delete_folders_journaled`
+  journals only ids that had a mapping row, so a system folder (whose EAS
+  ServerId is never a JMAP mailbox id) never fabricates a Delete.
 - **`FolderUpdate`** (§2.2.1.6): rename and/or move. A system folder → 2; an
   unknown folder → 4; otherwise JMAP `Mailbox/set update` (patch `name` and/or
   `parentId`) or a CalDAV `PROPPATCH` `<D:displayname>`; the CalDAV collection
@@ -96,7 +107,12 @@ gateway restarts and surface in `FolderSync`/`GetHierarchy`.
   folder-hierarchy changes journaled since the client's watermark
   (`change_journal` rows with `resource_href = 'folder'`), so a
   FolderCreate/Update/Delete mutation reaches an already-primed client as an
-  `<Add>`/`<Update>`/`<Delete>` rather than a stale `<Count>0</Count>`.
+  `<Add>`/`<Update>`/`<Delete>` rather than a stale `<Count>0</Count>`. A
+  successful folder mutation rotates the mutating device's SyncKey while
+  **preserving its own acknowledged watermark** (the stored `seq:` token is
+  carried onto the new key): the watermark is never advanced to the global
+  journal head, which would permanently skip a change another device journaled
+  below that head before this device had seen it.
 - **`GetAttachment`** (§2.2.1.7): the file reference (from the
   `AttachmentName` command parameter or an `AttachmentName`/`FileReference`
   body element) is streamed through `JmapClient::download_blob_range` and
@@ -164,10 +180,13 @@ gateway restarts and surface in `FolderSync`/`GetHierarchy`.
   row was written, so a failed write holds the cursor and the next sweep
   re-examines the same window instead of skipping the change; an overflowed delta
   (the change set exceeds the EAS window) persists them ONLY once the remainder
-  is durably queued — if persisting the queue fails the baseline is held too
-  (the stored token still sits at the pre-delta state, so the re-diff re-derives
-  the discarded flag changes rather than swallowing them), and the drain and
-  every later delta do not re-queue the same flag change. A backend hiccup
+  is durably queued — if persisting the queue fails the delta FAILS CLOSED: it
+  returns a retryable error (the caller answers Sync Status 6 with the incoming
+  key and no commands) and leaves the stored token and the baseline untouched,
+  rather than acknowledging the clipped window while the stored token still sits
+  at the pre-delta state (which would make the next delta re-diff and replay the
+  already-delivered commands as duplicate Adds/Deletes). The drain and every
+  later delta do not re-queue the same flag change. A backend hiccup
   during the scan degrades to serving the query-feed changes without persisting
   that page's rows.
   `Email/queryChanges` has no `hasMoreChanges` field (RFC 8620 §5.6), so
@@ -180,17 +199,22 @@ gateway restarts and surface in `FolderSync`/`GetHierarchy`.
 2 invalid/duplicate or special system folder, 3 special system folder
 (delete), 4 not found, 5 invalid parent, 6 server error, 10 malformed request.
 
-**Tests.** 26 in `src/eas_folders.rs` (classification helpers, response
+**Tests.** 30 in `src/eas_folders.rs` (classification helpers, response
 rendering + a WBXML round-trip of the FolderHierarchy-rooted responses, and
 end-to-end create/delete/update against a combined JMAP+CalDAV stub asserting
 the exact `Mailbox/set`/`MKCALENDAR`/`DELETE`/`PROPPATCH` wire calls and the
-persisted `folder_map` rows, plus the hierarchy-change journal watermark). The
-`eas::tests::test_folder_sync_create_then_rename_reaches_new_device_as_add`
+persisted `folder_map` rows, plus the hierarchy-change journal watermark;
+`create_rejects_custom_task_note_folder_types` pins the Type 14–17 rejection).
+The `eas::tests::test_folder_sync_create_then_rename_reaches_new_device_as_add`
 test drives a real `handle_folder_sync` prime + delta to pin the
 create-then-rename compaction (a folder added and then renamed before a second
 device's first incremental FolderSync reaches it as an `<Add>` with the latest
-DisplayName, never an `<Update>` for a folder it never received). The
-email-delta scoping adds `eas::tests::test_classify_query_change_ops_maps_add_remove_and_in_place`
+DisplayName, never an `<Update>` for a folder it never received), and
+`eas::tests::test_folder_mutation_rotation_preserves_unseen_earlier_change`
+pins the rotation watermark preservation (a change journaled by another device
+before a mutation is still delivered to the mutating device after its key
+rotates). The email-delta scoping adds
+`eas::tests::test_classify_query_change_ops_maps_add_remove_and_in_place`
 (pure classification) and
 `eas::tests::test_email_delta_sync_uses_mailbox_scoped_query_changes` (an
 end-to-end delta against a JMAP stub asserting the wire call carries
@@ -198,6 +222,13 @@ end-to-end delta against a JMAP stub asserting the wire call carries
 `jmap::tests::query_email_changes_*` tests (mailbox scoping + classification,
 `cannotCalculateChanges` and Stalwart `invalidArguments` both downcasting to
 the typed `CannotCalculateChanges`).
+`eas::tests::test_email_delta_overflow_queue_persist_failure_fails_closed` pins
+the fail-closed overflow acknowledgement (a poisoned queue write makes the
+delta return an error with the stored token and queue untouched, then drain
+cleanly once storage recovers). `mapi::handler` gains
+`rop_delete_folder_prunes_eas_folder_map_and_journals` and
+`rop_delete_folder_without_mapping_row_journals_nothing`, pinning the
+EAS-mirror consistency of a MAPI mailbox destroy.
 
 **Operator change list.** None required for Cloudflare or Stalwart: the new
 commands use the already-configured JMAP and CalDAV endpoints. No new

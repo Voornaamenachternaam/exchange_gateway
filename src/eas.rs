@@ -8588,6 +8588,31 @@ async fn handle_email_delta_sync(ctx: &EmailSyncCtx<'_>) -> anyhow::Result<Strin
                 false
             }
         };
+        if !queued_ok {
+            // The undelivered remainder could not be made durable. Acknowledging
+            // the delivered window (Status 1 + <MoreAvailable/>) while the stored
+            // token still sits at `old_state` would make the next delta recompute
+            // the WHOLE change set and replay the already-delivered commands —
+            // duplicate Adds (and a non-draining delta while storage stays
+            // broken). Fail closed with a retryable server error instead: the
+            // caller answers Status 6 carrying the incoming key and NO commands,
+            // the stored token is left untouched, and the same delta drains
+            // cleanly once storage recovers. The flag baseline is likewise NOT
+            // advanced, so a re-diff still re-derives the flag-only `<Change>`
+            // ops that were in the discarded remainder.
+            tracing::warn!(
+                user = %username,
+                collection_id,
+                delivered = take,
+                queued = leftover.len(),
+                sync_type = "delta",
+                window_clipped = true,
+                "Failed to persist email delta overflow queue; refusing to acknowledge"
+            );
+            return Err(anyhow::anyhow!(
+                "failed to persist email delta overflow queue for collection {state_collection_id}"
+            ));
+        }
         if let Err(e) = state
             .storage
             .set_sync_key(
@@ -8600,17 +8625,9 @@ async fn handle_email_delta_sync(ctx: &EmailSyncCtx<'_>) -> anyhow::Result<Strin
         {
             tracing::warn!(error = %e, "Failed to set email sync key while truncating delta");
         }
-        // The flag-scan baseline rows and rotating position may advance ONLY
-        // once the undelivered remainder is durably queued. If the queue write
-        // failed the stored token still sits at `old_state`, so the next delta
-        // recomputes membership changes — but an advanced baseline would
-        // suppress the flag-only `<Change>` operations that were in the
-        // discarded remainder, so hold the baseline in that case and let the
-        // re-diff re-derive them.
-        if queued_ok {
-            persist_keyword_scan(state, username, state_collection_id, &keyword_scan, &seeded)
-                .await;
-        }
+        // The remainder is durable, so the delivered window may be acknowledged
+        // and the flag-scan baseline rows + rotating position may advance.
+        persist_keyword_scan(state, username, state_collection_id, &keyword_scan, &seeded).await;
         tracing::info!(
             user = %username,
             collection_id,
@@ -10689,6 +10706,98 @@ mod tests {
         );
     }
 
+    /// A folder mutation by one device must NOT advance that device's
+    /// folder-hierarchy watermark past changes journaled by ANOTHER device.
+    /// Rotating the key preserves the mutating device's own acknowledged
+    /// position, so its next FolderSync still receives the earlier unseen
+    /// change instead of skipping it.
+    #[tokio::test]
+    async fn test_folder_mutation_rotation_preserves_unseen_earlier_change() {
+        let state = test_sync_state().await;
+        let owner = "hierarchy-rotate@example.com";
+        let device_a = "device-a";
+        let device_b = "device-b";
+        let wbxml = Wbxml::new();
+
+        // Both devices prime the hierarchy (watermark at the current head).
+        let prime = |device: &str| EasRequest {
+            command: "FolderSync".to_string(),
+            device_id: Some(device.to_string()),
+            sync_key: Some("0".to_string()),
+            ..Default::default()
+        };
+        let text_a = response_text(
+            handle_folder_sync(&state, owner, &prime(device_a), &wbxml, false, "p-a").await,
+        )
+        .await;
+        let key_a = extract_first_tag_text(&text_a, b"SyncKey")
+            .expect("device-a prime SyncKey")
+            .to_string();
+        let text_b = response_text(
+            handle_folder_sync(&state, owner, &prime(device_b), &wbxml, false, "p-b").await,
+        )
+        .await;
+        let key_b = extract_first_tag_text(&text_b, b"SyncKey")
+            .expect("device-b prime SyncKey")
+            .to_string();
+
+        // ANOTHER device adds a folder — journaled BELOW the global head the
+        // mutating device's key rotation would otherwise jump to.
+        state
+            .storage
+            .upsert_folder_journaled(
+                crate::storage::FolderUpsertParams {
+                    owner,
+                    server_id: "mbx-other",
+                    parent_id: "0",
+                    display_name: "FromOtherDevice",
+                    folder_type: 12,
+                    backend_kind: "jmap",
+                    backend_id: "mbx-other",
+                },
+                "folder-add",
+            )
+            .await
+            .expect("journal the other device's add");
+
+        // Device A performs a successful mutation, rotating its key.
+        let new_key_a =
+            crate::eas_folders::rotate_hierarchy_sync_key(&state, owner, device_a).await;
+        assert_ne!(new_key_a, key_a, "the mutating device's key must rotate");
+
+        // Device A's next FolderSync (with the rotated key) must STILL see the
+        // other device's earlier Add — not skip it.
+        let delta_a = EasRequest {
+            command: "FolderSync".to_string(),
+            device_id: Some(device_a.to_string()),
+            sync_key: Some(new_key_a),
+            ..Default::default()
+        };
+        let text_a2 =
+            response_text(handle_folder_sync(&state, owner, &delta_a, &wbxml, false, "d-a").await)
+                .await;
+        assert!(text_a2.contains("<Status>1</Status>"), "delta-a: {text_a2}");
+        assert!(
+            text_a2.contains("<ServerId>mbx-other</ServerId>"),
+            "the mutating device must still receive the earlier unseen change: {text_a2}"
+        );
+
+        // Device B (never mutated) still receives it too.
+        let delta_b = EasRequest {
+            command: "FolderSync".to_string(),
+            device_id: Some(device_b.to_string()),
+            sync_key: Some(key_b),
+            ..Default::default()
+        };
+        let text_b2 =
+            response_text(handle_folder_sync(&state, owner, &delta_b, &wbxml, false, "d-b").await)
+                .await;
+        assert!(
+            text_b2.contains("<ServerId>mbx-other</ServerId>"),
+            "the unaffected device receives the change: {text_b2}"
+        );
+    }
+
     /// §16: GetItemEstimate against a stale watermark reports the invalid-key
     /// status (4) rather than a wrong count the client would resume from.
     #[tokio::test]
@@ -11192,6 +11301,212 @@ mod tests {
         assert!(
             xml.contains("<Add><ServerId>") && xml.contains("<Delete><ServerId>"),
             "an arrival renders as Add and a departure as Delete: {xml}"
+        );
+    }
+
+    /// A delta whose undelivered remainder cannot be made durable must FAIL
+    /// CLOSED: it may not acknowledge the delivered window with Status 1 +
+    /// `<MoreAvailable/>` while the stored JMAP token still sits at the old
+    /// state (the next delta would then re-diff and replay the already-delivered
+    /// commands as duplicate Adds/Deletes, and the client could never drain the
+    /// delta while storage stays broken). It must return a retryable error, leave
+    /// the stored token untouched, and leave no queue behind — then drain
+    /// cleanly once storage recovers.
+    #[tokio::test]
+    async fn test_email_delta_overflow_queue_persist_failure_fails_closed() {
+        use crate::models::AppState;
+        use axum::routing::{get, post};
+        use serde_json::{Value, json};
+        use std::sync::Arc as StdArc;
+
+        #[derive(Clone)]
+        struct Ctl {
+            base: String,
+        }
+
+        async fn session(axum::Extension(ctl): axum::Extension<Ctl>) -> axum::Json<Value> {
+            let base = ctl.base;
+            axum::Json(json!({
+                "apiUrl": base,
+                "downloadUrl": format!("{}/download/{{accountId}}/{{blobId}}", base),
+                "uploadUrl": format!("{}/upload/{{accountId}}", base),
+                "eventSourceUrl": format!("{}/eventsource", base),
+                "state": "s",
+                "username": "u",
+                "accounts": {"a": {"name": "u", "isPersonal": true, "isReadOnly": false, "accountCapabilities": {}}},
+                "primaryAccounts": {"urn:ietf:params:jmap:mail": "a"},
+                "capabilities": {"urn:ietf:params:jmap:core": {"maxObjectsInGet": 500}}
+            }))
+        }
+
+        async fn api(body: String) -> axum::response::Response {
+            let req: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
+            let mut responses = Vec::new();
+            for call in req
+                .get("methodCalls")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default()
+            {
+                let name = call.get(0).and_then(|v| v.as_str()).unwrap_or("");
+                let args = call.get(1).cloned().unwrap_or(Value::Null);
+                let cid = call.get(2).and_then(|v| v.as_str()).unwrap_or("c0");
+                let result = match name {
+                    // Two arrivals so a window of 1 leaves a non-empty remainder.
+                    "Email/queryChanges" => json!({
+                        "accountId": "a",
+                        "oldQueryState": "S0",
+                        "newQueryState": "S1",
+                        "added": [{"id": "m1", "index": 0}, {"id": "m2", "index": 1}],
+                        "removed": [],
+                    }),
+                    // Render bodies for the explicitly requested ids; the
+                    // keyword scan's back-referenced `#ids` is empty here.
+                    "Email/get" => {
+                        let ids = args
+                            .get("ids")
+                            .and_then(|v| v.as_array())
+                            .cloned()
+                            .unwrap_or_default();
+                        let list: Vec<Value> = ids
+                            .iter()
+                            .filter_map(|id| id.as_str())
+                            .map(|id| {
+                                json!({
+                                    "id": id,
+                                    "blobId": format!("b-{id}"),
+                                    "threadId": format!("t-{id}"),
+                                    "mailboxIds": {"mbx-inbox": true},
+                                    "keywords": {},
+                                    "subject": "hello",
+                                    "from": [],
+                                    "to": [],
+                                    "receivedAt": "2026-11-10T12:00:00Z",
+                                    "sentAt": "2026-11-10T12:00:00Z",
+                                    "size": 10,
+                                    "preview": "hi",
+                                    "hasAttachment": false
+                                })
+                            })
+                            .collect();
+                        json!({"accountId": "a", "state": "S1", "list": list})
+                    }
+                    // Empty live mailbox → the keyword scan finds nothing.
+                    "Email/query" => {
+                        json!({"accountId": "a", "queryState": "S1", "ids": [], "total": 0, "position": 0})
+                    }
+                    _ => json!({"accountId": "a"}),
+                };
+                responses.push(json!([name, result, cid]));
+            }
+            let resp = json!({"methodResponses": responses, "sessionState": "s"});
+            axum::response::Response::builder()
+                .status(200)
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(serde_json::to_vec(&resp).unwrap()))
+                .unwrap()
+        }
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
+        let ctl = Ctl { base: base.clone() };
+        let app = axum::Router::new()
+            .route("/session", get(session))
+            .route("/", post(api))
+            .layer(axum::Extension(ctl));
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let storage = crate::storage::Storage::new("sqlite::memory:")
+            .await
+            .unwrap();
+        storage.init_schema().await.unwrap();
+        let cfg = crate::config::Config {
+            jmap_base: base.clone(),
+            email_enabled: true,
+            mail_domain: "example.com".to_string(),
+            hmac_secret: SecretString::from("a".repeat(32)),
+            ..Default::default()
+        };
+        let state = StdArc::new(AppState::new(cfg, StdArc::new(storage)));
+
+        let owner = "u@example.com";
+        let scoped = scoped_collection_id("2", "dev-1");
+        state
+            .storage
+            .set_sync_key(owner, &scoped, "oldkey", Some("S0"))
+            .await
+            .unwrap();
+
+        // Poison the overflow-queue write so `set_email_sync_pending` fails.
+        sqlx::query(
+            "CREATE TRIGGER poison_pending BEFORE INSERT ON email_sync_pending \
+             BEGIN SELECT RAISE(ABORT, 'poisoned'); END;",
+        )
+        .execute(state.storage.pool())
+        .await
+        .unwrap();
+
+        let jmap = state.jmap_client.as_ref().unwrap().clone();
+        let password = SecretString::from("pw");
+        let options = crate::eas_sync_options::EasSyncCollectionOptions::default();
+        let ctx = EmailSyncCtx {
+            state: &state,
+            jmap: &jmap,
+            account_id: "a",
+            username: owner,
+            password: &password,
+            collection_id: "2",
+            state_collection_id: &scoped,
+            window: 1,
+            options: &options,
+            conversation_mode: false,
+            mailbox_id: None,
+            delta_mailbox_id: Some("mbx-inbox"),
+        };
+
+        let result = handle_email_delta_sync(&ctx).await;
+        assert!(
+            result.is_err(),
+            "an unpersistable overflow queue must not be acknowledged: {result:?}"
+        );
+        assert_eq!(
+            state.storage.get_sync_key(owner, &scoped).await.unwrap(),
+            Some(("oldkey".to_string(), Some("S0".to_string()))),
+            "the stored sync key/token must be untouched on the fail-closed path"
+        );
+        assert!(
+            state
+                .storage
+                .get_email_sync_pending(owner, &scoped)
+                .await
+                .unwrap()
+                .is_none(),
+            "no queue may be left behind when the persist failed"
+        );
+
+        // Storage recovers: the same delta now drains cleanly — the delivered
+        // window is acknowledged and the remainder is durably queued.
+        sqlx::query("DROP TRIGGER poison_pending")
+            .execute(state.storage.pool())
+            .await
+            .unwrap();
+        let xml = handle_email_delta_sync(&ctx)
+            .await
+            .expect("delta must succeed once storage recovers");
+        assert!(
+            xml.contains("<Status>1</Status>") && xml.contains("<MoreAvailable/>"),
+            "the recovered delta acknowledges the clipped window: {xml}"
+        );
+        assert!(
+            state
+                .storage
+                .get_email_sync_pending(owner, &scoped)
+                .await
+                .unwrap()
+                .is_some(),
+            "the recovered delta durably queues its remainder"
         );
     }
 

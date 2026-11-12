@@ -3106,18 +3106,29 @@ impl Storage {
     /// `folder-delete` row for each in ONE transaction, so a delete is
     /// acknowledged only once every journal row is durable. If any statement
     /// fails the whole transaction rolls back and the caller reports failure.
+    ///
+    /// A `folder-delete` is journaled ONLY for ids that actually had a mapping
+    /// row: an id with no row (e.g. a system folder whose EAS ServerId is never
+    /// a backend mailbox id) is a no-op, so a caller that prunes a batch of
+    /// destroyed backend mailboxes never fabricates a Delete for a folder the
+    /// EAS surface never advertised.
     pub async fn delete_folders_journaled(&self, owner: &str, server_ids: &[String]) -> Result<()> {
         let mut tx = sqlx::Acquire::begin(self.pool.as_ref())
             .await
             .map_err(|e| GatewayError::Storage(format!("Transaction error: {}", e)))?;
 
         for server_id in server_ids {
-            sqlx::query("DELETE FROM folder_map WHERE owner = ?1 AND server_id = ?2")
+            let removed = sqlx::query("DELETE FROM folder_map WHERE owner = ?1 AND server_id = ?2")
                 .bind(owner)
                 .bind(server_id)
                 .execute(&mut *tx)
                 .await
-                .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+                .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?
+                .rows_affected();
+
+            if removed == 0 {
+                continue;
+            }
 
             sqlx::query(
                 "INSERT INTO change_journal (owner, server_id, op, resource_href) VALUES (?1, ?2, 'folder-delete', 'folder')",

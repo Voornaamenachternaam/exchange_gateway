@@ -71,32 +71,41 @@ fn is_default_folder_type(t: i64) -> bool {
 }
 
 /// The CalDAV collection `components` for an EAS user-created folder Type
-/// ([MS-ASCMD] §2.2.3.186.2): 13 = calendar, 14 = contacts, 15 = tasks,
-/// 16 = journal, 17 = notes. Contacts live on CardDAV, which the gateway
-/// cannot create collections for, so they are unsupported here.
+/// ([MS-ASCMD] §2.2.3.186.2). Only Type 13 (calendar) is a creatable CalDAV
+/// collection: Type 14 (contacts) lives on CardDAV (no collection creation),
+/// and Types 15/16/17 (tasks/journal/notes) map to the gateway's single
+/// gateway-local Tasks/Notes collections — all are rejected by
+/// `is_unsupported_folder_type` before this is reached.
 fn caldav_components_for_type(t: i64) -> Option<&'static [&'static str]> {
     match t {
         13 => Some(&["VEVENT"]),
-        15 => Some(&["VTODO"]),
-        16 | 17 => Some(&["VJOURNAL"]),
         _ => None,
     }
 }
 
-/// Whether an EAS user-created folder Type is unsupported by every backend the
-/// gateway can write to. Type 14 (Contacts) lives on CardDAV, for which the
-/// gateway cannot create collections, so `FolderCreate` must reject it rather
-/// than silently backing a "Contacts" folder with a JMAP mail mailbox.
+/// Whether an EAS user-created folder Type is unsupported because the gateway
+/// cannot round-trip it as a distinct collection.
+///
+/// - Type 14 (Contacts) lives on CardDAV, for which the gateway cannot create
+///   collections; backing it with a JMAP mail mailbox would be wrong.
+/// - Types 15 (Tasks), 16 (Journal) and 17 (Notes) map to the gateway's
+///   *gateway-local* Tasks/Notes stores, which are single fixed collections:
+///   EAS Sync routes `Tasks`/`Notes` by content class to that one default
+///   collection and ignores the folder's `folder_map` href. A custom folder of
+///   these types would therefore sync the wrong collection and write the
+///   client's mutations to the default one, so `FolderCreate` rejects them
+///   rather than creating a CalDAV collection no Sync path ever reads.
 fn is_unsupported_folder_type(t: i64) -> bool {
-    t == 14
+    matches!(t, 14..=17)
 }
 
-/// Map an EAS user-created folder Type to the backend that hosts it.
+/// Map an EAS user-created folder Type to the backend that hosts it. Only
+/// Type 13 (calendar) is a CalDAV collection; 1 (generic) and 12 (user mail)
+/// are JMAP mail folders. Types 14–17 are rejected by
+/// `is_unsupported_folder_type` before this is reached.
 fn backend_for_type(t: i64) -> FolderBackend {
     match t {
-        13 | 15 | 16 | 17 => FolderBackend::Caldav,
-        // 1 (generic), 12 (user mail) and anything unrecognised default to a
-        // mail folder. Type 14 (Contacts) is rejected before this point.
+        13 => FolderBackend::Caldav,
         _ => FolderBackend::Jmap,
     }
 }
@@ -227,9 +236,10 @@ pub async fn create_folder(
     if is_default_folder_type(folder_type) {
         return FolderMutationResult::status(10);
     }
-    // Contacts (14) live on CardDAV, which the gateway cannot create
-    // collections for; reject rather than back a "Contacts" folder with a JMAP
-    // mail mailbox.
+    // Unsupported Types (14–17): Contacts live on CardDAV (no collection
+    // creation), and Tasks/Notes/Journal are single gateway-local collections
+    // that Sync reaches by content class, not by this folder's mapping. Reject
+    // rather than create a collection no Sync path reads (Status 10).
     if is_unsupported_folder_type(folder_type) {
         return FolderMutationResult::status(10);
     }
@@ -893,33 +903,38 @@ pub async fn current_hierarchy_sync_key(
 }
 
 /// After a successful folder mutation, rotate the mutating device's
-/// folder-hierarchy SyncKey and advance its watermark to the latest journal
-/// entry, so its next FolderSync (which carries that key) does not re-report the
-/// change it just made. Other devices keep their own keys and watermarks and
-/// still receive the change. Returns the new key; on a persistence failure the
-/// previous key is returned so the client can still make progress.
+/// folder-hierarchy SyncKey while PRESERVING its acknowledged watermark, so its
+/// next FolderSync (which carries the new key) still receives every change it
+/// has not yet seen. Returns the new key; on a persistence failure the previous
+/// key is returned so the client can still make progress.
+///
+/// The watermark must NOT advance to the global journal head here. A change
+/// another device journaled since this device's last FolderSync sits BELOW that
+/// head; advancing past it would skip the change permanently (the device would
+/// never receive its Add/Update/Delete until a full re-prime). Carrying the
+/// device's own `seq:` token forward means the next FolderSync replays from the
+/// last position it acknowledged — including the mutation it just made, which
+/// is harmless and idempotent (a repeated Add/Update/Delete for a folder the
+/// device already reflects). A device with no stored watermark uses `seq:0`,
+/// forcing a full hierarchy replay it can reconcile.
 pub async fn rotate_hierarchy_sync_key(
     state: &Arc<AppState>,
     owner: &str,
     device_id: &str,
 ) -> String {
     let collection_id = crate::eas::scoped_collection_id("folderhierarchy", device_id);
-    let latest_seq = match state.storage.get_latest_change_seq().await {
-        Ok(seq) => seq,
-        Err(e) => {
-            tracing::warn!(error = %e, "FolderSync: failed to read latest change seq for key rotation");
-            return current_hierarchy_sync_key(state, owner, device_id).await;
-        }
-    };
+    let carried_token = state
+        .storage
+        .get_sync_key(owner, &collection_id)
+        .await
+        .ok()
+        .flatten()
+        .and_then(|(_, token)| token)
+        .unwrap_or_else(|| "seq:0".to_string());
     let new_key = uuid::Uuid::new_v4().simple().to_string();
     if let Err(e) = state
         .storage
-        .set_sync_key(
-            owner,
-            &collection_id,
-            &new_key,
-            Some(&format!("seq:{}", latest_seq)),
-        )
+        .set_sync_key(owner, &collection_id, &new_key, Some(&carried_token))
         .await
     {
         tracing::warn!(error = %e, "FolderSync: failed to persist rotated hierarchy sync key");
@@ -1186,23 +1201,31 @@ mod tests {
     #[test]
     fn backend_selection_matches_content_family() {
         assert_eq!(backend_for_type(13), FolderBackend::Caldav);
-        assert_eq!(backend_for_type(15), FolderBackend::Caldav);
-        assert_eq!(backend_for_type(16), FolderBackend::Caldav);
-        assert_eq!(backend_for_type(17), FolderBackend::Caldav);
         assert_eq!(backend_for_type(1), FolderBackend::Jmap);
         assert_eq!(backend_for_type(12), FolderBackend::Jmap);
-        assert_eq!(backend_for_type(14), FolderBackend::Jmap);
+        // Types 14–17 are rejected by `is_unsupported_folder_type` before this
+        // mapping is consulted; any value it still sees is a mail folder.
+        for t in [14, 15, 16, 17] {
+            assert!(
+                is_unsupported_folder_type(t),
+                "Type {t} must be rejected before backend selection"
+            );
+        }
     }
 
     #[test]
     fn caldav_component_sets_are_correct() {
+        // Only Type 13 is a creatable CalDAV collection.
         assert_eq!(caldav_components_for_type(13), Some(&["VEVENT"][..]));
-        assert_eq!(caldav_components_for_type(15), Some(&["VTODO"][..]));
-        assert_eq!(caldav_components_for_type(16), Some(&["VJOURNAL"][..]));
-        assert_eq!(caldav_components_for_type(17), Some(&["VJOURNAL"][..]));
-        // Contacts (CardDAV) and mail are not CalDAV collections.
-        assert_eq!(caldav_components_for_type(14), None);
-        assert_eq!(caldav_components_for_type(12), None);
+        // Contacts (CardDAV) and Tasks/Notes/Journal (gateway-local) are not
+        // creatable CalDAV collections, and mail is not a CalDAV collection.
+        for t in [12, 14, 15, 16, 17] {
+            assert_eq!(
+                caldav_components_for_type(t),
+                None,
+                "Type {t} must not map to a CalDAV component set"
+            );
+        }
     }
 
     #[test]
@@ -1324,6 +1347,28 @@ mod tests {
         let long = "x".repeat(65);
         let r = create_folder(&state, "u@example.com", &pw(), "0", &long, 12).await;
         assert_eq!(r.status, 10);
+    }
+
+    /// Custom Tasks/Notes/Journal folders (Types 15/16/17) map to the gateway's
+    /// single gateway-local Tasks/Notes collections, which Sync reaches by
+    /// content class and not by the folder's mapping. Creating them would sync
+    /// the wrong collection, so FolderCreate rejects them (Status 10) without
+    /// touching the backend — matching the Type 14 (Contacts) precedent.
+    #[tokio::test]
+    async fn create_rejects_custom_task_note_folder_types() {
+        for t in [14, 15, 16, 17] {
+            let (state, calls, dav_calls) = spawn_backend_stub().await;
+            let r = create_folder(&state, "u@example.com", &pw(), "0", "My Folder", t).await;
+            assert_eq!(r.status, 10, "Type {t} must be rejected with Status 10");
+            assert!(
+                jmap_methods(&calls).await.is_empty(),
+                "a rejected Type {t} create must not touch the JMAP backend"
+            );
+            assert!(
+                dav_calls.lock().await.is_empty(),
+                "a rejected Type {t} create must issue no CalDAV request"
+            );
+        }
     }
 
     #[tokio::test]
