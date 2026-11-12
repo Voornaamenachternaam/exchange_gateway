@@ -816,3 +816,34 @@ EAS specs v20250520 (16.1); older EAS compat NOT needed.
   idempotence-store test. Suite: 964 green (928 lib + 22 fixtures + 11
   snapshots + 2 jmap_calendar_deploy + 1 doc), clippy 0, fmt clean on
   rsvp.rs/message.rs/ews.rs/storage.rs (eas.rs pre-existing exception).
+
+- PR #2046 (`eas-folder-management-and-mailbox-scoped-email-sync`) review
+  triage COMPLETE: 4 substantive findings, all concurred with and fixed
+  (no comment replies). (A/§2-l) `render_pending_email_op` is now
+  `anyhow::Result<(String, Option<String>)>` and fail-closed: a transient
+  `Email/get` error on a queued created/changed op and a failed
+  keyword-baseline seed for a delivered `<Add>` both propagate, so the delta
+  does NOT acknowledge the window or consume the op (no token advance, no
+  overflow queue, no baseline write); the old code rendered empty on a fetch
+  error (treated as a vanished item → silent loss) and only logged a failed
+  seed (→ stale client flags). (B/§2-k) the email delta's mailbox-role
+  resolution no longer flattens a `Mailbox/query` failure with `.ok()` to
+  `None` (which cleared the stored query state and answered an empty success
+  window, losing every change during the outage): the error propagates as
+  Status 6 with the token untouched; a genuinely mailbox-less role is
+  `Ok(empty)` and still scopes to nothing. (C/§2-j) `FolderCreate` rejects a
+  missing/non-numeric `<Type>` (required, [MS-ASCMD] §2.2.3.186.2) as Status
+  10 instead of defaulting to 12, and `is_creatable_folder_type` (1/12/13)
+  gates `create_folder` so an unrecognised numeric Type no longer falls
+  through `backend_for_type` to JMAP and creates a mail mailbox. Tests: 2
+  eas_folders (`create_rejects_unrecognised_folder_types`,
+  `creatable_folder_types_match_spec`) + 4 eas
+  (`test_folder_create_rejects_missing_or_malformed_type`,
+  `test_email_sync_mailbox_resolution_failure_preserves_token`,
+  `test_email_delta_fetch_error_fails_closed_not_vanished`,
+  `test_email_delta_add_seed_failure_fails_closed`). Suite: 1314 lib + 7 + 5
+  + 22 + 11 + 1 doc = 1360 green, clippy 0, fmt clean on touched files.
+  NOTE the §19 `storage::tests::concurrent_sync_writes_and_ping_reads_never_fail_or_stall`
+  load test is timing-sensitive under a fully parallel `cargo test` (a
+  "database is locked" panic is possible); it passes reliably in isolation
+  and is unrelated to this change.

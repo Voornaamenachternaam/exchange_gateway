@@ -99,6 +99,18 @@ fn is_unsupported_folder_type(t: i64) -> bool {
     matches!(t, 14..=17)
 }
 
+/// Whether an EAS user-created folder Type is creatable by this gateway.
+///
+/// [MS-ASCMD] §2.2.3.186.2 lists only three creatable values: 1 (generic),
+/// 12 (mail) and 13 (calendar). Every other value is either a reserved default
+/// (2–11, 19), explicitly unsupported (14–17) or out of range; the last group
+/// is the dangerous one — an unrecognised numeric Type would otherwise fall
+/// through [`backend_for_type`] to JMAP and create a mail mailbox the client
+/// never asked for.
+fn is_creatable_folder_type(t: i64) -> bool {
+    matches!(t, 1 | 12 | 13)
+}
+
 /// Map an EAS user-created folder Type to the backend that hosts it. Only
 /// Type 13 (calendar) is a CalDAV collection; 1 (generic) and 12 (user mail)
 /// are JMAP mail folders. Types 14–17 are rejected by
@@ -257,6 +269,12 @@ pub async fn create_folder(
     // that Sync reaches by content class, not by this folder's mapping. Reject
     // rather than create a collection no Sync path reads (Status 10).
     if is_unsupported_folder_type(folder_type) {
+        return FolderMutationResult::status(10);
+    }
+    // Any value outside the spec's creatable set (1/12/13) is malformed
+    // (Status 10). Without this guard an unrecognised Type would fall through
+    // `backend_for_type` to JMAP and silently create a mail mailbox.
+    if !is_creatable_folder_type(folder_type) {
         return FolderMutationResult::status(10);
     }
     if is_system_folder_name(display_name) {
@@ -1464,6 +1482,53 @@ mod tests {
             assert!(
                 dav_calls.lock().await.is_empty(),
                 "a rejected Type {t} create must issue no CalDAV request"
+            );
+        }
+    }
+
+    /// An unrecognised numeric `<Type>` must be rejected as malformed (Status
+    /// 10) WITHOUT touching the backend. Before this guard an out-of-range type
+    /// (18, 100, 0, negative) fell through `backend_for_type` to JMAP and
+    /// created a mail mailbox the client never asked for.
+    #[tokio::test]
+    async fn create_rejects_unrecognised_folder_types() {
+        for t in [0, 18, 20, 100, -1] {
+            let (state, calls, dav_calls) = spawn_backend_stub().await;
+            let r = create_folder(&state, "u@example.com", &pw(), "0", "My Folder", t).await;
+            assert_eq!(r.status, 10, "Type {t} must be rejected with Status 10");
+            assert!(
+                jmap_methods(&calls).await.is_empty(),
+                "a rejected Type {t} create must not touch the JMAP backend"
+            );
+            assert!(
+                dav_calls.lock().await.is_empty(),
+                "a rejected Type {t} create must issue no CalDAV request"
+            );
+            assert!(
+                state
+                    .storage
+                    .list_folders("u@example.com")
+                    .await
+                    .unwrap()
+                    .is_empty(),
+                "a rejected Type {t} create must persist no folder row"
+            );
+        }
+    }
+
+    #[test]
+    fn creatable_folder_types_match_spec() {
+        for t in [1, 12, 13] {
+            assert!(is_creatable_folder_type(t), "Type {t} must be creatable");
+        }
+        // Reserved defaults, explicitly-unsupported and out-of-range values are
+        // all NOT creatable.
+        for t in [
+            0, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 14, 15, 16, 17, 18, 19, 20, 100,
+        ] {
+            assert!(
+                !is_creatable_folder_type(t),
+                "Type {t} must not be creatable"
             );
         }
     }

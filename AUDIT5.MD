@@ -271,6 +271,20 @@ create compensation; and the sync suite gains
 `scoped_calendar_prime_does_not_tombstone_foreign_event` and
 `unscoped_calendar_delta_tombstones_destroyed_event` pinning the scoped-folder
 tombstone guard (and its deliberate absence for the default folder).
+The post-commit hardening (j)–(l) adds
+`eas_folders::tests::create_rejects_unrecognised_folder_types` +
+`creatable_folder_types_match_spec` (out-of-range Type rejected with Status 10,
+no backend call, no persisted row) and
+`eas::tests::test_folder_create_rejects_missing_or_malformed_type` (missing/
+non-numeric `<Type>` → Status 10, no row), plus three fail-closed delta tests:
+`eas::tests::test_email_sync_mailbox_resolution_failure_preserves_token`
+(a `Mailbox/query` 500 makes the Sync return an error with the stored query
+state untouched),
+`eas::tests::test_email_delta_fetch_error_fails_closed_not_vanished` (an
+`Email/get` 500 for a queued Add fails the delta with token + queue untouched)
+and `eas::tests::test_email_delta_add_seed_failure_fails_closed` (a poisoned
+baseline seed fails the delta, then the same delta delivers the Add and seeds
+it once storage recovers).
 
 **Operator change list.** None required for Cloudflare or Stalwart: the new
 commands use the already-configured JMAP and CalDAV endpoints. No new
@@ -330,6 +344,26 @@ orphan (CalDAV, which no longer adopts). A failed compensation is logged and the
 client still receives the retryable Status 6. (i) `GetHierarchy` fails CLOSED
 (HTTP 500, [MS-ASCMD] §2.2.1.8) when the user-created folder list cannot be
 read, instead of returning a hierarchy that silently omits those folders.
+(j) A `FolderCreate` whose `<Type>` is missing, non-numeric or outside the
+spec's creatable set (1/12/13) is rejected as malformed (Status 10) WITHOUT
+touching the backend. `<Type>` is a REQUIRED `unsignedByte` child
+([MS-ASCMD] §2.2.3.186.2); the old handler defaulted an absent value to 12 and
+`backend_for_type` sent every other numeric value to JMAP, so a malformed or
+out-of-range Type silently created a mail mailbox the client never asked for
+(`is_creatable_folder_type` now gates the create). (k) The email delta's
+mailbox-role resolution is fail-closed: a transient `Mailbox/query` failure
+propagates as Status 6 with the stored query state untouched, instead of
+flattening to "no mailbox" — which would clear the token and answer an empty
+success window, losing every change made during the outage until a full
+re-prime. A role that genuinely has no mailbox is `Ok(empty)` and still scopes
+to nothing. (l) `render_pending_email_op` is fail-closed: a transient
+`Email/get` error for a queued created/changed op, or a failed keyword-baseline
+seed for a delivered `<Add>`, now returns an error so the caller does NOT
+acknowledge the window or consume the op (no token advance, no overflow queue,
+no baseline write) — a later Sync re-derives and re-delivers the same op. The
+old code turned a fetch error into an empty render (treated as a vanished item)
+and only logged a failed seed, silently dropping an email change the client
+never received and leaving its flags stale.
 
 **Upgrade note (expected one-time re-prime).** Before this change the stored
 email delta token was the `Email/get` data-type state; the new delta passes it
