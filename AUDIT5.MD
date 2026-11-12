@@ -228,7 +228,19 @@ delta return an error with the stored token and queue untouched, then drain
 cleanly once storage recovers). `mapi::handler` gains
 `rop_delete_folder_prunes_eas_folder_map_and_journals` and
 `rop_delete_folder_without_mapping_row_journals_nothing`, pinning the
-EAS-mirror consistency of a MAPI mailbox destroy.
+EAS-mirror consistency of a MAPI mailbox destroy, plus
+`rop_delete_folder_mirror_write_failure_is_disk_error` (the post-commit
+hardening above). The hierarchy-rotation tests
+`rotate_hierarchy_key_for_never_primed_device_returns_prime_key`,
+`rotate_hierarchy_key_preserves_primed_watermark` and
+`rotate_hierarchy_key_without_token_forces_prime` pin the fail-closed rotation;
+`create_calendar_folder_adopts_orphaned_collection_on_405` and
+`create_calendar_folder_405_with_existing_mapping_is_conflict` pin the orphan
+adoption; and the sync suite gains
+`scoped_calendar_delta_does_not_tombstone_foreign_destroyed_event`,
+`scoped_calendar_prime_does_not_tombstone_foreign_event` and
+`unscoped_calendar_delta_tombstones_destroyed_event` pinning the scoped-folder
+tombstone guard (and its deliberate absence for the default folder).
 
 **Operator change list.** None required for Cloudflare or Stalwart: the new
 commands use the already-configured JMAP and CalDAV endpoints. No new
@@ -250,6 +262,33 @@ instead of treating it as a missing row, so a flag change is never silently
 swallowed — and the per-delta scan's upserts SKIP ids delivered as an `<Add>`
 this delta, so the Add's fresh seed wins over the older scan snapshot (no
 duplicate flag `<Change>` on the next delta).
+
+**PR-review hardening (post-commit).** (d) A `FolderCreate` whose
+`MKCALENDAR` answers 405 is now adopted as an orphan when NO `folder_map` row
+owns that href (`folder_exists_for_backend_id`): a retry after a create whose
+mapping write failed recovers instead of being wedged on a permanent Status 2,
+while a 405 where another folder's mapping DOES own the href stays Status 2 (a
+real conflict — adopting would clobber that folder). (e) A MAPI mirror-write
+failure after a JMAP mailbox destroy is no longer acknowledged as success:
+`RopDeleteFolder` and `RopHardDeleteMessagesAndSubfolders` surface a retryable
+`DiskError` when `delete_folders_journaled` fails, because the mailbox is
+already gone and a stale `folder_map` row would keep EAS advertising a deleted
+folder and leave primed devices without its Delete (the destroy is idempotent,
+so a retry finds the mailbox already gone and re-runs the prune). (f) Hierarchy
+key rotation is fail-closed: a `get_sync_key` READ error is logged and returns
+the current key (never `seq:0`, which would clobber the device's real
+watermark and skip every earlier change), and a device with NO acknowledged
+watermark — no stored state, or a stored key with a NULL token — receives the
+prime key `"0"` so its next `FolderSync` takes the full-hierarchy branch
+instead of rendering only journal rows and omitting every default folder. (g)
+The calendar `item_map` is owner-global (no collection column), so a SCOPED
+(custom-calendar) folder must not infer deletions from the account-wide
+`CalendarEvent/changes` feed nor from its own single-calendar snapshot: an id
+destroyed in another calendar would otherwise emit a `<Delete>` in this folder
+for an event the client never held AND remove the shared row before the event's
+own collection could deliver it. The delta path only records destroyed ids for
+the unscoped (default) folder, and the full-snapshot tombstone sweep is skipped
+entirely for scoped folders.
 
 **Upgrade note (expected one-time re-prime).** Before this change the stored
 email delta token was the `Email/get` data-type state; the new delta passes it

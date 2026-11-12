@@ -409,9 +409,13 @@ async fn create_caldav_folder(
     let Ok(caldav) = CaldavClient::new(&state.cfg) else {
         return FolderMutationResult::status(6);
     };
-    // A 405 means the collection already exists; adopting it as a "new" folder
-    // would clobber whatever the existing collection is (or another folder's
-    // mapping). Reject it as a conflict.
+    // A 405 means the collection already exists. Distinguish the two causes:
+    //  * a genuine conflict — another folder's mapping already owns this href,
+    //    so adopting it would clobber that folder. Reject it as Status 2.
+    //  * a RETRY after MKCALENDAR succeeded but the mapping write below failed
+    //    — the collection exists but no `folder_map` row references it. Adopt
+    //    the collection by writing the mapping so the client obtains a
+    //    ServerId instead of being wedged on a permanent Status 2.
     match caldav
         .create_calendar_collection(
             owner,
@@ -424,11 +428,29 @@ async fn create_caldav_folder(
     {
         Ok(true) => {}
         Ok(false) => {
-            tracing::warn!(
-                collection = %coll.name,
-                "FolderCreate: calendar collection already exists"
-            );
-            return FolderMutationResult::status(2);
+            match state
+                .storage
+                .folder_exists_for_backend_id(owner, &coll.href)
+                .await
+            {
+                Ok(true) => {
+                    tracing::warn!(
+                        collection = %coll.name,
+                        "FolderCreate: calendar collection already exists and is mapped"
+                    );
+                    return FolderMutationResult::status(2);
+                }
+                Ok(false) => {
+                    tracing::info!(
+                        collection = %coll.name,
+                        "FolderCreate: adopting pre-existing calendar collection (recovering an orphaned MKCALENDAR)"
+                    );
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "FolderCreate: mapping lookup failed for existing collection");
+                    return FolderMutationResult::status(6);
+                }
+            }
         }
         Err(e) => {
             tracing::warn!(error = %e, "FolderCreate: MKCALENDAR failed");
@@ -915,22 +937,36 @@ pub async fn current_hierarchy_sync_key(
 /// device's own `seq:` token forward means the next FolderSync replays from the
 /// last position it acknowledged — including the mutation it just made, which
 /// is harmless and idempotent (a repeated Add/Update/Delete for a folder the
-/// device already reflects). A device with no stored watermark uses `seq:0`,
-/// forcing a full hierarchy replay it can reconcile.
+/// device already reflects).
+///
+/// A device with NO acknowledged watermark (no stored hierarchy state at all,
+/// e.g. its first command was a FolderCreate) must NOT receive a nonzero key
+/// carrying `seq:0`: the next FolderSync would treat that as an incremental
+/// delta and render only the journal rows, omitting every default folder.
+/// Answer the prime key `"0"` and persist nothing so the follow-up FolderSync
+/// takes the full-prime branch and writes a proper key.
 pub async fn rotate_hierarchy_sync_key(
     state: &Arc<AppState>,
     owner: &str,
     device_id: &str,
 ) -> String {
     let collection_id = crate::eas::scoped_collection_id("folderhierarchy", device_id);
-    let carried_token = state
-        .storage
-        .get_sync_key(owner, &collection_id)
-        .await
-        .ok()
-        .flatten()
-        .and_then(|(_, token)| token)
-        .unwrap_or_else(|| "seq:0".to_string());
+    let carried_token = match state.storage.get_sync_key(owner, &collection_id).await {
+        Ok(Some((_, Some(token)))) => token,
+        // No stored watermark (or a stored key with no token): force a prime.
+        Ok(_) => return "0".to_string(),
+        Err(e) => {
+            // A read failure must NOT be mistaken for "no watermark": rotating
+            // to `seq:0` would clobber the device's real position and make its
+            // next FolderSync skip every earlier change. Keep the current key
+            // so the client retries against the unchanged state.
+            tracing::warn!(
+                error = %e,
+                "FolderSync: failed to read hierarchy watermark for key rotation"
+            );
+            return current_hierarchy_sync_key(state, owner, device_id).await;
+        }
+    };
     let new_key = uuid::Uuid::new_v4().simple().to_string();
     if let Err(e) = state
         .storage
@@ -964,6 +1000,9 @@ mod tests {
         /// `notFound`, `Some("refused")` = `notDestroyed` `mailboxHasChild`,
         /// `Some("error")` = a method-level `error` response.
         destroy_mode: Option<String>,
+        /// The HTTP status the CalDAV stub answers `MKCALENDAR` with (201 by
+        /// default; 405 models a collection that already exists).
+        mkcalendar_status: u16,
     }
 
     async fn spawn_backend_stub() -> (
@@ -978,6 +1017,19 @@ mod tests {
     /// (see [`Ctl::destroy_mode`]).
     async fn spawn_backend_stub_with(
         destroy_mode: Option<&str>,
+    ) -> (
+        StdArc<AppState>,
+        StdArc<TokioMutex<Vec<Value>>>,
+        StdArc<TokioMutex<Vec<(String, String)>>>,
+    ) {
+        spawn_backend_stub_full(destroy_mode, 201).await
+    }
+
+    /// As [`spawn_backend_stub_with`] but also scripts the `MKCALENDAR` status
+    /// (405 models a collection that already exists).
+    async fn spawn_backend_stub_full(
+        destroy_mode: Option<&str>,
+        mkcalendar_status: u16,
     ) -> (
         StdArc<AppState>,
         StdArc<TokioMutex<Vec<Value>>>,
@@ -1115,7 +1167,7 @@ mod tests {
                 .await
                 .push((method.as_str().to_string(), uri.path().to_string()));
             let status = match method.as_str() {
-                "MKCALENDAR" => 201,
+                "MKCALENDAR" => ctl.mkcalendar_status,
                 _ => 200,
             };
             Response::builder()
@@ -1132,6 +1184,7 @@ mod tests {
             jmap_calls: jmap_calls.clone(),
             dav_calls: dav_calls.clone(),
             destroy_mode,
+            mkcalendar_status,
         };
         let app = axum::Router::new()
             .route("/session", get(session))
@@ -1437,6 +1490,124 @@ mod tests {
             .unwrap()
             .expect("caldav folder persisted");
         assert_eq!(row.backend_kind, "caldav");
+    }
+
+    /// A 405 from MKCALENDAR with NO `folder_map` row owning the href means the
+    /// collection is an orphan (a prior MKCALENDAR succeeded but the mapping
+    /// write failed). Adopt it by writing the mapping so the client gets a
+    /// ServerId instead of being wedged on a permanent Status 2.
+    #[tokio::test]
+    async fn create_calendar_folder_adopts_orphaned_collection_on_405() {
+        let (state, _, _) = spawn_backend_stub_full(None, 405).await;
+        let r = create_folder(&state, "u@example.com", &pw(), "0", "Orphan", 13).await;
+        assert_eq!(r.status, 1, "an orphaned collection must be adopted");
+        assert_eq!(r.server_id.as_deref(), Some("/cal/u@example.com/Orphan/"));
+        let row = state
+            .storage
+            .get_folder("u@example.com", "/cal/u@example.com/Orphan/")
+            .await
+            .unwrap()
+            .expect("adopted folder persisted");
+        assert_eq!(row.backend_kind, "caldav");
+    }
+
+    /// A 405 where another folder's mapping already owns the href is a genuine
+    /// conflict: adopting would clobber that folder, so it must stay Status 2.
+    #[tokio::test]
+    async fn create_calendar_folder_405_with_existing_mapping_is_conflict() {
+        let (state, _, _) = spawn_backend_stub_full(None, 405).await;
+        // Pre-seed a folder that already owns the target href.
+        state
+            .storage
+            .upsert_folder_journaled(
+                crate::storage::FolderUpsertParams {
+                    owner: "u@example.com",
+                    server_id: "/cal/u@example.com/Taken/",
+                    parent_id: "0",
+                    display_name: "Taken",
+                    folder_type: 13,
+                    backend_kind: "caldav",
+                    backend_id: "/cal/u@example.com/Taken/",
+                },
+                "folder-add",
+            )
+            .await
+            .unwrap();
+        let r = create_folder(&state, "u@example.com", &pw(), "0", "Taken", 13).await;
+        assert_eq!(
+            r.status, 2,
+            "a mapped href is a real conflict, not an orphan"
+        );
+    }
+
+    /// A device that has NEVER primed the hierarchy (no stored FolderSync
+    /// state) must not receive a nonzero rotated key carrying `seq:0`: its next
+    /// FolderSync would treat that as an incremental delta and omit every
+    /// default folder. The prime key `"0"` forces the full-hierarchy branch.
+    #[tokio::test]
+    async fn rotate_hierarchy_key_for_never_primed_device_returns_prime_key() {
+        let (state, _, _) = spawn_backend_stub().await;
+        let key = rotate_hierarchy_sync_key(&state, "u@example.com", "fresh-device").await;
+        assert_eq!(
+            key, "0",
+            "a device with no stored hierarchy state must be told to prime"
+        );
+        // Nothing is persisted, so the follow-up FolderSync writes a real key.
+        let collection_id = crate::eas::scoped_collection_id("folderhierarchy", "fresh-device");
+        assert!(
+            state
+                .storage
+                .get_sync_key("u@example.com", &collection_id)
+                .await
+                .unwrap()
+                .is_none(),
+            "no hierarchy state may be fabricated for a never-primed device"
+        );
+    }
+
+    /// A primed device keeps its acknowledged watermark across a rotation, so
+    /// its next FolderSync still receives every earlier unseen change.
+    #[tokio::test]
+    async fn rotate_hierarchy_key_preserves_primed_watermark() {
+        let (state, _, _) = spawn_backend_stub().await;
+        let collection_id = crate::eas::scoped_collection_id("folderhierarchy", "dev-1");
+        state
+            .storage
+            .set_sync_key("u@example.com", &collection_id, "old-key", Some("seq:7"))
+            .await
+            .unwrap();
+        let key = rotate_hierarchy_sync_key(&state, "u@example.com", "dev-1").await;
+        assert_ne!(key, "0", "a primed device gets a real rotated key");
+        let (stored_key, token) = state
+            .storage
+            .get_sync_key("u@example.com", &collection_id)
+            .await
+            .unwrap()
+            .expect("rotated key persisted");
+        assert_eq!(stored_key, key);
+        assert_eq!(
+            token.as_deref(),
+            Some("seq:7"),
+            "the acknowledged watermark must be preserved across rotation"
+        );
+    }
+
+    /// A stored hierarchy key whose token is NULL is not an acknowledged
+    /// watermark: rotation must force a prime rather than fabricate `seq:0`.
+    #[tokio::test]
+    async fn rotate_hierarchy_key_without_token_forces_prime() {
+        let (state, _, _) = spawn_backend_stub().await;
+        let collection_id = crate::eas::scoped_collection_id("folderhierarchy", "dev-2");
+        state
+            .storage
+            .set_sync_key("u@example.com", &collection_id, "k", None)
+            .await
+            .unwrap();
+        let key = rotate_hierarchy_sync_key(&state, "u@example.com", "dev-2").await;
+        assert_eq!(
+            key, "0",
+            "a key without a watermark is not a valid resume point"
+        );
     }
 
     #[tokio::test]

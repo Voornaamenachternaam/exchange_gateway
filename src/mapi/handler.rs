@@ -5283,6 +5283,14 @@ async fn execute_one_rop(
                         // receive its Delete. `delete_folders_journaled` is a
                         // no-op for ids with no mapping row (e.g. a system
                         // folder, whose ServerId is never a JMAP mailbox id).
+                        //
+                        // The mirror write must NOT be acknowledged as success
+                        // when it fails: the JMAP mailbox is already gone, so a
+                        // stale `folder_map` row keeps EAS advertising a deleted
+                        // folder and primed devices never learn of its Delete.
+                        // Report a retryable server error (the destroy is
+                        // idempotent — a retry finds the mailbox AlreadyGone and
+                        // re-runs the prune).
                         if !destroyed_ids.is_empty()
                             && let Some(storage) = storage
                             && let Err(e) = storage
@@ -5293,6 +5301,7 @@ async fn execute_one_rop(
                                 error = %e,
                                 "RopDeleteFolder: failed to prune EAS folder map for destroyed mailboxes"
                             );
+                            outcome = RopErrorCode::DiskError;
                         }
                         // The ROP succeeded for only some (or none) of the
                         // targets — a non-empty folder with DEL_MESSAGES unset,
@@ -6147,7 +6156,11 @@ async fn execute_one_rop(
                         }
                         // Keep the EAS folder mirror consistent with the
                         // destroyed subfolders (see `RopDeleteFolder`). A
-                        // no-op for ids with no mapping row.
+                        // no-op for ids with no mapping row. A failed mirror
+                        // write must fail the ROP: the JMAP children are gone,
+                        // so a stale `folder_map` row keeps EAS advertising a
+                        // deleted folder and primed devices miss its Delete.
+                        let mut mirror_ok = true;
                         if !destroyed_ids.is_empty()
                             && let Some(storage) = storage
                             && let Err(e) = storage
@@ -6158,8 +6171,9 @@ async fn execute_one_rop(
                                 error = %e,
                                 "HardDelete: failed to prune EAS folder map for destroyed subfolders"
                             );
+                            mirror_ok = false;
                         }
-                        outcome = if destroyed_ok && subfolders_ok {
+                        outcome = if destroyed_ok && subfolders_ok && mirror_ok {
                             RopErrorCode::Success
                         } else {
                             RopErrorCode::DiskError
@@ -11743,6 +11757,49 @@ mod tests {
                 .unwrap()
                 .is_empty(),
             "an unmapped mailbox destroy must journal nothing"
+        );
+    }
+
+    /// A failure to prune the EAS folder mirror after the JMAP mailbox is
+    /// already destroyed must NOT be acknowledged as success: a stale
+    /// `folder_map` row keeps EAS advertising a deleted folder and primed
+    /// devices miss its Delete. The ROP reports a retryable `DiskError`. The
+    /// pool is closed to force the mirror write to fail.
+    #[tokio::test]
+    async fn rop_delete_folder_mirror_write_failure_is_disk_error() {
+        let storage = std::sync::Arc::new(
+            crate::storage::Storage::new("sqlite::memory:")
+                .await
+                .unwrap(),
+        );
+        storage.init_schema().await.unwrap();
+        let owner = "u@example.com";
+        storage
+            .upsert_folder_journaled(
+                crate::storage::FolderUpsertParams {
+                    owner,
+                    server_id: "mb-1",
+                    parent_id: "0",
+                    display_name: "Projects",
+                    folder_type: 12,
+                    backend_kind: "jmap",
+                    backend_id: "mb-1",
+                },
+                "folder-add",
+            )
+            .await
+            .unwrap();
+
+        let (base, _calls) = spawn_delete_folder_stub(vec![]).await;
+        // Close the pool AFTER seeding the mapping but BEFORE the ROP runs, so
+        // the destroy succeeds but `delete_folders_journaled` cannot execute.
+        storage.pool().close().await;
+        let (rv, _partial) =
+            run_delete_folder_rop_full_storage(&base, "mb-1", 0, Some(storage.clone())).await;
+        assert_eq!(
+            rv,
+            RopErrorCode::DiskError,
+            "a failed mirror prune must surface as a retryable error, never success"
         );
     }
 
