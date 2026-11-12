@@ -172,7 +172,15 @@ gateway restarts and surface in `FolderSync`/`GetHierarchy`.
   offset would skip an unchanged message — and, because that message was
   already covered by the first window's query state, the delta would never
   re-report it (permanently absent from the client). A vanished anchor surfaces
-  as `anchorNotFound` and falls back to the numeric position. The clipped-prime
+  as `anchorNotFound` and falls back to the numeric position **rebased by one**:
+  the stored offset is the index PAST the previous window, so the anchor — the
+  last message that window delivered — occupied the slot `offset - 1`. When that
+  message is deleted everything after it shifts up by one, so the first
+  UNDELIVERED message now sits at `offset - 1`; resuming at the unchanged offset
+  would skip it — and, being already inside the first window's query state, no
+  later delta would re-report it. Resuming at `offset - 1` re-delivers that slot
+  (the now-deleted anchor's position, i.e. the first undelivered message) and the
+  client resolves the duplicate Add by ServerId. The clipped-prime
   resume decision uses the response's **authoritative `position`** (RFC 8620
   §5.5 `EmailListResult::query_position`), not a locally accumulated offset, for
   the same reason. A `get_email_sync_cursor` READ failure on the initial-prime
@@ -189,8 +197,16 @@ gateway restarts and surface in `FolderSync`/`GetHierarchy`.
   unadvanced key would make the next delta recompute the whole change set and
   replay already-delivered commands; an advanced key with a surviving queue
   would re-deliver the same ops — either ordering surfaces duplicate commands.
-  A failed drain is not acknowledged: the caller answers a retryable Status 6
-  and the transaction rolls back, so the next Sync retries the same drain.
+  The drain also CLAIMS the queue via the `DELETE`'s `rows_affected`: two
+  overlapping Sync requests can both read and render the same queued
+  operations, and without a claim the second `DELETE` would remove zero rows yet
+  still advance the token and acknowledge a window it did not own. Exactly one
+  caller observes `rows_affected == 1` (returns `true`); every later caller gets
+  `Ok(false)` with the stored token untouched. A failed drain (or a claim loss)
+  is not acknowledged: the caller answers a retryable Status 6 and the
+  transaction rolls back, so the next Sync retries the same drain — or, after a
+  claim loss, finds the queue gone and diffs from the winner's advanced token
+  instead of replaying.
 
 - **Class-omitted folder routing.** When the client omits the
   protocol-optional `<Class>` ([MS-ASCMD] §2.2.3.30), the persisted `folder_map`
@@ -198,10 +214,13 @@ gateway restarts and surface in `FolderSync`/`GetHierarchy`.
   the Email path (a user mail folder), `"caldav"` routes to the Calendar path (a
   user-created calendar-family folder, Type 13). Without the CalDAV inference a
   custom calendar folder would fall through to the unsupported-collection
-  Status 4 and could never sync. The mapping is read ONCE and reused; a read
-  failure here is treated as "no mapping", but the class-specific handler
-  re-resolves the mapping and fails closed (retryable Status 6) on its own read
-  error, so a misroute cannot occur.
+  Status 4 and could never sync. A SYSTEM collection (a system email id, `1`,
+  `8`, or the Tasks/Notes ids) is routed by its id alone and never consults
+  `folder_map`. For a user-created folder the mapping is read ONCE and reused;
+  a transient READ failure is NOT flattened to "no mapping" (which would answer
+  Status 4 and never sync the folder) — the collection fails closed with a
+  retryable Status 6 so the next Sync re-reads the mapping, matching the
+  class-specific handlers' own fail-closed resolution.
 
 - **Email property (flag) updates.** `Email/queryChanges` reports only
   membership of the query result set (RFC 8620 §5.6), so a message whose flags
@@ -284,15 +303,28 @@ cleanly once storage recovers).
 `eas::tests::test_email_delta_queue_drain_is_atomic_and_fails_closed` pins the
 atomic drain (a poisoned `sync_state` write during the drain makes the delta
 return an error with the queue and stored token both untouched, so the next
-Sync re-drains rather than replaying or losing the window), and
+Sync re-drains rather than replaying or losing the window);
+`eas::tests::test_email_delta_queue_drain_claims_and_loser_does_not_advance`
+pins the queue claim (the first `drain_email_sync_queue` returns `true` and
+advances the token; a second returns `false` and leaves the winner's key/token
+untouched); and
 `eas::tests::test_email_initial_sync_fails_closed_when_cursor_reread_fails`
 pins the fail-closed initial-prime cursor re-read.
+`eas::tests::test_email_initial_sync_anchor_not_found_falls_back_to_position`
+pins the rebased `anchorNotFound` fallback (the fallback `Email/query` carries
+`position` one less than the stored post-window offset and no anchor).
 `sync::tests::calendar_add_fails_closed_when_folder_lookup_fails` pins that a
 transient `folder_map` read failure during a calendar Add mutation fails the
 mutation closed (no CalDAV PUT reaches the backend), and
 `eas::tests::test_sync_collection_class_omitted_caldav_folder_routes_to_calendar`
 pins the Class-omitted CalDAV-folder routing to the Calendar path (never the
 unsupported-collection Status 4).
+`eas::tests::test_sync_collection_class_omitted_folder_read_failure_fails_closed`
+pins the Class-omitted routing fail-closed on a `folder_map` read failure
+(Status 6, never Status 4), and
+`eas::tests::test_sync_collection_class_omitted_system_folder_ignores_folder_map`
+pins that a system collection routes by id alone (unaffected by a `folder_map`
+read failure).
 `eas::tests::test_get_hierarchy_fails_closed_when_folder_list_read_fails`
 pins the GetHierarchy HTTP 500 on a folder-list read failure. `mapi::handler` gains
 `rop_delete_folder_prunes_eas_folder_map_and_journals` and

@@ -5938,6 +5938,26 @@ struct SyncCtx<'a> {
     global_window_size: Option<usize>,
 }
 
+/// True when `collection_id` names a built-in (system) EAS collection whose
+/// content class is fully determined by the id itself, so a Class-omitted Sync
+/// never needs the persisted `folder_map` to route it. User-created folders
+/// (a FolderCreate ServerId: a JMAP mailbox id or a CalDAV collection href) are
+/// deliberately NOT matched here and always go through the mapping lookup.
+fn is_system_sync_collection(collection_id: &str) -> bool {
+    // Email system folders (Inbox/Drafts/Deleted Items/Sent Items/Outbox/Junk).
+    crate::email::is_eas_email_collection_id(collection_id)
+        // Calendar.
+        || collection_id == "1"
+        // Contacts.
+        || collection_id == "8"
+        || collection_id.eq_ignore_ascii_case("contacts")
+        // Tasks and Notes.
+        || collection_id == crate::tasks::TASKS_COLLECTION_ID
+        || collection_id.eq_ignore_ascii_case("tasks")
+        || collection_id == crate::tasks::NOTES_COLLECTION_ID
+        || collection_id.eq_ignore_ascii_case("notes")
+}
+
 /// Handle a multi-collection EAS Sync command.
 ///
 /// Per MS-ASCMD §2.2.3.31.2, a Sync request can contain 1..N Collection elements.
@@ -6021,18 +6041,37 @@ async fn handle_sync_collections(ctx: &SyncCtx<'_>, collections: &[SyncCollectio
         // through to the "unsupported collection" Status 4. The SAME mapping
         // disambiguates a user-created calendar-family folder (a CalDAV
         // collection, Type 13), so it is read ONCE and reused by both the
-        // email and calendar inference. A read failure is treated as "no
-        // mapping" here; the class-specific handler re-resolves the mapping and
-        // fails closed (retryable Status 6) on its own read error, so a
-        // misroute cannot occur.
-        let mapped_backend_kind: Option<String> = if coll.class.is_none() {
-            state
-                .storage
-                .get_folder(username, collection_id)
-                .await
-                .ok()
-                .flatten()
-                .map(|row| row.backend_kind)
+        // email and calendar inference.
+        //
+        // A transient storage read failure must NOT be flattened to "no
+        // mapping": an omitted-Class custom folder would then fall through to
+        // the unsupported-collection Status 4 and never sync. Fail closed
+        // (retryable Status 6) for THIS collection so the next Sync re-reads
+        // the mapping, matching the class-specific handlers' own fail-closed
+        // resolution. A SYSTEM collection's class is inferable from its id
+        // alone, so the mapping is not consulted for it (and its read can never
+        // block it).
+        let mapped_backend_kind: Option<String> = if coll.class.is_none()
+            && !is_system_sync_collection(collection_id)
+        {
+            match state.storage.get_folder(username, collection_id).await {
+                Ok(row) => row.map(|r| r.backend_kind),
+                Err(e) => {
+                    tracing::warn!(
+                        request_id = %request_id,
+                        collection_id = %collection_id,
+                        error = %e,
+                        "Failed to read folder mapping for Class-omitted Sync; deferring"
+                    );
+                    collection_responses.push(format!(
+                        "<Collection><Class>{}</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>6</Status></Collection>",
+                        xml_escape(coll.class.as_deref().unwrap_or("")),
+                        xml_escape(incoming_key),
+                        xml_escape(collection_id)
+                    ));
+                    continue;
+                }
+            }
         } else {
             None
         };
@@ -8332,18 +8371,33 @@ async fn handle_email_initial_sync(
     .await;
     // A vanished anchor is recoverable (RFC 8620 §5.5 `anchorNotFound`): fall
     // back to the numeric position so the continuation still makes progress.
+    //
+    // The fallback position must be REBASED by one. The stored `start_position`
+    // is the index PAST the previous window (`query_position + delivered`), so
+    // the anchor — the LAST message that window delivered — occupied the slot
+    // `start_position - 1`. When that message is deleted, everything after it
+    // shifts up by one: the first UNDELIVERED message now sits at
+    // `start_position - 1`, so resuming at the unchanged `start_position` would
+    // skip it — and, because it is already covered by the first window's query
+    // state, no later delta would ever re-report it. Resuming at
+    // `start_position - 1` instead re-delivers the (now-deleted) anchor's slot
+    // — i.e. the first undelivered message — and the client resolves the
+    // duplicate Add by ServerId. `saturating_sub` keeps a window that began at
+    // position 0 well-defined.
     if anchor.is_some() && matches!(&result, Ok(r) if r.anchor_not_found) {
+        let fallback_position = start_position.saturating_sub(1);
         tracing::info!(
             user = %username,
             collection_id,
-            "Initial email sync anchor no longer exists; falling back to numeric position"
+            fallback_position,
+            "Initial email sync anchor no longer exists; rebasing fallback position by one"
         );
         result = crate::email::fetch_emails_jmap(
             state,
             &crate::email::FetchEmailsParams {
                 account_id,
                 mailbox_role,
-                position: start_position,
+                position: fallback_position,
                 limit: fetch_limit,
                 anchor: None,
                 anchor_offset: 0,
@@ -8652,20 +8706,41 @@ async fn handle_email_delta_sync(ctx: &EmailSyncCtx<'_>) -> anyhow::Result<Strin
         // caller answers a retryable Status 6 carrying the incoming key, the
         // queue and stored token are left untouched (the transaction rolled
         // back), and the same drain is retried once storage recovers.
-        if let Err(e) = state
+        //
+        // The drain CLAIMS the queue (storage `rows_affected == 1`): if two
+        // overlapping Sync requests rendered the same ops, only the claimer
+        // advances the token. A loser (`Ok(false)`) must NOT acknowledge its
+        // window — answering success would re-deliver the ops the winner is
+        // already committing — so it also fails closed (retryable Status 6),
+        // and its next Sync finds the queue gone and diffs from the winner's
+        // advanced token instead of replaying.
+        match state
             .storage
             .drain_email_sync_queue(username, state_collection_id, &new_sync_key, &base_state)
             .await
         {
-            tracing::warn!(
-                user = %username,
-                collection_id,
-                error = %e,
-                "Failed to atomically drain email delta queue; refusing to acknowledge"
-            );
-            return Err(anyhow::anyhow!(
-                "failed to drain email delta queue for collection {state_collection_id}"
-            ));
+            Ok(true) => {}
+            Ok(false) => {
+                tracing::warn!(
+                    user = %username,
+                    collection_id,
+                    "Email delta queue was claimed by a concurrent Sync; not acknowledging"
+                );
+                return Err(anyhow::anyhow!(
+                    "email delta queue for collection {state_collection_id} was already drained by a concurrent Sync"
+                ));
+            }
+            Err(e) => {
+                tracing::warn!(
+                    user = %username,
+                    collection_id,
+                    error = %e,
+                    "Failed to atomically drain email delta queue; refusing to acknowledge"
+                );
+                return Err(anyhow::anyhow!(
+                    "failed to drain email delta queue for collection {state_collection_id}"
+                ));
+            }
         }
         tracing::info!(
             user = %username,
@@ -12048,6 +12123,140 @@ mod tests {
                 .map(|(_, token)| token),
             Some(Some("Sbase".to_string())),
             "the stored token must advance to the queue's base state"
+        );
+    }
+
+    /// A drain must CLAIM the queue: two overlapping Sync requests can both
+    /// read and render the same queued operations, and without a claim the
+    /// second `DELETE` would remove zero rows yet still advance the token and
+    /// acknowledge a window it did not own. `drain_email_sync_queue` therefore
+    /// gates on the `DELETE`'s `rows_affected`: the first caller gets `true`,
+    /// every later caller gets `false` with the stored token left untouched.
+    #[tokio::test]
+    async fn test_email_delta_queue_drain_claims_and_loser_does_not_advance() {
+        let storage = crate::storage::Storage::new("sqlite::memory:")
+            .await
+            .unwrap();
+        storage.init_schema().await.unwrap();
+        let owner = "u@example.com";
+        let scoped = scoped_collection_id("2", "dev-1");
+
+        storage
+            .set_sync_key(owner, &scoped, "oldkey", Some("S0"))
+            .await
+            .unwrap();
+        storage
+            .set_email_sync_pending(owner, &scoped, r#"[{"op":"delete","id":"m1"}]"#, "Sbase")
+            .await
+            .unwrap();
+
+        // The first drain claims the queue and advances the token.
+        let won = storage
+            .drain_email_sync_queue(owner, &scoped, "newkey", "Sbase")
+            .await
+            .unwrap();
+        assert!(won, "the first drain must claim the queue");
+
+        // A second drain (the losing overlapping Sync) deletes zero rows and
+        // must NOT advance the token: the stored key/token stay at the
+        // winner's values, and the call reports the claim loss.
+        let lost = storage
+            .drain_email_sync_queue(owner, &scoped, "loserkey", "Sloser")
+            .await
+            .unwrap();
+        assert!(
+            !lost,
+            "a second drain must report the queue already claimed"
+        );
+        assert_eq!(
+            storage.get_sync_key(owner, &scoped).await.unwrap(),
+            Some(("newkey".to_string(), Some("Sbase".to_string()))),
+            "the losing drain must not overwrite the winner's key/token"
+        );
+    }
+
+    /// A transient `folder_map` read failure during a Class-omitted Sync must
+    /// fail the collection closed (retryable Status 6), NOT fall through to the
+    /// unsupported-collection Status 4: a custom folder would otherwise never
+    /// sync until a manual re-prime.
+    #[tokio::test]
+    async fn test_sync_collection_class_omitted_folder_read_failure_fails_closed() {
+        let state = test_sync_state().await;
+        let owner = "user@example.com";
+        let device = "device-failclosed";
+        // Poison the folder_map read the Class-omitted routing performs.
+        sqlx::query("DROP TABLE folder_map")
+            .execute(state.storage.pool())
+            .await
+            .unwrap();
+
+        let coll = SyncCollection {
+            sync_key: Some("0".to_string()),
+            collection_id: Some("custom-mail-folder".to_string()),
+            class: None,
+            ..Default::default()
+        };
+        let ctx = SyncCtx {
+            state: &state,
+            username: owner,
+            password: &SecretString::from("pw"),
+            wbxml: &Wbxml::new(),
+            as_wbxml: false,
+            request_id: "test-req",
+            device_id: device,
+            global_window_size: None,
+        };
+        let resp = handle_sync_collections(&ctx, &[coll]).await;
+        let text = response_text(resp).await;
+        assert!(
+            text.contains("<Status>6</Status>"),
+            "a folder-map read failure must fail the collection closed: {text}"
+        );
+        assert!(
+            !text.contains("<Status>4</Status>"),
+            "it must not be misreported as an unsupported collection: {text}"
+        );
+    }
+
+    /// A SYSTEM collection's class is inferable from its id alone, so a
+    /// Class-omitted Sync of one must NOT touch `folder_map` and therefore must
+    /// not fail even when the mapping read would error.
+    #[tokio::test]
+    async fn test_sync_collection_class_omitted_system_folder_ignores_folder_map() {
+        let state = test_sync_state().await;
+        let owner = "user@example.com";
+        let device = "device-system";
+        sqlx::query("DROP TABLE folder_map")
+            .execute(state.storage.pool())
+            .await
+            .unwrap();
+
+        // Collection "12" is the system Junk Email folder: no Class needed.
+        let coll = SyncCollection {
+            sync_key: Some("0".to_string()),
+            collection_id: Some("12".to_string()),
+            class: None,
+            ..Default::default()
+        };
+        let ctx = SyncCtx {
+            state: &state,
+            username: owner,
+            password: &SecretString::from("pw"),
+            wbxml: &Wbxml::new(),
+            as_wbxml: false,
+            request_id: "test-req",
+            device_id: device,
+            global_window_size: None,
+        };
+        let resp = handle_sync_collections(&ctx, &[coll]).await;
+        let text = response_text(resp).await;
+        assert!(
+            text.contains("<Class>Email</Class>"),
+            "a system folder must route by id, never via folder_map: {text}"
+        );
+        assert!(
+            !text.contains("<Status>6</Status>"),
+            "a system folder must not be blocked by a folder_map read failure: {text}"
         );
     }
 
@@ -16635,8 +16844,12 @@ mod tests {
     }
 
     /// When the anchor no longer exists the server answers `anchorNotFound`;
-    /// the continuation must recover by falling back to numeric `position`
-    /// rather than stalling the mailbox forever.
+    /// the continuation must recover by falling back to a numeric `position`
+    /// REBASED by one, not the stale post-window offset. The stored offset is
+    /// the index past the previous window, so the deleted anchor occupied the
+    /// slot `offset - 1`; resuming at the unchanged offset would skip the first
+    /// undelivered message (permanently, since it is already inside the initial
+    /// query state).
     #[tokio::test]
     async fn test_email_initial_sync_anchor_not_found_falls_back_to_position() {
         use crate::models::AppState;
@@ -16647,6 +16860,7 @@ mod tests {
         #[derive(Clone)]
         struct Ctl {
             base: String,
+            queries: StdArc<std::sync::Mutex<Vec<Value>>>,
         }
 
         async fn session(axum::Extension(ctl): axum::Extension<Ctl>) -> axum::Json<Value> {
@@ -16664,7 +16878,7 @@ mod tests {
         }
 
         async fn api(
-            axum::Extension(_ctl): axum::Extension<Ctl>,
+            axum::Extension(ctl): axum::Extension<Ctl>,
             body: String,
         ) -> axum::response::Response {
             let req: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
@@ -16686,6 +16900,12 @@ mod tests {
             for call in calls {
                 let name = call.get(0).and_then(|v| v.as_str()).unwrap_or("");
                 let cid = call.get(2).and_then(|v| v.as_str()).unwrap_or("c0");
+                if name == "Email/query" {
+                    ctl.queries
+                        .lock()
+                        .unwrap()
+                        .push(call.get(1).cloned().unwrap_or(Value::Null));
+                }
                 let result = if request_has_gone_anchor {
                     json!({"type":"anchorNotFound"})
                 } else {
@@ -16717,11 +16937,14 @@ mod tests {
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let base = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
-        let ctl = Ctl { base: base.clone() };
+        let ctl = Ctl {
+            base: base.clone(),
+            queries: StdArc::new(std::sync::Mutex::new(Vec::new())),
+        };
         let app = axum::Router::new()
             .route("/session", get(session))
             .route("/", post(api))
-            .layer(axum::Extension(ctl));
+            .layer(axum::Extension(ctl.clone()));
         tokio::spawn(async move {
             axum::serve(listener, app).await.unwrap();
         });
@@ -16741,7 +16964,9 @@ mod tests {
 
         let owner = "u@example.com";
         let scoped = scoped_collection_id("2", "dev-1");
-        // The pinned anchor was deleted from the mailbox meanwhile.
+        // The pinned anchor (the last delivered id of the previous window) was
+        // deleted from the mailbox meanwhile; the stored offset (2) is the
+        // index PAST that window.
         state
             .storage
             .set_email_sync_cursor(owner, &scoped, 2, Some("QS0"), Some("gone"))
@@ -16767,6 +16992,25 @@ mod tests {
         assert!(
             xml.contains("<Add><ServerId>em-m3</ServerId>"),
             "a vanished anchor must fall back to numeric position and still deliver: {xml}"
+        );
+        // The anchored attempt is recorded, then the fallback: the fallback
+        // Email/query must carry `position == 1` (the stored 2 rebased by one)
+        // and NO anchor, so it cannot skip the first undelivered message.
+        let queries = ctl.queries.lock().unwrap().clone();
+        let fallback = queries
+            .iter()
+            .find(|q| q.get("anchor").is_none())
+            .expect("a fallback (anchor-less) Email/query must be issued");
+        assert_eq!(
+            fallback.get("position").and_then(|v| v.as_u64()),
+            Some(1),
+            "the fallback must rebase the stored offset by one: {queries:?}"
+        );
+        assert!(
+            queries
+                .iter()
+                .any(|q| q.get("anchor").and_then(|v| v.as_str()) == Some("gone")),
+            "the first attempt must still pin the (now-gone) anchor: {queries:?}"
         );
     }
 

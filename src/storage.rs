@@ -1437,23 +1437,41 @@ impl Storage {
     /// caller (which answers a retryable Status 6) if either write fails,
     /// keeps the queue and token consistent so the next Sync retries the same
     /// drain.
+    ///
+    /// The drain also CLAIMS the queue: two overlapping Sync requests can both
+    /// read and render the same queued operations, and without a claim the
+    /// second `DELETE` would remove zero rows yet still advance the token and
+    /// acknowledge a window it did not own — the client would then see the same
+    /// commands twice. The `DELETE`'s `rows_affected` is therefore the
+    /// ownership gate: exactly one caller observes `1`, and every other caller
+    /// (which deleted zero rows) gets `Ok(false)` with the token left untouched.
+    /// Returns `true` when THIS call drained the queue, `false` when another
+    /// request had already claimed it.
     pub async fn drain_email_sync_queue(
         &self,
         owner: &str,
         collection_id: &str,
         sync_key: &str,
         token: &str,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         let mut tx = sqlx::Acquire::begin(self.pool.as_ref())
             .await
             .map_err(|e| GatewayError::Storage(format!("Transaction error: {}", e)))?;
 
-        sqlx::query("DELETE FROM email_sync_pending WHERE owner = ?1 AND collection_id = ?2")
-            .bind(owner)
-            .bind(collection_id)
-            .execute(&mut *tx)
-            .await
-            .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+        let deleted =
+            sqlx::query("DELETE FROM email_sync_pending WHERE owner = ?1 AND collection_id = ?2")
+                .bind(owner)
+                .bind(collection_id)
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+        if deleted.rows_affected() != 1 {
+            // Another request already claimed this queue. Do NOT advance the
+            // stored token (the claiming request owns that) and roll back by
+            // dropping the transaction, so this caller can answer a retryable
+            // failure instead of re-acknowledging the same ops.
+            return Ok(false);
+        }
 
         sqlx::query(
             "INSERT INTO sync_state (owner, collection_id, sync_key, token) VALUES (?1, ?2, ?3, ?4)
@@ -1470,7 +1488,7 @@ impl Storage {
         tx.commit()
             .await
             .map_err(|e| GatewayError::Storage(format!("Commit error: {}", e)))?;
-        Ok(())
+        Ok(true)
     }
 
     /// Upsert the sorted keyword set for one message in a collection's flag
