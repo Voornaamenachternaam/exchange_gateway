@@ -506,15 +506,76 @@ pub(crate) async fn handle_update_folder(
         )
         .await
     {
-        Ok(_) => success_response(
-            "UpdateFolder",
-            &format!(
-                "<m:Folders><t:Folder>{}</t:Folder></m:Folders>",
-                folder_id_el(&mailbox_id)
-            ),
-        ),
+        Ok(_) => {
+            // Mirror the rename into the EAS folder store so an EAS-created
+            // folder renamed over EWS stops advertising its old DisplayName and
+            // an already-primed EAS device receives the change. Only a folder
+            // with a `folder_map` row (an EAS-created folder whose ServerId is
+            // the JMAP mailbox id) is mirrored and journaled; a folder EAS never
+            // advertised (a row-less mailbox, or a CalDAV-backed row) is left
+            // untouched — never fabricate an EAS-visible folder.
+            match mirror_ews_folder_rename(state, &owner, &mailbox_id, new_name.trim()).await {
+                Ok(()) => success_response(
+                    "UpdateFolder",
+                    &format!(
+                        "<m:Folders><t:Folder>{}</t:Folder></m:Folders>",
+                        folder_id_el(&mailbox_id)
+                    ),
+                ),
+                Err(e) => {
+                    // The JMAP mailbox is already renamed, so a failed mirror
+                    // write must NOT be acknowledged as success: a stale
+                    // `folder_map` DisplayName would keep EAS advertising the
+                    // old name and leave primed devices without the change. The
+                    // rename is idempotent, so a retry re-applies it and re-runs
+                    // the mirror.
+                    internal_error(action, "folder_map rename mirror failed", &e)
+                }
+            }
+        }
         Err(e) => internal_error(action, "Mailbox/set update failed", &e),
     }
+}
+
+/// Mirror an EWS `UpdateFolder` rename of a JMAP mail mailbox into the EAS
+/// folder store: when a `folder_map` row exists for `mailbox_id`, rewrite its
+/// DisplayName and journal a `folder-update` in ONE transaction, so the change
+/// reaches EAS `GetHierarchy`/`FolderSync` and already-primed devices. A
+/// mailbox with no `folder_map` row (one EAS never advertised) is a no-op. The
+/// caller must treat a write failure as fatal (retryable) — the backend rename
+/// has already happened, so silently succeeding would leave EAS advertising the
+/// old name.
+async fn mirror_ews_folder_rename(
+    state: &Arc<AppState>,
+    owner: &str,
+    mailbox_id: &str,
+    display_name: &str,
+) -> anyhow::Result<()> {
+    let Some(row) = state.storage.get_folder(owner, mailbox_id).await? else {
+        return Ok(());
+    };
+    // Only a JMAP-backed row is renamed through this path (the mailbox was
+    // resolved as a JMAP mailbox id); a CalDAV-backed row is never renamed by
+    // UpdateFolder and must not be rewritten here.
+    if row.backend_kind != "jmap" {
+        return Ok(());
+    }
+    state
+        .storage
+        .upsert_folder_journaled(
+            crate::storage::FolderUpsertParams {
+                owner,
+                server_id: &row.server_id,
+                parent_id: &row.parent_id,
+                display_name,
+                folder_type: row.folder_type,
+                backend_kind: "jmap",
+                backend_id: &row.backend_id,
+            },
+            "folder-update",
+        )
+        .await?;
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -2361,6 +2422,212 @@ mod tests {
                 .iter()
                 .all(|r| r.op != "folder-delete" || r.server_id != "mb-root"),
             "the refused root must not be journaled as deleted"
+        );
+    }
+
+    /// Spawn a JMAP stub that accepts a `Mailbox/set` rename of `rename_id`,
+    /// recording the wire calls so a test can assert the update was issued.
+    async fn spawn_rename_stub(
+        rename_id: &'static str,
+    ) -> (String, StdArc<TokioMutex<Vec<Value>>>) {
+        use axum::response::Response;
+        let calls: StdArc<TokioMutex<Vec<Value>>> = StdArc::new(TokioMutex::new(Vec::new()));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let base = format!("http://127.0.0.1:{port}");
+        let session_base = base.clone();
+        let base_calls = calls.clone();
+        let app = axum::Router::new()
+            .route(
+                "/session",
+                get(move || {
+                    let base = session_base.clone();
+                    async move {
+                        axum::Json(json!({
+                            "apiUrl": base,
+                            "downloadUrl": format!("{base}/download/{{accountId}}/{{blobId}}"),
+                            "uploadUrl": format!("{base}/upload/{{accountId}}"),
+                            "eventSourceUrl": format!("{base}/eventsource"),
+                            "state": "s",
+                            "username": "u",
+                            "accounts": {"a": {"name": "u", "isPersonal": true, "isReadOnly": false, "accountCapabilities": {}}},
+                            "primaryAccounts": {"urn:ietf:params:jmap:mail": "a"},
+                            "capabilities": {}
+                        }))
+                    }
+                }),
+            )
+            .route(
+                "/",
+                post(move |body: String| {
+                    let calls = base_calls.clone();
+                    async move {
+                        let req: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
+                        let method_calls = req
+                            .get("methodCalls")
+                            .and_then(|v| v.as_array())
+                            .cloned()
+                            .unwrap_or_default();
+                        let mut responses = Vec::new();
+                        for call in method_calls {
+                            let name = call.get(0).and_then(|v| v.as_str()).unwrap_or("");
+                            let args = call.get(1).cloned().unwrap_or(Value::Null);
+                            let id = call.get(2).and_then(|v| v.as_str()).unwrap_or("c0");
+                            calls
+                                .lock()
+                                .await
+                                .push(json!({"method": name, "args": args.clone()}));
+                            let (mname, result) = match name {
+                                "Mailbox/set" => {
+                                    // Report the rename as applied.
+                                    (
+                                        "Mailbox/set",
+                                        json!({
+                                            "accountId": "a",
+                                            "updated": { rename_id: Value::Null },
+                                        }),
+                                    )
+                                }
+                                _ => (name, json!({"accountId": "a"})),
+                            };
+                            responses.push(json!([mname, result, id]));
+                        }
+                        let resp =
+                            json!({"methodResponses": responses, "sessionState": "s"});
+                        Response::builder()
+                            .status(200)
+                            .header("content-type", "application/json")
+                            .body(axum::body::Body::from(serde_json::to_vec(&resp).unwrap()))
+                            .unwrap()
+                    }
+                }),
+            );
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        (base, calls)
+    }
+
+    /// An EWS `UpdateFolder` rename of an EAS-created mail folder must mirror
+    /// the new DisplayName into `folder_map` AND journal a `folder-update`, so
+    /// EAS `GetHierarchy` stops advertising the old name and already-primed
+    /// devices receive the change.
+    #[tokio::test]
+    async fn update_folder_rename_mirrors_eas_folder_map_and_journals() {
+        let (base, _calls) = spawn_rename_stub("mb-1").await;
+        let storage = crate::storage::Storage::new("sqlite::memory:")
+            .await
+            .unwrap();
+        storage.init_schema().await.unwrap();
+        let owner = "u@example.com";
+        storage
+            .upsert_folder_journaled(
+                crate::storage::FolderUpsertParams {
+                    owner,
+                    server_id: "mb-1",
+                    parent_id: "0",
+                    display_name: "Old Name",
+                    folder_type: 12,
+                    backend_kind: "jmap",
+                    backend_id: "mb-1",
+                },
+                "folder-add",
+            )
+            .await
+            .unwrap();
+        let cfg = crate::config::Config {
+            jmap_base: base,
+            email_enabled: true,
+            mail_domain: "example.com".to_string(),
+            hmac_secret: SecretString::from("a".repeat(32)),
+            ..Default::default()
+        };
+        let state = StdArc::new(crate::models::AppState::new(cfg, StdArc::new(storage)));
+        let auth = AuthContext {
+            username: owner.to_string(),
+            password: SecretString::from("pw"),
+        };
+        let body = r#"<?xml version="1.0"?><m:UpdateFolder xmlns:m="m" xmlns:t="t"><m:FolderChanges><t:FolderChange><t:FolderId Id="mb-1"/><t:Updates><t:SetFolderField><t:Folder><t:DisplayName>New Name</t:DisplayName></t:Folder></t:SetFolderField></t:Updates></t:FolderChange></m:FolderChanges></m:UpdateFolder>"#;
+        let resp = handle_update_folder(&state, &auth, body).await;
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(text.contains("NoError"), "rename must succeed: {text}");
+        let row = state
+            .storage
+            .get_folder(owner, "mb-1")
+            .await
+            .unwrap()
+            .expect("the mapping row must survive the rename");
+        assert_eq!(
+            row.display_name, "New Name",
+            "the mirrored DisplayName must reflect the rename"
+        );
+        let journal = state
+            .storage
+            .list_folder_journal_since(owner, 0, i64::MAX)
+            .await
+            .unwrap();
+        assert!(
+            journal
+                .iter()
+                .any(|r| r.op == "folder-update" && r.server_id == "mb-1"),
+            "the rename must be journaled as folder-update: {:?}",
+            journal
+                .iter()
+                .map(|r| (&r.op, &r.server_id))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    /// An EWS `UpdateFolder` rename of a mailbox that has NO `folder_map` row
+    /// (one EAS never advertised) must succeed but journal NOTHING — the mirror
+    /// never fabricates an EAS-visible folder.
+    #[tokio::test]
+    async fn update_folder_rename_without_mapping_row_journals_nothing() {
+        let (base, _calls) = spawn_rename_stub("mb-unmapped").await;
+        let storage = crate::storage::Storage::new("sqlite::memory:")
+            .await
+            .unwrap();
+        storage.init_schema().await.unwrap();
+        let owner = "u@example.com";
+        let cfg = crate::config::Config {
+            jmap_base: base,
+            email_enabled: true,
+            mail_domain: "example.com".to_string(),
+            hmac_secret: SecretString::from("a".repeat(32)),
+            ..Default::default()
+        };
+        let state = StdArc::new(crate::models::AppState::new(cfg, StdArc::new(storage)));
+        let auth = AuthContext {
+            username: owner.to_string(),
+            password: SecretString::from("pw"),
+        };
+        let body = r#"<?xml version="1.0"?><m:UpdateFolder xmlns:m="m" xmlns:t="t"><m:FolderChanges><t:FolderChange><t:FolderId Id="mb-unmapped"/><t:Updates><t:SetFolderField><t:Folder><t:DisplayName>Renamed</t:DisplayName></t:Folder></t:SetFolderField></t:Updates></t:FolderChange></m:FolderChanges></m:UpdateFolder>"#;
+        let resp = handle_update_folder(&state, &auth, body).await;
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(text.contains("NoError"), "rename must succeed: {text}");
+        assert!(
+            state
+                .storage
+                .get_folder(owner, "mb-unmapped")
+                .await
+                .unwrap()
+                .is_none(),
+            "an unmapped mailbox must not gain a folder_map row"
+        );
+        let journal = state
+            .storage
+            .list_folder_journal_since(owner, 0, i64::MAX)
+            .await
+            .unwrap();
+        assert!(
+            journal.iter().all(|r| r.op != "folder-update"),
+            "an unmapped mailbox must journal no folder-update"
         );
     }
 }

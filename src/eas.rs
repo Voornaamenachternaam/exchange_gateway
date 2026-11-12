@@ -7488,14 +7488,20 @@ struct KeywordScanOutcome {
 }
 
 /// Persist a completed flag scan: the observed baseline rows, the rows for
-/// messages that left the mailbox, and the rotating position. Called after the
-/// delta's change set is durably delivered (or queued), so a crash re-reports
-/// rather than swallows a flag change.
+/// messages that left the mailbox, and the rotating position. Called only
+/// AFTER the delta's token write has been durably committed, so the flag
+/// baseline is never advanced past a window whose token was not stored (a later
+/// `Email/queryChanges` from the stale token would NOT re-report a flag-only
+/// `<Change>`, so the client would never learn about that edit).
 ///
 /// The rotating position advances ONLY when every baseline row was written: a
 /// failed write leaves the position where it was, so the next sweep re-examines
 /// the same window and re-reports the affected flag change instead of skipping
-/// it forever.
+/// it forever. This is best-effort by design — the `<Change>` was already
+/// emitted in the response being built, so a later re-scan only re-reports a
+/// duplicate the client resolves by ServerId; the caller must NOT fail the
+/// delta on a baseline write failure, because the partially-written rows would
+/// otherwise blind the retry's scan to the very change it must re-report.
 ///
 /// `seeded` holds the ids of delivered `<Add>` ops whose flag baseline was
 /// seeded with the message's CURRENT keywords while rendering the response.
@@ -8918,6 +8924,14 @@ async fn handle_email_delta_sync(ctx: &EmailSyncCtx<'_>) -> anyhow::Result<Strin
             )
             .await
         {
+            // Best-effort: this branch stores `old_state` (the SAME token the
+            // collection already had), so a failed write leaves the token
+            // unchanged — the overflow queue (base_state = `final_state`) is
+            // what carries progress, and the next Sync drains it. Failing the
+            // delta closed here would be worse: the queued remainder is only the
+            // part that did NOT fit this window, so a retry that drained the
+            // queue would deliver the remainder WITHOUT re-delivering this
+            // window's `deliver` ops (they are not in the queue) — losing them.
             tracing::warn!(error = %e, "Failed to set email sync key while truncating delta");
         }
         // The remainder is durable, so the delivered window may be acknowledged
@@ -8952,12 +8966,30 @@ async fn handle_email_delta_sync(ctx: &EmailSyncCtx<'_>) -> anyhow::Result<Strin
         )
         .await
     {
-        tracing::warn!(error = %e, "Failed to update email sync key with JMAP state");
+        // The token write is the durable record that this window was
+        // acknowledged, and it is the ONLY thing gating the flag-scan baseline
+        // below. Fail closed (retryable) rather than proceeding: if the baseline
+        // advanced while the stored token still sat at the pre-delta state, a
+        // later `Email/queryChanges` from that stale token would re-derive the
+        // membership set but NOT re-report a flag-only `<Change>` (the feed
+        // reports membership only), so the client would never learn about that
+        // edit. This branch holds NO overflow queue, so a retry re-derives the
+        // WHOLE change set from the unchanged token and re-delivers it — no loss.
+        tracing::warn!(
+            error = %e,
+            user = %username,
+            collection_id,
+            "Failed to update email sync key with JMAP state; refusing to acknowledge"
+        );
+        return Err(anyhow::anyhow!(
+            "failed to update email sync key for collection {state_collection_id}"
+        ));
     }
     // The whole change set (membership + keyword updates) has now been
-    // delivered, so the flag-scan baseline rows and rotating position may
-    // advance. Persisting them only here guarantees a crash before this point
-    // re-scans the same window rather than swallowing the updates.
+    // delivered and its token committed, so the flag-scan baseline rows and
+    // rotating position may advance. Persisting them only here guarantees a
+    // crash before this point re-scans the same window rather than swallowing
+    // the updates.
     persist_keyword_scan(state, username, state_collection_id, &keyword_scan, &seeded).await;
 
     tracing::info!(
@@ -13442,6 +13474,193 @@ mod tests {
         assert_eq!(
             position, 0,
             "a failed baseline read must hold the rotating scan position"
+        );
+    }
+
+    /// A FAILED sync-token write must fail the delta closed AND must not advance
+    /// the flag baseline. If the token write failed silently while the baseline
+    /// advanced, a later `Email/queryChanges` from the stale stored token would
+    /// not re-report a flag-only `<Change>` (the feed reports membership only),
+    /// so the client would never learn about that edit. The delta must return an
+    /// error with the stored token untouched, and the baseline row (observed by
+    /// the scan) must NOT have been persisted.
+    #[tokio::test]
+    async fn test_email_delta_token_write_failure_does_not_advance_baseline() {
+        use crate::models::AppState;
+        use axum::routing::{get, post};
+        use serde_json::{Value, json};
+        use std::sync::Arc as StdArc;
+
+        #[derive(Clone)]
+        struct Ctl {
+            base: String,
+        }
+
+        async fn session(axum::Extension(ctl): axum::Extension<Ctl>) -> axum::Json<Value> {
+            axum::Json(json!({
+                "apiUrl": ctl.base,
+                "downloadUrl": format!("{}/download/{{accountId}}/{{blobId}}", ctl.base),
+                "uploadUrl": format!("{}/upload/{{accountId}}", ctl.base),
+                "eventSourceUrl": format!("{}/eventsource", ctl.base),
+                "state": "s",
+                "username": "u",
+                "accounts": {"a": {"name": "u", "isPersonal": true, "isReadOnly": false, "accountCapabilities": {}}},
+                "primaryAccounts": {"urn:ietf:params:jmap:mail": "a"},
+                "capabilities": {"urn:ietf:params:jmap:core": {"maxObjectsInGet": 500}}
+            }))
+        }
+
+        async fn api(body: String) -> axum::response::Response {
+            let req: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
+            let mut responses = Vec::new();
+            let mut last_query_ids: Vec<String> = Vec::new();
+            for call in req
+                .get("methodCalls")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default()
+            {
+                let name = call.get(0).and_then(|v| v.as_str()).unwrap_or("");
+                let cid = call.get(2).and_then(|v| v.as_str()).unwrap_or("c0");
+                let result = match name {
+                    // Quiet membership feed: the only change source is the scan.
+                    "Email/queryChanges" => json!({
+                        "accountId": "a",
+                        "oldQueryState": "S0",
+                        "newQueryState": "S1",
+                        "added": [],
+                        "removed": [],
+                    }),
+                    // A single live message so the scan observes (and would
+                    // persist) a baseline row.
+                    "Email/query" => {
+                        last_query_ids = vec!["m0".to_string()];
+                        json!({
+                            "accountId": "a",
+                            "queryState": "S1",
+                            "ids": last_query_ids,
+                            "total": 1,
+                            "position": 0,
+                        })
+                    }
+                    "Email/get" => {
+                        let list: Vec<Value> = last_query_ids
+                            .iter()
+                            .map(|id| json!({"id": id, "keywords": {"$seen": true}}))
+                            .collect();
+                        json!({"accountId": "a", "state": "S1", "list": list})
+                    }
+                    _ => json!({"accountId": "a"}),
+                };
+                responses.push(json!([name, result, cid]));
+            }
+            let resp = json!({"methodResponses": responses, "sessionState": "s"});
+            axum::response::Response::builder()
+                .status(200)
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(serde_json::to_vec(&resp).unwrap()))
+                .unwrap()
+        }
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
+        let ctl = Ctl { base: base.clone() };
+        let app = axum::Router::new()
+            .route("/session", get(session))
+            .route("/", post(api))
+            .layer(axum::Extension(ctl));
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let storage = crate::storage::Storage::new("sqlite::memory:")
+            .await
+            .unwrap();
+        storage.init_schema().await.unwrap();
+        let cfg = crate::config::Config {
+            jmap_base: base.clone(),
+            email_enabled: true,
+            mail_domain: "example.com".to_string(),
+            hmac_secret: SecretString::from("a".repeat(32)),
+            ..Default::default()
+        };
+        let state = StdArc::new(AppState::new(cfg, StdArc::new(storage)));
+
+        let owner = "u@example.com";
+        let scoped = scoped_collection_id("2", "dev-1");
+        state
+            .storage
+            .set_sync_key(owner, &scoped, "oldkey", Some("S0"))
+            .await
+            .unwrap();
+
+        // Poison the sync-token write so the token commit fails.
+        sqlx::query(
+            "CREATE TRIGGER poison_sync_key BEFORE INSERT ON sync_state \
+             BEGIN SELECT RAISE(ABORT, 'poisoned'); END;",
+        )
+        .execute(state.storage.pool())
+        .await
+        .unwrap();
+
+        let jmap = state.jmap_client.as_ref().unwrap().clone();
+        let password = SecretString::from("pw");
+        let options = crate::eas_sync_options::EasSyncCollectionOptions::default();
+        let ctx = EmailSyncCtx {
+            state: &state,
+            jmap: &jmap,
+            account_id: "a",
+            username: owner,
+            password: &password,
+            collection_id: "2",
+            state_collection_id: &scoped,
+            window: 512,
+            options: &options,
+            conversation_mode: false,
+            mailbox_id: None,
+            delta_mailbox_id: Some("mbx-inbox"),
+        };
+
+        let result = handle_email_delta_sync(&ctx).await;
+        assert!(
+            result.is_err(),
+            "a failed token write must not be acknowledged: {result:?}"
+        );
+        assert_eq!(
+            state.storage.get_sync_key(owner, &scoped).await.unwrap(),
+            Some(("oldkey".to_string(), Some("S0".to_string()))),
+            "the stored sync key/token must be untouched on the token-failure path"
+        );
+        assert!(
+            state
+                .storage
+                .get_email_keyword(owner, &scoped, "m0")
+                .await
+                .unwrap()
+                .is_none(),
+            "the flag baseline must NOT advance when the token write failed"
+        );
+
+        // Storage recovers: the same delta commits the token AND the baseline.
+        sqlx::query("DROP TRIGGER poison_sync_key")
+            .execute(state.storage.pool())
+            .await
+            .unwrap();
+        let xml = handle_email_delta_sync(&ctx)
+            .await
+            .expect("the delta must succeed once storage recovers");
+        assert!(
+            xml.contains("<Status>1</Status>"),
+            "the recovered delta acknowledges the window: {xml}"
+        );
+        assert_eq!(
+            state
+                .storage
+                .get_email_keyword(owner, &scoped, "m0")
+                .await
+                .unwrap(),
+            Some(vec!["$seen".to_string()]),
+            "the recovered delta persists the baseline row"
         );
     }
 

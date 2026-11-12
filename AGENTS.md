@@ -138,7 +138,10 @@ EAS specs v20250520 (16.1); older EAS compat NOT needed.
   `FolderSync`/`GetHierarchy`. Type 14 (Contacts) is rejected (Status 10)
   because CardDAV collection creation is unsupported. The EAS ServerId of a
   mail folder is the JMAP mailbox id itself; a CalDAV folder's is its
-  collection href (kept stable across a rename). `GetHierarchy` now appends
+  collection href (kept stable across a rename). An EWS `UpdateFolder` rename
+  of an EAS-created mail folder is mirrored into `folder_map` and journaled as
+  `folder-update` (no-op when no mapping row exists; a failed mirror write is a
+  retryable error, never a silent success). `GetHierarchy` now appends
   user-created folders; the incremental `FolderSync` reports folder-hierarchy
   changes journaled in `change_journal` (`resource_href='folder'`, filtered out
   of the EWS item-delta feed) so a mutation reaches an already-primed client as

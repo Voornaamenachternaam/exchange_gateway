@@ -368,6 +368,17 @@ and `eas::tests::test_email_delta_add_seed_failure_fails_closed` (a poisoned
 baseline seed fails the delta, then the same delta delivers the Add and seeds
 it once storage recovers).
 
+The round-5 PR-review hardening (m)–(n) adds
+`eas::tests::test_email_delta_token_write_failure_does_not_advance_baseline`
+(a poisoned `sync_state` write fails the delta with the stored token AND the
+flag baseline both untouched, then the same delta commits the token and
+persists the baseline once storage recovers) and
+`ews_folder_ops::tests::update_folder_rename_mirrors_eas_folder_map_and_journals`
+(an EWS rename mirrors the new DisplayName into `folder_map` and journals a
+`folder-update`) plus
+`ews_folder_ops::tests::update_folder_rename_without_mapping_row_journals_nothing`
+(a rename of a mailbox with no `folder_map` row succeeds but journals nothing).
+
 **Operator change list.** None required for Cloudflare or Stalwart: the new
 commands use the already-configured JMAP and CalDAV endpoints. No new
 environment variables.
@@ -445,7 +456,33 @@ acknowledge the window or consume the op (no token advance, no overflow queue,
 no baseline write) — a later Sync re-derives and re-delivers the same op. The
 old code turned a fetch error into an empty render (treated as a vanished item)
 and only logged a failed seed, silently dropping an email change the client
-never received and leaving its flags stale.
+never received and leaving its flags stale. (m) The delta's **sync-token write
+is fail-closed** in the branch that completes a window with no overflow queue:
+a failed `set_sync_key` now returns a retryable error instead of being logged
+and ignored, and the flag-scan baseline is persisted ONLY after the token write
+commits. Persisting the baseline while the stored token still sat at the
+pre-delta state would let a later `Email/queryChanges` re-derive the membership
+set but NOT re-report a flag-only `<Change>` (the feed reports membership only),
+so a flag edit the client never received would be lost forever; the branch holds
+no queue, so a retry re-derives the whole change set from the unchanged token.
+The clipped-window branch keeps its token write best-effort (it stores the SAME
+`old_state`, so a failed write changes nothing; the durable overflow queue
+carries progress), and its baseline persist stays best-effort by design — the
+`<Change>` is already in the response being built, and failing the delta there
+would let a retry drain only the queued remainder while dropping this window's
+delivered ops. The baseline persist itself is deliberately NOT fail-closed: the
+partially-written rows would otherwise blind the retry's scan to the very change
+it must re-report, and the held scan position already guarantees a re-scan.
+(n) An EWS `UpdateFolder` rename of an EAS-created mail folder (a `folder_map`
+row whose ServerId is the JMAP mailbox id) is mirrored into `folder_map` and
+journaled as `folder-update` in one transaction, so EAS `GetHierarchy` stops
+advertising the old DisplayName and already-primed devices receive the change; a
+mailbox with no `folder_map` row (one EAS never advertised) is a no-op — the
+mirror never fabricates an EAS-visible folder. A failed mirror write is NOT
+acknowledged as success (retryable `ErrorInternalServerError`), because the JMAP
+mailbox is already renamed and a stale DisplayName would keep EAS advertising
+the old name; the rename is idempotent, so a retry re-applies it and re-runs the
+mirror.
 
 **Upgrade note (expected one-time re-prime).** Before this change the stored
 email delta token was the `Email/get` data-type state; the new delta passes it
