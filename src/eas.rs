@@ -8031,11 +8031,16 @@ async fn handle_email_sync(ctx: &EmailSyncRequestCtx<'_>) -> anyhow::Result<Stri
     let account_id = match jmap.get_account_id(username, password).await {
         Ok(id) => id,
         Err(e) => {
-            tracing::warn!(error = %e, "Failed to get JMAP account ID for email sync");
-            let new_sync_key = Uuid::new_v4().simple().to_string();
-            return Ok(format!(
-                "<Collection><Class>Email</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>1</Status></Collection>",
-                new_sync_key, collection_id
+            // The account id is the prerequisite for BOTH the initial prime and
+            // the delta path. A transient session/round-trip failure here must
+            // NOT be acknowledged with a fresh key: the key is not stored, so
+            // the client's next non-zero Sync would enter the delta path with no
+            // state and answer repeated empty-success windows — the mailbox is
+            // then never primed until the client manually resets. Fail closed
+            // with the incoming key so the client retries the same Sync.
+            tracing::warn!(error = %e, "Failed to get JMAP account ID for email sync; deferring");
+            return Err(anyhow::anyhow!(
+                "failed to resolve JMAP mail account for collection {state_collection_id}: {e}"
             ));
         }
     };
@@ -8081,14 +8086,25 @@ async fn handle_email_sync(ctx: &EmailSyncRequestCtx<'_>) -> anyhow::Result<Stri
     // For initial sync (sync_key="0"), fetch all emails and store JMAP state token.
     // Routing keys off cursor presence: a clipped initial sync returns a new
     // SyncKey plus <MoreAvailable/>, so the client's follow-up request carries
-    // a non-zero key that must RESUME the initial sync, not diff deltas.
-    let cursor_present = state
+    // a non-zero key that must RESUME the initial sync, not diff deltas. That
+    // routing decision hinges on the cursor, so a transient cursor-read failure
+    // must NOT be flattened to "no cursor": the request would then be routed to
+    // the delta path from the first page's query state (which already covers the
+    // not-yet-delivered tail), permanently skipping those messages. Fail closed
+    // (Status 6) so the next Sync retries the same read.
+    let cursor_present = match state
         .storage
         .get_email_sync_cursor(username, state_collection_id)
         .await
-        .ok()
-        .flatten()
-        .is_some();
+    {
+        Ok(cursor) => cursor.is_some(),
+        Err(e) => {
+            tracing::warn!(error = %e, "Failed to read email sync cursor; deferring sync");
+            return Err(anyhow::anyhow!(
+                "failed to read email sync cursor for collection {state_collection_id}: {e}"
+            ));
+        }
+    };
     match route_email_sync(incoming_sync_key, cursor_present) {
         EmailSyncRoute::Initial => {
             // A fresh prime must never inherit a previous sync's continuation:
@@ -8328,19 +8344,22 @@ async fn handle_email_initial_sync(
     let new_sync_key = Uuid::new_v4().simple().to_string();
 
     // More content remains when the mailbox holds more than we have delivered
-    // so far (`position` is the cumulative count delivered across the windows).
-    // A page that delivered NOTHING is the end of the walk: with the anchor
-    // continuation a page that returns zero items means the anchor was the
+    // so far. Progress is measured from RFC 8620 §5.5's authoritative response
+    // `position` — the absolute index of the first returned id — NOT a locally
+    // accumulated numeric offset: with an `anchor` continuation the offset is
+    // only a fallback estimate, and a concurrent deletion before the anchor
+    // shifts every later index, so a stale offset would OVERSTATE progress and
+    // could clear the cursor (or stop reporting `<MoreAvailable/>`) while items
+    // remain undelivered. A page that delivered NOTHING is the end of the walk:
+    // with the anchor continuation a zero-item page means the anchor was the
     // oldest match, so `total` growing (mail arriving mid-sync) must not spin a
     // fresh empty window forever — the delta from the first window's state
-    // delivers anything that arrived during pagination. A non-empty page with
-    // `total` still larger (the server clipped its own limit below our window)
-    // continues.
+    // delivers anything that arrived during pagination.
     let delivered = result.emails.len() as u64;
     let remaining = if delivered > 0 {
         result
             .total
-            .saturating_sub(start_position.saturating_add(delivered))
+            .saturating_sub(result.query_position.saturating_add(delivered))
     } else {
         0
     };
@@ -8393,8 +8412,12 @@ async fn handle_email_initial_sync(
     if remaining > 0 {
         // The continuation is pinned to the last delivered message (RFC 8620
         // §5.5 anchor), with the numeric position kept as the fallback for a
-        // deleted anchor. `position` advances by this window's delivered count
-        // (not the stale absolute offset) so the fallback stays a sane estimate.
+        // deleted anchor. The stored `position` is the response's AUTHORITATIVE
+        // absolute index advanced past this window (`query_position +
+        // delivered`), not a locally accumulated offset — the two differ once
+        // an anchor is in play or a concurrent deletion shifted the tail, and
+        // only the authoritative value keeps the fallback (and the progress
+        // estimate) correct.
         let last_delivered_id = result.emails.last().and_then(|e| e.id.clone());
 
         // Persist the resume point; the stored JMAP state token stays at the
@@ -8413,7 +8436,7 @@ async fn handle_email_initial_sync(
             .set_email_sync_cursor(
                 username,
                 state_collection_id,
-                start_position + delivered,
+                result.query_position.saturating_add(delivered),
                 base_state_token.as_deref(),
                 last_delivered_id.as_deref(),
             )
@@ -15966,6 +15989,192 @@ mod tests {
         );
     }
 
+    /// A transient JMAP account lookup failure on the FIRST email Sync must FAIL
+    /// CLOSED, not be acknowledged with a fresh (unstored) SyncKey: the client's
+    /// next non-zero Sync would then enter the delta path with no state and
+    /// receive repeated empty-success windows, so the mailbox is never primed.
+    #[tokio::test]
+    async fn test_email_initial_sync_fails_closed_when_account_lookup_fails() {
+        use crate::models::AppState;
+        use axum::routing::{get, post};
+        use std::sync::Arc as StdArc;
+
+        // The session endpoint 500s, so `get_account_id` (which reads the
+        // session) errors before any Email/query runs.
+        async fn session() -> axum::response::Response {
+            axum::response::Response::builder()
+                .status(500)
+                .body(axum::body::Body::from("backend down"))
+                .unwrap()
+        }
+
+        async fn api(_body: String) -> axum::response::Response {
+            axum::response::Response::builder()
+                .status(500)
+                .body(axum::body::Body::from("backend down"))
+                .unwrap()
+        }
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
+        let app = axum::Router::new()
+            .route("/session", get(session))
+            .route("/", post(api));
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let storage = crate::storage::Storage::new("sqlite::memory:")
+            .await
+            .unwrap();
+        storage.init_schema().await.unwrap();
+        let cfg = crate::config::Config {
+            jmap_base: base.clone(),
+            email_enabled: true,
+            mail_domain: "example.com".to_string(),
+            hmac_secret: SecretString::from("a".repeat(32)),
+            ..Default::default()
+        };
+        let state = StdArc::new(AppState::new(cfg, StdArc::new(storage)));
+
+        let owner = "u@example.com";
+        let scoped = scoped_collection_id("2", "dev-1");
+        let password = SecretString::from("pw");
+        let options = crate::eas_sync_options::EasSyncCollectionOptions::default();
+        let result = handle_email_sync(&EmailSyncRequestCtx {
+            state: &state,
+            username: owner,
+            password: &password,
+            collection_id: "2",
+            state_collection_id: &scoped,
+            incoming_sync_key: "0",
+            window: 512,
+            options: Some(&options),
+            conversation_mode: false,
+        })
+        .await;
+
+        assert!(
+            result.is_err(),
+            "a failed JMAP account lookup must fail the prime closed: {result:?}"
+        );
+    }
+
+    /// A transient cursor READ failure must FAIL the routing decision closed:
+    /// flattening it to "no cursor" would route a clipped-prime continuation to
+    /// the delta path from the first page's query state (which already covers
+    /// the not-yet-delivered tail), permanently skipping those messages.
+    #[tokio::test]
+    async fn test_email_sync_fails_closed_when_cursor_read_fails() {
+        use crate::models::AppState;
+        use axum::routing::{get, post};
+        use serde_json::{Value, json};
+        use std::sync::Arc as StdArc;
+
+        #[derive(Clone)]
+        struct Ctl {
+            base: String,
+        }
+
+        async fn session(axum::Extension(ctl): axum::Extension<Ctl>) -> axum::Json<Value> {
+            axum::Json(json!({
+                "apiUrl": ctl.base,
+                "downloadUrl": format!("{}/download/{{accountId}}/{{blobId}}", ctl.base),
+                "uploadUrl": format!("{}/upload/{{accountId}}", ctl.base),
+                "eventSourceUrl": format!("{}/eventsource", ctl.base),
+                "state": "s",
+                "username": "u",
+                "accounts": {"a": {"name": "u", "isPersonal": true, "isReadOnly": false, "accountCapabilities": {}}},
+                "primaryAccounts": {"urn:ietf:params:jmap:mail": "a"},
+                "capabilities": {"urn:ietf:params:jmap:core": {"maxObjectsInGet": 500}}
+            }))
+        }
+
+        async fn api(
+            axum::Extension(_ctl): axum::Extension<Ctl>,
+            body: String,
+        ) -> axum::response::Response {
+            let req: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
+            let mut responses = Vec::new();
+            for call in req
+                .get("methodCalls")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default()
+            {
+                let name = call.get(0).and_then(|v| v.as_str()).unwrap_or("");
+                let cid = call.get(2).and_then(|v| v.as_str()).unwrap_or("c0");
+                let result = match name {
+                    "Mailbox/query" => json!({"accountId":"a","ids":["mbx-inbox"],"total":1}),
+                    "Email/query" => {
+                        json!({"accountId":"a","queryState":"QS0","ids":[],"total":0,"position":0})
+                    }
+                    "Email/get" => json!({"accountId":"a","state":"D0","list":[]}),
+                    _ => json!({"accountId":"a"}),
+                };
+                responses.push(json!([name, result, cid]));
+            }
+            let resp = json!({"methodResponses": responses, "sessionState": "s"});
+            axum::response::Response::builder()
+                .status(200)
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(serde_json::to_vec(&resp).unwrap()))
+                .unwrap()
+        }
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
+        let ctl = Ctl { base: base.clone() };
+        let app = axum::Router::new()
+            .route("/session", get(session))
+            .route("/", post(api))
+            .layer(axum::Extension(ctl));
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let storage = crate::storage::Storage::new("sqlite::memory:")
+            .await
+            .unwrap();
+        storage.init_schema().await.unwrap();
+        let cfg = crate::config::Config {
+            jmap_base: base.clone(),
+            email_enabled: true,
+            mail_domain: "example.com".to_string(),
+            hmac_secret: SecretString::from("a".repeat(32)),
+            ..Default::default()
+        };
+        let state = StdArc::new(AppState::new(cfg, StdArc::new(storage)));
+
+        let owner = "u@example.com";
+        let scoped = scoped_collection_id("2", "dev-1");
+        // Poison the cursor read so routing cannot decide.
+        sqlx::query("DROP TABLE email_sync_cursor")
+            .execute(state.storage.pool())
+            .await
+            .unwrap();
+
+        let password = SecretString::from("pw");
+        let options = crate::eas_sync_options::EasSyncCollectionOptions::default();
+        let result = handle_email_sync(&EmailSyncRequestCtx {
+            state: &state,
+            username: owner,
+            password: &password,
+            collection_id: "2",
+            state_collection_id: &scoped,
+            incoming_sync_key: "contkey",
+            window: 512,
+            options: Some(&options),
+            conversation_mode: false,
+        })
+        .await;
+
+        assert!(
+            result.is_err(),
+            "a failed cursor read must fail the sync closed: {result:?}"
+        );
+    }
+
     /// A continuation of a clipped initial sync must pin its page on the last
     /// delivered message with an RFC 8620 §5.5 `anchor` (+`anchorOffset: 1`),
     /// not a numeric `position` — a concurrent deletion would otherwise shift
@@ -16366,6 +16575,150 @@ mod tests {
                 .unwrap()
                 .is_none(),
             "the drained cursor must be cleared"
+        );
+    }
+
+    /// The `remaining` decision (and the stored fallback cursor) must use the
+    /// RFC 8620 §5.5 response `position`, not a locally accumulated numeric
+    /// offset. When a message before the anchor is deleted, the anchor's live
+    /// index drops BELOW the stored offset; a stale-offset subtraction would
+    /// then report "drained" while items remain and drop them permanently
+    /// (they are already covered by the first window's query state, so the
+    /// delta never re-reports them).
+    #[tokio::test]
+    async fn test_email_initial_sync_uses_authoritative_query_position() {
+        use crate::models::AppState;
+        use axum::routing::{get, post};
+        use serde_json::{Value, json};
+        use std::sync::Arc as StdArc;
+
+        #[derive(Clone)]
+        struct Ctl {
+            base: String,
+        }
+
+        async fn session(axum::Extension(ctl): axum::Extension<Ctl>) -> axum::Json<Value> {
+            axum::Json(json!({
+                "apiUrl": ctl.base,
+                "downloadUrl": format!("{}/download/{{accountId}}/{{blobId}}", ctl.base),
+                "uploadUrl": format!("{}/upload/{{accountId}}", ctl.base),
+                "eventSourceUrl": format!("{}/eventsource", ctl.base),
+                "state": "s",
+                "username": "u",
+                "accounts": {"a": {"name": "u", "isPersonal": true, "isReadOnly": false, "accountCapabilities": {}}},
+                "primaryAccounts": {"urn:ietf:params:jmap:mail": "a"},
+                "capabilities": {"urn:ietf:params:jmap:core": {"maxObjectsInGet": 500}}
+            }))
+        }
+
+        async fn api(
+            axum::Extension(_ctl): axum::Extension<Ctl>,
+            body: String,
+        ) -> axum::response::Response {
+            let req: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
+            let mut responses = Vec::new();
+            for call in req
+                .get("methodCalls")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default()
+            {
+                let name = call.get(0).and_then(|v| v.as_str()).unwrap_or("");
+                let cid = call.get(2).and_then(|v| v.as_str()).unwrap_or("c0");
+                let result = match name {
+                    "Mailbox/query" => json!({"accountId":"a","ids":["mbx-inbox"],"total":1}),
+                    // The anchor now sits at index 4 (a message before it was
+                    // deleted), so the AUTHORITATIVE position is 4 — below the
+                    // stored offset of 5. Two items delivered from index 4 with
+                    // total 7 leaves ONE item (index 6) undelivered.
+                    "Email/query" => {
+                        json!({"accountId":"a","queryState":"QS1","ids":["m6","m7"],"total":7,"position":4})
+                    }
+                    "Email/get" => json!({"accountId":"a","state":"D1","list":[
+                        {"id":"m6","mailboxIds":{"mbx-inbox":true},"keywords":{},"subject":"s6","receivedAt":"2026-01-01T00:00:00Z"},
+                        {"id":"m7","mailboxIds":{"mbx-inbox":true},"keywords":{},"subject":"s7","receivedAt":"2026-01-01T00:00:00Z"}
+                    ]}),
+                    _ => json!({"accountId":"a"}),
+                };
+                responses.push(json!([name, result, cid]));
+            }
+            let resp = json!({"methodResponses": responses, "sessionState": "s"});
+            axum::response::Response::builder()
+                .status(200)
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(serde_json::to_vec(&resp).unwrap()))
+                .unwrap()
+        }
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
+        let ctl = Ctl { base: base.clone() };
+        let app = axum::Router::new()
+            .route("/session", get(session))
+            .route("/", post(api))
+            .layer(axum::Extension(ctl));
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let storage = crate::storage::Storage::new("sqlite::memory:")
+            .await
+            .unwrap();
+        storage.init_schema().await.unwrap();
+        let cfg = crate::config::Config {
+            jmap_base: base.clone(),
+            email_enabled: true,
+            mail_domain: "example.com".to_string(),
+            hmac_secret: SecretString::from("a".repeat(32)),
+            ..Default::default()
+        };
+        let state = StdArc::new(AppState::new(cfg, StdArc::new(storage)));
+
+        let owner = "u@example.com";
+        let scoped = scoped_collection_id("2", "dev-1");
+        // A clipped prime left a cursor at numeric offset 5 pinned on m5.
+        state
+            .storage
+            .set_email_sync_cursor(owner, &scoped, 5, Some("QS0"), Some("m5"))
+            .await
+            .unwrap();
+
+        let password = SecretString::from("pw");
+        let options = crate::eas_sync_options::EasSyncCollectionOptions::default();
+        let xml = handle_email_sync(&EmailSyncRequestCtx {
+            state: &state,
+            username: owner,
+            password: &password,
+            collection_id: "2",
+            state_collection_id: &scoped,
+            incoming_sync_key: "contkey",
+            window: 2,
+            options: Some(&options),
+            conversation_mode: false,
+        })
+        .await
+        .expect("continuation sync");
+
+        assert!(
+            xml.contains("<MoreAvailable/>"),
+            "an undelivered tail must keep the walk open (authoritative position): {xml}"
+        );
+        // The stored fallback offset must be the authoritative 4 + 2 = 6, not
+        // the stale 5 + 2 = 7.
+        let (position, _, anchor) = state
+            .storage
+            .get_email_sync_cursor(owner, &scoped)
+            .await
+            .unwrap()
+            .expect("cursor persists while a tail remains");
+        assert_eq!(
+            position, 6,
+            "the stored fallback offset must be the authoritative position"
+        );
+        assert_eq!(
+            anchor.as_deref(),
+            Some("m7"),
+            "anchor pins the last delivered"
         );
     }
 

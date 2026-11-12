@@ -111,35 +111,50 @@ pub fn invalid_sync_key_response(collection_id: &str, content_class: &str) -> St
 /// Resolve the CalDAV collection href backing a user-created calendar-family
 /// EAS folder from its `CollectionId`, or `None` for a system folder (which
 /// keeps the default-calendar behavior).
+///
+/// A `folder_map` READ failure is propagated as an error, never flattened to
+/// `None`: `None` means "system or genuinely unmapped", and the callers treat
+/// it as an unscoped collection (the default calendar, or account-wide JMAP
+/// events). Conflating a transient storage error with that would let a custom
+/// folder Sync leak the default calendar's events; the caller must instead fail
+/// retryably.
 async fn collection_folder_href(
     state: &Arc<AppState>,
     owner: &str,
     collection_id: &str,
-) -> Option<String> {
+) -> Result<Option<String>> {
     // Callers may pass either the visible CollectionId (the calendar Sync
     // path) or its device-scoped form `{visible}::{device}` (the client-mutation
     // path); `folder_map` is keyed by the visible id. A CalDAV collection href
     // is a valid CollectionId that may itself contain `::`, so the COMPLETE id
     // is looked up first and the device suffix is stripped only when that
     // fails — otherwise `Foo::Bar/` would resolve to `Foo`.
-    if let Some(href) = folder_caldav_href(state, owner, collection_id).await {
-        return Some(href);
+    if let Some(href) = folder_caldav_href(state, owner, collection_id).await? {
+        return Ok(Some(href));
     }
     match collection_id.rsplit_once("::") {
         Some((visible, _)) => folder_caldav_href(state, owner, visible).await,
-        None => None,
+        None => Ok(None),
     }
 }
 
 /// The CalDAV collection href a `folder_map` row backs, or `None` for a system
-/// folder or an unmapped id.
-async fn folder_caldav_href(state: &Arc<AppState>, owner: &str, server_id: &str) -> Option<String> {
+/// folder or an unmapped id. A storage read failure is an error (see
+/// [`collection_folder_href`]).
+async fn folder_caldav_href(
+    state: &Arc<AppState>,
+    owner: &str,
+    server_id: &str,
+) -> Result<Option<String>> {
     if crate::eas_folders::is_system_folder_id(server_id) {
-        return None;
+        return Ok(None);
     }
     match state.storage.get_folder(owner, server_id).await {
-        Ok(Some(row)) if row.backend_kind == "caldav" => Some(row.backend_id),
-        _ => None,
+        Ok(Some(row)) if row.backend_kind == "caldav" => Ok(Some(row.backend_id)),
+        Ok(_) => Ok(None),
+        Err(e) => Err(anyhow!(
+            "failed to resolve calendar folder {server_id}: {e}"
+        )),
     }
 }
 
@@ -162,7 +177,7 @@ pub async fn apply_client_sync_mutations(
     // its CalDAV collection href as its CollectionId, so an Add there must land
     // in that collection, not the first calendar returned. A system Calendar
     // folder (CollectionId "1") keeps the default-calendar behavior.
-    let collection_href = match collection_folder_href(&state, owner, collection_id).await {
+    let collection_href = match collection_folder_href(&state, owner, collection_id).await? {
         Some(href) => caldav.absolute_url(&href)?,
         None => {
             let calendars = caldav.find_user_calendars(username, password).await?;
@@ -1547,7 +1562,7 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
     // default calendar's events.
     let mut scoped_calendar_href: Option<String> = None;
     let calendar_scope: Option<Option<String>> =
-        match collection_folder_href(&params.state, params.owner, params.collection_id).await {
+        match collection_folder_href(&params.state, params.owner, params.collection_id).await? {
             None => None,
             Some(href) => {
                 let resolved = match &params.state.jmap_client {
@@ -4091,6 +4106,58 @@ mod tests {
                 .unwrap()
                 .is_none(),
             "the deleted event's item_map row must be removed"
+        );
+    }
+
+    /// A transient `folder_map` read failure while resolving a custom calendar
+    /// folder must FAIL the Sync closed, not be conflated with "unmapped" (which
+    /// `perform_sync` treats as an unscoped collection and would serve the
+    /// default calendar's / account-wide events under the custom folder). The
+    /// failure is induced by dropping the `folder_map` table after the device
+    /// has primed its sync key, so the request reaches the resolver.
+    #[tokio::test]
+    async fn custom_calendar_folder_resolution_failure_fails_closed() {
+        let stub = spawn_calendar_stub(vec![], vec![], "query-s", "get-s", None).await;
+        let state = calendar_sync_state(&stub.base).await;
+        let owner = "user@example.com";
+        let folder_href = "/dav/cal/user@example.com/Side%20Project/";
+        let state_collection_id = format!("{folder_href}::dev1");
+        // A primed device: the incoming non-zero key matches the stored key, so
+        // the request proceeds past the invalid-key guard to the folder
+        // resolver.
+        state
+            .storage
+            .set_sync_key(owner, &state_collection_id, "key-1", Some("s0"))
+            .await
+            .unwrap();
+        // Poison the `folder_map` read.
+        sqlx::query("DROP TABLE folder_map")
+            .execute(state.storage.pool())
+            .await
+            .unwrap();
+
+        let opts = SyncOptions {
+            window_size: 100,
+            get_changes: true,
+            filter_start: Utc::now() - Duration::weeks(52),
+            body_options: crate::eas_sync_options::EasSyncCollectionOptions::default(),
+        };
+        let result = perform_sync(&PerformSyncParams {
+            state: state.clone(),
+            owner,
+            collection_id: folder_href,
+            state_collection_id: &state_collection_id,
+            incoming_sync_key: "key-1",
+            content_class: "Calendar",
+            opts,
+            username: owner,
+            password: "pw",
+            client_mutation_responses: "",
+        })
+        .await;
+        assert!(
+            result.is_err(),
+            "a folder_map read failure must fail the Sync closed, got: {result:?}"
         );
     }
 }

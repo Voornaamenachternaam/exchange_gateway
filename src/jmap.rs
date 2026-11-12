@@ -492,6 +492,12 @@ pub struct EmailListResult {
     /// longer exists in the result set. The result is empty; the caller falls
     /// back to numeric `position` paging.
     pub anchor_not_found: bool,
+    /// RFC 8620 §5.5 response `position`: the zero-based index of the first
+    /// returned id within the COMPLETE result set. This is the authoritative
+    /// absolute progress of a paged walk — unlike a locally accumulated
+    /// numeric offset, it stays correct when an `anchor` is used or when a
+    /// concurrent deletion shifts the tail.
+    pub query_position: u64,
 }
 
 impl EmailListResult {
@@ -506,6 +512,7 @@ impl EmailListResult {
             query_state: String::new(),
             state: String::new(),
             anchor_not_found: false,
+            query_position: 0,
         }
     }
 }
@@ -2177,6 +2184,7 @@ impl JmapClient {
         let mut emails: Vec<JmapEmail> = Vec::new();
         let mut state = String::new();
         let mut method_errors: Vec<Value> = Vec::new();
+        let mut query_position: u64 = 0;
 
         for (method, data, _) in response.method_responses {
             if method == "Email/query" {
@@ -2190,6 +2198,10 @@ impl JmapClient {
                     .and_then(|v| v.as_str())
                     .unwrap_or("")
                     .to_string();
+                // RFC 8620 §5.5: the authoritative absolute index of the first
+                // returned id. Absent only on a malformed response; 0 is then a
+                // safe floor.
+                query_position = data.get("position").and_then(|v| v.as_u64()).unwrap_or(0);
             } else if method == "Email/get" {
                 emails = data
                     .get("list")
@@ -2225,6 +2237,7 @@ impl JmapClient {
             query_state,
             state,
             anchor_not_found,
+            query_position,
         })
     }
 

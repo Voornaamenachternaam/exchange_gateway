@@ -1748,8 +1748,8 @@ pub struct FetchEmailsParams<'a> {
     /// cannot shift the tail below a stale numeric `position` and be skipped.
     /// `None` uses numeric `position` paging.
     pub anchor: Option<&'a str>,
-    /// RFC 8620 §5.5 `anchorOffset` (only meaningful with `anchor`). `0` starts
-    /// the window immediately after the anchor.
+    /// RFC 8620 §5.5 `anchorOffset` (only meaningful with `anchor`). `0`
+    /// includes the anchor; `1` starts the window immediately after it.
     pub anchor_offset: i32,
 }
 
