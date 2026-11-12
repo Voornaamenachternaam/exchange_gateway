@@ -96,6 +96,17 @@ gateway restarts and surface in `FolderSync`/`GetHierarchy`.
   and already-primed devices receive its Delete. `delete_folders_journaled`
   journals only ids that had a mapping row, so a system folder (whose EAS
   ServerId is never a JMAP mailbox id) never fabricates a Delete.
+- **EWS mirror consistency.** The same rule holds for the EWS front door: an
+  EWS `DeleteFolder` with `DeleteType="HardDelete"` destroys the target JMAP
+  mailbox and its whole descendant subtree bottom-up, then prunes the
+  `folder_map` row of every mailbox it actually destroyed and journals a
+  `folder-delete` for each in one transaction, so a folder an EAS client
+  created and an EWS client deleted is no longer advertised by EAS
+  `FolderSync`/`GetHierarchy` and already-primed EAS devices receive its Delete.
+  A failed mirror write is NOT acknowledged as success (the mailbox is already
+  gone, so a stale `folder_map` row would keep EAS advertising a deleted
+  folder); it surfaces as a retryable `ErrorInternalServerError`, and the
+  destroy is idempotent so a retry re-runs the prune.
 - **`FolderUpdate`** (§2.2.1.6): rename and/or move. A system folder → 2; an
   unknown folder → 4; otherwise JMAP `Mailbox/set update` (patch `name` and/or
   `parentId`) or a CalDAV `PROPPATCH` `<D:displayname>`; the CalDAV collection
@@ -231,7 +242,11 @@ pins the GetHierarchy HTTP 500 on a folder-list read failure. `mapi::handler` ga
 `rop_delete_folder_without_mapping_row_journals_nothing`, pinning the
 EAS-mirror consistency of a MAPI mailbox destroy, plus
 `rop_delete_folder_mirror_write_failure_is_disk_error` (the post-commit
-hardening below). The hierarchy-rotation tests
+hardening below); `ews_folder_ops::tests` gains
+`hard_delete_prunes_eas_folder_map_and_journals`,
+`hard_delete_without_mapping_row_journals_nothing` and
+`hard_delete_mirror_write_failure_is_internal_error`, pinning the same
+EAS-mirror consistency for the EWS `DeleteFolder` hard-delete path. The hierarchy-rotation tests
 `rotate_hierarchy_key_for_never_primed_device_returns_prime_key`,
 `rotate_hierarchy_key_preserves_primed_watermark` and
 `rotate_hierarchy_key_without_token_forces_prime` pin the fail-closed rotation;

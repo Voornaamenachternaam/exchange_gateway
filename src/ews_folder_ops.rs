@@ -1011,6 +1011,9 @@ pub(crate) async fn handle_delete_folder(
         let mut destruction_order: Vec<String> = vec![mailbox_id.clone()];
         let mut seen: std::collections::HashSet<String> =
             destruction_order.iter().cloned().collect();
+        // Mailboxes actually destroyed, so the EAS folder store can be pruned
+        // and a `folder-delete` journaled for each once the walk completes.
+        let mut destroyed_ids: Vec<String> = Vec::new();
         while let Some(cur) = visit_stack.pop() {
             for child in hierarchy
                 .mailboxes
@@ -1047,7 +1050,9 @@ pub(crate) async fn handle_delete_folder(
                 Ok(
                     crate::jmap::MailboxDestroyOutcome::Destroyed
                     | crate::jmap::MailboxDestroyOutcome::AlreadyGone,
-                ) => {}
+                ) => {
+                    destroyed_ids.push(cb_id.clone());
+                }
                 Ok(crate::jmap::MailboxDestroyOutcome::Refused) => {
                     tracing::warn!(
                         mailbox = %cb_id,
@@ -1064,6 +1069,27 @@ pub(crate) async fn handle_delete_folder(
                     return internal_error(action, "Mailbox/set destroy failed", &e);
                 }
             }
+        }
+        // Mirror the destroyed mailboxes into the EAS folder store: prune any
+        // `folder_map` row whose ServerId is a destroyed mailbox and journal a
+        // `folder-delete`, so an EAS-created folder removed here is no longer
+        // advertised by FolderSync/GetHierarchy and already-primed EAS devices
+        // receive its Delete. `delete_folders_journaled` is a no-op for ids with
+        // no mapping row (e.g. a system folder, whose ServerId is never a JMAP
+        // mailbox id). A failed mirror write must NOT be acknowledged as
+        // success — the mailbox is already gone, so a stale `folder_map` row
+        // would keep EAS advertising a deleted folder.
+        if !destroyed_ids.is_empty()
+            && let Err(e) = state
+                .storage
+                .delete_folders_journaled(&owner, &destroyed_ids)
+                .await
+        {
+            tracing::warn!(
+                error = %e,
+                "EWS DeleteFolder: failed to prune EAS folder map for destroyed mailboxes"
+            );
+            return internal_error(action, "folder_map prune failed", &e);
         }
     }
 
@@ -1884,5 +1910,298 @@ mod tests {
         let el = folder_id_el("id<>");
         assert!(el.contains("Id=\"id&lt;&gt;\""));
         assert!(el.contains("ChangeKey=\"1\""));
+    }
+
+    // ---- DeleteFolder hard-delete mirror tests ---------------------------
+
+    use axum::routing::{get, post};
+    use serde_json::{Value, json};
+    use std::sync::Arc as StdArc;
+    use tokio::sync::Mutex as TokioMutex;
+
+    /// Minimal JMAP stub for the hard-delete path: a session, a `Mailbox/query`
+    /// that returns `mailboxes` (each `{"id","parentId"}`), a `Mailbox/get`
+    /// that echoes them, an empty `Email/query` (no messages to destroy), and a
+    /// `Mailbox/set` that reports every requested destroy as destroyed.
+    async fn spawn_delete_stub(mailboxes: Vec<Value>) -> (String, StdArc<TokioMutex<Vec<Value>>>) {
+        use axum::response::Response;
+        let calls: StdArc<TokioMutex<Vec<Value>>> = StdArc::new(TokioMutex::new(Vec::new()));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let base = format!("http://127.0.0.1:{port}");
+        let session_base = base.clone();
+        let mailboxes_for_api = mailboxes.clone();
+        let base_calls = calls.clone();
+        let app = axum::Router::new()
+            .route(
+                "/session",
+                get(move || {
+                    let base = session_base.clone();
+                    async move {
+                        axum::Json(json!({
+                            "apiUrl": base,
+                            "downloadUrl": format!("{base}/download/{{accountId}}/{{blobId}}"),
+                            "uploadUrl": format!("{base}/upload/{{accountId}}"),
+                            "eventSourceUrl": format!("{base}/eventsource"),
+                            "state": "s",
+                            "username": "u",
+                            "accounts": {"a": {"name": "u", "isPersonal": true, "isReadOnly": false, "accountCapabilities": {}}},
+                            "primaryAccounts": {"urn:ietf:params:jmap:mail": "a"},
+                            "capabilities": {}
+                        }))
+                    }
+                }),
+            )
+            .route(
+                "/",
+                post(move |body: String| {
+                    let calls = base_calls.clone();
+                    let mailboxes = mailboxes_for_api.clone();
+                    async move {
+                        let req: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
+                        let method_calls = req
+                            .get("methodCalls")
+                            .and_then(|v| v.as_array())
+                            .cloned()
+                            .unwrap_or_default();
+                        let mut responses = Vec::new();
+                        for call in method_calls {
+                            let name = call.get(0).and_then(|v| v.as_str()).unwrap_or("");
+                            let args = call.get(1).cloned().unwrap_or(Value::Null);
+                            let id = call.get(2).and_then(|v| v.as_str()).unwrap_or("c0");
+                            calls
+                                .lock()
+                                .await
+                                .push(json!({"method": name, "args": args.clone()}));
+                            let (mname, result) = match name {
+                                "Mailbox/query" => {
+                                    let ids: Vec<Value> = mailboxes
+                                        .iter()
+                                        .filter_map(|m| m.get("id").cloned())
+                                        .collect();
+                                    ("Mailbox/query", json!({"accountId": "a", "ids": ids}))
+                                }
+                                "Mailbox/get" => {
+                                    ("Mailbox/get", json!({"accountId": "a", "list": mailboxes}))
+                                }
+                                "Email/query" => {
+                                    ("Email/query", json!({"accountId": "a", "ids": [], "total": 0}))
+                                }
+                                "Mailbox/set" => {
+                                    let destroyed = args
+                                        .get("destroy")
+                                        .cloned()
+                                        .unwrap_or_else(|| json!([]));
+                                    (
+                                        "Mailbox/set",
+                                        json!({"accountId": "a", "destroyed": destroyed}),
+                                    )
+                                }
+                                _ => (name, json!({"accountId": "a"})),
+                            };
+                            responses.push(json!([mname, result, id]));
+                        }
+                        let resp =
+                            json!({"methodResponses": responses, "sessionState": "s"});
+                        Response::builder()
+                            .status(200)
+                            .header("content-type", "application/json")
+                            .body(axum::body::Body::from(serde_json::to_vec(&resp).unwrap()))
+                            .unwrap()
+                    }
+                }),
+            );
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        (base, calls)
+    }
+
+    /// An EWS hard-delete of an EAS-created folder must prune its `folder_map`
+    /// row and journal a `folder-delete`, so EAS `FolderSync`/`GetHierarchy`
+    /// stop advertising it and primed devices receive its Delete.
+    #[tokio::test]
+    async fn hard_delete_prunes_eas_folder_map_and_journals() {
+        let (base, _calls) = spawn_delete_stub(vec![
+            json!({"id": "mb-parent", "parentId": null}),
+            json!({"id": "mb-child", "parentId": "mb-parent"}),
+        ])
+        .await;
+        let storage = crate::storage::Storage::new("sqlite::memory:")
+            .await
+            .unwrap();
+        storage.init_schema().await.unwrap();
+        let owner = "u@example.com";
+        for (sid, name) in [("mb-parent", "Parent"), ("mb-child", "Child")] {
+            storage
+                .upsert_folder_journaled(
+                    crate::storage::FolderUpsertParams {
+                        owner,
+                        server_id: sid,
+                        parent_id: "0",
+                        display_name: name,
+                        folder_type: 12,
+                        backend_kind: "jmap",
+                        backend_id: sid,
+                    },
+                    "folder-add",
+                )
+                .await
+                .unwrap();
+        }
+        let cfg = crate::config::Config {
+            jmap_base: base,
+            email_enabled: true,
+            mail_domain: "example.com".to_string(),
+            hmac_secret: SecretString::from("a".repeat(32)),
+            ..Default::default()
+        };
+        let state = StdArc::new(crate::models::AppState::new(cfg, StdArc::new(storage)));
+        let auth = AuthContext {
+            username: owner.to_string(),
+            password: SecretString::from("pw"),
+        };
+        let body = r#"<?xml version="1.0"?><m:DeleteFolder DeleteType="HardDelete" xmlns:m="m" xmlns:t="t"><m:FolderIds><t:FolderId Id="mb-parent"/></m:FolderIds></m:DeleteFolder>"#;
+        let resp = handle_delete_folder(&state, &auth, body).await;
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(text.contains("NoError"), "hard delete must succeed: {text}");
+        assert!(
+            state
+                .storage
+                .get_folder(owner, "mb-parent")
+                .await
+                .unwrap()
+                .is_none(),
+            "the parent mapping must be pruned"
+        );
+        assert!(
+            state
+                .storage
+                .get_folder(owner, "mb-child")
+                .await
+                .unwrap()
+                .is_none(),
+            "the descendant mapping must be pruned"
+        );
+        let journal = state
+            .storage
+            .list_folder_journal_since(owner, 0, i64::MAX)
+            .await
+            .unwrap();
+        let deletes: Vec<&str> = journal
+            .iter()
+            .filter(|r| r.op == "folder-delete")
+            .map(|r| r.server_id.as_str())
+            .collect();
+        assert!(
+            deletes.contains(&"mb-parent") && deletes.contains(&"mb-child"),
+            "both destroyed mailboxes must be journaled as folder-delete: {deletes:?}"
+        );
+    }
+
+    /// A hard-delete whose JMAP mailbox ids have NO `folder_map` row (e.g. a
+    /// system mailbox referenced by a native id) must still succeed — the
+    /// mirror is a no-op, never an error.
+    #[tokio::test]
+    async fn hard_delete_without_mapping_row_journals_nothing() {
+        let (base, _calls) =
+            spawn_delete_stub(vec![json!({"id": "mb-sys", "parentId": null})]).await;
+        let storage = crate::storage::Storage::new("sqlite::memory:")
+            .await
+            .unwrap();
+        storage.init_schema().await.unwrap();
+        let cfg = crate::config::Config {
+            jmap_base: base,
+            email_enabled: true,
+            mail_domain: "example.com".to_string(),
+            hmac_secret: SecretString::from("a".repeat(32)),
+            ..Default::default()
+        };
+        let state = StdArc::new(crate::models::AppState::new(cfg, StdArc::new(storage)));
+        let owner = "u@example.com";
+        let auth = AuthContext {
+            username: owner.to_string(),
+            password: SecretString::from("pw"),
+        };
+        let body = r#"<?xml version="1.0"?><m:DeleteFolder DeleteType="HardDelete" xmlns:m="m" xmlns:t="t"><m:FolderIds><t:FolderId Id="mb-sys"/></m:FolderIds></m:DeleteFolder>"#;
+        let resp = handle_delete_folder(&state, &auth, body).await;
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(
+            text.contains("NoError"),
+            "an unmapped delete must succeed: {text}"
+        );
+        let journal = state
+            .storage
+            .list_folder_journal_since(owner, 0, i64::MAX)
+            .await
+            .unwrap();
+        assert!(
+            journal.iter().all(|r| r.op != "folder-delete"),
+            "an unmapped mailbox must journal nothing"
+        );
+    }
+
+    /// A hard-delete whose EAS mirror write fails must NOT be acknowledged as
+    /// success: the JMAP mailbox is gone, so a stale `folder_map` row would
+    /// keep EAS advertising a deleted folder.
+    #[tokio::test]
+    async fn hard_delete_mirror_write_failure_is_internal_error() {
+        let (base, _calls) = spawn_delete_stub(vec![json!({"id": "mb-1", "parentId": null})]).await;
+        let storage = crate::storage::Storage::new("sqlite::memory:")
+            .await
+            .unwrap();
+        storage.init_schema().await.unwrap();
+        let owner = "u@example.com";
+        storage
+            .upsert_folder_journaled(
+                crate::storage::FolderUpsertParams {
+                    owner,
+                    server_id: "mb-1",
+                    parent_id: "0",
+                    display_name: "Folder",
+                    folder_type: 12,
+                    backend_kind: "jmap",
+                    backend_id: "mb-1",
+                },
+                "folder-add",
+            )
+            .await
+            .unwrap();
+        let cfg = crate::config::Config {
+            jmap_base: base,
+            email_enabled: true,
+            mail_domain: "example.com".to_string(),
+            hmac_secret: SecretString::from("a".repeat(32)),
+            ..Default::default()
+        };
+        let state = StdArc::new(crate::models::AppState::new(cfg, StdArc::new(storage)));
+        // Close the pool so the mirror write cannot execute; JMAP calls are
+        // HTTP and still succeed.
+        state.storage.pool().close().await;
+        let auth = AuthContext {
+            username: owner.to_string(),
+            password: SecretString::from("pw"),
+        };
+        let body = r#"<?xml version="1.0"?><m:DeleteFolder DeleteType="HardDelete" xmlns:m="m" xmlns:t="t"><m:FolderIds><t:FolderId Id="mb-1"/></m:FolderIds></m:DeleteFolder>"#;
+        let resp = handle_delete_folder(&state, &auth, body).await;
+        assert_eq!(
+            resp.status(),
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "a failed mirror write must surface as a retryable server error"
+        );
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(
+            text.contains("ErrorInternalServerError"),
+            "the fault must be a retryable EWS code, got: {text}"
+        );
     }
 }
