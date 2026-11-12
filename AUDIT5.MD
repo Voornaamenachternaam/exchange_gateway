@@ -106,7 +106,14 @@ gateway restarts and surface in `FolderSync`/`GetHierarchy`.
   A failed mirror write is NOT acknowledged as success (the mailbox is already
   gone, so a stale `folder_map` row would keep EAS advertising a deleted
   folder); it surfaces as a retryable `ErrorInternalServerError`, and the
-  destroy is idempotent so a retry re-runs the prune.
+  destroy is idempotent so a retry re-runs the prune. The mirror runs on EVERY
+  exit path, including a walk that aborts part-way (a mid-subtree backend
+  refusal or transport error): the subtree is destroyed deepest-first, so an
+  abort leaves the already-destroyed descendants gone from JMAP, and pruning
+  only on the full-success path would strand their `folder_map` rows (EAS keeps
+  advertising them) while a retry — re-querying the now-childless hierarchy —
+  could never recover the descendant ids. The destroyed-so-far set is pruned
+  before the walk's own failure is surfaced.
 - **`FolderUpdate`** (§2.2.1.6): rename and/or move. A system folder → 2; an
   unknown folder → 4; otherwise JMAP `Mailbox/set update` (patch `name` and/or
   `parentId`) or a CalDAV `PROPPATCH` `<D:displayname>`; the CalDAV collection
@@ -246,7 +253,10 @@ hardening below); `ews_folder_ops::tests` gains
 `hard_delete_prunes_eas_folder_map_and_journals`,
 `hard_delete_without_mapping_row_journals_nothing` and
 `hard_delete_mirror_write_failure_is_internal_error`, pinning the same
-EAS-mirror consistency for the EWS `DeleteFolder` hard-delete path. The hierarchy-rotation tests
+EAS-mirror consistency for the EWS `DeleteFolder` hard-delete path, plus
+`hard_delete_partial_failure_prunes_destroyed_descendants`, pinning that a
+walk aborted mid-subtree still prunes the descendants it already destroyed.
+The hierarchy-rotation tests
 `rotate_hierarchy_key_for_never_primed_device_returns_prime_key`,
 `rotate_hierarchy_key_preserves_primed_watermark` and
 `rotate_hierarchy_key_without_token_forces_prime` pin the fail-closed rotation;

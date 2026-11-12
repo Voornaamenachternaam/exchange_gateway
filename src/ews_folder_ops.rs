@@ -1012,8 +1012,12 @@ pub(crate) async fn handle_delete_folder(
         let mut seen: std::collections::HashSet<String> =
             destruction_order.iter().cloned().collect();
         // Mailboxes actually destroyed, so the EAS folder store can be pruned
-        // and a `folder-delete` journaled for each once the walk completes.
+        // and a `folder-delete` journaled for each once the walk completes (or
+        // is aborted — see below).
         let mut destroyed_ids: Vec<String> = Vec::new();
+        // A walk that stopped early (backend refusal or transport error), to be
+        // returned only AFTER the destroyed-so-far mailboxes have been mirrored.
+        let mut destroy_failure: Option<Response> = None;
         while let Some(cur) = visit_stack.pop() {
             for child in hierarchy
                 .mailboxes
@@ -1034,14 +1038,22 @@ pub(crate) async fn handle_delete_folder(
                 .await
             {
                 Ok(v) => v.into_iter().map(|(jid, _)| jid).collect::<Vec<_>>(),
-                Err(e) => return internal_error(action, "Email/query for hard delete failed", &e),
+                Err(e) => {
+                    destroy_failure = Some(internal_error(
+                        action,
+                        "Email/query for hard delete failed",
+                        &e,
+                    ));
+                    break;
+                }
             };
             if !ids_in.is_empty()
                 && let Err(e) = jmap
                     .destroy_emails(&account_id, &ids_in, &auth.username, &auth.password)
                     .await
             {
-                return internal_error(action, "Email/set destroy failed", &e);
+                destroy_failure = Some(internal_error(action, "Email/set destroy failed", &e));
+                break;
             }
             match jmap
                 .destroy_mailbox(&account_id, cb_id, false, &auth.username, &auth.password)
@@ -1058,15 +1070,18 @@ pub(crate) async fn handle_delete_folder(
                         mailbox = %cb_id,
                         "EWS DeleteFolder: Mailbox/set refused the destroy"
                     );
-                    return operation_error_response(
+                    destroy_failure = Some(operation_error_response(
                         &action,
                         "ErrorCannotDeleteObject",
                         "The folder could not be deleted",
                         StatusCode::OK,
-                    );
+                    ));
+                    break;
                 }
                 Err(e) => {
-                    return internal_error(action, "Mailbox/set destroy failed", &e);
+                    destroy_failure =
+                        Some(internal_error(action, "Mailbox/set destroy failed", &e));
+                    break;
                 }
             }
         }
@@ -1079,6 +1094,14 @@ pub(crate) async fn handle_delete_folder(
         // mailbox id). A failed mirror write must NOT be acknowledged as
         // success — the mailbox is already gone, so a stale `folder_map` row
         // would keep EAS advertising a deleted folder.
+        //
+        // This runs on EVERY path, including a walk that stopped early: the
+        // subtree is destroyed deepest-first, so an abort part-way leaves the
+        // already-destroyed descendants gone from JMAP. Pruning only on the
+        // full-success path would strand their `folder_map` rows (EAS keeps
+        // advertising them) and a retry — which re-queries the now-childless
+        // hierarchy — could never recover the descendant ids. Mirror the
+        // destroyed-so-far set before surfacing the walk's failure.
         if !destroyed_ids.is_empty()
             && let Err(e) = state
                 .storage
@@ -1090,6 +1113,9 @@ pub(crate) async fn handle_delete_folder(
                 "EWS DeleteFolder: failed to prune EAS folder map for destroyed mailboxes"
             );
             return internal_error(action, "folder_map prune failed", &e);
+        }
+        if let Some(resp) = destroy_failure {
+            return resp;
         }
     }
 
@@ -1922,8 +1948,19 @@ mod tests {
     /// Minimal JMAP stub for the hard-delete path: a session, a `Mailbox/query`
     /// that returns `mailboxes` (each `{"id","parentId"}`), a `Mailbox/get`
     /// that echoes them, an empty `Email/query` (no messages to destroy), and a
-    /// `Mailbox/set` that reports every requested destroy as destroyed.
+    /// `Mailbox/set` that reports every requested destroy as destroyed (unless
+    /// its id is in `refuse`, which is answered as a `notDestroyed` refusal).
     async fn spawn_delete_stub(mailboxes: Vec<Value>) -> (String, StdArc<TokioMutex<Vec<Value>>>) {
+        spawn_delete_stub_refusing(mailboxes, Vec::new()).await
+    }
+
+    /// As [`spawn_delete_stub`] but every id in `refuse` is answered with a
+    /// `Mailbox/set` `notDestroyed` refusal (`mailboxHasChild`), modelling a
+    /// mid-walk abort after some descendants were already destroyed.
+    async fn spawn_delete_stub_refusing(
+        mailboxes: Vec<Value>,
+        refuse: Vec<String>,
+    ) -> (String, StdArc<TokioMutex<Vec<Value>>>) {
         use axum::response::Response;
         let calls: StdArc<TokioMutex<Vec<Value>>> = StdArc::new(TokioMutex::new(Vec::new()));
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1957,6 +1994,7 @@ mod tests {
                 post(move |body: String| {
                     let calls = base_calls.clone();
                     let mailboxes = mailboxes_for_api.clone();
+                    let refuse = refuse.clone();
                     async move {
                         let req: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
                         let method_calls = req
@@ -1988,13 +2026,34 @@ mod tests {
                                     ("Email/query", json!({"accountId": "a", "ids": [], "total": 0}))
                                 }
                                 "Mailbox/set" => {
-                                    let destroyed = args
+                                    let destroy: Vec<String> = args
                                         .get("destroy")
-                                        .cloned()
-                                        .unwrap_or_else(|| json!([]));
+                                        .and_then(|v| v.as_array())
+                                        .map(|a| {
+                                            a.iter()
+                                                .filter_map(|v| v.as_str().map(str::to_string))
+                                                .collect()
+                                        })
+                                        .unwrap_or_default();
+                                    let mut destroyed: Vec<String> = Vec::new();
+                                    let mut not_destroyed = serde_json::Map::new();
+                                    for mb in destroy {
+                                        if refuse.contains(&mb) {
+                                            not_destroyed.insert(
+                                                mb,
+                                                json!({"type": "mailboxHasChild"}),
+                                            );
+                                        } else {
+                                            destroyed.push(mb);
+                                        }
+                                    }
                                     (
                                         "Mailbox/set",
-                                        json!({"accountId": "a", "destroyed": destroyed}),
+                                        json!({
+                                            "accountId": "a",
+                                            "destroyed": destroyed,
+                                            "notDestroyed": Value::Object(not_destroyed),
+                                        }),
                                     )
                                 }
                                 _ => (name, json!({"accountId": "a"})),
@@ -2202,6 +2261,104 @@ mod tests {
         assert!(
             text.contains("ErrorInternalServerError"),
             "the fault must be a retryable EWS code, got: {text}"
+        );
+    }
+
+    /// A walk that aborts part-way (a mid-subtree `Mailbox/set` refusal) must
+    /// still mirror the mailboxes destroyed before the abort: they are already
+    /// gone from JMAP, and a retry re-queries the now-childless hierarchy so it
+    /// could never recover their ids — leaving their `folder_map` rows
+    /// advertised by EAS forever.
+    #[tokio::test]
+    async fn hard_delete_partial_failure_prunes_destroyed_descendants() {
+        // Root → child; the child destroys cleanly, the root is refused
+        // (`mailboxHasChild`), modelling an abort after the descendant is gone.
+        let (base, _calls) = spawn_delete_stub_refusing(
+            vec![
+                json!({"id": "mb-root", "parentId": null}),
+                json!({"id": "mb-child", "parentId": "mb-root"}),
+            ],
+            vec!["mb-root".to_string()],
+        )
+        .await;
+        let storage = crate::storage::Storage::new("sqlite::memory:")
+            .await
+            .unwrap();
+        storage.init_schema().await.unwrap();
+        let owner = "u@example.com";
+        for (sid, name) in [("mb-root", "Root"), ("mb-child", "Child")] {
+            storage
+                .upsert_folder_journaled(
+                    crate::storage::FolderUpsertParams {
+                        owner,
+                        server_id: sid,
+                        parent_id: "0",
+                        display_name: name,
+                        folder_type: 12,
+                        backend_kind: "jmap",
+                        backend_id: sid,
+                    },
+                    "folder-add",
+                )
+                .await
+                .unwrap();
+        }
+        let cfg = crate::config::Config {
+            jmap_base: base,
+            email_enabled: true,
+            mail_domain: "example.com".to_string(),
+            hmac_secret: SecretString::from("a".repeat(32)),
+            ..Default::default()
+        };
+        let state = StdArc::new(crate::models::AppState::new(cfg, StdArc::new(storage)));
+        let auth = AuthContext {
+            username: owner.to_string(),
+            password: SecretString::from("pw"),
+        };
+        let body = r#"<?xml version="1.0"?><m:DeleteFolder DeleteType="HardDelete" xmlns:m="m" xmlns:t="t"><m:FolderIds><t:FolderId Id="mb-root"/></m:FolderIds></m:DeleteFolder>"#;
+        let resp = handle_delete_folder(&state, &auth, body).await;
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(
+            text.contains("ErrorCannotDeleteObject"),
+            "a refused destroy must surface as a delete error: {text}"
+        );
+        assert!(
+            state
+                .storage
+                .get_folder(owner, "mb-child")
+                .await
+                .unwrap()
+                .is_none(),
+            "the destroyed descendant's mapping must be pruned on the failure path"
+        );
+        assert!(
+            state
+                .storage
+                .get_folder(owner, "mb-root")
+                .await
+                .unwrap()
+                .is_some(),
+            "the refused root's mapping must be preserved"
+        );
+        let journal = state
+            .storage
+            .list_folder_journal_since(owner, 0, i64::MAX)
+            .await
+            .unwrap();
+        assert!(
+            journal
+                .iter()
+                .any(|r| r.op == "folder-delete" && r.server_id == "mb-child"),
+            "the destroyed descendant must be journaled as folder-delete"
+        );
+        assert!(
+            journal
+                .iter()
+                .all(|r| r.op != "folder-delete" || r.server_id != "mb-root"),
+            "the refused root must not be journaled as deleted"
         );
     }
 }
