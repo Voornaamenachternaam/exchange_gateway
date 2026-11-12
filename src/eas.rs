@@ -6018,25 +6018,45 @@ async fn handle_sync_collections(ctx: &SyncCtx<'_>, collections: &[SyncCollectio
         // that is neither a system id nor a role; when <Class> is absent the
         // persisted `folder_map` mapping is consulted so such a request reaches
         // the email handler (its backend_kind is "jmap") instead of falling
-        // through to the "unsupported collection" Status 4.
+        // through to the "unsupported collection" Status 4. The SAME mapping
+        // disambiguates a user-created calendar-family folder (a CalDAV
+        // collection, Type 13), so it is read ONCE and reused by both the
+        // email and calendar inference. A read failure is treated as "no
+        // mapping" here; the class-specific handler re-resolves the mapping and
+        // fails closed (retryable Status 6) on its own read error, so a
+        // misroute cannot occur.
+        let mapped_backend_kind: Option<String> = if coll.class.is_none() {
+            state
+                .storage
+                .get_folder(username, collection_id)
+                .await
+                .ok()
+                .flatten()
+                .map(|row| row.backend_kind)
+        } else {
+            None
+        };
         let is_email = match coll.class.as_deref() {
             Some(c) if c.eq_ignore_ascii_case("Email") => true,
             Some(_) => crate::email::is_eas_email_collection_id(collection_id),
             None => {
                 crate::email::is_eas_email_collection_id(collection_id)
-                    || matches!(
-                        state.storage.get_folder(username, collection_id).await,
-                        Ok(Some(ref row)) if row.backend_kind == "jmap"
-                    )
+                    || mapped_backend_kind.as_deref() == Some("jmap")
             }
         };
 
         // Determine if this is Calendar sync. Collection ID "1" is Calendar.
+        // When <Class> is absent, a mapped CalDAV collection (a user-created
+        // calendar-family folder, [MS-ASCMD] §2.2.3.186.2 Type 13) is Calendar
+        // too: without this inference the request would fall through to the
+        // unsupported-collection Status 4 and the folder could never sync.
         let is_calendar = coll
             .class
             .as_deref()
             .map(|c| c.eq_ignore_ascii_case("Calendar"))
-            .unwrap_or_else(|| collection_id == "1");
+            .unwrap_or_else(|| {
+                collection_id == "1" || mapped_backend_kind.as_deref() == Some("caldav")
+            });
 
         // Determine if this is Contacts sync. Per MS-ASCMD, Contacts class is "Contacts".
         // Collection ID for contacts is often "8" (the Contacts folder).
@@ -8249,12 +8269,25 @@ async fn handle_email_initial_sync(
     // to the numeric position (which, with the anchor gone, is the best
     // remaining estimate). Mail that arrives during paging sorts before the
     // anchor and is re-reported by the delta from the first window's state.
-    let (start_position, cursor_state, cursor_anchor) = state
+    let (start_position, cursor_state, cursor_anchor) = match state
         .storage
         .get_email_sync_cursor(username, state_collection_id)
         .await
-        .unwrap_or(None)
-        .unwrap_or((0, None, None));
+    {
+        Ok(cursor) => cursor.unwrap_or((0, None, None)),
+        Err(e) => {
+            // A transient cursor READ failure must not be flattened to "no
+            // cursor" (start from position 0 with no anchor or base state):
+            // that would restart the walk from the beginning, re-capturing the
+            // keyword baseline and re-deriving every page. Fail closed
+            // (retryable) so the next Sync re-reads the same cursor — matching
+            // the routing guard in `handle_email_sync`.
+            tracing::warn!(error = %e, "Failed to read email sync cursor; deferring sync");
+            return Err(anyhow::anyhow!(
+                "failed to read email sync cursor for collection {state_collection_id}: {e}"
+            ));
+        }
+    };
 
     // Capture the keyword (flag) baseline at the START of the initial sync,
     // BEFORE the first window is fetched. `Email/queryChanges` cannot report a
@@ -8606,27 +8639,33 @@ async fn handle_email_delta_sync(ctx: &EmailSyncCtx<'_>) -> anyhow::Result<Strin
             ));
         }
 
-        // Queue drained within this window: advance the stored token to the
-        // queue's base state. The next Sync diffs from there and picks up
-        // everything that happened since — no re-delivery, no loss.
+        // Queue drained within this window: drop the queue AND advance the
+        // stored token to the queue's base state in ONE transaction. The next
+        // Sync diffs from there and picks up everything that happened since —
+        // no re-delivery, no loss. The two writes MUST be atomic: if the queue
+        // were cleared but the key advance failed, the stored token would still
+        // sit at the pre-drain value while the queue was gone, so the next delta
+        // would recompute the WHOLE change set and replay the already-delivered
+        // commands; if the key advanced but the clear failed, the same ops would
+        // be re-delivered from the stale queue. Either way the client sees
+        // duplicates. On failure the delivered window is NOT acknowledged: the
+        // caller answers a retryable Status 6 carrying the incoming key, the
+        // queue and stored token are left untouched (the transaction rolled
+        // back), and the same drain is retried once storage recovers.
         if let Err(e) = state
             .storage
-            .clear_email_sync_pending(username, state_collection_id)
+            .drain_email_sync_queue(username, state_collection_id, &new_sync_key, &base_state)
             .await
         {
-            tracing::warn!(error = %e, "Failed to clear drained email delta queue");
-        }
-        if let Err(e) = state
-            .storage
-            .set_sync_key(
-                username,
-                state_collection_id,
-                &new_sync_key,
-                Some(&base_state),
-            )
-            .await
-        {
-            tracing::warn!(error = %e, "Failed to advance email sync key to queue base state");
+            tracing::warn!(
+                user = %username,
+                collection_id,
+                error = %e,
+                "Failed to atomically drain email delta queue; refusing to acknowledge"
+            );
+            return Err(anyhow::anyhow!(
+                "failed to drain email delta queue for collection {state_collection_id}"
+            ));
         }
         tracing::info!(
             user = %username,
@@ -11890,6 +11929,128 @@ mod tests {
         );
     }
 
+    /// Draining a persisted overflow queue must commit the queue removal AND
+    /// the stored key/token advance TOGETHER. If the queue were removed but the
+    /// key write failed (or vice versa), the next delta would recompute the
+    /// whole change set — or re-deliver the stale queue — and the client would
+    /// see duplicate Adds/Changes/Deletes. The drain therefore runs in one
+    /// transaction and FAILS CLOSED (retryable) on any write error, leaving the
+    /// queue and token untouched.
+    #[tokio::test]
+    async fn test_email_delta_queue_drain_is_atomic_and_fails_closed() {
+        use crate::models::AppState;
+        use std::sync::Arc as StdArc;
+
+        let storage = crate::storage::Storage::new("sqlite::memory:")
+            .await
+            .unwrap();
+        storage.init_schema().await.unwrap();
+        let cfg = crate::config::Config {
+            // No JMAP call is made for a queued delete, so an unroutable base
+            // is fine and keeps the test hermetic.
+            jmap_base: "http://127.0.0.1:1".to_string(),
+            email_enabled: true,
+            mail_domain: "example.com".to_string(),
+            hmac_secret: SecretString::from("a".repeat(32)),
+            ..Default::default()
+        };
+        let state = StdArc::new(AppState::new(cfg, StdArc::new(storage)));
+
+        let owner = "u@example.com";
+        let scoped = scoped_collection_id("2", "dev-1");
+        state
+            .storage
+            .set_sync_key(owner, &scoped, "oldkey", Some("S0"))
+            .await
+            .unwrap();
+        // A single-op queue that fits the window, so the drain branch runs and
+        // the delivered op (a delete) needs no JMAP round-trip.
+        state
+            .storage
+            .set_email_sync_pending(owner, &scoped, r#"[{"op":"delete","id":"m1"}]"#, "Sbase")
+            .await
+            .unwrap();
+
+        // Poison the key advance so the transaction's second write aborts.
+        sqlx::query(
+            "CREATE TRIGGER poison_sync_key BEFORE INSERT ON sync_state \
+             BEGIN SELECT RAISE(ABORT, 'poisoned'); END;",
+        )
+        .execute(state.storage.pool())
+        .await
+        .unwrap();
+
+        let jmap = state.jmap_client.as_ref().unwrap().clone();
+        let password = SecretString::from("pw");
+        let options = crate::eas_sync_options::EasSyncCollectionOptions::default();
+        let ctx = EmailSyncCtx {
+            state: &state,
+            jmap: &jmap,
+            account_id: "a",
+            username: owner,
+            password: &password,
+            collection_id: "2",
+            state_collection_id: &scoped,
+            window: 512,
+            options: &options,
+            conversation_mode: false,
+            mailbox_id: None,
+            delta_mailbox_id: Some("mbx-inbox"),
+        };
+
+        let result = handle_email_delta_sync(&ctx).await;
+        assert!(
+            result.is_err(),
+            "a drain whose key advance fails must not be acknowledged: {result:?}"
+        );
+        assert_eq!(
+            state.storage.get_sync_key(owner, &scoped).await.unwrap(),
+            Some(("oldkey".to_string(), Some("S0".to_string()))),
+            "the stored sync key/token must be untouched on the drain-failure path"
+        );
+        assert!(
+            state
+                .storage
+                .get_email_sync_pending(owner, &scoped)
+                .await
+                .unwrap()
+                .is_some(),
+            "the queue must survive a failed drain (the DELETE rolls back with the key write)"
+        );
+
+        // Storage recovers: the same drain commits both writes atomically.
+        sqlx::query("DROP TRIGGER poison_sync_key")
+            .execute(state.storage.pool())
+            .await
+            .unwrap();
+        let xml = handle_email_delta_sync(&ctx)
+            .await
+            .expect("the drain must succeed once storage recovers");
+        assert!(
+            xml.contains("<Delete><ServerId>") && !xml.contains("<MoreAvailable/>"),
+            "the recovered drain delivers the queued delete and completes: {xml}"
+        );
+        assert!(
+            state
+                .storage
+                .get_email_sync_pending(owner, &scoped)
+                .await
+                .unwrap()
+                .is_none(),
+            "the drained queue must be removed"
+        );
+        assert_eq!(
+            state
+                .storage
+                .get_sync_key(owner, &scoped)
+                .await
+                .unwrap()
+                .map(|(_, token)| token),
+            Some(Some("Sbase".to_string())),
+            "the stored token must advance to the queue's base state"
+        );
+    }
+
     /// The email delta must surface a flag (`keywords`) change that
     /// `Email/queryChanges` cannot report — it tracks only query-set
     /// membership — by diffing the live mailbox against the stored keyword
@@ -14298,6 +14459,63 @@ mod tests {
         );
     }
 
+    /// A user-created calendar-family folder (a CalDAV collection, Type 13)
+    /// whose `folder_map` row is `backend_kind = "caldav"` must route to the
+    /// Calendar Sync path even when the client omits the protocol-optional
+    /// `<Class>` ([MS-ASCMD] §2.2.3.30). Without the inference the collection
+    /// falls through to the unsupported-collection Status 4 and the folder can
+    /// never sync.
+    #[tokio::test]
+    async fn test_sync_collection_class_omitted_caldav_folder_routes_to_calendar() {
+        let state = test_sync_state().await;
+        let owner = "user@example.com";
+        let device = "device-caldav";
+        let folder_href = "/dav/cal/user@example.com/Side%20Project/";
+        state
+            .storage
+            .upsert_folder_journaled(
+                crate::storage::FolderUpsertParams {
+                    owner,
+                    server_id: folder_href,
+                    parent_id: "0",
+                    display_name: "Side Project",
+                    folder_type: 13,
+                    backend_kind: "caldav",
+                    backend_id: folder_href,
+                },
+                "folder-add",
+            )
+            .await
+            .unwrap();
+
+        let coll = SyncCollection {
+            sync_key: Some("0".to_string()),
+            collection_id: Some(folder_href.to_string()),
+            class: None,
+            ..Default::default()
+        };
+        let ctx = SyncCtx {
+            state: &state,
+            username: owner,
+            password: &SecretString::from("pw"),
+            wbxml: &Wbxml::new(),
+            as_wbxml: false,
+            request_id: "test-req",
+            device_id: device,
+            global_window_size: None,
+        };
+        let resp = handle_sync_collections(&ctx, &[coll]).await;
+        let text = response_text(resp).await;
+        assert!(
+            text.contains("<Class>Calendar</Class>"),
+            "a mapped CalDAV folder with no Class must route to the Calendar path: {text}"
+        );
+        assert!(
+            !text.contains("<Status>4</Status>"),
+            "it must not fall through to the unsupported-collection status: {text}"
+        );
+    }
+
     /// The initial Provision response (PolicyKey 0 path) must be WBXML-
     /// encodable. The template mixes `Settings:`-prefixed elements with the
     /// Provision default namespace, so the `Settings` prefix must be declared
@@ -16172,6 +16390,109 @@ mod tests {
         assert!(
             result.is_err(),
             "a failed cursor read must fail the sync closed: {result:?}"
+        );
+    }
+
+    /// The initial-sync handler re-reads the resume cursor after the routing
+    /// guard already did. That SECOND read must fail closed too: flattening it
+    /// to "no cursor" would restart the walk from position 0 with no anchor or
+    /// base state, re-deriving every already-delivered page and re-capturing
+    /// the keyword baseline.
+    #[tokio::test]
+    async fn test_email_initial_sync_fails_closed_when_cursor_reread_fails() {
+        use crate::models::AppState;
+        use axum::routing::{get, post};
+        use serde_json::{Value, json};
+        use std::sync::Arc as StdArc;
+
+        #[derive(Clone)]
+        struct Ctl {
+            base: String,
+        }
+
+        async fn session(axum::Extension(ctl): axum::Extension<Ctl>) -> axum::Json<Value> {
+            axum::Json(json!({
+                "apiUrl": ctl.base,
+                "downloadUrl": format!("{}/download/{{accountId}}/{{blobId}}", ctl.base),
+                "uploadUrl": format!("{}/upload/{{accountId}}", ctl.base),
+                "eventSourceUrl": format!("{}/eventsource", ctl.base),
+                "state": "s",
+                "username": "u",
+                "accounts": {"a": {"name": "u", "isPersonal": true, "isReadOnly": false, "accountCapabilities": {}}},
+                "primaryAccounts": {"urn:ietf:params:jmap:mail": "a"},
+                "capabilities": {"urn:ietf:params:jmap:core": {"maxObjectsInGet": 500}}
+            }))
+        }
+
+        async fn api(
+            axum::Extension(_ctl): axum::Extension<Ctl>,
+            _body: String,
+        ) -> axum::response::Response {
+            let resp = json!({"methodResponses": [], "sessionState": "s"});
+            axum::response::Response::builder()
+                .status(200)
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(serde_json::to_vec(&resp).unwrap()))
+                .unwrap()
+        }
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
+        let ctl = Ctl { base: base.clone() };
+        let app = axum::Router::new()
+            .route("/session", get(session))
+            .route("/", post(api))
+            .layer(axum::Extension(ctl));
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let storage = crate::storage::Storage::new("sqlite::memory:")
+            .await
+            .unwrap();
+        storage.init_schema().await.unwrap();
+        let cfg = crate::config::Config {
+            jmap_base: base.clone(),
+            email_enabled: true,
+            mail_domain: "example.com".to_string(),
+            hmac_secret: SecretString::from("a".repeat(32)),
+            ..Default::default()
+        };
+        let state = StdArc::new(AppState::new(cfg, StdArc::new(storage)));
+
+        let owner = "u@example.com";
+        let scoped = scoped_collection_id("2", "dev-1");
+        // Poison the cursor read the handler itself performs.
+        sqlx::query("DROP TABLE email_sync_cursor")
+            .execute(state.storage.pool())
+            .await
+            .unwrap();
+
+        let jmap = state.jmap_client.as_ref().unwrap().clone();
+        let password = SecretString::from("pw");
+        let options = crate::eas_sync_options::EasSyncCollectionOptions::default();
+        let result = handle_email_initial_sync(
+            &EmailSyncCtx {
+                state: &state,
+                jmap: &jmap,
+                account_id: "a",
+                username: owner,
+                password: &password,
+                collection_id: "2",
+                state_collection_id: &scoped,
+                window: 512,
+                options: &options,
+                conversation_mode: false,
+                mailbox_id: None,
+                delta_mailbox_id: Some("mbx-inbox"),
+            },
+            "inbox",
+        )
+        .await;
+
+        assert!(
+            result.is_err(),
+            "the initial-sync cursor re-read must fail closed, not restart the walk: {result:?}"
         );
     }
 

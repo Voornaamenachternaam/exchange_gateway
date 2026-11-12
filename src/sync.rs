@@ -3806,6 +3806,60 @@ mod tests {
             "the PUT must target the folder's own collection, got {puts:?}"
         );
     }
+    /// Regression test for the fail-closed `?` on the folder lookup in
+    /// `apply_client_sync_mutations`: when the `folder_map` read itself fails,
+    /// the mutation must NOT fall back to the default calendar — an Add would
+    /// otherwise be written to a collection the folder does not own. The
+    /// lookup error propagates so the caller answers a retryable Status 6 and
+    /// no PUT reaches the CalDAV stub.
+    #[tokio::test]
+    async fn calendar_add_fails_closed_when_folder_lookup_fails() {
+        let stub = spawn_calendar_stub(vec![], vec![], "query-s", "get-s", None)
+            .await
+            .with_calendars(vec![json!({
+                "id": "cal-default",
+                "name": "Calendar",
+                "href": "/dav/cal/user@example.com/Calendar/"
+            })]);
+        let state = calendar_mutation_state(&stub.base).await;
+        let owner = "user@example.com";
+        let folder_href = "/dav/cal/user@example.com/Side%20Project/";
+
+        // Poison the folder_map read so `collection_folder_href` errors.
+        sqlx::query("DROP TABLE folder_map")
+            .execute(state.storage.pool())
+            .await
+            .unwrap();
+
+        let xml = "<Sync><Collections><Collection><Class>Calendar</Class>\
+<CollectionId>/dav/cal/user@example.com/Side%20Project/</CollectionId>\
+<Add><ClientId>c1</ClientId><ApplicationData>\
+<Calendar:Subject>Scoped</Calendar:Subject>\
+<Calendar:StartTime>2026-01-05T09:00:00Z</Calendar:StartTime>\
+<Calendar:EndTime>2026-01-05T10:00:00Z</Calendar:EndTime>\
+</ApplicationData></Add></Collection></Collections></Sync>";
+        let result = apply_client_sync_mutations(
+            state.clone(),
+            owner,
+            &crate::eas::scoped_collection_id(folder_href, "dev1"),
+            owner,
+            "pw",
+            xml,
+        )
+        .await;
+        assert!(
+            result.is_err(),
+            "a folder-lookup failure must fail the mutation closed: {result:?}"
+        );
+        assert!(
+            stub.dav_calls
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|(m, _)| m != "PUT"),
+            "no Add may reach a calendar when the folder cannot be resolved"
+        );
+    }
 
     /// A user-created calendar-family folder must sync ONLY its own calendar:
     /// the prime resolves the folder's CalDAV href to its JMAP calendar id and

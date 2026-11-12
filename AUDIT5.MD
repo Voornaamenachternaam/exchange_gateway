@@ -165,6 +165,43 @@ gateway restarts and surface in `FolderSync`/`GetHierarchy`.
   of freezing the feed. The Ping email-folder probe uses the same
   mailbox-scoped feed. The push monitor keeps the account-wide `Email/changes`
   deliberately — it must observe every mailbox to wake the right folder.
+  A continuation page pins its window on the **last delivered message id**
+  (RFC 8620 §5.5 `anchor` + `anchorOffset: 1`, "start immediately after the
+  anchor") instead of a numeric `position`: a message deleted before the next
+  request shrinks the live `receivedAt`-ordered result set, so a stored numeric
+  offset would skip an unchanged message — and, because that message was
+  already covered by the first window's query state, the delta would never
+  re-report it (permanently absent from the client). A vanished anchor surfaces
+  as `anchorNotFound` and falls back to the numeric position. The clipped-prime
+  resume decision uses the response's **authoritative `position`** (RFC 8620
+  §5.5 `EmailListResult::query_position`), not a locally accumulated offset, for
+  the same reason. A `get_email_sync_cursor` READ failure on the initial-prime
+  continuation path fails closed (retryable) rather than being flattened to "no
+  cursor" (which would restart the walk from position 0 and re-derive every
+  page); a failed cursor WRITE after a clipped window likewise fails closed, so
+  the next Sync cannot route a not-yet-delivered tail to the delta from the
+  first page's state.
+
+- **Atomic delta-queue drain.** When a persisted email-delta overflow queue is
+  fully delivered within the EAS window, dropping the queue AND advancing the
+  stored (SyncKey, token) to the queue's base state happen in ONE SQLite
+  transaction (`Storage::drain_email_sync_queue`). A cleared queue with an
+  unadvanced key would make the next delta recompute the whole change set and
+  replay already-delivered commands; an advanced key with a surviving queue
+  would re-deliver the same ops — either ordering surfaces duplicate commands.
+  A failed drain is not acknowledged: the caller answers a retryable Status 6
+  and the transaction rolls back, so the next Sync retries the same drain.
+
+- **Class-omitted folder routing.** When the client omits the
+  protocol-optional `<Class>` ([MS-ASCMD] §2.2.3.30), the persisted `folder_map`
+  row's `backend_kind` disambiguates a user-created folder: `"jmap"` routes to
+  the Email path (a user mail folder), `"caldav"` routes to the Calendar path (a
+  user-created calendar-family folder, Type 13). Without the CalDAV inference a
+  custom calendar folder would fall through to the unsupported-collection
+  Status 4 and could never sync. The mapping is read ONCE and reused; a read
+  failure here is treated as "no mapping", but the class-specific handler
+  re-resolves the mapping and fails closed (retryable Status 6) on its own read
+  error, so a misroute cannot occur.
 
 - **Email property (flag) updates.** `Email/queryChanges` reports only
   membership of the query result set (RFC 8620 §5.6), so a message whose flags
@@ -243,7 +280,20 @@ the typed `CannotCalculateChanges`).
 `eas::tests::test_email_delta_overflow_queue_persist_failure_fails_closed` pins
 the fail-closed overflow acknowledgement (a poisoned queue write makes the
 delta return an error with the stored token and queue untouched, then drain
-cleanly once storage recovers). `eas::tests::test_get_hierarchy_fails_closed_when_folder_list_read_fails`
+cleanly once storage recovers).
+`eas::tests::test_email_delta_queue_drain_is_atomic_and_fails_closed` pins the
+atomic drain (a poisoned `sync_state` write during the drain makes the delta
+return an error with the queue and stored token both untouched, so the next
+Sync re-drains rather than replaying or losing the window), and
+`eas::tests::test_email_initial_sync_fails_closed_when_cursor_reread_fails`
+pins the fail-closed initial-prime cursor re-read.
+`sync::tests::calendar_add_fails_closed_when_folder_lookup_fails` pins that a
+transient `folder_map` read failure during a calendar Add mutation fails the
+mutation closed (no CalDAV PUT reaches the backend), and
+`eas::tests::test_sync_collection_class_omitted_caldav_folder_routes_to_calendar`
+pins the Class-omitted CalDAV-folder routing to the Calendar path (never the
+unsupported-collection Status 4).
+`eas::tests::test_get_hierarchy_fails_closed_when_folder_list_read_fails`
 pins the GetHierarchy HTTP 500 on a folder-list read failure. `mapi::handler` gains
 `rop_delete_folder_prunes_eas_folder_map_and_journals` and
 `rop_delete_folder_without_mapping_row_journals_nothing`, pinning the

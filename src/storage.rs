@@ -1425,6 +1425,54 @@ impl Storage {
         Ok(())
     }
 
+    /// Drop the EAS email delta-sync overflow queue AND advance the stored
+    /// (SyncKey, token) to the queue's base state in ONE transaction.
+    ///
+    /// Draining a persisted queue is only safe to acknowledge when the two
+    /// writes are durable TOGETHER: a cleared queue with an unadvanced key
+    /// would make the next delta recompute the whole change set and replay the
+    /// already-delivered commands, while an advanced key with a surviving queue
+    /// would re-deliver the same ops — either ordering surfaces duplicate
+    /// commands to the client. Committing both atomically, and failing the
+    /// caller (which answers a retryable Status 6) if either write fails,
+    /// keeps the queue and token consistent so the next Sync retries the same
+    /// drain.
+    pub async fn drain_email_sync_queue(
+        &self,
+        owner: &str,
+        collection_id: &str,
+        sync_key: &str,
+        token: &str,
+    ) -> Result<()> {
+        let mut tx = sqlx::Acquire::begin(self.pool.as_ref())
+            .await
+            .map_err(|e| GatewayError::Storage(format!("Transaction error: {}", e)))?;
+
+        sqlx::query("DELETE FROM email_sync_pending WHERE owner = ?1 AND collection_id = ?2")
+            .bind(owner)
+            .bind(collection_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+
+        sqlx::query(
+            "INSERT INTO sync_state (owner, collection_id, sync_key, token) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(owner, collection_id) DO UPDATE SET sync_key = ?3, token = ?4, updated_at = CURRENT_TIMESTAMP",
+        )
+        .bind(owner)
+        .bind(collection_id)
+        .bind(sync_key)
+        .bind(token)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+
+        tx.commit()
+            .await
+            .map_err(|e| GatewayError::Storage(format!("Commit error: {}", e)))?;
+        Ok(())
+    }
+
     /// Upsert the sorted keyword set for one message in a collection's flag
     /// baseline. `set_email_keyword_baseline` replaces the whole baseline;
     /// this incremental form lets a delta persist only the ids it actually
