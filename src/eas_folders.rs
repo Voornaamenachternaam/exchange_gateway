@@ -1425,15 +1425,18 @@ mod tests {
         let (state, calls, _) = spawn_backend_stub().await;
         state
             .storage
-            .upsert_folder(crate::storage::FolderUpsertParams {
-                owner: "u@example.com",
-                server_id: "mb-x",
-                parent_id: "0",
-                display_name: "Old",
-                folder_type: 12,
-                backend_kind: "jmap",
-                backend_id: "mb-x",
-            })
+            .upsert_folder_journaled(
+                crate::storage::FolderUpsertParams {
+                    owner: "u@example.com",
+                    server_id: "mb-x",
+                    parent_id: "0",
+                    display_name: "Old",
+                    folder_type: 12,
+                    backend_kind: "jmap",
+                    backend_id: "mb-x",
+                },
+                "folder-add",
+            )
             .await
             .unwrap();
         let r = delete_folder(&state, "u@example.com", &pw(), "mb-x").await;
@@ -1458,15 +1461,18 @@ mod tests {
         let (state, _, dav) = spawn_backend_stub().await;
         state
             .storage
-            .upsert_folder(crate::storage::FolderUpsertParams {
-                owner: "u@example.com",
-                server_id: "/cal/u@example.com/Foo/",
-                parent_id: "0",
-                display_name: "Foo",
-                folder_type: 13,
-                backend_kind: "caldav",
-                backend_id: "/cal/u@example.com/Foo/",
-            })
+            .upsert_folder_journaled(
+                crate::storage::FolderUpsertParams {
+                    owner: "u@example.com",
+                    server_id: "/cal/u@example.com/Foo/",
+                    parent_id: "0",
+                    display_name: "Foo",
+                    folder_type: 13,
+                    backend_kind: "caldav",
+                    backend_id: "/cal/u@example.com/Foo/",
+                },
+                "folder-add",
+            )
             .await
             .unwrap();
         let r = delete_folder(&state, "u@example.com", &pw(), "/cal/u@example.com/Foo/").await;
@@ -1486,15 +1492,18 @@ mod tests {
         for (id, parent) in [("mb-p", "0"), ("mb-c", "mb-p")] {
             state
                 .storage
-                .upsert_folder(crate::storage::FolderUpsertParams {
-                    owner: "u@example.com",
-                    server_id: id,
-                    parent_id: parent,
-                    display_name: id,
-                    folder_type: 12,
-                    backend_kind: "jmap",
-                    backend_id: id,
-                })
+                .upsert_folder_journaled(
+                    crate::storage::FolderUpsertParams {
+                        owner: "u@example.com",
+                        server_id: id,
+                        parent_id: parent,
+                        display_name: id,
+                        folder_type: 12,
+                        backend_kind: "jmap",
+                        backend_id: id,
+                    },
+                    "folder-add",
+                )
                 .await
                 .unwrap();
         }
@@ -1518,15 +1527,18 @@ mod tests {
         let (state, _, _) = spawn_backend_stub_with(Some("notfound")).await;
         state
             .storage
-            .upsert_folder(crate::storage::FolderUpsertParams {
-                owner: "u@example.com",
-                server_id: "mb-x",
-                parent_id: "0",
-                display_name: "Old",
-                folder_type: 12,
-                backend_kind: "jmap",
-                backend_id: "mb-x",
-            })
+            .upsert_folder_journaled(
+                crate::storage::FolderUpsertParams {
+                    owner: "u@example.com",
+                    server_id: "mb-x",
+                    parent_id: "0",
+                    display_name: "Old",
+                    folder_type: 12,
+                    backend_kind: "jmap",
+                    backend_id: "mb-x",
+                },
+                "folder-add",
+            )
             .await
             .unwrap();
         let r = delete_folder(&state, "u@example.com", &pw(), "mb-x").await;
@@ -1553,15 +1565,18 @@ mod tests {
         let (state, _, _) = spawn_backend_stub_with(Some("refused")).await;
         state
             .storage
-            .upsert_folder(crate::storage::FolderUpsertParams {
-                owner: "u@example.com",
-                server_id: "mb-x",
-                parent_id: "0",
-                display_name: "Old",
-                folder_type: 12,
-                backend_kind: "jmap",
-                backend_id: "mb-x",
-            })
+            .upsert_folder_journaled(
+                crate::storage::FolderUpsertParams {
+                    owner: "u@example.com",
+                    server_id: "mb-x",
+                    parent_id: "0",
+                    display_name: "Old",
+                    folder_type: 12,
+                    backend_kind: "jmap",
+                    backend_id: "mb-x",
+                },
+                "folder-add",
+            )
             .await
             .unwrap();
         let r = delete_folder(&state, "u@example.com", &pw(), "mb-x").await;
@@ -1584,15 +1599,18 @@ mod tests {
         let (state, _, _) = spawn_backend_stub_with(Some("error")).await;
         state
             .storage
-            .upsert_folder(crate::storage::FolderUpsertParams {
-                owner: "u@example.com",
-                server_id: "mb-x",
-                parent_id: "0",
-                display_name: "Old",
-                folder_type: 12,
-                backend_kind: "jmap",
-                backend_id: "mb-x",
-            })
+            .upsert_folder_journaled(
+                crate::storage::FolderUpsertParams {
+                    owner: "u@example.com",
+                    server_id: "mb-x",
+                    parent_id: "0",
+                    display_name: "Old",
+                    folder_type: 12,
+                    backend_kind: "jmap",
+                    backend_id: "mb-x",
+                },
+                "folder-add",
+            )
             .await
             .unwrap();
         let r = delete_folder(&state, "u@example.com", &pw(), "mb-x").await;
@@ -1629,15 +1647,18 @@ mod tests {
         let (state, calls, _) = spawn_backend_stub().await;
         state
             .storage
-            .upsert_folder(crate::storage::FolderUpsertParams {
-                owner: "u@example.com",
-                server_id: "mb-x",
-                parent_id: "0",
-                display_name: "Old",
-                folder_type: 12,
-                backend_kind: "jmap",
-                backend_id: "mb-x",
-            })
+            .upsert_folder_journaled(
+                crate::storage::FolderUpsertParams {
+                    owner: "u@example.com",
+                    server_id: "mb-x",
+                    parent_id: "0",
+                    display_name: "Old",
+                    folder_type: 12,
+                    backend_kind: "jmap",
+                    backend_id: "mb-x",
+                },
+                "folder-add",
+            )
             .await
             .unwrap();
         let r = update_folder(&state, "u@example.com", &pw(), "mb-x", "0", "New").await;
@@ -1659,15 +1680,18 @@ mod tests {
         let (state, _, dav) = spawn_backend_stub().await;
         state
             .storage
-            .upsert_folder(crate::storage::FolderUpsertParams {
-                owner: "u@example.com",
-                server_id: "/cal/u@example.com/Foo/",
-                parent_id: "0",
-                display_name: "Foo",
-                folder_type: 13,
-                backend_kind: "caldav",
-                backend_id: "/cal/u@example.com/Foo/",
-            })
+            .upsert_folder_journaled(
+                crate::storage::FolderUpsertParams {
+                    owner: "u@example.com",
+                    server_id: "/cal/u@example.com/Foo/",
+                    parent_id: "0",
+                    display_name: "Foo",
+                    folder_type: 13,
+                    backend_kind: "caldav",
+                    backend_id: "/cal/u@example.com/Foo/",
+                },
+                "folder-add",
+            )
             .await
             .unwrap();
         let r = update_folder(
@@ -1701,16 +1725,24 @@ mod tests {
     #[tokio::test]
     async fn folder_hierarchy_journal_is_listed_since_watermark() {
         let (state, _, _) = spawn_backend_stub().await;
-        state
-            .storage
-            .record_folder_hierarchy_change("u@example.com", "mb-a", "folder-add")
-            .await
-            .unwrap();
-        state
-            .storage
-            .record_folder_hierarchy_change("u@example.com", "mb-b", "folder-add")
-            .await
-            .unwrap();
+        for (server_id, display_name) in [("mb-a", "A"), ("mb-b", "B")] {
+            state
+                .storage
+                .upsert_folder_journaled(
+                    crate::storage::FolderUpsertParams {
+                        owner: "u@example.com",
+                        server_id,
+                        parent_id: "0",
+                        display_name,
+                        folder_type: 12,
+                        backend_kind: "jmap",
+                        backend_id: server_id,
+                    },
+                    "folder-add",
+                )
+                .await
+                .unwrap();
+        }
         let all = state
             .storage
             .list_folder_journal_since("u@example.com", 0, i64::MAX)

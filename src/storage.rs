@@ -1480,7 +1480,9 @@ impl Storage {
         let s: String = r
             .try_get(0)
             .map_err(|e| GatewayError::Storage(format!("Decode error: {}", e)))?;
-        Ok(serde_json::from_str(&s).ok())
+        serde_json::from_str(&s)
+            .map(Some)
+            .map_err(|e| GatewayError::Storage(format!("Decode error: {}", e)))
     }
 
     /// Read the mailbox keyword baseline for an email collection. `None` when
@@ -3029,29 +3031,6 @@ impl Storage {
         Ok(rows)
     }
 
-    /// Insert or replace a user-created folder mapping ([MS-ASCMD] §2.2.1.3).
-    pub async fn upsert_folder(&self, p: FolderUpsertParams<'_>) -> Result<()> {
-        sqlx::query(
-            "INSERT INTO folder_map \
-             (owner, server_id, parent_id, display_name, folder_type, backend_kind, backend_id) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) \
-             ON CONFLICT(owner, server_id) DO UPDATE SET \
-                 parent_id = ?3, display_name = ?4, folder_type = ?5, \
-                 backend_kind = ?6, backend_id = ?7, updated_at = CURRENT_TIMESTAMP",
-        )
-        .bind(p.owner)
-        .bind(p.server_id)
-        .bind(p.parent_id)
-        .bind(p.display_name)
-        .bind(p.folder_type)
-        .bind(p.backend_kind)
-        .bind(p.backend_id)
-        .execute(self.pool.as_ref())
-        .await
-        .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
-        Ok(())
-    }
-
     /// All user-created folders owned by `owner`, stable by ServerId.
     pub async fn list_folders(&self, owner: &str) -> Result<Vec<FolderRow>> {
         sqlx::query_as::<_, FolderRow>(
@@ -3075,38 +3054,6 @@ impl Storage {
         .fetch_optional(self.pool.as_ref())
         .await
         .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))
-    }
-
-    /// Remove a user-created folder mapping ([MS-ASCMD] §2.2.1.4).
-    pub async fn delete_folder(&self, owner: &str, server_id: &str) -> Result<()> {
-        sqlx::query("DELETE FROM folder_map WHERE owner = ?1 AND server_id = ?2")
-            .bind(owner)
-            .bind(server_id)
-            .execute(self.pool.as_ref())
-            .await
-            .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
-        Ok(())
-    }
-
-    /// Journal a folder-hierarchy change so an already-primed FolderSync is
-    /// told the hierarchy changed (rather than a stale `<Count>0</Count>`).
-    /// `op` is `folder-add`, `folder-update` or `folder-delete`.
-    pub async fn record_folder_hierarchy_change(
-        &self,
-        owner: &str,
-        server_id: &str,
-        op: &str,
-    ) -> Result<()> {
-        sqlx::query(
-            "INSERT INTO change_journal (owner, server_id, op, resource_href) VALUES (?1, ?2, ?3, 'folder')",
-        )
-        .bind(owner)
-        .bind(server_id)
-        .bind(op)
-        .execute(self.pool.as_ref())
-        .await
-        .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
-        Ok(())
     }
 
     /// Persist a user-created folder mapping AND its folder-hierarchy journal
@@ -3211,8 +3158,8 @@ impl Storage {
     }
 }
 
-/// Parameters for [`Storage::upsert_folder`]. Grouped so the call site stays
-/// under clippy's argument-count threshold.
+/// Parameters for [`Storage::upsert_folder_journaled`]. Grouped so the call
+/// site stays under clippy's argument-count threshold.
 pub struct FolderUpsertParams<'a> {
     pub owner: &'a str,
     pub server_id: &'a str,
@@ -4339,6 +4286,29 @@ mod tests {
         );
     }
 
+    /// A row whose `keywords_json` is valid TEXT but not valid JSON is a READ
+    /// ERROR too: treating it as `None` would re-capture the live keywords and
+    /// silently swallow a flag-only change.
+    #[tokio::test]
+    async fn get_email_keyword_propagates_malformed_json() {
+        let storage = mem_storage().await;
+        let owner = "malformed@example.com";
+        let coll = "2::dev-1";
+        sqlx::query(
+            "INSERT INTO email_keyword_baseline (owner, collection_id, email_id, keywords_json) \
+             VALUES (?1, ?2, 'm1', 'not json')",
+        )
+        .bind(owner)
+        .bind(coll)
+        .execute(storage.pool())
+        .await
+        .expect("seed malformed row");
+        assert!(
+            storage.get_email_keyword(owner, coll, "m1").await.is_err(),
+            "malformed baseline JSON must surface as Err, never a missing row"
+        );
+    }
+
     /// `upsert_folder_journaled` writes the folder mapping AND its
     /// folder-hierarchy journal row in ONE transaction, so an already-primed
     /// FolderSync can always learn about a create/rename. The atomic
@@ -4429,6 +4399,59 @@ mod tests {
         assert_eq!(journal.len(), 3);
         assert_eq!(journal[2].op, "folder-delete");
         assert_eq!(journal[2].server_id, "mb-1");
+    }
+
+    /// If the journal insert fails the WHOLE transaction must roll back: the
+    /// mapping is not written and the caller sees an error, so a mutation can
+    /// never be acknowledged without a durable journal row an already-primed
+    /// device can learn about. A regression that wrote the mapping first (or
+    /// outside the transaction) would leave the row behind and pass a
+    /// happy-path-only test.
+    #[tokio::test]
+    async fn upsert_folder_journaled_rolls_back_mapping_when_journal_insert_fails() {
+        let storage = mem_storage().await;
+        let owner = "rollback@example.com";
+        // Force every `change_journal` insert to abort, so the journal half of
+        // the transaction fails after the `folder_map` upsert has run.
+        sqlx::query(
+            "CREATE TRIGGER fail_folder_journal BEFORE INSERT ON change_journal \
+             BEGIN SELECT RAISE(ABORT, 'journal insert refused'); END",
+        )
+        .execute(storage.pool())
+        .await
+        .expect("install failing trigger");
+
+        let err = storage
+            .upsert_folder_journaled(
+                FolderUpsertParams {
+                    owner,
+                    server_id: "mb-1",
+                    parent_id: "0",
+                    display_name: "Rollback",
+                    folder_type: 12,
+                    backend_kind: "jmap",
+                    backend_id: "mb-1",
+                },
+                "folder-add",
+            )
+            .await;
+        assert!(err.is_err(), "a failed journal insert must surface as Err");
+        assert!(
+            storage
+                .get_folder(owner, "mb-1")
+                .await
+                .expect("get folder")
+                .is_none(),
+            "the mapping must roll back with the failed journal insert"
+        );
+        assert!(
+            storage
+                .list_folder_journal_since(owner, 0, i64::MAX)
+                .await
+                .expect("folder journal")
+                .is_empty(),
+            "no journal row may survive a rolled-back mutation"
+        );
     }
 
     #[tokio::test]

@@ -3711,15 +3711,18 @@ mod tests {
         let folder_href = "/dav/cal/user@example.com/Side%20Project/";
         state
             .storage
-            .upsert_folder(crate::storage::FolderUpsertParams {
-                owner,
-                server_id: folder_href,
-                parent_id: "0",
-                display_name: "Side Project",
-                folder_type: 13,
-                backend_kind: "caldav",
-                backend_id: folder_href,
-            })
+            .upsert_folder_journaled(
+                crate::storage::FolderUpsertParams {
+                    owner,
+                    server_id: folder_href,
+                    parent_id: "0",
+                    display_name: "Side Project",
+                    folder_type: 13,
+                    backend_kind: "caldav",
+                    backend_id: folder_href,
+                },
+                "folder-add",
+            )
             .await
             .unwrap();
 
@@ -3788,15 +3791,18 @@ mod tests {
         let folder_href = "/dav/cal/user@example.com/Side%20Project/";
         state
             .storage
-            .upsert_folder(crate::storage::FolderUpsertParams {
-                owner,
-                server_id: folder_href,
-                parent_id: "0",
-                display_name: "Side Project",
-                folder_type: 13,
-                backend_kind: "caldav",
-                backend_id: folder_href,
-            })
+            .upsert_folder_journaled(
+                crate::storage::FolderUpsertParams {
+                    owner,
+                    server_id: folder_href,
+                    parent_id: "0",
+                    display_name: "Side Project",
+                    folder_type: 13,
+                    backend_kind: "caldav",
+                    backend_id: folder_href,
+                },
+                "folder-add",
+            )
             .await
             .unwrap();
 

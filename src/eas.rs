@@ -10588,22 +10588,20 @@ mod tests {
         // A folder that already existed when the device primed.
         state
             .storage
-            .upsert_folder(crate::storage::FolderUpsertParams {
-                owner,
-                server_id: "mbx-pre",
-                parent_id: "0",
-                display_name: "Pre-existing",
-                folder_type: 12,
-                backend_kind: "jmap",
-                backend_id: "mbx-pre",
-            })
+            .upsert_folder_journaled(
+                crate::storage::FolderUpsertParams {
+                    owner,
+                    server_id: "mbx-pre",
+                    parent_id: "0",
+                    display_name: "Pre-existing",
+                    folder_type: 12,
+                    backend_kind: "jmap",
+                    backend_id: "mbx-pre",
+                },
+                "folder-add",
+            )
             .await
             .expect("persist pre-existing folder");
-        state
-            .storage
-            .record_folder_hierarchy_change(owner, "mbx-pre", "folder-add")
-            .await
-            .expect("journal pre-existing add");
 
         // Device B primes the hierarchy (SyncKey 0) — this stores its watermark
         // at the current head and returns the key its next call must carry.
@@ -10634,27 +10632,36 @@ mod tests {
         // `folder-add` followed by a `folder-update`.
         state
             .storage
-            .upsert_folder(crate::storage::FolderUpsertParams {
-                owner,
-                server_id: "mbx-1",
-                parent_id: "0",
-                display_name: "Renamed",
-                folder_type: 12,
-                backend_kind: "jmap",
-                backend_id: "mbx-1",
-            })
+            .upsert_folder_journaled(
+                crate::storage::FolderUpsertParams {
+                    owner,
+                    server_id: "mbx-1",
+                    parent_id: "0",
+                    display_name: "Original",
+                    folder_type: 12,
+                    backend_kind: "jmap",
+                    backend_id: "mbx-1",
+                },
+                "folder-add",
+            )
             .await
             .expect("persist created folder");
         state
             .storage
-            .record_folder_hierarchy_change(owner, "mbx-1", "folder-add")
+            .upsert_folder_journaled(
+                crate::storage::FolderUpsertParams {
+                    owner,
+                    server_id: "mbx-1",
+                    parent_id: "0",
+                    display_name: "Renamed",
+                    folder_type: 12,
+                    backend_kind: "jmap",
+                    backend_id: "mbx-1",
+                },
+                "folder-update",
+            )
             .await
-            .expect("journal add");
-        state
-            .storage
-            .record_folder_hierarchy_change(owner, "mbx-1", "folder-update")
-            .await
-            .expect("journal update");
+            .expect("rename created folder");
 
         let delta_req = EasRequest {
             command: "FolderSync".to_string(),
