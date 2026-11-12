@@ -194,22 +194,38 @@ pub fn is_system_folder_id(server_id: &str) -> bool {
     )
 }
 
+/// The DisplayNames of the gateway's fixed system folders, shared by the
+/// reserved-name check and the reserved *collection*-name guard.
+const SYSTEM_FOLDER_NAMES: [&str; 10] = [
+    "Inbox",
+    "Drafts",
+    "Deleted Items",
+    "Sent Items",
+    "Outbox",
+    "Junk Email",
+    "Calendar",
+    "Contacts",
+    "Tasks",
+    "Notes",
+];
+
 /// Whether a DisplayName is already taken by a system folder (case-insensitive).
 fn is_system_folder_name(display_name: &str) -> bool {
-    [
-        "Inbox",
-        "Drafts",
-        "Deleted Items",
-        "Sent Items",
-        "Outbox",
-        "Junk Email",
-        "Calendar",
-        "Contacts",
-        "Tasks",
-        "Notes",
-    ]
-    .iter()
-    .any(|n| n.eq_ignore_ascii_case(display_name.trim()))
+    SYSTEM_FOLDER_NAMES
+        .iter()
+        .any(|n| n.eq_ignore_ascii_case(display_name.trim()))
+}
+
+/// Whether a sanitized CalDAV collection path segment collides with a
+/// system-managed collection. `sanitize_collection_name` strips surrounding
+/// dots, so display names such as `Tasks.`, `.Tasks` or `Notes.` sanitize to
+/// the gateway's own Tasks/Notes collection name; creating or adopting such a
+/// collection would let a later `FolderDelete` destroy the shared Tasks/Notes
+/// store, so those names are rejected.
+fn is_reserved_collection_name(name: &str) -> bool {
+    SYSTEM_FOLDER_NAMES
+        .iter()
+        .any(|n| n.eq_ignore_ascii_case(name.trim()))
 }
 
 // ---------------------------------------------------------------------------
@@ -272,6 +288,12 @@ pub async fn create_folder(
         let Some(coll) = caldav_collection_for(&base_path, owner, display_name, folder_type) else {
             return FolderMutationResult::status(10);
         };
+        // A sanitized name that collides with a system collection (e.g.
+        // `Tasks.` → `Tasks`) would create or adopt the gateway's own shared
+        // Tasks/Notes collection, which a later FolderDelete would destroy.
+        if is_reserved_collection_name(&coll.name) {
+            return FolderMutationResult::status(2);
+        }
         if coll.href.chars().count() > 64 {
             return FolderMutationResult::status(10);
         }
@@ -386,7 +408,32 @@ async fn create_mail_folder(
                 )
                 .await
             {
+                // The mailbox was created but the mapping write failed.
+                // Compensate by destroying the just-created mailbox (and its
+                // contents — it was empty) so a retry is not rejected as a
+                // duplicate sibling name while the backend folder is left
+                // orphaned. `AlreadyGone` is the desired end state; a failed
+                // compensation is logged and the client still receives a
+                // retryable failure.
                 tracing::warn!(error = %e, "FolderCreate: failed to persist folder mapping");
+                match jmap
+                    .destroy_mailbox(&account_id, &mailbox_id, true, owner, password)
+                    .await
+                {
+                    Ok(
+                        crate::jmap::MailboxDestroyOutcome::Destroyed
+                        | crate::jmap::MailboxDestroyOutcome::AlreadyGone,
+                    ) => {}
+                    Ok(crate::jmap::MailboxDestroyOutcome::Refused) => tracing::warn!(
+                        mailbox_id = %mailbox_id,
+                        "FolderCreate: rollback of the created mailbox was refused"
+                    ),
+                    Err(del) => tracing::warn!(
+                        error = %del,
+                        mailbox_id = %mailbox_id,
+                        "FolderCreate: failed to roll back the created mailbox"
+                    ),
+                }
                 return FolderMutationResult::status(6);
             }
             FolderMutationResult::created(mailbox_id)
@@ -409,13 +456,12 @@ async fn create_caldav_folder(
     let Ok(caldav) = CaldavClient::new(&state.cfg) else {
         return FolderMutationResult::status(6);
     };
-    // A 405 means the collection already exists. Distinguish the two causes:
-    //  * a genuine conflict — another folder's mapping already owns this href,
-    //    so adopting it would clobber that folder. Reject it as Status 2.
-    //  * a RETRY after MKCALENDAR succeeded but the mapping write below failed
-    //    — the collection exists but no `folder_map` row references it. Adopt
-    //    the collection by writing the mapping so the client obtains a
-    //    ServerId instead of being wedged on a permanent Status 2.
+    // A 405 means the collection already exists. The gateway cannot tell an
+    // orphan left by a failed mapping write from a pre-existing collection a
+    // user created outside EAS, so it never adopts one: adopting would silently
+    // link a new EAS folder to a collection whose events it does not own.
+    // Instead it reports the spec's duplicate/conflict status. An orphan is
+    // prevented up front by the compensation below.
     match caldav
         .create_calendar_collection(
             owner,
@@ -428,29 +474,11 @@ async fn create_caldav_folder(
     {
         Ok(true) => {}
         Ok(false) => {
-            match state
-                .storage
-                .folder_exists_for_backend_id(owner, &coll.href)
-                .await
-            {
-                Ok(true) => {
-                    tracing::warn!(
-                        collection = %coll.name,
-                        "FolderCreate: calendar collection already exists and is mapped"
-                    );
-                    return FolderMutationResult::status(2);
-                }
-                Ok(false) => {
-                    tracing::info!(
-                        collection = %coll.name,
-                        "FolderCreate: adopting pre-existing calendar collection (recovering an orphaned MKCALENDAR)"
-                    );
-                }
-                Err(e) => {
-                    tracing::warn!(error = %e, "FolderCreate: mapping lookup failed for existing collection");
-                    return FolderMutationResult::status(6);
-                }
-            }
+            tracing::warn!(
+                collection = %coll.name,
+                "FolderCreate: calendar collection already exists"
+            );
+            return FolderMutationResult::status(2);
         }
         Err(e) => {
             tracing::warn!(error = %e, "FolderCreate: MKCALENDAR failed");
@@ -473,7 +501,23 @@ async fn create_caldav_folder(
         )
         .await
     {
+        // The collection was created but the mapping write failed. Compensate
+        // by deleting the just-created collection, so a retry starts clean
+        // rather than 405ing on an orphan that can never be mapped (the gateway
+        // no longer adopts on 405). A failed compensation is logged; the client
+        // still receives a retryable failure and an orphan is no worse than
+        // the pre-compensation behavior.
         tracing::warn!(error = %e, "FolderCreate: failed to persist folder mapping");
+        if let Err(del) = caldav
+            .delete_collection(&coll.href, owner, password.expose_secret())
+            .await
+        {
+            tracing::warn!(
+                error = %del,
+                collection = %coll.name,
+                "FolderCreate: failed to roll back the created calendar collection"
+            );
+        }
         return FolderMutationResult::status(6);
     }
     FolderMutationResult::created(coll.href)
@@ -1492,27 +1536,30 @@ mod tests {
         assert_eq!(row.backend_kind, "caldav");
     }
 
-    /// A 405 from MKCALENDAR with NO `folder_map` row owning the href means the
-    /// collection is an orphan (a prior MKCALENDAR succeeded but the mapping
-    /// write failed). Adopt it by writing the mapping so the client gets a
-    /// ServerId instead of being wedged on a permanent Status 2.
+    /// A 405 from MKCALENDAR means the collection already exists. The gateway
+    /// cannot tell an orphan from a collection the user created outside EAS, so
+    /// it never adopts one — a pre-existing collection must stay Status 2.
     #[tokio::test]
-    async fn create_calendar_folder_adopts_orphaned_collection_on_405() {
+    async fn create_calendar_folder_405_on_preexisting_collection_is_conflict() {
         let (state, _, _) = spawn_backend_stub_full(None, 405).await;
-        let r = create_folder(&state, "u@example.com", &pw(), "0", "Orphan", 13).await;
-        assert_eq!(r.status, 1, "an orphaned collection must be adopted");
-        assert_eq!(r.server_id.as_deref(), Some("/cal/u@example.com/Orphan/"));
-        let row = state
-            .storage
-            .get_folder("u@example.com", "/cal/u@example.com/Orphan/")
-            .await
-            .unwrap()
-            .expect("adopted folder persisted");
-        assert_eq!(row.backend_kind, "caldav");
+        let r = create_folder(&state, "u@example.com", &pw(), "0", "default", 13).await;
+        assert_eq!(
+            r.status, 2,
+            "a pre-existing unmapped collection must not be silently adopted"
+        );
+        assert!(
+            state
+                .storage
+                .get_folder("u@example.com", "/cal/u@example.com/default/")
+                .await
+                .unwrap()
+                .is_none(),
+            "no mapping may be fabricated for a collection the request did not create"
+        );
     }
 
-    /// A 405 where another folder's mapping already owns the href is a genuine
-    /// conflict: adopting would clobber that folder, so it must stay Status 2.
+    /// A 405 where another folder's mapping already owns the href is likewise
+    /// Status 2 — the gateway never adopts on 405.
     #[tokio::test]
     async fn create_calendar_folder_405_with_existing_mapping_is_conflict() {
         let (state, _, _) = spawn_backend_stub_full(None, 405).await;
@@ -1537,6 +1584,61 @@ mod tests {
         assert_eq!(
             r.status, 2,
             "a mapped href is a real conflict, not an orphan"
+        );
+    }
+
+    /// A display name that sanitizes to a system collection (`Tasks.` →
+    /// `Tasks`) must be rejected, not created or adopted: a later FolderDelete
+    /// would otherwise DELETE the gateway's shared Tasks/Notes collection.
+    #[tokio::test]
+    async fn create_calendar_folder_rejects_sanitized_system_collection_name() {
+        let (state, _, dav_calls) = spawn_backend_stub_full(None, 201).await;
+        for name in ["Tasks.", ".Tasks", "Notes.", "tasks"] {
+            let r = create_folder(&state, "u@example.com", &pw(), "0", name, 13).await;
+            assert_eq!(r.status, 2, "`{name}` must not map a system collection");
+        }
+        assert!(
+            dav_calls.lock().await.is_empty(),
+            "no MKCALENDAR may be attempted for a reserved system collection name"
+        );
+    }
+
+    /// When the JMAP mailbox is created but the mapping write fails, the
+    /// just-created mailbox must be destroyed so a retry is not rejected as a
+    /// duplicate sibling name with an orphaned backend folder.
+    #[tokio::test]
+    async fn create_mail_folder_rolls_back_mailbox_when_mapping_write_fails() {
+        let (state, jmap_calls, _) = spawn_backend_stub().await;
+        // Close the pool so the mapping write cannot execute; the JMAP calls
+        // (account lookup, create, rollback destroy) are HTTP and still work.
+        state.storage.pool().close().await;
+        let r = create_mail_folder(&state, "u@example.com", &pw(), "0", "Rollback", 12).await;
+        assert_eq!(r.status, 6, "a failed mapping write must report failure");
+        let args = last_call_args(&jmap_calls, "Mailbox/set").await;
+        assert_eq!(
+            args.get("destroy").and_then(|v| v.as_array()),
+            Some(&vec![json!("mb-new")]),
+            "the orphaned mailbox must be destroyed as compensation"
+        );
+    }
+
+    /// When the CalDAV collection is created but the mapping write fails, the
+    /// just-created collection must be deleted so a retry does not 405 on an
+    /// orphan (the gateway no longer adopts on 405).
+    #[tokio::test]
+    async fn create_caldav_folder_rolls_back_collection_when_mapping_write_fails() {
+        let (state, _, dav_calls) = spawn_backend_stub_full(None, 201).await;
+        state.storage.pool().close().await;
+        let coll = caldav_collection_for("", "u@example.com", "Rollback", 13)
+            .expect("caldav collection descriptor");
+        let r = create_caldav_folder(&state, "u@example.com", &pw(), "Rollback", 13, coll).await;
+        assert_eq!(r.status, 6, "a failed mapping write must report failure");
+        let calls = dav_calls.lock().await;
+        assert!(
+            calls
+                .iter()
+                .any(|(m, p)| m == "DELETE" && p.contains("/cal/u@example.com/Rollback/")),
+            "the orphaned collection must be deleted as compensation: {calls:?}"
         );
     }
 

@@ -5357,7 +5357,17 @@ async fn handle_get_hierarchy(ctx: &FolderCmdCtx<'_>) -> Response {
         ));
     }
     // User-created folders persisted by FolderCreate ([MS-ASCMD] §2.2.1.3).
-    for row in state.storage.list_folders(owner).await.unwrap_or_default() {
+    // A read failure must NOT be answered with a hierarchy that silently omits
+    // them: the client would treat the partial list as the complete hierarchy.
+    // Fail closed with the spec's HTTP 500 instead.
+    let user_folders = match state.storage.list_folders(owner).await {
+        Ok(rows) => rows,
+        Err(e) => {
+            tracing::warn!(error = %e, "GetHierarchy: failed to list user-created folders");
+            return get_hierarchy_server_error(request_id);
+        }
+    };
+    for row in user_folders {
         folders.push_str(&format!(
             "<Folder><DisplayName>{}</DisplayName><ServerId>{}</ServerId><Type>{}</Type><ParentId>{}</ParentId></Folder>",
             xml_escape(&row.display_name),
@@ -5450,6 +5460,20 @@ async fn handle_get_attachment(ctx: &GetAttachmentCtx<'_>) -> Response {
         }
         _ => get_attachment_server_error(request_id),
     }
+}
+
+/// The spec's "request failed" answer for `GetHierarchy`: an HTTP 500
+/// ([MS-ASCMD] §2.2.1.8). Used when the user-created folder list cannot be
+/// read, so the client is never handed a hierarchy that silently omits folders.
+fn get_hierarchy_server_error(request_id: &str) -> Response {
+    let mut r = (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        [("Content-Type", "application/xml; charset=utf-8")],
+        r#"<?xml version="1.0" encoding="utf-8"?><Status xmlns="AirSync:">500</Status>"#,
+    )
+        .into_response();
+    inject_common_headers(&mut r, request_id);
+    r
 }
 
 /// The spec's "attachment deleted / not found" answer for GetAttachment:
@@ -10795,6 +10819,51 @@ mod tests {
         assert!(
             text_b2.contains("<ServerId>mbx-other</ServerId>"),
             "the unaffected device receives the change: {text_b2}"
+        );
+    }
+
+    /// GetHierarchy must FAIL CLOSED when the user-created folder list cannot be
+    /// read: a hierarchy that silently omits those folders would be taken by
+    /// the client as the complete set.
+    #[tokio::test]
+    async fn test_get_hierarchy_fails_closed_when_folder_list_read_fails() {
+        let state = test_ping_state().await;
+        let owner = "hierarchy-failclosed@example.com";
+        state
+            .storage
+            .upsert_folder_journaled(
+                crate::storage::FolderUpsertParams {
+                    owner,
+                    server_id: "mbx-1",
+                    parent_id: "0",
+                    display_name: "User Folder",
+                    folder_type: 12,
+                    backend_kind: "jmap",
+                    backend_id: "mbx-1",
+                },
+                "folder-add",
+            )
+            .await
+            .expect("persist a user folder");
+        // Close the pool so `list_folders` fails during the handler.
+        state.storage.pool().close().await;
+
+        let wbxml = Wbxml::new();
+        let ctx = FolderCmdCtx {
+            state: &state,
+            owner,
+            password: &SecretString::from("pw"),
+            device_id: "dev",
+            xml: "",
+            wbxml: &wbxml,
+            as_wbxml: false,
+            request_id: "gh-failclosed",
+        };
+        let resp = handle_get_hierarchy(&ctx).await;
+        assert_eq!(
+            resp.status(),
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "a folder-list read failure must surface as HTTP 500, not a partial hierarchy"
         );
     }
 

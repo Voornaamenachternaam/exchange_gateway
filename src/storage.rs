@@ -3056,25 +3056,6 @@ impl Storage {
         .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))
     }
 
-    /// Whether any user-created folder's mapping references the given backend
-    /// id (a CalDAV collection href). Used by `FolderCreate` to tell a genuine
-    /// collection conflict from an orphaned collection left by a retried create
-    /// whose mapping write failed.
-    pub async fn folder_exists_for_backend_id(
-        &self,
-        owner: &str,
-        backend_id: &str,
-    ) -> Result<bool> {
-        let row =
-            sqlx::query("SELECT 1 FROM folder_map WHERE owner = ?1 AND backend_id = ?2 LIMIT 1")
-                .bind(owner)
-                .bind(backend_id)
-                .fetch_optional(self.pool.as_ref())
-                .await
-                .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))?;
-        Ok(row.is_some())
-    }
-
     /// Persist a user-created folder mapping AND its folder-hierarchy journal
     /// row in ONE transaction, so a mutation is acknowledged only once its
     /// journal row is durable. If the journal insert fails the whole

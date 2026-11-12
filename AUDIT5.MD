@@ -225,18 +225,23 @@ the typed `CannotCalculateChanges`).
 `eas::tests::test_email_delta_overflow_queue_persist_failure_fails_closed` pins
 the fail-closed overflow acknowledgement (a poisoned queue write makes the
 delta return an error with the stored token and queue untouched, then drain
-cleanly once storage recovers). `mapi::handler` gains
+cleanly once storage recovers). `eas::tests::test_get_hierarchy_fails_closed_when_folder_list_read_fails`
+pins the GetHierarchy HTTP 500 on a folder-list read failure. `mapi::handler` gains
 `rop_delete_folder_prunes_eas_folder_map_and_journals` and
 `rop_delete_folder_without_mapping_row_journals_nothing`, pinning the
 EAS-mirror consistency of a MAPI mailbox destroy, plus
 `rop_delete_folder_mirror_write_failure_is_disk_error` (the post-commit
-hardening above). The hierarchy-rotation tests
+hardening below). The hierarchy-rotation tests
 `rotate_hierarchy_key_for_never_primed_device_returns_prime_key`,
 `rotate_hierarchy_key_preserves_primed_watermark` and
 `rotate_hierarchy_key_without_token_forces_prime` pin the fail-closed rotation;
-`create_calendar_folder_adopts_orphaned_collection_on_405` and
-`create_calendar_folder_405_with_existing_mapping_is_conflict` pin the orphan
-adoption; and the sync suite gains
+`create_calendar_folder_405_on_preexisting_collection_is_conflict` and
+`create_calendar_folder_405_with_existing_mapping_is_conflict` pin the
+no-adoption-on-405 rule, `create_calendar_folder_rejects_sanitized_system_collection_name`
+pins the reserved-collection guard, and
+`create_mail_folder_rolls_back_mailbox_when_mapping_write_fails` /
+`create_caldav_folder_rolls_back_collection_when_mapping_write_fails` pin the
+create compensation; and the sync suite gains
 `scoped_calendar_delta_does_not_tombstone_foreign_destroyed_event`,
 `scoped_calendar_prime_does_not_tombstone_foreign_event` and
 `unscoped_calendar_delta_tombstones_destroyed_event` pinning the scoped-folder
@@ -264,11 +269,14 @@ this delta, so the Add's fresh seed wins over the older scan snapshot (no
 duplicate flag `<Change>` on the next delta).
 
 **PR-review hardening (post-commit).** (d) A `FolderCreate` whose
-`MKCALENDAR` answers 405 is now adopted as an orphan when NO `folder_map` row
-owns that href (`folder_exists_for_backend_id`): a retry after a create whose
-mapping write failed recovers instead of being wedged on a permanent Status 2,
-while a 405 where another folder's mapping DOES own the href stays Status 2 (a
-real conflict — adopting would clobber that folder). (e) A MAPI mirror-write
+`MKCALENDAR` answers 405 is reported as Status 2 and NEVER adopted: the gateway
+cannot tell an orphan left by a failed mapping write from a collection the user
+created outside EAS, so adopting would silently link a new EAS folder to a
+collection whose events it does not own. Orphans are instead prevented up front
+by the create-compensation below. A display name that sanitizes to a system
+collection (`Tasks.`/`.Tasks` → `Tasks`, `Notes.` → `Notes`) is rejected before
+`MKCALENDAR`, so a later `FolderDelete` can never destroy the shared
+Tasks/Notes store (`is_reserved_collection_name`). (e) A MAPI mirror-write
 failure after a JMAP mailbox destroy is no longer acknowledged as success:
 `RopDeleteFolder` and `RopHardDeleteMessagesAndSubfolders` surface a retryable
 `DiskError` when `delete_folders_journaled` fails, because the mailbox is
@@ -288,7 +296,15 @@ destroyed in another calendar would otherwise emit a `<Delete>` in this folder
 for an event the client never held AND remove the shared row before the event's
 own collection could deliver it. The delta path only records destroyed ids for
 the unscoped (default) folder, and the full-snapshot tombstone sweep is skipped
-entirely for scoped folders.
+entirely for scoped folders. (h) A `FolderCreate` whose backend object was
+created but whose mapping write then fails is COMPENSATED, not left as an
+orphan: the just-created JMAP mailbox (`Mailbox/set destroy`, contents included)
+or CalDAV collection (`DELETE`) is rolled back, so a retry starts clean instead
+of being rejected as a duplicate sibling name (JMAP) or 405ing on an unmappable
+orphan (CalDAV, which no longer adopts). A failed compensation is logged and the
+client still receives the retryable Status 6. (i) `GetHierarchy` fails CLOSED
+(HTTP 500, [MS-ASCMD] §2.2.1.8) when the user-created folder list cannot be
+read, instead of returning a hierarchy that silently omits those folders.
 
 **Upgrade note (expected one-time re-prime).** Before this change the stored
 email delta token was the `Email/get` data-type state; the new delta passes it
