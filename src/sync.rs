@@ -5,6 +5,7 @@ use crate::calendar::{
     parse_eas_sync_mutations, parse_ics_event, render_ics,
 };
 use crate::models::AppState;
+use crate::storage::CalendarDeliveryWrite;
 use crate::util::{resolve_xml_reference, xml_escape};
 use anyhow::{Result, anyhow};
 use base64::Engine;
@@ -2094,12 +2095,11 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
         .list_calendar_deliveries(params.owner, params.state_collection_id)
         .await?;
     if initial_sync {
-        // A fresh prime restarts the stream: the ledger is stale by definition
-        // (the client was told to discard all prior items), so clear it before
-        // computing deliveries. `item_map` is untouched (other scopes share it).
-        storage
-            .clear_calendar_deliveries(params.owner, params.state_collection_id)
-            .await?;
+        // A fresh prime restarts the stream: the client was told to forget all
+        // prior items, so within THIS response every event is an `<Add>`. The
+        // in-memory ledger is emptied for the Add/Change decision here; the
+        // durable ledger is cleared in `commit_calendar_sync` (atomic with the
+        // new SyncKey). `item_map` is untouched (other scopes share it).
         delivered_map.clear();
     }
     // NOTE: an empty ledger on a non-prime (delta) is deliberately NOT seeded
@@ -2217,6 +2217,9 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
     let mut more_available = false;
     // Href of the last item actually delivered, for the prime cursor.
     let mut last_delivered_href: Option<String> = None;
+    // Durable side effects of THIS response, materialised only once the whole
+    // window has been rendered and committed atomically below.
+    let mut delivered_now: Vec<CalendarDeliveryWrite<'_>> = Vec::new();
 
     for pi in &pending_items {
         if items_included >= window_size {
@@ -2224,27 +2227,16 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
             break;
         }
         last_delivered_href = Some(pi.resource_href.clone());
-        storage
-            .upsert_item_map(
-                params.owner,
-                &pi.resource_href,
-                &pi.resource_href,
-                &pi.server_id,
-                &pi.uid,
-                &pi.etag,
-            )
-            .await?;
-        // Record the delivery in THIS scope's ledger so the next delta on this
-        // SyncKey stream compares against the ETag it was actually sent (and a
-        // re-prime on a fresh stream still re-delivers as `<Add>`).
-        storage
-            .upsert_calendar_delivery(
-                params.owner,
-                params.state_collection_id,
-                &pi.server_id,
-                &pi.etag,
-            )
-            .await?;
+        // Deferred to the atomic commit: recording delivery (item_map + this
+        // scope's ledger) BEFORE the SyncKey advances would make a partial
+        // failure lose the event on retry (the ledger would already mark it
+        // delivered while the client never received the new SyncKey).
+        delivered_now.push(CalendarDeliveryWrite {
+            server_id: pi.server_id.as_str(),
+            resource_href: pi.resource_href.as_str(),
+            uid: pi.uid.as_str(),
+            etag: pi.etag.as_str(),
+        });
         if pi.is_add {
             let mut app_data =
                 render_calendar_app_data_with_options(&pi.item, &params.opts.body_options);
@@ -2283,6 +2275,7 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
         items_included += 1;
     }
 
+    let mut deleted_now: Vec<&str> = Vec::new();
     if !more_available {
         for server_id in &pending_deletes {
             if items_included >= window_size {
@@ -2294,21 +2287,15 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
                 xml_escape(server_id)
             ));
             items_included += 1;
-            // The push of this delete above is the moment the item_map row
-            // may finally be removed. Deleting it any earlier (e.g. in the
-            // sweep above) would lose the retry path: a clipped window that
-            // has not emitted this `<Delete>` yet must keep the row so the
-            // held-token retry re-queues it.
-            let _ = storage
-                .delete_item_by_server_id(params.owner, server_id)
-                .await;
-            // Drop THIS scope's ledger row too: the client has been told the
-            // item is gone, so a later re-add must be an `<Add>` for this stream.
-            // (Other scopes keep their own rows; the shared item_map row is
-            // removed above only once this `<Delete>` was emitted.)
-            let _ = storage
-                .delete_calendar_delivery(params.owner, params.state_collection_id, server_id)
-                .await;
+            // The push of this delete above is the moment the item_map row may
+            // finally be removed. Deleting it any earlier (e.g. in the sweep
+            // above) would lose the retry path: a clipped window that has not
+            // emitted this `<Delete>` yet must keep the row so the held-token
+            // retry re-queues it. The removal (item_map + THIS scope's ledger
+            // row) is applied in the atomic commit below, together with the
+            // new SyncKey, so a failed commit retains both the row and the
+            // client's old SyncKey — the retry re-emits the `<Delete>`.
+            deleted_now.push(server_id.as_str());
         }
     }
 
@@ -2360,14 +2347,6 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
     } else {
         Some(provider_token.unwrap_or_else(|| sync_seq_to_token(start_db_seq)))
     };
-    storage
-        .set_sync_key(
-            params.owner,
-            params.state_collection_id,
-            &new_sync_key,
-            token_val.as_deref(),
-        )
-        .await?;
     // Journal watermark independent of the provider token (which may be a
     // non-`seq:` JMAP query_state): everything journaled up to the delivered
     // set is consumed. When the window clipped (MoreAvailable), undelivered
@@ -2382,8 +2361,23 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
             .unwrap_or(0)
             .max(start_db_seq)
     };
+    // Commit every durable side effect of this response in ONE transaction:
+    // the delivered items' item_map + per-scope ledger rows, the emitted
+    // `<Delete>`s' removals, the new SyncKey + token, and the watermark. They
+    // MUST advance together — writing the ledger before the SyncKey would let a
+    // later failure lose an event on the client's retry (the ledger would mark
+    // it delivered while the client never got the new SyncKey).
     storage
-        .set_journal_watermark(params.owner, params.state_collection_id, journal_seq)
+        .commit_calendar_sync(
+            params.owner,
+            params.state_collection_id,
+            &new_sync_key,
+            token_val.as_deref(),
+            journal_seq,
+            initial_sync,
+            &delivered_now,
+            &deleted_now,
+        )
         .await?;
     let more_available_tag = if more_available || drain_has_more {
         "<MoreAvailable/>"
@@ -4342,6 +4336,55 @@ mod tests {
         assert!(
             !xml2.contains("uid-e1") && !xml2.contains("uid-e2"),
             "unchanged events recorded in the ledger are skipped:\n{xml2}"
+        );
+    }
+
+    /// The delivery ledger and the SyncKey the client is handed advance in the
+    /// SAME commit (the P1 fix): after a successful Sync the scope's ledger
+    /// records exactly the delivered events, and the stored SyncKey is the new
+    /// key — never a ledger ahead of a stale SyncKey (which would make the
+    /// client's retry skip an event it never received).
+    #[tokio::test]
+    async fn successful_sync_advances_ledger_and_sync_key_together() {
+        let page = json!({
+            "accountId": "acct", "oldState": "s0", "newState": "s1",
+            "hasMoreChanges": false,
+            "created": ["e1"], "updated": [], "destroyed": []
+        });
+        let e1 = stub_event("e1", "uid-e1", "Event One");
+        let stub = spawn_calendar_stub(vec![page], vec![e1.clone()], "q", "get-s", None).await;
+        let state = calendar_sync_state(&stub.base).await;
+        let owner = "user@example.com";
+        state
+            .storage
+            .set_sync_key(owner, "calendar", "key-1", Some("s0"))
+            .await
+            .unwrap();
+
+        let xml = run_calendar_sync(&state, "key-1").await;
+        assert!(xml.contains("uid-e1"), "the delta must deliver e1:\n{xml}");
+
+        // The response's SyncKey is persisted (a different key from key-1).
+        let (stored_key, _) = state
+            .storage
+            .get_sync_key(owner, "calendar")
+            .await
+            .unwrap()
+            .expect("sync key persisted");
+        assert_ne!(stored_key, "key-1", "a completed sync rotates the SyncKey");
+
+        // And the scope ledger records the delivered event with its ETag.
+        let href = "jmap://calendar/acct/e1";
+        let sid = generate_server_id(state.cfg.hmac_secret(), href);
+        let ledger = state
+            .storage
+            .list_calendar_deliveries(owner, "calendar")
+            .await
+            .unwrap();
+        assert_eq!(
+            ledger.get(&sid).map(String::as_str),
+            Some(crate::jmap::calendar_event_etag(&e1, None).as_str()),
+            "the ledger row is written by the same commit that stores the SyncKey"
         );
     }
 

@@ -204,9 +204,17 @@ EAS specs v20250520 (16.1); older EAS compat NOT needed.
   calendar holding the same event) and a per-collection edit is reported to every
   collection that holds the event. `item_map` remains the candidate set for the
   owner-level deletion sweep (a delete is an account-level fact). A fresh prime
-  (SyncKey 0) clears the scope's ledger; a delta with an empty ledger seeds it
-  from `item_map` (`seed_calendar_deliveries_from_item_map`) so an upgrade does
-  not re-`<Add>` items the client already holds. Folder mutations journal
+  (SyncKey 0) clears the scope's ledger; a delta with an EMPTY ledger is NOT
+  seeded from `item_map` — a shared ETag would make the scope skip a changed
+  event another collection already delivered (the exact bug this ledger fixes),
+  so instead every event in the stream's change set is delivered as `<Add>`
+  (EAS keys items by ServerId, so an `<Add>` for an item the client already
+  holds updates it in place) — the safe upgrade path. The Sync response's
+  durable side effects (`item_map` rows + per-scope ledger rows, the emitted
+  `<Delete>`s' removals, the new SyncKey/token, the journal watermark) are
+  written in ONE transaction (`Storage::commit_calendar_sync`) so the ledger can
+  never advance ahead of the SyncKey the client is told — a partial failure
+  rolls back and the retry re-delivers identically. Folder mutations journal
   atomically with the mapping:
   `Storage::upsert_folder_journaled` (folder-add/folder-update) and
   `delete_folders_journaled` write the `folder_map` row(s) AND the

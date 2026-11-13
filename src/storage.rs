@@ -46,6 +46,15 @@ impl SafeDebug for JournalRow {
     }
 }
 
+// Input row for a calendar Sync's atomic commit: one delivered event. Borrowed
+// so a Sync response can build the list without cloning its pending items.
+pub struct CalendarDeliveryWrite<'a> {
+    pub server_id: &'a str,
+    pub resource_href: &'a str,
+    pub uid: &'a str,
+    pub etag: &'a str,
+}
+
 // Row struct for item_map queries - safe for logging (no sensitive data)
 #[derive(FromRow)]
 pub struct EwsItemRow {
@@ -882,13 +891,45 @@ impl Storage {
         Ok(())
     }
 
+    /// The per-scope calendar delivery ledger: the ETag this scope (a single
+    /// device+collection SyncKey stream) last DELIVERED for each `server_id`.
+    ///
+    /// Read IN FULL, never truncated: the ledger is what decides `<Add>` vs
+    /// `<Change>` and whether a backend ETag moved, so a dropped row would look
+    /// like an undelivered event and be re-sent as `<Add>` on every sync. The
+    /// row count is bounded by this scope's own calendar size, which the same
+    /// sync already materialises — so no cap is needed (an arbitrary `LIMIT`
+    /// would silently lose rows, and without `ORDER BY` which ones is
+    /// nondeterministic).
+    pub async fn list_calendar_deliveries(
+        &self,
+        owner: &str,
+        scope_id: &str,
+    ) -> Result<HashMap<String, String>> {
+        let rows = sqlx::query(
+            "SELECT server_id, etag FROM calendar_delivery_map WHERE owner = ?1 AND scope_id = ?2",
+        )
+        .bind(owner)
+        .bind(scope_id)
+        .fetch_all(self.pool.as_ref())
+        .await
+        .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))?;
+        Ok(rows
+            .into_iter()
+            .map(|r| {
+                (
+                    r.get::<String, _>(0),
+                    r.get::<Option<String>, _>(1).unwrap_or_default(),
+                )
+            })
+            .collect())
+    }
+
     /// Record that EAS Sync scope `scope_id` has delivered `server_id` with
-    /// `etag`. A per-scope delivery ledger for calendar collections: unlike the
-    /// owner-global `item_map`, this distinguishes WHICH device+collection
-    /// SyncKey stream delivered an event, so a fresh prime emits `<Add>` (not
-    /// `<Change>`) and a per-collection edit is reported to every collection
-    /// that holds the event. Idempotent upsert keyed `(owner, scope_id,
-    /// server_id)`.
+    /// `etag` (used by the client-mutation path, where the client already holds
+    /// the item it just created/changed, so the follow-up Sync must filter it
+    /// out rather than re-emit `<Add>`). Idempotent upsert keyed `(owner,
+    /// scope_id, server_id)`.
     pub async fn upsert_calendar_delivery(
         &self,
         owner: &str,
@@ -912,9 +953,9 @@ impl Storage {
         Ok(())
     }
 
-    /// Remove a `scope_id`'s delivery-ledger row for `server_id`. Used when the
-    /// scope issues a `<Delete>` (its own record is no longer relevant) and when
-    /// a scope's mapping is re-primed.
+    /// Remove a `scope_id`'s delivery-ledger row for `server_id` (used by the
+    /// client-mutation Delete path: the client has been told the item is gone,
+    /// so a later re-add must be an `<Add>` for this stream).
     pub async fn delete_calendar_delivery(
         &self,
         owner: &str,
@@ -933,44 +974,122 @@ impl Storage {
         Ok(())
     }
 
-    /// Drop ALL delivery-ledger rows for a `scope_id`. Called when a fresh prime
-    /// (SyncKey 0) restarts a device+collection stream: the client has been told
-    /// to forget every prior item, so the scope must re-deliver them as `<Add>`.
-    pub async fn clear_calendar_deliveries(&self, owner: &str, scope_id: &str) -> Result<()> {
-        sqlx::query("DELETE FROM calendar_delivery_map WHERE owner = ?1 AND scope_id = ?2")
-            .bind(owner)
-            .bind(scope_id)
-            .execute(self.pool.as_ref())
-            .await
-            .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
-        Ok(())
-    }
-
-    /// The delivery ledger for `scope_id`: the ETag this scope last delivered
-    /// for each `server_id`. Bounded by the collection's live size; a 4096 cap
-    /// matches `list_ews_items`.
-    pub async fn list_calendar_deliveries(
+    /// Commit ONE calendar Sync response's durable side effects in a single
+    /// transaction: the delivered items' `item_map` rows and this scope's
+    /// delivery-ledger rows, the emitted `<Delete>`s' `item_map`/ledger
+    /// removals, the new SyncKey and its token, and the journal watermark.
+    ///
+    /// Atomicity is a correctness requirement, not a convenience: the ledger
+    /// must advance WITH the SyncKey it belongs to. If the ledger were written
+    /// first and the SyncKey write then failed, the client's retry (same
+    /// SyncKey) would see the event as already delivered and SKIP it forever —
+    /// a silently lost update. Committing both together means a partial failure
+    /// rolls the whole response back, so the retry re-derives and re-delivers
+    /// exactly the same set. This mirrors `upsert_item_map`'s own transaction.
+    ///
+    /// `item_map`/ledger DELETE failures are non-fatal (the caller's earlier
+    /// best-effort behavior is preserved) — a missing row only re-delivers, it
+    /// never loses data — but the SyncKey/watermark writes are fatal.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn commit_calendar_sync(
         &self,
         owner: &str,
         scope_id: &str,
-    ) -> Result<HashMap<String, String>> {
-        let rows = sqlx::query(
-            "SELECT server_id, etag FROM calendar_delivery_map WHERE owner = ?1 AND scope_id = ?2 LIMIT 4096",
+        sync_key: &str,
+        token: Option<&str>,
+        journal_seq: i64,
+        initial_prime: bool,
+        deliveries: &[CalendarDeliveryWrite<'_>],
+        deletes: &[&str],
+    ) -> Result<()> {
+        let mut tx = sqlx::Acquire::begin(self.pool.as_ref())
+            .await
+            .map_err(|e| GatewayError::Storage(format!("Transaction error: {}", e)))?;
+
+        // A fresh prime (SyncKey 0) restarts the stream: the client was told to
+        // forget every prior item, so the scope's whole ledger is dropped before
+        // the delivered set is recorded — every delivered event is then an
+        // `<Add>` for the new stream.
+        if initial_prime {
+            sqlx::query("DELETE FROM calendar_delivery_map WHERE owner = ?1 AND scope_id = ?2")
+                .bind(owner)
+                .bind(scope_id)
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+        }
+
+        for d in deliveries {
+            sqlx::query(
+                "INSERT INTO item_map (owner, caldav_href, resource_href, server_id, uid, etag) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                 ON CONFLICT(owner, server_id) DO UPDATE SET caldav_href = ?2, resource_href = ?3, uid = ?5, etag = ?6, updated_at = CURRENT_TIMESTAMP",
+            )
+            .bind(owner)
+            .bind(d.resource_href)
+            .bind(d.resource_href)
+            .bind(d.server_id)
+            .bind(d.uid)
+            .bind(d.etag)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+            sqlx::query(
+                "INSERT INTO calendar_delivery_map (owner, scope_id, server_id, etag)
+                 VALUES (?1, ?2, ?3, ?4)
+                 ON CONFLICT(owner, scope_id, server_id) DO UPDATE
+                 SET etag = ?4, updated_at = CURRENT_TIMESTAMP",
+            )
+            .bind(owner)
+            .bind(scope_id)
+            .bind(d.server_id)
+            .bind(d.etag)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+        }
+
+        for server_id in deletes {
+            let _ = sqlx::query("DELETE FROM item_map WHERE owner = ?1 AND server_id = ?2")
+                .bind(owner)
+                .bind(server_id)
+                .execute(&mut *tx)
+                .await;
+            let _ = sqlx::query(
+                "DELETE FROM calendar_delivery_map WHERE owner = ?1 AND scope_id = ?2 AND server_id = ?3",
+            )
+            .bind(owner)
+            .bind(scope_id)
+            .bind(server_id)
+            .execute(&mut *tx)
+            .await;
+        }
+
+        sqlx::query(
+            "INSERT INTO sync_state (owner, collection_id, sync_key, token) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(owner, collection_id) DO UPDATE SET sync_key = ?3, token = ?4, updated_at = CURRENT_TIMESTAMP",
         )
         .bind(owner)
         .bind(scope_id)
-        .fetch_all(self.pool.as_ref())
+        .bind(sync_key)
+        .bind(token)
+        .execute(&mut *tx)
         .await
-        .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))?;
-        Ok(rows
-            .into_iter()
-            .map(|r| {
-                (
-                    r.get::<String, _>(0),
-                    r.get::<Option<String>, _>(1).unwrap_or_default(),
-                )
-            })
-            .collect())
+        .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+
+        sqlx::query(
+            "UPDATE sync_state SET journal_seq = ?3 WHERE owner = ?1 AND collection_id = ?2",
+        )
+        .bind(owner)
+        .bind(scope_id)
+        .bind(journal_seq)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+
+        tx.commit()
+            .await
+            .map_err(|e| GatewayError::Storage(format!("Commit error: {}", e)))?;
+        Ok(())
     }
 
     pub async fn add_delete_tombstone(&self, owner: &str, server_id: &str) -> Result<()> {
@@ -3707,17 +3826,94 @@ mod tests {
             1
         );
 
-        // Clear drops every row for B only.
+        // A fresh prime (initial_prime=true) drops B's whole ledger inside the
+        // same atomic commit that advances its SyncKey; A's rows are untouched.
         storage
-            .clear_calendar_deliveries(owner, "1::devB")
+            .upsert_calendar_delivery(owner, "1::devA", "srv-2", "etagA2")
             .await
-            .expect("clear B");
+            .expect("seed A row for isolation check");
+        storage
+            .commit_calendar_sync(owner, "1::devB", "key-new", Some("t"), 0, true, &[], &[])
+            .await
+            .expect("prime commit B");
         assert!(
             storage
                 .list_calendar_deliveries(owner, "1::devB")
                 .await
                 .unwrap()
-                .is_empty()
+                .is_empty(),
+            "a prime must clear the scope's ledger"
+        );
+        assert_eq!(
+            storage
+                .list_calendar_deliveries(owner, "1::devA")
+                .await
+                .unwrap()
+                .len(),
+            1,
+            "another scope's ledger survives B's prime clear"
+        );
+    }
+
+    /// `commit_calendar_sync` writes the delivered ledger rows, the emitted
+    /// `<Delete>` removals, the new SyncKey + token and the watermark as ONE
+    /// unit, so the ledger can never advance ahead of the SyncKey the client is
+    /// told (the P1 fix): after the commit a later Sync sees exactly the state
+    /// the client was handed.
+    #[tokio::test]
+    async fn commit_calendar_sync_records_deliveries_and_sync_key_atomically() {
+        let storage = mem_storage().await;
+        let owner = "commit-user@example.com";
+        let scope = "1::dev";
+
+        // Pre-existing item that this response deletes.
+        storage
+            .upsert_item_map(owner, "h-old", "h-old", "srv-old", "uid-old", "e0")
+            .await
+            .unwrap();
+        storage
+            .upsert_calendar_delivery(owner, scope, "srv-old", "e0")
+            .await
+            .unwrap();
+
+        let deliveries = [CalendarDeliveryWrite {
+            server_id: "srv-new",
+            resource_href: "h-new",
+            uid: "uid-new",
+            etag: "e1",
+        }];
+        storage
+            .commit_calendar_sync(
+                owner,
+                scope,
+                "key-1",
+                Some("tok"),
+                42,
+                false,
+                &deliveries,
+                &["srv-old"],
+            )
+            .await
+            .expect("commit");
+
+        assert_eq!(
+            storage.get_sync_key(owner, scope).await.unwrap(),
+            Some(("key-1".to_string(), Some("tok".to_string())))
+        );
+        let ledger = storage
+            .list_calendar_deliveries(owner, scope)
+            .await
+            .unwrap();
+        assert_eq!(ledger.get("srv-new").map(String::as_str), Some("e1"));
+        assert!(
+            !ledger.contains_key("srv-old"),
+            "the deleted event's ledger row is removed in the same commit"
+        );
+        let items = storage.list_ews_items(owner, 100, 0).await.unwrap();
+        assert!(items.iter().any(|i| i.server_id == "srv-new"));
+        assert!(
+            !items.iter().any(|i| i.server_id == "srv-old"),
+            "the deleted event's item_map row is removed in the same commit"
         );
     }
 
