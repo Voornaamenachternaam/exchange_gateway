@@ -2351,29 +2351,25 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
     // non-`seq:` JMAP query_state): everything journaled up to the delivered
     // set is consumed. When the window clipped (MoreAvailable), undelivered
     // rows must stay visible to Ping, so hold the watermark at the pre-sync
-    // head; the client's obligatory follow-up Sync drains the remainder.
-    let journal_seq = if more_available {
-        start_db_seq
-    } else {
-        storage
-            .get_latest_change_seq()
-            .await
-            .unwrap_or(0)
-            .max(start_db_seq)
-    };
+    // head (`Some`); the client's obligatory follow-up Sync drains the
+    // remainder. A full drain (`None`) lets the commit read the journal head
+    // AFTER its own delivery rows are written, so the device is never woken by
+    // the very rows it just delivered.
+    let watermark_hold = more_available.then_some(start_db_seq);
     // Commit every durable side effect of this response in ONE transaction:
-    // the delivered items' item_map + per-scope ledger rows, the emitted
-    // `<Delete>`s' removals, the new SyncKey + token, and the watermark. They
-    // MUST advance together — writing the ledger before the SyncKey would let a
-    // later failure lose an event on the client's retry (the ledger would mark
-    // it delivered while the client never got the new SyncKey).
+    // the delivered items' item_map + change_journal rows and per-scope ledger
+    // rows, the emitted `<Delete>`s' removals, the new SyncKey + token, and the
+    // watermark. They MUST advance together — writing the ledger before the
+    // SyncKey would let a later failure lose an event on the client's retry
+    // (the ledger would mark it delivered while the client never got the new
+    // SyncKey).
     storage
         .commit_calendar_sync(
             params.owner,
             params.state_collection_id,
             &new_sync_key,
             token_val.as_deref(),
-            journal_seq,
+            watermark_hold,
             initial_sync,
             &delivered_now,
             &deleted_now,
@@ -4385,6 +4381,21 @@ mod tests {
             ledger.get(&sid).map(String::as_str),
             Some(crate::jmap::calendar_event_etag(&e1, None).as_str()),
             "the ledger row is written by the same commit that stores the SyncKey"
+        );
+
+        // The delivery also journals a change (`op='upsert'`) so Ping,
+        // GetItemEstimate and EWS SyncFolderItems detect the event — without it
+        // an event first delivered here would never wake another client.
+        let journal = state
+            .storage
+            .list_journal_since_seq(owner, 0)
+            .await
+            .unwrap();
+        assert!(
+            journal
+                .iter()
+                .any(|r| r.server_id == sid && r.op == "upsert"),
+            "a delivered event must journal a change for other clients"
         );
     }
 

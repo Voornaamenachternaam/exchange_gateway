@@ -210,12 +210,15 @@ EAS specs v20250520 (16.1); older EAS compat NOT needed.
   so instead every event in the stream's change set is delivered as `<Add>`
   (EAS keys items by ServerId, so an `<Add>` for an item the client already
   holds updates it in place) — the safe upgrade path. The Sync response's
-  durable side effects (`item_map` rows + per-scope ledger rows, the emitted
-  `<Delete>`s' removals, the new SyncKey/token, the journal watermark) are
-  written in ONE transaction (`Storage::commit_calendar_sync`) so the ledger can
-  never advance ahead of the SyncKey the client is told — a partial failure
-  rolls back and the retry re-delivers identically. Folder mutations journal
-  atomically with the mapping:
+  durable side effects (`item_map` + `change_journal` `op='upsert'` rows, the
+  per-scope ledger rows, the emitted `<Delete>`s' removals, the new
+  SyncKey/token, the journal watermark) are written in ONE transaction
+  (`Storage::commit_calendar_sync`) so the ledger can never advance ahead of the
+  SyncKey the client is told — a partial failure rolls back and the retry
+  re-delivers identically. The delivery MUST journal the same `op='upsert'` row
+  `upsert_item_map` writes, or Ping/GetItemEstimate/EWS `SyncFolderItems` never
+  see an event first delivered by another device's EAS Sync. Folder mutations
+  journal atomically with the mapping:
   `Storage::upsert_folder_journaled` (folder-add/folder-update) and
   `delete_folders_journaled` write the `folder_map` row(s) AND the
   `change_journal` row(s) in ONE transaction, so a FolderSync success is

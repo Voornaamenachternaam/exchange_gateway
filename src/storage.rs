@@ -975,9 +975,10 @@ impl Storage {
     }
 
     /// Commit ONE calendar Sync response's durable side effects in a single
-    /// transaction: the delivered items' `item_map` rows and this scope's
-    /// delivery-ledger rows, the emitted `<Delete>`s' `item_map`/ledger
-    /// removals, the new SyncKey and its token, and the journal watermark.
+    /// transaction: the delivered items' `item_map` + `change_journal` rows and
+    /// this scope's delivery-ledger rows, the emitted `<Delete>`s'
+    /// `item_map`/ledger removals, the new SyncKey and its token, and the
+    /// journal watermark.
     ///
     /// Atomicity is a correctness requirement, not a convenience: the ledger
     /// must advance WITH the SyncKey it belongs to. If the ledger were written
@@ -987,9 +988,21 @@ impl Storage {
     /// rolls the whole response back, so the retry re-derives and re-delivers
     /// exactly the same set. This mirrors `upsert_item_map`'s own transaction.
     ///
+    /// Each delivered item ALSO gets the `change_journal` `op='upsert'` row that
+    /// `upsert_item_map` writes: Ping, GetItemEstimate and EWS `SyncFolderItems`
+    /// detect calendar changes from those rows, so an event first delivered by
+    /// one device's EAS Sync must journal a change for the others.
+    ///
+    /// `journal_seq` is the watermark to store: `Some(seq)` for a clipped window
+    /// (hold the pre-sync head so the undelivered rows stay visible to Ping), or
+    /// `None` to consume up to the journal head AS OF THIS COMMIT — read inside
+    /// the transaction, after the delivery rows are inserted, so a device is
+    /// never woken by the very rows it just delivered.
+    ///
     /// `item_map`/ledger DELETE failures are non-fatal (the caller's earlier
     /// best-effort behavior is preserved) — a missing row only re-delivers, it
-    /// never loses data — but the SyncKey/watermark writes are fatal.
+    /// never loses data — but the delivery, SyncKey and watermark writes are
+    /// fatal.
     #[allow(clippy::too_many_arguments)]
     pub async fn commit_calendar_sync(
         &self,
@@ -997,7 +1010,7 @@ impl Storage {
         scope_id: &str,
         sync_key: &str,
         token: Option<&str>,
-        journal_seq: i64,
+        journal_seq: Option<i64>,
         initial_prime: bool,
         deliveries: &[CalendarDeliveryWrite<'_>],
         deletes: &[&str],
@@ -1033,6 +1046,21 @@ impl Storage {
             .execute(&mut *tx)
             .await
             .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+            // Every `item_map` mutation is paired with a `change_journal`
+            // `op='upsert'` row — the invariant `upsert_item_map` upholds and
+            // the feed Ping, GetItemEstimate and EWS SyncFolderItems read to
+            // detect calendar changes. Without it, an event first delivered by
+            // one device's EAS Sync would never wake another device or an EWS
+            // client.
+            sqlx::query(
+                "INSERT INTO change_journal (owner, server_id, op, resource_href) VALUES (?1, ?2, 'upsert', ?3)",
+            )
+            .bind(owner)
+            .bind(d.server_id)
+            .bind(d.resource_href)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
             sqlx::query(
                 "INSERT INTO calendar_delivery_map (owner, scope_id, server_id, etag)
                  VALUES (?1, ?2, ?3, ?4)
@@ -1064,6 +1092,18 @@ impl Storage {
             .await;
         }
 
+        // Watermark: the caller's held pre-sync head for a clipped window, or the
+        // journal head as of THIS commit (read after the delivery rows above, so
+        // it covers them) for a full drain.
+        let watermark = match journal_seq {
+            Some(seq) => seq,
+            None => sqlx::query("SELECT COALESCE(MAX(id), 0) FROM change_journal")
+                .fetch_one(&mut *tx)
+                .await
+                .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))?
+                .get::<i64, _>(0),
+        };
+
         sqlx::query(
             "INSERT INTO sync_state (owner, collection_id, sync_key, token) VALUES (?1, ?2, ?3, ?4)
              ON CONFLICT(owner, collection_id) DO UPDATE SET sync_key = ?3, token = ?4, updated_at = CURRENT_TIMESTAMP",
@@ -1081,7 +1121,7 @@ impl Storage {
         )
         .bind(owner)
         .bind(scope_id)
-        .bind(journal_seq)
+        .bind(watermark)
         .execute(&mut *tx)
         .await
         .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
@@ -3833,7 +3873,16 @@ mod tests {
             .await
             .expect("seed A row for isolation check");
         storage
-            .commit_calendar_sync(owner, "1::devB", "key-new", Some("t"), 0, true, &[], &[])
+            .commit_calendar_sync(
+                owner,
+                "1::devB",
+                "key-new",
+                Some("t"),
+                Some(0),
+                true,
+                &[],
+                &[],
+            )
             .await
             .expect("prime commit B");
         assert!(
@@ -3888,7 +3937,7 @@ mod tests {
                 scope,
                 "key-1",
                 Some("tok"),
-                42,
+                Some(42),
                 false,
                 &deliveries,
                 &["srv-old"],
@@ -3914,6 +3963,46 @@ mod tests {
         assert!(
             !items.iter().any(|i| i.server_id == "srv-old"),
             "the deleted event's item_map row is removed in the same commit"
+        );
+
+        // The delivery ALSO journals an `op='upsert'` row (the invariant
+        // `upsert_item_map` upholds) so every change-detection consumer sees it:
+        // `list_changes_since_seq` (Ping, GetItemEstimate) and
+        // `list_journal_since_seq` (EWS SyncFolderItems).
+        assert!(
+            storage
+                .list_journal_since_seq(owner, 0)
+                .await
+                .unwrap()
+                .iter()
+                .any(|r| r.server_id == "srv-new" && r.op == "upsert"),
+            "a delivered event must journal an upsert row (EWS path)"
+        );
+        assert!(
+            storage
+                .list_changes_since_seq(owner, 0, 100)
+                .await
+                .unwrap()
+                .iter()
+                .any(|i| i.server_id == "srv-new"),
+            "a delivered event must journal an upsert row (Ping/GetItemEstimate path)"
+        );
+        // A held watermark (clipped window) is stored verbatim.
+        assert_eq!(
+            storage.journal_watermark(owner, scope).await.unwrap(),
+            Some(42)
+        );
+
+        // A full drain (journal_seq None) instead advances the watermark to the
+        // journal head AS OF the commit — covering the just-written delivery
+        // row, so the device is not woken by the very rows it delivered.
+        storage
+            .commit_calendar_sync(owner, scope, "key-2", Some("tok2"), None, false, &[], &[])
+            .await
+            .expect("full-drain commit");
+        assert_eq!(
+            storage.journal_watermark(owner, scope).await.unwrap(),
+            Some(storage.get_latest_change_seq().await.unwrap())
         );
     }
 
