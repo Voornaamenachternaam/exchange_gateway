@@ -226,7 +226,7 @@ gateway restarts and surface in `FolderSync`/`GetHierarchy`.
   membership of the query result set (RFC 8620 §5.6), so a message whose flags
   change without leaving the mailbox (mark read/flagged, ...) never appears in
   its `added`/`removed` lists and would otherwise be dropped by both the EAS
-  and EWS email deltas. The EAS delta now keeps a per-collection **keyword
+  and EWS email deltas. Both deltas now keep a per-collection **keyword
   baseline** (`email_keyword_baseline`, one row per JMAP Email id holding its
   sorted keyword list) captured at the start of every initial sync — the
   snapshot is taken before the first window is fetched, so a flag edit during
@@ -237,10 +237,14 @@ gateway restarts and surface in `FolderSync`/`GetHierarchy`.
   the first delta then captures it without reporting the intervening edits). The
   delta then diffs the live mailbox against this baseline, emitting a `<Change>`
   for each id whose keyword set changed and was not already queued. A delivered
-  `<Add>` seeds its own baseline row at delivery time, so a flag edit before the
-  rotating scan reaches the message is still detected (a missing row on the
-  scan's first observation is recorded without a `<Change>` — the Add already
-  carries the current flags). The diff is
+  `<Add>`/`<Create>` seeds its own baseline row at delivery time, so a flag edit
+  before the rotating scan reaches the message is still detected (a missing row
+  on the scan's first observation is recorded without a `<Change>` — the Add
+  already carries the current flags). The EWS email delta runs the SAME bounded
+  scan and persists the SAME baseline/position (keyed on the EWS folder id), so
+  a flag edit made by any client on the mailbox (an EAS device, another EWS
+  client, or the web UI) surfaces to an EWS client as a `<t:Update>`; without it
+  the membership-only feed would leave EWS flag state stale forever. The diff is
   **bounded per delta**: the scan walks at most a fixed number of pages
   (`KEYWORD_SCAN_MAX_PAGES`) from a per-collection rotating position persisted
   in `email_keyword_scan` (wrapping to the top at the end), so a delta never
@@ -254,12 +258,19 @@ gateway restarts and surface in `FolderSync`/`GetHierarchy`.
   row was written, so a failed write holds the cursor and the next sweep
   re-examines the same window instead of skipping the change; an overflowed delta
   (the change set exceeds the EAS window) persists them ONLY once the remainder
-  is durably queued — if persisting the queue fails the delta FAILS CLOSED: it
+  is durably queued AND the best-effort sync-token write has committed — if
+  persisting the queue fails the delta FAILS CLOSED: it
   returns a retryable error (the caller answers Sync Status 6 with the incoming
   key and no commands) and leaves the stored token and the baseline untouched,
   rather than acknowledging the clipped window while the stored token still sits
   at the pre-delta state (which would make the next delta re-diff and replay the
-  already-delivered commands as duplicate Adds/Deletes). The drain and every
+  already-delivered commands as duplicate Adds/Deletes). If the queue persist
+  succeeds but the token write fails, the window is still acknowledged (Status 1
+  + `<MoreAvailable/>`; the queue carries progress) but the baseline is HELD —
+  the stored token stays at the pre-delta state, so advancing the baseline would
+  let a retry's `Email/queryChanges` re-derive the membership set without
+  re-reporting a flag-only `<Change>` (the feed reports membership only), losing
+  the edit. The drain and every
   later delta do not re-queue the same flag change. A backend hiccup
   during the scan degrades to serving the query-feed changes without persisting
   that page's rows.
@@ -467,10 +478,15 @@ so a flag edit the client never received would be lost forever; the branch holds
 no queue, so a retry re-derives the whole change set from the unchanged token.
 The clipped-window branch keeps its token write best-effort (it stores the SAME
 `old_state`, so a failed write changes nothing; the durable overflow queue
-carries progress), and its baseline persist stays best-effort by design — the
-`<Change>` is already in the response being built, and failing the delta there
-would let a retry drain only the queued remainder while dropping this window's
-delivered ops. The baseline persist itself is deliberately NOT fail-closed: the
+carries progress) but now HOLDS the flag-scan baseline unless that token write
+committed: the stored token stays at the pre-delta state, so advancing the
+baseline would let a retry's `Email/queryChanges` re-derive the membership set
+but NOT re-report a flag-only `<Change>` (the feed reports membership only),
+losing the edit; the window is still acknowledged (Status 1 +
+`<MoreAvailable/>`) because the queue carries progress and failing the delta
+there would let a retry drain only the queued remainder while dropping this
+window's delivered ops. The baseline persist itself is deliberately NOT
+fail-closed: the
 partially-written rows would otherwise blind the retry's scan to the very change
 it must re-report, and the held scan position already guarantees a re-scan.
 (n) An EWS `UpdateFolder` rename of an EAS-created mail folder (a `folder_map`
@@ -478,11 +494,18 @@ row whose ServerId is the JMAP mailbox id) is mirrored into `folder_map` and
 journaled as `folder-update` in one transaction, so EAS `GetHierarchy` stops
 advertising the old DisplayName and already-primed devices receive the change; a
 mailbox with no `folder_map` row (one EAS never advertised) is a no-op — the
-mirror never fabricates an EAS-visible folder. A failed mirror write is NOT
-acknowledged as success (retryable `ErrorInternalServerError`), because the JMAP
-mailbox is already renamed and a stale DisplayName would keep EAS advertising
-the old name; the rename is idempotent, so a retry re-applies it and re-runs the
-mirror.
+mirror never fabricates an EAS-visible folder. The rename is held to the SAME
+name rules EAS `FolderUpdate` enforces ([MS-ASCMD] §2.2.1.6) BEFORE the backend
+is touched — a reserved system-folder name, a name over the 64-character bound,
+or a case-insensitive sibling collision is rejected — so the EAS-visible
+hierarchy can never advertise a name EAS itself would refuse. `update_mailbox`'s
+boolean is honoured: the mirror runs only on `Ok(true)`; `Ok(false)` (the id in
+neither `updated` nor `notUpdated`) is a retryable `ErrorInternalServerError`
+rather than mirroring a name the backend never applied. A failed mirror write is
+NOT acknowledged as success (retryable `ErrorInternalServerError`), because the
+JMAP mailbox is already renamed and a stale DisplayName would keep EAS
+advertising the old name; the rename is idempotent, so a retry re-applies it and
+re-runs the mirror.
 
 **Upgrade note (expected one-time re-prime).** Before this change the stored
 email delta token was the `Email/get` data-type state; the new delta passes it

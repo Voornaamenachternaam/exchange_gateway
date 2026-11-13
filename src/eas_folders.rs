@@ -222,7 +222,10 @@ const SYSTEM_FOLDER_NAMES: [&str; 10] = [
 ];
 
 /// Whether a DisplayName is already taken by a system folder (case-insensitive).
-fn is_system_folder_name(display_name: &str) -> bool {
+///
+/// Shared with the EWS `UpdateFolder` mirror so an EWS rename of an
+/// EAS-visible folder is held to the same rule EAS `FolderUpdate` enforces.
+pub(crate) fn is_system_folder_name(display_name: &str) -> bool {
     SYSTEM_FOLDER_NAMES
         .iter()
         .any(|n| n.eq_ignore_ascii_case(display_name.trim()))

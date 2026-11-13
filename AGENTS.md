@@ -141,7 +141,11 @@ EAS specs v20250520 (16.1); older EAS compat NOT needed.
   collection href (kept stable across a rename). An EWS `UpdateFolder` rename
   of an EAS-created mail folder is mirrored into `folder_map` and journaled as
   `folder-update` (no-op when no mapping row exists; a failed mirror write is a
-  retryable error, never a silent success). `GetHierarchy` now appends
+  retryable error, never a silent success). The rename is held to the SAME name
+  rules EAS `FolderUpdate` enforces (reserved system name / >64 chars /
+  case-insensitive sibling collision) BEFORE the backend is touched, and
+  `update_mailbox`'s bool is honoured (mirror only on `Ok(true)`; `Ok(false)` is
+  a retryable error). `GetHierarchy` now appends
   user-created folders; the incremental `FolderSync` reports folder-hierarchy
   changes journaled in `change_journal` (`resource_href='folder'`, filtered out
   of the EWS item-delta feed) so a mutation reaches an already-primed client as
@@ -153,12 +157,11 @@ EAS specs v20250520 (16.1); older EAS compat NOT needed.
   drive the mailbox-scoped `Email/queryChanges` feed (`filter.inMailbox` +
   the prime's `receivedAt` sort), never the account-wide `Email/changes`, so a
   single collection never receives another folder's mail; a `queryChanges`
-  membership feed misses in-place flag edits, so the EAS delta's per-collection
-  keyword baseline diff recovers them as `<Change>` — the diff is bounded per
-  delta (a rotating per-collection scan position in `email_keyword_scan` walks
-  at most `KEYWORD_SCAN_MAX_PAGES` pages, wrapping at the end), so a delta
-  never pays O(mailbox) in JMAP calls (the EWS email delta has no baseline and
-  still misses flag-only edits). Tests: `src/eas_folders.rs` (a
+  membership feed misses in-place flag edits, so BOTH the EAS and EWS email
+  deltas keep a per-collection keyword baseline and diff it as `<Change>`/
+  `<t:Update>` — the diff is bounded per delta (a rotating per-collection scan
+  position in `email_keyword_scan` walks at most `KEYWORD_SCAN_MAX_PAGES` pages,
+  wrapping at the end), so a delta never pays O(mailbox) in JMAP calls. Tests: `src/eas_folders.rs` (a
   combined JMAP+CalDAV axum stub records the exact wire calls; session apiUrl
   must equal the base origin so the client POSTs to `/`, and CalDAV paths are
   percent-encoded by reqwest's Url::join) plus the `src/sync.rs` and `src/eas.rs`
@@ -211,8 +214,12 @@ EAS specs v20250520 (16.1); older EAS compat NOT needed.
   upserts SKIP ids delivered as an `<Add>` this delta, so the Add's fresh seed
   wins over the older scan snapshot (no duplicate flag `<Change>` next delta).
   The overflow branch persists the keyword baseline ONLY once the undelivered
-  remainder is durably queued (a failed queue write holds the baseline too, so
-  the re-diff re-derives the discarded flag changes).
+  remainder is durably queued AND the (best-effort) sync-token write has
+  committed — a failed queue write holds the baseline (and fails the delta
+  closed), and a failed token write still acknowledges the clipped window but
+  holds the baseline, so the re-diff re-derives the discarded flag changes.
+  The completing branch's token write is fail-closed: a failed `set_sync_key`
+  returns a retryable error and never advances the baseline.
 - AUDIT.md §10 (EAS Sync wire-exactness) is COMPLETE and its section now
   documents the delivered behavior — keep it accurate when touching Sync.
 - AUDIT.md §11 (WBXML conformance hardening) is COMPLETE (commit 7b7d242):
