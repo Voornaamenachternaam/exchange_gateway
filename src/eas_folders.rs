@@ -383,8 +383,15 @@ async fn create_mail_folder(
         "0" => None,
         id if is_system_folder_id(id) => {
             match system_email_folder_mailbox_id(&jmap, &account_id, id, owner, password).await {
-                Some(m) => Some(m),
-                None => return FolderMutationResult::status(5),
+                SystemFolderMailbox::Resolved(m) => Some(m),
+                SystemFolderMailbox::Absent => return FolderMutationResult::status(5),
+                SystemFolderMailbox::Error => {
+                    tracing::warn!(
+                        collection_id = id,
+                        "FolderCreate: system parent mailbox lookup failed"
+                    );
+                    return FolderMutationResult::status(6);
+                }
             }
         }
         id => match state.storage.get_folder(owner, id).await {
@@ -545,18 +552,44 @@ async fn create_caldav_folder(
 }
 
 /// Resolve a system email folder's EAS CollectionId to its JMAP mailbox id.
+///
+/// Tri-state so the caller can tell a genuinely absent mailbox (an
+/// authoritative empty lookup, or an id with no mappable role → Status 5,
+/// invalid parent) from a transient backend failure (`Err` → Status 6,
+/// retryable). Flattening the lookup error to `None` would answer a retryable
+/// outage as a permanent invalid-parent.
+enum SystemFolderMailbox {
+    /// The role resolved to a JMAP mailbox id.
+    Resolved(String),
+    /// No JMAP mailbox maps to this collection id (no role, or an empty lookup).
+    Absent,
+    /// The mailbox lookup failed transiently.
+    Error,
+}
+
 async fn system_email_folder_mailbox_id(
     jmap: &JmapClient,
     account_id: &str,
     collection_id: &str,
     username: &str,
     password: &SecretString,
-) -> Option<String> {
-    let role = crate::email::eas_collection_id_to_mailbox_role(collection_id)?;
-    jmap.get_mailbox_ids_for_role(account_id, role, username, password)
+) -> SystemFolderMailbox {
+    let Some(role) = crate::email::eas_collection_id_to_mailbox_role(collection_id) else {
+        return SystemFolderMailbox::Absent;
+    };
+    match jmap
+        .get_mailbox_ids_for_role(account_id, role, username, password)
         .await
-        .ok()
-        .and_then(|v| v.into_iter().next())
+    {
+        Ok(ids) => match ids.into_iter().next() {
+            Some(m) => SystemFolderMailbox::Resolved(m),
+            None => SystemFolderMailbox::Absent,
+        },
+        Err(e) => {
+            tracing::warn!(error = %e, collection_id = %collection_id, "Folder: system email folder mailbox lookup failed");
+            SystemFolderMailbox::Error
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -823,8 +856,15 @@ async fn update_mail_folder(
             id if is_system_folder_id(id) => {
                 match system_email_folder_mailbox_id(&jmap, &account_id, id, owner, password).await
                 {
-                    Some(m) => Some(Some(m)),
-                    None => return FolderMutationResult::status(5),
+                    SystemFolderMailbox::Resolved(m) => Some(Some(m)),
+                    SystemFolderMailbox::Absent => return FolderMutationResult::status(5),
+                    SystemFolderMailbox::Error => {
+                        tracing::warn!(
+                            collection_id = id,
+                            "FolderUpdate: system parent mailbox lookup failed"
+                        );
+                        return FolderMutationResult::status(6);
+                    }
                 }
             }
             id => match state.storage.get_folder(owner, id).await {
@@ -1576,6 +1616,193 @@ mod tests {
             create.get("parentId").and_then(|v| v.as_str()),
             Some("mb-inbox"),
             "parent must resolve the Inbox role to its mailbox id"
+        );
+    }
+
+    /// Scripts the `Mailbox/query`-by-role reply for the system-parent lookup:
+    /// `Fail` answers HTTP 500 (a transient backend outage), `Empty` answers a
+    /// successful query with no matching mailbox.
+    enum RoleLookup {
+        Fail,
+        Empty,
+    }
+
+    /// A stub whose session resolves but whose `Mailbox/query` (the role lookup
+    /// behind a system parent) is scripted by [`RoleLookup`].
+    async fn spawn_role_lookup_stub(
+        mode: RoleLookup,
+    ) -> (StdArc<AppState>, StdArc<TokioMutex<Vec<Value>>>) {
+        use axum::response::Response;
+        use axum::routing::{get, post};
+
+        let calls: StdArc<TokioMutex<Vec<Value>>> = StdArc::new(TokioMutex::new(Vec::new()));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let base = format!("http://127.0.0.1:{port}");
+        let session_base = base.clone();
+        let base_calls = calls.clone();
+        let fail = matches!(mode, RoleLookup::Fail);
+        let app = axum::Router::new()
+            .route(
+                "/session",
+                get(move || {
+                    let base = session_base.clone();
+                    async move {
+                        axum::Json(json!({
+                            "apiUrl": base,
+                            "downloadUrl": format!("{base}/download/{{accountId}}/{{blobId}}"),
+                            "uploadUrl": format!("{base}/upload/{{accountId}}"),
+                            "eventSourceUrl": format!("{base}/eventsource"),
+                            "state": "s",
+                            "username": "u",
+                            "accounts": {"a": {"name": "u", "isPersonal": true, "isReadOnly": false, "accountCapabilities": {}}},
+                            "primaryAccounts": {"urn:ietf:params:jmap:mail": "a"},
+                            "capabilities": {}
+                        }))
+                    }
+                }),
+            )
+            .route(
+                "/",
+                post(move |body: String| {
+                    let calls = base_calls.clone();
+                    async move {
+                        let req: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
+                        let mut responses = Vec::new();
+                        for call in req
+                            .get("methodCalls")
+                            .and_then(|v| v.as_array())
+                            .cloned()
+                            .unwrap_or_default()
+                        {
+                            let name = call.get(0).and_then(|v| v.as_str()).unwrap_or("");
+                            let args = call.get(1).cloned().unwrap_or(Value::Null);
+                            let id = call.get(2).and_then(|v| v.as_str()).unwrap_or("c0");
+                            calls
+                                .lock()
+                                .await
+                                .push(json!({"method": name, "args": args.clone()}));
+                            if name == "Mailbox/query" && fail {
+                                return Response::builder()
+                                    .status(500)
+                                    .body(axum::body::Body::from("backend down"))
+                                    .unwrap();
+                            }
+                            let (mname, result) = match name {
+                                "Mailbox/query" => (
+                                    "Mailbox/query",
+                                    json!({"accountId": "a", "ids": []}),
+                                ),
+                                "Mailbox/set" => (
+                                    "Mailbox/set",
+                                    json!({"accountId": "a", "created": {"c0": {"id": "mb-new"}}}),
+                                ),
+                                _ => (name, json!({"accountId": "a"})),
+                            };
+                            responses.push(json!([mname, result, id]));
+                        }
+                        let resp = json!({"methodResponses": responses, "sessionState": "s"});
+                        Response::builder()
+                            .status(200)
+                            .header("content-type", "application/json")
+                            .body(axum::body::Body::from(serde_json::to_vec(&resp).unwrap()))
+                            .unwrap()
+                    }
+                }),
+            );
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let storage = crate::storage::Storage::new("sqlite::memory:")
+            .await
+            .expect("in-memory storage");
+        storage.init_schema().await.expect("schema init");
+        let cfg = crate::config::Config {
+            jmap_base: base.clone(),
+            caldav_base: base.clone(),
+            carddav_base: base,
+            email_enabled: true,
+            mail_domain: "example.com".to_string(),
+            hmac_secret: SecretString::from("a".repeat(32)),
+            ..Default::default()
+        };
+        let state = StdArc::new(AppState::new(cfg, StdArc::new(storage)));
+        (state, calls)
+    }
+
+    /// A transient failure resolving a system parent's mailbox is NOT a
+    /// permanent invalid-parent: it must be answered retryably (Status 6) and
+    /// must not create a mailbox under an unresolved parent.
+    #[tokio::test]
+    async fn create_under_system_parent_lookup_outage_is_retryable_status_6() {
+        let (state, calls) = spawn_role_lookup_stub(RoleLookup::Fail).await;
+        let r = create_folder(&state, "u@example.com", &pw(), "2", "Nested", 12).await;
+        assert_eq!(
+            r.status, 6,
+            "a transient parent lookup failure must be retryable, not invalid-parent"
+        );
+        assert!(
+            jmap_methods(&calls)
+                .await
+                .iter()
+                .all(|m| m != "Mailbox/set"),
+            "a failed parent resolution must not create a mailbox"
+        );
+    }
+
+    /// A `FolderUpdate` reparent under a system parent whose mailbox lookup
+    /// fails transiently is retryable (Status 6), never a permanent
+    /// invalid-parent (Status 5).
+    #[tokio::test]
+    async fn update_reparent_under_system_parent_lookup_outage_is_status_6() {
+        let (state, calls) = spawn_role_lookup_stub(RoleLookup::Fail).await;
+        state
+            .storage
+            .upsert_folder_journaled(
+                crate::storage::FolderUpsertParams {
+                    owner: "u@example.com",
+                    server_id: "mb-1",
+                    parent_id: "0",
+                    display_name: "Projects",
+                    folder_type: 12,
+                    backend_kind: "jmap",
+                    backend_id: "mb-1",
+                },
+                "folder-add",
+            )
+            .await
+            .unwrap();
+        let r = update_folder(&state, "u@example.com", &pw(), "mb-1", "2", "Projects").await;
+        assert_eq!(
+            r.status, 6,
+            "a transient parent lookup failure must be retryable"
+        );
+        assert!(
+            jmap_methods(&calls)
+                .await
+                .iter()
+                .all(|m| m != "Mailbox/set"),
+            "a failed parent resolution must not issue a backend update"
+        );
+    }
+
+    /// A successful lookup that returns no mailbox for the system role is an
+    /// authoritative "invalid parent" (Status 5), distinct from an outage.
+    #[tokio::test]
+    async fn create_under_system_parent_absent_mailbox_is_status_5() {
+        let (state, calls) = spawn_role_lookup_stub(RoleLookup::Empty).await;
+        let r = create_folder(&state, "u@example.com", &pw(), "2", "Nested", 12).await;
+        assert_eq!(
+            r.status, 5,
+            "an absent system parent mailbox is an invalid parent"
+        );
+        assert!(
+            jmap_methods(&calls)
+                .await
+                .iter()
+                .all(|m| m != "Mailbox/set"),
+            "an absent parent must not create a mailbox"
         );
     }
 

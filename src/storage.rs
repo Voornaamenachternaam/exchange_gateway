@@ -3192,55 +3192,52 @@ impl Storage {
 
     /// Update a folder mapping's `display_name` and/or `parent_id` AND journal
     /// a `folder-update` row in ONE transaction, writing ONLY the named columns
-    /// on the EXISTING row. Unlike [`Storage::upsert_folder_journaled`], this
-    /// performs a targeted `UPDATE ... WHERE` that affects zero rows when the
-    /// mapping is gone, so a concurrent `folder-delete` is never resurrected and
-    /// the other columns are never overwritten from a caller's possibly-stale
-    /// snapshot. `server_id`, `folder_type`, `backend_kind`, and `backend_id`
-    /// are left untouched.
+    /// on the EXISTING row. A `None` column is left untouched, so a rename never
+    /// rewrites `parent_id` from a stale snapshot and a reparent never rewrites
+    /// `display_name` (a concurrent rename therefore survives the reparent
+    /// mirror). Unlike [`Storage::upsert_folder_journaled`], this performs a
+    /// targeted `UPDATE ... WHERE` that affects zero rows when the mapping is
+    /// gone, so a concurrent `folder-delete` is never resurrected. `server_id`,
+    /// `folder_type`, `backend_kind`, and `backend_id` are left untouched.
     ///
     /// Returns `Ok(true)` when the row existed and was updated (its
     /// `folder-update` journaled), `Ok(false)` when no row matched (the mapping
     /// was deleted concurrently — nothing is written and no journal row is
-    /// fabricated). `display_name` is always written; `parent_id` is written
-    /// only when `Some`.
+    /// fabricated). A call with both columns `None` is a no-op returning
+    /// `Ok(false)`.
     pub async fn update_folder_journaled(
         &self,
         owner: &str,
         server_id: &str,
         parent_id: Option<&str>,
-        display_name: &str,
+        display_name: Option<&str>,
     ) -> Result<bool> {
+        // The SET clause names only the columns the caller supplied; `?3`/`?4`
+        // are bound in the same order they appear.
+        let set = match (parent_id.is_some(), display_name.is_some()) {
+            (true, true) => "parent_id = ?3, display_name = ?4, updated_at = CURRENT_TIMESTAMP",
+            (true, false) => "parent_id = ?3, updated_at = CURRENT_TIMESTAMP",
+            (false, true) => "display_name = ?3, updated_at = CURRENT_TIMESTAMP",
+            (false, false) => return Ok(false),
+        };
+        let sql = format!("UPDATE folder_map SET {set} WHERE owner = ?1 AND server_id = ?2");
+
         let mut tx = sqlx::Acquire::begin(self.pool.as_ref())
             .await
             .map_err(|e| GatewayError::Storage(format!("Transaction error: {}", e)))?;
 
-        let affected = match parent_id {
-            Some(parent) => sqlx::query(
-                "UPDATE folder_map SET parent_id = ?3, display_name = ?4, \
-                 updated_at = CURRENT_TIMESTAMP \
-                 WHERE owner = ?1 AND server_id = ?2",
-            )
-            .bind(owner)
-            .bind(server_id)
-            .bind(parent)
-            .bind(display_name)
+        let mut query = sqlx::query(&sql).bind(owner).bind(server_id);
+        if let Some(parent) = parent_id {
+            query = query.bind(parent);
+        }
+        if let Some(name) = display_name {
+            query = query.bind(name);
+        }
+        let affected = query
             .execute(&mut *tx)
             .await
             .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?
-            .rows_affected(),
-            None => sqlx::query(
-                "UPDATE folder_map SET display_name = ?3, updated_at = CURRENT_TIMESTAMP \
-                 WHERE owner = ?1 AND server_id = ?2",
-            )
-            .bind(owner)
-            .bind(server_id)
-            .bind(display_name)
-            .execute(&mut *tx)
-            .await
-            .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?
-            .rows_affected(),
-        };
+            .rows_affected();
 
         if affected == 0 {
             tx.rollback()
@@ -5149,7 +5146,7 @@ mod tests {
 
         // Rename only: parent_id and the other columns must be untouched.
         let updated = storage
-            .update_folder_journaled(owner, "mb-1", None, "New")
+            .update_folder_journaled(owner, "mb-1", None, Some("New"))
             .await
             .expect("rename");
         assert!(updated, "an existing row must be updated");
@@ -5175,9 +5172,10 @@ mod tests {
             "a successful update must journal exactly one folder-update"
         );
 
-        // Reparent only: display_name must be preserved.
+        // Reparent only (display_name `None`): the name written by the rename
+        // above must be preserved.
         let updated = storage
-            .update_folder_journaled(owner, "mb-1", Some("mb-parent"), "New")
+            .update_folder_journaled(owner, "mb-1", Some("mb-parent"), None)
             .await
             .expect("reparent");
         assert!(updated, "an existing row must be updated");
@@ -5196,7 +5194,7 @@ mod tests {
             .expect("journal")
             .len();
         let updated = storage
-            .update_folder_journaled(owner, "mb-gone", None, "Ghost")
+            .update_folder_journaled(owner, "mb-gone", None, Some("Ghost"))
             .await
             .expect("no-op update");
         assert!(!updated, "a missing row must report no update");

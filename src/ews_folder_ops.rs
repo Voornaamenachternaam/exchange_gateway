@@ -648,7 +648,7 @@ async fn mirror_ews_folder_rename(
 ) -> anyhow::Result<()> {
     let updated = state
         .storage
-        .update_folder_journaled(owner, &row.server_id, None, display_name)
+        .update_folder_journaled(owner, &row.server_id, None, Some(display_name))
         .await?;
     if !updated {
         anyhow::bail!(
@@ -662,9 +662,15 @@ async fn mirror_ews_folder_rename(
 /// Resolve the EAS `ParentId` string for a JMAP mailbox id: `"0"` for the root,
 /// the distinguished EAS id (`"2"`/`"3"`/`"4"`/`"5"`/`"12"`) for a system
 /// mailbox, or the mailbox id itself for a user-created folder (whose EAS
-/// ServerId IS the JMAP mailbox id). `None` when a mailbox has neither a
+/// ServerId IS the JMAP mailbox id). `Ok(None)` when a mailbox has neither a
 /// `folder_map` row nor a recognised system role, so a caller leaves the stored
 /// ParentId untouched rather than writing a wrong id.
+///
+/// A transient `folder_map` read or JMAP mailbox-lookup failure is propagated
+/// as `Err` rather than flattened to `None`: acknowledging the move without a
+/// mirrored ParentId would leave EAS advertising a stale hierarchy, so the
+/// caller must fail the operation (retryable) instead of silently skipping the
+/// journaled update.
 async fn eas_parent_id_for_mailbox(
     state: &Arc<AppState>,
     owner: &str,
@@ -672,30 +678,38 @@ async fn eas_parent_id_for_mailbox(
     username: &str,
     password: &SecretString,
     mailbox_id: Option<&str>,
-) -> Option<String> {
+) -> anyhow::Result<Option<String>> {
     let Some(mailbox_id) = mailbox_id else {
-        return Some("0".to_string());
+        return Ok(Some("0".to_string()));
     };
-    if matches!(
-        state.storage.get_folder(owner, mailbox_id).await,
-        Ok(Some(_))
-    ) {
-        return Some(mailbox_id.to_string());
+    match state.storage.get_folder(owner, mailbox_id).await {
+        Ok(Some(_)) => return Ok(Some(mailbox_id.to_string())),
+        Ok(None) => {}
+        Err(e) => {
+            return Err(anyhow::anyhow!(
+                "folder_map lookup failed resolving the parent of {mailbox_id}: {e}"
+            ));
+        }
     }
-    let all = jmap.query_mailboxes(username, password).await.ok()?;
+    let all = jmap
+        .query_mailboxes(username, password)
+        .await
+        .map_err(|e| {
+            anyhow::anyhow!("mailbox lookup failed resolving the parent of {mailbox_id}: {e}")
+        })?;
     let role = all
         .mailboxes
         .iter()
         .find(|m| m.id.as_deref() == Some(mailbox_id))
-        .and_then(|m| m.role.as_deref())?;
-    match role {
-        "inbox" => Some("2".to_string()),
-        "drafts" => Some("3".to_string()),
-        "trash" => Some("4".to_string()),
-        "sent" => Some("5".to_string()),
-        "junk" => Some("12".to_string()),
+        .and_then(|m| m.role.as_deref());
+    Ok(match role {
+        Some("inbox") => Some("2".to_string()),
+        Some("drafts") => Some("3".to_string()),
+        Some("trash") => Some("4".to_string()),
+        Some("sent") => Some("5".to_string()),
+        Some("junk") => Some("12".to_string()),
         _ => None,
-    }
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -827,8 +841,25 @@ pub(crate) async fn handle_move_folder(
                 // folder under its old parent). Only a folder with a `folder_map`
                 // row is mirrored; a row that vanished concurrently is a benign
                 // no-op, never resurrected.
-                if let Ok(Some(row)) = state.storage.get_folder(&owner, &mailbox_id).await {
-                    let parent_eas = eas_parent_id_for_mailbox(
+                //
+                // A `folder_map` READ failure is NOT "no row": treating it as one
+                // would acknowledge the move while leaving EAS's ParentId stale, so
+                // it is a retryable error (the move is idempotent).
+                let row = match state.storage.get_folder(&owner, &mailbox_id).await {
+                    Ok(row) => row,
+                    Err(e) => {
+                        return internal_error(
+                            action,
+                            "folder_map parent mirror lookup failed",
+                            &e,
+                        );
+                    }
+                };
+                if let Some(row) = row {
+                    // A lookup failure (folder_map read or JMAP mailbox list) is
+                    // propagated: silently skipping the mirror would ack the move
+                    // with a stale ParentId.
+                    let parent_eas = match eas_parent_id_for_mailbox(
                         state,
                         &owner,
                         &jmap,
@@ -836,15 +867,27 @@ pub(crate) async fn handle_move_folder(
                         &auth.password,
                         new_parent.as_deref(),
                     )
-                    .await;
+                    .await
+                    {
+                        Ok(p) => p,
+                        Err(e) => {
+                            return internal_error(
+                                action,
+                                "folder_map parent resolution failed",
+                                &e,
+                            );
+                        }
+                    };
                     if let Some(parent_eas) = parent_eas {
+                        // Reparent ONLY: `display_name` is left untouched (a
+                        // concurrent EWS rename must survive the move mirror).
                         match state
                             .storage
                             .update_folder_journaled(
                                 &owner,
                                 &row.server_id,
                                 Some(&parent_eas),
-                                &row.display_name,
+                                None,
                             )
                             .await
                         {
@@ -3283,6 +3326,164 @@ mod tests {
                 .iter()
                 .map(|r| (&r.op, &r.server_id))
                 .collect::<Vec<_>>()
+        );
+    }
+
+    /// A JMAP stub for `MoveFolder` whose backend move (`Mailbox/set`) succeeds
+    /// but whose subsequent mailbox-listing lookup (the `Mailbox/get` behind
+    /// `query_mailboxes`) fails with HTTP 500. This models a transient outage
+    /// striking between the reparent and the ParentId mirror.
+    async fn spawn_move_stub_failing_parent_lookup() -> (String, StdArc<TokioMutex<Vec<Value>>>) {
+        use axum::response::Response;
+        let calls: StdArc<TokioMutex<Vec<Value>>> = StdArc::new(TokioMutex::new(Vec::new()));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let base = format!("http://127.0.0.1:{port}");
+        let session_base = base.clone();
+        let base_calls = calls.clone();
+        let app = axum::Router::new()
+            .route(
+                "/session",
+                get(move || {
+                    let base = session_base.clone();
+                    async move {
+                        axum::Json(json!({
+                            "apiUrl": base,
+                            "downloadUrl": format!("{base}/download/{{accountId}}/{{blobId}}"),
+                            "uploadUrl": format!("{base}/upload/{{accountId}}"),
+                            "eventSourceUrl": format!("{base}/eventsource"),
+                            "state": "s",
+                            "username": "u",
+                            "accounts": {"a": {"name": "u", "isPersonal": true, "isReadOnly": false, "accountCapabilities": {}}},
+                            "primaryAccounts": {"urn:ietf:params:jmap:mail": "a"},
+                            "capabilities": {}
+                        }))
+                    }
+                }),
+            )
+            .route(
+                "/",
+                post(move |body: String| {
+                    let calls = base_calls.clone();
+                    async move {
+                        let req: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
+                        let method_calls = req
+                            .get("methodCalls")
+                            .and_then(|v| v.as_array())
+                            .cloned()
+                            .unwrap_or_default();
+                        for call in &method_calls {
+                            let name = call.get(0).and_then(|v| v.as_str()).unwrap_or("");
+                            let args = call.get(1).cloned().unwrap_or(Value::Null);
+                            calls
+                                .lock()
+                                .await
+                                .push(json!({"method": name, "args": args.clone()}));
+                        }
+                        // The mailbox-listing lookup fails; the move itself does not.
+                        if method_calls
+                            .iter()
+                            .any(|c| c.get(0).and_then(|v| v.as_str()) == Some("Mailbox/get"))
+                        {
+                            return Response::builder()
+                                .status(500)
+                                .body(axum::body::Body::from("backend down"))
+                                .unwrap();
+                        }
+                        let mut responses = Vec::new();
+                        for call in method_calls {
+                            let name = call.get(0).and_then(|v| v.as_str()).unwrap_or("");
+                            let id = call.get(2).and_then(|v| v.as_str()).unwrap_or("c0");
+                            let (mname, result) = match name {
+                                "Mailbox/set" => (
+                                    "Mailbox/set",
+                                    json!({"accountId": "a", "updated": {"mb-1": Value::Null}}),
+                                ),
+                                _ => (name, json!({"accountId": "a"})),
+                            };
+                            responses.push(json!([mname, result, id]));
+                        }
+                        let resp = json!({"methodResponses": responses, "sessionState": "s"});
+                        Response::builder()
+                            .status(200)
+                            .header("content-type", "application/json")
+                            .body(axum::body::Body::from(serde_json::to_vec(&resp).unwrap()))
+                            .unwrap()
+                    }
+                }),
+            );
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        (base, calls)
+    }
+
+    /// A `MoveFolder` whose ParentId mirror cannot be resolved (the mailbox
+    /// lookup fails transiently) must NOT be acknowledged as success: the stored
+    /// ParentId would be left stale while EAS keeps the folder under its old
+    /// parent. It is answered with a retryable error and the mapping row is
+    /// left unchanged.
+    #[tokio::test]
+    async fn move_folder_parent_lookup_failure_is_not_acknowledged() {
+        let (base, _calls) = spawn_move_stub_failing_parent_lookup().await;
+        let storage = crate::storage::Storage::new("sqlite::memory:")
+            .await
+            .unwrap();
+        storage.init_schema().await.unwrap();
+        let owner = "u@example.com";
+        storage
+            .upsert_folder_journaled(
+                crate::storage::FolderUpsertParams {
+                    owner,
+                    server_id: "mb-1",
+                    parent_id: "0",
+                    display_name: "Projects",
+                    folder_type: 12,
+                    backend_kind: "jmap",
+                    backend_id: "mb-1",
+                },
+                "folder-add",
+            )
+            .await
+            .unwrap();
+        let cfg = crate::config::Config {
+            jmap_base: base,
+            email_enabled: true,
+            mail_domain: "example.com".to_string(),
+            hmac_secret: SecretString::from("a".repeat(32)),
+            ..Default::default()
+        };
+        let state = StdArc::new(crate::models::AppState::new(cfg, StdArc::new(storage)));
+        let auth = AuthContext {
+            username: owner.to_string(),
+            password: SecretString::from("pw"),
+        };
+        // The destination is a mailbox EAS never advertised (no `folder_map`
+        // row), so resolving its EAS ParentId requires the mailbox listing that
+        // fails here.
+        let body = r#"<?xml version="1.0"?><m:MoveFolder xmlns:m="m" xmlns:t="t"><m:ToFolderId><t:FolderId Id="mb-foreign"/></m:ToFolderId><m:FolderIds><t:FolderId Id="mb-1"/></m:FolderIds></m:MoveFolder>"#;
+        let resp = handle_move_folder(&state, &auth, body).await;
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(
+            !text.contains("NoError"),
+            "an unresolved parent mirror must not be acknowledged: {text}"
+        );
+        assert!(
+            text.contains("Error"),
+            "the move must fail with an error response: {text}"
+        );
+        let row = state
+            .storage
+            .get_folder(owner, "mb-1")
+            .await
+            .unwrap()
+            .expect("the mapping row must survive");
+        assert_eq!(
+            row.parent_id, "0",
+            "a failed parent resolution must not write a stale/incorrect ParentId"
         );
     }
 }
