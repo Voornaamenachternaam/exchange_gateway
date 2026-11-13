@@ -4933,9 +4933,17 @@ async fn handle_sync_email_folder_items(
     // An id present in BOTH lists is an in-place move within the mailbox
     // (Stalwart reports a reorder as added+removed); render it as an Update
     // below, NOT as a Create (a client would reject a Create for an item it
-    // already holds).
-    let overlap: std::collections::HashSet<&str> =
-        changes.destroyed.iter().map(String::as_str).collect();
+    // already holds). `overlap` is the INTERSECTION of the two lists, so the
+    // membership-op budget below counts a moved id once and the departed-id
+    // set (used to prune the keyword baseline) still excludes it.
+    let created_set: std::collections::HashSet<&str> =
+        changes.created.iter().map(String::as_str).collect();
+    let overlap: std::collections::HashSet<&str> = changes
+        .destroyed
+        .iter()
+        .map(String::as_str)
+        .filter(|id| created_set.contains(id))
+        .collect();
 
     // The EAS `Sync` delta recovers in-place flag edits with a bounded
     // per-collection keyword scan, because `Email/queryChanges` reports only
@@ -5070,11 +5078,9 @@ async fn handle_sync_email_folder_items(
     // in BOTH lists — Stalwart reports that when the message merely moved
     // within the mailbox (a flag edit re-sorting a keyword-sorted query), which
     // is an in-place Update, not a Delete.
-    let added_set: std::collections::HashSet<&str> =
-        changes.created.iter().map(String::as_str).collect();
     for email_id in &changes.destroyed {
         let server_id = email_server_id_from_jmap_id(email_id);
-        if added_set.contains(email_id.as_str()) {
+        if created_set.contains(email_id.as_str()) {
             match jmap
                 .get_email(&account_id, email_id, &auth.username, &auth.password, true)
                 .await

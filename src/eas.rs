@@ -8466,18 +8466,16 @@ async fn handle_email_initial_sync(
     let result = match result {
         Ok(r) => r,
         Err(e) => {
+            // A transient `Email/query` failure must NOT be acknowledged with a
+            // fresh SyncKey: that stores a key for a mailbox we never primed, so
+            // the client's next non-zero Sync enters the delta path with no base
+            // state and the folder is never populated until a manual re-prime.
+            // Propagate so `handle_email_sync`'s caller answers a retryable
+            // Status 6 with the incoming key untouched, and the next Sync retries
+            // the same prime.
             tracing::warn!(error = %e, "Failed to fetch emails from JMAP for initial sync");
-            let new_sync_key = Uuid::new_v4().simple().to_string();
-            if let Err(e) = state
-                .storage
-                .set_sync_key(username, state_collection_id, &new_sync_key, None)
-                .await
-            {
-                tracing::warn!(error = %e, "Failed to set initial email sync key");
-            }
-            return Ok(format!(
-                "<Collection><Class>Email</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>1</Status></Collection>",
-                new_sync_key, collection_id
+            return Err(anyhow::anyhow!(
+                "failed to fetch emails for initial sync of collection {state_collection_id}: {e}"
             ));
         }
     };

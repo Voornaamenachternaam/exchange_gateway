@@ -300,7 +300,7 @@ gateway restarts and surface in `FolderSync`/`GetHierarchy`.
 2 invalid/duplicate or special system folder, 3 special system folder
 (delete), 4 not found, 5 invalid parent, 6 server error, 10 malformed request.
 
-**Tests.** 30 in `src/eas_folders.rs` (classification helpers, response
+**Tests.** The `src/eas_folders.rs` test module (classification helpers, response
 rendering + a WBXML round-trip of the FolderHierarchy-rooted responses, and
 end-to-end create/delete/update against a combined JMAP+CalDAV stub asserting
 the exact `Mailbox/set`/`MKCALENDAR`/`DELETE`/`PROPPATCH` wire calls and the
@@ -1013,10 +1013,12 @@ No `@` (root) CNAME. Both must be Proxied from the start.
 | 23–33 | P2 | Robustness/friction | Config file, HMAC placeholder, cleartext admin password, duplicated healthcheck, attachment cap, rate limit default, Bearer AutoDetect URI, MAPI Basic auth, no README, stale AGENTS.md, smoke env vars | docs/compose (1) |
 
 **Bottom line:** with the current code, the calendar and email read/write paths are
-substantially sound (AUDIT3 P0 calendar/contacts are delivered), but the use-case
-is **not** deployment-ready: the EAS folder-management and attachment commands are
-stubs (P0 #2), the hostname pairing is not enforced (P0 #3), SMTP TLS will fail
+substantially sound (AUDIT3 P0 calendar/contacts are delivered) and the EAS
+folder-management, GetAttachment and Find commands are delivered (P0 #2), but the
+use-case is **not** deployment-ready: the hostname pairing is not enforced
+(P0 #3), SMTP TLS will fail
 against the internal bridge name (P0 #10), and the Stalwart backend version
-contract is unvalidated for v1.1.0 (P0 #1). Resolving P0 items 1–10, plus the
+contract is unvalidated for v1.1.0 (P0 #1). Resolving the remaining P0 items
+(1, 3–10), plus the
 operator change list above, is required before the container can be deployed via
 Portainer for the stated use-case.

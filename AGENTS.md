@@ -132,12 +132,15 @@ EAS specs v20250520 (16.1); older EAS compat NOT needed.
   v11 `folder_map`) implements `FolderCreate`/`FolderDelete`/`FolderUpdate`
   against Stalwart as the system of record: mail folders → JMAP `Mailbox/set`
   (create/update/destroy, with `onDestroyRemoveEmails` and deepest-first
-  subtree destruction), calendar-family folders (Types 13/15/16/17) →
+  subtree destruction), calendar folder (Type 13) →
   CalDAV `MKCALENDAR`/`DELETE`/`PROPPATCH` displayname, persisting the mapping
   in `folder_map` so user-created folders survive restarts and surface in
-  `FolderSync`/`GetHierarchy`. Type 14 (Contacts) is rejected (Status 10)
-  because CardDAV collection creation is unsupported. The EAS ServerId of a
-  mail folder is the JMAP mailbox id itself; a CalDAV folder's is its
+  `FolderSync`/`GetHierarchy`. Types 14–17 are rejected (Status 10): Type 14
+  (Contacts) because CardDAV collection creation is unsupported, and Types
+  15/16/17 (Tasks/Journal/Notes) because they map to the gateway's single
+  gateway-local Tasks/Notes collections rather than a per-folder backend
+  collection. The EAS ServerId of a mail folder is the JMAP mailbox id itself;
+  a CalDAV folder's is its
   collection href (kept stable across a rename). An EWS `UpdateFolder` rename
   of an EAS-created mail folder is mirrored into `folder_map` and journaled as
   `folder-update` (no-op when no mapping row exists; a failed mirror write is a

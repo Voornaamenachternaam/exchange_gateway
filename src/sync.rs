@@ -1572,15 +1572,16 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
     let prime_cursor: Option<String> =
         prime_cursor_from_token(previous_state.as_ref().and_then(|(_, t)| t.as_deref()));
 
-    // Folder scoping: a user-created calendar-family folder (Types 13/15/16/17,
+    // Folder scoping: a user-created calendar folder (Type 13,
     // [MS-ASCMD] §2.2.3.186.2) has its CalDAV collection href as its EAS
     // CollectionId. Without scoping, the Calendar Sync path would query with
     // `calendar_id: None` (every calendar) and the CalDAV fallback would use
     // the FIRST calendar returned, so the client would receive events from
     // other calendars. Resolve the href to its JMAP calendar id and scope both
     // backends to it. `Some(None)` marks a custom folder whose calendar could
-    // not be resolved: serve an empty collection rather than leaking the
-    // default calendar's events.
+    // not be resolved: the JMAP path is skipped and the CalDAV fallback below
+    // queries the folder's own collection (from `scoped_calendar_href`) rather
+    // than leaking the default calendar's events.
     let mut scoped_calendar_href: Option<String> = None;
     let calendar_scope: Option<Option<String>> =
         match collection_folder_href(&params.state, params.owner, params.collection_id).await? {

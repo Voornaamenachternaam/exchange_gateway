@@ -1832,9 +1832,14 @@ pub async fn fetch_emails_jmap(
             Ok(crate::jmap::EmailListResult::empty())
         }
         Err(e) => {
-            // Log the error but still return empty result to maintain sync stability.
-            tracing::warn!(error = %e, role = %normalized_role, "Failed to fetch mailbox IDs for role");
-            Ok(crate::jmap::EmailListResult::empty())
+            // A transient `Mailbox/query` failure must NOT be flattened to an
+            // empty result: it is indistinguishable from a genuinely empty
+            // mailbox, so the EAS/EWS initial sync would complete with no emails
+            // and no query state and the folder would be skipped until a manual
+            // re-prime. Propagate so the caller answers a retryable Status 6
+            // with the sync token untouched.
+            tracing::warn!(error = %e, role = %normalized_role, "Failed to fetch mailbox IDs for role; failing closed");
+            Err(e)
         }
     }
 }

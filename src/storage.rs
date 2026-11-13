@@ -1827,6 +1827,12 @@ impl Storage {
     /// Read the mailbox keyword baseline for an email collection. `None` when
     /// no baseline has been captured yet (the next delta captures one without
     /// reporting updates).
+    ///
+    /// Test-only: production code reads a single message's keywords via
+    /// `get_email_keyword` (the bounded scan never needs the whole baseline as
+    /// one JSON document). A malformed row is surfaced as a READ ERROR, matching
+    /// `get_email_keyword`, so it can never be mistaken for an empty keyword set.
+    #[cfg(test)]
     pub async fn get_email_keyword_baseline(
         &self,
         owner: &str,
@@ -1847,9 +1853,14 @@ impl Storage {
         let mut map: std::collections::BTreeMap<String, Vec<String>> =
             std::collections::BTreeMap::new();
         for r in rows {
-            let id: String = r.get(0);
-            let json: String = r.get(1);
-            let keywords: Vec<String> = serde_json::from_str(&json).unwrap_or_default();
+            let id: String = r
+                .try_get(0)
+                .map_err(|e| GatewayError::Storage(format!("Decode error: {}", e)))?;
+            let json: String = r
+                .try_get(1)
+                .map_err(|e| GatewayError::Storage(format!("Decode error: {}", e)))?;
+            let keywords: Vec<String> = serde_json::from_str(&json)
+                .map_err(|e| GatewayError::Storage(format!("Decode error: {}", e)))?;
             map.insert(id, keywords);
         }
         serde_json::to_string(&map)
