@@ -5192,12 +5192,22 @@ async fn execute_one_rop(
             // would delete the wrong subtree, so the FID is inverted against the
             // folder-hierarchy projection.
             let req = RopDeleteFolderRequest::decode(cur)?;
-            // The input handle must index a Folder (the parent). A non-folder
-            // handle is a structural NoSupport; a Folder that is not a mail
-            // folder has no JMAP mailbox to resolve against.
+            // The input handle is the PARENT folder. Only a mail folder or the
+            // synthetic Root can parent a deletable folder: `RopCreateFolder`
+            // accepts a Mail parent alone, and Calendar/Contacts are
+            // gateway-owned leaves whose own parent is Root. A delete routed
+            // through a Calendar/Contacts handle is therefore a malformed /
+            // cross-hierarchy ROP — it would destroy whichever mail folder
+            // happens to match `FolderId` even though that folder is not a
+            // child of the handle. Reject it (and any non-folder handle) as a
+            // structural NoSupport before touching the store.
             let parent_kind = sessions
                 .with_handle(session_id, req.input_handle_index, |h| match h {
-                    Handle::Folder { kind, .. } => Some(*kind),
+                    Handle::Folder { kind, .. }
+                        if matches!(*kind, FolderKind::Mail | FolderKind::Root) =>
+                    {
+                        Some(*kind)
+                    }
                     _ => None,
                 })
                 .unwrap_or(None);
@@ -11565,6 +11575,26 @@ mod tests {
         delete_flags: u8,
         storage: Option<std::sync::Arc<crate::storage::Storage>>,
     ) -> (RopErrorCode, u8) {
+        run_delete_folder_rop_kind(
+            base,
+            target_id,
+            delete_flags,
+            storage,
+            crate::mapi::session::FolderKind::Mail,
+        )
+        .await
+    }
+
+    /// As [`run_delete_folder_rop_full_storage`] but with the PARENT handle
+    /// carrying an explicit folder kind, so a delete routed through a
+    /// non-mail parent (Calendar/Contacts) can be asserted to be rejected.
+    async fn run_delete_folder_rop_kind(
+        base: &str,
+        target_id: &str,
+        delete_flags: u8,
+        storage: Option<std::sync::Arc<crate::storage::Storage>>,
+        parent_kind: crate::mapi::session::FolderKind,
+    ) -> (RopErrorCode, u8) {
         let mut cfg = Config::test_with_mail_domain("example.com");
         cfg.mapi_enabled = true;
         cfg.jmap_base = base.to_string();
@@ -11590,7 +11620,7 @@ mod tests {
                 INPUT_HANDLE,
                 crate::mapi::session::Handle::Folder {
                     backend_id: "parent-folder".into(),
-                    kind: crate::mapi::session::FolderKind::Mail,
+                    kind: parent_kind,
                 },
             );
         });
@@ -11707,6 +11737,73 @@ mod tests {
             calls.lock().await.is_empty(),
             "an unresolvable FolderId must not touch the store"
         );
+    }
+
+    /// A delete routed through a Calendar (non-mail) parent handle is a
+    /// malformed / cross-hierarchy ROP: `RopCreateFolder` accepts only a Mail
+    /// parent and Calendar is a gateway-owned leaf, so no mail folder is ever
+    /// its child. The handler MUST reject it with `ecNotSupported` before
+    /// touching the store rather than destroy whichever mail folder matches
+    /// `FolderId`.
+    #[tokio::test]
+    async fn rop_delete_folder_rejects_calendar_parent_handle() {
+        let (base, calls) = spawn_delete_folder_stub(vec![("mb-child", None)]).await;
+        let (rv, _partial) = run_delete_folder_rop_kind(
+            &base,
+            "mb-child",
+            0,
+            None,
+            crate::mapi::session::FolderKind::Calendar,
+        )
+        .await;
+        assert_eq!(rv, RopErrorCode::NoSupport);
+        assert!(
+            calls.lock().await.is_empty(),
+            "a non-mail parent must not reach the JMAP delete path"
+        );
+    }
+
+    /// As above for a Contacts parent handle.
+    #[tokio::test]
+    async fn rop_delete_folder_rejects_contacts_parent_handle() {
+        let (base, calls) = spawn_delete_folder_stub(vec![("mb-child", None)]).await;
+        let (rv, _partial) = run_delete_folder_rop_kind(
+            &base,
+            "mb-child",
+            0,
+            None,
+            crate::mapi::session::FolderKind::Contacts,
+        )
+        .await;
+        assert_eq!(rv, RopErrorCode::NoSupport);
+        assert!(
+            calls.lock().await.is_empty(),
+            "a non-mail parent must not reach the JMAP delete path"
+        );
+    }
+
+    /// A top-level mail folder's parent is the synthetic Root, so a delete
+    /// routed through a Root handle MUST still succeed (the target is resolved
+    /// from `FolderId`).
+    #[tokio::test]
+    async fn rop_delete_folder_accepts_root_parent_handle() {
+        let (base, calls) = spawn_delete_folder_stub(vec![("mb-top", None)]).await;
+        let (rv, _partial) = run_delete_folder_rop_kind(
+            &base,
+            "mb-top",
+            0,
+            None,
+            crate::mapi::session::FolderKind::Root,
+        )
+        .await;
+        assert_eq!(rv, RopErrorCode::Success);
+        let ids: Vec<String> = calls
+            .lock()
+            .await
+            .iter()
+            .map(|(id, _)| id.clone())
+            .collect();
+        assert_eq!(ids, vec!["mb-top".to_string()]);
     }
 
     /// [MS-OXCFOLD] §2.2.1.3.1: `DeleteFolderFlags` defines only 0x01, 0x04 and
