@@ -195,8 +195,19 @@ EAS specs v20250520 (16.1); older EAS compat NOT needed.
   calendar-event hrefs are account-scoped
   (`jmap://calendar/{account}/{id}`), so tombstoning them would delete every
   OTHER calendar's events from the shared rows. The residual is bounded and
-  cross-calendar-safe; a correct fix needs a per-collection calendar scope on
-  `item_map`. Folder mutations journal atomically with the mapping:
+  cross-calendar-safe. The EAS `<Add>`/`<Change>` decision and the ETag-change
+  filter ARE now scoped: a per-(device,collection) delivery ledger
+  (`calendar_delivery_map`, `UNIQUE(owner, scope_id, server_id)`, scope_id = the
+  device-scoped `state_collection_id`) records the ETag each SyncKey stream last
+  delivered, so a fresh prime emits `<Add>` for every event it delivers even when
+  the owner-global `item_map` already holds the row (another device, or another
+  calendar holding the same event) and a per-collection edit is reported to every
+  collection that holds the event. `item_map` remains the candidate set for the
+  owner-level deletion sweep (a delete is an account-level fact). A fresh prime
+  (SyncKey 0) clears the scope's ledger; a delta with an empty ledger seeds it
+  from `item_map` (`seed_calendar_deliveries_from_item_map`) so an upgrade does
+  not re-`<Add>` items the client already holds. Folder mutations journal
+  atomically with the mapping:
   `Storage::upsert_folder_journaled` (folder-add/folder-update) and
   `delete_folders_journaled` write the `folder_map` row(s) AND the
   `change_journal` row(s) in ONE transaction, so a FolderSync success is

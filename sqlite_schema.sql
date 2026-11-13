@@ -40,6 +40,32 @@ CREATE TABLE IF NOT EXISTS item_map (
     UNIQUE(owner, server_id)
 );
 
+-- Per-(device,collection) EAS calendar delivery ledger.
+--
+-- `item_map` is owner-global (no collection column): it records that SOME
+-- collection delivered an item, not that THIS SyncKey stream (a single
+-- device's collection) delivered it. An EAS `<Add>`/`<Change>` decision —
+-- and the ETag-change filter — must be scoped to the exact device+collection
+-- SyncKey stream, so each folder (and each device) receives its OWN Adds and
+-- Updates. Two devices sharing one account, or one event that belongs to two
+-- calendars (`calendarIds`), otherwise make a fresh prime emit `<Change>` for
+-- an item the client never held, and make a per-collection edit invisible to
+-- the other collection because the shared ETag already matched.
+--
+-- `scope_id` is the device-scoped `state_collection_id`
+-- ("{visible_collection_id}::{device_id}") — the unit an EAS SyncKey
+-- identifies. The row carries the ETag the scope last delivered for
+-- `server_id`; a delta emits `<Change>` only when the backend ETag moved.
+CREATE TABLE IF NOT EXISTS calendar_delivery_map (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner TEXT NOT NULL,
+    scope_id TEXT NOT NULL,
+    server_id TEXT NOT NULL,
+    etag TEXT,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(owner, scope_id, server_id)
+);
+
 CREATE TABLE IF NOT EXISTS deleted_item_tombstone (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     owner TEXT NOT NULL,

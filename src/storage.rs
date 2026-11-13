@@ -1,5 +1,6 @@
 // src/storage.rs
 use sqlx::{Executor, FromRow, Pool, Row, Sqlite};
+use std::collections::HashMap;
 use std::fmt;
 use std::sync::Arc;
 
@@ -879,6 +880,97 @@ impl Storage {
             .await
             .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
         Ok(())
+    }
+
+    /// Record that EAS Sync scope `scope_id` has delivered `server_id` with
+    /// `etag`. A per-scope delivery ledger for calendar collections: unlike the
+    /// owner-global `item_map`, this distinguishes WHICH device+collection
+    /// SyncKey stream delivered an event, so a fresh prime emits `<Add>` (not
+    /// `<Change>`) and a per-collection edit is reported to every collection
+    /// that holds the event. Idempotent upsert keyed `(owner, scope_id,
+    /// server_id)`.
+    pub async fn upsert_calendar_delivery(
+        &self,
+        owner: &str,
+        scope_id: &str,
+        server_id: &str,
+        etag: &str,
+    ) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO calendar_delivery_map (owner, scope_id, server_id, etag)
+             VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(owner, scope_id, server_id) DO UPDATE
+             SET etag = ?4, updated_at = CURRENT_TIMESTAMP",
+        )
+        .bind(owner)
+        .bind(scope_id)
+        .bind(server_id)
+        .bind(etag)
+        .execute(self.pool.as_ref())
+        .await
+        .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+        Ok(())
+    }
+
+    /// Remove a `scope_id`'s delivery-ledger row for `server_id`. Used when the
+    /// scope issues a `<Delete>` (its own record is no longer relevant) and when
+    /// a scope's mapping is re-primed.
+    pub async fn delete_calendar_delivery(
+        &self,
+        owner: &str,
+        scope_id: &str,
+        server_id: &str,
+    ) -> Result<()> {
+        sqlx::query(
+            "DELETE FROM calendar_delivery_map WHERE owner = ?1 AND scope_id = ?2 AND server_id = ?3",
+        )
+        .bind(owner)
+        .bind(scope_id)
+        .bind(server_id)
+        .execute(self.pool.as_ref())
+        .await
+        .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+        Ok(())
+    }
+
+    /// Drop ALL delivery-ledger rows for a `scope_id`. Called when a fresh prime
+    /// (SyncKey 0) restarts a device+collection stream: the client has been told
+    /// to forget every prior item, so the scope must re-deliver them as `<Add>`.
+    pub async fn clear_calendar_deliveries(&self, owner: &str, scope_id: &str) -> Result<()> {
+        sqlx::query("DELETE FROM calendar_delivery_map WHERE owner = ?1 AND scope_id = ?2")
+            .bind(owner)
+            .bind(scope_id)
+            .execute(self.pool.as_ref())
+            .await
+            .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+        Ok(())
+    }
+
+    /// The delivery ledger for `scope_id`: the ETag this scope last delivered
+    /// for each `server_id`. Bounded by the collection's live size; a 4096 cap
+    /// matches `list_ews_items`.
+    pub async fn list_calendar_deliveries(
+        &self,
+        owner: &str,
+        scope_id: &str,
+    ) -> Result<HashMap<String, String>> {
+        let rows = sqlx::query(
+            "SELECT server_id, etag FROM calendar_delivery_map WHERE owner = ?1 AND scope_id = ?2 LIMIT 4096",
+        )
+        .bind(owner)
+        .bind(scope_id)
+        .fetch_all(self.pool.as_ref())
+        .await
+        .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))?;
+        Ok(rows
+            .into_iter()
+            .map(|r| {
+                (
+                    r.get::<String, _>(0),
+                    r.get::<Option<String>, _>(1).unwrap_or_default(),
+                )
+            })
+            .collect())
     }
 
     pub async fn add_delete_tombstone(&self, owner: &str, server_id: &str) -> Result<()> {
@@ -3543,6 +3635,92 @@ mod tests {
             .len()
     }
 
+    /// The per-scope calendar delivery ledger isolates one SyncKey stream from
+    /// another: identical `server_id`s under two `scope_id`s are independent, an
+    /// upsert replaces the recorded ETag, a targeted delete removes one row, and
+    /// a full clear drops only the named scope.
+    #[tokio::test]
+    async fn calendar_delivery_ledger_is_scoped_and_idempotent() {
+        let storage = mem_storage().await;
+        let owner = "ledger-user@example.com";
+
+        // Same event delivered under two device scopes.
+        storage
+            .upsert_calendar_delivery(owner, "1::devA", "srv-1", "etagA")
+            .await
+            .expect("upsert A");
+        storage
+            .upsert_calendar_delivery(owner, "1::devB", "srv-1", "etagB")
+            .await
+            .expect("upsert B");
+
+        let a = storage
+            .list_calendar_deliveries(owner, "1::devA")
+            .await
+            .unwrap();
+        let b = storage
+            .list_calendar_deliveries(owner, "1::devB")
+            .await
+            .unwrap();
+        assert_eq!(a.get("srv-1").map(String::as_str), Some("etagA"));
+        assert_eq!(b.get("srv-1").map(String::as_str), Some("etagB"));
+
+        // Re-delivering to A with a new ETag updates only A's row.
+        storage
+            .upsert_calendar_delivery(owner, "1::devA", "srv-1", "etagA2")
+            .await
+            .expect("re-upsert A");
+        let a2 = storage
+            .list_calendar_deliveries(owner, "1::devA")
+            .await
+            .unwrap();
+        assert_eq!(a2.get("srv-1").map(String::as_str), Some("etagA2"));
+        assert_eq!(a2.len(), 1, "upsert must not duplicate the row");
+        let b2 = storage
+            .list_calendar_deliveries(owner, "1::devB")
+            .await
+            .unwrap();
+        assert_eq!(
+            b2.get("srv-1").map(String::as_str),
+            Some("etagB"),
+            "another scope's row is untouched"
+        );
+
+        // Targeted delete removes only the named scope's row.
+        storage
+            .delete_calendar_delivery(owner, "1::devA", "srv-1")
+            .await
+            .expect("delete A row");
+        assert!(
+            storage
+                .list_calendar_deliveries(owner, "1::devA")
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            storage
+                .list_calendar_deliveries(owner, "1::devB")
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+
+        // Clear drops every row for B only.
+        storage
+            .clear_calendar_deliveries(owner, "1::devB")
+            .await
+            .expect("clear B");
+        assert!(
+            storage
+                .list_calendar_deliveries(owner, "1::devB")
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+
     #[tokio::test]
     async fn prune_change_journal_removes_rows_below_all_watermarks() {
         let storage = mem_storage().await;
@@ -4302,6 +4480,77 @@ mod tests {
                 "{table} must have the uid index: {indexes:?}"
             );
         }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A database created before the per-scope calendar delivery ledger existed
+    /// must gain `calendar_delivery_map` on the next `init_schema` (the table is
+    /// declared with `CREATE TABLE IF NOT EXISTS`, so it is created on any open
+    /// that lacks it), and the re-init must stay idempotent.
+    #[tokio::test]
+    async fn init_schema_adds_calendar_delivery_map_to_legacy_db() {
+        let dir =
+            std::env::temp_dir().join(format!("gateway-storage-migrate-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let db = dir.join("gateway.db");
+        let url = format!("sqlite://{}?mode=rwc", db.display());
+
+        // Pre-create just `item_map` (a pre-ledger database shape) with a row.
+        {
+            let pool = sqlx::SqlitePool::connect(&url).await.expect("raw pool");
+            sqlx::query(
+                "CREATE TABLE item_map (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    owner TEXT NOT NULL,
+                    caldav_href TEXT,
+                    resource_href TEXT NOT NULL,
+                    server_id TEXT NOT NULL,
+                    uid TEXT,
+                    etag TEXT,
+                    instance_id TEXT,
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(owner, server_id)
+                )",
+            )
+            .execute(&pool)
+            .await
+            .expect("legacy item_map");
+            sqlx::query(
+                "INSERT INTO item_map (owner, resource_href, server_id) VALUES ('o', 'href', 'srv-1')",
+            )
+            .execute(&pool)
+            .await
+            .expect("legacy row");
+            pool.close().await;
+        }
+
+        let storage = Storage::new(&url).await.expect("open db");
+        storage.init_schema().await.expect("schema init migrates");
+        storage.init_schema().await.expect("re-init idempotent");
+
+        // The ledger table now exists and is usable; the legacy item_map row
+        // survives untouched.
+        storage
+            .upsert_calendar_delivery("o", "1::dev", "srv-1", "etag")
+            .await
+            .expect("ledger usable after migration");
+        assert_eq!(
+            storage
+                .list_calendar_deliveries("o", "1::dev")
+                .await
+                .expect("ledger read")
+                .get("srv-1")
+                .map(String::as_str),
+            Some("etag")
+        );
+        assert!(
+            storage
+                .get_ews_item_by_server_id("o", "srv-1")
+                .await
+                .expect("item read")
+                .is_some(),
+            "the pre-existing item_map row must survive the migration"
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 

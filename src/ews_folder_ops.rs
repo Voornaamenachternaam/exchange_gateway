@@ -3425,7 +3425,7 @@ mod tests {
     /// left unchanged.
     #[tokio::test]
     async fn move_folder_parent_lookup_failure_is_not_acknowledged() {
-        let (base, _calls) = spawn_move_stub_failing_parent_lookup().await;
+        let (base, calls) = spawn_move_stub_failing_parent_lookup().await;
         let storage = crate::storage::Storage::new("sqlite::memory:")
             .await
             .unwrap();
@@ -3467,13 +3467,24 @@ mod tests {
             .await
             .unwrap();
         let text = String::from_utf8_lossy(&bytes);
+        // The backend reparent itself DID run: the failure is specifically the
+        // follow-up ParentId mirror, so the move must be retried (the reparent
+        // is idempotent) rather than acknowledged with a stale ParentId.
+        assert!(
+            calls
+                .lock()
+                .await
+                .iter()
+                .any(|c| c.get("method").and_then(|v| v.as_str()) == Some("Mailbox/set")),
+            "the backend Mailbox/set must have been applied before the mirror failed"
+        );
+        assert!(
+            text.contains("ErrorInternalServerError"),
+            "the move must fail with a retryable ErrorInternalServerError: {text}"
+        );
         assert!(
             !text.contains("NoError"),
             "an unresolved parent mirror must not be acknowledged: {text}"
-        );
-        assert!(
-            text.contains("Error"),
-            "the move must fail with an error response: {text}"
         );
         let row = state
             .storage

@@ -236,6 +236,13 @@ pub async fn apply_client_sync_mutations(
                                 &etag,
                             )
                             .await?;
+                        // The client already holds this item (it just created it),
+                        // so record it in this scope's ledger: the follow-up Sync
+                        // must filter it out instead of re-emitting `<Add>`.
+                        state
+                            .storage
+                            .upsert_calendar_delivery(owner, collection_id, &server_id, &etag)
+                            .await?;
                         if let Some(client_id) = client_id.as_deref() {
                             state
                                 .storage
@@ -437,6 +444,13 @@ pub async fn apply_client_sync_mutations(
                                 &etag,
                             )
                             .await?;
+                        // The client just applied this change locally; record the
+                        // new ETag so the follow-up Sync does not re-emit
+                        // `<Change>` for it.
+                        state
+                            .storage
+                            .upsert_calendar_delivery(owner, collection_id, &server_id, &etag)
+                            .await?;
                         for att_id in &attachment_deletes {
                             if let Err(e) = state
                                 .attachment_manager
@@ -524,6 +538,12 @@ pub async fn apply_client_sync_mutations(
                         state
                             .storage
                             .delete_item_by_server_id(owner, &server_id)
+                            .await?;
+                        // The client applied this delete locally; drop this
+                        // scope's ledger row so a later re-add is an `<Add>`.
+                        state
+                            .storage
+                            .delete_calendar_delivery(owner, collection_id, &server_id)
                             .await?;
                         if let Err(e) = state
                             .attachment_manager
@@ -2048,12 +2068,50 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
     // Delta results (already a bounded change set) are unaffected in practice.
     events.sort_by(|a, b| a.href.cmp(&b.href));
 
+    // Per-scope delivery ledger (device+collection SyncKey stream) drives the
+    // EAS Add/Change decision and the ETag-change filter for CALENDAR. `item_map`
+    // is owner-global and records that SOME collection delivered an item; using
+    // it here makes a fresh prime emit `<Change>` for an item this scope never
+    // held (e.g. a second device, or an event shared by two calendars), and
+    // makes a per-collection edit invisible to the other collection because the
+    // shared ETag already matched. This scope is exactly one EAS SyncKey stream
+    // (`state_collection_id`), whose SyncKey 0 prime the client treats as "forget
+    // everything".
+    //
+    // `existing_map` (owner-global `item_map`) remains the candidate set for the
+    // owner-level DELETION sweep below: a deletion is an account-level fact and
+    // the shared row is what the delete fill removes once its `<Delete>` is
+    // emitted.
     let existing_map = storage
         .list_ews_items(params.owner, 4096, 0)
         .await?
         .into_iter()
         .map(|item| (item.server_id.clone(), item))
         .collect::<HashMap<_, _>>();
+
+    let initial_sync = params.incoming_sync_key == "0";
+    let mut delivered_map = storage
+        .list_calendar_deliveries(params.owner, params.state_collection_id)
+        .await?;
+    if initial_sync {
+        // A fresh prime restarts the stream: the ledger is stale by definition
+        // (the client was told to discard all prior items), so clear it before
+        // computing deliveries. `item_map` is untouched (other scopes share it).
+        storage
+            .clear_calendar_deliveries(params.owner, params.state_collection_id)
+            .await?;
+        delivered_map.clear();
+    }
+    // NOTE: an empty ledger on a non-prime (delta) is deliberately NOT seeded
+    // from the owner-global `item_map`. A shared ETag would make this scope skip
+    // a changed event another collection already delivered (its ETag "already
+    // matches"), i.e. exactly the per-collection bug this ledger exists to fix.
+    // With no ledger row, every event in this stream's change set is treated as
+    // new to the stream and delivered as `<Add>` — EAS keys items by ServerId, so
+    // an `<Add>` for an item the client already holds updates it in place. This is
+    // the upgrade path: a scope's first delta after the ledger is introduced
+    // re-delivers its bounded change set (and a fresh prime delivers the whole
+    // snapshot) as `<Add>` rather than silently dropping events.
 
     struct PendingItem {
         server_id: String,
@@ -2066,7 +2124,6 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
     let mut pending_items: Vec<PendingItem> = Vec::new();
     let mut pending_deletes: Vec<String> = Vec::new();
     let mut seen_ids = HashSet::new();
-    let initial_sync = params.incoming_sync_key == "0";
     let in_prime_cursor = prime_cursor.is_some();
 
     for ev in &events {
@@ -2078,18 +2135,17 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
         let etag = ev.etag.trim_matches('"').to_string();
         // Use pre-parsed item from EventItem (set by both JMAP and CalDAV paths)
         let item = &ev.item;
-        let existing = existing_map.get(&server_id);
-        let is_add = existing.is_none();
-        let changed = existing
-            .map(|row| row.etag.as_deref() != Some(etag.as_str()))
-            .unwrap_or(true);
+        // Add vs Change is decided by THIS scope's ledger, not the owner-global
+        // item_map: an item this exact SyncKey stream never delivered is an
+        // `<Add>` even when another device/collection already stored it.
+        let delivered_etag = delivered_map.get(&server_id);
+        let is_add = delivered_etag.is_none();
+        let changed = delivered_etag.map(|e| e != &etag).unwrap_or(true);
         // A prime continuation resumes strictly after the stored href
         // cursor: events at/before it were already delivered to THIS device,
         // so they are skipped unconditionally. Events past it are force-
-        // delivered even when the shared item_map already holds them with
-        // a matching etag (another device's completed prime may have
-        // populated the map with events this device never saw, and the
-        // `changed` check would otherwise filter them out forever).
+        // delivered even when this scope's ledger already holds them with a
+        // matching etag (a ledger write may lag the delivered window).
         if in_prime_cursor {
             if ev.href.as_str() <= prime_cursor.as_deref().unwrap() {
                 continue;
@@ -2178,6 +2234,17 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
                 &pi.etag,
             )
             .await?;
+        // Record the delivery in THIS scope's ledger so the next delta on this
+        // SyncKey stream compares against the ETag it was actually sent (and a
+        // re-prime on a fresh stream still re-delivers as `<Add>`).
+        storage
+            .upsert_calendar_delivery(
+                params.owner,
+                params.state_collection_id,
+                &pi.server_id,
+                &pi.etag,
+            )
+            .await?;
         if pi.is_add {
             let mut app_data =
                 render_calendar_app_data_with_options(&pi.item, &params.opts.body_options);
@@ -2234,6 +2301,13 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
             // held-token retry re-queues it.
             let _ = storage
                 .delete_item_by_server_id(params.owner, server_id)
+                .await;
+            // Drop THIS scope's ledger row too: the client has been told the
+            // item is gone, so a later re-add must be an `<Add>` for this stream.
+            // (Other scopes keep their own rows; the shared item_map row is
+            // removed above only once this `<Delete>` was emitted.)
+            let _ = storage
+                .delete_calendar_delivery(params.owner, params.state_collection_id, server_id)
                 .await;
         }
     }
@@ -2699,6 +2773,14 @@ mod tests {
             // clone of this stub, so replacing the `Arc` would not reach it.
             *self.calendars.lock().unwrap() = calendars;
             self
+        }
+
+        /// Replace the scripted `CalendarEvent/changes` pages and reset the page
+        /// cursor, so a second `Sync` in the same test can script a new delta.
+        fn set_changes(&self, pages: Vec<Value>) {
+            *self.changes_pages.lock().unwrap() = pages;
+            self.change_idx
+                .store(0, std::sync::atomic::Ordering::SeqCst);
         }
     }
 
@@ -4111,6 +4193,155 @@ mod tests {
                 .unwrap()
                 .is_empty(),
             "no tombstone may be recorded for a foreign calendar's event"
+        );
+    }
+
+    /// A fresh prime (SyncKey 0) on ONE device+collection scope must emit
+    /// `<Add>` for every event it delivers, even when the owner-global
+    /// `item_map` already holds the row from another device's completed prime
+    /// of the SAME calendar. The old decision read the shared `item_map`, so the
+    /// second device's prime emitted `<Change>` for an item it never held — the
+    /// client then ignored/garbled the calendar. Regression for the per-scope
+    /// delivery ledger (`calendar_delivery_map`).
+    #[tokio::test]
+    async fn scoped_prime_emits_add_when_another_device_already_stored_event() {
+        let stub = spawn_calendar_stub(
+            vec![],
+            vec![stub_event("e1", "uid-e1", "Shared")],
+            "query-s",
+            "get-s",
+            None,
+        )
+        .await;
+        let state = calendar_sync_state(&stub.base).await;
+
+        // Device A primes the default calendar; its row lands in the shared
+        // `item_map`.
+        let a = run_calendar_sync_for(&state, "1", "1::devA", "0").await;
+        assert!(a.contains("<Add>"), "device A prime must Add:\n{a}");
+
+        // Device B primes the SAME calendar on a fresh stream: it never
+        // delivered this event, so it must be an `<Add>` for device B.
+        let b = run_calendar_sync_for(&state, "1", "1::devB", "0").await;
+        assert!(
+            b.contains("<Add>") && !b.contains("<Change>"),
+            "a fresh prime must emit Add (not Change) even when another device \
+             already stored the event:\n{b}"
+        );
+    }
+
+    /// An event that belongs to TWO calendars (JMAP `calendarIds` with two
+    /// entries) must be delivered as `<Add>` in each calendar's scoped folder —
+    /// the second calendar's prime sees the owner-global `item_map` row from the
+    /// first, but its own scope never delivered it. Regression for the per-scope
+    /// delivery ledger.
+    #[tokio::test]
+    async fn shared_event_is_added_in_each_scoped_calendar() {
+        let folder_a = "/dav/cal/user@example.com/A/";
+        let folder_b = "/dav/cal/user@example.com/B/";
+        let mut shared = scoped_event("e-shared", "uid-shared", "Shared", "cal-a");
+        shared["calendarIds"]["cal-b"] = json!(true);
+        let stub = spawn_calendar_stub(vec![], vec![shared], "query-s", "get-s", None)
+            .await
+            .with_calendars(vec![
+                json!({"id": "cal-a", "name": "A", "href": folder_a}),
+                json!({"id": "cal-b", "name": "B", "href": folder_b}),
+            ]);
+        let state = calendar_mutation_state(&stub.base).await;
+        let owner = "user@example.com";
+        for (href, name) in [(folder_a, "A"), (folder_b, "B")] {
+            state
+                .storage
+                .upsert_folder_journaled(
+                    crate::storage::FolderUpsertParams {
+                        owner,
+                        server_id: href,
+                        parent_id: "0",
+                        display_name: name,
+                        folder_type: 13,
+                        backend_kind: "caldav",
+                        backend_id: href,
+                    },
+                    "folder-add",
+                )
+                .await
+                .unwrap();
+        }
+
+        let a = run_calendar_sync_for(&state, folder_a, &format!("{folder_a}::dev1"), "0").await;
+        assert!(
+            a.contains("<Add>") && a.contains("uid-shared"),
+            "calendar A prime must Add the shared event:\n{a}"
+        );
+        let b = run_calendar_sync_for(&state, folder_b, &format!("{folder_b}::dev1"), "0").await;
+        assert!(
+            b.contains("<Add>") && b.contains("uid-shared") && !b.contains("<Change>"),
+            "calendar B prime must Add the shared event (its own scope never \
+             delivered it), not Change:\n{b}"
+        );
+    }
+
+    /// Upgrade/continuity: a scope that has no delivery-ledger rows yet (the
+    /// ledger table is new, or was never written for this scope) treats its
+    /// first DELTA's change set as new to the stream and re-delivers it as
+    /// `<Add>` — including an event the client already holds (its shared
+    /// `item_map` ETag matching does NOT suppress it, which is exactly what keeps
+    /// a per-collection change from being silently dropped for a scope that has
+    /// not recorded it). EAS keys items by ServerId, so re-`<Add>` updates the
+    /// client's existing copy in place. A per-collection change is likewise
+    /// re-reported as `<Add>` — never skipped.
+    #[tokio::test]
+    async fn delta_without_ledger_redelivers_change_set_as_add() {
+        // Delta reports one event already held (e1) and one new event (e2).
+        let page = json!({
+            "accountId": "acct", "oldState": "s0", "newState": "s1",
+            "hasMoreChanges": false,
+            "created": [], "updated": ["e1", "e2"], "destroyed": []
+        });
+        let e1 = stub_event("e1", "uid-e1", "Event One");
+        let e2 = stub_event("e2", "uid-e2", "Event Two");
+        let stub = spawn_calendar_stub(vec![page], vec![e1.clone(), e2], "q", "get-s", None).await;
+        let state = calendar_sync_state(&stub.base).await;
+        let owner = "user@example.com";
+
+        // The client already holds e1 (shared item_map row, CURRENT etag), but NO
+        // delivery-ledger row exists for this scope yet.
+        let href_e1 = "jmap://calendar/acct/e1";
+        let sid_e1 = generate_server_id(state.cfg.hmac_secret(), href_e1);
+        let etag_e1 = crate::jmap::calendar_event_etag(&e1, None);
+        state
+            .storage
+            .upsert_item_map(owner, href_e1, href_e1, &sid_e1, "uid-e1", &etag_e1)
+            .await
+            .unwrap();
+        state
+            .storage
+            .set_sync_key(owner, "calendar", "key-1", Some("s0"))
+            .await
+            .unwrap();
+
+        let xml = run_calendar_sync(&state, "key-1").await;
+        assert!(
+            xml.contains("uid-e1") && xml.contains("uid-e2"),
+            "the whole delta change set is delivered without a ledger:\n{xml}"
+        );
+        assert!(
+            !xml.contains("<Change>"),
+            "an empty ledger treats every event as new to the stream (no Change):\n{xml}"
+        );
+
+        // Once the ledger is recorded, a repeat delta with the same ETags skips
+        // both events (no churn).
+        let page2 = json!({
+            "accountId": "acct", "oldState": "s1", "newState": "s2",
+            "hasMoreChanges": false,
+            "created": [], "updated": ["e1", "e2"], "destroyed": []
+        });
+        stub.set_changes(vec![page2]);
+        let xml2 = run_calendar_sync(&state, "key-2").await;
+        assert!(
+            !xml2.contains("uid-e1") && !xml2.contains("uid-e2"),
+            "unchanged events recorded in the ledger are skipped:\n{xml2}"
         );
     }
 
