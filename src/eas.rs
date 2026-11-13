@@ -7463,6 +7463,10 @@ async fn accumulate_email_changes(
     //    to persist AFTER it commits the delivered change set, so a crash
     //    cannot advance the baseline past updates the client never received.
     let queued: HashSet<String> = ops.iter().map(|o| o.id.clone()).collect();
+    // Unbounded here: the EAS delta renders whatever the scan finds and its
+    // overflow queue carries any excess past the response window (see
+    // `render_delta_collection_xml`), so a bulk flag change is windowed rather
+    // than deferred across deltas.
     let scan = scan_email_keyword_changes(
         &KeywordScanCtx {
             state,
@@ -7475,6 +7479,7 @@ async fn accumulate_email_changes(
         },
         &queued,
         &mut ops,
+        None,
     )
     .await;
     Ok((ops, since, scan))
@@ -7491,6 +7496,13 @@ pub(crate) struct KeywordScanOutcome {
     pub(crate) upserts: Vec<(String, Vec<String>)>,
     pub(crate) deletes: Vec<String>,
     pub(crate) position: u64,
+    /// True when the scan stopped early with its rotating position HELD because
+    /// the caller's `max_ops` change budget was spent (see
+    /// [`scan_email_keyword_changes`]). The deferred flag `<Change>`s remain
+    /// discoverable from the held position, so a caller with no overflow queue of
+    /// its own (the EWS email delta) reports `IncludesLastItemInRange=false` and
+    /// tells the client to sync again.
+    pub(crate) deferred: bool,
 }
 
 /// Persist a completed flag scan: the observed baseline rows, the rows for
@@ -7596,6 +7608,7 @@ pub(crate) async fn scan_email_keyword_changes(
     ctx: &KeywordScanCtx<'_>,
     queued: &HashSet<String>,
     ops: &mut Vec<PendingEmailOp>,
+    max_ops: Option<usize>,
 ) -> KeywordScanOutcome {
     let KeywordScanCtx {
         state,
@@ -7619,7 +7632,12 @@ pub(crate) async fn scan_email_keyword_changes(
             .map(|o| o.id.clone())
             .collect(),
         position: 0,
+        deferred: false,
     };
+    // `<Change>` ops THIS scan has appended, bounded by `max_ops` (the caller's
+    // remaining change budget) independently of any delete ops already in `ops`,
+    // so a bulk flag change cannot emit an unbounded batch in one response.
+    let mut emitted = 0usize;
     let mut position = match state
         .storage
         .get_email_keyword_scan_position(username, state_collection_id)
@@ -7694,7 +7712,19 @@ pub(crate) async fn scan_email_keyword_changes(
             // this delta and already carries its current flags.
             let changed_since_baseline = previous.is_some();
             if changed_since_baseline && !queued.contains(id.as_str()) {
+                if max_ops.is_some_and(|limit| emitted >= limit) {
+                    // The caller's change budget is spent. Hold the cursor at
+                    // this page's start so the next delta re-observes this id —
+                    // its baseline row is deliberately NOT recorded below, so
+                    // the next sweep still sees a difference and emits the
+                    // deferred flag `<Change>` then. Ids already handled in this
+                    // page kept their rows, so the re-scan skips them.
+                    outcome.position = position;
+                    outcome.deferred = true;
+                    return outcome;
+                }
                 ops.push(PendingEmailOp::change(id.clone()));
+                emitted += 1;
             }
             outcome.upserts.push((id, keywords));
         }
@@ -14118,6 +14148,167 @@ mod tests {
                 .unwrap()
                 .is_none(),
             "a departing message's baseline row must be pruned"
+        );
+    }
+
+    /// A caller-supplied change budget (`max_ops`, the EWS `MaxChangesReturned`
+    /// remainder) must cap the flag scan's `<Change>` emission and HOLD the
+    /// rotating position so the deferred edits remain discoverable, setting
+    /// `deferred` so the caller can tell the client to sync again. The scan's own
+    /// `KEYWORD_SCAN_MAX_PAGES` bound does not apply to a budget that trips first.
+    #[tokio::test]
+    async fn test_email_keyword_scan_defers_excess_changes_and_holds_position() {
+        use crate::models::AppState;
+        use axum::routing::{get, post};
+        use serde_json::{Value, json};
+        use std::sync::Arc as StdArc;
+
+        #[derive(Clone)]
+        struct Ctl {
+            base: String,
+        }
+
+        async fn session(axum::Extension(ctl): axum::Extension<Ctl>) -> axum::Json<Value> {
+            axum::Json(json!({
+                "apiUrl": ctl.base,
+                "downloadUrl": format!("{}/download/{{accountId}}/{{blobId}}", ctl.base),
+                "uploadUrl": format!("{}/upload/{{accountId}}", ctl.base),
+                "eventSourceUrl": format!("{}/eventsource", ctl.base),
+                "state": "s",
+                "username": "u",
+                "accounts": {"a": {"name": "u", "isPersonal": true, "isReadOnly": false, "accountCapabilities": {}}},
+                "primaryAccounts": {"urn:ietf:params:jmap:mail": "a"},
+                "capabilities": {"urn:ietf:params:jmap:core": {"maxObjectsInGet": 500}}
+            }))
+        }
+
+        async fn api(
+            axum::Extension(_ctl): axum::Extension<Ctl>,
+            body: String,
+        ) -> axum::response::Response {
+            let req: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
+            let mut responses = Vec::new();
+            let mut last_query_ids: Vec<String> = Vec::new();
+            for call in req
+                .get("methodCalls")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default()
+            {
+                let name = call.get(0).and_then(|v| v.as_str()).unwrap_or("");
+                let cid = call.get(2).and_then(|v| v.as_str()).unwrap_or("c0");
+                let result = match name {
+                    "Email/query" => {
+                        // Three messages, all with a CHANGED flag set (baseline
+                        // seeded empty below), so every one would emit a `<Change>`
+                        // without a budget.
+                        last_query_ids = vec!["m1".into(), "m2".into(), "m3".into()];
+                        json!({
+                            "accountId": "a",
+                            "queryState": "S1",
+                            "ids": last_query_ids,
+                            "total": 3,
+                            "position": 0,
+                        })
+                    }
+                    "Email/get" => {
+                        let list: Vec<Value> = last_query_ids
+                            .iter()
+                            .map(|id| json!({"id": id, "keywords": {"$seen": true}}))
+                            .collect();
+                        json!({"accountId": "a", "state": "S1", "list": list})
+                    }
+                    _ => json!({"accountId": "a"}),
+                };
+                responses.push(json!([name, result, cid]));
+            }
+            let resp = json!({"methodResponses": responses, "sessionState": "s"});
+            axum::response::Response::builder()
+                .status(200)
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(serde_json::to_vec(&resp).unwrap()))
+                .unwrap()
+        }
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
+        let ctl = Ctl { base: base.clone() };
+        let app = axum::Router::new()
+            .route("/session", get(session))
+            .route("/", post(api))
+            .layer(axum::Extension(ctl));
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let storage = crate::storage::Storage::new("sqlite::memory:")
+            .await
+            .unwrap();
+        storage.init_schema().await.unwrap();
+        let cfg = crate::config::Config {
+            jmap_base: base.clone(),
+            email_enabled: true,
+            mail_domain: "example.com".to_string(),
+            hmac_secret: SecretString::from("a".repeat(32)),
+            ..Default::default()
+        };
+        let state = StdArc::new(AppState::new(cfg, StdArc::new(storage)));
+
+        let owner = "u@example.com";
+        let scoped = scoped_collection_id("2", "dev-1");
+        let jmap = state.jmap_client.as_ref().unwrap().clone();
+        let password = SecretString::from("pw");
+        // Seed empty baselines so all three ids are "changed" (they are `$seen`
+        // live).
+        for id in ["m1", "m2", "m3"] {
+            state
+                .storage
+                .upsert_email_keyword(owner, &scoped, id, &[])
+                .await
+                .unwrap();
+        }
+
+        // Budget of 1: only the first changed id may be emitted; the cursor holds
+        // at the page start (0) so the rest stay discoverable.
+        let mut ops: Vec<PendingEmailOp> = Vec::new();
+        let outcome = scan_email_keyword_changes(
+            &KeywordScanCtx {
+                state: &state,
+                jmap: &jmap,
+                account_id: "a",
+                mailbox_id: "mbx-inbox",
+                username: owner,
+                password: &password,
+                state_collection_id: &scoped,
+            },
+            &HashSet::new(),
+            &mut ops,
+            Some(1),
+        )
+        .await;
+        let changes = ops.iter().filter(|o| !o.is_delete()).count();
+        assert_eq!(changes, 1, "the budget must cap emitted flag changes");
+        assert!(
+            outcome.deferred,
+            "a spent budget must mark the scan deferred"
+        );
+        assert_eq!(
+            outcome.position, 0,
+            "the held cursor must stay at the page start so the deferred edits re-emit"
+        );
+        // Only the emitted id's baseline may advance; the deferred ids must NOT be
+        // recorded, or their change would be swallowed on the next sweep (the scan
+        // returns the rows for the caller to persist only after delivery).
+        assert_eq!(
+            outcome.upserts.len(),
+            1,
+            "only the emitted id's baseline may advance: {:?}",
+            outcome.upserts
+        );
+        assert_eq!(outcome.upserts[0].0, "m1");
+        assert!(
+            outcome.upserts[0].1.contains(&"$seen".to_string()),
+            "the emitted id's baseline must record the new keywords"
         );
     }
 

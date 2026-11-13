@@ -3190,6 +3190,80 @@ impl Storage {
         Ok(())
     }
 
+    /// Update a folder mapping's `display_name` and/or `parent_id` AND journal
+    /// a `folder-update` row in ONE transaction, writing ONLY the named columns
+    /// on the EXISTING row. Unlike [`Storage::upsert_folder_journaled`], this
+    /// performs a targeted `UPDATE ... WHERE` that affects zero rows when the
+    /// mapping is gone, so a concurrent `folder-delete` is never resurrected and
+    /// the other columns are never overwritten from a caller's possibly-stale
+    /// snapshot. `server_id`, `folder_type`, `backend_kind`, and `backend_id`
+    /// are left untouched.
+    ///
+    /// Returns `Ok(true)` when the row existed and was updated (its
+    /// `folder-update` journaled), `Ok(false)` when no row matched (the mapping
+    /// was deleted concurrently — nothing is written and no journal row is
+    /// fabricated). `display_name` is always written; `parent_id` is written
+    /// only when `Some`.
+    pub async fn update_folder_journaled(
+        &self,
+        owner: &str,
+        server_id: &str,
+        parent_id: Option<&str>,
+        display_name: &str,
+    ) -> Result<bool> {
+        let mut tx = sqlx::Acquire::begin(self.pool.as_ref())
+            .await
+            .map_err(|e| GatewayError::Storage(format!("Transaction error: {}", e)))?;
+
+        let affected = match parent_id {
+            Some(parent) => sqlx::query(
+                "UPDATE folder_map SET parent_id = ?3, display_name = ?4, \
+                 updated_at = CURRENT_TIMESTAMP \
+                 WHERE owner = ?1 AND server_id = ?2",
+            )
+            .bind(owner)
+            .bind(server_id)
+            .bind(parent)
+            .bind(display_name)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?
+            .rows_affected(),
+            None => sqlx::query(
+                "UPDATE folder_map SET display_name = ?3, updated_at = CURRENT_TIMESTAMP \
+                 WHERE owner = ?1 AND server_id = ?2",
+            )
+            .bind(owner)
+            .bind(server_id)
+            .bind(display_name)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?
+            .rows_affected(),
+        };
+
+        if affected == 0 {
+            tx.rollback()
+                .await
+                .map_err(|e| GatewayError::Storage(format!("Rollback error: {}", e)))?;
+            return Ok(false);
+        }
+
+        sqlx::query(
+            "INSERT INTO change_journal (owner, server_id, op, resource_href) VALUES (?1, ?2, 'folder-update', 'folder')",
+        )
+        .bind(owner)
+        .bind(server_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+
+        tx.commit()
+            .await
+            .map_err(|e| GatewayError::Storage(format!("Commit error: {}", e)))?;
+        Ok(true)
+    }
+
     /// Remove one or more user-created folder mappings AND journal a
     /// `folder-delete` row for each in ONE transaction, so a delete is
     /// acknowledged only once every journal row is durable. If any statement
@@ -5045,6 +5119,103 @@ mod tests {
             elapsed < std::time::Duration::from_secs(30),
             "concurrent sync-state writes serialized into ping latency spikes: {:?}",
             elapsed
+        );
+    }
+
+    /// `update_folder_journaled` writes ONLY the named columns on an EXISTING row
+    /// and journals a `folder-update`; a missing row is a no-op (`Ok(false)`) that
+    /// neither resurrects the mapping nor fabricates a journal row. This is the
+    /// targeted update the EWS rename/parent-mirror use so a concurrent delete is
+    /// never undone and unrelated columns are never clobbered.
+    #[tokio::test]
+    async fn update_folder_journaled_is_targeted_and_never_resurrects() {
+        let storage = mem_storage().await;
+        let owner = "u@example.com";
+        storage
+            .upsert_folder_journaled(
+                FolderUpsertParams {
+                    owner,
+                    server_id: "mb-1",
+                    parent_id: "0",
+                    display_name: "Old",
+                    folder_type: 12,
+                    backend_kind: "jmap",
+                    backend_id: "mb-1",
+                },
+                "folder-add",
+            )
+            .await
+            .expect("seed folder");
+
+        // Rename only: parent_id and the other columns must be untouched.
+        let updated = storage
+            .update_folder_journaled(owner, "mb-1", None, "New")
+            .await
+            .expect("rename");
+        assert!(updated, "an existing row must be updated");
+        let row = storage
+            .get_folder(owner, "mb-1")
+            .await
+            .expect("db")
+            .expect("row survives");
+        assert_eq!(row.display_name, "New");
+        assert_eq!(row.parent_id, "0", "a rename must not touch parent_id");
+        assert_eq!(row.folder_type, 12, "a rename must not touch folder_type");
+        assert_eq!(row.backend_id, "mb-1", "backend_id must be preserved");
+        let journal = storage
+            .list_folder_journal_since(owner, 0, i64::MAX)
+            .await
+            .expect("journal");
+        assert_eq!(
+            journal
+                .iter()
+                .filter(|r| r.op == "folder-update" && r.server_id == "mb-1")
+                .count(),
+            1,
+            "a successful update must journal exactly one folder-update"
+        );
+
+        // Reparent only: display_name must be preserved.
+        let updated = storage
+            .update_folder_journaled(owner, "mb-1", Some("mb-parent"), "New")
+            .await
+            .expect("reparent");
+        assert!(updated, "an existing row must be updated");
+        let row = storage
+            .get_folder(owner, "mb-1")
+            .await
+            .expect("db")
+            .expect("row survives");
+        assert_eq!(row.parent_id, "mb-parent", "the parent must move");
+        assert_eq!(row.display_name, "New", "the name must be preserved");
+
+        // A vanished row is a no-op: nothing written, nothing journaled.
+        let before = storage
+            .list_folder_journal_since(owner, 0, i64::MAX)
+            .await
+            .expect("journal")
+            .len();
+        let updated = storage
+            .update_folder_journaled(owner, "mb-gone", None, "Ghost")
+            .await
+            .expect("no-op update");
+        assert!(!updated, "a missing row must report no update");
+        assert!(
+            storage
+                .get_folder(owner, "mb-gone")
+                .await
+                .expect("db")
+                .is_none(),
+            "a missing row must never be resurrected"
+        );
+        let after = storage
+            .list_folder_journal_since(owner, 0, i64::MAX)
+            .await
+            .expect("journal")
+            .len();
+        assert_eq!(
+            before, after,
+            "a no-op update must not fabricate a journal row"
         );
     }
 }

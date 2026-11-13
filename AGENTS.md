@@ -857,3 +857,49 @@ EAS specs v20250520 (16.1); older EAS compat NOT needed.
   load test is timing-sensitive under a fully parallel `cargo test` (a
   "database is locked" panic is possible); it passes reliably in isolation
   and is unrelated to this change.
+
+- PR #2046 round-6 review triage (comments posted after `80d00df1`) COMPLETE:
+  10 comments audited = 8 distinct findings (7 substantive + 1 doc) + 2
+  duplicate pairs (chatgpt-codex-connector re-reported two cubic findings).
+  5 substantive findings concurred with and fixed, 2 refuted with evidence,
+  1 doc finding fixed. No comment replies (resolve via code/push only).
+  (F/I) EWS email delta now FAILS CLOSED when `set_ews_sync_state` fails
+  (`ErrorServerBusy`, 503) instead of logging-and-continuing, so the
+  flag-scan baseline/position are never advanced past a token that was not
+  durably stored (a membership-only `Email/queryChanges` retry cannot
+  rediscover a flag-only `<t:Update>`). (B/J) the flag `<t:Update>` loop is now
+  bounded by `MaxChangesReturned`: the scan gets the remaining budget
+  (`max_changes - membership_ops`) and, when spent, HOLDS its rotating position
+  and sets the new `KeywordScanOutcome.deferred`, which makes the EWS response
+  report `IncludesLastItemInRange=false` so the client syncs again (the EAS
+  delta passes `None` — its overflow queue windows the excess instead).
+  (D) an overlap Update (`created`+`destroyed`) now seeds its flag baseline so
+  a bounded scan that never reaches the id cannot later re-emit the delivered
+  flag change. (C) `mirror_ews_folder_rename` uses the NEW targeted
+  `Storage::update_folder_journaled` (writes ONLY `display_name` on the
+  EXISTING row, `Ok(false)` when the mapping vanished → fail-closed) so a
+  concurrent `FolderDelete` is not resurrected and the pre-round-trip snapshot
+  cannot revert a concurrent parent move. (G) `handle_move_folder` mirrors the
+  reparent into `folder_map` via `eas_parent_id_for_mailbox` (system mailbox →
+  distinguished id, user folder → its own mailbox id, unknown → leave
+  untouched) so a later rename's sibling check validates the real parent; a
+  backend `Mailbox/set` that reports no update is now a retryable error.
+  REFUTED with evidence: (cubic #4560928440) the EWS flag baseline is NOT
+  device-scoped — EWS `SyncFolderItems` carries no stream identifier on the
+  wire and the pre-existing `ews_sync_state` cursor is already one-per-folder,
+  so the baseline is no more shared than the cursor it advances (single-EWS-
+  client-per-mailbox is the supported deployment; documented in AUDIT5);
+  (cubic #4560928460) the initial-prime full baseline capture is an intentional
+  one-time cost for flag-edit fidelity (a bounded capture would lose a flag
+  edit made before the scan reaches the message; documented in AUDIT5).
+  (cubic #4560928475) AUDIT5's clipped-window text clarified: only the
+  scan-derived baseline/position are held; a delivered `<Add>`/`<Create>` seeds
+  its own row eagerly (BEFORE the queue/token writes) so a failed token write
+  can leave that per-item seed behind. Tests: 5 new
+  (`eas::tests::test_email_keyword_scan_defers_excess_changes_and_holds_position`,
+  `ews::tests::sync_email_folder_items_defers_flag_changes_beyond_max_changes`,
+  `ews::tests::sync_email_folder_items_fails_closed_when_state_write_fails`,
+  `ews_folder_ops::tests::move_folder_mirrors_parent_into_eas_folder_map`,
+  `storage::tests::update_folder_journaled_is_targeted_and_never_resurrects`).
+  Suite: 1347 lib + 7 + 5 + 22 + 11 + 1 doc = 1393 green, clippy 0, fmt clean
+  on touched files, release warning-free.

@@ -266,11 +266,15 @@ gateway restarts and surface in `FolderSync`/`GetHierarchy`.
   at the pre-delta state (which would make the next delta re-diff and replay the
   already-delivered commands as duplicate Adds/Deletes). If the queue persist
   succeeds but the token write fails, the window is still acknowledged (Status 1
-  + `<MoreAvailable/>`; the queue carries progress) but the baseline is HELD —
-  the stored token stays at the pre-delta state, so advancing the baseline would
-  let a retry's `Email/queryChanges` re-derive the membership set without
-  re-reporting a flag-only `<Change>` (the feed reports membership only), losing
-  the edit. The drain and every
+  + `<MoreAvailable/>`; the queue carries progress) but the SCAN-DERIVED baseline
+  and rotating position are HELD — the stored token stays at the pre-delta
+  state, so advancing the scan baseline would let a retry's `Email/queryChanges`
+  re-derive the membership set without re-reporting a flag-only `<Change>` (the
+  feed reports membership only), losing the edit. A delivered `<Add>`/`<Create>`
+  seeds its own baseline row eagerly in `render_pending_email_op` (BEFORE the queue
+  and token writes), so a failed token write can leave that per-item seed row
+  behind; only the scan's snapshot rows and rotating position are held. The drain
+  and every
   later delta do not re-queue the same flag change. A backend hiccup
   during the scan degrades to serving the query-feed changes without persisting
   that page's rows.
@@ -279,6 +283,17 @@ gateway restarts and surface in `FolderSync`/`GetHierarchy`.
   `maxChanges` cap — and the drain loop plus the EWS
   `IncludesLastItemInRange` reflect a *possibly* clipped page (one extra page
   is fetched to confirm the feed drained) rather than a fixed `false`.
+  The EWS baseline is keyed on the EWS folder id, NOT on the opaque `SyncState`:
+  EWS SyncFolderItems carries no device/stream identifier on the wire (unlike EAS,
+  whose `Sync` is scoped per device), so a second concurrent client on the same
+  mailbox is not distinguishable. This matches the gateway's pre-existing EWS
+  SyncState model -- one persisted cursor per folder -- and is correct for the
+  supported single-EWS-client-per-mailbox deployment; the flag baseline is no more
+  shared than the cursor it advances. A full initial prime also captures the whole
+  mailbox's keyword baseline inside the request (unbounded page count) so no flag
+  edit made before the first window is folded into the baseline as
+  already-synchronized; this one-time cost is the deliberate price of flag-edit
+  fidelity, and a mid-prime continuation keeps the baseline the first page captured.
 
 **Status codes.** Per [MS-ASCMD] §2.2.3.177.8 / §6.10–§6.19: 1 success,
 2 invalid/duplicate or special system folder, 3 special system folder
@@ -389,6 +404,26 @@ persists the baseline once storage recovers) and
 `folder-update`) plus
 `ews_folder_ops::tests::update_folder_rename_without_mapping_row_journals_nothing`
 (a rename of a mailbox with no `folder_map` row succeeds but journals nothing).
+    The round-6 PR-review hardening (o)-(s) adds
+    `eas::tests::test_email_keyword_scan_defers_excess_changes_and_holds_position`
+    (a caller-supplied change budget caps the flag scan's `<Change>` emission, holds
+    the rotating position at the page start and marks the scan deferred while only
+    the emitted id's baseline advances);
+    `ews::tests::sync_email_folder_items_defers_flag_changes_beyond_max_changes`
+    (an EWS delta with a quiet membership feed and three changed flags delivers one
+    `<t:Update>` under `MaxChangesReturned=1`, reports
+    `IncludesLastItemInRange=false`, advances the SyncState but leaves the deferred
+    ids' baselines stale);
+    `ews::tests::sync_email_folder_items_fails_closed_when_state_write_fails` (a
+    failed `set_ews_sync_state` fails the delta with `ErrorServerBusy` and leaves the
+    flag baseline untouched);
+    `ews_folder_ops::tests::move_folder_mirrors_parent_into_eas_folder_map` (an EWS
+    `MoveFolder` writes the new EAS ParentId into `folder_map` and journals a
+    `folder-update` without touching the DisplayName); and
+    `storage::tests::update_folder_journaled_is_targeted_and_never_resurrects` (the
+    targeted helper updates only the named columns, journals exactly one
+    `folder-update`, and is a no-op -- no write, no journal row -- for a vanished
+    mapping).
 
 **Operator change list.** None required for Cloudflare or Stalwart: the new
 commands use the already-configured JMAP and CalDAV endpoints. No new

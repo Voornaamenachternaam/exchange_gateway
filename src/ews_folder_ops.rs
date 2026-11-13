@@ -632,28 +632,70 @@ async fn validate_eas_visible_rename(
 /// passed here). The caller must treat a write failure as fatal (retryable) —
 /// the backend rename has already happened, so silently succeeding would leave
 /// EAS advertising the old name.
+///
+/// A TARGETED update writes ONLY `display_name` on the EXISTING row: the
+/// `parent_id`, `folder_type`, `backend_kind`, and `backend_id` from the
+/// caller's pre-round-trip snapshot are never rewritten, so a concurrent
+/// `FolderDelete` is not resurrected and a concurrent parent move is not
+/// reverted. A row that vanished during the backend round trip is reported as a
+/// failure (the caller answers a retryable error) rather than silently
+/// re-inserted.
 async fn mirror_ews_folder_rename(
     state: &Arc<AppState>,
     owner: &str,
     row: &crate::storage::FolderRow,
     display_name: &str,
 ) -> anyhow::Result<()> {
-    state
+    let updated = state
         .storage
-        .upsert_folder_journaled(
-            crate::storage::FolderUpsertParams {
-                owner,
-                server_id: &row.server_id,
-                parent_id: &row.parent_id,
-                display_name,
-                folder_type: row.folder_type,
-                backend_kind: "jmap",
-                backend_id: &row.backend_id,
-            },
-            "folder-update",
-        )
+        .update_folder_journaled(owner, &row.server_id, None, display_name)
         .await?;
+    if !updated {
+        anyhow::bail!(
+            "folder mapping {} vanished during the rename mirror",
+            row.server_id
+        );
+    }
     Ok(())
+}
+
+/// Resolve the EAS `ParentId` string for a JMAP mailbox id: `"0"` for the root,
+/// the distinguished EAS id (`"2"`/`"3"`/`"4"`/`"5"`/`"12"`) for a system
+/// mailbox, or the mailbox id itself for a user-created folder (whose EAS
+/// ServerId IS the JMAP mailbox id). `None` when a mailbox has neither a
+/// `folder_map` row nor a recognised system role, so a caller leaves the stored
+/// ParentId untouched rather than writing a wrong id.
+async fn eas_parent_id_for_mailbox(
+    state: &Arc<AppState>,
+    owner: &str,
+    jmap: &JmapClient,
+    username: &str,
+    password: &SecretString,
+    mailbox_id: Option<&str>,
+) -> Option<String> {
+    let Some(mailbox_id) = mailbox_id else {
+        return Some("0".to_string());
+    };
+    if matches!(
+        state.storage.get_folder(owner, mailbox_id).await,
+        Ok(Some(_))
+    ) {
+        return Some(mailbox_id.to_string());
+    }
+    let all = jmap.query_mailboxes(username, password).await.ok()?;
+    let role = all
+        .mailboxes
+        .iter()
+        .find(|m| m.id.as_deref() == Some(mailbox_id))
+        .and_then(|m| m.role.as_deref())?;
+    match role {
+        "inbox" => Some("2".to_string()),
+        "drafts" => Some("3".to_string()),
+        "trash" => Some("4".to_string()),
+        "sent" => Some("5".to_string()),
+        "junk" => Some("12".to_string()),
+        _ => None,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -777,7 +819,68 @@ pub(crate) async fn handle_move_folder(
             )
             .await
         {
-            Ok(_) => {}
+            Ok(true) => {
+                // Mirror the reparent into the EAS folder store: the backend move
+                // above does not touch `folder_map`, so without this the stored
+                // ParentId stays stale and a later rename's sibling-collision check
+                // would validate against the wrong parent (and EAS would keep the
+                // folder under its old parent). Only a folder with a `folder_map`
+                // row is mirrored; a row that vanished concurrently is a benign
+                // no-op, never resurrected.
+                if let Ok(Some(row)) = state.storage.get_folder(&owner, &mailbox_id).await {
+                    let parent_eas = eas_parent_id_for_mailbox(
+                        state,
+                        &owner,
+                        &jmap,
+                        &auth.username,
+                        &auth.password,
+                        new_parent.as_deref(),
+                    )
+                    .await;
+                    if let Some(parent_eas) = parent_eas {
+                        match state
+                            .storage
+                            .update_folder_journaled(
+                                &owner,
+                                &row.server_id,
+                                Some(&parent_eas),
+                                &row.display_name,
+                            )
+                            .await
+                        {
+                            Ok(true) => {}
+                            Ok(false) => tracing::warn!(
+                                mailbox_id = %mailbox_id,
+                                "MoveFolder: folder mapping vanished before the parent mirror"
+                            ),
+                            Err(e) => {
+                                return internal_error(
+                                    action,
+                                    "folder_map parent mirror failed",
+                                    &e,
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+            Ok(false) => {
+                // The backend did not report the mailbox as updated; the parent did
+                // not change. `update_mailbox` only returns `false` when the id is in
+                // neither `updated` nor `notUpdated`, an unexpected backend outcome —
+                // a retryable failure (the move is idempotent) is safer than a false
+                // success with a stale mapping.
+                tracing::warn!(
+                    mailbox_id = %mailbox_id,
+                    "MoveFolder: Mailbox/set reported no update for the mailbox"
+                );
+                return operation_error_response(
+                    &action,
+                    "ErrorInternalServerError",
+                    "The folder move was not applied by the backend",
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                );
+            }
             Err(e) => return internal_error(action, "Mailbox/set reparent failed", &e),
         }
     }
@@ -2996,6 +3099,190 @@ mod tests {
                 .iter()
                 .any(|c| c["method"] == "Mailbox/set"),
             "an unmapped mailbox rename must reach the backend"
+        );
+    }
+
+    /// A JMAP stub for `MoveFolder`: `Mailbox/query` reports the destination
+    /// mailbox (and, when asked for the moved mailbox's own id, its role), and
+    /// `Mailbox/set` reports the reparent as applied.
+    async fn spawn_move_stub() -> (String, StdArc<TokioMutex<Vec<Value>>>) {
+        use axum::response::Response;
+        let calls: StdArc<TokioMutex<Vec<Value>>> = StdArc::new(TokioMutex::new(Vec::new()));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let base = format!("http://127.0.0.1:{port}");
+        let session_base = base.clone();
+        let base_calls = calls.clone();
+        let app = axum::Router::new()
+            .route(
+                "/session",
+                get(move || {
+                    let base = session_base.clone();
+                    async move {
+                        axum::Json(json!({
+                            "apiUrl": base,
+                            "downloadUrl": format!("{base}/download/{{accountId}}/{{blobId}}"),
+                            "uploadUrl": format!("{base}/upload/{{accountId}}"),
+                            "eventSourceUrl": format!("{base}/eventsource"),
+                            "state": "s",
+                            "username": "u",
+                            "accounts": {"a": {"name": "u", "isPersonal": true, "isReadOnly": false, "accountCapabilities": {}}},
+                            "primaryAccounts": {"urn:ietf:params:jmap:mail": "a"},
+                            "capabilities": {}
+                        }))
+                    }
+                }),
+            )
+            .route(
+                "/",
+                post(move |body: String| {
+                    let calls = base_calls.clone();
+                    async move {
+                        let req: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
+                        let mut responses = Vec::new();
+                        for call in req
+                            .get("methodCalls")
+                            .and_then(|v| v.as_array())
+                            .cloned()
+                            .unwrap_or_default()
+                        {
+                            let name = call.get(0).and_then(|v| v.as_str()).unwrap_or("");
+                            let args = call.get(1).cloned().unwrap_or(Value::Null);
+                            let id = call.get(2).and_then(|v| v.as_str()).unwrap_or("c0");
+                            calls
+                                .lock()
+                                .await
+                                .push(json!({"method": name, "args": args.clone()}));
+                            let (mname, result) = match name {
+                                "Mailbox/query" => (
+                                    "Mailbox/query",
+                                    json!({"accountId": "a", "ids": ["mb-dest"], "total": 1}),
+                                ),
+                                // `eas_parent_id_for_mailbox` resolves a system
+                                // destination by listing mailboxes and reading the
+                                // role; a user destination is resolved by the
+                                // folder_map row and never reaches here.
+                                "Mailbox/get" => (
+                                    "Mailbox/get",
+                                    json!({"accountId": "a", "list": [
+                                        {"id": "mb-dest", "name": "Destination", "role": "inbox"}
+                                    ]}),
+                                ),
+                                "Mailbox/set" => (
+                                    "Mailbox/set",
+                                    json!({"accountId": "a", "updated": {"mb-1": Value::Null}}),
+                                ),
+                                _ => (name, json!({"accountId": "a"})),
+                            };
+                            responses.push(json!([mname, result, id]));
+                        }
+                        let resp = json!({"methodResponses": responses, "sessionState": "s"});
+                        Response::builder()
+                            .status(200)
+                            .header("content-type", "application/json")
+                            .body(axum::body::Body::from(serde_json::to_vec(&resp).unwrap()))
+                            .unwrap()
+                    }
+                }),
+            );
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        (base, calls)
+    }
+
+    /// An EWS `MoveFolder` reparents the backend mailbox, but the backend move does
+    /// NOT touch `folder_map`: without a mirror the stored ParentId stays stale, so
+    /// a later rename's sibling-collision check validates against the wrong parent
+    /// and EAS keeps the folder under its old parent. The mirror must write the new
+    /// ParentId and journal a `folder-update`.
+    #[tokio::test]
+    async fn move_folder_mirrors_parent_into_eas_folder_map() {
+        let (base, _calls) = spawn_move_stub().await;
+        let storage = crate::storage::Storage::new("sqlite::memory:")
+            .await
+            .unwrap();
+        storage.init_schema().await.unwrap();
+        let owner = "u@example.com";
+        storage
+            .upsert_folder_journaled(
+                crate::storage::FolderUpsertParams {
+                    owner,
+                    server_id: "mb-1",
+                    parent_id: "0",
+                    display_name: "Projects",
+                    folder_type: 12,
+                    backend_kind: "jmap",
+                    backend_id: "mb-1",
+                },
+                "folder-add",
+            )
+            .await
+            .unwrap();
+        // The destination is another EAS-visible (mapped) folder, so its EAS
+        // ParentId IS its mailbox id.
+        storage
+            .upsert_folder_journaled(
+                crate::storage::FolderUpsertParams {
+                    owner,
+                    server_id: "mb-dest",
+                    parent_id: "0",
+                    display_name: "Archive",
+                    folder_type: 12,
+                    backend_kind: "jmap",
+                    backend_id: "mb-dest",
+                },
+                "folder-add",
+            )
+            .await
+            .unwrap();
+        let cfg = crate::config::Config {
+            jmap_base: base,
+            email_enabled: true,
+            mail_domain: "example.com".to_string(),
+            hmac_secret: SecretString::from("a".repeat(32)),
+            ..Default::default()
+        };
+        let state = StdArc::new(crate::models::AppState::new(cfg, StdArc::new(storage)));
+        let auth = AuthContext {
+            username: owner.to_string(),
+            password: SecretString::from("pw"),
+        };
+        let body = r#"<?xml version="1.0"?><m:MoveFolder xmlns:m="m" xmlns:t="t"><m:ToFolderId><t:FolderId Id="mb-dest"/></m:ToFolderId><m:FolderIds><t:FolderId Id="mb-1"/></m:FolderIds></m:MoveFolder>"#;
+        let resp = handle_move_folder(&state, &auth, body).await;
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(text.contains("NoError"), "move must succeed: {text}");
+        let row = state
+            .storage
+            .get_folder(owner, "mb-1")
+            .await
+            .unwrap()
+            .expect("the mapping row must survive the move");
+        assert_eq!(
+            row.parent_id, "mb-dest",
+            "the mirrored ParentId must reflect the new parent"
+        );
+        assert_eq!(
+            row.display_name, "Projects",
+            "the move must not touch the display name"
+        );
+        let journal = state
+            .storage
+            .list_folder_journal_since(owner, 0, i64::MAX)
+            .await
+            .unwrap();
+        assert!(
+            journal
+                .iter()
+                .any(|r| r.op == "folder-update" && r.server_id == "mb-1"),
+            "the reparent must be journaled as folder-update: {:?}",
+            journal
+                .iter()
+                .map(|r| (&r.op, &r.server_id))
+                .collect::<Vec<_>>()
         );
     }
 }

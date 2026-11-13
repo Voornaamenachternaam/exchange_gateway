@@ -4964,6 +4964,22 @@ async fn handle_sync_email_folder_items(
         .filter(|id| !overlap.contains(id.as_str()))
         .map(|id| crate::eas::PendingEmailOp::delete(id.clone()))
         .collect();
+    // `MaxChangesReturned` bounds the whole `<Changes>` list, not just the
+    // membership feed. The membership ops this response will render are every
+    // `created` id (as Create or, when it also left, an overlap Update) plus
+    // every `destroyed` id that is not an overlap (as Delete); the overlap ids
+    // render once, inside the `destroyed` walk. The flag scan may therefore emit
+    // only the remaining budget, so a bulk flag change (e.g. mark-all-read) is
+    // capped exactly as a bulk membership change is. The excess is deferred: the
+    // scan holds its rotating position so a later delta re-emits it, which is
+    // the EWS analogue of the EAS overflow queue.
+    let overlap_count = changes
+        .destroyed
+        .iter()
+        .filter(|id| overlap.contains(id.as_str()))
+        .count();
+    let membership_ops = changes.created.len() + changes.destroyed.len() - overlap_count;
+    let flag_budget = max_changes.saturating_sub(membership_ops);
     let keyword_scan = crate::eas::scan_email_keyword_changes(
         &crate::eas::KeywordScanCtx {
             state,
@@ -4976,6 +4992,7 @@ async fn handle_sync_email_folder_items(
         },
         &membership_ids,
         &mut flag_ops,
+        Some(flag_budget),
     )
     .await;
 
@@ -5068,6 +5085,34 @@ async fn handle_sync_email_folder_items(
                         r#"<t:Update>{}</t:Update>"#,
                         render_jmap_email_as_ews_message(&email, &server_id, &change_key)
                     ));
+                    // Seed this delivered Update's flag baseline too. An overlap
+                    // id is queued, so the scan never emits an op for it — but the
+                    // bounded scan may not even REACH it, and a missing baseline
+                    // row would make a later sweep record the next keyword set as a
+                    // first observation (no `<Change>`). The seed makes the
+                    // delivered Update's flags the baseline regardless of whether
+                    // the scan reaches the id. Fails closed so the Update is not
+                    // acknowledged without it (the upsert is idempotent, so the
+                    // retry re-seeds).
+                    let keywords = email.sorted_active_keywords();
+                    if let Err(e) = state
+                        .storage
+                        .upsert_email_keyword(owner, &folder_id, email_id, &keywords)
+                        .await
+                    {
+                        tracing::error!(
+                            error = %e,
+                            email_id = %email_id,
+                            "Failed to seed EWS email keyword baseline for delivered Update"
+                        );
+                        return operation_error_response(
+                            &EwsAction::SyncFolderItems,
+                            "ErrorInternalServerError",
+                            "Failed to record a delivered message's flag baseline",
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                        );
+                    }
+                    seeded_ids.insert(email_id.clone());
                 }
                 Ok(None) => {}
                 Err(e) => {
@@ -5132,13 +5177,27 @@ async fn handle_sync_email_folder_items(
         }
     }
 
-    // Store the new sync state.
+    // Store the new sync state. Fail CLOSED: the flag-scan baseline and rotating
+    // position below MUST NOT advance past a window whose token was not durably
+    // stored. The membership feed (`Email/queryChanges`) is membership-only, so a
+    // retry from the old `SyncState` cannot rediscover a flag-only `<t:Update>`
+    // the client already received — if the baseline advanced while the token did
+    // not, that edit would be lost forever. A failure here is therefore answered
+    // with a retryable error (carrying the incoming state, so the client retries
+    // the same window) rather than a success whose cursor the gateway could not
+    // persist.
     if let Err(e) = state
         .storage
         .set_ews_sync_state(owner, &folder_id, &changes.new_state)
         .await
     {
-        tracing::warn!(folder_id = %folder_id, error = %e, "Failed to set EWS email sync state");
+        tracing::error!(folder_id = %folder_id, error = %e, "Failed to set EWS email sync state; failing closed");
+        return operation_error_response(
+            &EwsAction::SyncFolderItems,
+            "ErrorServerBusy",
+            "Failed to persist the email sync state",
+            StatusCode::SERVICE_UNAVAILABLE,
+        );
     }
 
     // The whole change set (membership + flag updates) has now been delivered
@@ -5146,16 +5205,18 @@ async fn handle_sync_email_folder_items(
     // position may advance. Persisting them only here guarantees a crash before
     // this point re-scans the same window rather than swallowing the update.
     // Ids whose baseline was seeded with the message's CURRENT keywords while
-    // rendering a delivered Create are skipped: that seed is fresher than the
-    // scan snapshot, so writing the snapshot would force a duplicate flag
-    // `<Change>` on the next delta.
+    // rendering a delivered Create/overlap Update are skipped: that seed is
+    // fresher than the scan snapshot, so writing the snapshot would force a
+    // duplicate flag `<Change>` on the next delta.
     crate::eas::persist_keyword_scan(state, owner, &folder_id, &keyword_scan, &seeded_ids).await;
 
     // A page that reported no change is the end of the change set; a page that
     // came back at the `maxChanges` cap (`has_more_changes`) was clipped, so
     // more changes remain behind the returned state and the client must
-    // continue from it.
-    let includes_last = if changes.has_more_changes {
+    // continue from it. A flag scan that hit its change budget also left
+    // undelivered `<t:Update>`s behind its held position, so the range is not
+    // complete either — the client must sync again to drain them.
+    let includes_last = if changes.has_more_changes || keyword_scan.deferred {
         "false"
     } else {
         "true"
@@ -14270,6 +14331,247 @@ mod tests {
                 .as_deref(),
             Some("S1"),
             "the delivered delta must advance the stored SyncState"
+        );
+    }
+
+    /// Spawn a JMAP stub for the EWS email delta with a QUIET membership feed
+    /// (`Email/queryChanges` reports no added/removed) but `count` messages whose
+    /// live `$seen` keyword differs from an empty baseline. The caller seeds the
+    /// baselines.
+    async fn spawn_flag_delta_stub(count: usize) -> String {
+        use axum::routing::{get, post};
+        use serde_json::{Value, json};
+
+        #[derive(Clone)]
+        struct Ctl {
+            base: String,
+            count: usize,
+        }
+
+        async fn session(axum::Extension(ctl): axum::Extension<Ctl>) -> axum::Json<Value> {
+            axum::Json(json!({
+                "apiUrl": ctl.base,
+                "downloadUrl": format!("{}/download/{{accountId}}/{{blobId}}", ctl.base),
+                "uploadUrl": format!("{}/upload/{{accountId}}", ctl.base),
+                "eventSourceUrl": format!("{}/eventsource", ctl.base),
+                "state": "s",
+                "username": "u",
+                "accounts": {"a": {"name": "u", "isPersonal": true, "isReadOnly": false, "accountCapabilities": {}}},
+                "primaryAccounts": {"urn:ietf:params:jmap:mail": "a"},
+                "capabilities": {"urn:ietf:params:jmap:core": {"maxObjectsInGet": 500}}
+            }))
+        }
+
+        async fn api(
+            axum::Extension(ctl): axum::Extension<Ctl>,
+            body: String,
+        ) -> axum::response::Response {
+            let req: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
+            let mut responses = Vec::new();
+            let ids: Vec<String> = (0..ctl.count).map(|i| format!("m{i}")).collect();
+            for call in req
+                .get("methodCalls")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default()
+            {
+                let name = call.get(0).and_then(|v| v.as_str()).unwrap_or("");
+                let cid = call.get(2).and_then(|v| v.as_str()).unwrap_or("c0");
+                let result = match name {
+                    "Mailbox/query" => json!({"accountId":"a","ids":["mbx-inbox"],"total":1}),
+                    "Email/queryChanges" => json!({
+                        "accountId": "a",
+                        "oldQueryState": "S0",
+                        "newQueryState": "S1",
+                        "added": [],
+                        "removed": [],
+                    }),
+                    "Email/query" => json!({
+                        "accountId": "a",
+                        "queryState": "S1",
+                        "ids": ids,
+                        "total": ids.len(),
+                        "position": 0,
+                    }),
+                    "Email/get" => {
+                        let list: Vec<Value> = ids
+                            .iter()
+                            .map(|id| {
+                                json!({
+                                    "id": id,
+                                    "blobId": "b1",
+                                    "threadId": "t1",
+                                    "mailboxIds": {"mbx-inbox": true},
+                                    "keywords": {"$seen": true},
+                                    "subject": "hello",
+                                    "from": [{"name": "S", "email": "s@example.com"}],
+                                    "to": [{"name": "R", "email": "r@example.com"}],
+                                    "receivedAt": "2026-11-10T12:00:00Z",
+                                    "sentAt": "2026-11-10T12:00:00Z",
+                                    "size": 10,
+                                    "preview": "hi",
+                                    "hasAttachment": false
+                                })
+                            })
+                            .collect();
+                        json!({"accountId": "a", "state": "S1", "list": list})
+                    }
+                    _ => json!({"accountId": "a"}),
+                };
+                responses.push(json!([name, result, cid]));
+            }
+            let resp = json!({"methodResponses": responses, "sessionState": "s"});
+            axum::response::Response::builder()
+                .status(200)
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(serde_json::to_vec(&resp).unwrap()))
+                .unwrap()
+        }
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
+        let ctl = Ctl {
+            base: base.clone(),
+            count,
+        };
+        let app = axum::Router::new()
+            .route("/session", get(session))
+            .route("/", post(api))
+            .layer(axum::Extension(ctl));
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        base
+    }
+
+    async fn flag_delta_state(
+        base: String,
+        count: usize,
+    ) -> (
+        std::sync::Arc<crate::models::AppState>,
+        &'static str,
+        String,
+    ) {
+        use std::sync::Arc as StdArc;
+        let storage = crate::storage::Storage::new("sqlite::memory:")
+            .await
+            .unwrap();
+        storage.init_schema().await.unwrap();
+        let cfg = crate::config::Config {
+            jmap_base: base,
+            email_enabled: true,
+            mail_domain: "example.com".to_string(),
+            hmac_secret: SecretString::from("a".repeat(32)),
+            ..Default::default()
+        };
+        let state = StdArc::new(crate::models::AppState::new(cfg, StdArc::new(storage)));
+        let owner = owner_from_username("user@example.com");
+        let folder_id = folder_id_for(owner, DistinguishedFolder::Inbox);
+        state
+            .storage
+            .set_ews_sync_state(owner, &folder_id, "S0")
+            .await
+            .expect("persist delta state");
+        for i in 0..count {
+            state
+                .storage
+                .upsert_email_keyword(owner, &folder_id, &format!("m{i}"), &[])
+                .await
+                .expect("seed baseline");
+        }
+        (state, owner, folder_id)
+    }
+
+    /// `MaxChangesReturned` bounds the WHOLE `<Changes>` list, not just the
+    /// membership feed. With a quiet `Email/queryChanges` and three changed flags,
+    /// a `MaxChangesReturned` of 1 must deliver exactly one flag `<t:Update>` and
+    /// report `IncludesLastItemInRange=false` (the rest are deferred and
+    /// discoverable from the held scan position), while still advancing the stored
+    /// SyncState because the membership set itself is complete.
+    #[tokio::test]
+    async fn sync_email_folder_items_defers_flag_changes_beyond_max_changes() {
+        let base = spawn_flag_delta_stub(3).await;
+        let (state, owner, folder_id) = flag_delta_state(base, 3).await;
+
+        let body = r#"<m:SyncFolderItems><m:ItemShape/><m:SyncFolderId><t:DistinguishedFolderId Id="inbox"/></m:SyncFolderId><m:SyncState>S0</m:SyncState><m:MaxChangesReturned>1</m:MaxChangesReturned></m:SyncFolderItems>"#;
+        let text =
+            response_body(handle_sync_folder_items(&state, &meeting_auth(), body).await).await;
+        assert_eq!(
+            text.matches("<t:Update>").count(),
+            1,
+            "the flag budget must cap the Updates at MaxChangesReturned: {text}"
+        );
+        assert!(
+            text.contains("<m:IncludesLastItemInRange>false</m:IncludesLastItemInRange>"),
+            "a deferred flag change must mark the range incomplete: {text}"
+        );
+        // The membership set is complete, so the state advances; the deferred edits
+        // stay discoverable from the held scan position (their baselines did NOT
+        // advance).
+        assert_eq!(
+            state
+                .storage
+                .get_ews_sync_state(owner, &folder_id)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("S1"),
+            "a complete membership set must advance the stored SyncState"
+        );
+        let advanced = state
+            .storage
+            .get_email_keyword(owner, &folder_id, "m0")
+            .await
+            .unwrap()
+            .expect("baseline row");
+        assert!(
+            advanced.contains(&"$seen".to_string()),
+            "the delivered id's baseline must advance: {advanced:?}"
+        );
+        for deferred in ["m1", "m2"] {
+            let row = state
+                .storage
+                .get_email_keyword(owner, &folder_id, deferred)
+                .await
+                .unwrap()
+                .expect("baseline row");
+            assert!(
+                row.is_empty(),
+                "a deferred id's baseline must stay stale so its change re-emits: {deferred} = {row:?}"
+            );
+        }
+    }
+
+    /// A failed `set_ews_sync_state` must FAIL the delta CLOSED (retryable), and the
+    /// flag-scan baseline/position must NOT advance: a membership-only
+    /// `Email/queryChanges` cannot rediscover a flag-only `<t:Update>`, so
+    /// advancing the baseline without the token would lose that edit forever.
+    #[tokio::test]
+    async fn sync_email_folder_items_fails_closed_when_state_write_fails() {
+        let base = spawn_flag_delta_stub(1).await;
+        let (state, owner, folder_id) = flag_delta_state(base, 1).await;
+        // Make `set_ews_sync_state` fail by removing its table.
+        sqlx::query("DROP TABLE ews_sync_state")
+            .execute(state.storage.pool())
+            .await
+            .expect("drop sync state table");
+
+        let body = r#"<m:SyncFolderItems><m:ItemShape/><m:SyncFolderId><t:DistinguishedFolderId Id="inbox"/></m:SyncFolderId><m:SyncState>S0</m:SyncState><m:MaxChangesReturned>100</m:MaxChangesReturned></m:SyncFolderItems>"#;
+        let text =
+            response_body(handle_sync_folder_items(&state, &meeting_auth(), body).await).await;
+        assert!(
+            text.contains("ErrorServerBusy"),
+            "a failed SyncState write must fail the delta closed: {text}"
+        );
+        let row = state
+            .storage
+            .get_email_keyword(owner, &folder_id, "m0")
+            .await
+            .unwrap()
+            .expect("baseline row");
+        assert!(
+            row.is_empty(),
+            "the flag baseline must NOT advance when the token write failed: {row:?}"
         );
     }
 }
