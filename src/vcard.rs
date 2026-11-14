@@ -167,10 +167,8 @@ impl Email {
 }
 
 /// Well-known TYPE labels used by the EAS/JSCard mappings.
-#[allow(dead_code)]
 pub struct Type;
 
-#[allow(dead_code)]
 impl Type {
     pub const WORK: &'static str = "work";
     pub const HOME: &'static str = "home";

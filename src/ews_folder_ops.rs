@@ -493,33 +493,286 @@ pub(crate) async fn handle_update_folder(
             );
         }
     }
-    let new_name = new_name.unwrap();
+    let new_name = new_name.unwrap().trim();
+
+    // Resolve the folder's EAS mapping up front. An EAS-visible folder (a JMAP
+    // mailbox carrying a `folder_map` row) is constrained by the SAME name
+    // rules EAS `FolderUpdate` enforces ([MS-ASCMD] §2.2.1.6); a mailbox EAS
+    // never advertised is renamed freely. Validating BEFORE the backend rename
+    // keeps the two hierarchies from diverging: a name EAS itself would reject
+    // must never be applied to a folder EAS advertises.
+    let mapped = match state.storage.get_folder(&owner, &mailbox_id).await {
+        Ok(row) => row.filter(|r| r.backend_kind == "jmap"),
+        Err(e) => return internal_error(action, "folder_map lookup failed", &e),
+    };
+    if let Some(row) = mapped.as_ref()
+        && let Some(resp) = validate_eas_visible_rename(state, &owner, row, new_name).await
+    {
+        return resp;
+    }
 
     match jmap
         .update_mailbox(
             &account_id,
             &mailbox_id,
-            Some(new_name.trim()),
+            Some(new_name),
             None,
             &auth.username,
             &auth.password,
         )
         .await
     {
-        Ok(_) => success_response(
-            "UpdateFolder",
-            &format!(
-                "<m:Folders><t:Folder>{}</t:Folder></m:Folders>",
-                folder_id_el(&mailbox_id)
-            ),
-        ),
+        Ok(true) => {
+            // Mirror the rename into the EAS folder store so an EAS-created
+            // folder renamed over EWS stops advertising its old DisplayName and
+            // an already-primed EAS device receives the change. Only a folder
+            // with a `folder_map` row (an EAS-created folder whose ServerId is
+            // the JMAP mailbox id) is mirrored and journaled; a folder EAS never
+            // advertised (a row-less mailbox, or a CalDAV-backed row) is left
+            // untouched — never fabricate an EAS-visible folder.
+            if let Some(row) = mapped.as_ref()
+                && let Err(e) = mirror_ews_folder_rename(state, &owner, row, new_name).await
+            {
+                // The JMAP mailbox is already renamed, so a failed mirror write
+                // must NOT be acknowledged as success: a stale `folder_map`
+                // DisplayName would keep EAS advertising the old name and leave
+                // primed devices without the change. The rename is idempotent,
+                // so a retry re-applies it and re-runs the mirror.
+                return internal_error(action, "folder_map rename mirror failed", &e);
+            }
+            success_response(
+                "UpdateFolder",
+                &format!(
+                    "<m:Folders><t:Folder>{}</t:Folder></m:Folders>",
+                    folder_id_el(&mailbox_id)
+                ),
+            )
+        }
+        Ok(false) => {
+            // The backend did not report the mailbox as updated; do not mirror
+            // the requested name as though it had been applied. `update_mailbox`
+            // only returns `false` when the id is in neither `updated` nor
+            // `notUpdated`, which is an unexpected backend outcome — a retryable
+            // failure (the rename is idempotent) is safer than a false success.
+            tracing::warn!(
+                mailbox_id = %mailbox_id,
+                "EWS UpdateFolder: Mailbox/set reported no update for the mailbox"
+            );
+            operation_error_response(
+                &action,
+                "ErrorInternalServerError",
+                "The folder rename was not applied by the backend",
+                StatusCode::INTERNAL_SERVER_ERROR,
+            )
+        }
         Err(e) => internal_error(action, "Mailbox/set update failed", &e),
     }
+}
+
+/// Validate an EWS `UpdateFolder` rename of an EAS-visible folder against the
+/// same name rules EAS `FolderUpdate` enforces ([MS-ASCMD] §2.2.1.6): a
+/// reserved system-folder name, a name longer than the §6.13 64-character
+/// bound, or a case-insensitive duplicate of a sibling under the same parent is
+/// rejected. Returns `Some(error response)` when the name must be refused so
+/// the EAS-visible hierarchy can never advertise a name EAS itself would reject.
+async fn validate_eas_visible_rename(
+    state: &Arc<AppState>,
+    owner: &str,
+    row: &crate::storage::FolderRow,
+    new_name: &str,
+) -> Option<Response> {
+    if crate::eas_folders::is_system_folder_name(new_name) {
+        return Some(operation_error_response(
+            &EwsAction::UpdateFolder,
+            "ErrorInvalidProperty",
+            "The folder name is reserved for a system folder",
+            StatusCode::OK,
+        ));
+    }
+    if new_name.chars().count() > 64 {
+        return Some(operation_error_response(
+            &EwsAction::UpdateFolder,
+            "ErrorInvalidProperty",
+            "The folder name exceeds the maximum length",
+            StatusCode::OK,
+        ));
+    }
+    match state.storage.list_folders(owner).await {
+        Ok(rows) => {
+            if rows.iter().any(|r| {
+                r.server_id != row.server_id
+                    && r.parent_id == row.parent_id
+                    && r.display_name.eq_ignore_ascii_case(new_name)
+            }) {
+                return Some(operation_error_response(
+                    &EwsAction::UpdateFolder,
+                    "ErrorFolderExists",
+                    "A folder with that name already exists in the parent folder",
+                    StatusCode::OK,
+                ));
+            }
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "EWS UpdateFolder: failed to list folders for rename validation");
+            return Some(internal_error(
+                EwsAction::UpdateFolder,
+                "folder listing failed",
+                &e,
+            ));
+        }
+    }
+    None
+}
+
+/// Mirror an EWS `UpdateFolder` rename of a JMAP mail mailbox into the EAS
+/// folder store: rewrite the `folder_map` row's DisplayName and journal a
+/// `folder-update` in ONE transaction, so the change reaches EAS
+/// `GetHierarchy`/`FolderSync` and already-primed devices. The caller passes the
+/// already-resolved JMAP-backed row (a mailbox EAS never advertised is never
+/// passed here). The caller must treat a write failure as fatal (retryable) —
+/// the backend rename has already happened, so silently succeeding would leave
+/// EAS advertising the old name.
+///
+/// A TARGETED update writes ONLY `display_name` on the EXISTING row: the
+/// `parent_id`, `folder_type`, `backend_kind`, and `backend_id` from the
+/// caller's pre-round-trip snapshot are never rewritten, so a concurrent
+/// `FolderDelete` is not resurrected and a concurrent parent move is not
+/// reverted. A row that vanished during the backend round trip is reported as a
+/// failure (the caller answers a retryable error) rather than silently
+/// re-inserted.
+async fn mirror_ews_folder_rename(
+    state: &Arc<AppState>,
+    owner: &str,
+    row: &crate::storage::FolderRow,
+    display_name: &str,
+) -> anyhow::Result<()> {
+    let updated = state
+        .storage
+        .update_folder_journaled(owner, &row.server_id, None, Some(display_name))
+        .await?;
+    if !updated {
+        anyhow::bail!(
+            "folder mapping {} vanished during the rename mirror",
+            row.server_id
+        );
+    }
+    Ok(())
+}
+
+/// Resolve the EAS `ParentId` string for a JMAP mailbox id: `"0"` for the root,
+/// the distinguished EAS id (`"2"`/`"3"`/`"4"`/`"5"`/`"12"`) for a system
+/// mailbox, or the mailbox id itself for a user-created folder (whose EAS
+/// ServerId IS the JMAP mailbox id). `Ok(None)` when a mailbox has neither a
+/// `folder_map` row nor a recognised system role, so a caller leaves the stored
+/// ParentId untouched rather than writing a wrong id.
+///
+/// A transient `folder_map` read or JMAP mailbox-lookup failure is propagated
+/// as `Err` rather than flattened to `None`: acknowledging the move without a
+/// mirrored ParentId would leave EAS advertising a stale hierarchy, so the
+/// caller must fail the operation (retryable) instead of silently skipping the
+/// journaled update.
+async fn eas_parent_id_for_mailbox(
+    state: &Arc<AppState>,
+    owner: &str,
+    jmap: &JmapClient,
+    username: &str,
+    password: &SecretString,
+    mailbox_id: Option<&str>,
+) -> anyhow::Result<Option<String>> {
+    let Some(mailbox_id) = mailbox_id else {
+        return Ok(Some("0".to_string()));
+    };
+    match state.storage.get_folder(owner, mailbox_id).await {
+        Ok(Some(_)) => return Ok(Some(mailbox_id.to_string())),
+        Ok(None) => {}
+        Err(e) => {
+            return Err(anyhow::anyhow!(
+                "folder_map lookup failed resolving the parent of {mailbox_id}: {e}"
+            ));
+        }
+    }
+    let all = jmap
+        .query_mailboxes(username, password)
+        .await
+        .map_err(|e| {
+            anyhow::anyhow!("mailbox lookup failed resolving the parent of {mailbox_id}: {e}")
+        })?;
+    let role = all
+        .mailboxes
+        .iter()
+        .find(|m| m.id.as_deref() == Some(mailbox_id))
+        .and_then(|m| m.role.as_deref());
+    Ok(match role {
+        Some("inbox") => Some("2".to_string()),
+        Some("drafts") => Some("3".to_string()),
+        Some("trash") => Some("4".to_string()),
+        Some("sent") => Some("5".to_string()),
+        Some("junk") => Some("12".to_string()),
+        _ => None,
+    })
 }
 
 // ---------------------------------------------------------------------------
 // MoveFolder: re-parent via Mailbox/set update parentId
 // ---------------------------------------------------------------------------
+
+/// Mirror a confirmed backend reparent into the EAS folder store.
+///
+/// The backend `Mailbox/set update` does not touch `folder_map`, so without
+/// this the stored `ParentId` stays stale: EAS keeps the folder under its old
+/// parent and a later rename's sibling-collision check validates against the
+/// wrong parent. Only a folder with a `folder_map` row is mirrored; a row that
+/// vanished concurrently is a benign no-op, never resurrected. A `folder_map`
+/// read failure or a failed journaled update is a retryable error (the move is
+/// idempotent) — silently skipping the mirror would acknowledge the move with a
+/// stale ParentId.
+///
+/// `parent_eas` is the destination's EAS `ParentId`, resolved by the caller
+/// BEFORE the backend move (see `handle_move_folder`): a destination the EAS
+/// hierarchy cannot represent is rejected up front, so this helper never has to
+/// silently drop the mirror.
+async fn mirror_eas_parent(
+    state: &Arc<AppState>,
+    owner: &str,
+    mailbox_id: &str,
+    parent_eas: &str,
+    action: EwsAction,
+) -> Result<(), Box<Response>> {
+    let row = match state.storage.get_folder(owner, mailbox_id).await {
+        Ok(row) => row,
+        Err(e) => {
+            return Err(Box::new(internal_error(
+                action,
+                "folder_map parent mirror lookup failed",
+                &e,
+            )));
+        }
+    };
+    let Some(row) = row else {
+        return Ok(());
+    };
+    // Reparent ONLY: `display_name` is left untouched (a concurrent rename must
+    // survive the move mirror).
+    match state
+        .storage
+        .update_folder_journaled(owner, &row.server_id, Some(parent_eas), None)
+        .await
+    {
+        Ok(true) => Ok(()),
+        Ok(false) => {
+            tracing::warn!(
+                mailbox_id = %mailbox_id,
+                "folder mapping vanished before the parent mirror"
+            );
+            Ok(())
+        }
+        Err(e) => Err(Box::new(internal_error(
+            action,
+            "folder_map parent mirror failed",
+            &e,
+        ))),
+    }
+}
 
 pub(crate) async fn handle_move_folder(
     state: &Arc<AppState>,
@@ -593,6 +846,35 @@ pub(crate) async fn handle_move_folder(
         }
     };
 
+    // Resolve the destination's EAS `ParentId` BEFORE the backend move. A
+    // destination the EAS hierarchy cannot represent (neither a `folder_map`
+    // folder nor a recognised system role) must reject the move: proceeding
+    // would change the backend parent while the EAS `ParentId` stayed stale, so
+    // EAS would keep advertising the folder under its old parent.
+    let dest_parent_eas = match eas_parent_id_for_mailbox(
+        state,
+        &owner,
+        &jmap,
+        &auth.username,
+        &auth.password,
+        new_parent.as_deref(),
+    )
+    .await
+    {
+        Ok(Some(p)) => p,
+        Ok(None) => {
+            return operation_error_response(
+                &action,
+                "ErrorInvalidFolderTypeForOperation",
+                "The destination folder cannot be represented in the EAS hierarchy",
+                StatusCode::OK,
+            );
+        }
+        Err(e) => {
+            return internal_error(action, "folder_map parent resolution failed", &e);
+        }
+    };
+
     for id in all_attrs(body, Some("FolderIds"), "FolderId", "Id") {
         // Moving a distinguished/system folder (Inbox, Trash, ...) is not
         // permitted; only user-created mailboxes move.
@@ -638,7 +920,33 @@ pub(crate) async fn handle_move_folder(
             )
             .await
         {
-            Ok(_) => {}
+            Ok(true) => {
+                // Mirror the reparent into the EAS folder store (see
+                // `mirror_eas_parent`); the destination parent was resolved and
+                // validated above.
+                if let Err(resp) =
+                    mirror_eas_parent(state, &owner, &mailbox_id, &dest_parent_eas, action).await
+                {
+                    return *resp;
+                }
+            }
+            Ok(false) => {
+                // The backend did not report the mailbox as updated; the parent did
+                // not change. `update_mailbox` only returns `false` when the id is in
+                // neither `updated` nor `notUpdated`, an unexpected backend outcome —
+                // a retryable failure (the move is idempotent) is safer than a false
+                // success with a stale mapping.
+                tracing::warn!(
+                    mailbox_id = %mailbox_id,
+                    "MoveFolder: Mailbox/set reported no update for the mailbox"
+                );
+                return operation_error_response(
+                    &action,
+                    "ErrorInternalServerError",
+                    "The folder move was not applied by the backend",
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                );
+            }
             Err(e) => return internal_error(action, "Mailbox/set reparent failed", &e),
         }
     }
@@ -962,6 +1270,36 @@ pub(crate) async fn handle_delete_folder(
             // client expected to be recoverable.
             match &trash_id {
                 Some(t) if *t != mailbox_id => {
+                    // Resolve the Trash mailbox's EAS ParentId before moving, so
+                    // an unrepresentable destination fails rather than leaving
+                    // the EAS ParentId stale.
+                    let trash_parent_eas = match eas_parent_id_for_mailbox(
+                        state,
+                        &owner,
+                        &jmap,
+                        &auth.username,
+                        &auth.password,
+                        Some(t.as_str()),
+                    )
+                    .await
+                    {
+                        Ok(Some(p)) => p,
+                        Ok(None) => {
+                            return operation_error_response(
+                                &action,
+                                "ErrorInvalidFolderTypeForOperation",
+                                "The Deleted Items folder cannot be represented in the EAS hierarchy",
+                                StatusCode::OK,
+                            );
+                        }
+                        Err(e) => {
+                            return internal_error(
+                                action,
+                                "folder_map parent resolution failed",
+                                &e,
+                            );
+                        }
+                    };
                     if let Err(e) = jmap
                         .update_mailbox(
                             &account_id,
@@ -974,6 +1312,15 @@ pub(crate) async fn handle_delete_folder(
                         .await
                     {
                         return internal_error(action, "Mailbox/set move-to-trash failed", &e);
+                    }
+                    // Mirror the new Trash parent into the EAS folder store, so
+                    // EAS stops advertising the folder under its old parent and
+                    // primed devices receive the folder-update.
+                    if let Err(resp) =
+                        mirror_eas_parent(state, &owner, &mailbox_id, &trash_parent_eas, action)
+                            .await
+                    {
+                        return *resp;
                     }
                     continue;
                 }
@@ -1011,6 +1358,13 @@ pub(crate) async fn handle_delete_folder(
         let mut destruction_order: Vec<String> = vec![mailbox_id.clone()];
         let mut seen: std::collections::HashSet<String> =
             destruction_order.iter().cloned().collect();
+        // Mailboxes actually destroyed, so the EAS folder store can be pruned
+        // and a `folder-delete` journaled for each once the walk completes (or
+        // is aborted — see below).
+        let mut destroyed_ids: Vec<String> = Vec::new();
+        // A walk that stopped early (backend refusal or transport error), to be
+        // returned only AFTER the destroyed-so-far mailboxes have been mirrored.
+        let mut destroy_failure: Option<Response> = None;
         while let Some(cur) = visit_stack.pop() {
             for child in hierarchy
                 .mailboxes
@@ -1031,21 +1385,102 @@ pub(crate) async fn handle_delete_folder(
                 .await
             {
                 Ok(v) => v.into_iter().map(|(jid, _)| jid).collect::<Vec<_>>(),
-                Err(e) => return internal_error(action, "Email/query for hard delete failed", &e),
+                Err(e) => {
+                    destroy_failure = Some(internal_error(
+                        action,
+                        "Email/query for hard delete failed",
+                        &e,
+                    ));
+                    break;
+                }
             };
             if !ids_in.is_empty()
                 && let Err(e) = jmap
                     .destroy_emails(&account_id, &ids_in, &auth.username, &auth.password)
                     .await
             {
-                return internal_error(action, "Email/set destroy failed", &e);
+                destroy_failure = Some(internal_error(action, "Email/set destroy failed", &e));
+                break;
             }
-            if let Err(e) = jmap
-                .destroy_mailbox(&account_id, cb_id, &auth.username, &auth.password)
+            match jmap
+                .destroy_mailbox(&account_id, cb_id, false, &auth.username, &auth.password)
                 .await
             {
-                return internal_error(action, "Mailbox/set destroy failed", &e);
+                Ok(
+                    crate::jmap::MailboxDestroyOutcome::Destroyed
+                    | crate::jmap::MailboxDestroyOutcome::AlreadyGone,
+                ) => {
+                    destroyed_ids.push(cb_id.clone());
+                }
+                Ok(crate::jmap::MailboxDestroyOutcome::Refused) => {
+                    tracing::warn!(
+                        mailbox = %cb_id,
+                        "EWS DeleteFolder: Mailbox/set refused the destroy"
+                    );
+                    destroy_failure = Some(operation_error_response(
+                        &action,
+                        "ErrorCannotDeleteObject",
+                        "The folder could not be deleted",
+                        StatusCode::OK,
+                    ));
+                    break;
+                }
+                Err(e) => {
+                    destroy_failure =
+                        Some(internal_error(action, "Mailbox/set destroy failed", &e));
+                    break;
+                }
             }
+        }
+        // Mirror the destroyed mailboxes into the EAS folder store: prune any
+        // `folder_map` row whose ServerId is a destroyed mailbox and journal a
+        // `folder-delete`, so an EAS-created folder removed here is no longer
+        // advertised by FolderSync/GetHierarchy and already-primed EAS devices
+        // receive its Delete. `delete_folders_journaled` is a no-op for ids with
+        // no mapping row (e.g. a system folder, whose ServerId is never a JMAP
+        // mailbox id). A failed mirror write must NOT be acknowledged as
+        // success — the mailbox is already gone, so a stale `folder_map` row
+        // would keep EAS advertising a deleted folder.
+        //
+        // This runs on EVERY path, including a walk that stopped early: the
+        // subtree is destroyed deepest-first, so an abort part-way leaves the
+        // already-destroyed descendants gone from JMAP. Pruning only on the
+        // full-success path would strand their `folder_map` rows (EAS keeps
+        // advertising them) and a retry — which re-queries the now-childless
+        // hierarchy — could never recover the descendant ids. Mirror the
+        // destroyed-so-far set before surfacing the walk's failure.
+        if !destroyed_ids.is_empty() {
+            // Record the destroyed ids durably BEFORE the prune: the mailboxes are
+            // already gone from JMAP, so if the prune below fails the ids cannot
+            // be re-derived by a retry. A committed `pending_folder_prune` row is
+            // replayed by the next folder-sync read (`FolderSync`/`GetHierarchy`/
+            // EWS `SyncFolderHierarchy`), which journals the `folder-delete` and
+            // clears the row. Best-effort: a failure here is logged but the direct
+            // prune still runs (it is the primary path).
+            if let Err(e) = state
+                .storage
+                .record_pending_folder_prunes(&owner, &destroyed_ids)
+                .await
+            {
+                tracing::warn!(
+                    error = %e,
+                    "EWS DeleteFolder: failed to record the deferred folder-map prune"
+                );
+            }
+            if let Err(e) = state
+                .storage
+                .delete_folders_journaled(&owner, &destroyed_ids)
+                .await
+            {
+                tracing::warn!(
+                    error = %e,
+                    "EWS DeleteFolder: failed to prune EAS folder map for destroyed mailboxes"
+                );
+                return internal_error(action, "folder_map prune failed", &e);
+            }
+        }
+        if let Some(resp) = destroy_failure {
+            return resp;
         }
     }
 
@@ -1409,6 +1844,8 @@ pub(crate) async fn handle_find_conversation(
                 ]),
                 position: cursor,
                 limit: batch,
+                anchor: None,
+                anchor_offset: 0,
                 username: &auth.username,
                 password: &auth.password,
             })
@@ -1866,5 +2303,1290 @@ mod tests {
         let el = folder_id_el("id<>");
         assert!(el.contains("Id=\"id&lt;&gt;\""));
         assert!(el.contains("ChangeKey=\"1\""));
+    }
+
+    // ---- DeleteFolder hard-delete mirror tests ---------------------------
+
+    use axum::routing::{get, post};
+    use serde_json::{Value, json};
+    use std::sync::Arc as StdArc;
+    use tokio::sync::Mutex as TokioMutex;
+
+    /// Minimal JMAP stub for the hard-delete path: a session, a `Mailbox/query`
+    /// that returns `mailboxes` (each `{"id","parentId"}`), a `Mailbox/get`
+    /// that echoes them, an empty `Email/query` (no messages to destroy), and a
+    /// `Mailbox/set` that reports every requested destroy as destroyed (unless
+    /// its id is in `refuse`, which is answered as a `notDestroyed` refusal).
+    async fn spawn_delete_stub(mailboxes: Vec<Value>) -> (String, StdArc<TokioMutex<Vec<Value>>>) {
+        spawn_delete_stub_refusing(mailboxes, Vec::new()).await
+    }
+
+    /// As [`spawn_delete_stub`] but every id in `refuse` is answered with a
+    /// `Mailbox/set` `notDestroyed` refusal (`mailboxHasChild`), modelling a
+    /// mid-walk abort after some descendants were already destroyed.
+    async fn spawn_delete_stub_refusing(
+        mailboxes: Vec<Value>,
+        refuse: Vec<String>,
+    ) -> (String, StdArc<TokioMutex<Vec<Value>>>) {
+        use axum::response::Response;
+        let calls: StdArc<TokioMutex<Vec<Value>>> = StdArc::new(TokioMutex::new(Vec::new()));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let base = format!("http://127.0.0.1:{port}");
+        let session_base = base.clone();
+        let mailboxes_for_api = mailboxes.clone();
+        let base_calls = calls.clone();
+        let app = axum::Router::new()
+            .route(
+                "/session",
+                get(move || {
+                    let base = session_base.clone();
+                    async move {
+                        axum::Json(json!({
+                            "apiUrl": base,
+                            "downloadUrl": format!("{base}/download/{{accountId}}/{{blobId}}"),
+                            "uploadUrl": format!("{base}/upload/{{accountId}}"),
+                            "eventSourceUrl": format!("{base}/eventsource"),
+                            "state": "s",
+                            "username": "u",
+                            "accounts": {"a": {"name": "u", "isPersonal": true, "isReadOnly": false, "accountCapabilities": {}}},
+                            "primaryAccounts": {"urn:ietf:params:jmap:mail": "a"},
+                            "capabilities": {}
+                        }))
+                    }
+                }),
+            )
+            .route(
+                "/",
+                post(move |body: String| {
+                    let calls = base_calls.clone();
+                    let mailboxes = mailboxes_for_api.clone();
+                    let refuse = refuse.clone();
+                    async move {
+                        let req: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
+                        let method_calls = req
+                            .get("methodCalls")
+                            .and_then(|v| v.as_array())
+                            .cloned()
+                            .unwrap_or_default();
+                        let mut responses = Vec::new();
+                        for call in method_calls {
+                            let name = call.get(0).and_then(|v| v.as_str()).unwrap_or("");
+                            let args = call.get(1).cloned().unwrap_or(Value::Null);
+                            let id = call.get(2).and_then(|v| v.as_str()).unwrap_or("c0");
+                            calls
+                                .lock()
+                                .await
+                                .push(json!({"method": name, "args": args.clone()}));
+                            let (mname, result) = match name {
+                                "Mailbox/query" => {
+                                    let ids: Vec<Value> = mailboxes
+                                        .iter()
+                                        .filter_map(|m| m.get("id").cloned())
+                                        .collect();
+                                    ("Mailbox/query", json!({"accountId": "a", "ids": ids}))
+                                }
+                                "Mailbox/get" => {
+                                    ("Mailbox/get", json!({"accountId": "a", "list": mailboxes}))
+                                }
+                                "Email/query" => {
+                                    ("Email/query", json!({"accountId": "a", "ids": [], "total": 0}))
+                                }
+                                "Mailbox/set" => {
+                                    let destroy: Vec<String> = args
+                                        .get("destroy")
+                                        .and_then(|v| v.as_array())
+                                        .map(|a| {
+                                            a.iter()
+                                                .filter_map(|v| v.as_str().map(str::to_string))
+                                                .collect()
+                                        })
+                                        .unwrap_or_default();
+                                    let mut destroyed: Vec<String> = Vec::new();
+                                    let mut not_destroyed = serde_json::Map::new();
+                                    for mb in destroy {
+                                        if refuse.contains(&mb) {
+                                            not_destroyed.insert(
+                                                mb,
+                                                json!({"type": "mailboxHasChild"}),
+                                            );
+                                        } else {
+                                            destroyed.push(mb);
+                                        }
+                                    }
+                                    (
+                                        "Mailbox/set",
+                                        json!({
+                                            "accountId": "a",
+                                            "destroyed": destroyed,
+                                            "notDestroyed": Value::Object(not_destroyed),
+                                        }),
+                                    )
+                                }
+                                _ => (name, json!({"accountId": "a"})),
+                            };
+                            responses.push(json!([mname, result, id]));
+                        }
+                        let resp =
+                            json!({"methodResponses": responses, "sessionState": "s"});
+                        Response::builder()
+                            .status(200)
+                            .header("content-type", "application/json")
+                            .body(axum::body::Body::from(serde_json::to_vec(&resp).unwrap()))
+                            .unwrap()
+                    }
+                }),
+            );
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        (base, calls)
+    }
+
+    /// An EWS hard-delete of an EAS-created folder must prune its `folder_map`
+    /// row and journal a `folder-delete`, so EAS `FolderSync`/`GetHierarchy`
+    /// stop advertising it and primed devices receive its Delete.
+    #[tokio::test]
+    async fn hard_delete_prunes_eas_folder_map_and_journals() {
+        let (base, _calls) = spawn_delete_stub(vec![
+            json!({"id": "mb-parent", "parentId": null}),
+            json!({"id": "mb-child", "parentId": "mb-parent"}),
+        ])
+        .await;
+        let storage = crate::storage::Storage::new("sqlite::memory:")
+            .await
+            .unwrap();
+        storage.init_schema().await.unwrap();
+        let owner = "u@example.com";
+        for (sid, name) in [("mb-parent", "Parent"), ("mb-child", "Child")] {
+            storage
+                .upsert_folder_journaled(
+                    crate::storage::FolderUpsertParams {
+                        owner,
+                        server_id: sid,
+                        parent_id: "0",
+                        display_name: name,
+                        folder_type: 12,
+                        backend_kind: "jmap",
+                        backend_id: sid,
+                    },
+                    "folder-add",
+                )
+                .await
+                .unwrap();
+        }
+        let cfg = crate::config::Config {
+            jmap_base: base,
+            email_enabled: true,
+            mail_domain: "example.com".to_string(),
+            hmac_secret: SecretString::from("a".repeat(32)),
+            ..Default::default()
+        };
+        let state = StdArc::new(crate::models::AppState::new(cfg, StdArc::new(storage)));
+        let auth = AuthContext {
+            username: owner.to_string(),
+            password: SecretString::from("pw"),
+        };
+        let body = r#"<?xml version="1.0"?><m:DeleteFolder DeleteType="HardDelete" xmlns:m="m" xmlns:t="t"><m:FolderIds><t:FolderId Id="mb-parent"/></m:FolderIds></m:DeleteFolder>"#;
+        let resp = handle_delete_folder(&state, &auth, body).await;
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(text.contains("NoError"), "hard delete must succeed: {text}");
+        assert!(
+            state
+                .storage
+                .get_folder(owner, "mb-parent")
+                .await
+                .unwrap()
+                .is_none(),
+            "the parent mapping must be pruned"
+        );
+        assert!(
+            state
+                .storage
+                .get_folder(owner, "mb-child")
+                .await
+                .unwrap()
+                .is_none(),
+            "the descendant mapping must be pruned"
+        );
+        let journal = state
+            .storage
+            .list_folder_journal_since(owner, 0, i64::MAX)
+            .await
+            .unwrap();
+        let deletes: Vec<&str> = journal
+            .iter()
+            .filter(|r| r.op == "folder-delete")
+            .map(|r| r.server_id.as_str())
+            .collect();
+        assert!(
+            deletes.contains(&"mb-parent") && deletes.contains(&"mb-child"),
+            "both destroyed mailboxes must be journaled as folder-delete: {deletes:?}"
+        );
+        assert!(
+            state
+                .storage
+                .list_pending_folder_prunes(owner)
+                .await
+                .unwrap()
+                .is_empty(),
+            "a successful delete must leave no deferred-prune rows behind"
+        );
+    }
+
+    /// A hard-delete whose JMAP mailbox ids have NO `folder_map` row (e.g. a
+    /// system mailbox referenced by a native id) must still succeed — the
+    /// mirror is a no-op, never an error.
+    #[tokio::test]
+    async fn hard_delete_without_mapping_row_journals_nothing() {
+        let (base, _calls) =
+            spawn_delete_stub(vec![json!({"id": "mb-sys", "parentId": null})]).await;
+        let storage = crate::storage::Storage::new("sqlite::memory:")
+            .await
+            .unwrap();
+        storage.init_schema().await.unwrap();
+        let cfg = crate::config::Config {
+            jmap_base: base,
+            email_enabled: true,
+            mail_domain: "example.com".to_string(),
+            hmac_secret: SecretString::from("a".repeat(32)),
+            ..Default::default()
+        };
+        let state = StdArc::new(crate::models::AppState::new(cfg, StdArc::new(storage)));
+        let owner = "u@example.com";
+        let auth = AuthContext {
+            username: owner.to_string(),
+            password: SecretString::from("pw"),
+        };
+        let body = r#"<?xml version="1.0"?><m:DeleteFolder DeleteType="HardDelete" xmlns:m="m" xmlns:t="t"><m:FolderIds><t:FolderId Id="mb-sys"/></m:FolderIds></m:DeleteFolder>"#;
+        let resp = handle_delete_folder(&state, &auth, body).await;
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(
+            text.contains("NoError"),
+            "an unmapped delete must succeed: {text}"
+        );
+        let journal = state
+            .storage
+            .list_folder_journal_since(owner, 0, i64::MAX)
+            .await
+            .unwrap();
+        assert!(
+            journal.iter().all(|r| r.op != "folder-delete"),
+            "an unmapped mailbox must journal nothing"
+        );
+    }
+
+    /// A hard-delete whose EAS mirror write fails must NOT be acknowledged as
+    /// success: the JMAP mailbox is gone, so a stale `folder_map` row would
+    /// keep EAS advertising a deleted folder.
+    #[tokio::test]
+    async fn hard_delete_mirror_write_failure_is_internal_error() {
+        let (base, _calls) = spawn_delete_stub(vec![json!({"id": "mb-1", "parentId": null})]).await;
+        let storage = crate::storage::Storage::new("sqlite::memory:")
+            .await
+            .unwrap();
+        storage.init_schema().await.unwrap();
+        let owner = "u@example.com";
+        storage
+            .upsert_folder_journaled(
+                crate::storage::FolderUpsertParams {
+                    owner,
+                    server_id: "mb-1",
+                    parent_id: "0",
+                    display_name: "Folder",
+                    folder_type: 12,
+                    backend_kind: "jmap",
+                    backend_id: "mb-1",
+                },
+                "folder-add",
+            )
+            .await
+            .unwrap();
+        let cfg = crate::config::Config {
+            jmap_base: base,
+            email_enabled: true,
+            mail_domain: "example.com".to_string(),
+            hmac_secret: SecretString::from("a".repeat(32)),
+            ..Default::default()
+        };
+        let state = StdArc::new(crate::models::AppState::new(cfg, StdArc::new(storage)));
+        // Close the pool so the mirror write cannot execute; JMAP calls are
+        // HTTP and still succeed.
+        state.storage.pool().close().await;
+        let auth = AuthContext {
+            username: owner.to_string(),
+            password: SecretString::from("pw"),
+        };
+        let body = r#"<?xml version="1.0"?><m:DeleteFolder DeleteType="HardDelete" xmlns:m="m" xmlns:t="t"><m:FolderIds><t:FolderId Id="mb-1"/></m:FolderIds></m:DeleteFolder>"#;
+        let resp = handle_delete_folder(&state, &auth, body).await;
+        assert_eq!(
+            resp.status(),
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "a failed mirror write must surface as a retryable server error"
+        );
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(
+            text.contains("ErrorInternalServerError"),
+            "the fault must be a retryable EWS code, got: {text}"
+        );
+    }
+
+    /// A walk that aborts part-way (a mid-subtree `Mailbox/set` refusal) must
+    /// still mirror the mailboxes destroyed before the abort: they are already
+    /// gone from JMAP, and a retry re-queries the now-childless hierarchy so it
+    /// could never recover their ids — leaving their `folder_map` rows
+    /// advertised by EAS forever.
+    #[tokio::test]
+    async fn hard_delete_partial_failure_prunes_destroyed_descendants() {
+        // Root → child; the child destroys cleanly, the root is refused
+        // (`mailboxHasChild`), modelling an abort after the descendant is gone.
+        let (base, _calls) = spawn_delete_stub_refusing(
+            vec![
+                json!({"id": "mb-root", "parentId": null}),
+                json!({"id": "mb-child", "parentId": "mb-root"}),
+            ],
+            vec!["mb-root".to_string()],
+        )
+        .await;
+        let storage = crate::storage::Storage::new("sqlite::memory:")
+            .await
+            .unwrap();
+        storage.init_schema().await.unwrap();
+        let owner = "u@example.com";
+        for (sid, name) in [("mb-root", "Root"), ("mb-child", "Child")] {
+            storage
+                .upsert_folder_journaled(
+                    crate::storage::FolderUpsertParams {
+                        owner,
+                        server_id: sid,
+                        parent_id: "0",
+                        display_name: name,
+                        folder_type: 12,
+                        backend_kind: "jmap",
+                        backend_id: sid,
+                    },
+                    "folder-add",
+                )
+                .await
+                .unwrap();
+        }
+        let cfg = crate::config::Config {
+            jmap_base: base,
+            email_enabled: true,
+            mail_domain: "example.com".to_string(),
+            hmac_secret: SecretString::from("a".repeat(32)),
+            ..Default::default()
+        };
+        let state = StdArc::new(crate::models::AppState::new(cfg, StdArc::new(storage)));
+        let auth = AuthContext {
+            username: owner.to_string(),
+            password: SecretString::from("pw"),
+        };
+        let body = r#"<?xml version="1.0"?><m:DeleteFolder DeleteType="HardDelete" xmlns:m="m" xmlns:t="t"><m:FolderIds><t:FolderId Id="mb-root"/></m:FolderIds></m:DeleteFolder>"#;
+        let resp = handle_delete_folder(&state, &auth, body).await;
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(
+            text.contains("ErrorCannotDeleteObject"),
+            "a refused destroy must surface as a delete error: {text}"
+        );
+        assert!(
+            state
+                .storage
+                .get_folder(owner, "mb-child")
+                .await
+                .unwrap()
+                .is_none(),
+            "the destroyed descendant's mapping must be pruned on the failure path"
+        );
+        assert!(
+            state
+                .storage
+                .get_folder(owner, "mb-root")
+                .await
+                .unwrap()
+                .is_some(),
+            "the refused root's mapping must be preserved"
+        );
+        let journal = state
+            .storage
+            .list_folder_journal_since(owner, 0, i64::MAX)
+            .await
+            .unwrap();
+        assert!(
+            journal
+                .iter()
+                .any(|r| r.op == "folder-delete" && r.server_id == "mb-child"),
+            "the destroyed descendant must be journaled as folder-delete"
+        );
+        assert!(
+            journal
+                .iter()
+                .all(|r| r.op != "folder-delete" || r.server_id != "mb-root"),
+            "the refused root must not be journaled as deleted"
+        );
+    }
+
+    /// Spawn a JMAP stub that accepts a `Mailbox/set` rename of `rename_id`,
+    /// recording the wire calls so a test can assert the update was issued.
+    async fn spawn_rename_stub(
+        rename_id: &'static str,
+    ) -> (String, StdArc<TokioMutex<Vec<Value>>>) {
+        use axum::response::Response;
+        let calls: StdArc<TokioMutex<Vec<Value>>> = StdArc::new(TokioMutex::new(Vec::new()));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let base = format!("http://127.0.0.1:{port}");
+        let session_base = base.clone();
+        let base_calls = calls.clone();
+        let app = axum::Router::new()
+            .route(
+                "/session",
+                get(move || {
+                    let base = session_base.clone();
+                    async move {
+                        axum::Json(json!({
+                            "apiUrl": base,
+                            "downloadUrl": format!("{base}/download/{{accountId}}/{{blobId}}"),
+                            "uploadUrl": format!("{base}/upload/{{accountId}}"),
+                            "eventSourceUrl": format!("{base}/eventsource"),
+                            "state": "s",
+                            "username": "u",
+                            "accounts": {"a": {"name": "u", "isPersonal": true, "isReadOnly": false, "accountCapabilities": {}}},
+                            "primaryAccounts": {"urn:ietf:params:jmap:mail": "a"},
+                            "capabilities": {}
+                        }))
+                    }
+                }),
+            )
+            .route(
+                "/",
+                post(move |body: String| {
+                    let calls = base_calls.clone();
+                    async move {
+                        let req: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
+                        let method_calls = req
+                            .get("methodCalls")
+                            .and_then(|v| v.as_array())
+                            .cloned()
+                            .unwrap_or_default();
+                        let mut responses = Vec::new();
+                        for call in method_calls {
+                            let name = call.get(0).and_then(|v| v.as_str()).unwrap_or("");
+                            let args = call.get(1).cloned().unwrap_or(Value::Null);
+                            let id = call.get(2).and_then(|v| v.as_str()).unwrap_or("c0");
+                            calls
+                                .lock()
+                                .await
+                                .push(json!({"method": name, "args": args.clone()}));
+                            let (mname, result) = match name {
+                                "Mailbox/set" => {
+                                    // Report the rename as applied.
+                                    (
+                                        "Mailbox/set",
+                                        json!({
+                                            "accountId": "a",
+                                            "updated": { rename_id: Value::Null },
+                                        }),
+                                    )
+                                }
+                                _ => (name, json!({"accountId": "a"})),
+                            };
+                            responses.push(json!([mname, result, id]));
+                        }
+                        let resp =
+                            json!({"methodResponses": responses, "sessionState": "s"});
+                        Response::builder()
+                            .status(200)
+                            .header("content-type", "application/json")
+                            .body(axum::body::Body::from(serde_json::to_vec(&resp).unwrap()))
+                            .unwrap()
+                    }
+                }),
+            );
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        (base, calls)
+    }
+
+    /// An EWS `UpdateFolder` rename of an EAS-created mail folder must mirror
+    /// the new DisplayName into `folder_map` AND journal a `folder-update`, so
+    /// EAS `GetHierarchy` stops advertising the old name and already-primed
+    /// devices receive the change.
+    #[tokio::test]
+    async fn update_folder_rename_mirrors_eas_folder_map_and_journals() {
+        let (base, _calls) = spawn_rename_stub("mb-1").await;
+        let storage = crate::storage::Storage::new("sqlite::memory:")
+            .await
+            .unwrap();
+        storage.init_schema().await.unwrap();
+        let owner = "u@example.com";
+        storage
+            .upsert_folder_journaled(
+                crate::storage::FolderUpsertParams {
+                    owner,
+                    server_id: "mb-1",
+                    parent_id: "0",
+                    display_name: "Old Name",
+                    folder_type: 12,
+                    backend_kind: "jmap",
+                    backend_id: "mb-1",
+                },
+                "folder-add",
+            )
+            .await
+            .unwrap();
+        let cfg = crate::config::Config {
+            jmap_base: base,
+            email_enabled: true,
+            mail_domain: "example.com".to_string(),
+            hmac_secret: SecretString::from("a".repeat(32)),
+            ..Default::default()
+        };
+        let state = StdArc::new(crate::models::AppState::new(cfg, StdArc::new(storage)));
+        let auth = AuthContext {
+            username: owner.to_string(),
+            password: SecretString::from("pw"),
+        };
+        let body = r#"<?xml version="1.0"?><m:UpdateFolder xmlns:m="m" xmlns:t="t"><m:FolderChanges><t:FolderChange><t:FolderId Id="mb-1"/><t:Updates><t:SetFolderField><t:Folder><t:DisplayName>New Name</t:DisplayName></t:Folder></t:SetFolderField></t:Updates></t:FolderChange></m:FolderChanges></m:UpdateFolder>"#;
+        let resp = handle_update_folder(&state, &auth, body).await;
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(text.contains("NoError"), "rename must succeed: {text}");
+        let row = state
+            .storage
+            .get_folder(owner, "mb-1")
+            .await
+            .unwrap()
+            .expect("the mapping row must survive the rename");
+        assert_eq!(
+            row.display_name, "New Name",
+            "the mirrored DisplayName must reflect the rename"
+        );
+        let journal = state
+            .storage
+            .list_folder_journal_since(owner, 0, i64::MAX)
+            .await
+            .unwrap();
+        assert!(
+            journal
+                .iter()
+                .any(|r| r.op == "folder-update" && r.server_id == "mb-1"),
+            "the rename must be journaled as folder-update: {:?}",
+            journal
+                .iter()
+                .map(|r| (&r.op, &r.server_id))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    /// An EWS `UpdateFolder` rename of a mailbox that has NO `folder_map` row
+    /// (one EAS never advertised) must succeed but journal NOTHING — the mirror
+    /// never fabricates an EAS-visible folder.
+    #[tokio::test]
+    async fn update_folder_rename_without_mapping_row_journals_nothing() {
+        let (base, _calls) = spawn_rename_stub("mb-unmapped").await;
+        let storage = crate::storage::Storage::new("sqlite::memory:")
+            .await
+            .unwrap();
+        storage.init_schema().await.unwrap();
+        let owner = "u@example.com";
+        let cfg = crate::config::Config {
+            jmap_base: base,
+            email_enabled: true,
+            mail_domain: "example.com".to_string(),
+            hmac_secret: SecretString::from("a".repeat(32)),
+            ..Default::default()
+        };
+        let state = StdArc::new(crate::models::AppState::new(cfg, StdArc::new(storage)));
+        let auth = AuthContext {
+            username: owner.to_string(),
+            password: SecretString::from("pw"),
+        };
+        let body = r#"<?xml version="1.0"?><m:UpdateFolder xmlns:m="m" xmlns:t="t"><m:FolderChanges><t:FolderChange><t:FolderId Id="mb-unmapped"/><t:Updates><t:SetFolderField><t:Folder><t:DisplayName>Renamed</t:DisplayName></t:Folder></t:SetFolderField></t:Updates></t:FolderChange></m:FolderChanges></m:UpdateFolder>"#;
+        let resp = handle_update_folder(&state, &auth, body).await;
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(text.contains("NoError"), "rename must succeed: {text}");
+        assert!(
+            state
+                .storage
+                .get_folder(owner, "mb-unmapped")
+                .await
+                .unwrap()
+                .is_none(),
+            "an unmapped mailbox must not gain a folder_map row"
+        );
+        let journal = state
+            .storage
+            .list_folder_journal_since(owner, 0, i64::MAX)
+            .await
+            .unwrap();
+        assert!(
+            journal.iter().all(|r| r.op != "folder-update"),
+            "an unmapped mailbox must journal no folder-update"
+        );
+    }
+
+    /// Spawn a JMAP stub whose `Mailbox/set` reports NO update at all (the id is
+    /// in neither `updated` nor `notUpdated`), so `update_mailbox` returns
+    /// `Ok(false)`.
+    async fn spawn_rename_stub_unapplied() -> String {
+        use axum::response::Response;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let base = format!("http://127.0.0.1:{port}");
+        let session_base = base.clone();
+        let app = axum::Router::new()
+            .route(
+                "/session",
+                get(move || {
+                    let base = session_base.clone();
+                    async move {
+                        axum::Json(json!({
+                            "apiUrl": base,
+                            "downloadUrl": format!("{base}/download/{{accountId}}/{{blobId}}"),
+                            "uploadUrl": format!("{base}/upload/{{accountId}}"),
+                            "eventSourceUrl": format!("{base}/eventsource"),
+                            "state": "s",
+                            "username": "u",
+                            "accounts": {"a": {"name": "u", "isPersonal": true, "isReadOnly": false, "accountCapabilities": {}}},
+                            "primaryAccounts": {"urn:ietf:params:jmap:mail": "a"},
+                            "capabilities": {}
+                        }))
+                    }
+                }),
+            )
+            .route(
+                "/",
+                post(move |body: String| async move {
+                    let req: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
+                    let method_calls = req
+                        .get("methodCalls")
+                        .and_then(|v| v.as_array())
+                        .cloned()
+                        .unwrap_or_default();
+                    let mut responses = Vec::new();
+                    for call in method_calls {
+                        let name = call.get(0).and_then(|v| v.as_str()).unwrap_or("");
+                        let id = call.get(2).and_then(|v| v.as_str()).unwrap_or("c0");
+                        let result = match name {
+                            // Report NO update: `updated` empty, no `notUpdated`.
+                            "Mailbox/set" => json!({"accountId": "a", "updated": {}}),
+                            _ => json!({"accountId": "a"}),
+                        };
+                        responses.push(json!([name, result, id]));
+                    }
+                    let resp = json!({"methodResponses": responses, "sessionState": "s"});
+                    Response::builder()
+                        .status(200)
+                        .header("content-type", "application/json")
+                        .body(axum::body::Body::from(serde_json::to_vec(&resp).unwrap()))
+                        .unwrap()
+                }),
+            );
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        base
+    }
+
+    /// Build an app state with a single JMAP-backed `folder_map` row
+    /// (`mb-1`/`Old Name`, top-level) against the given stub base.
+    async fn state_with_mapped_folder(base: String) -> StdArc<crate::models::AppState> {
+        let storage = crate::storage::Storage::new("sqlite::memory:")
+            .await
+            .unwrap();
+        storage.init_schema().await.unwrap();
+        storage
+            .upsert_folder_journaled(
+                crate::storage::FolderUpsertParams {
+                    owner: "u@example.com",
+                    server_id: "mb-1",
+                    parent_id: "0",
+                    display_name: "Old Name",
+                    folder_type: 12,
+                    backend_kind: "jmap",
+                    backend_id: "mb-1",
+                },
+                "folder-add",
+            )
+            .await
+            .unwrap();
+        let cfg = crate::config::Config {
+            jmap_base: base,
+            email_enabled: true,
+            mail_domain: "example.com".to_string(),
+            hmac_secret: SecretString::from("a".repeat(32)),
+            ..Default::default()
+        };
+        StdArc::new(crate::models::AppState::new(cfg, StdArc::new(storage)))
+    }
+
+    fn update_folder_body(id: &str, name: &str) -> String {
+        format!(
+            r#"<?xml version="1.0"?><m:UpdateFolder xmlns:m="m" xmlns:t="t"><m:FolderChanges><t:FolderChange><t:FolderId Id="{id}"/><t:Updates><t:SetFolderField><t:Folder><t:DisplayName>{name}</t:DisplayName></t:Folder></t:SetFolderField></t:Updates></t:FolderChange></m:FolderChanges></m:UpdateFolder>"#
+        )
+    }
+
+    async fn body_text(resp: axum::response::Response) -> String {
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        String::from_utf8_lossy(&bytes).to_string()
+    }
+
+    /// When the backend reports the rename as NOT applied, the handler must fail
+    /// (never mirror a name the backend never adopted) and leave `folder_map`
+    /// and the journal untouched.
+    #[tokio::test]
+    async fn update_folder_rename_not_applied_by_backend_does_not_mirror() {
+        let base = spawn_rename_stub_unapplied().await;
+        let state = state_with_mapped_folder(base).await;
+        let auth = AuthContext {
+            username: "u@example.com".to_string(),
+            password: SecretString::from("pw"),
+        };
+        let resp =
+            handle_update_folder(&state, &auth, &update_folder_body("mb-1", "New Name")).await;
+        let text = body_text(resp).await;
+        assert!(
+            !text.contains("NoError"),
+            "an unapplied rename must not be acknowledged as success: {text}"
+        );
+        let row = state
+            .storage
+            .get_folder("u@example.com", "mb-1")
+            .await
+            .unwrap()
+            .expect("the mapping row must survive");
+        assert_eq!(
+            row.display_name, "Old Name",
+            "the unapplied rename must not be mirrored into folder_map"
+        );
+        let journal = state
+            .storage
+            .list_folder_journal_since("u@example.com", 0, i64::MAX)
+            .await
+            .unwrap();
+        assert!(
+            journal.iter().all(|r| r.op != "folder-update"),
+            "an unapplied rename must journal no folder-update"
+        );
+    }
+
+    /// A rename of an EAS-visible folder to a reserved system-folder name must be
+    /// rejected BEFORE the backend is touched, leaving the mapping and journal
+    /// untouched.
+    #[tokio::test]
+    async fn update_folder_rename_to_reserved_name_rejected_before_backend() {
+        let (base, calls) = spawn_rename_stub("mb-1").await;
+        let state = state_with_mapped_folder(base).await;
+        let auth = AuthContext {
+            username: "u@example.com".to_string(),
+            password: SecretString::from("pw"),
+        };
+        let resp = handle_update_folder(&state, &auth, &update_folder_body("mb-1", "Inbox")).await;
+        let text = body_text(resp).await;
+        assert!(
+            !text.contains("NoError"),
+            "a reserved-name rename must be rejected: {text}"
+        );
+        assert!(
+            calls
+                .lock()
+                .await
+                .iter()
+                .all(|c| c["method"] != "Mailbox/set"),
+            "a reserved-name rename must not reach the backend"
+        );
+        let row = state
+            .storage
+            .get_folder("u@example.com", "mb-1")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(row.display_name, "Old Name");
+    }
+
+    /// A rename to a name longer than the [MS-ASCMD] §6.13 64-character bound
+    /// must be rejected before the backend is touched.
+    #[tokio::test]
+    async fn update_folder_rename_too_long_rejected_before_backend() {
+        let (base, calls) = spawn_rename_stub("mb-1").await;
+        let state = state_with_mapped_folder(base).await;
+        let auth = AuthContext {
+            username: "u@example.com".to_string(),
+            password: SecretString::from("pw"),
+        };
+        let long_name = "x".repeat(65);
+        let resp =
+            handle_update_folder(&state, &auth, &update_folder_body("mb-1", &long_name)).await;
+        let text = body_text(resp).await;
+        assert!(
+            !text.contains("NoError"),
+            "an over-length rename must be rejected: {text}"
+        );
+        assert!(
+            calls
+                .lock()
+                .await
+                .iter()
+                .all(|c| c["method"] != "Mailbox/set"),
+            "an over-length rename must not reach the backend"
+        );
+    }
+
+    /// A rename colliding (case-insensitively) with a sibling under the same
+    /// parent must be rejected before the backend is touched.
+    #[tokio::test]
+    async fn update_folder_rename_sibling_collision_rejected_before_backend() {
+        let (base, calls) = spawn_rename_stub("mb-1").await;
+        let state = state_with_mapped_folder(base).await;
+        state
+            .storage
+            .upsert_folder_journaled(
+                crate::storage::FolderUpsertParams {
+                    owner: "u@example.com",
+                    server_id: "mb-2",
+                    parent_id: "0",
+                    display_name: "Sibling",
+                    folder_type: 12,
+                    backend_kind: "jmap",
+                    backend_id: "mb-2",
+                },
+                "folder-add",
+            )
+            .await
+            .unwrap();
+        let auth = AuthContext {
+            username: "u@example.com".to_string(),
+            password: SecretString::from("pw"),
+        };
+        let resp =
+            handle_update_folder(&state, &auth, &update_folder_body("mb-1", "sibling")).await;
+        let text = body_text(resp).await;
+        assert!(
+            !text.contains("NoError"),
+            "a sibling-name collision must be rejected: {text}"
+        );
+        assert!(
+            calls
+                .lock()
+                .await
+                .iter()
+                .all(|c| c["method"] != "Mailbox/set"),
+            "a sibling-name collision must not reach the backend"
+        );
+    }
+
+    /// An unmapped mailbox (one EAS never advertised) is renamed freely: the
+    /// validation applies only to EAS-visible folders.
+    #[tokio::test]
+    async fn update_folder_rename_unmapped_mailbox_allows_reserved_name() {
+        let (base, calls) = spawn_rename_stub("mb-unmapped").await;
+        let storage = crate::storage::Storage::new("sqlite::memory:")
+            .await
+            .unwrap();
+        storage.init_schema().await.unwrap();
+        let cfg = crate::config::Config {
+            jmap_base: base,
+            email_enabled: true,
+            mail_domain: "example.com".to_string(),
+            hmac_secret: SecretString::from("a".repeat(32)),
+            ..Default::default()
+        };
+        let state = StdArc::new(crate::models::AppState::new(cfg, StdArc::new(storage)));
+        let auth = AuthContext {
+            username: "u@example.com".to_string(),
+            password: SecretString::from("pw"),
+        };
+        let resp =
+            handle_update_folder(&state, &auth, &update_folder_body("mb-unmapped", "Inbox")).await;
+        let text = body_text(resp).await;
+        assert!(
+            text.contains("NoError"),
+            "an unmapped mailbox rename must not be constrained by EAS name rules: {text}"
+        );
+        assert!(
+            calls
+                .lock()
+                .await
+                .iter()
+                .any(|c| c["method"] == "Mailbox/set"),
+            "an unmapped mailbox rename must reach the backend"
+        );
+    }
+
+    /// A JMAP stub for `MoveFolder`: `Mailbox/query` reports the destination
+    /// mailbox (and, when asked for the moved mailbox's own id, its role), and
+    /// `Mailbox/set` reports the reparent as applied.
+    async fn spawn_move_stub() -> (String, StdArc<TokioMutex<Vec<Value>>>) {
+        use axum::response::Response;
+        let calls: StdArc<TokioMutex<Vec<Value>>> = StdArc::new(TokioMutex::new(Vec::new()));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let base = format!("http://127.0.0.1:{port}");
+        let session_base = base.clone();
+        let base_calls = calls.clone();
+        let app = axum::Router::new()
+            .route(
+                "/session",
+                get(move || {
+                    let base = session_base.clone();
+                    async move {
+                        axum::Json(json!({
+                            "apiUrl": base,
+                            "downloadUrl": format!("{base}/download/{{accountId}}/{{blobId}}"),
+                            "uploadUrl": format!("{base}/upload/{{accountId}}"),
+                            "eventSourceUrl": format!("{base}/eventsource"),
+                            "state": "s",
+                            "username": "u",
+                            "accounts": {"a": {"name": "u", "isPersonal": true, "isReadOnly": false, "accountCapabilities": {}}},
+                            "primaryAccounts": {"urn:ietf:params:jmap:mail": "a"},
+                            "capabilities": {}
+                        }))
+                    }
+                }),
+            )
+            .route(
+                "/",
+                post(move |body: String| {
+                    let calls = base_calls.clone();
+                    async move {
+                        let req: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
+                        let mut responses = Vec::new();
+                        for call in req
+                            .get("methodCalls")
+                            .and_then(|v| v.as_array())
+                            .cloned()
+                            .unwrap_or_default()
+                        {
+                            let name = call.get(0).and_then(|v| v.as_str()).unwrap_or("");
+                            let args = call.get(1).cloned().unwrap_or(Value::Null);
+                            let id = call.get(2).and_then(|v| v.as_str()).unwrap_or("c0");
+                            calls
+                                .lock()
+                                .await
+                                .push(json!({"method": name, "args": args.clone()}));
+                            let (mname, result) = match name {
+                                "Mailbox/query" => (
+                                    "Mailbox/query",
+                                    json!({"accountId": "a", "ids": ["mb-dest"], "total": 1}),
+                                ),
+                                // `eas_parent_id_for_mailbox` resolves a system
+                                // destination by listing mailboxes and reading the
+                                // role; a user destination is resolved by the
+                                // folder_map row and never reaches here.
+                                "Mailbox/get" => (
+                                    "Mailbox/get",
+                                    json!({"accountId": "a", "list": [
+                                        {"id": "mb-dest", "name": "Destination", "role": "inbox"}
+                                    ]}),
+                                ),
+                                "Mailbox/set" => (
+                                    "Mailbox/set",
+                                    json!({"accountId": "a", "updated": {"mb-1": Value::Null}}),
+                                ),
+                                _ => (name, json!({"accountId": "a"})),
+                            };
+                            responses.push(json!([mname, result, id]));
+                        }
+                        let resp = json!({"methodResponses": responses, "sessionState": "s"});
+                        Response::builder()
+                            .status(200)
+                            .header("content-type", "application/json")
+                            .body(axum::body::Body::from(serde_json::to_vec(&resp).unwrap()))
+                            .unwrap()
+                    }
+                }),
+            );
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        (base, calls)
+    }
+
+    /// An EWS `MoveFolder` reparents the backend mailbox, but the backend move does
+    /// NOT touch `folder_map`: without a mirror the stored ParentId stays stale, so
+    /// a later rename's sibling-collision check validates against the wrong parent
+    /// and EAS keeps the folder under its old parent. The mirror must write the new
+    /// ParentId and journal a `folder-update`.
+    #[tokio::test]
+    async fn move_folder_mirrors_parent_into_eas_folder_map() {
+        let (base, _calls) = spawn_move_stub().await;
+        let storage = crate::storage::Storage::new("sqlite::memory:")
+            .await
+            .unwrap();
+        storage.init_schema().await.unwrap();
+        let owner = "u@example.com";
+        storage
+            .upsert_folder_journaled(
+                crate::storage::FolderUpsertParams {
+                    owner,
+                    server_id: "mb-1",
+                    parent_id: "0",
+                    display_name: "Projects",
+                    folder_type: 12,
+                    backend_kind: "jmap",
+                    backend_id: "mb-1",
+                },
+                "folder-add",
+            )
+            .await
+            .unwrap();
+        // The destination is another EAS-visible (mapped) folder, so its EAS
+        // ParentId IS its mailbox id.
+        storage
+            .upsert_folder_journaled(
+                crate::storage::FolderUpsertParams {
+                    owner,
+                    server_id: "mb-dest",
+                    parent_id: "0",
+                    display_name: "Archive",
+                    folder_type: 12,
+                    backend_kind: "jmap",
+                    backend_id: "mb-dest",
+                },
+                "folder-add",
+            )
+            .await
+            .unwrap();
+        let cfg = crate::config::Config {
+            jmap_base: base,
+            email_enabled: true,
+            mail_domain: "example.com".to_string(),
+            hmac_secret: SecretString::from("a".repeat(32)),
+            ..Default::default()
+        };
+        let state = StdArc::new(crate::models::AppState::new(cfg, StdArc::new(storage)));
+        let auth = AuthContext {
+            username: owner.to_string(),
+            password: SecretString::from("pw"),
+        };
+        let body = r#"<?xml version="1.0"?><m:MoveFolder xmlns:m="m" xmlns:t="t"><m:ToFolderId><t:FolderId Id="mb-dest"/></m:ToFolderId><m:FolderIds><t:FolderId Id="mb-1"/></m:FolderIds></m:MoveFolder>"#;
+        let resp = handle_move_folder(&state, &auth, body).await;
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(text.contains("NoError"), "move must succeed: {text}");
+        let row = state
+            .storage
+            .get_folder(owner, "mb-1")
+            .await
+            .unwrap()
+            .expect("the mapping row must survive the move");
+        assert_eq!(
+            row.parent_id, "mb-dest",
+            "the mirrored ParentId must reflect the new parent"
+        );
+        assert_eq!(
+            row.display_name, "Projects",
+            "the move must not touch the display name"
+        );
+        let journal = state
+            .storage
+            .list_folder_journal_since(owner, 0, i64::MAX)
+            .await
+            .unwrap();
+        assert!(
+            journal
+                .iter()
+                .any(|r| r.op == "folder-update" && r.server_id == "mb-1"),
+            "the reparent must be journaled as folder-update: {:?}",
+            journal
+                .iter()
+                .map(|r| (&r.op, &r.server_id))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    /// A JMAP stub for `MoveFolder` whose backend move (`Mailbox/set`) succeeds
+    /// but whose subsequent mailbox-listing lookup (the `Mailbox/get` behind
+    /// `query_mailboxes`) fails with HTTP 500. This models a transient outage
+    /// striking between the reparent and the ParentId mirror.
+    async fn spawn_move_stub_failing_parent_lookup() -> (String, StdArc<TokioMutex<Vec<Value>>>) {
+        use axum::response::Response;
+        let calls: StdArc<TokioMutex<Vec<Value>>> = StdArc::new(TokioMutex::new(Vec::new()));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let base = format!("http://127.0.0.1:{port}");
+        let session_base = base.clone();
+        let base_calls = calls.clone();
+        let app = axum::Router::new()
+            .route(
+                "/session",
+                get(move || {
+                    let base = session_base.clone();
+                    async move {
+                        axum::Json(json!({
+                            "apiUrl": base,
+                            "downloadUrl": format!("{base}/download/{{accountId}}/{{blobId}}"),
+                            "uploadUrl": format!("{base}/upload/{{accountId}}"),
+                            "eventSourceUrl": format!("{base}/eventsource"),
+                            "state": "s",
+                            "username": "u",
+                            "accounts": {"a": {"name": "u", "isPersonal": true, "isReadOnly": false, "accountCapabilities": {}}},
+                            "primaryAccounts": {"urn:ietf:params:jmap:mail": "a"},
+                            "capabilities": {}
+                        }))
+                    }
+                }),
+            )
+            .route(
+                "/",
+                post(move |body: String| {
+                    let calls = base_calls.clone();
+                    async move {
+                        let req: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
+                        let method_calls = req
+                            .get("methodCalls")
+                            .and_then(|v| v.as_array())
+                            .cloned()
+                            .unwrap_or_default();
+                        for call in &method_calls {
+                            let name = call.get(0).and_then(|v| v.as_str()).unwrap_or("");
+                            let args = call.get(1).cloned().unwrap_or(Value::Null);
+                            calls
+                                .lock()
+                                .await
+                                .push(json!({"method": name, "args": args.clone()}));
+                        }
+                        // The mailbox-listing lookup fails; the move itself does not.
+                        if method_calls
+                            .iter()
+                            .any(|c| c.get(0).and_then(|v| v.as_str()) == Some("Mailbox/get"))
+                        {
+                            return Response::builder()
+                                .status(500)
+                                .body(axum::body::Body::from("backend down"))
+                                .unwrap();
+                        }
+                        let mut responses = Vec::new();
+                        for call in method_calls {
+                            let name = call.get(0).and_then(|v| v.as_str()).unwrap_or("");
+                            let id = call.get(2).and_then(|v| v.as_str()).unwrap_or("c0");
+                            let (mname, result) = match name {
+                                "Mailbox/set" => (
+                                    "Mailbox/set",
+                                    json!({"accountId": "a", "updated": {"mb-1": Value::Null}}),
+                                ),
+                                _ => (name, json!({"accountId": "a"})),
+                            };
+                            responses.push(json!([mname, result, id]));
+                        }
+                        let resp = json!({"methodResponses": responses, "sessionState": "s"});
+                        Response::builder()
+                            .status(200)
+                            .header("content-type", "application/json")
+                            .body(axum::body::Body::from(serde_json::to_vec(&resp).unwrap()))
+                            .unwrap()
+                    }
+                }),
+            );
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        (base, calls)
+    }
+
+    /// A `MoveFolder` whose destination EAS `ParentId` cannot be resolved (the
+    /// mailbox lookup fails transiently) must NOT be applied at all: proceeding
+    /// would change the backend parent while the EAS `ParentId` stayed stale, so
+    /// EAS would keep advertising the folder under its old parent. The
+    /// destination is resolved BEFORE the backend move, so the failure is
+    /// answered with a retryable error, the backend is left untouched, and the
+    /// mapping row is unchanged.
+    #[tokio::test]
+    async fn move_folder_parent_lookup_failure_is_not_acknowledged() {
+        let (base, calls) = spawn_move_stub_failing_parent_lookup().await;
+        let storage = crate::storage::Storage::new("sqlite::memory:")
+            .await
+            .unwrap();
+        storage.init_schema().await.unwrap();
+        let owner = "u@example.com";
+        storage
+            .upsert_folder_journaled(
+                crate::storage::FolderUpsertParams {
+                    owner,
+                    server_id: "mb-1",
+                    parent_id: "0",
+                    display_name: "Projects",
+                    folder_type: 12,
+                    backend_kind: "jmap",
+                    backend_id: "mb-1",
+                },
+                "folder-add",
+            )
+            .await
+            .unwrap();
+        let cfg = crate::config::Config {
+            jmap_base: base,
+            email_enabled: true,
+            mail_domain: "example.com".to_string(),
+            hmac_secret: SecretString::from("a".repeat(32)),
+            ..Default::default()
+        };
+        let state = StdArc::new(crate::models::AppState::new(cfg, StdArc::new(storage)));
+        let auth = AuthContext {
+            username: owner.to_string(),
+            password: SecretString::from("pw"),
+        };
+        // The destination is a mailbox EAS never advertised (no `folder_map`
+        // row), so resolving its EAS ParentId requires the mailbox listing that
+        // fails here.
+        let body = r#"<?xml version="1.0"?><m:MoveFolder xmlns:m="m" xmlns:t="t"><m:ToFolderId><t:FolderId Id="mb-foreign"/></m:ToFolderId><m:FolderIds><t:FolderId Id="mb-1"/></m:FolderIds></m:MoveFolder>"#;
+        let resp = handle_move_folder(&state, &auth, body).await;
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let text = String::from_utf8_lossy(&bytes);
+        // The destination is resolved BEFORE the backend move, so an unresolved
+        // ParentId rejects the move up front: the backend reparent must NOT have
+        // run, and the move must be retryable rather than acknowledged with a
+        // stale ParentId.
+        assert!(
+            !calls
+                .lock()
+                .await
+                .iter()
+                .any(|c| c.get("method").and_then(|v| v.as_str()) == Some("Mailbox/set")),
+            "an unresolved destination must reject the move BEFORE the backend Mailbox/set"
+        );
+        assert!(
+            text.contains("ErrorInternalServerError"),
+            "the move must fail with a retryable ErrorInternalServerError: {text}"
+        );
+        assert!(
+            !text.contains("NoError"),
+            "an unresolved parent mirror must not be acknowledged: {text}"
+        );
+        let row = state
+            .storage
+            .get_folder(owner, "mb-1")
+            .await
+            .unwrap()
+            .expect("the mapping row must survive");
+        assert_eq!(
+            row.parent_id, "0",
+            "a failed parent resolution must not write a stale/incorrect ParentId"
+        );
     }
 }

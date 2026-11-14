@@ -9,7 +9,7 @@ Specs: `exchange_protocols/` (v20250520 .txt docs). Toolchain: Rust 1.99.1.
 EAS specs v20250520 (16.1); older EAS compat NOT needed.
 
 ## Build / test
-- `cargo test` — lib (871) + integration suites (protocol_fixtures 22, snapshots 11, jmap_calendar_deploy 2, doc 1). All must pass.
+- `cargo test` — lib + integration suites (`main.rs` bin tests, `protocol_fixtures`, `snapshots`, `jmap_calendar_deploy`, doc). All must pass. (Run it for the current count; exact numbers are not pinned here.)
 - `cargo clippy --all-targets` — must be 0 warnings. `#[allow(clippy::too_many_arguments)]` is the accepted escape for irreducible request params (email.rs, jmap.rs, eas.rs handle_email_sync).
 - `cargo build --release` — ~5min, must be warning-free.
 - Precedence for gaps: existing deps → new quality deps → Rust 1.99.1 std → custom code.
@@ -127,6 +127,124 @@ EAS specs v20250520 (16.1); older EAS compat NOT needed.
   (default 5 MiB, floor 1024).
 
 ## Session notes
+- AUDIT5.MD §2 (EAS folder-management commands) is COMPLETE and its section
+  documents the delivered behavior. New module `src/eas_folders.rs` (schema
+  v11 `folder_map`) implements `FolderCreate`/`FolderDelete`/`FolderUpdate`
+  against Stalwart as the system of record: mail folders → JMAP `Mailbox/set`
+  (create/update/destroy, with `onDestroyRemoveEmails` and deepest-first
+  subtree destruction), calendar folder (Type 13) →
+  CalDAV `MKCALENDAR`/`DELETE`/`PROPPATCH` displayname, persisting the mapping
+  in `folder_map` so user-created folders survive restarts and surface in
+  `FolderSync`/`GetHierarchy`. Types 14–17 are rejected (Status 10): Type 14
+  (Contacts) because CardDAV collection creation is unsupported, and Types
+  15/16/17 (Tasks/Journal/Notes) because they map to the gateway's single
+  gateway-local Tasks/Notes collections rather than a per-folder backend
+  collection. The EAS ServerId of a mail folder is the JMAP mailbox id itself;
+  a CalDAV folder's is its
+  collection href (kept stable across a rename). An EWS `UpdateFolder` rename
+  of an EAS-created mail folder is mirrored into `folder_map` and journaled as
+  `folder-update` (no-op when no mapping row exists; a failed mirror write is a
+  retryable error, never a silent success). The rename is held to the SAME name
+  rules EAS `FolderUpdate` enforces (reserved system name / >64 chars /
+  case-insensitive sibling collision) BEFORE the backend is touched, and
+  `update_mailbox`'s bool is honoured (mirror only on `Ok(true)`; `Ok(false)` is
+  a retryable error). `GetHierarchy` now appends
+  user-created folders; the incremental `FolderSync` reports folder-hierarchy
+  changes journaled in `change_journal` (`resource_href='folder'`, filtered out
+  of the EWS item-delta feed) so a mutation reaches an already-primed client as
+  Add/Update/Delete. `GetAttachment` streams the blob through
+  `JmapClient::download_blob_range` as the response body + blob Content-Type
+  (missing name → Status 2; missing/empty → HTTP 500). `Find` stays the legacy
+  GAL/mailbox compatibility shape. Status codes per [MS-ASCMD]
+  §2.2.3.177.8/§6.10–§6.19 (1/2/3/4/5/6/10). The EAS and EWS email deltas now
+  drive the mailbox-scoped `Email/queryChanges` feed (`filter.inMailbox` +
+  the prime's `receivedAt` sort), never the account-wide `Email/changes`, so a
+  single collection never receives another folder's mail; a `queryChanges`
+  membership feed misses in-place flag edits, so BOTH the EAS and EWS email
+  deltas keep a per-collection keyword baseline and diff it as `<Change>`/
+  `<t:Update>` — the diff is bounded per delta (a rotating per-collection scan
+  position in `email_keyword_scan` walks at most `KEYWORD_SCAN_MAX_PAGES` pages,
+  wrapping at the end), so a delta never pays O(mailbox) in JMAP calls. Tests: `src/eas_folders.rs` (a
+  combined JMAP+CalDAV axum stub records the exact wire calls; session apiUrl
+  must equal the base origin so the client POSTs to `/`, and CalDAV paths are
+  percent-encoded by reqwest's Url::join) plus the `src/sync.rs` and `src/eas.rs`
+  delta/scoping tests. clippy 0 (`-D warnings`), rustfmt clean on ALL touched
+  files, release warning-free.
+- AUDIT5.MD §2 PR-review hardening (delivered). `JmapClient::destroy_mailbox`
+  returns a typed `MailboxDestroyOutcome` (`Destroyed`/`AlreadyGone`/`Refused`):
+  a JMAP method-level `error` and a `Mailbox/set` result with no `destroyed`
+  array are hard `Err`s, a `notDestroyed` `notFound` entry is `AlreadyGone`
+  (RFC 8620 §5.3 — the desired end state, so an EAS FolderDelete/EWS/MAPI
+  subtree retry after a partial delete resumes), and any other `notDestroyed`
+  type is `Refused` (the mailbox still exists — the mirror must NOT be pruned,
+  else the next reconcile resurrects it). Callers (eas_folders, ews_folder_ops,
+  mapi handler) match the typed outcome. `query_all_mailboxes` pages
+  `Mailbox/query` at `MAILBOX_QUERY_PAGE` (500) and stops on the requested
+  `total` (calculateTotal), NOT a "short page means done" heuristic — a server
+  that clamps `limit` below 500 would otherwise truncate the subtree walk.
+  MAPI `RopDeleteFolder` ([MS-OXCFOLD] §2.2.1.3) now rejects any
+  `DeleteFolderFlags` bit outside 0x01|0x04|0x10 (ecInvalidParam, store
+  untouched), accepts 0x10 as a valid no-op bit, and reports
+  `PartialCompletion` (new `RopDeleteFolderResponse`, MS-OXCROPS §2.2.4.3.2)
+  when it succeeds for only a subset of the subtree. The EAS email delta's
+  keyword baseline seeds a row for every delivered `<Add>` (`render_pending_email_op`)
+  so a flag edit before the rotating scan reaches the message is still reported
+  — a missing row on the scan's first observation is recorded WITHOUT a
+  `<Change>` (the Add already carried the current flags; emitting a Change there
+  fired for messages the client never received). A scoped folder's delta is the
+  account-wide calendar feed, so an event moved OUT of that folder's calendar
+  lingers on the device until a client resync; tombstoning the scoped-filtered
+  ids is NOT done because `item_map` is owner-global (no collection column) and
+  calendar-event hrefs are account-scoped
+  (`jmap://calendar/{account}/{id}`), so tombstoning them would delete every
+  OTHER calendar's events from the shared rows. The residual is bounded and
+  cross-calendar-safe. The EAS `<Add>`/`<Change>` decision and the ETag-change
+  filter ARE now scoped: a per-(device,collection) delivery ledger
+  (`calendar_delivery_map`, `UNIQUE(owner, scope_id, server_id)`, scope_id = the
+  device-scoped `state_collection_id`) records the ETag each SyncKey stream last
+  delivered, so a fresh prime emits `<Add>` for every event it delivers even when
+  the owner-global `item_map` already holds the row (another device, or another
+  calendar holding the same event) and a per-collection edit is reported to every
+  collection that holds the event. `item_map` remains the candidate set for the
+  owner-level deletion sweep (a delete is an account-level fact). A fresh prime
+  (SyncKey 0) clears the scope's ledger; a delta with an EMPTY ledger is NOT
+  seeded from `item_map` — a shared ETag would make the scope skip a changed
+  event another collection already delivered (the exact bug this ledger fixes),
+  so instead every event in the stream's change set is delivered as `<Add>`
+  (EAS keys items by ServerId, so an `<Add>` for an item the client already
+  holds updates it in place) — the safe upgrade path. The Sync response's
+  durable side effects (`item_map` + `change_journal` `op='upsert'` rows, the
+  per-scope ledger rows, the emitted `<Delete>`s' removals, the new
+  SyncKey/token, the journal watermark) are written in ONE transaction
+  (`Storage::commit_calendar_sync`) so the ledger can never advance ahead of the
+  SyncKey the client is told — a partial failure rolls back and the retry
+  re-delivers identically. The delivery MUST journal the same `op='upsert'` row
+  `upsert_item_map` writes, or Ping/GetItemEstimate/EWS `SyncFolderItems` never
+  see an event first delivered by another device's EAS Sync. Folder mutations
+  journal atomically with the mapping:
+  `Storage::upsert_folder_journaled` (folder-add/folder-update) and
+  `delete_folders_journaled` write the `folder_map` row(s) AND the
+  `change_journal` row(s) in ONE transaction, so a FolderSync success is
+  returned only once an already-primed device can learn about the change (the
+  old separate `record_hierarchy_change` calls could ack a create/delete whose
+  journal row was never written). MAPI
+  `RopHardDeleteMessagesAndSubfolders` ([MS-OXCFOLD] §2.2.1.10) removes the
+  folder's messages AND its whole descendant subtree (the folder itself
+  survives), walking it deepest-first with `onDestroyRemoveEmails` set on every
+  child destroy (a child that still holds mail is otherwise refused). The EAS
+  keyword baseline's rotating scan holds its position (does not advance past
+  the window) when a baseline ROW READ fails — `Storage::get_email_keyword`
+  propagates a decode error as `Err` rather than treating it as a missing row,
+  so a flag change is never silently swallowed; and the per-delta scan's
+  upserts SKIP ids delivered as an `<Add>` this delta, so the Add's fresh seed
+  wins over the older scan snapshot (no duplicate flag `<Change>` next delta).
+  The overflow branch persists the keyword baseline ONLY once the undelivered
+  remainder is durably queued AND the (best-effort) sync-token write has
+  committed — a failed queue write holds the baseline (and fails the delta
+  closed), and a failed token write still acknowledges the clipped window but
+  holds the baseline, so the re-diff re-derives the discarded flag changes.
+  The completing branch's token write is fail-closed: a failed `set_sync_key`
+  returns a retryable error and never advances the baseline.
 - AUDIT.md §10 (EAS Sync wire-exactness) is COMPLETE and its section now
   documents the delivered behavior — keep it accurate when touching Sync.
 - AUDIT.md §11 (WBXML conformance hardening) is COMPLETE (commit 7b7d242):
@@ -733,3 +851,80 @@ EAS specs v20250520 (16.1); older EAS compat NOT needed.
   idempotence-store test. Suite: 964 green (928 lib + 22 fixtures + 11
   snapshots + 2 jmap_calendar_deploy + 1 doc), clippy 0, fmt clean on
   rsvp.rs/message.rs/ews.rs/storage.rs (eas.rs pre-existing exception).
+
+- PR #2046 (`eas-folder-management-and-mailbox-scoped-email-sync`) review
+  triage COMPLETE: 4 substantive findings, all concurred with and fixed
+  (no comment replies). (A/§2-l) `render_pending_email_op` is now
+  `anyhow::Result<(String, Option<String>)>` and fail-closed: a transient
+  `Email/get` error on a queued created/changed op and a failed
+  keyword-baseline seed for a delivered `<Add>` both propagate, so the delta
+  does NOT acknowledge the window or consume the op (no token advance, no
+  overflow queue, no baseline write); the old code rendered empty on a fetch
+  error (treated as a vanished item → silent loss) and only logged a failed
+  seed (→ stale client flags). (B/§2-k) the email delta's mailbox-role
+  resolution no longer flattens a `Mailbox/query` failure with `.ok()` to
+  `None` (which cleared the stored query state and answered an empty success
+  window, losing every change during the outage): the error propagates as
+  Status 6 with the token untouched; a genuinely mailbox-less role is
+  `Ok(empty)` and still scopes to nothing. (C/§2-j) `FolderCreate` rejects a
+  missing/non-numeric `<Type>` (required, [MS-ASCMD] §2.2.3.186.2) as Status
+  10 instead of defaulting to 12, and `is_creatable_folder_type` (1/12/13)
+  gates `create_folder` so an unrecognised numeric Type no longer falls
+  through `backend_for_type` to JMAP and creates a mail mailbox. Tests: 2
+  eas_folders (`create_rejects_unrecognised_folder_types`,
+  `creatable_folder_types_match_spec`) + 4 eas
+  (`test_folder_create_rejects_missing_or_malformed_type`,
+  `test_email_sync_mailbox_resolution_failure_preserves_token`,
+  `test_email_delta_fetch_error_fails_closed_not_vanished`,
+  `test_email_delta_add_seed_failure_fails_closed`). Suite: 1314 lib + 7 + 5
+  + 22 + 11 + 1 doc = 1360 green, clippy 0, fmt clean on touched files.
+  NOTE the §19 `storage::tests::concurrent_sync_writes_and_ping_reads_never_fail_or_stall`
+  load test is timing-sensitive under a fully parallel `cargo test` (a
+  "database is locked" panic is possible); it passes reliably in isolation
+  and is unrelated to this change.
+
+- PR #2046 round-6 review triage (comments posted after `80d00df1`) COMPLETE:
+  10 comments audited = 8 distinct findings (7 substantive + 1 doc) + 2
+  duplicate pairs (chatgpt-codex-connector re-reported two cubic findings).
+  5 substantive findings concurred with and fixed, 2 refuted with evidence,
+  1 doc finding fixed. No comment replies (resolve via code/push only).
+  (F/I) EWS email delta now FAILS CLOSED when `set_ews_sync_state` fails
+  (`ErrorServerBusy`, 503) instead of logging-and-continuing, so the
+  flag-scan baseline/position are never advanced past a token that was not
+  durably stored (a membership-only `Email/queryChanges` retry cannot
+  rediscover a flag-only `<t:Update>`). (B/J) the flag `<t:Update>` loop is now
+  bounded by `MaxChangesReturned`: the scan gets the remaining budget
+  (`max_changes - membership_ops`) and, when spent, HOLDS its rotating position
+  and sets the new `KeywordScanOutcome.deferred`, which makes the EWS response
+  report `IncludesLastItemInRange=false` so the client syncs again (the EAS
+  delta passes `None` — its overflow queue windows the excess instead).
+  (D) an overlap Update (`created`+`destroyed`) now seeds its flag baseline so
+  a bounded scan that never reaches the id cannot later re-emit the delivered
+  flag change. (C) `mirror_ews_folder_rename` uses the NEW targeted
+  `Storage::update_folder_journaled` (writes ONLY `display_name` on the
+  EXISTING row, `Ok(false)` when the mapping vanished → fail-closed) so a
+  concurrent `FolderDelete` is not resurrected and the pre-round-trip snapshot
+  cannot revert a concurrent parent move. (G) `handle_move_folder` mirrors the
+  reparent into `folder_map` via `eas_parent_id_for_mailbox` (system mailbox →
+  distinguished id, user folder → its own mailbox id, unknown → leave
+  untouched) so a later rename's sibling check validates the real parent; a
+  backend `Mailbox/set` that reports no update is now a retryable error.
+  REFUTED with evidence: (cubic #4560928440) the EWS flag baseline is NOT
+  device-scoped — EWS `SyncFolderItems` carries no stream identifier on the
+  wire and the pre-existing `ews_sync_state` cursor is already one-per-folder,
+  so the baseline is no more shared than the cursor it advances (single-EWS-
+  client-per-mailbox is the supported deployment; documented in AUDIT5);
+  (cubic #4560928460) the initial-prime full baseline capture is an intentional
+  one-time cost for flag-edit fidelity (a bounded capture would lose a flag
+  edit made before the scan reaches the message; documented in AUDIT5).
+  (cubic #4560928475) AUDIT5's clipped-window text clarified: only the
+  scan-derived baseline/position are held; a delivered `<Add>`/`<Create>` seeds
+  its own row eagerly (BEFORE the queue/token writes) so a failed token write
+  can leave that per-item seed behind. Tests: 5 new
+  (`eas::tests::test_email_keyword_scan_defers_excess_changes_and_holds_position`,
+  `ews::tests::sync_email_folder_items_defers_flag_changes_beyond_max_changes`,
+  `ews::tests::sync_email_folder_items_fails_closed_when_state_write_fails`,
+  `ews_folder_ops::tests::move_folder_mirrors_parent_into_eas_folder_map`,
+  `storage::tests::update_folder_journaled_is_targeted_and_never_resurrects`).
+  Suite: 1347 lib + 7 + 5 + 22 + 11 + 1 doc = 1393 green, clippy 0, fmt clean
+  on touched files, release warning-free.

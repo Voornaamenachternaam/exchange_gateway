@@ -22,3 +22,6 @@ gha-creds-*.json
 
 # Log files
 *.log
+
+# Agent memory (local only)
+.openhands/

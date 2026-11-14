@@ -314,9 +314,10 @@ impl RopCreateFolderSuccess {
     }
 }
 
-/// `RopDeleteFolder` request, MS-OXCROPS §2.2.4.4.1. After the dispatcher
+/// `RopDeleteFolder` request, MS-OXCROPS §2.2.4.3.1. After the dispatcher
 /// consumed the `RopId`, the body is `LogonId · InputHandleIndex ·
-/// FolderId(8 LE) · DeleteFlags(1)`.
+/// DeleteFolderFlags(1) · FolderId(8 LE)` — the flag byte PRECEDES the FID on
+/// the wire (see the §4.2.1 example: `1D 00 01 05 01 00 00 00 0E 8E DF 36`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RopDeleteFolderRequest {
     pub logon_id: u8,
@@ -328,8 +329,8 @@ impl RopDeleteFolderRequest {
     pub fn decode(buf: &mut Buf<'_>) -> Result<Self, DecodeError> {
         let logon_id = buf.take_u8()?;
         let input_handle_index = buf.take_u8()?;
-        let folder_id = buf.take_u64_le()?;
         let delete_flags = buf.take_u8()?;
+        let folder_id = buf.take_u64_le()?;
         Ok(Self {
             logon_id,
             input_handle_index,
@@ -353,6 +354,27 @@ impl RopHandleAckSuccess {
         out.push(self.rop_id.to_u8());
         out.push(self.input_handle_index);
         out.extend(&self.return_value.to_u32().to_le_bytes());
+    }
+}
+
+/// `RopDeleteFolder` response (MS-OXCROPS §2.2.4.3.2):
+///   `RopId(0x1D) · InputHandleIndex · ReturnValue(4 LE) · PartialCompletion(1)`.
+/// Unlike [`RopHandleAckSuccess`] this ROP carries `PartialCompletion`
+/// ([MS-OXCFOLD] §2.2.1.3.2), set when the ROP succeeds for only a subset of
+/// targets (e.g. the folder is non-empty and the request did not ask to delete
+/// its messages/subfolders).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RopDeleteFolderResponse {
+    pub input_handle_index: u8,
+    pub return_value: RopErrorCode,
+    pub partial_completion: u8,
+}
+impl RopDeleteFolderResponse {
+    pub fn encode(&self, out: &mut Vec<u8>) {
+        out.push(RopId::ROP_DELETE_FOLDER.to_u8());
+        out.push(self.input_handle_index);
+        out.extend(&self.return_value.to_u32().to_le_bytes());
+        out.push(self.partial_completion);
     }
 }
 

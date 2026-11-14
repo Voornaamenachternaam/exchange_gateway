@@ -54,35 +54,523 @@ DEPLOY_RUNBOOK.md, CLOUDFLARED_SETUP.md, and the compose comments to state
 v1.1.0 as the validated backend. Do NOT change the gateway image tag — the
 operator pulls it from their registry.
 
-### 2. EAS folder-management commands return failure statuses (not implemented)
+### 2. EAS folder-management commands return failure statuses — DELIVERED
 
-`FolderCreate`, `FolderDelete`, `FolderUpdate` return Status 6 ("An error
-occurred on the server") — they are stubs with no persisted folder store and
-no JMAP `Mailbox/set` or CalDAV collection mutation path. `GetAttachment`
-returns Status 2 / HTTP 500 (no attachment fetch). `GetHierarchy` returns a
-hard-coded fixed system-folder list only (no user-created folders). `Find`
-routes GAL/mailbox criteria to Search paths but is a legacy command (removed
-in 14.0).
+**Original gap.** `FolderCreate`, `FolderDelete`, `FolderUpdate` returned
+Status 6 ("An error occurred on the server") — they were stubs with no
+persisted folder store and no JMAP `Mailbox/set` or CalDAV collection mutation
+path. `GetAttachment` returned Status 2 / HTTP 500 (no attachment fetch).
+`GetHierarchy` returned a hard-coded fixed system-folder list only (no
+user-created folders).
 
-Outlook for Windows and Outlook Android both issue folder management
-(`FolderCreate` for new folders, `FolderSync` for hierarchy, `ItemOperations
-Fetch` for attachments). While `FolderSync` and `ItemOperations` are
-implemented, the missing folder-mutation and attachment-fetch commands cause
-client friction and can stall account setup.
+**Delivered.** A new module `src/eas_folders.rs` implements the three
+folder-mutation commands against Stalwart as the system of record, plus a
+persisted `folder_map` store (schema **v11**) so user-created folders survive
+gateway restarts and surface in `FolderSync`/`GetHierarchy`.
 
-**Fix (ladder 1→4):**
-- Implement `FolderCreate`/`FolderDelete`/`FolderUpdate` backed by JMAP
-  `Mailbox/set` (existing `reqwest` + `serde_json` deps) for email folders,
-  CalDAV collection create/delete/update for calendar/tasks/notes/contacts
-  folders, persisting mappings in `storage.rs` (`item_map` / a new
-  `folder_map` table) so user-created folders survive restarts and surface in
-  `FolderSync`/`GetHierarchy`.
-- Implement `GetAttachment` via `JmapClient::download_blob_range` (existing
-  dep, already used by ItemOperations Fetch) streaming the attachment bytes
-  as the response body with `Content-Type`, per [MS-ASHTTP] §2.2.1.7.
-- Keep `Find` as the legacy compatibility shape (route GAL → GAL search,
-  mailbox → mailbox search, rendered in `Find:` envelope) — low risk since
-  14.0+ clients use `Search` instead.
+- **Backend selection** ([MS-ASCMD] §2.2.3.186.2 user-created Types):
+  Type 12/1 (mail) → JMAP `Mailbox/set`; Type 13 (Calendar) → CalDAV
+  `MKCALENDAR` with `VEVENT`. Types 14–17 are **not creatable** and
+  `FolderCreate` rejects them up front with Status 10: Type 14 (Contacts) lives
+  on CardDAV (collection creation is unsupported), and Types 15/16/17
+  (Tasks/Journal/Notes) map to the gateway's single *gateway-local*
+  Tasks/Notes collections, which EAS Sync reaches by content class rather than
+  by the folder's mapping — a custom folder of those types would sync the wrong
+  collection and write the client's mutations to the default one.
+- **`FolderCreate`** (§2.2.1.3): validates the request (missing DisplayName/
+  ParentId → 10; a reserved *default* Type 2–11/19 → 10; a DisplayName that
+  collides with a system folder or an existing sibling → 2; DisplayName > 64
+  chars → 10). On success the JMAP mailbox id (or the CalDAV collection href)
+  becomes the EAS ServerId, is persisted in `folder_map`, and the response is
+  `<Status>1</Status><SyncKey>…</SyncKey><ServerId>…</ServerId>` (§6.10).
+- **`FolderDelete`** (§2.2.1.4): a system-folder ServerId → 3 ("The specified
+  folder is a special system folder"); an unknown ServerId → 4; otherwise the
+  backing mailbox (`Mailbox/set destroy`) or CalDAV collection (`DELETE`) is
+  removed first, then the `folder_map` row (and every descendant row) is
+  dropped. Response is `<Status>` + `<SyncKey>`.
+- **MAPI mirror consistency.** A mailbox an EAS client created (so it has a
+  `folder_map` row keyed on its JMAP mailbox id) that is later destroyed through
+  MAPI — `RopDeleteFolder` or `RopHardDeleteMessagesAndSubfolders` — has its
+  `folder_map` row pruned and a `folder-delete` journaled for every mailbox the
+  ROP actually destroyed, so EAS `FolderSync`/`GetHierarchy` stop advertising it
+  and already-primed devices receive its Delete. `delete_folders_journaled`
+  journals only ids that had a mapping row, so a system folder (whose EAS
+  ServerId is never a JMAP mailbox id) never fabricates a Delete.
+- **EWS mirror consistency.** The same rule holds for the EWS front door: an
+  EWS `DeleteFolder` with `DeleteType="HardDelete"` destroys the target JMAP
+  mailbox and its whole descendant subtree bottom-up, then prunes the
+  `folder_map` row of every mailbox it actually destroyed and journals a
+  `folder-delete` for each in one transaction, so a folder an EAS client
+  created and an EWS client deleted is no longer advertised by EAS
+  `FolderSync`/`GetHierarchy` and already-primed EAS devices receive its Delete.
+  A failed mirror write is NOT acknowledged as success (the mailbox is already
+  gone, so a stale `folder_map` row would keep EAS advertising a deleted
+  folder); it surfaces as a retryable `ErrorInternalServerError`, and the
+  destroy is idempotent so a retry re-runs the prune. The mirror runs on EVERY
+  exit path, including a walk that aborts part-way (a mid-subtree backend
+  refusal or transport error): the subtree is destroyed deepest-first, so an
+  abort leaves the already-destroyed descendants gone from JMAP, and pruning
+  only on the full-success path would strand their `folder_map` rows (EAS keeps
+  advertising them) while a retry — re-querying the now-childless hierarchy —
+  could never recover the descendant ids. The destroyed-so-far set is pruned
+  before the walk's own failure is surfaced.
+- **Deferred folder-map prune work list (durable recovery).** A folder destroy
+  whose backend object is already gone but whose `folder_map` prune fails (a DB
+  error, or a transport failure after the destroy committed) is not recoverable
+  by a retry: the destroyed mailbox is no longer returned by JMAP, and for a deep
+  subtree only the ids destroyed so far are known. Every destroy path — EAS
+  `FolderDelete`, EWS `DeleteFolder` (including a walk that aborts part-way),
+  MAPI `RopDeleteFolder` and `RopHardDeleteMessagesAndSubfolders` — therefore
+  records the destroyed ids in `pending_folder_prune` (schema **v13**) BEFORE
+  pruning, then prunes in the same request; a successful prune clears the pending
+  rows (the prune itself is a no-op for an unmapped id, so a system folder never
+  fabricates a Delete). Any row still present is replayed by the next
+  folder-sync read — EAS `FolderSync` (before the journal head is captured, so
+  the `folder-delete` it journals lands inside that same window and is delivered
+  immediately) and `GetHierarchy`, plus EWS `SyncFolderHierarchy` — which re-runs
+  the prune and journals the `folder-delete`, so the client receives the Delete
+  instead of EAS advertising a folder that no longer exists. A replay failure is
+  non-fatal: the pending row survives for the next read.
+- **`FolderUpdate`** (§2.2.1.6): rename and/or move. A system folder → 2; an
+  unknown folder → 4; otherwise JMAP `Mailbox/set update` (patch `name` and/or
+  `parentId`) or a CalDAV `PROPPATCH` `<D:displayname>`; the CalDAV collection
+  href (ServerId) is kept stable across a rename.
+- **`GetHierarchy`** (§2.2.1.8) now lists user-created folders after the fixed
+  system set, in the §6.19 `<Folders>/<Folder>` shape.
+- **`FolderSync`** (§2.2.1.5): a prime (`SyncKey 0`) lists the system set plus
+  every persisted user-created folder; an incremental call reports the
+  folder-hierarchy changes journaled since the client's watermark
+  (`change_journal` rows with `resource_href = 'folder'`), so a
+  FolderCreate/Update/Delete mutation reaches an already-primed client as an
+  `<Add>`/`<Update>`/`<Delete>` rather than a stale `<Count>0</Count>`. A
+  successful folder mutation rotates the mutating device's SyncKey while
+  **preserving its own acknowledged watermark** (the stored `seq:` token is
+  carried onto the new key): the watermark is never advanced to the global
+  journal head, which would permanently skip a change another device journaled
+  below that head before this device had seen it.
+- **`GetAttachment`** (§2.2.1.7): the file reference (from the
+  `AttachmentName` command parameter or an `AttachmentName`/`FileReference`
+  body element) is streamed through `JmapClient::download_blob_range` and
+  returned as the response BODY with the blob's `Content-Type`; a missing name
+  → Status 2, a missing/empty attachment → the spec's HTTP 500.
+- **`Find`** (§2.2.1.2, removed in 14.0): kept as the legacy compatibility
+  shape — GAL criteria route to the GAL search path and mailbox criteria to
+  the mailbox search path, rendered in the `Find:` envelope. 14.0+ clients use
+  `Search` instead.
+- **Email delta sync scoping (correctness).** The EAS email delta
+  (`handle_email_delta_sync`) and the EWS `SyncFolderItems` email delta now
+  drive the **mailbox-scoped** `Email/queryChanges` feed (RFC 8620 §5.6,
+  `filter.inMailbox`) instead of the account-wide `Email/changes`. The latter
+  reports changes across *every* mailbox, so a single EAS/EWS collection would
+  receive `<Add>`/`<Delete>` for messages belonging to other folders —
+  corruption on the wire and spurious Ping wakes. `accumulate_email_changes`
+  resolves the collection's concrete JMAP mailbox id (`resolve_email_mailbox_id`:
+  a user folder's EAS ServerId *is* the mailbox id; a system role resolves via
+  its JMAP role) and pages `queryChanges` until the feed drains. An id that
+  Stalwart reports in **both** `added` and `removed` (an in-place reorder — a
+  flag edit re-sorting a keyword-sorted query) is classified as a single `<Change>`,
+  not an Add+Delete (`classify_query_change_ops`). The initial sync now stores
+  the **first window's query state** (`Email/query` `queryState`) as the delta
+  base and keeps it across continuation pages rather than replacing it with
+  each page's state: a base taken from the first window makes the delta
+  re-report anything that arrived mid-prime (a duplicate Add the client
+  resolves by ServerId), whereas a base taken from a later window would
+  silently skip a message that arrived during paging and was never delivered. A state the backend can no longer compute — Stalwart returns
+  `invalidArguments` ("invalid JMAP State"), not `cannotCalculateChanges` — is
+  mapped to the typed `CannotCalculateChanges`, so the delta forces a clean
+  re-prime (EAS SyncKey 0 / Status 3; EWS `ErrorInvalidSyncStateData`) instead
+  of freezing the feed. The Ping email-folder probe uses the same
+  mailbox-scoped feed. The push monitor keeps the account-wide `Email/changes`
+  deliberately — it must observe every mailbox to wake the right folder.
+  A continuation page pins its window on the **last delivered message id**
+  (RFC 8620 §5.5 `anchor` + `anchorOffset: 1`, "start immediately after the
+  anchor") instead of a numeric `position`: a message deleted before the next
+  request shrinks the live `receivedAt`-ordered result set, so a stored numeric
+  offset would skip an unchanged message — and, because that message was
+  already covered by the first window's query state, the delta would never
+  re-report it (permanently absent from the client). A vanished anchor surfaces
+  as `anchorNotFound` and falls back to the numeric position **rebased by one**:
+  the stored offset is the index PAST the previous window, so the anchor — the
+  last message that window delivered — occupied the slot `offset - 1`. When that
+  message is deleted everything after it shifts up by one, so the first
+  UNDELIVERED message now sits at `offset - 1`; resuming at the unchanged offset
+  would skip it — and, being already inside the first window's query state, no
+  later delta would re-report it. Resuming at `offset - 1` re-delivers that slot
+  (the now-deleted anchor's position, i.e. the first undelivered message) and the
+  client resolves the duplicate Add by ServerId. The clipped-prime
+  resume decision uses the response's **authoritative `position`** (RFC 8620
+  §5.5 `EmailListResult::query_position`), not a locally accumulated offset, for
+  the same reason. A `get_email_sync_cursor` READ failure on the initial-prime
+  continuation path fails closed (retryable) rather than being flattened to "no
+  cursor" (which would restart the walk from position 0 and re-derive every
+  page); a failed cursor WRITE after a clipped window likewise fails closed, so
+  the next Sync cannot route a not-yet-delivered tail to the delta from the
+  first page's state.
+
+- **Atomic delta-queue drain.** When a persisted email-delta overflow queue is
+  fully delivered within the EAS window, dropping the queue AND advancing the
+  stored (SyncKey, token) to the queue's base state happen in ONE SQLite
+  transaction (`Storage::drain_email_sync_queue`). A cleared queue with an
+  unadvanced key would make the next delta recompute the whole change set and
+  replay already-delivered commands; an advanced key with a surviving queue
+  would re-deliver the same ops — either ordering surfaces duplicate commands.
+  The drain also CLAIMS the queue via the `DELETE`'s `rows_affected`: two
+  overlapping Sync requests can both read and render the same queued
+  operations, and without a claim the second `DELETE` would remove zero rows yet
+  still advance the token and acknowledge a window it did not own. Exactly one
+  caller observes `rows_affected == 1` (returns `true`); every later caller gets
+  `Ok(false)` with the stored token untouched. A failed drain (or a claim loss)
+  is not acknowledged: the caller answers a retryable Status 6 and the
+  transaction rolls back, so the next Sync retries the same drain — or, after a
+  claim loss, finds the queue gone and diffs from the winner's advanced token
+  instead of replaying.
+
+- **Class-omitted folder routing.** When the client omits the
+  protocol-optional `<Class>` ([MS-ASCMD] §2.2.3.30), the persisted `folder_map`
+  row's `backend_kind` disambiguates a user-created folder: `"jmap"` routes to
+  the Email path (a user mail folder), `"caldav"` routes to the Calendar path (a
+  user-created calendar-family folder, Type 13). Without the CalDAV inference a
+  custom calendar folder would fall through to the unsupported-collection
+  Status 4 and could never sync. A SYSTEM collection (a system email id, `1`,
+  `8`, or the Tasks/Notes ids) is routed by its id alone and never consults
+  `folder_map`. For a user-created folder the mapping is read ONCE and reused;
+  a transient READ failure is NOT flattened to "no mapping" (which would answer
+  Status 4 and never sync the folder) — the collection fails closed with a
+  retryable Status 6 so the next Sync re-reads the mapping, matching the
+  class-specific handlers' own fail-closed resolution.
+
+- **Email property (flag) updates.** `Email/queryChanges` reports only
+  membership of the query result set (RFC 8620 §5.6), so a message whose flags
+  change without leaving the mailbox (mark read/flagged, ...) never appears in
+  its `added`/`removed` lists and would otherwise be dropped by both the EAS
+  and EWS email deltas. Both deltas now keep a per-collection **keyword
+  baseline** (`email_keyword_baseline`, one row per JMAP Email id holding its
+  sorted keyword list) captured at the start of every initial sync — the
+  snapshot is taken before the first window is fetched, so a flag edit during
+  pagination is not folded into the baseline as already-synchronized and is
+  reported as a `<Change>` once the rotating scan window reaches that message
+  (the scan is bounded, so a large mailbox may take several sweeps to reach it);
+  the capture is best-effort (a backend hiccup leaves the previous baseline, and
+  the first delta then captures it without reporting the intervening edits). The
+  delta then diffs the live mailbox against this baseline, emitting a `<Change>`
+  for each id whose keyword set changed and was not already queued. A delivered
+  `<Add>`/`<Create>` seeds its own baseline row at delivery time, so a flag edit
+  before the rotating scan reaches the message is still detected (a missing row
+  on the scan's first observation is recorded without a `<Change>` — the Add
+  already carries the current flags). The EWS email delta runs the SAME bounded
+  scan and persists the SAME baseline/position (keyed on the EWS folder id), so
+  a flag edit made by any client on the mailbox (an EAS device, another EWS
+  client, or the web UI) surfaces to an EWS client as a `<t:Update>`; without it
+  the membership-only feed would leave EWS flag state stale forever. The diff is
+  **bounded per delta**: the scan walks at most a fixed number of pages
+  (`KEYWORD_SCAN_MAX_PAGES`) from a per-collection rotating position persisted
+  in `email_keyword_scan` (wrapping to the top at the end), so a delta never
+  pays O(mailbox) in JMAP calls — every message present for a whole sweep is
+  re-examined once per sweep, with the sweep's cost amortized across deltas. The
+  observed baseline rows, the rows for messages the feed reported as having left
+  the mailbox (they can never be observed by a later scan page, so they are
+  pruned rather than leaking), and the next position are persisted only after the
+  whole change set is delivered, so a crash re-scans the same window rather than
+  swallowing an update; the rotating position advances only when every baseline
+  row was written, so a failed write holds the cursor and the next sweep
+  re-examines the same window instead of skipping the change; an overflowed delta
+  (the change set exceeds the EAS window) persists them ONLY once the remainder
+  is durably queued AND the best-effort sync-token write has committed — if
+  persisting the queue fails the delta FAILS CLOSED: it
+  returns a retryable error (the caller answers Sync Status 6 with the incoming
+  key and no commands) and leaves the stored token and the baseline untouched,
+  rather than acknowledging the clipped window while the stored token still sits
+  at the pre-delta state (which would make the next delta re-diff and replay the
+  already-delivered commands as duplicate Adds/Deletes). If the queue persist
+  succeeds but the token write fails, the window is still acknowledged (Status 1
+  + `<MoreAvailable/>`; the queue carries progress) but the SCAN-DERIVED baseline
+  and rotating position are HELD — the stored token stays at the pre-delta
+  state, so advancing the scan baseline would let a retry's `Email/queryChanges`
+  re-derive the membership set without re-reporting a flag-only `<Change>` (the
+  feed reports membership only), losing the edit. A delivered `<Add>`/`<Create>`
+  seeds its own baseline row eagerly in `render_pending_email_op` (BEFORE the queue
+  and token writes), so a failed token write can leave that per-item seed row
+  behind; only the scan's snapshot rows and rotating position are held. The drain
+  and every
+  later delta do not re-queue the same flag change. A backend hiccup
+  during the scan degrades to serving the query-feed changes without persisting
+  that page's rows.
+  `Email/queryChanges` has no `hasMoreChanges` field (RFC 8620 §5.6), so
+  `has_more_changes` is a heuristic — set when a page returns exactly at the
+  `maxChanges` cap — and the drain loop plus the EWS
+  `IncludesLastItemInRange` reflect a *possibly* clipped page (one extra page
+  is fetched to confirm the feed drained) rather than a fixed `false`.
+  The EWS baseline is keyed on the EWS folder id, NOT on the opaque `SyncState`:
+  EWS SyncFolderItems carries no device/stream identifier on the wire (unlike EAS,
+  whose `Sync` is scoped per device), so a second concurrent client on the same
+  mailbox is not distinguishable. This matches the gateway's pre-existing EWS
+  SyncState model -- one persisted cursor per folder -- and is correct for the
+  supported single-EWS-client-per-mailbox deployment; the flag baseline is no more
+  shared than the cursor it advances. A full initial prime also captures the whole
+  mailbox's keyword baseline inside the request (unbounded page count), reducing
+  but not eliminating the chance that a flag edit made during capture is folded
+  into the baseline as already-synchronized before the first window observes it;
+  this one-time cost is the deliberate price of flag-edit fidelity, and a
+  mid-prime continuation keeps the baseline the first page captured.
+
+**Status codes.** Per [MS-ASCMD] §2.2.3.177.8 / §6.10–§6.19: 1 success,
+2 invalid/duplicate or special system folder, 3 special system folder
+(delete), 4 not found, 5 invalid parent, 6 server error, 10 malformed request.
+
+**Tests.** The `src/eas_folders.rs` test module (classification helpers, response
+rendering + a WBXML round-trip of the FolderHierarchy-rooted responses, and
+end-to-end create/delete/update against a combined JMAP+CalDAV stub asserting
+the exact `Mailbox/set`/`MKCALENDAR`/`DELETE`/`PROPPATCH` wire calls and the
+persisted `folder_map` rows, plus the hierarchy-change journal watermark;
+`create_rejects_custom_task_note_folder_types` pins the Type 14–17 rejection).
+The `eas::tests::test_folder_sync_create_then_rename_reaches_new_device_as_add`
+test drives a real `handle_folder_sync` prime + delta to pin the
+create-then-rename compaction (a folder added and then renamed before a second
+device's first incremental FolderSync reaches it as an `<Add>` with the latest
+DisplayName, never an `<Update>` for a folder it never received), and
+`eas::tests::test_folder_mutation_rotation_preserves_unseen_earlier_change`
+pins the rotation watermark preservation (a change journaled by another device
+before a mutation is still delivered to the mutating device after its key
+rotates). The email-delta scoping adds
+`eas::tests::test_classify_query_change_ops_maps_add_remove_and_in_place`
+(pure classification) and
+`eas::tests::test_email_delta_sync_uses_mailbox_scoped_query_changes` (an
+end-to-end delta against a JMAP stub asserting the wire call carries
+`filter.inMailbox`, never `Email/changes`, and renders Add/Delete), plus three
+`jmap::tests::query_email_changes_*` tests (mailbox scoping + classification,
+`cannotCalculateChanges` and Stalwart `invalidArguments` both downcasting to
+the typed `CannotCalculateChanges`).
+`eas::tests::test_email_delta_overflow_queue_persist_failure_fails_closed` pins
+the fail-closed overflow acknowledgement (a poisoned queue write makes the
+delta return an error with the stored token and queue untouched, then drain
+cleanly once storage recovers).
+`eas::tests::test_email_delta_queue_drain_is_atomic_and_fails_closed` pins the
+atomic drain (a poisoned `sync_state` write during the drain makes the delta
+return an error with the queue and stored token both untouched, so the next
+Sync re-drains rather than replaying or losing the window);
+`eas::tests::test_email_delta_queue_drain_claims_and_loser_does_not_advance`
+pins the queue claim (the first `drain_email_sync_queue` returns `true` and
+advances the token; a second returns `false` and leaves the winner's key/token
+untouched); and
+`eas::tests::test_email_initial_sync_fails_closed_when_cursor_reread_fails`
+pins the fail-closed initial-prime cursor re-read.
+`eas::tests::test_email_initial_sync_anchor_not_found_falls_back_to_position`
+pins the rebased `anchorNotFound` fallback (the fallback `Email/query` carries
+`position` one less than the stored post-window offset and no anchor).
+`sync::tests::calendar_add_fails_closed_when_folder_lookup_fails` pins that a
+transient `folder_map` read failure during a calendar Add mutation fails the
+mutation closed (no CalDAV PUT reaches the backend), and
+`eas::tests::test_sync_collection_class_omitted_caldav_folder_routes_to_calendar`
+pins the Class-omitted CalDAV-folder routing to the Calendar path (never the
+unsupported-collection Status 4).
+`eas::tests::test_sync_collection_class_omitted_folder_read_failure_fails_closed`
+pins the Class-omitted routing fail-closed on a `folder_map` read failure
+(Status 6, never Status 4), and
+`eas::tests::test_sync_collection_class_omitted_system_folder_ignores_folder_map`
+pins that a system collection routes by id alone (unaffected by a `folder_map`
+read failure).
+`eas::tests::test_get_hierarchy_fails_closed_when_folder_list_read_fails`
+pins the GetHierarchy HTTP 500 on a folder-list read failure. `mapi::handler` gains
+`rop_delete_folder_prunes_eas_folder_map_and_journals` and
+`rop_delete_folder_without_mapping_row_journals_nothing`, pinning the
+EAS-mirror consistency of a MAPI mailbox destroy, plus
+`rop_delete_folder_mirror_write_failure_is_disk_error` (the post-commit
+hardening below); `ews_folder_ops::tests` gains
+`hard_delete_prunes_eas_folder_map_and_journals`,
+`hard_delete_without_mapping_row_journals_nothing` and
+`hard_delete_mirror_write_failure_is_internal_error`, pinning the same
+EAS-mirror consistency for the EWS `DeleteFolder` hard-delete path, plus
+`hard_delete_partial_failure_prunes_destroyed_descendants`, pinning that a
+walk aborted mid-subtree still prunes the descendants it already destroyed.
+The hierarchy-rotation tests
+`rotate_hierarchy_key_for_never_primed_device_returns_prime_key`,
+`rotate_hierarchy_key_preserves_primed_watermark` and
+`rotate_hierarchy_key_without_token_forces_prime` pin the fail-closed rotation;
+`create_calendar_folder_405_on_preexisting_collection_is_conflict` and
+`create_calendar_folder_405_with_existing_mapping_is_conflict` pin the
+no-adoption-on-405 rule, `create_calendar_folder_rejects_sanitized_system_collection_name`
+pins the reserved-collection guard, and
+`create_mail_folder_rolls_back_mailbox_when_mapping_write_fails` /
+`create_caldav_folder_rolls_back_collection_when_mapping_write_fails` pin the
+create compensation; and the sync suite gains
+`scoped_calendar_delta_does_not_tombstone_foreign_destroyed_event`,
+`scoped_calendar_prime_does_not_tombstone_foreign_event` and
+`unscoped_calendar_delta_tombstones_destroyed_event` pinning the scoped-folder
+tombstone guard (and its deliberate absence for the default folder).
+The post-commit hardening (j)–(l) adds
+`eas_folders::tests::create_rejects_unrecognised_folder_types` +
+`creatable_folder_types_match_spec` (out-of-range Type rejected with Status 10,
+no backend call, no persisted row) and
+`eas::tests::test_folder_create_rejects_missing_or_malformed_type` (missing/
+non-numeric `<Type>` → Status 10, no row), plus three fail-closed delta tests:
+`eas::tests::test_email_sync_mailbox_resolution_failure_preserves_token`
+(a `Mailbox/query` 500 makes the Sync return an error with the stored query
+state untouched),
+`eas::tests::test_email_delta_fetch_error_fails_closed_not_vanished` (an
+`Email/get` 500 for a queued Add fails the delta with token + queue untouched)
+and `eas::tests::test_email_delta_add_seed_failure_fails_closed` (a poisoned
+baseline seed fails the delta, then the same delta delivers the Add and seeds
+it once storage recovers).
+
+The round-5 PR-review hardening (m)–(n) adds
+`eas::tests::test_email_delta_token_write_failure_does_not_advance_baseline`
+(a poisoned `sync_state` write fails the delta with the stored token AND the
+flag baseline both untouched, then the same delta commits the token and
+persists the baseline once storage recovers) and
+`ews_folder_ops::tests::update_folder_rename_mirrors_eas_folder_map_and_journals`
+(an EWS rename mirrors the new DisplayName into `folder_map` and journals a
+`folder-update`) plus
+`ews_folder_ops::tests::update_folder_rename_without_mapping_row_journals_nothing`
+(a rename of a mailbox with no `folder_map` row succeeds but journals nothing).
+
+The round-6 PR-review hardening (o)-(s) adds
+`eas::tests::test_email_keyword_scan_defers_excess_changes_and_holds_position`
+(a caller-supplied change budget caps the flag scan's `<Change>` emission, holds
+the rotating position at the page start and marks the scan deferred while only
+the emitted id's baseline advances);
+`ews::tests::sync_email_folder_items_defers_flag_changes_beyond_max_changes`
+(an EWS delta with a quiet membership feed and three changed flags delivers one
+`<t:Update>` under `MaxChangesReturned=1`, reports
+`IncludesLastItemInRange=false`, advances the SyncState but leaves the deferred
+ids' baselines stale);
+`ews::tests::sync_email_folder_items_fails_closed_when_state_write_fails` (a
+failed `set_ews_sync_state` fails the delta with `ErrorServerBusy` and leaves the
+flag baseline untouched);
+`ews_folder_ops::tests::move_folder_mirrors_parent_into_eas_folder_map` (an EWS
+`MoveFolder` writes the new EAS ParentId into `folder_map` and journals a
+`folder-update` without touching the DisplayName); and
+`storage::tests::update_folder_journaled_is_targeted_and_never_resurrects` (the
+targeted helper updates only the named columns, journals exactly one
+`folder-update`, and is a no-op -- no write, no journal row -- for a vanished
+mapping).
+
+**Operator change list.** None required for Cloudflare or Stalwart: the new
+commands use the already-configured JMAP and CalDAV endpoints. No new
+environment variables.
+
+**PR-review hardening.** (a) Folder mutations journal ATOMICALLY with the
+mapping: `Storage::upsert_folder_journaled` (folder-add/folder-update) and
+`delete_folders_journaled` write the `folder_map` row(s) AND the
+`change_journal` row(s) in one transaction, so a FolderCreate/Update/Delete is
+acknowledged only once an already-primed device can learn about it (the previous
+separate `record_hierarchy_change` calls could ack a mutation whose journal row
+was never written). (b) MAPI `RopHardDeleteMessagesAndSubfolders`
+([MS-OXCFOLD] §2.2.1.10) removes the folder's messages AND its whole descendant
+subtree (the folder itself survives), walking it deepest-first with
+`onDestroyRemoveEmails` set on every child destroy. (c) The rotating keyword
+scan HOLDS its position (does not advance past the window) when a baseline row
+read fails — `Storage::get_email_keyword` propagates a decode error as `Err`
+instead of treating it as a missing row, so a flag change is never silently
+swallowed — and the per-delta scan's upserts SKIP ids delivered as an `<Add>`
+this delta, so the Add's fresh seed wins over the older scan snapshot (no
+duplicate flag `<Change>` on the next delta).
+
+**PR-review hardening (post-commit).** (d) A `FolderCreate` whose
+`MKCALENDAR` answers 405 is reported as Status 2 and NEVER adopted: the gateway
+cannot tell an orphan left by a failed mapping write from a collection the user
+created outside EAS, so adopting would silently link a new EAS folder to a
+collection whose events it does not own. Orphans are instead prevented up front
+by the create-compensation below. A display name that sanitizes to a system
+collection (`Tasks.`/`.Tasks` → `Tasks`, `Notes.` → `Notes`) is rejected before
+`MKCALENDAR`, so a later `FolderDelete` can never destroy the shared
+Tasks/Notes store (`is_reserved_collection_name`). (e) A MAPI mirror-write
+failure after a JMAP mailbox destroy is no longer acknowledged as success:
+`RopDeleteFolder` and `RopHardDeleteMessagesAndSubfolders` surface a retryable
+`DiskError` when `delete_folders_journaled` fails, because the mailbox is
+already gone and a stale `folder_map` row would keep EAS advertising a deleted
+folder and leave primed devices without its Delete (the destroy is idempotent,
+so a retry finds the mailbox already gone and re-runs the prune). (f) Hierarchy
+key rotation is fail-closed: a `get_sync_key` READ error is logged and returns
+the current key (never `seq:0`, which would clobber the device's real
+watermark and skip every earlier change), and a device with NO acknowledged
+watermark — no stored state, or a stored key with a NULL token — receives the
+prime key `"0"` so its next `FolderSync` takes the full-hierarchy branch
+instead of rendering only journal rows and omitting every default folder. (g)
+The calendar `item_map` is owner-global (no collection column), so a SCOPED
+(custom-calendar) folder must not infer deletions from the account-wide
+`CalendarEvent/changes` feed nor from its own single-calendar snapshot: an id
+destroyed in another calendar would otherwise emit a `<Delete>` in this folder
+for an event the client never held AND remove the shared row before the event's
+own collection could deliver it. The delta path only records destroyed ids for
+the unscoped (default) folder, and the full-snapshot tombstone sweep is skipped
+entirely for scoped folders. (h) A `FolderCreate` whose backend object was
+created but whose mapping write then fails is COMPENSATED, not left as an
+orphan: the just-created JMAP mailbox (`Mailbox/set destroy`, contents included)
+or CalDAV collection (`DELETE`) is rolled back, so a retry starts clean instead
+of being rejected as a duplicate sibling name (JMAP) or 405ing on an unmappable
+orphan (CalDAV, which no longer adopts). A failed compensation is logged and the
+client still receives the retryable Status 6. (i) `GetHierarchy` fails CLOSED
+(HTTP 500, [MS-ASCMD] §2.2.1.8) when the user-created folder list cannot be
+read, instead of returning a hierarchy that silently omits those folders.
+(j) A `FolderCreate` whose `<Type>` is missing, non-numeric or outside the
+spec's creatable set (1/12/13) is rejected as malformed (Status 10) WITHOUT
+touching the backend. `<Type>` is a REQUIRED `unsignedByte` child
+([MS-ASCMD] §2.2.3.186.2); the old handler defaulted an absent value to 12 and
+`backend_for_type` sent every other numeric value to JMAP, so a malformed or
+out-of-range Type silently created a mail mailbox the client never asked for
+(`is_creatable_folder_type` now gates the create). (k) The email delta's
+mailbox-role resolution is fail-closed: a transient `Mailbox/query` failure
+propagates as Status 6 with the stored query state untouched, instead of
+flattening to "no mailbox" — which would clear the token and answer an empty
+success window, losing every change made during the outage until a full
+re-prime. A role that genuinely has no mailbox is `Ok(empty)` and still scopes
+to nothing. (l) `render_pending_email_op` is fail-closed: a transient
+`Email/get` error for a queued created/changed op, or a failed keyword-baseline
+seed for a delivered `<Add>`, now returns an error so the caller does NOT
+acknowledge the window or consume the op (no token advance, no overflow queue,
+no baseline write) — a later Sync re-derives and re-delivers the same op. The
+old code turned a fetch error into an empty render (treated as a vanished item)
+and only logged a failed seed, silently dropping an email change the client
+never received and leaving its flags stale. (m) The delta's **sync-token write
+is fail-closed** in the branch that completes a window with no overflow queue:
+a failed `set_sync_key` now returns a retryable error instead of being logged
+and ignored, and the flag-scan baseline is persisted ONLY after the token write
+commits. Persisting the baseline while the stored token still sat at the
+pre-delta state would let a later `Email/queryChanges` re-derive the membership
+set but NOT re-report a flag-only `<Change>` (the feed reports membership only),
+so a flag edit the client never received would be lost forever; the branch holds
+no queue, so a retry re-derives the whole change set from the unchanged token.
+The clipped-window branch keeps its token write best-effort (it stores the SAME
+`old_state`, so a failed write changes nothing; the durable overflow queue
+carries progress) but now HOLDS the flag-scan baseline unless that token write
+committed: the stored token stays at the pre-delta state, so advancing the
+baseline would let a retry's `Email/queryChanges` re-derive the membership set
+but NOT re-report a flag-only `<Change>` (the feed reports membership only),
+losing the edit; the window is still acknowledged (Status 1 +
+`<MoreAvailable/>`) because the queue carries progress and failing the delta
+there would let a retry drain only the queued remainder while dropping this
+window's delivered ops. The baseline persist itself is deliberately NOT
+fail-closed: the
+partially-written rows would otherwise blind the retry's scan to the very change
+it must re-report, and the held scan position already guarantees a re-scan.
+(n) An EWS `UpdateFolder` rename of an EAS-created mail folder (a `folder_map`
+row whose ServerId is the JMAP mailbox id) is mirrored into `folder_map` and
+journaled as `folder-update` in one transaction, so EAS `GetHierarchy` stops
+advertising the old DisplayName and already-primed devices receive the change; a
+mailbox with no `folder_map` row (one EAS never advertised) is a no-op — the
+mirror never fabricates an EAS-visible folder. The rename is held to the SAME
+name rules EAS `FolderUpdate` enforces ([MS-ASCMD] §2.2.1.6) BEFORE the backend
+is touched — a reserved system-folder name, a name over the 64-character bound,
+or a case-insensitive sibling collision is rejected — so the EAS-visible
+hierarchy can never advertise a name EAS itself would refuse. `update_mailbox`'s
+boolean is honoured: the mirror runs only on `Ok(true)`; `Ok(false)` (the id in
+neither `updated` nor `notUpdated`) is a retryable `ErrorInternalServerError`
+rather than mirroring a name the backend never applied. A failed mirror write is
+NOT acknowledged as success (retryable `ErrorInternalServerError`), because the
+JMAP mailbox is already renamed and a stale DisplayName would keep EAS
+advertising the old name; the rename is idempotent, so a retry re-applies it and
+re-runs the mirror.
+
+**Upgrade note (expected one-time re-prime).** Before this change the stored
+email delta token was the `Email/get` data-type state; the new delta passes it
+to `Email/queryChanges` as `sinceQueryState`, which Stalwart rejects with
+`invalidArguments` (mapped to `CannotCalculateChanges`). Every already-synced
+email collection therefore answers EAS `Sync` with Status 3 (SyncKey 0) and
+EWS `SyncFolderItems` with `ErrorInvalidSyncStateData` exactly once, then
+re-downloads its mailbox from a clean prime. This is self-healing and needs no
+operator action, but the first Sync after the upgrade is heavier than steady
+state.
+
 
 ### 3. Autodiscover hostname pairing is only a startup warning, not enforced
 
@@ -518,7 +1006,7 @@ No `@` (root) CNAME. Both must be Proxied from the start.
 | # | Sev | Area | Defect | Fix ladder |
 |---|-----|------|--------|------------|
 | 1 | P0 | Backend version | Code/docs validated vs Stalwart v1.0.x; operator runs v1.1.0 | docs + live re-verify (1→3) |
-| 2 | P0 | EAS | FolderCreate/Delete/Update/GetAttachment/Find unimplemented (Status 5/6) | handlers + JMAP Mailbox/set + CalDAV collections (1→4) |
+| 2 | P0 | EAS | ~~FolderCreate/Delete/Update/GetAttachment/Find unimplemented~~ **DELIVERED** (`eas_folders.rs` + `folder_map` v11) | handlers + JMAP Mailbox/set + CalDAV collections (1→4) |
 | 3 | P0 | Autodiscover | Hostname pairing is warning-only; placeholders not enforced | make fatal at startup (1) |
 | 4 | P0 | SMTP/Autodiscover | `GATEWAY_MAIL_HOST` vs `GATEWAY_SMTP_HOST` TLS/hostname mismatch risk | startup validation of internal vs public hosts (1) |
 | 5 | P0 | HTTP/TLS | Plain HTTP only; `x-forwarded-proto` enforcement inconsistent | centralized proxy-header middleware (1) |
@@ -542,10 +1030,12 @@ No `@` (root) CNAME. Both must be Proxied from the start.
 | 23–33 | P2 | Robustness/friction | Config file, HMAC placeholder, cleartext admin password, duplicated healthcheck, attachment cap, rate limit default, Bearer AutoDetect URI, MAPI Basic auth, no README, stale AGENTS.md, smoke env vars | docs/compose (1) |
 
 **Bottom line:** with the current code, the calendar and email read/write paths are
-substantially sound (AUDIT3 P0 calendar/contacts are delivered), but the use-case
-is **not** deployment-ready: the EAS folder-management and attachment commands are
-stubs (P0 #2), the hostname pairing is not enforced (P0 #3), SMTP TLS will fail
+substantially sound (AUDIT3 P0 calendar/contacts are delivered) and the EAS
+folder-management, GetAttachment and Find commands are delivered (P0 #2), but the
+use-case is **not** deployment-ready: the hostname pairing is not enforced
+(P0 #3), SMTP TLS will fail
 against the internal bridge name (P0 #10), and the Stalwart backend version
-contract is unvalidated for v1.1.0 (P0 #1). Resolving P0 items 1–10, plus the
+contract is unvalidated for v1.1.0 (P0 #1). Resolving the remaining P0 items
+(1, 3–10), plus the
 operator change list above, is required before the container can be deployed via
 Portainer for the stated use-case.

@@ -1037,7 +1037,6 @@ pub fn render_jmap_email_as_eas_application_data(
 /// ([MS-ASWBXML]: AttMethod 0x0A is followed by Body 0x0C). Its only EAS
 /// definition is in the Find namespace (§2.2.3.87). Attachment presence is
 /// conveyed by the `<AirSyncBase:Attachments>` roster below.
-#[allow(clippy::too_many_arguments)]
 pub fn render_jmap_email_as_eas_application_data_with_options(
     email: &JmapEmail,
     server_id: &str,
@@ -1738,6 +1737,20 @@ pub struct FetchEmailsParams<'a> {
     /// `AND` operator, so a mailbox-scoped search never leaks results from
     /// other mailboxes.
     pub search_filter: Option<serde_json::Value>,
+    /// Optional concrete JMAP mailbox id that overrides role resolution.
+    ///
+    /// User-created mail folders have no JMAP role, so their EAS ServerId *is*
+    /// the JMAP mailbox id and role lookup cannot find them. When set, this id
+    /// scopes the `Email/query` directly and `mailbox_role` is only a label.
+    pub mailbox_id: Option<&'a str>,
+    /// RFC 8620 §5.5 query `anchor`: the id the window starts from. Used by
+    /// the EAS initial-sync continuation so a message deleted during paging
+    /// cannot shift the tail below a stale numeric `position` and be skipped.
+    /// `None` uses numeric `position` paging.
+    pub anchor: Option<&'a str>,
+    /// RFC 8620 §5.5 `anchorOffset` (only meaningful with `anchor`). `0`
+    /// includes the anchor; `1` starts the window immediately after it.
+    pub anchor_offset: i32,
 }
 
 /// Fetch emails from JMAP for a specific folder.
@@ -1751,28 +1764,27 @@ pub async fn fetch_emails_jmap(
 ) -> anyhow::Result<crate::jmap::EmailListResult> {
     let account_id = params.account_id;
     let mailbox_role = params.mailbox_role;
-    let position = params.position;
-    let limit = params.limit;
     let username = params.username;
     let password = params.password;
-    let search_filter = params.search_filter.as_ref();
+    let explicit_mailbox = params.mailbox_id;
     let jmap = state
         .jmap_client
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("JMAP is not configured; email reading is unavailable"))?;
+
+    // A concrete mailbox id (a user-created folder whose EAS ServerId is the
+    // JMAP mailbox id) bypasses role resolution entirely: such folders have no
+    // JMAP role, and role lookup would return the wrong (or no) mailbox.
+    if let Some(mb) = explicit_mailbox {
+        return fetch_emails_in_mailbox(jmap, params, mb).await;
+    }
 
     // Map mailbox role to JMAP filter.
     // "outbox" returns empty result — JMAP has no outbox role; outbound email
     // is handled via EmailSubmission/set. Return early with empty result.
     let mailbox_role_lower = mailbox_role.to_lowercase();
     if mailbox_role_lower == "outbox" {
-        return Ok(crate::jmap::EmailListResult {
-            emails: Vec::new(),
-            total: 0,
-            can_calculate_changes: false,
-            query_state: String::new(),
-            state: String::new(),
-        });
+        return Ok(crate::jmap::EmailListResult::empty());
     }
 
     // Normalize role to JMAP standard role name
@@ -1783,23 +1795,11 @@ pub async fn fetch_emails_jmap(
         "junkemail" | "junk" => "junk",
         "deleteditems" | "trash" => "trash",
         "outbox" => {
-            return Ok(crate::jmap::EmailListResult {
-                emails: Vec::new(),
-                total: 0,
-                can_calculate_changes: false,
-                query_state: String::new(),
-                state: String::new(),
-            });
+            return Ok(crate::jmap::EmailListResult::empty());
         }
         _ => {
             tracing::warn!(role = %mailbox_role, "Unrecognised mailbox role; returning empty email list");
-            return Ok(crate::jmap::EmailListResult {
-                emails: Vec::new(),
-                total: 0,
-                can_calculate_changes: false,
-                query_state: String::new(),
-                state: String::new(),
-            });
+            return Ok(crate::jmap::EmailListResult::empty());
         }
     };
 
@@ -1821,55 +1821,56 @@ pub async fn fetch_emails_jmap(
                     "Multiple mailbox IDs found for role; using first"
                 );
             }
-            let in_mailbox = serde_json::json!({ "inMailbox": mailbox_ids[0] });
-            let filter = match search_filter {
-                // Combine the mailbox scope with the search conditions under
-                // a single AND so a search is always confined to this mailbox.
-                Some(search) => Some(
-                    crate::ews_search::combine_with_in_mailbox(
-                        &mailbox_ids[0],
-                        Some(search.clone()),
-                    )
-                    .unwrap_or(in_mailbox),
-                ),
-                None => Some(in_mailbox),
-            };
-            let result = jmap
-                .query_emails(crate::jmap::QueryEmailsParams {
-                    account_id,
-                    filter,
-                    sort: None,
-                    position,
-                    limit,
-                    username,
-                    password,
-                })
-                .await?;
-            Ok(result)
+            // Resolve the role to its concrete mailbox id, then reuse the
+            // mailbox-scoped query (inMailbox + search combination) so that
+            // logic lives in one place.
+            fetch_emails_in_mailbox(jmap, params, &mailbox_ids[0]).await
         }
         Ok(_) => {
             // No mailbox for that role — return empty result.
             tracing::info!(role = %normalized_role, "No mailbox found for role; returning empty email list");
-            Ok(crate::jmap::EmailListResult {
-                emails: Vec::new(),
-                total: 0,
-                can_calculate_changes: false,
-                query_state: String::new(),
-                state: String::new(),
-            })
+            Ok(crate::jmap::EmailListResult::empty())
         }
         Err(e) => {
-            // Log the error but still return empty result to maintain sync stability.
-            tracing::warn!(error = %e, role = %normalized_role, "Failed to fetch mailbox IDs for role");
-            Ok(crate::jmap::EmailListResult {
-                emails: Vec::new(),
-                total: 0,
-                can_calculate_changes: false,
-                query_state: String::new(),
-                state: String::new(),
-            })
+            // A transient `Mailbox/query` failure must NOT be flattened to an
+            // empty result: it is indistinguishable from a genuinely empty
+            // mailbox, so the EAS/EWS initial sync would complete with no emails
+            // and no query state and the folder would be skipped until a manual
+            // re-prime. Propagate so the caller answers a retryable Status 6
+            // with the sync token untouched.
+            tracing::warn!(error = %e, role = %normalized_role, "Failed to fetch mailbox IDs for role; failing closed");
+            Err(e)
         }
     }
+}
+
+/// Query a concrete JMAP mailbox id (used for user-created folders, whose EAS
+/// ServerId *is* the mailbox id and which have no JMAP role).
+async fn fetch_emails_in_mailbox(
+    jmap: &Arc<crate::jmap::JmapClient>,
+    params: &FetchEmailsParams<'_>,
+    mailbox_id: &str,
+) -> anyhow::Result<crate::jmap::EmailListResult> {
+    let in_mailbox = serde_json::json!({ "inMailbox": mailbox_id });
+    let filter = match params.search_filter.as_ref() {
+        Some(search) => {
+            crate::ews_search::combine_with_in_mailbox(mailbox_id, Some(search.clone()))
+                .unwrap_or(in_mailbox)
+        }
+        None => in_mailbox,
+    };
+    jmap.query_emails(crate::jmap::QueryEmailsParams {
+        account_id: params.account_id,
+        filter: Some(filter),
+        sort: None,
+        position: params.position,
+        limit: params.limit,
+        anchor: params.anchor,
+        anchor_offset: params.anchor_offset,
+        username: params.username,
+        password: params.password,
+    })
+    .await
 }
 
 /// EAS folder type constants per MS-ASCMD §2.2.3.186.3.
