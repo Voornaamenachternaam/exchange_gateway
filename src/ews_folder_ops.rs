@@ -716,6 +716,64 @@ async fn eas_parent_id_for_mailbox(
 // MoveFolder: re-parent via Mailbox/set update parentId
 // ---------------------------------------------------------------------------
 
+/// Mirror a confirmed backend reparent into the EAS folder store.
+///
+/// The backend `Mailbox/set update` does not touch `folder_map`, so without
+/// this the stored `ParentId` stays stale: EAS keeps the folder under its old
+/// parent and a later rename's sibling-collision check validates against the
+/// wrong parent. Only a folder with a `folder_map` row is mirrored; a row that
+/// vanished concurrently is a benign no-op, never resurrected. A `folder_map`
+/// read failure or a failed journaled update is a retryable error (the move is
+/// idempotent) — silently skipping the mirror would acknowledge the move with a
+/// stale ParentId.
+///
+/// `parent_eas` is the destination's EAS `ParentId`, resolved by the caller
+/// BEFORE the backend move (see `handle_move_folder`): a destination the EAS
+/// hierarchy cannot represent is rejected up front, so this helper never has to
+/// silently drop the mirror.
+async fn mirror_eas_parent(
+    state: &Arc<AppState>,
+    owner: &str,
+    mailbox_id: &str,
+    parent_eas: &str,
+    action: EwsAction,
+) -> Result<(), Box<Response>> {
+    let row = match state.storage.get_folder(owner, mailbox_id).await {
+        Ok(row) => row,
+        Err(e) => {
+            return Err(Box::new(internal_error(
+                action,
+                "folder_map parent mirror lookup failed",
+                &e,
+            )));
+        }
+    };
+    let Some(row) = row else {
+        return Ok(());
+    };
+    // Reparent ONLY: `display_name` is left untouched (a concurrent rename must
+    // survive the move mirror).
+    match state
+        .storage
+        .update_folder_journaled(owner, &row.server_id, Some(parent_eas), None)
+        .await
+    {
+        Ok(true) => Ok(()),
+        Ok(false) => {
+            tracing::warn!(
+                mailbox_id = %mailbox_id,
+                "folder mapping vanished before the parent mirror"
+            );
+            Ok(())
+        }
+        Err(e) => Err(Box::new(internal_error(
+            action,
+            "folder_map parent mirror failed",
+            &e,
+        ))),
+    }
+}
+
 pub(crate) async fn handle_move_folder(
     state: &Arc<AppState>,
     auth: &AuthContext,
@@ -788,6 +846,35 @@ pub(crate) async fn handle_move_folder(
         }
     };
 
+    // Resolve the destination's EAS `ParentId` BEFORE the backend move. A
+    // destination the EAS hierarchy cannot represent (neither a `folder_map`
+    // folder nor a recognised system role) must reject the move: proceeding
+    // would change the backend parent while the EAS `ParentId` stayed stale, so
+    // EAS would keep advertising the folder under its old parent.
+    let dest_parent_eas = match eas_parent_id_for_mailbox(
+        state,
+        &owner,
+        &jmap,
+        &auth.username,
+        &auth.password,
+        new_parent.as_deref(),
+    )
+    .await
+    {
+        Ok(Some(p)) => p,
+        Ok(None) => {
+            return operation_error_response(
+                &action,
+                "ErrorInvalidFolderTypeForOperation",
+                "The destination folder cannot be represented in the EAS hierarchy",
+                StatusCode::OK,
+            );
+        }
+        Err(e) => {
+            return internal_error(action, "folder_map parent resolution failed", &e);
+        }
+    };
+
     for id in all_attrs(body, Some("FolderIds"), "FolderId", "Id") {
         // Moving a distinguished/system folder (Inbox, Trash, ...) is not
         // permitted; only user-created mailboxes move.
@@ -834,77 +921,13 @@ pub(crate) async fn handle_move_folder(
             .await
         {
             Ok(true) => {
-                // Mirror the reparent into the EAS folder store: the backend move
-                // above does not touch `folder_map`, so without this the stored
-                // ParentId stays stale and a later rename's sibling-collision check
-                // would validate against the wrong parent (and EAS would keep the
-                // folder under its old parent). Only a folder with a `folder_map`
-                // row is mirrored; a row that vanished concurrently is a benign
-                // no-op, never resurrected.
-                //
-                // A `folder_map` READ failure is NOT "no row": treating it as one
-                // would acknowledge the move while leaving EAS's ParentId stale, so
-                // it is a retryable error (the move is idempotent).
-                let row = match state.storage.get_folder(&owner, &mailbox_id).await {
-                    Ok(row) => row,
-                    Err(e) => {
-                        return internal_error(
-                            action,
-                            "folder_map parent mirror lookup failed",
-                            &e,
-                        );
-                    }
-                };
-                if let Some(row) = row {
-                    // A lookup failure (folder_map read or JMAP mailbox list) is
-                    // propagated: silently skipping the mirror would ack the move
-                    // with a stale ParentId.
-                    let parent_eas = match eas_parent_id_for_mailbox(
-                        state,
-                        &owner,
-                        &jmap,
-                        &auth.username,
-                        &auth.password,
-                        new_parent.as_deref(),
-                    )
-                    .await
-                    {
-                        Ok(p) => p,
-                        Err(e) => {
-                            return internal_error(
-                                action,
-                                "folder_map parent resolution failed",
-                                &e,
-                            );
-                        }
-                    };
-                    if let Some(parent_eas) = parent_eas {
-                        // Reparent ONLY: `display_name` is left untouched (a
-                        // concurrent EWS rename must survive the move mirror).
-                        match state
-                            .storage
-                            .update_folder_journaled(
-                                &owner,
-                                &row.server_id,
-                                Some(&parent_eas),
-                                None,
-                            )
-                            .await
-                        {
-                            Ok(true) => {}
-                            Ok(false) => tracing::warn!(
-                                mailbox_id = %mailbox_id,
-                                "MoveFolder: folder mapping vanished before the parent mirror"
-                            ),
-                            Err(e) => {
-                                return internal_error(
-                                    action,
-                                    "folder_map parent mirror failed",
-                                    &e,
-                                );
-                            }
-                        }
-                    }
+                // Mirror the reparent into the EAS folder store (see
+                // `mirror_eas_parent`); the destination parent was resolved and
+                // validated above.
+                if let Err(resp) =
+                    mirror_eas_parent(state, &owner, &mailbox_id, &dest_parent_eas, action).await
+                {
+                    return *resp;
                 }
             }
             Ok(false) => {
@@ -1247,6 +1270,36 @@ pub(crate) async fn handle_delete_folder(
             // client expected to be recoverable.
             match &trash_id {
                 Some(t) if *t != mailbox_id => {
+                    // Resolve the Trash mailbox's EAS ParentId before moving, so
+                    // an unrepresentable destination fails rather than leaving
+                    // the EAS ParentId stale.
+                    let trash_parent_eas = match eas_parent_id_for_mailbox(
+                        state,
+                        &owner,
+                        &jmap,
+                        &auth.username,
+                        &auth.password,
+                        Some(t.as_str()),
+                    )
+                    .await
+                    {
+                        Ok(Some(p)) => p,
+                        Ok(None) => {
+                            return operation_error_response(
+                                &action,
+                                "ErrorInvalidFolderTypeForOperation",
+                                "The Deleted Items folder cannot be represented in the EAS hierarchy",
+                                StatusCode::OK,
+                            );
+                        }
+                        Err(e) => {
+                            return internal_error(
+                                action,
+                                "folder_map parent resolution failed",
+                                &e,
+                            );
+                        }
+                    };
                     if let Err(e) = jmap
                         .update_mailbox(
                             &account_id,
@@ -1259,6 +1312,15 @@ pub(crate) async fn handle_delete_folder(
                         .await
                     {
                         return internal_error(action, "Mailbox/set move-to-trash failed", &e);
+                    }
+                    // Mirror the new Trash parent into the EAS folder store, so
+                    // EAS stops advertising the folder under its old parent and
+                    // primed devices receive the folder-update.
+                    if let Err(resp) =
+                        mirror_eas_parent(state, &owner, &mailbox_id, &trash_parent_eas, action)
+                            .await
+                    {
+                        return *resp;
                     }
                     continue;
                 }
@@ -1387,17 +1449,35 @@ pub(crate) async fn handle_delete_folder(
         // advertising them) and a retry — which re-queries the now-childless
         // hierarchy — could never recover the descendant ids. Mirror the
         // destroyed-so-far set before surfacing the walk's failure.
-        if !destroyed_ids.is_empty()
-            && let Err(e) = state
+        if !destroyed_ids.is_empty() {
+            // Record the destroyed ids durably BEFORE the prune: the mailboxes are
+            // already gone from JMAP, so if the prune below fails the ids cannot
+            // be re-derived by a retry. A committed `pending_folder_prune` row is
+            // replayed by the next folder-sync read (`FolderSync`/`GetHierarchy`/
+            // EWS `SyncFolderHierarchy`), which journals the `folder-delete` and
+            // clears the row. Best-effort: a failure here is logged but the direct
+            // prune still runs (it is the primary path).
+            if let Err(e) = state
+                .storage
+                .record_pending_folder_prunes(&owner, &destroyed_ids)
+                .await
+            {
+                tracing::warn!(
+                    error = %e,
+                    "EWS DeleteFolder: failed to record the deferred folder-map prune"
+                );
+            }
+            if let Err(e) = state
                 .storage
                 .delete_folders_journaled(&owner, &destroyed_ids)
                 .await
-        {
-            tracing::warn!(
-                error = %e,
-                "EWS DeleteFolder: failed to prune EAS folder map for destroyed mailboxes"
-            );
-            return internal_error(action, "folder_map prune failed", &e);
+            {
+                tracing::warn!(
+                    error = %e,
+                    "EWS DeleteFolder: failed to prune EAS folder map for destroyed mailboxes"
+                );
+                return internal_error(action, "folder_map prune failed", &e);
+            }
         }
         if let Some(resp) = destroy_failure {
             return resp;
@@ -2446,6 +2526,15 @@ mod tests {
             deletes.contains(&"mb-parent") && deletes.contains(&"mb-child"),
             "both destroyed mailboxes must be journaled as folder-delete: {deletes:?}"
         );
+        assert!(
+            state
+                .storage
+                .list_pending_folder_prunes(owner)
+                .await
+                .unwrap()
+                .is_empty(),
+            "a successful delete must leave no deferred-prune rows behind"
+        );
     }
 
     /// A hard-delete whose JMAP mailbox ids have NO `folder_map` row (e.g. a
@@ -3418,11 +3507,13 @@ mod tests {
         (base, calls)
     }
 
-    /// A `MoveFolder` whose ParentId mirror cannot be resolved (the mailbox
-    /// lookup fails transiently) must NOT be acknowledged as success: the stored
-    /// ParentId would be left stale while EAS keeps the folder under its old
-    /// parent. It is answered with a retryable error and the mapping row is
-    /// left unchanged.
+    /// A `MoveFolder` whose destination EAS `ParentId` cannot be resolved (the
+    /// mailbox lookup fails transiently) must NOT be applied at all: proceeding
+    /// would change the backend parent while the EAS `ParentId` stayed stale, so
+    /// EAS would keep advertising the folder under its old parent. The
+    /// destination is resolved BEFORE the backend move, so the failure is
+    /// answered with a retryable error, the backend is left untouched, and the
+    /// mapping row is unchanged.
     #[tokio::test]
     async fn move_folder_parent_lookup_failure_is_not_acknowledged() {
         let (base, calls) = spawn_move_stub_failing_parent_lookup().await;
@@ -3467,16 +3558,17 @@ mod tests {
             .await
             .unwrap();
         let text = String::from_utf8_lossy(&bytes);
-        // The backend reparent itself DID run: the failure is specifically the
-        // follow-up ParentId mirror, so the move must be retried (the reparent
-        // is idempotent) rather than acknowledged with a stale ParentId.
+        // The destination is resolved BEFORE the backend move, so an unresolved
+        // ParentId rejects the move up front: the backend reparent must NOT have
+        // run, and the move must be retryable rather than acknowledged with a
+        // stale ParentId.
         assert!(
-            calls
+            !calls
                 .lock()
                 .await
                 .iter()
                 .any(|c| c.get("method").and_then(|v| v.as_str()) == Some("Mailbox/set")),
-            "the backend Mailbox/set must have been applied before the mirror failed"
+            "an unresolved destination must reject the move BEFORE the backend Mailbox/set"
         );
         assert!(
             text.contains("ErrorInternalServerError"),

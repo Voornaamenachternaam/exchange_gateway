@@ -314,9 +314,10 @@ impl RopCreateFolderSuccess {
     }
 }
 
-/// `RopDeleteFolder` request, MS-OXCROPS §2.2.4.4.1. After the dispatcher
+/// `RopDeleteFolder` request, MS-OXCROPS §2.2.4.3.1. After the dispatcher
 /// consumed the `RopId`, the body is `LogonId · InputHandleIndex ·
-/// FolderId(8 LE) · DeleteFlags(1)`.
+/// DeleteFolderFlags(1) · FolderId(8 LE)` — the flag byte PRECEDES the FID on
+/// the wire (see the §4.2.1 example: `1D 00 01 05 01 00 00 00 0E 8E DF 36`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RopDeleteFolderRequest {
     pub logon_id: u8,
@@ -328,8 +329,8 @@ impl RopDeleteFolderRequest {
     pub fn decode(buf: &mut Buf<'_>) -> Result<Self, DecodeError> {
         let logon_id = buf.take_u8()?;
         let input_handle_index = buf.take_u8()?;
-        let folder_id = buf.take_u64_le()?;
         let delete_flags = buf.take_u8()?;
+        let folder_id = buf.take_u64_le()?;
         Ok(Self {
             logon_id,
             input_handle_index,

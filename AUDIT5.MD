@@ -114,6 +114,23 @@ gateway restarts and surface in `FolderSync`/`GetHierarchy`.
   advertising them) while a retry — re-querying the now-childless hierarchy —
   could never recover the descendant ids. The destroyed-so-far set is pruned
   before the walk's own failure is surfaced.
+- **Deferred folder-map prune work list (durable recovery).** A folder destroy
+  whose backend object is already gone but whose `folder_map` prune fails (a DB
+  error, or a transport failure after the destroy committed) is not recoverable
+  by a retry: the destroyed mailbox is no longer returned by JMAP, and for a deep
+  subtree only the ids destroyed so far are known. Every destroy path — EAS
+  `FolderDelete`, EWS `DeleteFolder` (including a walk that aborts part-way),
+  MAPI `RopDeleteFolder` and `RopHardDeleteMessagesAndSubfolders` — therefore
+  records the destroyed ids in `pending_folder_prune` (schema **v13**) BEFORE
+  pruning, then prunes in the same request; a successful prune clears the pending
+  rows (the prune itself is a no-op for an unmapped id, so a system folder never
+  fabricates a Delete). Any row still present is replayed by the next
+  folder-sync read — EAS `FolderSync` (before the journal head is captured, so
+  the `folder-delete` it journals lands inside that same window and is delivered
+  immediately) and `GetHierarchy`, plus EWS `SyncFolderHierarchy` — which re-runs
+  the prune and journals the `folder-delete`, so the client receives the Delete
+  instead of EAS advertising a folder that no longer exists. A replay failure is
+  non-fatal: the pending row survives for the next read.
 - **`FolderUpdate`** (§2.2.1.6): rename and/or move. A system folder → 2; an
   unknown folder → 4; otherwise JMAP `Mailbox/set update` (patch `name` and/or
   `parentId`) or a CalDAV `PROPPATCH` `<D:displayname>`; the CalDAV collection

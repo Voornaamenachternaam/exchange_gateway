@@ -2164,7 +2164,18 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
         });
     }
 
-    for server_id in existing_map.keys() {
+    // Candidate deletions: every event THIS scope has delivered (its ledger)
+    // plus every event any scope has stored (the owner-global `item_map`). The
+    // ledger is required because a deletion confirmed by ANOTHER scope removes
+    // the shared `item_map` row, so a scope that still holds the item in its own
+    // ledger would otherwise never enumerate it here — and the earlier
+    // tombstone already sits at or below the captured journal head
+    // (`start_db_seq`), so the tombstone feed cannot recover it either (that
+    // device would keep the deleted event indefinitely). A ledger id whose
+    // `item_map` row is gone is therefore a confirmed deletion for THIS scope.
+    let mut deletion_candidates: HashSet<String> = existing_map.keys().cloned().collect();
+    deletion_candidates.extend(delivered_map.keys().cloned());
+    for server_id in &deletion_candidates {
         if seen_ids.contains(server_id) {
             continue;
         }
@@ -2172,7 +2183,9 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
         // stored event absent from it is merely unchanged and must survive.
         // Only an event the delta explicitly reported as destroyed is removed
         // here. A full snapshot (initial sync or the CalDAV fallback) is
-        // authoritative, so any stored event it omits is a deletion.
+        // authoritative, so any stored event it omits is a deletion. An event
+        // this scope delivered whose `item_map` row is already gone was removed
+        // by another scope's confirmed deletion — that is authoritative here.
         //
         // For a SCOPED folder (a custom calendar folder) that authority does
         // not extend to events outside its own calendar: `item_map` is
@@ -2183,11 +2196,12 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
         // sweep entirely for scoped folders — their own deletions still arrive
         // as explicit deltas once their calendar reports them.
         let deleted = scoped_calendar_id.is_none()
-            && calendar_event_deleted(
-                calendar_delta_partial,
-                &jmap_destroyed_server_ids,
-                server_id,
-            );
+            && (!existing_map.contains_key(server_id)
+                || calendar_event_deleted(
+                    calendar_delta_partial,
+                    &jmap_destroyed_server_ids,
+                    server_id,
+                ));
         if deleted {
             // Queue the tombstone now (it carries the journal seq and
             // must survive a clipped window) but RETAIN the item_map row:
@@ -4219,6 +4233,80 @@ mod tests {
             "a fresh prime must emit Add (not Change) even when another device \
              already stored the event:\n{b}"
         );
+    }
+
+    /// A deletion confirmed by ONE scope must still be delivered to ANOTHER
+    /// scope that holds the same event. The confirming scope removes the shared
+    /// `item_map` row when it emits the `<Delete>`, so the second scope's sweep
+    /// (which otherwise iterates `item_map`) would never enumerate the id — and
+    /// the tombstone sits at or below the second scope's captured journal head,
+    /// so the tombstone feed cannot recover it either. The second scope would
+    /// keep the deleted event indefinitely. The sweep must therefore also
+    /// consider THIS scope's delivery ledger, where the id is a confirmed
+    /// deletion once its `item_map` row is gone.
+    #[tokio::test]
+    async fn deletion_confirmed_by_one_scope_is_delivered_to_another() {
+        let stub = spawn_calendar_stub(
+            vec![],
+            vec![stub_event("e1", "uid-e1", "Shared")],
+            "query-s",
+            "get-s",
+            None,
+        )
+        .await;
+        let state = calendar_sync_state(&stub.base).await;
+
+        // Both devices prime the SAME calendar, so both hold e1 in their ledgers
+        // and e1 lives in the shared `item_map`.
+        let a = run_calendar_sync_for(&state, "1", "1::devA", "0").await;
+        assert!(
+            a.contains("<Add>") && a.contains("uid-e1"),
+            "device A prime:\n{a}"
+        );
+        let b = run_calendar_sync_for(&state, "1", "1::devB", "0").await;
+        assert!(
+            b.contains("<Add>") && b.contains("uid-e1"),
+            "device B prime:\n{b}"
+        );
+
+        // The event is deleted on the backend: the calendar feed now reports it
+        // destroyed, and it is gone from the snapshot.
+        *stub.events.lock().unwrap() = vec![];
+        let deleted_page = json!({
+            "accountId": "acct", "oldState": "s0", "newState": "s1",
+            "hasMoreChanges": false,
+            "created": [], "updated": [], "destroyed": ["e1"]
+        });
+        *stub.changes_pages.lock().unwrap() = vec![deleted_page];
+
+        // Device A's delta confirms the deletion: it emits the Delete and removes
+        // the shared `item_map` row.
+        let a_key = sync_key_of(&a);
+        let a_delta = run_calendar_sync_for(&state, "1", "1::devA", &a_key).await;
+        assert!(
+            a_delta.contains("<Delete>"),
+            "device A must emit the Delete for the confirmed deletion:\n{a_delta}"
+        );
+
+        // Device B has NOT synced since. Its own ledger still holds e1, but the
+        // shared `item_map` row is gone, so its next delta must STILL emit the
+        // Delete (the tombstone is already behind its journal head).
+        let b_key = sync_key_of(&b);
+        let b_delta = run_calendar_sync_for(&state, "1", "1::devB", &b_key).await;
+        assert!(
+            b_delta.contains("<Delete>") && !b_delta.contains("<Add>"),
+            "device B must receive the deletion another scope confirmed:\n{b_delta}"
+        );
+    }
+
+    /// Extract the response `SyncKey` (the LAST `<SyncKey>` in the envelope) from
+    /// a rendered `Sync` response.
+    fn sync_key_of(xml: &str) -> String {
+        xml.rsplit("<SyncKey>")
+            .next()
+            .and_then(|s| s.split("</SyncKey>").next())
+            .expect("SyncKey in response")
+            .to_string()
     }
 
     /// An event that belongs to TWO calendars (JMAP `calendarIds` with two

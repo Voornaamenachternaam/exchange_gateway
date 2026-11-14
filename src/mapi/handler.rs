@@ -893,6 +893,51 @@ fn mailbox_subtree_deepest_first(
     out
 }
 
+/// Resolve the EAS `ParentId` string for a destination JMAP mailbox id, for
+/// mirroring a MAPI folder move into `folder_map`. Mirrors the EWS resolver: a
+/// user-created folder (a `folder_map` row) uses its own id, a system folder its
+/// distinguished id (`"2"`…`"12"`), and the root `"0"`. `None` when the
+/// destination cannot be represented in the EAS hierarchy.
+async fn eas_parent_id_for_dest(
+    jc: &crate::jmap::JmapClient,
+    storage: &crate::storage::Storage,
+    owner: &str,
+    dest: Option<&str>,
+    username: &str,
+    password: &secrecy::SecretString,
+) -> Option<String> {
+    let Some(dest) = dest else {
+        return Some("0".to_string());
+    };
+    if storage
+        .get_folder(owner, dest)
+        .await
+        .ok()
+        .flatten()
+        .is_some()
+    {
+        return Some(dest.to_string());
+    }
+    let role = jc
+        .query_mailboxes(username, password)
+        .await
+        .ok()
+        .and_then(|m| {
+            m.mailboxes
+                .into_iter()
+                .find(|mb| mb.id.as_deref() == Some(dest))
+                .and_then(|mb| mb.role)
+        });
+    match role.as_deref() {
+        Some("inbox") => Some("2".to_string()),
+        Some("drafts") => Some("3".to_string()),
+        Some("trash") => Some("4".to_string()),
+        Some("sent") => Some("5".to_string()),
+        Some("junk") => Some("12".to_string()),
+        _ => None,
+    }
+}
+
 /// Resolve a MAPI folder id (FID) back to its JMAP mailbox id by inverting the
 /// folder-hierarchy projection, which assigns each mailbox a row id of
 /// `store::folder_id_from_backend(jmap_mailbox_id)`. Used by folder-targeting
@@ -4978,7 +5023,7 @@ async fn execute_one_rop(
                     _ => String::new(),
                 })
                 .unwrap_or_default();
-            let outcome: RopErrorCode;
+            let mut outcome: RopErrorCode;
             let partial: u8;
             match (jmap, password, &src_backend, &dest_backend) {
                 (_, _, s, d) if s.is_empty() || d.is_empty() => {
@@ -5077,8 +5122,69 @@ async fn execute_one_rop(
                             .update_mailbox(&account_id, src, None, Some(Some(dest)), username, pw)
                             .await
                         {
-                            Ok(_) => {
+                            Ok(true) => {
                                 outcome = RopErrorCode::Success;
+                                partial = 0;
+                                // Mirror the move into the EAS folder registry: a
+                                // mailbox an EAS client created (so it has a
+                                // `folder_map` row keyed on its JMAP mailbox id)
+                                // that is moved here must have its stored
+                                // ParentId updated and a `folder-update`
+                                // journaled, so EAS FolderSync/GetHierarchy stop
+                                // advertising the old hierarchy and already-
+                                // primed devices receive the move. The mirror
+                                // runs only for a confirmed backend move; a
+                                // failed mirror write is NOT acknowledged as
+                                // success (the move is idempotent — a retry
+                                // re-runs it).
+                                if let Some(storage) = storage {
+                                    let owner = crate::ews::owner_from_username(username);
+                                    let dest_parent = eas_parent_id_for_dest(
+                                        jc,
+                                        storage,
+                                        owner,
+                                        Some(dest),
+                                        username,
+                                        pw,
+                                    )
+                                    .await;
+                                    if let Some(dest_parent) = dest_parent {
+                                        let row = storage.get_folder(owner, src).await;
+                                        match row {
+                                            Ok(Some(row)) => {
+                                                if let Err(e) = storage
+                                                    .update_folder_journaled(
+                                                        owner,
+                                                        &row.server_id,
+                                                        Some(&dest_parent),
+                                                        None,
+                                                    )
+                                                    .await
+                                                {
+                                                    tracing::warn!(
+                                                        error = %e,
+                                                        "RopMoveFolder: failed to mirror the EAS parent"
+                                                    );
+                                                    outcome = RopErrorCode::DiskError;
+                                                }
+                                            }
+                                            Ok(None) => {}
+                                            Err(e) => {
+                                                tracing::warn!(
+                                                    error = %e,
+                                                    "RopMoveFolder: folder_map lookup failed for the EAS parent mirror"
+                                                );
+                                                outcome = RopErrorCode::DiskError;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            Ok(false) => {
+                                tracing::warn!(
+                                    "JMAP Mailbox/set reported no update for the folder move"
+                                );
+                                outcome = RopErrorCode::DiskError;
                                 partial = 0;
                             }
                             Err(e) => {
@@ -5201,19 +5307,19 @@ async fn execute_one_rop(
             // happens to match `FolderId` even though that folder is not a
             // child of the handle. Reject it (and any non-folder handle) as a
             // structural NoSupport before touching the store.
-            let parent_kind = sessions
+            let parent = sessions
                 .with_handle(session_id, req.input_handle_index, |h| match h {
-                    Handle::Folder { kind, .. }
+                    Handle::Folder { backend_id, kind }
                         if matches!(*kind, FolderKind::Mail | FolderKind::Root) =>
                     {
-                        Some(*kind)
+                        Some((backend_id.clone(), *kind))
                     }
                     _ => None,
                 })
                 .unwrap_or(None);
             let mut outcome: RopErrorCode;
             let mut partial: u8 = 0;
-            match (jmap, password, parent_kind) {
+            match (jmap, password, parent) {
                 (_, _, None) => outcome = RopErrorCode::NoSupport,
                 (None, _, _) => outcome = RopErrorCode::NotFound,
                 (_, None, _) => outcome = RopErrorCode::AccessDenied,
@@ -5223,7 +5329,17 @@ async fn execute_one_rop(
                 (Some(_), Some(_), _) if req.delete_flags & !VALID_DELETE_FOLDER_FLAGS != 0 => {
                     outcome = RopErrorCode::InvalidParameter;
                 }
-                (Some(jc), Some(pw), Some(_)) => {
+                // [MS-OXCFOLD] §3.2.5.3: with `DELETE_HARD_DELETE` clear the
+                // folder becomes SOFT-deleted (recoverable). The gateway's
+                // folder model has no soft-deleted state — a mailbox is either
+                // present or permanently gone — so a soft-delete request MUST
+                // NOT be answered with the permanent JMAP `Mailbox/set destroy`
+                // used for a hard delete. Reject it as unsupported rather than
+                // destroying data the client expected to recover.
+                (Some(_), Some(_), _) if req.delete_flags & DELETE_HARD_DELETE == 0 => {
+                    outcome = RopErrorCode::NoSupport;
+                }
+                (Some(jc), Some(pw), Some((parent_backend, parent_kind))) => {
                     let account_id = jc
                         .get_account_id(username, pw)
                         .await
@@ -5261,6 +5377,41 @@ async fn execute_one_rop(
                             .encode(out);
                             return Ok(());
                         };
+                        // [MS-OXCFOLD] §2.2.1.3.1: the input handle is the
+                        // target's PARENT. Verify the target really is a child
+                        // of the handle before destroying: a stale parent handle
+                        // (the folder was moved elsewhere by another client)
+                        // must NOT be able to delete a folder that is no longer
+                        // its child. A Mail handle's backend id is the parent
+                        // mailbox id; a Root handle parents only top-level
+                        // folders (`parentId` null / absent / the JMAP root).
+                        let parent_ok = match parent_kind {
+                            FolderKind::Root => mailboxes
+                                .iter()
+                                .find(|m| m.id.as_deref() == Some(target.as_str()))
+                                .is_none_or(|m| {
+                                    m.parent_id
+                                        .as_deref()
+                                        .is_none_or(|p| p.is_empty() || p == "0")
+                                }),
+                            _ => {
+                                mailboxes
+                                    .iter()
+                                    .find(|m| m.id.as_deref() == Some(target.as_str()))
+                                    .and_then(|m| m.parent_id.as_deref())
+                                    == Some(parent_backend.as_str())
+                            }
+                        };
+                        if !parent_ok {
+                            outcome = RopErrorCode::NotFound;
+                            crate::mapi::rops::RopDeleteFolderResponse {
+                                input_handle_index: req.input_handle_index,
+                                return_value: outcome,
+                                partial_completion: 0,
+                            }
+                            .encode(out);
+                            return Ok(());
+                        }
                         // The subtree to destroy: just the target unless
                         // DEL_FOLDERS asks for its descendants too (deepest
                         // first so a parent is never destroyed while it still
@@ -5288,12 +5439,11 @@ async fn execute_one_rop(
                         // `mailboxHasEmail` — the ROP then succeeds for no
                         // target and reports PartialCompletion.
                         let remove_emails = req.delete_flags & DEL_MESSAGES != 0;
-                        // DELETE_HARD_DELETE is accepted but does not change
-                        // the outcome: the gateway's folder model has no
-                        // soft-deleted state (a mailbox is either present or
-                        // gone), so both soft and hard deletes map to a
-                        // permanent JMAP `Mailbox/set destroy`. The bit is
-                        // validated above with the rest of the mask.
+                        // A permanent JMAP `Mailbox/set destroy` is reached ONLY
+                        // for a hard delete (`DELETE_HARD_DELETE` set); a
+                        // soft-delete request was already rejected as
+                        // unsupported above, so this is always the client's
+                        // explicit permanent removal.
                         outcome = RopErrorCode::Success;
                         let mut destroyed_count = 0usize;
                         // Backend mailbox ids that were actually destroyed.
@@ -5346,15 +5496,32 @@ async fn execute_one_rop(
                         // re-runs the prune).
                         if !destroyed_ids.is_empty()
                             && let Some(storage) = storage
-                            && let Err(e) = storage
+                        {
+                            // Record the destroyed ids durably BEFORE the prune: the
+                            // mailboxes are already gone from JMAP, so a failed prune
+                            // cannot re-derive them on retry. The next folder-sync
+                            // read replays the row and journals the `folder-delete`.
+                            // Best-effort: a failure here is logged but the direct
+                            // prune still runs.
+                            if let Err(e) = storage
+                                .record_pending_folder_prunes(username, &destroyed_ids)
+                                .await
+                            {
+                                tracing::warn!(
+                                    error = %e,
+                                    "RopDeleteFolder: failed to record the deferred folder-map prune"
+                                );
+                            }
+                            if let Err(e) = storage
                                 .delete_folders_journaled(username, &destroyed_ids)
                                 .await
-                        {
-                            tracing::warn!(
-                                error = %e,
-                                "RopDeleteFolder: failed to prune EAS folder map for destroyed mailboxes"
-                            );
-                            outcome = RopErrorCode::DiskError;
+                            {
+                                tracing::warn!(
+                                    error = %e,
+                                    "RopDeleteFolder: failed to prune EAS folder map for destroyed mailboxes"
+                                );
+                                outcome = RopErrorCode::DiskError;
+                            }
                         }
                         // The ROP succeeded for only some (or none) of the
                         // targets — a non-empty folder with DEL_MESSAGES unset,
@@ -6218,15 +6385,32 @@ async fn execute_one_rop(
                         let mut mirror_ok = true;
                         if !destroyed_ids.is_empty()
                             && let Some(storage) = storage
-                            && let Err(e) = storage
+                        {
+                            // Record the destroyed subfolder ids durably BEFORE the
+                            // prune: they are already gone from JMAP, so a failed
+                            // prune cannot re-derive them. The next folder-sync read
+                            // replays the row and journals the `folder-delete`.
+                            // Best-effort: a failure here is logged but the direct
+                            // prune still runs.
+                            if let Err(e) = storage
+                                .record_pending_folder_prunes(username, &destroyed_ids)
+                                .await
+                            {
+                                tracing::warn!(
+                                    error = %e,
+                                    "HardDelete: failed to record the deferred folder-map prune"
+                                );
+                            }
+                            if let Err(e) = storage
                                 .delete_folders_journaled(username, &destroyed_ids)
                                 .await
-                        {
-                            tracing::warn!(
-                                error = %e,
-                                "HardDelete: failed to prune EAS folder map for destroyed subfolders"
-                            );
-                            mirror_ok = false;
+                            {
+                                tracing::warn!(
+                                    error = %e,
+                                    "HardDelete: failed to prune EAS folder map for destroyed subfolders"
+                                );
+                                mirror_ok = false;
+                            }
                         }
                         outcome = if destroyed_ok && subfolders_ok && mirror_ok {
                             RopErrorCode::Success
@@ -11565,10 +11749,10 @@ mod tests {
     /// wired onto the MAPI state, so the EAS `folder_map` mirroring of the
     /// destroy can be asserted.
     ///
-    /// The input handle is the PARENT folder (a distinct id) and the wire
-    /// `FolderId` names the target, exactly as [MS-OXCFOLD] §2.2.1.3.1 requires,
-    /// so these tests fail if the handler ever deletes the handle instead of the
-    /// `FolderId`.
+    /// The input handle is the synthetic Root (its backend id is ignored) and
+    /// the wire `FolderId` names a top-level target, exactly as [MS-OXCFOLD]
+    /// §2.2.1.3.1 requires, so these tests fail if the handler ever deletes the
+    /// handle instead of the `FolderId`.
     async fn run_delete_folder_rop_full_storage(
         base: &str,
         target_id: &str,
@@ -11580,19 +11764,22 @@ mod tests {
             target_id,
             delete_flags,
             storage,
-            crate::mapi::session::FolderKind::Mail,
+            "0",
+            crate::mapi::session::FolderKind::Root,
         )
         .await
     }
 
-    /// As [`run_delete_folder_rop_full_storage`] but with the PARENT handle
-    /// carrying an explicit folder kind, so a delete routed through a
-    /// non-mail parent (Calendar/Contacts) can be asserted to be rejected.
+    /// As [`run_delete_folder_rop_full_storage`] but with an explicit PARENT
+    /// handle backend id and folder kind, so a delete routed through a non-mail
+    /// parent (Calendar/Contacts) can be asserted to be rejected and a Mail
+    /// handle can be pointed at a specific parent mailbox.
     async fn run_delete_folder_rop_kind(
         base: &str,
         target_id: &str,
         delete_flags: u8,
         storage: Option<std::sync::Arc<crate::storage::Storage>>,
+        parent_backend: &str,
         parent_kind: crate::mapi::session::FolderKind,
     ) -> (RopErrorCode, u8) {
         let mut cfg = Config::test_with_mail_domain("example.com");
@@ -11613,22 +11800,20 @@ mod tests {
                 basic_auth: true,
             });
         const INPUT_HANDLE: u8 = 3;
-        // The input handle is the PARENT folder; its backend id is deliberately
-        // different from the target so a handle-based delete is caught.
         state.sessions.with_session_mut(&sid, |s| {
             s.set_handle(
                 INPUT_HANDLE,
                 crate::mapi::session::Handle::Folder {
-                    backend_id: "parent-folder".into(),
+                    backend_id: parent_backend.into(),
                     kind: parent_kind,
                 },
             );
         });
         // Wire: RopId(0x1D) · LogonId(0) · InputHandle(3) ·
-        // FolderId(hash of the target) · DeleteFolderFlags(1).
+        // DeleteFolderFlags(1) · FolderId(hash of the target)(8).
         let mut body: Vec<u8> = vec![0x1D, 0, INPUT_HANDLE];
-        body.extend(store::folder_id_from_backend(target_id).to_le_bytes());
         body.push(delete_flags);
+        body.extend(store::folder_id_from_backend(target_id).to_le_bytes());
         let req = MapiRequest {
             kind: RpcKind::Mailbox(MapiRequestType::Execute),
             request_id: "{G}:1".into(),
@@ -11652,10 +11837,12 @@ mod tests {
 
     /// `DEL_MESSAGES` (0x01) must set `onDestroyRemoveEmails` so a non-empty
     /// folder can be deleted (otherwise JMAP rejects it with `mailboxHasEmail`).
+    /// `DELETE_HARD_DELETE` (0x10) is required alongside it: a soft-delete
+    /// request is rejected as unsupported.
     #[tokio::test]
     async fn rop_delete_folder_del_messages_sets_on_destroy_remove_emails() {
         let (base, calls) = spawn_delete_folder_stub(vec![("mb-1", None)]).await;
-        let rv = run_delete_folder_rop(&base, "mb-1", DEL_MESSAGES).await;
+        let rv = run_delete_folder_rop(&base, "mb-1", DEL_MESSAGES | DELETE_HARD_DELETE).await;
         assert_eq!(rv, RopErrorCode::Success);
         let rec = calls.lock().await.clone();
         assert_eq!(rec, vec![("mb-1".to_string(), true)]);
@@ -11666,10 +11853,25 @@ mod tests {
     #[tokio::test]
     async fn rop_delete_folder_without_flags_keeps_remove_emails_false() {
         let (base, calls) = spawn_delete_folder_stub(vec![("mb-1", None)]).await;
-        let rv = run_delete_folder_rop(&base, "mb-1", 0).await;
+        let rv = run_delete_folder_rop(&base, "mb-1", DELETE_HARD_DELETE).await;
         assert_eq!(rv, RopErrorCode::Success);
         let rec = calls.lock().await.clone();
         assert_eq!(rec, vec![("mb-1".to_string(), false)]);
+    }
+
+    /// [MS-OXCFOLD] §3.2.5.3: with `DELETE_HARD_DELETE` clear the folder is
+    /// only SOFT-deleted (recoverable). The gateway has no soft-deleted state,
+    /// so it MUST reject the request as unsupported rather than permanently
+    /// destroying the mailbox through the hard-delete path.
+    #[tokio::test]
+    async fn rop_delete_folder_soft_delete_is_not_supported() {
+        let (base, calls) = spawn_delete_folder_stub(vec![("mb-1", None)]).await;
+        let (rv, _partial) = run_delete_folder_rop_full(&base, "mb-1", DEL_MESSAGES).await;
+        assert_eq!(rv, RopErrorCode::NoSupport);
+        assert!(
+            calls.lock().await.is_empty(),
+            "a soft-delete request must not permanently destroy the mailbox"
+        );
     }
 
     /// `DEL_FOLDERS` (0x04) must destroy the whole subtree deepest-first so a
@@ -11684,7 +11886,7 @@ mod tests {
             ("unrelated", Some("other")),
         ])
         .await;
-        let rv = run_delete_folder_rop(&base, "root", DEL_FOLDERS).await;
+        let rv = run_delete_folder_rop(&base, "root", DEL_FOLDERS | DELETE_HARD_DELETE).await;
         assert_eq!(rv, RopErrorCode::Success);
         let rec = calls.lock().await.clone();
         let ids: Vec<&str> = rec.iter().map(|(id, _)| id.as_str()).collect();
@@ -11709,9 +11911,18 @@ mod tests {
             ("mb-sibling", Some("parent-folder")),
         ])
         .await;
-        // The driver wires the input handle to `parent-folder`; the wire
-        // `FolderId` names `mb-child`.
-        let rv = run_delete_folder_rop(&base, "mb-child", 0).await;
+        // The driver wires the input handle to `parent-folder` (the target's
+        // real parent); the wire `FolderId` names `mb-child`.
+        let rv = run_delete_folder_rop_kind(
+            &base,
+            "mb-child",
+            DELETE_HARD_DELETE,
+            None,
+            "parent-folder",
+            crate::mapi::session::FolderKind::Mail,
+        )
+        .await
+        .0;
         assert_eq!(rv, RopErrorCode::Success);
         let ids: Vec<String> = calls
             .lock()
@@ -11726,12 +11937,41 @@ mod tests {
         );
     }
 
+    /// [MS-OXCFOLD] §2.2.1.3.1: the handle is the target's PARENT. A stale Mail
+    /// handle that no longer parents the target (another client moved it) must
+    /// NOT be able to delete that target — a clean NotFound, nothing destroyed.
+    #[tokio::test]
+    async fn rop_delete_folder_rejects_target_not_child_of_handle() {
+        let (base, calls) = spawn_delete_folder_stub(vec![
+            ("parent-a", None),
+            ("parent-b", None),
+            ("mb-child", Some("parent-b")),
+        ])
+        .await;
+        // The handle names `parent-a`, but the target lives under `parent-b`.
+        let (rv, _partial) = run_delete_folder_rop_kind(
+            &base,
+            "mb-child",
+            DELETE_HARD_DELETE,
+            None,
+            "parent-a",
+            crate::mapi::session::FolderKind::Mail,
+        )
+        .await;
+        assert_eq!(rv, RopErrorCode::NotFound);
+        assert!(
+            calls.lock().await.is_empty(),
+            "a target that is not a child of the handle must not be destroyed"
+        );
+    }
+
     /// A `FolderId` that matches no mailbox in the account is a clean NotFound
     /// (nothing is destroyed), never a destroy of the parent handle.
     #[tokio::test]
     async fn rop_delete_folder_unresolved_folder_id_is_not_found() {
         let (base, calls) = spawn_delete_folder_stub(vec![("parent-folder", None)]).await;
-        let (rv, _partial) = run_delete_folder_rop_full(&base, "no-such-mailbox", 0).await;
+        let (rv, _partial) =
+            run_delete_folder_rop_full(&base, "no-such-mailbox", DELETE_HARD_DELETE).await;
         assert_eq!(rv, RopErrorCode::NotFound);
         assert!(
             calls.lock().await.is_empty(),
@@ -11751,8 +11991,9 @@ mod tests {
         let (rv, _partial) = run_delete_folder_rop_kind(
             &base,
             "mb-child",
-            0,
+            DELETE_HARD_DELETE,
             None,
+            "parent",
             crate::mapi::session::FolderKind::Calendar,
         )
         .await;
@@ -11770,8 +12011,9 @@ mod tests {
         let (rv, _partial) = run_delete_folder_rop_kind(
             &base,
             "mb-child",
-            0,
+            DELETE_HARD_DELETE,
             None,
+            "parent",
             crate::mapi::session::FolderKind::Contacts,
         )
         .await;
@@ -11791,8 +12033,9 @@ mod tests {
         let (rv, _partial) = run_delete_folder_rop_kind(
             &base,
             "mb-top",
-            0,
+            DELETE_HARD_DELETE,
             None,
+            "0",
             crate::mapi::session::FolderKind::Root,
         )
         .await;
@@ -11842,7 +12085,7 @@ mod tests {
         let (base, _calls) =
             spawn_delete_folder_stub_with(vec![("mb-1", None)], Some("mailboxHasEmail"), None)
                 .await;
-        let (rv, partial) = run_delete_folder_rop_full(&base, "mb-1", 0).await;
+        let (rv, partial) = run_delete_folder_rop_full(&base, "mb-1", DELETE_HARD_DELETE).await;
         assert_eq!(rv, RopErrorCode::Success);
         assert_eq!(partial, 1, "a refused destroy is a partial completion");
     }
@@ -11853,7 +12096,7 @@ mod tests {
     async fn rop_delete_folder_method_error_is_disk_error() {
         let (base, _calls) =
             spawn_delete_folder_stub_with(vec![("mb-1", None)], None, Some("serverFail")).await;
-        let (rv, _partial) = run_delete_folder_rop_full(&base, "mb-1", 0).await;
+        let (rv, _partial) = run_delete_folder_rop_full(&base, "mb-1", DELETE_HARD_DELETE).await;
         assert_eq!(rv, RopErrorCode::DiskError);
     }
 
@@ -11888,8 +12131,13 @@ mod tests {
             .unwrap();
 
         let (base, _calls) = spawn_delete_folder_stub(vec![("mb-1", None)]).await;
-        let (rv, partial) =
-            run_delete_folder_rop_full_storage(&base, "mb-1", 0, Some(storage.clone())).await;
+        let (rv, partial) = run_delete_folder_rop_full_storage(
+            &base,
+            "mb-1",
+            DELETE_HARD_DELETE,
+            Some(storage.clone()),
+        )
+        .await;
         assert_eq!(rv, RopErrorCode::Success);
         assert_eq!(partial, 0);
 
@@ -11923,9 +12171,13 @@ mod tests {
         let owner = "u@example.com";
 
         let (base, _calls) = spawn_delete_folder_stub(vec![("unmapped-mb", None)]).await;
-        let (rv, _partial) =
-            run_delete_folder_rop_full_storage(&base, "unmapped-mb", 0, Some(storage.clone()))
-                .await;
+        let (rv, _partial) = run_delete_folder_rop_full_storage(
+            &base,
+            "unmapped-mb",
+            DELETE_HARD_DELETE,
+            Some(storage.clone()),
+        )
+        .await;
         assert_eq!(rv, RopErrorCode::Success);
         assert!(
             storage
@@ -11971,8 +12223,13 @@ mod tests {
         // Close the pool AFTER seeding the mapping but BEFORE the ROP runs, so
         // the destroy succeeds but `delete_folders_journaled` cannot execute.
         storage.pool().close().await;
-        let (rv, _partial) =
-            run_delete_folder_rop_full_storage(&base, "mb-1", 0, Some(storage.clone())).await;
+        let (rv, _partial) = run_delete_folder_rop_full_storage(
+            &base,
+            "mb-1",
+            DELETE_HARD_DELETE,
+            Some(storage.clone()),
+        )
+        .await;
         assert_eq!(
             rv,
             RopErrorCode::DiskError,

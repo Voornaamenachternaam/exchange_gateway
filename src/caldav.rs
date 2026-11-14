@@ -506,7 +506,9 @@ impl CaldavClient {
         // the body's `<D:propstat>`. A rejected displayname is a failure, not a
         // silent success.
         if status.as_u16() == 207 {
-            let body = resp.text().await.unwrap_or_default();
+            let body = resp.text().await.map_err(|e| {
+                anyhow!("PROPPATCH displayname response body could not be read: {e}")
+            })?;
             if !multistatus_displayname_ok(&body) {
                 return Err(anyhow!(
                     "PROPPATCH displayname rejected: {}",
@@ -594,6 +596,30 @@ impl CaldavClient {
                     &body_preview
                 }
             ));
+        }
+        // RFC 4918 §9.6.1: a collection DELETE MAY answer 207 Multi-Status when
+        // one or more descendants could not be removed (e.g. a locked child).
+        // That is NOT completion — the collection remains — so require the body
+        // to confirm every sub-response succeeded (2xx) or was already gone
+        // (404). An unreadable/malformed body, no status line, or any other
+        // status fails closed so the caller does not drop the mapping or journal
+        // a delete for a collection that is still present.
+        if resp.status().as_u16() == 207 {
+            let body = resp
+                .text()
+                .await
+                .map_err(|e| anyhow!("DELETE {} 207 body could not be read: {}", url, e))?;
+            if !multistatus_delete_confirmed(&body) {
+                return Err(anyhow!(
+                    "DELETE {} returned 207 without confirming deletion: {}",
+                    url,
+                    if body.len() > 300 {
+                        "response truncated"
+                    } else {
+                        &body
+                    }
+                ));
+            }
         }
         Ok(true)
     }
@@ -1171,12 +1197,78 @@ fn parse_etag_from_multistatus(xml_body: &str) -> Option<String> {
     None
 }
 
+/// Parse the numeric HTTP status code from a DAV `<D:status>` line. RFC 4918
+/// §14.24 / RFC 7230 §3.1.2: the element carries a full status LINE such as
+/// `HTTP/1.1 200 OK`, not a bare code — so the code must be read from the
+/// second whitespace-delimited token, never by a `starts_with('2')` test on
+/// the whole string (which would reject every real line beginning `HTTP/…`).
+/// A leading `HTTP/x.y` token is skipped when present; a bare `200` is still
+/// accepted for servers that omit the prefix.
+fn dav_status_code(status_line: &str) -> Option<u16> {
+    let mut tokens = status_line.split_whitespace();
+    let first = tokens.next()?;
+    let code_token = if first.len() >= 5 && first[..5].eq_ignore_ascii_case("HTTP/") {
+        tokens.next()?
+    } else {
+        first
+    };
+    // The token must be exactly three digits (a status code, not `HTTP/1.1`).
+    if code_token.len() == 3 && code_token.bytes().all(|b| b.is_ascii_digit()) {
+        code_token.parse::<u16>().ok()
+    } else {
+        None
+    }
+}
+
+/// Whether a collection DELETE 207 Multi-Status confirms the deletion.
+/// RFC 4918 §9.6.1: a 207 here means one or more descendants could not be
+/// removed, so the collection is NOT gone unless every `<D:response>` reports a
+/// 2xx (removed) or 404 (already absent) `<D:status>`. A body with no status
+/// line, or any other status, is treated as NOT confirmed (fail closed).
+fn multistatus_delete_confirmed(xml_body: &str) -> bool {
+    let mut reader = quick_xml::Reader::from_str(xml_body);
+    reader.config_mut().trim_text(true);
+    let mut buf = Vec::new();
+    let mut in_status = false;
+    let mut status_text = String::new();
+    let mut saw_status = false;
+    let mut all_ok = true;
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(quick_xml::events::Event::Start(ref e)) => {
+                if e.name().local_name().as_ref() == "status" {
+                    in_status = true;
+                    status_text.clear();
+                }
+            }
+            Ok(quick_xml::events::Event::Text(ref t)) if in_status => {
+                status_text.push_str(t.as_ref());
+            }
+            Ok(quick_xml::events::Event::End(ref e)) => {
+                if e.name().local_name().as_ref() == "status" {
+                    in_status = false;
+                    saw_status = true;
+                    let ok = dav_status_code(&status_text)
+                        .is_some_and(|c| (200..300).contains(&c) || c == 404);
+                    all_ok &= ok;
+                }
+            }
+            Ok(quick_xml::events::Event::Eof) => break,
+            Err(_) => return false,
+            _ => {}
+        }
+        buf.clear();
+    }
+    saw_status && all_ok
+}
+
 /// Whether a PROPPATCH 207 Multi-Status reports the `displayname` property as
-/// applied. RFC 4918 §9.2: the per-property outcome is in `<D:propstat>`; the
-/// property succeeded only if a `propstat` containing `displayname` carries a
-/// 2xx `<D:status>`. A body with no `propstat` (some servers answer 207 with
-/// an empty body) is treated as success, since a non-2xx there would still
-/// carry the failing status.
+/// applied. RFC 4918 §9.2 mandates a `propstat` multistatus for PROPPATCH, so
+/// success requires an explicit `<D:propstat>` naming `displayname` with a 2xx
+/// `<D:status>`. Anything else — a body with no `propstat`, a `propstat` that
+/// does not name `displayname`, or malformed XML — is fail-closed (rejected):
+/// acknowledging a rename the server did not apply would desynchronize the
+/// stored DisplayName from the backend collection name.
 fn multistatus_displayname_ok(xml_body: &str) -> bool {
     let mut reader = quick_xml::Reader::from_str(xml_body);
     reader.config_mut().trim_text(true);
@@ -1187,16 +1279,14 @@ fn multistatus_displayname_ok(xml_body: &str) -> bool {
     let mut propstat_has_displayname = false;
     let mut propstat_status = String::new();
     let mut in_status = false;
-    let mut saw_propstat = false;
     let mut any_ok = false;
 
     macro_rules! flush {
         () => {
-            if propstat_has_displayname {
-                saw_propstat = true;
-                if propstat_status.starts_with('2') {
-                    any_ok = true;
-                }
+            if propstat_has_displayname
+                && dav_status_code(&propstat_status).is_some_and(|c| (200..300).contains(&c))
+            {
+                any_ok = true;
             }
             propstat_has_displayname = false;
             propstat_status.clear();
@@ -1231,14 +1321,15 @@ fn multistatus_displayname_ok(xml_body: &str) -> bool {
                 }
                 _ => {}
             },
-            Ok(quick_xml::events::Event::Eof) | Err(_) => break,
+            Ok(quick_xml::events::Event::Eof) => break,
+            // A malformed body leaves the outcome unknown: fail closed.
+            Err(_) => return false,
             _ => {}
         }
         buf.clear();
     }
-    // Success when the displayname propstat is 2xx; a body with no propstat at
-    // all is accepted (nothing to contradict the 2xx status line).
-    any_ok || !saw_propstat
+    // Success ONLY when an explicit 2xx displayname propstat was seen.
+    any_ok
 }
 
 /// Normalize an etag string to its internal (unquoted) representation.
@@ -1766,5 +1857,88 @@ END:VCALENDAR
             outage.check_credentials("u", "pw").await,
             CredentialCheck::BackendError(_)
         ));
+    }
+
+    #[test]
+    fn test_dav_status_code_parses_full_status_line() {
+        // RFC 4918 §14.24: the `<D:status>` element carries a complete HTTP
+        // status line, not a bare code. A `starts_with('2')` test would reject
+        // every real line.
+        assert_eq!(dav_status_code("HTTP/1.1 200 OK"), Some(200));
+        assert_eq!(dav_status_code("HTTP/1.1 404 Not Found"), Some(404));
+        assert_eq!(
+            dav_status_code("HTTP/1.1 507 Insufficient Storage"),
+            Some(507)
+        );
+        // A bare code (server omitting the prefix) is still accepted.
+        assert_eq!(dav_status_code("200"), Some(200));
+        // Malformed / non-numeric tokens are rejected.
+        assert_eq!(dav_status_code("HTTP/1.1"), None);
+        assert_eq!(dav_status_code("not a status"), None);
+        assert_eq!(dav_status_code(""), None);
+    }
+
+    #[test]
+    fn test_multistatus_displayname_ok_accepts_real_207() {
+        // A real Stalwart PROPPATCH 207: displayname applied, status carries a
+        // full HTTP status line.
+        let body = r#"<?xml version="1.0" encoding="utf-8"?>
+<D:multistatus xmlns:D="DAV:">
+  <D:response>
+    <D:href>/dav/cal/user/default/</D:href>
+    <D:propstat>
+      <D:prop><D:displayname>Renamed</D:displayname></D:prop>
+      <D:status>HTTP/1.1 200 OK</D:status>
+    </D:propstat>
+  </D:response>
+</D:multistatus>"#;
+        assert!(multistatus_displayname_ok(body));
+    }
+
+    #[test]
+    fn test_multistatus_displayname_ok_fails_closed() {
+        // A rejected displayname (403) is not success.
+        let rejected = r#"<D:multistatus xmlns:D="DAV:"><D:response>
+          <D:propstat><D:prop><D:displayname>x</D:displayname></D:prop>
+          <D:status>HTTP/1.1 403 Forbidden</D:status></D:propstat>
+        </D:response></D:multistatus>"#;
+        assert!(!multistatus_displayname_ok(rejected));
+
+        // A body with no propstat at all is not success.
+        assert!(!multistatus_displayname_ok(
+            r#"<D:multistatus xmlns:D="DAV:"></D:multistatus>"#
+        ));
+        // A propstat that does not name displayname is not success.
+        let other = r#"<D:multistatus xmlns:D="DAV:"><D:response>
+          <D:propstat><D:prop><D:getetag>"1"</D:getetag></D:prop>
+          <D:status>HTTP/1.1 200 OK</D:status></D:propstat>
+        </D:response></D:multistatus>"#;
+        assert!(!multistatus_displayname_ok(other));
+        // Malformed XML and an empty body fail closed.
+        assert!(!multistatus_displayname_ok("<D:multistatus"));
+        assert!(!multistatus_displayname_ok(""));
+    }
+
+    #[test]
+    fn test_multistatus_delete_confirmed_matrix() {
+        // Every sub-response 2xx (or already-gone 404) confirms the collection
+        // deletion.
+        let ok = r#"<D:multistatus xmlns:D="DAV:"><D:response>
+          <D:href>/dav/cal/user/c/x.ics</D:href>
+          <D:status>HTTP/1.1 200 OK</D:status></D:response></D:multistatus>"#;
+        assert!(multistatus_delete_confirmed(ok));
+
+        // A locked child (423) means the collection is NOT gone: fail closed.
+        let locked = r#"<D:multistatus xmlns:D="DAV:"><D:response>
+          <D:href>/dav/cal/user/c/x.ics</D:href>
+          <D:status>HTTP/1.1 423 Locked</D:status></D:response></D:multistatus>"#;
+        assert!(!multistatus_delete_confirmed(locked));
+
+        // No status line at all, and malformed/empty bodies, fail closed.
+        assert!(!multistatus_delete_confirmed(
+            r#"<D:multistatus xmlns:D="DAV:"></D:multistatus>"#
+        ));
+        assert!(!multistatus_delete_confirmed("<D:multistatus"));
+        assert!(!multistatus_delete_confirmed(""));
     }
 }

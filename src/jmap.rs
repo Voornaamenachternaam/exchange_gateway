@@ -1060,6 +1060,12 @@ const CALENDAR_EVENT_PROPERTIES: &[&str] = &[
     "alerts",
     "links",
     "iCalendar",
+    // `calendarIds` is the event's calendar-membership map. A scoped EAS/EWS
+    // calendar folder filters a fetch by this property, so it MUST be
+    // requested — an omitted property is never returned (RFC 8620 §5.1), which
+    // would leave the membership map absent and the scope filter unable to
+    // reject another calendar's events.
+    "calendarIds",
     "@etag",
 ];
 
@@ -5869,13 +5875,16 @@ impl JmapClient {
                         {
                             // A scoped folder receives only its own calendar's
                             // events: skip a fetched event whose `calendarIds`
-                            // does not carry the requested calendar. An event
-                            // object that carries no `calendarIds` map is left
-                            // in (defensive — the filter must not drop data a
-                            // server omitted).
+                            // does not carry the requested calendar. A scope
+                            // filter was requested, so an event object that
+                            // carries no `calendarIds` map cannot be proven to
+                            // belong to this calendar — reject it rather than
+                            // admit another calendar's event into the scope.
                             if let Some(cal_id) = calendar_id
-                                && let Some(ids) = event.calendar_ids.as_ref()
-                                && !ids.contains_key(cal_id)
+                                && !event
+                                    .calendar_ids
+                                    .as_ref()
+                                    .is_some_and(|ids| ids.contains_key(cal_id))
                             {
                                 continue;
                             }

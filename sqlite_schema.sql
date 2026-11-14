@@ -130,6 +130,54 @@ CREATE TABLE IF NOT EXISTS ews_sync_state (
     UNIQUE(user_email, folder_id)
 );
 
+-- EWS email initial-sync (prime) continuation cursor.
+--
+-- The EWS email prime (`SyncFolderItems` with a null SyncState) pages the live
+-- mailbox via JMAP `Email/query`. When `MaxChangesReturned` clips the snapshot,
+-- the response carries `IncludesLastItemInRange=false` and this row records the
+-- count already delivered (`position`, plus `anchor_id` = the last delivered
+-- message id so a mid-prime deletion cannot shift the tail below a stale
+-- position) and the JMAP query state captured at the prime's START. The stored
+-- SyncState IS that query state, so a quiet `Email/queryChanges` from it still
+-- delivers everything the prime omitted — the continuation must not commit a
+-- per-page token. The row is dropped once the snapshot is fully delivered, or on
+-- a fresh prime.
+CREATE TABLE IF NOT EXISTS ews_prime_cursor (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_email TEXT NOT NULL,
+    folder_id TEXT NOT NULL,
+    position INTEGER NOT NULL DEFAULT 0,
+    anchor_id TEXT,
+    query_state TEXT NOT NULL,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(user_email, folder_id)
+);
+
+-- EWS email delta response replay cache.
+--
+-- An EWS `SyncFolderItems` email delta returns a new `SyncState` the client
+-- echoes on its next call. The delta's in-place flag updates (read/flagged)
+-- come from a rotating keyword scan whose baseline is advanced when the
+-- response is built — so if the HTTP response is LOST and the client retries
+-- with the SAME incoming `SyncState`, the membership feed is quiet and the
+-- scan no longer sees a difference: the flag `<t:Update>` would be lost
+-- forever. This row remembers the exact response rendered for an incoming
+-- `SyncState` (the `<Changes>` XML and the `IncludesLastItemInRange` flag) so
+-- a retry with that same cursor replays the identical response instead of
+-- recomputing an empty one. The row is REPLACED when the client moves on (a
+-- new incoming cursor) and deleted when the delta is an initial/forced prime.
+CREATE TABLE IF NOT EXISTS ews_delta_replay (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_email TEXT NOT NULL,
+    folder_id TEXT NOT NULL,
+    incoming_state TEXT NOT NULL,
+    new_state TEXT NOT NULL,
+    changes_xml TEXT NOT NULL,
+    includes_last INTEGER NOT NULL,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(user_email, folder_id)
+);
+
 -- EAS email initial-sync windowing cursor (MS-ASCMD §2.2.3.199 WindowSize /
 -- §2.2.3.116 MoreAvailable).
 --
@@ -694,6 +742,30 @@ CREATE TABLE IF NOT EXISTS folder_map (
 
 CREATE INDEX IF NOT EXISTS idx_folder_map_owner ON folder_map(owner);
 
+-- Pending EAS folder-map prunes (deferred deletion work list).
+--
+-- A folder deletion first destroys the backing JMAP mailbox (or CalDAV
+-- collection) and only then prunes the matching `folder_map` row and journals
+-- a `folder-delete`. If that prune fails — a DB error, or a transport failure
+-- after the mailbox was already destroyed — the destroyed ids are unrecoverable
+-- from the live backend: JMAP no longer returns the mailbox, so a retry cannot
+-- re-derive the id, and for a deep subtree only the ids destroyed so far are
+-- known. This table records those ids in the SAME transaction as the JMAP
+-- destroy's acknowledgement, so the next folder-sync read (`FolderSync`,
+-- `GetHierarchy`, EWS `SyncFolderHierarchy`) re-runs the prune and journals the
+-- `folder-delete` — the client then receives the Delete instead of EAS
+-- advertising a folder that no longer exists. A row is deleted only once its
+-- `folder_map` row is confirmed gone and the journal row written.
+CREATE TABLE IF NOT EXISTS pending_folder_prune (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner TEXT NOT NULL,
+    server_id TEXT NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(owner, server_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_pending_folder_prune_owner ON pending_folder_prune(owner);
+
 INSERT OR IGNORE INTO schema_version (version, description)
 VALUES (9, 'v9: meeting_rsvp idempotence table for MeetingResponse/iMIP integrity');
 
@@ -705,3 +777,6 @@ VALUES (11, 'v11: folder_map persists user-created EAS folders (JMAP Mailbox / C
 
 INSERT OR IGNORE INTO schema_version (version, description)
 VALUES (12, 'v12: email_keyword_baseline tracks per-collection message keyword (flag) state so email deltas emit <Change> for in-place flag edits');
+
+INSERT OR IGNORE INTO schema_version (version, description)
+VALUES (13, 'v13: pending_folder_prune defers a folder-map prune whose backend destroy already succeeded, so a failed mirror retry still journals the folder-delete');

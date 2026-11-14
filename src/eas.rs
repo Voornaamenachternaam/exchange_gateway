@@ -1897,6 +1897,16 @@ async fn handle_folder_sync(
     // head (`render_until`) and the stored watermark is exactly this head — the
     // pre-render read is fail-closed (an error answers Status 6 rather than
     // persisting a watermark of 0 that would replay the whole journal).
+    //
+    // Replay any deferred folder-map prune (a `pending_folder_prune` row whose
+    // backend destroy already succeeded but whose mirror failed) BEFORE the head
+    // capture, so the `folder-delete` it journals is inside this window and is
+    // delivered by this very FolderSync; a retry can no longer re-derive the id
+    // from the live backend. Non-fatal: a failure leaves the pending row for the
+    // next read, and the primary FolderSync work is never blocked by a replay.
+    if let Err(e) = state.storage.drain_pending_folder_prunes(owner).await {
+        tracing::warn!(error = %e, "FolderSync: failed to replay deferred folder-map prunes");
+    }
     let render_until = match state.storage.get_latest_change_seq().await {
         Ok(seq) => seq,
         Err(e) => {
@@ -5376,6 +5386,14 @@ async fn handle_get_hierarchy(ctx: &FolderCmdCtx<'_>) -> Response {
     // A read failure must NOT be answered with a hierarchy that silently omits
     // them: the client would treat the partial list as the complete hierarchy.
     // Fail closed with the spec's HTTP 500 instead.
+    //
+    // Replay any deferred folder-map prune first, so a folder whose backend was
+    // already destroyed but whose mirror failed is dropped from this hierarchy
+    // (and journaled for FolderSync). Non-fatal: a failure leaves the pending row
+    // for the next read.
+    if let Err(e) = state.storage.drain_pending_folder_prunes(owner).await {
+        tracing::warn!(error = %e, "GetHierarchy: failed to replay deferred folder-map prunes");
+    }
     let user_folders = match state.storage.list_folders(owner).await {
         Ok(rows) => rows,
         Err(e) => {
@@ -8768,7 +8786,13 @@ async fn handle_email_delta_sync(ctx: &EmailSyncCtx<'_>) -> anyhow::Result<Strin
         // advanced token instead of replaying.
         match state
             .storage
-            .drain_email_sync_queue(username, state_collection_id, &new_sync_key, &base_state)
+            .drain_email_sync_queue(
+                username,
+                state_collection_id,
+                &ops_json,
+                &new_sync_key,
+                &base_state,
+            )
             .await
         {
             Ok(true) => {}
@@ -11091,6 +11115,96 @@ mod tests {
         );
     }
 
+    /// AUDIT5 §2 / PR #2046: a folder deletion whose backend destroy already
+    /// succeeded but whose `folder_map` prune failed must still reach the client.
+    /// The destroyed id is recorded in `pending_folder_prune`; the next
+    /// FolderSync replays the prune, journals the `folder-delete`, and delivers
+    /// the `<Delete>` inside that same window (a retry can no longer re-derive
+    /// the id from the live backend).
+    #[tokio::test]
+    async fn test_folder_sync_replays_deferred_prune_as_delete() {
+        let state = test_sync_state().await;
+        let owner = "deferred-prune@example.com";
+        let device = "device-a";
+        state
+            .storage
+            .upsert_folder_journaled(
+                crate::storage::FolderUpsertParams {
+                    owner,
+                    server_id: "mbx-1",
+                    parent_id: "0",
+                    display_name: "Doomed",
+                    folder_type: 12,
+                    backend_kind: "jmap",
+                    backend_id: "mbx-1",
+                },
+                "folder-add",
+            )
+            .await
+            .expect("persist folder");
+
+        let wbxml = Wbxml::new();
+        let prime_req = EasRequest {
+            command: "FolderSync".to_string(),
+            device_id: Some(device.to_string()),
+            sync_key: Some("0".to_string()),
+            ..Default::default()
+        };
+        let prime_text = response_text(
+            handle_folder_sync(&state, owner, &prime_req, &wbxml, false, "prime").await,
+        )
+        .await;
+        assert!(
+            prime_text.contains("<ServerId>mbx-1</ServerId>"),
+            "prime must list the folder, got: {prime_text}"
+        );
+        let key = extract_first_tag_text(&prime_text, b"SyncKey")
+            .expect("prime must return a SyncKey")
+            .to_string();
+
+        // The backend mailbox was destroyed but the mirror failed: the id is
+        // recorded as a deferred prune and the mapping row survives.
+        state
+            .storage
+            .record_pending_folder_prunes(owner, &["mbx-1".to_string()])
+            .await
+            .expect("record deferred prune");
+        assert!(
+            state
+                .storage
+                .get_folder(owner, "mbx-1")
+                .await
+                .unwrap()
+                .is_some(),
+            "the mapping must still be present before the replay"
+        );
+
+        // The next FolderSync replays the prune and delivers the Delete.
+        let delta_req = EasRequest {
+            command: "FolderSync".to_string(),
+            device_id: Some(device.to_string()),
+            sync_key: Some(key),
+            ..Default::default()
+        };
+        let delta_text = response_text(
+            handle_folder_sync(&state, owner, &delta_req, &wbxml, false, "delta").await,
+        )
+        .await;
+        assert!(
+            delta_text.contains("<Delete><ServerId>mbx-1</ServerId></Delete>"),
+            "the deferred prune must be delivered as a Delete, got: {delta_text}"
+        );
+        assert!(
+            state
+                .storage
+                .get_folder(owner, "mbx-1")
+                .await
+                .unwrap()
+                .is_none(),
+            "the replayed prune must remove the mapping"
+        );
+    }
+
     /// A folder mutation by one device must NOT advance that device's
     /// folder-hierarchy watermark past changes journaled by ANOTHER device.
     /// Rotating the key preserves the mutating device's own acknowledged
@@ -12235,14 +12349,15 @@ mod tests {
             .set_sync_key(owner, &scoped, "oldkey", Some("S0"))
             .await
             .unwrap();
+        let ops1 = r#"[{"op":"delete","id":"m1"}]"#;
         storage
-            .set_email_sync_pending(owner, &scoped, r#"[{"op":"delete","id":"m1"}]"#, "Sbase")
+            .set_email_sync_pending(owner, &scoped, ops1, "Sbase")
             .await
             .unwrap();
 
         // The first drain claims the queue and advances the token.
         let won = storage
-            .drain_email_sync_queue(owner, &scoped, "newkey", "Sbase")
+            .drain_email_sync_queue(owner, &scoped, ops1, "newkey", "Sbase")
             .await
             .unwrap();
         assert!(won, "the first drain must claim the queue");
@@ -12251,7 +12366,7 @@ mod tests {
         // must NOT advance the token: the stored key/token stay at the
         // winner's values, and the call reports the claim loss.
         let lost = storage
-            .drain_email_sync_queue(owner, &scoped, "loserkey", "Sloser")
+            .drain_email_sync_queue(owner, &scoped, ops1, "loserkey", "Sloser")
             .await
             .unwrap();
         assert!(
@@ -12262,6 +12377,61 @@ mod tests {
             storage.get_sync_key(owner, &scoped).await.unwrap(),
             Some(("newkey".to_string(), Some("Sbase".to_string()))),
             "the losing drain must not overwrite the winner's key/token"
+        );
+    }
+
+    /// A drain is bound to the EXACT queue row it rendered (`ops_json` AND
+    /// `base_state`). If an overlapping Sync REPLACED the queue between the
+    /// read and the drain, the stale drain must delete zero rows, report
+    /// `Ok(false)`, leave the stored token untouched, and leave the
+    /// replacement queue intact for the next Sync to drain — otherwise its
+    /// flag-only operations would be advanced past without being rendered.
+    #[tokio::test]
+    async fn test_email_delta_queue_drain_binds_to_rendered_payload() {
+        let storage = crate::storage::Storage::new("sqlite::memory:")
+            .await
+            .unwrap();
+        storage.init_schema().await.unwrap();
+        let owner = "u@example.com";
+        let scoped = scoped_collection_id("2", "dev-1");
+
+        storage
+            .set_sync_key(owner, &scoped, "oldkey", Some("S0"))
+            .await
+            .unwrap();
+        let rendered = r#"[{"op":"delete","id":"m1"}]"#;
+        storage
+            .set_email_sync_pending(owner, &scoped, rendered, "Sbase")
+            .await
+            .unwrap();
+        // A concurrent Sync replaces the queue with a NEW payload.
+        let replacement = r#"[{"op":"change","id":"m2"}]"#;
+        storage
+            .set_email_sync_pending(owner, &scoped, replacement, "Sbase2")
+            .await
+            .unwrap();
+
+        // The stale drain (rendered payload) must lose the claim.
+        let claimed = storage
+            .drain_email_sync_queue(owner, &scoped, rendered, "newkey", "Sbase")
+            .await
+            .unwrap();
+        assert!(
+            !claimed,
+            "a drain must not claim a queue row it did not render"
+        );
+        assert_eq!(
+            storage.get_sync_key(owner, &scoped).await.unwrap(),
+            Some(("oldkey".to_string(), Some("S0".to_string()))),
+            "a stale drain must not advance the stored token"
+        );
+        assert_eq!(
+            storage
+                .get_email_sync_pending(owner, &scoped)
+                .await
+                .unwrap(),
+            Some((replacement.to_string(), "Sbase2".to_string())),
+            "the replacement queue must survive for the next Sync to drain"
         );
     }
 

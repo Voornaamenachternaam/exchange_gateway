@@ -694,6 +694,19 @@ pub async fn delete_folder(
     // journal row is durable, so an already-primed device can always learn
     // about the removal.
     let removed_ids: Vec<String> = subtree.iter().map(|f| f.server_id.clone()).collect();
+    // Record the destroyed ids durably BEFORE the prune, so a failed mirror is
+    // still replayed by the next folder-sync read (`FolderSync`/`GetHierarchy`).
+    // Unlike the EWS/MAPI paths the mirror itself is a recovery source here (a
+    // retry re-collects the still-present rows), but recording keeps the
+    // deletion work list explicit and uniform across every destroy path.
+    // Best-effort: a failure here is logged but the direct prune still runs.
+    if let Err(e) = state
+        .storage
+        .record_pending_folder_prunes(owner, &removed_ids)
+        .await
+    {
+        tracing::warn!(error = %e, "FolderDelete: failed to record the deferred folder-map prune");
+    }
     if let Err(e) = state
         .storage
         .delete_folders_journaled(owner, &removed_ids)
@@ -894,24 +907,29 @@ async fn update_mail_folder(
         .await
     {
         Ok(true) => {
-            if let Err(e) = state
+            // Persist ONLY the fields this update actually changed, via the
+            // targeted `update_folder_journaled`: a whole-row upsert would
+            // restore the parent snapshot read before the JMAP call (so a
+            // concurrent EWS move of the same folder would be reverted) and
+            // could resurrect a mapping a concurrent delete removed. A field
+            // equal to the stored value is left untouched; `Ok(false)` means
+            // the row vanished (or nothing changed) and must NOT be recreated.
+            let new_parent = (parent_id != row.parent_id).then_some(parent_id);
+            let new_name = (row.display_name != display_name).then_some(display_name);
+            match state
                 .storage
-                .upsert_folder_journaled(
-                    crate::storage::FolderUpsertParams {
-                        owner,
-                        server_id: &row.server_id,
-                        parent_id,
-                        display_name,
-                        folder_type: row.folder_type,
-                        backend_kind: "jmap",
-                        backend_id: &row.backend_id,
-                    },
-                    "folder-update",
-                )
+                .update_folder_journaled(owner, &row.server_id, new_parent, new_name)
                 .await
             {
-                tracing::warn!(error = %e, "FolderUpdate: failed to persist folder mapping");
-                return FolderMutationResult::status(6);
+                Ok(true) => {}
+                Ok(false) => tracing::warn!(
+                    server_id = %row.server_id,
+                    "FolderUpdate: folder mapping vanished (or was a no-op) before the mirror"
+                ),
+                Err(e) => {
+                    tracing::warn!(error = %e, "FolderUpdate: failed to persist folder mapping");
+                    return FolderMutationResult::status(6);
+                }
             }
             FolderMutationResult::status(1)
         }
@@ -950,24 +968,25 @@ async fn rename_caldav_folder(
         tracing::warn!(error = %e, "FolderUpdate: PROPPATCH displayname failed");
         return FolderMutationResult::status(6);
     }
-    if let Err(e) = state
+    // A CalDAV collection rename never moves the parent, so persist only the
+    // DisplayName via the targeted `update_folder_journaled`. A whole-row
+    // upsert would restore the pre-PROPPATCH snapshot and could resurrect a
+    // mapping a concurrent delete removed.
+    let new_name = (row.display_name != display_name).then_some(display_name);
+    match state
         .storage
-        .upsert_folder_journaled(
-            crate::storage::FolderUpsertParams {
-                owner,
-                server_id: &row.server_id,
-                parent_id: &row.parent_id,
-                display_name,
-                folder_type: row.folder_type,
-                backend_kind: "caldav",
-                backend_id: &row.backend_id,
-            },
-            "folder-update",
-        )
+        .update_folder_journaled(owner, &row.server_id, None, new_name)
         .await
     {
-        tracing::warn!(error = %e, "FolderUpdate: failed to persist folder mapping");
-        return FolderMutationResult::status(6);
+        Ok(true) => {}
+        Ok(false) => tracing::warn!(
+            server_id = %row.server_id,
+            "FolderUpdate: folder mapping vanished (or was a no-op) before the mirror"
+        ),
+        Err(e) => {
+            tracing::warn!(error = %e, "FolderUpdate: failed to persist folder mapping");
+            return FolderMutationResult::status(6);
+        }
     }
     FolderMutationResult::status(1)
 }
