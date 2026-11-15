@@ -4695,6 +4695,42 @@ fn decode_prime_continuation_token(marker: &str) -> Option<(u64, Option<String>,
     ))
 }
 
+/// Encode an EWS email DELTA's outgoing `SyncState`. The client's incoming token
+/// is the cursor `Email/queryChanges` resumes from; when the backend reports no
+/// membership change it returns the SAME `newQueryState` the client sent, so an
+/// outgoing token equal to the incoming one would be cached under a token the
+/// client has ALREADY received — and the replay branch (keyed on the incoming
+/// cursor, `src/ews.rs`) would then answer every later request carrying that
+/// token from the cache WITHOUT consulting the backend, so a subsequent arrival
+/// or flag edit would never be delivered. Wrapping the backend state with a fresh
+/// `nonce` guarantees the outgoing token differs from the token the response was
+/// cached under, so the client's next request never matches the previous replay
+/// entry and always recomputes; a genuinely lost response is still replayable
+/// because the retry echoes the exact token it was cached under. The raw backend
+/// query state is preserved (base64) for `Email/queryChanges`.
+fn encode_delta_sync_state(base: &str, nonce: &str) -> String {
+    let base = STANDARD.encode(base.as_bytes());
+    let nonce = STANDARD.encode(nonce.as_bytes());
+    STANDARD.encode(format!("edelta:{base}:{nonce}").as_bytes())
+}
+
+/// Decode an [`encode_delta_sync_state`] token into `(base_query_state, nonce)`.
+/// `None` for any other shape (a bare JMAP query state from a prime, a
+/// prime-continuation token, or malformed input), so the caller falls back to
+/// treating the whole token as the raw cursor.
+fn decode_delta_sync_state(token: &str) -> Option<(String, String)> {
+    let raw = STANDARD.decode(token).ok()?;
+    let decoded = String::from_utf8(raw).ok()?;
+    let rest = decoded.strip_prefix("edelta:")?;
+    let mut parts = rest.split(':');
+    let base = String::from_utf8(STANDARD.decode(parts.next()?).ok()?).ok()?;
+    let nonce = String::from_utf8(STANDARD.decode(parts.next()?).ok()?).ok()?;
+    if parts.next().is_some() {
+        return None;
+    }
+    Some((base, nonce))
+}
+
 /// Handle the EWS email initial sync (prime) and its continuation.
 ///
 /// A null `SyncState` starts a fresh prime. A request that echoes a
@@ -5001,6 +5037,13 @@ async fn handle_sync_email_folder_items(
     // echoes it re-delivers the SAME page and two clients never share progress.
     // Any other non-empty state (a plain JMAP query state) is the delta cursor.
     let continuation = decode_prime_continuation_token(&old_state_token);
+    // A delta's outgoing `SyncState` is a wrapper carrying the backend query
+    // state plus a per-response nonce (`encode_delta_sync_state`). Unwrap it to
+    // recover the raw cursor `Email/queryChanges` resumes from; a bare state
+    // (from a prime that drained) or a prime-continuation token is used verbatim.
+    let delta_cursor = decode_delta_sync_state(&old_state_token)
+        .map(|(base, _)| base)
+        .unwrap_or_else(|| old_state_token.clone());
 
     // Map EWS distinguished folder to JMAP mailbox role
     let mailbox_role = match folder {
@@ -5117,7 +5160,7 @@ async fn handle_sync_email_folder_items(
         .query_email_changes(
             &account_id,
             &mailbox_id,
-            &old_state_token,
+            &delta_cursor,
             &auth.username,
             &auth.password,
             Some(max_changes as u32),
@@ -5476,6 +5519,20 @@ async fn handle_sync_email_folder_items(
         "true"
     };
 
+    // The outgoing `SyncState` wraps the backend query state with a FRESH nonce,
+    // so it always differs from the token this response is cached under (the
+    // client's incoming cursor). Without this, a quiet delta — where the backend
+    // returns the SAME state the client sent — would cache its response under a
+    // token the client already holds, and the replay branch (keyed on the
+    // incoming cursor) would then answer every later request carrying that token
+    // from the cache without consulting the backend, so a subsequent arrival or
+    // flag edit would never be delivered. The nonce is recomputed per response,
+    // so the client's next request never matches the previous replay entry.
+    let outgoing_sync_state = encode_delta_sync_state(
+        &changes.new_state,
+        &uuid::Uuid::new_v4().simple().to_string(),
+    );
+
     // Cache the EXACT response for the incoming cursor before answering, so a
     // retry that echoes `old_state_token` (e.g. the HTTP response was lost after
     // the flag baseline advanced) replays it instead of recomputing an empty
@@ -5487,7 +5544,7 @@ async fn handle_sync_email_folder_items(
             owner,
             &folder_id,
             &old_state_token,
-            &changes.new_state,
+            &outgoing_sync_state,
             &changes_xml,
             includes_last == "true",
         )
@@ -5500,7 +5557,7 @@ async fn handle_sync_email_folder_items(
         r#"<m:SyncFolderItemsResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:SyncFolderItemsResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:SyncState>{}</m:SyncState><m:IncludesLastItemInRange>{}</m:IncludesLastItemInRange><m:Changes>{}</m:Changes></m:SyncFolderItemsResponseMessage></m:ResponseMessages></m:SyncFolderItemsResponse>"#,
         EWS_MSG_NS,
         EWS_TYPE_NS,
-        xml_escape(&changes.new_state),
+        xml_escape(&outgoing_sync_state),
         includes_last,
         changes_xml
     );
@@ -14989,9 +15046,19 @@ mod tests {
             1,
             "a retry from the same cursor must replay the flag Update: {second}"
         );
-        assert!(
-            second.contains("<m:SyncState>S1</m:SyncState>"),
-            "the replay must carry the same new SyncState: {second}"
+        // The replay is byte-identical, so the retry carries the SAME wrapped
+        // outgoing token the first response did, and that token decodes to the
+        // backend query state S1.
+        let first_state = extract_email_sync_state(&first);
+        let second_state = extract_email_sync_state(&second);
+        assert_eq!(
+            first_state, second_state,
+            "the replay must carry the same outgoing SyncState: {second}"
+        );
+        assert_eq!(
+            decode_delta_sync_state(&first_state).map(|(base, _)| base),
+            Some("S1".to_string()),
+            "the outgoing token must wrap the backend query state S1: {first_state}"
         );
 
         // A client that has MOVED ON (a different cursor) must not see a stale
@@ -15005,6 +15072,292 @@ mod tests {
                 .is_none(),
             "the replay cache must not match a cursor the client never sent"
         );
+    }
+
+    /// A QUIET delta (the backend reports no membership change, so its
+    /// `newQueryState` equals the client's cursor) must NOT pin the client to
+    /// the cached response: the outgoing `SyncState` is wrapped with a fresh
+    /// nonce, so the client's next request carries a token that never matches
+    /// the replay entry cached under its previous token, and the backend is
+    /// consulted again. Regression for the unchanged-token replay bug: without
+    /// the nonce, the first (empty) delta would be replayed forever and a later
+    /// arrival would never be delivered.
+    #[tokio::test]
+    async fn sync_email_folder_items_unchanged_state_is_not_replayed_for_next_request() {
+        let base = spawn_quiet_then_arrival_delta_stub().await;
+        let (state, _owner, _folder_id) = quiet_then_arrival_state(base).await;
+
+        // First delta: the feed is quiet, so it reports no changes and the
+        // backend echoes the cursor S0 as `newQueryState`.
+        let first = response_body(
+            handle_sync_folder_items(&state, &meeting_auth(), &email_delta_request(Some("S0")))
+                .await,
+        )
+        .await;
+        assert_eq!(
+            first.matches("<t:Create>").count(),
+            0,
+            "a quiet delta must report no Create: {first}"
+        );
+        let first_state = extract_email_sync_state(&first);
+        assert_ne!(
+            first_state, "S0",
+            "the outgoing SyncState must differ from the incoming cursor: {first}"
+        );
+
+        // The client's NEXT request carries the token the quiet delta returned.
+        // The backend now reports a new arrival; it MUST be delivered (the bug
+        // replayed the empty cached response instead).
+        let second = response_body(
+            handle_sync_folder_items(
+                &state,
+                &meeting_auth(),
+                &email_delta_request(Some(&first_state)),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(
+            second.matches("<t:Create>").count(),
+            1,
+            "a later arrival must be delivered after a quiet delta: {second}"
+        );
+    }
+
+    /// The same nonce guarantee for a FLAG-only change: after a quiet delta, a
+    /// later delta whose membership feed is still quiet but whose keyword scan
+    /// observes a flag edit must deliver the `<t:Update>` (the bug replayed the
+    /// empty cached response and swallowed it).
+    #[tokio::test]
+    async fn sync_email_folder_items_flag_change_after_quiet_delta_is_delivered() {
+        let base = spawn_stateful_delta_stub(StatefulDeltaMode::QuietAlways).await;
+        let (state, owner, folder_id) = quiet_then_arrival_state(base).await;
+        // The client's last-known flags for m1 MATCH the stub's live flags
+        // (`$seen`), so the first delta has no flag difference to report.
+        state
+            .storage
+            .upsert_email_keyword(owner, &folder_id, "m1", &["$seen".to_string()])
+            .await
+            .expect("seed matching baseline");
+
+        let first = response_body(
+            handle_sync_folder_items(&state, &meeting_auth(), &email_delta_request(Some("S0")))
+                .await,
+        )
+        .await;
+        assert_eq!(
+            first.matches("<t:Update>").count(),
+            0,
+            "the quiet delta must report no flag Update: {first}"
+        );
+        let first_state = extract_email_sync_state(&first);
+
+        // Between syncs m1's flags changed relative to what the client last saw
+        // (the baseline is reset to "unseen"), while the membership feed stays
+        // quiet. The client's next request carries the quiet delta's token.
+        state
+            .storage
+            .upsert_email_keyword(owner, &folder_id, "m1", &[])
+            .await
+            .expect("reset baseline to simulate a flag edit");
+
+        let second = response_body(
+            handle_sync_folder_items(
+                &state,
+                &meeting_auth(),
+                &email_delta_request(Some(&first_state)),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(
+            second.matches("<t:Update>").count(),
+            1,
+            "a flag edit after a quiet delta must be delivered: {second}"
+        );
+    }
+
+    /// A stateful stub whose FIRST `Email/queryChanges` is quiet (echoing the
+    /// cursor) and whose SECOND reports `m1` as a new arrival. `Email/get`
+    /// serves `m1` with `$seen`.
+    async fn spawn_quiet_then_arrival_delta_stub() -> String {
+        spawn_stateful_delta_stub(StatefulDeltaMode::QuietThenArrival).await
+    }
+
+    /// Which scripted `Email/queryChanges` behaviour [`spawn_stateful_delta_stub`]
+    /// serves.
+    #[derive(Clone, Copy)]
+    enum StatefulDeltaMode {
+        /// Quiet on the first call, a single new arrival on the second.
+        QuietThenArrival,
+        /// Quiet on every call.
+        QuietAlways,
+    }
+
+    /// A stub whose `Email/queryChanges` follows [`StatefulDeltaMode`] and whose
+    /// `Email/query`/`Email/get` serve the mailbox and its messages (so the
+    /// keyword scan observes `m1`).
+    async fn spawn_stateful_delta_stub(mode: StatefulDeltaMode) -> String {
+        use axum::routing::{get, post};
+        use serde_json::{Value, json};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        #[derive(Clone)]
+        struct Ctl {
+            base: String,
+            mode: StatefulDeltaMode,
+            query_calls: std::sync::Arc<AtomicUsize>,
+        }
+
+        async fn session(axum::Extension(ctl): axum::Extension<Ctl>) -> axum::Json<Value> {
+            axum::Json(json!({
+                "apiUrl": ctl.base,
+                "downloadUrl": format!("{}/download/{{accountId}}/{{blobId}}", ctl.base),
+                "uploadUrl": format!("{}/upload/{{accountId}}", ctl.base),
+                "eventSourceUrl": format!("{}/eventsource", ctl.base),
+                "state": "s",
+                "username": "u",
+                "accounts": {"a": {"name": "u", "isPersonal": true, "isReadOnly": false, "accountCapabilities": {}}},
+                "primaryAccounts": {"urn:ietf:params:jmap:mail": "a"},
+                "capabilities": {"urn:ietf:params:jmap:core": {"maxObjectsInGet": 500}}
+            }))
+        }
+
+        async fn api(
+            axum::Extension(ctl): axum::Extension<Ctl>,
+            body: String,
+        ) -> axum::response::Response {
+            let req: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
+            let mut responses = Vec::new();
+            let email = json!({
+                "id": "m1",
+                "blobId": "b1",
+                "threadId": "t1",
+                "mailboxIds": {"mbx-inbox": true},
+                "keywords": {"$seen": true},
+                "subject": "hello",
+                "from": [{"name": "S", "email": "s@example.com"}],
+                "to": [{"name": "R", "email": "r@example.com"}],
+                "receivedAt": "2026-11-10T12:00:00Z",
+                "sentAt": "2026-11-10T12:00:00Z",
+                "size": 10,
+                "preview": "hi",
+                "hasAttachment": false
+            });
+            for call in req
+                .get("methodCalls")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default()
+            {
+                let name = call.get(0).and_then(|v| v.as_str()).unwrap_or("");
+                let cid = call.get(2).and_then(|v| v.as_str()).unwrap_or("c0");
+                let result = match name {
+                    "Mailbox/query" => json!({"accountId":"a","ids":["mbx-inbox"],"total":1}),
+                    "Email/queryChanges" => {
+                        let call_no = ctl.query_calls.fetch_add(1, Ordering::SeqCst);
+                        let arrival =
+                            matches!(ctl.mode, StatefulDeltaMode::QuietThenArrival) && call_no >= 1;
+                        if arrival {
+                            json!({
+                                "accountId": "a",
+                                "oldQueryState": "S0",
+                                "newQueryState": "S1",
+                                "added": [{"id": "m1", "index": 0}],
+                                "removed": [],
+                            })
+                        } else {
+                            json!({
+                                "accountId": "a",
+                                "oldQueryState": "S0",
+                                "newQueryState": "S0",
+                                "added": [],
+                                "removed": [],
+                            })
+                        }
+                    }
+                    "Email/query" => json!({
+                        "accountId": "a",
+                        "queryState": "S1",
+                        "ids": ["m1"],
+                        "total": 1,
+                        "position": 0,
+                    }),
+                    "Email/get" => json!({
+                        "accountId": "a",
+                        "state": "S1",
+                        "list": [email],
+                    }),
+                    _ => json!({"accountId": "a"}),
+                };
+                responses.push(json!([name, result, cid]));
+            }
+            let resp = json!({"methodResponses": responses, "sessionState": "s"});
+            axum::response::Response::builder()
+                .status(200)
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(serde_json::to_vec(&resp).unwrap()))
+                .unwrap()
+        }
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
+        let ctl = Ctl {
+            base: base.clone(),
+            mode,
+            query_calls: std::sync::Arc::new(AtomicUsize::new(0)),
+        };
+        let app = axum::Router::new()
+            .route("/session", get(session))
+            .route("/", post(api))
+            .layer(axum::Extension(ctl));
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        base
+    }
+
+    /// Build an in-memory state whose stored EWS email delta cursor is `S0`.
+    async fn quiet_then_arrival_state(
+        base: String,
+    ) -> (
+        std::sync::Arc<crate::models::AppState>,
+        &'static str,
+        String,
+    ) {
+        use std::sync::Arc as StdArc;
+        let storage = crate::storage::Storage::new("sqlite::memory:")
+            .await
+            .unwrap();
+        storage.init_schema().await.unwrap();
+        let cfg = crate::config::Config {
+            jmap_base: base,
+            email_enabled: true,
+            mail_domain: "example.com".to_string(),
+            hmac_secret: SecretString::from("a".repeat(32)),
+            ..Default::default()
+        };
+        let state = StdArc::new(crate::models::AppState::new(cfg, StdArc::new(storage)));
+        let owner = owner_from_username("user@example.com");
+        let folder_id = folder_id_for(owner, DistinguishedFolder::Inbox);
+        state
+            .storage
+            .set_ews_sync_state(owner, &folder_id, "S0")
+            .await
+            .expect("persist delta state");
+        (state, owner, folder_id)
+    }
+
+    /// An EWS email `SyncFolderItems` request body for the Inbox with an
+    /// optional `SyncState`.
+    fn email_delta_request(sync_state: Option<&str>) -> String {
+        let state_xml = match sync_state {
+            Some(s) => format!("<m:SyncState>{s}</m:SyncState>"),
+            None => String::new(),
+        };
+        format!(
+            r#"<m:SyncFolderItems><m:ItemShape/><m:SyncFolderId><t:DistinguishedFolderId Id="inbox"/></m:SyncFolderId>{state_xml}<m:MaxChangesReturned>100</m:MaxChangesReturned></m:SyncFolderItems>"#
+        )
     }
 
     /// `MaxChangesReturned` bounds the WHOLE `<Changes>` list, not just the
