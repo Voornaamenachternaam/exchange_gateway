@@ -847,6 +847,30 @@ async fn enumerate_mailboxes(
         })
 }
 
+/// Whether `mailbox_id` still exists in the live JMAP hierarchy. Used to
+/// reconcile an UNKNOWN destroy outcome (a transport error after `Mailbox/set`
+/// may have committed): a still-present mailbox means the destroy did NOT happen
+/// and its `folder_map` mapping must be preserved. A lookup FAILURE is reported
+/// as present (fail-safe): the worst case is a retained mapping re-pruned on a
+/// later retry, never a live folder losing its mapping.
+async fn mailbox_still_exists(
+    jmap: &crate::jmap::JmapClient,
+    username: &str,
+    password: &secrecy::SecretString,
+    mailbox_id: &str,
+) -> bool {
+    match jmap.query_all_mailboxes(username, password).await {
+        Ok(r) => r
+            .mailboxes
+            .iter()
+            .any(|m| m.id.as_deref() == Some(mailbox_id)),
+        Err(e) => {
+            tracing::warn!(error = %e, mailbox = %mailbox_id, "Mailbox/query failed reconciling an uncertain destroy outcome; assuming the mailbox still exists");
+            true
+        }
+    }
+}
+
 /// Pure BFS over an already-enumerated mailbox set, starting at `root_id`,
 /// returning the subtree deepest-first (children before parents).
 /// `RopDeleteFolder` with `DEL_FOLDERS` uses this so a destroy never hits a
@@ -896,8 +920,14 @@ fn mailbox_subtree_deepest_first(
 /// Resolve the EAS `ParentId` string for a destination JMAP mailbox id, for
 /// mirroring a MAPI folder move into `folder_map`. Mirrors the EWS resolver: a
 /// user-created folder (a `folder_map` row) uses its own id, a system folder its
-/// distinguished id (`"2"`…`"12"`), and the root `"0"`. `None` when the
+/// distinguished id (`"2"`…`"12"`), and the root `"0"`. `Ok(None)` when the
 /// destination cannot be represented in the EAS hierarchy.
+///
+/// A transient `folder_map` read or JMAP mailbox-lookup failure is propagated as
+/// `Err` rather than flattened to `None`: acknowledging the move without a
+/// mirrored ParentId would leave EAS advertising a stale hierarchy, so the
+/// caller must fail the operation (retryable) instead of silently skipping the
+/// journaled update.
 async fn eas_parent_id_for_dest(
     jc: &crate::jmap::JmapClient,
     storage: &crate::storage::Storage,
@@ -905,37 +935,35 @@ async fn eas_parent_id_for_dest(
     dest: Option<&str>,
     username: &str,
     password: &secrecy::SecretString,
-) -> Option<String> {
+) -> anyhow::Result<Option<String>> {
     let Some(dest) = dest else {
-        return Some("0".to_string());
+        return Ok(Some("0".to_string()));
     };
-    if storage
-        .get_folder(owner, dest)
-        .await
-        .ok()
-        .flatten()
-        .is_some()
-    {
-        return Some(dest.to_string());
+    match storage.get_folder(owner, dest).await {
+        Ok(Some(_)) => return Ok(Some(dest.to_string())),
+        Ok(None) => {}
+        Err(e) => {
+            return Err(anyhow::anyhow!(
+                "folder_map lookup failed resolving the parent of {dest}: {e}"
+            ));
+        }
     }
     let role = jc
         .query_mailboxes(username, password)
         .await
-        .ok()
-        .and_then(|m| {
-            m.mailboxes
-                .into_iter()
-                .find(|mb| mb.id.as_deref() == Some(dest))
-                .and_then(|mb| mb.role)
-        });
-    match role.as_deref() {
+        .map_err(|e| anyhow::anyhow!("mailbox lookup failed resolving the parent of {dest}: {e}"))?
+        .mailboxes
+        .into_iter()
+        .find(|mb| mb.id.as_deref() == Some(dest))
+        .and_then(|mb| mb.role);
+    Ok(match role.as_deref() {
         Some("inbox") => Some("2".to_string()),
         Some("drafts") => Some("3".to_string()),
         Some("trash") => Some("4".to_string()),
         Some("sent") => Some("5".to_string()),
         Some("junk") => Some("12".to_string()),
         _ => None,
-    }
+    })
 }
 
 /// Resolve a MAPI folder id (FID) back to its JMAP mailbox id by inverting the
@@ -5148,34 +5176,52 @@ async fn execute_one_rop(
                                         pw,
                                     )
                                     .await;
-                                    if let Some(dest_parent) = dest_parent {
-                                        let row = storage.get_folder(owner, src).await;
-                                        match row {
-                                            Ok(Some(row)) => {
-                                                if let Err(e) = storage
-                                                    .update_folder_journaled(
-                                                        owner,
-                                                        &row.server_id,
-                                                        Some(&dest_parent),
-                                                        None,
-                                                    )
-                                                    .await
-                                                {
+                                    // A destination lookup FAILURE is retryable
+                                    // (a storage/JMAP error) and must NOT be
+                                    // treated as an unmappable destination: the
+                                    // backend move already happened, so silently
+                                    // skipping the mirror would leave the old
+                                    // ParentId advertised. Only `Ok(None)` (a
+                                    // genuinely unrepresentable destination) is a
+                                    // benign no-op.
+                                    match dest_parent {
+                                        Ok(Some(dest_parent)) => {
+                                            let row = storage.get_folder(owner, src).await;
+                                            match row {
+                                                Ok(Some(row)) => {
+                                                    if let Err(e) = storage
+                                                        .update_folder_journaled(
+                                                            owner,
+                                                            &row.server_id,
+                                                            Some(&dest_parent),
+                                                            None,
+                                                        )
+                                                        .await
+                                                    {
+                                                        tracing::warn!(
+                                                            error = %e,
+                                                            "RopMoveFolder: failed to mirror the EAS parent"
+                                                        );
+                                                        outcome = RopErrorCode::DiskError;
+                                                    }
+                                                }
+                                                Ok(None) => {}
+                                                Err(e) => {
                                                     tracing::warn!(
                                                         error = %e,
-                                                        "RopMoveFolder: failed to mirror the EAS parent"
+                                                        "RopMoveFolder: folder_map lookup failed for the EAS parent mirror"
                                                     );
                                                     outcome = RopErrorCode::DiskError;
                                                 }
                                             }
-                                            Ok(None) => {}
-                                            Err(e) => {
-                                                tracing::warn!(
-                                                    error = %e,
-                                                    "RopMoveFolder: folder_map lookup failed for the EAS parent mirror"
-                                                );
-                                                outcome = RopErrorCode::DiskError;
-                                            }
+                                        }
+                                        Ok(None) => {}
+                                        Err(e) => {
+                                            tracing::warn!(
+                                                error = %e,
+                                                "RopMoveFolder: destination parent lookup failed"
+                                            );
+                                            outcome = RopErrorCode::DiskError;
                                         }
                                     }
                                 }
@@ -5446,13 +5492,44 @@ async fn execute_one_rop(
                         // explicit permanent removal.
                         outcome = RopErrorCode::Success;
                         let mut destroyed_count = 0usize;
-                        // Backend mailbox ids that were actually destroyed.
-                        // MAPI folder ids for user-created folders ARE the JMAP
-                        // mailbox ids (see the folder-hierarchy projection), so
-                        // these are exactly the `folder_map` ServerIds an
-                        // EAS-created folder would carry.
+                        // Backend mailbox ids CONFIRMED destroyed (the deferred
+                        // record is KEPT for these and the prune runs below).
                         let mut destroyed_ids: Vec<String> = Vec::new();
+                        // Ids whose destroy was REFUSED or did NOT happen: the
+                        // mailbox still exists, so its mapping must be preserved
+                        // and its deferred record withdrawn.
+                        let mut preserved_ids: Vec<String> = Vec::new();
                         for mb in &subtree {
+                            // Record the destroy intent durably BEFORE the
+                            // destructive call, so an outcome we cannot observe (a
+                            // `Mailbox/set` transport error after the destroy
+                            // committed) still leaves a work list: on retry the
+                            // mailbox is gone from the live hierarchy, so it can no
+                            // longer be re-derived, and the deferred prune replays
+                            // the `folder-delete` for its `folder_map` row.
+                            //
+                            // FAIL-CLOSED: if the intent cannot be recorded, the
+                            // mailbox is NOT destroyed — a mailbox gone from JMAP
+                            // with no durable work list would stay advertised by
+                            // EAS forever, since a retry rebuilds the subtree from
+                            // the now-childless hierarchy. The destroy is
+                            // idempotent, so aborting is safe.
+                            if let Some(storage) = storage
+                                && let Err(e) = storage
+                                    .record_pending_folder_prunes(
+                                        username,
+                                        std::slice::from_ref(mb),
+                                    )
+                                    .await
+                            {
+                                tracing::warn!(
+                                    error = %e,
+                                    mailbox = %mb,
+                                    "RopDeleteFolder: failed to record the deferred folder-map prune intent; not destroying"
+                                );
+                                outcome = RopErrorCode::DiskError;
+                                break;
+                            }
                             match jc
                                 .destroy_mailbox(&account_id, mb, remove_emails, username, pw)
                                 .await
@@ -5469,23 +5546,52 @@ async fn execute_one_rop(
                                         mailbox = %mb,
                                         "RopDeleteFolder: Mailbox/set refused the destroy"
                                     );
+                                    preserved_ids.push(mb.clone());
                                     break;
                                 }
                                 Err(e) => {
-                                    tracing::warn!(error = %e, "JMAP Mailbox/set destroy failed");
+                                    // UNKNOWN outcome: `Mailbox/set` may have
+                                    // committed before the transport failed.
+                                    // Reconcile against the live hierarchy; only
+                                    // a mailbox that is actually gone is treated
+                                    // as destroyed.
+                                    tracing::warn!(error = %e, "JMAP Mailbox/set destroy failed; reconciling");
+                                    if mailbox_still_exists(jc, username, pw, mb).await {
+                                        preserved_ids.push(mb.clone());
+                                    } else {
+                                        destroyed_ids.push(mb.clone());
+                                        destroyed_count += 1;
+                                    }
                                     outcome = RopErrorCode::DiskError;
                                     break;
                                 }
                             }
                         }
-                        // Mirror the destroyed mailboxes into the EAS folder
-                        // store: prune any `folder_map` row whose ServerId is a
-                        // destroyed mailbox and journal a `folder-delete`, so an
-                        // EAS-created folder removed here is no longer advertised
-                        // by FolderSync/GetHierarchy and already-primed devices
-                        // receive its Delete. `delete_folders_journaled` is a
-                        // no-op for ids with no mapping row (e.g. a system
-                        // folder, whose ServerId is never a JMAP mailbox id).
+                        // Withdraw the deferred record for every mailbox that
+                        // still exists (a refused destroy or a reconciled-present
+                        // outcome): its mapping must survive, so it must not be
+                        // pruned by a later folder-sync replay.
+                        if let Some(storage) = storage
+                            && !preserved_ids.is_empty()
+                            && let Err(e) = storage
+                                .clear_pending_folder_prunes(username, &preserved_ids)
+                                .await
+                        {
+                            tracing::warn!(
+                                error = %e,
+                                "RopDeleteFolder: failed to withdraw the deferred prune for preserved mailboxes"
+                            );
+                        }
+                        // Mirror the CONFIRMED destroyed mailboxes into the EAS
+                        // folder store: prune any `folder_map` row whose ServerId
+                        // is a destroyed mailbox and journal a `folder-delete`, so
+                        // an EAS-created folder removed here is no longer
+                        // advertised by FolderSync/GetHierarchy and already-primed
+                        // devices receive its Delete. `delete_folders_journaled`
+                        // is a no-op for ids with no mapping row (e.g. a system
+                        // folder, whose ServerId is never a JMAP mailbox id). The
+                        // ids were already recorded durably above, so the next
+                        // folder-sync read replays any prune that fails here.
                         //
                         // The mirror write must NOT be acknowledged as success
                         // when it fails: the JMAP mailbox is already gone, so a
@@ -5496,32 +5602,15 @@ async fn execute_one_rop(
                         // re-runs the prune).
                         if !destroyed_ids.is_empty()
                             && let Some(storage) = storage
-                        {
-                            // Record the destroyed ids durably BEFORE the prune: the
-                            // mailboxes are already gone from JMAP, so a failed prune
-                            // cannot re-derive them on retry. The next folder-sync
-                            // read replays the row and journals the `folder-delete`.
-                            // Best-effort: a failure here is logged but the direct
-                            // prune still runs.
-                            if let Err(e) = storage
-                                .record_pending_folder_prunes(username, &destroyed_ids)
-                                .await
-                            {
-                                tracing::warn!(
-                                    error = %e,
-                                    "RopDeleteFolder: failed to record the deferred folder-map prune"
-                                );
-                            }
-                            if let Err(e) = storage
+                            && let Err(e) = storage
                                 .delete_folders_journaled(username, &destroyed_ids)
                                 .await
-                            {
-                                tracing::warn!(
-                                    error = %e,
-                                    "RopDeleteFolder: failed to prune EAS folder map for destroyed mailboxes"
-                                );
-                                outcome = RopErrorCode::DiskError;
-                            }
+                        {
+                            tracing::warn!(
+                                error = %e,
+                                "RopDeleteFolder: failed to prune EAS folder map for destroyed mailboxes"
+                            );
+                            outcome = RopErrorCode::DiskError;
                         }
                         // The ROP succeeded for only some (or none) of the
                         // targets — a non-empty folder with DEL_MESSAGES unset,
@@ -6334,6 +6423,10 @@ async fn execute_one_rop(
                         // EAS surface stops advertising them. The root folder is
                         // not deleted, so it is never in this set.
                         let mut destroyed_ids: Vec<String> = Vec::new();
+                        // Children whose destroy was REFUSED or did NOT happen:
+                        // the mailbox still exists, so its mapping must survive and
+                        // any recorded destroy intent must be withdrawn.
+                        let mut preserved_ids: Vec<String> = Vec::new();
                         if rop_id == RopId::ROP_HARD_DELETE_MESSAGES_AND_SUBFOLDERS {
                             match enumerate_mailboxes(jc, username, pw).await {
                                 Ok(mailboxes) => {
@@ -6342,6 +6435,33 @@ async fn execute_one_rop(
                                     for child_id in
                                         subtree.iter().filter(|id| id.as_str() != backend)
                                     {
+                                        // Record the destroy intent durably BEFORE
+                                        // the destructive call, so an unobservable
+                                        // outcome (a transport error after the
+                                        // destroy committed) still leaves a work
+                                        // list — the child is then gone from the
+                                        // live hierarchy and cannot be re-derived.
+                                        //
+                                        // FAIL-CLOSED: if the intent cannot be
+                                        // recorded the child is NOT destroyed, so
+                                        // its `folder_map` row can never be
+                                        // stranded without a durable work list.
+                                        if let Some(storage) = storage
+                                            && let Err(e) = storage
+                                                .record_pending_folder_prunes(
+                                                    username,
+                                                    std::slice::from_ref(child_id),
+                                                )
+                                                .await
+                                        {
+                                            tracing::warn!(
+                                                error = %e,
+                                                mailbox = %child_id,
+                                                "HardDelete: failed to record the deferred folder-map prune intent; not destroying"
+                                            );
+                                            subfolders_ok = false;
+                                            break;
+                                        }
                                         match jc
                                             .destroy_mailbox(
                                                 &account_id,
@@ -6361,10 +6481,22 @@ async fn execute_one_rop(
                                                     mailbox = %child_id,
                                                     "JMAP Mailbox/set refused subfolder destroy"
                                                 );
+                                                preserved_ids.push(child_id.clone());
                                                 subfolders_ok = false;
                                             }
                                             Err(e) => {
-                                                tracing::warn!(error = %e, "JMAP Mailbox/set subfolder destroy failed");
+                                                // UNKNOWN outcome: reconcile
+                                                // against the live hierarchy; only
+                                                // a child that is actually gone is
+                                                // treated as destroyed.
+                                                tracing::warn!(error = %e, "JMAP Mailbox/set subfolder destroy failed; reconciling");
+                                                if mailbox_still_exists(jc, username, pw, child_id)
+                                                    .await
+                                                {
+                                                    preserved_ids.push(child_id.clone());
+                                                } else {
+                                                    destroyed_ids.push(child_id.clone());
+                                                }
                                                 subfolders_ok = false;
                                             }
                                         }
@@ -6376,41 +6508,42 @@ async fn execute_one_rop(
                                 }
                             }
                         }
+                        // Withdraw the deferred record for every child that still
+                        // exists (a refused destroy or a reconciled-present
+                        // outcome): its mapping must survive, so it must not be
+                        // pruned by a later folder-sync replay.
+                        if let Some(storage) = storage
+                            && !preserved_ids.is_empty()
+                            && let Err(e) = storage
+                                .clear_pending_folder_prunes(username, &preserved_ids)
+                                .await
+                        {
+                            tracing::warn!(
+                                error = %e,
+                                "HardDelete: failed to withdraw the deferred prune for preserved subfolders"
+                            );
+                        }
                         // Keep the EAS folder mirror consistent with the
                         // destroyed subfolders (see `RopDeleteFolder`). A
                         // no-op for ids with no mapping row. A failed mirror
                         // write must fail the ROP: the JMAP children are gone,
                         // so a stale `folder_map` row keeps EAS advertising a
                         // deleted folder and primed devices miss its Delete.
+                        // The destroyed ids were already recorded durably before
+                        // their destroy (above), so a failed prune here is
+                        // replayed by the next folder-sync read.
                         let mut mirror_ok = true;
                         if !destroyed_ids.is_empty()
                             && let Some(storage) = storage
-                        {
-                            // Record the destroyed subfolder ids durably BEFORE the
-                            // prune: they are already gone from JMAP, so a failed
-                            // prune cannot re-derive them. The next folder-sync read
-                            // replays the row and journals the `folder-delete`.
-                            // Best-effort: a failure here is logged but the direct
-                            // prune still runs.
-                            if let Err(e) = storage
-                                .record_pending_folder_prunes(username, &destroyed_ids)
-                                .await
-                            {
-                                tracing::warn!(
-                                    error = %e,
-                                    "HardDelete: failed to record the deferred folder-map prune"
-                                );
-                            }
-                            if let Err(e) = storage
+                            && let Err(e) = storage
                                 .delete_folders_journaled(username, &destroyed_ids)
                                 .await
-                            {
-                                tracing::warn!(
-                                    error = %e,
-                                    "HardDelete: failed to prune EAS folder map for destroyed subfolders"
-                                );
-                                mirror_ok = false;
-                            }
+                        {
+                            tracing::warn!(
+                                error = %e,
+                                "HardDelete: failed to prune EAS folder map for destroyed subfolders"
+                            );
+                            mirror_ok = false;
                         }
                         outcome = if destroyed_ok && subfolders_ok && mirror_ok {
                             RopErrorCode::Success
@@ -12189,13 +12322,16 @@ mod tests {
         );
     }
 
-    /// A failure to prune the EAS folder mirror after the JMAP mailbox is
-    /// already destroyed must NOT be acknowledged as success: a stale
-    /// `folder_map` row keeps EAS advertising a deleted folder and primed
-    /// devices miss its Delete. The ROP reports a retryable `DiskError`. The
-    /// pool is closed to force the mirror write to fail.
+    /// A failure to record the pre-destroy prune intent must NOT be
+    /// acknowledged as success, and must NOT destroy the mailbox: without a
+    /// durable work list a destroyed mailbox stays advertised by EAS (a stale
+    /// `folder_map` row with no `folder-delete`) and a retry — rebuilding the
+    /// subtree from the now-childless hierarchy — could never recover its id.
+    /// The record is FAIL-CLOSED, so the ROP reports a retryable `DiskError`
+    /// and the destroy never runs. The pool is closed to force the record to
+    /// fail.
     #[tokio::test]
-    async fn rop_delete_folder_mirror_write_failure_is_disk_error() {
+    async fn rop_delete_folder_record_failure_is_disk_error() {
         let storage = std::sync::Arc::new(
             crate::storage::Storage::new("sqlite::memory:")
                 .await
@@ -12221,7 +12357,8 @@ mod tests {
 
         let (base, _calls) = spawn_delete_folder_stub(vec![("mb-1", None)]).await;
         // Close the pool AFTER seeding the mapping but BEFORE the ROP runs, so
-        // the destroy succeeds but `delete_folders_journaled` cannot execute.
+        // the pre-destroy prune-intent record cannot execute and the fail-closed
+        // guard aborts without destroying the mailbox.
         storage.pool().close().await;
         let (rv, _partial) = run_delete_folder_rop_full_storage(
             &base,
@@ -12233,7 +12370,7 @@ mod tests {
         assert_eq!(
             rv,
             RopErrorCode::DiskError,
-            "a failed mirror prune must surface as a retryable error, never success"
+            "a failed prune-intent record must surface as a retryable error, never success"
         );
     }
 

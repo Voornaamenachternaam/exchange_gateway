@@ -15,7 +15,7 @@ use hmac::digest::KeyInit;
 use hmac::{Hmac, Mac};
 use secrecy::SecretString;
 use sha2::Sha256;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -1676,26 +1676,23 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
                                 // ACCOUNT-wide, so a destroyed id may belong to
                                 // ANY calendar. `item_map` is owner-global (no
                                 // collection column), so tombstoning a
-                                // destroyed id here removes a SHARED row and
-                                // emits a `<Delete>` in this collection for an
-                                // event the client never held — and, by
-                                // removing the row first, suppresses the
-                                // Delete the event's OWN collection would
-                                // otherwise deliver (a silently missed
-                                // deletion). A scoped folder therefore does not
-                                // infer deletions from the account feed; an
-                                // event deleted from its own calendar lingers
-                                // until the folder's next full re-prime. An
+                                // destroyed id here removes a SHARED row. A
+                                // scoped folder must therefore delete only the
+                                // events IT delivered: the deletion sweep below
+                                // consults this scope's delivery ledger and
+                                // emits `<Delete>` for a destroyed id the scope
+                                // holds, leaving foreign events untouched. An
                                 // unscoped (default) calendar folder owns the
                                 // whole account feed and tombstones normally.
-                                if scoped_calendar_id.is_none() {
-                                    for id in &changes.destroyed {
-                                        let href = format!("jmap://calendar/{}/{}", account_id, id);
-                                        jmap_destroyed_server_ids.insert(generate_server_id(
-                                            params.state.cfg.hmac_secret(),
-                                            &href,
-                                        ));
-                                    }
+                                // Record EVERY explicitly destroyed id; the
+                                // sweep decides which are this scope's to
+                                // deliver.
+                                for id in &changes.destroyed {
+                                    let href = format!("jmap://calendar/{}/{}", account_id, id);
+                                    jmap_destroyed_server_ids.insert(generate_server_id(
+                                        params.state.cfg.hmac_secret(),
+                                        &href,
+                                    ));
                                 }
                                 let mut conversion_failed = false;
                                 if !all_ids.is_empty() {
@@ -2083,13 +2080,11 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
     // `existing_map` (owner-global `item_map`) remains the candidate set for the
     // owner-level DELETION sweep below: a deletion is an account-level fact and
     // the shared row is what the delete fill removes once its `<Delete>` is
-    // emitted.
-    let existing_map = storage
-        .list_ews_items(params.owner, 4096, 0)
-        .await?
-        .into_iter()
-        .map(|item| (item.server_id.clone(), item))
-        .collect::<HashMap<_, _>>();
+    // emitted. It is read UNBOUNDED (`list_ews_item_server_ids`) — a page-bounded
+    // read would omit stored events whose row falls outside the page, making
+    // `!existing_map.contains_key(id)` true for a LIVE event and tombstoning it
+    // on a partial delta.
+    let existing_map = storage.list_ews_item_server_ids(params.owner).await?;
 
     let initial_sync = params.incoming_sync_key == "0";
     let mut delivered_map = storage
@@ -2173,7 +2168,7 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
     // (`start_db_seq`), so the tombstone feed cannot recover it either (that
     // device would keep the deleted event indefinitely). A ledger id whose
     // `item_map` row is gone is therefore a confirmed deletion for THIS scope.
-    let mut deletion_candidates: HashSet<String> = existing_map.keys().cloned().collect();
+    let mut deletion_candidates: HashSet<String> = existing_map.iter().cloned().collect();
     deletion_candidates.extend(delivered_map.keys().cloned());
     for server_id in &deletion_candidates {
         if seen_ids.contains(server_id) {
@@ -2187,21 +2182,34 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
         // this scope delivered whose `item_map` row is already gone was removed
         // by another scope's confirmed deletion — that is authoritative here.
         //
-        // For a SCOPED folder (a custom calendar folder) that authority does
-        // not extend to events outside its own calendar: `item_map` is
-        // owner-global, so a snapshot of one calendar is not a statement about
-        // another calendar's events. Sweeping them here would tombstone a
-        // foreign calendar's live event in this collection (and remove the
-        // shared row before its own collection could deliver it). Skip the
-        // sweep entirely for scoped folders — their own deletions still arrive
-        // as explicit deltas once their calendar reports them.
-        let deleted = scoped_calendar_id.is_none()
-            && (!existing_map.contains_key(server_id)
+        // A SCOPED folder (a custom calendar folder, whether or not JMAP
+        // resolution succeeded) is bounded to ONE calendar, but `item_map` is
+        // owner-global, so its snapshot/absence is NOT a statement about another
+        // calendar's events. Restrict its deletion candidates to events THIS
+        // scope delivered (its own ledger), and within that set use the
+        // snapshot-vs-delta rule: a full snapshot (CalDAV fallback) omitting a
+        // delivered event deletes it, and a partial JMAP delta (`CalendarEvent/
+        // changes`, which is account-wide) deletes only an explicitly destroyed
+        // id. A foreign event (never in this ledger) is therefore never swept.
+        // The scope is keyed on the mapped folder, NOT on whether JMAP
+        // resolution produced a calendar id — a resolution failure or a
+        // CalDAV-only deployment must not grant account-wide deletion authority.
+        let folder_scoped = calendar_scope.is_some();
+        let deleted = if folder_scoped {
+            delivered_map.contains_key(server_id)
+                && calendar_event_deleted(
+                    calendar_delta_partial,
+                    &jmap_destroyed_server_ids,
+                    server_id,
+                )
+        } else {
+            !existing_map.contains(server_id)
                 || calendar_event_deleted(
                     calendar_delta_partial,
                     &jmap_destroyed_server_ids,
                     server_id,
-                ));
+                )
+        };
         if deleted {
             // Queue the tombstone now (it carries the journal seq and
             // must survive a clipped window) but RETAIN the item_map row:
@@ -4121,6 +4129,96 @@ mod tests {
         );
     }
 
+    /// A scoped (custom-calendar) folder MUST deliver the deletion of an event
+    /// IT previously delivered: the `CalendarEvent/changes` feed is account-wide,
+    /// and the event's own calendar reported it destroyed, so the scoped folder
+    /// that holds it must emit `<Delete>` (using its own delivery ledger to
+    /// identify the event as its own) rather than leave it on the client until a
+    /// re-prime.
+    #[tokio::test]
+    async fn scoped_calendar_delta_delivers_own_destroyed_event() {
+        let folder_href = "/dav/cal/user@example.com/Side%20Project/";
+        let stub = spawn_calendar_stub(
+            vec![json!({
+                "accountId": "acct", "oldState": "s0", "newState": "s1",
+                "hasMoreChanges": false,
+                "created": [], "updated": [], "destroyed": ["e-mine"]
+            })],
+            vec![],
+            "query-s",
+            "get-s",
+            None,
+        )
+        .await
+        .with_calendars(vec![json!({
+            "id": "cal-side",
+            "name": "Side Project",
+            "href": folder_href
+        })]);
+        let state = calendar_mutation_state(&stub.base).await;
+        let owner = "user@example.com";
+        state
+            .storage
+            .upsert_folder_journaled(
+                crate::storage::FolderUpsertParams {
+                    owner,
+                    server_id: folder_href,
+                    parent_id: "0",
+                    display_name: "Side Project",
+                    folder_type: 13,
+                    backend_kind: "caldav",
+                    backend_id: folder_href,
+                },
+                "folder-add",
+            )
+            .await
+            .unwrap();
+
+        let mine_href = "jmap://calendar/acct/e-mine";
+        let mine_server_id = generate_server_id(state.cfg.hmac_secret(), mine_href);
+        state
+            .storage
+            .upsert_item_map(
+                owner,
+                mine_href,
+                mine_href,
+                &mine_server_id,
+                "uid-mine",
+                "etag",
+            )
+            .await
+            .unwrap();
+        let state_collection_id = format!("{folder_href}::dev1");
+        // This scope DELIVERED the event earlier (its ledger row exists).
+        state
+            .storage
+            .upsert_calendar_delivery(owner, &state_collection_id, &mine_server_id, "etag")
+            .await
+            .unwrap();
+        state
+            .storage
+            .set_sync_key(owner, &state_collection_id, "key-1", Some("s0"))
+            .await
+            .unwrap();
+
+        let xml = run_calendar_sync_for(&state, folder_href, &state_collection_id, "key-1").await;
+        assert!(
+            xml.contains(&format!(
+                "<Delete><ServerId>{mine_server_id}</ServerId></Delete>"
+            )),
+            "a scoped folder must delete an event it delivered:\n{xml}"
+        );
+        assert!(
+            state
+                .storage
+                .get_ews_item_by_server_id(owner, &mine_server_id)
+                .await
+                .unwrap()
+                .is_none(),
+            "the delivered deletion's item_map row must be removed"
+        );
+    }
+
     /// A scoped folder's PRIME is a snapshot of ONE calendar, not the account.
     /// The full-snapshot tombstone sweep must not treat another calendar's
     /// stored event (owner-global `item_map`) as deleted just because this
@@ -4417,7 +4515,15 @@ mod tests {
             "created": [], "updated": ["e1", "e2"], "destroyed": []
         });
         stub.set_changes(vec![page2]);
-        let xml2 = run_calendar_sync(&state, "key-2").await;
+        // Use the SyncKey the first sync RETURNED (the completed sync rotates
+        // it); an arbitrary key would be answered with Status 3 and the negative
+        // assertions below would pass vacuously without exercising suppression.
+        let next_key = sync_key_of(&xml);
+        let xml2 = run_calendar_sync(&state, &next_key).await;
+        assert!(
+            xml2.contains("<Status>1</Status>"),
+            "the delta must succeed (not be rejected as an invalid key):\n{xml2}"
+        );
         assert!(
             !xml2.contains("uid-e1") && !xml2.contains("uid-e2"),
             "unchanged events recorded in the ledger are skipped:\n{xml2}"

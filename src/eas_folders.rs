@@ -16,6 +16,7 @@
 
 use secrecy::{ExposeSecret, SecretString};
 use std::sync::Arc;
+use subtle::ConstantTimeEq;
 
 use crate::caldav::CaldavClient;
 use crate::jmap::JmapClient;
@@ -633,17 +634,25 @@ pub async fn delete_folder(
 
     // Destroy the backend objects deepest-first, ABORTING on the first failure
     // so the mirror is never pruned ahead of the system of record (that would
-    // resurrect the folder on the next reconcile).
+    // resurrect the folder on the next reconcile). A child whose destroy
+    // SUCCEEDED before the abort is already gone from the backend, so its mirror
+    // row MUST be pruned and a `folder-delete` journaled even though the overall
+    // command fails: leaving it would make `FolderSync` keep advertising a
+    // nonexistent folder until a later retry — and a retry re-collects only the
+    // still-present rows, so the destroyed child could never be re-derived.
+    let mut destroyed_ids: Vec<String> = Vec::new();
     for folder in &subtree {
         match folder.backend_kind.as_str() {
             "jmap" => {
                 let Some(jmap) = state.jmap_client.clone() else {
+                    prune_destroyed_folder_ids(state, owner, &destroyed_ids).await;
                     return FolderMutationResult::status(6);
                 };
                 let account_id = match jmap.get_account_id(owner, password).await {
                     Ok(id) => id,
                     Err(e) => {
                         tracing::warn!(error = %e, "FolderDelete: JMAP account lookup failed");
+                        prune_destroyed_folder_ids(state, owner, &destroyed_ids).await;
                         return FolderMutationResult::status(6);
                     }
                 };
@@ -654,27 +663,33 @@ pub async fn delete_folder(
                     Ok(
                         crate::jmap::MailboxDestroyOutcome::Destroyed
                         | crate::jmap::MailboxDestroyOutcome::AlreadyGone,
-                    ) => {}
+                    ) => {
+                        destroyed_ids.push(folder.server_id.clone());
+                    }
                     // The server refused the destroy (e.g. `mailboxHasChild`
                     // because a child was recreated, or `forbidden`). This is a
                     // failure: pruning the mirror here would resurrect the
                     // folder on the next reconcile, so abort and let the client
-                    // retry.
+                    // retry. Any child destroyed earlier in the walk is still
+                    // pruned.
                     Ok(crate::jmap::MailboxDestroyOutcome::Refused) => {
                         tracing::warn!(
                             server_id = %folder.server_id,
                             "FolderDelete: Mailbox/set refused the destroy"
                         );
+                        prune_destroyed_folder_ids(state, owner, &destroyed_ids).await;
                         return FolderMutationResult::status(6);
                     }
                     Err(e) => {
                         tracing::warn!(error = %e, "FolderDelete: JMAP Mailbox/set destroy failed");
+                        prune_destroyed_folder_ids(state, owner, &destroyed_ids).await;
                         return FolderMutationResult::status(6);
                     }
                 }
             }
             "caldav" => {
                 let Ok(caldav) = CaldavClient::new(&state.cfg) else {
+                    prune_destroyed_folder_ids(state, owner, &destroyed_ids).await;
                     return FolderMutationResult::status(6);
                 };
                 if let Err(e) = caldav
@@ -682,10 +697,15 @@ pub async fn delete_folder(
                     .await
                 {
                     tracing::warn!(error = %e, "FolderDelete: CalDAV collection delete failed");
+                    prune_destroyed_folder_ids(state, owner, &destroyed_ids).await;
                     return FolderMutationResult::status(6);
                 }
+                destroyed_ids.push(folder.server_id.clone());
             }
-            _ => return FolderMutationResult::status(4),
+            _ => {
+                prune_destroyed_folder_ids(state, owner, &destroyed_ids).await;
+                return FolderMutationResult::status(4);
+            }
         }
     }
 
@@ -719,6 +739,32 @@ pub async fn delete_folder(
         status: 1,
         server_id: None,
         removed_server_ids: removed_ids,
+    }
+}
+
+/// Record and prune the `folder_map` rows of folders whose backend destroy
+/// already succeeded before a subtree walk aborted. Best-effort: the ids are
+/// first recorded durably (so a later folder-sync read can replay the prune),
+/// then the direct prune + `folder-delete` journal runs. Used only on the abort
+/// paths of [`delete_folder`], where the mailboxes are already gone from the
+/// backend and a retry can no longer re-derive them.
+async fn prune_destroyed_folder_ids(state: &Arc<AppState>, owner: &str, destroyed_ids: &[String]) {
+    if destroyed_ids.is_empty() {
+        return;
+    }
+    if let Err(e) = state
+        .storage
+        .record_pending_folder_prunes(owner, destroyed_ids)
+        .await
+    {
+        tracing::warn!(error = %e, "FolderDelete: failed to record the deferred folder-map prune for a partial walk");
+    }
+    if let Err(e) = state
+        .storage
+        .delete_folders_journaled(owner, destroyed_ids)
+        .await
+    {
+        tracing::warn!(error = %e, "FolderDelete: failed to prune folder mappings for a partial walk");
     }
 }
 
@@ -1046,6 +1092,46 @@ pub async fn current_hierarchy_sync_key(
         Ok(Some((key, _))) => key,
         _ => "0".to_string(),
     }
+}
+
+/// Whether the `SyncKey` a folder-mutation command supplied matches this
+/// device's stored folder-hierarchy key ([MS-ASCMD] §2.2.3.181.1). The server
+/// MUST reject a mismatched key with Status 9 rather than apply the mutation
+/// (an obsolete key means the client's hierarchy view is out of date). `"0"` is
+/// always accepted: a client that has never synced the hierarchy (or was told
+/// to re-prime with key 0) is allowed to create its first folder, matching the
+/// `FolderSync` prime path. A storage read failure is treated as a MISMATCH
+/// (fail closed): the client re-primes rather than mutate against a key the
+/// server cannot verify.
+pub async fn folder_sync_key_matches(
+    state: &Arc<AppState>,
+    owner: &str,
+    device_id: &str,
+    supplied: &str,
+) -> bool {
+    let supplied = supplied.trim();
+    if supplied == "0" {
+        return true;
+    }
+    let collection_id = crate::eas::scoped_collection_id("folderhierarchy", device_id);
+    match state.storage.get_sync_key(owner, &collection_id).await {
+        Ok(Some((stored, _))) => stored.as_bytes().ct_eq(supplied.as_bytes()).into(),
+        Ok(None) => false,
+        Err(e) => {
+            tracing::warn!(error = %e, "folder mutation: failed to read hierarchy sync key");
+            false
+        }
+    }
+}
+
+/// The `FolderHierarchy` status-code response for a folder-mutation command
+/// whose supplied `SyncKey` did not match the stored key: Status 9 with
+/// `SyncKey` 0, instructing the client to re-prime its hierarchy
+/// ([MS-ASCMD] §2.2.3.181.1).
+pub fn invalid_folder_sync_key_response(root: &str) -> String {
+    format!(
+        r#"<?xml version="1.0" encoding="utf-8"?><{root} xmlns="FolderHierarchy:"><Status>9</Status><SyncKey>0</SyncKey></{root}>"#
+    )
 }
 
 /// After a successful folder mutation, rotate the mutating device's

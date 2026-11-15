@@ -4651,12 +4651,59 @@ fn parse_sync_state_marker(marker: Option<String>) -> Result<(i64, i64), ()> {
     }
 }
 
+/// Encode an in-progress EWS email prime page's continuation into the opaque
+/// `SyncState` returned to the client. The token is SELF-DESCRIBING — it carries
+/// the page's origin (absolute `position`, RFC 8620 §5.5 `anchor`, and the
+/// prime's query state) — so a retry that echoes it re-delivers the SAME page
+/// instead of skipping it, and two clients priming the same folder each carry
+/// their own progress instead of sharing one server-side row. The fields are
+/// individually base64-encoded so an opaque query state (which may contain `:`)
+/// cannot be mistaken for a field separator.
+fn encode_prime_continuation_token(
+    position: u64,
+    anchor: Option<&str>,
+    query_state: &str,
+) -> String {
+    let anchor = STANDARD.encode(anchor.unwrap_or("").as_bytes());
+    let state = STANDARD.encode(query_state.as_bytes());
+    STANDARD.encode(format!("prime:{position}:{anchor}:{state}").as_bytes())
+}
+
+/// Decode a prime-continuation token produced by
+/// [`encode_prime_continuation_token`]. `None` for anything else (a plain JMAP
+/// query state, a `seq:` cursor, or malformed input), so the caller routes it
+/// down the delta path.
+fn decode_prime_continuation_token(marker: &str) -> Option<(u64, Option<String>, String)> {
+    let raw = STANDARD.decode(marker).ok()?;
+    let decoded = String::from_utf8(raw).ok()?;
+    let rest = decoded.strip_prefix("prime:")?;
+    let mut parts = rest.split(':');
+    let position = parts.next()?.parse::<u64>().ok()?;
+    let anchor = String::from_utf8(STANDARD.decode(parts.next()?).ok()?).ok()?;
+    let query_state = String::from_utf8(STANDARD.decode(parts.next()?).ok()?).ok()?;
+    if parts.next().is_some() {
+        return None;
+    }
+    Some((
+        position,
+        if anchor.is_empty() {
+            None
+        } else {
+            Some(anchor)
+        },
+        query_state,
+    ))
+}
+
 /// Handle the EWS email initial sync (prime) and its continuation.
 ///
-/// A null `SyncState` starts a fresh prime; a request whose previous window
-/// reported `IncludesLastItemInRange=false` continues the persisted
-/// `ews_prime_cursor`. The stored `SyncState` is the JMAP query state captured
-/// at the prime's START (never a per-page token), so a quiet
+/// A null `SyncState` starts a fresh prime. A request that echoes a
+/// prime-continuation token (see [`encode_prime_continuation_token`]) continues
+/// that prime: the token is SELF-DESCRIBING, so the page it names is re-derived
+/// from the token alone — a retry that echoes the token re-delivers the SAME
+/// page (no cursor to advance ahead of the response), and two clients priming
+/// the same folder each carry their own progress (no shared server row). The
+/// continuation's `SyncState` is the prime's query state, so a quiet
 /// `Email/queryChanges` from it still delivers everything the prime omitted.
 #[allow(clippy::too_many_arguments)]
 async fn handle_sync_email_prime(
@@ -4668,6 +4715,7 @@ async fn handle_sync_email_prime(
     account_id: &str,
     max_changes: usize,
     fresh: bool,
+    continuation: Option<(u64, Option<String>, String)>,
 ) -> Response {
     use crate::email::{email_server_id_from_jmap_id, render_jmap_email_as_ews_message};
     let jmap = match state.jmap_client.as_ref() {
@@ -4681,29 +4729,11 @@ async fn handle_sync_email_prime(
             );
         }
     };
-    // A prime either starts fresh (null SyncState) or continues an unfinished
-    // one (a prior window reported `IncludesLastItemInRange=false`). A fresh
-    // prime drops any stale continuation so a re-provisioned device restarts
-    // from the beginning; the continuation reads the persisted cursor.
-    let stored_cursor = match state.storage.get_ews_prime_cursor(owner, folder_id).await {
-        Ok(c) => c,
-        Err(e) => {
-            tracing::error!(error = %e, folder_id = %folder_id, "Failed to read EWS prime cursor");
-            return operation_error_response(
-                &EwsAction::SyncFolderItems,
-                "ErrorInternalServerError",
-                "Failed to read the email sync cursor",
-                StatusCode::INTERNAL_SERVER_ERROR,
-            );
-        }
-    };
-    let is_fresh_prime = fresh || stored_cursor.is_none();
-    if fresh
-        && stored_cursor.is_some()
-        && let Err(e) = state.storage.clear_ews_prime_cursor(owner, folder_id).await
-    {
-        tracing::warn!(folder_id = %folder_id, error = %e, "Failed to reset EWS prime cursor");
-    }
+    // The prime either starts fresh (null SyncState) or continues the page named
+    // by the client's prime-continuation token. The continuation state lives in
+    // the token, not a server row, so a lost response is retried identically and
+    // two clients never share progress.
+    let is_fresh_prime = fresh;
     // A fresh prime restarts the stream: any cached delta replay keyed on an old
     // cursor is obsolete, so drop it. (A continuation leaves it in place.)
     if is_fresh_prime && let Err(e) = state.storage.clear_ews_delta_replay(owner, folder_id).await {
@@ -4712,8 +4742,7 @@ async fn handle_sync_email_prime(
     let (start_position, anchor_id, mut query_state) = if is_fresh_prime {
         (0u64, None, String::new())
     } else {
-        let (pos, anchor, state_token) = stored_cursor.expect("cursor present when not fresh");
-        (pos.max(0) as u64, anchor, state_token)
+        continuation.unwrap_or((0u64, None, String::new()))
     };
 
     // The flag baseline is captured ONCE, at the START of a fresh prime. A
@@ -4791,15 +4820,21 @@ async fn handle_sync_email_prime(
             );
         }
     };
-    // The anchor is gone (the message was destroyed mid-prime): fall back to
-    // numeric `position` paging, which the query does when `anchor` is omitted.
-    if result.anchor_not_found && start_position > 0 {
+    // The anchor is gone (the message was destroyed mid-prime). Restart the page
+    // from the HEAD (position 0, no anchor): the stored `start_position` is the
+    // index PAST the previous window, and when the anchor is deleted it is NOT
+    // safe to resume there (or at `start_position - 1`) — more than the anchor
+    // may have been deleted above the stored offset, so a numeric resume can
+    // skip an undelivered message, and that message is already inside the
+    // prime's query state so no later delta would re-report it. Re-delivering
+    // the prefix is safe: EWS clients deduplicate Creates by ItemId.
+    if result.anchor_not_found {
         result = match crate::email::fetch_emails_jmap(
             state,
             &crate::email::FetchEmailsParams {
                 account_id,
                 mailbox_role,
-                position: start_position,
+                position: 0,
                 limit: max_changes as u64,
                 username: &auth.username,
                 password: &auth.password,
@@ -4813,7 +4848,7 @@ async fn handle_sync_email_prime(
         {
             Ok(r) => r,
             Err(e) => {
-                tracing::error!(error = %e, "JMAP Email/query failed for initial sync (position fallback)");
+                tracing::error!(error = %e, "JMAP Email/query failed for initial sync (head restart)");
                 return operation_error_response(
                     &EwsAction::SyncFolderItems,
                     "ErrorInternalServerError",
@@ -4869,29 +4904,34 @@ async fn handle_sync_email_prime(
     }
 
     // Whether this window drained the snapshot. A clipped window (a full
-    // `max_changes` page) persists the continuation cursor and reports
-    // `IncludesLastItemInRange=false`; the client's follow-up Sync resumes
-    // here. The stored SyncState is the prime's query state either way, so a
+    // `max_changes` page) reports `IncludesLastItemInRange=false` and hands back
+    // a self-describing continuation token; the client's follow-up Sync echoes
+    // it to resume. The SyncState is the prime's query state either way, so a
     // quiet `Email/queryChanges` still delivers whatever the prime omitted.
-    let snapshot_drained = (emails.len() as u64) < max_changes as u64;
-    let cursor_result = if snapshot_drained {
-        state.storage.clear_ews_prime_cursor(owner, folder_id).await
+    //
+    // Drain is decided from RFC 8620 §5.5's authoritative response `position`
+    // and `total`, NOT from a short page: the server MAY apply a lower `limit`
+    // than requested, so `emails.len() < max_changes` does NOT mean the set is
+    // exhausted — a short page would falsely report `IncludesLastItemInRange=
+    // true`, silently dropping every later message.
+    // `query_position` is the absolute index of the first returned id; the page
+    // is drained when it reaches `total`.
+    let snapshot_drained =
+        result.query_position.saturating_add(emails.len() as u64) >= result.total;
+    // The token the client echoes to continue. On a clipped window it carries
+    // the NEXT page's origin — the RFC 8620 §5.5 absolute index past the
+    // delivered page (`query_position + delivered`, NOT `start_position +
+    // delivered`: after a head restart the page began at 0) and the last
+    // delivered id as the anchor — together with the prime's query state. On a
+    // drained window it is just the query state, so the next request takes the
+    // delta path. The token is self-describing, so a lost response is retried
+    // with the identical token and re-delivers the same page.
+    let sync_state = if snapshot_drained {
+        query_state.clone()
     } else {
-        let next_position = start_position + emails.len() as u64;
-        state
-            .storage
-            .set_ews_prime_cursor(
-                owner,
-                folder_id,
-                next_position as i64,
-                last_delivered_id.as_deref(),
-                &query_state,
-            )
-            .await
+        let next_position = result.query_position + emails.len() as u64;
+        encode_prime_continuation_token(next_position, last_delivered_id.as_deref(), &query_state)
     };
-    if let Err(e) = cursor_result {
-        tracing::warn!(folder_id = %folder_id, error = %e, "Failed to update EWS email prime cursor");
-    }
 
     if let Err(e) = state
         .storage
@@ -4906,7 +4946,7 @@ async fn handle_sync_email_prime(
         r#"<m:SyncFolderItemsResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:SyncFolderItemsResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:SyncState>{}</m:SyncState><m:IncludesLastItemInRange>{}</m:IncludesLastItemInRange><m:Changes>{}</m:Changes></m:SyncFolderItemsResponseMessage></m:ResponseMessages></m:SyncFolderItemsResponse>"#,
         EWS_MSG_NS,
         EWS_TYPE_NS,
-        xml_escape(&query_state),
+        xml_escape(&sync_state),
         includes_last,
         changes_xml
     );
@@ -4955,22 +4995,12 @@ async fn handle_sync_email_folder_items(
     let requested_state = extract_first_tag_text(body, b"SyncState");
     let old_state_token = requested_state.unwrap_or_default();
     let is_initial = old_state_token.is_empty();
-    // An unfinished prime (a prior window clipped with
-    // `IncludesLastItemInRange=false`) is continued even though its returned
-    // SyncState is a NON-empty query state: the continuation is keyed on the
-    // persisted cursor, not on an empty SyncState.
-    let prime_in_progress = match state.storage.get_ews_prime_cursor(owner, &folder_id).await {
-        Ok(c) => c.is_some(),
-        Err(e) => {
-            tracing::error!(error = %e, folder_id = %folder_id, "Failed to read EWS prime cursor");
-            return operation_error_response(
-                &EwsAction::SyncFolderItems,
-                "ErrorInternalServerError",
-                "Failed to read the email sync cursor",
-                StatusCode::INTERNAL_SERVER_ERROR,
-            );
-        }
-    };
+    // A prime CONTINUATION is signalled by the self-describing token the prime
+    // returned (`encode_prime_continuation_token`): it names the next page's
+    // origin, so the page is re-derived from the token alone — a retry that
+    // echoes it re-delivers the SAME page and two clients never share progress.
+    // Any other non-empty state (a plain JMAP query state) is the delta cursor.
+    let continuation = decode_prime_continuation_token(&old_state_token);
 
     // Map EWS distinguished folder to JMAP mailbox role
     let mailbox_role = match folder {
@@ -4993,7 +5023,7 @@ async fn handle_sync_email_folder_items(
         }
     };
 
-    if is_initial || prime_in_progress {
+    if is_initial || continuation.is_some() {
         return handle_sync_email_prime(
             state,
             auth,
@@ -5003,6 +5033,7 @@ async fn handle_sync_email_folder_items(
             &account_id,
             max_changes,
             is_initial,
+            continuation,
         )
         .await;
     }
@@ -5252,6 +5283,13 @@ async fn handle_sync_email_folder_items(
     // vanished id (`Ok(None)`) is skipped instead: a later delta reports its
     // destruction, and re-adding a vanished id is a client-side error.
     let mut seeded_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+    // Delivered Create/Update flag-baseline seeds, STAGED here and written only
+    // after the whole response is built and its state committed (below). Writing
+    // them inline would persist membership for a message whose Create the client
+    // may never receive (a later `Email/get` failure fails the call closed) — on
+    // the retry `has_email_keyword` would then classify it as held and emit an
+    // `Update` for an item the client never got.
+    let mut pending_seeds: Vec<(String, Vec<String>)> = Vec::new();
     for email_id in &changes.created {
         if overlap_held.contains(email_id.as_str()) {
             continue;
@@ -5267,32 +5305,13 @@ async fn handle_sync_email_folder_items(
                     r#"<t:Create>{}</t:Create>"#,
                     render_jmap_email_as_ews_message(&email, &server_id, &change_key)
                 ));
-                // Seed the flag baseline for a delivered Create, exactly as the
+                // Stage the flag baseline for a delivered Create, exactly as the
                 // EAS delta seeds a delivered `<Add>`: the bounded scan may not
                 // reach this message before its flags change, and a missing
                 // baseline row would record the new keywords as a first
-                // observation (no `<Change>`) instead of reporting the edit. A
-                // failed seed fails the call closed so the Create is not
-                // acknowledged without its baseline (the upsert is idempotent,
-                // so the retry re-seeds).
+                // observation (no `<Change>`) instead of reporting the edit.
                 let keywords = email.sorted_active_keywords();
-                if let Err(e) = state
-                    .storage
-                    .upsert_email_keyword(owner, &folder_id, email_id, &keywords)
-                    .await
-                {
-                    tracing::error!(
-                        error = %e,
-                        email_id = %email_id,
-                        "Failed to seed EWS email keyword baseline for delivered Create"
-                    );
-                    return operation_error_response(
-                        &EwsAction::SyncFolderItems,
-                        "ErrorInternalServerError",
-                        "Failed to record a delivered message's flag baseline",
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                    );
-                }
+                pending_seeds.push((email_id.clone(), keywords));
                 seeded_ids.insert(email_id.clone());
             }
             Ok(None) => {}
@@ -5336,33 +5355,15 @@ async fn handle_sync_email_folder_items(
                         r#"<t:Update>{}</t:Update>"#,
                         render_jmap_email_as_ews_message(&email, &server_id, &change_key)
                     ));
-                    // Seed this delivered Update's flag baseline too. An overlap
+                    // Stage this delivered Update's flag baseline too. An overlap
                     // id is queued, so the scan never emits an op for it — but the
                     // bounded scan may not even REACH it, and a missing baseline
                     // row would make a later sweep record the next keyword set as a
-                    // first observation (no `<Change>`). The seed makes the
-                    // delivered Update's flags the baseline regardless of whether
-                    // the scan reaches the id. Fails closed so the Update is not
-                    // acknowledged without it (the upsert is idempotent, so the
-                    // retry re-seeds).
+                    // first observation (no `<Change>`). The staged seed makes the
+                    // delivered Update's flags the baseline once the response is
+                    // acknowledged.
                     let keywords = email.sorted_active_keywords();
-                    if let Err(e) = state
-                        .storage
-                        .upsert_email_keyword(owner, &folder_id, email_id, &keywords)
-                        .await
-                    {
-                        tracing::error!(
-                            error = %e,
-                            email_id = %email_id,
-                            "Failed to seed EWS email keyword baseline for delivered Update"
-                        );
-                        return operation_error_response(
-                            &EwsAction::SyncFolderItems,
-                            "ErrorInternalServerError",
-                            "Failed to record a delivered message's flag baseline",
-                            StatusCode::INTERNAL_SERVER_ERROR,
-                        );
-                    }
+                    pending_seeds.push((email_id.clone(), keywords));
                     seeded_ids.insert(email_id.clone());
                 }
                 Ok(None) => {}
@@ -5428,18 +5429,20 @@ async fn handle_sync_email_folder_items(
         }
     }
 
-    // Store the new sync state. Fail CLOSED: the flag-scan baseline and rotating
-    // position below MUST NOT advance past a window whose token was not durably
-    // stored. The membership feed (`Email/queryChanges`) is membership-only, so a
-    // retry from the old `SyncState` cannot rediscover a flag-only `<t:Update>`
-    // the client already received — if the baseline advanced while the token did
+    // Store the new sync state AND the staged delivered-membership seeds in ONE
+    // transaction. Fail CLOSED: the flag-scan baseline and rotating position
+    // below MUST NOT advance past a window whose token was not durably stored,
+    // and a staged seed must not land without the state it was delivered under.
+    // The membership feed (`Email/queryChanges`) is membership-only, so a retry
+    // from the old `SyncState` cannot rediscover a flag-only `<t:Update>` the
+    // client already received — if the baseline advanced while the token did
     // not, that edit would be lost forever. A failure here is therefore answered
     // with a retryable error (carrying the incoming state, so the client retries
     // the same window) rather than a success whose cursor the gateway could not
     // persist.
     if let Err(e) = state
         .storage
-        .set_ews_sync_state(owner, &folder_id, &changes.new_state)
+        .set_ews_sync_state_with_seeds(owner, &folder_id, &changes.new_state, &pending_seeds)
         .await
     {
         tracing::error!(folder_id = %folder_id, error = %e, "Failed to set EWS email sync state; failing closed");
@@ -15296,15 +15299,15 @@ mod tests {
     }
 
     /// A clipped email prime (`MaxChangesReturned` smaller than the mailbox)
-    /// must report `IncludesLastItemInRange=false`, persist a continuation
-    /// cursor, and the follow-up request must resume from it — delivering the
-    /// remaining messages rather than restarting from the beginning. The
-    /// SyncState is the prime's query state on BOTH windows so a quiet
-    /// `Email/queryChanges` still covers anything the prime omitted.
+    /// must report `IncludesLastItemInRange=false` and hand back a
+    /// SELF-DESCRIBING continuation token. Echoing that token resumes the
+    /// snapshot (delivering the remaining messages) and reports the drained
+    /// query state; echoing it AGAIN re-delivers the SAME page, so a lost
+    /// response is retried identically instead of skipping a window.
     #[tokio::test]
-    async fn sync_email_prime_continuation_resumes_from_cursor() {
+    async fn sync_email_prime_continuation_token_resumes_and_replays() {
         let base = spawn_paged_email_stub(vec!["m0", "m1", "m2"]).await;
-        let (state, owner, folder_id) = paged_email_state(base).await;
+        let (state, _owner, _folder_id) = paged_email_state(base).await;
 
         let first = response_body(
             handle_sync_folder_items(&state, &meeting_auth(), &email_prime_request(None, 2)).await,
@@ -15324,20 +15327,24 @@ mod tests {
             "a clipped prime must report IncludesLastItemInRange=false: {first}"
         );
         let token = extract_email_sync_state(&first);
+        let decoded =
+            decode_prime_continuation_token(&token).expect("the SyncState is a continuation token");
         assert_eq!(
-            token, "QS1",
-            "the SyncState must be the prime's query state"
+            decoded.0, 2,
+            "the token names the index past the delivered page"
         );
-        let cursor = state
-            .storage
-            .get_ews_prime_cursor(owner, &folder_id)
-            .await
-            .unwrap()
-            .expect("prime cursor persisted after a clipped window");
-        assert_eq!(cursor.0, 2, "the cursor must record two delivered messages");
-        assert_eq!(cursor.1.as_deref(), Some("m1"), "the anchor is the last id");
+        assert_eq!(
+            decoded.1.as_deref(),
+            Some("m1"),
+            "the token pins the last delivered id as the anchor"
+        );
+        assert_eq!(
+            decoded.2, "QS1",
+            "the token carries the prime's query state"
+        );
 
-        // Continuation: the client echoes the SyncState it was handed.
+        // The continuation delivers the remaining message and hands back the
+        // drained query state as the delta base.
         let second = response_body(
             handle_sync_folder_items(
                 &state,
@@ -15360,82 +15367,112 @@ mod tests {
             second.contains("<m:IncludesLastItemInRange>true</m:IncludesLastItemInRange>"),
             "the drained continuation must report IncludesLastItemInRange=true: {second}"
         );
+        assert_eq!(
+            extract_email_sync_state(&second),
+            "QS1",
+            "the drained prime must hand back the query state for the delta feed"
+        );
+
+        // Replayability: retrying the SAME continuation token (a lost response)
+        // re-derives the SAME page instead of skipping it.
+        let retry = response_body(
+            handle_sync_folder_items(
+                &state,
+                &meeting_auth(),
+                &email_prime_request(Some(&token), 2),
+            )
+            .await,
+        )
+        .await;
         assert!(
-            state
-                .storage
-                .get_ews_prime_cursor(owner, &folder_id)
-                .await
-                .unwrap()
-                .is_none(),
-            "the cursor must be dropped once the snapshot is fully delivered"
+            retry.contains("m2") && !retry.contains("m0") && !retry.contains("m1"),
+            "a retried continuation token must re-deliver the same page: {retry}"
         );
     }
 
-    /// A fresh prime (null SyncState) with a stale continuation cursor on disk
-    /// must restart from the beginning and drop the stale cursor, so a
-    /// re-provisioned device is not left resuming an abandoned window.
+    /// Two clients priming the same folder each carry their own progress in the
+    /// token they were handed: a continuation from one client must not advance
+    /// (or consume) the other's. The token is self-describing, so the second
+    /// client's continuation re-delivers the SAME page the first client got,
+    /// rather than resuming after it and skipping a window.
     #[tokio::test]
-    async fn sync_email_fresh_prime_resets_stale_cursor() {
-        let base = spawn_paged_email_stub(vec!["m0", "m1", "m2"]).await;
-        let (state, owner, folder_id) = paged_email_state(base).await;
-        state
-            .storage
-            .set_ews_prime_cursor(owner, &folder_id, 2, Some("m1"), "QS1")
-            .await
-            .unwrap();
+    async fn sync_email_prime_continuations_are_independent_per_client() {
+        let base = spawn_paged_email_stub(vec!["m0", "m1", "m2", "m3"]).await;
+        let (state, _owner, _folder_id) = paged_email_state(base).await;
 
-        let text = response_body(
+        // Both clients start with a null SyncState and receive the head page.
+        let client_a_head = response_body(
             handle_sync_folder_items(&state, &meeting_auth(), &email_prime_request(None, 2)).await,
         )
         .await;
-        assert_eq!(
-            text.matches("<t:Create>").count(),
-            2,
-            "a fresh prime must restart from the head of the mailbox: {text}"
-        );
+        let client_b_head = response_body(
+            handle_sync_folder_items(&state, &meeting_auth(), &email_prime_request(None, 2)).await,
+        )
+        .await;
+        let token_a = extract_email_sync_state(&client_a_head);
+        let token_b = extract_email_sync_state(&client_b_head);
+
+        // Client A continues: m2/m3.
+        let a = response_body(
+            handle_sync_folder_items(
+                &state,
+                &meeting_auth(),
+                &email_prime_request(Some(&token_a), 2),
+            )
+            .await,
+        )
+        .await;
         assert!(
-            text.contains("m0") && text.contains("m1") && !text.contains("m2"),
-            "a fresh prime must not resume the abandoned cursor: {text}"
+            a.contains("m2") && a.contains("m3"),
+            "client A's continuation must deliver its own next window: {a}"
         );
-        let cursor = state
-            .storage
-            .get_ews_prime_cursor(owner, &folder_id)
-            .await
-            .unwrap()
-            .expect("the fresh prime persists its own cursor");
-        assert_eq!(cursor.0, 2, "the stale cursor must be overwritten");
+
+        // Client B continues with ITS token: it must see the SAME next window,
+        // not a page advanced past it by client A.
+        let b = response_body(
+            handle_sync_folder_items(
+                &state,
+                &meeting_auth(),
+                &email_prime_request(Some(&token_b), 2),
+            )
+            .await,
+        )
+        .await;
+        assert!(
+            b.contains("m2") && b.contains("m3") && !b.contains("m0") && !b.contains("m1"),
+            "client B's continuation must not be advanced by client A: {b}"
+        );
     }
 
     /// When the continuation's anchor was destroyed mid-prime, the JMAP query
-    /// answers `anchorNotFound`; the prime must fall back to numeric `position`
-    /// paging rather than failing or re-delivering the head.
+    /// answers `anchorNotFound`; the prime must NOT resume from a numeric
+    /// `position` (more than the anchor may have been deleted above the stored
+    /// offset, so a numeric resume can skip an undelivered message that is
+    /// already inside the prime's query state). It restarts the page from the
+    /// HEAD and re-delivers the prefix, which the client deduplicates by ItemId.
     #[tokio::test]
-    async fn sync_email_prime_continuation_falls_back_when_anchor_gone() {
+    async fn sync_email_prime_continuation_restarts_from_head_when_anchor_gone() {
         let base = spawn_paged_email_stub(vec!["m0", "m1", "m2"]).await;
-        let (state, owner, folder_id) = paged_email_state(base).await;
-        state
-            .storage
-            .set_ews_prime_cursor(owner, &folder_id, 2, Some("m1-gone"), "QS1")
-            .await
-            .unwrap();
+        let (state, _owner, _folder_id) = paged_email_state(base).await;
+        let token = encode_prime_continuation_token(2, Some("m1-gone"), "QS1");
 
         let text = response_body(
             handle_sync_folder_items(
                 &state,
                 &meeting_auth(),
-                &email_prime_request(Some("QS1"), 2),
+                &email_prime_request(Some(&token), 2),
             )
             .await,
         )
         .await;
         assert_eq!(
             text.matches("<t:Create>").count(),
-            1,
-            "the position fallback must deliver the tail from the recorded position: {text}"
+            2,
+            "the head restart must re-deliver the prefix window (m0, m1): {text}"
         );
         assert!(
-            text.contains("m2") && !text.contains("m0"),
-            "the fallback must not re-deliver the head: {text}"
+            text.contains("m0") && text.contains("m1") && !text.contains("m2"),
+            "the restart must deliver the head, not the recorded position: {text}"
         );
     }
 }

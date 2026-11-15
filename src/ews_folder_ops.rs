@@ -846,39 +846,58 @@ pub(crate) async fn handle_move_folder(
         }
     };
 
-    // Resolve the destination's EAS `ParentId` BEFORE the backend move. A
-    // destination the EAS hierarchy cannot represent (neither a `folder_map`
-    // folder nor a recognised system role) must reject the move: proceeding
-    // would change the backend parent while the EAS `ParentId` stayed stale, so
-    // EAS would keep advertising the folder under its old parent.
-    let dest_parent_eas = match eas_parent_id_for_mailbox(
-        state,
-        &owner,
-        &jmap,
-        &auth.username,
-        &auth.password,
-        new_parent.as_deref(),
-    )
-    .await
-    {
-        Ok(Some(p)) => p,
-        Ok(None) => {
-            return operation_error_response(
-                &action,
-                "ErrorInvalidFolderTypeForOperation",
-                "The destination folder cannot be represented in the EAS hierarchy",
-                StatusCode::OK,
-            );
+    // Resolve the destination's EAS `ParentId` BEFORE the backend move — but
+    // only when at least one source is EAS-mapped (has a `folder_map` row). A
+    // source with no `folder_map` row is never mirrored, so a pure
+    // EWS-to-EWS move of ordinary mailboxes must NOT be rejected just because
+    // the destination has no EAS representation. For an EAS-mapped source the
+    // destination MUST be representable: proceeding would change the backend
+    // parent while the EAS `ParentId` stayed stale, so EAS would keep
+    // advertising the folder under its old parent.
+    let source_ids: Vec<String> = all_attrs(body, Some("FolderIds"), "FolderId", "Id");
+    let mut any_source_mapped = false;
+    for id in &source_ids {
+        match state.storage.get_folder(&owner, id).await {
+            Ok(Some(_)) => {
+                any_source_mapped = true;
+                break;
+            }
+            Ok(None) => {}
+            Err(e) => return internal_error(action, "folder_map lookup failed", &e),
         }
-        Err(e) => {
-            return internal_error(action, "folder_map parent resolution failed", &e);
+    }
+    let dest_parent_eas: Option<String> = if any_source_mapped {
+        match eas_parent_id_for_mailbox(
+            state,
+            &owner,
+            &jmap,
+            &auth.username,
+            &auth.password,
+            new_parent.as_deref(),
+        )
+        .await
+        {
+            Ok(Some(p)) => Some(p),
+            Ok(None) => {
+                return operation_error_response(
+                    &action,
+                    "ErrorInvalidFolderTypeForOperation",
+                    "The destination folder cannot be represented in the EAS hierarchy",
+                    StatusCode::OK,
+                );
+            }
+            Err(e) => {
+                return internal_error(action, "folder_map parent resolution failed", &e);
+            }
         }
+    } else {
+        None
     };
 
-    for id in all_attrs(body, Some("FolderIds"), "FolderId", "Id") {
+    for id in &source_ids {
         // Moving a distinguished/system folder (Inbox, Trash, ...) is not
         // permitted; only user-created mailboxes move.
-        if resolve_folder_id(&id, &owner).is_some() {
+        if resolve_folder_id(id, &owner).is_some() {
             return operation_error_response(
                 &action,
                 "ErrorInvalidFolderId",
@@ -890,7 +909,7 @@ pub(crate) async fn handle_move_folder(
             &jmap,
             &account_id,
             &owner,
-            Some(&id),
+            Some(id),
             None,
             &auth.username,
             &auth.password,
@@ -923,9 +942,11 @@ pub(crate) async fn handle_move_folder(
             Ok(true) => {
                 // Mirror the reparent into the EAS folder store (see
                 // `mirror_eas_parent`); the destination parent was resolved and
-                // validated above.
-                if let Err(resp) =
-                    mirror_eas_parent(state, &owner, &mailbox_id, &dest_parent_eas, action).await
+                // validated above. Only EAS-mapped sources are mirrored (a
+                // non-mapped source is a no-op inside the helper).
+                if let Some(dest_parent_eas) = dest_parent_eas.as_deref()
+                    && let Err(resp) =
+                        mirror_eas_parent(state, &owner, &mailbox_id, dest_parent_eas, action).await
                 {
                     return *resp;
                 }
@@ -1300,7 +1321,7 @@ pub(crate) async fn handle_delete_folder(
                             );
                         }
                     };
-                    if let Err(e) = jmap
+                    match jmap
                         .update_mailbox(
                             &account_id,
                             &mailbox_id,
@@ -1311,7 +1332,26 @@ pub(crate) async fn handle_delete_folder(
                         )
                         .await
                     {
-                        return internal_error(action, "Mailbox/set move-to-trash failed", &e);
+                        Ok(true) => {}
+                        Ok(false) => {
+                            // The backend did not report the mailbox as updated;
+                            // the move did not happen. Do NOT mirror the Trash
+                            // parent (that would advertise an EAS hierarchy the
+                            // backend does not reflect). Retryable error.
+                            tracing::warn!(
+                                mailbox_id = %mailbox_id,
+                                "DeleteFolder: Mailbox/set reported no update for the move-to-trash"
+                            );
+                            return operation_error_response(
+                                &action,
+                                "ErrorInternalServerError",
+                                "The folder move to Deleted Items was not applied by the backend",
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                            );
+                        }
+                        Err(e) => {
+                            return internal_error(action, "Mailbox/set move-to-trash failed", &e);
+                        }
                     }
                     // Mirror the new Trash parent into the EAS folder store, so
                     // EAS stops advertising the folder under its old parent and
@@ -1349,8 +1389,15 @@ pub(crate) async fn handle_delete_folder(
         // Hard delete: destroy the entire subtree bottom-up, because JMAP
         // servers refuse to destroy a mailbox that still has children. List
         // the subtree (children before parents), destroying each mailbox's
-        // messages first and the mailbox second.
-        let hierarchy = match jmap.query_mailboxes(&auth.username, &auth.password).await {
+        // messages first and the mailbox second. The PAGED enumeration is used
+        // so a hierarchy larger than one `Mailbox/query` page (a server may
+        // clamp `limit`, RFC 8620 §5.5) does not omit descendants — a missed
+        // child would leave the parent undeletable after the child was already
+        // destroyed.
+        let hierarchy = match jmap
+            .query_all_mailboxes(&auth.username, &auth.password)
+            .await
+        {
             Ok(m) => m,
             Err(e) => return internal_error(action, "Mailbox/query failed", &e),
         };
@@ -1402,6 +1449,35 @@ pub(crate) async fn handle_delete_folder(
                 destroy_failure = Some(internal_error(action, "Email/set destroy failed", &e));
                 break;
             }
+            // Record the destroy intent durably BEFORE the destructive call, so
+            // an unobservable outcome (a transport error after `Mailbox/set`
+            // committed) still leaves a work list: the mailbox is then gone from
+            // the live hierarchy, so a retry cannot re-derive it, and the next
+            // folder-sync read replays the deferred prune + `folder-delete`.
+            //
+            // This write is FAIL-CLOSED: if the intent cannot be recorded, the
+            // mailbox is NOT destroyed. Destroying without a durable work list
+            // would leave a mailbox gone from JMAP but still advertised by EAS
+            // (a stale `folder_map` row with no `folder-delete`) that a retry —
+            // rebuilding the subtree from the now-childless hierarchy — could
+            // never recover. Aborting is safe: the destroy is idempotent.
+            if let Err(e) = state
+                .storage
+                .record_pending_folder_prunes(&owner, std::slice::from_ref(cb_id))
+                .await
+            {
+                tracing::warn!(
+                    error = %e,
+                    mailbox = %cb_id,
+                    "EWS DeleteFolder: failed to record the deferred folder-map prune intent; not destroying"
+                );
+                destroy_failure = Some(internal_error(
+                    action,
+                    "failed to record the folder-map prune intent",
+                    &e,
+                ));
+                break;
+            }
             match jmap
                 .destroy_mailbox(&account_id, cb_id, false, &auth.username, &auth.password)
                 .await
@@ -1413,10 +1489,23 @@ pub(crate) async fn handle_delete_folder(
                     destroyed_ids.push(cb_id.clone());
                 }
                 Ok(crate::jmap::MailboxDestroyOutcome::Refused) => {
+                    // The mailbox still exists; withdraw the destroy intent so a
+                    // later folder-sync replay does not prune a live folder.
                     tracing::warn!(
                         mailbox = %cb_id,
                         "EWS DeleteFolder: Mailbox/set refused the destroy"
                     );
+                    if let Err(e) = state
+                        .storage
+                        .clear_pending_folder_prunes(&owner, std::slice::from_ref(cb_id))
+                        .await
+                    {
+                        tracing::warn!(
+                            error = %e,
+                            mailbox = %cb_id,
+                            "EWS DeleteFolder: failed to withdraw the deferred prune for a refused destroy"
+                        );
+                    }
                     destroy_failure = Some(operation_error_response(
                         &action,
                         "ErrorCannotDeleteObject",
@@ -1426,6 +1515,36 @@ pub(crate) async fn handle_delete_folder(
                     break;
                 }
                 Err(e) => {
+                    // UNKNOWN outcome: reconcile against the live hierarchy;
+                    // only a mailbox that is actually gone is treated as
+                    // destroyed, and a still-present one has its intent
+                    // withdrawn.
+                    tracing::warn!(error = %e, "EWS DeleteFolder: Mailbox/set destroy failed; reconciling");
+                    let still_present = match jmap
+                        .query_all_mailboxes(&auth.username, &auth.password)
+                        .await
+                    {
+                        Ok(m) => m
+                            .mailboxes
+                            .iter()
+                            .any(|mb| mb.id.as_deref() == Some(cb_id.as_str())),
+                        Err(_) => true,
+                    };
+                    if still_present {
+                        if let Err(e) = state
+                            .storage
+                            .clear_pending_folder_prunes(&owner, std::slice::from_ref(cb_id))
+                            .await
+                        {
+                            tracing::warn!(
+                                error = %e,
+                                mailbox = %cb_id,
+                                "EWS DeleteFolder: failed to withdraw the deferred prune for a present mailbox"
+                            );
+                        }
+                    } else {
+                        destroyed_ids.push(cb_id.clone());
+                    }
                     destroy_failure =
                         Some(internal_error(action, "Mailbox/set destroy failed", &e));
                     break;
@@ -1447,37 +1566,20 @@ pub(crate) async fn handle_delete_folder(
         // already-destroyed descendants gone from JMAP. Pruning only on the
         // full-success path would strand their `folder_map` rows (EAS keeps
         // advertising them) and a retry — which re-queries the now-childless
-        // hierarchy — could never recover the descendant ids. Mirror the
-        // destroyed-so-far set before surfacing the walk's failure.
-        if !destroyed_ids.is_empty() {
-            // Record the destroyed ids durably BEFORE the prune: the mailboxes are
-            // already gone from JMAP, so if the prune below fails the ids cannot
-            // be re-derived by a retry. A committed `pending_folder_prune` row is
-            // replayed by the next folder-sync read (`FolderSync`/`GetHierarchy`/
-            // EWS `SyncFolderHierarchy`), which journals the `folder-delete` and
-            // clears the row. Best-effort: a failure here is logged but the direct
-            // prune still runs (it is the primary path).
-            if let Err(e) = state
-                .storage
-                .record_pending_folder_prunes(&owner, &destroyed_ids)
-                .await
-            {
-                tracing::warn!(
-                    error = %e,
-                    "EWS DeleteFolder: failed to record the deferred folder-map prune"
-                );
-            }
-            if let Err(e) = state
+        // hierarchy — could never recover the descendant ids. The destroyed ids
+        // were already recorded durably before each destroy (above), so a failed
+        // prune here is replayed by the next folder-sync read.
+        if !destroyed_ids.is_empty()
+            && let Err(e) = state
                 .storage
                 .delete_folders_journaled(&owner, &destroyed_ids)
                 .await
-            {
-                tracing::warn!(
-                    error = %e,
-                    "EWS DeleteFolder: failed to prune EAS folder map for destroyed mailboxes"
-                );
-                return internal_error(action, "folder_map prune failed", &e);
-            }
+        {
+            tracing::warn!(
+                error = %e,
+                "EWS DeleteFolder: failed to prune EAS folder map for destroyed mailboxes"
+            );
+            return internal_error(action, "folder_map prune failed", &e);
         }
         if let Some(resp) = destroy_failure {
             return resp;
@@ -2582,12 +2684,15 @@ mod tests {
         );
     }
 
-    /// A hard-delete whose EAS mirror write fails must NOT be acknowledged as
-    /// success: the JMAP mailbox is gone, so a stale `folder_map` row would
-    /// keep EAS advertising a deleted folder.
+    /// A hard-delete whose pre-destroy prune-intent record cannot be written
+    /// must NOT be acknowledged as success, and must NOT destroy the mailbox:
+    /// without a durable work list a destroyed mailbox would stay advertised by
+    /// EAS (a stale `folder_map` row with no `folder-delete`) and a retry —
+    /// rebuilding the subtree from the now-childless hierarchy — could never
+    /// recover its id. The record is therefore FAIL-CLOSED.
     #[tokio::test]
-    async fn hard_delete_mirror_write_failure_is_internal_error() {
-        let (base, _calls) = spawn_delete_stub(vec![json!({"id": "mb-1", "parentId": null})]).await;
+    async fn hard_delete_record_failure_is_internal_error_and_destroys_nothing() {
+        let (base, calls) = spawn_delete_stub(vec![json!({"id": "mb-1", "parentId": null})]).await;
         let storage = crate::storage::Storage::new("sqlite::memory:")
             .await
             .unwrap();
@@ -2616,8 +2721,10 @@ mod tests {
             ..Default::default()
         };
         let state = StdArc::new(crate::models::AppState::new(cfg, StdArc::new(storage)));
-        // Close the pool so the mirror write cannot execute; JMAP calls are
-        // HTTP and still succeed.
+        // Close the pool so the pre-destroy prune-intent record cannot execute;
+        // JMAP calls are HTTP and still succeed. The record is FAIL-CLOSED, so
+        // the mailbox is NOT destroyed when its intent cannot be durably
+        // recorded.
         state.storage.pool().close().await;
         let auth = AuthContext {
             username: owner.to_string(),
@@ -2637,6 +2744,13 @@ mod tests {
         assert!(
             text.contains("ErrorInternalServerError"),
             "the fault must be a retryable EWS code, got: {text}"
+        );
+        // The fail-closed guard must have aborted BEFORE the destructive call:
+        // no `Mailbox/set` destroy may have reached the backend.
+        let recorded = calls.lock().await;
+        assert!(
+            !recorded.iter().any(|c| c["method"] == "Mailbox/set"),
+            "a failed prune-intent record must not destroy the mailbox: {recorded:?}"
         );
     }
 

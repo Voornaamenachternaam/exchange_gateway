@@ -1552,6 +1552,24 @@ impl Storage {
         .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))
     }
 
+    /// The owner's COMPLETE set of `item_map` `server_id`s, unbounded. Used as
+    /// deletion evidence: a stored event absent from a full snapshot is a
+    /// deletion, and that conclusion MUST NOT be drawn from a page-bounded read
+    /// (`list_ews_items` is limited, so an item whose row falls outside the
+    /// page would look "absent" and be tombstoned while still live).
+    pub async fn list_ews_item_server_ids(
+        &self,
+        owner: &str,
+    ) -> Result<std::collections::HashSet<String>> {
+        let ids =
+            sqlx::query_scalar::<_, String>("SELECT server_id FROM item_map WHERE owner = ?1")
+                .bind(owner)
+                .fetch_all(self.pool.as_ref())
+                .await
+                .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))?;
+        Ok(ids.into_iter().collect())
+    }
+
     /// Persist the EAS email initial-sync paging cursor
     /// (`position`, captured JMAP state token) for a collection.
     ///
@@ -2048,70 +2066,6 @@ impl Storage {
         Ok(row.map(|r| (r.get(0), r.get(1))))
     }
 
-    /// Persist the EWS email initial-sync (prime) continuation cursor. The prime
-    /// pages the live mailbox; when a window fills before the snapshot is
-    /// drained, `position` records the count already delivered and `anchor_id`
-    /// the id of the last delivered message (RFC 8620 §5.5 anchor) so a message
-    /// deleted mid-prime cannot shift the tail below a stale numeric position.
-    /// `query_state` is the JMAP query state captured at the prime's START; it is
-    /// also the SyncState returned for the window, so a quiet
-    /// `Email/queryChanges` from it still delivers everything the prime omitted.
-    pub async fn set_ews_prime_cursor(
-        &self,
-        owner: &str,
-        folder_id: &str,
-        position: i64,
-        anchor_id: Option<&str>,
-        query_state: &str,
-    ) -> Result<()> {
-        sqlx::query(
-            "INSERT INTO ews_prime_cursor (user_email, folder_id, position, anchor_id, query_state)
-             VALUES (?1, ?2, ?3, ?4, ?5)
-             ON CONFLICT(user_email, folder_id) DO UPDATE
-             SET position = ?3, anchor_id = ?4, query_state = ?5, updated_at = CURRENT_TIMESTAMP",
-        )
-        .bind(owner)
-        .bind(folder_id)
-        .bind(position)
-        .bind(anchor_id)
-        .bind(query_state)
-        .execute(self.pool.as_ref())
-        .await
-        .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
-        Ok(())
-    }
-
-    /// Read the EWS email prime continuation cursor, if a windowed prime is in
-    /// progress. Returns `(position, anchor_id, query_state)`.
-    pub async fn get_ews_prime_cursor(
-        &self,
-        owner: &str,
-        folder_id: &str,
-    ) -> Result<Option<(i64, Option<String>, String)>> {
-        let row = sqlx::query(
-            "SELECT position, anchor_id, query_state FROM ews_prime_cursor
-             WHERE user_email = ?1 AND folder_id = ?2",
-        )
-        .bind(owner)
-        .bind(folder_id)
-        .fetch_optional(self.pool.as_ref())
-        .await
-        .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))?;
-        Ok(row.map(|r| (r.get(0), r.get(1), r.get(2))))
-    }
-
-    /// Drop the EWS email prime continuation cursor (the snapshot was fully
-    /// delivered, or a fresh prime restarted).
-    pub async fn clear_ews_prime_cursor(&self, owner: &str, folder_id: &str) -> Result<()> {
-        sqlx::query("DELETE FROM ews_prime_cursor WHERE user_email = ?1 AND folder_id = ?2")
-            .bind(owner)
-            .bind(folder_id)
-            .execute(self.pool.as_ref())
-            .await
-            .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
-        Ok(())
-    }
-
     /// Persist the exact EWS email delta response rendered for an incoming
     /// `SyncState`, so a retry that echoes that same cursor replays it byte for
     /// byte. The delta's in-place flag updates come from a rotating keyword scan
@@ -2423,6 +2377,56 @@ impl Storage {
         .execute(self.pool.as_ref())
         .await
         .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+        Ok(())
+    }
+
+    /// Commit an EWS email delta's new `SyncState` AND the delivered-membership
+    /// flag-baseline seeds for the Create/Update items it rendered, in ONE
+    /// transaction. The seeds MUST advance together with the state: a seed
+    /// persisted while the state write failed would make the retry (from the
+    /// OLD state, re-offering the same ids) classify a never-delivered message
+    /// as already held and emit an `Update` for an item the client never
+    /// received. `seeds` is `(email_id, sorted_active_keywords)`.
+    pub async fn set_ews_sync_state_with_seeds(
+        &self,
+        owner: &str,
+        folder_id: &str,
+        sync_state: &str,
+        seeds: &[(String, Vec<String>)],
+    ) -> Result<()> {
+        let mut tx = sqlx::Acquire::begin(self.pool.as_ref())
+            .await
+            .map_err(|e| GatewayError::Storage(format!("Transaction error: {}", e)))?;
+        sqlx::query(
+            "INSERT INTO ews_sync_state (user_email, folder_id, sync_state) VALUES (?1, ?2, ?3)
+             ON CONFLICT(user_email, folder_id) DO UPDATE SET sync_state = ?3",
+        )
+        .bind(owner)
+        .bind(folder_id)
+        .bind(sync_state)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+        for (email_id, keywords) in seeds {
+            let json = serde_json::to_string(keywords)
+                .map_err(|e| GatewayError::Storage(format!("serialize keywords: {e}")))?;
+            sqlx::query(
+                "INSERT INTO email_keyword_baseline (owner, collection_id, email_id, keywords_json)
+                 VALUES (?1, ?2, ?3, ?4)
+                 ON CONFLICT(owner, collection_id, email_id) DO UPDATE
+                 SET keywords_json = ?4",
+            )
+            .bind(owner)
+            .bind(folder_id)
+            .bind(email_id)
+            .bind(json)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+        }
+        tx.commit()
+            .await
+            .map_err(|e| GatewayError::Storage(format!("Commit error: {}", e)))?;
         Ok(())
     }
 
@@ -3789,6 +3793,36 @@ impl Storage {
             .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
         }
 
+        tx.commit()
+            .await
+            .map_err(|e| GatewayError::Storage(format!("Commit error: {}", e)))?;
+        Ok(())
+    }
+
+    /// Drop the deferred-prune record for `owner`'s `server_ids` WITHOUT
+    /// pruning their `folder_map` rows. Used when a backend destroy did NOT
+    /// happen (a refused destroy, or a reconciled-present mailbox): the folder
+    /// still exists, so its mapping must be preserved and any intent recorded
+    /// before the attempt must be withdrawn.
+    pub async fn clear_pending_folder_prunes(
+        &self,
+        owner: &str,
+        server_ids: &[String],
+    ) -> Result<()> {
+        if server_ids.is_empty() {
+            return Ok(());
+        }
+        let mut tx = sqlx::Acquire::begin(self.pool.as_ref())
+            .await
+            .map_err(|e| GatewayError::Storage(format!("Transaction error: {}", e)))?;
+        for server_id in server_ids {
+            sqlx::query("DELETE FROM pending_folder_prune WHERE owner = ?1 AND server_id = ?2")
+                .bind(owner)
+                .bind(server_id)
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+        }
         tx.commit()
             .await
             .map_err(|e| GatewayError::Storage(format!("Commit error: {}", e)))?;

@@ -1560,11 +1560,45 @@ pub async fn save_draft_via_jmap(
 /// `server_id` is the gateway's server ID (em-<jmap_id>).
 /// `target_folder` is the distinguished folder name (e.g., "inbox", "sent", "drafts", "trash").
 pub async fn move_email_via_jmap(
-    _state: &Arc<AppState>,
+    state: &Arc<AppState>,
     jmap: &Arc<crate::jmap::JmapClient>,
     account_id: &str,
     server_id: &str,
     target_folder: &str,
+    username: &str,
+    password: &SecretString,
+) -> anyhow::Result<String> {
+    // Resolve the destination ROLE to its concrete JMAP mailbox id, then reuse
+    // the mailbox-scoped move so that logic lives in one place.
+    let target_mailbox_ids = jmap
+        .get_mailbox_ids_for_role(account_id, target_folder, username, password)
+        .await?;
+    let Some(target_mb_id) = target_mailbox_ids.into_iter().next() else {
+        return Err(anyhow!("Target folder '{}' not found", target_folder));
+    };
+    move_email_to_mailbox_via_jmap(
+        state,
+        jmap,
+        account_id,
+        server_id,
+        &target_mb_id,
+        username,
+        password,
+    )
+    .await
+}
+
+/// Move an email to a concrete JMAP mailbox id via `Email/set`.
+///
+/// Used for user-created folders whose EAS ServerId *is* the JMAP mailbox id
+/// (they have no JMAP role, so role resolution cannot find them).
+/// `server_id` is the gateway's server ID (em-<jmap_id>).
+pub async fn move_email_to_mailbox_via_jmap(
+    _state: &Arc<AppState>,
+    jmap: &Arc<crate::jmap::JmapClient>,
+    account_id: &str,
+    server_id: &str,
+    target_mb_id: &str,
     username: &str,
     password: &SecretString,
 ) -> anyhow::Result<String> {
@@ -1573,18 +1607,6 @@ pub async fn move_email_via_jmap(
         Some(id) => id.to_string(),
         None => return Err(anyhow!("Invalid server ID format: {}", server_id)),
     };
-
-    // Get the mailbox ID for the target folder role
-    let target_mailbox_ids = jmap
-        .get_mailbox_ids_for_role(account_id, target_folder, username, password)
-        .await?;
-
-    if target_mailbox_ids.is_empty() {
-        return Err(anyhow!("Target folder '{}' not found", target_folder));
-    }
-
-    // For simplicity, use the first mailbox ID (servers may return multiple with same role)
-    let target_mb_id = &target_mailbox_ids[0];
 
     // Build the update: set mailboxIds to contain only the target folder
     // This effectively moves the email (removes from other mailboxes)

@@ -130,29 +130,6 @@ CREATE TABLE IF NOT EXISTS ews_sync_state (
     UNIQUE(user_email, folder_id)
 );
 
--- EWS email initial-sync (prime) continuation cursor.
---
--- The EWS email prime (`SyncFolderItems` with a null SyncState) pages the live
--- mailbox via JMAP `Email/query`. When `MaxChangesReturned` clips the snapshot,
--- the response carries `IncludesLastItemInRange=false` and this row records the
--- count already delivered (`position`, plus `anchor_id` = the last delivered
--- message id so a mid-prime deletion cannot shift the tail below a stale
--- position) and the JMAP query state captured at the prime's START. The stored
--- SyncState IS that query state, so a quiet `Email/queryChanges` from it still
--- delivers everything the prime omitted — the continuation must not commit a
--- per-page token. The row is dropped once the snapshot is fully delivered, or on
--- a fresh prime.
-CREATE TABLE IF NOT EXISTS ews_prime_cursor (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_email TEXT NOT NULL,
-    folder_id TEXT NOT NULL,
-    position INTEGER NOT NULL DEFAULT 0,
-    anchor_id TEXT,
-    query_state TEXT NOT NULL,
-    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE(user_email, folder_id)
-);
-
 -- EWS email delta response replay cache.
 --
 -- An EWS `SyncFolderItems` email delta returns a new `SyncState` the client

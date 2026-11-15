@@ -263,10 +263,15 @@ impl CaldavClient {
     }
 
     /// Create a calendar collection, reporting whether it was newly created.
-    /// Returns `Ok(true)` on 201/200/207 (created) and `Ok(false)` on 405 (the
-    /// collection already existed). The EAS `FolderCreate` path uses the
-    /// distinction to reject a name that would adopt a pre-existing collection,
-    /// whereas the fixed-name Tasks/Notes path treats both as success.
+    /// Returns `Ok(true)` on 200/201 (created) and `Ok(false)` on 405 (the
+    /// collection already existed). A 207 is an ERROR: RFC 4791 §5.3.1.1
+    /// defines MKCALENDAR 207 as "the calendar collection resource was NOT
+    /// created since one or more DAV:set instructions ... could not be
+    /// processed successfully" — reporting it as success would persist a
+    /// `folder_map` row for a collection that does not exist. The EAS
+    /// `FolderCreate` path uses the `Ok(true)`/`Ok(false)` distinction to reject
+    /// a name that would adopt a pre-existing collection, whereas the
+    /// fixed-name Tasks/Notes path treats both as success.
     pub async fn create_calendar_collection(
         &self,
         username: &str,
@@ -309,12 +314,28 @@ impl CaldavClient {
             .await?;
         let status = resp.status().as_u16();
         match status {
-            // 201 Created, or a 200/207 from servers answering MKCALENDAR with
-            // a multistatus propstat, mean the collection was created.
-            200 | 201 | 207 => Ok(true),
+            // 201 Created, or a 200 from a server answering MKCALENDAR with a
+            // plain success, mean the collection was created.
+            200 | 201 => Ok(true),
             // 405: the collection already exists (or is not a collection — the
             // follow-up calendar-query decides which).
             405 => Ok(false),
+            // 207 Multi-Status is a FAILED creation (RFC 4791 §5.3.1.1): one or
+            // more DAV:set instructions could not be applied, so the collection
+            // was NOT created. Reporting success would map a nonexistent
+            // collection into `folder_map`.
+            207 => {
+                let body_preview = resp.text().await.unwrap_or_default();
+                Err(anyhow!(
+                    "MKCALENDAR {} returned 207 Multi-Status (creation rejected): {}",
+                    url,
+                    if body_preview.len() > 300 {
+                        "response truncated"
+                    } else {
+                        &body_preview
+                    }
+                ))
+            }
             // 301/302 redirects: resolve like a browser would be wrong; treat
             // as an error unless the later query succeeds.
             _ => {
@@ -1811,6 +1832,71 @@ END:VCALENDAR
             axum::serve(listener, app).await.unwrap();
         });
         base
+    }
+
+    /// A stub that answers EVERY path with `status` (so MKCALENDAR targets at
+    /// `{base}/cal/{user}/{name}/` are matched, not 404'd).
+    async fn spawn_any_status_stub(status: axum::http::StatusCode) -> String {
+        use axum::response::Response;
+        use axum::routing::any;
+
+        let handler = move || async move {
+            Response::builder()
+                .status(status)
+                .body(axum::body::Body::empty())
+                .unwrap()
+        };
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let base = format!("http://127.0.0.1:{port}");
+        let app = axum::Router::new().fallback(any(handler));
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        base
+    }
+
+    /// RFC 4791 §5.3.1.1: a MKCALENDAR 207 means the collection was NOT created
+    /// (one or more DAV:set instructions could not be applied). Reporting it as
+    /// success would persist a `folder_map` row for a nonexistent collection.
+    #[tokio::test]
+    async fn mkcalendar_207_is_a_creation_failure() {
+        use axum::http::StatusCode;
+
+        let client =
+            CaldavClient::new_from_base(&spawn_any_status_stub(StatusCode::MULTI_STATUS).await)
+                .unwrap();
+        let result = client
+            .create_calendar_collection("u", "pw", "Foo", &["VEVENT"], "Foo")
+            .await;
+        assert!(
+            result.is_err(),
+            "a 207 MKCALENDAR must be an error, not Ok(true)"
+        );
+
+        // 201 is a real creation.
+        let created =
+            CaldavClient::new_from_base(&spawn_any_status_stub(StatusCode::CREATED).await).unwrap();
+        assert!(
+            created
+                .create_calendar_collection("u", "pw", "Foo", &["VEVENT"], "Foo")
+                .await
+                .unwrap(),
+            "a 201 MKCALENDAR must be a creation"
+        );
+
+        // 405 means it already existed.
+        let existing = CaldavClient::new_from_base(
+            &spawn_any_status_stub(StatusCode::METHOD_NOT_ALLOWED).await,
+        )
+        .unwrap();
+        assert!(
+            !existing
+                .create_calendar_collection("u", "pw", "Foo", &["VEVENT"], "Foo")
+                .await
+                .unwrap(),
+            "a 405 MKCALENDAR means the collection already existed"
+        );
     }
 
     #[tokio::test]

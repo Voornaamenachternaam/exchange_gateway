@@ -4535,6 +4535,13 @@ impl JmapClient {
 
         let mut all: Vec<JmapMailbox> = Vec::new();
         let mut position: u64 = 0;
+        // RFC 8620 §5.5: a server MAY apply a lower `limit` than requested, and
+        // the back-referenced `Mailbox/get` is subject to `maxObjectsInGet`
+        // (§5.3) — result references become ordinary arguments before method
+        // processing, so a page larger than the get limit is rejected with
+        // `requestTooLarge`. Cap the page at the SMALLER of the query page and
+        // the advertised get limit so neither limit can fail the walk.
+        let page = Self::MAILBOX_QUERY_PAGE.min(session_max_objects_in_get(&session).max(1) as u64);
         loop {
             let method_calls = vec![
                 (
@@ -4542,7 +4549,7 @@ impl JmapClient {
                     json!({
                         "accountId": account_id,
                         "position": position,
-                        "limit": Self::MAILBOX_QUERY_PAGE,
+                        "limit": page,
                         "calculateTotal": true,
                     }),
                     "mq0",
@@ -4613,10 +4620,22 @@ impl JmapClient {
                 break;
             }
             position += page_len;
-            if let Some(t) = total
-                && all.len() as u64 >= t
-            {
-                break;
+            match total {
+                Some(t) => {
+                    if all.len() as u64 >= t {
+                        break;
+                    }
+                }
+                // The server omitted `total` despite `calculateTotal: true`
+                // (non-conforming). Fall back to the short-page heuristic so the
+                // walk TERMINATES: a server that also ignores `position` would
+                // otherwise return the same page forever and grow `all` without
+                // bound.
+                None => {
+                    if page_len < page {
+                        break;
+                    }
+                }
             }
         }
 
@@ -9833,10 +9852,21 @@ mod tests {
     /// Spawn a stub JMAP server whose `Mailbox/query` honours `position`/`limit`
     /// over a fixed id list (clamped to `page_cap`) so `query_all_mailboxes`
     /// pagination can be exercised, and whose `Mailbox/get` echoes the queried
-    /// ids with a `parentId` derived from the id suffix.
+    /// ids with a `parentId` derived from the id suffix. `get_cap` advertises
+    /// the session's `maxObjectsInGet`; the stub REJECTS a `Mailbox/get` whose
+    /// id list exceeds it (RFC 8620 §5.3 `requestTooLarge`), so a page bounded
+    /// only by the query cap would fail the walk.
     async fn spawn_paged_mailbox_stub(
         total: usize,
         page_cap: usize,
+    ) -> (String, std::sync::Arc<tokio::sync::Mutex<Vec<u64>>>) {
+        spawn_paged_mailbox_stub_with_get_cap(total, page_cap, DEFAULT_MAX_OBJECTS_IN_GET).await
+    }
+
+    async fn spawn_paged_mailbox_stub_with_get_cap(
+        total: usize,
+        page_cap: usize,
+        get_cap: usize,
     ) -> (String, std::sync::Arc<tokio::sync::Mutex<Vec<u64>>>) {
         use axum::routing::{get, post};
 
@@ -9845,12 +9875,16 @@ mod tests {
             base: String,
             total: usize,
             page_cap: usize,
+            get_cap: usize,
             queries: std::sync::Arc<tokio::sync::Mutex<Vec<u64>>>,
         }
 
         async fn session(axum::Extension(ctl): axum::Extension<PagedCtl>) -> axum::Json<Value> {
             let mut s = session_json(&ctl.base);
             s["primaryAccounts"] = json!({ "urn:ietf:params:jmap:mail": "a" });
+            s["capabilities"] = json!({
+                JMAP_CORE_CAPABILITY: { "maxObjectsInGet": ctl.get_cap }
+            });
             axum::Json(s)
         }
 
@@ -9889,6 +9923,18 @@ mod tests {
                         })
                     }
                     "Mailbox/get" => {
+                        // RFC 8620 §5.3: the back-referenced id list is an
+                        // ordinary argument, so a page larger than
+                        // `maxObjectsInGet` is rejected whole with a method-level
+                        // error.
+                        if last_query_ids.len() > ctl.get_cap {
+                            responses.push(json!([
+                                "error",
+                                {"type": "requestTooLarge"},
+                                cid
+                            ]));
+                            continue;
+                        }
                         let list: Vec<Value> = last_query_ids
                             .iter()
                             .map(|id| json!({ "id": id, "name": id, "parentId": Value::Null }))
@@ -9910,6 +9956,7 @@ mod tests {
             base: base.clone(),
             total,
             page_cap,
+            get_cap,
             queries: queries.clone(),
         };
         let app = axum::Router::new()
@@ -9972,6 +10019,29 @@ mod tests {
             *queries.lock().await,
             vec![0, 200, 400, 600, 800, 1000],
             "the walk must not stop at the first short page"
+        );
+    }
+
+    /// RFC 8620 §5.3/§5.5: a page bounded only by the query page size would
+    /// exceed a smaller advertised `maxObjectsInGet` on the back-referenced
+    /// `Mailbox/get`, which the server rejects whole (`requestTooLarge`),
+    /// failing the walk. The page must be the SMALLER of the two limits.
+    #[tokio::test]
+    async fn query_all_mailboxes_bounds_page_by_max_objects_in_get() {
+        // Query cap 500 but a get cap of 256: each page must be <= 256, else the
+        // stub rejects the get and the walk errors.
+        let (base, queries) = spawn_paged_mailbox_stub_with_get_cap(600, 500, 256).await;
+        let client = JmapClient::new(&base).unwrap();
+        let pw = SecretString::from("pw");
+        let result = client
+            .query_all_mailboxes("u", &pw)
+            .await
+            .expect("the walk must page within maxObjectsInGet");
+        assert_eq!(result.mailboxes.len(), 600);
+        assert_eq!(
+            *queries.lock().await,
+            vec![0, 256, 512],
+            "each page must be bounded by the advertised get limit"
         );
     }
 }

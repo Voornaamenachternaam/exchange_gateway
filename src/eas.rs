@@ -4398,12 +4398,20 @@ async fn handle_move_items(
                 continue;
             }
 
-            // Map destination folder CollectionId to mailbox role
-            let target_role = match dst_fld_id.as_str() {
-                "2" => "inbox",
-                "3" => "drafts",
-                "4" => "trash",
-                "5" => "sent",
+            // Map destination folder CollectionId to a JMAP destination. System
+            // ids / role aliases resolve to a role; anything else may be a
+            // user-created mail folder whose EAS ServerId IS the JMAP mailbox id
+            // (returned by FolderCreate), which has no role — resolve it through
+            // the owner-scoped `folder_map` so mail can be moved into it.
+            enum MoveDest<'a> {
+                Role(&'a str),
+                Mailbox(String),
+            }
+            let target: MoveDest = match dst_fld_id.as_str() {
+                "2" => MoveDest::Role("inbox"),
+                "3" => MoveDest::Role("drafts"),
+                "4" => MoveDest::Role("trash"),
+                "5" => MoveDest::Role("sent"),
                 "6" => {
                     // Outbox not a real mailbox; special handling
                     responses.push_str(&format!(
@@ -4412,21 +4420,47 @@ async fn handle_move_items(
                     ));
                     continue;
                 }
-                "12" => "junk",
-                _ => {
-                    // Check if it's a distinguished folder ID string (like "inbox")
-                    match dst_fld_id.to_ascii_lowercase().as_str() {
-                        "inbox" => "inbox",
-                        "drafts" => "drafts",
-                        "deleteditems" => "trash",
-                        "sentitems" => "sent",
-                        "junkemail" => "junk",
-                        _ => {
-                            responses.push_str(&format!(
-                                r#"<Response><SrcMsgId>{}</SrcMsgId><Status>6</Status></Response>"#,
-                                xml_escape(&src_msg_id)
-                            ));
-                            continue;
+                "12" => MoveDest::Role("junk"),
+                other => {
+                    // Distinguished-folder aliases, or a user-created folder.
+                    let alias = match other.to_ascii_lowercase().as_str() {
+                        "inbox" => Some("inbox"),
+                        "drafts" => Some("drafts"),
+                        "deleteditems" => Some("trash"),
+                        "sentitems" => Some("sent"),
+                        "junkemail" => Some("junk"),
+                        _ => None,
+                    };
+                    match alias {
+                        Some(role) => MoveDest::Role(role),
+                        None => {
+                            // Resolve a user-created mail folder via `folder_map`.
+                            // A read failure must fail closed (retryable Status 8)
+                            // rather than be treated as "no such folder".
+                            match state.storage.get_folder(username, other).await {
+                                Ok(Some(row)) if row.backend_kind == "jmap" => {
+                                    MoveDest::Mailbox(row.backend_id)
+                                }
+                                Ok(_) => {
+                                    responses.push_str(&format!(
+                                        r#"<Response><SrcMsgId>{}</SrcMsgId><Status>6</Status></Response>"#,
+                                        xml_escape(&src_msg_id)
+                                    ));
+                                    continue;
+                                }
+                                Err(e) => {
+                                    tracing::warn!(
+                                        error = %e,
+                                        dst_fld_id = %dst_fld_id,
+                                        "MoveItems: folder_map lookup failed for the destination"
+                                    );
+                                    responses.push_str(&format!(
+                                        r#"<Response><SrcMsgId>{}</SrcMsgId><Status>8</Status></Response>"#,
+                                        xml_escape(&src_msg_id)
+                                    ));
+                                    continue;
+                                }
+                            }
                         }
                     }
                 }
@@ -4454,17 +4488,33 @@ async fn handle_move_items(
             };
 
             // Perform the move
-            match crate::email::move_email_via_jmap(
-                state,
-                jmap,
-                &account_id,
-                &src_msg_id,
-                target_role,
-                username,
-                password,
-            )
-            .await
-            {
+            let move_result = match &target {
+                MoveDest::Role(role) => {
+                    crate::email::move_email_via_jmap(
+                        state,
+                        jmap,
+                        &account_id,
+                        &src_msg_id,
+                        role,
+                        username,
+                        password,
+                    )
+                    .await
+                }
+                MoveDest::Mailbox(mailbox_id) => {
+                    crate::email::move_email_to_mailbox_via_jmap(
+                        state,
+                        jmap,
+                        &account_id,
+                        &src_msg_id,
+                        mailbox_id,
+                        username,
+                        password,
+                    )
+                    .await
+                }
+            };
+            match move_result {
                 Ok(_new_change_key) => {
                     // Success: [MS-ASCMD] §6.28 MoveItems Response requires
                     // <Response><SrcMsgId/><Status/><DstMsgId/></Response>.
@@ -5240,6 +5290,15 @@ async fn handle_folder_create(ctx: &FolderCmdCtx<'_>) -> Response {
         as_wbxml,
         request_id,
     } = *ctx;
+    // [MS-ASCMD] §2.2.3.181.1: validate the supplied SyncKey against this
+    // device's stored hierarchy key BEFORE any mutation. A mismatch is Status 9
+    // (with SyncKey 0), so an obsolete key can never create a folder or rotate
+    // the device's current key.
+    let supplied_key = extract_first_tag_text(xml, b"SyncKey").unwrap_or_default();
+    if !crate::eas_folders::folder_sync_key_matches(state, owner, device_id, &supplied_key).await {
+        let body = crate::eas_folders::invalid_folder_sync_key_response("FolderCreate");
+        return wbxml_response(&body, as_wbxml, wbxml, request_id);
+    }
     let parent_id = extract_first_tag_text(xml, b"ParentId")
         .map(|s| s.trim().to_string())
         .unwrap_or_default();
@@ -5295,6 +5354,13 @@ async fn handle_folder_delete(ctx: &FolderCmdCtx<'_>) -> Response {
         as_wbxml,
         request_id,
     } = *ctx;
+    // [MS-ASCMD] §2.2.3.181.1: validate the SyncKey before deleting. A mismatch
+    // is Status 9 + SyncKey 0; an obsolete key must never delete a folder.
+    let supplied_key = extract_first_tag_text(xml, b"SyncKey").unwrap_or_default();
+    if !crate::eas_folders::folder_sync_key_matches(state, owner, device_id, &supplied_key).await {
+        let body = crate::eas_folders::invalid_folder_sync_key_response("FolderDelete");
+        return wbxml_response(&body, as_wbxml, wbxml, request_id);
+    }
     let server_id = extract_first_tag_text(xml, b"ServerId")
         .map(|s| s.trim().to_string())
         .unwrap_or_default();
@@ -5321,6 +5387,13 @@ async fn handle_folder_update(ctx: &FolderCmdCtx<'_>) -> Response {
         as_wbxml,
         request_id,
     } = *ctx;
+    // [MS-ASCMD] §2.2.3.181.1: validate the SyncKey before updating. A mismatch
+    // is Status 9 + SyncKey 0; an obsolete key must never rename/move a folder.
+    let supplied_key = extract_first_tag_text(xml, b"SyncKey").unwrap_or_default();
+    if !crate::eas_folders::folder_sync_key_matches(state, owner, device_id, &supplied_key).await {
+        let body = crate::eas_folders::invalid_folder_sync_key_response("FolderUpdate");
+        return wbxml_response(&body, as_wbxml, wbxml, request_id);
+    }
     let server_id = extract_first_tag_text(xml, b"ServerId")
         .map(|s| s.trim().to_string())
         .unwrap_or_default();
@@ -8441,35 +8514,31 @@ async fn handle_email_initial_sync(
         },
     )
     .await;
-    // A vanished anchor is recoverable (RFC 8620 §5.5 `anchorNotFound`): fall
-    // back to the numeric position so the continuation still makes progress.
-    //
-    // The fallback position must be REBASED by one. The stored `start_position`
-    // is the index PAST the previous window (`query_position + delivered`), so
-    // the anchor — the LAST message that window delivered — occupied the slot
-    // `start_position - 1`. When that message is deleted, everything after it
-    // shifts up by one: the first UNDELIVERED message now sits at
-    // `start_position - 1`, so resuming at the unchanged `start_position` would
-    // skip it — and, because it is already covered by the first window's query
-    // state, no later delta would ever re-report it. Resuming at
-    // `start_position - 1` instead re-delivers the (now-deleted) anchor's slot
-    // — i.e. the first undelivered message — and the client resolves the
-    // duplicate Add by ServerId. `saturating_sub` keeps a window that began at
-    // position 0 well-defined.
+    // A vanished anchor is recoverable (RFC 8620 §5.5 `anchorNotFound`): the
+    // pinned continuation cannot resume from it. Restart the page from the HEAD
+    // (position 0, no anchor) rather than from any stored numeric offset. The
+    // stored `start_position` is the index PAST the previous window; when the
+    // anchor is deleted it is NOT safe to resume at `start_position` or even
+    // `start_position - 1`: more than the anchor may have been deleted above the
+    // stored offset, so a numeric resume can skip an undelivered message — and
+    // that message is already inside the first window's query state, so no later
+    // delta would ever re-report it. Restarting from the head re-delivers the
+    // prefix (already-delivered messages are re-sent as `<Add>`; EAS keys items
+    // by ServerId, so the client deduplicates them), guaranteeing no message is
+    // skipped. The keyword baseline is NOT re-captured (that guard keys on the
+    // original `start_position`, not this fallback).
     if anchor.is_some() && matches!(&result, Ok(r) if r.anchor_not_found) {
-        let fallback_position = start_position.saturating_sub(1);
         tracing::info!(
             user = %username,
             collection_id,
-            fallback_position,
-            "Initial email sync anchor no longer exists; rebasing fallback position by one"
+            "Initial email sync anchor no longer exists; restarting the page from the head"
         );
         result = crate::email::fetch_emails_jmap(
             state,
             &crate::email::FetchEmailsParams {
                 account_id,
                 mailbox_role,
-                position: fallback_position,
+                position: 0,
                 limit: fetch_limit,
                 anchor: None,
                 anchor_offset: 0,
@@ -11353,9 +11422,9 @@ mod tests {
         let wbxml = Wbxml::new();
         for xml in [
             // No <Type> child at all.
-            r#"<?xml version="1.0" encoding="utf-8"?><FolderCreate xmlns="FolderHierarchy:"><ParentId>0</ParentId><DisplayName>My Folder</DisplayName></FolderCreate>"#,
+            r#"<?xml version="1.0" encoding="utf-8"?><FolderCreate xmlns="FolderHierarchy:"><SyncKey>0</SyncKey><ParentId>0</ParentId><DisplayName>My Folder</DisplayName></FolderCreate>"#,
             // Non-numeric <Type>.
-            r#"<?xml version="1.0" encoding="utf-8"?><FolderCreate xmlns="FolderHierarchy:"><ParentId>0</ParentId><DisplayName>My Folder</DisplayName><Type>abc</Type></FolderCreate>"#,
+            r#"<?xml version="1.0" encoding="utf-8"?><FolderCreate xmlns="FolderHierarchy:"><SyncKey>0</SyncKey><ParentId>0</ParentId><DisplayName>My Folder</DisplayName><Type>abc</Type></FolderCreate>"#,
         ] {
             let ctx = FolderCmdCtx {
                 state: &state,
@@ -17651,14 +17720,14 @@ mod tests {
     }
 
     /// When the anchor no longer exists the server answers `anchorNotFound`;
-    /// the continuation must recover by falling back to a numeric `position`
-    /// REBASED by one, not the stale post-window offset. The stored offset is
-    /// the index past the previous window, so the deleted anchor occupied the
-    /// slot `offset - 1`; resuming at the unchanged offset would skip the first
-    /// undelivered message (permanently, since it is already inside the initial
-    /// query state).
+    /// the continuation must NOT resume from a numeric `position` — more than
+    /// the anchor may have been deleted above the stored offset, so a numeric
+    /// resume can skip an undelivered message (permanently, since it is already
+    /// inside the initial query state). It restarts the page from the HEAD
+    /// (position 0, no anchor) and re-delivers the prefix, which the client
+    /// deduplicates by ServerId.
     #[tokio::test]
-    async fn test_email_initial_sync_anchor_not_found_falls_back_to_position() {
+    async fn test_email_initial_sync_anchor_not_found_restarts_from_head() {
         use crate::models::AppState;
         use axum::routing::{get, post};
         use serde_json::{Value, json};
@@ -17798,11 +17867,12 @@ mod tests {
 
         assert!(
             xml.contains("<Add><ServerId>em-m3</ServerId>"),
-            "a vanished anchor must fall back to numeric position and still deliver: {xml}"
+            "a vanished anchor must restart from the head and still deliver: {xml}"
         );
-        // The anchored attempt is recorded, then the fallback: the fallback
-        // Email/query must carry `position == 1` (the stored 2 rebased by one)
-        // and NO anchor, so it cannot skip the first undelivered message.
+        // The anchored attempt is recorded, then the restart: the fallback
+        // Email/query must carry `position == 0` (the head) and NO anchor, so it
+        // cannot skip an undelivered message the deleted anchor's numeric
+        // offset would have jumped over.
         let queries = ctl.queries.lock().unwrap().clone();
         let fallback = queries
             .iter()
@@ -17810,8 +17880,8 @@ mod tests {
             .expect("a fallback (anchor-less) Email/query must be issued");
         assert_eq!(
             fallback.get("position").and_then(|v| v.as_u64()),
-            Some(1),
-            "the fallback must rebase the stored offset by one: {queries:?}"
+            Some(0),
+            "the fallback must restart from the head (position 0): {queries:?}"
         );
         assert!(
             queries
