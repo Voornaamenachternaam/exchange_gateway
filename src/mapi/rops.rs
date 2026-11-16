@@ -1406,7 +1406,7 @@ impl RopLogonSuccess {
     }
 }
 
-/// A failure response for any ROP — the 9-byte envelope (RopId + handle +
+/// A failure response for any ROP — the 6-byte envelope (RopId + handle +
 /// ReturnValue) Outlook displays a transport error for.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RopErrorResponse {
@@ -1420,6 +1420,30 @@ impl RopErrorResponse {
         out.push(self.rop_id.to_u8());
         out.push(self.output_handle_index);
         out.extend_from_slice(&self.return_value.to_u32().to_le_bytes());
+    }
+}
+
+/// `RopEmptyFolder` response (MS-OXCROPS §2.2.4.9.2) and the two
+/// hard-delete ROPs, `RopHardDeleteMessages` (§2.2.4.12.2) and
+/// `RopHardDeleteMessagesAndSubfolders` (§2.2.4.10.2). All three share one
+/// shape:
+///   `RopId · InputHandleIndex · ReturnValue(4 LE) · PartialCompletion(1)`.
+/// `PartialCompletion` is mandatory: omitting it desynchronises the ROP chain,
+/// so a following ROP's first byte would be consumed as this field.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RopPartialCompletionResponse {
+    pub rop_id: RopId,
+    pub input_handle_index: u8,
+    pub return_value: RopErrorCode,
+    pub partial_completion: u8,
+}
+
+impl RopPartialCompletionResponse {
+    pub fn encode(&self, out: &mut Vec<u8>) {
+        out.push(self.rop_id.to_u8());
+        out.push(self.input_handle_index);
+        out.extend_from_slice(&self.return_value.to_u32().to_le_bytes());
+        out.push(self.partial_completion);
     }
 }
 

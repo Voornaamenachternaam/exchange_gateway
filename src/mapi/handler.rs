@@ -42,11 +42,11 @@ use crate::mapi::rops::{
     RopHeader4, RopId, RopLogonRequest, RopLogonSuccess, RopMoveCopyMessagesRequest,
     RopMoveCopyMessagesResponse, RopOpenAttachmentRequest, RopOpenAttachmentSuccess,
     RopOpenMessageRequest, RopOpenMessageSuccess, RopOpenStreamRequest, RopOpenStreamSuccess,
-    RopOpenTableRequest, RopPropertyWriteSuccess, RopQueryRowsRequest, RopReadStreamRequest,
-    RopReadStreamSuccess, RopRegisterNotificationResponse, RopReleaseRequest,
-    RopSaveChangesAttachmentRequest, RopSaveChangesAttachmentResponse,
-    RopSaveChangesMessageRequest, RopSaveChangesMessageSuccess, RopSeekStreamRequest,
-    RopSeekStreamSuccess, RopSetColumnsRequest, RopSetMessageReadFlagRequest,
+    RopOpenTableRequest, RopPartialCompletionResponse, RopPropertyWriteSuccess,
+    RopQueryRowsRequest, RopReadStreamRequest, RopReadStreamSuccess,
+    RopRegisterNotificationResponse, RopReleaseRequest, RopSaveChangesAttachmentRequest,
+    RopSaveChangesAttachmentResponse, RopSaveChangesMessageRequest, RopSaveChangesMessageSuccess,
+    RopSeekStreamRequest, RopSeekStreamSuccess, RopSetColumnsRequest, RopSetMessageReadFlagRequest,
     RopSetPropertiesRequest, RopSetReadFlagsRequest, RopSetStreamSizeRequest,
     RopSetStreamSizeResponse, RopSubmitMessageRequest, RopSubmitMessageResponse,
     RopTransportSendFailure, RopTransportSendRequest, RopTransportSendSuccess,
@@ -948,8 +948,13 @@ async fn eas_parent_id_for_dest(
             ));
         }
     }
+    // Enumerate the COMPLETE mailbox set (`query_all_mailboxes` pages
+    // `Mailbox/query`): `query_mailboxes` issues a single unpaged query, so a
+    // server that clamps `limit` (RFC 8620 §5.5) can omit an unmapped system
+    // mailbox beyond the first page, making its role resolve to `None` and the
+    // caller silently skip the mirror with a stale EAS parent.
     let role = jc
-        .query_mailboxes(username, password)
+        .query_all_mailboxes(username, password)
         .await
         .map_err(|e| anyhow::anyhow!("mailbox lookup failed resolving the parent of {dest}: {e}"))?
         .mailboxes
@@ -978,6 +983,90 @@ fn mailbox_backend_for_fid(mailboxes: &[crate::jmap::JmapMailbox], fid: u64) -> 
         .filter_map(|mb| mb.id.as_deref())
         .find(|id| store::folder_id_from_backend(id) == fid)
         .map(str::to_string)
+}
+
+/// Resolve the folder `RopOpenFolder` must open ([MS-OXCFOLD] §2.2.1.1.1):
+/// `FolderId` names the folder to open — the input handle is only the logon /
+/// context the client holds, so copying its backend id opens the WRONG folder
+/// whenever the handle is not the target (a Root handle carrying a child's FID
+/// would open the Root). The folder-hierarchy projection assigns each mailbox a
+/// row id of `store::folder_id_from_backend(mailbox_id)` (the synthetic
+/// Calendar/Contacts rows likewise), so inverting it recovers the backend id.
+///
+/// When the live hierarchy cannot be enumerated (no JMAP session, or the query
+/// failed) the input handle's backend id is used, preserving the legacy
+/// behavior. When the hierarchy IS enumerated and the FID matches no folder, the
+/// input handle is accepted only if it IS the requested folder — so a
+/// stale/unknown FID never silently opens the wrong folder.
+async fn resolve_open_folder_target(
+    jmap: Option<&crate::jmap::JmapClient>,
+    password: Option<&secrecy::SecretString>,
+    username: &str,
+    folder_id: u64,
+    input_handle: Option<(String, FolderKind)>,
+) -> Option<String> {
+    if folder_id == store::folder_id_from_backend("ROOT") {
+        return Some("ROOT".to_string());
+    }
+    for backend in [store::CALENDAR_BACKEND_ID, store::CONTACTS_BACKEND_ID] {
+        if store::folder_id_from_backend(backend) == folder_id {
+            return Some(backend.to_string());
+        }
+    }
+    if let (Some(jc), Some(pw)) = (jmap, password)
+        && let Ok(list) = jc.query_all_mailboxes(username, pw).await
+    {
+        if let Some(id) = list
+            .mailboxes
+            .iter()
+            .filter_map(|m| m.id.as_deref())
+            .find(|id| store::folder_id_from_backend(id) == folder_id)
+        {
+            return Some(id.to_string());
+        }
+        return input_handle
+            .map(|(b, _)| b)
+            .filter(|b| !b.is_empty() && store::folder_id_from_backend(b) == folder_id);
+    }
+    input_handle.map(|(b, _)| b).filter(|b| !b.is_empty())
+}
+
+/// Serialises `RopMoveFolder` mirror writes for the same `(owner, folder)` so
+/// two concurrent moves of one folder cannot commit their EAS `folder_map`
+/// ParentId in reverse order (which would advertise an earlier parent than the
+/// backend). Keyed per owner+folder; each entry is a tiny async mutex, so
+/// unrelated moves never contend.
+static MOVE_FOLDER_LOCKS: std::sync::LazyLock<
+    dashmap::DashMap<String, std::sync::Arc<tokio::sync::Mutex<()>>>,
+> = std::sync::LazyLock::new(dashmap::DashMap::new);
+
+/// Acquire the per-`(owner, folder)` move lock and run `f` while holding it.
+/// The entry is removed on release ONLY when no other task still holds (or is
+/// waiting on) this same mutex: removing unconditionally would let a waiter
+/// that resolved the previous `Arc` run concurrently with a newcomer that
+/// inserted a fresh `Arc` for the same key — defeating the serialization this
+/// exists to provide.
+async fn with_move_folder_lock<T, F, Fut>(owner: &str, folder: &str, f: F) -> T
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = T>,
+{
+    let key = format!("{owner}\u{0}{folder}");
+    let lock = MOVE_FOLDER_LOCKS
+        .entry(key.clone())
+        .or_insert_with(|| std::sync::Arc::new(tokio::sync::Mutex::new(())))
+        .clone();
+    let guard = lock.lock().await;
+    let out = f().await;
+    drop(guard);
+    // Release our own reference before the liveness check, so the map's value
+    // count reflects only OTHER waiters. `strong_count == 1` then means only the
+    // map references this mutex: no waiter holds the previous `Arc`, so it is
+    // safe to drop the entry. A concurrent acquirer that cloned the same `Arc`
+    // (count ≥ 2) keeps the entry, and the LAST holder removes it.
+    drop(lock);
+    MOVE_FOLDER_LOCKS.remove_if(&key, |_, v| std::sync::Arc::strong_count(v) == 1);
+    out
 }
 
 /// Dispatch one ROP, writing its response bytes into `out`. The cursor
@@ -1098,32 +1187,44 @@ async fn execute_one_rop(
             // misinterpret the following payload as a header).
             let h4 = RopHeader4::decode_after_ropid(cur, rop_id)?;
             let req = decode_open_folder_body(cur)?;
-            let _ = req;
-            // Resolve the folder backend id from the input handle (the root
-            // or a leaf Folder handle populated by a hierarchy table).
-            let backend_id = sessions
+            // [MS-OXCFOLD] §2.2.1.1.1: `FolderId` names the folder to OPEN; the
+            // input handle is only the logon/context the client holds. Resolve
+            // the FID against the folder-hierarchy projection (falling back to
+            // the input handle when the hierarchy is unavailable), so a Root
+            // handle carrying a child's FID opens the CHILD, not the Root.
+            let input_handle = sessions
                 .with_handle(session_id, h4.input_handle_index, |hnd| match hnd {
-                    Handle::Folder { backend_id, .. } => backend_id.clone(),
-                    _ => String::new(),
+                    Handle::Folder { backend_id, kind } => Some((backend_id.clone(), *kind)),
+                    _ => None,
                 })
-                .unwrap_or_default();
-            // Install the output handle pointing at the same folder.
-            sessions.with_session_mut(session_id, |s| {
-                s.set_handle(
-                    h4.output_handle_index,
-                    Handle::Folder {
-                        backend_id: backend_id.clone(),
-                        kind: folder_kind_for_backend(&backend_id, snap),
-                    },
-                );
-            });
-            crate::mapi::rops::RopOpenFolderSuccess {
-                output_handle_index: h4.output_handle_index,
-                return_value: RopErrorCode::Success,
-                has_rules: 0,
-                is_ghosted: 0,
+                .unwrap_or(None);
+            let target =
+                resolve_open_folder_target(jmap, password, username, req.folder_id, input_handle)
+                    .await;
+            // Install the output handle pointing at the resolved folder.
+            if let Some(backend_id) = target {
+                let kind = folder_kind_for_backend(&backend_id, snap);
+                sessions.with_session_mut(session_id, |s| {
+                    s.set_handle(h4.output_handle_index, Handle::Folder { backend_id, kind });
+                });
+                crate::mapi::rops::RopOpenFolderSuccess {
+                    output_handle_index: h4.output_handle_index,
+                    return_value: RopErrorCode::Success,
+                    has_rules: 0,
+                    is_ghosted: 0,
+                }
+                .encode(out);
+            } else {
+                // The requested folder does not exist (or the input handle is
+                // not a folder). MS-OXCROPS §2.2.4.1.3: the failure response is
+                // the 6-byte envelope (RopId ┬Ę OutputHandleIndex ┬Ę ReturnValue).
+                RopErrorResponse {
+                    rop_id,
+                    output_handle_index: h4.output_handle_index,
+                    return_value: RopErrorCode::NotFound,
+                }
+                .encode(out);
             }
-            .encode(out);
         }
         RopId::ROP_GET_HIERARCHY_TABLE | RopId::ROP_GET_CONTENTS_TABLE => {
             let h4 = RopHeader4::decode_after_ropid(cur, rop_id)?;
@@ -5051,7 +5152,7 @@ async fn execute_one_rop(
                     _ => String::new(),
                 })
                 .unwrap_or_default();
-            let mut outcome: RopErrorCode;
+            let outcome: RopErrorCode;
             let partial: u8;
             match (jmap, password, &src_backend, &dest_backend) {
                 (_, _, s, d) if s.is_empty() || d.is_empty() => {
@@ -5145,100 +5246,117 @@ async fn execute_one_rop(
                             }
                         }
                     } else {
-                        // Move: reparent the mailbox under the destination.
-                        match jc
-                            .update_mailbox(&account_id, src, None, Some(Some(dest)), username, pw)
-                            .await
-                        {
-                            Ok(true) => {
-                                outcome = RopErrorCode::Success;
-                                partial = 0;
-                                // Mirror the move into the EAS folder registry: a
-                                // mailbox an EAS client created (so it has a
-                                // `folder_map` row keyed on its JMAP mailbox id)
-                                // that is moved here must have its stored
-                                // ParentId updated and a `folder-update`
-                                // journaled, so EAS FolderSync/GetHierarchy stop
-                                // advertising the old hierarchy and already-
-                                // primed devices receive the move. The mirror
-                                // runs only for a confirmed backend move; a
-                                // failed mirror write is NOT acknowledged as
-                                // success (the move is idempotent — a retry
-                                // re-runs it).
-                                if let Some(storage) = storage {
-                                    let owner = crate::ews::owner_from_username(username);
-                                    let dest_parent = eas_parent_id_for_dest(
-                                        jc,
-                                        storage,
-                                        owner,
-                                        Some(dest),
+                        // Move: reparent the mailbox under the destination. Hold
+                        // the per-(owner, folder) move lock across BOTH the
+                        // backend reparent and the EAS mirror write, so two
+                        // concurrent moves of this folder cannot commit their
+                        // mirror updates in reverse order (which would leave the
+                        // stored ParentId naming an earlier parent than the
+                        // backend).
+                        let owner = crate::ews::owner_from_username(username);
+                        let (move_outcome, move_partial) =
+                            with_move_folder_lock(owner, src, || async {
+                                match jc
+                                    .update_mailbox(
+                                        &account_id,
+                                        src,
+                                        None,
+                                        Some(Some(dest)),
                                         username,
                                         pw,
                                     )
-                                    .await;
-                                    // A destination lookup FAILURE is retryable
-                                    // (a storage/JMAP error) and must NOT be
-                                    // treated as an unmappable destination: the
-                                    // backend move already happened, so silently
-                                    // skipping the mirror would leave the old
-                                    // ParentId advertised. Only `Ok(None)` (a
-                                    // genuinely unrepresentable destination) is a
-                                    // benign no-op.
-                                    match dest_parent {
-                                        Ok(Some(dest_parent)) => {
-                                            let row = storage.get_folder(owner, src).await;
-                                            match row {
-                                                Ok(Some(row)) => {
-                                                    if let Err(e) = storage
-                                                        .update_folder_journaled(
-                                                            owner,
-                                                            &row.server_id,
-                                                            Some(&dest_parent),
-                                                            None,
-                                                        )
-                                                        .await
-                                                    {
-                                                        tracing::warn!(
-                                                            error = %e,
-                                                            "RopMoveFolder: failed to mirror the EAS parent"
-                                                        );
-                                                        outcome = RopErrorCode::DiskError;
+                                    .await
+                                {
+                                    Ok(true) => {
+                                        // Mirror the move into the EAS folder registry: a
+                                        // mailbox an EAS client created (so it has a
+                                        // `folder_map` row keyed on its JMAP mailbox id)
+                                        // that is moved here must have its stored
+                                        // ParentId updated and a `folder-update`
+                                        // journaled, so EAS FolderSync/GetHierarchy stop
+                                        // advertising the old hierarchy and already-
+                                        // primed devices receive the move. The mirror
+                                        // runs only for a confirmed backend move; a
+                                        // failed mirror write is NOT acknowledged as
+                                        // success (the move is idempotent — a retry
+                                        // re-runs it).
+                                        if let Some(storage) = storage {
+                                            let dest_parent = eas_parent_id_for_dest(
+                                                jc,
+                                                storage,
+                                                owner,
+                                                Some(dest),
+                                                username,
+                                                pw,
+                                            )
+                                            .await;
+                                            // A destination lookup FAILURE is retryable
+                                            // (a storage/JMAP error) and must NOT be
+                                            // treated as an unmappable destination: the
+                                            // backend move already happened, so silently
+                                            // skipping the mirror would leave the old
+                                            // ParentId advertised. Only `Ok(None)` (a
+                                            // genuinely unrepresentable destination) is a
+                                            // benign no-op.
+                                            match dest_parent {
+                                                Ok(Some(dest_parent)) => {
+                                                    let row =
+                                                        storage.get_folder(owner, src).await;
+                                                    match row {
+                                                        Ok(Some(row)) => {
+                                                            if let Err(e) = storage
+                                                                .update_folder_journaled(
+                                                                    owner,
+                                                                    &row.server_id,
+                                                                    Some(&dest_parent),
+                                                                    None,
+                                                                )
+                                                                .await
+                                                            {
+                                                                tracing::warn!(
+                                                                    error = %e,
+                                                                    "RopMoveFolder: failed to mirror the EAS parent"
+                                                                );
+                                                                return (RopErrorCode::DiskError, 0);
+                                                            }
+                                                        }
+                                                        Ok(None) => {}
+                                                        Err(e) => {
+                                                            tracing::warn!(
+                                                                error = %e,
+                                                                "RopMoveFolder: folder_map lookup failed for the EAS parent mirror"
+                                                            );
+                                                            return (RopErrorCode::DiskError, 0);
+                                                        }
                                                     }
                                                 }
                                                 Ok(None) => {}
                                                 Err(e) => {
                                                     tracing::warn!(
                                                         error = %e,
-                                                        "RopMoveFolder: folder_map lookup failed for the EAS parent mirror"
+                                                        "RopMoveFolder: destination parent lookup failed"
                                                     );
-                                                    outcome = RopErrorCode::DiskError;
+                                                    return (RopErrorCode::DiskError, 0);
                                                 }
                                             }
                                         }
-                                        Ok(None) => {}
-                                        Err(e) => {
-                                            tracing::warn!(
-                                                error = %e,
-                                                "RopMoveFolder: destination parent lookup failed"
-                                            );
-                                            outcome = RopErrorCode::DiskError;
-                                        }
+                                        (RopErrorCode::Success, 0)
+                                    }
+                                    Ok(false) => {
+                                        tracing::warn!(
+                                            "JMAP Mailbox/set reported no update for the folder move"
+                                        );
+                                        (RopErrorCode::DiskError, 0)
+                                    }
+                                    Err(e) => {
+                                        tracing::warn!(error = %e, "JMAP Mailbox/set move failed");
+                                        (RopErrorCode::DiskError, 0)
                                     }
                                 }
-                            }
-                            Ok(false) => {
-                                tracing::warn!(
-                                    "JMAP Mailbox/set reported no update for the folder move"
-                                );
-                                outcome = RopErrorCode::DiskError;
-                                partial = 0;
-                            }
-                            Err(e) => {
-                                tracing::warn!(error = %e, "JMAP Mailbox/set move failed");
-                                outcome = RopErrorCode::DiskError;
-                                partial = 0;
-                            }
-                        }
+                            })
+                            .await;
+                        outcome = move_outcome;
+                        partial = move_partial;
                     }
                 }
             }
@@ -6366,6 +6484,12 @@ async fn execute_one_rop(
                 })
                 .unwrap_or_default();
             let outcome: RopErrorCode;
+            // `RopEmptyFolder`/`RopHardDeleteMessagesAndSubfolders` require a
+            // trailing `PartialCompletion` byte (MS-OXCROPS §2.2.4.9.2 /
+            // §2.2.4.10.2): 1 when the ROP fails for a SUBSET of the targeted
+            // objects (some destroyed, some not). Tracked as "an error was
+            // returned but at least one destructive action did succeed".
+            let mut destroyed_any = false;
             match (jmap, password, &backend) {
                 (_, _, b) if b.is_empty() => outcome = RopErrorCode::NoSupport,
                 (None, _, _) => outcome = RopErrorCode::NotFound,
@@ -6397,7 +6521,10 @@ async fn execute_one_rop(
                         if !ids.is_empty() {
                             destroyed_ok =
                                 match jc.destroy_emails(&account_id, &ids, username, pw).await {
-                                    Ok(_) => true,
+                                    Ok(n) => {
+                                        destroyed_any = n > 0;
+                                        true
+                                    }
                                     Err(e) => {
                                         tracing::warn!(error = %e, "JMAP Email/destroy failed");
                                         false
@@ -6475,7 +6602,10 @@ async fn execute_one_rop(
                                             Ok(
                                                 crate::jmap::MailboxDestroyOutcome::Destroyed
                                                 | crate::jmap::MailboxDestroyOutcome::AlreadyGone,
-                                            ) => destroyed_ids.push(child_id.clone()),
+                                            ) => {
+                                                destroyed_any = true;
+                                                destroyed_ids.push(child_id.clone())
+                                            }
                                             Ok(crate::jmap::MailboxDestroyOutcome::Refused) => {
                                                 tracing::warn!(
                                                     mailbox = %child_id,
@@ -6553,10 +6683,16 @@ async fn execute_one_rop(
                     }
                 }
             }
-            RopErrorResponse {
+            // MS-OXCROPS §2.2.4.9.2 / §2.2.4.10.2: the response is
+            // `RopId · InputHandleIndex · ReturnValue(4) · PartialCompletion(1)`.
+            // PartialCompletion is set when the ROP failed for a SUBSET of the
+            // targeted objects — an error was returned yet at least one
+            // destructive action already succeeded.
+            RopPartialCompletionResponse {
                 rop_id,
-                output_handle_index: idx,
+                input_handle_index: idx,
                 return_value: outcome,
+                partial_completion: u8::from(outcome != RopErrorCode::Success && destroyed_any),
             }
             .encode(out);
         }
@@ -6585,6 +6721,10 @@ async fn execute_one_rop(
                 .unwrap_or((String::new(), FolderKind::Root));
             let want: std::collections::HashSet<u64> = message_ids.iter().copied().collect();
             let outcome: RopErrorCode;
+            // MS-OXCROPS §2.2.4.12.2: the response ends with a PartialCompletion
+            // byte, set when the ROP fails for a SUBSET of the targeted messages
+            // (some destroyed, some not).
+            let mut partial_completion: u8 = 0;
             match (
                 jmap,
                 password,
@@ -6617,9 +6757,15 @@ async fn execute_one_rop(
                                 if jids.is_empty() {
                                     outcome = RopErrorCode::Success;
                                 } else {
+                                    let total = jids.len();
                                     match jc.destroy_emails(&account_id, &jids, username, pw).await
                                     {
-                                        Ok(_) => outcome = RopErrorCode::Success,
+                                        Ok(n) => {
+                                            outcome = RopErrorCode::Success;
+                                            if n < total {
+                                                partial_completion = 1;
+                                            }
+                                        }
                                         Err(e) => {
                                             tracing::warn!(error = %e, "JMAP Email/destroy failed");
                                             outcome = RopErrorCode::DiskError;
@@ -6635,10 +6781,11 @@ async fn execute_one_rop(
                     }
                 }
             }
-            RopErrorResponse {
+            RopPartialCompletionResponse {
                 rop_id,
-                output_handle_index: idx,
+                input_handle_index: idx,
                 return_value: outcome,
+                partial_completion,
             }
             .encode(out);
         }
@@ -9747,6 +9894,192 @@ mod tests {
         }
     }
 
+    /// `RopOpenFolder` must open the folder named by `FolderId` ([MS-OXCFOLD]
+    /// §2.2.1.1.1), NOT the folder the input handle points at: a Root handle
+    /// carrying a child's FID must resolve to the child. With the live
+    /// hierarchy enumerable, the FID is inverted against the projection and the
+    /// output handle carries the TARGET's backend id, not the handle's.
+    #[tokio::test]
+    async fn execute_rop_open_folder_resolves_folder_id_not_input_handle() {
+        use axum::routing::{get, post};
+        use serde_json::{Value, json};
+
+        #[derive(Clone)]
+        struct Ctl {
+            base: String,
+        }
+
+        async fn session(axum::Extension(ctl): axum::Extension<Ctl>) -> axum::Json<Value> {
+            axum::Json(json!({
+                "apiUrl": ctl.base,
+                "downloadUrl": format!("{}/download/{{accountId}}/{{blobId}}", ctl.base),
+                "uploadUrl": format!("{}/upload/{{accountId}}", ctl.base),
+                "eventSourceUrl": format!("{}/eventsource", ctl.base),
+                "state": "s",
+                "username": "u",
+                "accounts": {"a": {"name": "u", "isPersonal": true, "isReadOnly": false, "accountCapabilities": {}}},
+                "primaryAccounts": {"urn:ietf:params:jmap:mail": "a"},
+                "capabilities": {"urn:ietf:params:jmap:core": {"maxObjectsInGet": 500}}
+            }))
+        }
+
+        async fn api(body: String) -> axum::response::Response {
+            let req: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
+            let mut responses = Vec::new();
+            for call in req
+                .get("methodCalls")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default()
+            {
+                let name = call.get(0).and_then(|v| v.as_str()).unwrap_or("");
+                let cid = call.get(2).and_then(|v| v.as_str()).unwrap_or("c0");
+                let result = match name {
+                    "Mailbox/query" => json!({"accountId":"a","ids":["mbx-target"],"total":1}),
+                    "Mailbox/get" => json!({"accountId":"a","state":"m1","list":[
+                        {"id":"mbx-target","name":"Target","parentId":null}
+                    ]}),
+                    _ => json!({"accountId":"a"}),
+                };
+                responses.push(json!([name, result, cid]));
+            }
+            let resp = json!({"methodResponses": responses, "sessionState": "s"});
+            axum::response::Response::builder()
+                .status(200)
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(serde_json::to_vec(&resp).unwrap()))
+                .unwrap()
+        }
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
+        let ctl = Ctl { base: base.clone() };
+        let app = axum::Router::new()
+            .route("/session", get(session))
+            .route("/", post(api))
+            .layer(axum::Extension(ctl));
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let mut cfg = Config::test_with_mail_domain("example.com");
+        cfg.mapi_enabled = true;
+        cfg.jmap_base = base.clone();
+        cfg.email_enabled = true;
+        let state = MapiState::new(
+            cfg,
+            std::sync::Arc::new(AuthVerifier::new(&Config::default())),
+        );
+        let jmap = crate::jmap::JmapClient::new(&base).unwrap();
+        let sid = state
+            .sessions
+            .create(crate::mapi::session::SessionPrincipal {
+                email: "u@example.com".into(),
+                basic_auth: true,
+            });
+        const INPUT_HANDLE: u8 = 3;
+        const OUTPUT_HANDLE: u8 = 9;
+        state.sessions.with_session_mut(&sid, |s| {
+            s.set_handle(
+                INPUT_HANDLE,
+                crate::mapi::session::Handle::Folder {
+                    backend_id: "mbx-other".into(),
+                    kind: crate::mapi::session::FolderKind::Mail,
+                },
+            );
+        });
+
+        let target_fid = crate::mapi::store::folder_id_from_backend("mbx-target");
+        let mut body = vec![0x02u8, 0x00, INPUT_HANDLE, OUTPUT_HANDLE];
+        body.extend_from_slice(&target_fid.to_le_bytes());
+        body.push(0);
+        let mut cur = crate::mapi::rops::Buf::new(&body);
+        cur.take_u8().ok();
+        let mut out = Vec::new();
+        let snap = state.sessions.get(&sid).expect("session");
+        let password = secrecy::SecretString::from("pw");
+        execute_one_rop(
+            crate::mapi::rops::RopId::ROP_OPEN_FOLDER,
+            &mut cur,
+            &mut out,
+            &RopContext {
+                session_id: &sid,
+                sessions: &state.sessions,
+                snap: &snap,
+                jmap: Some(&jmap),
+                cfg: &Config::default(),
+                username: "u@example.com",
+                password: Some(&password),
+                logon_id: 0,
+                subscription_manager: None,
+                attachment_manager: None,
+                push_registry: &std::sync::Arc::new(crate::jmap_push::PushMonitorRegistry::new()),
+                storage: None,
+            },
+        )
+        .await
+        .expect("open folder dispatch");
+
+        assert_eq!(out[0], 0x02, "echoed RopId");
+        let rv = u32::from_le_bytes([out[2], out[3], out[4], out[5]]);
+        assert_eq!(
+            RopErrorCode::from_u32(rv),
+            RopErrorCode::Success,
+            "open_folder return value"
+        );
+        let snap2 = state.sessions.get(&sid).expect("session2");
+        match snap2.handles.get(&OUTPUT_HANDLE) {
+            Some(crate::mapi::session::Handle::Folder { backend_id, .. }) => {
+                assert_eq!(
+                    backend_id, "mbx-target",
+                    "the output handle must carry the FOLDER ID's backend, not the input handle's"
+                );
+            }
+            other => panic!("output handle not a Folder: {other:?}"),
+        }
+
+        // An UNKNOWN FolderId with an enumerable hierarchy must fail (the input
+        // handle is not the requested folder), never silently open the handle.
+        let unknown_fid = crate::mapi::store::folder_id_from_backend("mbx-does-not-exist");
+        let mut body2 = vec![0x02u8, 0x00, INPUT_HANDLE, OUTPUT_HANDLE];
+        body2.extend_from_slice(&unknown_fid.to_le_bytes());
+        body2.push(0);
+        let mut cur2 = crate::mapi::rops::Buf::new(&body2);
+        cur2.take_u8().ok();
+        let mut out2 = Vec::new();
+        let snap3 = state.sessions.get(&sid).expect("session3");
+        execute_one_rop(
+            crate::mapi::rops::RopId::ROP_OPEN_FOLDER,
+            &mut cur2,
+            &mut out2,
+            &RopContext {
+                session_id: &sid,
+                sessions: &state.sessions,
+                snap: &snap3,
+                jmap: Some(&jmap),
+                cfg: &Config::default(),
+                username: "u@example.com",
+                password: Some(&password),
+                logon_id: 0,
+                subscription_manager: None,
+                attachment_manager: None,
+                push_registry: &std::sync::Arc::new(crate::jmap_push::PushMonitorRegistry::new()),
+                storage: None,
+            },
+        )
+        .await
+        .expect("open folder dispatch (unknown fid)");
+        // Failure response is the 6-byte envelope (RopId ┬Ę OutputHandleIndex ┬Ę
+        // ReturnValue).
+        assert_eq!(out2.len(), 6, "open_folder failure response length");
+        let rv2 = u32::from_le_bytes([out2[2], out2[3], out2[4], out2[5]]);
+        assert_eq!(
+            RopErrorCode::from_u32(rv2),
+            RopErrorCode::NotFound,
+            "an unknown FolderId must not open the input handle's folder"
+        );
+    }
+
     /// `RopCreateMessage` must install a `Message { is_new: true }` handle at the
     /// client's OutputHandleIndex and echo `RopId(0x06) ┬Ę OutputHandleIndex
     /// ┬Ę Success ┬Ę HasMessageId=1 ┬Ę MessageId(8 LE=0 placeholder)`, even with
@@ -12375,8 +12708,16 @@ mod tests {
     }
 
     /// Drive one `RopHardDeleteMessagesAndSubfolders` (0x92) through the
-    /// Execute dispatcher and return the decoded `ReturnValue`.
-    async fn run_hard_delete_subfolders_rop(base: &str, backend_id: &str) -> RopErrorCode {
+    /// Execute dispatcher and return the decoded `ReturnValue` plus the raw
+    /// response payload. The request chains a SECOND identical ROP so the test
+    /// can assert the first response is exactly 7 bytes
+    /// (`RopId · InputHandle · ReturnValue(4) · PartialCompletion(1)`) and the
+    /// second ROP stays aligned — a missing `PartialCompletion` byte would shift
+    /// the second response.
+    async fn run_hard_delete_subfolders_rop(
+        base: &str,
+        backend_id: &str,
+    ) -> (RopErrorCode, Vec<u8>) {
         let mut cfg = Config::test_with_mail_domain("example.com");
         cfg.mapi_enabled = true;
         cfg.jmap_base = base.to_string();
@@ -12401,9 +12742,10 @@ mod tests {
                 },
             );
         });
-        // Wire: RopId(0x92) · LogonId(0) · InputHandle(3) ·
-        // WantAsynchronous(0) · WantDeleteAssociated(0).
-        let body: Vec<u8> = vec![0x92, 0, INPUT_HANDLE, 0, 0];
+        // Wire: [RopId(0x92) · LogonId(0) · InputHandle(3) ·
+        // WantAsynchronous(0) · WantDeleteAssociated(0)] × 2, so the response
+        // chain carries two 7-byte buffers back-to-back.
+        let body: Vec<u8> = vec![0x92, 0, INPUT_HANDLE, 0, 0, 0x92, 0, INPUT_HANDLE, 0, 0];
         let req = MapiRequest {
             kind: RpcKind::Mailbox(MapiRequestType::Execute),
             request_id: "{G}:1".into(),
@@ -12417,11 +12759,11 @@ mod tests {
         let resp = handle(req, &state).await;
         assert_eq!(resp.code, ResponseCode::Success, "Execute must succeed");
         let (_status, _h, _ct, body_out) = resp.render();
-        let payload = &body_out[4..];
+        let payload = body_out[4..].to_vec();
         assert_eq!(payload[0], 0x92, "echoed RopId");
         assert_eq!(payload[1], INPUT_HANDLE, "input handle echoed");
         let rv = u32::from_le_bytes([payload[2], payload[3], payload[4], payload[5]]);
-        RopErrorCode::from_u32(rv)
+        (RopErrorCode::from_u32(rv), payload)
     }
 
     /// [MS-OXCFOLD] §2.2.1.10: a hard delete removes the folder's messages AND
@@ -12439,8 +12781,21 @@ mod tests {
             ("unrelated", Some("other")),
         ])
         .await;
-        let rv = run_hard_delete_subfolders_rop(&base, "root").await;
+        let (rv, payload) = run_hard_delete_subfolders_rop(&base, "root").await;
         assert_eq!(rv, RopErrorCode::Success);
+        // Response alignment: the first ROP is exactly 7 bytes
+        // (`RopId · InputHandle · ReturnValue(4) · PartialCompletion(1)`) and the
+        // chained second ROP's RopId follows immediately. A response that omitted
+        // the trailing `PartialCompletion` byte would place the second RopId one
+        // byte early (at payload[6] instead of payload[7]).
+        assert_eq!(
+            payload[6], 0,
+            "the hard-delete response must carry a trailing PartialCompletion byte"
+        );
+        assert_eq!(
+            payload[7], 0x92,
+            "the chained second ROP must stay byte-aligned after the 7-byte first response"
+        );
         let rec = calls.lock().await.clone();
         let ids: Vec<&str> = rec.iter().map(|(id, _)| id.as_str()).collect();
         // The root folder itself is NOT deleted; its whole subtree is, and every
@@ -12464,6 +12819,85 @@ mod tests {
         assert!(
             pos("grandchild") < pos("child-a"),
             "grandchild must be destroyed before its parent: {ids:?}"
+        );
+    }
+
+    /// Two concurrent moves of the SAME `(owner, folder)` must not interleave
+    /// their critical sections: the lock exists so the EAS parent mirror always
+    /// records the LAST backend move. A counter that observes a concurrent
+    /// holder would prove the serialization failed.
+    #[tokio::test]
+    async fn move_folder_lock_serializes_same_folder() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let concurrent = Arc::new(AtomicUsize::new(0));
+        let max_concurrent = Arc::new(AtomicUsize::new(0));
+        let mut handles = Vec::new();
+        for _ in 0..8 {
+            let concurrent = concurrent.clone();
+            let max_concurrent = max_concurrent.clone();
+            handles.push(tokio::spawn(async move {
+                with_move_folder_lock("owner@example.com", "mbx-1", || {
+                    let concurrent = concurrent.clone();
+                    let max_concurrent = max_concurrent.clone();
+                    async move {
+                        let now = concurrent.fetch_add(1, Ordering::SeqCst) + 1;
+                        max_concurrent.fetch_max(now, Ordering::SeqCst);
+                        tokio::task::yield_now().await;
+                        concurrent.fetch_sub(1, Ordering::SeqCst);
+                    }
+                })
+                .await;
+            }));
+        }
+        for h in handles {
+            h.await.unwrap();
+        }
+        assert_eq!(
+            max_concurrent.load(Ordering::SeqCst),
+            1,
+            "the per-(owner, folder) lock must serialize holders"
+        );
+        // The map must not retain the entry once the last holder releases it.
+        assert!(
+            !MOVE_FOLDER_LOCKS.contains_key("owner@example.com\u{0}mbx-1"),
+            "the lock entry must be reclaimed after the last holder"
+        );
+    }
+
+    /// Moves of DIFFERENT folders must not contend: the lock is per
+    /// `(owner, folder)`.
+    #[tokio::test]
+    async fn move_folder_lock_allows_different_folders_concurrently() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let concurrent = Arc::new(AtomicUsize::new(0));
+        let max_concurrent = Arc::new(AtomicUsize::new(0));
+        let mut handles = Vec::new();
+        for i in 0..4 {
+            let concurrent = concurrent.clone();
+            let max_concurrent = max_concurrent.clone();
+            handles.push(tokio::spawn(async move {
+                let folder = format!("mbx-{i}");
+                with_move_folder_lock("owner@example.com", &folder, || {
+                    let concurrent = concurrent.clone();
+                    let max_concurrent = max_concurrent.clone();
+                    async move {
+                        let now = concurrent.fetch_add(1, Ordering::SeqCst) + 1;
+                        max_concurrent.fetch_max(now, Ordering::SeqCst);
+                        tokio::task::yield_now().await;
+                        concurrent.fetch_sub(1, Ordering::SeqCst);
+                    }
+                })
+                .await;
+            }));
+        }
+        for h in handles {
+            h.await.unwrap();
+        }
+        assert!(
+            max_concurrent.load(Ordering::SeqCst) > 1,
+            "moves of different folders must be able to run concurrently"
         );
     }
 }

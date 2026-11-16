@@ -691,8 +691,13 @@ async fn eas_parent_id_for_mailbox(
             ));
         }
     }
+    // Enumerate the COMPLETE mailbox set (`query_all_mailboxes` pages
+    // `Mailbox/query`): `query_mailboxes` issues a single unpaged query, so a
+    // server that clamps `limit` (RFC 8620 §5.5) can omit an unmapped system
+    // mailbox beyond the first page, making its role resolve to `None` and the
+    // caller silently leave the stored ParentId stale.
     let all = jmap
-        .query_mailboxes(username, password)
+        .query_all_mailboxes(username, password)
         .await
         .map_err(|e| {
             anyhow::anyhow!("mailbox lookup failed resolving the parent of {mailbox_id}: {e}")
@@ -1515,35 +1520,53 @@ pub(crate) async fn handle_delete_folder(
                     break;
                 }
                 Err(e) => {
-                    // UNKNOWN outcome: reconcile against the live hierarchy;
-                    // only a mailbox that is actually gone is treated as
-                    // destroyed, and a still-present one has its intent
-                    // withdrawn.
+                    // UNKNOWN outcome: reconcile against the live hierarchy.
+                    // A CONFIRMED absence means the destroy happened — treat the
+                    // mailbox as destroyed and prune it. A CONFIRMED presence
+                    // means the destroy did not happen — withdraw the intent so a
+                    // later folder-sync replay does not prune a live folder.
+                    // A FAILED reconciliation query is UNKNOWN, not present: the
+                    // durable intent must be RETAINED as unresolved work (a
+                    // retry can no longer rediscover a child that was in fact
+                    // destroyed), so it is neither withdrawn nor treated as a
+                    // confirmed destroy here.
                     tracing::warn!(error = %e, "EWS DeleteFolder: Mailbox/set destroy failed; reconciling");
-                    let still_present = match jmap
+                    match jmap
                         .query_all_mailboxes(&auth.username, &auth.password)
                         .await
                     {
-                        Ok(m) => m
-                            .mailboxes
-                            .iter()
-                            .any(|mb| mb.id.as_deref() == Some(cb_id.as_str())),
-                        Err(_) => true,
-                    };
-                    if still_present {
-                        if let Err(e) = state
-                            .storage
-                            .clear_pending_folder_prunes(&owner, std::slice::from_ref(cb_id))
-                            .await
-                        {
+                        Ok(m) => {
+                            let still_present = m
+                                .mailboxes
+                                .iter()
+                                .any(|mb| mb.id.as_deref() == Some(cb_id.as_str()));
+                            if still_present {
+                                if let Err(e) = state
+                                    .storage
+                                    .clear_pending_folder_prunes(
+                                        &owner,
+                                        std::slice::from_ref(cb_id),
+                                    )
+                                    .await
+                                {
+                                    tracing::warn!(
+                                        error = %e,
+                                        mailbox = %cb_id,
+                                        "EWS DeleteFolder: failed to withdraw the deferred prune for a present mailbox"
+                                    );
+                                }
+                            } else {
+                                destroyed_ids.push(cb_id.clone());
+                            }
+                        }
+                        Err(recon_err) => {
+                            // Unknown: leave the durable intent in place.
                             tracing::warn!(
-                                error = %e,
+                                error = %recon_err,
                                 mailbox = %cb_id,
-                                "EWS DeleteFolder: failed to withdraw the deferred prune for a present mailbox"
+                                "EWS DeleteFolder: reconciliation query failed; retaining the deferred prune intent as unresolved"
                             );
                         }
-                    } else {
-                        destroyed_ids.push(cb_id.clone());
                     }
                     destroy_failure =
                         Some(internal_error(action, "Mailbox/set destroy failed", &e));
@@ -2849,6 +2872,167 @@ mod tests {
                 .iter()
                 .all(|r| r.op != "folder-delete" || r.server_id != "mb-root"),
             "the refused root must not be journaled as deleted"
+        );
+    }
+
+    /// Spawn a JMAP stub where the initial hierarchy walk succeeds but
+    /// `Mailbox/set` returns HTTP 500 (an UNKNOWN destroy outcome) and every
+    /// SUBSEQUENT `Mailbox/query` (the handler's reconciliation probe) also
+    /// returns HTTP 500, so the reconciliation cannot confirm whether the
+    /// mailbox still exists.
+    async fn spawn_delete_stub_unknown_outcome() -> String {
+        use axum::response::Response;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let saw_set = StdArc::new(AtomicBool::new(false));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let base = format!("http://127.0.0.1:{port}");
+        let session_base = base.clone();
+        let app = axum::Router::new()
+            .route(
+                "/session",
+                get(move || {
+                    let base = session_base.clone();
+                    async move {
+                        axum::Json(json!({
+                            "apiUrl": base,
+                            "downloadUrl": format!("{base}/download/{{accountId}}/{{blobId}}"),
+                            "uploadUrl": format!("{base}/upload/{{accountId}}"),
+                            "eventSourceUrl": format!("{base}/eventsource"),
+                            "state": "s",
+                            "username": "u",
+                            "accounts": {"a": {"name": "u", "isPersonal": true, "isReadOnly": false, "accountCapabilities": {}}},
+                            "primaryAccounts": {"urn:ietf:params:jmap:mail": "a"},
+                            "capabilities": {}
+                        }))
+                    }
+                }),
+            )
+            .route(
+                "/",
+                post(move |body: String| {
+                    let saw_set = saw_set.clone();
+                    async move {
+                        let req: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
+                        let name = req
+                            .get("methodCalls")
+                            .and_then(|v| v.as_array())
+                            .and_then(|a| a.first())
+                            .and_then(|c| c.get(0))
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("");
+                        if name == "Mailbox/set" {
+                            saw_set.store(true, Ordering::SeqCst);
+                            return Response::builder()
+                                .status(500)
+                                .body(axum::body::Body::from("backend down"))
+                                .unwrap();
+                        }
+                        // Any `Mailbox/query` AFTER the failed destroy is the
+                        // reconciliation probe: fail it (unknown outcome).
+                        if name == "Mailbox/query" && saw_set.load(Ordering::SeqCst) {
+                            return Response::builder()
+                                .status(500)
+                                .body(axum::body::Body::from("backend down"))
+                                .unwrap();
+                        }
+                        let mut responses = Vec::new();
+                        for call in req
+                            .get("methodCalls")
+                            .and_then(|v| v.as_array())
+                            .cloned()
+                            .unwrap_or_default()
+                        {
+                            let mname = call.get(0).and_then(|v| v.as_str()).unwrap_or("");
+                            let cid = call.get(2).and_then(|v| v.as_str()).unwrap_or("c0");
+                            let result = match mname {
+                                "Mailbox/query" => json!({"accountId": "a", "ids": ["mb-1"], "total": 1}),
+                                "Mailbox/get" => json!({"accountId": "a", "list": [{"id": "mb-1", "name": "Folder", "parentId": null}]}),
+                                "Email/query" => json!({"accountId": "a", "ids": [], "total": 0}),
+                                "Email/get" => json!({"accountId": "a", "list": []}),
+                                _ => json!({"accountId": "a"}),
+                            };
+                            responses.push(json!([mname, result, cid]));
+                        }
+                        let resp = json!({"methodResponses": responses, "sessionState": "s"});
+                        Response::builder()
+                            .status(200)
+                            .header("content-type", "application/json")
+                            .body(axum::body::Body::from(serde_json::to_vec(&resp).unwrap()))
+                            .unwrap()
+                    }
+                }),
+            );
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        base
+    }
+
+    /// When `Mailbox/set` returns an UNKNOWN outcome (transport error) and the
+    /// reconciliation `Mailbox/query` ALSO fails, the durable prune intent must
+    /// be RETAINED (not withdrawn as if the folder were confirmed present): a
+    /// retry can no longer rediscover a child that was in fact destroyed, so
+    /// dropping the intent would let EAS advertise its stale mapping forever.
+    #[tokio::test]
+    async fn hard_delete_unknown_outcome_retains_pending_intent() {
+        let base = spawn_delete_stub_unknown_outcome().await;
+        let storage = crate::storage::Storage::new("sqlite::memory:")
+            .await
+            .unwrap();
+        storage.init_schema().await.unwrap();
+        let owner = "u@example.com";
+        storage
+            .upsert_folder_journaled(
+                crate::storage::FolderUpsertParams {
+                    owner,
+                    server_id: "mb-1",
+                    parent_id: "0",
+                    display_name: "Folder",
+                    folder_type: 12,
+                    backend_kind: "jmap",
+                    backend_id: "mb-1",
+                },
+                "folder-add",
+            )
+            .await
+            .unwrap();
+        let cfg = crate::config::Config {
+            jmap_base: base,
+            email_enabled: true,
+            mail_domain: "example.com".to_string(),
+            hmac_secret: SecretString::from("a".repeat(32)),
+            ..Default::default()
+        };
+        let state = StdArc::new(crate::models::AppState::new(cfg, StdArc::new(storage)));
+        let auth = AuthContext {
+            username: owner.to_string(),
+            password: SecretString::from("pw"),
+        };
+        let body = r#"<?xml version="1.0"?><m:DeleteFolder DeleteType="HardDelete" xmlns:m="m" xmlns:t="t"><m:FolderIds><t:FolderId Id="mb-1"/></m:FolderIds></m:DeleteFolder>"#;
+        let resp = handle_delete_folder(&state, &auth, body).await;
+        assert_eq!(
+            resp.status(),
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "an unknown destroy outcome must surface as a retryable error"
+        );
+        assert!(
+            state
+                .storage
+                .list_pending_folder_prunes(owner)
+                .await
+                .unwrap()
+                .contains(&"mb-1".to_string()),
+            "an unknown outcome must RETAIN the prune intent as unresolved work"
+        );
+        assert!(
+            state
+                .storage
+                .get_folder(owner, "mb-1")
+                .await
+                .unwrap()
+                .is_some(),
+            "the mapping must NOT be pruned when absence is unconfirmed"
         );
     }
 

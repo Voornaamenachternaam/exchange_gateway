@@ -1837,6 +1837,7 @@ async fn handle_provision(
 async fn handle_folder_sync(
     state: &Arc<AppState>,
     owner: &str,
+    password: &SecretString,
     req: &EasRequest,
     wbxml: &Wbxml,
     as_wbxml: bool,
@@ -1902,11 +1903,12 @@ async fn handle_folder_sync(
     // backend destroy already succeeded but whose mirror failed) BEFORE the head
     // capture, so the `folder-delete` it journals is inside this window and is
     // delivered by this very FolderSync; a retry can no longer re-derive the id
-    // from the live backend. Non-fatal: a failure leaves the pending row for the
-    // next read, and the primary FolderSync work is never blocked by a replay.
-    if let Err(e) = state.storage.drain_pending_folder_prunes(owner).await {
-        tracing::warn!(error = %e, "FolderSync: failed to replay deferred folder-map prunes");
-    }
+    // from the live backend. Each intent is reconciled against the LIVE mailbox
+    // set first, so an intent for a folder whose destroy is still in flight (or
+    // was refused) is NOT pruned — pruning it would drop a live folder's mapping.
+    // Non-fatal: a failure leaves the pending row for the next read, and the
+    // primary FolderSync work is never blocked by a replay.
+    crate::eas_folders::reconcile_deferred_folder_prunes(state, owner, password).await;
     let render_until = match state.storage.get_latest_change_seq().await {
         Ok(seq) => seq,
         Err(e) => {
@@ -5431,6 +5433,7 @@ async fn handle_get_hierarchy(ctx: &FolderCmdCtx<'_>) -> Response {
     let FolderCmdCtx {
         state,
         owner,
+        password,
         wbxml,
         as_wbxml,
         request_id,
@@ -5462,11 +5465,10 @@ async fn handle_get_hierarchy(ctx: &FolderCmdCtx<'_>) -> Response {
     //
     // Replay any deferred folder-map prune first, so a folder whose backend was
     // already destroyed but whose mirror failed is dropped from this hierarchy
-    // (and journaled for FolderSync). Non-fatal: a failure leaves the pending row
-    // for the next read.
-    if let Err(e) = state.storage.drain_pending_folder_prunes(owner).await {
-        tracing::warn!(error = %e, "GetHierarchy: failed to replay deferred folder-map prunes");
-    }
+    // (and journaled for FolderSync). Each intent is reconciled against the LIVE
+    // mailbox set first, so a live folder's mapping is never dropped. Non-fatal:
+    // a failure leaves the pending row for the next read.
+    crate::eas_folders::reconcile_deferred_folder_prunes(state, owner, password).await;
     let user_folders = match state.storage.list_folders(owner).await {
         Ok(rows) => rows,
         Err(e) => {
@@ -7729,6 +7731,12 @@ pub(crate) async fn scan_email_keyword_changes(
     // remaining change budget) independently of any delete ops already in `ops`,
     // so a bulk flag change cannot emit an unbounded batch in one response.
     let mut emitted = 0usize;
+    // Whether the sweep reached the END of the mailbox (an empty page or a page
+    // that reported no more entries). If the page budget is exhausted while more
+    // entries remain, the sweep is INCOMPLETE: flag edits on the unvisited tail
+    // stay undiscovered until the next delta, so the outcome is marked deferred
+    // (the EWS caller then reports `IncludesLastItemInRange=false`).
+    let mut complete = false;
     let mut position = match state
         .storage
         .get_email_keyword_scan_position(username, state_collection_id)
@@ -7761,6 +7769,7 @@ pub(crate) async fn scan_email_keyword_changes(
         };
         if entries.is_empty() {
             position = 0;
+            complete = true;
             break;
         }
         for (id, keywords) in entries {
@@ -7822,10 +7831,17 @@ pub(crate) async fn scan_email_keyword_changes(
         position = next_position;
         if !more {
             position = 0;
+            complete = true;
             break;
         }
     }
     outcome.position = position;
+    // Deferred when the page budget was exhausted while entries remained: flag
+    // edits on the unvisited tail stay undiscovered until the next delta, so the
+    // range is incomplete. A sweep that reached the mailbox end (empty page or a
+    // page with `more == false`) is complete. (A mid-sweep backend error returns
+    // early above, before this assignment.)
+    outcome.deferred = !complete;
     outcome
 }
 
@@ -8609,6 +8625,34 @@ async fn handle_email_initial_sync(
     for email in &result.emails {
         let jmap_id = email.id.as_deref().unwrap_or("unknown");
         let server_id = crate::email::email_server_id_from_jmap_id(jmap_id);
+        // Seed the flag baseline for a delivered `<Add>` (same rationale as the
+        // delta path's `render_pending_email_op`): a message that arrived during
+        // pagination is absent from the baseline captured at the start of the
+        // sync, and the bounded rotating scan records a first observation
+        // WITHOUT a `<Change>`, so a flag edit made before the scan reaches the
+        // message would be silently dropped. Recording the delivered keywords
+        // makes the next scan report any change from the client-visible state. A
+        // failed write fails the prime closed (retryable); the upsert is
+        // idempotent, so a retry re-seeds cleanly.
+        state
+            .storage
+            .upsert_email_keyword(
+                username,
+                state_collection_id,
+                jmap_id,
+                &email.sorted_active_keywords(),
+            )
+            .await
+            .map_err(|e| {
+                tracing::warn!(
+                    error = %e,
+                    email_id = %jmap_id,
+                    "Failed to seed email keyword baseline for initial-sync Add"
+                );
+                anyhow::anyhow!(
+                    "failed to seed email keyword baseline for initial-sync Add {jmap_id}"
+                )
+            })?;
         let app_data = crate::email::render_jmap_email_as_eas_application_data_with_options(
             email,
             &server_id,
@@ -8702,28 +8746,48 @@ async fn handle_email_initial_sync(
         return Ok(response);
     }
 
-    // Mailbox drained: drop the cursor, persist the query state for deltas.
+    // Mailbox drained: persist the SyncKey + query state for the delta path
+    // FIRST, then drop the resume cursor. The SyncKey write is MANDATORY here:
+    // the client is told to continue from this key and its next non-zero Sync
+    // routes to the DELTA path. If the key/token were not stored, that delta
+    // would start from an empty state — for a role-scoped collection the delta
+    // then answers an empty success window indefinitely and the mailbox stays
+    // unprimed until a manual re-prime. Fail closed (retryable) instead: the
+    // client re-sends SyncKey 0 (a fresh prime), or, with the cursor still
+    // present, re-runs this initial path; re-delivered `<Add>`s are
+    // deduplicated by the client's ServerId keying.
+    let key_result = match base_state_token.as_deref() {
+        Some(token) => {
+            state
+                .storage
+                .set_sync_key(username, state_collection_id, &new_sync_key, Some(token))
+                .await
+        }
+        None => {
+            state
+                .storage
+                .set_sync_key(username, state_collection_id, &new_sync_key, None)
+                .await
+        }
+    };
+    if let Err(e) = key_result {
+        tracing::warn!(
+            error = %e,
+            "Failed to set initial email sync key; refusing to acknowledge the drained prime"
+        );
+        return Err(anyhow::anyhow!(
+            "failed to persist initial email sync key for collection {state_collection_id}"
+        ));
+    }
+    // The cursor is now redundant: the key/token above is the delta base, and a
+    // leftover cursor would re-route the next Sync to this initial path. Drop it
+    // best-effort — a failure only costs one redundant re-prime, never data.
     if let Err(e) = state
         .storage
         .clear_email_sync_cursor(username, state_collection_id)
         .await
     {
         tracing::warn!(error = %e, "Failed to clear email initial-sync cursor");
-    }
-    if let Some(token) = base_state_token.as_deref() {
-        if let Err(e) = state
-            .storage
-            .set_sync_key(username, state_collection_id, &new_sync_key, Some(token))
-            .await
-        {
-            tracing::warn!(error = %e, "Failed to set initial email sync key with JMAP state");
-        }
-    } else if let Err(e) = state
-        .storage
-        .set_sync_key(username, state_collection_id, &new_sync_key, None)
-        .await
-    {
-        tracing::warn!(error = %e, "Failed to set initial email sync key");
     }
 
     let response = format!(
@@ -9299,7 +9363,16 @@ pub async fn handle(
 
     match req.command.as_str() {
         "FolderSync" => {
-            handle_folder_sync(&state, &username, &req, &wbxml, wants_wbxml, &request_id).await
+            handle_folder_sync(
+                &state,
+                &username,
+                &password,
+                &req,
+                &wbxml,
+                wants_wbxml,
+                &request_id,
+            )
+            .await
         }
         "Provision" => {
             handle_provision(
@@ -11108,7 +11181,16 @@ mod tests {
             ..Default::default()
         };
         let prime_text = response_text(
-            handle_folder_sync(&state, owner, &prime_req, &wbxml, false, "prime").await,
+            handle_folder_sync(
+                &state,
+                owner,
+                &SecretString::from("pw"),
+                &prime_req,
+                &wbxml,
+                false,
+                "prime",
+            )
+            .await,
         )
         .await;
         assert!(
@@ -11165,7 +11247,16 @@ mod tests {
             ..Default::default()
         };
         let text = response_text(
-            handle_folder_sync(&state, owner, &delta_req, &wbxml, false, "delta").await,
+            handle_folder_sync(
+                &state,
+                owner,
+                &SecretString::from("pw"),
+                &delta_req,
+                &wbxml,
+                false,
+                "delta",
+            )
+            .await,
         )
         .await;
         assert!(
@@ -11192,7 +11283,84 @@ mod tests {
     /// the id from the live backend).
     #[tokio::test]
     async fn test_folder_sync_replays_deferred_prune_as_delete() {
-        let state = test_sync_state().await;
+        use crate::models::AppState;
+        use axum::routing::{get, post};
+        use serde_json::{Value, json};
+        use std::sync::Arc as StdArc;
+
+        #[derive(Clone)]
+        struct Ctl {
+            base: String,
+        }
+
+        async fn session(axum::Extension(ctl): axum::Extension<Ctl>) -> axum::Json<Value> {
+            axum::Json(json!({
+                "apiUrl": ctl.base,
+                "downloadUrl": format!("{}/download/{{accountId}}/{{blobId}}", ctl.base),
+                "uploadUrl": format!("{}/upload/{{accountId}}", ctl.base),
+                "eventSourceUrl": format!("{}/eventsource", ctl.base),
+                "state": "s",
+                "username": "u",
+                "accounts": {"a": {"name": "u", "isPersonal": true, "isReadOnly": false, "accountCapabilities": {}}},
+                "primaryAccounts": {"urn:ietf:params:jmap:mail": "a"},
+                "capabilities": {"urn:ietf:params:jmap:core": {"maxObjectsInGet": 500}}
+            }))
+        }
+
+        // The LIVE hierarchy holds only `mbx-other`: the destroyed `mbx-1` is
+        // confirmed gone, so the deferred prune must be replayed.
+        async fn api(body: String) -> axum::response::Response {
+            let req: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
+            let mut responses = Vec::new();
+            for call in req
+                .get("methodCalls")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default()
+            {
+                let name = call.get(0).and_then(|v| v.as_str()).unwrap_or("");
+                let cid = call.get(2).and_then(|v| v.as_str()).unwrap_or("c0");
+                let result = match name {
+                    "Mailbox/query" => json!({"accountId":"a","ids":["mbx-other"],"total":1}),
+                    "Mailbox/get" => json!({"accountId":"a","state":"m1","list":[
+                        {"id":"mbx-other","name":"Other"}
+                    ]}),
+                    _ => json!({"accountId":"a"}),
+                };
+                responses.push(json!([name, result, cid]));
+            }
+            let resp = json!({"methodResponses": responses, "sessionState": "s"});
+            axum::response::Response::builder()
+                .status(200)
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(serde_json::to_vec(&resp).unwrap()))
+                .unwrap()
+        }
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
+        let ctl = Ctl { base: base.clone() };
+        let app = axum::Router::new()
+            .route("/session", get(session))
+            .route("/", post(api))
+            .layer(axum::Extension(ctl));
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let storage = crate::storage::Storage::new("sqlite::memory:")
+            .await
+            .expect("in-memory storage");
+        storage.init_schema().await.expect("schema init");
+        let cfg = crate::config::Config {
+            jmap_base: base.clone(),
+            email_enabled: true,
+            mail_domain: "example.com".to_string(),
+            hmac_secret: SecretString::from("a".repeat(32)),
+            ..Default::default()
+        };
+        let state = StdArc::new(AppState::new(cfg, StdArc::new(storage)));
+
         let owner = "deferred-prune@example.com";
         let device = "device-a";
         state
@@ -11220,7 +11388,16 @@ mod tests {
             ..Default::default()
         };
         let prime_text = response_text(
-            handle_folder_sync(&state, owner, &prime_req, &wbxml, false, "prime").await,
+            handle_folder_sync(
+                &state,
+                owner,
+                &SecretString::from("pw"),
+                &prime_req,
+                &wbxml,
+                false,
+                "prime",
+            )
+            .await,
         )
         .await;
         assert!(
@@ -11256,7 +11433,16 @@ mod tests {
             ..Default::default()
         };
         let delta_text = response_text(
-            handle_folder_sync(&state, owner, &delta_req, &wbxml, false, "delta").await,
+            handle_folder_sync(
+                &state,
+                owner,
+                &SecretString::from("pw"),
+                &delta_req,
+                &wbxml,
+                false,
+                "delta",
+            )
+            .await,
         )
         .await;
         assert!(
@@ -11271,6 +11457,183 @@ mod tests {
                 .unwrap()
                 .is_none(),
             "the replayed prune must remove the mapping"
+        );
+    }
+
+    /// A pending folder-map prune whose backend mailbox is STILL PRESENT must be
+    /// withdrawn, not replayed: a destroy that was refused (or is still in
+    /// flight) recorded an intent before the attempt, and pruning blindly would
+    /// strand a LIVE folder's mapping — EAS would stop advertising a folder that
+    /// still exists.
+    #[tokio::test]
+    async fn test_folder_sync_withdraws_prune_for_live_folder() {
+        use crate::models::AppState;
+        use axum::routing::{get, post};
+        use serde_json::{Value, json};
+        use std::sync::Arc as StdArc;
+
+        #[derive(Clone)]
+        struct Ctl {
+            base: String,
+        }
+
+        async fn session(axum::Extension(ctl): axum::Extension<Ctl>) -> axum::Json<Value> {
+            axum::Json(json!({
+                "apiUrl": ctl.base,
+                "downloadUrl": format!("{}/download/{{accountId}}/{{blobId}}", ctl.base),
+                "uploadUrl": format!("{}/upload/{{accountId}}", ctl.base),
+                "eventSourceUrl": format!("{}/eventsource", ctl.base),
+                "state": "s",
+                "username": "u",
+                "accounts": {"a": {"name": "u", "isPersonal": true, "isReadOnly": false, "accountCapabilities": {}}},
+                "primaryAccounts": {"urn:ietf:params:jmap:mail": "a"},
+                "capabilities": {"urn:ietf:params:jmap:core": {"maxObjectsInGet": 500}}
+            }))
+        }
+
+        // The LIVE hierarchy still holds `mbx-1`, so the intent must be withdrawn.
+        async fn api(body: String) -> axum::response::Response {
+            let req: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
+            let mut responses = Vec::new();
+            for call in req
+                .get("methodCalls")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default()
+            {
+                let name = call.get(0).and_then(|v| v.as_str()).unwrap_or("");
+                let cid = call.get(2).and_then(|v| v.as_str()).unwrap_or("c0");
+                let result = match name {
+                    "Mailbox/query" => json!({"accountId":"a","ids":["mbx-1"],"total":1}),
+                    "Mailbox/get" => json!({"accountId":"a","state":"m1","list":[
+                        {"id":"mbx-1","name":"Still Here"}
+                    ]}),
+                    _ => json!({"accountId":"a"}),
+                };
+                responses.push(json!([name, result, cid]));
+            }
+            let resp = json!({"methodResponses": responses, "sessionState": "s"});
+            axum::response::Response::builder()
+                .status(200)
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(serde_json::to_vec(&resp).unwrap()))
+                .unwrap()
+        }
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
+        let ctl = Ctl { base: base.clone() };
+        let app = axum::Router::new()
+            .route("/session", get(session))
+            .route("/", post(api))
+            .layer(axum::Extension(ctl));
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let storage = crate::storage::Storage::new("sqlite::memory:")
+            .await
+            .expect("in-memory storage");
+        storage.init_schema().await.expect("schema init");
+        let cfg = crate::config::Config {
+            jmap_base: base.clone(),
+            email_enabled: true,
+            mail_domain: "example.com".to_string(),
+            hmac_secret: SecretString::from("a".repeat(32)),
+            ..Default::default()
+        };
+        let state = StdArc::new(AppState::new(cfg, StdArc::new(storage)));
+
+        let owner = "live-folder@example.com";
+        let device = "device-a";
+        state
+            .storage
+            .upsert_folder_journaled(
+                crate::storage::FolderUpsertParams {
+                    owner,
+                    server_id: "mbx-1",
+                    parent_id: "0",
+                    display_name: "Still Here",
+                    folder_type: 12,
+                    backend_kind: "jmap",
+                    backend_id: "mbx-1",
+                },
+                "folder-add",
+            )
+            .await
+            .expect("persist folder");
+
+        let wbxml = Wbxml::new();
+        let prime_req = EasRequest {
+            command: "FolderSync".to_string(),
+            device_id: Some(device.to_string()),
+            sync_key: Some("0".to_string()),
+            ..Default::default()
+        };
+        let prime_text = response_text(
+            handle_folder_sync(
+                &state,
+                owner,
+                &SecretString::from("pw"),
+                &prime_req,
+                &wbxml,
+                false,
+                "prime",
+            )
+            .await,
+        )
+        .await;
+        let key = extract_first_tag_text(&prime_text, b"SyncKey")
+            .expect("prime must return a SyncKey")
+            .to_string();
+
+        // A destroy intent was recorded, but the backend mailbox is still live.
+        state
+            .storage
+            .record_pending_folder_prunes(owner, &["mbx-1".to_string()])
+            .await
+            .expect("record deferred prune");
+
+        let delta_req = EasRequest {
+            command: "FolderSync".to_string(),
+            device_id: Some(device.to_string()),
+            sync_key: Some(key),
+            ..Default::default()
+        };
+        let delta_text = response_text(
+            handle_folder_sync(
+                &state,
+                owner,
+                &SecretString::from("pw"),
+                &delta_req,
+                &wbxml,
+                false,
+                "delta",
+            )
+            .await,
+        )
+        .await;
+        assert!(
+            !delta_text.contains("<Delete>"),
+            "a live folder must NOT be deleted, got: {delta_text}"
+        );
+        assert!(
+            state
+                .storage
+                .get_folder(owner, "mbx-1")
+                .await
+                .unwrap()
+                .is_some(),
+            "a live folder's mapping must survive the reconcile"
+        );
+        assert!(
+            state
+                .storage
+                .list_pending_folder_prunes(owner)
+                .await
+                .unwrap()
+                .is_empty(),
+            "the withdrawn intent must be cleared"
         );
     }
 
@@ -11295,14 +11658,32 @@ mod tests {
             ..Default::default()
         };
         let text_a = response_text(
-            handle_folder_sync(&state, owner, &prime(device_a), &wbxml, false, "p-a").await,
+            handle_folder_sync(
+                &state,
+                owner,
+                &SecretString::from("pw"),
+                &prime(device_a),
+                &wbxml,
+                false,
+                "p-a",
+            )
+            .await,
         )
         .await;
         let key_a = extract_first_tag_text(&text_a, b"SyncKey")
             .expect("device-a prime SyncKey")
             .to_string();
         let text_b = response_text(
-            handle_folder_sync(&state, owner, &prime(device_b), &wbxml, false, "p-b").await,
+            handle_folder_sync(
+                &state,
+                owner,
+                &SecretString::from("pw"),
+                &prime(device_b),
+                &wbxml,
+                false,
+                "p-b",
+            )
+            .await,
         )
         .await;
         let key_b = extract_first_tag_text(&text_b, b"SyncKey")
@@ -11341,9 +11722,19 @@ mod tests {
             sync_key: Some(new_key_a),
             ..Default::default()
         };
-        let text_a2 =
-            response_text(handle_folder_sync(&state, owner, &delta_a, &wbxml, false, "d-a").await)
-                .await;
+        let text_a2 = response_text(
+            handle_folder_sync(
+                &state,
+                owner,
+                &SecretString::from("pw"),
+                &delta_a,
+                &wbxml,
+                false,
+                "d-a",
+            )
+            .await,
+        )
+        .await;
         assert!(text_a2.contains("<Status>1</Status>"), "delta-a: {text_a2}");
         assert!(
             text_a2.contains("<ServerId>mbx-other</ServerId>"),
@@ -11357,9 +11748,19 @@ mod tests {
             sync_key: Some(key_b),
             ..Default::default()
         };
-        let text_b2 =
-            response_text(handle_folder_sync(&state, owner, &delta_b, &wbxml, false, "d-b").await)
-                .await;
+        let text_b2 = response_text(
+            handle_folder_sync(
+                &state,
+                owner,
+                &SecretString::from("pw"),
+                &delta_b,
+                &wbxml,
+                false,
+                "d-b",
+            )
+            .await,
+        )
+        .await;
         assert!(
             text_b2.contains("<ServerId>mbx-other</ServerId>"),
             "the unaffected device receives the change: {text_b2}"
@@ -14388,6 +14789,143 @@ mod tests {
         );
     }
 
+    /// When the sweep exhausts `KEYWORD_SCAN_MAX_PAGES` with more entries still
+    /// pending, it stopped before the mailbox end, so the outcome must be marked
+    /// `deferred` — otherwise the EWS caller reports `IncludesLastItemInRange=true`
+    /// and the client never re-syncs to learn of a flag edit on the unvisited
+    /// tail (the update is only delayed until a later delta, never lost).
+    #[tokio::test]
+    async fn test_email_keyword_scan_marks_page_cap_exit_deferred() {
+        use crate::models::AppState;
+        use axum::routing::{get, post};
+        use serde_json::{Value, json};
+        use std::sync::Arc as StdArc;
+
+        #[derive(Clone)]
+        struct Ctl {
+            base: String,
+        }
+
+        async fn session(axum::Extension(ctl): axum::Extension<Ctl>) -> axum::Json<Value> {
+            axum::Json(json!({
+                "apiUrl": ctl.base,
+                "downloadUrl": format!("{}/download/{{accountId}}/{{blobId}}", ctl.base),
+                "uploadUrl": format!("{}/upload/{{accountId}}", ctl.base),
+                "eventSourceUrl": format!("{}/eventsource", ctl.base),
+                "state": "s",
+                "username": "u",
+                "accounts": {"a": {"name": "u", "isPersonal": true, "isReadOnly": false, "accountCapabilities": {}}},
+                "primaryAccounts": {"urn:ietf:params:jmap:mail": "a"},
+                "capabilities": {"urn:ietf:params:jmap:core": {"maxObjectsInGet": 500}}
+            }))
+        }
+
+        // Every page reports a FULL page (`more == true`) with a large `total`,
+        // so the sweep always exits by exhausting the page budget.
+        async fn api(
+            axum::Extension(_ctl): axum::Extension<Ctl>,
+            body: String,
+        ) -> axum::response::Response {
+            let req: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
+            let mut responses = Vec::new();
+            let mut last_query_ids: Vec<String> = Vec::new();
+            for call in req
+                .get("methodCalls")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default()
+            {
+                let name = call.get(0).and_then(|v| v.as_str()).unwrap_or("");
+                let args = call.get(1).cloned().unwrap_or(Value::Null);
+                let cid = call.get(2).and_then(|v| v.as_str()).unwrap_or("c0");
+                let result = match name {
+                    "Email/query" => {
+                        let position = args.get("position").and_then(|v| v.as_u64()).unwrap_or(0);
+                        last_query_ids = (0..KEYWORD_SCAN_PAGE)
+                            .map(|i| format!("m{}", position + i))
+                            .collect();
+                        json!({
+                            "accountId": "a",
+                            "queryState": "S1",
+                            "ids": last_query_ids,
+                            "total": 100_000,
+                            "position": position,
+                        })
+                    }
+                    "Email/get" => {
+                        let list: Vec<Value> = last_query_ids
+                            .iter()
+                            .map(|id| json!({"id": id, "keywords": {}}))
+                            .collect();
+                        json!({"accountId": "a", "state": "S1", "list": list})
+                    }
+                    _ => json!({"accountId": "a"}),
+                };
+                responses.push(json!([name, result, cid]));
+            }
+            let resp = json!({"methodResponses": responses, "sessionState": "s"});
+            axum::response::Response::builder()
+                .status(200)
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(serde_json::to_vec(&resp).unwrap()))
+                .unwrap()
+        }
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
+        let ctl = Ctl { base: base.clone() };
+        let app = axum::Router::new()
+            .route("/session", get(session))
+            .route("/", post(api))
+            .layer(axum::Extension(ctl));
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let storage = crate::storage::Storage::new("sqlite::memory:")
+            .await
+            .unwrap();
+        storage.init_schema().await.unwrap();
+        let cfg = crate::config::Config {
+            jmap_base: base.clone(),
+            email_enabled: true,
+            mail_domain: "example.com".to_string(),
+            hmac_secret: SecretString::from("a".repeat(32)),
+            ..Default::default()
+        };
+        let state = StdArc::new(AppState::new(cfg, StdArc::new(storage)));
+
+        let owner = "u@example.com";
+        let scoped = scoped_collection_id("2", "dev-1");
+        let jmap = state.jmap_client.as_ref().unwrap().clone();
+        let password = SecretString::from("pw");
+        let mut ops: Vec<PendingEmailOp> = Vec::new();
+        let outcome = scan_email_keyword_changes(
+            &KeywordScanCtx {
+                state: &state,
+                jmap: &jmap,
+                account_id: "a",
+                mailbox_id: "mbx-inbox",
+                username: owner,
+                password: &password,
+                state_collection_id: &scoped,
+            },
+            &HashSet::new(),
+            &mut ops,
+            None,
+        )
+        .await;
+        assert!(
+            outcome.deferred,
+            "a sweep that exhausts the page budget with entries pending must be deferred"
+        );
+        assert_eq!(
+            outcome.position,
+            u64::from(KEYWORD_SCAN_MAX_PAGES) * KEYWORD_SCAN_PAGE,
+            "the rotating position must advance to the page-cap boundary for the next sweep"
+        );
+    }
+
     /// A caller-supplied change budget (`max_ops`, the EWS `MaxChangesReturned`
     /// remainder) must cap the flag scan's `<Change>` emission and HOLD the
     /// rotating position so the deferred edits remain discoverable, setting
@@ -17289,6 +17827,267 @@ mod tests {
                 .unwrap()
                 .is_none(),
             "the prime must not acknowledge (no cursor) when the baseline capture failed"
+        );
+    }
+
+    /// An initial prime must SEED the flag baseline for every message it
+    /// delivers as an `<Add>`: a message that arrived during pagination is
+    /// absent from the baseline captured at the start of the sync, and the
+    /// bounded rotating scan records a first observation WITHOUT a `<Change>`,
+    /// so a flag edit made before the scan reaches the message would be silently
+    /// dropped. The delivered keywords must therefore be recorded.
+    #[tokio::test]
+    async fn test_email_initial_sync_seeds_keyword_baseline_for_delivered_adds() {
+        use crate::models::AppState;
+        use axum::routing::{get, post};
+        use serde_json::{Value, json};
+        use std::sync::Arc as StdArc;
+
+        #[derive(Clone)]
+        struct Ctl {
+            base: String,
+        }
+
+        async fn session(axum::Extension(ctl): axum::Extension<Ctl>) -> axum::Json<Value> {
+            axum::Json(json!({
+                "apiUrl": ctl.base,
+                "downloadUrl": format!("{}/download/{{accountId}}/{{blobId}}", ctl.base),
+                "uploadUrl": format!("{}/upload/{{accountId}}", ctl.base),
+                "eventSourceUrl": format!("{}/eventsource", ctl.base),
+                "state": "s",
+                "username": "u",
+                "accounts": {"a": {"name": "u", "isPersonal": true, "isReadOnly": false, "accountCapabilities": {}}},
+                "primaryAccounts": {"urn:ietf:params:jmap:mail": "a"},
+                "capabilities": {"urn:ietf:params:jmap:core": {"maxObjectsInGet": 500}}
+            }))
+        }
+
+        async fn api(body: String) -> axum::response::Response {
+            let req: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
+            let mut responses = Vec::new();
+            for call in req
+                .get("methodCalls")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default()
+            {
+                let name = call.get(0).and_then(|v| v.as_str()).unwrap_or("");
+                let cid = call.get(2).and_then(|v| v.as_str()).unwrap_or("c0");
+                let args = call.get(1).cloned().unwrap_or(Value::Null);
+                let result = match name {
+                    "Mailbox/query" => json!({"accountId":"a","ids":["mbx-inbox"],"total":1}),
+                    "Email/query" => {
+                        json!({"accountId":"a","queryState":"QS0","ids":["m1"],"total":1,"position":0})
+                    }
+                    "Email/get" => {
+                        // The baseline CAPTURE requests only `["keywords"]` and
+                        // sees a STALE flag set; the delivery fetch requests the
+                        // full property set and sees the CURRENT set. Only the
+                        // delivered-Add seed can make the final baseline match
+                        // the current set.
+                        let only_keywords = args
+                            .get("properties")
+                            .and_then(|v| v.as_array())
+                            .map(|a| a.len() == 1 && a[0].as_str() == Some("keywords"))
+                            .unwrap_or(false);
+                        if only_keywords {
+                            json!({"accountId":"a","state":"D0","list":[
+                                {"id":"m1","keywords":{"$seen":true}}
+                            ]})
+                        } else {
+                            json!({"accountId":"a","state":"D0","list":[
+                                {"id":"m1","mailboxIds":{"mbx-inbox":true},"keywords":{"$seen":true,"$flagged":true},"subject":"s1","receivedAt":"2026-01-01T00:00:00Z"}
+                            ]})
+                        }
+                    }
+                    _ => json!({"accountId":"a"}),
+                };
+                responses.push(json!([name, result, cid]));
+            }
+            let resp = json!({"methodResponses": responses, "sessionState": "s"});
+            axum::response::Response::builder()
+                .status(200)
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(serde_json::to_vec(&resp).unwrap()))
+                .unwrap()
+        }
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
+        let ctl = Ctl { base: base.clone() };
+        let app = axum::Router::new()
+            .route("/session", get(session))
+            .route("/", post(api))
+            .layer(axum::Extension(ctl));
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let storage = crate::storage::Storage::new("sqlite::memory:")
+            .await
+            .unwrap();
+        storage.init_schema().await.unwrap();
+        let cfg = crate::config::Config {
+            jmap_base: base.clone(),
+            email_enabled: true,
+            mail_domain: "example.com".to_string(),
+            hmac_secret: SecretString::from("a".repeat(32)),
+            ..Default::default()
+        };
+        let state = StdArc::new(AppState::new(cfg, StdArc::new(storage)));
+
+        let owner = "u@example.com";
+        let scoped = scoped_collection_id("2", "dev-1");
+        let password = SecretString::from("pw");
+        let options = crate::eas_sync_options::EasSyncCollectionOptions::default();
+        let result = handle_email_sync(&EmailSyncRequestCtx {
+            state: &state,
+            username: owner,
+            password: &password,
+            collection_id: "2",
+            state_collection_id: &scoped,
+            incoming_sync_key: "0",
+            window: 10,
+            options: Some(&options),
+            conversation_mode: false,
+        })
+        .await;
+        assert!(result.is_ok(), "initial prime must succeed: {result:?}");
+
+        let seeded = state
+            .storage
+            .get_email_keyword(owner, &scoped, "m1")
+            .await
+            .unwrap();
+        let mut expected = vec!["$flagged".to_string(), "$seen".to_string()];
+        expected.sort();
+        assert_eq!(
+            seeded,
+            Some(expected),
+            "the delivered <Add>'s keywords must be seeded into the flag baseline"
+        );
+    }
+
+    /// A DRAINED initial Sync whose `sync_state` write fails must FAIL CLOSED:
+    /// the client is told to continue from a fresh SyncKey, and its next
+    /// non-zero Sync routes to the DELTA path. If the query-state token was not
+    /// stored, that delta starts from an empty state, answers an empty success
+    /// window, and the mailbox stays unprimed until a manual re-prime.
+    #[tokio::test]
+    async fn test_email_initial_sync_fails_closed_when_state_write_fails() {
+        use crate::models::AppState;
+        use axum::routing::{get, post};
+        use serde_json::{Value, json};
+        use std::sync::Arc as StdArc;
+
+        #[derive(Clone)]
+        struct Ctl {
+            base: String,
+        }
+
+        async fn session(axum::Extension(ctl): axum::Extension<Ctl>) -> axum::Json<Value> {
+            axum::Json(json!({
+                "apiUrl": ctl.base,
+                "downloadUrl": format!("{}/download/{{accountId}}/{{blobId}}", ctl.base),
+                "uploadUrl": format!("{}/upload/{{accountId}}", ctl.base),
+                "eventSourceUrl": format!("{}/eventsource", ctl.base),
+                "state": "s",
+                "username": "u",
+                "accounts": {"a": {"name": "u", "isPersonal": true, "isReadOnly": false, "accountCapabilities": {}}},
+                "primaryAccounts": {"urn:ietf:params:jmap:mail": "a"},
+                "capabilities": {"urn:ietf:params:jmap:core": {"maxObjectsInGet": 500}}
+            }))
+        }
+
+        async fn api(
+            axum::Extension(_ctl): axum::Extension<Ctl>,
+            body: String,
+        ) -> axum::response::Response {
+            let req: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
+            let mut responses = Vec::new();
+            for call in req
+                .get("methodCalls")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default()
+            {
+                let name = call.get(0).and_then(|v| v.as_str()).unwrap_or("");
+                let cid = call.get(2).and_then(|v| v.as_str()).unwrap_or("c0");
+                let result = match name {
+                    "Mailbox/query" => json!({"accountId":"a","ids":["mbx-inbox"],"total":1}),
+                    "Email/query" => {
+                        json!({"accountId":"a","queryState":"QS0","ids":["m1"],"total":1,"position":0})
+                    }
+                    "Email/get" => json!({"accountId":"a","state":"D0","list":[
+                        {"id":"m1","mailboxIds":{"mbx-inbox":true},"keywords":{},"subject":"s1","receivedAt":"2026-01-01T00:00:00Z"}
+                    ]}),
+                    _ => json!({"accountId":"a"}),
+                };
+                responses.push(json!([name, result, cid]));
+            }
+            let resp = json!({"methodResponses": responses, "sessionState": "s"});
+            axum::response::Response::builder()
+                .status(200)
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(serde_json::to_vec(&resp).unwrap()))
+                .unwrap()
+        }
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
+        let ctl = Ctl { base: base.clone() };
+        let app = axum::Router::new()
+            .route("/session", get(session))
+            .route("/", post(api))
+            .layer(axum::Extension(ctl));
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let storage = crate::storage::Storage::new("sqlite::memory:")
+            .await
+            .unwrap();
+        storage.init_schema().await.unwrap();
+        let cfg = crate::config::Config {
+            jmap_base: base.clone(),
+            email_enabled: true,
+            mail_domain: "example.com".to_string(),
+            hmac_secret: SecretString::from("a".repeat(32)),
+            ..Default::default()
+        };
+        let state = StdArc::new(AppState::new(cfg, StdArc::new(storage)));
+
+        let owner = "u@example.com";
+        let scoped = scoped_collection_id("2", "dev-1");
+        // Poison the SyncKey/state write. The mailbox (total 1) fits the window
+        // (512), so the prime DRAINS and MUST persist the state token before
+        // acknowledging.
+        sqlx::query(
+            "CREATE TRIGGER poison_state BEFORE INSERT ON sync_state \
+             BEGIN SELECT RAISE(ABORT, 'poisoned'); END;",
+        )
+        .execute(state.storage.pool())
+        .await
+        .unwrap();
+
+        let password = SecretString::from("pw");
+        let options = crate::eas_sync_options::EasSyncCollectionOptions::default();
+        let result = handle_email_sync(&EmailSyncRequestCtx {
+            state: &state,
+            username: owner,
+            password: &password,
+            collection_id: "2",
+            state_collection_id: &scoped,
+            incoming_sync_key: "0",
+            window: 512,
+            options: Some(&options),
+            conversation_mode: false,
+        })
+        .await;
+
+        assert!(
+            result.is_err(),
+            "a failed state write on a drained prime must fail closed: {result:?}"
         );
     }
 

@@ -15,7 +15,7 @@ use hmac::digest::KeyInit;
 use hmac::{Hmac, Mac};
 use secrecy::SecretString;
 use sha2::Sha256;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -66,6 +66,65 @@ pub fn generate_server_id(secret: &str, resource_href: &str) -> String {
 
 fn sync_seq_to_token(seq: i64) -> String {
     format!("seq:{}", seq.max(0))
+}
+
+/// The canonical identity of a calendar event across backend representations.
+///
+/// The SAME event reaches the gateway through two paths that derive DIFFERENT
+/// ServerIds: a client `Add`/`Change` writes it through CalDAV and keys the
+/// delivery ledger on `generate_server_id(caldav_href)`, while a JMAP Sync reads
+/// it back under `generate_server_id("jmap://calendar/{account}/{id}")`. The
+/// per-scope ledger lookup then misses and EAS emits a duplicate `<Add>` for an
+/// event the client already holds.
+///
+/// The iCalendar UID is backend-agnostic, so it is the canonical join key:
+/// every event that has been written through either backend has an `item_map`
+/// row carrying its UID, and the FIRST stored ServerId for that UID is treated
+/// as canonical. `jmap_servers` maps an explicit JMAP `resource_href` to the
+/// ServerId its mapping was stored under, so an explicitly destroyed JMAP id
+/// resolves to the same identity.
+struct CalendarIdentity {
+    by_uid: HashMap<String, String>,
+    by_resource: HashMap<String, String>,
+}
+
+impl CalendarIdentity {
+    async fn load(state: &Arc<AppState>, owner: &str) -> Result<Self> {
+        let mut by_uid: HashMap<String, String> = HashMap::new();
+        let mut by_resource: HashMap<String, String> = HashMap::new();
+        for (uid, resource_href, server_id) in state.storage.list_item_map_identities(owner).await?
+        {
+            if let Some(uid) = uid.filter(|u| !u.is_empty()) {
+                by_uid.entry(uid).or_insert_with(|| server_id.clone());
+            }
+            by_resource.entry(resource_href).or_insert(server_id);
+        }
+        Ok(Self {
+            by_uid,
+            by_resource,
+        })
+    }
+
+    /// The canonical ServerId for a fetched event: the stored identity for its
+    /// UID when one exists, else the ServerId derived from `href`.
+    fn for_event(&self, secret: &str, uid: &str, href: &str) -> String {
+        if !uid.is_empty()
+            && let Some(existing) = self.by_uid.get(uid)
+        {
+            return existing.clone();
+        }
+        self.for_href(secret, href)
+    }
+
+    /// The canonical ServerId for a bare `href` (an event with no parsed UID,
+    /// e.g. an explicitly destroyed JMAP id): the stored identity for that
+    /// resource when one exists, else the derived ServerId.
+    fn for_href(&self, secret: &str, href: &str) -> String {
+        self.by_resource
+            .get(href)
+            .cloned()
+            .unwrap_or_else(|| generate_server_id(secret, href))
+    }
 }
 
 fn sync_since_from_token(token: Option<&str>) -> i64 {
@@ -1540,6 +1599,14 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
 
     let start_db_seq = storage.get_latest_change_seq().await.unwrap_or(0);
 
+    // Canonical identity map: resolves the SAME event to ONE ServerId across the
+    // CalDAV and JMAP representations, so this scope's ledger lookup and
+    // Add-vs-Change decision are consistent no matter which backend delivered the
+    // event first (a client Add through CalDAV and a later JMAP Sync otherwise
+    // derive different ServerIds and re-emit `<Add>` for an event the client
+    // already holds).
+    let identity = CalendarIdentity::load(&params.state, params.owner).await?;
+
     // EventItem struct used by both JMAP and CalDAV paths
     #[derive(Clone)]
     struct EventItem {
@@ -1689,10 +1756,9 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
                                 // deliver.
                                 for id in &changes.destroyed {
                                     let href = format!("jmap://calendar/{}/{}", account_id, id);
-                                    jmap_destroyed_server_ids.insert(generate_server_id(
-                                        params.state.cfg.hmac_secret(),
-                                        &href,
-                                    ));
+                                    jmap_destroyed_server_ids.insert(
+                                        identity.for_href(params.state.cfg.hmac_secret(), &href),
+                                    );
                                 }
                                 let mut conversion_failed = false;
                                 if !all_ids.is_empty() {
@@ -2126,7 +2192,7 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
         if ev.href.is_empty() {
             continue;
         }
-        let server_id = generate_server_id(params.state.cfg.hmac_secret(), &ev.href);
+        let server_id = identity.for_event(params.state.cfg.hmac_secret(), &ev.item.uid, &ev.href);
         seen_ids.insert(server_id.clone());
         let etag = ev.etag.trim_matches('"').to_string();
         // Use pre-parsed item from EventItem (set by both JMAP and CalDAV paths)
@@ -2372,13 +2438,21 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
     };
     // Journal watermark independent of the provider token (which may be a
     // non-`seq:` JMAP query_state): everything journaled up to the delivered
-    // set is consumed. When the window clipped (MoreAvailable), undelivered
-    // rows must stay visible to Ping, so hold the watermark at the pre-sync
-    // head (`Some`); the client's obligatory follow-up Sync drains the
-    // remainder. A full drain (`None`) lets the commit read the journal head
-    // AFTER its own delivery rows are written, so the device is never woken by
-    // the very rows it just delivered.
-    let watermark_hold = more_available.then_some(start_db_seq);
+    // set is consumed. The stored watermark is ALWAYS the pre-sync head
+    // (`Some(start_db_seq)`), for a clipped window AND a full drain alike.
+    //
+    // A full drain must NOT let the commit read the journal head at commit
+    // time: a change another device journals after `start_db_seq` but before
+    // this commit would then be folded into the stored watermark and Ping /
+    // GetItemEstimate would never report it — the device would sleep through
+    // another device's change until an unrelated Sync. Holding the pre-sync
+    // head keeps every post-snapshot row visible. The one cost is that the
+    // rows THIS response delivered also stay above the watermark, so the next
+    // Ping may wake once more; that follow-up Sync finds nothing new (the
+    // delivered rows are filtered by the provider token / etag) and re-holds
+    // the watermark at the then-current head, so it converges after one extra
+    // wake. This is a delayed-wake fix, never data loss.
+    let watermark_hold = Some(start_db_seq);
     // Commit every durable side effect of this response in ONE transaction:
     // the delivered items' item_map + change_journal rows and per-scope ledger
     // rows, the emitted `<Delete>`s' removals, the new SyncKey + token, and the
@@ -2910,16 +2984,39 @@ mod tests {
                         ]));
                     }
                     "CalendarEvent/get" => {
-                        let want: Vec<String> = args
-                            .get("ids")
-                            .and_then(|v| v.as_array())
-                            .map(|a| {
-                                a.iter()
+                        // Resolve the `#ids` back-reference (RFC 8620 §5.5) to
+                        // the earlier `CalendarEvent/query` result, so a scoped
+                        // query's `filter.inCalendarIds` is actually honoured.
+                        // Without this the stub returns EVERY event and a
+                        // scoping regression (query construction vs. response
+                        // rendering) stays invisible.
+                        let want: Vec<String> =
+                            if let Some(arr) = args.get("ids").and_then(|v| v.as_array()) {
+                                arr.iter()
                                     .filter_map(|v| v.as_str())
                                     .map(String::from)
                                     .collect()
-                            })
-                            .unwrap_or_default();
+                            } else if let Some(result_of) = args
+                                .get("#ids")
+                                .and_then(|v| v.get("resultOf"))
+                                .and_then(|v| v.as_str())
+                            {
+                                responses
+                                    .iter()
+                                    .find(|r| r.get(2).and_then(|v| v.as_str()) == Some(result_of))
+                                    .and_then(|r| r.get(1))
+                                    .and_then(|r| r.get("ids"))
+                                    .and_then(|v| v.as_array())
+                                    .map(|a| {
+                                        a.iter()
+                                            .filter_map(|v| v.as_str())
+                                            .map(String::from)
+                                            .collect()
+                                    })
+                                    .unwrap_or_default()
+                            } else {
+                                Vec::new()
+                            };
                         let list: Vec<Value> = s
                             .events
                             .lock()
@@ -4004,12 +4101,18 @@ mod tests {
             xml.contains("uid-mine"),
             "the folder's own event must be delivered:\n{xml}"
         );
+        // The isolation boundary must hold end-to-end: the stub resolves the
+        // `#ids` back-reference to the scoped `CalendarEvent/query` result, so a
+        // scoping regression between query construction and response rendering
+        // would leak the other calendar's event into the response.
+        assert!(
+            !xml.contains("uid-other"),
+            "another calendar's event must NOT be delivered:\n{xml}"
+        );
 
         // The scoped prime must issue its `CalendarEvent/query` with
         // `filter.inCalendarIds` naming ONLY the folder's own calendar, so a
-        // real backend never returns another calendar's events. (The stub does
-        // not resolve the `#ids` back-reference, so the wire query is the
-        // assertion target.)
+        // real backend never returns another calendar's events.
         let scoped = stub.recorded.lock().unwrap().iter().any(|body| {
             body.get("methodCalls")
                 .and_then(|c| c.as_array())
@@ -4333,6 +4436,76 @@ mod tests {
         );
     }
 
+    /// The SAME event written through CalDAV and later read through JMAP must
+    /// resolve to ONE ServerId. A client Add keys the delivery ledger on the
+    /// CalDAV-href ServerId; a later JMAP delta derives
+    /// `generate_server_id("jmap://calendar/...")`. Without a canonical identity
+    /// the ledger lookup misses and the delta re-emits a duplicate `<Add>`.
+    #[tokio::test]
+    async fn caldav_created_event_is_not_re_added_by_jmap_delta() {
+        let stub = spawn_calendar_stub(
+            vec![json!({
+                "accountId": "acct", "oldState": "s0", "newState": "s1",
+                "hasMoreChanges": false,
+                "created": ["e1"], "updated": [], "destroyed": []
+            })],
+            vec![stub_event("e1", "uid-e1", "Shared")],
+            "query-s",
+            "get-s",
+            None,
+        )
+        .await;
+        let state = calendar_mutation_state(&stub.base).await;
+        let owner = "user@example.com";
+        let scope = "1::devA";
+
+        // Simulate a client Add: the delivery ledger and item_map carry the
+        // CalDAV-href-derived ServerId, and the scope already holds a SyncKey.
+        let caldav_href = "/dav/cal/user@example.com/Default/e1.ics";
+        let caldav_server_id = generate_server_id(state.cfg.hmac_secret(), caldav_href);
+        state
+            .storage
+            .upsert_item_map(
+                owner,
+                caldav_href,
+                caldav_href,
+                &caldav_server_id,
+                "uid-e1",
+                "etag",
+            )
+            .await
+            .unwrap();
+        state
+            .storage
+            .upsert_calendar_delivery(owner, scope, &caldav_server_id, "etag")
+            .await
+            .unwrap();
+        state
+            .storage
+            .set_sync_key(owner, scope, "key-1", Some("s0"))
+            .await
+            .unwrap();
+
+        // A JMAP delta of the same scope reads the event under its jmap:// href;
+        // the canonical identity must resolve it to the SAME ServerId, so it is
+        // delivered as `<Change>` (the scope already holds it), never a second
+        // `<Add>`.
+        let xml = run_calendar_sync_for(&state, "1", scope, "key-1").await;
+        assert!(
+            xml.contains(&caldav_server_id),
+            "the JMAP delta must reuse the stored ServerId:\n{xml}"
+        );
+        assert!(
+            !xml.contains("<Add>"),
+            "an event already delivered under its CalDAV identity must not be \
+             re-added:\n{xml}"
+        );
+        assert!(
+            xml.contains("<Change>"),
+            "the event must be delivered as a Change:\n{xml}"
+        );
+    }
+
     /// A deletion confirmed by ONE scope must still be delivered to ANOTHER
     /// scope that holds the same event. The confirming scope removes the shared
     /// `item_map` row when it emits the `<Delete>`, so the second scope's sweep
@@ -4591,6 +4764,26 @@ mod tests {
                 .iter()
                 .any(|r| r.server_id == sid && r.op == "upsert"),
             "a delivered event must journal a change for other clients"
+        );
+
+        // The stored journal watermark is the PRE-sync head, not the head at
+        // commit time: the commit's own delivery row sits above it, so a change
+        // another device journals between the snapshot and the commit stays
+        // visible to Ping/GetItemEstimate (the wake-up is merely delayed by one
+        // extra Ping, never lost).
+        let head_after = state.storage.get_latest_change_seq().await.unwrap();
+        assert!(
+            head_after > 0,
+            "the delivery must have journaled a row above the watermark"
+        );
+        assert_eq!(
+            state
+                .storage
+                .journal_watermark(owner, "calendar")
+                .await
+                .unwrap(),
+            Some(0),
+            "a full drain must hold the pre-sync head (0 here), never the commit-time head"
         );
     }
 

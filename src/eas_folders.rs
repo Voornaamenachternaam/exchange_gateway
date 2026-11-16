@@ -768,6 +768,74 @@ async fn prune_destroyed_folder_ids(state: &Arc<AppState>, owner: &str, destroye
     }
 }
 
+/// Reconcile the owner's outstanding `pending_folder_prune` intents against the
+/// LIVE JMAP mailbox set and replay only the CONFIRMED deletions (prune +
+/// `folder-delete`), preserving the mapping of any folder the backend still
+/// holds.
+///
+/// A pending intent is recorded BEFORE its destroy so a crash mid-destroy still
+/// leaves a work list; that means a row can name a folder whose destroy is
+/// still in flight or was refused. Draining such a row blindly would strand a
+/// LIVE folder (EAS would stop advertising a folder that still exists), so this
+/// resolves each id against the complete live hierarchy first (see
+/// [`Storage::reconcile_pending_folder_prunes`]).
+///
+/// FAIL-CLOSED: when the live set cannot be established — no JMAP client, or a
+/// `Mailbox/query` failure — nothing is pruned and every intent is left in
+/// place for a later read to reconcile. Best-effort at the call site: a failure
+/// never blocks the primary folder-sync work.
+pub(crate) async fn reconcile_deferred_folder_prunes(
+    state: &Arc<AppState>,
+    owner: &str,
+    password: &SecretString,
+) {
+    let pending = match state.storage.list_pending_folder_prunes(owner).await {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::warn!(error = %e, "folder prune reconcile: failed to list pending intents");
+            return;
+        }
+    };
+    if pending.is_empty() {
+        return;
+    }
+    // No JMAP client (or a query failure) means the live set is UNKNOWN: leaving
+    // every intent in place is the safe choice — a later read with a reachable
+    // backend reconciles them.
+    let Some(jmap) = state.jmap_client.clone() else {
+        tracing::warn!(
+            owner = %owner,
+            "folder prune reconcile: no JMAP client; leaving pending intents unresolved"
+        );
+        return;
+    };
+    let live: std::collections::HashSet<String> = match jmap
+        .query_all_mailboxes(owner, password)
+        .await
+    {
+        Ok(result) => result
+            .mailboxes
+            .iter()
+            .filter_map(|m| m.id.clone())
+            .collect(),
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                owner = %owner,
+                "folder prune reconcile: Mailbox/query failed; leaving pending intents unresolved"
+            );
+            return;
+        }
+    };
+    if let Err(e) = state
+        .storage
+        .reconcile_pending_folder_prunes(owner, &live)
+        .await
+    {
+        tracing::warn!(error = %e, "folder prune reconcile: failed to reconcile pending intents");
+    }
+}
+
 /// The target folder and every descendant, ordered deepest-first (children
 /// before parents) so a backend destroy never hits a parent that still has a
 /// child.

@@ -993,11 +993,15 @@ impl Storage {
     /// detect calendar changes from those rows, so an event first delivered by
     /// one device's EAS Sync must journal a change for the others.
     ///
-    /// `journal_seq` is the watermark to store: `Some(seq)` for a clipped window
-    /// (hold the pre-sync head so the undelivered rows stay visible to Ping), or
-    /// `None` to consume up to the journal head AS OF THIS COMMIT — read inside
-    /// the transaction, after the delivery rows are inserted, so a device is
-    /// never woken by the very rows it just delivered.
+    /// `journal_seq` is the watermark to store. The Sync caller always passes
+    /// `Some(pre_sync_head)`: a clipped window must hold the head so the
+    /// undelivered rows stay visible to Ping, and a full drain must hold it too
+    /// so a change journaled by ANOTHER device after the head but before this
+    /// commit is not folded into the stored watermark (which would let the
+    /// device sleep through that change). `None` (read the journal head inside
+    /// the transaction, after the delivery rows are inserted) remains supported
+    /// for callers that deliberately want the commit-time head; it risks the
+    /// delayed-wake race above.
     ///
     /// `item_map`/ledger DELETE failures are non-fatal (the caller's earlier
     /// best-effort behavior is preserved) — a missing row only re-delivers, it
@@ -1033,9 +1037,18 @@ impl Storage {
         }
 
         for d in deliveries {
+            // Preserve a REAL backend href over a `jmap://` pseudo-href: the
+            // canonical identity may have been stored from a CalDAV write (real
+            // href) while this delivery reads the same event through JMAP (a
+            // `jmap://` pseudo-href). Overwriting would make EWS and later EAS
+            // reads depend on JMAP being reachable when a CalDAV href was
+            // available; the real href is strictly more useful.
             sqlx::query(
                 "INSERT INTO item_map (owner, caldav_href, resource_href, server_id, uid, etag) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-                 ON CONFLICT(owner, server_id) DO UPDATE SET caldav_href = ?2, resource_href = ?3, uid = ?5, etag = ?6, updated_at = CURRENT_TIMESTAMP",
+                 ON CONFLICT(owner, server_id) DO UPDATE SET
+                   caldav_href = CASE WHEN excluded.resource_href LIKE 'jmap://%' AND item_map.caldav_href IS NOT NULL AND item_map.caldav_href NOT LIKE 'jmap://%' THEN item_map.caldav_href ELSE excluded.caldav_href END,
+                   resource_href = CASE WHEN excluded.resource_href LIKE 'jmap://%' AND item_map.resource_href NOT LIKE 'jmap://%' THEN item_map.resource_href ELSE excluded.resource_href END,
+                   uid = ?5, etag = ?6, updated_at = CURRENT_TIMESTAMP",
             )
             .bind(owner)
             .bind(d.resource_href)
@@ -1568,6 +1581,29 @@ impl Storage {
                 .await
                 .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))?;
         Ok(ids.into_iter().collect())
+    }
+
+    /// The owner's COMPLETE `item_map` identity triples — `(uid, resource_href,
+    /// server_id)` — unbounded. Used to canonicalise a calendar event's
+    /// ServerId across backend representations: the SAME event written through
+    /// CalDAV (server_id derived from the CalDAV href) and later read through
+    /// JMAP (server_id derived from `jmap://calendar/...`) must resolve to ONE
+    /// stored identity, or a scope's delivery ledger misses it and EAS emits a
+    /// duplicate `<Add>`. The `uid` is backend-agnostic, so it is the join key;
+    /// `resource_href` lets an explicitly destroyed JMAP id resolve to the
+    /// ServerId its mapping was stored under.
+    pub async fn list_item_map_identities(
+        &self,
+        owner: &str,
+    ) -> Result<Vec<(Option<String>, String, String)>> {
+        let rows = sqlx::query_as::<_, (Option<String>, String, String)>(
+            "SELECT uid, resource_href, server_id FROM item_map WHERE owner = ?1 ORDER BY id ASC",
+        )
+        .bind(owner)
+        .fetch_all(self.pool.as_ref())
+        .await
+        .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))?;
+        Ok(rows)
     }
 
     /// Persist the EAS email initial-sync paging cursor
@@ -3840,19 +3876,50 @@ impl Storage {
         .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))
     }
 
-    /// Replay every outstanding folder-map prune for `owner`: prune the row and
-    /// journal a `folder-delete` (via [`Self::delete_folders_journaled`], which
-    /// also clears each replayed pending record), so a delete that failed to
-    /// mirror at destroy time still reaches the client on the next folder-sync
-    /// read. Returns the number of ids drained. An error leaves the pending rows
-    /// in place, so a later call retries the whole set.
-    pub async fn drain_pending_folder_prunes(&self, owner: &str) -> Result<u64> {
+    /// Reconcile and replay the outstanding folder-map prunes for `owner`
+    /// against the LIVE backend mailbox ids (`live_ids`).
+    ///
+    /// A pending prune is recorded BEFORE its `Mailbox/set destroy` call so a
+    /// crash mid-destroy still leaves a work list — which means a row can name
+    /// a folder whose destroy is still in flight, or was later REFUSED. Blindly
+    /// pruning every pending row would then strand a LIVE folder's mapping: EAS
+    /// would stop advertising a folder that still exists. So each pending id is
+    /// resolved against `live_ids`:
+    ///
+    /// * an id the backend STILL holds is live — the destroy did not happen
+    ///   (refused, or not yet observed) — so its mapping is preserved and its
+    ///   intent is dropped (the destroy, if it ever happens, records and prunes
+    ///   afresh);
+    /// * an id the backend no longer holds is a CONFIRMED deletion — its
+    ///   mapping is pruned and a `folder-delete` journaled.
+    ///
+    /// Returns the number of ids pruned. An error leaves every pending row in
+    /// place, so a later call retries the whole set.
+    ///
+    /// `live_ids` MUST be the COMPLETE live mailbox set (e.g. from
+    /// [`JmapClient::query_all_mailboxes`](crate::jmap::JmapClient::query_all_mailboxes),
+    /// which pages). A caller that cannot obtain it must NOT call this: an
+    /// incomplete set would treat a live folder as absent and prune it.
+    pub async fn reconcile_pending_folder_prunes(
+        &self,
+        owner: &str,
+        live_ids: &std::collections::HashSet<String>,
+    ) -> Result<u64> {
         let pending = self.list_pending_folder_prunes(owner).await?;
         if pending.is_empty() {
             return Ok(0);
         }
-        self.delete_folders_journaled(owner, &pending).await?;
-        Ok(pending.len() as u64)
+        let (live, dead): (Vec<String>, Vec<String>) =
+            pending.into_iter().partition(|id| live_ids.contains(id));
+        // Prune + journal the confirmed deletions first (this also clears their
+        // pending rows); then drop the intents of the still-live folders.
+        if !dead.is_empty() {
+            self.delete_folders_journaled(owner, &dead).await?;
+        }
+        if !live.is_empty() {
+            self.clear_pending_folder_prunes(owner, &live).await?;
+        }
+        Ok(dead.len() as u64)
     }
 
     /// Folder-hierarchy journal rows with `since < id <= until`. `until` is the
@@ -5200,7 +5267,7 @@ mod tests {
         );
         assert_eq!(
             storage
-                .drain_pending_folder_prunes("o")
+                .reconcile_pending_folder_prunes("o", &std::collections::HashSet::new())
                 .await
                 .expect("drain after migration"),
             1
@@ -6163,7 +6230,7 @@ mod tests {
         );
         assert_eq!(
             storage
-                .drain_pending_folder_prunes(owner)
+                .reconcile_pending_folder_prunes(owner, &std::collections::HashSet::new())
                 .await
                 .expect("drain"),
             0,
@@ -6188,7 +6255,7 @@ mod tests {
         // Drain: both mappings pruned + journaled, work list cleared.
         assert_eq!(
             storage
-                .drain_pending_folder_prunes(owner)
+                .reconcile_pending_folder_prunes(owner, &std::collections::HashSet::new())
                 .await
                 .expect("drain"),
             2
@@ -6245,7 +6312,7 @@ mod tests {
             .expect("record");
         assert_eq!(
             storage
-                .drain_pending_folder_prunes(owner)
+                .reconcile_pending_folder_prunes(owner, &std::collections::HashSet::new())
                 .await
                 .expect("drain"),
             1
@@ -6266,6 +6333,128 @@ mod tests {
                 .iter()
                 .all(|r| r.op != "folder-delete"),
             "an unmapped pending id must not fabricate a folder-delete"
+        );
+    }
+
+    /// `reconcile_pending_folder_prunes` must prune ONLY the intents whose
+    /// backend mailbox is confirmed gone, and preserve (dropping the intent of)
+    /// a folder the live hierarchy still holds — a pending intent recorded
+    /// before a destroy that was refused (or is still in flight) must never drop
+    /// a live folder's mapping.
+    #[tokio::test]
+    async fn reconcile_pending_folder_prunes_spares_live_folders() {
+        let storage = mem_storage().await;
+        let owner = "u@example.com";
+        for server_id in ["mb-live", "mb-dead"] {
+            storage
+                .upsert_folder_journaled(
+                    FolderUpsertParams {
+                        owner,
+                        server_id,
+                        parent_id: "0",
+                        display_name: server_id,
+                        folder_type: 12,
+                        backend_kind: "jmap",
+                        backend_id: server_id,
+                    },
+                    "folder-add",
+                )
+                .await
+                .expect("seed folder");
+        }
+        storage
+            .record_pending_folder_prunes(owner, &["mb-live".to_string(), "mb-dead".to_string()])
+            .await
+            .expect("record");
+
+        // The live hierarchy still holds `mb-live`; `mb-dead` is gone.
+        let live: std::collections::HashSet<String> = ["mb-live".to_string()].into_iter().collect();
+        assert_eq!(
+            storage
+                .reconcile_pending_folder_prunes(owner, &live)
+                .await
+                .expect("reconcile"),
+            1,
+            "only the confirmed deletion is pruned"
+        );
+        assert!(
+            storage
+                .get_folder(owner, "mb-live")
+                .await
+                .expect("db")
+                .is_some(),
+            "a live folder's mapping must survive the reconcile"
+        );
+        assert!(
+            storage
+                .get_folder(owner, "mb-dead")
+                .await
+                .expect("db")
+                .is_none(),
+            "a confirmed deletion's mapping must be pruned"
+        );
+        assert!(
+            storage
+                .list_pending_folder_prunes(owner)
+                .await
+                .expect("list")
+                .is_empty(),
+            "both intents are resolved (pruned or withdrawn)"
+        );
+        let deletes = storage
+            .list_folder_journal_since(owner, 0, i64::MAX)
+            .await
+            .expect("journal")
+            .into_iter()
+            .filter(|r| r.op == "folder-delete")
+            .map(|r| r.server_id)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            deletes,
+            vec!["mb-dead".to_string()],
+            "only the confirmed deletion is journaled"
+        );
+    }
+
+    /// An empty `live_ids` set (a caller that could not enumerate the backend)
+    /// prunes every intent; the callers guard this by not calling with an
+    /// incomplete set — see `reconcile_deferred_folder_prunes`.
+    #[tokio::test]
+    async fn reconcile_pending_folder_prunes_with_empty_live_set_prunes_all() {
+        let storage = mem_storage().await;
+        let owner = "u@example.com";
+        storage
+            .upsert_folder_journaled(
+                FolderUpsertParams {
+                    owner,
+                    server_id: "mb-1",
+                    parent_id: "0",
+                    display_name: "mb-1",
+                    folder_type: 12,
+                    backend_kind: "jmap",
+                    backend_id: "mb-1",
+                },
+                "folder-add",
+            )
+            .await
+            .expect("seed folder");
+        storage
+            .record_pending_folder_prunes(owner, &["mb-1".to_string()])
+            .await
+            .expect("record");
+        assert_eq!(
+            storage
+                .reconcile_pending_folder_prunes(owner, &std::collections::HashSet::new())
+                .await
+                .expect("reconcile"),
+            1
+        );
+        assert!(
+            storage
+                .get_folder(owner, "mb-1")
+                .await
+                .expect("db")
+                .is_none()
         );
     }
 }
