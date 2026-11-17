@@ -799,6 +799,12 @@ pub(crate) async fn reconcile_deferred_folder_prunes(
     if pending.is_empty() {
         return;
     }
+    // `pending` is the CANDIDATE set: captured BEFORE the live-mailbox query and
+    // passed through unchanged. A concurrent request can record a NEW intent
+    // (and create its mailbox) while the query below is in flight; classifying
+    // that newer intent against the older live set would treat a just-created
+    // folder as absent and prune its mapping. Only the captured candidates are
+    // reconciled; newer intents are left for the next reconcile.
     // No JMAP client (or a query failure) means the live set is UNKNOWN: leaving
     // every intent in place is the safe choice — a later read with a reachable
     // backend reconciles them.
@@ -829,7 +835,7 @@ pub(crate) async fn reconcile_deferred_folder_prunes(
     };
     if let Err(e) = state
         .storage
-        .reconcile_pending_folder_prunes(owner, &live)
+        .reconcile_pending_folder_prunes(owner, &pending, &live)
         .await
     {
         tracing::warn!(error = %e, "folder prune reconcile: failed to reconcile pending intents");
@@ -1009,6 +1015,15 @@ async fn update_mail_folder(
     // swallow while the local map still recorded the new name, desynchronizing
     // the stored DisplayName from the backend mailbox name.
     let rename = (row.display_name != display_name).then_some(display_name);
+    // Serialize this folder's backend rename/move with its `folder_map` mirror so
+    // a concurrent mutation of the SAME folder over ANY front door (EAS, EWS,
+    // MAPI) cannot interleave a mirror derived from a stale snapshot
+    // (`Storage::lock_folder_mutation`). Held across BOTH the `Mailbox/set`
+    // call and the mirror below.
+    let _folder_guard = state
+        .storage
+        .lock_folder_mutation(owner, &row.backend_id)
+        .await;
     match jmap
         .update_mailbox(
             &account_id,
@@ -1070,6 +1085,13 @@ async fn rename_caldav_folder(
     let Ok(caldav) = CaldavClient::new(&state.cfg) else {
         return FolderMutationResult::status(6);
     };
+    // Serialize this collection's PROPPATCH with its `folder_map` mirror
+    // (`Storage::lock_folder_mutation`), held across BOTH steps so a concurrent
+    // mutation of the SAME folder cannot interleave a stale mirror.
+    let _folder_guard = state
+        .storage
+        .lock_folder_mutation(owner, &row.backend_id)
+        .await;
     if let Err(e) = caldav
         .set_collection_displayname(
             &row.backend_id,
@@ -1127,8 +1149,16 @@ pub fn render_create_response(result: &FolderMutationResult, sync_key: &str) -> 
 }
 
 /// Render a `FolderDelete`/`FolderUpdate` response ([MS-ASCMD] §6.12/§6.17):
-/// `<Status>` followed by an optional `<SyncKey>`.
+/// `<Status>` followed by a `<SyncKey>` ONLY on success. §2.2.3.181.1: "If the
+/// FolderCreate command, FolderDelete command, or FolderUpdate command is not
+/// successful, the server MUST NOT return a SyncKey element."
 pub fn render_status_response(root: &str, result: &FolderMutationResult, sync_key: &str) -> String {
+    if result.status != 1 {
+        return format!(
+            r#"<?xml version="1.0" encoding="utf-8"?><{root} xmlns="FolderHierarchy:"><Status>{}</Status></{root}>"#,
+            result.status,
+        );
+    }
     format!(
         r#"<?xml version="1.0" encoding="utf-8"?><{root} xmlns="FolderHierarchy:"><Status>{}</Status><SyncKey>{}</SyncKey></{root}>"#,
         result.status,
@@ -1165,12 +1195,16 @@ pub async fn current_hierarchy_sync_key(
 /// Whether the `SyncKey` a folder-mutation command supplied matches this
 /// device's stored folder-hierarchy key ([MS-ASCMD] §2.2.3.181.1). The server
 /// MUST reject a mismatched key with Status 9 rather than apply the mutation
-/// (an obsolete key means the client's hierarchy view is out of date). `"0"` is
-/// always accepted: a client that has never synced the hierarchy (or was told
-/// to re-prime with key 0) is allowed to create its first folder, matching the
-/// `FolderSync` prime path. A storage read failure is treated as a MISMATCH
-/// (fail closed): the client re-primes rather than mutate against a key the
-/// server cannot verify.
+/// (an obsolete key means the client's hierarchy view is out of date).
+///
+/// `"0"` is accepted ONLY when the device has NO stored hierarchy key: a client
+/// that has never synced the hierarchy is allowed to create its first folder
+/// (the `FolderSync` prime path). A device that ALREADY holds a key (it primed,
+/// or made an earlier mutation) that supplies `"0"` is a STALE client — the
+/// value does not match its stored key, so it is rejected with Status 9 rather
+/// than applied against an out-of-date hierarchy view. A storage read failure is
+/// treated as a MISMATCH (fail closed): the client re-primes rather than mutate
+/// against a key the server cannot verify.
 pub async fn folder_sync_key_matches(
     state: &Arc<AppState>,
     owner: &str,
@@ -1178,13 +1212,14 @@ pub async fn folder_sync_key_matches(
     supplied: &str,
 ) -> bool {
     let supplied = supplied.trim();
-    if supplied == "0" {
-        return true;
-    }
     let collection_id = crate::eas::scoped_collection_id("folderhierarchy", device_id);
     match state.storage.get_sync_key(owner, &collection_id).await {
+        // A primed device: the supplied key must match the stored one, INCLUDING
+        // `"0"` — a stale client re-sending `"0"` is a mismatch (Status 9).
         Ok(Some((stored, _))) => stored.as_bytes().ct_eq(supplied.as_bytes()).into(),
-        Ok(None) => false,
+        // No stored hierarchy key: the device has never synced. The prime key
+        // `"0"` is accepted; any other key is unknown and rejected.
+        Ok(None) => supplied == "0",
         Err(e) => {
             tracing::warn!(error = %e, "folder mutation: failed to read hierarchy sync key");
             false
@@ -1193,12 +1228,16 @@ pub async fn folder_sync_key_matches(
 }
 
 /// The `FolderHierarchy` status-code response for a folder-mutation command
-/// whose supplied `SyncKey` did not match the stored key: Status 9 with
-/// `SyncKey` 0, instructing the client to re-prime its hierarchy
-/// ([MS-ASCMD] §2.2.3.181.1).
+/// whose supplied `SyncKey` did not match the stored key: Status 9
+/// ([MS-ASCMD] §2.2.3.181.1). §2.2.3.181.1 forbids a `SyncKey` element on a
+/// FAILED `FolderCreate`/`FolderDelete`/`FolderUpdate` ("If the … command is not
+/// successful, the server MUST NOT return a SyncKey element"), so only the
+/// Status is emitted; the client re-primes its hierarchy through `FolderSync`
+/// (which itself answers a mismatched key with Status 9 + SyncKey 0 per
+/// §2.2.3.181.2), not through this response.
 pub fn invalid_folder_sync_key_response(root: &str) -> String {
     format!(
-        r#"<?xml version="1.0" encoding="utf-8"?><{root} xmlns="FolderHierarchy:"><Status>9</Status><SyncKey>0</SyncKey></{root}>"#
+        r#"<?xml version="1.0" encoding="utf-8"?><{root} xmlns="FolderHierarchy:"><Status>9</Status></{root}>"#
     )
 }
 
@@ -1604,6 +1643,24 @@ mod tests {
         assert!(xml.contains("<FolderDelete"));
         assert!(xml.contains("<Status>1</Status><SyncKey>k</SyncKey>"));
         assert!(xml.contains("</FolderDelete>"));
+        // §2.2.3.181.1: a FAILED mutation MUST NOT carry a SyncKey.
+        let fail = render_status_response("FolderDelete", &FolderMutationResult::status(6), "k");
+        assert!(fail.contains("<Status>6</Status>"), "{fail}");
+        assert!(
+            !fail.contains("<SyncKey>"),
+            "a failed mutation must omit SyncKey: {fail}"
+        );
+    }
+
+    #[test]
+    fn invalid_sync_key_response_omits_synckey() {
+        // §2.2.3.181.1: a failed mutation (Status 9) MUST NOT carry a SyncKey.
+        let xml = invalid_folder_sync_key_response("FolderUpdate");
+        assert!(xml.contains("<Status>9</Status>"), "{xml}");
+        assert!(
+            !xml.contains("<SyncKey>"),
+            "a Status 9 mutation response must omit SyncKey: {xml}"
+        );
     }
 
     #[test]
@@ -2189,7 +2246,47 @@ mod tests {
         assert_eq!(second.status, 2);
     }
 
-    // ---- FolderDelete ---------------------------------------------------
+    /// [MS-ASCMD] §2.2.3.181.1: `"0"` is accepted only for a device with NO
+    /// stored hierarchy key. A primed device (a stored key exists) that supplies
+    /// `"0"` is STALE and must be rejected (Status 9) — accepting it would let an
+    /// out-of-date client mutate the hierarchy.
+    #[tokio::test]
+    async fn folder_sync_key_zero_rejected_for_primed_device() {
+        let (state, _, _) = spawn_backend_stub().await;
+        let owner = "primed@example.com";
+        let collection_id = crate::eas::scoped_collection_id("folderhierarchy", "dev-x");
+
+        // Never-primed device: "0" is the valid prime key.
+        assert!(
+            folder_sync_key_matches(&state, owner, "dev-x", "0").await,
+            "a never-primed device may mutate with the prime key 0"
+        );
+        // Any non-zero key is unknown for a never-primed device.
+        assert!(
+            !folder_sync_key_matches(&state, owner, "dev-x", "abc").await,
+            "an unknown key for a never-primed device must be rejected"
+        );
+
+        // Prime the device (a real key is stored).
+        state
+            .storage
+            .set_sync_key(owner, &collection_id, "key-1", Some("seq:5"))
+            .await
+            .unwrap();
+
+        assert!(
+            folder_sync_key_matches(&state, owner, "dev-x", "key-1").await,
+            "the stored key must match"
+        );
+        assert!(
+            !folder_sync_key_matches(&state, owner, "dev-x", "0").await,
+            "a primed device supplying 0 is stale and must be rejected (Status 9)"
+        );
+        assert!(
+            !folder_sync_key_matches(&state, owner, "dev-x", "key-2").await,
+            "a different key must be rejected"
+        );
+    }
 
     #[tokio::test]
     async fn delete_system_folder_is_status_3() {

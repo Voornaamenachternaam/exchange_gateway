@@ -79,37 +79,81 @@ fn sync_seq_to_token(seq: i64) -> String {
 ///
 /// The iCalendar UID is backend-agnostic, so it is the canonical join key:
 /// every event that has been written through either backend has an `item_map`
-/// row carrying its UID, and the FIRST stored ServerId for that UID is treated
-/// as canonical. `jmap_servers` maps an explicit JMAP `resource_href` to the
-/// ServerId its mapping was stored under, so an explicitly destroyed JMAP id
-/// resolves to the same identity.
+/// row carrying its UID, and the stored ServerId for that UID is treated as
+/// canonical. Because the join collapses the CalDAV and JMAP representations of
+/// one event onto a SINGLE `item_map` row (the delivery upsert keys on the
+/// joined ServerId), a UID that instead maps to MORE THAN ONE stored ServerId
+/// names two DISTINCT events — typically the same UID in two calendar
+/// collections, or a forged duplicate. Joining those would make the client see
+/// two events as one item and hide one of them, so an ambiguous UID is NOT
+/// joined: the href-derived identity is used instead. `by_resource` maps an
+/// explicit `resource_href` to the ServerId its mapping was stored under, so an
+/// explicitly destroyed JMAP id resolves to the same identity.
 struct CalendarIdentity {
-    by_uid: HashMap<String, String>,
+    /// UID → `(ServerId, stored_href_is_jmap)`. The href KIND is kept so a UID
+    /// join happens ONLY across backends (see [`CalendarIdentity::for_event`]).
+    by_uid: HashMap<String, (String, bool)>,
+    /// UIDs that map to more than one stored ServerId (distinct events sharing
+    /// a UID); never used for a UID join.
+    ambiguous_uids: HashSet<String>,
     by_resource: HashMap<String, String>,
 }
 
 impl CalendarIdentity {
     async fn load(state: &Arc<AppState>, owner: &str) -> Result<Self> {
-        let mut by_uid: HashMap<String, String> = HashMap::new();
+        let mut by_uid: HashMap<String, (String, bool)> = HashMap::new();
+        let mut ambiguous_uids: HashSet<String> = HashSet::new();
         let mut by_resource: HashMap<String, String> = HashMap::new();
         for (uid, resource_href, server_id) in state.storage.list_item_map_identities(owner).await?
         {
             if let Some(uid) = uid.filter(|u| !u.is_empty()) {
-                by_uid.entry(uid).or_insert_with(|| server_id.clone());
+                let is_jmap = resource_href.starts_with("jmap://");
+                match by_uid.entry(uid) {
+                    std::collections::hash_map::Entry::Vacant(slot) => {
+                        slot.insert((server_id.clone(), is_jmap));
+                    }
+                    std::collections::hash_map::Entry::Occupied(slot) => {
+                        // A second, DIFFERENT ServerId for the same UID means two
+                        // distinct events share the UID; the join is unsafe.
+                        if slot.get().0 != server_id {
+                            ambiguous_uids.insert(slot.key().clone());
+                        }
+                    }
+                }
             }
             by_resource.entry(resource_href).or_insert(server_id);
         }
+        // The durable JMAP alias table links a JMAP pseudo-href to the canonical
+        // ServerId an event was delivered under (a CalDAV-created event read back
+        // through JMAP). It overrides the item_map href entry, which after a
+        // preserved real href no longer carries the pseudo-href.
+        for (resource_href, server_id) in state.storage.list_jmap_id_aliases(owner).await? {
+            by_resource.insert(resource_href, server_id);
+        }
         Ok(Self {
             by_uid,
+            ambiguous_uids,
             by_resource,
         })
     }
 
     /// The canonical ServerId for a fetched event: the stored identity for its
-    /// UID when one exists, else the ServerId derived from `href`.
+    /// UID when one exists, is unambiguous, AND comes from the OTHER backend
+    /// (the join exists to bridge the JMAP and CalDAV representations of one
+    /// event, so a stored CalDAV href pairs only with a fetched `jmap://` href
+    /// and vice versa). A UID already stored under the SAME href KIND names a
+    /// DISTINCT resource — two events in different collections that happen to
+    /// share a UID (CalDAV requires UID uniqueness per collection, not per
+    /// account) — so the href-derived identity is used instead; joining them
+    /// would collapse B's mapping onto A's and later Change/Delete operations
+    /// would target the wrong resource. Otherwise the ServerId derived from
+    /// `href`.
     fn for_event(&self, secret: &str, uid: &str, href: &str) -> String {
+        let fetched_is_jmap = href.starts_with("jmap://");
         if !uid.is_empty()
-            && let Some(existing) = self.by_uid.get(uid)
+            && !self.ambiguous_uids.contains(uid)
+            && let Some((existing, stored_is_jmap)) = self.by_uid.get(uid)
+            && *stored_is_jmap != fetched_is_jmap
         {
             return existing.clone();
         }
@@ -1625,6 +1669,13 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
     // than a complete view of the calendar. Stored events absent from a partial
     // delta are merely unchanged and must NOT be tombstoned.
     let mut calendar_delta_partial = false;
+    // True when the snapshot below came from the CalDAV fallback, which queries
+    // exactly ONE collection (the folder's own, or the default/first calendar).
+    // Such a snapshot is authoritative ONLY for that collection, so the deletion
+    // sweep must be bounded to events THIS scope delivered (its ledger) rather
+    // than the owner-global `item_map`: otherwise an empty single-calendar
+    // snapshot would queue `<Delete>`s for every other calendar's events.
+    let mut caldav_single_collection = false;
     // Server IDs the delta explicitly reported as destroyed.
     let mut jmap_destroyed_server_ids: HashSet<String> = HashSet::new();
     // True when the JMAP drain stopped at its accumulation/page cap with
@@ -1987,9 +2038,15 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
     // CalDAV requests and potential stale/duplicate data.
     if jmap_failed {
         events.clear();
-        // The CalDAV fallback returns a complete snapshot of the collection, so
-        // it is authoritative: a stored event it omits is genuinely deleted.
+        // The CalDAV fallback returns a complete snapshot of ONE collection
+        // (the folder's own, or the default/first calendar), so it is
+        // authoritative for that collection only: a stored event it omits is
+        // genuinely deleted FROM THAT COLLECTION. Because `item_map` is
+        // owner-global, the deletion sweep below must be bounded to events THIS
+        // scope delivered, or an empty snapshot of one calendar would delete
+        // every other calendar's events.
         calendar_delta_partial = false;
+        caldav_single_collection = true;
         jmap_destroyed_server_ids.clear();
         let caldav = CaldavClient::new(&params.state.cfg)?;
         // Prefer the folder's own collection (resolved from its stored href)
@@ -2260,7 +2317,15 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
         // The scope is keyed on the mapped folder, NOT on whether JMAP
         // resolution produced a calendar id — a resolution failure or a
         // CalDAV-only deployment must not grant account-wide deletion authority.
-        let folder_scoped = calendar_scope.is_some();
+        //
+        // The CalDAV fallback (`caldav_single_collection`) queries EXACTLY ONE
+        // collection — the folder's own, or, for the unscoped default calendar,
+        // the first calendar returned. Its snapshot is therefore authoritative
+        // for that collection ONLY, never the account, so the DEFAULT calendar's
+        // fallback must ALSO be bounded to its own ledger: an empty snapshot of
+        // one calendar must not queue `<Delete>`s for every other calendar's
+        // mappings.
+        let folder_scoped = calendar_scope.is_some() || caldav_single_collection;
         let deleted = if folder_scoped {
             delivered_map.contains_key(server_id)
                 && calendar_event_deleted(
@@ -3186,6 +3251,27 @@ mod tests {
             caldav_base: base.to_string(),
             email_enabled: true,
             prefer_jmap_calendar: true,
+            mail_domain: "example.com".to_string(),
+            hmac_secret: SecretString::from("a".repeat(32)),
+            ..Default::default()
+        };
+        Arc::new(AppState::new(cfg, Arc::new(storage)))
+    }
+
+    /// State whose CalDAV base points at the stub with `prefer_jmap_calendar`
+    /// DISABLED, so a calendar `Sync` always takes the CalDAV fallback (which
+    /// queries exactly ONE collection).
+    async fn caldav_only_calendar_state(base: &str) -> Arc<AppState> {
+        use crate::models::AppState;
+        let storage = crate::storage::Storage::new("sqlite::memory:")
+            .await
+            .expect("in-memory storage");
+        storage.init_schema().await.expect("schema init");
+        let cfg = crate::config::Config {
+            jmap_base: base.to_string(),
+            caldav_base: base.to_string(),
+            email_enabled: true,
+            prefer_jmap_calendar: false,
             mail_domain: "example.com".to_string(),
             hmac_secret: SecretString::from("a".repeat(32)),
             ..Default::default()
@@ -4570,6 +4656,190 @@ mod tests {
         );
     }
 
+    /// The CalDAV fallback (`prefer_jmap_calendar=false`) queries EXACTLY ONE
+    /// collection (the first calendar for the unscoped default folder). Its
+    /// empty snapshot must NOT be treated as an account-wide deletion: a stored
+    /// event that belongs to ANOTHER calendar (a different collection the
+    /// fallback never queried) must survive, and no tombstone may be recorded
+    /// for it. Regression for the owner-global `item_map` deletion authority.
+    #[tokio::test]
+    async fn caldav_default_fallback_does_not_delete_other_calendars_events() {
+        let stub = spawn_calendar_stub(vec![], vec![], "query-s", "get-s", None)
+            .await
+            .with_calendars(vec![
+                json!({"id": "cal-default", "name": "Default", "href": "/dav/cal/user@example.com/Default/"}),
+                json!({"id": "cal-side", "name": "Side", "href": "/dav/cal/user@example.com/Side/"}),
+            ]);
+        let state = caldav_only_calendar_state(&stub.base).await;
+        let owner = "user@example.com";
+
+        // A stored event that lives in the OTHER calendar (never queried by the
+        // default-calendar fallback), mirrored in the shared `item_map`.
+        let foreign_href = "jmap://calendar/acct/e-other";
+        let foreign_server_id = generate_server_id(state.cfg.hmac_secret(), foreign_href);
+        state
+            .storage
+            .upsert_item_map(
+                owner,
+                foreign_href,
+                foreign_href,
+                &foreign_server_id,
+                "uid-other",
+                "etag",
+            )
+            .await
+            .unwrap();
+
+        // A non-prime Sync takes the delta path but still runs the deletion
+        // sweep; the fallback snapshot is empty.
+        state
+            .storage
+            .set_sync_key(owner, "calendar", "key-1", Some("s0"))
+            .await
+            .unwrap();
+        let xml = run_calendar_sync(&state, "key-1").await;
+        assert!(
+            !xml.contains("<Delete>"),
+            "a single-calendar fallback snapshot must not delete another calendar's event:\n{xml}"
+        );
+        assert!(
+            state
+                .storage
+                .get_ews_item_by_server_id(owner, &foreign_server_id)
+                .await
+                .unwrap()
+                .is_some(),
+            "the foreign calendar's shared item_map row must survive"
+        );
+        assert!(
+            state
+                .storage
+                .list_deleted_since(owner, 0)
+                .await
+                .unwrap()
+                .is_empty(),
+            "no tombstone may be recorded for a foreign calendar's event"
+        );
+    }
+
+    /// An event created through CalDAV is delivered under its CalDAV-href
+    /// ServerId; a later JMAP `CalendarEvent/changes` reports it DESTROYED by
+    /// its JMAP id. The deletion sweep must resolve that JMAP id to the SAME
+    /// canonical ServerId the scope delivered under (via the durable
+    /// `jmap_id_alias` persisted when the JMAP delivery was committed), or the
+    /// scope advances its token without delivering the `<Delete>` and the client
+    /// keeps the deleted event forever.
+    #[tokio::test]
+    async fn jmap_destroyed_id_resolves_to_caldav_canonical_identity() {
+        // First delta: the JMAP feed reports `e1` created (the event created via
+        // CalDAV, read back through JMAP). Second delta: destroyed by JMAP id.
+        let stub = spawn_calendar_stub(
+            vec![
+                json!({
+                    "accountId": "acct", "oldState": "s0", "newState": "s1",
+                    "hasMoreChanges": false,
+                    "created": ["e1"], "updated": [], "destroyed": []
+                }),
+                json!({
+                    "accountId": "acct", "oldState": "s1", "newState": "s2",
+                    "hasMoreChanges": false,
+                    "created": [], "updated": [], "destroyed": ["e1"]
+                }),
+            ],
+            vec![stub_event("e1", "uid-e1", "Shared")],
+            "query-s",
+            "get-s",
+            None,
+        )
+        .await;
+        let state = calendar_mutation_state(&stub.base).await;
+        let owner = "user@example.com";
+        let scope = "1::devA";
+
+        // The event was created through CalDAV: its canonical identity is the
+        // CalDAV-href-derived ServerId, held in this scope's delivery ledger and
+        // the shared `item_map`.
+        let caldav_href = "/dav/cal/user@example.com/Default/e1.ics";
+        let caldav_server_id = generate_server_id(state.cfg.hmac_secret(), caldav_href);
+        state
+            .storage
+            .upsert_item_map(
+                owner,
+                caldav_href,
+                caldav_href,
+                &caldav_server_id,
+                "uid-e1",
+                "etag",
+            )
+            .await
+            .unwrap();
+        state
+            .storage
+            .upsert_calendar_delivery(owner, scope, &caldav_server_id, "etag")
+            .await
+            .unwrap();
+        state
+            .storage
+            .set_sync_key(owner, scope, "key-1", Some("s0"))
+            .await
+            .unwrap();
+
+        // The JMAP delta delivers `e1` (the UID join resolves it to the CalDAV
+        // canonical ServerId) and the commit persists the JMAP-id alias.
+        let first = run_calendar_sync_for(&state, "1", scope, "key-1").await;
+        assert!(
+            first.contains(&caldav_server_id),
+            "the JMAP read must reuse the CalDAV canonical ServerId:\n{first}"
+        );
+        let second = run_calendar_sync_for(&state, "1", scope, &sync_key_of(&first)).await;
+        assert!(
+            second.contains("<Delete>") && second.contains(&caldav_server_id),
+            "the destroyed JMAP id must resolve to the CalDAV canonical ServerId and be Deleted:\n{second}"
+        );
+    }
+
+    /// Two DISTINCT events that share an iCalendar UID (the same UID in two
+    /// calendar collections, which CalDAV permits — UID uniqueness is per
+    /// collection) must NOT be joined to one identity: an ambiguous UID is not
+    /// used for the UID join, so each event keeps its href-derived ServerId.
+    /// Joining them would make the delivery commit overwrite one event's mapping
+    /// with the other's, and a later Change/Delete would target the wrong
+    /// resource.
+    #[tokio::test]
+    async fn ambiguous_uid_does_not_join_distinct_calendar_resources() {
+        let stub = spawn_calendar_stub(vec![], vec![], "query-s", "get-s", None).await;
+        let state = calendar_sync_state(&stub.base).await;
+        let owner = "user@example.com";
+        let secret = state.cfg.hmac_secret();
+
+        // Two `item_map` rows sharing UID `shared-uid` but with DIFFERENT
+        // ServerIds (two distinct calendar resources).
+        let href_a = "/dav/cal/user@example.com/A/e.ics";
+        let href_b = "/dav/cal/user@example.com/B/e.ics";
+        let sid_a = generate_server_id(secret, href_a);
+        let sid_b = generate_server_id(secret, href_b);
+        for (href, sid) in [(href_a, &sid_a), (href_b, &sid_b)] {
+            state
+                .storage
+                .upsert_item_map(owner, href, href, sid, "shared-uid", "etag")
+                .await
+                .unwrap();
+        }
+
+        let identity = CalendarIdentity::load(&state, owner).await.unwrap();
+        // The ambiguous UID must not resolve to either stored identity.
+        assert_eq!(
+            identity.for_event(secret, "shared-uid", href_a),
+            sid_a,
+            "an ambiguous UID must fall back to the href-derived identity (A)"
+        );
+        assert_eq!(
+            identity.for_event(secret, "shared-uid", href_b),
+            sid_b,
+            "an ambiguous UID must fall back to the href-derived identity (B)"
+        );
+    }
+
     /// Extract the response `SyncKey` (the LAST `<SyncKey>` in the envelope) from
     /// a rendered `Sync` response.
     fn sync_key_of(xml: &str) -> String {
@@ -4578,6 +4848,49 @@ mod tests {
             .and_then(|s| s.split("</SyncKey>").next())
             .expect("SyncKey in response")
             .to_string()
+    }
+
+    /// A UID stored under a CalDAV href must NOT be joined to a fetched event
+    /// that carries the SAME href KIND — a different CalDAV collection's
+    /// `/B/e.ics` is a DISTINCT resource even when only `/A/e.ics` is stored
+    /// (CalDAV requires UID uniqueness per collection, not per account). The UID
+    /// join exists only to bridge the JMAP and CalDAV representations of one
+    /// event, so it fires ONLY across backends; a same-kind match keeps its own
+    /// href-derived identity (joining would collapse B's mapping onto A's, and a
+    /// later Change/Delete would target the wrong resource).
+    #[tokio::test]
+    async fn single_mapped_uid_does_not_join_same_kind_caldav_resource() {
+        let stub = spawn_calendar_stub(vec![], vec![], "query-s", "get-s", None).await;
+        let state = calendar_sync_state(&stub.base).await;
+        let owner = "user@example.com";
+        let secret = state.cfg.hmac_secret();
+
+        // Only A (a CalDAV href) is stored for UID `shared-uid`.
+        let href_a = "/dav/cal/user@example.com/A/e.ics";
+        let href_b = "/dav/cal/user@example.com/B/e.ics";
+        let sid_a = generate_server_id(secret, href_a);
+        let sid_b = generate_server_id(secret, href_b);
+        state
+            .storage
+            .upsert_item_map(owner, href_a, href_a, &sid_a, "shared-uid", "etag")
+            .await
+            .unwrap();
+
+        let identity = CalendarIdentity::load(&state, owner).await.unwrap();
+        // Fetching B (same kind: a real CalDAV href) must NOT reuse A's id.
+        assert_eq!(
+            identity.for_event(secret, "shared-uid", href_b),
+            sid_b,
+            "a same-kind (CalDAV↔CalDAV) UID match must not join to A"
+        );
+        // A cross-kind join (fetched `jmap://`) still bridges to the stored id.
+        assert_eq!(
+            identity.for_event(secret, "shared-uid", "jmap://calendar/acct/e1"),
+            sid_a,
+            "a cross-backend (CalDAV↔JMAP) UID match must still join"
+        );
+        // A re-fetch of the SAME href also keeps its own id (A).
+        assert_eq!(identity.for_event(secret, "shared-uid", href_a), sid_a);
     }
 
     /// An event that belongs to TWO calendars (JMAP `calendarIds` with two

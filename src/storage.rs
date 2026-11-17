@@ -18,11 +18,41 @@ pub trait SafeDebug {
 #[derive(Clone)]
 pub struct Storage {
     pool: Arc<SqlPool>,
+    /// Per-`(owner, backend folder)` mutation locks. A folder mutation is two
+    /// steps — a backend `Mailbox/set` (or CalDAV `PROPPATCH`) and a
+    /// `folder_map` mirror — and the mirror must reflect the LAST backend write.
+    /// Without a shared lock, two concurrent mutations of the SAME folder (a
+    /// rename over EWS, a move over MAPI, a rename over EAS) can commit their
+    /// backend writes A-then-B but run their mirrors B-then-A, leaving the
+    /// stored name/parent disagreeing with the backend while both requests
+    /// report success. The lock is held across BOTH steps so each mutation is
+    /// one ordered operation. Keyed on `(owner, backend_id)`; the entry is kept
+    /// (never removed) so the lock identity is stable across requests — the map
+    /// is bounded by the number of folders a user creates.
+    folder_locks: Arc<dashmap::DashMap<String, Arc<tokio::sync::Mutex<()>>>>,
 }
 
 impl Storage {
     pub fn pool(&self) -> &SqlPool {
         &self.pool
+    }
+
+    /// Acquire the per-`(owner, backend folder)` folder-mutation lock. The
+    /// returned guard MUST be held across BOTH the backend mutation and the
+    /// `folder_map` mirror so the two steps form one ordered operation and a
+    /// concurrent rename/move of the same folder (over ANY front door: EAS,
+    /// EWS, or MAPI) cannot interleave a mirror derived from a stale snapshot.
+    pub async fn lock_folder_mutation(
+        &self,
+        owner: &str,
+        backend_id: &str,
+    ) -> tokio::sync::OwnedMutexGuard<()> {
+        let lock = self
+            .folder_locks
+            .entry(format!("{owner}:{backend_id}"))
+            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+            .clone();
+        lock.lock_owned().await
     }
 }
 
@@ -496,6 +526,7 @@ impl Storage {
             })?;
         Ok(Self {
             pool: Arc::new(pool),
+            folder_locks: Arc::new(dashmap::DashMap::new()),
         })
     }
 
@@ -1087,10 +1118,40 @@ impl Storage {
             .execute(&mut *tx)
             .await
             .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+            // Persist the JMAP pseudo-href -> canonical ServerId alias for an
+            // event delivered through JMAP. A later `CalendarEvent/changes`
+            // reports the event destroyed by its JMAP id; the deletion sweep
+            // resolves that id through `for_href`, which must find the SAME
+            // canonical ServerId the scope delivered under (an event created
+            // through CalDAV keeps a CalDAV-derived identity, so the alias is the
+            // only link). Written in the SAME transaction as the delivery so the
+            // alias can never lag the SyncKey the client is told.
+            if d.resource_href.starts_with("jmap://calendar/") {
+                sqlx::query(
+                    "INSERT INTO jmap_id_alias (owner, resource_href, server_id) VALUES (?1, ?2, ?3)
+                     ON CONFLICT(owner, resource_href) DO UPDATE
+                     SET server_id = ?3, updated_at = CURRENT_TIMESTAMP",
+                )
+                .bind(owner)
+                .bind(d.resource_href)
+                .bind(d.server_id)
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+            }
         }
 
         for server_id in deletes {
             sqlx::query("DELETE FROM item_map WHERE owner = ?1 AND server_id = ?2")
+                .bind(owner)
+                .bind(server_id)
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+            // Drop the JMAP aliases pointing at the removed identity: the event
+            // is gone, so a later destroy of its JMAP id must not resurrect a
+            // stale alias to a pruned ServerId.
+            sqlx::query("DELETE FROM jmap_id_alias WHERE owner = ?1 AND server_id = ?2")
                 .bind(owner)
                 .bind(server_id)
                 .execute(&mut *tx)
@@ -1606,6 +1667,21 @@ impl Storage {
         Ok(rows)
     }
 
+    /// Durable JMAP pseudo-href -> canonical ServerId aliases for `owner`
+    /// (see `jmap_id_alias`). Loaded into the sync identity map so an explicitly
+    /// destroyed JMAP id resolves to the SAME canonical ServerId the scope
+    /// delivered the event under.
+    pub async fn list_jmap_id_aliases(&self, owner: &str) -> Result<Vec<(String, String)>> {
+        let rows = sqlx::query_as::<_, (String, String)>(
+            "SELECT resource_href, server_id FROM jmap_id_alias WHERE owner = ?1 ORDER BY id ASC",
+        )
+        .bind(owner)
+        .fetch_all(self.pool.as_ref())
+        .await
+        .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))?;
+        Ok(rows)
+    }
+
     /// Persist the EAS email initial-sync paging cursor
     /// (`position`, captured JMAP state token) for a collection.
     ///
@@ -1920,6 +1996,77 @@ impl Storage {
         .await
         .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))?;
         Ok(row.is_some())
+    }
+
+    /// Record that a message's membership in a collection's mailbox has been
+    /// DELIVERED to the client (a `Create`/`<Add>`). Distinct from the keyword
+    /// baseline: an observed-only message (a scan or baseline-capture row) is NOT
+    /// delivered. The EAS/EWS overlap decision consults this ledger so a newly
+    /// arriving message is classified as a `Create`, not an `Update`.
+    pub async fn record_email_delivered_membership(
+        &self,
+        owner: &str,
+        collection_id: &str,
+        email_id: &str,
+    ) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO email_delivered_membership (owner, collection_id, email_id)
+             VALUES (?1, ?2, ?3)
+             ON CONFLICT(owner, collection_id, email_id) DO UPDATE
+             SET updated_at = CURRENT_TIMESTAMP",
+        )
+        .bind(owner)
+        .bind(collection_id)
+        .bind(email_id)
+        .execute(self.pool.as_ref())
+        .await
+        .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+        Ok(())
+    }
+
+    /// Whether a message's membership in a collection's mailbox has been
+    /// DELIVERED to the client. Used by the EWS email delta's overlap decision:
+    /// a delivered id is an in-place `Update`, an undelivered one is a `Create`.
+    pub async fn has_email_delivered_membership(
+        &self,
+        owner: &str,
+        collection_id: &str,
+        email_id: &str,
+    ) -> Result<bool> {
+        let row = sqlx::query(
+            "SELECT 1 FROM email_delivered_membership
+             WHERE owner = ?1 AND collection_id = ?2 AND email_id = ?3",
+        )
+        .bind(owner)
+        .bind(collection_id)
+        .bind(email_id)
+        .fetch_optional(self.pool.as_ref())
+        .await
+        .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))?;
+        Ok(row.is_some())
+    }
+
+    /// Drop every delivered-membership row for a collection. Called at the
+    /// START of a FRESH EWS email prime: the client is told to forget the whole
+    /// folder, so the ledger (which records what the client currently holds) is
+    /// reset before the prime re-records its delivered set. A row left over from
+    /// a prior stream would otherwise misclassify a later re-entry of that id as
+    /// an in-place `Update` rather than a `Create`.
+    pub async fn clear_email_delivered_membership(
+        &self,
+        owner: &str,
+        collection_id: &str,
+    ) -> Result<()> {
+        sqlx::query(
+            "DELETE FROM email_delivered_membership
+             WHERE owner = ?1 AND collection_id = ?2",
+        )
+        .bind(owner)
+        .bind(collection_id)
+        .execute(self.pool.as_ref())
+        .await
+        .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+        Ok(())
     }
 
     /// Read the mailbox keyword baseline for an email collection. `None` when
@@ -2416,19 +2563,26 @@ impl Storage {
         Ok(())
     }
 
-    /// Commit an EWS email delta's new `SyncState` AND the delivered-membership
-    /// flag-baseline seeds for the Create/Update items it rendered, in ONE
+    /// Commit an EWS email delta's new `SyncState`, the delivered-membership
+    /// flag-baseline seeds for the Create/Update items it rendered, and the
+    /// delivered-membership records/prunes for its Create/Delete items, in ONE
     /// transaction. The seeds MUST advance together with the state: a seed
     /// persisted while the state write failed would make the retry (from the
     /// OLD state, re-offering the same ids) classify a never-delivered message
     /// as already held and emit an `Update` for an item the client never
-    /// received. `seeds` is `(email_id, sorted_active_keywords)`.
+    /// received. `seeds` is `(email_id, sorted_active_keywords)`. `delivered`
+    /// are the ids rendered as `Create` (the client now holds them); `departed`
+    /// are the ids rendered as `Delete` (the client no longer holds them, so
+    /// their delivered-membership rows are pruned — a retained row would make a
+    /// later re-arrival of that id look like an in-place `Update`).
     pub async fn set_ews_sync_state_with_seeds(
         &self,
         owner: &str,
         folder_id: &str,
         sync_state: &str,
         seeds: &[(String, Vec<String>)],
+        delivered: &[String],
+        departed: &[String],
     ) -> Result<()> {
         let mut tx = sqlx::Acquire::begin(self.pool.as_ref())
             .await
@@ -2456,6 +2610,43 @@ impl Storage {
             .bind(folder_id)
             .bind(email_id)
             .bind(json)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+        }
+        // Record DELIVERED membership for every message this response rendered a
+        // Create for, in the SAME transaction as the state it was delivered
+        // under. Distinct from the keyword baseline (which the scan also writes
+        // for merely-observed messages): the next delta's overlap decision reads
+        // THIS ledger, so an item the client never received a Create for is
+        // classified as a new Create, not an Update.
+        for email_id in delivered {
+            sqlx::query(
+                "INSERT INTO email_delivered_membership (owner, collection_id, email_id)
+                 VALUES (?1, ?2, ?3)
+                 ON CONFLICT(owner, collection_id, email_id) DO UPDATE
+                 SET updated_at = CURRENT_TIMESTAMP",
+            )
+            .bind(owner)
+            .bind(folder_id)
+            .bind(email_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+        }
+        // Prune delivered membership for every id this response rendered as a
+        // `Delete`: the client no longer holds it, so its ledger row must go in
+        // the SAME transaction as the state it left under. A retained row would
+        // make a later re-arrival of that id look like an in-place `Update`
+        // (the overlap decision reads this ledger) instead of a `Create`.
+        for email_id in departed {
+            sqlx::query(
+                "DELETE FROM email_delivered_membership
+                 WHERE owner = ?1 AND collection_id = ?2 AND email_id = ?3",
+            )
+            .bind(owner)
+            .bind(folder_id)
+            .bind(email_id)
             .execute(&mut *tx)
             .await
             .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
@@ -3877,23 +4068,36 @@ impl Storage {
     }
 
     /// Reconcile and replay the outstanding folder-map prunes for `owner`
-    /// against the LIVE backend mailbox ids (`live_ids`).
+    /// against the LIVE backend mailbox ids (`live_ids`), considering ONLY the
+    /// `candidates` captured BEFORE the live query ran.
     ///
     /// A pending prune is recorded BEFORE its `Mailbox/set destroy` call so a
     /// crash mid-destroy still leaves a work list — which means a row can name
     /// a folder whose destroy is still in flight, or was later REFUSED. Blindly
     /// pruning every pending row would then strand a LIVE folder's mapping: EAS
-    /// would stop advertising a folder that still exists. So each pending id is
+    /// would stop advertising a folder that still exists. So each candidate is
     /// resolved against `live_ids`:
     ///
-    /// * an id the backend STILL holds is live — the destroy did not happen
-    ///   (refused, or not yet observed) — so its mapping is preserved and its
-    ///   intent is dropped (the destroy, if it ever happens, records and prunes
-    ///   afresh);
+    /// * an id the backend STILL holds is live — the destroy has not committed
+    ///   (refused, or still in flight) — so its mapping is preserved and its
+    ///   intent is RETAINED. The intent is NOT cleared here: the initiating
+    ///   destroy operation clears it on refusal or prunes-and-clears on success,
+    ///   and dropping it here would lose the recovery record if that operation
+    ///   then commits the destroy and stops before its direct prune (the
+    ///   mailbox is gone from the live hierarchy, so a later read could not
+    ///   re-derive it). A retained intent for a still-live folder is harmless:
+    ///   it is re-evaluated on the next reconcile and never prunes a live row;
     /// * an id the backend no longer holds is a CONFIRMED deletion — its
     ///   mapping is pruned and a `folder-delete` journaled.
     ///
-    /// Returns the number of ids pruned. An error leaves every pending row in
+    /// `candidates` MUST be the pending set captured BEFORE `live_ids` was read.
+    /// A concurrent request can record a NEW intent (and create its mailbox)
+    /// after the live query; classifying that newer intent against the older
+    /// `live_ids` would treat a live, just-created folder as absent and prune
+    /// its mapping. Intents recorded after the live read are left for the next
+    /// reconcile.
+    ///
+    /// Returns the number of ids pruned. An error leaves every candidate row in
     /// place, so a later call retries the whole set.
     ///
     /// `live_ids` MUST be the COMPLETE live mailbox set (e.g. from
@@ -3903,21 +4107,23 @@ impl Storage {
     pub async fn reconcile_pending_folder_prunes(
         &self,
         owner: &str,
+        candidates: &[String],
         live_ids: &std::collections::HashSet<String>,
     ) -> Result<u64> {
-        let pending = self.list_pending_folder_prunes(owner).await?;
-        if pending.is_empty() {
+        if candidates.is_empty() {
             return Ok(0);
         }
-        let (live, dead): (Vec<String>, Vec<String>) =
-            pending.into_iter().partition(|id| live_ids.contains(id));
-        // Prune + journal the confirmed deletions first (this also clears their
-        // pending rows); then drop the intents of the still-live folders.
+        // Only CONFIRMED deletions are pruned; a candidate the backend still
+        // holds keeps its intent (see above). A candidate whose id is absent
+        // from `live_ids` is dead; `delete_folders_journaled` also clears its
+        // pending row.
+        let dead: Vec<String> = candidates
+            .iter()
+            .filter(|id| !live_ids.contains(*id))
+            .cloned()
+            .collect();
         if !dead.is_empty() {
             self.delete_folders_journaled(owner, &dead).await?;
-        }
-        if !live.is_empty() {
-            self.clear_pending_folder_prunes(owner, &live).await?;
         }
         Ok(dead.len() as u64)
     }
@@ -5267,7 +5473,11 @@ mod tests {
         );
         assert_eq!(
             storage
-                .reconcile_pending_folder_prunes("o", &std::collections::HashSet::new())
+                .reconcile_pending_folder_prunes(
+                    "o",
+                    &["mb-1".to_string()],
+                    &std::collections::HashSet::new()
+                )
                 .await
                 .expect("drain after migration"),
             1
@@ -6230,7 +6440,7 @@ mod tests {
         );
         assert_eq!(
             storage
-                .reconcile_pending_folder_prunes(owner, &std::collections::HashSet::new())
+                .reconcile_pending_folder_prunes(owner, &[], &std::collections::HashSet::new())
                 .await
                 .expect("drain"),
             0,
@@ -6255,7 +6465,7 @@ mod tests {
         // Drain: both mappings pruned + journaled, work list cleared.
         assert_eq!(
             storage
-                .reconcile_pending_folder_prunes(owner, &std::collections::HashSet::new())
+                .reconcile_pending_folder_prunes(owner, &pending, &std::collections::HashSet::new())
                 .await
                 .expect("drain"),
             2
@@ -6312,7 +6522,11 @@ mod tests {
             .expect("record");
         assert_eq!(
             storage
-                .reconcile_pending_folder_prunes(owner, &std::collections::HashSet::new())
+                .reconcile_pending_folder_prunes(
+                    owner,
+                    &["mb-ghost".to_string()],
+                    &std::collections::HashSet::new()
+                )
                 .await
                 .expect("drain"),
             1
@@ -6337,10 +6551,10 @@ mod tests {
     }
 
     /// `reconcile_pending_folder_prunes` must prune ONLY the intents whose
-    /// backend mailbox is confirmed gone, and preserve (dropping the intent of)
-    /// a folder the live hierarchy still holds — a pending intent recorded
-    /// before a destroy that was refused (or is still in flight) must never drop
-    /// a live folder's mapping.
+    /// backend mailbox is confirmed gone, and RETAIN the intent of a folder the
+    /// live hierarchy still holds — a pending intent recorded before a destroy
+    /// that was refused (or is still in flight) must never drop a live folder's
+    /// mapping, nor lose the recovery record if that destroy then commits.
     #[tokio::test]
     async fn reconcile_pending_folder_prunes_spares_live_folders() {
         let storage = mem_storage().await;
@@ -6366,12 +6580,16 @@ mod tests {
             .record_pending_folder_prunes(owner, &["mb-live".to_string(), "mb-dead".to_string()])
             .await
             .expect("record");
+        let candidates = storage
+            .list_pending_folder_prunes(owner)
+            .await
+            .expect("list");
 
         // The live hierarchy still holds `mb-live`; `mb-dead` is gone.
         let live: std::collections::HashSet<String> = ["mb-live".to_string()].into_iter().collect();
         assert_eq!(
             storage
-                .reconcile_pending_folder_prunes(owner, &live)
+                .reconcile_pending_folder_prunes(owner, &candidates, &live)
                 .await
                 .expect("reconcile"),
             1,
@@ -6393,13 +6611,13 @@ mod tests {
                 .is_none(),
             "a confirmed deletion's mapping must be pruned"
         );
-        assert!(
+        assert_eq!(
             storage
                 .list_pending_folder_prunes(owner)
                 .await
-                .expect("list")
-                .is_empty(),
-            "both intents are resolved (pruned or withdrawn)"
+                .expect("list"),
+            vec!["mb-live".to_string()],
+            "the live folder's intent must be RETAINED until its destroy resolves"
         );
         let deletes = storage
             .list_folder_journal_since(owner, 0, i64::MAX)
@@ -6416,9 +6634,66 @@ mod tests {
         );
     }
 
+    /// Only the CANDIDATE set captured before the live query is reconciled: an
+    /// intent recorded AFTER the live read (a newer create whose mailbox the
+    /// older live set predates) must not be classified against that stale set.
+    #[tokio::test]
+    async fn reconcile_pending_folder_prunes_ignores_intents_after_capture() {
+        let storage = mem_storage().await;
+        let owner = "u@example.com";
+        // `mb-new` is recorded as a pending intent but is LIVE; it was captured
+        // after the live set used below was read, so it must NOT be pruned even
+        // though the older `live` set omits it.
+        storage
+            .record_pending_folder_prunes(owner, &["mb-new".to_string()])
+            .await
+            .expect("record");
+        storage
+            .upsert_folder_journaled(
+                FolderUpsertParams {
+                    owner,
+                    server_id: "mb-new",
+                    parent_id: "0",
+                    display_name: "mb-new",
+                    folder_type: 12,
+                    backend_kind: "jmap",
+                    backend_id: "mb-new",
+                },
+                "folder-add",
+            )
+            .await
+            .expect("seed folder");
+
+        // Candidates captured BEFORE `mb-new` was recorded: empty.
+        assert_eq!(
+            storage
+                .reconcile_pending_folder_prunes(owner, &[], &std::collections::HashSet::new())
+                .await
+                .expect("reconcile"),
+            0,
+            "an intent recorded after the capture must not be reconciled"
+        );
+        assert!(
+            storage
+                .get_folder(owner, "mb-new")
+                .await
+                .expect("db")
+                .is_some(),
+            "the newer intent's mapping must survive"
+        );
+        assert_eq!(
+            storage
+                .list_pending_folder_prunes(owner)
+                .await
+                .expect("list"),
+            vec!["mb-new".to_string()],
+            "the newer intent must remain for a later reconcile"
+        );
+    }
+
     /// An empty `live_ids` set (a caller that could not enumerate the backend)
-    /// prunes every intent; the callers guard this by not calling with an
-    /// incomplete set — see `reconcile_deferred_folder_prunes`.
+    /// prunes every candidate intent; the callers guard this by not calling with
+    /// an incomplete set — see `reconcile_deferred_folder_prunes`.
     #[tokio::test]
     async fn reconcile_pending_folder_prunes_with_empty_live_set_prunes_all() {
         let storage = mem_storage().await;
@@ -6444,7 +6719,11 @@ mod tests {
             .expect("record");
         assert_eq!(
             storage
-                .reconcile_pending_folder_prunes(owner, &std::collections::HashSet::new())
+                .reconcile_pending_folder_prunes(
+                    owner,
+                    &["mb-1".to_string()],
+                    &std::collections::HashSet::new()
+                )
                 .await
                 .expect("reconcile"),
             1
@@ -6456,5 +6735,151 @@ mod tests {
                 .expect("db")
                 .is_none()
         );
+    }
+
+    /// The EWS delivered-membership ledger must track EXACTLY what the client
+    /// holds: `set_ews_sync_state_with_seeds` records the ids it delivered as
+    /// `Create` AND prunes the ids it delivered as `Delete`, in the SAME
+    /// transaction as the new `SyncState`. A retained row for a departed id
+    /// would make a later re-arrival look like an in-place `Update` (the overlap
+    /// decision reads this ledger) instead of a `Create`.
+    #[tokio::test]
+    async fn ews_sync_state_records_and_prunes_delivered_membership() {
+        let storage = mem_storage().await;
+        let owner = "u@example.com";
+        let folder = "inbox";
+
+        // Prime-like delivery of `m1` (no departure).
+        storage
+            .set_ews_sync_state_with_seeds(
+                owner,
+                folder,
+                "S1",
+                &[("m1".to_string(), vec!["$seen".to_string()])],
+                &["m1".to_string()],
+                &[],
+            )
+            .await
+            .expect("commit delivered");
+        assert!(
+            storage
+                .has_email_delivered_membership(owner, folder, "m1")
+                .await
+                .expect("read"),
+            "a delivered Create must be recorded"
+        );
+
+        // A later delta delivers `m1` as a Delete (it left the mailbox): the row
+        // must be pruned in the same transaction.
+        storage
+            .set_ews_sync_state_with_seeds(owner, folder, "S2", &[], &[], &["m1".to_string()])
+            .await
+            .expect("commit departure");
+        assert!(
+            !storage
+                .has_email_delivered_membership(owner, folder, "m1")
+                .await
+                .expect("read"),
+            "a delivered Delete must prune its membership row"
+        );
+        assert_eq!(
+            storage
+                .get_ews_sync_state(owner, folder)
+                .await
+                .expect("state"),
+            Some("S2".to_string()),
+            "the prune commits with the new SyncState"
+        );
+    }
+
+    /// A fresh EWS prime (`clear_email_delivered_membership`) drops the whole
+    /// folder's ledger, so a re-arrival of a previously-delivered id after the
+    /// client was told to forget the folder is a `Create`, not an `Update`.
+    #[tokio::test]
+    async fn clear_email_delivered_membership_resets_the_folder() {
+        let storage = mem_storage().await;
+        let owner = "u@example.com";
+        let folder = "inbox";
+        storage
+            .record_email_delivered_membership(owner, folder, "m1")
+            .await
+            .expect("record");
+        storage
+            .record_email_delivered_membership(owner, folder, "m2")
+            .await
+            .expect("record");
+        // A different folder's rows must be untouched.
+        storage
+            .record_email_delivered_membership(owner, "sent", "m9")
+            .await
+            .expect("record");
+
+        storage
+            .clear_email_delivered_membership(owner, folder)
+            .await
+            .expect("clear");
+
+        assert!(
+            !storage
+                .has_email_delivered_membership(owner, folder, "m1")
+                .await
+                .expect("read")
+        );
+        assert!(
+            !storage
+                .has_email_delivered_membership(owner, folder, "m2")
+                .await
+                .expect("read")
+        );
+        assert!(
+            storage
+                .has_email_delivered_membership(owner, "sent", "m9")
+                .await
+                .expect("read"),
+            "the clear is scoped to one folder"
+        );
+    }
+
+    /// The shared folder-mutation lock must serialize two holders for the SAME
+    /// `(owner, backend folder)` (so a rename/move's backend write and its
+    /// `folder_map` mirror stay one ordered operation across ALL front doors),
+    /// while a DIFFERENT folder never contends. A held guard makes the
+    /// same-folder acquire Pending — deterministic, not timing-dependent.
+    #[tokio::test]
+    async fn folder_mutation_lock_serializes_same_folder_only() {
+        let storage = mem_storage().await;
+        let owner = "o@example.com";
+
+        let held = storage.lock_folder_mutation(owner, "mb-1").await;
+        let same = tokio::time::timeout(
+            std::time::Duration::from_millis(50),
+            storage.lock_folder_mutation(owner, "mb-1"),
+        )
+        .await;
+        assert!(
+            same.is_err(),
+            "the same folder's lock must block while held"
+        );
+        // A DIFFERENT folder (or owner) must not contend.
+        let other = tokio::time::timeout(
+            std::time::Duration::from_millis(50),
+            storage.lock_folder_mutation(owner, "mb-2"),
+        )
+        .await;
+        assert!(other.is_ok(), "a different folder must not contend");
+        let other_owner = tokio::time::timeout(
+            std::time::Duration::from_millis(50),
+            storage.lock_folder_mutation("other@example.com", "mb-1"),
+        )
+        .await;
+        assert!(other_owner.is_ok(), "a different owner must not contend");
+        drop(held);
+        // After release the same folder is acquirable again.
+        let again = tokio::time::timeout(
+            std::time::Duration::from_millis(50),
+            storage.lock_folder_mutation(owner, "mb-1"),
+        )
+        .await;
+        assert!(again.is_ok(), "a released lock must be acquirable");
     }
 }

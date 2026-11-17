@@ -1228,10 +1228,12 @@ fn parse_etag_from_multistatus(xml_body: &str) -> Option<String> {
 fn dav_status_code(status_line: &str) -> Option<u16> {
     let mut tokens = status_line.split_whitespace();
     let first = tokens.next()?;
-    let code_token = if first.len() >= 5 && first[..5].eq_ignore_ascii_case("HTTP/") {
-        tokens.next()?
-    } else {
-        first
+    // A boundary-safe prefix test: `first[..5]` panics when byte 5 falls inside
+    // a multi-byte UTF-8 character (e.g. `abcdé`), so use `get(..5)` which
+    // returns `None` off-boundary and then treats the whole token as the code.
+    let code_token = match first.get(..5) {
+        Some(prefix) if prefix.eq_ignore_ascii_case("HTTP/") => tokens.next()?,
+        _ => first,
     };
     // The token must be exactly three digits (a status code, not `HTTP/1.1`).
     if code_token.len() == 3 && code_token.bytes().all(|b| b.is_ascii_digit()) {
@@ -1962,6 +1964,10 @@ END:VCALENDAR
         assert_eq!(dav_status_code("HTTP/1.1"), None);
         assert_eq!(dav_status_code("not a status"), None);
         assert_eq!(dav_status_code(""), None);
+        // A multi-byte character whose 5th byte is not a UTF-8 boundary must be
+        // rejected WITHOUT panicking (a `first[..5]` slice would panic here).
+        assert_eq!(dav_status_code("abcdé"), None);
+        assert_eq!(dav_status_code("ééé"), None);
     }
 
     #[test]

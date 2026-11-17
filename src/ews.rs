@@ -4775,6 +4775,20 @@ async fn handle_sync_email_prime(
     if is_fresh_prime && let Err(e) = state.storage.clear_ews_delta_replay(owner, folder_id).await {
         tracing::warn!(folder_id = %folder_id, error = %e, "Failed to clear EWS delta replay on fresh prime");
     }
+    // A fresh prime also resets the delivered-membership ledger: the client is
+    // told to forget the folder, so the rows recording what it holds must be
+    // dropped before the prime re-records its delivered set. A row left from a
+    // prior stream for an id no longer in the mailbox would otherwise make a
+    // later re-arrival of that id look like an in-place `Update` (the overlap
+    // decision reads this ledger) instead of a `Create`.
+    if is_fresh_prime
+        && let Err(e) = state
+            .storage
+            .clear_email_delivered_membership(owner, folder_id)
+            .await
+    {
+        tracing::warn!(folder_id = %folder_id, error = %e, "Failed to clear EWS delivered-membership ledger on fresh prime");
+    }
     let (start_position, anchor_id, mut query_state) = if is_fresh_prime {
         (0u64, None, String::new())
     } else {
@@ -4956,6 +4970,24 @@ async fn handle_sync_email_prime(
             r#"<t:Create>{}</t:Create>"#,
             render_jmap_email_as_ews_message(email, &server_id, &change_key)
         ));
+        // Record DELIVERED membership for the prime's Create so the next delta's
+        // overlap decision classifies a later added+removed for this id as a held
+        // `Update`, not a duplicate `Create`. Written here (not only at the delta)
+        // because the prime is where the client first receives the item; a
+        // failure fails the prime closed (retryable), matching the baseline seed.
+        if let Err(e) = state
+            .storage
+            .record_email_delivered_membership(owner, folder_id, jmap_id)
+            .await
+        {
+            tracing::error!(error = %e, email_id = %jmap_id, "Failed to record delivered EWS prime membership");
+            return operation_error_response(
+                &EwsAction::SyncFolderItems,
+                "ErrorServerBusy",
+                "Failed to record the delivered email's membership",
+                StatusCode::SERVICE_UNAVAILABLE,
+            );
+        }
         if email.id.is_some() {
             last_delivered_id = email.id.clone();
         }
@@ -5103,6 +5135,22 @@ async fn handle_sync_email_folder_items(
         .await;
     }
 
+    // Serialize the whole delta for this (owner, folder) from the replay-cache
+    // lookup through the replay-cache write. Two concurrent requests carrying
+    // the SAME incoming cursor would otherwise both miss the replay cache, both
+    // run the keyword scan, and the second would overwrite the first's cached
+    // response — if the first response was lost, its flag-only `<t:Update>` would
+    // never be delivered (the advanced baseline suppresses the diff, and the
+    // membership feed reports nothing). The guard is acquired AFTER the prime
+    // branch above (a prime writes no replay) and released on every early return
+    // (RAII), so a request that returns without writing never holds it.
+    let delta_lock = state
+        .ews_delta_locks
+        .entry(format!("{owner}:{folder_id}"))
+        .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+        .clone();
+    let _delta_guard = delta_lock.lock().await;
+
     // Replay a cached response for this EXACT incoming cursor. The delta's
     // in-place flag `<t:Update>`s come from a rotating keyword scan whose
     // baseline is advanced when the response is built; if the HTTP response was
@@ -5245,16 +5293,24 @@ async fn handle_sync_email_folder_items(
     // (a reorder → `Update`) OR a message NEWLY arriving in this mailbox that
     // the membership change moved it into (its `mailboxIds` — the `inMailbox`
     // filter property — changed, so it appears in both lists; the client has
-    // never seen it here → `Create`). Decide from delivered membership: the flag
-    // baseline holds a row for every message THIS folder has delivered, so its
-    // presence means the client already holds the item (Update) and its absence
-    // means the item is new to the folder (Create). A storage READ failure fails
-    // the whole call closed (retryable): guessing either way would either drop a
-    // genuinely new message (rendered as an Update for an unknown item) or
-    // duplicate a held one.
+    // never seen it here → `Create`). Decide from DELIVERED membership: the
+    // delivered-membership ledger holds a row only for a message this folder
+    // actually delivered to the client (a Create), so its presence means the
+    // client already holds the item (Update) and its absence means the item is
+    // new to the folder (Create). The keyword baseline is NOT a valid proxy: the
+    // bounded scan records a baseline row for a message it merely OBSERVED (a
+    // first observation, no `<Change>`), and a full baseline capture records
+    // rows for the whole mailbox — either would misclassify a never-delivered
+    // arrival as held. A storage READ failure fails the whole call closed
+    // (retryable): guessing either way would either drop a genuinely new message
+    // (rendered as an Update for an unknown item) or duplicate a held one.
     let mut overlap_held: std::collections::HashSet<&str> = std::collections::HashSet::new();
     for id in &overlap_all {
-        match state.storage.has_email_keyword(owner, &folder_id, id).await {
+        match state
+            .storage
+            .has_email_delivered_membership(owner, &folder_id, id)
+            .await
+        {
             Ok(true) => {
                 overlap_held.insert(id);
             }
@@ -5263,7 +5319,7 @@ async fn handle_sync_email_folder_items(
                 tracing::error!(
                     error = %e,
                     email_id = %id,
-                    "Failed to read the email keyword baseline to classify an overlap id; failing closed"
+                    "Failed to read the delivered-membership ledger to classify an overlap id; failing closed"
                 );
                 return operation_error_response(
                     &EwsAction::SyncFolderItems,
@@ -5352,8 +5408,8 @@ async fn handle_sync_email_folder_items(
     // after the whole response is built and its state committed (below). Writing
     // them inline would persist membership for a message whose Create the client
     // may never receive (a later `Email/get` failure fails the call closed) — on
-    // the retry `has_email_keyword` would then classify it as held and emit an
-    // `Update` for an item the client never got.
+    // the retry `has_email_delivered_membership` would then classify it as held
+    // and emit an `Update` for an item the client never got.
     let mut pending_seeds: Vec<(String, Vec<String>)> = Vec::new();
     for email_id in &changes.created {
         if overlap_held.contains(email_id.as_str()) {
@@ -5505,9 +5561,27 @@ async fn handle_sync_email_folder_items(
     // with a retryable error (carrying the incoming state, so the client retries
     // the same window) rather than a success whose cursor the gateway could not
     // persist.
+    // The ids this response rendered as a `<t:Delete>` (a departure from the
+    // mailbox, excluding the overlap reorders handled as Updates/Creates). Their
+    // delivered-membership rows are pruned in the same transaction as the new
+    // state: the client no longer holds them, so a later re-arrival must be a
+    // `Create`, not an in-place `Update`.
+    let departed_ids: Vec<String> = changes
+        .destroyed
+        .iter()
+        .filter(|id| !overlap_all.contains(id.as_str()))
+        .cloned()
+        .collect();
     if let Err(e) = state
         .storage
-        .set_ews_sync_state_with_seeds(owner, &folder_id, &changes.new_state, &pending_seeds)
+        .set_ews_sync_state_with_seeds(
+            owner,
+            &folder_id,
+            &changes.new_state,
+            &pending_seeds,
+            &seeded_ids.iter().cloned().collect::<Vec<_>>(),
+            &departed_ids,
+        )
         .await
     {
         tracing::error!(folder_id = %folder_id, error = %e, "Failed to set EWS email sync state; failing closed");
@@ -5518,16 +5592,6 @@ async fn handle_sync_email_folder_items(
             StatusCode::SERVICE_UNAVAILABLE,
         );
     }
-
-    // The whole change set (membership + flag updates) has now been delivered
-    // and its state committed, so the flag-scan baseline rows and rotating
-    // position may advance. Persisting them only here guarantees a crash before
-    // this point re-scans the same window rather than swallowing the update.
-    // Ids whose baseline was seeded with the message's CURRENT keywords while
-    // rendering a delivered Create/overlap Update are skipped: that seed is
-    // fresher than the scan snapshot, so writing the snapshot would force a
-    // duplicate flag `<Change>` on the next delta.
-    crate::eas::persist_keyword_scan(state, owner, &folder_id, &keyword_scan, &seeded_ids).await;
 
     // A page that reported no change is the end of the change set; a page that
     // came back at the `maxChanges` cap (`has_more_changes`) was clipped, so
@@ -5555,12 +5619,18 @@ async fn handle_sync_email_folder_items(
         &uuid::Uuid::new_v4().simple().to_string(),
     );
 
-    // Cache the EXACT response for the incoming cursor before answering, so a
-    // retry that echoes `old_state_token` (e.g. the HTTP response was lost after
-    // the flag baseline advanced) replays it instead of recomputing an empty
-    // delta. A failed write is NOT fatal — the response is still correct — but
-    // it is logged, since it weakens the replay guarantee.
-    if let Err(e) = state
+    // Cache the EXACT response for the incoming cursor BEFORE advancing the flag
+    // baseline, so a retry that echoes `old_state_token` (e.g. the HTTP response
+    // was lost after the flag baseline advanced) replays it instead of
+    // recomputing an empty delta. The replay write must be durable BEFORE the
+    // baseline advances: a flag-only `<t:Update>` is invisible to a later
+    // membership-only `Email/queryChanges`, so if the replay write failed AND the
+    // baseline advanced, a lost response would leave the retry with neither a
+    // cached response nor a keyword difference — the edit would be lost forever.
+    // A failed write is NOT fatal to the response (it is still correct), but the
+    // baseline is then HELD so the retry's scan re-reports the edit as a
+    // duplicate the client resolves by ServerId.
+    let replay_ok = match state
         .storage
         .set_ews_delta_replay(
             owner,
@@ -5572,7 +5642,26 @@ async fn handle_sync_email_folder_items(
         )
         .await
     {
-        tracing::warn!(folder_id = %folder_id, error = %e, "Failed to cache the EWS email delta response for replay");
+        Ok(()) => true,
+        Err(e) => {
+            tracing::warn!(folder_id = %folder_id, error = %e, "Failed to cache the EWS email delta response for replay; holding the flag baseline");
+            false
+        }
+    };
+
+    // The whole change set (membership + flag updates) has now been delivered,
+    // its state committed, and its replay record made durable, so the flag-scan
+    // baseline rows and rotating position may advance. Advancing only here (and
+    // only when the replay write succeeded) guarantees a crash before this point
+    // — or a lost response whose replay could not be cached — re-scans the same
+    // window rather than swallowing the update. Ids whose baseline was seeded
+    // with the message's CURRENT keywords while rendering a delivered
+    // Create/overlap Update are skipped: that seed is fresher than the scan
+    // snapshot, so writing the snapshot would force a duplicate flag `<Change>`
+    // on the next delta.
+    if replay_ok {
+        crate::eas::persist_keyword_scan(state, owner, &folder_id, &keyword_scan, &seeded_ids)
+            .await;
     }
 
     let response = format!(
@@ -15130,6 +15219,165 @@ mod tests {
         base
     }
 
+    /// A stub whose `Email/queryChanges` reports a single id `m1` as REMOVED only
+    /// (a genuine departure from the mailbox) and whose `Email/query`/`Email/get`
+    /// serve an empty mailbox (the scan sees nothing).
+    async fn spawn_departure_delta_stub() -> String {
+        use axum::routing::{get, post};
+        use serde_json::{Value, json};
+
+        #[derive(Clone)]
+        struct Ctl {
+            base: String,
+        }
+
+        async fn session(axum::Extension(ctl): axum::Extension<Ctl>) -> axum::Json<Value> {
+            axum::Json(json!({
+                "apiUrl": ctl.base,
+                "downloadUrl": format!("{}/download/{{accountId}}/{{blobId}}", ctl.base),
+                "uploadUrl": format!("{}/upload/{{accountId}}", ctl.base),
+                "eventSourceUrl": format!("{}/eventsource", ctl.base),
+                "state": "s",
+                "username": "u",
+                "accounts": {"a": {"name": "u", "isPersonal": true, "isReadOnly": false, "accountCapabilities": {}}},
+                "primaryAccounts": {"urn:ietf:params:jmap:mail": "a"},
+                "capabilities": {"urn:ietf:params:jmap:core": {"maxObjectsInGet": 500}}
+            }))
+        }
+
+        async fn api(
+            axum::Extension(_ctl): axum::Extension<Ctl>,
+            body: String,
+        ) -> axum::response::Response {
+            let req: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
+            let mut responses = Vec::new();
+            for call in req
+                .get("methodCalls")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default()
+            {
+                let name = call.get(0).and_then(|v| v.as_str()).unwrap_or("");
+                let cid = call.get(2).and_then(|v| v.as_str()).unwrap_or("c0");
+                let result = match name {
+                    "Mailbox/query" => json!({"accountId":"a","ids":["mbx-inbox"],"total":1}),
+                    "Email/queryChanges" => json!({
+                        "accountId": "a",
+                        "oldQueryState": "S0",
+                        "newQueryState": "S1",
+                        "added": [],
+                        "removed": ["m1"],
+                    }),
+                    "Email/query" => json!({
+                        "accountId": "a",
+                        "queryState": "S1",
+                        "ids": [],
+                        "total": 0,
+                        "position": 0,
+                    }),
+                    "Email/get" => json!({"accountId": "a", "state": "S1", "list": []}),
+                    _ => json!({"accountId": "a"}),
+                };
+                responses.push(json!([name, result, cid]));
+            }
+            let resp = json!({"methodResponses": responses, "sessionState": "s"});
+            axum::response::Response::builder()
+                .status(200)
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(serde_json::to_vec(&resp).unwrap()))
+                .unwrap()
+        }
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
+        let ctl = Ctl { base: base.clone() };
+        let app = axum::Router::new()
+            .route("/session", get(session))
+            .route("/", post(api))
+            .layer(axum::Extension(ctl));
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        base
+    }
+
+    /// A departure delta (a pure `removed` id) must render `<t:Delete>` AND prune
+    /// the departed id's delivered-membership row in the same commit as the new
+    /// `SyncState` — a retained row would make a later re-arrival of that id look
+    /// like an in-place `Update` instead of the `Create` it is.
+    #[tokio::test]
+    async fn sync_email_folder_items_departure_prunes_delivered_membership() {
+        let base = spawn_departure_delta_stub().await;
+        // The folder previously delivered `m1` (a recorded membership row).
+        let (state, owner, folder_id) = overlap_delta_state(base, /*held=*/ true).await;
+        assert!(
+            state
+                .storage
+                .has_email_delivered_membership(owner, &folder_id, "m1")
+                .await
+                .unwrap(),
+            "precondition: the folder delivered m1"
+        );
+
+        let body = r#"<m:SyncFolderItems><m:ItemShape/><m:SyncFolderId><t:DistinguishedFolderId Id="inbox"/></m:SyncFolderId><m:SyncState>S0</m:SyncState><m:MaxChangesReturned>100</m:MaxChangesReturned></m:SyncFolderItems>"#;
+        let text =
+            response_body(handle_sync_folder_items(&state, &meeting_auth(), body).await).await;
+        assert_eq!(
+            text.matches("<t:Delete>").count(),
+            1,
+            "a departure must be rendered as a Delete: {text}"
+        );
+        assert!(
+            !state
+                .storage
+                .has_email_delivered_membership(owner, &folder_id, "m1")
+                .await
+                .unwrap(),
+            "a delivered Delete must prune the departed id's membership row: {text}"
+        );
+    }
+
+    /// A FRESH prime (null SyncState) clears the folder's delivered-membership
+    /// ledger before re-recording its delivered set: a stale row from a prior
+    /// stream for an id no longer in the mailbox must not survive to make a later
+    /// re-arrival of that id look like an in-place `Update`.
+    #[tokio::test]
+    async fn sync_email_prime_clears_stale_delivered_membership() {
+        let base = spawn_paged_email_stub(vec!["m0"]).await;
+        let (state, owner, folder_id) = paged_email_state(base).await;
+        // A stale row from a prior stream for an id the prime will NOT deliver.
+        state
+            .storage
+            .record_email_delivered_membership(owner, &folder_id, "stale")
+            .await
+            .unwrap();
+
+        let text = response_body(
+            handle_sync_folder_items(&state, &meeting_auth(), &email_prime_request(None, 10)).await,
+        )
+        .await;
+        assert!(
+            text.contains("m0"),
+            "the prime must deliver the live message: {text}"
+        );
+        assert!(
+            !state
+                .storage
+                .has_email_delivered_membership(owner, &folder_id, "stale")
+                .await
+                .unwrap(),
+            "a fresh prime must clear the stale delivered-membership row"
+        );
+        assert!(
+            state
+                .storage
+                .has_email_delivered_membership(owner, &folder_id, "m0")
+                .await
+                .unwrap(),
+            "the prime must record its own delivered message"
+        );
+    }
+
     /// State for the overlap tests: a persisted `S0` delta state and, when
     /// `held`, a flag baseline row for `m1` (the folder already delivered it).
     async fn overlap_delta_state(
@@ -15161,11 +15409,14 @@ mod tests {
             .await
             .expect("persist delta state");
         if held {
+            // "Held" is DELIVERED membership (the client received a Create for
+            // this id), NOT a keyword-baseline row: the baseline is written for
+            // merely-observed messages too, so it is not proof of delivery.
             state
                 .storage
-                .upsert_email_keyword(owner, &folder_id, "m1", &[])
+                .record_email_delivered_membership(owner, &folder_id, "m1")
                 .await
-                .expect("seed held baseline");
+                .expect("seed delivered membership");
         }
         (state, owner, folder_id)
     }
@@ -15224,6 +15475,46 @@ mod tests {
                 .unwrap()
                 .is_none(),
             "the replay cache must not match a cursor the client never sent"
+        );
+    }
+
+    /// Two CONCURRENT deltas carrying the SAME incoming cursor must not race the
+    /// replay cache: without the per-(owner, folder) lock, both could miss the
+    /// cache, run the keyword scan, and the second's replay write could replace
+    /// the first's — dropping the flag `<t:Update>` if the first response was
+    /// lost. The lock serializes the lookup-through-write, so the loser replays
+    /// the winner's cached response (both responses carry the Update).
+    #[tokio::test]
+    async fn sync_email_folder_items_serializes_concurrent_same_cursor_requests() {
+        let base = spawn_flag_delta_stub(1).await;
+        let (state, _owner, _folder_id) = flag_delta_state(base, 1).await;
+        let body = r#"<m:SyncFolderItems><m:ItemShape/><m:SyncFolderId><t:DistinguishedFolderId Id="inbox"/></m:SyncFolderId><m:SyncState>S0</m:SyncState><m:MaxChangesReturned>100</m:MaxChangesReturned></m:SyncFolderItems>"#;
+
+        let first_state = state.clone();
+        let second_state = state.clone();
+        let (first, second) = tokio::join!(
+            async move {
+                response_body(handle_sync_folder_items(&first_state, &meeting_auth(), body).await)
+                    .await
+            },
+            async move {
+                response_body(handle_sync_folder_items(&second_state, &meeting_auth(), body).await)
+                    .await
+            },
+        );
+
+        // Exactly one response runs the scan and the other replays it; BOTH must
+        // carry the flag Update — the loser must never produce an empty delta
+        // that overwrites the winner's replay entry.
+        assert_eq!(
+            first.matches("<t:Update>").count(),
+            1,
+            "one of two concurrent same-cursor deltas must carry the flag Update: {first}"
+        );
+        assert_eq!(
+            second.matches("<t:Update>").count(),
+            1,
+            "both concurrent same-cursor deltas must carry the flag Update: {second}"
         );
     }
 

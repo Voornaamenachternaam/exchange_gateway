@@ -2191,6 +2191,10 @@ impl JmapClient {
         let mut state = String::new();
         let mut method_errors: Vec<Value> = Vec::new();
         let mut query_position: u64 = 0;
+        // The `Email/query` page's id count. Compared with the `Email/get` list
+        // below to detect the "query returned ids but Email/get returned none"
+        // case (every id vanished between the two calls).
+        let mut query_ids_len: usize = 0;
 
         for (method, data, _) in response.method_responses {
             if method == "Email/query" {
@@ -2204,6 +2208,11 @@ impl JmapClient {
                     .and_then(|v| v.as_str())
                     .unwrap_or("")
                     .to_string();
+                query_ids_len = data
+                    .get("ids")
+                    .and_then(|v| v.as_array())
+                    .map(|a| a.len())
+                    .unwrap_or(0);
                 // RFC 8620 §5.5: the authoritative absolute index of the first
                 // returned id. Absent only on a malformed response; 0 is then a
                 // safe floor.
@@ -2234,6 +2243,21 @@ impl JmapClient {
             .any(|e| e.get("type").and_then(|v| v.as_str()) == Some("anchorNotFound"));
         if !anchor_not_found && let Some(err) = method_errors.into_iter().next() {
             return Err(anyhow!("Email/query returned method error: {}", err));
+        }
+
+        // The query returned ids but `Email/get` returned an empty `list`: every
+        // id vanished between the two calls (they were removed concurrently).
+        // This is NOT "the mailbox is empty" — the query result itself is
+        // authoritative and still holds the ids. Returning an empty success here
+        // would let an initial sync compute `remaining == 0` and store the
+        // pre-removal query state as the delta base, permanently skipping the
+        // undelivered tail that sits behind that state. Fail so the caller
+        // answers a retryable error and re-queries. An `anchorNotFound` result
+        // is genuinely empty and is excluded.
+        if !anchor_not_found && query_ids_len > 0 && emails.is_empty() {
+            return Err(anyhow!(
+                "Email/query returned {query_ids_len} ids but Email/get returned none; retrying"
+            ));
         }
 
         Ok(EmailListResult {
@@ -3237,6 +3261,15 @@ impl JmapClient {
     ) -> Result<(Vec<(String, Vec<String>)>, u64, u64, bool)> {
         let session = self.get_session(username, password).await?;
         let api_url = &session.api_url;
+        // The back-referenced `Email/get` is subject to the session's
+        // `maxObjectsInGet` (RFC 8620 §5.3) — result references become ordinary
+        // arguments before method processing, so a page larger than the get
+        // limit is rejected whole with `requestTooLarge`. Cap the query page at
+        // the advertised limit (floor 1) so the walk never fails on a server
+        // that advertises a cap below `KEYWORD_SCAN_PAGE`.
+        let limit = limit
+            .max(1)
+            .min(session_max_objects_in_get(&session).max(1) as u64);
         let calls = vec![
             (
                 "Email/query",
@@ -3245,7 +3278,7 @@ impl JmapClient {
                     "filter": { "inMailbox": mailbox_id },
                     "sort": [{ "property": "receivedAt", "isAscending": false }],
                     "position": position,
-                    "limit": limit.max(1),
+                    "limit": limit,
                     "calculateTotal": true,
                 }),
                 "q0",
@@ -4542,6 +4575,15 @@ impl JmapClient {
         // `requestTooLarge`. Cap the page at the SMALLER of the query page and
         // the advertised get limit so neither limit can fail the walk.
         let page = Self::MAILBOX_QUERY_PAGE.min(session_max_objects_in_get(&session).max(1) as u64);
+        // RFC 8620 §5.5: a cached query result is only valid while its
+        // `queryState` is unchanged. Paging a `Mailbox/query` whose state
+        // changed mid-walk (a concurrent create/destroy) can return a
+        // non-authoritative set — a page at `position` may skip ids that a
+        // deletion shifted, so the caller would treat a PARTIAL list as the
+        // complete inventory (and, in `reconcile_deferred_folder_prunes`, prune a
+        // live folder). Capture the first page's state and refuse to return a
+        // complete inventory when a later page reports a different one.
+        let mut query_state: Option<String> = None;
         loop {
             let method_calls = vec![
                 (
@@ -4596,6 +4638,23 @@ impl JmapClient {
                         .map(|a| a.len() as u64)
                         .unwrap_or(0);
                     total = data.get("total").and_then(|v| v.as_u64());
+                    // RFC 8620 §5.5: the query state must not change across the
+                    // walk, or the pages are not a single consistent result set.
+                    let page_state = data
+                        .get("queryState")
+                        .and_then(|v| v.as_str())
+                        .map(str::to_string);
+                    if let Some(s) = page_state {
+                        match query_state.as_deref() {
+                            None => query_state = Some(s),
+                            Some(first) if first != s.as_str() => {
+                                return Err(anyhow!(
+                                    "Mailbox/query state changed mid-walk; refusing to return a partial inventory"
+                                ));
+                            }
+                            Some(_) => {}
+                        }
+                    }
                 } else if method == "Mailbox/get" {
                     saw_get = true;
                     let mut list: Vec<JmapMailbox> = data
@@ -9741,6 +9800,71 @@ mod tests {
         assert_eq!(result.query_state, "query-7");
     }
 
+    /// A query that returned ids whose messages ALL vanished before the
+    /// back-referenced `Email/get` (an empty `list`) is NOT an empty mailbox:
+    /// returning an empty success would let an initial sync store the
+    /// pre-removal query state as the delta base and permanently skip the
+    /// undelivered tail behind it. The call must FAIL so the caller retries.
+    #[tokio::test]
+    async fn query_emails_fails_when_query_ids_vanish_before_get() {
+        let response = json!({
+            "methodResponses": [
+                ["Email/query", { "ids": ["m1", "m2"], "total": 3, "queryState": "q-1", "position": 0 }, "q0"],
+                ["Email/get", { "state": "s1", "list": [] }, "g0"]
+            ]
+        });
+        let base = spawn_stub_jmap_api_server(response).await;
+        let client = JmapClient::new(&base).unwrap();
+        let pw = SecretString::from("pw");
+        let err = client
+            .query_emails(QueryEmailsParams {
+                account_id: "a",
+                filter: Some(json!({"inMailbox": "mbx-inbox"})),
+                sort: None,
+                position: 0,
+                limit: 100,
+                anchor: None,
+                anchor_offset: 0,
+                username: "u",
+                password: &pw,
+            })
+            .await
+            .expect_err(
+                "a query whose ids all vanished before Email/get must fail, not answer empty",
+            );
+        assert!(err.to_string().contains("returned 2 ids"), "{err}");
+    }
+
+    /// A query that genuinely returns NO ids (an empty mailbox) is a legitimate
+    /// empty result and must NOT be treated as the vanished-ids failure.
+    #[tokio::test]
+    async fn query_emails_allows_genuinely_empty_query() {
+        let response = json!({
+            "methodResponses": [
+                ["Email/query", { "ids": [], "total": 0, "queryState": "q-0", "position": 0 }, "q0"],
+                ["Email/get", { "state": "s0", "list": [] }, "g0"]
+            ]
+        });
+        let base = spawn_stub_jmap_api_server(response).await;
+        let client = JmapClient::new(&base).unwrap();
+        let pw = SecretString::from("pw");
+        let result = client
+            .query_emails(QueryEmailsParams {
+                account_id: "a",
+                filter: Some(json!({"inMailbox": "mbx-inbox"})),
+                sort: None,
+                position: 0,
+                limit: 100,
+                anchor: None,
+                anchor_offset: 0,
+                username: "u",
+                password: &pw,
+            })
+            .await
+            .expect("an empty query is a legitimate empty result");
+        assert!(result.emails.is_empty());
+    }
+
     /// Spawn a stub JMAP server whose `Mailbox/set` `destroy` reply is the
     /// supplied scripted `methodResponses` entry, so the `destroy_mailbox`
     /// outcome mapping can be driven directly.
@@ -10043,5 +10167,86 @@ mod tests {
             vec![0, 256, 512],
             "each page must be bounded by the advertised get limit"
         );
+    }
+
+    /// RFC 8620 §5.5: a `Mailbox/query` whose `queryState` changes between
+    /// pages is NOT a single consistent result set — the walk must fail rather
+    /// than return a partial inventory a caller could mistake for complete
+    /// (which would prune a live folder's mapping in
+    /// `reconcile_deferred_folder_prunes`).
+    #[tokio::test]
+    async fn query_all_mailboxes_rejects_query_state_change_mid_walk() {
+        use axum::routing::{get, post};
+
+        #[derive(Clone)]
+        struct Ctl {
+            base: String,
+        }
+        async fn session(axum::Extension(ctl): axum::Extension<Ctl>) -> axum::Json<Value> {
+            let mut s = session_json(&ctl.base);
+            s["primaryAccounts"] = json!({ "urn:ietf:params:jmap:mail": "a" });
+            axum::Json(s)
+        }
+        async fn api(body: String) -> axum::Json<Value> {
+            let req: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
+            let mut responses = Vec::new();
+            let mut last_ids: Vec<String> = Vec::new();
+            for call in req
+                .get("methodCalls")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default()
+            {
+                let name = call.get(0).and_then(|v| v.as_str()).unwrap_or("");
+                let args = call.get(1).cloned().unwrap_or(Value::Null);
+                let cid = call.get(2).and_then(|v| v.as_str()).unwrap_or("c0");
+                let result = match name {
+                    "Mailbox/query" => {
+                        let position = args.get("position").and_then(|v| v.as_u64()).unwrap_or(0);
+                        // A DIFFERENT queryState per page — the walk must abort.
+                        let state = format!("state-{position}");
+                        let end = position + 2;
+                        last_ids = (position..end).map(|i| format!("mb-{i}")).collect();
+                        json!({
+                            "accountId": "a",
+                            "ids": last_ids,
+                            "total": 6,
+                            "position": position,
+                            "queryState": state,
+                        })
+                    }
+                    "Mailbox/get" => {
+                        let list: Vec<Value> = last_ids
+                            .iter()
+                            .map(|id| json!({ "id": id, "name": id, "parentId": Value::Null }))
+                            .collect();
+                        json!({ "accountId": "a", "list": list })
+                    }
+                    _ => json!({ "accountId": "a" }),
+                };
+                responses.push(json!([name, result, cid]));
+            }
+            axum::Json(json!({ "methodResponses": responses, "sessionState": "s" }))
+        }
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let base = format!("http://127.0.0.1:{port}");
+        let ctl = Ctl { base: base.clone() };
+        let app = axum::Router::new()
+            .route("/session", get(session))
+            .route("/", post(api))
+            .layer(axum::Extension(ctl));
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let client = JmapClient::new(&base).unwrap();
+        let pw = SecretString::from("pw");
+        let err = client
+            .query_all_mailboxes("u", &pw)
+            .await
+            .expect_err("a mid-walk queryState change must fail the walk");
+        assert!(err.to_string().contains("state changed"), "{err}");
     }
 }

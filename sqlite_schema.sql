@@ -66,6 +66,25 @@ CREATE TABLE IF NOT EXISTS calendar_delivery_map (
     UNIQUE(owner, scope_id, server_id)
 );
 
+-- Durable JMAP-ID-to-canonical-ServerId alias for calendar events.
+--
+-- An event created through CalDAV is keyed on `generate_server_id(caldav_href)`,
+-- while the SAME event read back through JMAP derives a different ServerId from
+-- its `jmap://calendar/{account}/{id}` pseudo-href. When `CalendarEvent/changes`
+-- later reports that JMAP id as destroyed, the deletion sweep must resolve it to
+-- the SAME canonical ServerId the scope delivered under, or the `<Delete>` is
+-- never emitted and the provider token advances past it. This table persists that
+-- association: `resource_href` is the JMAP pseudo-href, `server_id` the canonical
+-- identity it maps to.
+CREATE TABLE IF NOT EXISTS jmap_id_alias (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner TEXT NOT NULL,
+    resource_href TEXT NOT NULL,
+    server_id TEXT NOT NULL,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(owner, resource_href)
+);
+
 CREATE TABLE IF NOT EXISTS deleted_item_tombstone (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     owner TEXT NOT NULL,
@@ -218,6 +237,28 @@ CREATE TABLE IF NOT EXISTS email_keyword_baseline (
     collection_id TEXT NOT NULL,
     email_id TEXT NOT NULL,
     keywords_json TEXT NOT NULL,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(owner, collection_id, email_id)
+);
+
+-- Delivered-membership ledger for the EAS/EWS email delta.
+--
+-- `Email/queryChanges` reports an id in BOTH `added` and `removed` whenever a
+-- mutable filter property changed. For a message NEWLY arriving in the mailbox
+-- that is a `Create`; for one the client already holds it is an in-place
+-- `Update`. The two cannot be told apart from the keyword baseline: the bounded
+-- flag scan records a baseline row for a message it merely OBSERVED (a first
+-- observation, no `<Change>`), and a full baseline capture records rows for the
+-- whole mailbox — neither proves the client ever received the message. This
+-- table records membership the client was actually DELIVERED: a `Create`/`Add`
+-- (and an initial-prime `<Add>`) writes a row; the scan and baseline capture do
+-- NOT. The overlap decision therefore consults THIS ledger, so an observed-only
+-- message is correctly classified as a new `Create`.
+CREATE TABLE IF NOT EXISTS email_delivered_membership (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner TEXT NOT NULL,
+    collection_id TEXT NOT NULL,
+    email_id TEXT NOT NULL,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(owner, collection_id, email_id)
 );

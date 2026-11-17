@@ -1031,44 +1031,6 @@ async fn resolve_open_folder_target(
     input_handle.map(|(b, _)| b).filter(|b| !b.is_empty())
 }
 
-/// Serialises `RopMoveFolder` mirror writes for the same `(owner, folder)` so
-/// two concurrent moves of one folder cannot commit their EAS `folder_map`
-/// ParentId in reverse order (which would advertise an earlier parent than the
-/// backend). Keyed per owner+folder; each entry is a tiny async mutex, so
-/// unrelated moves never contend.
-static MOVE_FOLDER_LOCKS: std::sync::LazyLock<
-    dashmap::DashMap<String, std::sync::Arc<tokio::sync::Mutex<()>>>,
-> = std::sync::LazyLock::new(dashmap::DashMap::new);
-
-/// Acquire the per-`(owner, folder)` move lock and run `f` while holding it.
-/// The entry is removed on release ONLY when no other task still holds (or is
-/// waiting on) this same mutex: removing unconditionally would let a waiter
-/// that resolved the previous `Arc` run concurrently with a newcomer that
-/// inserted a fresh `Arc` for the same key — defeating the serialization this
-/// exists to provide.
-async fn with_move_folder_lock<T, F, Fut>(owner: &str, folder: &str, f: F) -> T
-where
-    F: FnOnce() -> Fut,
-    Fut: std::future::Future<Output = T>,
-{
-    let key = format!("{owner}\u{0}{folder}");
-    let lock = MOVE_FOLDER_LOCKS
-        .entry(key.clone())
-        .or_insert_with(|| std::sync::Arc::new(tokio::sync::Mutex::new(())))
-        .clone();
-    let guard = lock.lock().await;
-    let out = f().await;
-    drop(guard);
-    // Release our own reference before the liveness check, so the map's value
-    // count reflects only OTHER waiters. `strong_count == 1` then means only the
-    // map references this mutex: no waiter holds the previous `Arc`, so it is
-    // safe to drop the entry. A concurrent acquirer that cloned the same `Arc`
-    // (count ≥ 2) keeps the entry, and the LAST holder removes it.
-    drop(lock);
-    MOVE_FOLDER_LOCKS.remove_if(&key, |_, v| std::sync::Arc::strong_count(v) == 1);
-    out
-}
-
 /// Dispatch one ROP, writing its response bytes into `out`. The cursor
 /// `cur` is positioned just past the RopId byte on entry.
 async fn execute_one_rop(
@@ -5254,8 +5216,18 @@ async fn execute_one_rop(
                         // stored ParentId naming an earlier parent than the
                         // backend).
                         let owner = crate::ews::owner_from_username(username);
-                        let (move_outcome, move_partial) =
-                            with_move_folder_lock(owner, src, || async {
+                        // Serialize this folder's backend reparent with its
+                        // `folder_map` mirror across ALL front doors (EAS, EWS,
+                        // MAPI) via the shared lock
+                        // (`Storage::lock_folder_mutation`), held across BOTH the
+                        // `Mailbox/set` call and the mirror. The lock is only
+                        // meaningful when a mirror may run (storage wired); with
+                        // no storage there is no mirror to interleave.
+                        let _folder_guard = match storage {
+                            Some(s) => Some(s.lock_folder_mutation(owner, src).await),
+                            None => None,
+                        };
+                        let (move_outcome, move_partial) = (async {
                                 match jc
                                     .update_mailbox(
                                         &account_id,
@@ -6521,9 +6493,14 @@ async fn execute_one_rop(
                         if !ids.is_empty() {
                             destroyed_ok =
                                 match jc.destroy_emails(&account_id, &ids, username, pw).await {
+                                    // A partial destroy (fewer deleted than selected)
+                                    // must NOT be reported as complete success: the
+                                    // folder is not empty. `destroyed_any` still
+                                    // flags the partial-completion byte (some
+                                    // destructive action did succeed).
                                     Ok(n) => {
                                         destroyed_any = n > 0;
-                                        true
+                                        n == ids.len()
                                     }
                                     Err(e) => {
                                         tracing::warn!(error = %e, "JMAP Email/destroy failed");
@@ -12819,85 +12796,6 @@ mod tests {
         assert!(
             pos("grandchild") < pos("child-a"),
             "grandchild must be destroyed before its parent: {ids:?}"
-        );
-    }
-
-    /// Two concurrent moves of the SAME `(owner, folder)` must not interleave
-    /// their critical sections: the lock exists so the EAS parent mirror always
-    /// records the LAST backend move. A counter that observes a concurrent
-    /// holder would prove the serialization failed.
-    #[tokio::test]
-    async fn move_folder_lock_serializes_same_folder() {
-        use std::sync::Arc;
-        use std::sync::atomic::{AtomicUsize, Ordering};
-        let concurrent = Arc::new(AtomicUsize::new(0));
-        let max_concurrent = Arc::new(AtomicUsize::new(0));
-        let mut handles = Vec::new();
-        for _ in 0..8 {
-            let concurrent = concurrent.clone();
-            let max_concurrent = max_concurrent.clone();
-            handles.push(tokio::spawn(async move {
-                with_move_folder_lock("owner@example.com", "mbx-1", || {
-                    let concurrent = concurrent.clone();
-                    let max_concurrent = max_concurrent.clone();
-                    async move {
-                        let now = concurrent.fetch_add(1, Ordering::SeqCst) + 1;
-                        max_concurrent.fetch_max(now, Ordering::SeqCst);
-                        tokio::task::yield_now().await;
-                        concurrent.fetch_sub(1, Ordering::SeqCst);
-                    }
-                })
-                .await;
-            }));
-        }
-        for h in handles {
-            h.await.unwrap();
-        }
-        assert_eq!(
-            max_concurrent.load(Ordering::SeqCst),
-            1,
-            "the per-(owner, folder) lock must serialize holders"
-        );
-        // The map must not retain the entry once the last holder releases it.
-        assert!(
-            !MOVE_FOLDER_LOCKS.contains_key("owner@example.com\u{0}mbx-1"),
-            "the lock entry must be reclaimed after the last holder"
-        );
-    }
-
-    /// Moves of DIFFERENT folders must not contend: the lock is per
-    /// `(owner, folder)`.
-    #[tokio::test]
-    async fn move_folder_lock_allows_different_folders_concurrently() {
-        use std::sync::Arc;
-        use std::sync::atomic::{AtomicUsize, Ordering};
-        let concurrent = Arc::new(AtomicUsize::new(0));
-        let max_concurrent = Arc::new(AtomicUsize::new(0));
-        let mut handles = Vec::new();
-        for i in 0..4 {
-            let concurrent = concurrent.clone();
-            let max_concurrent = max_concurrent.clone();
-            handles.push(tokio::spawn(async move {
-                let folder = format!("mbx-{i}");
-                with_move_folder_lock("owner@example.com", &folder, || {
-                    let concurrent = concurrent.clone();
-                    let max_concurrent = max_concurrent.clone();
-                    async move {
-                        let now = concurrent.fetch_add(1, Ordering::SeqCst) + 1;
-                        max_concurrent.fetch_max(now, Ordering::SeqCst);
-                        tokio::task::yield_now().await;
-                        concurrent.fetch_sub(1, Ordering::SeqCst);
-                    }
-                })
-                .await;
-            }));
-        }
-        for h in handles {
-            h.await.unwrap();
-        }
-        assert!(
-            max_concurrent.load(Ordering::SeqCst) > 1,
-            "moves of different folders must be able to run concurrently"
         );
     }
 }

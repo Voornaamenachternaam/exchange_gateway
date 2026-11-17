@@ -5477,11 +5477,20 @@ async fn handle_get_hierarchy(ctx: &FolderCmdCtx<'_>) -> Response {
         }
     };
     for row in user_folders {
+        // [MS-ASCMD] §2.2.1.8: GetHierarchy "includes only email folders" — a
+        // persisted Type 13 CalDAV calendar folder must be excluded, and a
+        // persisted mail folder Type must be rendered as the GetHierarchy-legal
+        // Type 1 (generic); §2.2.3.186.4 lists only 1–6 as valid GetHierarchy
+        // values, so the FolderSync type 12 (user mail) is NOT legal here.
+        if row.backend_kind != "jmap" {
+            continue;
+        }
+        let get_hierarchy_type: i64 = 1;
         folders.push_str(&format!(
             "<Folder><DisplayName>{}</DisplayName><ServerId>{}</ServerId><Type>{}</Type><ParentId>{}</ParentId></Folder>",
             xml_escape(&row.display_name),
             xml_escape(&row.server_id),
-            row.folder_type,
+            get_hierarchy_type,
             xml_escape(&row.parent_id),
         ));
     }
@@ -8325,7 +8334,37 @@ async fn handle_email_sync(ctx: &EmailSyncRequestCtx<'_>) -> anyhow::Result<Stri
             ));
         }
     };
-    match route_email_sync(incoming_sync_key, cursor_present) {
+    // Route BEFORE validating the key: a non-zero incoming SyncKey is validated
+    // ONLY on the DELTA path. [MS-ASCMD] §2.2.3.181.4: a non-zero key MUST match
+    // the key this collection last issued, else the client's view is stale and it
+    // must re-prime (Status 3). Without this a client that retries its LAST
+    // RECEIVED key after a lost response would be diffed against the NEWER stored
+    // token/baseline — the membership feed reports nothing and the advanced flag
+    // baseline suppresses the flag-only `<Change>` the lost response carried, so
+    // the edit is never delivered. Validating the key forces a re-prime that
+    // re-establishes a consistent base. A prime CONTINUATION is deliberately NOT
+    // validated: it is routed by its persisted cursor (the clipped prime's key
+    // write is best-effort, so cursor presence — not the key — is the
+    // authoritative continuation signal), and its follow-up is part of the SAME
+    // prime, not a delta over committed state.
+    let route = route_email_sync(incoming_sync_key, cursor_present);
+    if incoming_sync_key != "0" && route == EmailSyncRoute::Delta {
+        let valid = match state
+            .storage
+            .get_sync_key(username, state_collection_id)
+            .await
+        {
+            Ok(Some((stored, _))) => stored == incoming_sync_key,
+            _ => false,
+        };
+        if !valid {
+            return Ok(format!(
+                "<Collection><Class>Email</Class><SyncKey>0</SyncKey><CollectionId>{}</CollectionId><Status>3</Status></Collection>",
+                xml_escape(collection_id)
+            ));
+        }
+    }
+    match route {
         EmailSyncRoute::Initial => {
             // A fresh prime must never inherit a previous sync's continuation:
             // after a Status 3 re-priming, re-provisioning or an account reset
@@ -9214,9 +9253,21 @@ async fn handle_email_delta_sync(ctx: &EmailSyncCtx<'_>) -> anyhow::Result<Strin
         sync_type = "delta",
         "Building EAS email delta sync response"
     );
+    // A flag scan that exhausted its page budget while messages remained left
+    // undelivered `<Change>`s behind its HELD position. The token advanced to the
+    // state that follows the delivered membership set, but the scan's held
+    // position still re-discovers those edits on the next delta — so the client
+    // must Sync again now rather than sleep until an unrelated change wakes it.
+    // `<MoreAvailable/>` is exactly that signal ([MS-ASCMD] §2.2.3.102.3). The
+    // non-deferred completion path is unchanged (no `<MoreAvailable/>`).
+    let more_available_tag = if keyword_scan.deferred {
+        "<MoreAvailable/>"
+    } else {
+        ""
+    };
     Ok(format!(
-        "<Collection><Class>Email</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>1</Status><Commands>{}</Commands></Collection>",
-        new_sync_key, collection_id, commands_xml
+        "<Collection><Class>Email</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>1</Status>{}<Commands>{}</Commands></Collection>",
+        new_sync_key, collection_id, more_available_tag, commands_xml
     ))
 }
 
@@ -11588,6 +11639,13 @@ mod tests {
             .to_string();
 
         // A destroy intent was recorded, but the backend mailbox is still live.
+        // The intent is RETAINED (not withdrawn): the initiating destroy
+        // operation owns clearing it — on refusal, or by pruning after a
+        // confirmed destroy — and a process stop between the backend destroy and
+        // its direct prune would otherwise lose the only recovery record for a
+        // mailbox already gone from the live hierarchy. A retained intent for a
+        // live folder is harmless: it is re-evaluated on the next reconcile and
+        // never prunes a live row.
         state
             .storage
             .record_pending_folder_prunes(owner, &["mbx-1".to_string()])
@@ -11626,14 +11684,14 @@ mod tests {
                 .is_some(),
             "a live folder's mapping must survive the reconcile"
         );
-        assert!(
+        assert_eq!(
             state
                 .storage
                 .list_pending_folder_prunes(owner)
                 .await
-                .unwrap()
-                .is_empty(),
-            "the withdrawn intent must be cleared"
+                .unwrap(),
+            vec!["mbx-1".to_string()],
+            "a live folder's intent must be RETAINED for the initiating destroy operation"
         );
     }
 
@@ -11809,6 +11867,64 @@ mod tests {
             resp.status(),
             StatusCode::INTERNAL_SERVER_ERROR,
             "a folder-list read failure must surface as HTTP 500, not a partial hierarchy"
+        );
+    }
+
+    /// §2.2.1.8: GetHierarchy returns ONLY email folders, and §2.2.3.186.4
+    /// allows only Types 1–6. A persisted CalDAV calendar folder (Type 13) must
+    /// be EXCLUDED, and a user mail folder (FolderSync Type 12) must be rendered
+    /// as the GetHierarchy-legal Type 1.
+    #[tokio::test]
+    async fn test_get_hierarchy_email_only_and_type_one() {
+        let state = test_ping_state().await;
+        let owner = "hierarchy-types@example.com";
+        for (server_id, folder_type, backend_kind) in
+            [("mb-mail", 12, "jmap"), ("cal-folder", 13, "caldav")]
+        {
+            state
+                .storage
+                .upsert_folder_journaled(
+                    crate::storage::FolderUpsertParams {
+                        owner,
+                        server_id,
+                        parent_id: "0",
+                        display_name: server_id,
+                        folder_type,
+                        backend_kind,
+                        backend_id: server_id,
+                    },
+                    "folder-add",
+                )
+                .await
+                .expect("persist folder");
+        }
+        let wbxml = Wbxml::new();
+        let ctx = FolderCmdCtx {
+            state: &state,
+            owner,
+            password: &SecretString::from("pw"),
+            device_id: "dev",
+            xml: "",
+            wbxml: &wbxml,
+            as_wbxml: false,
+            request_id: "gh-types",
+        };
+        let text = response_text(handle_get_hierarchy(&ctx).await).await;
+        assert!(
+            text.contains("<ServerId>mb-mail</ServerId>"),
+            "a mail folder must be listed: {text}"
+        );
+        assert!(
+            text.contains("<Type>1</Type>"),
+            "a user mail folder must render as GetHierarchy Type 1: {text}"
+        );
+        assert!(
+            !text.contains("<Type>12</Type>") && !text.contains("<Type>13</Type>"),
+            "GetHierarchy must not emit a Type outside 1–6: {text}"
+        );
+        assert!(
+            !text.contains("cal-folder"),
+            "a CalDAV calendar folder must be excluded from GetHierarchy: {text}"
         );
     }
 
@@ -12469,6 +12585,124 @@ mod tests {
             state.storage.get_sync_key(owner, &scoped).await.unwrap(),
             Some(("oldkey".to_string(), Some("S0".to_string()))),
             "the stored query state must be preserved so the delta can resume"
+        );
+    }
+
+    /// [MS-ASCMD] §2.2.3.181.4: a non-zero incoming `SyncKey` on the DELTA path
+    /// MUST match the key this collection last issued. A stale key (the client
+    /// retrying its last received key after a lost response) must answer Status 3
+    /// + SyncKey 0 so the client re-primes, rather than being diffed against the
+    /// NEWER stored token/baseline (which would silently swallow a flag-only
+    /// `<Change>` the lost response carried). A never-issued key is equally
+    /// rejected.
+    #[tokio::test]
+    async fn test_email_delta_rejects_stale_key_with_status_3() {
+        use crate::models::AppState;
+        use axum::routing::{get, post};
+        use serde_json::{Value, json};
+        use std::sync::Arc as StdArc;
+
+        #[derive(Clone)]
+        struct Ctl {
+            base: String,
+        }
+
+        async fn session(axum::Extension(ctl): axum::Extension<Ctl>) -> axum::Json<Value> {
+            axum::Json(json!({
+                "apiUrl": ctl.base,
+                "downloadUrl": format!("{}/download/{{accountId}}/{{blobId}}", ctl.base),
+                "uploadUrl": format!("{}/upload/{{accountId}}", ctl.base),
+                "eventSourceUrl": format!("{}/eventsource", ctl.base),
+                "state": "s",
+                "username": "u",
+                "accounts": {"a": {"name": "u", "isPersonal": true, "isReadOnly": false, "accountCapabilities": {}}},
+                "primaryAccounts": {"urn:ietf:params:jmap:mail": "a"},
+                "capabilities": {"urn:ietf:params:jmap:core": {"maxObjectsInGet": 500}}
+            }))
+        }
+
+        async fn api(body: String) -> axum::Json<Value> {
+            let req: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
+            let mut responses = Vec::new();
+            for call in req
+                .get("methodCalls")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default()
+            {
+                let name = call.get(0).and_then(|v| v.as_str()).unwrap_or("");
+                let cid = call.get(2).and_then(|v| v.as_str()).unwrap_or("c0");
+                let result = match name {
+                    "Mailbox/query" => json!({"accountId":"a","ids":["mbx-inbox"],"total":1}),
+                    _ => json!({"accountId":"a"}),
+                };
+                responses.push(json!([name, result, cid]));
+            }
+            axum::Json(json!({"methodResponses": responses, "sessionState": "s"}))
+        }
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
+        let ctl = Ctl { base: base.clone() };
+        let app = axum::Router::new()
+            .route("/session", get(session))
+            .route("/", post(api))
+            .layer(axum::Extension(ctl));
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let storage = crate::storage::Storage::new("sqlite::memory:")
+            .await
+            .unwrap();
+        storage.init_schema().await.unwrap();
+        let cfg = crate::config::Config {
+            jmap_base: base.clone(),
+            email_enabled: true,
+            mail_domain: "example.com".to_string(),
+            hmac_secret: SecretString::from("a".repeat(32)),
+            ..Default::default()
+        };
+        let state = StdArc::new(AppState::new(cfg, StdArc::new(storage)));
+
+        let owner = "u@example.com";
+        let scoped = scoped_collection_id("2", "dev-1");
+        // A completed prime stored `key-1`; no cursor is present, so a non-zero
+        // key routes to the DELTA path where the key is validated.
+        state
+            .storage
+            .set_sync_key(owner, &scoped, "key-1", Some("QS0"))
+            .await
+            .unwrap();
+
+        let password = SecretString::from("pw");
+        let options = crate::eas_sync_options::EasSyncCollectionOptions::default();
+        // The client retries its LAST RECEIVED key `key-0` — never issued.
+        let xml = handle_email_sync(&EmailSyncRequestCtx {
+            state: &state,
+            username: owner,
+            password: &password,
+            collection_id: "2",
+            state_collection_id: &scoped,
+            incoming_sync_key: "key-0",
+            window: 512,
+            options: Some(&options),
+            conversation_mode: false,
+        })
+        .await
+        .expect("a stale key must answer a Status 3 body, not an error");
+        assert!(
+            xml.contains("<Status>3</Status>"),
+            "a stale non-zero key must force a re-prime: {xml}"
+        );
+        assert!(
+            xml.contains("<SyncKey>0</SyncKey>"),
+            "Status 3 must carry SyncKey 0: {xml}"
+        );
+        assert_eq!(
+            state.storage.get_sync_key(owner, &scoped).await.unwrap(),
+            Some(("key-1".to_string(), Some("QS0".to_string()))),
+            "the stored key/state must be untouched by a rejected stale Sync"
         );
     }
 

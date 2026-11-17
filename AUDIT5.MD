@@ -130,13 +130,43 @@ gateway restarts and surface in `FolderSync`/`GetHierarchy`.
   immediately) and `GetHierarchy`, plus EWS `SyncFolderHierarchy` — which re-runs
   the prune and journals the `folder-delete`, so the client receives the Delete
   instead of EAS advertising a folder that no longer exists. A replay failure is
-  non-fatal: the pending row survives for the next read.
+  non-fatal: the pending row survives for the next read. The replay reconciles
+  ONLY the candidate set captured BEFORE its live-mailbox query (a concurrent
+  request can record a NEW intent and create its mailbox after the query; that
+  newer intent is left for the next reconcile, never classified against the
+  older live set), and a candidate the backend STILL holds keeps its intent
+  (RETAINED, not withdrawn): the initiating destroy operation owns clearing it —
+  on refusal, or by pruning after a confirmed destroy — and a process stop
+  between the backend destroy and its direct prune would otherwise lose the only
+  recovery record for a mailbox already gone from the live hierarchy. A retained
+  intent for a live folder is harmless: it is re-evaluated on the next reconcile
+  and never prunes a live row.
 - **`FolderUpdate`** (§2.2.1.6): rename and/or move. A system folder → 2; an
   unknown folder → 4; otherwise JMAP `Mailbox/set update` (patch `name` and/or
   `parentId`) or a CalDAV `PROPPATCH` `<D:displayname>`; the CalDAV collection
-  href (ServerId) is kept stable across a rename.
+  href (ServerId) is kept stable across a rename. The backend mutation and its
+  `folder_map` mirror are serialized per `(owner, backend folder)` by
+  `Storage::lock_folder_mutation` (held across BOTH the `Mailbox/set` call and
+  the mirror), so two concurrent renames/moves of the SAME folder cannot
+  interleave a mirror derived from a stale snapshot (each mirrors its own name,
+  and the last mirror to run need not be the last backend write). The lock lives
+  on `Storage` (not `AppState`) so EVERY front door — EAS `FolderUpdate`
+  (`update_mail_folder`/`rename_caldav_folder`), EWS `UpdateFolder`/`MoveFolder`,
+  and MAPI `RopMoveFolder` — shares ONE lock instance and thus cannot interleave
+  across paths (a MAPI move racing an EWS rename of the same folder would
+  otherwise mirror out of order). All paths key on the JMAP mailbox id.
+- **Folder-mutation response shape** (§2.2.3.181.1): a `SyncKey` element is
+  emitted ONLY on success; a failed `FolderCreate`/`FolderDelete`/`FolderUpdate`
+  (including Status 9 for a mismatched hierarchy `SyncKey`) MUST NOT carry one.
+  A hierarchy `SyncKey` of `"0"` is accepted ONLY for a device with NO stored
+  hierarchy key (the first-use prime); a primed device that supplies `"0"` is
+  stale and is rejected with Status 9 rather than mutating against an
+  out-of-date hierarchy view.
 - **`GetHierarchy`** (§2.2.1.8) now lists user-created folders after the fixed
-  system set, in the §6.19 `<Folders>/<Folder>` shape.
+  system set, in the §6.19 `<Folders>/<Folder>` shape. Per §2.2.1.8 the response
+  includes ONLY email folders: a persisted Type 13 CalDAV calendar folder is
+  excluded, and a persisted mail folder (FolderSync Type 12) is rendered as the
+  GetHierarchy-legal Type 1 (§2.2.3.186.4 lists only 1–6).
 - **`FolderSync`** (§2.2.1.5): a prime (`SyncKey 0`) lists the system set plus
   every persisted user-created folder; an incremental call reports the
   folder-hierarchy changes journaled since the client's watermark
@@ -238,6 +268,24 @@ gateway restarts and surface in `FolderSync`/`GetHierarchy`.
   Status 4 and never sync the folder) — the collection fails closed with a
   retryable Status 6 so the next Sync re-reads the mapping, matching the
   class-specific handlers' own fail-closed resolution.
+
+- **Email delta SyncKey validation + deferred flag scan.** On the DELTA path a
+  non-zero incoming `SyncKey` MUST match the key the collection last issued
+  ([MS-ASCMD] §2.2.3.181.4); a mismatch (a stale client retrying its LAST
+  RECEIVED key after a lost response, or a never-issued key) answers Status 3 +
+  `SyncKey 0` so the client re-primes. Without this the retry would be diffed
+  against the NEWER stored token/baseline — the membership feed reports nothing
+  and the advanced flag baseline suppresses the flag-only `<Change>` the lost
+  response carried, so the edit would be lost forever. The validation runs ONLY
+  on the delta route: a prime continuation is routed by its persisted cursor
+  (the clipped prime's key write is best-effort, so cursor presence — not the
+  key — is the authoritative continuation signal) and is part of the SAME prime,
+  not a delta over committed state, so validating it would break resumption.
+  When the bounded flag scan exhausts its per-delta change budget with messages
+  still unscanned (`keyword_scan.deferred`), the delta emits `<MoreAvailable/>`
+  so the client Syncs again immediately instead of sleeping until an unrelated
+  change wakes it; the scan holds its rotating position, so the held edits are
+  re-discovered on the next delta.
 
 - **Email property (flag) updates.** `Email/queryChanges` reports only
   membership of the query result set (RFC 8620 §5.6), so a message whose flags
@@ -560,6 +608,59 @@ NOT acknowledged as success (retryable `ErrorInternalServerError`), because the
 JMAP mailbox is already renamed and a stale DisplayName would keep EAS
 advertising the old name; the rename is idempotent, so a retry re-applies it and
 re-runs the mirror.
+
+**PR-review hardening (post-commit, second batch).** (o) The EWS email delta's
+replay lookup and replay write run under ONE per-`(owner, folder)` async lock
+(`AppState::ews_delta_locks`), so two requests carrying the SAME incoming
+`SyncState` cannot both miss the replay cache, both scan, and have the second's
+replay write replace the first's cached response (which would drop the flag
+`<t:Update>` the first delivered). The lock is released on the early-return
+paths that skip the write. (p) The replay record is written BEFORE the flag
+baseline advances: a flag-only `<t:Update>` is invisible to a later
+membership-only `Email/queryChanges`, so if the replay write failed AND the
+baseline advanced, a lost response would leave the retry with neither a cached
+response nor a keyword difference. A failed replay write holds the baseline
+(the response is still correct); the retry's scan re-reports the edit as a
+duplicate the client resolves by ServerId. (q) The EWS delta's
+`has_email_keyword` overlap decision consults a DELIVERED-membership ledger
+(`email_delivered_membership`), NOT the keyword baseline: the baseline records
+a row for a message merely OBSERVED by a scan or captured at prime, which does
+not prove the client ever received a Create, so a message that entered the
+folder between `query_email_changes` and the scan would otherwise be
+misclassified as an in-place Update. Only a delivered `Create`/`<Add>` writes a
+delivered-membership row (in the SAME transaction as the state it was delivered
+under, via `set_ews_sync_state_with_seeds`). The ledger is kept an exact record
+of what the client holds: a `<t:Delete>` prunes its departed id's row in that
+same transaction (a retained row would make a later re-arrival look like an
+in-place `Update`), and a FRESH prime clears the whole ledger for the folder
+before re-recording its delivered set (the client was told to forget the
+folder). (r) `query_emails` FAILS CLOSED
+when `Email/query` returned ids but the back-referenced `Email/get` returned
+none of them (they vanished between the two calls): the initial-prime path must
+not save the pre-removal query state as the delta base, which would place the
+still-undelivered tail inside that base and permanently skip it.
+(t) `list_email_ids_with_keywords_page` clamps its `Email/query` page size to
+the session's advertised `maxObjectsInGet`, so the back-referenced `Email/get`
+never exceeds the server's object cap (`requestTooLarge`). (u) The mailbox
+query pagination captures the first page's `queryState` and treats a later
+page whose state differs as a partial (non-authoritative) inventory, so the
+folder-map prune reconcile never acts on a torn snapshot. (v) The calendar
+deletion sweep bounds the CalDAV fallback — which queries exactly ONE
+collection — to events THIS scope delivered (its ledger), and joins a UID to a
+stored identity ONLY across backends AND only when that UID is unambiguous: the
+join exists to bridge the JMAP and CalDAV representations of ONE event, so a
+stored href pairs only with a fetched href of the OTHER kind, and a UID mapping
+to two different stored ServerIds names two DISTINCT events and is never joined
+(a same-kind match — two CalDAV collections sharing a UID, which CalDAV permits
+since UID uniqueness is per collection — keeps each resource's own href-derived
+identity rather than collapsing one onto the other).
+(w) A JMAP `jmap://calendar/{account}/{id}` pseudo-href is persisted
+(`jmap_id_alias`) to the canonical ServerId an event was delivered under, so a
+`CalendarEvent/changes` destroy of that JMAP id resolves to the same identity
+and the delivered item can be deleted. (x) MAPI `destroy_emails`' success
+branch compares the destroyed count with `ids.len()`, preserving
+`PartialCompletion` when only some messages were deleted. (y) `dav_status_code`
+rejects a malformed status without slicing at a non-UTF-8 boundary.
 
 **Upgrade note (expected one-time re-prime).** Before this change the stored
 email delta token was the `Email/get` data-type state; the new delta passes it

@@ -511,6 +511,15 @@ pub(crate) async fn handle_update_folder(
         return resp;
     }
 
+    // Serialize this folder's backend rename with its `folder_map` mirror so a
+    // concurrent rename/move of the SAME folder cannot interleave a mirror
+    // derived from a stale snapshot (see `Storage::lock_folder_mutation`). Held
+    // across BOTH the `Mailbox/set` call and the mirror below.
+    let _folder_guard = state
+        .storage
+        .lock_folder_mutation(&owner, &mailbox_id)
+        .await;
+
     match jmap
         .update_mailbox(
             &account_id,
@@ -933,6 +942,14 @@ pub(crate) async fn handle_move_folder(
                 );
             }
         };
+        // Serialize this folder's backend reparent with its `folder_map` mirror
+        // (see `Storage::lock_folder_mutation`): a concurrent rename/move of the
+        // SAME folder must not interleave a mirror derived from a stale
+        // snapshot. Held across BOTH the `Mailbox/set` call and the mirror.
+        let _folder_guard = state
+            .storage
+            .lock_folder_mutation(&owner, &mailbox_id)
+            .await;
         match jmap
             .update_mailbox(
                 &account_id,
