@@ -217,18 +217,19 @@ gateway restarts and surface in `FolderSync`/`GetHierarchy`.
   anchor") instead of a numeric `position`: a message deleted before the next
   request shrinks the live `receivedAt`-ordered result set, so a stored numeric
   offset would skip an unchanged message — and, because that message was
-  already covered by the first window's query state, the delta would never
+  already covered by the first window’s query state, the delta would never
   re-report it (permanently absent from the client). A vanished anchor surfaces
-  as `anchorNotFound` and falls back to the numeric position **rebased by one**:
-  the stored offset is the index PAST the previous window, so the anchor — the
-  last message that window delivered — occupied the slot `offset - 1`. When that
-  message is deleted everything after it shifts up by one, so the first
-  UNDELIVERED message now sits at `offset - 1`; resuming at the unchanged offset
-  would skip it — and, being already inside the first window's query state, no
-  later delta would re-report it. Resuming at `offset - 1` re-delivers that slot
-  (the now-deleted anchor's position, i.e. the first undelivered message) and the
-  client resolves the duplicate Add by ServerId. The clipped-prime
-  resume decision uses the response's **authoritative `position`** (RFC 8620
+  as `anchorNotFound` and **restarts the page from the head** (position 0, no
+  anchor): the stored offset is the index PAST the previous window, but a
+  concurrent deletion may remove more than the anchor above the stored offset,
+  so resuming at any stored numeric offset risks skipping an undelivered message
+  that the first window’s query state already covers (no later delta would ever
+  re-report it). Restarting from the head re-delivers the prefix —
+  already-delivered messages are re-sent as `<Add>` and the client deduplicates
+  them by ServerId — guaranteeing no message is skipped. The keyword baseline
+  is NOT re-captured (that guard keys on the original `start_position`, not
+  this fallback). The clipped-prime resume decision uses the response’s
+  **authoritative `position`** (RFC 8620
   §5.5 `EmailListResult::query_position`), not a locally accumulated offset, for
   the same reason. A `get_email_sync_cursor` READ failure on the initial-prime
   continuation path fails closed (retryable) rather than being flattened to "no
@@ -322,25 +323,34 @@ gateway restarts and surface in `FolderSync`/`GetHierarchy`.
   swallowing an update; the rotating position advances only when every baseline
   row was written, so a failed write holds the cursor and the next sweep
   re-examines the same window instead of skipping the change; an overflowed delta
-  (the change set exceeds the EAS window) persists them ONLY once the remainder
-  is durably queued AND the best-effort sync-token write has committed — if
-  persisting the queue fails the delta FAILS CLOSED: it
-  returns a retryable error (the caller answers Sync Status 6 with the incoming
-  key and no commands) and leaves the stored token and the baseline untouched,
-  rather than acknowledging the clipped window while the stored token still sits
-  at the pre-delta state (which would make the next delta re-diff and replay the
-  already-delivered commands as duplicate Adds/Deletes). If the queue persist
-  succeeds but the token write fails, the window is still acknowledged (Status 1
-  + `<MoreAvailable/>`; the queue carries progress) but the SCAN-DERIVED baseline
-  and rotating position are HELD — the stored token stays at the pre-delta
-  state, so advancing the scan baseline would let a retry's `Email/queryChanges`
-  re-derive the membership set without re-reporting a flag-only `<Change>` (the
-  feed reports membership only), losing the edit. A delivered `<Add>`/`<Create>`
-  seeds its own baseline row eagerly in `render_pending_email_op` (BEFORE the queue
-  and token writes), so a failed token write can leave that per-item seed row
-  behind; only the scan's snapshot rows and rotating position are held. The drain
-  and every
-  later delta do not re-queue the same flag change. A backend hiccup
+  (the change set exceeds the EAS window) persists the remainder AND the window’s
+  rendered keyword seeds together with the response SyncKey in ONE transaction
+  (`set_email_sync_pending_and_key`) — if persisting the queue fails the delta
+  FAILS CLOSED: it returns a retryable error (the caller answers Sync Status 6
+  with the incoming key and no commands) and leaves the stored token and the
+  baseline untouched, rather than acknowledging the clipped window while the
+  stored token still sits at the pre-delta state (which would make the next
+  delta re-diff and replay the already-delivered commands as duplicate
+  Adds/Deletes). If the queue persist succeeds but the token write fails, both
+  roll back together — nothing is acknowledged and nothing is lost; the retry
+  re-derives the whole change set from the unchanged token. The window is
+  acknowledged only once queue, key, and seeds are all durable together.
+  The Everything-fits branch also writes the rendered seeds ATOMICALLY with the
+  token (`set_sync_key_with_seeds`): the window is acknowledged only once both
+  are durable, so a failed write rolls both back and the retry re-derives the
+  flag-only `<Change>`s rather than suppressing them against an advanced
+  baseline. Seeds are staged from each delivered `<Add>`/`<Change>` as its
+  CURRENT keywords — never eagerly before the queue/token writes — and the
+  seed ids are skipped by the baseline persist below so a delivered <Add>
+  seeds its own row at delivery time and a flag edit before the rotating scan
+  reaches the message is still detected. A missing row on the scan’s first
+  observation is recorded without a `<Change>` (the Add already carries the
+  current flags).
+  A delivered `<Add>`/`<Create>` therefore seeds its own baseline row with the
+  message’s current keywords, and the scan diffs the live mailbox against
+  this baseline, emitting a `<Change>` for each id whose keyword set changed
+  and was not already queued. The drain and every later delta do not
+  re-queue the same flag change. A backend hiccup
   during the scan degrades to serving the query-feed changes without persisting
   that page's rows.
   `Email/queryChanges` has no `hasMoreChanges` field (RFC 8620 §5.6), so
@@ -578,20 +588,19 @@ pre-delta state would let a later `Email/queryChanges` re-derive the membership
 set but NOT re-report a flag-only `<Change>` (the feed reports membership only),
 so a flag edit the client never received would be lost forever; the branch holds
 no queue, so a retry re-derives the whole change set from the unchanged token.
-The clipped-window branch keeps its token write best-effort (it stores the SAME
-`old_state`, so a failed write changes nothing; the durable overflow queue
-carries progress) but now HOLDS the flag-scan baseline unless that token write
-committed: the stored token stays at the pre-delta state, so advancing the
-baseline would let a retry's `Email/queryChanges` re-derive the membership set
-but NOT re-report a flag-only `<Change>` (the feed reports membership only),
-losing the edit; the window is still acknowledged (Status 1 +
-`<MoreAvailable/>`) because the queue carries progress and failing the delta
-there would let a retry drain only the queued remainder while dropping this
-window's delivered ops. The baseline persist itself is deliberately NOT
-fail-closed: the
-partially-written rows would otherwise blind the retry's scan to the very change
-it must re-report, and the held scan position already guarantees a re-scan.
-(n) An EWS `UpdateFolder` rename of an EAS-created mail folder (a `folder_map`
+no queue, so a retry re-derives the whole change set from the unchanged token.
+  The clipped-window branch persists its queue, its rendered seeds, AND its
+  response SyncKey together in one transaction (`set_email_sync_pending_and_key`)
+  — a failed write rolls everything back and nothing is acknowledged, so the
+  retry re-derives the whole change set from the unchanged token. Because the
+  stored token stays at the pre-delta state, advancing the flag-scan baseline
+  would let a retry’s `Email/queryChanges` re-derive the membership set but
+  NOT re-report a flag-only `<Change>` (the feed reports membership only),
+  losing the edit; the baseline persist runs only after the token write commits,
+  and its seeded ids are skipped so the delivered <Add>’s seed survives.
+  The baseline persist itself is deliberately NOT fail-closed: partially-written
+  rows would otherwise blind the retry’s scan to the very change it must
+  re-report, and the held scan position already guarantees a re-scan.
 row whose ServerId is the JMAP mailbox id) is mirrored into `folder_map` and
 journaled as `folder-update` in one transaction, so EAS `GetHierarchy` stops
 advertising the old DisplayName and already-primed devices receive the change; a

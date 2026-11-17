@@ -916,46 +916,121 @@ pub(crate) async fn reconcile_deferred_folder_prunes(
     if pending.is_empty() {
         return;
     }
-    // `pending` is the CANDIDATE set: captured BEFORE the live-mailbox query and
-    // passed through unchanged. A concurrent request can record a NEW intent
-    // (and create its mailbox) while the query below is in flight; classifying
-    // that newer intent against the older live set would treat a just-created
-    // folder as absent and prune its mapping. Only the captured candidates are
-    // reconciled; newer intents are left for the next reconcile.
-    // No JMAP client (or a query failure) means the live set is UNKNOWN: leaving
-    // every intent in place is the safe choice — a later read with a reachable
-    // backend reconciles them.
-    let Some(jmap) = state.jmap_client.clone() else {
-        tracing::warn!(
-            owner = %owner,
-            "folder prune reconcile: no JMAP client; leaving pending intents unresolved"
-        );
-        return;
-    };
-    let live: std::collections::HashSet<String> = match jmap
-        .query_all_mailboxes(owner, password)
-        .await
-    {
-        Ok(result) => result
-            .mailboxes
-            .iter()
-            .filter_map(|m| m.id.clone())
-            .collect(),
+    // `pending` is the CANDIDATE set: captured BEFORE any live query and passed
+    // through unchanged. A concurrent request can record a NEW intent (and
+    // create its mailbox/collection) while a query below is in flight;
+    // classifying that newer intent against the older live set would treat a
+    // just-created folder as absent and prune its mapping. Only the captured
+    // candidates are reconciled; newer intents are left for the next reconcile.
+    //
+    // Split intents by backend kind: JMAP mailboxes are reconciled against the
+    // live JMAP hierarchy, CalDAV collections against the live CalDAV state.
+    // A CalDAV collection href never appears in JMAP `Mailbox/query`, so
+    // reconciling it there would treat a live collection as deleted and strand
+    // its events. Load the folder map once to classify each intent.
+    let rows = match state.storage.list_folders(owner).await {
+        Ok(r) => r,
         Err(e) => {
-            tracing::warn!(
-                error = %e,
-                owner = %owner,
-                "folder prune reconcile: Mailbox/query failed; leaving pending intents unresolved"
-            );
+            tracing::warn!(error = %e, "folder prune reconcile: failed to list folder map");
             return;
         }
     };
-    if let Err(e) = state
-        .storage
-        .reconcile_pending_folder_prunes(owner, &pending, &live)
-        .await
-    {
-        tracing::warn!(error = %e, "folder prune reconcile: failed to reconcile pending intents");
+    let by_id: std::collections::HashMap<&str, &FolderRow> =
+        rows.iter().map(|r| (r.server_id.as_str(), r)).collect();
+
+    let mut jmap_pending: Vec<String> = Vec::new();
+    let mut caldav_pending: Vec<String> = Vec::new();
+    for id in &pending {
+        match by_id.get(id.as_str()) {
+            Some(row) if row.backend_kind == "caldav" => caldav_pending.push(id.clone()),
+            Some(_) => jmap_pending.push(id.clone()),
+            None => {
+                // No mapping row means this intent was already pruned or never
+                // had one; drop it silently.
+                tracing::debug!(
+                    server_id = %id,
+                    "folder prune reconcile: no folder_map row; dropping intent"
+                );
+            }
+        }
+    }
+
+    // Reconcile JMAP intents against the live JMAP mailbox set. An id the
+    // backend still holds keeps its intent; an id the backend no longer holds
+    // is pruned and journaled as `folder-delete`.
+    if !jmap_pending.is_empty() {
+        let Some(jmap) = state.jmap_client.clone() else {
+            tracing::warn!(
+                owner = %owner,
+                "folder prune reconcile: no JMAP client; leaving JMAP intents unresolved"
+            );
+            return;
+        };
+        match jmap.query_all_mailboxes(owner, password).await {
+            Ok(result) => {
+                let live: std::collections::HashSet<String> = result
+                    .mailboxes
+                    .iter()
+                    .filter_map(|m| m.id.clone())
+                    .collect();
+                if let Err(e) = state
+                    .storage
+                    .reconcile_pending_folder_prunes(owner, &jmap_pending, &live)
+                    .await
+                {
+                    tracing::warn!(
+                        error = %e,
+                        "folder prune reconcile: failed to reconcile JMAP intents"
+                    );
+                }
+            }
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    owner = %owner,
+                    "folder prune reconcile: Mailbox/query failed; leaving JMAP intents unresolved"
+                );
+            }
+        }
+    }
+
+    // Reconcile CalDAV intents against the live CalDAV collection set. A
+    // collection whose `DELETE` failed while the collection remained live must
+    // keep its mapping — pruning it would make EAS stop advertising a folder
+    // whose events still exist. Only collections confirmed absent from CalDAV
+    // are pruned and journaled.
+    if !caldav_pending.is_empty() {
+        let Ok(caldav) = CaldavClient::new(&state.cfg) else {
+            tracing::warn!(
+                owner = %owner,
+                "folder prune reconcile: no CalDAV client; leaving CalDAV intents unresolved"
+            );
+            return;
+        };
+        let live: std::collections::HashSet<String> = match caldav
+            .find_user_calendars(owner, password.expose_secret())
+            .await
+        {
+            Ok(hrefs) => hrefs.into_iter().collect(),
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    owner = %owner,
+                    "folder prune reconcile: CalDAV PROPFIND failed; leaving CalDAV intents unresolved"
+                );
+                return;
+            }
+        };
+        if let Err(e) = state
+            .storage
+            .reconcile_pending_folder_prunes(owner, &caldav_pending, &live)
+            .await
+        {
+            tracing::warn!(
+                error = %e,
+                "folder prune reconcile: failed to reconcile CalDAV intents"
+            );
+        }
     }
 }
 
