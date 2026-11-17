@@ -1669,6 +1669,12 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
     // than a complete view of the calendar. Stored events absent from a partial
     // delta are merely unchanged and must NOT be tombstoned.
     let mut calendar_delta_partial = false;
+    // Track delta change ids scoped OUT of this calendar (a scoped folder's
+    // delta is account-wide; an event whose calendarIds no longer matches this
+    // folder's calendar is silently skipped by `get_calendar_events`). Stored as
+    // ServerIds so the deletion sweep can match them directly without needing
+    // `account_id` in scope.
+    let mut scoped_out_server_ids: HashSet<String> = HashSet::new();
     // True when the snapshot below came from the CalDAV fallback, which queries
     // exactly ONE collection (the folder's own, or the default/first calendar).
     // Such a snapshot is authoritative ONLY for that collection, so the deletion
@@ -1819,6 +1825,18 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
                                     );
                                 }
                                 let mut conversion_failed = false;
+                                // Track delta change ids scoped OUT of this
+                                // calendar (a scoped folder's delta is
+                                // account-wide; an event whose calendarIds no
+                                // longer matches this folder's calendar is
+                                // silently skipped by `get_calendar_events`).
+                                // These are confirmed departures from this
+                                // scope and must receive a scope-local Delete
+                                // rather than lingering as stale entries.
+                                // Stored as ServerIds (derived from the full
+                                // `jmap://calendar/{account}/{id}` href) so the
+                                // deletion sweep can match them directly
+                                // without needing `account_id` in scope.
                                 if !all_ids.is_empty() {
                                     match jmap
                                         .get_calendar_events(
@@ -1856,20 +1874,27 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
                                                         }
                                                     },
                                                     None => {
-                                                        // A scoped folder's delta is
-                                                        // the account-wide change feed;
-                                                        // an id belonging to another
-                                                        // calendar is filtered out by
-                                                        // `get_calendar_events` and is
-                                                        // not a failure for this folder.
-                                                        // Only an unscoped fetch treats
-                                                        // an absent id as a fetch failure.
+                                                        // Scoped out (no longer belongs to this
+                                                        // calendar) — a confirmed departure for a
+                                                        // scoped folder. For an unscoped fetch this
+                                                        // is a fetch failure instead.
                                                         if scoped_calendar_id.is_none() {
                                                             conversion_failed = true;
                                                             tracing::warn!(
                                                                 target: "sync",
                                                                 event_id = %id,
                                                                 "changed JMAP calendar event could not be fetched; not advancing sync state"
+                                                            );
+                                                        } else {
+                                                            let href = format!(
+                                                                "jmap://calendar/{}/{}",
+                                                                account_id, id
+                                                            );
+                                                            scoped_out_server_ids.insert(
+                                                                identity.for_href(
+                                                                    params.state.cfg.hmac_secret(),
+                                                                    &href,
+                                                                ),
                                                             );
                                                         }
                                                     }
@@ -2239,6 +2264,18 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
     // re-delivers its bounded change set (and a fresh prime delivers the whole
     // snapshot) as `<Add>` rather than silently dropping events.
 
+    // A legacy scoped folder (valid SyncKey, existing `item_map` rows, no
+    // `calendar_delivery_map` rows) cannot receive Deletes for
+    // silently-omitted events on a partial delta: its ledger has no record of
+    // what it previously delivered, so `delivered_map.contains_key` is false
+    // for every stored id and the scoped-out rule never matches; `calendar_event_deleted`
+    // for a partial delta only catches explicitly destroyed ids. Force a
+    // re-prime (Status 3 / SyncKey 0) so the client gets a fresh snapshot and
+    // the scope rebuilds its ledger — a one-time cost per scope.
+    if !initial_sync && calendar_scope.is_some() && delivered_map.is_empty() {
+        return Ok(invalid_sync_key_response(params.collection_id, "Calendar"));
+    }
+
     struct PendingItem {
         server_id: String,
         resource_href: String,
@@ -2333,13 +2370,26 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
         // one calendar must not queue `<Delete>`s for every other calendar's
         // mappings.
         let folder_scoped = calendar_scope.is_some() || caldav_single_collection;
+        // Resolve this candidate's server_id back to its JMAP event id for
+        // scoped-out detection. `identity.for_event` is deterministic, so we
+        // can re-derive it from the stored href (the resource_href is
+        // `jmap://calendar/{account}/{event_id}`).
+        let is_scoped_out = folder_scoped && scoped_out_server_ids.contains(server_id);
         let deleted = if folder_scoped {
+            // A scoped folder's deletion sweep must NOT tombstone unchanged
+            // events that merely didn't appear in this partial delta, nor
+            // events this scope never delivered. Deletion requires the item
+            // to be in this scope's ledger AND either be confirmed out of
+            // scope or explicitly destroyed. Bounding to the ledger is what
+            // prevents an empty single-calendar CalDAV snapshot from
+            // tombstoning every other calendar's events.
             delivered_map.contains_key(server_id)
-                && calendar_event_deleted(
-                    calendar_delta_partial,
-                    &jmap_destroyed_server_ids,
-                    server_id,
-                )
+                && (is_scoped_out
+                    || calendar_event_deleted(
+                        calendar_delta_partial,
+                        &jmap_destroyed_server_ids,
+                        server_id,
+                    ))
         } else {
             !existing_map.contains(server_id)
                 || calendar_event_deleted(

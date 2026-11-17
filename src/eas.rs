@@ -2251,8 +2251,14 @@ async fn probe_email_folder_changes(
             .await
         {
             Ok(changes) => {
+                // `updated` (flag/read edits that don't change membership) must
+                // wake the Ping folder just like membership changes; the
+                // keyword-baseline scan surfaces them as `<t:Update>`/`<Change>`
+                // ops, and the next delta won't emit them if this probe stays
+                // silent until an unrelated membership event arrives.
                 if !changes.created.is_empty()
                     || !changes.destroyed.is_empty()
+                    || !changes.updated.is_empty()
                     || changes.new_state != since
                 {
                     changed.push(folder_id.clone());

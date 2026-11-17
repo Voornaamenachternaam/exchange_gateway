@@ -4939,7 +4939,6 @@ async fn handle_sync_email_prime(
     }
 
     let mut changes_xml = String::new();
-    let mut last_delivered_id: Option<String> = None;
     for email in &emails {
         let jmap_id = email.id.as_deref().unwrap_or("unknown");
         let server_id = email_server_id_from_jmap_id(jmap_id);
@@ -4988,9 +4987,6 @@ async fn handle_sync_email_prime(
                 StatusCode::SERVICE_UNAVAILABLE,
             );
         }
-        if email.id.is_some() {
-            last_delivered_id = email.id.clone();
-        }
     }
 
     // Whether this window drained the snapshot. A clipped window (a full
@@ -5020,7 +5016,11 @@ async fn handle_sync_email_prime(
         query_state.clone()
     } else {
         let next_position = result.query_position + emails.len() as u64;
-        encode_prime_continuation_token(next_position, last_delivered_id.as_deref(), &query_state)
+        encode_prime_continuation_token(
+            next_position,
+            result.query_last_id.as_deref(),
+            &query_state,
+        )
     };
 
     if let Err(e) = state
@@ -11932,12 +11932,14 @@ async fn try_jmap_update_calendar(
         &updated_event_id
     };
 
-    // Build consistent resource_href and server_id
+    // Build consistent resource_href and server_id.
+    // Preserve the stored ServerId so upsert_item_map targets the EXISTING
+    // row rather than creating a duplicate (ON CONFLICT(owner, server_id)).
+    // Deriving a new id from `account_id` diverges from the read path's
+    // owner-based derivation when account_id != owner, leaving a stale row
+    // and a second row with the same resource_href/uid.
     let resource_href = format!("jmap://calendar/{}/{}", account_id, final_event_id);
-    let server_id = generate_server_id(
-        state.cfg.hmac_secret(),
-        &format!("jmap:{}:{}", account_id, final_event_id),
-    );
+    let server_id = stored_item.server_id.clone();
 
     // Upsert mapping
     if let Err(e) = state

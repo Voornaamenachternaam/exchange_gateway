@@ -498,6 +498,11 @@ pub struct EmailListResult {
     /// numeric offset, it stays correct when an `anchor` is used or when a
     /// concurrent deletion shifts the tail.
     pub query_position: u64,
+    /// The final id in `Email/query`'s `/ids` order, NOT `Email/get`'s result
+    /// order. RFC 8620 permits reordered get results, so the continuation
+    /// anchor must come from query order to avoid re-delivering or skipping
+    /// items across pages.
+    pub query_last_id: Option<String>,
 }
 
 impl EmailListResult {
@@ -513,6 +518,7 @@ impl EmailListResult {
             state: String::new(),
             anchor_not_found: false,
             query_position: 0,
+            query_last_id: None,
         }
     }
 }
@@ -2191,6 +2197,7 @@ impl JmapClient {
         let mut state = String::new();
         let mut method_errors: Vec<Value> = Vec::new();
         let mut query_position: u64 = 0;
+        let mut query_last_id: Option<String> = None;
         // The `Email/query` page's id count. Compared with the `Email/get` list
         // below to detect the "query returned ids but Email/get returned none"
         // case (every id vanished between the two calls).
@@ -2217,6 +2224,15 @@ impl JmapClient {
                 // returned id. Absent only on a malformed response; 0 is then a
                 // safe floor.
                 query_position = data.get("position").and_then(|v| v.as_u64()).unwrap_or(0);
+                // The final id in query order — this, not the Email/get result
+                // order, is the correct continuation anchor (RFC 8620 permits
+                // reordered get results).
+                query_last_id = data
+                    .get("ids")
+                    .and_then(|v| v.as_array())
+                    .and_then(|a| a.last())
+                    .and_then(|v| v.as_str())
+                    .map(String::from);
             } else if method == "Email/get" {
                 emails = data
                     .get("list")
@@ -2268,6 +2284,7 @@ impl JmapClient {
             state,
             anchor_not_found,
             query_position,
+            query_last_id,
         })
     }
 
@@ -2663,6 +2680,19 @@ impl JmapClient {
                     })
                     .unwrap_or_default();
 
+                // `updated` is an array of id strings (RFC 8620 §5.6): flag/
+                // read edits that don't change membership. Parse them so the
+                // Ping probe can wake on keyword-only edits.
+                let updated: Vec<String> = data
+                    .get("updated")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|v| v.as_str().map(String::from))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+
                 // A response without a `newQueryState` cannot advance the
                 // delta: treat it like `cannotCalculateChanges` (as
                 // `changes_calendar_events` does for a missing `newState`) so
@@ -2692,7 +2722,7 @@ impl JmapClient {
                     >= max_changes.unwrap_or(crate::jmap::DEFAULT_EMAIL_CHANGES_MAX) as usize;
                 return Ok(EmailChangesResult {
                     created: added,
-                    updated: Vec::new(),
+                    updated,
                     destroyed: removed,
                     new_state,
                     has_more_changes,
