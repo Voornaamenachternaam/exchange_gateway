@@ -239,10 +239,9 @@ EAS specs v20250520 (16.1); older EAS compat NOT needed.
   upserts SKIP ids delivered as an `<Add>` this delta, so the Add's fresh seed
   wins over the older scan snapshot (no duplicate flag `<Change>` next delta).
   The overflow branch persists the keyword baseline ONLY once the undelivered
-  remainder is durably queued AND the (best-effort) sync-token write has
-  committed — a failed queue write holds the baseline (and fails the delta
-  closed), and a failed token write still acknowledges the clipped window but
-  holds the baseline, so the re-diff re-derives the discarded flag changes.
+  remainder is durably queued AND the SyncKey write has committed — queue,
+  SyncKey, and rendered seeds are written ATOMICALLY in one transaction, so
+  a failed write rolls everything back and leaves no seed behind.
   The completing branch's token write is fail-closed: a failed `set_sync_key`
   returns a retryable error and never advances the baseline.
 - AUDIT.md §10 (EAS Sync wire-exactness) is COMPLETE and its section now
@@ -918,9 +917,10 @@ EAS specs v20250520 (16.1); older EAS compat NOT needed.
   one-time cost for flag-edit fidelity (a bounded capture would lose a flag
   edit made before the scan reaches the message; documented in AUDIT5).
   (cubic #4560928475) AUDIT5's clipped-window text clarified: only the
-  scan-derived baseline/position are held; a delivered `<Add>`/`<Create>` seeds
-  its own row eagerly (BEFORE the queue/token writes) so a failed token write
-  can leave that per-item seed behind. Tests: 5 new
+  scan-derived baseline/position are held; a delivered `<Add>`/`<Create>`
+  seeds its own row at delivery time — staged and committed ATOMICALLY with
+  the acknowledged window (queue + SyncKey + seeds in one transaction), so
+  a failed token write rolls everything back and leaves no seed behind.
   (`eas::tests::test_email_keyword_scan_defers_excess_changes_and_holds_position`,
   `ews::tests::sync_email_folder_items_defers_flag_changes_beyond_max_changes`,
   `ews::tests::sync_email_folder_items_fails_closed_when_state_write_fails`,

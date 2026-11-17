@@ -6544,6 +6544,18 @@ async fn execute_one_rop(
                         // deleted ([MS-OXCFOLD] §2.2.1.10: "without deleting the
                         // folder itself"); its own messages were destroyed
                         // above.
+                        //
+                        // SERIALIZATION: take the folder-mutation lock on the
+                        // root before the walk so a concurrent `RopMoveFolder`
+                        // (which serializes each folder with the same lock)
+                        // cannot reparent a descendant out of this subtree
+                        // after we snapshot it and then have us destroy that
+                        // descendant by ID anyway — permanently deleting mail
+                        // that now lives elsewhere.
+                        let _root_lock = match storage.as_ref() {
+                            Some(s) => Some(s.lock_folder_mutation(username, backend).await),
+                            None => None,
+                        };
                         let mut subfolders_ok = true;
                         // Child mailboxes actually destroyed here; their EAS
                         // `folder_map` rows (if any) are pruned below so the

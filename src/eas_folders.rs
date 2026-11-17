@@ -1011,7 +1011,20 @@ pub(crate) async fn reconcile_deferred_folder_prunes(
             .find_user_calendars(owner, password.expose_secret())
             .await
         {
-            Ok(hrefs) => hrefs.into_iter().collect(),
+            Ok(hrefs) => hrefs
+                .into_iter()
+                // `find_user_calendars` expands PROPFIND hrefs to absolute URLs,
+                // but `folder_map.backend_id` stores path-only CalDAV hrefs.
+                // Normalize both sides to the path-only form so the live-set
+                // membership check actually matches; otherwise every live
+                // CalDAV folder is treated as deleted and its mapping pruned.
+                .map(|href| {
+                    reqwest::Url::parse(&href)
+                        .ok()
+                        .map(|u| u.path().trim_end_matches('/').to_string())
+                        .unwrap_or_else(|| href.trim_end_matches('/').to_string())
+                })
+                .collect(),
             Err(e) => {
                 tracing::warn!(
                     error = %e,
