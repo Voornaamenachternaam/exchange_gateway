@@ -5748,7 +5748,12 @@ async fn handle_sync_contacts_folder_items(
     // stays absent), so the next call re-delivers it instead of losing it.
     let mut next_state: Vec<(String, String)> = Vec::new();
     for entry in current.iter() {
-        // Always map the contact so a later Get/Update/Delete resolves it.
+        // Always map the contact so a later Get/Update/Delete resolves it. This
+        // write is FAIL-CLOSED: a contact whose mapping could not be stored must
+        // NOT be acknowledged (its Create/Update emitted, its ChangeKey advanced
+        // in the cursor) — `contact_get_item_xml` needs the mapping, so the
+        // client could not open an acknowledged contact. Answer a retryable
+        // error with the cursor untouched so the next Sync re-delivers it.
         if let Err(e) = state
             .storage
             .upsert_contact(
@@ -5760,7 +5765,17 @@ async fn handle_sync_contacts_folder_items(
             )
             .await
         {
-            tracing::warn!(server_id = %entry.server_id, error = %e, "SyncFolderItems: failed to upsert contact mapping");
+            tracing::error!(
+                server_id = %entry.server_id,
+                error = %e,
+                "SyncFolderItems: failed to upsert contact mapping; failing closed"
+            );
+            return operation_error_response(
+                &EwsAction::SyncFolderItems,
+                "ErrorServerBusy",
+                "Failed to persist the contact mapping",
+                StatusCode::SERVICE_UNAVAILABLE,
+            );
         }
 
         let prior_change_key = previous.get(&entry.server_id);
@@ -5874,11 +5889,13 @@ async fn handle_sync_folder_items(
         return *resp;
     }
 
-    // Determine the folder type from the request
-    let distinguished_str =
-        extract_first_attr(body, b"DistinguishedFolderId", b"Id").unwrap_or_default();
-    let distinguished =
-        parse_distinguished_folder_id(&distinguished_str).unwrap_or(DistinguishedFolder::Calendar);
+    // Determine the folder type from the request. `requested_folder_from_ids`
+    // resolves a DistinguishedFolderId first and falls back to an explicit
+    // `FolderId`/`ParentFolderId` (matching `folder_id_for`), so a request that
+    // names Contacts/Inbox by their gateway-generated id (as a client does
+    // after SyncFolderHierarchy/FindFolder) routes to the correct handler
+    // instead of defaulting to Calendar.
+    let distinguished = requested_folder_from_ids(body, owner);
 
     // Route email folders to JMAP-based sync
     if distinguished.is_email() && state.email_available() {
@@ -6029,6 +6046,29 @@ async fn handle_sync_folder_items(
         };
         (since, ub)
     };
+    // Load and STORE the owner's current backend calendar items BEFORE
+    // enumerating the prime snapshot. The prime's keyset page is drawn from
+    // `item_map`, so a brand-new owner (empty map) would otherwise enumerate no
+    // rows and report a complete EMPTY prime — even though `load_current_calendar_items`
+    // (called below to render) discovers and stores the backend's existing
+    // events. Priming first makes those events part of the snapshot and delivers
+    // them as `<t:Create>`, instead of leaving them for a later `<t:Update>`.
+    let prime_loaded = if is_prime {
+        match load_current_calendar_items(state, owner, auth.password.expose_secret(), None).await {
+            Ok(items) => Some(items),
+            Err(e) => {
+                tracing::error!(error = %e, "An internal error occurred");
+                return operation_error_response(
+                    &EwsAction::SyncFolderItems,
+                    "ErrorInternalServerError",
+                    "An internal error occurred",
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                );
+            }
+        }
+    } else {
+        None
+    };
     let journal_rows: Vec<crate::storage::JournalRow> = if is_prime {
         let limit = (max_changes as u64) + 1;
         match state
@@ -6069,18 +6109,23 @@ async fn handle_sync_folder_items(
             }
         }
     };
-    let items = match load_current_calendar_items(state, owner, auth.password.expose_secret(), None)
-        .await
-    {
-        Ok(v) => v,
-        Err(e) => {
-            tracing::error!(error = %e, "An internal error occurred");
-            return operation_error_response(
-                &EwsAction::SyncFolderItems,
-                "ErrorInternalServerError",
-                "An internal error occurred",
-                StatusCode::INTERNAL_SERVER_ERROR,
-            );
+    let items = match prime_loaded {
+        Some(items) => items,
+        None => {
+            match load_current_calendar_items(state, owner, auth.password.expose_secret(), None)
+                .await
+            {
+                Ok(v) => v,
+                Err(e) => {
+                    tracing::error!(error = %e, "An internal error occurred");
+                    return operation_error_response(
+                        &EwsAction::SyncFolderItems,
+                        "ErrorInternalServerError",
+                        "An internal error occurred",
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                    );
+                }
+            }
         }
     };
     let mut current_map = HashMap::new();
@@ -6291,24 +6336,36 @@ async fn handle_sync_folder_items(
     // live server_id with the frozen baseline, or drop the cursor once the
     // whole snapshot fits.
     if is_prime {
-        let cursor_result = if has_more {
-            match last_returned_key.as_deref() {
-                Some(k) => {
-                    state
-                        .storage
-                        .set_local_sync_cursor(owner, &folder_id, k, prime_baseline)
-                        .await
-                }
-                None => Ok(()),
+        if has_more {
+            // The keyset position MUST be durable before the page is
+            // acknowledged: the response cites the frozen baseline, so the
+            // follow-up is routed to a prime CONTINUATION keyed on this cursor.
+            // If the cursor were lost, the follow-up would be treated as a
+            // normal delta from the baseline and would deliver only the
+            // journal's post-baseline rows — silently dropping the rest of the
+            // snapshot. Fail closed (retryable) so the client re-primes.
+            if let Some(k) = last_returned_key.as_deref()
+                && let Err(e) = state
+                    .storage
+                    .set_local_sync_cursor(owner, &folder_id, k, prime_baseline)
+                    .await
+            {
+                tracing::error!(folder_id = %folder_id, error = %e, "Failed to persist EWS prime cursor; refusing to acknowledge clipped prime");
+                return operation_error_response(
+                    &EwsAction::SyncFolderItems,
+                    "ErrorServerBusy",
+                    "Failed to persist sync progress",
+                    StatusCode::SERVICE_UNAVAILABLE,
+                );
             }
-        } else {
-            state
-                .storage
-                .clear_local_sync_cursor(owner, &folder_id)
-                .await
-        };
-        if let Err(e) = cursor_result {
-            tracing::warn!(folder_id = %folder_id, error = %e, "Failed to update EWS prime cursor");
+        } else if let Err(e) = state
+            .storage
+            .clear_local_sync_cursor(owner, &folder_id)
+            .await
+        {
+            // No continuation follows a fully-drained prime, so a failed clear
+            // only costs one redundant re-prime — never data.
+            tracing::warn!(folder_id = %folder_id, error = %e, "Failed to clear EWS prime cursor");
         }
     }
     let new_sync_state = encode_sync_state_cursor(next_seen_seq, next_upper_bound);
@@ -7817,6 +7874,44 @@ async fn handle_update_email_item(
     soap_ok(response)
 }
 
+/// Load the CURRENT stored event as a `CalendarItem`, so a partial EWS
+/// `UpdateItem` — which carries only the fields the client changed — can be
+/// applied ON TOP of the existing event. Without this the renderer writes a
+/// mostly-default item and erases every field the update did not name (times,
+/// description, recurrence, attendees, …).
+///
+/// Returns `None` when the event cannot be loaded (an unreadable backend, or an
+/// unparseable payload); the caller then falls back to the legacy blank
+/// template, preserving the previous behavior for an unreadable event rather
+/// than failing the update outright.
+async fn load_stored_calendar_item(
+    state: &Arc<AppState>,
+    owner: &str,
+    password: &SecretString,
+    stored_item: &EwsItemRow,
+) -> Option<crate::calendar::CalendarItem> {
+    let href = &stored_item.resource_href;
+    if href.starts_with("jmap://calendar/") {
+        let jmap = state.jmap_client.as_ref()?;
+        let account_id = jmap.get_account_id(owner, password).await.ok()?;
+        let event_id = href
+            .trim_start_matches("jmap://calendar/")
+            .split('/')
+            .nth(1)?;
+        let (ics, _id, _etag) = jmap
+            .get_calendar_event(&account_id, event_id, owner, password)
+            .await
+            .ok()?;
+        return parse_ics_event(&ics);
+    }
+    let caldav = CaldavClient::new(&state.cfg).ok()?;
+    let (ics, _etag) = caldav
+        .get_event(href, owner, password.expose_secret())
+        .await
+        .ok()?;
+    parse_ics_event(&ics)
+}
+
 async fn handle_update_item(state: &Arc<AppState>, auth: &AuthContext, body: &str) -> Response {
     let owner = owner_from_username(&auth.username);
     let item_id = extract_first_attr(body, b"ItemId", b"Id").unwrap_or_default();
@@ -7927,33 +8022,35 @@ async fn handle_update_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
     }
     let password_secret = SecretString::from(auth.password.expose_secret());
 
-    // Parse the incoming item changes into a new CalendarItem struct.
-    let mut new_item = if let Some(_existing_ics) = &stored_item.caldav_href {
-        // Might need to fetch via CalDAV later, but we can construct a blank template from stored UID
-        crate::calendar::CalendarItem {
-            uid: stored_item
-                .uid
-                .clone()
-                .unwrap_or_else(|| stored_item.server_id.clone()),
-            start: chrono::Utc::now(),
-            end: chrono::Utc::now() + chrono::Duration::hours(1),
-            dtstamp: Some(chrono::Utc::now()),
-            ..Default::default()
-        }
-    } else {
-        // JMAP item: we still need to fetch existing via JMAP? But we can build a minimal item for rendering
-        // Use the stored UID or server_id as UID to keep consistency.
-        crate::calendar::CalendarItem {
-            uid: stored_item
-                .uid
-                .clone()
-                .unwrap_or_else(|| stored_item.server_id.clone()),
-            start: chrono::Utc::now(),
-            end: chrono::Utc::now() + chrono::Duration::hours(1),
-            dtstamp: Some(chrono::Utc::now()),
-            ..Default::default()
-        }
-    };
+    // Build the base event for the update. EWS `UpdateItem` is PARTIAL: the
+    // request names only the fields the client changed, so the base MUST be the
+    // event as it currently exists on the backend — otherwise the renderer would
+    // write a mostly-default item and erase every unnamed field (times,
+    // description, recurrence, attendees, …). When the current event cannot be
+    // loaded we fall back to the legacy blank template (preserving the stored
+    // UID) rather than failing the update outright.
+    let mut new_item =
+        match load_stored_calendar_item(state, owner, &password_secret, &stored_item).await {
+            Some(item) => item,
+            None => crate::calendar::CalendarItem {
+                uid: stored_item
+                    .uid
+                    .clone()
+                    .unwrap_or_else(|| stored_item.server_id.clone()),
+                start: chrono::Utc::now(),
+                end: chrono::Utc::now() + chrono::Duration::hours(1),
+                dtstamp: Some(chrono::Utc::now()),
+                ..Default::default()
+            },
+        };
+    // The stored UID is authoritative for the resource identity; keep it even
+    // when the loaded event somehow lacks one.
+    if new_item.uid.is_empty() {
+        new_item.uid = stored_item
+            .uid
+            .clone()
+            .unwrap_or_else(|| stored_item.server_id.clone());
+    }
 
     // Apply changes from the UpdateItem request to new_item
     let field_changes = parse_item_changes(body);
@@ -11705,18 +11802,22 @@ async fn update_calendar_via_caldav(
         etag_for_if_match.as_deref()
     };
 
-    // Perform the PUT
+    // Perform the PUT. `put_event`'s second parameter is the RESOURCE href
+    // (not the collection) and its last is the If-Match condition: passing the
+    // etag as the resource made `resolve_resource_url` treat it as a relative
+    // path under the collection (creating a duplicate `.ics` when the etag was
+    // absent) and dropped the conditional write entirely.
     let (href, new_etag) = caldav
         .put_event(
             stored_item
                 .caldav_href
-                .as_ref()
+                .as_deref()
                 .unwrap_or(&stored_item.resource_href),
-            if_match_etag,
+            Some(&stored_item.resource_href),
             &new_ics,
             owner,
             password.expose_secret(),
-            None,
+            if_match_etag,
         )
         .await
         .map_err(|e| {

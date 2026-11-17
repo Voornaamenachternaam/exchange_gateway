@@ -5228,6 +5228,56 @@ async fn execute_one_rop(
                             None => None,
                         };
                         let (move_outcome, move_partial) = (async {
+                                // For an EAS-MAPPED source (a mailbox carrying a
+                                // `folder_map` row), resolve and validate the
+                                // destination's EAS ParentId BEFORE the backend
+                                // move: an unrepresentable destination must be
+                                // rejected BEFORE JMAP is touched, else EAS would
+                                // keep advertising the old parent while JMAP holds
+                                // the new one (mirroring the EWS MoveFolder path).
+                                // A non-mapped source is never mirrored, so its
+                                // destination is unconstrained.
+                                let mut dest_parent_eas: Option<String> = None;
+                                if let Some(storage) = storage {
+                                    match storage.get_folder(owner, src).await {
+                                        Ok(Some(_)) => {
+                                            match eas_parent_id_for_dest(
+                                                jc,
+                                                storage,
+                                                owner,
+                                                Some(dest),
+                                                username,
+                                                pw,
+                                            )
+                                            .await
+                                            {
+                                                Ok(Some(p)) => dest_parent_eas = Some(p),
+                                                Ok(None) => {
+                                                    tracing::warn!(
+                                                        dest = %dest,
+                                                        "RopMoveFolder: destination cannot be represented in the EAS hierarchy"
+                                                    );
+                                                    return (RopErrorCode::NoSupport, 0);
+                                                }
+                                                Err(e) => {
+                                                    tracing::warn!(
+                                                        error = %e,
+                                                        "RopMoveFolder: destination parent lookup failed"
+                                                    );
+                                                    return (RopErrorCode::DiskError, 0);
+                                                }
+                                            }
+                                        }
+                                        Ok(None) => {}
+                                        Err(e) => {
+                                            tracing::warn!(
+                                                error = %e,
+                                                "RopMoveFolder: folder_map lookup failed"
+                                            );
+                                            return (RopErrorCode::DiskError, 0);
+                                        }
+                                    }
+                                }
                                 match jc
                                     .update_mailbox(
                                         &account_id,
@@ -5251,62 +5301,35 @@ async fn execute_one_rop(
                                         // runs only for a confirmed backend move; a
                                         // failed mirror write is NOT acknowledged as
                                         // success (the move is idempotent — a retry
-                                        // re-runs it).
-                                        if let Some(storage) = storage {
-                                            let dest_parent = eas_parent_id_for_dest(
-                                                jc,
-                                                storage,
-                                                owner,
-                                                Some(dest),
-                                                username,
-                                                pw,
-                                            )
-                                            .await;
-                                            // A destination lookup FAILURE is retryable
-                                            // (a storage/JMAP error) and must NOT be
-                                            // treated as an unmappable destination: the
-                                            // backend move already happened, so silently
-                                            // skipping the mirror would leave the old
-                                            // ParentId advertised. Only `Ok(None)` (a
-                                            // genuinely unrepresentable destination) is a
-                                            // benign no-op.
-                                            match dest_parent {
-                                                Ok(Some(dest_parent)) => {
-                                                    let row =
-                                                        storage.get_folder(owner, src).await;
-                                                    match row {
-                                                        Ok(Some(row)) => {
-                                                            if let Err(e) = storage
-                                                                .update_folder_journaled(
-                                                                    owner,
-                                                                    &row.server_id,
-                                                                    Some(&dest_parent),
-                                                                    None,
-                                                                )
-                                                                .await
-                                                            {
-                                                                tracing::warn!(
-                                                                    error = %e,
-                                                                    "RopMoveFolder: failed to mirror the EAS parent"
-                                                                );
-                                                                return (RopErrorCode::DiskError, 0);
-                                                            }
-                                                        }
-                                                        Ok(None) => {}
-                                                        Err(e) => {
-                                                            tracing::warn!(
-                                                                error = %e,
-                                                                "RopMoveFolder: folder_map lookup failed for the EAS parent mirror"
-                                                            );
-                                                            return (RopErrorCode::DiskError, 0);
-                                                        }
+                                        // re-runs it). `dest_parent_eas` is `Some`
+                                        // only for a mapped source, whose destination
+                                        // was validated above.
+                                        if let (Some(storage), Some(dest_parent)) =
+                                            (storage, dest_parent_eas.as_deref())
+                                        {
+                                            match storage.get_folder(owner, src).await {
+                                                Ok(Some(row)) => {
+                                                    if let Err(e) = storage
+                                                        .update_folder_journaled(
+                                                            owner,
+                                                            &row.server_id,
+                                                            Some(dest_parent),
+                                                            None,
+                                                        )
+                                                        .await
+                                                    {
+                                                        tracing::warn!(
+                                                            error = %e,
+                                                            "RopMoveFolder: failed to mirror the EAS parent"
+                                                        );
+                                                        return (RopErrorCode::DiskError, 0);
                                                     }
                                                 }
                                                 Ok(None) => {}
                                                 Err(e) => {
                                                     tracing::warn!(
                                                         error = %e,
-                                                        "RopMoveFolder: destination parent lookup failed"
+                                                        "RopMoveFolder: folder_map lookup failed for the EAS parent mirror"
                                                     );
                                                     return (RopErrorCode::DiskError, 0);
                                                 }

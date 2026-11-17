@@ -1687,8 +1687,15 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
     // `previous_state` carries a `prime-cursor:` token (per-device, since
     // `state_collection_id` is device-scoped). A prime continuation resumes
     // after this href and force-delivers the remainder.
-    let prime_cursor: Option<String> =
-        prime_cursor_from_token(previous_state.as_ref().and_then(|(_, t)| t.as_deref()));
+    let prime_cursor: Option<String> = if params.incoming_sync_key == "0" {
+        // SyncKey 0 means "forget everything": a `prime-cursor:` token left by
+        // an EARLIER clipped prime must not survive, or the restarted stream
+        // would skip every href at/before the stale cursor and never deliver
+        // the head of the snapshot.
+        None
+    } else {
+        prime_cursor_from_token(previous_state.as_ref().and_then(|(_, t)| t.as_deref()))
+    };
 
     // Folder scoping: a user-created calendar folder (Type 13,
     // [MS-ASCMD] §2.2.3.186.2) has its CalDAV collection href as its EAS
@@ -3853,6 +3860,67 @@ mod tests {
                 .len(),
             1,
             "only the forced remainder event is stored after the cursor continuation"
+        );
+    }
+
+    /// A SyncKey 0 re-prime must DISCARD any `prime-cursor:` token left by an
+    /// earlier clipped prime: the client was told to forget everything, so the
+    /// restarted stream must deliver the complete snapshot from the head — not
+    /// skip every href at/before the stale cursor. Otherwise the head events
+    /// would never be re-delivered on the fresh prime.
+    #[tokio::test]
+    async fn calendar_synckey_zero_discards_stale_prime_cursor() {
+        let stub = spawn_calendar_stub(
+            vec![],
+            vec![
+                stub_event("e1", "uid-e1", "Event One"),
+                stub_event("e2", "uid-e2", "Event Two"),
+            ],
+            "query-7",
+            "get-9",
+            None,
+        )
+        .await;
+        let state = calendar_sync_state(&stub.base).await;
+
+        // A prior clipped prime left a `prime-cursor:` token. The stub's event
+        // hrefs sort BELOW this sentinel, so if the stale cursor survived the
+        // re-prime, EVERY event would be skipped as "already delivered".
+        state
+            .storage
+            .set_sync_key(
+                "user@example.com",
+                "calendar",
+                "prior-key",
+                Some("prime-cursor:zzzz"),
+            )
+            .await
+            .unwrap();
+
+        let xml = perform_sync(&PerformSyncParams {
+            state: state.clone(),
+            owner: "user@example.com",
+            collection_id: "calendar",
+            state_collection_id: "calendar",
+            incoming_sync_key: "0",
+            content_class: "Calendar",
+            opts: SyncOptions {
+                window_size: 100,
+                get_changes: true,
+                filter_start: Utc::now() - Duration::weeks(52),
+                body_options: crate::eas_sync_options::EasSyncCollectionOptions::default(),
+            },
+            username: "user@example.com",
+            password: "pw",
+            client_mutation_responses: "",
+        })
+        .await
+        .expect("perform_sync");
+
+        assert!(
+            xml.contains("uid-e1") && xml.contains("uid-e2"),
+            "a SyncKey 0 re-prime must deliver the WHOLE snapshot, not skip past \
+             the stale prime cursor:\n{xml}"
         );
     }
 

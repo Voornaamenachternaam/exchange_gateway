@@ -7623,11 +7623,13 @@ pub(crate) struct KeywordScanOutcome {
 /// delta on a baseline write failure, because the partially-written rows would
 /// otherwise blind the retry's scan to the very change it must re-report.
 ///
-/// `seeded` holds the ids of delivered `<Add>` ops whose flag baseline was
-/// seeded with the message's CURRENT keywords while rendering the response.
-/// That seed is fresher than the scan snapshot (captured earlier), so the scan
-/// upsert for those ids is skipped — otherwise the stale snapshot would
-/// overwrite the seed and force a duplicate flag `<Change>` on the next delta.
+/// `seeded` holds the ids of delivered `<Add>`/`<Change>` ops whose flag
+/// baseline was seeded with the message's CURRENT keywords (staged while
+/// rendering and written ATOMICALLY with the window's acknowledgement — see
+/// `render_pending_email_op` and the storage `*_with_seeds` helpers). That seed
+/// is fresher than the scan snapshot (captured earlier), so the scan upsert for
+/// those ids is skipped — otherwise the stale snapshot would overwrite the seed
+/// and force a duplicate flag `<Change>` on the next delta.
 ///
 /// Shared with the EWS email delta so both email deltas recover the in-place
 /// flag edits a membership-only `Email/queryChanges` feed cannot report.
@@ -7921,22 +7923,23 @@ pub(crate) async fn capture_email_keyword_baseline(
 /// Fetches the current JMAP Email and renders the same `<Add>`/`<Change>`
 /// body the direct delta path produces. Destroyed emails need no fetch.
 ///
-/// Returns the rendered XML and, when the op is a delivered `<Add>` whose flag
-/// baseline was seeded, the seeded message id. The caller keeps that id so the
-/// older scan snapshot cannot overwrite the fresh seed (see
-/// [`persist_keyword_scan`]).
+/// Returns the rendered XML and, for a delivered `<Add>`/`<Change>`, the
+/// message's CURRENT (rendered) keywords STAGED as a `(id, keywords)` seed. The
+/// caller writes that seed ATOMICALLY with the window's acknowledgement (see
+/// [`persist_keyword_scan`] and the storage `*_with_seeds` helpers) — never
+/// here: an eager write would advance the baseline for a `<Change>` whose window
+/// a LATER op's failure rolls back, and the retry's scan would then find the
+/// baseline equal to the live keywords and suppress the very `<Change>` it must
+/// re-deliver. Staging the seed keeps it tied to the acknowledged window.
 ///
-/// Fail-closed: a transient `Email/get` error or a failed baseline seed is
-/// returned as an error so the caller does NOT acknowledge the window or
-/// consume the op. Treating a fetch error as a vanished item would silently
-/// drop a created/changed message the client never sees, and acknowledging an
-/// `<Add>` whose seed could not be written would leave the client's flags stale
-/// once the rotating scan reaches the message (a missing baseline row records
-/// the new keywords as a first observation without emitting a `<Change>`).
+/// Fail-closed: a transient `Email/get` error is returned as an error so the
+/// caller does NOT acknowledge the window or consume the op — treating a fetch
+/// error as a vanished item would silently drop a created/changed message the
+/// client never sees.
 async fn render_pending_email_op(
     ctx: &EmailSyncCtx<'_>,
     op: &PendingEmailOp,
-) -> anyhow::Result<(String, Option<String>)> {
+) -> anyhow::Result<(String, Option<(String, Vec<String>)>)> {
     let EmailSyncCtx {
         jmap,
         account_id,
@@ -7990,32 +7993,21 @@ async fn render_pending_email_op(
     };
     let jmap_id = email.id.as_deref().unwrap_or_default();
     let server_id = crate::email::email_server_id_from_jmap_id(jmap_id);
-    // Seed the flag baseline for a delivered `<Add>`: the bounded rotating scan
-    // may not reach this message before the user edits its flags, and without a
-    // baseline row `scan_email_keyword_changes` would treat the first
-    // observation as a fresh capture (recording the new keywords) instead of
-    // reporting the edit — the `queryChanges` feed cannot report it either, so
-    // the client's flag would stay stale until the next full sweep. Writing the
-    // baseline at delivery makes the very next scan report any change. A failed
-    // write fails the render closed so the Add is not acknowledged without its
-    // baseline (the retry re-seeds; the upsert is idempotent).
-    let mut seeded_id = None;
-    if op.op == "add" {
-        let keywords = email.sorted_active_keywords();
-        ctx.state
-            .storage
-            .upsert_email_keyword(ctx.username, ctx.state_collection_id, jmap_id, &keywords)
-            .await
-            .map_err(|e| {
-                tracing::warn!(
-                    error = %e,
-                    email_id = %jmap_id,
-                    "Failed to seed email keyword baseline for delivered Add"
-                );
-                anyhow::anyhow!("failed to seed email keyword baseline for delivered Add {jmap_id}")
-            })?;
-        seeded_id = Some(jmap_id.to_string());
-    }
+    // Stage the flag baseline with the message's CURRENT (rendered) keywords for
+    // a delivered `<Add>` AND `<Change>`. The bounded rotating scan may not reach
+    // this message before the user edits its flags, and without a baseline row
+    // `scan_email_keyword_changes` would treat the first observation as a fresh
+    // capture (recording the new keywords) instead of reporting the edit — the
+    // `queryChanges` feed cannot report it either, so the client's flag would
+    // stay stale until the next full sweep. Seeding the RENDERED keywords (not
+    // the earlier scan snapshot) is essential for a `<Change>`: the scan may have
+    // observed an older flag state, and storing that stale snapshot would
+    // suppress the very `<Change>` a later edit requires. The seed is RETURNED,
+    // not written: the caller persists it only once the delivered window is
+    // acknowledged, so a fail-closed retry re-derives the `<Change>` instead of
+    // finding its baseline already advanced.
+    let keywords = email.sorted_active_keywords();
+    let seeded = Some((jmap_id.to_string(), keywords));
     let app_data = crate::email::render_jmap_email_as_eas_application_data_with_options(
         &email,
         &server_id,
@@ -8037,7 +8029,7 @@ async fn render_pending_email_op(
             app_data
         )
     };
-    Ok((xml, seeded_id))
+    Ok((xml, seeded))
 }
 
 /// How an email-collection Sync request must be served.
@@ -8257,6 +8249,40 @@ async fn handle_email_sync(ctx: &EmailSyncRequestCtx<'_>) -> anyhow::Result<Stri
         }
     };
 
+    // Validate a non-zero SyncKey against the key this collection last issued,
+    // BEFORE any backend work. [MS-ASCMD] §2.2.3.181.4: a non-zero key MUST match
+    // the key the collection last issued, else the client's view is stale and it
+    // must re-prime (Status 3). This covers BOTH a delta retry and a prime
+    // CONTINUATION:
+    //   - A delta retry after a lost response carries the client's LAST RECEIVED
+    //     key; without this check it would be diffed against the NEWER stored
+    //     token/baseline — the membership feed reports nothing and the advanced
+    //     flag baseline suppresses the flag-only `<Change>` the lost response
+    //     carried, so the edit is never delivered.
+    //   - A prime continuation commits its cursor and SyncKey in ONE transaction
+    //     (`set_email_sync_cursor_and_key`), so the echoed key identifies the exact
+    //     page boundary; a retry after a LOST continuation response carries the
+    //     PREVIOUS key, and resuming from the advanced cursor would start AFTER
+    //     the lost page — those messages are already inside the initial query
+    //     state, so no later delta recovers them.
+    // Rejecting the stale key forces a re-prime that re-delivers from the head.
+    if incoming_sync_key != "0" {
+        let valid = match state
+            .storage
+            .get_sync_key(username, state_collection_id)
+            .await
+        {
+            Ok(Some((stored, _))) => stored == incoming_sync_key,
+            _ => false,
+        };
+        if !valid {
+            return Ok(format!(
+                "<Collection><Class>Email</Class><SyncKey>0</SyncKey><CollectionId>{}</CollectionId><Status>3</Status></Collection>",
+                xml_escape(collection_id)
+            ));
+        }
+    }
+
     let account_id = match jmap.get_account_id(username, password).await {
         Ok(id) => id,
         Err(e) => {
@@ -8334,36 +8360,9 @@ async fn handle_email_sync(ctx: &EmailSyncRequestCtx<'_>) -> anyhow::Result<Stri
             ));
         }
     };
-    // Route BEFORE validating the key: a non-zero incoming SyncKey is validated
-    // ONLY on the DELTA path. [MS-ASCMD] §2.2.3.181.4: a non-zero key MUST match
-    // the key this collection last issued, else the client's view is stale and it
-    // must re-prime (Status 3). Without this a client that retries its LAST
-    // RECEIVED key after a lost response would be diffed against the NEWER stored
-    // token/baseline — the membership feed reports nothing and the advanced flag
-    // baseline suppresses the flag-only `<Change>` the lost response carried, so
-    // the edit is never delivered. Validating the key forces a re-prime that
-    // re-establishes a consistent base. A prime CONTINUATION is deliberately NOT
-    // validated: it is routed by its persisted cursor (the clipped prime's key
-    // write is best-effort, so cursor presence — not the key — is the
-    // authoritative continuation signal), and its follow-up is part of the SAME
-    // prime, not a delta over committed state.
+    // Route by the incoming key and the persisted cursor (the key itself was
+    // validated above).
     let route = route_email_sync(incoming_sync_key, cursor_present);
-    if incoming_sync_key != "0" && route == EmailSyncRoute::Delta {
-        let valid = match state
-            .storage
-            .get_sync_key(username, state_collection_id)
-            .await
-        {
-            Ok(Some((stored, _))) => stored == incoming_sync_key,
-            _ => false,
-        };
-        if !valid {
-            return Ok(format!(
-                "<Collection><Class>Email</Class><SyncKey>0</SyncKey><CollectionId>{}</CollectionId><Status>3</Status></Collection>",
-                xml_escape(collection_id)
-            ));
-        }
-    }
     match route {
         EmailSyncRoute::Initial => {
             // A fresh prime must never inherit a previous sync's continuation:
@@ -8729,47 +8728,30 @@ async fn handle_email_initial_sync(
         // estimate) correct.
         let last_delivered_id = result.emails.last().and_then(|e| e.id.clone());
 
-        // Persist the resume point; the stored JMAP state token stays at the
-        // initial-sync value so the delta diff starts from a stable base once
-        // the cursor drains.
-        //
-        // The cursor write is MANDATORY before acknowledging a clipped window.
-        // If it fails, the next non-zero Sync finds no cursor and routes to the
-        // DELTA path from the first page's query state — a state that already
-        // includes the messages on later pages, so they would never be sent.
-        // Fail closed (retryable) instead: the client re-sends SyncKey 0, the
-        // re-prime restarts from position 0, and the first window is
-        // re-delivered (clients resolve the duplicate Adds by ServerId).
+        // Persist the resume cursor AND the response SyncKey in ONE transaction.
+        // A clipped prime acknowledges its window only when both are durable
+        // together: a stored cursor with the SyncKey still at the previous value
+        // (or the reverse) would let a continuation or retry resume from a state
+        // the client was never told about. On failure neither write commits, so
+        // the client re-sends SyncKey 0, the re-prime restarts from position 0,
+        // and the first window is re-delivered (clients resolve the duplicate
+        // Adds by ServerId).
         if let Err(e) = state
             .storage
-            .set_email_sync_cursor(
+            .set_email_sync_cursor_and_key(
                 username,
                 state_collection_id,
                 result.query_position.saturating_add(delivered),
                 base_state_token.as_deref(),
                 last_delivered_id.as_deref(),
+                &new_sync_key,
             )
             .await
         {
-            tracing::warn!(error = %e, "Failed to persist email initial-sync cursor; refusing to acknowledge clipped window");
+            tracing::warn!(error = %e, "Failed to persist email initial-sync cursor and key; refusing to acknowledge clipped window");
             return Err(anyhow::anyhow!(
                 "failed to persist email initial-sync cursor for collection {state_collection_id}"
             ));
-        }
-        // A failed SyncKey write is NOT lossy: the client's next request
-        // carries the key returned below, and cursor presence (already stored)
-        // routes it to the continuation path regardless of the stored key.
-        if let Err(e) = state
-            .storage
-            .set_sync_key(
-                username,
-                state_collection_id,
-                &new_sync_key,
-                base_state_token.as_deref(),
-            )
-            .await
-        {
-            tracing::warn!(error = %e, "Failed to set initial email sync key with JMAP state");
         }
         let response = format!(
             "<Collection><Class>Email</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>1</Status><MoreAvailable/><Commands>{}</Commands></Collection>",
@@ -8883,18 +8865,24 @@ async fn handle_email_delta_sync(ctx: &EmailSyncCtx<'_>) -> anyhow::Result<Strin
         let (deliver, leftover) = queue.split_at(take);
 
         let mut commands_xml = String::new();
+        let mut seeds: Vec<(String, Vec<String>)> = Vec::new();
         for op in deliver {
-            // A transient fetch/seed failure aborts the drain before any state
-            // is committed: the caller answers Status 6 and the queue (and the
+            // A transient fetch failure aborts the drain before any state is
+            // committed: the caller answers Status 6 and the queue (and the
             // stored token) stay intact, so the next Sync retries the same ops
             // instead of dropping a change the client never received.
-            let (xml, _seed) = render_pending_email_op(ctx, op).await?;
+            let (xml, seed) = render_pending_email_op(ctx, op).await?;
             commands_xml.push_str(&xml);
+            if let Some(seed) = seed {
+                seeds.push(seed);
+            }
         }
 
         if !leftover.is_empty() {
             // Still more behind this window: keep the queue (and the stored
-            // token exactly where it is) and tell the client to sync again.
+            // token exactly where it is) and tell the client to sync again. The
+            // queue replacement and the delivered window's rendered seeds are
+            // written in ONE transaction.
             if let Ok(leftover_json) = serde_json::to_string(&leftover)
                 && let Err(e) = state
                     .storage
@@ -8903,6 +8891,7 @@ async fn handle_email_delta_sync(ctx: &EmailSyncCtx<'_>) -> anyhow::Result<Strin
                         state_collection_id,
                         &leftover_json,
                         &base_state,
+                        &seeds,
                     )
                     .await
             {
@@ -8964,6 +8953,7 @@ async fn handle_email_delta_sync(ctx: &EmailSyncCtx<'_>) -> anyhow::Result<Strin
                 &ops_json,
                 &new_sync_key,
                 &base_state,
+                &seeds,
             )
             .await
         {
@@ -9097,16 +9087,20 @@ async fn handle_email_delta_sync(ctx: &EmailSyncCtx<'_>) -> anyhow::Result<Strin
     let (deliver, leftover) = ops.split_at(take);
 
     let mut commands_xml = String::new();
-    let mut seeded: HashSet<String> = HashSet::new();
+    // Staged rendered keyword seeds for this delivered window: each `<Add>`/
+    // `<Change>` contributes the message's CURRENT keywords. They are written
+    // ATOMICALLY with the window's acknowledgement (never eagerly), so a failed
+    // window leaves no advanced baseline behind.
+    let mut seeds: Vec<(String, Vec<String>)> = Vec::new();
     for op in deliver {
-        // A transient fetch/seed failure aborts BEFORE any state is committed
-        // (no token advance, no overflow queue, no baseline write): the caller
-        // answers Status 6 carrying the incoming key, so the next Sync
-        // re-derives the same change set instead of dropping the op.
+        // A transient fetch failure aborts BEFORE any state is committed (no
+        // token advance, no overflow queue, no seed write): the caller answers
+        // Status 6 carrying the incoming key, so the next Sync re-derives the
+        // same change set instead of dropping the op.
         let (xml, seed) = render_pending_email_op(ctx, op).await?;
         commands_xml.push_str(&xml);
-        if let Some(id) = seed {
-            seeded.insert(id);
+        if let Some(seed) = seed {
+            seeds.push(seed);
         }
     }
 
@@ -9114,15 +9108,31 @@ async fn handle_email_delta_sync(ctx: &EmailSyncCtx<'_>) -> anyhow::Result<Strin
         // Overflow: stash the remainder plus the state that follows the full
         // change set, and DO NOT advance the stored token (the next diff
         // must not re-report the queued ops).
+        // Persist the overflow queue AND the response SyncKey in ONE
+        // transaction. The two writes MUST be atomic: saving the queue while the
+        // key write fails (or the process stops between the two) would leave the
+        // client holding the OLD key while the queue's `base_state` sits AHEAD of
+        // it — a retry drains the queued remainder and advances past THIS
+        // window's `deliver` ops (which are not in the queue), losing them. On
+        // failure the caller answers a retryable Status 6 and the same delta is
+        // recomputed from the unchanged token.
         let queued_ok = match serde_json::to_string(leftover) {
             Ok(leftover_json) => match state
                 .storage
-                .set_email_sync_pending(username, state_collection_id, &leftover_json, &final_state)
+                .set_email_sync_pending_and_key(
+                    username,
+                    state_collection_id,
+                    &leftover_json,
+                    &final_state,
+                    &new_sync_key,
+                    Some(&old_state),
+                    &seeds,
+                )
                 .await
             {
                 Ok(()) => true,
                 Err(e) => {
-                    tracing::warn!(error = %e, "Failed to persist email delta overflow queue");
+                    tracing::warn!(error = %e, "Failed to atomically persist email delta overflow queue and sync key");
                     false
                 }
             },
@@ -9132,12 +9142,8 @@ async fn handle_email_delta_sync(ctx: &EmailSyncCtx<'_>) -> anyhow::Result<Strin
             }
         };
         if !queued_ok {
-            // The undelivered remainder could not be made durable. Acknowledging
-            // the delivered window (Status 1 + <MoreAvailable/>) while the stored
-            // token still sits at `old_state` would make the next delta recompute
-            // the WHOLE change set and replay the already-delivered commands —
-            // duplicate Adds (and a non-draining delta while storage stays
-            // broken). Fail closed with a retryable server error instead: the
+            // The undelivered remainder could not be made durable together with
+            // the response key. Fail closed with a retryable server error: the
             // caller answers Status 6 carrying the incoming key and NO commands,
             // the stored token is left untouched, and the same delta drains
             // cleanly once storage recovers. The flag baseline is likewise NOT
@@ -9156,41 +9162,12 @@ async fn handle_email_delta_sync(ctx: &EmailSyncCtx<'_>) -> anyhow::Result<Strin
                 "failed to persist email delta overflow queue for collection {state_collection_id}"
             ));
         }
-        // The token write here is best-effort: this branch stores `old_state`
-        // (the SAME token the collection already had), so a failed write leaves
-        // the token unchanged — the overflow queue (base_state = `final_state`)
-        // is what carries progress, and the next Sync drains it. Failing the
-        // delta closed here would be worse: the queued remainder is only the
-        // part that did NOT fit this window, so a retry that drained the queue
-        // would deliver the remainder WITHOUT re-delivering this window's
-        // `deliver` ops (they are not in the queue) — losing them.
-        let token_committed = match state
-            .storage
-            .set_sync_key(
-                username,
-                state_collection_id,
-                &new_sync_key,
-                Some(&old_state),
-            )
-            .await
-        {
-            Ok(()) => true,
-            Err(e) => {
-                tracing::warn!(error = %e, "Failed to set email sync key while truncating delta");
-                false
-            }
-        };
-        // Advance the flag-scan baseline rows + rotating position ONLY once the
-        // token write has committed. If it did not, the stored token stays at the
-        // pre-delta state; a lost response would make the retry re-derive from
-        // that stale token and re-deliver the membership set but NOT re-report a
-        // flag-only `<Change>` (the feed reports membership only), so the edit
-        // would be lost forever. Holding the baseline lets the retry's scan
-        // re-detect it. The remainder is still durable in the overflow queue.
-        if token_committed {
-            persist_keyword_scan(state, username, state_collection_id, &keyword_scan, &seeded)
-                .await;
-        }
+        // The queue, the response key, and this window's rendered seeds are now
+        // durable together, so the delivered window IS acknowledged. Advance the
+        // remaining flag-scan baseline rows + rotating position (the seeded ids
+        // were already written atomically above, so they are skipped).
+        let seeded: HashSet<String> = seeds.iter().map(|(id, _)| id.clone()).collect();
+        persist_keyword_scan(state, username, state_collection_id, &keyword_scan, &seeded).await;
         tracing::info!(
             user = %username,
             collection_id,
@@ -9209,14 +9186,19 @@ async fn handle_email_delta_sync(ctx: &EmailSyncCtx<'_>) -> anyhow::Result<Strin
     }
 
     // Everything fits: advance to the state that follows the delivered set
-    // and finish the window.
+    // and finish the window. The window's rendered seeds are written in the SAME
+    // transaction as the token: the window is acknowledged only once both are
+    // durable, so a failed write rolls both back and the retry re-derives the
+    // flag-only `<Change>`s rather than suppressing them against an advanced
+    // baseline.
     if let Err(e) = state
         .storage
-        .set_sync_key(
+        .set_sync_key_with_seeds(
             username,
             state_collection_id,
             &new_sync_key,
             Some(&final_state),
+            &seeds,
         )
         .await
     {
@@ -9241,9 +9223,11 @@ async fn handle_email_delta_sync(ctx: &EmailSyncCtx<'_>) -> anyhow::Result<Strin
     }
     // The whole change set (membership + keyword updates) has now been
     // delivered and its token committed, so the flag-scan baseline rows and
-    // rotating position may advance. Persisting them only here guarantees a
-    // crash before this point re-scans the same window rather than swallowing
-    // the updates.
+    // rotating position may advance. The seeded ids were written atomically with
+    // the token above, so they are skipped here. Persisting the rest only here
+    // guarantees a crash before this point re-scans the same window rather than
+    // swallowing the updates.
+    let seeded: HashSet<String> = seeds.iter().map(|(id, _)| id.clone()).collect();
     persist_keyword_scan(state, username, state_collection_id, &keyword_scan, &seeded).await;
 
     tracing::info!(
@@ -12950,7 +12934,13 @@ mod tests {
         // the delivered op (a delete) needs no JMAP round-trip.
         state
             .storage
-            .set_email_sync_pending(owner, &scoped, r#"[{"op":"delete","id":"m1"}]"#, "Sbase")
+            .set_email_sync_pending(
+                owner,
+                &scoped,
+                r#"[{"op":"delete","id":"m1"}]"#,
+                "Sbase",
+                &[],
+            )
             .await
             .unwrap();
 
@@ -13055,13 +13045,13 @@ mod tests {
             .unwrap();
         let ops1 = r#"[{"op":"delete","id":"m1"}]"#;
         storage
-            .set_email_sync_pending(owner, &scoped, ops1, "Sbase")
+            .set_email_sync_pending(owner, &scoped, ops1, "Sbase", &[])
             .await
             .unwrap();
 
         // The first drain claims the queue and advances the token.
         let won = storage
-            .drain_email_sync_queue(owner, &scoped, ops1, "newkey", "Sbase")
+            .drain_email_sync_queue(owner, &scoped, ops1, "newkey", "Sbase", &[])
             .await
             .unwrap();
         assert!(won, "the first drain must claim the queue");
@@ -13070,7 +13060,7 @@ mod tests {
         // must NOT advance the token: the stored key/token stay at the
         // winner's values, and the call reports the claim loss.
         let lost = storage
-            .drain_email_sync_queue(owner, &scoped, ops1, "loserkey", "Sloser")
+            .drain_email_sync_queue(owner, &scoped, ops1, "loserkey", "Sloser", &[])
             .await
             .unwrap();
         assert!(
@@ -13105,19 +13095,19 @@ mod tests {
             .unwrap();
         let rendered = r#"[{"op":"delete","id":"m1"}]"#;
         storage
-            .set_email_sync_pending(owner, &scoped, rendered, "Sbase")
+            .set_email_sync_pending(owner, &scoped, rendered, "Sbase", &[])
             .await
             .unwrap();
         // A concurrent Sync replaces the queue with a NEW payload.
         let replacement = r#"[{"op":"change","id":"m2"}]"#;
         storage
-            .set_email_sync_pending(owner, &scoped, replacement, "Sbase2")
+            .set_email_sync_pending(owner, &scoped, replacement, "Sbase2", &[])
             .await
             .unwrap();
 
         // The stale drain (rendered payload) must lose the claim.
         let claimed = storage
-            .drain_email_sync_queue(owner, &scoped, rendered, "newkey", "Sbase")
+            .drain_email_sync_queue(owner, &scoped, rendered, "newkey", "Sbase", &[])
             .await
             .unwrap();
         assert!(
@@ -14596,14 +14586,15 @@ mod tests {
         );
     }
 
-    /// A CLIPPED delta window (one that queues a remainder) must NOT advance the
-    /// flag-scan baseline when its best-effort sync-token write fails: the stored
-    /// token stays at the pre-delta state, so advancing the baseline would let a
-    /// retry's `Email/queryChanges` re-derive the membership set but never
-    /// re-report a flag-only `<Change>` (the feed reports membership only) — the
-    /// edit would be lost forever. The remainder is still durably queued.
+    /// A CLIPPED delta window (one that queues a remainder) commits the
+    /// overflow queue AND the response key in ONE transaction. If that write
+    /// fails, BOTH roll back and the delta refuses to acknowledge the window
+    /// (retryable error): the stored key stays at the pre-delta state, so a
+    /// retry re-derives the delivered ops from the unchanged token rather than
+    /// draining a queue whose `base_state` already sits past them (losing the
+    /// window's `deliver` ops, which are not queued).
     #[tokio::test]
-    async fn test_email_delta_clipped_token_write_failure_does_not_advance_baseline() {
+    async fn test_email_delta_clipped_write_failure_rolls_back_queue_and_key() {
         use crate::models::AppState;
         use axum::routing::{get, post};
         use serde_json::{Value, json};
@@ -14763,12 +14754,10 @@ mod tests {
             delta_mailbox_id: Some("mbx-inbox"),
         };
 
-        let xml = handle_email_delta_sync(&ctx)
-            .await
-            .expect("the clipped branch still serves the delivered window");
+        let result = handle_email_delta_sync(&ctx).await;
         assert!(
-            xml.contains("<Status>1</Status>") && xml.contains("<MoreAvailable/>"),
-            "the clipped window is acknowledged with a remainder: {xml}"
+            result.is_err(),
+            "a failed atomic queue+key write must refuse to acknowledge the clipped window"
         );
         assert_eq!(
             state.storage.get_sync_key(owner, &scoped).await.unwrap(),
@@ -14781,8 +14770,8 @@ mod tests {
                 .get_email_sync_pending(owner, &scoped)
                 .await
                 .unwrap()
-                .is_some(),
-            "the remainder must stay durably queued"
+                .is_none(),
+            "the queue write must roll back together with the failed key write"
         );
         assert!(
             state
@@ -14791,7 +14780,21 @@ mod tests {
                 .await
                 .unwrap()
                 .is_none(),
-            "the flag baseline must NOT advance when the token write failed"
+            "the flag baseline must NOT advance when the window was not acknowledged"
+        );
+        // The delivered `<Add>` (m1) staged a rendered keyword seed; it is written
+        // in the SAME transaction as the queue+key, so the failed write must roll
+        // it back too. Were it written eagerly, the retry's scan would find the
+        // baseline already at the live keywords and suppress the `<Change>` the
+        // client still needs.
+        assert!(
+            state
+                .storage
+                .get_email_keyword(owner, &scoped, "m1")
+                .await
+                .unwrap()
+                .is_none(),
+            "a delivered op's rendered keyword seed must roll back with the failed window"
         );
     }
 
@@ -18484,6 +18487,13 @@ mod tests {
 
         let owner = "u@example.com";
         let scoped = scoped_collection_id("2", "dev-1");
+        // A matching key so the routing key-validation passes and the cursor
+        // read is actually reached.
+        state
+            .storage
+            .set_sync_key(owner, &scoped, "contkey", Some("QS0"))
+            .await
+            .unwrap();
         // Poison the cursor read so routing cannot decide.
         sqlx::query("DROP TABLE email_sync_cursor")
             .execute(state.storage.pool())
@@ -18714,10 +18724,16 @@ mod tests {
 
         let owner = "u@example.com";
         let scoped = scoped_collection_id("2", "dev-1");
-        // A clipped prime left a cursor pinned on m2 (the last delivered id).
+        // A clipped prime left a cursor pinned on m2 (the last delivered id),
+        // committing the cursor AND the continuation SyncKey together.
         state
             .storage
             .set_email_sync_cursor(owner, &scoped, 2, Some("QS0"), Some("m2"))
+            .await
+            .unwrap();
+        state
+            .storage
+            .set_sync_key(owner, &scoped, "contkey", Some("QS0"))
             .await
             .unwrap();
 
@@ -18749,6 +18765,124 @@ mod tests {
         assert!(
             anchored,
             "the continuation must pin its page on the last delivered id via anchor/anchorOffset: {queries:?}"
+        );
+    }
+
+    /// A non-zero SyncKey that does not match the key the collection last
+    /// issued is REJECTED with Status 3 + SyncKey 0, and no JMAP work runs.
+    /// This covers a prime CONTINUATION whose response was LOST: the clipped
+    /// prime committed its cursor and key atomically, so a retry carrying the
+    /// PREVIOUS key must NOT resume from the advanced cursor (that would skip the
+    /// lost page, and those messages are already inside the initial query state,
+    /// so no later delta recovers them).
+    #[tokio::test]
+    async fn test_email_sync_rejects_stale_sync_key_with_status_3() {
+        use crate::models::AppState;
+        use axum::routing::{get, post};
+        use serde_json::{Value, json};
+        use std::sync::Arc as StdArc;
+
+        #[derive(Clone)]
+        struct Ctl {
+            base: String,
+            hits: StdArc<std::sync::atomic::AtomicUsize>,
+        }
+
+        async fn session(axum::Extension(ctl): axum::Extension<Ctl>) -> axum::Json<Value> {
+            axum::Json(json!({
+                "apiUrl": ctl.base,
+                "downloadUrl": format!("{}/download/{{accountId}}/{{blobId}}", ctl.base),
+                "uploadUrl": format!("{}/upload/{{accountId}}", ctl.base),
+                "eventSourceUrl": format!("{}/eventsource", ctl.base),
+                "state": "s",
+                "username": "u",
+                "accounts": {"a": {"name": "u", "isPersonal": true, "isReadOnly": false, "accountCapabilities": {}}},
+                "primaryAccounts": {"urn:ietf:params:jmap:mail": "a"},
+                "capabilities": {"urn:ietf:params:jmap:core": {"maxObjectsInGet": 500}}
+            }))
+        }
+
+        async fn api(
+            axum::Extension(ctl): axum::Extension<Ctl>,
+            _body: String,
+        ) -> axum::response::Response {
+            ctl.hits.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            axum::response::Response::builder()
+                .status(200)
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(
+                    serde_json::to_vec(&json!({"methodResponses": [], "sessionState": "s"}))
+                        .unwrap(),
+                ))
+                .unwrap()
+        }
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
+        let ctl = Ctl {
+            base: base.clone(),
+            hits: StdArc::new(std::sync::atomic::AtomicUsize::new(0)),
+        };
+        let app = axum::Router::new()
+            .route("/session", get(session))
+            .route("/", post(api))
+            .layer(axum::Extension(ctl.clone()));
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let storage = crate::storage::Storage::new("sqlite::memory:")
+            .await
+            .unwrap();
+        storage.init_schema().await.unwrap();
+        let cfg = crate::config::Config {
+            jmap_base: base.clone(),
+            email_enabled: true,
+            mail_domain: "example.com".to_string(),
+            hmac_secret: SecretString::from("a".repeat(32)),
+            ..Default::default()
+        };
+        let state = StdArc::new(AppState::new(cfg, StdArc::new(storage)));
+
+        let owner = "u@example.com";
+        let scoped = scoped_collection_id("2", "dev-1");
+        // The clipped prime committed the cursor AND the key `K1`; the client
+        // retries with the PREVIOUS key `K0`.
+        state
+            .storage
+            .set_email_sync_cursor(owner, &scoped, 2, Some("QS0"), Some("m2"))
+            .await
+            .unwrap();
+        state
+            .storage
+            .set_sync_key(owner, &scoped, "K1", Some("QS0"))
+            .await
+            .unwrap();
+
+        let password = SecretString::from("pw");
+        let options = crate::eas_sync_options::EasSyncCollectionOptions::default();
+        let xml = handle_email_sync(&EmailSyncRequestCtx {
+            state: &state,
+            username: owner,
+            password: &password,
+            collection_id: "2",
+            state_collection_id: &scoped,
+            incoming_sync_key: "K0",
+            window: 2,
+            options: Some(&options),
+            conversation_mode: false,
+        })
+        .await
+        .expect("a stale key is answered, not errored");
+
+        assert!(
+            xml.contains("<Status>3</Status>") && xml.contains("<SyncKey>0</SyncKey>"),
+            "a stale SyncKey must force a re-prime (Status 3 + SyncKey 0): {xml}"
+        );
+        assert_eq!(
+            ctl.hits.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "a rejected stale key must not touch the backend"
         );
     }
 
@@ -18875,10 +19009,15 @@ mod tests {
         let scoped = scoped_collection_id("2", "dev-1");
         // The pinned anchor (the last delivered id of the previous window) was
         // deleted from the mailbox meanwhile; the stored offset (2) is the
-        // index PAST that window.
+        // index PAST that window. The continuation SyncKey is committed with it.
         state
             .storage
             .set_email_sync_cursor(owner, &scoped, 2, Some("QS0"), Some("gone"))
+            .await
+            .unwrap();
+        state
+            .storage
+            .set_sync_key(owner, &scoped, "contkey", Some("QS0"))
             .await
             .unwrap();
 
@@ -19020,6 +19159,11 @@ mod tests {
             .set_email_sync_cursor(owner, &scoped, 5, Some("QS0"), Some("m5"))
             .await
             .unwrap();
+        state
+            .storage
+            .set_sync_key(owner, &scoped, "contkey", Some("QS0"))
+            .await
+            .unwrap();
 
         let password = SecretString::from("pw");
         let options = crate::eas_sync_options::EasSyncCollectionOptions::default();
@@ -19151,10 +19295,16 @@ mod tests {
 
         let owner = "u@example.com";
         let scoped = scoped_collection_id("2", "dev-1");
-        // A clipped prime left a cursor at numeric offset 5 pinned on m5.
+        // A clipped prime left a cursor at numeric offset 5 pinned on m5,
+        // committing the cursor and the continuation SyncKey together.
         state
             .storage
             .set_email_sync_cursor(owner, &scoped, 5, Some("QS0"), Some("m5"))
+            .await
+            .unwrap();
+        state
+            .storage
+            .set_sync_key(owner, &scoped, "contkey", Some("QS0"))
             .await
             .unwrap();
 

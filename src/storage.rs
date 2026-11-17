@@ -760,6 +760,44 @@ impl Storage {
         Ok(())
     }
 
+    /// Persist a collection's (SyncKey, token) AND the rendered `<Add>`/`<Change>`
+    /// keyword seeds of the window that SyncKey acknowledges, in ONE
+    /// transaction. The "everything fits" delta acknowledges its window here, so
+    /// the seeds MUST be durable with it: a seed written without the token would
+    /// advance the baseline past a window the client was never told about (a
+    /// later `Email/queryChanges` cannot re-report a flag-only `<Change>`), and a
+    /// token without its seeds would suppress the flag `<Change>` the retry must
+    /// re-derive. A failure rolls both back, so the caller answers a retryable
+    /// error and re-delivers the same window.
+    pub async fn set_sync_key_with_seeds(
+        &self,
+        owner: &str,
+        collection_id: &str,
+        sync_key: &str,
+        token: Option<&str>,
+        seeds: &[(String, Vec<String>)],
+    ) -> Result<()> {
+        let mut tx = sqlx::Acquire::begin(self.pool.as_ref())
+            .await
+            .map_err(|e| GatewayError::Storage(format!("Transaction error: {}", e)))?;
+        sqlx::query(
+            "INSERT INTO sync_state (owner, collection_id, sync_key, token) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(owner, collection_id) DO UPDATE SET sync_key = ?3, token = ?4, updated_at = CURRENT_TIMESTAMP",
+        )
+        .bind(owner)
+        .bind(collection_id)
+        .bind(sync_key)
+        .bind(token)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+        Self::write_keyword_seeds_tx(&mut tx, owner, collection_id, seeds).await?;
+        tx.commit()
+            .await
+            .map_err(|e| GatewayError::Storage(format!("Commit error: {}", e)))?;
+        Ok(())
+    }
+
     pub async fn get_sync_key(
         &self,
         owner: &str,
@@ -1749,19 +1787,110 @@ impl Storage {
         Ok(())
     }
 
+    /// Persist a clipped initial-sync's paging cursor AND the response SyncKey in
+    /// ONE transaction. A clipped prime acknowledges its window only when both
+    /// are durable together: a stored cursor with the SyncKey still at the
+    /// previous value (or the reverse) would let a continuation or retry resume
+    /// from a state the client was never told about. On failure neither write
+    /// commits, so the caller answers a retryable error and the same prime is
+    /// re-issued.
+    pub async fn set_email_sync_cursor_and_key(
+        &self,
+        owner: &str,
+        collection_id: &str,
+        position: u64,
+        state_token: Option<&str>,
+        anchor_id: Option<&str>,
+        sync_key: &str,
+    ) -> Result<()> {
+        let mut tx = sqlx::Acquire::begin(self.pool.as_ref())
+            .await
+            .map_err(|e| GatewayError::Storage(format!("Transaction error: {}", e)))?;
+        sqlx::query(
+            "INSERT INTO email_sync_cursor (owner, collection_id, position, state_token, anchor_id)
+             VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(owner, collection_id) DO UPDATE
+             SET position = ?3, state_token = ?4, anchor_id = ?5, updated_at = CURRENT_TIMESTAMP",
+        )
+        .bind(owner)
+        .bind(collection_id)
+        .bind(position as i64)
+        .bind(state_token)
+        .bind(anchor_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+        sqlx::query(
+            "INSERT INTO sync_state (owner, collection_id, sync_key, token) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(owner, collection_id) DO UPDATE SET sync_key = ?3, token = ?4, updated_at = CURRENT_TIMESTAMP",
+        )
+        .bind(owner)
+        .bind(collection_id)
+        .bind(sync_key)
+        .bind(state_token)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+        tx.commit()
+            .await
+            .map_err(|e| GatewayError::Storage(format!("Commit error: {}", e)))?;
+        Ok(())
+    }
+
+    /// Write rendered keyword seeds (a delivered `<Add>`/`<Change>`'s CURRENT
+    /// keywords) into a collection's flag baseline, inside an EXISTING
+    /// transaction. The seed is fresher than the bounded scan's snapshot, so
+    /// writing it with the window that delivered the op keeps the baseline tied
+    /// to the acknowledged window: a later op's failure rolls the whole
+    /// transaction back, and the retry's scan re-detects the flag change instead
+    /// of finding the baseline already advanced.
+    async fn write_keyword_seeds_tx(
+        tx: &mut sqlx::Transaction<'_, Sqlite>,
+        owner: &str,
+        collection_id: &str,
+        seeds: &[(String, Vec<String>)],
+    ) -> Result<()> {
+        for (email_id, keywords) in seeds {
+            let json = serde_json::to_string(keywords)
+                .map_err(|e| GatewayError::Storage(format!("serialize keywords: {e}")))?;
+            sqlx::query(
+                "INSERT INTO email_keyword_baseline (owner, collection_id, email_id, keywords_json)
+                 VALUES (?1, ?2, ?3, ?4)
+                 ON CONFLICT(owner, collection_id, email_id) DO UPDATE
+                 SET keywords_json = ?4",
+            )
+            .bind(owner)
+            .bind(collection_id)
+            .bind(email_id)
+            .bind(json)
+            .execute(&mut **tx)
+            .await
+            .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+        }
+        Ok(())
+    }
+
     /// Persist the EAS email delta-sync overflow queue for a collection.
     ///
     /// `ops_json` is a JSON array of `{"op":"add|change|delete","id":"…"}`
     /// entries; `base_state` is the JMAP Email state token that follows the
     /// full accumulated change set (see `email_sync_pending` in
     /// `sqlite_schema.sql`).
+    ///
+    /// `seeds` are the rendered `<Add>`/`<Change>` keyword seeds for the window
+    /// that delivered the ops REMOVED from this queue, written in the SAME
+    /// transaction so the queue replacement and the seeds are durable together.
     pub async fn set_email_sync_pending(
         &self,
         owner: &str,
         collection_id: &str,
         ops_json: &str,
         base_state: &str,
+        seeds: &[(String, Vec<String>)],
     ) -> Result<()> {
+        let mut tx = sqlx::Acquire::begin(self.pool.as_ref())
+            .await
+            .map_err(|e| GatewayError::Storage(format!("Transaction error: {}", e)))?;
         sqlx::query(
             "INSERT INTO email_sync_pending (owner, collection_id, ops_json, base_state)
              VALUES (?1, ?2, ?3, ?4)
@@ -1772,9 +1901,13 @@ impl Storage {
         .bind(collection_id)
         .bind(ops_json)
         .bind(base_state)
-        .execute(self.pool.as_ref())
+        .execute(&mut *tx)
         .await
         .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+        Self::write_keyword_seeds_tx(&mut tx, owner, collection_id, seeds).await?;
+        tx.commit()
+            .await
+            .map_err(|e| GatewayError::Storage(format!("Commit error: {}", e)))?;
         Ok(())
     }
 
@@ -1805,6 +1938,72 @@ impl Storage {
             .execute(self.pool.as_ref())
             .await
             .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+        Ok(())
+    }
+
+    /// Persist the EAS email delta-sync overflow queue AND the response SyncKey
+    /// in ONE transaction. A clipped delta acknowledges its window only when the
+    /// undelivered remainder is durable TOGETHER with the key the client is told
+    /// to continue from: if the queue were saved but the key write failed (or the
+    /// process stopped between the two), the client would hold the OLD key while
+    /// the queue's base state sits AHEAD of it — a retry drains the queued
+    /// remainder and advances past the window that was delivered but whose ops
+    /// are not in the queue, losing them. Committing both atomically (and failing
+    /// the caller, which answers a retryable Status 6, if either write fails)
+    /// keeps the queue and the key consistent.
+    ///
+    /// `base_state` is the queue's own base (the JMAP state that follows the FULL
+    /// accumulated change set); `token` is the sync_state token to store, which
+    /// is deliberately the PRE-delta token so a lost response's retry re-derives
+    /// the delivered window rather than trusting an undrained queue.
+    ///
+    /// `seeds` are the rendered `<Add>`/`<Change>` keyword seeds for the DELIVERED
+    /// window, written in the SAME transaction: the window is acknowledged only
+    /// once its seeds are durable with it, so a failed write rolls both back and
+    /// the retry re-delivers the flag change instead of suppressing it against an
+    /// already-advanced baseline.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn set_email_sync_pending_and_key(
+        &self,
+        owner: &str,
+        collection_id: &str,
+        ops_json: &str,
+        base_state: &str,
+        sync_key: &str,
+        token: Option<&str>,
+        seeds: &[(String, Vec<String>)],
+    ) -> Result<()> {
+        let mut tx = sqlx::Acquire::begin(self.pool.as_ref())
+            .await
+            .map_err(|e| GatewayError::Storage(format!("Transaction error: {}", e)))?;
+        sqlx::query(
+            "INSERT INTO email_sync_pending (owner, collection_id, ops_json, base_state)
+             VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(owner, collection_id) DO UPDATE
+             SET ops_json = ?3, base_state = ?4, updated_at = CURRENT_TIMESTAMP",
+        )
+        .bind(owner)
+        .bind(collection_id)
+        .bind(ops_json)
+        .bind(base_state)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+        sqlx::query(
+            "INSERT INTO sync_state (owner, collection_id, sync_key, token) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(owner, collection_id) DO UPDATE SET sync_key = ?3, token = ?4, updated_at = CURRENT_TIMESTAMP",
+        )
+        .bind(owner)
+        .bind(collection_id)
+        .bind(sync_key)
+        .bind(token)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+        Self::write_keyword_seeds_tx(&mut tx, owner, collection_id, seeds).await?;
+        tx.commit()
+            .await
+            .map_err(|e| GatewayError::Storage(format!("Commit error: {}", e)))?;
         Ok(())
     }
 
@@ -1842,6 +2041,7 @@ impl Storage {
         rendered_ops_json: &str,
         sync_key: &str,
         token: &str,
+        seeds: &[(String, Vec<String>)],
     ) -> Result<bool> {
         let mut tx = sqlx::Acquire::begin(self.pool.as_ref())
             .await
@@ -1884,6 +2084,11 @@ impl Storage {
         .execute(&mut *tx)
         .await
         .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+
+        // Write the drained window's rendered keyword seeds in the SAME
+        // transaction as the claim + token advance: the window is acknowledged
+        // only once its seeds are durable with it.
+        Self::write_keyword_seeds_tx(&mut tx, owner, collection_id, seeds).await?;
 
         tx.commit()
             .await

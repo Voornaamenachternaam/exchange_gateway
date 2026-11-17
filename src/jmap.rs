@@ -4657,10 +4657,30 @@ impl JmapClient {
                     }
                 } else if method == "Mailbox/get" {
                     saw_get = true;
-                    let mut list: Vec<JmapMailbox> = data
-                        .get("list")
-                        .and_then(|v| serde_json::from_value(v.clone()).ok())
-                        .unwrap_or_default();
+                    // A `Mailbox/get` whose `list` is missing or cannot be
+                    // deserialized must FAIL the walk, not silently contribute an
+                    // empty page: `reconcile_deferred_folder_prunes` treats the
+                    // returned set as the authoritative live hierarchy and would
+                    // prune (and journal a false deletion for) a live mailbox the
+                    // undecodable page actually contained.
+                    let list_value = data.get("list").ok_or_else(|| {
+                        anyhow!("Mailbox/get response is missing its `list` array")
+                    })?;
+                    let mut list: Vec<JmapMailbox> = serde_json::from_value(list_value.clone())
+                        .map_err(|e| {
+                            anyhow!("Mailbox/get returned an undecodable mailbox list: {e}")
+                        })?;
+                    // Every mailbox must carry a usable id: an id-less object
+                    // cannot be matched against a pending prune, so a live
+                    // mailbox would look absent and be pruned.
+                    if list
+                        .iter()
+                        .any(|m| m.id.as_deref().is_none_or(str::is_empty))
+                    {
+                        return Err(anyhow!(
+                            "Mailbox/get returned a mailbox without a usable id"
+                        ));
+                    }
                     all.append(&mut list);
                 }
             }
@@ -10248,5 +10268,114 @@ mod tests {
             .await
             .expect_err("a mid-walk queryState change must fail the walk");
         assert!(err.to_string().contains("state changed"), "{err}");
+    }
+
+    /// A `Mailbox/get` whose `list` cannot be deserialized must FAIL the walk
+    /// rather than contribute an empty page: `reconcile_deferred_folder_prunes`
+    /// treats the returned set as the authoritative live hierarchy, so a
+    /// silently-dropped page would prune (and journal a false deletion for) a
+    /// live mailbox it actually contained.
+    #[tokio::test]
+    async fn query_all_mailboxes_rejects_undecodable_list() {
+        let err = query_all_mailboxes_with_get(json!({
+            "accountId": "a",
+            "list": [{ "id": 5, "name": "bad" }],
+        }))
+        .await
+        .expect_err("an undecodable mailbox list must fail the walk");
+        assert!(
+            err.to_string().contains("undecodable mailbox list"),
+            "{err}"
+        );
+    }
+
+    /// A `Mailbox/get` with no `list` array at all must FAIL the walk, not be
+    /// read as an empty page.
+    #[tokio::test]
+    async fn query_all_mailboxes_rejects_missing_list() {
+        let err = query_all_mailboxes_with_get(json!({ "accountId": "a" }))
+            .await
+            .expect_err("a missing mailbox list must fail the walk");
+        assert!(err.to_string().contains("missing its `list`"), "{err}");
+    }
+
+    /// A `Mailbox/get` entry without a usable id cannot be matched against a
+    /// pending prune, so a live mailbox would look absent and be pruned. Reject
+    /// the whole walk.
+    #[tokio::test]
+    async fn query_all_mailboxes_rejects_mailbox_without_id() {
+        let err = query_all_mailboxes_with_get(json!({
+            "accountId": "a",
+            "list": [{ "name": "no-id" }],
+        }))
+        .await
+        .expect_err("an id-less mailbox must fail the walk");
+        assert!(err.to_string().contains("without a usable id"), "{err}");
+    }
+
+    /// Drive `query_all_mailboxes` against a stub whose `Mailbox/get` returns
+    /// exactly `get_result`, so the inventory-validation branches can be pinned.
+    async fn query_all_mailboxes_with_get(get_result: Value) -> anyhow::Result<MailboxListResult> {
+        use axum::routing::{get, post};
+
+        #[derive(Clone)]
+        struct Ctl {
+            base: String,
+            get_result: Value,
+        }
+        async fn session(axum::Extension(ctl): axum::Extension<Ctl>) -> axum::Json<Value> {
+            let mut s = session_json(&ctl.base);
+            s["primaryAccounts"] = json!({ "urn:ietf:params:jmap:mail": "a" });
+            axum::Json(s)
+        }
+        async fn api(
+            axum::Extension(ctl): axum::Extension<Ctl>,
+            body: String,
+        ) -> axum::Json<Value> {
+            let req: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
+            let mut responses = Vec::new();
+            for call in req
+                .get("methodCalls")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default()
+            {
+                let name = call.get(0).and_then(|v| v.as_str()).unwrap_or("");
+                let cid = call.get(2).and_then(|v| v.as_str()).unwrap_or("c0");
+                let result = match name {
+                    // One live mailbox A, so the walk issues a `Mailbox/get`.
+                    "Mailbox/query" => json!({
+                        "accountId": "a",
+                        "ids": ["mb-a"],
+                        "total": 1,
+                        "position": 0,
+                        "queryState": "q",
+                    }),
+                    "Mailbox/get" => ctl.get_result.clone(),
+                    _ => json!({ "accountId": "a" }),
+                };
+                responses.push(json!([name, result, cid]));
+            }
+            axum::Json(json!({ "methodResponses": responses, "sessionState": "s" }))
+        }
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let base = format!("http://127.0.0.1:{port}");
+        let ctl = Ctl {
+            base: base.clone(),
+            get_result,
+        };
+        let app = axum::Router::new()
+            .route("/session", get(session))
+            .route("/", post(api))
+            .layer(axum::Extension(ctl));
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let client = JmapClient::new(&base).unwrap();
+        let pw = SecretString::from("pw");
+        client.query_all_mailboxes("u", &pw).await
     }
 }

@@ -642,6 +642,31 @@ pub async fn delete_folder(
     // still-present rows, so the destroyed child could never be re-derived.
     let mut destroyed_ids: Vec<String> = Vec::new();
     for folder in &subtree {
+        // Revalidate subtree membership against a FRESH read before destroying:
+        // a concurrent move (which updates `folder_map` under the target's
+        // mutation lock) may have reparented this folder OUT of the subtree
+        // since the snapshot was taken. Destroying it then would delete a LIVE
+        // folder the user moved elsewhere — its saved backend id would be
+        // deleted even though it no longer belongs to the subtree. Skipping it
+        // keeps the moved folder (and its mapping) intact.
+        match folder_is_within_subtree(state, owner, server_id, &folder.server_id).await {
+            Ok(true) => {}
+            Ok(false) => {
+                tracing::info!(
+                    server_id = %folder.server_id,
+                    "FolderDelete: folder no longer within the subtree (moved out); skipping"
+                );
+                continue;
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "FolderDelete: failed to revalidate subtree membership");
+                prune_destroyed_folder_ids(state, owner, &destroyed_ids).await;
+                return FolderMutationResult::status(6);
+            }
+        }
+        // Resolve the backend client FIRST so an abort here (no client, account
+        // lookup failure) happens BEFORE any intent is recorded — there is
+        // nothing to record when no destroy was attempted.
         match folder.backend_kind.as_str() {
             "jmap" => {
                 let Some(jmap) = state.jmap_client.clone() else {
@@ -656,6 +681,28 @@ pub async fn delete_folder(
                         return FolderMutationResult::status(6);
                     }
                 };
+                // Record this mailbox's prune intent durably BEFORE its
+                // destructive backend call. A crash or an unobservable outcome
+                // (a transport error after the backend committed the destroy)
+                // then still leaves a work list for the next folder-sync read to
+                // replay; without it, a mailbox gone from the backend but still
+                // in `folder_map` could never be re-derived by a retry (the retry
+                // re-collects only still-present rows). FAIL-CLOSED: if the
+                // intent cannot be recorded, the mailbox is NOT destroyed — the
+                // destroy is idempotent, so aborting is safe.
+                if let Err(e) = state
+                    .storage
+                    .record_pending_folder_prunes(owner, std::slice::from_ref(&folder.server_id))
+                    .await
+                {
+                    tracing::warn!(
+                        error = %e,
+                        server_id = %folder.server_id,
+                        "FolderDelete: failed to record the deferred folder-map prune intent; not destroying"
+                    );
+                    prune_destroyed_folder_ids(state, owner, &destroyed_ids).await;
+                    return FolderMutationResult::status(6);
+                }
                 match jmap
                     .destroy_mailbox(&account_id, &folder.backend_id, true, owner, password)
                     .await
@@ -670,17 +717,38 @@ pub async fn delete_folder(
                     // because a child was recreated, or `forbidden`). This is a
                     // failure: pruning the mirror here would resurrect the
                     // folder on the next reconcile, so abort and let the client
-                    // retry. Any child destroyed earlier in the walk is still
-                    // pruned.
+                    // retry. The intent recorded above is WITHDRAWN — the
+                    // mailbox still exists, so a later folder-sync replay must
+                    // not prune its live mapping. Any child destroyed earlier in
+                    // the walk is still pruned.
                     Ok(crate::jmap::MailboxDestroyOutcome::Refused) => {
                         tracing::warn!(
                             server_id = %folder.server_id,
                             "FolderDelete: Mailbox/set refused the destroy"
                         );
+                        if let Err(e) = state
+                            .storage
+                            .clear_pending_folder_prunes(
+                                owner,
+                                std::slice::from_ref(&folder.server_id),
+                            )
+                            .await
+                        {
+                            tracing::warn!(
+                                error = %e,
+                                server_id = %folder.server_id,
+                                "FolderDelete: failed to withdraw the deferred prune for a refused destroy"
+                            );
+                        }
                         prune_destroyed_folder_ids(state, owner, &destroyed_ids).await;
                         return FolderMutationResult::status(6);
                     }
                     Err(e) => {
+                        // UNKNOWN outcome: the intent is RETAINED (do NOT
+                        // withdraw it). A retry cannot rediscover a child the
+                        // backend in fact destroyed, so the durable work list
+                        // must stay for the next folder-sync replay to
+                        // reconcile against the live hierarchy.
                         tracing::warn!(error = %e, "FolderDelete: JMAP Mailbox/set destroy failed");
                         prune_destroyed_folder_ids(state, owner, &destroyed_ids).await;
                         return FolderMutationResult::status(6);
@@ -692,10 +760,28 @@ pub async fn delete_folder(
                     prune_destroyed_folder_ids(state, owner, &destroyed_ids).await;
                     return FolderMutationResult::status(6);
                 };
+                // Record the prune intent durably BEFORE the destructive call
+                // (same rationale as the JMAP arm above). A failed record
+                // aborts without deleting.
+                if let Err(e) = state
+                    .storage
+                    .record_pending_folder_prunes(owner, std::slice::from_ref(&folder.server_id))
+                    .await
+                {
+                    tracing::warn!(
+                        error = %e,
+                        server_id = %folder.server_id,
+                        "FolderDelete: failed to record the deferred folder-map prune intent; not deleting"
+                    );
+                    prune_destroyed_folder_ids(state, owner, &destroyed_ids).await;
+                    return FolderMutationResult::status(6);
+                }
                 if let Err(e) = caldav
                     .delete_collection(&folder.backend_id, owner, password.expose_secret())
                     .await
                 {
+                    // UNKNOWN outcome: retain the intent for the next
+                    // folder-sync replay to reconcile.
                     tracing::warn!(error = %e, "FolderDelete: CalDAV collection delete failed");
                     prune_destroyed_folder_ids(state, owner, &destroyed_ids).await;
                     return FolderMutationResult::status(6);
@@ -712,14 +798,15 @@ pub async fn delete_folder(
     // Backend objects are gone; prune the mirror and journal a Delete for each
     // removed ServerId in ONE transaction. Success is returned only once every
     // journal row is durable, so an already-primed device can always learn
-    // about the removal.
-    let removed_ids: Vec<String> = subtree.iter().map(|f| f.server_id.clone()).collect();
-    // Record the destroyed ids durably BEFORE the prune, so a failed mirror is
-    // still replayed by the next folder-sync read (`FolderSync`/`GetHierarchy`).
-    // Unlike the EWS/MAPI paths the mirror itself is a recovery source here (a
-    // retry re-collects the still-present rows), but recording keeps the
-    // deletion work list explicit and uniform across every destroy path.
-    // Best-effort: a failure here is logged but the direct prune still runs.
+    // about the removal. `removed_ids` is EXACTLY the set of folders whose
+    // backend destroy succeeded — a folder skipped because it was moved out of
+    // the subtree during the walk is NOT pruned (it is still live).
+    let removed_ids: Vec<String> = destroyed_ids.clone();
+    // Each id's prune intent was already recorded durably BEFORE its destroy
+    // above; this upsert is an idempotent backstop (ON CONFLICT DO NOTHING) so a
+    // failed mirror is still replayed by the next folder-sync read
+    // (`FolderSync`/`GetHierarchy`). `delete_folders_journaled` clears the rows
+    // it prunes, so a recorded-then-pruned id leaves no residue.
     if let Err(e) = state
         .storage
         .record_pending_folder_prunes(owner, &removed_ids)
@@ -766,6 +853,36 @@ async fn prune_destroyed_folder_ids(state: &Arc<AppState>, owner: &str, destroye
     {
         tracing::warn!(error = %e, "FolderDelete: failed to prune folder mappings for a partial walk");
     }
+}
+
+/// True when `server_id` is still a descendant of `root_server_id` in the
+/// CURRENT folder map. A concurrent move (which updates `folder_map` under the
+/// target folder's mutation lock) may have reparented a folder OUT of the
+/// subtree since the snapshot was taken; destroying it then would delete a live
+/// folder the user moved elsewhere. Walks the parent chain from `server_id` to
+/// the root using a FRESH read; a chain that never reaches the root — or hits a
+/// missing row — is no longer part of the subtree. A cycle (corrupt data) is
+/// treated as "not within" so the delete aborts rather than looping.
+async fn folder_is_within_subtree(
+    state: &Arc<AppState>,
+    owner: &str,
+    root_server_id: &str,
+    server_id: &str,
+) -> crate::error::Result<bool> {
+    let rows = state.storage.list_folders(owner).await?;
+    let by_id: std::collections::HashMap<&str, &FolderRow> =
+        rows.iter().map(|r| (r.server_id.as_str(), r)).collect();
+    let mut cur = server_id.to_string();
+    for _ in 0..=rows.len() {
+        if cur == root_server_id {
+            return Ok(true);
+        }
+        match by_id.get(cur.as_str()) {
+            Some(row) => cur = row.parent_id.clone(),
+            None => return Ok(false),
+        }
+    }
+    Ok(false)
 }
 
 /// Reconcile the owner's outstanding `pending_folder_prune` intents against the
@@ -915,6 +1032,30 @@ pub async fn update_folder(
             return FolderMutationResult::status(6);
         }
     };
+
+    // Serialize the WHOLE read-validate-mutate-mirror sequence for this folder
+    // over EVERY front door (EAS, EWS, MAPI) via `Storage::lock_folder_mutation`.
+    // Acquiring the lock BEFORE re-reading the row is what makes the
+    // `display_name`/`parent_id` derivation race-free: two concurrent renames of
+    // the same folder could otherwise both read the OLD name and one would
+    // classify a requested rename back to the original as "unchanged" (no-op),
+    // reporting success while the backend kept the other rename. The lock is
+    // held across the backend call AND the mirror below.
+    let _folder_guard = state
+        .storage
+        .lock_folder_mutation(owner, &row.backend_id)
+        .await;
+    // Re-read under the lock: a concurrent mutation may have changed the row
+    // (rename, move, or delete) between the lookup above and the lock.
+    let row = match state.storage.get_folder(owner, server_id).await {
+        Ok(Some(row)) => row,
+        Ok(None) => return FolderMutationResult::status(4),
+        Err(e) => {
+            tracing::warn!(error = %e, "FolderUpdate: folder lookup failed");
+            return FolderMutationResult::status(6);
+        }
+    };
+
     let parent_id = if parent_id.trim().is_empty() {
         row.parent_id.clone()
     } else {
@@ -1015,15 +1156,9 @@ async fn update_mail_folder(
     // swallow while the local map still recorded the new name, desynchronizing
     // the stored DisplayName from the backend mailbox name.
     let rename = (row.display_name != display_name).then_some(display_name);
-    // Serialize this folder's backend rename/move with its `folder_map` mirror so
-    // a concurrent mutation of the SAME folder over ANY front door (EAS, EWS,
-    // MAPI) cannot interleave a mirror derived from a stale snapshot
-    // (`Storage::lock_folder_mutation`). Held across BOTH the `Mailbox/set`
-    // call and the mirror below.
-    let _folder_guard = state
-        .storage
-        .lock_folder_mutation(owner, &row.backend_id)
-        .await;
+    // The per-folder mutation lock is held by `update_folder` for the WHOLE
+    // read-validate-mutate-mirror sequence (see there), so the backend call and
+    // the mirror below cannot interleave with a concurrent mutation.
     match jmap
         .update_mailbox(
             &account_id,
@@ -1085,13 +1220,9 @@ async fn rename_caldav_folder(
     let Ok(caldav) = CaldavClient::new(&state.cfg) else {
         return FolderMutationResult::status(6);
     };
-    // Serialize this collection's PROPPATCH with its `folder_map` mirror
-    // (`Storage::lock_folder_mutation`), held across BOTH steps so a concurrent
-    // mutation of the SAME folder cannot interleave a stale mirror.
-    let _folder_guard = state
-        .storage
-        .lock_folder_mutation(owner, &row.backend_id)
-        .await;
+    // The per-folder mutation lock is held by `update_folder` for the WHOLE
+    // read-validate-mutate-mirror sequence (see there), so the PROPPATCH and the
+    // mirror below cannot interleave with a concurrent mutation.
     if let Err(e) = caldav
         .set_collection_displayname(
             &row.backend_id,
@@ -2400,6 +2531,96 @@ mod tests {
                 .unwrap()
                 .is_empty(),
             "child folder must be removed with its parent"
+        );
+    }
+
+    /// The delete loop revalidates each folder's subtree membership against a
+    /// FRESH read before destroying it, so a folder reparented OUT of the
+    /// subtree by a concurrent move is skipped (it is still live). This pins the
+    /// membership predicate directly: a moved-out folder, a folder under a
+    /// DIFFERENT root, and a missing row are all "not within".
+    #[tokio::test]
+    async fn folder_is_within_subtree_tracks_current_parentage() {
+        let (state, _, _) = spawn_backend_stub().await;
+        for (id, parent) in [
+            ("mb-root", "0"),
+            ("mb-child", "mb-root"),
+            ("mb-grand", "mb-child"),
+            ("mb-moved", "0"),
+            ("mb-elsewhere", "mb-other"),
+        ] {
+            state
+                .storage
+                .upsert_folder_journaled(
+                    crate::storage::FolderUpsertParams {
+                        owner: "u@example.com",
+                        server_id: id,
+                        parent_id: parent,
+                        display_name: id,
+                        folder_type: 12,
+                        backend_kind: "jmap",
+                        backend_id: id,
+                    },
+                    "folder-add",
+                )
+                .await
+                .unwrap();
+        }
+        let owner = "u@example.com";
+        assert!(
+            folder_is_within_subtree(&state, owner, "mb-root", "mb-grand")
+                .await
+                .unwrap(),
+            "a deep descendant is within the subtree"
+        );
+        assert!(
+            folder_is_within_subtree(&state, owner, "mb-root", "mb-root")
+                .await
+                .unwrap(),
+            "the root is within its own subtree"
+        );
+        assert!(
+            !folder_is_within_subtree(&state, owner, "mb-root", "mb-moved")
+                .await
+                .unwrap(),
+            "a folder under a different parent is not within"
+        );
+        assert!(
+            !folder_is_within_subtree(&state, owner, "mb-root", "mb-absent")
+                .await
+                .unwrap(),
+            "a missing row is not within"
+        );
+
+        // Reparent `mb-child` (with its subtree) OUT of the root: the whole
+        // moved chain is no longer within.
+        state
+            .storage
+            .upsert_folder_journaled(
+                crate::storage::FolderUpsertParams {
+                    owner,
+                    server_id: "mb-child",
+                    parent_id: "0",
+                    display_name: "mb-child",
+                    folder_type: 12,
+                    backend_kind: "jmap",
+                    backend_id: "mb-child",
+                },
+                "folder-update",
+            )
+            .await
+            .unwrap();
+        assert!(
+            !folder_is_within_subtree(&state, owner, "mb-root", "mb-child")
+                .await
+                .unwrap(),
+            "a folder moved out of the subtree is no longer within"
+        );
+        assert!(
+            !folder_is_within_subtree(&state, owner, "mb-root", "mb-grand")
+                .await
+                .unwrap(),
+            "a descendant that moved WITH its parent is no longer within"
         );
     }
 
