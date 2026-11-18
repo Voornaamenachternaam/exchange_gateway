@@ -2305,20 +2305,31 @@ pub async fn apply_eas_email_mutations(
                         // collection's mailbox. Without this check, a stale
                         // <Delete> from collection A for a message that moved
                         // to collection B would remove/destroy it from B.
-                        let in_source_mailbox = jmap
+                        let in_source_mailbox = match jmap
                             .get_email(account_id, jmap_id, username, password, false)
                             .await
-                            .map(|emails| {
-                                emails.iter().any(|e| {
-                                    e.mailbox_ids
-                                        .as_ref()
-                                        .map(|mids| {
-                                            mids.iter().any(|(m, _)| m.as_str() == collection_id)
-                                        })
-                                        .unwrap_or(false)
-                                })
-                            })
-                            .unwrap_or(false);
+                        {
+                            Ok(emails) => emails.iter().any(|e| {
+                                e.mailbox_ids
+                                    .as_ref()
+                                    .map(|mids| {
+                                        mids.iter().any(|(m, _)| m.as_str() == collection_id)
+                                    })
+                                    .unwrap_or(false)
+                            }),
+                            // A transient backend lookup failure must NOT be
+                            // reported as "Object not found" (Status 8): the
+                            // message may still exist in the source folder.
+                            // Return a retryable failure so the client retries.
+                            Err(_) => {
+                                tracing::warn!(
+                                    target: "eas",
+                                    server_id = %server_id,
+                                    "Email membership lookup failed; reporting retryable Status 6"
+                                );
+                                "6"
+                            }
+                        };
                         if !in_source_mailbox {
                             "8"
                         } else if deletes_as_moves {

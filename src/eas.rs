@@ -4526,8 +4526,11 @@ async fn handle_move_items(
                 Ok(_new_change_key) => {
                     // Success: [MS-ASCMD] §6.28 MoveItems Response requires
                     // <Response><SrcMsgId/><Status/><DstMsgId/></Response>.
+                    // Status 3 = success ([MS-ASCMD] §2.2.3.177.8); Status 1
+                    // means invalid source folder. Return Status 3 and
+                    // preserve DstMsgId.
                     responses.push_str(&format!(
-                        r#"<Response><SrcMsgId>{}</SrcMsgId><Status>1</Status><DstMsgId>{}</DstMsgId></Response>"#,
+                        r#"<Response><SrcMsgId>{}</SrcMsgId><Status>3</Status><DstMsgId>{}</DstMsgId></Response>"#,
                         xml_escape(&src_msg_id),
                         xml_escape(&src_msg_id) // DstMsgId equals moved item id
                     ));
@@ -7680,7 +7683,7 @@ pub(crate) async fn persist_keyword_scan(
     collection_id: &str,
     outcome: &KeywordScanOutcome,
     seeded: &HashSet<String>,
-) {
+) -> anyhow::Result<()> {
     let mut all_written = true;
     for (id, keywords) in &outcome.upserts {
         if seeded.contains(id) {
@@ -7708,7 +7711,9 @@ pub(crate) async fn persist_keyword_scan(
     if !all_written {
         // Hold the cursor: a later delta re-scans this window so no baseline
         // row is left stale relative to the position the sweep advanced past.
-        return;
+        return Err(anyhow::anyhow!(
+            "failed to persist email keyword baseline for collection {collection_id}"
+        ));
     }
     if let Err(e) = state
         .storage
@@ -7716,7 +7721,11 @@ pub(crate) async fn persist_keyword_scan(
         .await
     {
         tracing::warn!(error = %e, "Failed to persist email keyword scan position");
+        return Err(anyhow::anyhow!(
+            "failed to persist email keyword scan position for collection {collection_id}"
+        ));
     }
+    Ok(())
 }
 
 /// Request-scoped inputs for [`scan_email_keyword_changes`]. Grouped so the
@@ -8176,12 +8185,23 @@ async fn apply_email_client_mutations(
         return Ok(String::new());
     };
     let account_id = jmap.get_account_id(username, password).await?;
+
+    // Resolve the EAS source collection to a JMAP mailbox before checking
+    // membership. A raw EAS CollectionId such as "2" (Inbox) must be compared
+    // against the backend mailbox id (e.g. "inbox1") returned by Email/get,
+    // not the raw EAS id.
+    let resolved_mailbox_id = resolve_email_mailbox_id(
+        state, jmap, &account_id, username, password, collection_id,
+    )
+    .await
+    .unwrap_or_else(|| collection_id.to_string());
+
     let results = crate::email::apply_eas_email_mutations(
         jmap,
         &account_id,
         username,
         password,
-        collection_id,
+        &resolved_mailbox_id,
         collection_xml,
         deletes_as_moves,
     )
@@ -8192,6 +8212,7 @@ async fn apply_email_client_mutations(
     tracing::info!(
         user = %username,
         collection_id = %collection_id,
+        resolved_mailbox = %resolved_mailbox_id,
         applied = results.len(),
         "Applied EAS email client mutations"
     );
@@ -9227,7 +9248,25 @@ async fn handle_email_delta_sync(ctx: &EmailSyncCtx<'_>) -> anyhow::Result<Strin
         // remaining flag-scan baseline rows + rotating position (the seeded ids
         // were already written atomically above, so they are skipped).
         let seeded: HashSet<String> = seeds.iter().map(|(id, _)| id.clone()).collect();
-        persist_keyword_scan(state, username, state_collection_id, &keyword_scan, &seeded).await;
+        if let Err(e) = persist_keyword_scan(
+            state,
+            username,
+            state_collection_id,
+            &keyword_scan,
+            &seeded,
+        )
+        .await
+        {
+            tracing::warn!(
+                error = %e,
+                user = %username,
+                collection_id,
+                "Failed to persist email keyword baseline after overflow; refusing to acknowledge"
+            );
+            return Err(anyhow::anyhow!(
+                "failed to persist email keyword baseline for collection {state_collection_id}"
+            ));
+        }
         tracing::info!(
             user = %username,
             collection_id,
@@ -9288,7 +9327,25 @@ async fn handle_email_delta_sync(ctx: &EmailSyncCtx<'_>) -> anyhow::Result<Strin
     // guarantees a crash before this point re-scans the same window rather than
     // swallowing the updates.
     let seeded: HashSet<String> = seeds.iter().map(|(id, _)| id.clone()).collect();
-    persist_keyword_scan(state, username, state_collection_id, &keyword_scan, &seeded).await;
+    if let Err(e) = persist_keyword_scan(
+        state,
+        username,
+        state_collection_id,
+        &keyword_scan,
+        &seeded,
+    )
+    .await
+    {
+        tracing::warn!(
+            error = %e,
+            user = %username,
+            collection_id,
+            "Failed to persist email keyword baseline after token commit; refusing to acknowledge"
+        );
+        return Err(anyhow::anyhow!(
+            "failed to persist email keyword baseline for collection {state_collection_id}"
+        ));
+    }
 
     tracing::info!(
         user = %username,
@@ -9412,8 +9469,15 @@ pub async fn handle(
     if req.command.is_empty() {
         return bad_request_response(&request_id, "Cannot determine EAS command");
     }
-    if let Err(e) = validate_payload(&req.command, &xml) {
-        return bad_request_response(&request_id, e);
+    // GetHierarchy has no request body; GetAttachment can supply AttachmentName
+    // in the URI without XML. Allow an empty body for these commands only,
+    // preserving authentication/policy checks and validation of nonempty bodies.
+    let legacy_bodyless = req.command.eq_ignore_ascii_case("GetHierarchy")
+        || req.command.eq_ignore_ascii_case("GetAttachment");
+    if !legacy_bodyless {
+        if let Err(e) = validate_payload(&req.command, &xml) {
+            return bad_request_response(&request_id, e);
+        }
     }
     let device_id = req
         .device_id

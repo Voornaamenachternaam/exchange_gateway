@@ -14,6 +14,7 @@
 //! folder-map row only needs to persist the DisplayName/Type/ParentId the EAS
 //! wire carries.
 
+use percent_encoding::percent_decode_str;
 use secrecy::{ExposeSecret, SecretString};
 use std::sync::Arc;
 use subtle::ConstantTimeEq;
@@ -1019,10 +1020,16 @@ pub(crate) async fn reconcile_deferred_folder_prunes(
                 // membership check actually matches; otherwise every live
                 // CalDAV folder is treated as deleted and its mapping pruned.
                 .map(|href| {
-                    reqwest::Url::parse(&href)
+                    let path = reqwest::Url::parse(&href)
                         .ok()
                         .map(|u| u.path().trim_end_matches('/').to_string())
-                        .unwrap_or_else(|| href.trim_end_matches('/').to_string())
+                        .unwrap_or_else(|| href.trim_end_matches('/').to_string());
+                    // Percent-decode so a stored href with raw characters (e.g.
+                    // `@`, space) matches the server's escaped form (`%40`,
+                    // `%20`).
+                    percent_decode_str(&path)
+                        .decode_utf8()
+                        .unwrap_or_else(|_| path)
                 })
                 .collect(),
             Err(e) => {
@@ -2314,7 +2321,10 @@ mod tests {
     #[tokio::test]
     async fn create_calendar_folder_405_with_existing_mapping_is_conflict() {
         let (state, _, _) = spawn_backend_stub_full(None, 405).await;
-        // Pre-seed a folder that already owns the target href.
+        // Pre-seed a folder that already owns the target href — but with a
+        // different display name and `backend_kind: "jmap"` so neither the
+        // duplicate-name check nor the caldav-collision check fires first.
+        // The test must reach the 405 mapping branch.
         state
             .storage
             .upsert_folder_journaled(
@@ -2322,9 +2332,9 @@ mod tests {
                     owner: "u@example.com",
                     server_id: "/cal/u@example.com/Taken/",
                     parent_id: "0",
-                    display_name: "Taken",
+                    display_name: "TakenFolder",
                     folder_type: 13,
-                    backend_kind: "caldav",
+                    backend_kind: "jmap",
                     backend_id: "/cal/u@example.com/Taken/",
                 },
                 "folder-add",

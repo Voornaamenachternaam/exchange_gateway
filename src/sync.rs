@@ -2415,7 +2415,10 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
             // moved past it) and the client would keep the deleted
             // meeting indefinitely. The row is dropped by the delete fill
             // only once its `<Delete>` command has been emitted.
-            let _ = storage.add_delete_tombstone(params.owner, server_id).await;
+            // Propagate a failed tombstone write before advancing the key: if the
+        // tombstone is not durable, the delete would be lost on retry and the
+        // client would keep the deleted event forever.
+        storage.add_delete_tombstone(params.owner, server_id).await?;
         }
     }
 
@@ -5183,14 +5186,19 @@ mod tests {
         let xml = run_calendar_sync(&state, "key-1").await;
         assert!(xml.contains("uid-e1"), "the delta must deliver e1:\n{xml}");
 
-        // The response's SyncKey is persisted (a different key from key-1).
+        // The response's SyncKey is persisted. It must equal the SyncKey the
+        // response actually rendered to the client — not just any different key.
         let (stored_key, _) = state
             .storage
             .get_sync_key(owner, "calendar")
             .await
             .unwrap()
             .expect("sync key persisted");
-        assert_ne!(stored_key, "key-1", "a completed sync rotates the SyncKey");
+        let response_key = sync_key_of(&xml);
+        assert_eq!(
+            stored_key, response_key,
+            "persisted key {stored_key} must equal the rendered response key {response_key}"
+        );
 
         // And the scope ledger records the delivered event with its ETag.
         let href = "jmap://calendar/acct/e1";
