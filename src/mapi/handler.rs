@@ -74,7 +74,7 @@ use crate::mapi::rops::{
     RopGetPropertyIdsFromNamesRequest, RopGetReceiveFolderRequest,
     RopGetRulesPermissionsTableRequest, RopGetSearchCriteriaRequest, RopGetSearchCriteriaSuccess,
     RopModifyPermissionsRequest, RopModifyRecipientsRequest, RopModifyRulesRequest,
-    RopMoveFolderRequest, RopCopyFolderRequest, RopMoveFolderSuccess, RopCopyFolderSuccess,
+    RopMoveFolderRequest, RopCopyFolderRequest,
     RopNotifyResponse, RopOpenEmbeddedMessageRequest, RopPendingResponse,
     RopQueryNamedPropertiesRequest, RopQueryNamedPropertiesSuccess, RopQueryPositionRequest,
     RopQueryPositionResponse, RopReloadCachedInformationRequest, RopResetTableRequest,
@@ -5420,20 +5420,24 @@ async fn execute_one_rop(
                             .await
                             .ok()
                             .and_then(|mbs| {
-                                mbs.iter()
+                                mbs.mailboxes
+                                    .iter()
                                     .find(|m| m.id.as_deref() == Some(src.as_str()))
                                     .and_then(|m| m.name.as_deref().map(str::to_owned))
                             })
                             .unwrap_or_else(|| "Untitled Folder".to_string());
                         let dst_name = format!("{} (copy)", src_name);
-                        match jc.create_mailbox(
-                            account_id,
-                            &dst_name,
-                            dest.as_deref().unwrap_or(src),
-                            username,
-                            pw,
-                        ) {
-                            Ok(()) => {
+                        match jc
+                            .create_mailbox(
+                                &account_id,
+                                &dst_name,
+                                Some(dest.as_str()),
+                                username,
+                                pw,
+                            )
+                            .await
+                        {
+                            Ok(_) => {
                                 outcome = RopErrorCode::Success;
                                 partial = 1;
                             }
@@ -5442,7 +5446,7 @@ async fn execute_one_rop(
                                     error = %e,
                                     "RopCopyFolder: destination mailbox creation failed"
                                 );
-                                outcome = RopErrorCode::ServerError;
+                                outcome = RopErrorCode::DiskError;
                                 partial = 0;
                             }
                         }

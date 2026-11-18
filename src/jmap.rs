@@ -5748,7 +5748,7 @@ impl JmapClient {
         // raw characters (e.g. `@`, space) while Stalwart reports them
         // percent-encoded (`%40`, `%20`). Without decoding, `h == wanted`
         // fails and the sync path cannot resolve the folder.
-        let wanted_decoded = percent_decode_str(wanted).decode_utf8().unwrap_or_else(|_| wanted.to_string());
+        let wanted_decoded = percent_decode_str(wanted).decode_utf8_lossy().into_owned();
         let result = self.query_calendars(username, password).await?;
         Ok(result
             .calendars
@@ -5758,8 +5758,8 @@ impl JmapClient {
                     .as_deref()
                     .map(|h| {
                         let h = h.trim_end_matches('/');
-                        let h_decoded = percent_decode_str(h).decode_utf8().unwrap_or_else(|_| h.to_string());
-                        h_decoded == wanted_decoded || h_decoded.ends_with(wanted_decoded)
+                        let h_decoded = percent_decode_str(h).decode_utf8_lossy().into_owned();
+                        h_decoded == wanted_decoded || h_decoded.ends_with(&wanted_decoded)
                     })
                     .unwrap_or(false)
             })

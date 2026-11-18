@@ -5660,8 +5660,23 @@ async fn handle_sync_email_folder_items(
     // snapshot, so writing the snapshot would force a duplicate flag `<Change>`
     // on the next delta.
     if replay_ok {
-        crate::eas::persist_keyword_scan(state, owner, &folder_id, &keyword_scan, &seeded_ids)
-            .await;
+        match crate::eas::persist_keyword_scan(state, owner, &folder_id, &keyword_scan, &seeded_ids).await {
+            Ok(()) => {}
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    owner = %owner,
+                    folder_id = %folder_id,
+                    "persist_keyword_scan failed on SyncFolderItems replay"
+                );
+                return operation_error_response(
+                    &EwsAction::SyncFolderItems,
+                    "ErrorServerBusy",
+                    "Failed to persist keyword baseline",
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                );
+            }
+        }
     }
 
     let response = format!(

@@ -1043,8 +1043,8 @@ pub(crate) async fn reconcile_deferred_folder_prunes(
                 // `@`, space) matches the server's escaped form (`%40`,
                 // `%20`).
                 percent_decode_str(&path)
-                    .decode_utf8()
-                    .unwrap_or_else(|_| path)
+                    .decode_utf8_lossy()
+                    .into_owned()
             })
             .collect();
         // `ambiguous` hrefs were seen in the multistatus but their
@@ -1059,8 +1059,8 @@ pub(crate) async fn reconcile_deferred_folder_prunes(
                     .map(|u| u.path().trim_end_matches('/').to_string())
                     .unwrap_or_else(|| href.trim_end_matches('/').to_string());
                 percent_decode_str(&path)
-                    .decode_utf8()
-                    .unwrap_or_else(|_| path)
+                    .decode_utf8_lossy()
+                    .into_owned()
             })
             .collect();
         // Only prune intents whose hrefs are absent from the confirmed live set
