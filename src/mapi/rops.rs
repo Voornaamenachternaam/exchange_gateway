@@ -759,21 +759,21 @@ impl RopGetPropertyIdsFromNamesSuccess {
     }
 }
 
-// ---------- Move/CopyFolder (0x35 / 0x36) ------------------------------------
+// ---------- MoveFolder (0x35) -------------------------------------------
 
-/// `RopMoveFolder` / `RopCopyFolder` request, MS-OXCROPS §2.2.4.5.1 /
-/// §2.2.4.6.1. After the dispatcher consumed the `RopId`, the body is:
+/// `RopMoveFolder` request, MS-OXCROPS §2.2.4.5.1. After the dispatcher
+/// consumed the `RopId`, the body is:
 ///   `LogonId · SourceHandleIndex · DestHandleIndex · WantCopy(1) ·
-///    FolderId(8 LE) · [DestFolderId(8 LE) if recursive]`.
+///    FolderId(8 LE)`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct RopMoveCopyFolderRequest {
+pub struct RopMoveFolderRequest {
     pub logon_id: u8,
     pub source_handle_index: u8,
     pub dest_handle_index: u8,
     pub want_copy: u8,
     pub folder_id: u64,
 }
-impl RopMoveCopyFolderRequest {
+impl RopMoveFolderRequest {
     pub fn decode(buf: &mut Buf<'_>) -> Result<Self, DecodeError> {
         let logon_id = buf.take_u8()?;
         let source_handle_index = buf.take_u8()?;
@@ -790,17 +790,70 @@ impl RopMoveCopyFolderRequest {
     }
 }
 
-/// `RopMoveFolder` / `RopCopyFolder` success response
+/// `RopMoveFolder` success response
 /// (MS-OXCROPS §2.2.4.5.2 is a sectionless envelope):
 ///   `RopId · SourceHandleIndex · ReturnValue(4 LE) · PartialCompletion(1)`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct RopMoveCopyFolderSuccess {
+pub struct RopMoveFolderSuccess {
     pub rop_id: RopId,
     pub source_handle_index: u8,
     pub return_value: RopErrorCode,
     pub partial_completion: u8,
 }
-impl RopMoveCopyFolderSuccess {
+impl RopMoveFolderSuccess {
+    pub fn encode(&self, out: &mut Vec<u8>) {
+        out.push(self.rop_id.to_u8());
+        out.push(self.source_handle_index);
+        out.extend(&self.return_value.to_u32().to_le_bytes());
+        out.push(self.partial_completion);
+    }
+}
+
+// ---------- CopyFolder (0x36) --------------------------------------------
+
+/// `RopCopyFolder` request, MS-OXCROPS §2.2.4.6.1. After the dispatcher
+/// consumed the `RopId`, the body is:
+///   `LogonId · SourceHandleIndex · DestHandleIndex · WantCopy(1) ·
+///    FolderId(8 LE) · DestFolderId(8 LE)`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RopCopyFolderRequest {
+    pub logon_id: u8,
+    pub source_handle_index: u8,
+    pub dest_handle_index: u8,
+    pub want_copy: u8,
+    pub folder_id: u64,
+    pub dest_folder_id: u64,
+}
+impl RopCopyFolderRequest {
+    pub fn decode(buf: &mut Buf<'_>) -> Result<Self, DecodeError> {
+        let logon_id = buf.take_u8()?;
+        let source_handle_index = buf.take_u8()?;
+        let dest_handle_index = buf.take_u8()?;
+        let want_copy = buf.take_u8()?;
+        let folder_id = buf.take_u64_le()?;
+        let dest_folder_id = buf.take_u64_le()?;
+        Ok(Self {
+            logon_id,
+            source_handle_index,
+            dest_handle_index,
+            want_copy,
+            folder_id,
+            dest_folder_id,
+        })
+    }
+}
+
+/// `RopCopyFolder` success response
+/// (MS-OXCROPS §2.2.4.6.2 is a sectionless envelope):
+///   `RopId · SourceHandleIndex · ReturnValue(4 LE) · PartialCompletion(1)`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RopCopyFolderSuccess {
+    pub rop_id: RopId,
+    pub source_handle_index: u8,
+    pub return_value: RopErrorCode,
+    pub partial_completion: u8,
+}
+impl RopCopyFolderSuccess {
     pub fn encode(&self, out: &mut Vec<u8>) {
         out.push(self.rop_id.to_u8());
         out.push(self.source_handle_index);

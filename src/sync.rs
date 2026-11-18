@@ -432,9 +432,12 @@ pub async fn apply_client_sync_mutations(
                     });
                     continue;
                 };
-                let (existing_ics, existing_etag) = caldav
-                    .get_event(&existing.resource_href, username, password)
-                    .await?;
+                let caldav_href = existing
+                    .caldav_href
+                    .as_deref()
+                    .ok_or_else(|| anyhow!("caldav event has no caldav_href"))?;
+                let (existing_ics, existing_etag) =
+                    caldav.get_event(caldav_href, username, password).await?;
                 let mut item = parse_ics_event(&existing_ics)
                     .ok_or_else(|| anyhow!("failed parsing existing calendar item"))?;
                 if let Some(v) = patch.uid {
@@ -527,8 +530,8 @@ pub async fn apply_client_sync_mutations(
                 let ics = render_ics(&item);
                 match caldav
                     .put_event(
-                        &existing.resource_href,
-                        Some(&existing.resource_href),
+                        caldav_href,
+                        Some(caldav_href),
                         &ics,
                         username,
                         password,
@@ -541,7 +544,7 @@ pub async fn apply_client_sync_mutations(
                             .storage
                             .upsert_item_map(
                                 owner,
-                                &existing.resource_href,
+                                caldav_href,
                                 &resource_href,
                                 &server_id,
                                 &item.uid,
@@ -625,13 +628,12 @@ pub async fn apply_client_sync_mutations(
                     });
                     continue;
                 };
+                let caldav_href = existing
+                    .caldav_href
+                    .as_deref()
+                    .ok_or_else(|| anyhow!("caldav event has no caldav_href"))?;
                 match caldav
-                    .delete_event(
-                        &existing.resource_href,
-                        username,
-                        password,
-                        existing.etag.as_deref(),
-                    )
+                    .delete_event(caldav_href, username, password, existing.etag.as_deref())
                     .await
                 {
                     Ok(()) => {

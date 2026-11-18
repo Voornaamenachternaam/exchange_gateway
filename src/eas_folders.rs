@@ -14,6 +14,7 @@
 //! folder-map row only needs to persist the DisplayName/Type/ParentId the EAS
 //! wire carries.
 
+use crate::storage::normalize_caldav_path;
 use percent_encoding::percent_decode_str;
 use secrecy::{ExposeSecret, SecretString};
 use std::sync::Arc;
@@ -999,7 +1000,10 @@ pub(crate) async fn reconcile_deferred_folder_prunes(
     // collection whose `DELETE` failed while the collection remained live must
     // keep its mapping — pruning it would make EAS stop advertising a folder
     // whose events still exist. Only collections confirmed absent from CalDAV
-    // are pruned and journaled.
+    // are pruned and journaled. An href seen in the PROPFIND multistatus but
+    // whose resourcetype could not be confirmed (per-property failure) is
+    // *ambiguous*: it must not be treated as proof of absence, and its intent
+    // is retained.
     if !caldav_pending.is_empty() {
         let Ok(caldav) = CaldavClient::new(&state.cfg) else {
             tracing::warn!(
@@ -1008,30 +1012,11 @@ pub(crate) async fn reconcile_deferred_folder_prunes(
             );
             return;
         };
-        let live: std::collections::HashSet<String> = match caldav
-            .find_user_calendars(owner, password.expose_secret())
+        let (confirmed, all_seen) = match caldav
+            .find_user_calendars_with_ambiguity(owner, password.expose_secret())
             .await
         {
-            Ok(hrefs) => hrefs
-                .into_iter()
-                // `find_user_calendars` expands PROPFIND hrefs to absolute URLs,
-                // but `folder_map.backend_id` stores path-only CalDAV hrefs.
-                // Normalize both sides to the path-only form so the live-set
-                // membership check actually matches; otherwise every live
-                // CalDAV folder is treated as deleted and its mapping pruned.
-                .map(|href| {
-                    let path = reqwest::Url::parse(&href)
-                        .ok()
-                        .map(|u| u.path().trim_end_matches('/').to_string())
-                        .unwrap_or_else(|| href.trim_end_matches('/').to_string());
-                    // Percent-decode so a stored href with raw characters (e.g.
-                    // `@`, space) matches the server's escaped form (`%40`,
-                    // `%20`).
-                    percent_decode_str(&path)
-                        .decode_utf8()
-                        .unwrap_or_else(|_| path)
-                })
-                .collect(),
+            Ok((c, a)) => (c, a),
             Err(e) => {
                 tracing::warn!(
                     error = %e,
@@ -1041,9 +1026,55 @@ pub(crate) async fn reconcile_deferred_folder_prunes(
                 return;
             }
         };
+        // `confirmed` hrefs are calendars the server authoritatively reported
+        // as calendar collections. Build the live set from confirmed only.
+        let live: std::collections::HashSet<String> = confirmed
+            .into_iter()
+            // `find_user_calendars_with_ambiguity` expands PROPFIND hrefs to
+            // absolute URLs, but `folder_map.backend_id` stores path-only
+            // CalDAV hrefs. Normalize both sides to the path-only form so the
+            // live-set membership check actually matches.
+            .map(|href| {
+                let path = reqwest::Url::parse(&href)
+                    .ok()
+                    .map(|u| u.path().trim_end_matches('/').to_string())
+                    .unwrap_or_else(|| href.trim_end_matches('/').to_string());
+                // Percent-decode so a stored href with raw characters (e.g.
+                // `@`, space) matches the server's escaped form (`%40`,
+                // `%20`).
+                percent_decode_str(&path)
+                    .decode_utf8()
+                    .unwrap_or_else(|_| path)
+            })
+            .collect();
+        // `ambiguous` hrefs were seen in the multistatus but their
+        // resourcetype could not be confirmed. Their absence from `confirmed`
+        // must NOT be treated as proof they are gone; retain their intents.
+        let ambiguous: std::collections::HashSet<String> = all_seen
+            .into_iter()
+            .filter(|h| !live.contains(h))
+            .map(|href| {
+                let path = reqwest::Url::parse(&href)
+                    .ok()
+                    .map(|u| u.path().trim_end_matches('/').to_string())
+                    .unwrap_or_else(|| href.trim_end_matches('/').to_string());
+                percent_decode_str(&path)
+                    .decode_utf8()
+                    .unwrap_or_else(|_| path)
+            })
+            .collect();
+        // Only prune intents whose hrefs are absent from the confirmed live set
+        // AND not ambiguous (seen in the multistatus but unconfirmed).
+        // Ambiguous hrefs retain their intent; a follow-up reconciliation can
+        // retry once the backend returns authoritative resourcetype data.
+        let prunable: Vec<String> = caldav_pending
+            .iter()
+            .filter(|id| !ambiguous.contains(&normalize_caldav_path(id)))
+            .cloned()
+            .collect();
         if let Err(e) = state
             .storage
-            .reconcile_pending_folder_prunes(owner, &caldav_pending, &live)
+            .reconcile_pending_folder_prunes(owner, &prunable, &live)
             .await
         {
             tracing::warn!(

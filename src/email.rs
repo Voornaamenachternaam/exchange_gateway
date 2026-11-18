@@ -2320,14 +2320,18 @@ pub async fn apply_eas_email_mutations(
                             // A transient backend lookup failure must NOT be
                             // reported as "Object not found" (Status 8): the
                             // message may still exist in the source folder.
-                            // Return a retryable failure so the client retries.
+                            // Report Status 6 and continue the command loop.
                             Err(_) => {
                                 tracing::warn!(
                                     target: "eas",
                                     server_id = %server_id,
                                     "Email membership lookup failed; reporting retryable Status 6"
                                 );
-                                "6"
+                                results.push(EasEmailMutationResult::Delete {
+                                    server_id,
+                                    status: "6",
+                                });
+                                continue;
                             }
                         };
                         if !in_source_mailbox {

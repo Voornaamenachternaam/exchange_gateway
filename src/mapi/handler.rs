@@ -74,7 +74,8 @@ use crate::mapi::rops::{
     RopGetPropertyIdsFromNamesRequest, RopGetReceiveFolderRequest,
     RopGetRulesPermissionsTableRequest, RopGetSearchCriteriaRequest, RopGetSearchCriteriaSuccess,
     RopModifyPermissionsRequest, RopModifyRecipientsRequest, RopModifyRulesRequest,
-    RopMoveCopyFolderRequest, RopNotifyResponse, RopOpenEmbeddedMessageRequest, RopPendingResponse,
+    RopMoveFolderRequest, RopCopyFolderRequest, RopMoveFolderSuccess, RopCopyFolderSuccess,
+    RopNotifyResponse, RopOpenEmbeddedMessageRequest, RopPendingResponse,
     RopQueryNamedPropertiesRequest, RopQueryNamedPropertiesSuccess, RopQueryPositionRequest,
     RopQueryPositionResponse, RopReloadCachedInformationRequest, RopResetTableRequest,
     RopResetTableResponse, RopRestrictRequest, RopRestrictResponse, RopSeekRowBookmarkRequest,
@@ -5088,14 +5089,11 @@ async fn execute_one_rop(
             }
             .encode(out);
         }
-        RopId::ROP_MOVE_FOLDER | RopId::ROP_COPY_FOLDER => {
-            // MS-OXCROPS §2.2.4.5.1 / §2.2.4.6.1: folder move/copy. `source`
-            // is the folder handle to move/copy; `dest` is the destination
-            // parent folder. Move => Mailbox/set update parentId; Copy =>
-            // create an empty mailbox under the destination parent then
-            // re-parent-by-copy every message. The folder_id field is echoed
-            // verbatim but the authoritative backend id is the live handle.
-            let req = RopMoveCopyFolderRequest::decode(cur)?;
+        RopId::ROP_MOVE_FOLDER => {
+            // MS-OXCROPS §2.2.4.5.1: folder move. `source` is the folder
+            // handle to move; `dest` is the destination parent folder.
+            // Move => Mailbox/set update parentId.
+            let req = RopMoveFolderRequest::decode(cur)?;
             let src_backend = sessions
                 .with_handle(session_id, req.source_handle_index, |h| match h {
                     Handle::Folder {
@@ -5355,7 +5353,103 @@ async fn execute_one_rop(
                     }
                 }
             }
-            crate::mapi::rops::RopMoveCopyFolderSuccess {
+            crate::mapi::rops::RopMoveFolderSuccess {
+                rop_id,
+                source_handle_index: req.source_handle_index,
+                return_value: outcome,
+                partial_completion: partial,
+            }
+            .encode(out);
+        }
+        RopId::ROP_COPY_FOLDER => {
+            // MS-OXCROPS §2.2.4.6.1: folder copy. `source` is the folder
+            // handle to copy; `dest` is the destination parent folder; the
+            // wire body carries an additional `DestFolderId` after `FolderId`.
+            let req = RopCopyFolderRequest::decode(cur)?;
+            let src_backend = sessions
+                .with_handle(session_id, req.source_handle_index, |h| match h {
+                    Handle::Folder {
+                        backend_id,
+                        kind: FolderKind::Mail,
+                    } => backend_id.clone(),
+                    _ => String::new(),
+                })
+                .unwrap_or_default();
+            let dest_backend = sessions
+                .with_handle(session_id, req.dest_handle_index, |h| match h {
+                    Handle::Folder {
+                        backend_id,
+                        kind: FolderKind::Mail,
+                    } => backend_id.clone(),
+                    _ => String::new(),
+                })
+                .unwrap_or_default();
+            let outcome: RopErrorCode;
+            let partial: u8;
+            match (jmap, password, &src_backend, &dest_backend) {
+                (_, _, s, d) if s.is_empty() || d.is_empty() => {
+                    // A non-mail (or missing) endpoint: structural NoSupport.
+                    outcome = RopErrorCode::NoSupport;
+                    partial = 0;
+                }
+                (None, _, _, _) => {
+                    outcome = RopErrorCode::NotFound;
+                    partial = 0;
+                }
+                (_, None, _, _) => {
+                    outcome = RopErrorCode::AccessDenied;
+                    partial = 0;
+                }
+                (Some(jc), Some(pw), src, dest) => {
+                    let account_id = jc
+                        .get_account_id(username, pw)
+                        .await
+                        .ok()
+                        .unwrap_or_default();
+                    if account_id.is_empty() {
+                        outcome = RopErrorCode::NotFound;
+                        partial = 0;
+                    } else {
+                        // Copy: create the destination mailbox under the
+                        // destination parent. The new mailbox is named after
+                        // the source folder's display name (with a "(copy)"
+                        // suffix) so Outlook's folder tree renders a
+                        // meaningful name.
+                        let src_name = jc
+                            .query_mailboxes(username, pw)
+                            .await
+                            .ok()
+                            .and_then(|mbs| {
+                                mbs.iter()
+                                    .find(|m| m.id.as_deref() == Some(src.as_str()))
+                                    .and_then(|m| m.name.as_deref().map(str::to_owned))
+                            })
+                            .unwrap_or_else(|| "Untitled Folder".to_string());
+                        let dst_name = format!("{} (copy)", src_name);
+                        match jc.create_mailbox(
+                            account_id,
+                            &dst_name,
+                            dest.as_deref().unwrap_or(src),
+                            username,
+                            pw,
+                        ) {
+                            Ok(()) => {
+                                outcome = RopErrorCode::Success;
+                                partial = 1;
+                            }
+                            Err(e) => {
+                                tracing::warn!(
+                                    error = %e,
+                                    "RopCopyFolder: destination mailbox creation failed"
+                                );
+                                outcome = RopErrorCode::ServerError;
+                                partial = 0;
+                            }
+                        }
+                    }
+                }
+            }
+            crate::mapi::rops::RopCopyFolderSuccess {
                 rop_id,
                 source_handle_index: req.source_handle_index,
                 return_value: outcome,

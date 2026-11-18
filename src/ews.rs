@@ -10727,10 +10727,12 @@ async fn handle_mark_as_junk(state: &Arc<AppState>, auth: &AuthContext, body: &s
         }
     };
 
-    // Move each email, collecting ids that actually moved. A non-email id
-    // (e.g. a calendar/contact id) is silently skipped: MarkAsJunk applies to
-    // messages and the client should never send those ids here in practice.
+    // Move each email, collecting ids that actually moved and any failures.
+    // A non-email id (e.g. a calendar/contact id) is silently skipped:
+    // MarkAsJunk applies to messages and the client should never send those
+    // ids here in practice.
     let mut moved_xml = String::new();
+    let mut failed_items = Vec::new();
     for item_id in &item_ids {
         if !crate::email::is_email_server_id(item_id) {
             continue;
@@ -10755,20 +10757,42 @@ async fn handle_mark_as_junk(state: &Arc<AppState>, auth: &AuthContext, body: &s
             }
             Err(e) => {
                 tracing::warn!(error = %e, item_id = %item_id, "MarkAsJunk: failed to move email");
+                failed_items.push(item_id);
             }
         }
     }
 
-    let inner = format!(
-        r#"<m:MarkAsJunkResponse xmlns:m="{}" xmlns:t="{}">
-<m:ResponseMessages>
-<m:MarkAsJunkResponseMessage ResponseClass="Success">
+    // Build per-item responses: successful moves under MovedItemIds, failures
+    // as individual ErrorItemNotFound items so the client does not see a
+    // spurious overall success when some items could not be moved.
+    let mut resp_messages = String::new();
+    if !moved_xml.is_empty() {
+        resp_messages.push_str(&format!(
+            r#"<m:MarkAsJunkResponseMessage ResponseClass="Success">
 <m:ResponseCode>NoError</m:ResponseCode>
 <m:MovedItemIds>{}</m:MovedItemIds>
-</m:MarkAsJunkResponseMessage>
-</m:ResponseMessages>
+</m:MarkAsJunkResponseMessage>"#,
+            moved_xml
+        ));
+    }
+    for item_id in &failed_items {
+        resp_messages.push_str(&format!(
+            r#"<m:MarkAsJunkResponseMessage ResponseClass="Error">
+<m:MessageText>The item could not be moved.</m:MessageText>
+<m:ResponseCode>ErrorItemNotFound</m:ResponseCode>
+<m:DescriptiveLinkKey>0</m:DescriptiveLinkKey>
+<m:ItemId Id="{}" ChangeKey="{}" />
+</m:MarkAsJunkResponseMessage>"#,
+            xml_escape(item_id),
+            xml_escape(item_id)
+        ));
+    }
+
+    let inner = format!(
+        r#"<m:MarkAsJunkResponse xmlns:m="{}" xmlns:t="{}">
+<m:ResponseMessages>{}</m:ResponseMessages>
 </m:MarkAsJunkResponse>"#,
-        EWS_MSG_NS, EWS_TYPE_NS, moved_xml
+        EWS_MSG_NS, EWS_TYPE_NS, resp_messages
     );
     soap_ok(inner)
 }

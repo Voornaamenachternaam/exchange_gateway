@@ -152,6 +152,24 @@ impl CaldavClient {
     }
 
     pub async fn find_user_calendars(&self, username: &str, password: &str) -> Result<Vec<String>> {
+        let (confirmed, _) = self
+            .find_user_calendars_with_ambiguity(username, password)
+            .await?;
+        Ok(confirmed)
+    }
+
+    /// Like `find_user_calendars`, but also returns every href seen in the
+    /// multistatus regardless of whether its resourcetype was confirmed.
+    ///
+    /// Callers that need to establish *absence* (e.g. deferred folder pruning)
+    /// must treat an href present in `all_seen` but absent from `confirmed` as
+    /// confirmed absent, and an href absent from *both* as ambiguous — retain
+    /// the intent rather than pruning.
+    pub async fn find_user_calendars_with_ambiguity(
+        &self,
+        username: &str,
+        password: &str,
+    ) -> Result<(Vec<String>, Vec<String>)> {
         let home_url = format!("{}/cal/{}/", self.base.trim_end_matches('/'), username);
 
         let propfind_body = r#"<?xml version="1.0" encoding="utf-8"?>
@@ -211,8 +229,9 @@ impl CaldavClient {
             }
         };
 
-        let hrefs = parse_calendar_collection_hrefs(&body, &home_url);
-        if hrefs.is_empty() {
+        let (confirmed, all_seen) = parse_calendar_collection_hrefs(&body, &home_url);
+
+        if confirmed.is_empty() {
             tracing::error!(
                 "caldav: PROPFIND on {} returned no calendar collections. Check Stalwart configuration and user permissions.",
                 home_url
@@ -221,11 +240,11 @@ impl CaldavClient {
         }
 
         tracing::debug!(
-            "caldav: discovered {} calendar collection(s) for {}",
-            hrefs.len(),
+            "caldav: discovered {} confirmed calendar collection(s) for {}",
+            confirmed.len(),
             username
         );
-        Ok(hrefs)
+        Ok((confirmed, all_seen))
     }
 
     /// Create (or confirm the existence of) a calendar collection below the
@@ -1123,12 +1142,22 @@ struct Propstat {
     prop: Prop,
 }
 
-fn parse_calendar_collection_hrefs(xml_body: &str, home_url: &str) -> Vec<String> {
+/// Returns `(confirmed_calendars, all_seen_hrefs)`.
+///
+/// `confirmed_calendars` are hrefs with authoritative evidence they are
+/// calendar collections (a propstat with `resourcetype/calendar` and a
+/// successful status). `all_seen_hrefs` includes every href returned by the
+/// multistatus, even those whose resourcetype could not be determined due to
+/// per-property failures. Callers that need to establish absence (e.g.
+/// deferred folder pruning) must treat an href present in `all_seen_hrefs` but
+/// absent from `confirmed_calendars` as *confirmed absent*, and an href absent
+/// from *both* as *ambiguous* (retain the intent).
+fn parse_calendar_collection_hrefs(xml_body: &str, home_url: &str) -> (Vec<String>, Vec<String>) {
     let multistatus: Multistatus = match quick_xml::de::from_str(xml_body) {
         Ok(m) => m,
         Err(e) => {
             tracing::warn!("caldav: XML parse error: {}", e);
-            return Vec::new();
+            return (Vec::new(), Vec::new());
         }
     };
 
@@ -1144,29 +1173,36 @@ fn parse_calendar_collection_hrefs(xml_body: &str, home_url: &str) -> Vec<String
         .map(|u| u.path().trim_end_matches('/').to_string())
         .unwrap_or_else(|| home_url.trim_end_matches('/').to_string());
 
-    multistatus
-        .responses
-        .into_iter()
-        .filter(|r| {
-            r.propstats
-                .iter()
-                .any(|ps| ps.prop.resourcetype.calendar.is_some())
-        })
-        .map(|r| {
-            home_url_parsed
-                .as_ref()
-                .and_then(|u| u.join(&r.href).ok())
-                .map(|u| u.to_string())
-                .unwrap_or(r.href)
-        })
-        .filter(|href| {
-            let path = reqwest::Url::parse(href)
-                .ok()
-                .map(|u| u.path().trim_end_matches('/').to_string())
-                .unwrap_or_else(|| href.trim_end_matches('/').to_string());
-            path != home_path
-        })
-        .collect()
+    let mut confirmed: Vec<String> = Vec::new();
+    let mut all_seen: Vec<String> = Vec::new();
+
+    for r in multistatus.responses {
+        let href = home_url_parsed
+            .as_ref()
+            .and_then(|u| u.join(&r.href).ok())
+            .map(|u| u.to_string())
+            .unwrap_or(r.href);
+
+        let path = reqwest::Url::parse(&href)
+            .ok()
+            .map(|u| u.path().trim_end_matches('/').to_string())
+            .unwrap_or_else(|| href.trim_end_matches('/').to_string());
+        if path == home_path {
+            continue;
+        }
+
+        all_seen.push(href.clone());
+
+        let is_calendar = r
+            .propstats
+            .iter()
+            .any(|ps| ps.prop.resourcetype.calendar.is_some());
+        if is_calendar {
+            confirmed.push(href);
+        }
+    }
+
+    (confirmed, all_seen)
 }
 
 /// Parse the D:getetag value from a WebDAV PROPFIND multistatus response.

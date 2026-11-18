@@ -336,7 +336,7 @@ const PATH_ENCODE_SET: AsciiSet = CONTROLS
     .add(b'>')
     .add(b'?');
 
-fn normalize_caldav_path(path: &str) -> String {
+pub(crate) fn normalize_caldav_path(path: &str) -> String {
     // Trim trailing slashes to match the live-set normalization
     // performed by `find_user_calendars` callers (see eas_folders.rs),
     // then percent-encode to the same escaped form so candidates whose

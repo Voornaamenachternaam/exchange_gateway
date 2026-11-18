@@ -4450,8 +4450,11 @@ async fn handle_move_items(
                                     MoveDest::Mailbox(row.backend_id)
                                 }
                                 Ok(_) => {
+                                    // The destination folder exists but has no
+                                    // JMAP mapping: the item is not movable to
+                                    // it under this collection.
                                     responses.push_str(&format!(
-                                        r#"<Response><SrcMsgId>{}</SrcMsgId><Status>6</Status></Response>"#,
+                                        r#"<Response><SrcMsgId>{}</SrcMsgId><Status>2</Status></Response>"#,
                                         xml_escape(&src_msg_id)
                                     ));
                                     continue;
@@ -8052,6 +8055,22 @@ async fn render_pending_email_op(
         // and never reaches this branch.)
         return Ok((String::new(), None));
     };
+
+    // Only render messages whose mailboxIds still include this collection's
+    // mailbox id. A message that moved out of the folder between the change
+    // report and this fetch is not an `<Add>`/`<Change>` here — the direct
+    // delta's diff filter already excluded it, and a later diff reports any
+    // relevant destruction or new arrival.
+    if let Some(delta_mailbox_id) = ctx.delta_mailbox_id {
+        let in_mailbox = email
+            .mailbox_ids
+            .as_ref()
+            .is_some_and(|ids| ids.contains_key(delta_mailbox_id));
+        if !in_mailbox {
+            return Ok((String::new(), None));
+        }
+    }
+
     let jmap_id = email.id.as_deref().unwrap_or_default();
     let server_id = crate::email::email_server_id_from_jmap_id(jmap_id);
     // Stage the flag baseline with the message's CURRENT (rendered) keywords for
