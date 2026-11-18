@@ -9126,7 +9126,7 @@ async fn handle_email_delta_sync(ctx: &EmailSyncCtx<'_>) -> anyhow::Result<Strin
             password,
             old_state: &old_state,
             collection_id,
-            owner: &owner,
+            owner,
         },
     )
     .await
@@ -9493,11 +9493,10 @@ pub async fn handle(
     // preserving authentication/policy checks and validation of nonempty bodies.
     let legacy_bodyless = req.command.eq_ignore_ascii_case("GetHierarchy")
         || req.command.eq_ignore_ascii_case("GetAttachment");
-    if !legacy_bodyless {
-        if let Err(e) = validate_payload(&req.command, &xml) {
+    if !legacy_bodyless
+        && let Err(e) = validate_payload(&req.command, &xml) {
             return bad_request_response(&request_id, e);
         }
-    }
     let device_id = req
         .device_id
         .clone()
@@ -12520,7 +12519,7 @@ mod tests {
                             "id": "m1",
                             "blobId": "b1",
                             "threadId": "t1",
-                            "mailboxIds": {"a": true},
+                            "mailboxIds": {"mbx-inbox": true},
                             "keywords": {},
                             "subject": "hello",
                             "from": [{"name": "S", "email": "s@example.com"}],

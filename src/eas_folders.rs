@@ -328,7 +328,7 @@ pub async fn create_folder(
     match state.storage.list_folders(owner).await {
         Ok(rows) => {
             if rows.iter().any(|r| {
-                r.parent_id == parent_id && r.display_name.eq_ignore_ascii_case(&display_name)
+                r.parent_id == parent_id && r.display_name.eq_ignore_ascii_case(display_name)
             }) {
                 return FolderMutationResult::status(2);
             }
