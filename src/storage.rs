@@ -1,7 +1,7 @@
 // src/storage.rs
 use percent_encoding::{AsciiSet, CONTROLS, utf8_percent_encode};
 use sqlx::{Executor, FromRow, Pool, Row, Sqlite};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::sync::Arc;
 
@@ -337,7 +337,12 @@ const PATH_ENCODE_SET: AsciiSet = CONTROLS
     .add(b'?');
 
 fn normalize_caldav_path(path: &str) -> String {
-    utf8_percent_encode(path, &PATH_ENCODE_SET).collect::<String>()
+    // Trim trailing slashes to match the live-set normalization
+    // performed by `find_user_calendars` callers (see eas_folders.rs),
+    // then percent-encode to the same escaped form so candidates whose
+    // href contains spaces or non-ASCII are not mistaken for deleted.
+    let trimmed = path.trim_end_matches('/');
+    utf8_percent_encode(trimmed, &PATH_ENCODE_SET).collect::<String>()
 }
 
 /// Parameters for recording one delivered iTIP REPLY in the duplicate-RSVP
@@ -1312,6 +1317,22 @@ impl Storage {
         .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))?;
         let Some(row) = row else { return Ok(false) };
         Ok(row.get::<Option<i64>, _>(0).unwrap_or(0) != 0)
+    }
+
+    /// Record that this calendar sync stream has been initialized, so a later
+    /// delta with an empty delivery ledger is accepted instead of forcing an
+    /// endless re-prime loop. Used by tests to set up a scoped folder whose
+    /// stream was primed before running a scripted delta.
+    pub async fn set_calendar_stream_init(&self, owner: &str, collection_id: &str) -> Result<()> {
+        sqlx::query(
+            "UPDATE sync_state SET calendar_stream_init = 1 WHERE owner = ?1 AND collection_id = ?2",
+        )
+        .bind(owner)
+        .bind(collection_id)
+        .execute(self.pool.as_ref())
+        .await
+        .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+        Ok(())
     }
 
     pub async fn add_delete_tombstone(&self, owner: &str, server_id: &str) -> Result<()> {
@@ -2317,6 +2338,29 @@ impl Storage {
         .await
         .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))?;
         Ok(row.is_some())
+    }
+
+    /// List every email id this collection has DELIVERED to the client, used by
+    /// the EAS email delta's overlap decision: an id in both `created` and
+    /// `destroyed` from `Email/queryChanges` is an in-place `<Change>` only if
+    /// this collection previously delivered it; otherwise it is a new arrival
+    /// (`<Add>`) — a message moved *in* from another folder can match both
+    /// lists without ever having been delivered here.
+    pub async fn list_email_delivered_membership(
+        &self,
+        owner: &str,
+        collection_id: &str,
+    ) -> Result<HashSet<String>> {
+        let rows = sqlx::query_scalar::<_, String>(
+            "SELECT email_id FROM email_delivered_membership
+             WHERE owner = ?1 AND collection_id = ?2",
+        )
+        .bind(owner)
+        .bind(collection_id)
+        .fetch_all(self.pool.as_ref())
+        .await
+        .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))?;
+        Ok(rows.into_iter().collect())
     }
 
     /// Drop every delivered-membership row for a collection. Called at the

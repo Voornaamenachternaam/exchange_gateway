@@ -7466,16 +7466,23 @@ const KEYWORD_SCAN_PAGE: u64 = 500;
 /// Stalwart emits when the message merely moved within the mailbox (a keyword
 /// edit re-sorts a keyword-sorted query): that is an in-place update, so it is
 /// delivered as a `<Change>`.
-fn classify_query_change_ops(added: &[String], removed: &[String]) -> Vec<PendingEmailOp> {
+fn classify_query_change_ops(
+    added: &[String],
+    removed: &[String],
+    delivered: &HashSet<String>,
+) -> Vec<PendingEmailOp> {
     let added_set: HashSet<&str> = added.iter().map(String::as_str).collect();
     let removed_set: HashSet<&str> = removed.iter().map(String::as_str).collect();
     let mut ops = Vec::with_capacity(added.len() + removed.len());
     for id in added {
-        // An id in BOTH lists did not enter the mailbox — it was already here
-        // and its position changed (a flag edit re-sorting a keyword-sorted
-        // query). Emit exactly ONE `<Change>` for it, never an Add.
         if removed_set.contains(id.as_str()) {
-            ops.push(PendingEmailOp::change(id.clone()));
+            // Overlap: an in-place update ONLY if previously delivered;
+            // otherwise this mailbox newly matches and it is an `<Add>`.
+            if delivered.contains(id.as_str()) {
+                ops.push(PendingEmailOp::change(id.clone()));
+            } else {
+                ops.push(PendingEmailOp::add(id.clone()));
+            }
         } else {
             ops.push(PendingEmailOp::add(id.clone()));
         }
@@ -7499,6 +7506,8 @@ struct AccumulateEmailChangesCtx<'a> {
     username: &'a str,
     password: &'a SecretString,
     old_state: &'a str,
+    collection_id: &'a str,
+    owner: &'a str,
 }
 
 /// Accumulate every email change between `old_state` and the backend's
@@ -7540,16 +7549,42 @@ async fn accumulate_email_changes(
         username,
         password,
         old_state,
+        collection_id,
+        owner,
     } = *ctx;
     // 1) Drain the `Email/queryChanges` chain: the membership changes
     //    (messages that entered or left this mailbox).
     let mut ops: Vec<PendingEmailOp> = Vec::new();
+    // Loaded once per delta: ids this collection has already delivered to the
+    // client, so overlap ids (in both created and destroyed) are classified as
+    // in-place `<Change>` only when previously delivered — otherwise a message
+    // newly moved into this mailbox is an `<Add>`.
+    let delivered = match state
+        .storage
+        .list_email_delivered_membership(owner, collection_id)
+        .await
+    {
+        Ok(d) => d,
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                owner = %owner,
+                collection = %collection_id,
+                "Failed to load email delivered membership; treating all overlap as new arrivals"
+            );
+            HashSet::new()
+        }
+    };
     let mut since = old_state.to_string();
     loop {
         let batch = jmap
             .query_email_changes(account_id, mailbox_id, &since, username, password, None)
             .await?;
-        ops.extend(classify_query_change_ops(&batch.created, &batch.destroyed));
+        ops.extend(classify_query_change_ops(
+            &batch.created,
+            &batch.destroyed,
+            &delivered,
+        ));
         since = batch.new_state;
         // `Email/queryChanges` reports no `hasMoreChanges` flag; the server caps
         // each page at `maxChanges` and `has_more_changes` is set when the page
@@ -7786,6 +7821,15 @@ pub(crate) async fn scan_email_keyword_changes(
             }
         };
         if entries.is_empty() {
+            // Reached the end of the mailbox. If we started from a saved
+            // position > 0, the prefix (0..saved_position) was never scanned
+            // in this delta — continue from position 0 so flag edits in the
+            // prefix are discovered this sweep instead of waiting for the
+            // next delta. The page budget bounds how far we get.
+            if position > 0 && !complete {
+                position = 0;
+                continue;
+            }
             position = 0;
             complete = true;
             break;
@@ -8137,6 +8181,7 @@ async fn apply_email_client_mutations(
         &account_id,
         username,
         password,
+        collection_id,
         collection_xml,
         deletes_as_moves,
     )
@@ -8734,7 +8779,11 @@ async fn handle_email_initial_sync(
         // an anchor is in play or a concurrent deletion shifted the tail, and
         // only the authoritative value keeps the fallback (and the progress
         // estimate) correct.
-        let last_delivered_id = result.emails.last().and_then(|e| e.id.clone());
+        // The authoritative continuation anchor is query_last_id (from the
+        // ordered Email/query ids), not the last Email/get item — the get
+        // response may reorder results, in which case emails.last() would
+        // advance the window by only one message per page. RFC 8620 §5.5.
+        let last_delivered_id = result.query_last_id.clone();
 
         // Persist the resume cursor AND the response SyncKey in ONE transaction.
         // A clipped prime acknowledges its window only when both are durable
@@ -8850,6 +8899,7 @@ async fn handle_email_delta_sync(ctx: &EmailSyncCtx<'_>) -> anyhow::Result<Strin
         delta_mailbox_id,
         ..
     } = *ctx;
+    let owner = crate::ews::owner_from_username(username);
     let new_sync_key = Uuid::new_v4().simple().to_string();
 
     // Stored (sync key, JMAP state token).
@@ -9035,6 +9085,8 @@ async fn handle_email_delta_sync(ctx: &EmailSyncCtx<'_>) -> anyhow::Result<Strin
             username,
             password,
             old_state: &old_state,
+            collection_id,
+            owner: &owner,
         },
     )
     .await
@@ -12268,30 +12320,53 @@ mod tests {
 
         // A pure arrival is an Add; a pure departure is a Delete.
         assert_eq!(
-            classify_query_change_ops(&s(&["m1"]), &[]),
+            classify_query_change_ops(&s(&["m1"]), &[], &HashSet::new()),
             vec![P::add("m1".into())]
         );
         assert_eq!(
-            classify_query_change_ops(&[], &s(&["m2"])),
+            classify_query_change_ops(&[], &s(&["m2"]), &HashSet::new()),
             vec![P::delete("m2".into())]
         );
 
-        // An id in BOTH lists is an in-place reorder (a flag edit re-sorting a
-        // keyword-sorted query): exactly one `<Change>`, never an Add — the
-        // client already has the ServerId.
+        // An id in BOTH lists with NO prior delivery: this mailbox newly
+        // matches (message moved in), so it's an `<Add>`, not a `<Change>`.
         assert_eq!(
-            classify_query_change_ops(&s(&["m3"]), &s(&["m3"])),
-            vec![P::change("m3".into())]
+            classify_query_change_ops(&s(&["m3"]), &s(&["m3"]), &HashSet::new()),
+            vec![P::add("m3".into())]
         );
         assert_eq!(
-            collapse_email_ops(classify_query_change_ops(&s(&["m3"]), &s(&["m3"]))),
+            collapse_email_ops(classify_query_change_ops(&s(&["m3"]), &s(&["m3"]), &HashSet::new())),
+            vec![P::add("m3".into())]
+        );
+
+        // An overlap id previously delivered by this collection is an in-place
+        // `<Change>`.
+        assert_eq!(
+            classify_query_change_ops(
+                &s(&["m3"]),
+                &s(&["m3"]),
+                &HashSet::from([String::from("m3")]),
+            ),
             vec![P::change("m3".into())]
         );
 
-        // Mixed page: adds then deletes, each id classified independently, and
-        // an overlapping id contributes exactly one op.
+        // Mixed page: adds then deletes, each id classified independently,
+        // an overlapping id not previously delivered is an `<Add>`.
         assert_eq!(
-            classify_query_change_ops(&s(&["a", "b"]), &s(&["b", "c"])),
+            classify_query_change_ops(&s(&["a", "b"]), &s(&["b", "c"]), &HashSet::new()),
+            vec![
+                P::add("a".into()),
+                P::add("b".into()),
+                P::delete("c".into()),
+            ]
+        );
+        // Mixed page with b previously delivered: overlap is a `<Change>`.
+        assert_eq!(
+            classify_query_change_ops(
+                &s(&["a", "b"]),
+                &s(&["b", "c"]),
+                &HashSet::from([String::from("b")]),
+            ),
             vec![
                 P::add("a".into()),
                 P::change("b".into()),

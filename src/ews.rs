@@ -6230,7 +6230,25 @@ async fn handle_sync_folder_items(
                                     None
                                 }
                             }
-                            Err(_) => None,
+                            Err(e) => {
+                                // A transient CalDAV GET failure must NOT be
+                                // treated as a deletion: the event may still
+                                // exist, and tombstoning it would permanently
+                                // remove it from the client. Return a server
+                                // error so the SyncFolderItems retry re-fetches
+                                // it.
+                                tracing::warn!(
+                                    server_id = %row.server_id,
+                                    error = %e,
+                                    "CalDAV event fetch failed; not tombstoning"
+                                );
+                                return operation_error_response(
+                                    &EwsAction::SyncFolderItems,
+                                    "ErrorServerBusy",
+                                    "CalDAV event fetch failed; retry later",
+                                    StatusCode::INTERNAL_SERVER_ERROR,
+                                );
+                            }
                         }
                     } else {
                         None

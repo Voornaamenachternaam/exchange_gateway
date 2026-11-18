@@ -4426,6 +4426,14 @@ mod tests {
             .set_sync_key(owner, &state_collection_id, "key-1", Some("s0"))
             .await
             .unwrap();
+        // Prime an empty custom-calendar stream so the guard at sync.rs:2278
+        // does not short-circuit this test with Status 3 before reaching the
+        // deletion sweep.
+        state
+            .storage
+            .set_calendar_stream_init(owner, &state_collection_id)
+            .await
+            .unwrap();
 
         let xml = run_calendar_sync_for(&state, folder_href, &state_collection_id, "key-1").await;
         assert!(

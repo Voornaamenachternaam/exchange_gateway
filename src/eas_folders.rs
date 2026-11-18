@@ -326,7 +326,7 @@ pub async fn create_folder(
     match state.storage.list_folders(owner).await {
         Ok(rows) => {
             if rows.iter().any(|r| {
-                r.parent_id == parent_id && r.display_name.eq_ignore_ascii_case(display_name)
+                r.parent_id == parent_id && r.display_name.eq_ignore_ascii_case(&display_name)
             }) {
                 return FolderMutationResult::status(2);
             }
@@ -1105,7 +1105,7 @@ pub async fn update_folder(
 ) -> FolderMutationResult {
     let server_id = server_id.trim();
     let display_name = display_name.trim();
-    if server_id.is_empty() || display_name.is_empty() {
+    if server_id.is_empty() {
         return FolderMutationResult::status(10);
     }
     // [MS-ASCMD] §2.2.1.6: updating a special system folder is Status 2.
@@ -1150,21 +1150,28 @@ pub async fn update_folder(
         parent_id.trim().to_string()
     };
 
-    // Apply the same name validation FolderCreate enforces: a rename must not
-    // adopt a reserved system-folder name, exceed the §6.13 length, or collide
-    // with a sibling's DisplayName under the same parent.
-    if is_system_folder_name(display_name) {
-        return FolderMutationResult::status(2);
-    }
-    if display_name.chars().count() > 64 {
-        return FolderMutationResult::status(10);
-    }
+    // A FolderUpdate with no explicit DisplayName keeps the folder's current
+    // mapped name (a move-only update preserves the stored name). Validation
+    // (reserved names, length, sibling collision) only applies when the client
+    // actually sends a new DisplayName — i.e. a rename request.
+    let display_name = if display_name.trim().is_empty() {
+        row.display_name.clone()
+    } else {
+        let dn = display_name.trim().to_string();
+        if is_system_folder_name(&dn) {
+            return FolderMutationResult::status(2);
+        }
+        if dn.chars().count() > 64 {
+            return FolderMutationResult::status(10);
+        }
+        dn
+    };
     match state.storage.list_folders(owner).await {
         Ok(rows) => {
             if rows.iter().any(|r| {
                 r.server_id != row.server_id
                     && r.parent_id == parent_id
-                    && r.display_name.eq_ignore_ascii_case(display_name)
+                    && r.display_name.eq_ignore_ascii_case(&display_name)
             }) {
                 return FolderMutationResult::status(2);
             }
@@ -1176,7 +1183,7 @@ pub async fn update_folder(
     }
 
     match row.backend_kind.as_str() {
-        "jmap" => update_mail_folder(state, owner, password, &row, &parent_id, display_name).await,
+        "jmap" => update_mail_folder(state, owner, password, &row, &parent_id, &display_name).await,
         // A CalDAV collection rename keeps the stored ServerId (href) stable and
         // only refreshes the collection's own displayname plus the persisted
         // DisplayName. CalDAV collections are top-level only, so a requested
@@ -1185,7 +1192,7 @@ pub async fn update_folder(
             if parent_id != row.parent_id {
                 return FolderMutationResult::status(5);
             }
-            rename_caldav_folder(state, owner, password, &row, display_name).await
+            rename_caldav_folder(state, owner, password, &row, &display_name).await
         }
         _ => FolderMutationResult::status(4),
     }

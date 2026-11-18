@@ -2261,6 +2261,7 @@ pub async fn apply_eas_email_mutations(
     account_id: &str,
     username: &str,
     password: &SecretString,
+    collection_id: &str,
     xml: &str,
     deletes_as_moves: bool,
 ) -> Vec<EasEmailMutationResult> {
@@ -2299,7 +2300,28 @@ pub async fn apply_eas_email_mutations(
             } => {
                 let status = match crate::email::jmap_id_from_email_server_id(&server_id) {
                     Some(jmap_id) if !jmap_id.is_empty() => {
-                        if deletes_as_moves {
+                        // [MS-ASEMAIL] §3.2.5.4.2: a Delete addressed to a
+                        // collection must target an item that belongs to that
+                        // collection's mailbox. Without this check, a stale
+                        // <Delete> from collection A for a message that moved
+                        // to collection B would remove/destroy it from B.
+                        let in_source_mailbox = jmap
+                            .get_email(account_id, jmap_id, username, password, false)
+                            .await
+                            .map(|emails| {
+                                emails.iter().any(|e| {
+                                    e.mailbox_ids
+                                        .as_ref()
+                                        .map(|mids| {
+                                            mids.iter().any(|(m, _)| m.as_str() == collection_id)
+                                        })
+                                        .unwrap_or(false)
+                                })
+                            })
+                            .unwrap_or(false);
+                        if !in_source_mailbox {
+                            "8"
+                        } else if deletes_as_moves {
                             if trash_ids.is_none() {
                                 trash_ids = jmap
                                     .get_mailbox_ids_for_role(
@@ -4039,7 +4061,7 @@ Body\r\n";
         let xml = r#"<Commands>
           <Change><ServerId>em-abc</ServerId><ApplicationData><Email:Read>1</Email:Read><Email:Flag><Email:Status>2</Email:Status></Email:Flag></ApplicationData></Change>
         </Commands>"#;
-        let results = apply_eas_email_mutations(&client, "a", "u", &pw, xml, true).await;
+        let results = apply_eas_email_mutations(&client, "a", "u", &pw, "1", xml, true).await;
         assert_eq!(results.len(), 1);
         assert!(matches!(
             &results[0],
@@ -4061,7 +4083,7 @@ Body\r\n";
         let client = std::sync::Arc::new(crate::jmap::JmapClient::new(&base).unwrap());
         let pw = secrecy::SecretString::from("pw");
         let xml = r#"<Commands><Change><ServerId>em-1</ServerId><ApplicationData><Email:Read>0</Email:Read></ApplicationData></Change></Commands>"#;
-        let results = apply_eas_email_mutations(&client, "a", "u", &pw, xml, true).await;
+        let results = apply_eas_email_mutations(&client, "a", "u", &pw, "1", xml, true).await;
         assert!(matches!(
             &results[0],
             EasEmailMutationResult::Change { status: "1", .. }
@@ -4083,7 +4105,7 @@ Body\r\n";
         let client = std::sync::Arc::new(crate::jmap::JmapClient::new(&base).unwrap());
         let pw = secrecy::SecretString::from("pw");
         let xml = r#"<Commands><Change><ServerId>2:999</ServerId><ApplicationData><Email:Read>1</Email:Read></ApplicationData></Change></Commands>"#;
-        let results = apply_eas_email_mutations(&client, "a", "u", &pw, xml, true).await;
+        let results = apply_eas_email_mutations(&client, "a", "u", &pw, "1", xml, true).await;
         assert!(matches!(
             &results[0],
             EasEmailMutationResult::Change { status: "8", .. }
@@ -4096,7 +4118,7 @@ Body\r\n";
         let client = std::sync::Arc::new(crate::jmap::JmapClient::new(&base).unwrap());
         let pw = secrecy::SecretString::from("pw");
         let xml = r#"<Commands><Change><ServerId>em-1</ServerId><ApplicationData><Email:Read>1</Email:Read></ApplicationData></Change></Commands>"#;
-        let results = apply_eas_email_mutations(&client, "a", "u", &pw, xml, true).await;
+        let results = apply_eas_email_mutations(&client, "a", "u", &pw, "1", xml, true).await;
         assert!(matches!(
             &results[0],
             EasEmailMutationResult::Change { status: "6", .. }
@@ -4109,7 +4131,7 @@ Body\r\n";
         let client = std::sync::Arc::new(crate::jmap::JmapClient::new(&base).unwrap());
         let pw = secrecy::SecretString::from("pw");
         let xml = r#"<Commands><Delete><ServerId>em-7</ServerId></Delete></Commands>"#;
-        let results = apply_eas_email_mutations(&client, "a", "u", &pw, xml, true).await;
+        let results = apply_eas_email_mutations(&client, "a", "u", &pw, "inbox1", xml, true).await;
         assert!(matches!(
             &results[0],
             EasEmailMutationResult::Delete { status: "1", .. }
@@ -4139,7 +4161,7 @@ Body\r\n";
         let client = std::sync::Arc::new(crate::jmap::JmapClient::new(&base).unwrap());
         let pw = secrecy::SecretString::from("pw");
         let xml = r#"<Commands><Delete><ServerId>em-7</ServerId></Delete></Commands>"#;
-        let results = apply_eas_email_mutations(&client, "a", "u", &pw, xml, false).await;
+        let results = apply_eas_email_mutations(&client, "a", "u", &pw, "inbox1", xml, false).await;
         assert!(matches!(
             &results[0],
             EasEmailMutationResult::Delete { status: "1", .. }
@@ -4158,7 +4180,7 @@ Body\r\n";
         let client = std::sync::Arc::new(crate::jmap::JmapClient::new(&base).unwrap());
         let pw = secrecy::SecretString::from("pw");
         let xml = r#"<Sync><Collections><Collection><SyncKey>1</SyncKey></Collection></Collections></Sync>"#;
-        let results = apply_eas_email_mutations(&client, "a", "u", &pw, xml, true).await;
+        let results = apply_eas_email_mutations(&client, "a", "u", &pw, "1", xml, true).await;
         assert!(results.is_empty());
         assert!(
             seen.lock().await.is_empty(),
