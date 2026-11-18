@@ -1,4 +1,5 @@
 // src/storage.rs
+use percent_encoding::{AsciiSet, CONTROLS, utf8_percent_encode};
 use sqlx::{Executor, FromRow, Pool, Row, Sqlite};
 use std::collections::HashMap;
 use std::fmt;
@@ -316,6 +317,27 @@ pub struct MeetingRsvpRow {
     pub message_id: Option<String>,
     pub calendar_server_id: Option<String>,
     pub responded_at: String,
+}
+
+/// Percent-encode a CalDAV href path for comparison with the live-set entries
+/// returned by `find_user_calendars`. Those entries come through `Url::path()`,
+/// which preserves percent-encoding (e.g. `My Calendar` → `My%20Calendar`).
+/// The stored `folder_map.backend_id` holds the raw path (e.g. `My Calendar`),
+/// so we encode it to the same escaped form before comparing. This prevents a
+/// still-live collection whose href contains spaces or non-ASCII from being
+/// mistaken for deleted and having its EAS mapping pruned. `/` and other
+/// path-safe characters are preserved.
+const PATH_ENCODE_SET: AsciiSet = CONTROLS
+    .add(b' ')
+    .add(b'"')
+    .add(b'#')
+    .add(b'%')
+    .add(b'<')
+    .add(b'>')
+    .add(b'?');
+
+fn normalize_caldav_path(path: &str) -> String {
+    utf8_percent_encode(path, &PATH_ENCODE_SET).collect::<String>()
 }
 
 /// Parameters for recording one delivered iTIP REPLY in the duplicate-RSVP
@@ -4367,10 +4389,13 @@ impl Storage {
         // Only CONFIRMED deletions are pruned; a candidate the backend still
         // holds keeps its intent (see above). A candidate whose id is absent
         // from `live_ids` is dead; `delete_folders_journaled` also clears its
-        // pending row.
+        // pending row. Normalize each candidate to the same percent-escaped form
+        // as the `live_ids` entries (which come through `Url::path()` preserving
+        // percent-encoding) so a collection whose href contains spaces or
+        // non-ASCII is not mistaken for deleted.
         let dead: Vec<String> = candidates
             .iter()
-            .filter(|id| !live_ids.contains(*id))
+            .filter(|id| !live_ids.contains(&normalize_caldav_path(id)))
             .cloned()
             .collect();
         if !dead.is_empty() {
