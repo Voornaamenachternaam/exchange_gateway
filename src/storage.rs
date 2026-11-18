@@ -553,6 +553,22 @@ impl Storage {
                 .await
                 .map_err(|e| GatewayError::Storage(format!("Migration error: {}", e)))?;
         }
+        // Track whether a calendar sync stream has been initialized (had at
+        // least one successful prime/delta), separately from whether its
+        // delivery ledger currently holds rows. An empty calendar's successful
+        // prime sets this marker; a subsequent delta with an empty ledger is
+        // then accepted instead of forcing an endless re-prime loop.
+        let has_calendar_stream_init = columns
+            .iter()
+            .any(|c| c.get::<String, _>("name") == "calendar_stream_init");
+        if !has_calendar_stream_init {
+            sqlx::query(
+                "ALTER TABLE sync_state ADD COLUMN calendar_stream_init INTEGER NOT NULL DEFAULT 0",
+            )
+            .execute(self.pool.as_ref())
+            .await
+            .map_err(|e| GatewayError::Storage(format!("Migration error: {}", e)))?;
+        }
         // Same probe for the `base_seq` column of `local_sync_cursor`: it
         // anchors continuation windows to the journal head captured when
         // the initial sync started (see sqlite_schema.sql).
@@ -1230,6 +1246,18 @@ impl Storage {
         .await
         .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
 
+        // Record that this calendar sync stream has been initialized so a
+        // later delta with an empty delivery ledger is accepted instead of
+        // forcing an endless re-prime loop.
+        sqlx::query(
+            "UPDATE sync_state SET calendar_stream_init = 1 WHERE owner = ?1 AND collection_id = ?2",
+        )
+        .bind(owner)
+        .bind(scope_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+
         sqlx::query(
             "UPDATE sync_state SET journal_seq = ?3 WHERE owner = ?1 AND collection_id = ?2",
         )
@@ -1244,6 +1272,24 @@ impl Storage {
             .await
             .map_err(|e| GatewayError::Storage(format!("Commit error: {}", e)))?;
         Ok(())
+    }
+
+    /// Whether this calendar sync stream has been initialized (had at least one
+    /// successful prime/delta), tracked separately from whether its delivery
+    /// ledger currently holds rows. An empty calendar's successful prime sets
+    /// this marker so a later delta with an empty ledger is accepted instead of
+    /// forcing an endless re-prime loop.
+    pub async fn calendar_stream_init(&self, owner: &str, collection_id: &str) -> Result<bool> {
+        let row = sqlx::query(
+            "SELECT calendar_stream_init FROM sync_state WHERE owner = ?1 AND collection_id = ?2",
+        )
+        .bind(owner)
+        .bind(collection_id)
+        .fetch_optional(self.pool.as_ref())
+        .await
+        .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))?;
+        let Some(row) = row else { return Ok(false) };
+        Ok(row.get::<Option<i64>, _>(0).unwrap_or(0) != 0)
     }
 
     pub async fn add_delete_tombstone(&self, owner: &str, server_id: &str) -> Result<()> {

@@ -1614,15 +1614,30 @@ pub async fn move_email_to_mailbox_via_jmap(
         "mailboxIds": { (target_mb_id): true },
     });
 
-    jmap.update_email(
-        account_id,
-        &json!({
-            (jmap_id): update_patch,
-        }),
-        username,
-        password,
-    )
-    .await?;
+    // Clone jmap_id: the `json!` macro below moves it into the `Value`,
+    // but we still need it afterward to verify the `updated` collection.
+    let jmap_id_check = jmap_id.clone();
+
+    let outcome = jmap
+        .update_email_checked(
+            account_id,
+            &json!({
+                (jmap_id): update_patch,
+            }),
+            username,
+            password,
+        )
+        .await?;
+
+    // A confirmed move requires the Email/set response's `updated` collection
+    // to contain the extracted JMAP email id. A `notUpdated` rejection (e.g.
+    // a move to a forbidden destination) leaves the message in its original
+    // mailbox and must surface as an error, not a silent success.
+    if !outcome.updated.iter().any(|id| id == &jmap_id_check) {
+        return Err(anyhow!(
+            "Email/set did not confirm move for JMAP email id {jmap_id_check}"
+        ));
+    }
 
     // Return a new change key; could be same as server_id for simplicity
     Ok(server_id.to_string())

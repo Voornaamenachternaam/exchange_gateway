@@ -7781,6 +7781,7 @@ pub(crate) async fn scan_email_keyword_changes(
             Err(e) => {
                 tracing::warn!(error = %e, "Email keyword baseline scan failed; serving query-feed changes only");
                 outcome.position = position;
+                outcome.deferred = true;
                 return outcome;
             }
         };
@@ -7807,6 +7808,7 @@ pub(crate) async fn scan_email_keyword_changes(
                         "Failed to read email keyword baseline row; holding scan position"
                     );
                     outcome.position = position;
+                    outcome.deferred = true;
                     return outcome;
                 }
             };

@@ -2264,15 +2264,24 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
     // re-delivers its bounded change set (and a fresh prime delivers the whole
     // snapshot) as `<Add>` rather than silently dropping events.
 
-    // A legacy scoped folder (valid SyncKey, existing `item_map` rows, no
-    // `calendar_delivery_map` rows) cannot receive Deletes for
+    // A legacy scoped folder whose stream was never initialized (no
+    // `calendar_stream_init` marker) cannot receive Deletes for
     // silently-omitted events on a partial delta: its ledger has no record of
     // what it previously delivered, so `delivered_map.contains_key` is false
     // for every stored id and the scoped-out rule never matches; `calendar_event_deleted`
     // for a partial delta only catches explicitly destroyed ids. Force a
     // re-prime (Status 3 / SyncKey 0) so the client gets a fresh snapshot and
-    // the scope rebuilds its ledger — a one-time cost per scope.
-    if !initial_sync && calendar_scope.is_some() && delivered_map.is_empty() {
+    // the scope rebuilds its ledger — a one-time cost per scope. An initialized
+    // stream with an empty ledger (e.g. an empty calendar or the stream's last
+    // event deleted) is accepted: its deliveries happened before the ledger was
+    // introduced, and re-priming it endlessly would trap the client.
+    if !initial_sync
+        && calendar_scope.is_some()
+        && delivered_map.is_empty()
+        && !storage
+            .calendar_stream_init(params.owner, params.state_collection_id)
+            .await?
+    {
         return Ok(invalid_sync_key_response(params.collection_id, "Calendar"));
     }
 
@@ -3114,10 +3123,17 @@ mod tests {
                         // rendering) stays invisible.
                         let want: Vec<String> =
                             if let Some(arr) = args.get("ids").and_then(|v| v.as_array()) {
-                                arr.iter()
-                                    .filter_map(|v| v.as_str())
-                                    .map(String::from)
-                                    .collect()
+                                // An explicitly empty `ids` array selects nothing:
+                                // an empty calendar must not receive another
+                                // calendar's events.
+                                if arr.is_empty() {
+                                    Vec::new()
+                                } else {
+                                    arr.iter()
+                                        .filter_map(|v| v.as_str())
+                                        .map(String::from)
+                                        .collect()
+                                }
                             } else if let Some(result_of) = args
                                 .get("#ids")
                                 .and_then(|v| v.get("resultOf"))
