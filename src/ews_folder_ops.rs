@@ -1716,7 +1716,12 @@ pub(crate) async fn handle_empty_folder(
         // EmptyFolder recurse into subfolders when SubFolders="true").
         let mut all_ids = in_this;
         if include_subfolders {
-            let all = match jmap.query_mailboxes(&auth.username, &auth.password).await {
+            // Use paged enumeration so the full hierarchy is visited even when
+            // `Mailbox/query` clamps its page below the total mailbox count.
+            let all = match jmap
+                .query_all_mailboxes(&auth.username, &auth.password)
+                .await
+            {
                 Ok(m) => m,
                 Err(e) => return internal_error(action, "Mailbox/query failed", &e),
             };
@@ -1729,13 +1734,13 @@ pub(crate) async fn handle_empty_folder(
                 .collect();
             let mut seen: std::collections::HashSet<String> = queue.iter().cloned().collect();
             while let Some(cur) = queue.pop_front() {
-                let cur_ids: Vec<String> = jmap
+                let cur_ids: Vec<String> = match jmap
                     .list_email_ids_in_mailbox(&account_id, &cur, &auth.username, &auth.password)
                     .await
-                    .unwrap_or_default()
-                    .into_iter()
-                    .map(|(jid, _)| jid)
-                    .collect();
+                {
+                    Ok(v) => v.into_iter().map(|(jid, _)| jid).collect(),
+                    Err(e) => return internal_error(action, "Email/query failed", &e),
+                };
                 all_ids.extend(cur_ids);
                 for child in all
                     .mailboxes

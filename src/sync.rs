@@ -2317,14 +2317,14 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
         let changed = delivered_etag.map(|e| e != &etag).unwrap_or(true);
         // A prime continuation resumes strictly after the stored href
         // cursor: events at/before it were already delivered to THIS device,
-        // so they are skipped unconditionally. Events past it are force-
-        // delivered even when this scope's ledger already holds them with a
-        // matching etag (a ledger write may lag the delivered window).
-        if in_prime_cursor {
-            if ev.href.as_str() <= prime_cursor.as_deref().unwrap() {
-                continue;
-            }
-        } else if !initial_sync && !changed {
+        // so they are skipped unless they changed since the delivered prefix.
+        // Otherwise an edit to A (at the cursor) made before the continuation
+        // would be lost — the next snapshot sees A's new ETag but skips A
+        // because its href is at the cursor, and A's edit is now behind the
+        // stored provider state.
+        if (in_prime_cursor && ev.href.as_str() <= prime_cursor.as_deref().unwrap() && !changed)
+            || (!initial_sync && !changed)
+        {
             continue;
         }
         pending_items.push(PendingItem {
@@ -2431,6 +2431,12 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
             .list_deleted_since_seq(params.owner, start_db_seq)
             .await?;
         for (_, sid) in tombstones {
+            // A scoped stream must only import a tombstone if its own ledger
+            // delivered the item; otherwise another calendar's deletion would
+            // cause this stream to emit a Delete for an item it never held.
+            if calendar_scope.is_some() && !delivered_map.contains_key(sid.as_str()) {
+                continue;
+            }
             if !seen_ids.contains(sid.as_str()) {
                 pending_deletes.push(sid);
             }

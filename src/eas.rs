@@ -2206,6 +2206,12 @@ fn ping_superseded_response(wbxml: &Wbxml, as_wbxml: bool, request_id: &str) -> 
 /// through its JMAP role. `None` when the collection has no mailbox (Outbox,
 /// or a resolution failure), in which case the caller scopes to nothing rather
 /// than diffing the account-wide `Email/changes`.
+/// Resolve an EAS collection id to a JMAP mailbox id.
+///
+/// Returns `Ok(Some(mailbox_id))` on successful resolution, `Ok(None)` when the
+/// collection is genuinely unknown (caller may fall back to the raw EAS id and
+/// report Status 8), and `Err` on a backend/lookup failure (caller must fail
+/// closed with a retryable Status 6).
 async fn resolve_email_mailbox_id(
     state: &Arc<AppState>,
     jmap: &Arc<JmapClient>,
@@ -2213,17 +2219,21 @@ async fn resolve_email_mailbox_id(
     owner: &str,
     password: &SecretString,
     collection_id: &str,
-) -> Option<String> {
+) -> anyhow::Result<Option<String>> {
     if let Ok(Some(row)) = state.storage.get_folder(owner, collection_id).await
         && row.backend_kind == "jmap"
     {
-        return Some(row.backend_id);
+        return Ok(Some(row.backend_id));
     }
-    let role = crate::email::eas_collection_id_to_mailbox_role(collection_id)?;
-    jmap.get_mailbox_ids_for_role(account_id, role, owner, password)
+    let role = match crate::email::eas_collection_id_to_mailbox_role(collection_id) {
+        Some(r) => r,
+        None => return Ok(None),
+    };
+    Ok(jmap
+        .get_mailbox_ids_for_role(account_id, role, owner, password)
         .await
         .ok()
-        .and_then(|ids| ids.into_iter().next())
+        .and_then(|ids| ids.into_iter().next()))
 }
 
 /// Per-folder mailbox-scoped `Email/queryChanges` probe: returns the pinged
@@ -2262,11 +2272,21 @@ async fn probe_email_folder_changes(
         // Probe the SAME mailbox-scoped feed the delta uses; the account-wide
         // `Email/changes` would report every other folder's mail and wake this
         // folder spuriously.
-        let Some(mailbox_id) =
-            resolve_email_mailbox_id(state, jmap, account_id, owner, password, folder_id).await
-        else {
-            continue;
-        };
+        let mailbox_id =
+            match resolve_email_mailbox_id(state, jmap, account_id, owner, password, folder_id)
+                .await
+            {
+                Ok(Some(m)) => m,
+                Ok(None) => continue,
+                Err(e) => {
+                    tracing::warn!(
+                        request_id = %request_id,
+                        error = %e,
+                        "Failed to resolve source mailbox id; skipping Ping folder probe"
+                    );
+                    continue;
+                }
+            };
         match jmap
             .query_email_changes(account_id, &mailbox_id, &since, owner, password, Some(1))
             .await
@@ -6287,9 +6307,13 @@ async fn handle_sync_collections(ctx: &SyncCtx<'_>, collections: &[SyncCollectio
                             tracing::warn!(
                                 request_id = %request_id,
                                 error = %e,
-                                "Email mutation apply failed"
+                                "Email mutation apply failed, returning Status 6"
                             );
-                            String::new()
+                            format!(
+                                "<Collection><Class>Email</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>6</Status></Collection>",
+                                xml_escape(incoming_key),
+                                xml_escape(collection_id)
+                            )
                         }
                     }
                 } else {
@@ -8248,10 +8272,22 @@ async fn apply_email_client_mutations(
     // membership. A raw EAS CollectionId such as "2" (Inbox) must be compared
     // against the backend mailbox id (e.g. "inbox1") returned by Email/get,
     // not the raw EAS id.
+    //
+    // A lookup failure is fail-closed: returning Status 6 for the affected
+    // Delete rather than falling back to the raw EAS id (which could hit
+    // Status 8 on a message that exists under its true JMAP mailbox id).
     let resolved_mailbox_id =
-        resolve_email_mailbox_id(state, jmap, &account_id, username, password, collection_id)
+        match resolve_email_mailbox_id(state, jmap, &account_id, username, password, collection_id)
             .await
-            .unwrap_or_else(|| collection_id.to_string());
+        {
+            Ok(Some(m)) => m,
+            Ok(None) => collection_id.to_string(),
+            Err(e) => {
+                return Err(anyhow::anyhow!(
+                    "failed to resolve source mailbox id for collection {collection_id}: {e}"
+                ));
+            }
+        };
 
     let results = crate::email::apply_eas_email_mutations(
         jmap,
