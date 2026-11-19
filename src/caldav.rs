@@ -1292,6 +1292,7 @@ fn multistatus_delete_confirmed(xml_body: &str) -> bool {
     let mut status_text = String::new();
     let mut saw_status = false;
     let mut all_ok = true;
+    let mut saw_multistatus_end = false;
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(quick_xml::events::Event::Start(ref e)) => {
@@ -1303,20 +1304,28 @@ fn multistatus_delete_confirmed(xml_body: &str) -> bool {
             Ok(quick_xml::events::Event::Text(ref t)) if in_status => {
                 status_text.push_str(t.as_ref());
             }
-            Ok(quick_xml::events::Event::End(ref e)) => {
-                if e.name().local_name().as_ref() == "status" {
+            Ok(quick_xml::events::Event::End(ref e)) => match e.name().local_name().as_ref() {
+                "status" => {
                     in_status = false;
                     saw_status = true;
                     let ok = dav_status_code(&status_text)
                         .is_some_and(|c| (200..300).contains(&c) || c == 404);
                     all_ok &= ok;
                 }
-            }
+                "multistatus" => saw_multistatus_end = true,
+                _ => {}
+            },
+            // The document ended before the multistatus element closed — treat as
+            // incomplete, not success, so a truncated body can never be mistaken
+            // for an authoritative response.
             Ok(quick_xml::events::Event::Eof) => break,
             Err(_) => return false,
             _ => {}
         }
         buf.clear();
+    }
+    if !saw_multistatus_end {
+        return false;
     }
     saw_status && all_ok
 }
@@ -1339,6 +1348,7 @@ fn multistatus_displayname_ok(xml_body: &str) -> bool {
     let mut propstat_status = String::new();
     let mut in_status = false;
     let mut any_ok = false;
+    let mut saw_multistatus_end = false;
 
     macro_rules! flush {
         () => {
@@ -1378,14 +1388,20 @@ fn multistatus_displayname_ok(xml_body: &str) -> bool {
                     flush!();
                     in_propstat = false;
                 }
+                "multistatus" => saw_multistatus_end = true,
                 _ => {}
             },
+            // The document ended before the multistatus element closed — treat as
+            // incomplete, not success.
             Ok(quick_xml::events::Event::Eof) => break,
             // A malformed body leaves the outcome unknown: fail closed.
             Err(_) => return false,
             _ => {}
         }
         buf.clear();
+    }
+    if !saw_multistatus_end {
+        return false;
     }
     // Success ONLY when an explicit 2xx displayname propstat was seen.
     any_ok

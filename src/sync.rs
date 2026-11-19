@@ -432,12 +432,9 @@ pub async fn apply_client_sync_mutations(
                     });
                     continue;
                 };
-                let caldav_href = existing
-                    .caldav_href
-                    .as_deref()
-                    .ok_or_else(|| anyhow!("caldav event has no caldav_href"))?;
+                let event_href = existing.resource_href.as_str();
                 let (existing_ics, existing_etag) =
-                    caldav.get_event(caldav_href, username, password).await?;
+                    caldav.get_event(event_href, username, password).await?;
                 let mut item = parse_ics_event(&existing_ics)
                     .ok_or_else(|| anyhow!("failed parsing existing calendar item"))?;
                 if let Some(v) = patch.uid {
@@ -530,8 +527,8 @@ pub async fn apply_client_sync_mutations(
                 let ics = render_ics(&item);
                 match caldav
                     .put_event(
-                        caldav_href,
-                        Some(caldav_href),
+                        event_href,
+                        Some(event_href),
                         &ics,
                         username,
                         password,
@@ -544,7 +541,7 @@ pub async fn apply_client_sync_mutations(
                             .storage
                             .upsert_item_map(
                                 owner,
-                                caldav_href,
+                                event_href,
                                 &resource_href,
                                 &server_id,
                                 &item.uid,
@@ -628,12 +625,9 @@ pub async fn apply_client_sync_mutations(
                     });
                     continue;
                 };
-                let caldav_href = existing
-                    .caldav_href
-                    .as_deref()
-                    .ok_or_else(|| anyhow!("caldav event has no caldav_href"))?;
+                let event_href = existing.resource_href.as_str();
                 match caldav
-                    .delete_event(caldav_href, username, password, existing.etag.as_deref())
+                    .delete_event(event_href, username, password, existing.etag.as_deref())
                     .await
                 {
                     Ok(()) => {
@@ -2279,7 +2273,6 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
     // introduced, and re-priming it endlessly would trap the client.
     if !initial_sync
         && calendar_scope.is_some()
-        && delivered_map.is_empty()
         && !storage
             .calendar_stream_init(params.owner, params.state_collection_id)
             .await?
@@ -4542,6 +4535,12 @@ mod tests {
         state
             .storage
             .set_sync_key(owner, &state_collection_id, "key-1", Some("s0"))
+            .await
+            .unwrap();
+        // The scope was initialized before the ledger was introduced.
+        state
+            .storage
+            .set_calendar_stream_init(owner, &state_collection_id)
             .await
             .unwrap();
 

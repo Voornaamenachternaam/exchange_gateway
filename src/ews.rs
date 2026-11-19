@@ -5073,9 +5073,9 @@ async fn handle_sync_email_folder_items(
             tracing::error!(error = %e, "JMAP get_account_id failed in SyncFolderItems");
             return operation_error_response(
                 &EwsAction::SyncFolderItems,
-                "ErrorFolderNotFound",
-                "JMAP account not found",
-                StatusCode::OK,
+                "ErrorServerBusy",
+                "JMAP account lookup failed; retry later",
+                StatusCode::SERVICE_UNAVAILABLE,
             );
         }
     };
@@ -10779,30 +10779,34 @@ async fn handle_mark_as_junk(state: &Arc<AppState>, auth: &AuthContext, body: &s
         }
     }
 
-    // Build per-item responses: successful moves under MovedItemIds, failures
-    // as individual ErrorItemNotFound items so the client does not see a
-    // spurious overall success when some items could not be moved.
+    // Build per-item responses, one MarkAsJunkResponseMessage per input item
+    // in request order. A successful move reports its ItemId under MovedItemIds;
+    // a transient backend failure reports a retryable server error (not
+    // ErrorItemNotFound, which must mean a confirmed missing item).
     let mut resp_messages = String::new();
-    if !moved_xml.is_empty() {
-        resp_messages.push_str(&format!(
-            r#"<m:MarkAsJunkResponseMessage ResponseClass="Success">
+    for item_id in &item_ids {
+        if !crate::email::is_email_server_id(item_id) {
+            continue;
+        }
+        // Determine if this item succeeded or failed.
+        if moved_xml.contains(&format!(r#"Id="{}""#, xml_escape(item_id))) {
+            resp_messages.push_str(&format!(
+                r#"<m:MarkAsJunkResponseMessage ResponseClass="Success">
 <m:ResponseCode>NoError</m:ResponseCode>
-<m:MovedItemIds>{}</m:MovedItemIds>
+<m:MovedItemIds><t:ItemId Id="{}" ChangeKey="{}" /></m:MovedItemIds>
 </m:MarkAsJunkResponseMessage>"#,
-            moved_xml
-        ));
-    }
-    for item_id in &failed_items {
-        resp_messages.push_str(&format!(
-            r#"<m:MarkAsJunkResponseMessage ResponseClass="Error">
+                xml_escape(item_id),
+                xml_escape(item_id)
+            ));
+        } else if failed_items.iter().any(|f| f.as_str() == item_id.as_str()) {
+            resp_messages.push_str(
+                r#"<m:MarkAsJunkResponseMessage ResponseClass="Error">
 <m:MessageText>The item could not be moved.</m:MessageText>
-<m:ResponseCode>ErrorItemNotFound</m:ResponseCode>
+<m:ResponseCode>ErrorServerBusy</m:ResponseCode>
 <m:DescriptiveLinkKey>0</m:DescriptiveLinkKey>
-<m:ItemId Id="{}" ChangeKey="{}" />
 </m:MarkAsJunkResponseMessage>"#,
-            xml_escape(item_id),
-            xml_escape(item_id)
-        ));
+            );
+        }
     }
 
     let inner = format!(
