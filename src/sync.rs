@@ -2418,9 +2418,11 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
             // meeting indefinitely. The row is dropped by the delete fill
             // only once its `<Delete>` command has been emitted.
             // Propagate a failed tombstone write before advancing the key: if the
-        // tombstone is not durable, the delete would be lost on retry and the
-        // client would keep the deleted event forever.
-        storage.add_delete_tombstone(params.owner, server_id).await?;
+            // tombstone is not durable, the delete would be lost on retry and the
+            // client would keep the deleted event forever.
+            storage
+                .add_delete_tombstone(params.owner, server_id)
+                .await?;
         }
     }
 

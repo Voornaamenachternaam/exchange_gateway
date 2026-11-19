@@ -4469,6 +4469,50 @@ impl Storage {
         .await
         .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))
     }
+
+    /// Read the journal head (latest change-seq), the folder journal rows for
+    /// `(since, head]`, and the complete folder map within ONE SQLite read
+    /// transaction, so FolderSync renders the hierarchy against a single
+    /// consistent snapshot: a mutation journaled between the head read and the
+    /// folder-map read is not folded into this response's watermark, and the
+    /// initial folder list does not reflect a change newer than the captured
+    /// journal head.
+    pub async fn snapshot_folder_sync_data(
+        &self,
+        owner: &str,
+        since: i64,
+    ) -> Result<(i64, Vec<JournalRow>, Vec<FolderRow>)> {
+        let mut tx = sqlx::Acquire::begin(self.pool.as_ref())
+            .await
+            .map_err(|e| GatewayError::Storage(format!("Transaction error: {}", e)))?;
+        let head: i64 =
+            sqlx::query_scalar::<_, i64>("SELECT COALESCE(MAX(id), 0) FROM change_journal")
+                .fetch_one(&mut *tx)
+                .await
+                .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))?;
+        let rows = sqlx::query_as::<_, JournalRow>(
+            "SELECT id, server_id, op, resource_href FROM change_journal \
+             WHERE owner = ?1 AND id > ?2 AND id <= ?3 AND resource_href = 'folder' ORDER BY id ASC",
+        )
+        .bind(owner)
+        .bind(since)
+        .bind(head)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))?;
+        let folders = sqlx::query_as::<_, FolderRow>(
+            "SELECT server_id, parent_id, display_name, folder_type, backend_kind, backend_id \
+             FROM folder_map WHERE owner = ?1 ORDER BY display_name ASC, server_id ASC",
+        )
+        .bind(owner)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))?;
+        tx.commit()
+            .await
+            .map_err(|e| GatewayError::Storage(format!("Commit error: {}", e)))?;
+        Ok((head, rows, folders))
+    }
 }
 
 /// Parameters for [`Storage::upsert_folder_journaled`]. Grouped so the call

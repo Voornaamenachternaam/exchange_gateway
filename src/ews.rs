@@ -5660,7 +5660,9 @@ async fn handle_sync_email_folder_items(
     // snapshot, so writing the snapshot would force a duplicate flag `<Change>`
     // on the next delta.
     if replay_ok {
-        match crate::eas::persist_keyword_scan(state, owner, &folder_id, &keyword_scan, &seeded_ids).await {
+        match crate::eas::persist_keyword_scan(state, owner, &folder_id, &keyword_scan, &seeded_ids)
+            .await
+        {
             Ok(()) => {}
             Err(e) => {
                 tracing::warn!(

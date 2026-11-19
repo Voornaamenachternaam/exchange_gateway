@@ -1890,15 +1890,6 @@ async fn handle_folder_sync(
             return xml_or_wbxml_response(wbxml, as_wbxml, xml, request_id);
         }
     }
-    // Capture the journal head BEFORE rendering the hierarchy. A folder
-    // mutation journaled while the response is being built must NOT be folded
-    // into the watermark this request acknowledges: it was not part of the
-    // rendered change set, so advancing past it would drop its
-    // Add/Update/Delete forever. The rendered journal window is bounded to this
-    // head (`render_until`) and the stored watermark is exactly this head — the
-    // pre-render read is fail-closed (an error answers Status 6 rather than
-    // persisting a watermark of 0 that would replay the whole journal).
-    //
     // Replay any deferred folder-map prune (a `pending_folder_prune` row whose
     // backend destroy already succeeded but whose mirror failed) BEFORE the head
     // capture, so the `folder-delete` it journals is inside this window and is
@@ -1909,10 +1900,20 @@ async fn handle_folder_sync(
     // Non-fatal: a failure leaves the pending row for the next read, and the
     // primary FolderSync work is never blocked by a replay.
     crate::eas_folders::reconcile_deferred_folder_prunes(state, owner, password).await;
-    let render_until = match state.storage.get_latest_change_seq().await {
-        Ok(seq) => seq,
+    // Read the journal head, the folder journal rows for (stored_since, head],
+    // and the complete folder map within ONE SQLite read transaction, so the
+    // rendered hierarchy reflects a single consistent snapshot: a mutation
+    // journaled between the head read and the folder-map read is not folded into
+    // this response's watermark, and the initial folder list does not reflect a
+    // change newer than the captured journal head.
+    let (render_until, journal_rows, folder_rows) = match state
+        .storage
+        .snapshot_folder_sync_data(owner, stored_since)
+        .await
+    {
+        Ok(data) => data,
         Err(e) => {
-            tracing::warn!(error = %e, "FolderSync: failed to read journal head");
+            tracing::warn!(error = %e, "FolderSync: failed to read folder sync snapshot");
             return folder_sync_error_response(wbxml, as_wbxml, request_id);
         }
     };
@@ -1940,8 +1941,9 @@ async fn handle_folder_sync(
             ""
         };
 
-        // User-created folders persisted by FolderCreate ([MS-ASCMD] §2.2.1.3).
-        let user_folders = match render_user_folders_add(state, owner).await {
+        // User-created folders persisted by FolderCreate ([MS-ASCMD] §2.2.1.3),
+        // rendered from the folder map captured in the same snapshot.
+        let user_folders = match render_user_folders_add(state, owner, &folder_rows).await {
             Ok(xml) => xml,
             Err(e) => {
                 tracing::warn!(error = %e, "FolderSync: failed to list user-created folders");
@@ -1969,7 +1971,16 @@ async fn handle_folder_sync(
         // since the client's stored watermark, so a client that already primed
         // the hierarchy is told about FolderCreate/Update/Delete mutations
         // ([MS-ASCMD] §2.2.3.25).
-        match render_folder_hierarchy_changes(state, owner, stored_since, render_until).await {
+        match render_folder_hierarchy_changes(
+            state,
+            owner,
+            stored_since,
+            render_until,
+            Some(journal_rows),
+            Some(folder_rows),
+        )
+        .await
+        {
             Ok(changes) => changes,
             Err(e) => {
                 tracing::warn!(error = %e, "FolderSync: failed to render folder-hierarchy changes");
@@ -2029,14 +2040,14 @@ fn folder_sync_error_response(wbxml: &Wbxml, as_wbxml: bool, request_id: &str) -
 
 /// Render the `<Add>` entries for every user-created folder owned by `owner`.
 async fn render_user_folders_add(
-    state: &Arc<AppState>,
-    owner: &str,
+    _state: &Arc<AppState>,
+    _owner: &str,
+    folders: &[crate::storage::FolderRow],
 ) -> crate::error::Result<String> {
-    let rows = state.storage.list_folders(owner).await?;
     let mut xml = String::new();
-    for row in rows {
+    for row in folders {
         let (server_id, parent_id, display_name, folder_type) =
-            crate::eas_folders::folder_wire_tuple(&row);
+            crate::eas_folders::folder_wire_tuple(row);
         xml.push_str(&format!(
             "<Add><ServerId>{}</ServerId><ParentId>{}</ParentId><DisplayName>{}</DisplayName><Type>{}</Type></Add>",
             xml_escape(&server_id),
@@ -2063,11 +2074,18 @@ async fn render_folder_hierarchy_changes(
     owner: &str,
     since: i64,
     until: i64,
+    journal_rows: Option<Vec<crate::storage::JournalRow>>,
+    folder_rows: Option<Vec<crate::storage::FolderRow>>,
 ) -> crate::error::Result<String> {
-    let rows = state
-        .storage
-        .list_folder_journal_since(owner, since, until)
-        .await?;
+    let rows = match journal_rows {
+        Some(rows) => rows,
+        None => {
+            state
+                .storage
+                .list_folder_journal_since(owner, since, until)
+                .await?
+        }
+    };
     if rows.is_empty() {
         return Ok(r#"<Changes><Count>0</Count></Changes>"#.to_string());
     }
@@ -2090,7 +2108,10 @@ async fn render_folder_hierarchy_changes(
         }
         latest.insert(row.server_id.clone(), row.op.clone());
     }
-    let folders = state.storage.list_folders(owner).await?;
+    let folders = match folder_rows {
+        Some(rows) => rows,
+        None => state.storage.list_folders(owner).await?,
+    };
     let by_id: std::collections::HashMap<&str, &crate::storage::FolderRow> =
         folders.iter().map(|f| (f.server_id.as_str(), f)).collect();
 
@@ -7472,14 +7493,20 @@ const KEYWORD_SCAN_PAGE: u64 = 500;
 /// Stalwart emits when the message merely moved within the mailbox (a keyword
 /// edit re-sorts a keyword-sorted query): that is an in-place update, so it is
 /// delivered as a `<Change>`.
+///
+/// `updated` ids are messages whose position within the fixed
+/// `inMailbox`/`receivedAt` query changed without leaving it — e.g. a draft's
+/// subject or body was edited — and are delivered as `<Change>` when previously
+/// delivered, or `<Add>` when not yet delivered to this device.
 fn classify_query_change_ops(
     added: &[String],
     removed: &[String],
+    updated: &[String],
     delivered: &HashSet<String>,
 ) -> Vec<PendingEmailOp> {
     let added_set: HashSet<&str> = added.iter().map(String::as_str).collect();
     let removed_set: HashSet<&str> = removed.iter().map(String::as_str).collect();
-    let mut ops = Vec::with_capacity(added.len() + removed.len());
+    let mut ops = Vec::with_capacity(added.len() + removed.len() + updated.len());
     for id in added {
         if removed_set.contains(id.as_str()) {
             // Overlap: an in-place update ONLY if previously delivered;
@@ -7491,6 +7518,17 @@ fn classify_query_change_ops(
             }
         } else {
             ops.push(PendingEmailOp::add(id.clone()));
+        }
+    }
+    for id in updated {
+        if !added_set.contains(id.as_str()) {
+            // In-place property change (no membership change): a `<Change>`
+            // only when this device already holds it; otherwise an `<Add>`.
+            if delivered.contains(id.as_str()) {
+                ops.push(PendingEmailOp::change(id.clone()));
+            } else {
+                ops.push(PendingEmailOp::add(id.clone()));
+            }
         }
     }
     for id in removed {
@@ -7589,6 +7627,7 @@ async fn accumulate_email_changes(
         ops.extend(classify_query_change_ops(
             &batch.created,
             &batch.destroyed,
+            &batch.updated,
             &delivered,
         ));
         since = batch.new_state;
@@ -8209,11 +8248,10 @@ async fn apply_email_client_mutations(
     // membership. A raw EAS CollectionId such as "2" (Inbox) must be compared
     // against the backend mailbox id (e.g. "inbox1") returned by Email/get,
     // not the raw EAS id.
-    let resolved_mailbox_id = resolve_email_mailbox_id(
-        state, jmap, &account_id, username, password, collection_id,
-    )
-    .await
-    .unwrap_or_else(|| collection_id.to_string());
+    let resolved_mailbox_id =
+        resolve_email_mailbox_id(state, jmap, &account_id, username, password, collection_id)
+            .await
+            .unwrap_or_else(|| collection_id.to_string());
 
     let results = crate::email::apply_eas_email_mutations(
         jmap,
@@ -9267,14 +9305,8 @@ async fn handle_email_delta_sync(ctx: &EmailSyncCtx<'_>) -> anyhow::Result<Strin
         // remaining flag-scan baseline rows + rotating position (the seeded ids
         // were already written atomically above, so they are skipped).
         let seeded: HashSet<String> = seeds.iter().map(|(id, _)| id.clone()).collect();
-        if let Err(e) = persist_keyword_scan(
-            state,
-            username,
-            state_collection_id,
-            &keyword_scan,
-            &seeded,
-        )
-        .await
+        if let Err(e) =
+            persist_keyword_scan(state, username, state_collection_id, &keyword_scan, &seeded).await
         {
             tracing::warn!(
                 error = %e,
@@ -9346,14 +9378,8 @@ async fn handle_email_delta_sync(ctx: &EmailSyncCtx<'_>) -> anyhow::Result<Strin
     // guarantees a crash before this point re-scans the same window rather than
     // swallowing the updates.
     let seeded: HashSet<String> = seeds.iter().map(|(id, _)| id.clone()).collect();
-    if let Err(e) = persist_keyword_scan(
-        state,
-        username,
-        state_collection_id,
-        &keyword_scan,
-        &seeded,
-    )
-    .await
+    if let Err(e) =
+        persist_keyword_scan(state, username, state_collection_id, &keyword_scan, &seeded).await
     {
         tracing::warn!(
             error = %e,
@@ -9493,10 +9519,9 @@ pub async fn handle(
     // preserving authentication/policy checks and validation of nonempty bodies.
     let legacy_bodyless = req.command.eq_ignore_ascii_case("GetHierarchy")
         || req.command.eq_ignore_ascii_case("GetAttachment");
-    if !legacy_bodyless
-        && let Err(e) = validate_payload(&req.command, &xml) {
-            return bad_request_response(&request_id, e);
-        }
+    if !legacy_bodyless && let Err(e) = validate_payload(&req.command, &xml) {
+        return bad_request_response(&request_id, e);
+    }
     let device_id = req
         .device_id
         .clone()
@@ -12402,22 +12427,27 @@ mod tests {
 
         // A pure arrival is an Add; a pure departure is a Delete.
         assert_eq!(
-            classify_query_change_ops(&s(&["m1"]), &[], &HashSet::new()),
+            classify_query_change_ops(&s(&["m1"]), &[], &[], &HashSet::new()),
             vec![P::add("m1".into())]
         );
         assert_eq!(
-            classify_query_change_ops(&[], &s(&["m2"]), &HashSet::new()),
+            classify_query_change_ops(&[], &s(&["m2"]), &[], &HashSet::new()),
             vec![P::delete("m2".into())]
         );
 
         // An id in BOTH lists with NO prior delivery: this mailbox newly
         // matches (message moved in), so it's an `<Add>`, not a `<Change>`.
         assert_eq!(
-            classify_query_change_ops(&s(&["m3"]), &s(&["m3"]), &HashSet::new()),
+            classify_query_change_ops(&s(&["m3"]), &s(&["m3"]), &[], &HashSet::new()),
             vec![P::add("m3".into())]
         );
         assert_eq!(
-            collapse_email_ops(classify_query_change_ops(&s(&["m3"]), &s(&["m3"]), &HashSet::new())),
+            collapse_email_ops(classify_query_change_ops(
+                &s(&["m3"]),
+                &s(&["m3"]),
+                &[],
+                &HashSet::new()
+            ),),
             vec![P::add("m3".into())]
         );
 
@@ -12427,6 +12457,7 @@ mod tests {
             classify_query_change_ops(
                 &s(&["m3"]),
                 &s(&["m3"]),
+                &[],
                 &HashSet::from([String::from("m3")]),
             ),
             vec![P::change("m3".into())]
@@ -12435,7 +12466,7 @@ mod tests {
         // Mixed page: adds then deletes, each id classified independently,
         // an overlapping id not previously delivered is an `<Add>`.
         assert_eq!(
-            classify_query_change_ops(&s(&["a", "b"]), &s(&["b", "c"]), &HashSet::new()),
+            classify_query_change_ops(&s(&["a", "b"]), &s(&["b", "c"]), &[], &HashSet::new()),
             vec![
                 P::add("a".into()),
                 P::add("b".into()),
@@ -12447,6 +12478,7 @@ mod tests {
             classify_query_change_ops(
                 &s(&["a", "b"]),
                 &s(&["b", "c"]),
+                &[],
                 &HashSet::from([String::from("b")]),
             ),
             vec![
@@ -12454,6 +12486,23 @@ mod tests {
                 P::change("b".into()),
                 P::delete("c".into()),
             ]
+        );
+
+        // `updated` ids previously delivered are in-place `<Change>` ops;
+        // ids not yet delivered are `<Add>`.
+        assert_eq!(
+            classify_query_change_ops(
+                &[],
+                &[],
+                &s(&["m1", "m2"]),
+                &HashSet::from([String::from("m1")]),
+            ),
+            vec![P::change("m1".into()), P::add("m2".into())]
+        );
+        // `updated` id also in `added` takes the `added` classification.
+        assert_eq!(
+            classify_query_change_ops(&s(&["m1"]), &[], &s(&["m1"]), &HashSet::new(),),
+            vec![P::add("m1".into())]
         );
     }
 
