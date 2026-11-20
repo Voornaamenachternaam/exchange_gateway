@@ -1631,6 +1631,7 @@ mod tests {
     use secrecy::SecretString;
     use serde_json::{Value, json};
     use std::sync::Arc as StdArc;
+    use std::sync::atomic::Ordering;
     use tokio::sync::Mutex as TokioMutex;
 
     /// A stub that answers both the JMAP surface the mail-folder path uses and
@@ -1646,6 +1647,12 @@ mod tests {
         /// `notFound`, `Some("refused")` = `notDestroyed` `mailboxHasChild`,
         /// `Some("error")` = a method-level `error` response.
         destroy_mode: Option<String>,
+        /// When non-zero, each `Mailbox/set destroy` call increments this counter
+        /// and cycles through outcomes [success, refused, error], so concurrent
+        /// `delete_folder` calls observe mixed backend outcomes. This exercises
+        /// the race where a `Refused` outcome must not clear a pending prune
+        /// intent that an earlier in-flight destroy may still need.
+        destroy_variety: StdArc<std::sync::atomic::AtomicU16>,
         /// The HTTP status the CalDAV stub answers `MKCALENDAR` with (201 by
         /// default; 405 models a collection that already exists). Atomic so a
         /// test can flip the status between calls to simulate a lost response
@@ -1659,6 +1666,17 @@ mod tests {
         StdArc<TokioMutex<Vec<(String, String)>>>,
     ) {
         spawn_backend_stub_with(None).await
+    }
+
+    /// As [`spawn_backend_stub_with`] but scripts mixed `Mailbox/set destroy`
+    /// outcomes (success / refused / error) across calls, exercising the
+    /// concurrent-delete race on pending prune intents.
+    async fn spawn_backend_stub_varied() -> (
+        StdArc<AppState>,
+        StdArc<TokioMutex<Vec<Value>>>,
+        StdArc<TokioMutex<Vec<(String, String)>>>,
+    ) {
+        spawn_backend_stub_full(None, 201).await
     }
 
     /// As [`spawn_backend_stub`] but scripts the `Mailbox/set destroy` reply
@@ -1691,6 +1709,7 @@ mod tests {
         let jmap_calls: StdArc<TokioMutex<Vec<Value>>> = StdArc::new(TokioMutex::new(Vec::new()));
         let dav_calls: StdArc<TokioMutex<Vec<(String, String)>>> =
             StdArc::new(TokioMutex::new(Vec::new()));
+        let destroy_variety = StdArc::new(AtomicU16::new(0));
         let mkcalendar_status = StdArc::new(AtomicU16::new(mkcalendar_status));
 
         async fn session(axum::Extension(ctl): axum::Extension<Ctl>) -> axum::Json<Value> {
@@ -1762,33 +1781,69 @@ mod tests {
                             )
                         } else if let Some(destroy) = args.get("destroy").and_then(|v| v.as_array())
                         {
-                            match ctl.destroy_mode.as_deref() {
-                                None => (
-                                    "Mailbox/set",
-                                    json!({"accountId": "a", "destroyed": destroy}),
-                                ),
-                                Some("notfound") => {
-                                    let nd: serde_json::Map<String, Value> = destroy
-                                        .iter()
-                                        .filter_map(|v| v.as_str())
-                                        .map(|id| (id.to_string(), json!({"type": "notFound"})))
-                                        .collect();
-                                    ("Mailbox/set", json!({"accountId": "a", "notDestroyed": nd}))
+                            // When `destroy_variety` is set, cycle outcomes
+                            // [success, refused, error] so concurrent
+                            // `delete_folder` calls observe mixed results.
+                            if ctl.destroy_variety.load(Ordering::Relaxed) != 0 {
+                                let n = ctl.destroy_variety.fetch_add(1, Ordering::Relaxed) % 3;
+                                match n {
+                                    0 => (
+                                        "Mailbox/set",
+                                        json!({"accountId": "a", "destroyed": destroy}),
+                                    ),
+                                    1 => {
+                                        let nd: serde_json::Map<String, Value> = destroy
+                                            .iter()
+                                            .filter_map(|v| v.as_str())
+                                            .map(|id| {
+                                                (id.to_string(), json!({"type": "mailboxHasChild"}))
+                                            })
+                                            .collect();
+                                        (
+                                            "Mailbox/set",
+                                            json!({"accountId": "a", "notDestroyed": nd}),
+                                        )
+                                    }
+                                    _ => (
+                                        "error",
+                                        json!({"type": "serverFail", "description": "scripted"}),
+                                    ),
                                 }
-                                Some("refused") => {
-                                    let nd: serde_json::Map<String, Value> = destroy
-                                        .iter()
-                                        .filter_map(|v| v.as_str())
-                                        .map(|id| {
-                                            (id.to_string(), json!({"type": "mailboxHasChild"}))
-                                        })
-                                        .collect();
-                                    ("Mailbox/set", json!({"accountId": "a", "notDestroyed": nd}))
+                            } else {
+                                match ctl.destroy_mode.as_deref() {
+                                    None => (
+                                        "Mailbox/set",
+                                        json!({"accountId": "a", "destroyed": destroy}),
+                                    ),
+                                    Some("notfound") => {
+                                        let nd: serde_json::Map<String, Value> = destroy
+                                            .iter()
+                                            .filter_map(|v| v.as_str())
+                                            .map(|id| (id.to_string(), json!({"type": "notFound"})))
+                                            .collect();
+                                        (
+                                            "Mailbox/set",
+                                            json!({"accountId": "a", "notDestroyed": nd}),
+                                        )
+                                    }
+                                    Some("refused") => {
+                                        let nd: serde_json::Map<String, Value> = destroy
+                                            .iter()
+                                            .filter_map(|v| v.as_str())
+                                            .map(|id| {
+                                                (id.to_string(), json!({"type": "mailboxHasChild"}))
+                                            })
+                                            .collect();
+                                        (
+                                            "Mailbox/set",
+                                            json!({"accountId": "a", "notDestroyed": nd}),
+                                        )
+                                    }
+                                    Some(_) => (
+                                        "error",
+                                        json!({"type": "serverFail", "description": "scripted"}),
+                                    ),
                                 }
-                                Some(_) => (
-                                    "error",
-                                    json!({"type": "serverFail", "description": "scripted"}),
-                                ),
                             }
                         } else {
                             ("Mailbox/set", json!({"accountId": "a"}))
@@ -1836,6 +1891,7 @@ mod tests {
             jmap_calls: jmap_calls.clone(),
             dav_calls: dav_calls.clone(),
             destroy_mode,
+            destroy_variety,
             mkcalendar_status,
         };
         let app = axum::Router::new()
@@ -3000,6 +3056,107 @@ mod tests {
                 .unwrap()
                 .is_some()
         );
+    }
+
+    /// Concurrent `delete_folder` calls against the same mailbox must not
+    /// drop the pending prune intent when a `Refused` destroy races with an
+    /// earlier in-flight destroy whose outcome is still unknown.
+    ///
+    /// The stub cycles destroy outcomes [success, refused, error] so each
+    /// concurrent caller observes a different backend result. Regardless of
+    /// which call "wins," exactly one of these invariants must hold at the
+    /// end:
+    ///
+    /// * at least one destroy committed (`deleted`): the folder_map row is
+    ///   pruned, a `folder-delete` is journaled, and no pending intent
+    ///   survives;
+    /// * no destroy committed (`not deleted`): the mapping row survives and
+    ///   its intent is retained so a later folder-sync replay can prune it.
+    ///
+    /// The failure mode this guards against: a `Refused` arm clearing the
+    /// intent row while an earlier `Err` (unknown outcome) destroy is still
+    /// in flight — that earlier destroy may commit afterward, leaving the
+    /// mailbox gone from the backend but still advertised by EAS.
+    #[tokio::test]
+    async fn concurrent_delete_folder_keeps_prune_intent_safe() {
+        let (state, _, _) = spawn_backend_stub_varied().await;
+        state
+            .storage
+            .record_pending_folder_prunes(
+                "u@example.com",
+                std::slice::from_ref(&"mb-x".to_string()),
+            )
+            .await
+            .expect("seed pending prune intent");
+        state
+            .storage
+            .upsert_folder_journaled(
+                crate::storage::FolderUpsertParams {
+                    owner: "u@example.com",
+                    server_id: "mb-x",
+                    parent_id: "0",
+                    display_name: "Old",
+                    folder_type: 12,
+                    backend_kind: "jmap",
+                    backend_id: "mb-x",
+                },
+                "folder-add",
+            )
+            .await
+            .expect("seed folder mapping");
+
+        const CALLERS: usize = 8;
+        let mut handles = Vec::new();
+        for _ in 0..CALLERS {
+            let state = state.clone();
+            handles.push(tokio::spawn(async move {
+                // Yield briefly to interleave intent-record/destroy steps
+                // across callers and widen the race window.
+                tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+                delete_folder(&state, "u@example.com", &pw(), "mb-x").await
+            }));
+        }
+        let mut results = Vec::new();
+        for handle in handles {
+            results.push(handle.await.expect("caller joined"));
+        }
+
+        let deleted = state
+            .storage
+            .get_folder("u@example.com", "mb-x")
+            .await
+            .expect("folder lookup")
+            .is_none();
+        let intent = state
+            .storage
+            .list_pending_folder_prunes("u@example.com")
+            .await
+            .expect("list intents")
+            .contains(&"mb-x".to_string());
+        // Exactly one invariant must hold:
+        if deleted {
+            // delete_folders_journaled clears the pending row in the same
+            // transaction that prunes the mapping row.
+            assert!(
+                !intent,
+                "deleted folder must not retain a pending prune intent"
+            );
+        } else {
+            assert!(
+                intent,
+                "not-deleted folder must retain its pending prune intent"
+            );
+        }
+
+        // Sanity: every caller got a Status response (none crashed).
+        assert_eq!(results.len(), CALLERS);
+        for r in &results {
+            assert!(
+                (1..=6).contains(&r.status) || r.status == 111,
+                "unexpected status {}",
+                r.status
+            );
+        }
     }
 
     // ---- FolderUpdate ---------------------------------------------------
