@@ -375,6 +375,11 @@ CREATE INDEX IF NOT EXISTS idx_item_map_owner_time ON item_map(owner, updated_at
 CREATE INDEX IF NOT EXISTS idx_item_map_resource ON item_map(owner, resource_href);
 CREATE INDEX IF NOT EXISTS idx_item_map_uid ON item_map(owner, uid);
 CREATE INDEX IF NOT EXISTS idx_item_map_instance ON item_map(owner, instance_id);
+-- The UNIQUE(owner, server_id) constraint already provides a b-tree on that
+-- column pair, covering keyset pagination (`WHERE owner = ? AND server_id > ?
+-- ORDER BY server_id ASC`) and point lookups (`WHERE owner = ? AND server_id =
+-- ?`). No redundant index is added here; write amplification matters on the hot
+-- sync path.
 CREATE INDEX IF NOT EXISTS idx_deleted_owner_time ON deleted_item_tombstone(owner, deleted_at);
 CREATE INDEX IF NOT EXISTS idx_change_journal_owner ON change_journal(owner, id);
 CREATE INDEX IF NOT EXISTS idx_change_journal_op ON change_journal(owner, op, id);
@@ -759,6 +764,12 @@ CREATE TABLE IF NOT EXISTS folder_map (
 );
 
 CREATE INDEX IF NOT EXISTS idx_folder_map_owner ON folder_map(owner);
+-- FolderSync / GetHierarchy enumerate `WHERE owner = ? ORDER BY display_name
+-- ASC, server_id ASC`. Without an index on the ordering column pair, SQLite
+-- does a full-table scan plus a filesort on every folder sync. The (owner,
+-- display_name, server_id) index serves both the filter and the sort, so the
+-- response can be streamed in index order.
+CREATE INDEX IF NOT EXISTS idx_folder_map_owner_name ON folder_map(owner, display_name, server_id);
 
 -- Pending EAS folder-map prunes (deferred deletion work list).
 --
