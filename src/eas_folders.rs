@@ -793,29 +793,20 @@ pub async fn delete_folder(
                     // because a child was recreated, or `forbidden`). This is a
                     // failure: pruning the mirror here would resurrect the
                     // folder on the next reconcile, so abort and let the client
-                    // retry. The intent recorded above is WITHDRAWN — the
-                    // mailbox still exists, so a later folder-sync replay must
-                    // not prune its live mapping. Any child destroyed earlier in
-                    // the walk is still pruned.
+                    // retry. The intent is intentionally RETAINED: an earlier
+                    // concurrent destroy of the same mailbox may still be in
+                    // flight with an unknown outcome, and clearing the row here
+                    // would drop the only record that lets `reconcile_pending_folder_prunes`
+                    // prune it later if that destroy commits. `reconcile_pending_folder_prunes`
+                    // resolves each intent against the live JMAP hierarchy — a
+                    // still-live mailbox keeps its intent (harmless), a dead one
+                    // is pruned and journaled as `folder-delete`. Any child
+                    // destroyed earlier in the walk is still pruned.
                     Ok(crate::jmap::MailboxDestroyOutcome::Refused) => {
                         tracing::warn!(
                             server_id = %folder.server_id,
-                            "FolderDelete: Mailbox/set refused the destroy"
+                            "FolderDelete: Mailbox/set refused the destroy; intent retained for reconciliation"
                         );
-                        if let Err(e) = state
-                            .storage
-                            .clear_pending_folder_prunes(
-                                owner,
-                                std::slice::from_ref(&folder.server_id),
-                            )
-                            .await
-                        {
-                            tracing::warn!(
-                                error = %e,
-                                server_id = %folder.server_id,
-                                "FolderDelete: failed to withdraw the deferred prune for a refused destroy"
-                            );
-                        }
                         prune_destroyed_folder_ids(state, owner, &destroyed_ids).await;
                         return FolderMutationResult::status(6);
                     }
