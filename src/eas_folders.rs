@@ -489,22 +489,17 @@ async fn create_caldav_folder(
     let Ok(caldav) = CaldavClient::new(&state.cfg) else {
         return FolderMutationResult::status(6);
     };
-    // A 405 means the collection already exists. The gateway cannot tell an
-    // orphan left by a failed mapping write from a pre-existing collection a
-    // user created outside EAS, so it never adopts one: adopting would silently
-    // link a new EAS folder to a collection whose events it does not own.
-    // Instead it reports the spec's duplicate/conflict status. An orphan is
-    // prevented up front by the compensation below.
-    //
-    // Record pending intent BEFORE MKCALENDAR so a retry whose backend response
-    // was lost can reconcile: MKCALENDAR commits on the first attempt, its
-    // response is lost, the retry reaches MKCALENDAR again, gets 405, and this
-    // intent lets it recognize the collection created by the original attempt
-    // instead of returning Status 2 for a collection that already exists.
-    let _pending = state
+
+    // Check for a pending intent from a PRIOR attempt BEFORE sending MKCALENDAR.
+    // If MKCALENDAR later returns 405 and a prior intent exists, this attempt is
+    // a retry whose backend response was lost: the prior attempt committed the
+    // collection but never told the client, so we reconcile via the intent
+    // instead of refusing with Status 2 for an orphan.
+    let prior_intent = state
         .storage
-        .record_pending_calendar_create(owner, &coll.href, display_name)
-        .await;
+        .get_pending_calendar_create(owner, &coll.href)
+        .await
+        .unwrap_or(None);
 
     match caldav
         .create_calendar_collection(
@@ -516,55 +511,121 @@ async fn create_caldav_folder(
         )
         .await
     {
-        Ok(true) => {}
+        Ok(true) => {
+            // MKCALENDAR committed the collection. Record our intent for any
+            // future retry whose response is lost: the retry will see 405 and
+            // reconcile via this intent instead of returning Status 2 for an
+            // orphan.
+            if let Err(e) = state
+                .storage
+                .record_pending_calendar_create(owner, &coll.href, display_name)
+                .await
+            {
+                tracing::warn!(error = %e, "FolderCreate: failed to record pending calendar create");
+                // Non-fatal: proceed to persist the mapping. A failed intent
+                // record only means a lost-response retry cannot reconcile
+                // via this path.
+            }
+
+            // Persist the mapping. The pending intent is intentionally NOT
+            // cleared here: if the client never learns of this success (response
+            // lost), its retry will see 405 and reconcile via this same intent.
+            if let Err(e) = state
+                .storage
+                .upsert_folder_journaled(
+                    crate::storage::FolderUpsertParams {
+                        owner,
+                        server_id: &coll.href,
+                        parent_id: "0",
+                        display_name,
+                        folder_type,
+                        backend_kind: "caldav",
+                        backend_id: &coll.href,
+                    },
+                    "folder-add",
+                )
+                .await
+            {
+                // The collection was created but the mapping write failed.
+                // Compensate by deleting the just-created collection, so a
+                // retry starts clean rather than 405ing on an orphan that can
+                // never be mapped (the gateway no longer adopts on 405).
+                tracing::warn!(error = %e, "FolderCreate: failed to persist folder mapping");
+                if let Err(del) = caldav
+                    .delete_collection(&coll.href, owner, password.expose_secret())
+                    .await
+                {
+                    tracing::warn!(
+                        error = %del,
+                        collection = %coll.name,
+                        "FolderCreate: failed to roll back the created calendar collection"
+                    );
+                }
+                return FolderMutationResult::status(6);
+            }
+            FolderMutationResult::created(coll.href)
+        }
         Ok(false) => {
+            // MKCALENDAR returned 405: the collection already exists. Before
+            // refusing with Status 2, reconcile only if a PRIOR attempt's intent
+            // is recorded AND the collection is verifiably present on the
+            // backend. A prior intent means a previous attempt committed this
+            // collection (MKCALENDAR returned 201) but the client never learned
+            // of it — this is exactly the lost-response case.
+            if let Some(intent) = prior_intent {
+                let exists = caldav
+                    .get_calendar_resource(&coll.href, owner, password.expose_secret())
+                    .await
+                    .map(|o| o.is_some())
+                    .unwrap_or(false);
+                if exists {
+                    tracing::info!(
+                        collection = %coll.name,
+                        "FolderCreate: reconciling pending calendar create on 405"
+                    );
+                    let result = state
+                        .storage
+                        .upsert_folder_journaled(
+                            crate::storage::FolderUpsertParams {
+                                owner,
+                                server_id: &coll.href,
+                                parent_id: "0",
+                                display_name: &intent.display_name,
+                                folder_type,
+                                backend_kind: "caldav",
+                                backend_id: &coll.href,
+                            },
+                            "folder-add",
+                        )
+                        .await;
+                    // The intent is consumed by a successful reconciliation.
+                    if let Err(e) = state
+                        .storage
+                        .clear_pending_calendar_create(owner, &coll.href)
+                        .await
+                    {
+                        tracing::warn!(error = %e, "FolderCreate: failed to clear pending calendar create");
+                    }
+                    match result {
+                        Ok(()) => return FolderMutationResult::created(coll.href),
+                        Err(e) => {
+                            tracing::warn!(error = %e, "FolderCreate: failed to persist folder mapping on reconcile");
+                            return FolderMutationResult::status(6);
+                        }
+                    }
+                }
+            }
             tracing::warn!(
                 collection = %coll.name,
                 "FolderCreate: calendar collection already exists"
             );
-            return FolderMutationResult::status(2);
+            FolderMutationResult::status(2)
         }
         Err(e) => {
             tracing::warn!(error = %e, "FolderCreate: MKCALENDAR failed");
-            return FolderMutationResult::status(6);
+            FolderMutationResult::status(6)
         }
     }
-    if let Err(e) = state
-        .storage
-        .upsert_folder_journaled(
-            crate::storage::FolderUpsertParams {
-                owner,
-                server_id: &coll.href,
-                parent_id: "0",
-                display_name,
-                folder_type,
-                backend_kind: "caldav",
-                backend_id: &coll.href,
-            },
-            "folder-add",
-        )
-        .await
-    {
-        // The collection was created but the mapping write failed. Compensate
-        // by deleting the just-created collection, so a retry starts clean
-        // rather than 405ing on an orphan that can never be mapped (the gateway
-        // no longer adopts on 405). A failed compensation is logged; the client
-        // still receives a retryable failure and an orphan is no worse than
-        // the pre-compensation behavior.
-        tracing::warn!(error = %e, "FolderCreate: failed to persist folder mapping");
-        if let Err(del) = caldav
-            .delete_collection(&coll.href, owner, password.expose_secret())
-            .await
-        {
-            tracing::warn!(
-                error = %del,
-                collection = %coll.name,
-                "FolderCreate: failed to roll back the created calendar collection"
-            );
-        }
-        return FolderMutationResult::status(6);
-    }
-    FolderMutationResult::created(coll.href)
 }
 
 /// Resolve a system email folder's EAS CollectionId to its JMAP mailbox id.
@@ -1595,8 +1656,10 @@ mod tests {
         /// `Some("error")` = a method-level `error` response.
         destroy_mode: Option<String>,
         /// The HTTP status the CalDAV stub answers `MKCALENDAR` with (201 by
-        /// default; 405 models a collection that already exists).
-        mkcalendar_status: u16,
+        /// default; 405 models a collection that already exists). Atomic so a
+        /// test can flip the status between calls to simulate a lost response
+        /// (first MKCALENDAR returns 201, the retry sees 405).
+        mkcalendar_status: StdArc<std::sync::atomic::AtomicU16>,
     }
 
     async fn spawn_backend_stub() -> (
@@ -1631,11 +1694,13 @@ mod tests {
     ) {
         use axum::response::Response;
         use axum::routing::{any, get, post};
+        use std::sync::atomic::AtomicU16;
 
         let destroy_mode = destroy_mode.map(str::to_string);
         let jmap_calls: StdArc<TokioMutex<Vec<Value>>> = StdArc::new(TokioMutex::new(Vec::new()));
         let dav_calls: StdArc<TokioMutex<Vec<(String, String)>>> =
             StdArc::new(TokioMutex::new(Vec::new()));
+        let mkcalendar_status = StdArc::new(AtomicU16::new(mkcalendar_status));
 
         async fn session(axum::Extension(ctl): axum::Extension<Ctl>) -> axum::Json<Value> {
             axum::Json(json!({
@@ -1761,7 +1826,9 @@ mod tests {
                 .await
                 .push((method.as_str().to_string(), uri.path().to_string()));
             let status = match method.as_str() {
-                "MKCALENDAR" => ctl.mkcalendar_status,
+                "MKCALENDAR" => ctl
+                    .mkcalendar_status
+                    .load(std::sync::atomic::Ordering::Relaxed),
                 _ => 200,
             };
             Response::builder()
@@ -2389,6 +2456,72 @@ mod tests {
         assert_eq!(
             r.status, 2,
             "a mapped href is a real conflict, not an orphan"
+        );
+    }
+
+    /// A MKCALENDAR 405 on retry after a lost response is reconciled: the
+    /// pending intent recorded by the first attempt lets the retry recognize
+    /// the collection it created, verify it exists on the backend, and upsert
+    /// its mapping instead of returning Status 2 for an orphan.
+    #[tokio::test]
+    async fn create_calendar_folder_405_reconciles_pending_create_after_lost_response() {
+        // Simulate a lost-response retry: spawn a stub whose MKCALENDAR returns
+        // 405 (collection already exists), but pre-record a pending intent for
+        // the same href — exactly the state left by an attempt whose backend
+        // response was lost after MKCALENDAR committed. GET is not scripted in
+        // the stub (returns 200 empty body), so get_calendar_resource observes
+        // the collection as present and the retry upserts the mapping.
+        let (state, _, dav_calls) = spawn_backend_stub_full(None, 405).await;
+        state
+            .storage
+            .record_pending_calendar_create(
+                "u@example.com",
+                "/cal/u@example.com/Reconcile/",
+                "Reconcile",
+            )
+            .await
+            .expect("record pending intent for retry");
+        let coll = caldav_collection_for("", "u@example.com", "Reconcile", 13)
+            .expect("caldav collection descriptor");
+        let r = create_caldav_folder(&state, "u@example.com", &pw(), "Reconcile", 13, coll).await;
+        assert_eq!(
+            r.status, 1,
+            "retry must reconcile pending intent and create mapping on 405"
+        );
+        assert_eq!(
+            r.server_id.as_deref(),
+            Some("/cal/u@example.com/Reconcile/"),
+            "retry must return the collection href as ServerId"
+        );
+        let row = state
+            .storage
+            .get_folder("u@example.com", "/cal/u@example.com/Reconcile/")
+            .await
+            .unwrap()
+            .expect("reconciled mapping must persist");
+        assert_eq!(row.backend_kind, "caldav");
+        // The pending intent must be cleared after reconciliation.
+        let intent = state
+            .storage
+            .get_pending_calendar_create("u@example.com", "/cal/u@example.com/Reconcile/")
+            .await
+            .unwrap();
+        assert!(
+            intent.is_none(),
+            "pending intent must be cleared after reconcile"
+        );
+        let calls = dav_calls.lock().await;
+        assert!(
+            calls
+                .iter()
+                .any(|(m, p)| m == "MKCALENDAR" && p == "/cal/u@example.com/Reconcile/"),
+            "retry must still send MKCALENDAR (gets 405): {calls:?}"
+        );
+        assert!(
+            calls
+                .iter()
+                .any(|(m, p)| m == "GET" && p == "/cal/u@example.com/Reconcile/"),
+            "retry must GET the collection to verify it exists: {calls:?}"
         );
     }
 

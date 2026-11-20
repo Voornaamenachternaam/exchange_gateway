@@ -77,6 +77,24 @@ impl SafeDebug for JournalRow {
     }
 }
 
+/// A pending calendar-create intent recorded before MKCALENDAR, returned to
+/// callers so a retry can reconcile a lost-response 405 by verifying the
+/// collection exists and upserting its mapping.
+#[derive(Debug, Clone)]
+pub struct PendingCalendarCreate {
+    pub owner: String,
+    pub href: String,
+    pub display_name: String,
+}
+
+/// Private FromRow helper for reading `pending_calendar_create` rows.
+#[derive(sqlx::FromRow)]
+struct PendingCalendarCreateRow {
+    owner: String,
+    href: String,
+    display_name: String,
+}
+
 // Input row for a calendar Sync's atomic commit: one delivered event. Borrowed
 // so a Sync response can build the list without cloning its pending items.
 pub struct CalendarDeliveryWrite<'a> {
@@ -4363,6 +4381,47 @@ impl Storage {
         .execute(self.pool.as_ref())
         .await
         .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+        Ok(())
+    }
+
+    /// Read the pending calendar-create intent for `(owner, href)`, if any.
+    ///
+    /// Used on a MKCALENDAR 405 retry: if an intent is recorded and the
+    /// collection still exists on the backend, the retry can upsert the
+    /// mapping instead of returning Status 2 for an orphan.
+    pub async fn get_pending_calendar_create(
+        &self,
+        owner: &str,
+        href: &str,
+    ) -> Result<Option<PendingCalendarCreate>> {
+        let row = sqlx::query_as::<_, PendingCalendarCreateRow>(
+            "SELECT owner, href, display_name FROM pending_calendar_create
+             WHERE owner = ?1 AND href = ?2",
+        )
+        .bind(owner)
+        .bind(href)
+        .fetch_optional(self.pool.as_ref())
+        .await
+        .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+        Ok(row.map(|r| PendingCalendarCreate {
+            owner: r.owner,
+            href: r.href,
+            display_name: r.display_name,
+        }))
+    }
+
+    /// Drop the pending calendar-create intent for `(owner, href)`.
+    ///
+    /// Called once the intent has been reconciled (mapping persisted) so the
+    /// intent does not linger and block a legitimate future create of the same
+    /// href.
+    pub async fn clear_pending_calendar_create(&self, owner: &str, href: &str) -> Result<()> {
+        sqlx::query("DELETE FROM pending_calendar_create WHERE owner = ?1 AND href = ?2")
+            .bind(owner)
+            .bind(href)
+            .execute(self.pool.as_ref())
+            .await
+            .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
         Ok(())
     }
 
