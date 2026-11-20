@@ -564,6 +564,15 @@ pub enum MailboxDestroyOutcome {
     Refused,
 }
 
+impl MailboxDestroyOutcome {
+    /// Whether the desired backend end state — the mailbox being absent — is
+    /// known to hold. A transport/method error has no outcome value and must
+    /// not be treated as gone by callers.
+    pub const fn is_gone(self) -> bool {
+        matches!(self, Self::Destroyed | Self::AlreadyGone)
+    }
+}
+
 /// Parameters for querying emails via JMAP.
 pub struct QueryEmailsParams<'a> {
     pub account_id: &'a str,

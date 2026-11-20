@@ -94,6 +94,13 @@ tokio-test = "^0.4.6"
 insta = "^1.49.0"
 pretty_assertions = "^1.4.1"
 temp-env = "^0.3.6"
+arbitrary = { version = "=1.5.0", features = ["derive"] }
+loom = "=0.7.3"
+wiremock = "=0.6.5"
+
+[[bench]]
+name = "hot_paths"
+harness = false
 
 [profile.release]
 opt-level = 3

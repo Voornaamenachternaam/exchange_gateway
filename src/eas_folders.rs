@@ -783,32 +783,30 @@ pub async fn delete_folder(
                     .destroy_mailbox(&account_id, &folder.backend_id, true, owner, password)
                     .await
                 {
-                    Ok(
-                        crate::jmap::MailboxDestroyOutcome::Destroyed
-                        | crate::jmap::MailboxDestroyOutcome::AlreadyGone,
-                    ) => {
-                        destroyed_ids.push(folder.server_id.clone());
-                    }
-                    // The server refused the destroy (e.g. `mailboxHasChild`
-                    // because a child was recreated, or `forbidden`). This is a
-                    // failure: pruning the mirror here would resurrect the
-                    // folder on the next reconcile, so abort and let the client
-                    // retry. The intent is intentionally RETAINED: an earlier
-                    // concurrent destroy of the same mailbox may still be in
-                    // flight with an unknown outcome, and clearing the row here
-                    // would drop the only record that lets `reconcile_pending_folder_prunes`
-                    // prune it later if that destroy commits. `reconcile_pending_folder_prunes`
-                    // resolves each intent against the live JMAP hierarchy — a
-                    // still-live mailbox keeps its intent (harmless), a dead one
-                    // is pruned and journaled as `folder-delete`. Any child
-                    // destroyed earlier in the walk is still pruned.
-                    Ok(crate::jmap::MailboxDestroyOutcome::Refused) => {
-                        tracing::warn!(
-                            server_id = %folder.server_id,
-                            "FolderDelete: Mailbox/set refused the destroy; intent retained for reconciliation"
-                        );
-                        prune_destroyed_folder_ids(state, owner, &destroyed_ids).await;
-                        return FolderMutationResult::status(6);
+                    Ok(outcome) => {
+                        if outcome.is_gone() {
+                            destroyed_ids.push(folder.server_id.clone());
+                        } else {
+                            // The server refused the destroy (e.g. `mailboxHasChild`
+                            // because a child was recreated, or `forbidden`). This is a
+                            // failure: pruning the mirror here would resurrect the
+                            // folder on the next reconcile, so abort and let the client
+                            // retry. The intent is intentionally RETAINED: an earlier
+                            // concurrent destroy of the same mailbox may still be in
+                            // flight with an unknown outcome, and clearing the row here
+                            // would drop the only record that lets `reconcile_pending_folder_prunes`
+                            // prune it later if that destroy commits. `reconcile_pending_folder_prunes`
+                            // resolves each intent against the live JMAP hierarchy — a
+                            // still-live mailbox keeps its intent (harmless), a dead one
+                            // is pruned and journaled as `folder-delete`. Any child
+                            // destroyed earlier in the walk is still pruned.
+                            tracing::warn!(
+                                server_id = %folder.server_id,
+                                "FolderDelete: Mailbox/set refused the destroy; intent retained for reconciliation"
+                            );
+                            prune_destroyed_folder_ids(state, owner, &destroyed_ids).await;
+                            return FolderMutationResult::status(6);
+                        }
                     }
                     Err(e) => {
                         // UNKNOWN outcome: the intent is RETAINED (do NOT
@@ -3302,5 +3300,149 @@ mod tests {
             .unwrap();
         assert_eq!(bounded.len(), 1);
         assert_eq!(bounded[0].server_id, "mb-a");
+    }
+
+    #[tokio::test]
+    async fn delete_then_recreate_same_name_preserves_only_the_new_identity() {
+        let (state, _, _) = spawn_backend_stub().await;
+        state
+            .storage
+            .upsert_folder_journaled(
+                crate::storage::FolderUpsertParams {
+                    owner: "u@example.com",
+                    server_id: "mb-old",
+                    parent_id: "0",
+                    display_name: "Projects",
+                    folder_type: 12,
+                    backend_kind: "jmap",
+                    backend_id: "mb-old",
+                },
+                "folder-add",
+            )
+            .await
+            .unwrap();
+
+        let deleted = delete_folder(&state, "u@example.com", &pw(), "mb-old").await;
+        assert_eq!(deleted.status, 1);
+        assert!(
+            state
+                .storage
+                .get_folder("u@example.com", "mb-old")
+                .await
+                .unwrap()
+                .is_none()
+        );
+
+        let created = create_folder(&state, "u@example.com", &pw(), "0", "Projects", 12).await;
+        assert_eq!(created.status, 1);
+        assert_eq!(created.server_id.as_deref(), Some("mb-new"));
+        let replacement = state
+            .storage
+            .get_folder("u@example.com", "mb-new")
+            .await
+            .unwrap()
+            .expect("replacement mapping");
+        assert_eq!(replacement.display_name, "Projects");
+        assert!(
+            state
+                .storage
+                .get_folder("u@example.com", "mb-old")
+                .await
+                .unwrap()
+                .is_none(),
+            "the recreate must not resurrect the deleted identity"
+        );
+        assert!(
+            state
+                .storage
+                .list_pending_folder_prunes("u@example.com")
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        let journal = state
+            .storage
+            .list_folder_journal_since("u@example.com", 0, i64::MAX)
+            .await
+            .unwrap();
+        let tail = &journal[journal.len() - 2..];
+        assert_eq!(tail[0].server_id, "mb-old");
+        assert_eq!(tail[0].op, "folder-delete");
+        assert_eq!(tail[1].server_id, "mb-new");
+        assert_eq!(tail[1].op, "folder-add");
+    }
+
+    #[tokio::test]
+    async fn rename_recreate_and_stale_delete_cannot_remove_the_wrong_folder() {
+        let (state, _, _) = spawn_backend_stub().await;
+        state
+            .storage
+            .upsert_folder_journaled(
+                crate::storage::FolderUpsertParams {
+                    owner: "u@example.com",
+                    server_id: "mb-a",
+                    parent_id: "0",
+                    display_name: "Alpha",
+                    folder_type: 12,
+                    backend_kind: "jmap",
+                    backend_id: "mb-a",
+                },
+                "folder-add",
+            )
+            .await
+            .unwrap();
+        let renamed = update_folder(&state, "u@example.com", &pw(), "mb-a", "0", "Beta").await;
+        assert_eq!(renamed.status, 1);
+        let created = create_folder(&state, "u@example.com", &pw(), "0", "Alpha", 12).await;
+        assert_eq!(created.status, 1);
+        assert_eq!(created.server_id.as_deref(), Some("mb-new"));
+
+        let stale_name = delete_folder(&state, "u@example.com", &pw(), "Alpha").await;
+        assert_eq!(
+            stale_name.status, 4,
+            "a display name is not a stable EAS deletion identity"
+        );
+        assert_eq!(
+            state
+                .storage
+                .get_folder("u@example.com", "mb-a")
+                .await
+                .unwrap()
+                .unwrap()
+                .display_name,
+            "Beta"
+        );
+        assert_eq!(
+            state
+                .storage
+                .get_folder("u@example.com", "mb-new")
+                .await
+                .unwrap()
+                .unwrap()
+                .display_name,
+            "Alpha"
+        );
+
+        let deleted = delete_folder(&state, "u@example.com", &pw(), "mb-a").await;
+        assert_eq!(deleted.status, 1);
+        assert!(
+            state
+                .storage
+                .get_folder("u@example.com", "mb-a")
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            state
+                .storage
+                .get_folder("u@example.com", "mb-new")
+                .await
+                .unwrap()
+                .unwrap()
+                .display_name,
+            "Alpha",
+            "deleting the renamed identity must spare the replacement"
+        );
     }
 }
