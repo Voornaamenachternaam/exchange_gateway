@@ -1,5 +1,7 @@
 // src/storage.rs
+use percent_encoding::{AsciiSet, CONTROLS, utf8_percent_encode};
 use sqlx::{Executor, FromRow, Pool, Row, Sqlite};
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::sync::Arc;
 
@@ -17,11 +19,41 @@ pub trait SafeDebug {
 #[derive(Clone)]
 pub struct Storage {
     pool: Arc<SqlPool>,
+    /// Per-`(owner, backend folder)` mutation locks. A folder mutation is two
+    /// steps — a backend `Mailbox/set` (or CalDAV `PROPPATCH`) and a
+    /// `folder_map` mirror — and the mirror must reflect the LAST backend write.
+    /// Without a shared lock, two concurrent mutations of the SAME folder (a
+    /// rename over EWS, a move over MAPI, a rename over EAS) can commit their
+    /// backend writes A-then-B but run their mirrors B-then-A, leaving the
+    /// stored name/parent disagreeing with the backend while both requests
+    /// report success. The lock is held across BOTH steps so each mutation is
+    /// one ordered operation. Keyed on `(owner, backend_id)`; the entry is kept
+    /// (never removed) so the lock identity is stable across requests — the map
+    /// is bounded by the number of folders a user creates.
+    folder_locks: Arc<dashmap::DashMap<String, Arc<tokio::sync::Mutex<()>>>>,
 }
 
 impl Storage {
     pub fn pool(&self) -> &SqlPool {
         &self.pool
+    }
+
+    /// Acquire the per-`(owner, backend folder)` folder-mutation lock. The
+    /// returned guard MUST be held across BOTH the backend mutation and the
+    /// `folder_map` mirror so the two steps form one ordered operation and a
+    /// concurrent rename/move of the same folder (over ANY front door: EAS,
+    /// EWS, or MAPI) cannot interleave a mirror derived from a stale snapshot.
+    pub async fn lock_folder_mutation(
+        &self,
+        owner: &str,
+        backend_id: &str,
+    ) -> tokio::sync::OwnedMutexGuard<()> {
+        let lock = self
+            .folder_locks
+            .entry(format!("{owner}:{backend_id}"))
+            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+            .clone();
+        lock.lock_owned().await
     }
 }
 
@@ -43,6 +75,33 @@ impl SafeDebug for JournalRow {
             .field("resource_href", &self.resource_href)
             .finish()
     }
+}
+
+/// A pending calendar-create intent recorded before MKCALENDAR, returned to
+/// callers so a retry can reconcile a lost-response 405 by verifying the
+/// collection exists and upserting its mapping.
+#[derive(Debug, Clone)]
+pub struct PendingCalendarCreate {
+    pub owner: String,
+    pub href: String,
+    pub display_name: String,
+}
+
+/// Private FromRow helper for reading `pending_calendar_create` rows.
+#[derive(sqlx::FromRow)]
+struct PendingCalendarCreateRow {
+    owner: String,
+    href: String,
+    display_name: String,
+}
+
+// Input row for a calendar Sync's atomic commit: one delivered event. Borrowed
+// so a Sync response can build the list without cloning its pending items.
+pub struct CalendarDeliveryWrite<'a> {
+    pub server_id: &'a str,
+    pub resource_href: &'a str,
+    pub uid: &'a str,
+    pub etag: &'a str,
 }
 
 // Row struct for item_map queries - safe for logging (no sensitive data)
@@ -278,6 +337,32 @@ pub struct MeetingRsvpRow {
     pub responded_at: String,
 }
 
+/// Percent-encode a CalDAV href path for comparison with the live-set entries
+/// returned by `find_user_calendars`. Those entries come through `Url::path()`,
+/// which preserves percent-encoding (e.g. `My Calendar` → `My%20Calendar`).
+/// The stored `folder_map.backend_id` holds the raw path (e.g. `My Calendar`),
+/// so we encode it to the same escaped form before comparing. This prevents a
+/// still-live collection whose href contains spaces or non-ASCII from being
+/// mistaken for deleted and having its EAS mapping pruned. `/` and other
+/// path-safe characters are preserved.
+const PATH_ENCODE_SET: AsciiSet = CONTROLS
+    .add(b' ')
+    .add(b'"')
+    .add(b'#')
+    .add(b'%')
+    .add(b'<')
+    .add(b'>')
+    .add(b'?');
+
+pub(crate) fn normalize_caldav_path(path: &str) -> String {
+    // Trim trailing slashes to match the live-set normalization
+    // performed by `find_user_calendars` callers (see eas_folders.rs),
+    // then percent-encode to the same escaped form so candidates whose
+    // href contains spaces or non-ASCII are not mistaken for deleted.
+    let trimmed = path.trim_end_matches('/');
+    utf8_percent_encode(trimmed, &PATH_ENCODE_SET).collect::<String>()
+}
+
 /// Parameters for recording one delivered iTIP REPLY in the duplicate-RSVP
 /// idempotence store ([MS-ASCMD] §2.2.1.11) — the `MeetingStateParams`
 /// borrow convention applied to the meeting_rsvp upsert.
@@ -486,6 +571,7 @@ impl Storage {
             })?;
         Ok(Self {
             pool: Arc::new(pool),
+            folder_locks: Arc::new(dashmap::DashMap::new()),
         })
     }
 
@@ -512,6 +598,22 @@ impl Storage {
                 .await
                 .map_err(|e| GatewayError::Storage(format!("Migration error: {}", e)))?;
         }
+        // Track whether a calendar sync stream has been initialized (had at
+        // least one successful prime/delta), separately from whether its
+        // delivery ledger currently holds rows. An empty calendar's successful
+        // prime sets this marker; a subsequent delta with an empty ledger is
+        // then accepted instead of forcing an endless re-prime loop.
+        let has_calendar_stream_init = columns
+            .iter()
+            .any(|c| c.get::<String, _>("name") == "calendar_stream_init");
+        if !has_calendar_stream_init {
+            sqlx::query(
+                "ALTER TABLE sync_state ADD COLUMN calendar_stream_init INTEGER NOT NULL DEFAULT 0",
+            )
+            .execute(self.pool.as_ref())
+            .await
+            .map_err(|e| GatewayError::Storage(format!("Migration error: {}", e)))?;
+        }
         // Same probe for the `base_seq` column of `local_sync_cursor`: it
         // anchors continuation windows to the journal head captured when
         // the initial sync started (see sqlite_schema.sql).
@@ -529,6 +631,24 @@ impl Storage {
             .execute(self.pool.as_ref())
             .await
             .map_err(|e| GatewayError::Storage(format!("Migration error: {}", e)))?;
+        }
+        // Same probe for the `anchor_id` column of `email_sync_cursor`:
+        // databases created before anchor-based initial-sync paging resume the
+        // continuation by numeric `position` only (the fallback path); the
+        // column lets the next initial sync pin its page with an RFC 8620 §5.5
+        // query anchor.
+        let email_cursor_columns = sqlx::query("PRAGMA table_info(email_sync_cursor)")
+            .fetch_all(self.pool.as_ref())
+            .await
+            .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))?;
+        let has_anchor_id = email_cursor_columns
+            .iter()
+            .any(|c| c.get::<String, _>("name") == "anchor_id");
+        if !has_anchor_id {
+            sqlx::query("ALTER TABLE email_sync_cursor ADD COLUMN anchor_id TEXT")
+                .execute(self.pool.as_ref())
+                .await
+                .map_err(|e| GatewayError::Storage(format!("Migration error: {}", e)))?;
         }
         // Same probe for the `sequence` column of `meeting_rsvp`: databases
         // created between the v9 table's introduction and the SEQUENCE-aware
@@ -598,6 +718,85 @@ impl Storage {
             .await
             .map_err(|e| GatewayError::Storage(format!("Migration error: {}", e)))?;
         }
+        // `email_keyword_baseline` was introduced with a one-row-per-collection
+        // shape (`baseline_json`), but the bounded flag scan needs one row per
+        // message (`email_id`, `keywords_json`). `CREATE TABLE IF NOT EXISTS`
+        // cannot reshape an existing table, so a database created before this
+        // change still carries the old columns and every baseline query would
+        // fail. Detect the old shape and rebuild it, expanding each stored JSON
+        // map into per-message rows.
+        let kw_columns = sqlx::query("PRAGMA table_info(email_keyword_baseline)")
+            .fetch_all(self.pool.as_ref())
+            .await
+            .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))?;
+        let kw_names: Vec<String> = kw_columns
+            .iter()
+            .map(|c| c.get::<String, _>("name"))
+            .collect();
+        let old_shape = !kw_names.is_empty()
+            && kw_names.iter().any(|n| n == "baseline_json")
+            && !kw_names.iter().any(|n| n == "email_id");
+        if old_shape {
+            let legacy = sqlx::query(
+                "SELECT owner, collection_id, baseline_json FROM email_keyword_baseline",
+            )
+            .fetch_all(self.pool.as_ref())
+            .await
+            .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))?;
+            let mut tx = self
+                .pool
+                .begin()
+                .await
+                .map_err(|e| GatewayError::Storage(format!("Migration error: {}", e)))?;
+            sqlx::query(
+                "CREATE TABLE email_keyword_baseline_new (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    owner TEXT NOT NULL,
+                    collection_id TEXT NOT NULL,
+                    email_id TEXT NOT NULL,
+                    keywords_json TEXT NOT NULL,
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(owner, collection_id, email_id)
+                )",
+            )
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| GatewayError::Storage(format!("Migration error: {}", e)))?;
+            for row in legacy {
+                let owner: String = row.get(0);
+                let collection_id: String = row.get(1);
+                let baseline_json: String = row.get(2);
+                let map: std::collections::BTreeMap<String, Vec<String>> =
+                    serde_json::from_str(&baseline_json).unwrap_or_default();
+                for (email_id, keywords) in map {
+                    let json =
+                        serde_json::to_string(&keywords).unwrap_or_else(|_| "[]".to_string());
+                    sqlx::query(
+                        "INSERT INTO email_keyword_baseline_new
+                            (owner, collection_id, email_id, keywords_json)
+                         VALUES (?1, ?2, ?3, ?4)",
+                    )
+                    .bind(&owner)
+                    .bind(&collection_id)
+                    .bind(&email_id)
+                    .bind(json)
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(|e| GatewayError::Storage(format!("Migration error: {}", e)))?;
+                }
+            }
+            sqlx::query("DROP TABLE email_keyword_baseline")
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| GatewayError::Storage(format!("Migration error: {}", e)))?;
+            sqlx::query("ALTER TABLE email_keyword_baseline_new RENAME TO email_keyword_baseline")
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| GatewayError::Storage(format!("Migration error: {}", e)))?;
+            tx.commit()
+                .await
+                .map_err(|e| GatewayError::Storage(format!("Migration error: {}", e)))?;
+        }
         Ok(())
     }
 
@@ -619,6 +818,44 @@ impl Storage {
         .execute(self.pool.as_ref())
         .await
         .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+        Ok(())
+    }
+
+    /// Persist a collection's (SyncKey, token) AND the rendered `<Add>`/`<Change>`
+    /// keyword seeds of the window that SyncKey acknowledges, in ONE
+    /// transaction. The "everything fits" delta acknowledges its window here, so
+    /// the seeds MUST be durable with it: a seed written without the token would
+    /// advance the baseline past a window the client was never told about (a
+    /// later `Email/queryChanges` cannot re-report a flag-only `<Change>`), and a
+    /// token without its seeds would suppress the flag `<Change>` the retry must
+    /// re-derive. A failure rolls both back, so the caller answers a retryable
+    /// error and re-delivers the same window.
+    pub async fn set_sync_key_with_seeds(
+        &self,
+        owner: &str,
+        collection_id: &str,
+        sync_key: &str,
+        token: Option<&str>,
+        seeds: &[(String, Vec<String>)],
+    ) -> Result<()> {
+        let mut tx = sqlx::Acquire::begin(self.pool.as_ref())
+            .await
+            .map_err(|e| GatewayError::Storage(format!("Transaction error: {}", e)))?;
+        sqlx::query(
+            "INSERT INTO sync_state (owner, collection_id, sync_key, token) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(owner, collection_id) DO UPDATE SET sync_key = ?3, token = ?4, updated_at = CURRENT_TIMESTAMP",
+        )
+        .bind(owner)
+        .bind(collection_id)
+        .bind(sync_key)
+        .bind(token)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+        Self::write_keyword_seeds_tx(&mut tx, owner, collection_id, seeds).await?;
+        tx.commit()
+            .await
+            .map_err(|e| GatewayError::Storage(format!("Commit error: {}", e)))?;
         Ok(())
     }
 
@@ -784,6 +1021,338 @@ impl Storage {
         Ok(())
     }
 
+    /// The per-scope calendar delivery ledger: the ETag this scope (a single
+    /// device+collection SyncKey stream) last DELIVERED for each `server_id`.
+    ///
+    /// Read IN FULL, never truncated: the ledger is what decides `<Add>` vs
+    /// `<Change>` and whether a backend ETag moved, so a dropped row would look
+    /// like an undelivered event and be re-sent as `<Add>` on every sync. The
+    /// row count is bounded by this scope's own calendar size, which the same
+    /// sync already materialises — so no cap is needed (an arbitrary `LIMIT`
+    /// would silently lose rows, and without `ORDER BY` which ones is
+    /// nondeterministic).
+    pub async fn list_calendar_deliveries(
+        &self,
+        owner: &str,
+        scope_id: &str,
+    ) -> Result<HashMap<String, String>> {
+        let rows = sqlx::query(
+            "SELECT server_id, etag FROM calendar_delivery_map WHERE owner = ?1 AND scope_id = ?2",
+        )
+        .bind(owner)
+        .bind(scope_id)
+        .fetch_all(self.pool.as_ref())
+        .await
+        .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))?;
+        Ok(rows
+            .into_iter()
+            .map(|r| {
+                (
+                    r.get::<String, _>(0),
+                    r.get::<Option<String>, _>(1).unwrap_or_default(),
+                )
+            })
+            .collect())
+    }
+
+    /// Record that EAS Sync scope `scope_id` has delivered `server_id` with
+    /// `etag` (used by the client-mutation path, where the client already holds
+    /// the item it just created/changed, so the follow-up Sync must filter it
+    /// out rather than re-emit `<Add>`). Idempotent upsert keyed `(owner,
+    /// scope_id, server_id)`.
+    pub async fn upsert_calendar_delivery(
+        &self,
+        owner: &str,
+        scope_id: &str,
+        server_id: &str,
+        etag: &str,
+    ) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO calendar_delivery_map (owner, scope_id, server_id, etag)
+             VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(owner, scope_id, server_id) DO UPDATE
+             SET etag = ?4, updated_at = CURRENT_TIMESTAMP",
+        )
+        .bind(owner)
+        .bind(scope_id)
+        .bind(server_id)
+        .bind(etag)
+        .execute(self.pool.as_ref())
+        .await
+        .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+        Ok(())
+    }
+
+    /// Remove a `scope_id`'s delivery-ledger row for `server_id` (used by the
+    /// client-mutation Delete path: the client has been told the item is gone,
+    /// so a later re-add must be an `<Add>` for this stream).
+    pub async fn delete_calendar_delivery(
+        &self,
+        owner: &str,
+        scope_id: &str,
+        server_id: &str,
+    ) -> Result<()> {
+        sqlx::query(
+            "DELETE FROM calendar_delivery_map WHERE owner = ?1 AND scope_id = ?2 AND server_id = ?3",
+        )
+        .bind(owner)
+        .bind(scope_id)
+        .bind(server_id)
+        .execute(self.pool.as_ref())
+        .await
+        .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+        Ok(())
+    }
+
+    /// Commit ONE calendar Sync response's durable side effects in a single
+    /// transaction: the delivered items' `item_map` + `change_journal` rows and
+    /// this scope's delivery-ledger rows, the emitted `<Delete>`s'
+    /// `item_map`/ledger removals, the new SyncKey and its token, and the
+    /// journal watermark.
+    ///
+    /// Atomicity is a correctness requirement, not a convenience: the ledger
+    /// must advance WITH the SyncKey it belongs to. If the ledger were written
+    /// first and the SyncKey write then failed, the client's retry (same
+    /// SyncKey) would see the event as already delivered and SKIP it forever —
+    /// a silently lost update. Committing both together means a partial failure
+    /// rolls the whole response back, so the retry re-derives and re-delivers
+    /// exactly the same set. This mirrors `upsert_item_map`'s own transaction.
+    ///
+    /// Each delivered item ALSO gets the `change_journal` `op='upsert'` row that
+    /// `upsert_item_map` writes: Ping, GetItemEstimate and EWS `SyncFolderItems`
+    /// detect calendar changes from those rows, so an event first delivered by
+    /// one device's EAS Sync must journal a change for the others.
+    ///
+    /// `journal_seq` is the watermark to store. The Sync caller always passes
+    /// `Some(pre_sync_head)`: a clipped window must hold the head so the
+    /// undelivered rows stay visible to Ping, and a full drain must hold it too
+    /// so a change journaled by ANOTHER device after the head but before this
+    /// commit is not folded into the stored watermark (which would let the
+    /// device sleep through that change). `None` (read the journal head inside
+    /// the transaction, after the delivery rows are inserted) remains supported
+    /// for callers that deliberately want the commit-time head; it risks the
+    /// delayed-wake race above.
+    ///
+    /// `item_map`/ledger DELETE failures are non-fatal (the caller's earlier
+    /// best-effort behavior is preserved) — a missing row only re-delivers, it
+    /// never loses data — but the delivery, SyncKey and watermark writes are
+    /// fatal.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn commit_calendar_sync(
+        &self,
+        owner: &str,
+        scope_id: &str,
+        sync_key: &str,
+        token: Option<&str>,
+        journal_seq: Option<i64>,
+        initial_prime: bool,
+        deliveries: &[CalendarDeliveryWrite<'_>],
+        deletes: &[&str],
+    ) -> Result<()> {
+        let mut tx = sqlx::Acquire::begin(self.pool.as_ref())
+            .await
+            .map_err(|e| GatewayError::Storage(format!("Transaction error: {}", e)))?;
+
+        // A fresh prime (SyncKey 0) restarts the stream: the client was told to
+        // forget every prior item, so the scope's whole ledger is dropped before
+        // the delivered set is recorded — every delivered event is then an
+        // `<Add>` for the new stream.
+        if initial_prime {
+            sqlx::query("DELETE FROM calendar_delivery_map WHERE owner = ?1 AND scope_id = ?2")
+                .bind(owner)
+                .bind(scope_id)
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+        }
+
+        for d in deliveries {
+            // Preserve a REAL backend href over a `jmap://` pseudo-href: the
+            // canonical identity may have been stored from a CalDAV write (real
+            // href) while this delivery reads the same event through JMAP (a
+            // `jmap://` pseudo-href). Overwriting would make EWS and later EAS
+            // reads depend on JMAP being reachable when a CalDAV href was
+            // available; the real href is strictly more useful.
+            sqlx::query(
+                "INSERT INTO item_map (owner, caldav_href, resource_href, server_id, uid, etag) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                 ON CONFLICT(owner, server_id) DO UPDATE SET
+                   caldav_href = CASE WHEN excluded.resource_href LIKE 'jmap://%' AND item_map.caldav_href IS NOT NULL AND item_map.caldav_href NOT LIKE 'jmap://%' THEN item_map.caldav_href ELSE excluded.caldav_href END,
+                   resource_href = CASE WHEN excluded.resource_href LIKE 'jmap://%' AND item_map.resource_href NOT LIKE 'jmap://%' THEN item_map.resource_href ELSE excluded.resource_href END,
+                   uid = ?5, etag = ?6, updated_at = CURRENT_TIMESTAMP",
+            )
+            .bind(owner)
+            .bind(d.resource_href)
+            .bind(d.resource_href)
+            .bind(d.server_id)
+            .bind(d.uid)
+            .bind(d.etag)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+            // Every `item_map` mutation is paired with a `change_journal`
+            // `op='upsert'` row — the invariant `upsert_item_map` upholds and
+            // the feed Ping, GetItemEstimate and EWS SyncFolderItems read to
+            // detect calendar changes. Without it, an event first delivered by
+            // one device's EAS Sync would never wake another device or an EWS
+            // client.
+            sqlx::query(
+                "INSERT INTO change_journal (owner, server_id, op, resource_href) VALUES (?1, ?2, 'upsert', ?3)",
+            )
+            .bind(owner)
+            .bind(d.server_id)
+            .bind(d.resource_href)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+            sqlx::query(
+                "INSERT INTO calendar_delivery_map (owner, scope_id, server_id, etag)
+                 VALUES (?1, ?2, ?3, ?4)
+                 ON CONFLICT(owner, scope_id, server_id) DO UPDATE
+                 SET etag = ?4, updated_at = CURRENT_TIMESTAMP",
+            )
+            .bind(owner)
+            .bind(scope_id)
+            .bind(d.server_id)
+            .bind(d.etag)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+            // Persist the JMAP pseudo-href -> canonical ServerId alias for an
+            // event delivered through JMAP. A later `CalendarEvent/changes`
+            // reports the event destroyed by its JMAP id; the deletion sweep
+            // resolves that id through `for_href`, which must find the SAME
+            // canonical ServerId the scope delivered under (an event created
+            // through CalDAV keeps a CalDAV-derived identity, so the alias is the
+            // only link). Written in the SAME transaction as the delivery so the
+            // alias can never lag the SyncKey the client is told.
+            if d.resource_href.starts_with("jmap://calendar/") {
+                sqlx::query(
+                    "INSERT INTO jmap_id_alias (owner, resource_href, server_id) VALUES (?1, ?2, ?3)
+                     ON CONFLICT(owner, resource_href) DO UPDATE
+                     SET server_id = ?3, updated_at = CURRENT_TIMESTAMP",
+                )
+                .bind(owner)
+                .bind(d.resource_href)
+                .bind(d.server_id)
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+            }
+        }
+
+        for server_id in deletes {
+            sqlx::query("DELETE FROM item_map WHERE owner = ?1 AND server_id = ?2")
+                .bind(owner)
+                .bind(server_id)
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+            // Drop the JMAP aliases pointing at the removed identity: the event
+            // is gone, so a later destroy of its JMAP id must not resurrect a
+            // stale alias to a pruned ServerId.
+            sqlx::query("DELETE FROM jmap_id_alias WHERE owner = ?1 AND server_id = ?2")
+                .bind(owner)
+                .bind(server_id)
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+            sqlx::query(
+                "DELETE FROM calendar_delivery_map WHERE owner = ?1 AND scope_id = ?2 AND server_id = ?3",
+            )
+            .bind(owner)
+            .bind(scope_id)
+            .bind(server_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+        }
+
+        // Watermark: the caller's held pre-sync head for a clipped window, or the
+        // journal head as of THIS commit (read after the delivery rows above, so
+        // it covers them) for a full drain.
+        let watermark = match journal_seq {
+            Some(seq) => seq,
+            None => sqlx::query("SELECT COALESCE(MAX(id), 0) FROM change_journal")
+                .fetch_one(&mut *tx)
+                .await
+                .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))?
+                .get::<i64, _>(0),
+        };
+
+        sqlx::query(
+            "INSERT INTO sync_state (owner, collection_id, sync_key, token) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(owner, collection_id) DO UPDATE SET sync_key = ?3, token = ?4, updated_at = CURRENT_TIMESTAMP",
+        )
+        .bind(owner)
+        .bind(scope_id)
+        .bind(sync_key)
+        .bind(token)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+
+        // Record that this calendar sync stream has been initialized so a
+        // later delta with an empty delivery ledger is accepted instead of
+        // forcing an endless re-prime loop.
+        sqlx::query(
+            "UPDATE sync_state SET calendar_stream_init = 1 WHERE owner = ?1 AND collection_id = ?2",
+        )
+        .bind(owner)
+        .bind(scope_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+
+        sqlx::query(
+            "UPDATE sync_state SET journal_seq = ?3 WHERE owner = ?1 AND collection_id = ?2",
+        )
+        .bind(owner)
+        .bind(scope_id)
+        .bind(watermark)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+
+        tx.commit()
+            .await
+            .map_err(|e| GatewayError::Storage(format!("Commit error: {}", e)))?;
+        Ok(())
+    }
+
+    /// Whether this calendar sync stream has been initialized (had at least one
+    /// successful prime/delta), tracked separately from whether its delivery
+    /// ledger currently holds rows. An empty calendar's successful prime sets
+    /// this marker so a later delta with an empty ledger is accepted instead of
+    /// forcing an endless re-prime loop.
+    pub async fn calendar_stream_init(&self, owner: &str, collection_id: &str) -> Result<bool> {
+        let row = sqlx::query(
+            "SELECT calendar_stream_init FROM sync_state WHERE owner = ?1 AND collection_id = ?2",
+        )
+        .bind(owner)
+        .bind(collection_id)
+        .fetch_optional(self.pool.as_ref())
+        .await
+        .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))?;
+        let Some(row) = row else { return Ok(false) };
+        Ok(row.get::<Option<i64>, _>(0).unwrap_or(0) != 0)
+    }
+
+    /// Record that this calendar sync stream has been initialized, so a later
+    /// delta with an empty delivery ledger is accepted instead of forcing an
+    /// endless re-prime loop. Used by tests to set up a scoped folder whose
+    /// stream was primed before running a scripted delta.
+    pub async fn set_calendar_stream_init(&self, owner: &str, collection_id: &str) -> Result<()> {
+        sqlx::query(
+            "UPDATE sync_state SET calendar_stream_init = 1 WHERE owner = ?1 AND collection_id = ?2",
+        )
+        .bind(owner)
+        .bind(collection_id)
+        .execute(self.pool.as_ref())
+        .await
+        .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+        Ok(())
+    }
+
     pub async fn add_delete_tombstone(&self, owner: &str, server_id: &str) -> Result<()> {
         let mut tx = sqlx::Acquire::begin(self.pool.as_ref())
             .await
@@ -899,8 +1468,16 @@ impl Storage {
     }
 
     pub async fn list_journal_since_seq(&self, owner: &str, since: i64) -> Result<Vec<JournalRow>> {
+        // Exclude folder-hierarchy rows (`resource_href = 'folder'`): those are
+        // consumed only by FolderSync. Leaking them into the EWS calendar
+        // SyncFolderItems item-delta feed would emit a spurious `<t:Delete>`
+        // for the folder's ServerId (the `Ok(None)` arm treats any unknown id
+        // as purged) and consume a `MaxChangesReturned` slot.
         sqlx::query_as::<_, JournalRow>(
-            "SELECT id, server_id, op, resource_href FROM change_journal WHERE owner = ?1 AND id > ?2 ORDER BY id ASC"
+            "SELECT id, server_id, op, resource_href FROM change_journal \
+             WHERE owner = ?1 AND id > ?2 \
+               AND (resource_href IS NULL OR resource_href <> 'folder') \
+             ORDER BY id ASC",
         )
         .bind(owner)
         .bind(since)
@@ -1194,6 +1771,62 @@ impl Storage {
         .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))
     }
 
+    /// The owner's COMPLETE set of `item_map` `server_id`s, unbounded. Used as
+    /// deletion evidence: a stored event absent from a full snapshot is a
+    /// deletion, and that conclusion MUST NOT be drawn from a page-bounded read
+    /// (`list_ews_items` is limited, so an item whose row falls outside the
+    /// page would look "absent" and be tombstoned while still live).
+    pub async fn list_ews_item_server_ids(
+        &self,
+        owner: &str,
+    ) -> Result<std::collections::HashSet<String>> {
+        let ids =
+            sqlx::query_scalar::<_, String>("SELECT server_id FROM item_map WHERE owner = ?1")
+                .bind(owner)
+                .fetch_all(self.pool.as_ref())
+                .await
+                .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))?;
+        Ok(ids.into_iter().collect())
+    }
+
+    /// The owner's COMPLETE `item_map` identity triples — `(uid, resource_href,
+    /// server_id)` — unbounded. Used to canonicalise a calendar event's
+    /// ServerId across backend representations: the SAME event written through
+    /// CalDAV (server_id derived from the CalDAV href) and later read through
+    /// JMAP (server_id derived from `jmap://calendar/...`) must resolve to ONE
+    /// stored identity, or a scope's delivery ledger misses it and EAS emits a
+    /// duplicate `<Add>`. The `uid` is backend-agnostic, so it is the join key;
+    /// `resource_href` lets an explicitly destroyed JMAP id resolve to the
+    /// ServerId its mapping was stored under.
+    pub async fn list_item_map_identities(
+        &self,
+        owner: &str,
+    ) -> Result<Vec<(Option<String>, String, String)>> {
+        let rows = sqlx::query_as::<_, (Option<String>, String, String)>(
+            "SELECT uid, resource_href, server_id FROM item_map WHERE owner = ?1 ORDER BY id ASC",
+        )
+        .bind(owner)
+        .fetch_all(self.pool.as_ref())
+        .await
+        .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))?;
+        Ok(rows)
+    }
+
+    /// Durable JMAP pseudo-href -> canonical ServerId aliases for `owner`
+    /// (see `jmap_id_alias`). Loaded into the sync identity map so an explicitly
+    /// destroyed JMAP id resolves to the SAME canonical ServerId the scope
+    /// delivered the event under.
+    pub async fn list_jmap_id_aliases(&self, owner: &str) -> Result<Vec<(String, String)>> {
+        let rows = sqlx::query_as::<_, (String, String)>(
+            "SELECT resource_href, server_id FROM jmap_id_alias WHERE owner = ?1 ORDER BY id ASC",
+        )
+        .bind(owner)
+        .fetch_all(self.pool.as_ref())
+        .await
+        .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))?;
+        Ok(rows)
+    }
+
     /// Persist the EAS email initial-sync paging cursor
     /// (`position`, captured JMAP state token) for a collection.
     ///
@@ -1206,17 +1839,19 @@ impl Storage {
         collection_id: &str,
         position: u64,
         state_token: Option<&str>,
+        anchor_id: Option<&str>,
     ) -> Result<()> {
         sqlx::query(
-            "INSERT INTO email_sync_cursor (owner, collection_id, position, state_token)
-             VALUES (?1, ?2, ?3, ?4)
+            "INSERT INTO email_sync_cursor (owner, collection_id, position, state_token, anchor_id)
+             VALUES (?1, ?2, ?3, ?4, ?5)
              ON CONFLICT(owner, collection_id) DO UPDATE
-             SET position = ?3, state_token = ?4, updated_at = CURRENT_TIMESTAMP",
+             SET position = ?3, state_token = ?4, anchor_id = ?5, updated_at = CURRENT_TIMESTAMP",
         )
         .bind(owner)
         .bind(collection_id)
         .bind(position as i64)
         .bind(state_token)
+        .bind(anchor_id)
         .execute(self.pool.as_ref())
         .await
         .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
@@ -1224,14 +1859,16 @@ impl Storage {
     }
 
     /// Read the EAS email initial-sync paging cursor for a collection, if a
-    /// partially-delivered initial sync left one behind.
+    /// partially-delivered initial sync left one behind. The returned
+    /// `anchor_id` is the last delivered message id the continuation pins its
+    /// page on (RFC 8620 §5.5 `anchor`); `None` falls back to `position`.
     pub async fn get_email_sync_cursor(
         &self,
         owner: &str,
         collection_id: &str,
-    ) -> Result<Option<(u64, Option<String>)>> {
+    ) -> Result<Option<(u64, Option<String>, Option<String>)>> {
         let row = sqlx::query(
-            "SELECT position, state_token FROM email_sync_cursor
+            "SELECT position, state_token, anchor_id FROM email_sync_cursor
              WHERE owner = ?1 AND collection_id = ?2",
         )
         .bind(owner)
@@ -1241,7 +1878,7 @@ impl Storage {
         .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))?;
         Ok(row.map(|r| {
             let position: i64 = r.get(0);
-            (position.max(0) as u64, r.get(1))
+            (position.max(0) as u64, r.get(1), r.get(2))
         }))
     }
 
@@ -1257,19 +1894,110 @@ impl Storage {
         Ok(())
     }
 
+    /// Persist a clipped initial-sync's paging cursor AND the response SyncKey in
+    /// ONE transaction. A clipped prime acknowledges its window only when both
+    /// are durable together: a stored cursor with the SyncKey still at the
+    /// previous value (or the reverse) would let a continuation or retry resume
+    /// from a state the client was never told about. On failure neither write
+    /// commits, so the caller answers a retryable error and the same prime is
+    /// re-issued.
+    pub async fn set_email_sync_cursor_and_key(
+        &self,
+        owner: &str,
+        collection_id: &str,
+        position: u64,
+        state_token: Option<&str>,
+        anchor_id: Option<&str>,
+        sync_key: &str,
+    ) -> Result<()> {
+        let mut tx = sqlx::Acquire::begin(self.pool.as_ref())
+            .await
+            .map_err(|e| GatewayError::Storage(format!("Transaction error: {}", e)))?;
+        sqlx::query(
+            "INSERT INTO email_sync_cursor (owner, collection_id, position, state_token, anchor_id)
+             VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(owner, collection_id) DO UPDATE
+             SET position = ?3, state_token = ?4, anchor_id = ?5, updated_at = CURRENT_TIMESTAMP",
+        )
+        .bind(owner)
+        .bind(collection_id)
+        .bind(position as i64)
+        .bind(state_token)
+        .bind(anchor_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+        sqlx::query(
+            "INSERT INTO sync_state (owner, collection_id, sync_key, token) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(owner, collection_id) DO UPDATE SET sync_key = ?3, token = ?4, updated_at = CURRENT_TIMESTAMP",
+        )
+        .bind(owner)
+        .bind(collection_id)
+        .bind(sync_key)
+        .bind(state_token)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+        tx.commit()
+            .await
+            .map_err(|e| GatewayError::Storage(format!("Commit error: {}", e)))?;
+        Ok(())
+    }
+
+    /// Write rendered keyword seeds (a delivered `<Add>`/`<Change>`'s CURRENT
+    /// keywords) into a collection's flag baseline, inside an EXISTING
+    /// transaction. The seed is fresher than the bounded scan's snapshot, so
+    /// writing it with the window that delivered the op keeps the baseline tied
+    /// to the acknowledged window: a later op's failure rolls the whole
+    /// transaction back, and the retry's scan re-detects the flag change instead
+    /// of finding the baseline already advanced.
+    async fn write_keyword_seeds_tx(
+        tx: &mut sqlx::Transaction<'_, Sqlite>,
+        owner: &str,
+        collection_id: &str,
+        seeds: &[(String, Vec<String>)],
+    ) -> Result<()> {
+        for (email_id, keywords) in seeds {
+            let json = serde_json::to_string(keywords)
+                .map_err(|e| GatewayError::Storage(format!("serialize keywords: {e}")))?;
+            sqlx::query(
+                "INSERT INTO email_keyword_baseline (owner, collection_id, email_id, keywords_json)
+                 VALUES (?1, ?2, ?3, ?4)
+                 ON CONFLICT(owner, collection_id, email_id) DO UPDATE
+                 SET keywords_json = ?4",
+            )
+            .bind(owner)
+            .bind(collection_id)
+            .bind(email_id)
+            .bind(json)
+            .execute(&mut **tx)
+            .await
+            .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+        }
+        Ok(())
+    }
+
     /// Persist the EAS email delta-sync overflow queue for a collection.
     ///
     /// `ops_json` is a JSON array of `{"op":"add|change|delete","id":"…"}`
     /// entries; `base_state` is the JMAP Email state token that follows the
     /// full accumulated change set (see `email_sync_pending` in
     /// `sqlite_schema.sql`).
+    ///
+    /// `seeds` are the rendered `<Add>`/`<Change>` keyword seeds for the window
+    /// that delivered the ops REMOVED from this queue, written in the SAME
+    /// transaction so the queue replacement and the seeds are durable together.
     pub async fn set_email_sync_pending(
         &self,
         owner: &str,
         collection_id: &str,
         ops_json: &str,
         base_state: &str,
+        seeds: &[(String, Vec<String>)],
     ) -> Result<()> {
+        let mut tx = sqlx::Acquire::begin(self.pool.as_ref())
+            .await
+            .map_err(|e| GatewayError::Storage(format!("Transaction error: {}", e)))?;
         sqlx::query(
             "INSERT INTO email_sync_pending (owner, collection_id, ops_json, base_state)
              VALUES (?1, ?2, ?3, ?4)
@@ -1280,9 +2008,13 @@ impl Storage {
         .bind(collection_id)
         .bind(ops_json)
         .bind(base_state)
-        .execute(self.pool.as_ref())
+        .execute(&mut *tx)
         .await
         .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+        Self::write_keyword_seeds_tx(&mut tx, owner, collection_id, seeds).await?;
+        tx.commit()
+            .await
+            .map_err(|e| GatewayError::Storage(format!("Commit error: {}", e)))?;
         Ok(())
     }
 
@@ -1313,6 +2045,491 @@ impl Storage {
             .execute(self.pool.as_ref())
             .await
             .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+        Ok(())
+    }
+
+    /// Persist the EAS email delta-sync overflow queue AND the response SyncKey
+    /// in ONE transaction. A clipped delta acknowledges its window only when the
+    /// undelivered remainder is durable TOGETHER with the key the client is told
+    /// to continue from: if the queue were saved but the key write failed (or the
+    /// process stopped between the two), the client would hold the OLD key while
+    /// the queue's base state sits AHEAD of it — a retry drains the queued
+    /// remainder and advances past the window that was delivered but whose ops
+    /// are not in the queue, losing them. Committing both atomically (and failing
+    /// the caller, which answers a retryable Status 6, if either write fails)
+    /// keeps the queue and the key consistent.
+    ///
+    /// `base_state` is the queue's own base (the JMAP state that follows the FULL
+    /// accumulated change set); `token` is the sync_state token to store, which
+    /// is deliberately the PRE-delta token so a lost response's retry re-derives
+    /// the delivered window rather than trusting an undrained queue.
+    ///
+    /// `seeds` are the rendered `<Add>`/`<Change>` keyword seeds for the DELIVERED
+    /// window, written in the SAME transaction: the window is acknowledged only
+    /// once its seeds are durable with it, so a failed write rolls both back and
+    /// the retry re-delivers the flag change instead of suppressing it against an
+    /// already-advanced baseline.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn set_email_sync_pending_and_key(
+        &self,
+        owner: &str,
+        collection_id: &str,
+        ops_json: &str,
+        base_state: &str,
+        sync_key: &str,
+        token: Option<&str>,
+        seeds: &[(String, Vec<String>)],
+    ) -> Result<()> {
+        let mut tx = sqlx::Acquire::begin(self.pool.as_ref())
+            .await
+            .map_err(|e| GatewayError::Storage(format!("Transaction error: {}", e)))?;
+        sqlx::query(
+            "INSERT INTO email_sync_pending (owner, collection_id, ops_json, base_state)
+             VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(owner, collection_id) DO UPDATE
+             SET ops_json = ?3, base_state = ?4, updated_at = CURRENT_TIMESTAMP",
+        )
+        .bind(owner)
+        .bind(collection_id)
+        .bind(ops_json)
+        .bind(base_state)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+        sqlx::query(
+            "INSERT INTO sync_state (owner, collection_id, sync_key, token) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(owner, collection_id) DO UPDATE SET sync_key = ?3, token = ?4, updated_at = CURRENT_TIMESTAMP",
+        )
+        .bind(owner)
+        .bind(collection_id)
+        .bind(sync_key)
+        .bind(token)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+        Self::write_keyword_seeds_tx(&mut tx, owner, collection_id, seeds).await?;
+        tx.commit()
+            .await
+            .map_err(|e| GatewayError::Storage(format!("Commit error: {}", e)))?;
+        Ok(())
+    }
+
+    /// Drop the EAS email delta-sync overflow queue AND advance the stored
+    /// (SyncKey, token) to the queue's base state in ONE transaction.
+    ///
+    /// Draining a persisted queue is only safe to acknowledge when the two
+    /// writes are durable TOGETHER: a cleared queue with an unadvanced key
+    /// would make the next delta recompute the whole change set and replay the
+    /// already-delivered commands, while an advanced key with a surviving queue
+    /// would re-deliver the same ops — either ordering surfaces duplicate
+    /// commands to the client. Committing both atomically, and failing the
+    /// caller (which answers a retryable Status 6) if either write fails,
+    /// keeps the queue and token consistent so the next Sync retries the same
+    /// drain.
+    ///
+    /// The drain also CLAIMS the queue: two overlapping Sync requests can both
+    /// read and render the same queued operations, and without a claim the
+    /// second `DELETE` would remove zero rows yet still advance the token and
+    /// acknowledge a window it did not own — the client would then see the same
+    /// commands twice. The claim is bound to the EXACT row the caller rendered
+    /// (`rendered_ops_json` + `token` = the queue's `ops_json` + `base_state`),
+    /// not merely the (owner, collection) slot: if an overlapping Sync replaced
+    /// the queue between the read and the drain, the stale drain matches zero
+    /// rows and loses the claim instead of advancing the token past the
+    /// replacement's operations without rendering them. The `DELETE`'s
+    /// `rows_affected` is therefore the ownership gate: exactly one caller
+    /// observes `1`, and every other caller (which deleted zero rows) gets
+    /// `Ok(false)` with the token left untouched. Returns `true` when THIS call
+    /// drained the queue, `false` when another request had already claimed it.
+    pub async fn drain_email_sync_queue(
+        &self,
+        owner: &str,
+        collection_id: &str,
+        rendered_ops_json: &str,
+        sync_key: &str,
+        token: &str,
+        seeds: &[(String, Vec<String>)],
+    ) -> Result<bool> {
+        let mut tx = sqlx::Acquire::begin(self.pool.as_ref())
+            .await
+            .map_err(|e| GatewayError::Storage(format!("Transaction error: {}", e)))?;
+
+        // Bind the DELETE to the EXACT queue row this caller rendered (its
+        // `ops_json` AND `base_state`), not merely the (owner, collection) slot.
+        // An overlapping Sync can replace that row after this caller read it; a
+        // bare (owner, collection) DELETE would then claim the REPLACEMENT and
+        // advance the token past its operations without rendering them — losing
+        // them. Matching the rendered payload makes a stale drain delete zero
+        // rows and fall through to `Ok(false)`.
+        let deleted = sqlx::query(
+            "DELETE FROM email_sync_pending
+             WHERE owner = ?1 AND collection_id = ?2 AND ops_json = ?3 AND base_state = ?4",
+        )
+        .bind(owner)
+        .bind(collection_id)
+        .bind(rendered_ops_json)
+        .bind(token)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+        if deleted.rows_affected() != 1 {
+            // Another request already claimed this queue. Do NOT advance the
+            // stored token (the claiming request owns that) and roll back by
+            // dropping the transaction, so this caller can answer a retryable
+            // failure instead of re-acknowledging the same ops.
+            return Ok(false);
+        }
+
+        sqlx::query(
+            "INSERT INTO sync_state (owner, collection_id, sync_key, token) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(owner, collection_id) DO UPDATE SET sync_key = ?3, token = ?4, updated_at = CURRENT_TIMESTAMP",
+        )
+        .bind(owner)
+        .bind(collection_id)
+        .bind(sync_key)
+        .bind(token)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+
+        // Write the drained window's rendered keyword seeds in the SAME
+        // transaction as the claim + token advance: the window is acknowledged
+        // only once its seeds are durable with it.
+        Self::write_keyword_seeds_tx(&mut tx, owner, collection_id, seeds).await?;
+
+        tx.commit()
+            .await
+            .map_err(|e| GatewayError::Storage(format!("Commit error: {}", e)))?;
+        Ok(true)
+    }
+
+    /// Upsert the sorted keyword set for one message in a collection's flag
+    /// baseline. `set_email_keyword_baseline` replaces the whole baseline;
+    /// this incremental form lets a delta persist only the ids it actually
+    /// observed, so a bounded scan never has to rewrite the full map.
+    pub async fn upsert_email_keyword(
+        &self,
+        owner: &str,
+        collection_id: &str,
+        email_id: &str,
+        keywords: &[String],
+    ) -> Result<()> {
+        let json = serde_json::to_string(keywords)
+            .map_err(|e| GatewayError::Storage(format!("serialize keywords: {e}")))?;
+        sqlx::query(
+            "INSERT INTO email_keyword_baseline (owner, collection_id, email_id, keywords_json)
+             VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(owner, collection_id, email_id) DO UPDATE
+             SET keywords_json = ?4",
+        )
+        .bind(owner)
+        .bind(collection_id)
+        .bind(email_id)
+        .bind(json)
+        .execute(self.pool.as_ref())
+        .await
+        .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+        Ok(())
+    }
+
+    /// Drop a message's row from a collection's flag baseline (it left the
+    /// mailbox or was destroyed).
+    pub async fn delete_email_keyword(
+        &self,
+        owner: &str,
+        collection_id: &str,
+        email_id: &str,
+    ) -> Result<()> {
+        sqlx::query(
+            "DELETE FROM email_keyword_baseline
+             WHERE owner = ?1 AND collection_id = ?2 AND email_id = ?3",
+        )
+        .bind(owner)
+        .bind(collection_id)
+        .bind(email_id)
+        .execute(self.pool.as_ref())
+        .await
+        .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+        Ok(())
+    }
+
+    /// Read one message's keyword set from a collection's flag baseline.
+    /// `None` when the id has no recorded baseline row.
+    pub async fn get_email_keyword(
+        &self,
+        owner: &str,
+        collection_id: &str,
+        email_id: &str,
+    ) -> Result<Option<Vec<String>>> {
+        let row = sqlx::query(
+            "SELECT keywords_json FROM email_keyword_baseline
+             WHERE owner = ?1 AND collection_id = ?2 AND email_id = ?3",
+        )
+        .bind(owner)
+        .bind(collection_id)
+        .bind(email_id)
+        .fetch_optional(self.pool.as_ref())
+        .await
+        .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))?;
+        let Some(r) = row else {
+            return Ok(None);
+        };
+        // A decode failure is a READ ERROR, not a missing row: the caller must
+        // not mistake it for "no baseline yet" (which would record the current
+        // keywords as a fresh capture and swallow a flag change).
+        let s: String = r
+            .try_get(0)
+            .map_err(|e| GatewayError::Storage(format!("Decode error: {}", e)))?;
+        serde_json::from_str(&s)
+            .map(Some)
+            .map_err(|e| GatewayError::Storage(format!("Decode error: {}", e)))
+    }
+
+    /// Whether a message has a recorded baseline row in a collection's flag
+    /// baseline. Used by the EWS email delta to decide whether an overlap id (in
+    /// both the `added` and `removed` lists) is a message the client already
+    /// holds in this folder (a reorder → `Update`) or one newly arrived here (a
+    /// `Create`). A row exists for every message the folder has delivered, so
+    /// its presence is the per-folder membership test.
+    pub async fn has_email_keyword(
+        &self,
+        owner: &str,
+        collection_id: &str,
+        email_id: &str,
+    ) -> Result<bool> {
+        let row = sqlx::query(
+            "SELECT 1 FROM email_keyword_baseline
+             WHERE owner = ?1 AND collection_id = ?2 AND email_id = ?3",
+        )
+        .bind(owner)
+        .bind(collection_id)
+        .bind(email_id)
+        .fetch_optional(self.pool.as_ref())
+        .await
+        .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))?;
+        Ok(row.is_some())
+    }
+
+    /// Record that a message's membership in a collection's mailbox has been
+    /// DELIVERED to the client (a `Create`/`<Add>`). Distinct from the keyword
+    /// baseline: an observed-only message (a scan or baseline-capture row) is NOT
+    /// delivered. The EAS/EWS overlap decision consults this ledger so a newly
+    /// arriving message is classified as a `Create`, not an `Update`.
+    pub async fn record_email_delivered_membership(
+        &self,
+        owner: &str,
+        collection_id: &str,
+        email_id: &str,
+    ) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO email_delivered_membership (owner, collection_id, email_id)
+             VALUES (?1, ?2, ?3)
+             ON CONFLICT(owner, collection_id, email_id) DO UPDATE
+             SET updated_at = CURRENT_TIMESTAMP",
+        )
+        .bind(owner)
+        .bind(collection_id)
+        .bind(email_id)
+        .execute(self.pool.as_ref())
+        .await
+        .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+        Ok(())
+    }
+
+    /// Whether a message's membership in a collection's mailbox has been
+    /// DELIVERED to the client. Used by the EWS email delta's overlap decision:
+    /// a delivered id is an in-place `Update`, an undelivered one is a `Create`.
+    pub async fn has_email_delivered_membership(
+        &self,
+        owner: &str,
+        collection_id: &str,
+        email_id: &str,
+    ) -> Result<bool> {
+        let row = sqlx::query(
+            "SELECT 1 FROM email_delivered_membership
+             WHERE owner = ?1 AND collection_id = ?2 AND email_id = ?3",
+        )
+        .bind(owner)
+        .bind(collection_id)
+        .bind(email_id)
+        .fetch_optional(self.pool.as_ref())
+        .await
+        .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))?;
+        Ok(row.is_some())
+    }
+
+    /// List every email id this collection has DELIVERED to the client, used by
+    /// the EAS email delta's overlap decision: an id in both `created` and
+    /// `destroyed` from `Email/queryChanges` is an in-place `<Change>` only if
+    /// this collection previously delivered it; otherwise it is a new arrival
+    /// (`<Add>`) — a message moved *in* from another folder can match both
+    /// lists without ever having been delivered here.
+    pub async fn list_email_delivered_membership(
+        &self,
+        owner: &str,
+        collection_id: &str,
+    ) -> Result<HashSet<String>> {
+        let rows = sqlx::query_scalar::<_, String>(
+            "SELECT email_id FROM email_delivered_membership
+             WHERE owner = ?1 AND collection_id = ?2",
+        )
+        .bind(owner)
+        .bind(collection_id)
+        .fetch_all(self.pool.as_ref())
+        .await
+        .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))?;
+        Ok(rows.into_iter().collect())
+    }
+
+    /// Drop every delivered-membership row for a collection. Called at the
+    /// START of a FRESH EWS email prime: the client is told to forget the whole
+    /// folder, so the ledger (which records what the client currently holds) is
+    /// reset before the prime re-records its delivered set. A row left over from
+    /// a prior stream would otherwise misclassify a later re-entry of that id as
+    /// an in-place `Update` rather than a `Create`.
+    pub async fn clear_email_delivered_membership(
+        &self,
+        owner: &str,
+        collection_id: &str,
+    ) -> Result<()> {
+        sqlx::query(
+            "DELETE FROM email_delivered_membership
+             WHERE owner = ?1 AND collection_id = ?2",
+        )
+        .bind(owner)
+        .bind(collection_id)
+        .execute(self.pool.as_ref())
+        .await
+        .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+        Ok(())
+    }
+
+    /// Read the mailbox keyword baseline for an email collection. `None` when
+    /// no baseline has been captured yet (the next delta captures one without
+    /// reporting updates).
+    ///
+    /// Test-only: production code reads a single message's keywords via
+    /// `get_email_keyword` (the bounded scan never needs the whole baseline as
+    /// one JSON document). A malformed row is surfaced as a READ ERROR, matching
+    /// `get_email_keyword`, so it can never be mistaken for an empty keyword set.
+    #[cfg(test)]
+    pub async fn get_email_keyword_baseline(
+        &self,
+        owner: &str,
+        collection_id: &str,
+    ) -> Result<Option<String>> {
+        let rows = sqlx::query(
+            "SELECT email_id, keywords_json FROM email_keyword_baseline
+             WHERE owner = ?1 AND collection_id = ?2",
+        )
+        .bind(owner)
+        .bind(collection_id)
+        .fetch_all(self.pool.as_ref())
+        .await
+        .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))?;
+        if rows.is_empty() {
+            return Ok(None);
+        }
+        let mut map: std::collections::BTreeMap<String, Vec<String>> =
+            std::collections::BTreeMap::new();
+        for r in rows {
+            let id: String = r
+                .try_get(0)
+                .map_err(|e| GatewayError::Storage(format!("Decode error: {}", e)))?;
+            let json: String = r
+                .try_get(1)
+                .map_err(|e| GatewayError::Storage(format!("Decode error: {}", e)))?;
+            let keywords: Vec<String> = serde_json::from_str(&json)
+                .map_err(|e| GatewayError::Storage(format!("Decode error: {}", e)))?;
+            map.insert(id, keywords);
+        }
+        serde_json::to_string(&map)
+            .map(Some)
+            .map_err(|e| GatewayError::Storage(format!("serialize baseline: {e}")))
+    }
+
+    /// Replace a collection's entire flag baseline with `baseline_json` (a JSON
+    /// map of email id to sorted keyword list) in one transaction. Used to
+    /// capture the baseline after a full mailbox sweep; the incremental
+    /// `upsert_email_keyword` / `delete_email_keyword` forms are used by the
+    /// bounded per-delta scan.
+    pub async fn set_email_keyword_baseline(
+        &self,
+        owner: &str,
+        collection_id: &str,
+        baseline_json: &str,
+    ) -> Result<()> {
+        let map: std::collections::BTreeMap<String, Vec<String>> =
+            serde_json::from_str(baseline_json).unwrap_or_default();
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+        sqlx::query("DELETE FROM email_keyword_baseline WHERE owner = ?1 AND collection_id = ?2")
+            .bind(owner)
+            .bind(collection_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+        for (id, keywords) in map {
+            let json = serde_json::to_string(&keywords)
+                .map_err(|e| GatewayError::Storage(format!("serialize keywords: {e}")))?;
+            sqlx::query(
+                "INSERT INTO email_keyword_baseline (owner, collection_id, email_id, keywords_json)
+                 VALUES (?1, ?2, ?3, ?4)",
+            )
+            .bind(owner)
+            .bind(collection_id)
+            .bind(&id)
+            .bind(json)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+        }
+        tx.commit()
+            .await
+            .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+        Ok(())
+    }
+
+    /// Read the rotating scan position for a collection's bounded flag scan.
+    /// `0` when none has been stored (a fresh sweep starts at the top).
+    pub async fn get_email_keyword_scan_position(
+        &self,
+        owner: &str,
+        collection_id: &str,
+    ) -> Result<u64> {
+        let row = sqlx::query(
+            "SELECT position FROM email_keyword_scan WHERE owner = ?1 AND collection_id = ?2",
+        )
+        .bind(owner)
+        .bind(collection_id)
+        .fetch_optional(self.pool.as_ref())
+        .await
+        .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))?;
+        Ok(row.map(|r| r.get::<i64, _>(0).max(0) as u64).unwrap_or(0))
+    }
+
+    /// Store the rotating scan position for a collection's bounded flag scan.
+    pub async fn set_email_keyword_scan_position(
+        &self,
+        owner: &str,
+        collection_id: &str,
+        position: u64,
+    ) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO email_keyword_scan (owner, collection_id, position)
+             VALUES (?1, ?2, ?3)
+             ON CONFLICT(owner, collection_id) DO UPDATE
+             SET position = ?3, updated_at = CURRENT_TIMESTAMP",
+        )
+        .bind(owner)
+        .bind(collection_id)
+        .bind(position as i64)
+        .execute(self.pool.as_ref())
+        .await
+        .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
         Ok(())
     }
 
@@ -1365,6 +2582,81 @@ impl Storage {
         .await
         .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))?;
         Ok(row.map(|r| (r.get(0), r.get(1))))
+    }
+
+    /// Persist the exact EWS email delta response rendered for an incoming
+    /// `SyncState`, so a retry that echoes that same cursor replays it byte for
+    /// byte. The delta's in-place flag updates come from a rotating keyword scan
+    /// whose baseline advances as the response is built; if the HTTP response is
+    /// lost, a retry from the same cursor would find the feed quiet and the scan
+    /// clean, and the flag `<t:Update>` would be lost. Replaying the stored
+    /// `<Changes>` keeps it deliverable. One row per (owner, folder): a new
+    /// incoming cursor REPLACES the previous entry.
+    pub async fn set_ews_delta_replay(
+        &self,
+        owner: &str,
+        folder_id: &str,
+        incoming_state: &str,
+        new_state: &str,
+        changes_xml: &str,
+        includes_last: bool,
+    ) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO ews_delta_replay (user_email, folder_id, incoming_state, new_state, changes_xml, includes_last)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT(user_email, folder_id) DO UPDATE
+             SET incoming_state = ?3, new_state = ?4, changes_xml = ?5, includes_last = ?6, updated_at = CURRENT_TIMESTAMP",
+        )
+        .bind(owner)
+        .bind(folder_id)
+        .bind(incoming_state)
+        .bind(new_state)
+        .bind(changes_xml)
+        .bind(if includes_last { 1i64 } else { 0i64 })
+        .execute(self.pool.as_ref())
+        .await
+        .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+        Ok(())
+    }
+
+    /// Read the cached EWS email delta response for a given incoming `SyncState`.
+    /// `None` when the client has moved on (the stored cursor differs) or no
+    /// response has been cached. Returns `(new_state, changes_xml, includes_last)`.
+    pub async fn get_ews_delta_replay(
+        &self,
+        owner: &str,
+        folder_id: &str,
+        incoming_state: &str,
+    ) -> Result<Option<(String, String, bool)>> {
+        let row = sqlx::query(
+            "SELECT new_state, changes_xml, includes_last FROM ews_delta_replay
+             WHERE user_email = ?1 AND folder_id = ?2 AND incoming_state = ?3",
+        )
+        .bind(owner)
+        .bind(folder_id)
+        .bind(incoming_state)
+        .fetch_optional(self.pool.as_ref())
+        .await
+        .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))?;
+        Ok(row.map(|r| {
+            (
+                r.get::<String, _>(0),
+                r.get::<String, _>(1),
+                r.get::<i64, _>(2) != 0,
+            )
+        }))
+    }
+
+    /// Drop the cached EWS email delta response (an initial/forced prime, or a
+    /// stale cursor the backend can no longer compute).
+    pub async fn clear_ews_delta_replay(&self, owner: &str, folder_id: &str) -> Result<()> {
+        sqlx::query("DELETE FROM ews_delta_replay WHERE user_email = ?1 AND folder_id = ?2")
+            .bind(owner)
+            .bind(folder_id)
+            .execute(self.pool.as_ref())
+            .await
+            .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+        Ok(())
     }
 
     /// Drop the gateway-local (Tasks/Notes) initial-sync keyset cursor IFF it
@@ -1603,6 +2895,100 @@ impl Storage {
         .execute(self.pool.as_ref())
         .await
         .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+        Ok(())
+    }
+
+    /// Commit an EWS email delta's new `SyncState`, the delivered-membership
+    /// flag-baseline seeds for the Create/Update items it rendered, and the
+    /// delivered-membership records/prunes for its Create/Delete items, in ONE
+    /// transaction. The seeds MUST advance together with the state: a seed
+    /// persisted while the state write failed would make the retry (from the
+    /// OLD state, re-offering the same ids) classify a never-delivered message
+    /// as already held and emit an `Update` for an item the client never
+    /// received. `seeds` is `(email_id, sorted_active_keywords)`. `delivered`
+    /// are the ids rendered as `Create` (the client now holds them); `departed`
+    /// are the ids rendered as `Delete` (the client no longer holds them, so
+    /// their delivered-membership rows are pruned — a retained row would make a
+    /// later re-arrival of that id look like an in-place `Update`).
+    pub async fn set_ews_sync_state_with_seeds(
+        &self,
+        owner: &str,
+        folder_id: &str,
+        sync_state: &str,
+        seeds: &[(String, Vec<String>)],
+        delivered: &[String],
+        departed: &[String],
+    ) -> Result<()> {
+        let mut tx = sqlx::Acquire::begin(self.pool.as_ref())
+            .await
+            .map_err(|e| GatewayError::Storage(format!("Transaction error: {}", e)))?;
+        sqlx::query(
+            "INSERT INTO ews_sync_state (user_email, folder_id, sync_state) VALUES (?1, ?2, ?3)
+             ON CONFLICT(user_email, folder_id) DO UPDATE SET sync_state = ?3",
+        )
+        .bind(owner)
+        .bind(folder_id)
+        .bind(sync_state)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+        for (email_id, keywords) in seeds {
+            let json = serde_json::to_string(keywords)
+                .map_err(|e| GatewayError::Storage(format!("serialize keywords: {e}")))?;
+            sqlx::query(
+                "INSERT INTO email_keyword_baseline (owner, collection_id, email_id, keywords_json)
+                 VALUES (?1, ?2, ?3, ?4)
+                 ON CONFLICT(owner, collection_id, email_id) DO UPDATE
+                 SET keywords_json = ?4",
+            )
+            .bind(owner)
+            .bind(folder_id)
+            .bind(email_id)
+            .bind(json)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+        }
+        // Record DELIVERED membership for every message this response rendered a
+        // Create for, in the SAME transaction as the state it was delivered
+        // under. Distinct from the keyword baseline (which the scan also writes
+        // for merely-observed messages): the next delta's overlap decision reads
+        // THIS ledger, so an item the client never received a Create for is
+        // classified as a new Create, not an Update.
+        for email_id in delivered {
+            sqlx::query(
+                "INSERT INTO email_delivered_membership (owner, collection_id, email_id)
+                 VALUES (?1, ?2, ?3)
+                 ON CONFLICT(owner, collection_id, email_id) DO UPDATE
+                 SET updated_at = CURRENT_TIMESTAMP",
+            )
+            .bind(owner)
+            .bind(folder_id)
+            .bind(email_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+        }
+        // Prune delivered membership for every id this response rendered as a
+        // `Delete`: the client no longer holds it, so its ledger row must go in
+        // the SAME transaction as the state it left under. A retained row would
+        // make a later re-arrival of that id look like an in-place `Update`
+        // (the overlap decision reads this ledger) instead of a `Create`.
+        for email_id in departed {
+            sqlx::query(
+                "DELETE FROM email_delivered_membership
+                 WHERE owner = ?1 AND collection_id = ?2 AND email_id = ?3",
+            )
+            .bind(owner)
+            .bind(folder_id)
+            .bind(email_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+        }
+        tx.commit()
+            .await
+            .map_err(|e| GatewayError::Storage(format!("Commit error: {}", e)))?;
         Ok(())
     }
 
@@ -2743,6 +4129,510 @@ impl Storage {
         .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))?;
         Ok(rows)
     }
+
+    /// All user-created folders owned by `owner`, stable by ServerId.
+    pub async fn list_folders(&self, owner: &str) -> Result<Vec<FolderRow>> {
+        sqlx::query_as::<_, FolderRow>(
+            "SELECT server_id, parent_id, display_name, folder_type, backend_kind, backend_id \
+             FROM folder_map WHERE owner = ?1 ORDER BY display_name ASC, server_id ASC",
+        )
+        .bind(owner)
+        .fetch_all(self.pool.as_ref())
+        .await
+        .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))
+    }
+
+    /// One user-created folder by its EAS ServerId.
+    pub async fn get_folder(&self, owner: &str, server_id: &str) -> Result<Option<FolderRow>> {
+        sqlx::query_as::<_, FolderRow>(
+            "SELECT server_id, parent_id, display_name, folder_type, backend_kind, backend_id \
+             FROM folder_map WHERE owner = ?1 AND server_id = ?2",
+        )
+        .bind(owner)
+        .bind(server_id)
+        .fetch_optional(self.pool.as_ref())
+        .await
+        .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))
+    }
+
+    /// Persist a user-created folder mapping AND its folder-hierarchy journal
+    /// row in ONE transaction, so a mutation is acknowledged only once its
+    /// journal row is durable. If the journal insert fails the whole
+    /// transaction rolls back: the mapping is not written and the caller
+    /// reports failure instead of returning a success an already-primed device
+    /// could never learn about. `op` is `folder-add` or `folder-update`.
+    pub async fn upsert_folder_journaled(&self, p: FolderUpsertParams<'_>, op: &str) -> Result<()> {
+        let mut tx = sqlx::Acquire::begin(self.pool.as_ref())
+            .await
+            .map_err(|e| GatewayError::Storage(format!("Transaction error: {}", e)))?;
+
+        sqlx::query(
+            "INSERT INTO folder_map \
+             (owner, server_id, parent_id, display_name, folder_type, backend_kind, backend_id) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) \
+             ON CONFLICT(owner, server_id) DO UPDATE SET \
+                 parent_id = ?3, display_name = ?4, folder_type = ?5, \
+                 backend_kind = ?6, backend_id = ?7, updated_at = CURRENT_TIMESTAMP",
+        )
+        .bind(p.owner)
+        .bind(p.server_id)
+        .bind(p.parent_id)
+        .bind(p.display_name)
+        .bind(p.folder_type)
+        .bind(p.backend_kind)
+        .bind(p.backend_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+
+        sqlx::query(
+            "INSERT INTO change_journal (owner, server_id, op, resource_href) VALUES (?1, ?2, ?3, 'folder')",
+        )
+        .bind(p.owner)
+        .bind(p.server_id)
+        .bind(op)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+
+        tx.commit()
+            .await
+            .map_err(|e| GatewayError::Storage(format!("Commit error: {}", e)))?;
+        Ok(())
+    }
+
+    /// Update a folder mapping's `display_name` and/or `parent_id` AND journal
+    /// a `folder-update` row in ONE transaction, writing ONLY the named columns
+    /// on the EXISTING row. A `None` column is left untouched, so a rename never
+    /// rewrites `parent_id` from a stale snapshot and a reparent never rewrites
+    /// `display_name` (a concurrent rename therefore survives the reparent
+    /// mirror). Unlike [`Storage::upsert_folder_journaled`], this performs a
+    /// targeted `UPDATE ... WHERE` that affects zero rows when the mapping is
+    /// gone, so a concurrent `folder-delete` is never resurrected. `server_id`,
+    /// `folder_type`, `backend_kind`, and `backend_id` are left untouched.
+    ///
+    /// Returns `Ok(true)` when the row existed and was updated (its
+    /// `folder-update` journaled), `Ok(false)` when no row matched (the mapping
+    /// was deleted concurrently — nothing is written and no journal row is
+    /// fabricated). A call with both columns `None` is a no-op returning
+    /// `Ok(false)`.
+    pub async fn update_folder_journaled(
+        &self,
+        owner: &str,
+        server_id: &str,
+        parent_id: Option<&str>,
+        display_name: Option<&str>,
+    ) -> Result<bool> {
+        // The SET clause names only the columns the caller supplied; `?3`/`?4`
+        // are bound in the same order they appear.
+        let set = match (parent_id.is_some(), display_name.is_some()) {
+            (true, true) => "parent_id = ?3, display_name = ?4, updated_at = CURRENT_TIMESTAMP",
+            (true, false) => "parent_id = ?3, updated_at = CURRENT_TIMESTAMP",
+            (false, true) => "display_name = ?3, updated_at = CURRENT_TIMESTAMP",
+            (false, false) => return Ok(false),
+        };
+        let sql = format!("UPDATE folder_map SET {set} WHERE owner = ?1 AND server_id = ?2");
+
+        let mut tx = sqlx::Acquire::begin(self.pool.as_ref())
+            .await
+            .map_err(|e| GatewayError::Storage(format!("Transaction error: {}", e)))?;
+
+        let mut query = sqlx::query(&sql).bind(owner).bind(server_id);
+        if let Some(parent) = parent_id {
+            query = query.bind(parent);
+        }
+        if let Some(name) = display_name {
+            query = query.bind(name);
+        }
+        let affected = query
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?
+            .rows_affected();
+
+        if affected == 0 {
+            tx.rollback()
+                .await
+                .map_err(|e| GatewayError::Storage(format!("Rollback error: {}", e)))?;
+            return Ok(false);
+        }
+
+        sqlx::query(
+            "INSERT INTO change_journal (owner, server_id, op, resource_href) VALUES (?1, ?2, 'folder-update', 'folder')",
+        )
+        .bind(owner)
+        .bind(server_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+
+        tx.commit()
+            .await
+            .map_err(|e| GatewayError::Storage(format!("Commit error: {}", e)))?;
+        Ok(true)
+    }
+
+    /// Remove one or more user-created folder mappings AND journal a
+    /// `folder-delete` row for each in ONE transaction, so a delete is
+    /// acknowledged only once every journal row is durable. If any statement
+    /// fails the whole transaction rolls back and the caller reports failure.
+    ///
+    /// A `folder-delete` is journaled ONLY for ids that actually had a mapping
+    /// row: an id with no row (e.g. a system folder whose EAS ServerId is never
+    /// a backend mailbox id) is a no-op, so a caller that prunes a batch of
+    /// destroyed backend mailboxes never fabricates a Delete for a folder the
+    /// EAS surface never advertised.
+    pub async fn delete_folders_journaled(&self, owner: &str, server_ids: &[String]) -> Result<()> {
+        let mut tx = sqlx::Acquire::begin(self.pool.as_ref())
+            .await
+            .map_err(|e| GatewayError::Storage(format!("Transaction error: {}", e)))?;
+
+        for server_id in server_ids {
+            let removed = sqlx::query("DELETE FROM folder_map WHERE owner = ?1 AND server_id = ?2")
+                .bind(owner)
+                .bind(server_id)
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?
+                .rows_affected();
+
+            if removed > 0 {
+                sqlx::query(
+                    "INSERT INTO change_journal (owner, server_id, op, resource_href) VALUES (?1, ?2, 'folder-delete', 'folder')",
+                )
+                .bind(owner)
+                .bind(server_id)
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+            }
+
+            // This id's `folder_map` state is now confirmed — pruned above, or
+            // there was no mapping row to begin with — so clear any deferred-prune
+            // record for it. A no-op for ids that were never recorded.
+            sqlx::query("DELETE FROM pending_folder_prune WHERE owner = ?1 AND server_id = ?2")
+                .bind(owner)
+                .bind(server_id)
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+        }
+
+        tx.commit()
+            .await
+            .map_err(|e| GatewayError::Storage(format!("Commit error: {}", e)))?;
+        Ok(())
+    }
+
+    /// Record folder ids whose backend destroy has already succeeded but whose
+    /// `folder_map` prune is still outstanding. Must be called BEFORE the prune
+    /// (and, at the call site, in the same request that destroys the backend
+    /// mailbox) so that if the prune fails, the ids are not lost: the destroyed
+    /// mailboxes are gone from the live backend, so a retry cannot re-derive
+    /// them, and for a deep subtree only the ids destroyed so far are known.
+    /// Idempotent — a repeated id is a no-op.
+    pub async fn record_pending_folder_prunes(
+        &self,
+        owner: &str,
+        server_ids: &[String],
+    ) -> Result<()> {
+        if server_ids.is_empty() {
+            return Ok(());
+        }
+        let mut tx = sqlx::Acquire::begin(self.pool.as_ref())
+            .await
+            .map_err(|e| GatewayError::Storage(format!("Transaction error: {}", e)))?;
+
+        for server_id in server_ids {
+            sqlx::query(
+                "INSERT INTO pending_folder_prune (owner, server_id) VALUES (?1, ?2)
+                 ON CONFLICT(owner, server_id) DO NOTHING",
+            )
+            .bind(owner)
+            .bind(server_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+        }
+
+        tx.commit()
+            .await
+            .map_err(|e| GatewayError::Storage(format!("Commit error: {}", e)))?;
+        Ok(())
+    }
+
+    /// Record intent to create a calendar collection at `href` before MKCALENDAR
+    /// is sent. If the backend commits but its response is lost, a retry reaches
+    /// MKCALENDAR again, gets 405, and can reconcile this pending intent instead
+    /// of returning Status 2 for a collection that already exists.
+    pub async fn record_pending_calendar_create(
+        &self,
+        owner: &str,
+        href: &str,
+        display_name: &str,
+    ) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO pending_calendar_create (owner, href, display_name) VALUES (?1, ?2, ?3)
+             ON CONFLICT(owner, href) DO UPDATE SET display_name = ?3",
+        )
+        .bind(owner)
+        .bind(href)
+        .bind(display_name)
+        .execute(self.pool.as_ref())
+        .await
+        .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+        Ok(())
+    }
+
+    /// Read the pending calendar-create intent for `(owner, href)`, if any.
+    ///
+    /// Used on a MKCALENDAR 405 retry: if an intent is recorded and the
+    /// collection still exists on the backend, the retry can upsert the
+    /// mapping instead of returning Status 2 for an orphan.
+    pub async fn get_pending_calendar_create(
+        &self,
+        owner: &str,
+        href: &str,
+    ) -> Result<Option<PendingCalendarCreate>> {
+        let row = sqlx::query_as::<_, PendingCalendarCreateRow>(
+            "SELECT owner, href, display_name FROM pending_calendar_create
+             WHERE owner = ?1 AND href = ?2",
+        )
+        .bind(owner)
+        .bind(href)
+        .fetch_optional(self.pool.as_ref())
+        .await
+        .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+        Ok(row.map(|r| PendingCalendarCreate {
+            owner: r.owner,
+            href: r.href,
+            display_name: r.display_name,
+        }))
+    }
+
+    /// Drop the pending calendar-create intent for `(owner, href)`.
+    ///
+    /// Called once the intent has been reconciled (mapping persisted) so the
+    /// intent does not linger and block a legitimate future create of the same
+    /// href.
+    pub async fn clear_pending_calendar_create(&self, owner: &str, href: &str) -> Result<()> {
+        sqlx::query("DELETE FROM pending_calendar_create WHERE owner = ?1 AND href = ?2")
+            .bind(owner)
+            .bind(href)
+            .execute(self.pool.as_ref())
+            .await
+            .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+        Ok(())
+    }
+
+    /// Drop the deferred-prune record for `owner`'s `server_ids` WITHOUT
+    /// pruning their `folder_map` rows. Used when a backend destroy did NOT
+    /// happen (a refused destroy, or a reconciled-present mailbox): the folder
+    /// still exists, so its mapping must be preserved and any intent recorded
+    /// before the attempt must be withdrawn.
+    pub async fn clear_pending_folder_prunes(
+        &self,
+        owner: &str,
+        server_ids: &[String],
+    ) -> Result<()> {
+        if server_ids.is_empty() {
+            return Ok(());
+        }
+        let mut tx = sqlx::Acquire::begin(self.pool.as_ref())
+            .await
+            .map_err(|e| GatewayError::Storage(format!("Transaction error: {}", e)))?;
+        for server_id in server_ids {
+            sqlx::query("DELETE FROM pending_folder_prune WHERE owner = ?1 AND server_id = ?2")
+                .bind(owner)
+                .bind(server_id)
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+        }
+        tx.commit()
+            .await
+            .map_err(|e| GatewayError::Storage(format!("Commit error: {}", e)))?;
+        Ok(())
+    }
+
+    /// The folder ids with an outstanding prune for `owner`, oldest first.
+    pub async fn list_pending_folder_prunes(&self, owner: &str) -> Result<Vec<String>> {
+        sqlx::query_scalar::<_, String>(
+            "SELECT server_id FROM pending_folder_prune WHERE owner = ?1 ORDER BY id ASC",
+        )
+        .bind(owner)
+        .fetch_all(self.pool.as_ref())
+        .await
+        .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))
+    }
+
+    /// Reconcile and replay the outstanding folder-map prunes for `owner`
+    /// against the LIVE backend mailbox ids (`live_ids`), considering ONLY the
+    /// `candidates` captured BEFORE the live query ran.
+    ///
+    /// A pending prune is recorded BEFORE its `Mailbox/set destroy` call so a
+    /// crash mid-destroy still leaves a work list — which means a row can name
+    /// a folder whose destroy is still in flight, or was later REFUSED. Blindly
+    /// pruning every pending row would then strand a LIVE folder's mapping: EAS
+    /// would stop advertising a folder that still exists. So each candidate is
+    /// resolved against `live_ids`:
+    ///
+    /// * an id the backend STILL holds is live — the destroy has not committed
+    ///   (refused, or still in flight) — so its mapping is preserved and its
+    ///   intent is RETAINED. The intent is NOT cleared here: the initiating
+    ///   destroy operation clears it on refusal or prunes-and-clears on success,
+    ///   and dropping it here would lose the recovery record if that operation
+    ///   then commits the destroy and stops before its direct prune (the
+    ///   mailbox is gone from the live hierarchy, so a later read could not
+    ///   re-derive it). A retained intent for a still-live folder is harmless:
+    ///   it is re-evaluated on the next reconcile and never prunes a live row;
+    /// * an id the backend no longer holds is a CONFIRMED deletion — its
+    ///   mapping is pruned and a `folder-delete` journaled.
+    ///
+    /// `candidates` MUST be the pending set captured BEFORE `live_ids` was read.
+    /// A concurrent request can record a NEW intent (and create its mailbox)
+    /// after the live query; classifying that newer intent against the older
+    /// `live_ids` would treat a live, just-created folder as absent and prune
+    /// its mapping. Intents recorded after the live read are left for the next
+    /// reconcile.
+    ///
+    /// Returns the number of ids pruned. An error leaves every candidate row in
+    /// place, so a later call retries the whole set.
+    ///
+    /// `live_ids` MUST be the COMPLETE live mailbox set (e.g. from
+    /// [`JmapClient::query_all_mailboxes`](crate::jmap::JmapClient::query_all_mailboxes),
+    /// which pages). A caller that cannot obtain it must NOT call this: an
+    /// incomplete set would treat a live folder as absent and prune it.
+    pub async fn reconcile_pending_folder_prunes(
+        &self,
+        owner: &str,
+        candidates: &[String],
+        live_ids: &std::collections::HashSet<String>,
+    ) -> Result<u64> {
+        if candidates.is_empty() {
+            return Ok(0);
+        }
+        // Only CONFIRMED deletions are pruned; a candidate the backend still
+        // holds keeps its intent (see above). A candidate whose id is absent
+        // from `live_ids` is dead; `delete_folders_journaled` also clears its
+        // pending row. Normalize each candidate to the same percent-escaped form
+        // as the `live_ids` entries (which come through `Url::path()` preserving
+        // percent-encoding) so a collection whose href contains spaces or
+        // non-ASCII is not mistaken for deleted.
+        let dead: Vec<String> = candidates
+            .iter()
+            .filter(|id| !live_ids.contains(&normalize_caldav_path(id)))
+            .cloned()
+            .collect();
+        if !dead.is_empty() {
+            self.delete_folders_journaled(owner, &dead).await?;
+        }
+        Ok(dead.len() as u64)
+    }
+
+    /// Folder-hierarchy journal rows with `since < id <= until`. `until` is the
+    /// journal head captured BEFORE the hierarchy is rendered, so a mutation
+    /// journaled while rendering is never folded into the window the caller
+    /// then acknowledges as its watermark.
+    pub async fn list_folder_journal_since(
+        &self,
+        owner: &str,
+        since: i64,
+        until: i64,
+    ) -> Result<Vec<JournalRow>> {
+        sqlx::query_as::<_, JournalRow>(
+            "SELECT id, server_id, op, resource_href FROM change_journal \
+             WHERE owner = ?1 AND id > ?2 AND id <= ?3 AND resource_href = 'folder' ORDER BY id ASC",
+        )
+        .bind(owner)
+        .bind(since)
+        .bind(until)
+        .fetch_all(self.pool.as_ref())
+        .await
+        .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))
+    }
+
+    /// Read the journal head (latest change-seq), the folder journal rows for
+    /// `(since, head]`, and the complete folder map within ONE SQLite read
+    /// transaction, so FolderSync renders the hierarchy against a single
+    /// consistent snapshot: a mutation journaled between the head read and the
+    /// folder-map read is not folded into this response's watermark, and the
+    /// initial folder list does not reflect a change newer than the captured
+    /// journal head.
+    pub async fn snapshot_folder_sync_data(
+        &self,
+        owner: &str,
+        since: i64,
+    ) -> Result<(i64, Vec<JournalRow>, Vec<FolderRow>)> {
+        let mut tx = sqlx::Acquire::begin(self.pool.as_ref())
+            .await
+            .map_err(|e| GatewayError::Storage(format!("Transaction error: {}", e)))?;
+        let head: i64 =
+            sqlx::query_scalar::<_, i64>("SELECT COALESCE(MAX(id), 0) FROM change_journal")
+                .fetch_one(&mut *tx)
+                .await
+                .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))?;
+        let rows = sqlx::query_as::<_, JournalRow>(
+            "SELECT id, server_id, op, resource_href FROM change_journal \
+             WHERE owner = ?1 AND id > ?2 AND id <= ?3 AND resource_href = 'folder' ORDER BY id ASC",
+        )
+        .bind(owner)
+        .bind(since)
+        .bind(head)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))?;
+        let folders = sqlx::query_as::<_, FolderRow>(
+            "SELECT server_id, parent_id, display_name, folder_type, backend_kind, backend_id \
+             FROM folder_map WHERE owner = ?1 ORDER BY display_name ASC, server_id ASC",
+        )
+        .bind(owner)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))?;
+        tx.commit()
+            .await
+            .map_err(|e| GatewayError::Storage(format!("Commit error: {}", e)))?;
+        Ok((head, rows, folders))
+    }
+}
+
+/// Parameters for [`Storage::upsert_folder_journaled`]. Grouped so the call
+/// site stays under clippy's argument-count threshold.
+pub struct FolderUpsertParams<'a> {
+    pub owner: &'a str,
+    pub server_id: &'a str,
+    pub parent_id: &'a str,
+    pub display_name: &'a str,
+    pub folder_type: i64,
+    pub backend_kind: &'a str,
+    pub backend_id: &'a str,
+}
+
+/// A persisted user-created EAS folder ([MS-ASCMD] §2.2.1.3/§2.2.1.6),
+/// mapping the EAS ServerId the client sees to its backend identity.
+#[derive(FromRow, Clone)]
+pub struct FolderRow {
+    pub server_id: String,
+    pub parent_id: String,
+    pub display_name: String,
+    pub folder_type: i64,
+    /// Backend family: `"jmap"` (a JMAP Mailbox) or `"caldav"` (a CalDAV
+    /// collection).
+    pub backend_kind: String,
+    /// Backend identity: the JMAP mailbox id or the CalDAV collection href.
+    pub backend_id: String,
+}
+
+impl SafeDebug for FolderRow {
+    fn safe_debug(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("FolderRow")
+            .field("server_id", &self.server_id)
+            .field("parent_id", &self.parent_id)
+            .field("folder_type", &self.folder_type)
+            .field("backend_kind", &self.backend_kind)
+            .finish_non_exhaustive()
+    }
 }
 
 /// Row of the gateway-local S/MIME certificate store.
@@ -2920,6 +4810,218 @@ mod tests {
             .await
             .expect("journal listing")
             .len()
+    }
+
+    /// The per-scope calendar delivery ledger isolates one SyncKey stream from
+    /// another: identical `server_id`s under two `scope_id`s are independent, an
+    /// upsert replaces the recorded ETag, a targeted delete removes one row, and
+    /// a full clear drops only the named scope.
+    #[tokio::test]
+    async fn calendar_delivery_ledger_is_scoped_and_idempotent() {
+        let storage = mem_storage().await;
+        let owner = "ledger-user@example.com";
+
+        // Same event delivered under two device scopes.
+        storage
+            .upsert_calendar_delivery(owner, "1::devA", "srv-1", "etagA")
+            .await
+            .expect("upsert A");
+        storage
+            .upsert_calendar_delivery(owner, "1::devB", "srv-1", "etagB")
+            .await
+            .expect("upsert B");
+
+        let a = storage
+            .list_calendar_deliveries(owner, "1::devA")
+            .await
+            .unwrap();
+        let b = storage
+            .list_calendar_deliveries(owner, "1::devB")
+            .await
+            .unwrap();
+        assert_eq!(a.get("srv-1").map(String::as_str), Some("etagA"));
+        assert_eq!(b.get("srv-1").map(String::as_str), Some("etagB"));
+
+        // Re-delivering to A with a new ETag updates only A's row.
+        storage
+            .upsert_calendar_delivery(owner, "1::devA", "srv-1", "etagA2")
+            .await
+            .expect("re-upsert A");
+        let a2 = storage
+            .list_calendar_deliveries(owner, "1::devA")
+            .await
+            .unwrap();
+        assert_eq!(a2.get("srv-1").map(String::as_str), Some("etagA2"));
+        assert_eq!(a2.len(), 1, "upsert must not duplicate the row");
+        let b2 = storage
+            .list_calendar_deliveries(owner, "1::devB")
+            .await
+            .unwrap();
+        assert_eq!(
+            b2.get("srv-1").map(String::as_str),
+            Some("etagB"),
+            "another scope's row is untouched"
+        );
+
+        // Targeted delete removes only the named scope's row.
+        storage
+            .delete_calendar_delivery(owner, "1::devA", "srv-1")
+            .await
+            .expect("delete A row");
+        assert!(
+            storage
+                .list_calendar_deliveries(owner, "1::devA")
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            storage
+                .list_calendar_deliveries(owner, "1::devB")
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+
+        // A fresh prime (initial_prime=true) drops B's whole ledger inside the
+        // same atomic commit that advances its SyncKey; A's rows are untouched.
+        storage
+            .upsert_calendar_delivery(owner, "1::devA", "srv-2", "etagA2")
+            .await
+            .expect("seed A row for isolation check");
+        storage
+            .commit_calendar_sync(
+                owner,
+                "1::devB",
+                "key-new",
+                Some("t"),
+                Some(0),
+                true,
+                &[],
+                &[],
+            )
+            .await
+            .expect("prime commit B");
+        assert!(
+            storage
+                .list_calendar_deliveries(owner, "1::devB")
+                .await
+                .unwrap()
+                .is_empty(),
+            "a prime must clear the scope's ledger"
+        );
+        assert_eq!(
+            storage
+                .list_calendar_deliveries(owner, "1::devA")
+                .await
+                .unwrap()
+                .len(),
+            1,
+            "another scope's ledger survives B's prime clear"
+        );
+    }
+
+    /// `commit_calendar_sync` writes the delivered ledger rows, the emitted
+    /// `<Delete>` removals, the new SyncKey + token and the watermark as ONE
+    /// unit, so the ledger can never advance ahead of the SyncKey the client is
+    /// told (the P1 fix): after the commit a later Sync sees exactly the state
+    /// the client was handed.
+    #[tokio::test]
+    async fn commit_calendar_sync_records_deliveries_and_sync_key_atomically() {
+        let storage = mem_storage().await;
+        let owner = "commit-user@example.com";
+        let scope = "1::dev";
+
+        // Pre-existing item that this response deletes.
+        storage
+            .upsert_item_map(owner, "h-old", "h-old", "srv-old", "uid-old", "e0")
+            .await
+            .unwrap();
+        storage
+            .upsert_calendar_delivery(owner, scope, "srv-old", "e0")
+            .await
+            .unwrap();
+
+        let deliveries = [CalendarDeliveryWrite {
+            server_id: "srv-new",
+            resource_href: "h-new",
+            uid: "uid-new",
+            etag: "e1",
+        }];
+        storage
+            .commit_calendar_sync(
+                owner,
+                scope,
+                "key-1",
+                Some("tok"),
+                Some(42),
+                false,
+                &deliveries,
+                &["srv-old"],
+            )
+            .await
+            .expect("commit");
+
+        assert_eq!(
+            storage.get_sync_key(owner, scope).await.unwrap(),
+            Some(("key-1".to_string(), Some("tok".to_string())))
+        );
+        let ledger = storage
+            .list_calendar_deliveries(owner, scope)
+            .await
+            .unwrap();
+        assert_eq!(ledger.get("srv-new").map(String::as_str), Some("e1"));
+        assert!(
+            !ledger.contains_key("srv-old"),
+            "the deleted event's ledger row is removed in the same commit"
+        );
+        let items = storage.list_ews_items(owner, 100, 0).await.unwrap();
+        assert!(items.iter().any(|i| i.server_id == "srv-new"));
+        assert!(
+            !items.iter().any(|i| i.server_id == "srv-old"),
+            "the deleted event's item_map row is removed in the same commit"
+        );
+
+        // The delivery ALSO journals an `op='upsert'` row (the invariant
+        // `upsert_item_map` upholds) so every change-detection consumer sees it:
+        // `list_changes_since_seq` (Ping, GetItemEstimate) and
+        // `list_journal_since_seq` (EWS SyncFolderItems).
+        assert!(
+            storage
+                .list_journal_since_seq(owner, 0)
+                .await
+                .unwrap()
+                .iter()
+                .any(|r| r.server_id == "srv-new" && r.op == "upsert"),
+            "a delivered event must journal an upsert row (EWS path)"
+        );
+        assert!(
+            storage
+                .list_changes_since_seq(owner, 0, 100)
+                .await
+                .unwrap()
+                .iter()
+                .any(|i| i.server_id == "srv-new"),
+            "a delivered event must journal an upsert row (Ping/GetItemEstimate path)"
+        );
+        // A held watermark (clipped window) is stored verbatim.
+        assert_eq!(
+            storage.journal_watermark(owner, scope).await.unwrap(),
+            Some(42)
+        );
+
+        // A full drain (journal_seq None) instead advances the watermark to the
+        // journal head AS OF the commit — covering the just-written delivery
+        // row, so the device is not woken by the very rows it delivered.
+        storage
+            .commit_calendar_sync(owner, scope, "key-2", Some("tok2"), None, false, &[], &[])
+            .await
+            .expect("full-drain commit");
+        assert_eq!(
+            storage.journal_watermark(owner, scope).await.unwrap(),
+            Some(storage.get_latest_change_seq().await.unwrap())
+        );
     }
 
     #[tokio::test]
@@ -3684,6 +5786,551 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// A database created before the per-scope calendar delivery ledger existed
+    /// must gain `calendar_delivery_map` on the next `init_schema` (the table is
+    /// declared with `CREATE TABLE IF NOT EXISTS`, so it is created on any open
+    /// that lacks it), and the re-init must stay idempotent.
+    #[tokio::test]
+    async fn init_schema_adds_calendar_delivery_map_to_legacy_db() {
+        let dir =
+            std::env::temp_dir().join(format!("gateway-storage-migrate-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let db = dir.join("gateway.db");
+        let url = format!("sqlite://{}?mode=rwc", db.display());
+
+        // Pre-create just `item_map` (a pre-ledger database shape) with a row.
+        {
+            let pool = sqlx::SqlitePool::connect(&url).await.expect("raw pool");
+            sqlx::query(
+                "CREATE TABLE item_map (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    owner TEXT NOT NULL,
+                    caldav_href TEXT,
+                    resource_href TEXT NOT NULL,
+                    server_id TEXT NOT NULL,
+                    uid TEXT,
+                    etag TEXT,
+                    instance_id TEXT,
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(owner, server_id)
+                )",
+            )
+            .execute(&pool)
+            .await
+            .expect("legacy item_map");
+            sqlx::query(
+                "INSERT INTO item_map (owner, resource_href, server_id) VALUES ('o', 'href', 'srv-1')",
+            )
+            .execute(&pool)
+            .await
+            .expect("legacy row");
+            pool.close().await;
+        }
+
+        let storage = Storage::new(&url).await.expect("open db");
+        storage.init_schema().await.expect("schema init migrates");
+        storage.init_schema().await.expect("re-init idempotent");
+
+        // The ledger table now exists and is usable; the legacy item_map row
+        // survives untouched.
+        storage
+            .upsert_calendar_delivery("o", "1::dev", "srv-1", "etag")
+            .await
+            .expect("ledger usable after migration");
+        assert_eq!(
+            storage
+                .list_calendar_deliveries("o", "1::dev")
+                .await
+                .expect("ledger read")
+                .get("srv-1")
+                .map(String::as_str),
+            Some("etag")
+        );
+        assert!(
+            storage
+                .get_ews_item_by_server_id("o", "srv-1")
+                .await
+                .expect("item read")
+                .is_some(),
+            "the pre-existing item_map row must survive the migration"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A database created before `pending_folder_prune` existed must gain the
+    /// table on `init_schema` (CREATE TABLE IF NOT EXISTS), be re-initialisable
+    /// idempotently, and have the deferred-prune API usable afterwards.
+    #[tokio::test]
+    async fn init_schema_adds_pending_folder_prune_to_legacy_db() {
+        let dir = std::env::temp_dir().join(format!(
+            "gateway-storage-prune-migrate-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let db = dir.join("gateway.db");
+        let url = format!("sqlite://{}?mode=rwc", db.display());
+
+        // Pre-create just `folder_map` (a pre-v13 database shape) with a row.
+        {
+            let pool = sqlx::SqlitePool::connect(&url).await.expect("raw pool");
+            sqlx::query(
+                "CREATE TABLE folder_map (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    owner TEXT NOT NULL,
+                    server_id TEXT NOT NULL,
+                    parent_id TEXT NOT NULL DEFAULT '0',
+                    display_name TEXT NOT NULL,
+                    folder_type INTEGER NOT NULL DEFAULT 12,
+                    backend_kind TEXT NOT NULL DEFAULT 'jmap',
+                    backend_id TEXT NOT NULL,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(owner, server_id)
+                )",
+            )
+            .execute(&pool)
+            .await
+            .expect("legacy folder_map");
+            sqlx::query(
+                "INSERT INTO folder_map (owner, server_id, display_name, backend_id) \
+                 VALUES ('o', 'mb-1', 'Legacy', 'mb-1')",
+            )
+            .execute(&pool)
+            .await
+            .expect("legacy row");
+            pool.close().await;
+        }
+
+        let storage = Storage::new(&url).await.expect("open db");
+        storage.init_schema().await.expect("schema init migrates");
+        storage.init_schema().await.expect("re-init idempotent");
+
+        // The deferred-prune API is usable and the legacy mapping survives.
+        storage
+            .record_pending_folder_prunes("o", &["mb-1".to_string()])
+            .await
+            .expect("record after migration");
+        assert_eq!(
+            storage
+                .list_pending_folder_prunes("o")
+                .await
+                .expect("list after migration"),
+            vec!["mb-1".to_string()]
+        );
+        assert_eq!(
+            storage
+                .reconcile_pending_folder_prunes(
+                    "o",
+                    &["mb-1".to_string()],
+                    &std::collections::HashSet::new()
+                )
+                .await
+                .expect("drain after migration"),
+            1
+        );
+        assert!(
+            storage
+                .get_folder("o", "mb-1")
+                .await
+                .expect("folder read")
+                .is_none(),
+            "the drained prune must remove the legacy mapping row"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn email_keyword_baseline_rows_roundtrip_and_scan_position() {
+        let storage = Storage::new("sqlite::memory:").await.expect("open db");
+        storage.init_schema().await.expect("schema init");
+        let owner = "u@example.com";
+        let coll = "2::dev-1";
+
+        // No rows yet: baseline absent, position starts at 0.
+        assert!(
+            storage
+                .get_email_keyword_baseline(owner, coll)
+                .await
+                .expect("baseline read")
+                .is_none()
+        );
+        assert_eq!(
+            storage
+                .get_email_keyword_scan_position(owner, coll)
+                .await
+                .expect("position read"),
+            0
+        );
+
+        // Incremental upserts land as one row per message.
+        storage
+            .upsert_email_keyword(owner, coll, "m1", &["$seen".to_string()])
+            .await
+            .expect("upsert m1");
+        storage
+            .upsert_email_keyword(owner, coll, "m2", &[])
+            .await
+            .expect("upsert m2");
+        assert_eq!(
+            storage
+                .get_email_keyword(owner, coll, "m1")
+                .await
+                .expect("get m1"),
+            Some(vec!["$seen".to_string()])
+        );
+        // Upsert replaces rather than duplicating.
+        storage
+            .upsert_email_keyword(
+                owner,
+                coll,
+                "m1",
+                &["$seen".to_string(), "$flagged".to_string()],
+            )
+            .await
+            .expect("re-upsert m1");
+        assert_eq!(
+            storage
+                .get_email_keyword(owner, coll, "m1")
+                .await
+                .expect("get m1 again"),
+            Some(vec!["$seen".to_string(), "$flagged".to_string()])
+        );
+
+        // The JSON baseline view assembles the per-message rows.
+        let json = storage
+            .get_email_keyword_baseline(owner, coll)
+            .await
+            .expect("baseline read")
+            .expect("baseline present");
+        let map: std::collections::BTreeMap<String, Vec<String>> =
+            serde_json::from_str(&json).expect("baseline json");
+        assert_eq!(map.len(), 2);
+        assert_eq!(
+            map.get("m1").map(Vec::as_slice),
+            Some(["$seen".to_string(), "$flagged".to_string()].as_slice())
+        );
+
+        // Whole-baseline replace clears dropped ids.
+        storage
+            .set_email_keyword_baseline(owner, coll, "{\"m3\":[\"$seen\"]}")
+            .await
+            .expect("replace baseline");
+        assert!(
+            storage
+                .get_email_keyword(owner, coll, "m1")
+                .await
+                .expect("get m1 after replace")
+                .is_none()
+        );
+        assert_eq!(
+            storage
+                .get_email_keyword(owner, coll, "m3")
+                .await
+                .expect("get m3"),
+            Some(vec!["$seen".to_string()])
+        );
+
+        // Incremental delete drops a single row.
+        storage
+            .delete_email_keyword(owner, coll, "m3")
+            .await
+            .expect("delete m3");
+        assert!(
+            storage
+                .get_email_keyword(owner, coll, "m3")
+                .await
+                .expect("get m3 after delete")
+                .is_none()
+        );
+
+        // The rotating scan position round-trips and is collection-scoped.
+        storage
+            .set_email_keyword_scan_position(owner, coll, 1500)
+            .await
+            .expect("set position");
+        assert_eq!(
+            storage
+                .get_email_keyword_scan_position(owner, coll)
+                .await
+                .expect("position read"),
+            1500
+        );
+        assert_eq!(
+            storage
+                .get_email_keyword_scan_position(owner, "2::dev-2")
+                .await
+                .expect("other collection position"),
+            0,
+            "scan position is scoped per collection"
+        );
+    }
+
+    /// A decode failure on a baseline row is a READ ERROR, not a missing row:
+    /// `get_email_keyword` must return `Err`, so the caller cannot mistake it
+    /// for "no baseline yet" and swallow a flag change.
+    #[tokio::test]
+    async fn get_email_keyword_propagates_decode_errors() {
+        let storage = mem_storage().await;
+        let owner = "decode@example.com";
+        let coll = "2::dev-1";
+        // A BLOB in the TEXT-affinity column cannot decode as `String`; SQLite
+        // preserves BLOBs, so this reliably triggers the decode error.
+        sqlx::query(
+            "INSERT INTO email_keyword_baseline (owner, collection_id, email_id, keywords_json) \
+             VALUES (?1, ?2, 'm1', x'00ff')",
+        )
+        .bind(owner)
+        .bind(coll)
+        .execute(storage.pool())
+        .await
+        .expect("seed blob row");
+        assert!(
+            storage.get_email_keyword(owner, coll, "m1").await.is_err(),
+            "a decode failure must surface as Err, never a missing row"
+        );
+    }
+
+    /// A row whose `keywords_json` is valid TEXT but not valid JSON is a READ
+    /// ERROR too: treating it as `None` would re-capture the live keywords and
+    /// silently swallow a flag-only change.
+    #[tokio::test]
+    async fn get_email_keyword_propagates_malformed_json() {
+        let storage = mem_storage().await;
+        let owner = "malformed@example.com";
+        let coll = "2::dev-1";
+        sqlx::query(
+            "INSERT INTO email_keyword_baseline (owner, collection_id, email_id, keywords_json) \
+             VALUES (?1, ?2, 'm1', 'not json')",
+        )
+        .bind(owner)
+        .bind(coll)
+        .execute(storage.pool())
+        .await
+        .expect("seed malformed row");
+        assert!(
+            storage.get_email_keyword(owner, coll, "m1").await.is_err(),
+            "malformed baseline JSON must surface as Err, never a missing row"
+        );
+    }
+
+    /// `upsert_folder_journaled` writes the folder mapping AND its
+    /// folder-hierarchy journal row in ONE transaction, so an already-primed
+    /// FolderSync can always learn about a create/rename. The atomic
+    /// `delete_folders_journaled` mirrors this for deletes.
+    #[tokio::test]
+    async fn folder_mutations_journal_atomically_with_the_mapping() {
+        let storage = mem_storage().await;
+        let owner = "folders@example.com";
+
+        storage
+            .upsert_folder_journaled(
+                FolderUpsertParams {
+                    owner,
+                    server_id: "mb-1",
+                    parent_id: "0",
+                    display_name: "Inbox sub",
+                    folder_type: 1,
+                    backend_kind: "jmap",
+                    backend_id: "mb-1",
+                },
+                "folder-add",
+            )
+            .await
+            .expect("journaled upsert");
+        let row = storage
+            .get_folder(owner, "mb-1")
+            .await
+            .expect("get folder")
+            .expect("folder row present");
+        assert_eq!(row.display_name, "Inbox sub");
+        let journal = storage
+            .list_folder_journal_since(owner, 0, i64::MAX)
+            .await
+            .expect("folder journal");
+        assert_eq!(journal.len(), 1, "one folder-add journal row");
+        assert_eq!(journal[0].op, "folder-add");
+        assert_eq!(journal[0].server_id, "mb-1");
+
+        // A rename journals a folder-update row alongside the mapping rewrite.
+        storage
+            .upsert_folder_journaled(
+                FolderUpsertParams {
+                    owner,
+                    server_id: "mb-1",
+                    parent_id: "0",
+                    display_name: "Renamed",
+                    folder_type: 1,
+                    backend_kind: "jmap",
+                    backend_id: "mb-1",
+                },
+                "folder-update",
+            )
+            .await
+            .expect("journaled update");
+        assert_eq!(
+            storage
+                .get_folder(owner, "mb-1")
+                .await
+                .expect("get folder")
+                .expect("folder row")
+                .display_name,
+            "Renamed"
+        );
+        let journal = storage
+            .list_folder_journal_since(owner, 0, i64::MAX)
+            .await
+            .expect("folder journal");
+        assert_eq!(journal.len(), 2);
+        assert_eq!(journal[1].op, "folder-update");
+
+        // The atomic delete removes the mapping AND journals every removed id.
+        storage
+            .delete_folders_journaled(owner, &["mb-1".to_string()])
+            .await
+            .expect("journaled delete");
+        assert!(
+            storage
+                .get_folder(owner, "mb-1")
+                .await
+                .expect("get folder")
+                .is_none(),
+            "the mapping is gone"
+        );
+        let journal = storage
+            .list_folder_journal_since(owner, 0, i64::MAX)
+            .await
+            .expect("folder journal");
+        assert_eq!(journal.len(), 3);
+        assert_eq!(journal[2].op, "folder-delete");
+        assert_eq!(journal[2].server_id, "mb-1");
+    }
+
+    /// If the journal insert fails the WHOLE transaction must roll back: the
+    /// mapping is not written and the caller sees an error, so a mutation can
+    /// never be acknowledged without a durable journal row an already-primed
+    /// device can learn about. A regression that wrote the mapping first (or
+    /// outside the transaction) would leave the row behind and pass a
+    /// happy-path-only test.
+    #[tokio::test]
+    async fn upsert_folder_journaled_rolls_back_mapping_when_journal_insert_fails() {
+        let storage = mem_storage().await;
+        let owner = "rollback@example.com";
+        // Force every `change_journal` insert to abort, so the journal half of
+        // the transaction fails after the `folder_map` upsert has run.
+        sqlx::query(
+            "CREATE TRIGGER fail_folder_journal BEFORE INSERT ON change_journal \
+             BEGIN SELECT RAISE(ABORT, 'journal insert refused'); END",
+        )
+        .execute(storage.pool())
+        .await
+        .expect("install failing trigger");
+
+        let err = storage
+            .upsert_folder_journaled(
+                FolderUpsertParams {
+                    owner,
+                    server_id: "mb-1",
+                    parent_id: "0",
+                    display_name: "Rollback",
+                    folder_type: 12,
+                    backend_kind: "jmap",
+                    backend_id: "mb-1",
+                },
+                "folder-add",
+            )
+            .await;
+        assert!(err.is_err(), "a failed journal insert must surface as Err");
+        assert!(
+            storage
+                .get_folder(owner, "mb-1")
+                .await
+                .expect("get folder")
+                .is_none(),
+            "the mapping must roll back with the failed journal insert"
+        );
+        assert!(
+            storage
+                .list_folder_journal_since(owner, 0, i64::MAX)
+                .await
+                .expect("folder journal")
+                .is_empty(),
+            "no journal row may survive a rolled-back mutation"
+        );
+    }
+
+    #[tokio::test]
+    async fn init_schema_migrates_pre_bounded_keyword_baseline() {
+        // Databases created before the bounded flag scan stored the keyword
+        // baseline as one JSON blob per collection (`baseline_json`). Opening
+        // them must reshape the table to one row per message and expand each
+        // stored map, so the delta's per-id upsert path works afterwards.
+        let dir = std::env::temp_dir().join(format!(
+            "gateway-storage-keyword-migrate-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let db = dir.join("gateway.db");
+        let url = format!("sqlite://{}?mode=rwc", db.display());
+
+        {
+            let pool = sqlx::SqlitePool::connect(&url).await.expect("raw pool");
+            sqlx::query(
+                "CREATE TABLE email_keyword_baseline (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    owner TEXT NOT NULL,
+                    collection_id TEXT NOT NULL,
+                    baseline_json TEXT NOT NULL,
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(owner, collection_id)
+                )",
+            )
+            .execute(&pool)
+            .await
+            .expect("legacy baseline table");
+            sqlx::query(
+                "INSERT INTO email_keyword_baseline (owner, collection_id, baseline_json)
+                 VALUES ('o@example.com', '2::dev-1', '{\"m1\":[\"$seen\"],\"m2\":[]}')",
+            )
+            .execute(&pool)
+            .await
+            .expect("legacy baseline row");
+            pool.close().await;
+        }
+
+        let storage = Storage::new(&url).await.expect("open db");
+        storage.init_schema().await.expect("schema init migrates");
+        storage.init_schema().await.expect("re-init idempotent");
+
+        // The legacy map expanded into per-message rows.
+        assert_eq!(
+            storage
+                .get_email_keyword("o@example.com", "2::dev-1", "m1")
+                .await
+                .expect("get m1"),
+            Some(vec!["$seen".to_string()])
+        );
+        assert_eq!(
+            storage
+                .get_email_keyword("o@example.com", "2::dev-1", "m2")
+                .await
+                .expect("get m2"),
+            Some(Vec::<String>::new())
+        );
+        // The new per-id upsert path works on the migrated table.
+        storage
+            .upsert_email_keyword("o@example.com", "2::dev-1", "m3", &["$flagged".to_string()])
+            .await
+            .expect("upsert after migration");
+        assert_eq!(
+            storage
+                .get_email_keyword("o@example.com", "2::dev-1", "m3")
+                .await
+                .expect("get m3"),
+            Some(vec!["$flagged".to_string()])
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     #[tokio::test]
     async fn change_journal_survives_reopen_for_restart_replay() {
         let dir =
@@ -4104,5 +6751,581 @@ mod tests {
             "concurrent sync-state writes serialized into ping latency spikes: {:?}",
             elapsed
         );
+    }
+
+    /// `update_folder_journaled` writes ONLY the named columns on an EXISTING row
+    /// and journals a `folder-update`; a missing row is a no-op (`Ok(false)`) that
+    /// neither resurrects the mapping nor fabricates a journal row. This is the
+    /// targeted update the EWS rename/parent-mirror use so a concurrent delete is
+    /// never undone and unrelated columns are never clobbered.
+    #[tokio::test]
+    async fn update_folder_journaled_is_targeted_and_never_resurrects() {
+        let storage = mem_storage().await;
+        let owner = "u@example.com";
+        storage
+            .upsert_folder_journaled(
+                FolderUpsertParams {
+                    owner,
+                    server_id: "mb-1",
+                    parent_id: "0",
+                    display_name: "Old",
+                    folder_type: 12,
+                    backend_kind: "jmap",
+                    backend_id: "mb-1",
+                },
+                "folder-add",
+            )
+            .await
+            .expect("seed folder");
+
+        // Rename only: parent_id and the other columns must be untouched.
+        let updated = storage
+            .update_folder_journaled(owner, "mb-1", None, Some("New"))
+            .await
+            .expect("rename");
+        assert!(updated, "an existing row must be updated");
+        let row = storage
+            .get_folder(owner, "mb-1")
+            .await
+            .expect("db")
+            .expect("row survives");
+        assert_eq!(row.display_name, "New");
+        assert_eq!(row.parent_id, "0", "a rename must not touch parent_id");
+        assert_eq!(row.folder_type, 12, "a rename must not touch folder_type");
+        assert_eq!(row.backend_id, "mb-1", "backend_id must be preserved");
+        let journal = storage
+            .list_folder_journal_since(owner, 0, i64::MAX)
+            .await
+            .expect("journal");
+        assert_eq!(
+            journal
+                .iter()
+                .filter(|r| r.op == "folder-update" && r.server_id == "mb-1")
+                .count(),
+            1,
+            "a successful update must journal exactly one folder-update"
+        );
+
+        // Reparent only (display_name `None`): the name written by the rename
+        // above must be preserved.
+        let updated = storage
+            .update_folder_journaled(owner, "mb-1", Some("mb-parent"), None)
+            .await
+            .expect("reparent");
+        assert!(updated, "an existing row must be updated");
+        let row = storage
+            .get_folder(owner, "mb-1")
+            .await
+            .expect("db")
+            .expect("row survives");
+        assert_eq!(row.parent_id, "mb-parent", "the parent must move");
+        assert_eq!(row.display_name, "New", "the name must be preserved");
+
+        // A vanished row is a no-op: nothing written, nothing journaled.
+        let before = storage
+            .list_folder_journal_since(owner, 0, i64::MAX)
+            .await
+            .expect("journal")
+            .len();
+        let updated = storage
+            .update_folder_journaled(owner, "mb-gone", None, Some("Ghost"))
+            .await
+            .expect("no-op update");
+        assert!(!updated, "a missing row must report no update");
+        assert!(
+            storage
+                .get_folder(owner, "mb-gone")
+                .await
+                .expect("db")
+                .is_none(),
+            "a missing row must never be resurrected"
+        );
+        let after = storage
+            .list_folder_journal_since(owner, 0, i64::MAX)
+            .await
+            .expect("journal")
+            .len();
+        assert_eq!(
+            before, after,
+            "a no-op update must not fabricate a journal row"
+        );
+    }
+
+    /// A deferred folder-map prune round-trips: recorded ids are listed and, on
+    /// drain, each still-mapped id is pruned + journaled as `folder-delete` and
+    /// its pending row cleared. Re-recording an id is idempotent.
+    #[tokio::test]
+    async fn pending_folder_prunes_roundtrip_and_drain() {
+        let storage = mem_storage().await;
+        let owner = "u@example.com";
+        for server_id in ["mb-1", "mb-2"] {
+            storage
+                .upsert_folder_journaled(
+                    FolderUpsertParams {
+                        owner,
+                        server_id,
+                        parent_id: "0",
+                        display_name: server_id,
+                        folder_type: 12,
+                        backend_kind: "jmap",
+                        backend_id: server_id,
+                    },
+                    "folder-add",
+                )
+                .await
+                .expect("seed folder");
+        }
+
+        // Nothing pending initially.
+        assert!(
+            storage
+                .list_pending_folder_prunes(owner)
+                .await
+                .expect("list")
+                .is_empty()
+        );
+        assert_eq!(
+            storage
+                .reconcile_pending_folder_prunes(owner, &[], &std::collections::HashSet::new())
+                .await
+                .expect("drain"),
+            0,
+            "an empty work list drains nothing"
+        );
+
+        // Record both ids; a duplicate record is a no-op.
+        storage
+            .record_pending_folder_prunes(owner, &["mb-1".to_string(), "mb-2".to_string()])
+            .await
+            .expect("record");
+        storage
+            .record_pending_folder_prunes(owner, &["mb-1".to_string()])
+            .await
+            .expect("re-record is idempotent");
+        let pending = storage
+            .list_pending_folder_prunes(owner)
+            .await
+            .expect("list");
+        assert_eq!(pending, vec!["mb-1".to_string(), "mb-2".to_string()]);
+
+        // Drain: both mappings pruned + journaled, work list cleared.
+        assert_eq!(
+            storage
+                .reconcile_pending_folder_prunes(owner, &pending, &std::collections::HashSet::new())
+                .await
+                .expect("drain"),
+            2
+        );
+        assert!(
+            storage
+                .get_folder(owner, "mb-1")
+                .await
+                .expect("db")
+                .is_none(),
+            "a drained prune must remove the mapping"
+        );
+        assert!(
+            storage
+                .get_folder(owner, "mb-2")
+                .await
+                .expect("db")
+                .is_none()
+        );
+        assert!(
+            storage
+                .list_pending_folder_prunes(owner)
+                .await
+                .expect("list")
+                .is_empty(),
+            "the work list must be cleared once drained"
+        );
+        let deletes = storage
+            .list_folder_journal_since(owner, 0, i64::MAX)
+            .await
+            .expect("journal")
+            .into_iter()
+            .filter(|r| r.op == "folder-delete")
+            .map(|r| r.server_id)
+            .collect::<std::collections::HashSet<_>>();
+        assert_eq!(
+            deletes,
+            ["mb-1".to_string(), "mb-2".to_string()]
+                .into_iter()
+                .collect::<std::collections::HashSet<_>>(),
+            "each drained prune must journal a folder-delete"
+        );
+    }
+
+    /// A pending prune whose mapping row is already gone must still drain (a
+    /// no-op delete) and clear its work-list row, so it is not retried forever.
+    #[tokio::test]
+    async fn pending_folder_prune_without_mapping_drains_cleanly() {
+        let storage = mem_storage().await;
+        let owner = "u@example.com";
+        storage
+            .record_pending_folder_prunes(owner, &["mb-ghost".to_string()])
+            .await
+            .expect("record");
+        assert_eq!(
+            storage
+                .reconcile_pending_folder_prunes(
+                    owner,
+                    &["mb-ghost".to_string()],
+                    &std::collections::HashSet::new()
+                )
+                .await
+                .expect("drain"),
+            1
+        );
+        assert!(
+            storage
+                .list_pending_folder_prunes(owner)
+                .await
+                .expect("list")
+                .is_empty(),
+            "an unmapped pending id must be cleared, not retried forever"
+        );
+        assert!(
+            storage
+                .list_folder_journal_since(owner, 0, i64::MAX)
+                .await
+                .expect("journal")
+                .iter()
+                .all(|r| r.op != "folder-delete"),
+            "an unmapped pending id must not fabricate a folder-delete"
+        );
+    }
+
+    /// `reconcile_pending_folder_prunes` must prune ONLY the intents whose
+    /// backend mailbox is confirmed gone, and RETAIN the intent of a folder the
+    /// live hierarchy still holds — a pending intent recorded before a destroy
+    /// that was refused (or is still in flight) must never drop a live folder's
+    /// mapping, nor lose the recovery record if that destroy then commits.
+    #[tokio::test]
+    async fn reconcile_pending_folder_prunes_spares_live_folders() {
+        let storage = mem_storage().await;
+        let owner = "u@example.com";
+        for server_id in ["mb-live", "mb-dead"] {
+            storage
+                .upsert_folder_journaled(
+                    FolderUpsertParams {
+                        owner,
+                        server_id,
+                        parent_id: "0",
+                        display_name: server_id,
+                        folder_type: 12,
+                        backend_kind: "jmap",
+                        backend_id: server_id,
+                    },
+                    "folder-add",
+                )
+                .await
+                .expect("seed folder");
+        }
+        storage
+            .record_pending_folder_prunes(owner, &["mb-live".to_string(), "mb-dead".to_string()])
+            .await
+            .expect("record");
+        let candidates = storage
+            .list_pending_folder_prunes(owner)
+            .await
+            .expect("list");
+
+        // The live hierarchy still holds `mb-live`; `mb-dead` is gone.
+        let live: std::collections::HashSet<String> = ["mb-live".to_string()].into_iter().collect();
+        assert_eq!(
+            storage
+                .reconcile_pending_folder_prunes(owner, &candidates, &live)
+                .await
+                .expect("reconcile"),
+            1,
+            "only the confirmed deletion is pruned"
+        );
+        assert!(
+            storage
+                .get_folder(owner, "mb-live")
+                .await
+                .expect("db")
+                .is_some(),
+            "a live folder's mapping must survive the reconcile"
+        );
+        assert!(
+            storage
+                .get_folder(owner, "mb-dead")
+                .await
+                .expect("db")
+                .is_none(),
+            "a confirmed deletion's mapping must be pruned"
+        );
+        assert_eq!(
+            storage
+                .list_pending_folder_prunes(owner)
+                .await
+                .expect("list"),
+            vec!["mb-live".to_string()],
+            "the live folder's intent must be RETAINED until its destroy resolves"
+        );
+        let deletes = storage
+            .list_folder_journal_since(owner, 0, i64::MAX)
+            .await
+            .expect("journal")
+            .into_iter()
+            .filter(|r| r.op == "folder-delete")
+            .map(|r| r.server_id)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            deletes,
+            vec!["mb-dead".to_string()],
+            "only the confirmed deletion is journaled"
+        );
+    }
+
+    /// Only the CANDIDATE set captured before the live query is reconciled: an
+    /// intent recorded AFTER the live read (a newer create whose mailbox the
+    /// older live set predates) must not be classified against that stale set.
+    #[tokio::test]
+    async fn reconcile_pending_folder_prunes_ignores_intents_after_capture() {
+        let storage = mem_storage().await;
+        let owner = "u@example.com";
+        // `mb-new` is recorded as a pending intent but is LIVE; it was captured
+        // after the live set used below was read, so it must NOT be pruned even
+        // though the older `live` set omits it.
+        storage
+            .record_pending_folder_prunes(owner, &["mb-new".to_string()])
+            .await
+            .expect("record");
+        storage
+            .upsert_folder_journaled(
+                FolderUpsertParams {
+                    owner,
+                    server_id: "mb-new",
+                    parent_id: "0",
+                    display_name: "mb-new",
+                    folder_type: 12,
+                    backend_kind: "jmap",
+                    backend_id: "mb-new",
+                },
+                "folder-add",
+            )
+            .await
+            .expect("seed folder");
+
+        // Candidates captured BEFORE `mb-new` was recorded: empty.
+        assert_eq!(
+            storage
+                .reconcile_pending_folder_prunes(owner, &[], &std::collections::HashSet::new())
+                .await
+                .expect("reconcile"),
+            0,
+            "an intent recorded after the capture must not be reconciled"
+        );
+        assert!(
+            storage
+                .get_folder(owner, "mb-new")
+                .await
+                .expect("db")
+                .is_some(),
+            "the newer intent's mapping must survive"
+        );
+        assert_eq!(
+            storage
+                .list_pending_folder_prunes(owner)
+                .await
+                .expect("list"),
+            vec!["mb-new".to_string()],
+            "the newer intent must remain for a later reconcile"
+        );
+    }
+
+    /// An empty `live_ids` set (a caller that could not enumerate the backend)
+    /// prunes every candidate intent; the callers guard this by not calling with
+    /// an incomplete set — see `reconcile_deferred_folder_prunes`.
+    #[tokio::test]
+    async fn reconcile_pending_folder_prunes_with_empty_live_set_prunes_all() {
+        let storage = mem_storage().await;
+        let owner = "u@example.com";
+        storage
+            .upsert_folder_journaled(
+                FolderUpsertParams {
+                    owner,
+                    server_id: "mb-1",
+                    parent_id: "0",
+                    display_name: "mb-1",
+                    folder_type: 12,
+                    backend_kind: "jmap",
+                    backend_id: "mb-1",
+                },
+                "folder-add",
+            )
+            .await
+            .expect("seed folder");
+        storage
+            .record_pending_folder_prunes(owner, &["mb-1".to_string()])
+            .await
+            .expect("record");
+        assert_eq!(
+            storage
+                .reconcile_pending_folder_prunes(
+                    owner,
+                    &["mb-1".to_string()],
+                    &std::collections::HashSet::new()
+                )
+                .await
+                .expect("reconcile"),
+            1
+        );
+        assert!(
+            storage
+                .get_folder(owner, "mb-1")
+                .await
+                .expect("db")
+                .is_none()
+        );
+    }
+
+    /// The EWS delivered-membership ledger must track EXACTLY what the client
+    /// holds: `set_ews_sync_state_with_seeds` records the ids it delivered as
+    /// `Create` AND prunes the ids it delivered as `Delete`, in the SAME
+    /// transaction as the new `SyncState`. A retained row for a departed id
+    /// would make a later re-arrival look like an in-place `Update` (the overlap
+    /// decision reads this ledger) instead of a `Create`.
+    #[tokio::test]
+    async fn ews_sync_state_records_and_prunes_delivered_membership() {
+        let storage = mem_storage().await;
+        let owner = "u@example.com";
+        let folder = "inbox";
+
+        // Prime-like delivery of `m1` (no departure).
+        storage
+            .set_ews_sync_state_with_seeds(
+                owner,
+                folder,
+                "S1",
+                &[("m1".to_string(), vec!["$seen".to_string()])],
+                &["m1".to_string()],
+                &[],
+            )
+            .await
+            .expect("commit delivered");
+        assert!(
+            storage
+                .has_email_delivered_membership(owner, folder, "m1")
+                .await
+                .expect("read"),
+            "a delivered Create must be recorded"
+        );
+
+        // A later delta delivers `m1` as a Delete (it left the mailbox): the row
+        // must be pruned in the same transaction.
+        storage
+            .set_ews_sync_state_with_seeds(owner, folder, "S2", &[], &[], &["m1".to_string()])
+            .await
+            .expect("commit departure");
+        assert!(
+            !storage
+                .has_email_delivered_membership(owner, folder, "m1")
+                .await
+                .expect("read"),
+            "a delivered Delete must prune its membership row"
+        );
+        assert_eq!(
+            storage
+                .get_ews_sync_state(owner, folder)
+                .await
+                .expect("state"),
+            Some("S2".to_string()),
+            "the prune commits with the new SyncState"
+        );
+    }
+
+    /// A fresh EWS prime (`clear_email_delivered_membership`) drops the whole
+    /// folder's ledger, so a re-arrival of a previously-delivered id after the
+    /// client was told to forget the folder is a `Create`, not an `Update`.
+    #[tokio::test]
+    async fn clear_email_delivered_membership_resets_the_folder() {
+        let storage = mem_storage().await;
+        let owner = "u@example.com";
+        let folder = "inbox";
+        storage
+            .record_email_delivered_membership(owner, folder, "m1")
+            .await
+            .expect("record");
+        storage
+            .record_email_delivered_membership(owner, folder, "m2")
+            .await
+            .expect("record");
+        // A different folder's rows must be untouched.
+        storage
+            .record_email_delivered_membership(owner, "sent", "m9")
+            .await
+            .expect("record");
+
+        storage
+            .clear_email_delivered_membership(owner, folder)
+            .await
+            .expect("clear");
+
+        assert!(
+            !storage
+                .has_email_delivered_membership(owner, folder, "m1")
+                .await
+                .expect("read")
+        );
+        assert!(
+            !storage
+                .has_email_delivered_membership(owner, folder, "m2")
+                .await
+                .expect("read")
+        );
+        assert!(
+            storage
+                .has_email_delivered_membership(owner, "sent", "m9")
+                .await
+                .expect("read"),
+            "the clear is scoped to one folder"
+        );
+    }
+
+    /// The shared folder-mutation lock must serialize two holders for the SAME
+    /// `(owner, backend folder)` (so a rename/move's backend write and its
+    /// `folder_map` mirror stay one ordered operation across ALL front doors),
+    /// while a DIFFERENT folder never contends. A held guard makes the
+    /// same-folder acquire Pending — deterministic, not timing-dependent.
+    #[tokio::test]
+    async fn folder_mutation_lock_serializes_same_folder_only() {
+        let storage = mem_storage().await;
+        let owner = "o@example.com";
+
+        let held = storage.lock_folder_mutation(owner, "mb-1").await;
+        let same = tokio::time::timeout(
+            std::time::Duration::from_millis(50),
+            storage.lock_folder_mutation(owner, "mb-1"),
+        )
+        .await;
+        assert!(
+            same.is_err(),
+            "the same folder's lock must block while held"
+        );
+        // A DIFFERENT folder (or owner) must not contend.
+        let other = tokio::time::timeout(
+            std::time::Duration::from_millis(50),
+            storage.lock_folder_mutation(owner, "mb-2"),
+        )
+        .await;
+        assert!(other.is_ok(), "a different folder must not contend");
+        let other_owner = tokio::time::timeout(
+            std::time::Duration::from_millis(50),
+            storage.lock_folder_mutation("other@example.com", "mb-1"),
+        )
+        .await;
+        assert!(other_owner.is_ok(), "a different owner must not contend");
+        drop(held);
+        // After release the same folder is acquirable again.
+        let again = tokio::time::timeout(
+            std::time::Duration::from_millis(50),
+            storage.lock_folder_mutation(owner, "mb-1"),
+        )
+        .await;
+        assert!(again.is_ok(), "a released lock must be acquirable");
     }
 }

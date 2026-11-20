@@ -28,6 +28,9 @@ use tower_http::{
 };
 use tracing::{debug, info, warn};
 
+#[cfg(test)]
+mod http_wire_tests;
+
 /// Route-level request body ceiling for EAS/EWS/Autodiscover. Must cover
 /// a 25 MiB attachment as base64 MIMEData (~33.3 MiB) plus envelope margin:
 /// 4 MiB base of small requests + 36 MiB of encoded MIME. MAPI/HTTP routes
@@ -859,7 +862,18 @@ async fn main() -> anyhow::Result<()> {
         });
     }
 
-    let app = Router::new()
+    let app = build_router(app_state.clone());
+
+    let addr: SocketAddr = config.bind.parse()?;
+
+    serve_plain(addr, app).await?;
+
+    tracing::info!("Server shutdown complete");
+    Ok(())
+}
+
+fn build_router(app_state: Arc<AppState>) -> Router {
+    Router::new()
         // §20: liveness/readiness split. `/health/live` answers whether the
         // gateway PROCESS is up (router reachable, event loop responsive);
         // `/health/ready` reports whether the gateway can actually serve
@@ -1003,14 +1017,7 @@ async fn main() -> anyhow::Result<()> {
         .layer(SetResponseHeaderLayer::overriding(
             header::HeaderName::from_static("strict-transport-security"),
             HeaderValue::from_static("max-age=63072000; includeSubDomains"),
-        ));
-
-    let addr: SocketAddr = config.bind.parse()?;
-
-    serve_plain(addr, app).await?;
-
-    tracing::info!("Server shutdown complete");
-    Ok(())
+        ))
 }
 
 async fn serve_plain(addr: SocketAddr, app: Router) -> anyhow::Result<()> {

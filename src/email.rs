@@ -1037,7 +1037,6 @@ pub fn render_jmap_email_as_eas_application_data(
 /// ([MS-ASWBXML]: AttMethod 0x0A is followed by Body 0x0C). Its only EAS
 /// definition is in the Find namespace (§2.2.3.87). Attachment presence is
 /// conveyed by the `<AirSyncBase:Attachments>` roster below.
-#[allow(clippy::too_many_arguments)]
 pub fn render_jmap_email_as_eas_application_data_with_options(
     email: &JmapEmail,
     server_id: &str,
@@ -1561,11 +1560,49 @@ pub async fn save_draft_via_jmap(
 /// `server_id` is the gateway's server ID (em-<jmap_id>).
 /// `target_folder` is the distinguished folder name (e.g., "inbox", "sent", "drafts", "trash").
 pub async fn move_email_via_jmap(
-    _state: &Arc<AppState>,
+    state: &Arc<AppState>,
     jmap: &Arc<crate::jmap::JmapClient>,
     account_id: &str,
     server_id: &str,
     target_folder: &str,
+    username: &str,
+    password: &SecretString,
+) -> anyhow::Result<String> {
+    // Resolve the destination ROLE to its concrete JMAP mailbox id, then reuse
+    // the mailbox-scoped move so that logic lives in one place.
+    let target_mailbox_ids = jmap
+        .get_mailbox_ids_for_role(account_id, target_folder, username, password)
+        .await?;
+    let Some(target_mb_id) = target_mailbox_ids.into_iter().next() else {
+        return Err(anyhow!("Target folder '{}' not found", target_folder));
+    };
+    move_email_to_mailbox_via_jmap(
+        state,
+        jmap,
+        account_id,
+        server_id,
+        &target_mb_id,
+        username,
+        password,
+    )
+    .await
+}
+
+/// Move an email to a concrete JMAP mailbox id via `Email/set`.
+///
+/// Used for user-created folders whose EAS ServerId *is* the JMAP mailbox id
+/// (they have no JMAP role, so role resolution cannot find them).
+/// `server_id` is the gateway's server ID (em-<jmap_id>).
+///
+/// Preserves all existing mailbox memberships and adds only the destination
+/// mailbox. Returns Status 4 (no change) if the source and destination resolve
+/// to the same mailbox.
+pub async fn move_email_to_mailbox_via_jmap(
+    _state: &Arc<AppState>,
+    jmap: &Arc<crate::jmap::JmapClient>,
+    account_id: &str,
+    server_id: &str,
+    target_mb_id: &str,
     username: &str,
     password: &SecretString,
 ) -> anyhow::Result<String> {
@@ -1575,33 +1612,63 @@ pub async fn move_email_via_jmap(
         None => return Err(anyhow!("Invalid server ID format: {}", server_id)),
     };
 
-    // Get the mailbox ID for the target folder role
-    let target_mailbox_ids = jmap
-        .get_mailbox_ids_for_role(account_id, target_folder, username, password)
-        .await?;
+    // Read the email's current mailboxIds so we can preserve unrelated
+    // memberships and only add the destination mailbox.
+    let Some(email) = jmap
+        .get_email(account_id, &jmap_id, username, password, false)
+        .await?
+    else {
+        return Err(anyhow!("Email not found for JMAP id {jmap_id}"));
+    };
+    let current_mailboxes: Option<&HashMap<String, bool>> = email.mailbox_ids.as_ref();
 
-    if target_mailbox_ids.is_empty() {
-        return Err(anyhow!("Target folder '{}' not found", target_folder));
+    // If the email is already exclusively in the target mailbox, there is
+    // nothing to move — return Status 4 (no change) without writing.
+    if let Some(ids) = current_mailboxes {
+        let only_target = ids.len() == 1 && ids.contains_key(target_mb_id);
+        if only_target {
+            return Err(anyhow!(
+                "Message already in destination mailbox {target_mb_id}"
+            ));
+        }
     }
 
-    // For simplicity, use the first mailbox ID (servers may return multiple with same role)
-    let target_mb_id = &target_mailbox_ids[0];
+    // Build the update: preserve existing mailboxIds, add only the destination.
+    // Setting a mailboxId to `true` adds it; existing entries remain untouched.
+    let mut mailbox_ids_patch = serde_json::Map::new();
+    if let Some(ids) = current_mailboxes {
+        for (k, v) in ids {
+            mailbox_ids_patch.insert(k.clone(), serde_json::Value::Bool(*v));
+        }
+    }
+    mailbox_ids_patch.insert(target_mb_id.to_string(), serde_json::Value::Bool(true));
 
-    // Build the update: set mailboxIds to contain only the target folder
-    // This effectively moves the email (removes from other mailboxes)
-    let update_patch = json!({
-        "mailboxIds": { (target_mb_id): true },
-    });
+    // Clone jmap_id: the `json!` macro below moves it into the `Value`,
+    // but we still need it afterward to verify the `updated` collection.
+    let jmap_id_check = jmap_id.clone();
 
-    jmap.update_email(
-        account_id,
-        &json!({
-            (jmap_id): update_patch,
-        }),
-        username,
-        password,
-    )
-    .await?;
+    let outcome = jmap
+        .update_email_checked(
+            account_id,
+            &json!({
+                (jmap_id): {
+                    "mailboxIds": mailbox_ids_patch,
+                },
+            }),
+            username,
+            password,
+        )
+        .await?;
+
+    // A confirmed move requires the Email/set response's `updated` collection
+    // to contain the extracted JMAP email id. A `notUpdated` rejection (e.g.
+    // a move to a forbidden destination) leaves the message in its original
+    // mailbox and must surface as an error, not a silent success.
+    if !outcome.updated.iter().any(|id| id == &jmap_id_check) {
+        return Err(anyhow!(
+            "Email/set did not confirm move for JMAP email id {jmap_id_check}"
+        ));
+    }
 
     // Return a new change key; could be same as server_id for simplicity
     Ok(server_id.to_string())
@@ -1738,6 +1805,20 @@ pub struct FetchEmailsParams<'a> {
     /// `AND` operator, so a mailbox-scoped search never leaks results from
     /// other mailboxes.
     pub search_filter: Option<serde_json::Value>,
+    /// Optional concrete JMAP mailbox id that overrides role resolution.
+    ///
+    /// User-created mail folders have no JMAP role, so their EAS ServerId *is*
+    /// the JMAP mailbox id and role lookup cannot find them. When set, this id
+    /// scopes the `Email/query` directly and `mailbox_role` is only a label.
+    pub mailbox_id: Option<&'a str>,
+    /// RFC 8620 §5.5 query `anchor`: the id the window starts from. Used by
+    /// the EAS initial-sync continuation so a message deleted during paging
+    /// cannot shift the tail below a stale numeric `position` and be skipped.
+    /// `None` uses numeric `position` paging.
+    pub anchor: Option<&'a str>,
+    /// RFC 8620 §5.5 `anchorOffset` (only meaningful with `anchor`). `0`
+    /// includes the anchor; `1` starts the window immediately after it.
+    pub anchor_offset: i32,
 }
 
 /// Fetch emails from JMAP for a specific folder.
@@ -1751,28 +1832,27 @@ pub async fn fetch_emails_jmap(
 ) -> anyhow::Result<crate::jmap::EmailListResult> {
     let account_id = params.account_id;
     let mailbox_role = params.mailbox_role;
-    let position = params.position;
-    let limit = params.limit;
     let username = params.username;
     let password = params.password;
-    let search_filter = params.search_filter.as_ref();
+    let explicit_mailbox = params.mailbox_id;
     let jmap = state
         .jmap_client
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("JMAP is not configured; email reading is unavailable"))?;
+
+    // A concrete mailbox id (a user-created folder whose EAS ServerId is the
+    // JMAP mailbox id) bypasses role resolution entirely: such folders have no
+    // JMAP role, and role lookup would return the wrong (or no) mailbox.
+    if let Some(mb) = explicit_mailbox {
+        return fetch_emails_in_mailbox(jmap, params, mb).await;
+    }
 
     // Map mailbox role to JMAP filter.
     // "outbox" returns empty result — JMAP has no outbox role; outbound email
     // is handled via EmailSubmission/set. Return early with empty result.
     let mailbox_role_lower = mailbox_role.to_lowercase();
     if mailbox_role_lower == "outbox" {
-        return Ok(crate::jmap::EmailListResult {
-            emails: Vec::new(),
-            total: 0,
-            can_calculate_changes: false,
-            query_state: String::new(),
-            state: String::new(),
-        });
+        return Ok(crate::jmap::EmailListResult::empty());
     }
 
     // Normalize role to JMAP standard role name
@@ -1783,23 +1863,11 @@ pub async fn fetch_emails_jmap(
         "junkemail" | "junk" => "junk",
         "deleteditems" | "trash" => "trash",
         "outbox" => {
-            return Ok(crate::jmap::EmailListResult {
-                emails: Vec::new(),
-                total: 0,
-                can_calculate_changes: false,
-                query_state: String::new(),
-                state: String::new(),
-            });
+            return Ok(crate::jmap::EmailListResult::empty());
         }
         _ => {
             tracing::warn!(role = %mailbox_role, "Unrecognised mailbox role; returning empty email list");
-            return Ok(crate::jmap::EmailListResult {
-                emails: Vec::new(),
-                total: 0,
-                can_calculate_changes: false,
-                query_state: String::new(),
-                state: String::new(),
-            });
+            return Ok(crate::jmap::EmailListResult::empty());
         }
     };
 
@@ -1821,55 +1889,56 @@ pub async fn fetch_emails_jmap(
                     "Multiple mailbox IDs found for role; using first"
                 );
             }
-            let in_mailbox = serde_json::json!({ "inMailbox": mailbox_ids[0] });
-            let filter = match search_filter {
-                // Combine the mailbox scope with the search conditions under
-                // a single AND so a search is always confined to this mailbox.
-                Some(search) => Some(
-                    crate::ews_search::combine_with_in_mailbox(
-                        &mailbox_ids[0],
-                        Some(search.clone()),
-                    )
-                    .unwrap_or(in_mailbox),
-                ),
-                None => Some(in_mailbox),
-            };
-            let result = jmap
-                .query_emails(crate::jmap::QueryEmailsParams {
-                    account_id,
-                    filter,
-                    sort: None,
-                    position,
-                    limit,
-                    username,
-                    password,
-                })
-                .await?;
-            Ok(result)
+            // Resolve the role to its concrete mailbox id, then reuse the
+            // mailbox-scoped query (inMailbox + search combination) so that
+            // logic lives in one place.
+            fetch_emails_in_mailbox(jmap, params, &mailbox_ids[0]).await
         }
         Ok(_) => {
             // No mailbox for that role — return empty result.
             tracing::info!(role = %normalized_role, "No mailbox found for role; returning empty email list");
-            Ok(crate::jmap::EmailListResult {
-                emails: Vec::new(),
-                total: 0,
-                can_calculate_changes: false,
-                query_state: String::new(),
-                state: String::new(),
-            })
+            Ok(crate::jmap::EmailListResult::empty())
         }
         Err(e) => {
-            // Log the error but still return empty result to maintain sync stability.
-            tracing::warn!(error = %e, role = %normalized_role, "Failed to fetch mailbox IDs for role");
-            Ok(crate::jmap::EmailListResult {
-                emails: Vec::new(),
-                total: 0,
-                can_calculate_changes: false,
-                query_state: String::new(),
-                state: String::new(),
-            })
+            // A transient `Mailbox/query` failure must NOT be flattened to an
+            // empty result: it is indistinguishable from a genuinely empty
+            // mailbox, so the EAS/EWS initial sync would complete with no emails
+            // and no query state and the folder would be skipped until a manual
+            // re-prime. Propagate so the caller answers a retryable Status 6
+            // with the sync token untouched.
+            tracing::warn!(error = %e, role = %normalized_role, "Failed to fetch mailbox IDs for role; failing closed");
+            Err(e)
         }
     }
+}
+
+/// Query a concrete JMAP mailbox id (used for user-created folders, whose EAS
+/// ServerId *is* the mailbox id and which have no JMAP role).
+async fn fetch_emails_in_mailbox(
+    jmap: &Arc<crate::jmap::JmapClient>,
+    params: &FetchEmailsParams<'_>,
+    mailbox_id: &str,
+) -> anyhow::Result<crate::jmap::EmailListResult> {
+    let in_mailbox = serde_json::json!({ "inMailbox": mailbox_id });
+    let filter = match params.search_filter.as_ref() {
+        Some(search) => {
+            crate::ews_search::combine_with_in_mailbox(mailbox_id, Some(search.clone()))
+                .unwrap_or(in_mailbox)
+        }
+        None => in_mailbox,
+    };
+    jmap.query_emails(crate::jmap::QueryEmailsParams {
+        account_id: params.account_id,
+        filter: Some(filter),
+        sort: None,
+        position: params.position,
+        limit: params.limit,
+        anchor: params.anchor,
+        anchor_offset: params.anchor_offset,
+        username: params.username,
+        password: params.password,
+    })
+    .await
 }
 
 /// EAS folder type constants per MS-ASCMD §2.2.3.186.3.
@@ -2223,6 +2292,7 @@ pub async fn apply_eas_email_mutations(
     account_id: &str,
     username: &str,
     password: &SecretString,
+    collection_id: &str,
     xml: &str,
     deletes_as_moves: bool,
 ) -> Vec<EasEmailMutationResult> {
@@ -2261,7 +2331,43 @@ pub async fn apply_eas_email_mutations(
             } => {
                 let status = match crate::email::jmap_id_from_email_server_id(&server_id) {
                     Some(jmap_id) if !jmap_id.is_empty() => {
-                        if deletes_as_moves {
+                        // [MS-ASEMAIL] §3.2.5.4.2: a Delete addressed to a
+                        // collection must target an item that belongs to that
+                        // collection's mailbox. Without this check, a stale
+                        // <Delete> from collection A for a message that moved
+                        // to collection B would remove/destroy it from B.
+                        let in_source_mailbox = match jmap
+                            .get_email(account_id, jmap_id, username, password, false)
+                            .await
+                        {
+                            Ok(emails) => emails.iter().any(|e| {
+                                e.mailbox_ids
+                                    .as_ref()
+                                    .map(|mids| {
+                                        mids.iter().any(|(m, _)| m.as_str() == collection_id)
+                                    })
+                                    .unwrap_or(false)
+                            }),
+                            // A transient backend lookup failure must NOT be
+                            // reported as "Object not found" (Status 8): the
+                            // message may still exist in the source folder.
+                            // Report Status 6 and continue the command loop.
+                            Err(_) => {
+                                tracing::warn!(
+                                    target: "eas",
+                                    server_id = %server_id,
+                                    "Email membership lookup failed; reporting retryable Status 6"
+                                );
+                                results.push(EasEmailMutationResult::Delete {
+                                    server_id,
+                                    status: "6",
+                                });
+                                continue;
+                            }
+                        };
+                        if !in_source_mailbox {
+                            "8"
+                        } else if deletes_as_moves {
                             if trash_ids.is_none() {
                                 trash_ids = jmap
                                     .get_mailbox_ids_for_role(
@@ -4001,7 +4107,7 @@ Body\r\n";
         let xml = r#"<Commands>
           <Change><ServerId>em-abc</ServerId><ApplicationData><Email:Read>1</Email:Read><Email:Flag><Email:Status>2</Email:Status></Email:Flag></ApplicationData></Change>
         </Commands>"#;
-        let results = apply_eas_email_mutations(&client, "a", "u", &pw, xml, true).await;
+        let results = apply_eas_email_mutations(&client, "a", "u", &pw, "1", xml, true).await;
         assert_eq!(results.len(), 1);
         assert!(matches!(
             &results[0],
@@ -4023,7 +4129,7 @@ Body\r\n";
         let client = std::sync::Arc::new(crate::jmap::JmapClient::new(&base).unwrap());
         let pw = secrecy::SecretString::from("pw");
         let xml = r#"<Commands><Change><ServerId>em-1</ServerId><ApplicationData><Email:Read>0</Email:Read></ApplicationData></Change></Commands>"#;
-        let results = apply_eas_email_mutations(&client, "a", "u", &pw, xml, true).await;
+        let results = apply_eas_email_mutations(&client, "a", "u", &pw, "1", xml, true).await;
         assert!(matches!(
             &results[0],
             EasEmailMutationResult::Change { status: "1", .. }
@@ -4045,7 +4151,7 @@ Body\r\n";
         let client = std::sync::Arc::new(crate::jmap::JmapClient::new(&base).unwrap());
         let pw = secrecy::SecretString::from("pw");
         let xml = r#"<Commands><Change><ServerId>2:999</ServerId><ApplicationData><Email:Read>1</Email:Read></ApplicationData></Change></Commands>"#;
-        let results = apply_eas_email_mutations(&client, "a", "u", &pw, xml, true).await;
+        let results = apply_eas_email_mutations(&client, "a", "u", &pw, "1", xml, true).await;
         assert!(matches!(
             &results[0],
             EasEmailMutationResult::Change { status: "8", .. }
@@ -4058,7 +4164,7 @@ Body\r\n";
         let client = std::sync::Arc::new(crate::jmap::JmapClient::new(&base).unwrap());
         let pw = secrecy::SecretString::from("pw");
         let xml = r#"<Commands><Change><ServerId>em-1</ServerId><ApplicationData><Email:Read>1</Email:Read></ApplicationData></Change></Commands>"#;
-        let results = apply_eas_email_mutations(&client, "a", "u", &pw, xml, true).await;
+        let results = apply_eas_email_mutations(&client, "a", "u", &pw, "1", xml, true).await;
         assert!(matches!(
             &results[0],
             EasEmailMutationResult::Change { status: "6", .. }
@@ -4071,7 +4177,7 @@ Body\r\n";
         let client = std::sync::Arc::new(crate::jmap::JmapClient::new(&base).unwrap());
         let pw = secrecy::SecretString::from("pw");
         let xml = r#"<Commands><Delete><ServerId>em-7</ServerId></Delete></Commands>"#;
-        let results = apply_eas_email_mutations(&client, "a", "u", &pw, xml, true).await;
+        let results = apply_eas_email_mutations(&client, "a", "u", &pw, "inbox1", xml, true).await;
         assert!(matches!(
             &results[0],
             EasEmailMutationResult::Delete { status: "1", .. }
@@ -4101,7 +4207,7 @@ Body\r\n";
         let client = std::sync::Arc::new(crate::jmap::JmapClient::new(&base).unwrap());
         let pw = secrecy::SecretString::from("pw");
         let xml = r#"<Commands><Delete><ServerId>em-7</ServerId></Delete></Commands>"#;
-        let results = apply_eas_email_mutations(&client, "a", "u", &pw, xml, false).await;
+        let results = apply_eas_email_mutations(&client, "a", "u", &pw, "inbox1", xml, false).await;
         assert!(matches!(
             &results[0],
             EasEmailMutationResult::Delete { status: "1", .. }
@@ -4120,7 +4226,7 @@ Body\r\n";
         let client = std::sync::Arc::new(crate::jmap::JmapClient::new(&base).unwrap());
         let pw = secrecy::SecretString::from("pw");
         let xml = r#"<Sync><Collections><Collection><SyncKey>1</SyncKey></Collection></Collections></Sync>"#;
-        let results = apply_eas_email_mutations(&client, "a", "u", &pw, xml, true).await;
+        let results = apply_eas_email_mutations(&client, "a", "u", &pw, "1", xml, true).await;
         assert!(results.is_empty());
         assert!(
             seen.lock().await.is_empty(),

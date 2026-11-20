@@ -5,6 +5,7 @@ use crate::calendar::{
     parse_eas_sync_mutations, parse_ics_event, render_ics,
 };
 use crate::models::AppState;
+use crate::storage::CalendarDeliveryWrite;
 use crate::util::{resolve_xml_reference, xml_escape};
 use anyhow::{Result, anyhow};
 use base64::Engine;
@@ -67,6 +68,109 @@ fn sync_seq_to_token(seq: i64) -> String {
     format!("seq:{}", seq.max(0))
 }
 
+/// The canonical identity of a calendar event across backend representations.
+///
+/// The SAME event reaches the gateway through two paths that derive DIFFERENT
+/// ServerIds: a client `Add`/`Change` writes it through CalDAV and keys the
+/// delivery ledger on `generate_server_id(caldav_href)`, while a JMAP Sync reads
+/// it back under `generate_server_id("jmap://calendar/{account}/{id}")`. The
+/// per-scope ledger lookup then misses and EAS emits a duplicate `<Add>` for an
+/// event the client already holds.
+///
+/// The iCalendar UID is backend-agnostic, so it is the canonical join key:
+/// every event that has been written through either backend has an `item_map`
+/// row carrying its UID, and the stored ServerId for that UID is treated as
+/// canonical. Because the join collapses the CalDAV and JMAP representations of
+/// one event onto a SINGLE `item_map` row (the delivery upsert keys on the
+/// joined ServerId), a UID that instead maps to MORE THAN ONE stored ServerId
+/// names two DISTINCT events — typically the same UID in two calendar
+/// collections, or a forged duplicate. Joining those would make the client see
+/// two events as one item and hide one of them, so an ambiguous UID is NOT
+/// joined: the href-derived identity is used instead. `by_resource` maps an
+/// explicit `resource_href` to the ServerId its mapping was stored under, so an
+/// explicitly destroyed JMAP id resolves to the same identity.
+struct CalendarIdentity {
+    /// UID → `(ServerId, stored_href_is_jmap)`. The href KIND is kept so a UID
+    /// join happens ONLY across backends (see [`CalendarIdentity::for_event`]).
+    by_uid: HashMap<String, (String, bool)>,
+    /// UIDs that map to more than one stored ServerId (distinct events sharing
+    /// a UID); never used for a UID join.
+    ambiguous_uids: HashSet<String>,
+    by_resource: HashMap<String, String>,
+}
+
+impl CalendarIdentity {
+    async fn load(state: &Arc<AppState>, owner: &str) -> Result<Self> {
+        let mut by_uid: HashMap<String, (String, bool)> = HashMap::new();
+        let mut ambiguous_uids: HashSet<String> = HashSet::new();
+        let mut by_resource: HashMap<String, String> = HashMap::new();
+        for (uid, resource_href, server_id) in state.storage.list_item_map_identities(owner).await?
+        {
+            if let Some(uid) = uid.filter(|u| !u.is_empty()) {
+                let is_jmap = resource_href.starts_with("jmap://");
+                match by_uid.entry(uid) {
+                    std::collections::hash_map::Entry::Vacant(slot) => {
+                        slot.insert((server_id.clone(), is_jmap));
+                    }
+                    std::collections::hash_map::Entry::Occupied(slot) => {
+                        // A second, DIFFERENT ServerId for the same UID means two
+                        // distinct events share the UID; the join is unsafe.
+                        if slot.get().0 != server_id {
+                            ambiguous_uids.insert(slot.key().clone());
+                        }
+                    }
+                }
+            }
+            by_resource.entry(resource_href).or_insert(server_id);
+        }
+        // The durable JMAP alias table links a JMAP pseudo-href to the canonical
+        // ServerId an event was delivered under (a CalDAV-created event read back
+        // through JMAP). It overrides the item_map href entry, which after a
+        // preserved real href no longer carries the pseudo-href.
+        for (resource_href, server_id) in state.storage.list_jmap_id_aliases(owner).await? {
+            by_resource.insert(resource_href, server_id);
+        }
+        Ok(Self {
+            by_uid,
+            ambiguous_uids,
+            by_resource,
+        })
+    }
+
+    /// The canonical ServerId for a fetched event: the stored identity for its
+    /// UID when one exists, is unambiguous, AND comes from the OTHER backend
+    /// (the join exists to bridge the JMAP and CalDAV representations of one
+    /// event, so a stored CalDAV href pairs only with a fetched `jmap://` href
+    /// and vice versa). A UID already stored under the SAME href KIND names a
+    /// DISTINCT resource — two events in different collections that happen to
+    /// share a UID (CalDAV requires UID uniqueness per collection, not per
+    /// account) — so the href-derived identity is used instead; joining them
+    /// would collapse B's mapping onto A's and later Change/Delete operations
+    /// would target the wrong resource. Otherwise the ServerId derived from
+    /// `href`.
+    fn for_event(&self, secret: &str, uid: &str, href: &str) -> String {
+        let fetched_is_jmap = href.starts_with("jmap://");
+        if !uid.is_empty()
+            && !self.ambiguous_uids.contains(uid)
+            && let Some((existing, stored_is_jmap)) = self.by_uid.get(uid)
+            && *stored_is_jmap != fetched_is_jmap
+        {
+            return existing.clone();
+        }
+        self.for_href(secret, href)
+    }
+
+    /// The canonical ServerId for a bare `href` (an event with no parsed UID,
+    /// e.g. an explicitly destroyed JMAP id): the stored identity for that
+    /// resource when one exists, else the derived ServerId.
+    fn for_href(&self, secret: &str, href: &str) -> String {
+        self.by_resource
+            .get(href)
+            .cloned()
+            .unwrap_or_else(|| generate_server_id(secret, href))
+    }
+}
+
 fn sync_since_from_token(token: Option<&str>) -> i64 {
     token
         .and_then(|raw| raw.strip_prefix("seq:"))
@@ -108,6 +212,56 @@ pub fn invalid_sync_key_response(collection_id: &str, content_class: &str) -> St
     )
 }
 
+/// Resolve the CalDAV collection href backing a user-created calendar-family
+/// EAS folder from its `CollectionId`, or `None` for a system folder (which
+/// keeps the default-calendar behavior).
+///
+/// A `folder_map` READ failure is propagated as an error, never flattened to
+/// `None`: `None` means "system or genuinely unmapped", and the callers treat
+/// it as an unscoped collection (the default calendar, or account-wide JMAP
+/// events). Conflating a transient storage error with that would let a custom
+/// folder Sync leak the default calendar's events; the caller must instead fail
+/// retryably.
+async fn collection_folder_href(
+    state: &Arc<AppState>,
+    owner: &str,
+    collection_id: &str,
+) -> Result<Option<String>> {
+    // Callers may pass either the visible CollectionId (the calendar Sync
+    // path) or its device-scoped form `{visible}::{device}` (the client-mutation
+    // path); `folder_map` is keyed by the visible id. A CalDAV collection href
+    // is a valid CollectionId that may itself contain `::`, so the COMPLETE id
+    // is looked up first and the device suffix is stripped only when that
+    // fails — otherwise `Foo::Bar/` would resolve to `Foo`.
+    if let Some(href) = folder_caldav_href(state, owner, collection_id).await? {
+        return Ok(Some(href));
+    }
+    match collection_id.rsplit_once("::") {
+        Some((visible, _)) => folder_caldav_href(state, owner, visible).await,
+        None => Ok(None),
+    }
+}
+
+/// The CalDAV collection href a `folder_map` row backs, or `None` for a system
+/// folder or an unmapped id. A storage read failure is an error (see
+/// [`collection_folder_href`]).
+async fn folder_caldav_href(
+    state: &Arc<AppState>,
+    owner: &str,
+    server_id: &str,
+) -> Result<Option<String>> {
+    if crate::eas_folders::is_system_folder_id(server_id) {
+        return Ok(None);
+    }
+    match state.storage.get_folder(owner, server_id).await {
+        Ok(Some(row)) if row.backend_kind == "caldav" => Ok(Some(row.backend_id)),
+        Ok(_) => Ok(None),
+        Err(e) => Err(anyhow!(
+            "failed to resolve calendar folder {server_id}: {e}"
+        )),
+    }
+}
+
 pub async fn apply_client_sync_mutations(
     state: Arc<AppState>,
     owner: &str,
@@ -122,11 +276,21 @@ pub async fn apply_client_sync_mutations(
     }
 
     let caldav = CaldavClient::new(&state.cfg)?;
-    let calendars = caldav.find_user_calendars(username, password).await?;
-    let collection_href = calendars
-        .first()
-        .ok_or_else(|| anyhow!("no calendars found"))?
-        .clone();
+    // Scope mutations to the folder the client is syncing: a custom
+    // calendar-family folder ([MS-ASCMD] §2.2.3.186.2 Types 13/15/16/17) has
+    // its CalDAV collection href as its CollectionId, so an Add there must land
+    // in that collection, not the first calendar returned. A system Calendar
+    // folder (CollectionId "1") keeps the default-calendar behavior.
+    let collection_href = match collection_folder_href(&state, owner, collection_id).await? {
+        Some(href) => caldav.absolute_url(&href)?,
+        None => {
+            let calendars = caldav.find_user_calendars(username, password).await?;
+            calendars
+                .first()
+                .ok_or_else(|| anyhow!("no calendars found"))?
+                .clone()
+        }
+    };
     let mut results = Vec::new();
 
     for mutation in mutations {
@@ -175,6 +339,13 @@ pub async fn apply_client_sync_mutations(
                                 &item.uid,
                                 &etag,
                             )
+                            .await?;
+                        // The client already holds this item (it just created it),
+                        // so record it in this scope's ledger: the follow-up Sync
+                        // must filter it out instead of re-emitting `<Add>`.
+                        state
+                            .storage
+                            .upsert_calendar_delivery(owner, collection_id, &server_id, &etag)
                             .await?;
                         if let Some(client_id) = client_id.as_deref() {
                             state
@@ -261,9 +432,9 @@ pub async fn apply_client_sync_mutations(
                     });
                     continue;
                 };
-                let (existing_ics, existing_etag) = caldav
-                    .get_event(&existing.resource_href, username, password)
-                    .await?;
+                let event_href = existing.resource_href.as_str();
+                let (existing_ics, existing_etag) =
+                    caldav.get_event(event_href, username, password).await?;
                 let mut item = parse_ics_event(&existing_ics)
                     .ok_or_else(|| anyhow!("failed parsing existing calendar item"))?;
                 if let Some(v) = patch.uid {
@@ -356,8 +527,8 @@ pub async fn apply_client_sync_mutations(
                 let ics = render_ics(&item);
                 match caldav
                     .put_event(
-                        &existing.resource_href,
-                        Some(&existing.resource_href),
+                        event_href,
+                        Some(event_href),
                         &ics,
                         username,
                         password,
@@ -370,12 +541,19 @@ pub async fn apply_client_sync_mutations(
                             .storage
                             .upsert_item_map(
                                 owner,
-                                &existing.resource_href,
+                                event_href,
                                 &resource_href,
                                 &server_id,
                                 &item.uid,
                                 &etag,
                             )
+                            .await?;
+                        // The client just applied this change locally; record the
+                        // new ETag so the follow-up Sync does not re-emit
+                        // `<Change>` for it.
+                        state
+                            .storage
+                            .upsert_calendar_delivery(owner, collection_id, &server_id, &etag)
                             .await?;
                         for att_id in &attachment_deletes {
                             if let Err(e) = state
@@ -447,13 +625,9 @@ pub async fn apply_client_sync_mutations(
                     });
                     continue;
                 };
+                let event_href = existing.resource_href.as_str();
                 match caldav
-                    .delete_event(
-                        &existing.resource_href,
-                        username,
-                        password,
-                        existing.etag.as_deref(),
-                    )
+                    .delete_event(event_href, username, password, existing.etag.as_deref())
                     .await
                 {
                     Ok(()) => {
@@ -464,6 +638,12 @@ pub async fn apply_client_sync_mutations(
                         state
                             .storage
                             .delete_item_by_server_id(owner, &server_id)
+                            .await?;
+                        // The client applied this delete locally; drop this
+                        // scope's ledger row so a later re-add is an `<Add>`.
+                        state
+                            .storage
+                            .delete_calendar_delivery(owner, collection_id, &server_id)
                             .await?;
                         if let Err(e) = state
                             .attachment_manager
@@ -1278,6 +1458,7 @@ const PRIME_QUERY_PAGE_SIZE: u64 = 100;
 async fn query_all_calendar_events(
     jmap: &crate::jmap::JmapClient,
     account_id: &str,
+    calendar_id: Option<&str>,
     start: &str,
     end: &str,
     username: &str,
@@ -1286,7 +1467,7 @@ async fn query_all_calendar_events(
     let first = jmap
         .query_calendar_events(crate::jmap::QueryCalendarEventsParams {
             account_id,
-            calendar_id: None,
+            calendar_id,
             start,
             end,
             position: 0,
@@ -1306,7 +1487,7 @@ async fn query_all_calendar_events(
         let page = jmap
             .query_calendar_events(crate::jmap::QueryCalendarEventsParams {
                 account_id,
-                calendar_id: None,
+                calendar_id,
                 start,
                 end,
                 position: events.len() as u64,
@@ -1458,6 +1639,14 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
 
     let start_db_seq = storage.get_latest_change_seq().await.unwrap_or(0);
 
+    // Canonical identity map: resolves the SAME event to ONE ServerId across the
+    // CalDAV and JMAP representations, so this scope's ledger lookup and
+    // Add-vs-Change decision are consistent no matter which backend delivered the
+    // event first (a client Add through CalDAV and a later JMAP Sync otherwise
+    // derive different ServerIds and re-emit `<Add>` for an event the client
+    // already holds).
+    let identity = CalendarIdentity::load(&params.state, params.owner).await?;
+
     // EventItem struct used by both JMAP and CalDAV paths
     #[derive(Clone)]
     struct EventItem {
@@ -1476,6 +1665,19 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
     // than a complete view of the calendar. Stored events absent from a partial
     // delta are merely unchanged and must NOT be tombstoned.
     let mut calendar_delta_partial = false;
+    // Track delta change ids scoped OUT of this calendar (a scoped folder's
+    // delta is account-wide; an event whose calendarIds no longer matches this
+    // folder's calendar is silently skipped by `get_calendar_events`). Stored as
+    // ServerIds so the deletion sweep can match them directly without needing
+    // `account_id` in scope.
+    let mut scoped_out_server_ids: HashSet<String> = HashSet::new();
+    // True when the snapshot below came from the CalDAV fallback, which queries
+    // exactly ONE collection (the folder's own, or the default/first calendar).
+    // Such a snapshot is authoritative ONLY for that collection, so the deletion
+    // sweep must be bounded to events THIS scope delivered (its ledger) rather
+    // than the owner-global `item_map`: otherwise an empty single-calendar
+    // snapshot would queue `<Delete>`s for every other calendar's events.
+    let mut caldav_single_collection = false;
     // Server IDs the delta explicitly reported as destroyed.
     let mut jmap_destroyed_server_ids: HashSet<String> = HashSet::new();
     // True when the JMAP drain stopped at its accumulation/page cap with
@@ -1487,10 +1689,48 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
     // `previous_state` carries a `prime-cursor:` token (per-device, since
     // `state_collection_id` is device-scoped). A prime continuation resumes
     // after this href and force-delivers the remainder.
-    let prime_cursor: Option<String> =
-        prime_cursor_from_token(previous_state.as_ref().and_then(|(_, t)| t.as_deref()));
+    let prime_cursor: Option<String> = if params.incoming_sync_key == "0" {
+        // SyncKey 0 means "forget everything": a `prime-cursor:` token left by
+        // an EARLIER clipped prime must not survive, or the restarted stream
+        // would skip every href at/before the stale cursor and never deliver
+        // the head of the snapshot.
+        None
+    } else {
+        prime_cursor_from_token(previous_state.as_ref().and_then(|(_, t)| t.as_deref()))
+    };
 
-    if params.state.cfg.prefer_jmap_calendar {
+    // Folder scoping: a user-created calendar folder (Type 13,
+    // [MS-ASCMD] §2.2.3.186.2) has its CalDAV collection href as its EAS
+    // CollectionId. Without scoping, the Calendar Sync path would query with
+    // `calendar_id: None` (every calendar) and the CalDAV fallback would use
+    // the FIRST calendar returned, so the client would receive events from
+    // other calendars. Resolve the href to its JMAP calendar id and scope both
+    // backends to it. `Some(None)` marks a custom folder whose calendar could
+    // not be resolved: the JMAP path is skipped and the CalDAV fallback below
+    // queries the folder's own collection (from `scoped_calendar_href`) rather
+    // than leaking the default calendar's events.
+    let mut scoped_calendar_href: Option<String> = None;
+    let calendar_scope: Option<Option<String>> =
+        match collection_folder_href(&params.state, params.owner, params.collection_id).await? {
+            None => None,
+            Some(href) => {
+                let resolved = match &params.state.jmap_client {
+                    Some(jmap) => {
+                        let pw = SecretString::from(params.password.to_string());
+                        jmap.resolve_calendar_id_for_href(params.username, &pw, &href)
+                            .await
+                            .unwrap_or(None)
+                    }
+                    None => None,
+                };
+                scoped_calendar_href = Some(href);
+                Some(resolved)
+            }
+        };
+    let scoped_calendar_id: Option<&str> = calendar_scope.as_ref().and_then(|s| s.as_deref());
+    let scope_unresolved = matches!(calendar_scope, Some(None));
+
+    if params.state.cfg.prefer_jmap_calendar && !scope_unresolved {
         if let Some(jmap) = &params.state.jmap_client {
             let password_secret = SecretString::from(params.password.to_string());
             if jmap
@@ -1559,19 +1799,46 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
                                 // A delta is a PARTIAL change set: events
                                 // absent from it are unchanged, not gone.
                                 calendar_delta_partial = true;
+                                // The `CalendarEvent/changes` feed is
+                                // ACCOUNT-wide, so a destroyed id may belong to
+                                // ANY calendar. `item_map` is owner-global (no
+                                // collection column), so tombstoning a
+                                // destroyed id here removes a SHARED row. A
+                                // scoped folder must therefore delete only the
+                                // events IT delivered: the deletion sweep below
+                                // consults this scope's delivery ledger and
+                                // emits `<Delete>` for a destroyed id the scope
+                                // holds, leaving foreign events untouched. An
+                                // unscoped (default) calendar folder owns the
+                                // whole account feed and tombstones normally.
+                                // Record EVERY explicitly destroyed id; the
+                                // sweep decides which are this scope's to
+                                // deliver.
                                 for id in &changes.destroyed {
                                     let href = format!("jmap://calendar/{}/{}", account_id, id);
-                                    jmap_destroyed_server_ids.insert(generate_server_id(
-                                        params.state.cfg.hmac_secret(),
-                                        &href,
-                                    ));
+                                    jmap_destroyed_server_ids.insert(
+                                        identity.for_href(params.state.cfg.hmac_secret(), &href),
+                                    );
                                 }
                                 let mut conversion_failed = false;
+                                // Track delta change ids scoped OUT of this
+                                // calendar (a scoped folder's delta is
+                                // account-wide; an event whose calendarIds no
+                                // longer matches this folder's calendar is
+                                // silently skipped by `get_calendar_events`).
+                                // These are confirmed departures from this
+                                // scope and must receive a scope-local Delete
+                                // rather than lingering as stale entries.
+                                // Stored as ServerIds (derived from the full
+                                // `jmap://calendar/{account}/{id}` href) so the
+                                // deletion sweep can match them directly
+                                // without needing `account_id` in scope.
                                 if !all_ids.is_empty() {
                                     match jmap
                                         .get_calendar_events(
                                             &account_id,
                                             &all_ids,
+                                            scoped_calendar_id,
                                             params.username,
                                             &password_secret,
                                         )
@@ -1579,29 +1846,53 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
                                     {
                                         Ok(event_map) => {
                                             for id in all_ids {
-                                                match event_map.get(&id).and_then(|(ics, etag)| {
-                                                    parse_ics_event(ics).map(|item| {
-                                                        (ics.clone(), etag.clone(), item)
-                                                    })
-                                                }) {
-                                                    Some((ics, etag, item)) => {
-                                                        events.push(EventItem {
-                                                            href: format!(
+                                                match event_map.get(&id) {
+                                                    Some((ics, etag)) => match parse_ics_event(ics)
+                                                    {
+                                                        Some(item) => {
+                                                            events.push(EventItem {
+                                                                href: format!(
+                                                                    "jmap://calendar/{}/{}",
+                                                                    account_id, id
+                                                                ),
+                                                                etag: etag.clone(),
+                                                                ics: ics.clone(),
+                                                                item,
+                                                            });
+                                                        }
+                                                        None => {
+                                                            conversion_failed = true;
+                                                            tracing::warn!(
+                                                                target: "sync",
+                                                                event_id = %id,
+                                                                "changed JMAP calendar event could not be parsed; not advancing sync state"
+                                                            );
+                                                        }
+                                                    },
+                                                    None => {
+                                                        // Scoped out (no longer belongs to this
+                                                        // calendar) — a confirmed departure for a
+                                                        // scoped folder. For an unscoped fetch this
+                                                        // is a fetch failure instead.
+                                                        if scoped_calendar_id.is_none() {
+                                                            conversion_failed = true;
+                                                            tracing::warn!(
+                                                                target: "sync",
+                                                                event_id = %id,
+                                                                "changed JMAP calendar event could not be fetched; not advancing sync state"
+                                                            );
+                                                        } else {
+                                                            let href = format!(
                                                                 "jmap://calendar/{}/{}",
                                                                 account_id, id
-                                                            ),
-                                                            etag,
-                                                            ics,
-                                                            item,
-                                                        });
-                                                    }
-                                                    None => {
-                                                        conversion_failed = true;
-                                                        tracing::warn!(
-                                                            target: "sync",
-                                                            event_id = %id,
-                                                            "changed JMAP calendar event could not be fetched/converted/parsed; not advancing sync state"
-                                                        );
+                                                            );
+                                                            scoped_out_server_ids.insert(
+                                                                identity.for_href(
+                                                                    params.state.cfg.hmac_secret(),
+                                                                    &href,
+                                                                ),
+                                                            );
+                                                        }
                                                     }
                                                 }
                                             }
@@ -1658,6 +1949,7 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
                         match query_all_calendar_events(
                             jmap,
                             &account_id,
+                            scoped_calendar_id,
                             &start,
                             &end,
                             params.username,
@@ -1758,24 +2050,50 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
         } else {
             jmap_failed = true;
         }
+    } else {
+        // Two cases reach here and BOTH must fall back to CalDAV:
+        //  * CalDAV-only mode (`prefer_jmap_calendar` false) — JMAP is not the
+        //    calendar backend;
+        //  * a custom folder whose calendar scope could not be resolved
+        //    (`scope_unresolved`) — serving an empty snapshot instead would be
+        //    marked authoritative and the tombstone sweep below would delete
+        //    every stored calendar event. Falling back queries the folder's own
+        //    CalDAV collection (when known) or the default calendar.
+        jmap_failed = true;
     }
     // Fallback to CalDAV only if JMAP Calendar failed (not if it returned zero events)
     // Zero events is a valid JMAP result; falling back would cause unnecessary
     // CalDAV requests and potential stale/duplicate data.
     if jmap_failed {
         events.clear();
-        // The CalDAV fallback returns a complete snapshot of the collection, so
-        // it is authoritative: a stored event it omits is genuinely deleted.
+        // The CalDAV fallback returns a complete snapshot of ONE collection
+        // (the folder's own, or the default/first calendar), so it is
+        // authoritative for that collection only: a stored event it omits is
+        // genuinely deleted FROM THAT COLLECTION. Because `item_map` is
+        // owner-global, the deletion sweep below must be bounded to events THIS
+        // scope delivered, or an empty snapshot of one calendar would delete
+        // every other calendar's events.
         calendar_delta_partial = false;
+        caldav_single_collection = true;
         jmap_destroyed_server_ids.clear();
         let caldav = CaldavClient::new(&params.state.cfg)?;
-        let calendars = caldav
-            .find_user_calendars(params.username, params.password)
-            .await?;
-        let collection_href = calendars
-            .first()
-            .ok_or_else(|| anyhow!("no calendars found"))?
-            .clone();
+        // Prefer the folder's own collection (resolved from its stored href)
+        // over the first calendar returned: a custom calendar folder must sync
+        // only its own collection. `absolute_url` keeps the configured base
+        // path, so the stored href resolves to the collection that
+        // `ensure_calendar_collection` created.
+        let collection_href = match scoped_calendar_href.as_deref() {
+            Some(href) => caldav.absolute_url(href)?,
+            None => {
+                let calendars = caldav
+                    .find_user_calendars(params.username, params.password)
+                    .await?;
+                calendars
+                    .first()
+                    .ok_or_else(|| anyhow!("no calendars found"))?
+                    .clone()
+            }
+        };
         let start = params
             .opts
             .filter_start
@@ -1900,12 +2218,67 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
     // Delta results (already a bounded change set) are unaffected in practice.
     events.sort_by(|a, b| a.href.cmp(&b.href));
 
-    let existing_map = storage
-        .list_ews_items(params.owner, 4096, 0)
-        .await?
-        .into_iter()
-        .map(|item| (item.server_id.clone(), item))
-        .collect::<HashMap<_, _>>();
+    // Per-scope delivery ledger (device+collection SyncKey stream) drives the
+    // EAS Add/Change decision and the ETag-change filter for CALENDAR. `item_map`
+    // is owner-global and records that SOME collection delivered an item; using
+    // it here makes a fresh prime emit `<Change>` for an item this scope never
+    // held (e.g. a second device, or an event shared by two calendars), and
+    // makes a per-collection edit invisible to the other collection because the
+    // shared ETag already matched. This scope is exactly one EAS SyncKey stream
+    // (`state_collection_id`), whose SyncKey 0 prime the client treats as "forget
+    // everything".
+    //
+    // `existing_map` (owner-global `item_map`) remains the candidate set for the
+    // owner-level DELETION sweep below: a deletion is an account-level fact and
+    // the shared row is what the delete fill removes once its `<Delete>` is
+    // emitted. It is read UNBOUNDED (`list_ews_item_server_ids`) — a page-bounded
+    // read would omit stored events whose row falls outside the page, making
+    // `!existing_map.contains_key(id)` true for a LIVE event and tombstoning it
+    // on a partial delta.
+    let existing_map = storage.list_ews_item_server_ids(params.owner).await?;
+
+    let initial_sync = params.incoming_sync_key == "0";
+    let mut delivered_map = storage
+        .list_calendar_deliveries(params.owner, params.state_collection_id)
+        .await?;
+    if initial_sync {
+        // A fresh prime restarts the stream: the client was told to forget all
+        // prior items, so within THIS response every event is an `<Add>`. The
+        // in-memory ledger is emptied for the Add/Change decision here; the
+        // durable ledger is cleared in `commit_calendar_sync` (atomic with the
+        // new SyncKey). `item_map` is untouched (other scopes share it).
+        delivered_map.clear();
+    }
+    // NOTE: an empty ledger on a non-prime (delta) is deliberately NOT seeded
+    // from the owner-global `item_map`. A shared ETag would make this scope skip
+    // a changed event another collection already delivered (its ETag "already
+    // matches"), i.e. exactly the per-collection bug this ledger exists to fix.
+    // With no ledger row, every event in this stream's change set is treated as
+    // new to the stream and delivered as `<Add>` — EAS keys items by ServerId, so
+    // an `<Add>` for an item the client already holds updates it in place. This is
+    // the upgrade path: a scope's first delta after the ledger is introduced
+    // re-delivers its bounded change set (and a fresh prime delivers the whole
+    // snapshot) as `<Add>` rather than silently dropping events.
+
+    // A legacy scoped folder whose stream was never initialized (no
+    // `calendar_stream_init` marker) cannot receive Deletes for
+    // silently-omitted events on a partial delta: its ledger has no record of
+    // what it previously delivered, so `delivered_map.contains_key` is false
+    // for every stored id and the scoped-out rule never matches; `calendar_event_deleted`
+    // for a partial delta only catches explicitly destroyed ids. Force a
+    // re-prime (Status 3 / SyncKey 0) so the client gets a fresh snapshot and
+    // the scope rebuilds its ledger — a one-time cost per scope. An initialized
+    // stream with an empty ledger (e.g. an empty calendar or the stream's last
+    // event deleted) is accepted: its deliveries happened before the ledger was
+    // introduced, and re-priming it endlessly would trap the client.
+    if !initial_sync
+        && calendar_scope.is_some()
+        && !storage
+            .calendar_stream_init(params.owner, params.state_collection_id)
+            .await?
+    {
+        return Ok(invalid_sync_key_response(params.collection_id, "Calendar"));
+    }
 
     struct PendingItem {
         server_id: String,
@@ -1918,35 +2291,33 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
     let mut pending_items: Vec<PendingItem> = Vec::new();
     let mut pending_deletes: Vec<String> = Vec::new();
     let mut seen_ids = HashSet::new();
-    let initial_sync = params.incoming_sync_key == "0";
     let in_prime_cursor = prime_cursor.is_some();
 
     for ev in &events {
         if ev.href.is_empty() {
             continue;
         }
-        let server_id = generate_server_id(params.state.cfg.hmac_secret(), &ev.href);
+        let server_id = identity.for_event(params.state.cfg.hmac_secret(), &ev.item.uid, &ev.href);
         seen_ids.insert(server_id.clone());
         let etag = ev.etag.trim_matches('"').to_string();
         // Use pre-parsed item from EventItem (set by both JMAP and CalDAV paths)
         let item = &ev.item;
-        let existing = existing_map.get(&server_id);
-        let is_add = existing.is_none();
-        let changed = existing
-            .map(|row| row.etag.as_deref() != Some(etag.as_str()))
-            .unwrap_or(true);
+        // Add vs Change is decided by THIS scope's ledger, not the owner-global
+        // item_map: an item this exact SyncKey stream never delivered is an
+        // `<Add>` even when another device/collection already stored it.
+        let delivered_etag = delivered_map.get(&server_id);
+        let is_add = delivered_etag.is_none();
+        let changed = delivered_etag.map(|e| e != &etag).unwrap_or(true);
         // A prime continuation resumes strictly after the stored href
         // cursor: events at/before it were already delivered to THIS device,
-        // so they are skipped unconditionally. Events past it are force-
-        // delivered even when the shared item_map already holds them with
-        // a matching etag (another device's completed prime may have
-        // populated the map with events this device never saw, and the
-        // `changed` check would otherwise filter them out forever).
-        if in_prime_cursor {
-            if ev.href.as_str() <= prime_cursor.as_deref().unwrap() {
-                continue;
-            }
-        } else if !initial_sync && !changed {
+        // so they are skipped unless they changed since the delivered prefix.
+        // Otherwise an edit to A (at the cursor) made before the continuation
+        // would be lost — the next snapshot sees A's new ETag but skips A
+        // because its href is at the cursor, and A's edit is now behind the
+        // stored provider state.
+        if (in_prime_cursor && ev.href.as_str() <= prime_cursor.as_deref().unwrap() && !changed)
+            || (!initial_sync && !changed)
+        {
             continue;
         }
         pending_items.push(PendingItem {
@@ -1959,7 +2330,18 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
         });
     }
 
-    for server_id in existing_map.keys() {
+    // Candidate deletions: every event THIS scope has delivered (its ledger)
+    // plus every event any scope has stored (the owner-global `item_map`). The
+    // ledger is required because a deletion confirmed by ANOTHER scope removes
+    // the shared `item_map` row, so a scope that still holds the item in its own
+    // ledger would otherwise never enumerate it here — and the earlier
+    // tombstone already sits at or below the captured journal head
+    // (`start_db_seq`), so the tombstone feed cannot recover it either (that
+    // device would keep the deleted event indefinitely). A ledger id whose
+    // `item_map` row is gone is therefore a confirmed deletion for THIS scope.
+    let mut deletion_candidates: HashSet<String> = existing_map.iter().cloned().collect();
+    deletion_candidates.extend(delivered_map.keys().cloned());
+    for server_id in &deletion_candidates {
         if seen_ids.contains(server_id) {
             continue;
         }
@@ -1967,12 +2349,59 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
         // stored event absent from it is merely unchanged and must survive.
         // Only an event the delta explicitly reported as destroyed is removed
         // here. A full snapshot (initial sync or the CalDAV fallback) is
-        // authoritative, so any stored event it omits is a deletion.
-        let deleted = calendar_event_deleted(
-            calendar_delta_partial,
-            &jmap_destroyed_server_ids,
-            server_id,
-        );
+        // authoritative, so any stored event it omits is a deletion. An event
+        // this scope delivered whose `item_map` row is already gone was removed
+        // by another scope's confirmed deletion — that is authoritative here.
+        //
+        // A SCOPED folder (a custom calendar folder, whether or not JMAP
+        // resolution succeeded) is bounded to ONE calendar, but `item_map` is
+        // owner-global, so its snapshot/absence is NOT a statement about another
+        // calendar's events. Restrict its deletion candidates to events THIS
+        // scope delivered (its own ledger), and within that set use the
+        // snapshot-vs-delta rule: a full snapshot (CalDAV fallback) omitting a
+        // delivered event deletes it, and a partial JMAP delta (`CalendarEvent/
+        // changes`, which is account-wide) deletes only an explicitly destroyed
+        // id. A foreign event (never in this ledger) is therefore never swept.
+        // The scope is keyed on the mapped folder, NOT on whether JMAP
+        // resolution produced a calendar id — a resolution failure or a
+        // CalDAV-only deployment must not grant account-wide deletion authority.
+        //
+        // The CalDAV fallback (`caldav_single_collection`) queries EXACTLY ONE
+        // collection — the folder's own, or, for the unscoped default calendar,
+        // the first calendar returned. Its snapshot is therefore authoritative
+        // for that collection ONLY, never the account, so the DEFAULT calendar's
+        // fallback must ALSO be bounded to its own ledger: an empty snapshot of
+        // one calendar must not queue `<Delete>`s for every other calendar's
+        // mappings.
+        let folder_scoped = calendar_scope.is_some() || caldav_single_collection;
+        // Resolve this candidate's server_id back to its JMAP event id for
+        // scoped-out detection. `identity.for_event` is deterministic, so we
+        // can re-derive it from the stored href (the resource_href is
+        // `jmap://calendar/{account}/{event_id}`).
+        let is_scoped_out = folder_scoped && scoped_out_server_ids.contains(server_id);
+        let deleted = if folder_scoped {
+            // A scoped folder's deletion sweep must NOT tombstone unchanged
+            // events that merely didn't appear in this partial delta, nor
+            // events this scope never delivered. Deletion requires the item
+            // to be in this scope's ledger AND either be confirmed out of
+            // scope or explicitly destroyed. Bounding to the ledger is what
+            // prevents an empty single-calendar CalDAV snapshot from
+            // tombstoning every other calendar's events.
+            delivered_map.contains_key(server_id)
+                && (is_scoped_out
+                    || calendar_event_deleted(
+                        calendar_delta_partial,
+                        &jmap_destroyed_server_ids,
+                        server_id,
+                    ))
+        } else {
+            !existing_map.contains(server_id)
+                || calendar_event_deleted(
+                    calendar_delta_partial,
+                    &jmap_destroyed_server_ids,
+                    server_id,
+                )
+        };
         if deleted {
             // Queue the tombstone now (it carries the journal seq and
             // must survive a clipped window) but RETAIN the item_map row:
@@ -1981,7 +2410,12 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
             // moved past it) and the client would keep the deleted
             // meeting indefinitely. The row is dropped by the delete fill
             // only once its `<Delete>` command has been emitted.
-            let _ = storage.add_delete_tombstone(params.owner, server_id).await;
+            // Propagate a failed tombstone write before advancing the key: if the
+            // tombstone is not durable, the delete would be lost on retry and the
+            // client would keep the deleted event forever.
+            storage
+                .add_delete_tombstone(params.owner, server_id)
+                .await?;
         }
     }
 
@@ -1990,6 +2424,12 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
             .list_deleted_since_seq(params.owner, start_db_seq)
             .await?;
         for (_, sid) in tombstones {
+            // A scoped stream must only import a tombstone if its own ledger
+            // delivered the item; otherwise another calendar's deletion would
+            // cause this stream to emit a Delete for an item it never held.
+            if calendar_scope.is_some() && !delivered_map.contains_key(sid.as_str()) {
+                continue;
+            }
             if !seen_ids.contains(sid.as_str()) {
                 pending_deletes.push(sid);
             }
@@ -2003,6 +2443,9 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
     let mut more_available = false;
     // Href of the last item actually delivered, for the prime cursor.
     let mut last_delivered_href: Option<String> = None;
+    // Durable side effects of THIS response, materialised only once the whole
+    // window has been rendered and committed atomically below.
+    let mut delivered_now: Vec<CalendarDeliveryWrite<'_>> = Vec::new();
 
     for pi in &pending_items {
         if items_included >= window_size {
@@ -2010,16 +2453,16 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
             break;
         }
         last_delivered_href = Some(pi.resource_href.clone());
-        storage
-            .upsert_item_map(
-                params.owner,
-                &pi.resource_href,
-                &pi.resource_href,
-                &pi.server_id,
-                &pi.uid,
-                &pi.etag,
-            )
-            .await?;
+        // Deferred to the atomic commit: recording delivery (item_map + this
+        // scope's ledger) BEFORE the SyncKey advances would make a partial
+        // failure lose the event on retry (the ledger would already mark it
+        // delivered while the client never received the new SyncKey).
+        delivered_now.push(CalendarDeliveryWrite {
+            server_id: pi.server_id.as_str(),
+            resource_href: pi.resource_href.as_str(),
+            uid: pi.uid.as_str(),
+            etag: pi.etag.as_str(),
+        });
         if pi.is_add {
             let mut app_data =
                 render_calendar_app_data_with_options(&pi.item, &params.opts.body_options);
@@ -2058,6 +2501,7 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
         items_included += 1;
     }
 
+    let mut deleted_now: Vec<&str> = Vec::new();
     if !more_available {
         for server_id in &pending_deletes {
             if items_included >= window_size {
@@ -2069,14 +2513,15 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
                 xml_escape(server_id)
             ));
             items_included += 1;
-            // The push of this delete above is the moment the item_map row
-            // may finally be removed. Deleting it any earlier (e.g. in the
-            // sweep above) would lose the retry path: a clipped window that
-            // has not emitted this `<Delete>` yet must keep the row so the
-            // held-token retry re-queues it.
-            let _ = storage
-                .delete_item_by_server_id(params.owner, server_id)
-                .await;
+            // The push of this delete above is the moment the item_map row may
+            // finally be removed. Deleting it any earlier (e.g. in the sweep
+            // above) would lose the retry path: a clipped window that has not
+            // emitted this `<Delete>` yet must keep the row so the held-token
+            // retry re-queues it. The removal (item_map + THIS scope's ledger
+            // row) is applied in the atomic commit below, together with the
+            // new SyncKey, so a failed commit retains both the row and the
+            // client's old SyncKey — the retry re-emits the `<Delete>`.
+            deleted_now.push(server_id.as_str());
         }
     }
 
@@ -2128,30 +2573,41 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
     } else {
         Some(provider_token.unwrap_or_else(|| sync_seq_to_token(start_db_seq)))
     };
+    // Journal watermark independent of the provider token (which may be a
+    // non-`seq:` JMAP query_state): everything journaled up to the delivered
+    // set is consumed. The stored watermark is ALWAYS the pre-sync head
+    // (`Some(start_db_seq)`), for a clipped window AND a full drain alike.
+    //
+    // A full drain must NOT let the commit read the journal head at commit
+    // time: a change another device journals after `start_db_seq` but before
+    // this commit would then be folded into the stored watermark and Ping /
+    // GetItemEstimate would never report it — the device would sleep through
+    // another device's change until an unrelated Sync. Holding the pre-sync
+    // head keeps every post-snapshot row visible. The one cost is that the
+    // rows THIS response delivered also stay above the watermark, so the next
+    // Ping may wake once more; that follow-up Sync finds nothing new (the
+    // delivered rows are filtered by the provider token / etag) and re-holds
+    // the watermark at the then-current head, so it converges after one extra
+    // wake. This is a delayed-wake fix, never data loss.
+    let watermark_hold = Some(start_db_seq);
+    // Commit every durable side effect of this response in ONE transaction:
+    // the delivered items' item_map + change_journal rows and per-scope ledger
+    // rows, the emitted `<Delete>`s' removals, the new SyncKey + token, and the
+    // watermark. They MUST advance together — writing the ledger before the
+    // SyncKey would let a later failure lose an event on the client's retry
+    // (the ledger would mark it delivered while the client never got the new
+    // SyncKey).
     storage
-        .set_sync_key(
+        .commit_calendar_sync(
             params.owner,
             params.state_collection_id,
             &new_sync_key,
             token_val.as_deref(),
+            watermark_hold,
+            initial_sync,
+            &delivered_now,
+            &deleted_now,
         )
-        .await?;
-    // Journal watermark independent of the provider token (which may be a
-    // non-`seq:` JMAP query_state): everything journaled up to the delivered
-    // set is consumed. When the window clipped (MoreAvailable), undelivered
-    // rows must stay visible to Ping, so hold the watermark at the pre-sync
-    // head; the client's obligatory follow-up Sync drains the remainder.
-    let journal_seq = if more_available {
-        start_db_seq
-    } else {
-        storage
-            .get_latest_change_seq()
-            .await
-            .unwrap_or(0)
-            .max(start_db_seq)
-    };
-    storage
-        .set_journal_watermark(params.owner, params.state_collection_id, journal_seq)
         .await?;
     let more_available_tag = if more_available || drain_has_more {
         "<MoreAvailable/>"
@@ -2528,6 +2984,28 @@ mod tests {
         /// real backend (paging a sorted id list), instead of returning the
         /// whole list on every call.
         honour_position: std::sync::Arc<AtomicBool>,
+        /// Calendar objects returned by `Calendar/get`, used by the folder
+        /// scoping path (`resolve_calendar_id_for_href`).
+        calendars: std::sync::Arc<Mutex<Vec<Value>>>,
+        /// CalDAV surface calls (method, path) recorded by the fallback route.
+        dav_calls: std::sync::Arc<Mutex<Vec<(String, String)>>>,
+    }
+
+    impl CalStub {
+        fn with_calendars(self, calendars: Vec<Value>) -> Self {
+            // Mutate the shared `Calendar/get` list in place: the router holds a
+            // clone of this stub, so replacing the `Arc` would not reach it.
+            *self.calendars.lock().unwrap() = calendars;
+            self
+        }
+
+        /// Replace the scripted `CalendarEvent/changes` pages and reset the page
+        /// cursor, so a second `Sync` in the same test can script a new delta.
+        fn set_changes(&self, pages: Vec<Value>) {
+            *self.changes_pages.lock().unwrap() = pages;
+            self.change_idx
+                .store(0, std::sync::atomic::Ordering::SeqCst);
+        }
     }
 
     async fn spawn_calendar_stub(
@@ -2537,7 +3015,8 @@ mod tests {
         get_state: &str,
         changes_error: Option<String>,
     ) -> CalStub {
-        use axum::routing::{get, post};
+        use axum::response::Response;
+        use axum::routing::{any, get, post};
 
         async fn session(axum::Extension(s): axum::Extension<CalStub>) -> axum::Json<Value> {
             axum::Json(json!({
@@ -2593,11 +3072,32 @@ mod tests {
                         responses.push(json!(["CalendarEvent/changes", page, id]));
                     }
                     "CalendarEvent/query" => {
+                        // Honour `filter.inCalendarIds` (draft-ietf-jmap-
+                        // calendars §5.11.1) so a scoped query sees only its
+                        // own calendar's events, matching a real backend.
+                        let want_cal: Vec<String> = args
+                            .get("filter")
+                            .and_then(|f| f.get("inCalendarIds"))
+                            .and_then(|v| v.as_array())
+                            .map(|a| {
+                                a.iter()
+                                    .filter_map(|v| v.as_str())
+                                    .map(String::from)
+                                    .collect()
+                            })
+                            .unwrap_or_default();
                         let mut ids: Vec<String> = s
                             .events
                             .lock()
                             .unwrap()
                             .iter()
+                            .filter(|e| {
+                                want_cal.is_empty()
+                                    || e.get("calendarIds")
+                                        .and_then(|v| v.as_object())
+                                        .map(|m| want_cal.iter().any(|c| m.contains_key(c)))
+                                        .unwrap_or(false)
+                            })
                             .filter_map(|e| e.get("id").and_then(|v| v.as_str()).map(String::from))
                             .collect();
                         ids.sort();
@@ -2621,16 +3121,46 @@ mod tests {
                         ]));
                     }
                     "CalendarEvent/get" => {
-                        let want: Vec<String> = args
-                            .get("ids")
-                            .and_then(|v| v.as_array())
-                            .map(|a| {
-                                a.iter()
-                                    .filter_map(|v| v.as_str())
-                                    .map(String::from)
-                                    .collect()
-                            })
-                            .unwrap_or_default();
+                        // Resolve the `#ids` back-reference (RFC 8620 §5.5) to
+                        // the earlier `CalendarEvent/query` result, so a scoped
+                        // query's `filter.inCalendarIds` is actually honoured.
+                        // Without this the stub returns EVERY event and a
+                        // scoping regression (query construction vs. response
+                        // rendering) stays invisible.
+                        let want: Vec<String> =
+                            if let Some(arr) = args.get("ids").and_then(|v| v.as_array()) {
+                                // An explicitly empty `ids` array selects nothing:
+                                // an empty calendar must not receive another
+                                // calendar's events.
+                                if arr.is_empty() {
+                                    Vec::new()
+                                } else {
+                                    arr.iter()
+                                        .filter_map(|v| v.as_str())
+                                        .map(String::from)
+                                        .collect()
+                                }
+                            } else if let Some(result_of) = args
+                                .get("#ids")
+                                .and_then(|v| v.get("resultOf"))
+                                .and_then(|v| v.as_str())
+                            {
+                                responses
+                                    .iter()
+                                    .find(|r| r.get(2).and_then(|v| v.as_str()) == Some(result_of))
+                                    .and_then(|r| r.get(1))
+                                    .and_then(|r| r.get("ids"))
+                                    .and_then(|v| v.as_array())
+                                    .map(|a| {
+                                        a.iter()
+                                            .filter_map(|v| v.as_str())
+                                            .map(String::from)
+                                            .collect()
+                                    })
+                                    .unwrap_or_default()
+                            } else {
+                                Vec::new()
+                            };
                         let list: Vec<Value> = s
                             .events
                             .lock()
@@ -2651,10 +3181,72 @@ mod tests {
                             id
                         ]));
                     }
+                    "Calendar/get" => {
+                        let list = s.calendars.lock().unwrap().clone();
+                        responses.push(json!([
+                            "Calendar/get",
+                            { "accountId": "acct", "state": "cs", "list": list },
+                            id
+                        ]));
+                    }
                     _ => {}
                 }
             }
             axum::Json(json!({ "methodResponses": responses }))
+        }
+
+        /// CalDAV fallback surface: records PUT/PROPFIND and answers PROPFIND
+        /// with the collections `find_user_calendars` expects.
+        async fn dav(
+            axum::Extension(s): axum::Extension<CalStub>,
+            method: axum::http::Method,
+            uri: axum::http::Uri,
+            body: String,
+        ) -> Response {
+            s.dav_calls
+                .lock()
+                .unwrap()
+                .push((method.as_str().to_string(), uri.path().to_string()));
+            if method.as_str() == "PROPFIND" {
+                let names: Vec<String> = s
+                    .calendars
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .filter_map(|c| c.get("id").and_then(|v| v.as_str()).map(String::from))
+                    .collect();
+                let mut responses = String::new();
+                for name in names {
+                    responses.push_str(&format!(
+                        "<D:response><D:href>{}/{}/</D:href><D:propstat><D:prop>\
+<D:resourcetype><D:collection/><C:calendar/></D:resourcetype>\
+<D:displayname>{name}</D:displayname></D:prop><D:status>HTTP/1.1 200 OK</D:status>\
+</D:propstat></D:response>",
+                        uri.path().trim_end_matches('/'),
+                        name
+                    ));
+                }
+                let body = format!(
+                    "<?xml version=\"1.0\" encoding=\"utf-8\"?>\
+<D:multistatus xmlns:D=\"DAV:\" xmlns:C=\"urn:ietf:params:xml:ns:caldav\">{responses}</D:multistatus>"
+                );
+                return Response::builder()
+                    .status(207)
+                    .header("content-type", "application/xml; charset=utf-8")
+                    .body(axum::body::Body::from(body))
+                    .unwrap();
+            }
+            if method.as_str() == "PUT" {
+                return Response::builder()
+                    .status(201)
+                    .header("etag", "\"dav-etag\"")
+                    .body(axum::body::Body::from(body))
+                    .unwrap();
+            }
+            Response::builder()
+                .status(200)
+                .body(axum::body::Body::empty())
+                .unwrap()
         }
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -2671,10 +3263,13 @@ mod tests {
             changes_error: std::sync::Arc::new(changes_error),
             query_total: std::sync::Arc::new(AtomicUsize::new(0)),
             honour_position: std::sync::Arc::new(AtomicBool::new(false)),
+            calendars: std::sync::Arc::new(Mutex::new(Vec::new())),
+            dav_calls: std::sync::Arc::new(Mutex::new(Vec::new())),
         };
         let app = axum::Router::new()
             .route("/session", get(session))
             .route("/", post(api))
+            .fallback(any(dav))
             .layer(axum::Extension(stub.clone()));
         tokio::spawn(async move {
             axum::serve(listener, app).await.unwrap();
@@ -2697,6 +3292,14 @@ mod tests {
         })
     }
 
+    /// A stub event carrying an explicit `calendarIds` membership, so the
+    /// scoped prime/delta paths can filter by calendar.
+    fn scoped_event(id: &str, uid: &str, title: &str, calendar_id: &str) -> Value {
+        let mut event = stub_event(id, uid, title);
+        event["calendarIds"] = json!({ calendar_id: true });
+        event
+    }
+
     async fn calendar_sync_state(jmap_base: &str) -> Arc<AppState> {
         use crate::models::AppState;
         let storage = crate::storage::Storage::new("sqlite::memory:")
@@ -2714,7 +3317,60 @@ mod tests {
         Arc::new(AppState::new(cfg, Arc::new(storage)))
     }
 
+    /// State whose CalDAV base points at the same stub, for the client-mutation
+    /// path (which writes through CalDAV).
+    async fn calendar_mutation_state(base: &str) -> Arc<AppState> {
+        use crate::models::AppState;
+        let storage = crate::storage::Storage::new("sqlite::memory:")
+            .await
+            .expect("in-memory storage");
+        storage.init_schema().await.expect("schema init");
+        let cfg = crate::config::Config {
+            jmap_base: base.to_string(),
+            caldav_base: base.to_string(),
+            email_enabled: true,
+            prefer_jmap_calendar: true,
+            mail_domain: "example.com".to_string(),
+            hmac_secret: SecretString::from("a".repeat(32)),
+            ..Default::default()
+        };
+        Arc::new(AppState::new(cfg, Arc::new(storage)))
+    }
+
+    /// State whose CalDAV base points at the stub with `prefer_jmap_calendar`
+    /// DISABLED, so a calendar `Sync` always takes the CalDAV fallback (which
+    /// queries exactly ONE collection).
+    async fn caldav_only_calendar_state(base: &str) -> Arc<AppState> {
+        use crate::models::AppState;
+        let storage = crate::storage::Storage::new("sqlite::memory:")
+            .await
+            .expect("in-memory storage");
+        storage.init_schema().await.expect("schema init");
+        let cfg = crate::config::Config {
+            jmap_base: base.to_string(),
+            caldav_base: base.to_string(),
+            email_enabled: true,
+            prefer_jmap_calendar: false,
+            mail_domain: "example.com".to_string(),
+            hmac_secret: SecretString::from("a".repeat(32)),
+            ..Default::default()
+        };
+        Arc::new(AppState::new(cfg, Arc::new(storage)))
+    }
+
     async fn run_calendar_sync(state: &Arc<AppState>, incoming_sync_key: &str) -> String {
+        run_calendar_sync_for(state, "calendar", "calendar", incoming_sync_key).await
+    }
+
+    /// Drive a calendar `Sync` for an explicit `collection_id` /
+    /// `state_collection_id` (a custom calendar-family folder uses its CalDAV
+    /// href as the CollectionId and a device-scoped state key).
+    async fn run_calendar_sync_for(
+        state: &Arc<AppState>,
+        collection_id: &str,
+        state_collection_id: &str,
+        incoming_sync_key: &str,
+    ) -> String {
         let opts = SyncOptions {
             window_size: 100,
             get_changes: true,
@@ -2724,8 +3380,8 @@ mod tests {
         perform_sync(&PerformSyncParams {
             state: state.clone(),
             owner: "user@example.com",
-            collection_id: "calendar",
-            state_collection_id: "calendar",
+            collection_id,
+            state_collection_id,
             incoming_sync_key,
             content_class: "Calendar",
             opts,
@@ -3279,6 +3935,67 @@ mod tests {
         );
     }
 
+    /// A SyncKey 0 re-prime must DISCARD any `prime-cursor:` token left by an
+    /// earlier clipped prime: the client was told to forget everything, so the
+    /// restarted stream must deliver the complete snapshot from the head — not
+    /// skip every href at/before the stale cursor. Otherwise the head events
+    /// would never be re-delivered on the fresh prime.
+    #[tokio::test]
+    async fn calendar_synckey_zero_discards_stale_prime_cursor() {
+        let stub = spawn_calendar_stub(
+            vec![],
+            vec![
+                stub_event("e1", "uid-e1", "Event One"),
+                stub_event("e2", "uid-e2", "Event Two"),
+            ],
+            "query-7",
+            "get-9",
+            None,
+        )
+        .await;
+        let state = calendar_sync_state(&stub.base).await;
+
+        // A prior clipped prime left a `prime-cursor:` token. The stub's event
+        // hrefs sort BELOW this sentinel, so if the stale cursor survived the
+        // re-prime, EVERY event would be skipped as "already delivered".
+        state
+            .storage
+            .set_sync_key(
+                "user@example.com",
+                "calendar",
+                "prior-key",
+                Some("prime-cursor:zzzz"),
+            )
+            .await
+            .unwrap();
+
+        let xml = perform_sync(&PerformSyncParams {
+            state: state.clone(),
+            owner: "user@example.com",
+            collection_id: "calendar",
+            state_collection_id: "calendar",
+            incoming_sync_key: "0",
+            content_class: "Calendar",
+            opts: SyncOptions {
+                window_size: 100,
+                get_changes: true,
+                filter_start: Utc::now() - Duration::weeks(52),
+                body_options: crate::eas_sync_options::EasSyncCollectionOptions::default(),
+            },
+            username: "user@example.com",
+            password: "pw",
+            client_mutation_responses: "",
+        })
+        .await
+        .expect("perform_sync");
+
+        assert!(
+            xml.contains("uid-e1") && xml.contains("uid-e2"),
+            "a SyncKey 0 re-prime must deliver the WHOLE snapshot, not skip past \
+             the stale prime cursor:\n{xml}"
+        );
+    }
+
     /// An incomplete prime snapshot must store NO token, so the next Sync
     /// re-primes from the full snapshot rather than attempting a delta.
     #[tokio::test]
@@ -3434,6 +4151,1212 @@ mod tests {
                 .iter()
                 .any(|r| r.server_id == sid_e9),
             "the row must be removed after its Delete is emitted"
+        );
+    }
+
+    /// A client Add into a user-created calendar-family folder must land in
+    /// THAT folder's CalDAV collection, resolved from the folder's stored
+    /// href. The mutation path receives the device-scoped CollectionId
+    /// (`{visible}::{device}`), so the href lookup must strip that suffix.
+    #[tokio::test]
+    async fn calendar_add_scopes_put_to_the_folders_own_collection() {
+        let stub = spawn_calendar_stub(vec![], vec![], "query-s", "get-s", None)
+            .await
+            .with_calendars(vec![json!({
+                "id": "cal-side",
+                "name": "Side Project",
+                "href": "/dav/cal/user@example.com/Side%20Project/"
+            })]);
+        let state = calendar_mutation_state(&stub.base).await;
+        let owner = "user@example.com";
+        let folder_href = "/dav/cal/user@example.com/Side%20Project/";
+        state
+            .storage
+            .upsert_folder_journaled(
+                crate::storage::FolderUpsertParams {
+                    owner,
+                    server_id: folder_href,
+                    parent_id: "0",
+                    display_name: "Side Project",
+                    folder_type: 13,
+                    backend_kind: "caldav",
+                    backend_id: folder_href,
+                },
+                "folder-add",
+            )
+            .await
+            .unwrap();
+
+        let xml = "<Sync><Collections><Collection><Class>Calendar</Class>\
+<CollectionId>/dav/cal/user@example.com/Side%20Project/</CollectionId>\
+<Add><ClientId>c1</ClientId><ApplicationData>\
+<Calendar:Subject>Scoped</Calendar:Subject>\
+<Calendar:StartTime>2026-01-05T09:00:00Z</Calendar:StartTime>\
+<Calendar:EndTime>2026-01-05T10:00:00Z</Calendar:EndTime>\
+</ApplicationData></Add></Collection></Collections></Sync>";
+        let results = apply_client_sync_mutations(
+            state.clone(),
+            owner,
+            &crate::eas::scoped_collection_id(folder_href, "dev1"),
+            owner,
+            "pw",
+            xml,
+        )
+        .await
+        .expect("mutations apply");
+        assert!(
+            matches!(
+                results.as_slice(),
+                [ClientMutationResult::Add { status: "1", .. }]
+            ),
+            "the Add must succeed: {results:?}"
+        );
+        let puts: Vec<String> = stub
+            .dav_calls
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(m, _)| m == "PUT")
+            .map(|(_, p)| p.clone())
+            .collect();
+        assert!(
+            puts.iter().any(|p| p.contains("Side%20Project")),
+            "the PUT must target the folder's own collection, got {puts:?}"
+        );
+    }
+    /// Regression test for the fail-closed `?` on the folder lookup in
+    /// `apply_client_sync_mutations`: when the `folder_map` read itself fails,
+    /// the mutation must NOT fall back to the default calendar — an Add would
+    /// otherwise be written to a collection the folder does not own. The
+    /// lookup error propagates so the caller answers a retryable Status 6 and
+    /// no PUT reaches the CalDAV stub.
+    #[tokio::test]
+    async fn calendar_add_fails_closed_when_folder_lookup_fails() {
+        let stub = spawn_calendar_stub(vec![], vec![], "query-s", "get-s", None)
+            .await
+            .with_calendars(vec![json!({
+                "id": "cal-default",
+                "name": "Calendar",
+                "href": "/dav/cal/user@example.com/Calendar/"
+            })]);
+        let state = calendar_mutation_state(&stub.base).await;
+        let owner = "user@example.com";
+        let folder_href = "/dav/cal/user@example.com/Side%20Project/";
+
+        // Poison the folder_map read so `collection_folder_href` errors.
+        sqlx::query("DROP TABLE folder_map")
+            .execute(state.storage.pool())
+            .await
+            .unwrap();
+
+        let xml = "<Sync><Collections><Collection><Class>Calendar</Class>\
+<CollectionId>/dav/cal/user@example.com/Side%20Project/</CollectionId>\
+<Add><ClientId>c1</ClientId><ApplicationData>\
+<Calendar:Subject>Scoped</Calendar:Subject>\
+<Calendar:StartTime>2026-01-05T09:00:00Z</Calendar:StartTime>\
+<Calendar:EndTime>2026-01-05T10:00:00Z</Calendar:EndTime>\
+</ApplicationData></Add></Collection></Collections></Sync>";
+        let result = apply_client_sync_mutations(
+            state.clone(),
+            owner,
+            &crate::eas::scoped_collection_id(folder_href, "dev1"),
+            owner,
+            "pw",
+            xml,
+        )
+        .await;
+        assert!(
+            result.is_err(),
+            "a folder-lookup failure must fail the mutation closed: {result:?}"
+        );
+        assert!(
+            stub.dav_calls
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|(m, _)| m != "PUT"),
+            "no Add may reach a calendar when the folder cannot be resolved"
+        );
+    }
+
+    /// A user-created calendar-family folder must sync ONLY its own calendar:
+    /// the prime resolves the folder's CalDAV href to its JMAP calendar id and
+    /// scopes the query to it, so events from other calendars never reach the
+    /// folder.
+    #[tokio::test]
+    async fn calendar_scoped_folder_prime_only_delivers_its_own_calendar() {
+        let stub = spawn_calendar_stub(
+            vec![],
+            vec![
+                scoped_event("e-mine", "uid-mine", "Mine", "cal-side"),
+                scoped_event("e-other", "uid-other", "Other", "cal-default"),
+            ],
+            "query-s",
+            "get-s",
+            None,
+        )
+        .await
+        .with_calendars(vec![json!({
+            "id": "cal-side",
+            "name": "Side Project",
+            "href": "/dav/cal/user@example.com/Side%20Project/"
+        })]);
+        let state = calendar_mutation_state(&stub.base).await;
+        let owner = "user@example.com";
+        let folder_href = "/dav/cal/user@example.com/Side%20Project/";
+        state
+            .storage
+            .upsert_folder_journaled(
+                crate::storage::FolderUpsertParams {
+                    owner,
+                    server_id: folder_href,
+                    parent_id: "0",
+                    display_name: "Side Project",
+                    folder_type: 13,
+                    backend_kind: "caldav",
+                    backend_id: folder_href,
+                },
+                "folder-add",
+            )
+            .await
+            .unwrap();
+
+        let xml =
+            run_calendar_sync_for(&state, folder_href, &format!("{folder_href}::dev1"), "0").await;
+        assert!(
+            xml.contains("uid-mine"),
+            "the folder's own event must be delivered:\n{xml}"
+        );
+        // The isolation boundary must hold end-to-end: the stub resolves the
+        // `#ids` back-reference to the scoped `CalendarEvent/query` result, so a
+        // scoping regression between query construction and response rendering
+        // would leak the other calendar's event into the response.
+        assert!(
+            !xml.contains("uid-other"),
+            "another calendar's event must NOT be delivered:\n{xml}"
+        );
+
+        // The scoped prime must issue its `CalendarEvent/query` with
+        // `filter.inCalendarIds` naming ONLY the folder's own calendar, so a
+        // real backend never returns another calendar's events.
+        let scoped = stub.recorded.lock().unwrap().iter().any(|body| {
+            body.get("methodCalls")
+                .and_then(|c| c.as_array())
+                .map(|calls| {
+                    calls.iter().any(|c| {
+                        c.get(0).and_then(|v| v.as_str()) == Some("CalendarEvent/query")
+                            && c.get(1)
+                                .and_then(|a| a.get("filter"))
+                                .and_then(|f| f.get("inCalendarIds"))
+                                .and_then(|v| v.as_array())
+                                .map(|ids| ids.iter().any(|i| i.as_str() == Some("cal-side")))
+                                .unwrap_or(false)
+                    })
+                })
+                .unwrap_or(false)
+        });
+        assert!(
+            scoped,
+            "the folder's prime must scope the query to its own calendar id"
+        );
+    }
+
+    /// Finding E: `CalendarEvent/changes` is ACCOUNT-wide, so a destroyed id in
+    /// a scoped (custom-calendar) folder may belong to a DIFFERENT calendar.
+    /// Because `item_map` is owner-global (no collection column), tombstoning
+    /// such an id would emit a `<Delete>` in this folder for an event the
+    /// client never held AND remove the shared row before the event's own
+    /// collection could deliver its Delete. A scoped folder must not infer
+    /// deletions from the account feed.
+    #[tokio::test]
+    async fn scoped_calendar_delta_does_not_tombstone_foreign_destroyed_event() {
+        let folder_href = "/dav/cal/user@example.com/Side%20Project/";
+        let stub = spawn_calendar_stub(
+            vec![json!({
+                "accountId": "acct", "oldState": "s0", "newState": "s1",
+                "hasMoreChanges": false,
+                "created": [], "updated": [], "destroyed": ["e-other"]
+            })],
+            // The destroyed event is still fetchable in this stub (the destroy
+            // and the get race on a real backend); the folder must not care.
+            vec![scoped_event("e-other", "uid-other", "Other", "cal-default")],
+            "query-s",
+            "get-s",
+            None,
+        )
+        .await
+        .with_calendars(vec![json!({
+            "id": "cal-side",
+            "name": "Side Project",
+            "href": folder_href
+        })]);
+        let state = calendar_mutation_state(&stub.base).await;
+        let owner = "user@example.com";
+        state
+            .storage
+            .upsert_folder_journaled(
+                crate::storage::FolderUpsertParams {
+                    owner,
+                    server_id: folder_href,
+                    parent_id: "0",
+                    display_name: "Side Project",
+                    folder_type: 13,
+                    backend_kind: "caldav",
+                    backend_id: folder_href,
+                },
+                "folder-add",
+            )
+            .await
+            .unwrap();
+
+        // A stored event that lives in ANOTHER calendar, mirrored in the shared
+        // item_map.
+        let foreign_href = "jmap://calendar/acct/e-other";
+        let foreign_server_id = generate_server_id(state.cfg.hmac_secret(), foreign_href);
+        state
+            .storage
+            .upsert_item_map(
+                owner,
+                foreign_href,
+                foreign_href,
+                &foreign_server_id,
+                "uid-other",
+                "etag",
+            )
+            .await
+            .unwrap();
+
+        let state_collection_id = format!("{folder_href}::dev1");
+        state
+            .storage
+            .set_sync_key(owner, &state_collection_id, "key-1", Some("s0"))
+            .await
+            .unwrap();
+        // Prime an empty custom-calendar stream so the guard at sync.rs:2278
+        // does not short-circuit this test with Status 3 before reaching the
+        // deletion sweep.
+        state
+            .storage
+            .set_calendar_stream_init(owner, &state_collection_id)
+            .await
+            .unwrap();
+
+        let xml = run_calendar_sync_for(&state, folder_href, &state_collection_id, "key-1").await;
+        assert!(
+            !xml.contains("<Delete>"),
+            "a scoped folder must not delete an event from another calendar:\n{xml}"
+        );
+        assert!(
+            state
+                .storage
+                .get_ews_item_by_server_id(owner, &foreign_server_id)
+                .await
+                .unwrap()
+                .is_some(),
+            "the shared item_map row of the foreign calendar's event must survive"
+        );
+        assert!(
+            state
+                .storage
+                .list_deleted_since(owner, 0)
+                .await
+                .unwrap()
+                .is_empty(),
+            "no tombstone may be recorded for a foreign calendar's destroyed id"
+        );
+    }
+
+    /// A scoped (custom-calendar) folder MUST deliver the deletion of an event
+    /// IT previously delivered: the `CalendarEvent/changes` feed is account-wide,
+    /// and the event's own calendar reported it destroyed, so the scoped folder
+    /// that holds it must emit `<Delete>` (using its own delivery ledger to
+    /// identify the event as its own) rather than leave it on the client until a
+    /// re-prime.
+    #[tokio::test]
+    async fn scoped_calendar_delta_delivers_own_destroyed_event() {
+        let folder_href = "/dav/cal/user@example.com/Side%20Project/";
+        let stub = spawn_calendar_stub(
+            vec![json!({
+                "accountId": "acct", "oldState": "s0", "newState": "s1",
+                "hasMoreChanges": false,
+                "created": [], "updated": [], "destroyed": ["e-mine"]
+            })],
+            vec![],
+            "query-s",
+            "get-s",
+            None,
+        )
+        .await
+        .with_calendars(vec![json!({
+            "id": "cal-side",
+            "name": "Side Project",
+            "href": folder_href
+        })]);
+        let state = calendar_mutation_state(&stub.base).await;
+        let owner = "user@example.com";
+        state
+            .storage
+            .upsert_folder_journaled(
+                crate::storage::FolderUpsertParams {
+                    owner,
+                    server_id: folder_href,
+                    parent_id: "0",
+                    display_name: "Side Project",
+                    folder_type: 13,
+                    backend_kind: "caldav",
+                    backend_id: folder_href,
+                },
+                "folder-add",
+            )
+            .await
+            .unwrap();
+
+        let mine_href = "jmap://calendar/acct/e-mine";
+        let mine_server_id = generate_server_id(state.cfg.hmac_secret(), mine_href);
+        state
+            .storage
+            .upsert_item_map(
+                owner,
+                mine_href,
+                mine_href,
+                &mine_server_id,
+                "uid-mine",
+                "etag",
+            )
+            .await
+            .unwrap();
+        let state_collection_id = format!("{folder_href}::dev1");
+        // This scope DELIVERED the event earlier (its ledger row exists).
+        state
+            .storage
+            .upsert_calendar_delivery(owner, &state_collection_id, &mine_server_id, "etag")
+            .await
+            .unwrap();
+        state
+            .storage
+            .set_sync_key(owner, &state_collection_id, "key-1", Some("s0"))
+            .await
+            .unwrap();
+        // The scope was initialized before the ledger was introduced.
+        state
+            .storage
+            .set_calendar_stream_init(owner, &state_collection_id)
+            .await
+            .unwrap();
+
+        let xml = run_calendar_sync_for(&state, folder_href, &state_collection_id, "key-1").await;
+        assert!(
+            xml.contains(&format!(
+                "<Delete><ServerId>{mine_server_id}</ServerId></Delete>"
+            )),
+            "a scoped folder must delete an event it delivered:\n{xml}"
+        );
+        assert!(
+            state
+                .storage
+                .get_ews_item_by_server_id(owner, &mine_server_id)
+                .await
+                .unwrap()
+                .is_none(),
+            "the delivered deletion's item_map row must be removed"
+        );
+    }
+
+    /// A scoped folder's PRIME is a snapshot of ONE calendar, not the account.
+    /// The full-snapshot tombstone sweep must not treat another calendar's
+    /// stored event (owner-global `item_map`) as deleted just because this
+    /// calendar's snapshot omits it.
+    #[tokio::test]
+    async fn scoped_calendar_prime_does_not_tombstone_foreign_event() {
+        let folder_href = "/dav/cal/user@example.com/Side%20Project/";
+        let stub = spawn_calendar_stub(
+            vec![],
+            vec![scoped_event("e-mine", "uid-mine", "Mine", "cal-side")],
+            "query-s",
+            "get-s",
+            None,
+        )
+        .await
+        .with_calendars(vec![json!({
+            "id": "cal-side",
+            "name": "Side Project",
+            "href": folder_href
+        })]);
+        let state = calendar_mutation_state(&stub.base).await;
+        let owner = "user@example.com";
+        state
+            .storage
+            .upsert_folder_journaled(
+                crate::storage::FolderUpsertParams {
+                    owner,
+                    server_id: folder_href,
+                    parent_id: "0",
+                    display_name: "Side Project",
+                    folder_type: 13,
+                    backend_kind: "caldav",
+                    backend_id: folder_href,
+                },
+                "folder-add",
+            )
+            .await
+            .unwrap();
+        let foreign_href = "jmap://calendar/acct/e-other";
+        let foreign_server_id = generate_server_id(state.cfg.hmac_secret(), foreign_href);
+        state
+            .storage
+            .upsert_item_map(
+                owner,
+                foreign_href,
+                foreign_href,
+                &foreign_server_id,
+                "uid-other",
+                "etag",
+            )
+            .await
+            .unwrap();
+
+        let state_collection_id = format!("{folder_href}::dev1");
+        let xml = run_calendar_sync_for(&state, folder_href, &state_collection_id, "0").await;
+        assert!(xml.contains("uid-mine"), "own event delivered:\n{xml}");
+        assert!(
+            !xml.contains("<Delete>"),
+            "a scoped prime must not delete another calendar's event:\n{xml}"
+        );
+        assert!(
+            state
+                .storage
+                .get_ews_item_by_server_id(owner, &foreign_server_id)
+                .await
+                .unwrap()
+                .is_some(),
+            "the foreign calendar's item_map row must survive the scoped prime"
+        );
+        assert!(
+            state
+                .storage
+                .list_deleted_since(owner, 0)
+                .await
+                .unwrap()
+                .is_empty(),
+            "no tombstone may be recorded for a foreign calendar's event"
+        );
+    }
+
+    /// A fresh prime (SyncKey 0) on ONE device+collection scope must emit
+    /// `<Add>` for every event it delivers, even when the owner-global
+    /// `item_map` already holds the row from another device's completed prime
+    /// of the SAME calendar. The old decision read the shared `item_map`, so the
+    /// second device's prime emitted `<Change>` for an item it never held — the
+    /// client then ignored/garbled the calendar. Regression for the per-scope
+    /// delivery ledger (`calendar_delivery_map`).
+    #[tokio::test]
+    async fn scoped_prime_emits_add_when_another_device_already_stored_event() {
+        let stub = spawn_calendar_stub(
+            vec![],
+            vec![stub_event("e1", "uid-e1", "Shared")],
+            "query-s",
+            "get-s",
+            None,
+        )
+        .await;
+        let state = calendar_sync_state(&stub.base).await;
+
+        // Device A primes the default calendar; its row lands in the shared
+        // `item_map`.
+        let a = run_calendar_sync_for(&state, "1", "1::devA", "0").await;
+        assert!(a.contains("<Add>"), "device A prime must Add:\n{a}");
+
+        // Device B primes the SAME calendar on a fresh stream: it never
+        // delivered this event, so it must be an `<Add>` for device B.
+        let b = run_calendar_sync_for(&state, "1", "1::devB", "0").await;
+        assert!(
+            b.contains("<Add>") && !b.contains("<Change>"),
+            "a fresh prime must emit Add (not Change) even when another device \
+             already stored the event:\n{b}"
+        );
+    }
+
+    /// The SAME event written through CalDAV and later read through JMAP must
+    /// resolve to ONE ServerId. A client Add keys the delivery ledger on the
+    /// CalDAV-href ServerId; a later JMAP delta derives
+    /// `generate_server_id("jmap://calendar/...")`. Without a canonical identity
+    /// the ledger lookup misses and the delta re-emits a duplicate `<Add>`.
+    #[tokio::test]
+    async fn caldav_created_event_is_not_re_added_by_jmap_delta() {
+        let stub = spawn_calendar_stub(
+            vec![json!({
+                "accountId": "acct", "oldState": "s0", "newState": "s1",
+                "hasMoreChanges": false,
+                "created": ["e1"], "updated": [], "destroyed": []
+            })],
+            vec![stub_event("e1", "uid-e1", "Shared")],
+            "query-s",
+            "get-s",
+            None,
+        )
+        .await;
+        let state = calendar_mutation_state(&stub.base).await;
+        let owner = "user@example.com";
+        let scope = "1::devA";
+
+        // Simulate a client Add: the delivery ledger and item_map carry the
+        // CalDAV-href-derived ServerId, and the scope already holds a SyncKey.
+        let caldav_href = "/dav/cal/user@example.com/Default/e1.ics";
+        let caldav_server_id = generate_server_id(state.cfg.hmac_secret(), caldav_href);
+        state
+            .storage
+            .upsert_item_map(
+                owner,
+                caldav_href,
+                caldav_href,
+                &caldav_server_id,
+                "uid-e1",
+                "etag",
+            )
+            .await
+            .unwrap();
+        state
+            .storage
+            .upsert_calendar_delivery(owner, scope, &caldav_server_id, "etag")
+            .await
+            .unwrap();
+        state
+            .storage
+            .set_sync_key(owner, scope, "key-1", Some("s0"))
+            .await
+            .unwrap();
+
+        // A JMAP delta of the same scope reads the event under its jmap:// href;
+        // the canonical identity must resolve it to the SAME ServerId, so it is
+        // delivered as `<Change>` (the scope already holds it), never a second
+        // `<Add>`.
+        let xml = run_calendar_sync_for(&state, "1", scope, "key-1").await;
+        assert!(
+            xml.contains(&caldav_server_id),
+            "the JMAP delta must reuse the stored ServerId:\n{xml}"
+        );
+        assert!(
+            !xml.contains("<Add>"),
+            "an event already delivered under its CalDAV identity must not be \
+             re-added:\n{xml}"
+        );
+        assert!(
+            xml.contains("<Change>"),
+            "the event must be delivered as a Change:\n{xml}"
+        );
+    }
+
+    /// A deletion confirmed by ONE scope must still be delivered to ANOTHER
+    /// scope that holds the same event. The confirming scope removes the shared
+    /// `item_map` row when it emits the `<Delete>`, so the second scope's sweep
+    /// (which otherwise iterates `item_map`) would never enumerate the id — and
+    /// the tombstone sits at or below the second scope's captured journal head,
+    /// so the tombstone feed cannot recover it either. The second scope would
+    /// keep the deleted event indefinitely. The sweep must therefore also
+    /// consider THIS scope's delivery ledger, where the id is a confirmed
+    /// deletion once its `item_map` row is gone.
+    #[tokio::test]
+    async fn deletion_confirmed_by_one_scope_is_delivered_to_another() {
+        let stub = spawn_calendar_stub(
+            vec![],
+            vec![stub_event("e1", "uid-e1", "Shared")],
+            "query-s",
+            "get-s",
+            None,
+        )
+        .await;
+        let state = calendar_sync_state(&stub.base).await;
+
+        // Both devices prime the SAME calendar, so both hold e1 in their ledgers
+        // and e1 lives in the shared `item_map`.
+        let a = run_calendar_sync_for(&state, "1", "1::devA", "0").await;
+        assert!(
+            a.contains("<Add>") && a.contains("uid-e1"),
+            "device A prime:\n{a}"
+        );
+        let b = run_calendar_sync_for(&state, "1", "1::devB", "0").await;
+        assert!(
+            b.contains("<Add>") && b.contains("uid-e1"),
+            "device B prime:\n{b}"
+        );
+
+        // The event is deleted on the backend: the calendar feed now reports it
+        // destroyed, and it is gone from the snapshot.
+        *stub.events.lock().unwrap() = vec![];
+        let deleted_page = json!({
+            "accountId": "acct", "oldState": "s0", "newState": "s1",
+            "hasMoreChanges": false,
+            "created": [], "updated": [], "destroyed": ["e1"]
+        });
+        *stub.changes_pages.lock().unwrap() = vec![deleted_page];
+
+        // Device A's delta confirms the deletion: it emits the Delete and removes
+        // the shared `item_map` row.
+        let a_key = sync_key_of(&a);
+        let a_delta = run_calendar_sync_for(&state, "1", "1::devA", &a_key).await;
+        assert!(
+            a_delta.contains("<Delete>"),
+            "device A must emit the Delete for the confirmed deletion:\n{a_delta}"
+        );
+
+        // Device B has NOT synced since. Its own ledger still holds e1, but the
+        // shared `item_map` row is gone, so its next delta must STILL emit the
+        // Delete (the tombstone is already behind its journal head).
+        let b_key = sync_key_of(&b);
+        let b_delta = run_calendar_sync_for(&state, "1", "1::devB", &b_key).await;
+        assert!(
+            b_delta.contains("<Delete>") && !b_delta.contains("<Add>"),
+            "device B must receive the deletion another scope confirmed:\n{b_delta}"
+        );
+    }
+
+    /// The CalDAV fallback (`prefer_jmap_calendar=false`) queries EXACTLY ONE
+    /// collection (the first calendar for the unscoped default folder). Its
+    /// empty snapshot must NOT be treated as an account-wide deletion: a stored
+    /// event that belongs to ANOTHER calendar (a different collection the
+    /// fallback never queried) must survive, and no tombstone may be recorded
+    /// for it. Regression for the owner-global `item_map` deletion authority.
+    #[tokio::test]
+    async fn caldav_default_fallback_does_not_delete_other_calendars_events() {
+        let stub = spawn_calendar_stub(vec![], vec![], "query-s", "get-s", None)
+            .await
+            .with_calendars(vec![
+                json!({"id": "cal-default", "name": "Default", "href": "/dav/cal/user@example.com/Default/"}),
+                json!({"id": "cal-side", "name": "Side", "href": "/dav/cal/user@example.com/Side/"}),
+            ]);
+        let state = caldav_only_calendar_state(&stub.base).await;
+        let owner = "user@example.com";
+
+        // A stored event that lives in the OTHER calendar (never queried by the
+        // default-calendar fallback), mirrored in the shared `item_map`.
+        let foreign_href = "jmap://calendar/acct/e-other";
+        let foreign_server_id = generate_server_id(state.cfg.hmac_secret(), foreign_href);
+        state
+            .storage
+            .upsert_item_map(
+                owner,
+                foreign_href,
+                foreign_href,
+                &foreign_server_id,
+                "uid-other",
+                "etag",
+            )
+            .await
+            .unwrap();
+
+        // A non-prime Sync takes the delta path but still runs the deletion
+        // sweep; the fallback snapshot is empty.
+        state
+            .storage
+            .set_sync_key(owner, "calendar", "key-1", Some("s0"))
+            .await
+            .unwrap();
+        let xml = run_calendar_sync(&state, "key-1").await;
+        assert!(
+            !xml.contains("<Delete>"),
+            "a single-calendar fallback snapshot must not delete another calendar's event:\n{xml}"
+        );
+        assert!(
+            state
+                .storage
+                .get_ews_item_by_server_id(owner, &foreign_server_id)
+                .await
+                .unwrap()
+                .is_some(),
+            "the foreign calendar's shared item_map row must survive"
+        );
+        assert!(
+            state
+                .storage
+                .list_deleted_since(owner, 0)
+                .await
+                .unwrap()
+                .is_empty(),
+            "no tombstone may be recorded for a foreign calendar's event"
+        );
+    }
+
+    /// An event created through CalDAV is delivered under its CalDAV-href
+    /// ServerId; a later JMAP `CalendarEvent/changes` reports it DESTROYED by
+    /// its JMAP id. The deletion sweep must resolve that JMAP id to the SAME
+    /// canonical ServerId the scope delivered under (via the durable
+    /// `jmap_id_alias` persisted when the JMAP delivery was committed), or the
+    /// scope advances its token without delivering the `<Delete>` and the client
+    /// keeps the deleted event forever.
+    #[tokio::test]
+    async fn jmap_destroyed_id_resolves_to_caldav_canonical_identity() {
+        // First delta: the JMAP feed reports `e1` created (the event created via
+        // CalDAV, read back through JMAP). Second delta: destroyed by JMAP id.
+        let stub = spawn_calendar_stub(
+            vec![
+                json!({
+                    "accountId": "acct", "oldState": "s0", "newState": "s1",
+                    "hasMoreChanges": false,
+                    "created": ["e1"], "updated": [], "destroyed": []
+                }),
+                json!({
+                    "accountId": "acct", "oldState": "s1", "newState": "s2",
+                    "hasMoreChanges": false,
+                    "created": [], "updated": [], "destroyed": ["e1"]
+                }),
+            ],
+            vec![stub_event("e1", "uid-e1", "Shared")],
+            "query-s",
+            "get-s",
+            None,
+        )
+        .await;
+        let state = calendar_mutation_state(&stub.base).await;
+        let owner = "user@example.com";
+        let scope = "1::devA";
+
+        // The event was created through CalDAV: its canonical identity is the
+        // CalDAV-href-derived ServerId, held in this scope's delivery ledger and
+        // the shared `item_map`.
+        let caldav_href = "/dav/cal/user@example.com/Default/e1.ics";
+        let caldav_server_id = generate_server_id(state.cfg.hmac_secret(), caldav_href);
+        state
+            .storage
+            .upsert_item_map(
+                owner,
+                caldav_href,
+                caldav_href,
+                &caldav_server_id,
+                "uid-e1",
+                "etag",
+            )
+            .await
+            .unwrap();
+        state
+            .storage
+            .upsert_calendar_delivery(owner, scope, &caldav_server_id, "etag")
+            .await
+            .unwrap();
+        state
+            .storage
+            .set_sync_key(owner, scope, "key-1", Some("s0"))
+            .await
+            .unwrap();
+
+        // The JMAP delta delivers `e1` (the UID join resolves it to the CalDAV
+        // canonical ServerId) and the commit persists the JMAP-id alias.
+        let first = run_calendar_sync_for(&state, "1", scope, "key-1").await;
+        assert!(
+            first.contains(&caldav_server_id),
+            "the JMAP read must reuse the CalDAV canonical ServerId:\n{first}"
+        );
+        let second = run_calendar_sync_for(&state, "1", scope, &sync_key_of(&first)).await;
+        assert!(
+            second.contains("<Delete>") && second.contains(&caldav_server_id),
+            "the destroyed JMAP id must resolve to the CalDAV canonical ServerId and be Deleted:\n{second}"
+        );
+    }
+
+    /// Two DISTINCT events that share an iCalendar UID (the same UID in two
+    /// calendar collections, which CalDAV permits — UID uniqueness is per
+    /// collection) must NOT be joined to one identity: an ambiguous UID is not
+    /// used for the UID join, so each event keeps its href-derived ServerId.
+    /// Joining them would make the delivery commit overwrite one event's mapping
+    /// with the other's, and a later Change/Delete would target the wrong
+    /// resource.
+    #[tokio::test]
+    async fn ambiguous_uid_does_not_join_distinct_calendar_resources() {
+        let stub = spawn_calendar_stub(vec![], vec![], "query-s", "get-s", None).await;
+        let state = calendar_sync_state(&stub.base).await;
+        let owner = "user@example.com";
+        let secret = state.cfg.hmac_secret();
+
+        // Two `item_map` rows sharing UID `shared-uid` but with DIFFERENT
+        // ServerIds (two distinct calendar resources).
+        let href_a = "/dav/cal/user@example.com/A/e.ics";
+        let href_b = "/dav/cal/user@example.com/B/e.ics";
+        let sid_a = generate_server_id(secret, href_a);
+        let sid_b = generate_server_id(secret, href_b);
+        for (href, sid) in [(href_a, &sid_a), (href_b, &sid_b)] {
+            state
+                .storage
+                .upsert_item_map(owner, href, href, sid, "shared-uid", "etag")
+                .await
+                .unwrap();
+        }
+
+        let identity = CalendarIdentity::load(&state, owner).await.unwrap();
+        // The ambiguous UID must not resolve to either stored identity.
+        assert_eq!(
+            identity.for_event(secret, "shared-uid", href_a),
+            sid_a,
+            "an ambiguous UID must fall back to the href-derived identity (A)"
+        );
+        assert_eq!(
+            identity.for_event(secret, "shared-uid", href_b),
+            sid_b,
+            "an ambiguous UID must fall back to the href-derived identity (B)"
+        );
+    }
+
+    /// Extract the response `SyncKey` (the LAST `<SyncKey>` in the envelope) from
+    /// a rendered `Sync` response.
+    fn sync_key_of(xml: &str) -> String {
+        xml.rsplit("<SyncKey>")
+            .next()
+            .and_then(|s| s.split("</SyncKey>").next())
+            .expect("SyncKey in response")
+            .to_string()
+    }
+
+    /// A UID stored under a CalDAV href must NOT be joined to a fetched event
+    /// that carries the SAME href KIND — a different CalDAV collection's
+    /// `/B/e.ics` is a DISTINCT resource even when only `/A/e.ics` is stored
+    /// (CalDAV requires UID uniqueness per collection, not per account). The UID
+    /// join exists only to bridge the JMAP and CalDAV representations of one
+    /// event, so it fires ONLY across backends; a same-kind match keeps its own
+    /// href-derived identity (joining would collapse B's mapping onto A's, and a
+    /// later Change/Delete would target the wrong resource).
+    #[tokio::test]
+    async fn single_mapped_uid_does_not_join_same_kind_caldav_resource() {
+        let stub = spawn_calendar_stub(vec![], vec![], "query-s", "get-s", None).await;
+        let state = calendar_sync_state(&stub.base).await;
+        let owner = "user@example.com";
+        let secret = state.cfg.hmac_secret();
+
+        // Only A (a CalDAV href) is stored for UID `shared-uid`.
+        let href_a = "/dav/cal/user@example.com/A/e.ics";
+        let href_b = "/dav/cal/user@example.com/B/e.ics";
+        let sid_a = generate_server_id(secret, href_a);
+        let sid_b = generate_server_id(secret, href_b);
+        state
+            .storage
+            .upsert_item_map(owner, href_a, href_a, &sid_a, "shared-uid", "etag")
+            .await
+            .unwrap();
+
+        let identity = CalendarIdentity::load(&state, owner).await.unwrap();
+        // Fetching B (same kind: a real CalDAV href) must NOT reuse A's id.
+        assert_eq!(
+            identity.for_event(secret, "shared-uid", href_b),
+            sid_b,
+            "a same-kind (CalDAV↔CalDAV) UID match must not join to A"
+        );
+        // A cross-kind join (fetched `jmap://`) still bridges to the stored id.
+        assert_eq!(
+            identity.for_event(secret, "shared-uid", "jmap://calendar/acct/e1"),
+            sid_a,
+            "a cross-backend (CalDAV↔JMAP) UID match must still join"
+        );
+        // A re-fetch of the SAME href also keeps its own id (A).
+        assert_eq!(identity.for_event(secret, "shared-uid", href_a), sid_a);
+    }
+
+    /// An event that belongs to TWO calendars (JMAP `calendarIds` with two
+    /// entries) must be delivered as `<Add>` in each calendar's scoped folder —
+    /// the second calendar's prime sees the owner-global `item_map` row from the
+    /// first, but its own scope never delivered it. Regression for the per-scope
+    /// delivery ledger.
+    #[tokio::test]
+    async fn shared_event_is_added_in_each_scoped_calendar() {
+        let folder_a = "/dav/cal/user@example.com/A/";
+        let folder_b = "/dav/cal/user@example.com/B/";
+        let mut shared = scoped_event("e-shared", "uid-shared", "Shared", "cal-a");
+        shared["calendarIds"]["cal-b"] = json!(true);
+        let stub = spawn_calendar_stub(vec![], vec![shared], "query-s", "get-s", None)
+            .await
+            .with_calendars(vec![
+                json!({"id": "cal-a", "name": "A", "href": folder_a}),
+                json!({"id": "cal-b", "name": "B", "href": folder_b}),
+            ]);
+        let state = calendar_mutation_state(&stub.base).await;
+        let owner = "user@example.com";
+        for (href, name) in [(folder_a, "A"), (folder_b, "B")] {
+            state
+                .storage
+                .upsert_folder_journaled(
+                    crate::storage::FolderUpsertParams {
+                        owner,
+                        server_id: href,
+                        parent_id: "0",
+                        display_name: name,
+                        folder_type: 13,
+                        backend_kind: "caldav",
+                        backend_id: href,
+                    },
+                    "folder-add",
+                )
+                .await
+                .unwrap();
+        }
+
+        let a = run_calendar_sync_for(&state, folder_a, &format!("{folder_a}::dev1"), "0").await;
+        assert!(
+            a.contains("<Add>") && a.contains("uid-shared"),
+            "calendar A prime must Add the shared event:\n{a}"
+        );
+        let b = run_calendar_sync_for(&state, folder_b, &format!("{folder_b}::dev1"), "0").await;
+        assert!(
+            b.contains("<Add>") && b.contains("uid-shared") && !b.contains("<Change>"),
+            "calendar B prime must Add the shared event (its own scope never \
+             delivered it), not Change:\n{b}"
+        );
+    }
+
+    /// Upgrade/continuity: a scope that has no delivery-ledger rows yet (the
+    /// ledger table is new, or was never written for this scope) treats its
+    /// first DELTA's change set as new to the stream and re-delivers it as
+    /// `<Add>` — including an event the client already holds (its shared
+    /// `item_map` ETag matching does NOT suppress it, which is exactly what keeps
+    /// a per-collection change from being silently dropped for a scope that has
+    /// not recorded it). EAS keys items by ServerId, so re-`<Add>` updates the
+    /// client's existing copy in place. A per-collection change is likewise
+    /// re-reported as `<Add>` — never skipped.
+    #[tokio::test]
+    async fn delta_without_ledger_redelivers_change_set_as_add() {
+        // Delta reports one event already held (e1) and one new event (e2).
+        let page = json!({
+            "accountId": "acct", "oldState": "s0", "newState": "s1",
+            "hasMoreChanges": false,
+            "created": [], "updated": ["e1", "e2"], "destroyed": []
+        });
+        let e1 = stub_event("e1", "uid-e1", "Event One");
+        let e2 = stub_event("e2", "uid-e2", "Event Two");
+        let stub = spawn_calendar_stub(vec![page], vec![e1.clone(), e2], "q", "get-s", None).await;
+        let state = calendar_sync_state(&stub.base).await;
+        let owner = "user@example.com";
+
+        // The client already holds e1 (shared item_map row, CURRENT etag), but NO
+        // delivery-ledger row exists for this scope yet.
+        let href_e1 = "jmap://calendar/acct/e1";
+        let sid_e1 = generate_server_id(state.cfg.hmac_secret(), href_e1);
+        let etag_e1 = crate::jmap::calendar_event_etag(&e1, None);
+        state
+            .storage
+            .upsert_item_map(owner, href_e1, href_e1, &sid_e1, "uid-e1", &etag_e1)
+            .await
+            .unwrap();
+        state
+            .storage
+            .set_sync_key(owner, "calendar", "key-1", Some("s0"))
+            .await
+            .unwrap();
+
+        let xml = run_calendar_sync(&state, "key-1").await;
+        assert!(
+            xml.contains("uid-e1") && xml.contains("uid-e2"),
+            "the whole delta change set is delivered without a ledger:\n{xml}"
+        );
+        assert!(
+            !xml.contains("<Change>"),
+            "an empty ledger treats every event as new to the stream (no Change):\n{xml}"
+        );
+
+        // Once the ledger is recorded, a repeat delta with the same ETags skips
+        // both events (no churn).
+        let page2 = json!({
+            "accountId": "acct", "oldState": "s1", "newState": "s2",
+            "hasMoreChanges": false,
+            "created": [], "updated": ["e1", "e2"], "destroyed": []
+        });
+        stub.set_changes(vec![page2]);
+        // Use the SyncKey the first sync RETURNED (the completed sync rotates
+        // it); an arbitrary key would be answered with Status 3 and the negative
+        // assertions below would pass vacuously without exercising suppression.
+        let next_key = sync_key_of(&xml);
+        let xml2 = run_calendar_sync(&state, &next_key).await;
+        assert!(
+            xml2.contains("<Status>1</Status>"),
+            "the delta must succeed (not be rejected as an invalid key):\n{xml2}"
+        );
+        assert!(
+            !xml2.contains("uid-e1") && !xml2.contains("uid-e2"),
+            "unchanged events recorded in the ledger are skipped:\n{xml2}"
+        );
+    }
+
+    /// The delivery ledger and the SyncKey the client is handed advance in the
+    /// SAME commit (the P1 fix): after a successful Sync the scope's ledger
+    /// records exactly the delivered events, and the stored SyncKey is the new
+    /// key — never a ledger ahead of a stale SyncKey (which would make the
+    /// client's retry skip an event it never received).
+    #[tokio::test]
+    async fn successful_sync_advances_ledger_and_sync_key_together() {
+        let page = json!({
+            "accountId": "acct", "oldState": "s0", "newState": "s1",
+            "hasMoreChanges": false,
+            "created": ["e1"], "updated": [], "destroyed": []
+        });
+        let e1 = stub_event("e1", "uid-e1", "Event One");
+        let stub = spawn_calendar_stub(vec![page], vec![e1.clone()], "q", "get-s", None).await;
+        let state = calendar_sync_state(&stub.base).await;
+        let owner = "user@example.com";
+        state
+            .storage
+            .set_sync_key(owner, "calendar", "key-1", Some("s0"))
+            .await
+            .unwrap();
+
+        let xml = run_calendar_sync(&state, "key-1").await;
+        assert!(xml.contains("uid-e1"), "the delta must deliver e1:\n{xml}");
+
+        // The response's SyncKey is persisted. It must equal the SyncKey the
+        // response actually rendered to the client — not just any different key.
+        let (stored_key, _) = state
+            .storage
+            .get_sync_key(owner, "calendar")
+            .await
+            .unwrap()
+            .expect("sync key persisted");
+        let response_key = sync_key_of(&xml);
+        assert_eq!(
+            stored_key, response_key,
+            "persisted key {stored_key} must equal the rendered response key {response_key}"
+        );
+
+        // And the scope ledger records the delivered event with its ETag.
+        let href = "jmap://calendar/acct/e1";
+        let sid = generate_server_id(state.cfg.hmac_secret(), href);
+        let ledger = state
+            .storage
+            .list_calendar_deliveries(owner, "calendar")
+            .await
+            .unwrap();
+        assert_eq!(
+            ledger.get(&sid).map(String::as_str),
+            Some(crate::jmap::calendar_event_etag(&e1, None).as_str()),
+            "the ledger row is written by the same commit that stores the SyncKey"
+        );
+
+        // The delivery also journals a change (`op='upsert'`) so Ping,
+        // GetItemEstimate and EWS SyncFolderItems detect the event — without it
+        // an event first delivered here would never wake another client.
+        let journal = state
+            .storage
+            .list_journal_since_seq(owner, 0)
+            .await
+            .unwrap();
+        assert!(
+            journal
+                .iter()
+                .any(|r| r.server_id == sid && r.op == "upsert"),
+            "a delivered event must journal a change for other clients"
+        );
+
+        // The stored journal watermark is the PRE-sync head, not the head at
+        // commit time: the commit's own delivery row sits above it, so a change
+        // another device journals between the snapshot and the commit stays
+        // visible to Ping/GetItemEstimate (the wake-up is merely delayed by one
+        // extra Ping, never lost).
+        let head_after = state.storage.get_latest_change_seq().await.unwrap();
+        assert!(
+            head_after > 0,
+            "the delivery must have journaled a row above the watermark"
+        );
+        assert_eq!(
+            state
+                .storage
+                .journal_watermark(owner, "calendar")
+                .await
+                .unwrap(),
+            Some(0),
+            "a full drain must hold the pre-sync head (0 here), never the commit-time head"
+        );
+    }
+
+    /// The DEFAULT (unscoped) calendar folder owns the whole account feed, so a
+    /// destroyed id IS tombstoned — the Finding E guard must not over-suppress.
+    #[tokio::test]
+    async fn unscoped_calendar_delta_tombstones_destroyed_event() {
+        let stub = spawn_calendar_stub(
+            vec![json!({
+                "accountId": "acct", "oldState": "s0", "newState": "s1",
+                "hasMoreChanges": false,
+                "created": [], "updated": [], "destroyed": ["e1"]
+            })],
+            vec![stub_event("e1", "uid-e1", "Event One")],
+            "query-s",
+            "get-s",
+            None,
+        )
+        .await;
+        let state = calendar_sync_state(&stub.base).await;
+        let owner = "user@example.com";
+        let href = "jmap://calendar/acct/e1";
+        let server_id = generate_server_id(state.cfg.hmac_secret(), href);
+        state
+            .storage
+            .upsert_item_map(owner, href, href, &server_id, "uid-e1", "etag")
+            .await
+            .unwrap();
+        state
+            .storage
+            .set_sync_key(owner, "calendar", "key-1", Some("s0"))
+            .await
+            .unwrap();
+
+        let xml = run_calendar_sync(&state, "key-1").await;
+        assert!(
+            xml.contains(&format!(
+                "<Delete><ServerId>{server_id}</ServerId></Delete>"
+            )),
+            "the default calendar must deliver the deletion:\n{xml}"
+        );
+        assert!(
+            state
+                .storage
+                .get_ews_item_by_server_id(owner, &server_id)
+                .await
+                .unwrap()
+                .is_none(),
+            "the deleted event's item_map row must be removed"
+        );
+    }
+
+    /// A transient `folder_map` read failure while resolving a custom calendar
+    /// folder must FAIL the Sync closed, not be conflated with "unmapped" (which
+    /// `perform_sync` treats as an unscoped collection and would serve the
+    /// default calendar's / account-wide events under the custom folder). The
+    /// failure is induced by dropping the `folder_map` table after the device
+    /// has primed its sync key, so the request reaches the resolver.
+    #[tokio::test]
+    async fn custom_calendar_folder_resolution_failure_fails_closed() {
+        let stub = spawn_calendar_stub(vec![], vec![], "query-s", "get-s", None).await;
+        let state = calendar_sync_state(&stub.base).await;
+        let owner = "user@example.com";
+        let folder_href = "/dav/cal/user@example.com/Side%20Project/";
+        let state_collection_id = format!("{folder_href}::dev1");
+        // A primed device: the incoming non-zero key matches the stored key, so
+        // the request proceeds past the invalid-key guard to the folder
+        // resolver.
+        state
+            .storage
+            .set_sync_key(owner, &state_collection_id, "key-1", Some("s0"))
+            .await
+            .unwrap();
+        // Poison the `folder_map` read.
+        sqlx::query("DROP TABLE folder_map")
+            .execute(state.storage.pool())
+            .await
+            .unwrap();
+
+        let opts = SyncOptions {
+            window_size: 100,
+            get_changes: true,
+            filter_start: Utc::now() - Duration::weeks(52),
+            body_options: crate::eas_sync_options::EasSyncCollectionOptions::default(),
+        };
+        let result = perform_sync(&PerformSyncParams {
+            state: state.clone(),
+            owner,
+            collection_id: folder_href,
+            state_collection_id: &state_collection_id,
+            incoming_sync_key: "key-1",
+            content_class: "Calendar",
+            opts,
+            username: owner,
+            password: "pw",
+            client_mutation_responses: "",
+        })
+        .await;
+        assert!(
+            result.is_err(),
+            "a folder_map read failure must fail the Sync closed, got: {result:?}"
         );
     }
 }

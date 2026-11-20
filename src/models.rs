@@ -62,6 +62,16 @@ pub struct AppState {
     /// the backend provably discards `iCalendar` payloads, so create/update
     /// traffic falls back to CalDAV instead of silently losing event data.
     pub jmap_calendar_write_enabled: Arc<std::sync::atomic::AtomicBool>,
+    /// Per-(owner, folder) async locks serializing the EWS email delta for one
+    /// folder from its replay-cache lookup through its replay-cache write. Two
+    /// concurrent `SyncFolderItems` requests carrying the SAME incoming cursor
+    /// would otherwise both miss the replay cache, both run the keyword scan,
+    /// and the second would overwrite the first's cached response — dropping a
+    /// flag-only `<t:Update>` if the first response was lost. The key is
+    /// `(owner, folder)`, so the map is bounded by users × folders (the same
+    /// order as the other per-user state); entries are left in place so the lock
+    /// identity is stable across requests.
+    pub ews_delta_locks: Arc<dashmap::DashMap<String, Arc<tokio::sync::Mutex<()>>>>,
 }
 
 impl AppState {
@@ -292,7 +302,8 @@ impl AppState {
                 subscription_manager.clone(),
             )
             .with_attachment_manager(attachment_manager.clone())
-            .with_push_registry(push_registry.clone());
+            .with_push_registry(push_registry.clone())
+            .with_storage(storage.clone());
             // Wire the operator-configured directory so the NSPI address-book
             // surface (`/mapi/nspi`) serves a real GAL rather than the
             // caller-only minimal stub (audit gap §2d). When no JMAP-backed
@@ -323,6 +334,7 @@ impl AppState {
             mapi,
             push_registry,
             jmap_calendar_write_enabled: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            ews_delta_locks: Arc::new(dashmap::DashMap::new()),
         }
     }
 
