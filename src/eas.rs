@@ -9054,32 +9054,25 @@ async fn handle_email_delta_sync(ctx: &EmailSyncCtx<'_>) -> anyhow::Result<Strin
             // Still more behind this window: keep the queue (and the stored
             // token exactly where it is) and tell the client to sync again. The
             // queue replacement and the delivered window's rendered seeds are
-            // written in ONE transaction.
+            // written in ONE transaction via `set_email_sync_pending_and_key`
+            // so the queue remainder and sync key advance are atomic — a partial
+            // failure leaves neither written and the next Sync retries from the
+            // pre-window state instead of re-delivering or losing ops.
             if let Ok(leftover_json) = serde_json::to_string(&leftover)
                 && let Err(e) = state
                     .storage
-                    .set_email_sync_pending(
+                    .set_email_sync_pending_and_key(
                         username,
                         state_collection_id,
                         &leftover_json,
                         &base_state,
+                        &new_sync_key,
+                        jmap_state_token.as_deref(),
                         &seeds,
                     )
                     .await
             {
-                tracing::warn!(error = %e, "Failed to persist email delta queue remainder");
-            }
-            if let Err(e) = state
-                .storage
-                .set_sync_key(
-                    username,
-                    state_collection_id,
-                    &new_sync_key,
-                    jmap_state_token.as_deref(),
-                )
-                .await
-            {
-                tracing::warn!(error = %e, "Failed to set email sync key while draining queue");
+                tracing::warn!(error = %e, "Failed to persist email delta queue remainder and key atomically");
             }
             tracing::info!(
                 user = %username,

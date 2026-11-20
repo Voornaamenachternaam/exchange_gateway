@@ -15,7 +15,7 @@
 //! wire carries.
 
 use crate::storage::normalize_caldav_path;
-use percent_encoding::percent_decode_str;
+
 use secrecy::{ExposeSecret, SecretString};
 use std::sync::Arc;
 use subtle::ConstantTimeEq;
@@ -440,15 +440,17 @@ async fn create_mail_folder(
                 .await
             {
                 // The mailbox was created but the mapping write failed.
-                // Compensate by destroying the just-created mailbox (and its
-                // contents — it was empty) so a retry is not rejected as a
-                // duplicate sibling name while the backend folder is left
-                // orphaned. `AlreadyGone` is the desired end state; a failed
+                // Compensate by destroying the just-created mailbox, only if it
+                // holds no mail, so a retry is not rejected as a duplicate
+                // sibling name while the backend folder is left orphaned.
+                // `AlreadyGone` is the desired end state; a failed
                 // compensation is logged and the client still receives a
-                // retryable failure.
+                // retryable failure. Passing `false` for `onDestroyRemoveEmails`
+                // means the server refuses the destroy when the mailbox still
+                // holds mail — no mail is removed by this rollback.
                 tracing::warn!(error = %e, "FolderCreate: failed to persist folder mapping");
                 match jmap
-                    .destroy_mailbox(&account_id, &mailbox_id, true, owner, password)
+                    .destroy_mailbox(&account_id, &mailbox_id, false, owner, password)
                     .await
                 {
                     Ok(
@@ -493,6 +495,17 @@ async fn create_caldav_folder(
     // link a new EAS folder to a collection whose events it does not own.
     // Instead it reports the spec's duplicate/conflict status. An orphan is
     // prevented up front by the compensation below.
+    //
+    // Record pending intent BEFORE MKCALENDAR so a retry whose backend response
+    // was lost can reconcile: MKCALENDAR commits on the first attempt, its
+    // response is lost, the retry reaches MKCALENDAR again, gets 405, and this
+    // intent lets it recognize the collection created by the original attempt
+    // instead of returning Status 2 for a collection that already exists.
+    let _pending = state
+        .storage
+        .record_pending_calendar_create(owner, &coll.href, display_name)
+        .await;
+
     match caldav
         .create_calendar_collection(
             owner,
@@ -1028,21 +1041,18 @@ pub(crate) async fn reconcile_deferred_folder_prunes(
         };
         // `confirmed` hrefs are calendars the server authoritatively reported
         // as calendar collections. Build the live set from confirmed only.
+        // Normalize both sides into one canonical form: path-only, then
+        // percent-encode to match how `folder_map.backend_id` entries are stored
+        // (already-escaped hrefs are NOT re-encoded — `utf8_percent_encode`
+        // leaves `%XX` sequences intact).
         let live: std::collections::HashSet<String> = confirmed
             .into_iter()
-            // `find_user_calendars_with_ambiguity` expands PROPFIND hrefs to
-            // absolute URLs, but `folder_map.backend_id` stores path-only
-            // CalDAV hrefs. Normalize both sides to the path-only form so the
-            // live-set membership check actually matches.
             .map(|href| {
                 let path = reqwest::Url::parse(&href)
                     .ok()
                     .map(|u| u.path().trim_end_matches('/').to_string())
                     .unwrap_or_else(|| href.trim_end_matches('/').to_string());
-                // Percent-decode so a stored href with raw characters (e.g.
-                // `@`, space) matches the server's escaped form (`%40`,
-                // `%20`).
-                percent_decode_str(&path).decode_utf8_lossy().into_owned()
+                crate::storage::normalize_caldav_path(&path)
             })
             .collect();
         // `ambiguous` hrefs were seen in the multistatus but their
@@ -1050,13 +1060,20 @@ pub(crate) async fn reconcile_deferred_folder_prunes(
         // must NOT be treated as proof they are gone; retain their intents.
         let ambiguous: std::collections::HashSet<String> = all_seen
             .into_iter()
-            .filter(|h| !live.contains(h))
+            .filter(|h| {
+                !live.contains(&crate::storage::normalize_caldav_path(
+                    &reqwest::Url::parse(h)
+                        .ok()
+                        .map(|u| u.path().trim_end_matches('/').to_string())
+                        .unwrap_or_else(|| h.trim_end_matches('/').to_string()),
+                ))
+            })
             .map(|href| {
                 let path = reqwest::Url::parse(&href)
                     .ok()
                     .map(|u| u.path().trim_end_matches('/').to_string())
                     .unwrap_or_else(|| href.trim_end_matches('/').to_string());
-                percent_decode_str(&path).decode_utf8_lossy().into_owned()
+                crate::storage::normalize_caldav_path(&path)
             })
             .collect();
         // Only prune intents whose hrefs are absent from the confirmed live set

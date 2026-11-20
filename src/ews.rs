@@ -5411,8 +5411,46 @@ async fn handle_sync_email_folder_items(
     // the retry `has_email_delivered_membership` would then classify it as held
     // and emit an `Update` for an item the client never got.
     let mut pending_seeds: Vec<(String, Vec<String>)> = Vec::new();
+    let mut rendered_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
     for email_id in &changes.created {
         if overlap_held.contains(email_id.as_str()) {
+            // Already delivered — render as Update instead of Create so the
+            // client's copy is refreshed with current content. Skip if already
+            // rendered (an id may appear in both `created` and `destroyed`).
+            if rendered_ids.contains(email_id) {
+                continue;
+            }
+            match jmap
+                .get_email(&account_id, email_id, &auth.username, &auth.password, true)
+                .await
+            {
+                Ok(Some(email)) => {
+                    let server_id = email_server_id_from_jmap_id(email_id);
+                    let change_key = server_id.clone();
+                    changes_xml.push_str(&format!(
+                        r#"<t:Update>{}</t:Update>"#,
+                        render_jmap_email_as_ews_message(&email, &server_id, &change_key)
+                    ));
+                    rendered_ids.insert(email_id.clone());
+                    let keywords = email.sorted_active_keywords();
+                    pending_seeds.push((email_id.clone(), keywords));
+                    seeded_ids.insert(email_id.clone());
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    tracing::error!(
+                        error = %e,
+                        email_id = %email_id,
+                        "JMAP Email/get failed rendering an EWS email Update for held overlap; failing closed"
+                    );
+                    return operation_error_response(
+                        &EwsAction::SyncFolderItems,
+                        "ErrorInternalServerError",
+                        "Failed to fetch a changed message",
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                    );
+                }
+            }
             continue;
         }
         match jmap
@@ -5426,6 +5464,7 @@ async fn handle_sync_email_folder_items(
                     r#"<t:Create>{}</t:Create>"#,
                     render_jmap_email_as_ews_message(&email, &server_id, &change_key)
                 ));
+                rendered_ids.insert(email_id.clone());
                 // Stage the flag baseline for a delivered Create, exactly as the
                 // EAS delta seeds a delivered `<Add>`: the bounded scan may not
                 // reach this message before its flags change, and a missing
@@ -5466,11 +5505,15 @@ async fn handle_sync_email_folder_items(
             if !overlap_held.contains(email_id.as_str()) {
                 continue;
             }
+            if rendered_ids.contains(email_id) {
+                continue;
+            }
             match jmap
                 .get_email(&account_id, email_id, &auth.username, &auth.password, true)
                 .await
             {
                 Ok(Some(email)) => {
+                    rendered_ids.insert(email_id.clone());
                     let change_key = server_id.clone();
                     changes_xml.push_str(&format!(
                         r#"<t:Update>{}</t:Update>"#,

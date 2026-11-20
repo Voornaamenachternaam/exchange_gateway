@@ -1593,6 +1593,10 @@ pub async fn move_email_via_jmap(
 /// Used for user-created folders whose EAS ServerId *is* the JMAP mailbox id
 /// (they have no JMAP role, so role resolution cannot find them).
 /// `server_id` is the gateway's server ID (em-<jmap_id>).
+///
+/// Preserves all existing mailbox memberships and adds only the destination
+/// mailbox. Returns Status 4 (no change) if the source and destination resolve
+/// to the same mailbox.
 pub async fn move_email_to_mailbox_via_jmap(
     _state: &Arc<AppState>,
     jmap: &Arc<crate::jmap::JmapClient>,
@@ -1608,11 +1612,36 @@ pub async fn move_email_to_mailbox_via_jmap(
         None => return Err(anyhow!("Invalid server ID format: {}", server_id)),
     };
 
-    // Build the update: set mailboxIds to contain only the target folder
-    // This effectively moves the email (removes from other mailboxes)
-    let update_patch = json!({
-        "mailboxIds": { (target_mb_id): true },
-    });
+    // Read the email's current mailboxIds so we can preserve unrelated
+    // memberships and only add the destination mailbox.
+    let Some(email) = jmap
+        .get_email(account_id, &jmap_id, username, password, false)
+        .await?
+    else {
+        return Err(anyhow!("Email not found for JMAP id {jmap_id}"));
+    };
+    let current_mailboxes: Option<&HashMap<String, bool>> = email.mailbox_ids.as_ref();
+
+    // If the email is already exclusively in the target mailbox, there is
+    // nothing to move — return Status 4 (no change) without writing.
+    if let Some(ids) = current_mailboxes {
+        let only_target = ids.len() == 1 && ids.contains_key(target_mb_id);
+        if only_target {
+            return Err(anyhow!(
+                "Message already in destination mailbox {target_mb_id}"
+            ));
+        }
+    }
+
+    // Build the update: preserve existing mailboxIds, add only the destination.
+    // Setting a mailboxId to `true` adds it; existing entries remain untouched.
+    let mut mailbox_ids_patch = serde_json::Map::new();
+    if let Some(ids) = current_mailboxes {
+        for (k, v) in ids {
+            mailbox_ids_patch.insert(k.clone(), serde_json::Value::Bool(*v));
+        }
+    }
+    mailbox_ids_patch.insert(target_mb_id.to_string(), serde_json::Value::Bool(true));
 
     // Clone jmap_id: the `json!` macro below moves it into the `Value`,
     // but we still need it afterward to verify the `updated` collection.
@@ -1622,7 +1651,9 @@ pub async fn move_email_to_mailbox_via_jmap(
         .update_email_checked(
             account_id,
             &json!({
-                (jmap_id): update_patch,
+                (jmap_id): {
+                    "mailboxIds": mailbox_ids_patch,
+                },
             }),
             username,
             password,

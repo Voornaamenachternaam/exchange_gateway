@@ -798,3 +798,17 @@ VALUES (12, 'v12: email_keyword_baseline tracks per-collection message keyword (
 
 INSERT OR IGNORE INTO schema_version (version, description)
 VALUES (13, 'v13: pending_folder_prune defers a folder-map prune whose backend destroy already succeeded, so a failed mirror retry still journals the folder-delete');
+
+CREATE TABLE IF NOT EXISTS pending_calendar_create (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner TEXT NOT NULL,
+    href TEXT NOT NULL,
+    display_name TEXT NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(owner, href)
+);
+
+CREATE INDEX IF NOT EXISTS idx_pending_calendar_create_owner ON pending_calendar_create(owner);
+
+INSERT OR IGNORE INTO schema_version (version, description)
+VALUES (14, 'v14: pending_calendar_create records intent before MKCALENDAR so a lost-response retry can reconcile instead of returning Status 2 for an orphan');

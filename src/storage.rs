@@ -4343,6 +4343,29 @@ impl Storage {
         Ok(())
     }
 
+    /// Record intent to create a calendar collection at `href` before MKCALENDAR
+    /// is sent. If the backend commits but its response is lost, a retry reaches
+    /// MKCALENDAR again, gets 405, and can reconcile this pending intent instead
+    /// of returning Status 2 for a collection that already exists.
+    pub async fn record_pending_calendar_create(
+        &self,
+        owner: &str,
+        href: &str,
+        display_name: &str,
+    ) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO pending_calendar_create (owner, href, display_name) VALUES (?1, ?2, ?3)
+             ON CONFLICT(owner, href) DO UPDATE SET display_name = ?3",
+        )
+        .bind(owner)
+        .bind(href)
+        .bind(display_name)
+        .execute(self.pool.as_ref())
+        .await
+        .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+        Ok(())
+    }
+
     /// Drop the deferred-prune record for `owner`'s `server_ids` WITHOUT
     /// pruning their `folder_map` rows. Used when a backend destroy did NOT
     /// happen (a refused destroy, or a reconciled-present mailbox): the folder

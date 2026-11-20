@@ -1008,9 +1008,13 @@ async fn resolve_open_folder_target(
     if folder_id == store::folder_id_from_backend("ROOT") {
         return Some("ROOT".to_string());
     }
+    // Calendar and Contacts are gateway-owned leaves whose parent is Root —
+    // they are never parented under a Mail mailbox and cannot be deleted via
+    // RopDeleteFolder (a Mail-parent handle must resolve a Mail child). Exclude
+    // them so a stale Calendar/Contacts handle cannot match a Mail folder.
     for backend in [store::CALENDAR_BACKEND_ID, store::CONTACTS_BACKEND_ID] {
         if store::folder_id_from_backend(backend) == folder_id {
-            return Some(backend.to_string());
+            return None;
         }
     }
     if let (Some(jc), Some(pw)) = (jmap, password)
