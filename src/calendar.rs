@@ -2609,13 +2609,6 @@ pub fn normalize_timezone_to_iana(raw: &str) -> String {
 
 pub fn parse_ews_calendar_item(xml: &str) -> Result<CalendarItem> {
     let doc = Document::parse(xml).map_err(|e| anyhow!("failed to parse EWS XML: {e}"))?;
-
-    // The request's timezone: `t:StartTimeZone`/`t:StartTimeZoneId`/
-    // `t:MeetingTimeZone`/`t:EndTimeZone`/`t:EndTimeZoneId` on the item, or
-    // the SOAP `t:TimeZoneContext` header ([MS-OXWSCORE] §2.2.1.12) Outlook
-    // sends alongside naive (offset-less) `t:Start`/`t:End` values. The
-    // header is the LAST fallback: element-level zones override the
-    // request-wide context.
     let timezone_raw = extract_ews_timezone_field_doc(&doc, b"StartTimeZone")
         .or_else(|| extract_ews_field_doc(&doc, b"StartTimeZoneId"))
         .or_else(|| extract_ews_timezone_field_doc(&doc, b"MeetingTimeZone"))

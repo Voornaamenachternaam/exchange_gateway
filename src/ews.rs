@@ -7755,6 +7755,7 @@ async fn handle_create_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
     let item = match parse_ews_calendar_item(body) {
         Ok(v) => v,
         Err(e) => {
+            eprintln!("DEBUG parse calendar item error: {}", e);
             tracing::error!(error = %e, "Failed to parse CalendarItem payload");
             return operation_error_response(
                 &EwsAction::CreateItem,

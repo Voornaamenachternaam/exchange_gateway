@@ -5966,6 +5966,7 @@ async fn handle_send_mail(
     request_id: &str,
 ) -> Response {
     if !state.cfg.email_enabled {
+        eprintln!("SendMail: email_enabled=false");
         return xml_or_wbxml_response(
             wbxml,
             as_wbxml,
@@ -5976,6 +5977,11 @@ async fn handle_send_mail(
             request_id,
         );
     }
+    eprintln!(
+        "SendMail: email_enabled={}, jmap_client.is_some()={}",
+        state.cfg.email_enabled,
+        state.jmap_client.is_some()
+    );
 
     // Parse the EAS SendMail/SmartReply/SmartForward request and extract the
     // client-supplied MIME content plus (for SmartReply/SmartForward) the
@@ -6054,6 +6060,7 @@ async fn handle_send_mail(
     {
         Ok(_) => {}
         Err(e) => {
+            eprintln!("SendMail error: {}", e);
             tracing::error!(
                 error = %e,
                 "Failed to send EAS SendMail/SmartReply/SmartForward message"

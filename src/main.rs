@@ -1582,3 +1582,13 @@ mod tests {
         );
     }
 }
+
+// ========================================================================
+// Recorded-client contract tests (recommendation 2)
+// These replace the shallow string-containment fixtures in
+// tests/protocol_fixtures.rs. They drive the real production handlers
+// through `build_router` against wiremock backends emulating Stalwart.
+// ========================================================================
+
+#[cfg(test)]
+mod recorded_client_contract;

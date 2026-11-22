@@ -28,7 +28,33 @@ test = false
 doc = false
 
 [[bin]]
+name = "wbxml_grammar"
+path = "fuzz_targets/wbxml_grammar.rs"
+test = false
+doc = false
+
+[[bin]]
 name = "icalendar_parse"
 path = "fuzz_targets/icalendar_parse.rs"
 test = false
 doc = false
+
+[[bin]]
+name = "icalendar_grammar"
+path = "fuzz_targets/icalendar_grammar.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "mapi_rop"
+path = "fuzz_targets/mapi_rop.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "mapi_tnef"
+path = "fuzz_targets/mapi_tnef.rs"
+test = false
+doc = false
+
+

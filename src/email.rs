@@ -1260,9 +1260,11 @@ pub async fn send_email(
 
     // Prefer JMAP EmailSubmission when available
     if let Some(jmap) = &state.jmap_client {
+        eprintln!("send_email: trying JMAP submission");
         match send_email_jmap(state, jmap, msg, username, password).await {
             Ok(id) => return Ok(id),
             Err(e) => {
+                eprintln!("send_email: JMAP submission failed: {}", e);
                 tracing::warn!(
                     error = %e,
                     "JMAP EmailSubmission failed, falling back to SMTP"
@@ -2038,7 +2040,8 @@ fn extract_first_tag_text(xml: &str, tag: &[u8]) -> Option<String> {
 /// a MIME message or individual email elements.
 pub fn parse_eas_sendmail(xml: &str) -> Option<EasSendMailRequest> {
     let client_id = extract_first_tag_text(xml, b"ClientId");
-    let mime_data = extract_first_tag_text(xml, b"MIMEData");
+    let mime_data =
+        extract_first_tag_text(xml, b"MIMEData").or_else(|| extract_first_tag_text(xml, b"Mime"));
     let save_in_sent = xml.contains("<SaveInSentItems") || xml.contains(":SaveInSentItems");
     // Per MS-ASCMD §2.2.1.19/20, SmartReply and SmartForward reference the
     // original message via CollectionId + ItemId so the gateway can wire

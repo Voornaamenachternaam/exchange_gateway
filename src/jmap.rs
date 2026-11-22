@@ -6085,9 +6085,16 @@ impl JmapClient {
         let session = self.get_session(params.username, params.password).await?;
         let api_url = &session.api_url;
 
-        let entry = crate::jscalendar::ics_to_jscalendar_event(params.ics).ok_or_else(|| {
-            anyhow!("failed to convert rendered iCalendar into a JSCalendar event payload")
-        })?;
+        let entry = match crate::jscalendar::ics_to_jscalendar_event(params.ics) {
+            Some(e) => e,
+            None => {
+                eprintln!("DEBUG set_calendar_event: ics_to_jscalendar_event FAILED");
+                return Err(anyhow!(
+                    "failed to convert rendered iCalendar into a JSCalendar event payload"
+                )
+                .into());
+            }
+        };
 
         if let Some(existing_id) = params.event_id {
             let payload = crate::jscalendar::jscalendar_write_payload(&entry, true);
@@ -6111,7 +6118,7 @@ impl JmapClient {
                 ),
             ];
 
-            let response = self
+            let response = match self
                 .api_call(
                     api_url,
                     &["urn:ietf:params:jmap:core", JMAP_CAL_CAPABILITY],
@@ -6119,14 +6126,32 @@ impl JmapClient {
                     params.username,
                     params.password,
                 )
-                .await?;
+                .await
+            {
+                Ok(r) => r,
+                Err(e) => {
+                    return Err(CalendarWriteError::Other(e));
+                }
+            };
 
-            let set_args = response
+            let set_args = match response
                 .method_responses
                 .iter()
                 .find(|(m, _, _)| m == "CalendarEvent/set")
                 .map(|(_, a, _)| a)
-                .ok_or_else(|| anyhow!("CalendarEvent/set returned no response"))?;
+            {
+                Some(args) => {
+                    eprintln!(
+                        "DEBUG set_calendar_event: CalendarEvent/set found, args keys={:?}",
+                        args.as_object()
+                            .map(|o| o.keys().cloned().collect::<Vec<_>>())
+                    );
+                    args
+                }
+                None => {
+                    return Err(anyhow!("CalendarEvent/set returned no response").into());
+                }
+            };
             if let Some(not_updated) = set_args.get("notUpdated")
                 && !not_updated.is_null()
                 && not_updated.as_object().is_none_or(|o| !o.is_empty())
@@ -6188,7 +6213,7 @@ impl JmapClient {
                 ),
             ];
 
-            let response = self
+            let response = match self
                 .api_call(
                     api_url,
                     &["urn:ietf:params:jmap:core", JMAP_CAL_CAPABILITY],
@@ -6196,7 +6221,13 @@ impl JmapClient {
                     params.username,
                     params.password,
                 )
-                .await?;
+                .await
+            {
+                Ok(r) => r,
+                Err(e) => {
+                    return Err(e.into());
+                }
+            };
 
             let set_args = response
                 .method_responses
