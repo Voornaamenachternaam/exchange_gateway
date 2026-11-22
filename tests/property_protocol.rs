@@ -4,7 +4,6 @@ use arbitrary::{Arbitrary, Unstructured};
 use chrono::{DateTime, Utc};
 use exchange_gateway::auth::{AuthOutcome, AuthVerifier};
 use exchange_gateway::calendar::{CalendarItem, parse_ics_event, render_ics};
-use exchange_gateway::config::Config;
 use exchange_gateway::eas_sync_options::{
     CollectionLevelControls, EasBodyPreference, EasSyncCollectionOptions, parse_collection_options,
 };
@@ -719,3 +718,4 @@ proptest! {
         }
     }
 }
+

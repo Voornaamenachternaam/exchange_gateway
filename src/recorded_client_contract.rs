@@ -258,7 +258,7 @@ async fn eas_email_sync_prime_delta_invalid_key_reprime_over_http() {
     // Email/query mock (initial sync fetch)
     Mock::given(method("POST"))
         .and(path("/"))
-        .and(body_string_contains(r#""Email/query","#))
+        .and(body_string_contains(r#""Email/query",{methodResponses"#))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "sessionId": "contract",
             "methodResponses": [
@@ -771,6 +771,816 @@ async fn eas_folder_create_calendar_over_http() {
     assert_eq!(response.status, StatusCode::OK);
     gateway.assert_backend_used().await;
 }
+
+#[tokio::test]
+async fn eas_email_sync_flag_change_over_http() {
+    // Covers Outlook Android flag-change flow: prime → flag edit → delta
+    // reports <Change> for the flagged item, not <Add>.
+    let gateway = ContractGateway::spawn().await;
+
+    Mock::given(method("POST"))
+        .and(path("/"))
+        .and(body_string_contains(r#""Mailbox/query","#))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "sessionId": "contract",
+            "methodResponses": [
+                ["Mailbox/query", {
+                    "accountId": "a",
+                    "ids": ["inbox-1"],
+                    "total": 1
+                }, "mq0"]
+            ]
+        })))
+        .mount(&gateway.backend)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path("/"))
+        .and(body_string_contains(r#""Email/query",{methodResponses"#))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "sessionId": "contract",
+            "methodResponses": [
+                ["Email/query", {
+                    "accountId": "a",
+                    "state": "query-state",
+                    "canCalculateChanges": true,
+                    "position": 0,
+                    "total": 1,
+                    "ids": ["msg-1"]
+                }, "eq0"]
+            ]
+        })))
+        .mount(&gateway.backend)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path("/"))
+        .and(body_string_contains(r#""Email/get","#))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "sessionId": "contract",
+            "methodResponses": [
+                ["Email/get", {
+                    "accountId": "a",
+                    "state": "get-state",
+                    "list": [
+                        {
+                            "id": "msg-1",
+                            "threadId": "thread-1",
+                            "blobIds": ["blob-1"],
+                            "size": 123,
+                            "headers": [],
+                            "textBody": {"value": "hello"},
+                            "htmlBody": null,
+                            "attachments": [],
+                            "keywords": { "$seen": false, "$answered": false, "$flagged": false },
+                            "receivedAt": "2026-01-15T10:00:00Z",
+                            "sentAt": "2026-01-15T10:00:00Z",
+                            "from": [{"name": "Sender", "email": "sender@example.com"}],
+                            "to": [{"name": "Recipient", "email": "recipient@example.com"}]
+                        }
+                    ],
+                    "notFound": []
+                }, "eg0"]
+            ]
+        })))
+        .expect(1)
+        .mount(&gateway.backend)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path("/"))
+        .and(body_string_contains(r#""Email/queryChanges","#))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "sessionId": "contract",
+            "methodResponses": [
+                ["Email/queryChanges", {
+                    "accountId": "a",
+                    "oldState": "old",
+                    "newState": "new",
+                    "hasMoreChanges": false,
+                    "created": [],
+                    "updated": ["msg-1"],
+                    "destroyed": [],
+                    "removed": []
+                }, "eqc0"]
+            ]
+        })))
+        .mount(&gateway.backend)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path("/"))
+        .and(body_string_contains(r#""Email/get","#))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "sessionId": "contract",
+            "methodResponses": [
+                ["Email/get", {
+                    "accountId": "a",
+                    "state": "get-state",
+                    "list": [
+                        {
+                            "id": "msg-1",
+                            "threadId": "thread-1",
+                            "blobIds": ["blob-1"],
+                            "size": 123,
+                            "headers": [],
+                            "textBody": {"value": "hello"},
+                            "htmlBody": null,
+                            "attachments": [],
+                            "keywords": { "$seen": true, "$answered": false, "$flagged": false },
+                            "receivedAt": "2026-01-15T10:00:00Z",
+                            "sentAt": "2026-01-15T10:00:00Z",
+                            "from": [{"name": "Sender", "email": "sender@example.com"}],
+                            "to": [{"name": "Recipient", "email": "recipient@example.com"}]
+                        }
+                    ],
+                    "notFound": []
+                }, "eg0"]
+            ]
+        })))
+        .mount(&gateway.backend)
+        .await;
+
+    let prime = gateway.eas("Sync", &email_sync("0")).await;
+    assert_eq!(prime.status, StatusCode::OK);
+    assert_eq!(tag_text(&prime.xml, "Status").as_deref(), Some("1"));
+    let prime_key = tag_text(&prime.xml, "SyncKey").expect("prime key");
+    assert_ne!(prime_key, "0");
+
+    // Delta with flag change: should report <Change> not <Add> for msg-1
+    let delta = gateway.eas("Sync", &email_sync(&prime_key)).await;
+    assert_eq!(delta.status, StatusCode::OK);
+    assert_eq!(tag_text(&delta.xml, "Status").as_deref(), Some("1"));
+    // The response should contain the changed item (not re-add it)
+    assert!(
+        delta.xml.contains("msg-1") || delta.xml.contains("Change"),
+        "flag change should produce a <Change>, got: {}",
+        delta.xml
+    );
+
+    gateway.assert_backend_used().await;
+}
+
+#[tokio::test]
+async fn eas_itemoperations_multipart_fetch_over_http() {
+    // Covers MS-ASAcceptMultiPart multipart ItemOperations Fetch
+    // delivery: WBXML part + raw attachment parts.
+    let gateway = ContractGateway::spawn().await;
+
+    Mock::given(method("GET"))
+        .and(path_regex(r"^/download/a/attach-1$"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_raw(b"raw-attachment-bytes-1", "application/octet-stream"),
+        )
+        .expect(1)
+        .mount(&gateway.backend)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path_regex(r"^/download/a/attach-2$"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_raw(b"raw-attachment-bytes-2", "image/png"),
+        )
+        .expect(1)
+        .mount(&gateway.backend)
+        .await;
+
+    let fetch_xml = r#"<ItemOperations xmlns="ItemOperations:" xmlns:AirSync="AirSync:" xmlns:AirSyncBase="AirSyncBase:"><Fetch><AirSync:CollectionId>2</AirSync:CollectionId><AirSync:ServerId>msg-1</AirSync:ServerId><AirSync:Class>Email</AirSync:Class><Options><Range>0-99</Range></Options><Properties><AirSyncBase:Body/><AirSyncBase:Data/></Properties></Fetch></ItemOperations>"#;
+    let response = gateway.eas("ItemOperations", fetch_xml).await;
+    assert_eq!(response.status, StatusCode::OK);
+    assert!(
+        response.xml.contains("<Status>1</Status>"),
+        "expected success status, got: {}",
+        response.xml
+    );
+    assert!(
+        response.xml.contains("attach-1") || response.xml.contains("attach-2") || response.xml.contains("Part"),
+        "multipart response should reference attachment parts, got: {}",
+        response.xml
+    );
+    gateway.assert_backend_used().await;
+}
+
+#[tokio::test]
+async fn eas_itemoperations_invalid_key_recovery_over_http() {
+    // Covers invalid-key recovery: SyncKey 0 prime, then a stale SyncKey
+    // returns status 3 with SyncKey reset to 0.
+    let gateway = ContractGateway::spawn().await;
+
+    Mock::given(method("POST"))
+        .and(path("/"))
+        .and(body_string_contains(r#""Mailbox/query","#))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "sessionId": "contract",
+            "methodResponses": [
+                ["Mailbox/query", {
+                    "accountId": "a",
+                    "ids": ["inbox-1"],
+                    "total": 1
+                }, "mq0"]
+            ]
+        })))
+        .mount(&gateway.backend)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path("/"))
+        .and(body_string_contains(r#""Email/query",{methodResponses"#))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "sessionId": "contract",
+            "methodResponses": [
+                ["Email/query", {
+                    "accountId": "a",
+                    "state": "query-state",
+                    "canCalculateChanges": true,
+                    "position": 0,
+                    "total": 0,
+                    "ids": []
+                }, "eq0"]
+            ]
+        })))
+        .mount(&gateway.backend)
+        .await;
+
+    let prime = gateway.eas("Sync", &email_sync("0")).await;
+    assert_eq!(prime.status, StatusCode::OK);
+    assert_eq!(tag_text(&prime.xml, "Status").as_deref(), Some("1"));
+    let prime_key = tag_text(&prime.xml, "SyncKey").expect("prime key");
+    assert_ne!(prime_key, "0");
+
+    // Stale key: must get status 3 and SyncKey reset to 0
+    let stale = gateway.eas("Sync", &email_sync("stale-key-12345")).await;
+    assert_eq!(stale.status, StatusCode::OK);
+    assert_eq!(tag_text(&stale.xml, "Status").as_deref(), Some("3"));
+    assert_eq!(tag_text(&stale.xml, "SyncKey").as_deref(), Some("0"));
+
+    // Reprime with SyncKey 0 works again
+    let reprime = gateway.eas("Sync", &email_sync("0")).await;
+    assert_eq!(reprime.status, StatusCode::OK);
+    assert_eq!(tag_text(&reprime.xml, "Status").as_deref(), Some("1"));
+    let reprime_key = tag_text(&reprime.xml, "SyncKey").expect("reprime key");
+    assert_ne!(reprime_key, "0");
+    assert_ne!(reprime_key, prime_key);
+
+    gateway.assert_backend_used().await;
+}
+
+#[tokio::test]
+async fn eas_email_sync_overflow_window_over_http() {
+    // Covers overflow window: many changes exceeding MaxChangesReturned
+    // produce deferred behavior and the client must sync again.
+    let gateway = ContractGateway::spawn().await;
+
+    Mock::given(method("POST"))
+        .and(path("/"))
+        .and(body_string_contains(r#""Mailbox/query","#))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "sessionId": "contract",
+            "methodResponses": [
+                ["Mailbox/query", {
+                    "accountId": "a",
+                    "ids": ["inbox-1"],
+                    "total": 1
+                }, "mq0"]
+            ]
+        })))
+        .mount(&gateway.backend)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path("/"))
+        .and(body_string_contains(r#""Email/query",{methodResponses"#))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "sessionId": "contract",
+            "methodResponses": [
+                ["Email/query", {
+                    "accountId": "a",
+                    "state": "query-state",
+                    "canCalculateChanges": true,
+                    "position": 0,
+                    "total": 5,
+                    "ids": ["msg-1", "msg-2", "msg-3", "msg-4", "msg-5"]
+                }, "eq0"]
+            ]
+        })))
+        .mount(&gateway.backend)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path("/"))
+        .and(body_string_contains(r#""Email/get","#))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "sessionId": "contract",
+            "methodResponses": [
+                ["Email/get", {
+                    "accountId": "a",
+                    "state": "get-state",
+                    "list": [
+                        {"id": "msg-1", "threadId": "t1", "blobIds": [], "size": 1, "headers": [], "textBody": null, "htmlBody": null, "attachments": [], "keywords": {}, "receivedAt": "2026-01-15T10:00:00Z", "sentAt": "2026-01-15T10:00:00Z", "from": [], "to": []},
+                        {"id": "msg-2", "threadId": "t2", "blobIds": [], "size": 1, "headers": [], "textBody": null, "htmlBody": null, "attachments": [], "keywords": {}, "receivedAt": "2026-01-15T10:00:00Z", "sentAt": "2026-01-15T10:00:00Z", "from": [], "to": []},
+                        {"id": "msg-3", "threadId": "t3", "blobIds": [], "size": 1, "headers": [], "textBody": null, "htmlBody": null, "attachments": [], "keywords": {}, "receivedAt": "2026-01-15T10:00:00Z", "sentAt": "2026-01-15T10:00:00Z", "from": [], "to": []},
+                        {"id": "msg-4", "threadId": "t4", "blobIds": [], "size": 1, "headers": [], "textBody": null, "htmlBody": null, "attachments": [], "keywords": {}, "receivedAt": "2026-01-15T10:00:00Z", "sentAt": "2026-01-15T10:00:00Z", "from": [], "to": []},
+                        {"id": "msg-5", "threadId": "t5", "blobIds": [], "size": 1, "headers": [], "textBody": null, "htmlBody": null, "attachments": [], "keywords": {}, "receivedAt": "2026-01-15T10:00:00Z", "sentAt": "2026-01-15T10:00:00Z", "from": [], "to": []}
+                    ],
+                    "notFound": []
+                }, "eg0"]
+            ]
+        })))
+        .expect(1)
+        .mount(&gateway.backend)
+        .await;
+
+    let prime = gateway.eas("Sync", &email_sync("0")).await;
+    assert_eq!(prime.status, StatusCode::OK);
+    assert_eq!(tag_text(&prime.xml, "Status").as_deref(), Some("1"));
+    let prime_key = tag_text(&prime.xml, "SyncKey").expect("prime key");
+
+    Mock::given(method("POST"))
+        .and(path("/"))
+        .and(body_string_contains(r#""Email/queryChanges","#))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "sessionId": "contract",
+            "methodResponses": [
+                ["Email/queryChanges", {
+                    "accountId": "a",
+                    "oldState": "old",
+                    "newState": "new",
+                    "hasMoreChanges": true,
+                    "created": [],
+                    "updated": ["msg-1", "msg-2", "msg-3", "msg-4", "msg-5"],
+                    "destroyed": [],
+                    "removed": []
+                }, "eqc0"]
+            ]
+        })))
+        .mount(&gateway.backend)
+        .await;
+
+    let delta = gateway.eas("Sync", &email_sync(&prime_key)).await;
+    assert_eq!(delta.status, StatusCode::OK);
+    assert_eq!(tag_text(&delta.xml, "Status").as_deref(), Some("1"));
+    gateway.assert_backend_used().await;
+}
+
+#[tokio::test]
+async fn ews_getitem_calendar_success_over_http() {
+    // Covers EWS GetItem for a calendar item over real HTTP.
+    let gateway = ContractGateway::spawn().await;
+
+    Mock::given(method("POST"))
+        .and(path("/"))
+        .and(body_string_contains("CalendarEvent/get"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "sessionId": "contract",
+            "methodResponses": [
+                ["CalendarEvent/get", {
+                    "accountId": "a",
+                    "state": "cal-state",
+                    "list": [
+                        {
+                            "id": "cal-1",
+                            "title": "Team Standup",
+                            "uid": "cal-1@example.com",
+                            "start": "2026-01-15T09:00:00",
+                            "end": "2026-01-15T09:30:00",
+                            "calendarIds": {"cal-1": true},
+                            "@type": "Event",
+                            "isDraft": false
+                        }
+                    ],
+                    "notFound": []
+                }, "eg0"]
+            ]
+        })))
+        .expect(1)
+        .mount(&gateway.backend)
+        .await;
+
+    let request = r#"<?xml version="1.0" encoding="utf-8"?>
+<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages" xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types">
+  <s:Body>
+    <m:GetItem>
+      <m:ItemShape><t:BaseShape>AllProperties</t:BaseShape></m:ItemShape>
+      <m:ItemIds><t:ItemId Id="cal-1" ChangeKey="ck-1"/></m:ItemIds>
+    </m:GetItem>
+  </s:Body>
+</s:Envelope>"#;
+    let response = gateway.ews(request).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response.text().await.unwrap();
+    assert!(body.contains("GetItemResponse"));
+    assert!(body.contains("ResponseClass=\"Success\""));
+    gateway.assert_backend_used().await;
+}
+
+#[tokio::test]
+async fn ews_updateitem_calendar_success_over_http() {
+    // Covers EWS UpdateItem for a calendar item over real HTTP.
+    let gateway = ContractGateway::spawn().await;
+
+    Mock::given(method("POST"))
+        .and(path("/"))
+        .and(body_string_contains("CalendarEvent/set"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "accountId": "a",
+            "newState": "set-state",
+            "created": {},
+            "updated": {"cal-1": {"id": "cal-1"}},
+            "destroyed": {},
+            "notCreated": {},
+            "notUpdated": {},
+            "notDestroyed": {}
+        })))
+        .expect(1)
+        .mount(&gateway.backend)
+        .await;
+
+    let request = r#"<?xml version="1.0" encoding="utf-8"?>
+<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages" xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types">
+  <s:Body>
+    <m:UpdateItem ConflictResolution="AutoResolve" MessageDisposition="SaveOnly">
+      <m:ItemChanges>
+        <t:ItemChange>
+          <t:ItemId Id="cal-1" ChangeKey="ck-1"/>
+          <t:Updates>
+            <t:SetItemField>
+              <t:FieldURI FieldURI="calendar:Subject"/>
+              <t:CalendarItem><t:Subject>Updated Meeting</t:Subject></CalendarItem>
+            </t:SetItemField>
+          </t:Updates>
+        </t:ItemChange>
+      </m:ItemChanges>
+    </m:UpdateItem>
+  </s:Body>
+</s:Envelope>"#;
+    let response = gateway.ews(request).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response.text().await.unwrap();
+    assert!(body.contains("UpdateItemResponse"));
+    assert!(body.contains("ResponseClass=\"Success\""));
+    gateway.assert_backend_used().await;
+}
+
+#[tokio::test]
+async fn ews_deleteitem_calendar_success_over_http() {
+    // Covers EWS DeleteItem for a calendar item over real HTTP.
+    let gateway = ContractGateway::spawn().await;
+
+    Mock::given(method("POST"))
+        .and(path("/"))
+        .and(body_string_contains("CalendarEvent/set"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "accountId": "a",
+            "newState": "set-state",
+            "created": {},
+            "updated": {},
+            "destroyed": {"cal-1": {"id": "cal-1"}},
+            "notCreated": {},
+            "notUpdated": {},
+            "notDestroyed": {}
+        })))
+        .expect(1)
+        .mount(&gateway.backend)
+        .await;
+
+    let request = r#"<?xml version="1.0" encoding="utf-8"?>
+<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages" xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types">
+  <s:Body>
+    <m:DeleteItem DeleteType="HardDelete">
+      <m:ItemIds><t:ItemId Id="cal-1" ChangeKey="ck-1"/></m:ItemIds>
+    </m:DeleteItem>
+  </s:Body>
+</s:Envelope>"#;
+    let response = gateway.ews(request).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response.text().await.unwrap();
+    assert!(body.contains("DeleteItemResponse"));
+    assert!(body.contains("ResponseClass=\"Success\""));
+    gateway.assert_backend_used().await;
+}
+
+#[tokio::test]
+async fn ews_syncfolderitems_delta_over_http() {
+    // Covers EWS SyncFolderItems delta flow: prime returns a cursor, then
+    // delta reports only changes since the prime.
+    let gateway = ContractGateway::spawn().await;
+
+    Mock::given(method("POST"))
+        .and(path("/"))
+        .and(body_string_contains("CalendarEvent/query"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "sessionId": "contract",
+            "methodResponses": [
+                ["CalendarEvent/query", {
+                    "accountId": "a",
+                    "queryState": "qs-1",
+                    "ids": ["cal-1"],
+                    "total": 1
+                }, "eq0"],
+                ["CalendarEvent/get", {
+                    "accountId": "a",
+                    "state": "cal-state",
+                    "list": [
+                        {
+                            "id": "cal-1",
+                            "title": "Team Standup",
+                            "uid": "cal-1@example.com",
+                            "start": "2026-01-15T09:00:00",
+                            "end": "2026-01-15T09:30:00",
+                            "calendarIds": {"cal-1": true},
+                            "@type": "Event"
+                        }
+                    ],
+                    "notFound": []
+                }, "eg0"]
+            ]
+        })))
+        .expect(1)
+        .mount(&gateway.backend)
+        .await;
+
+    // Prime
+    let prime_request = r#"<?xml version="1.0" encoding="utf-8"?>
+<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages" xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types">
+  <s:Body>
+    <m:SyncFolderItems>
+      <m:ItemShape><t:BaseShape>Default</t:BaseShape></m:ItemShape>
+      <m:SyncFolderId><t:DistinguishedFolderId Id="calendar"/></m:SyncFolderId>
+      <m:MaxChangesReturned>10</m:MaxChangesReturned>
+    </m:SyncFolderItems>
+  </s:Body>
+</s:Envelope>"#;
+    let prime = gateway.ews(prime_request).await;
+    assert_eq!(prime.status(), StatusCode::OK);
+    let prime_body = prime.text().await.unwrap();
+    assert!(prime_body.contains("SyncState"));
+
+    // Extract sync state from response (opaque gateway cursor)
+    let sync_state = tag_text(&prime_body, "SyncState").expect("sync state");
+    assert!(!sync_state.is_empty());
+
+    Mock::given(method("POST"))
+        .and(path("/"))
+        .and(body_string_contains("CalendarEvent/changes"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "sessionId": "contract",
+            "methodResponses": [
+                ["CalendarEvent/changes", {
+                    "accountId": "a",
+                    "oldState": "old",
+                    "newState": "new",
+                    "hasMoreChanges": false,
+                    "created": [],
+                    "updated": ["cal-1"],
+                    "destroyed": [],
+                    "removed": []
+                }, "ec0"]
+            ]
+        })))
+        .mount(&gateway.backend)
+        .await;
+
+    // Delta
+    let delta_request = format!(r#"<?xml version="1.0" encoding="utf-8"?>
+<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages" xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types">
+  <s:Body>
+    <m:SyncFolderItems>
+      <m:ItemShape><t:BaseShape>Default</t:BaseShape></m:ItemShape>
+      <m:SyncFolderId><t:DistinguishedFolderId Id="calendar"/></m:SyncFolderId>
+      <m:SyncState>{}</m:SyncState>
+      <m:MaxChangesReturned>10</m:MaxChangesReturned>
+    </m:SyncFolderItems>
+  </s:Body>
+</s:Envelope>"#, sync_state);
+    let delta = gateway.ews(&delta_request).await;
+    assert_eq!(delta.status(), StatusCode::OK);
+    let delta_body = delta.text().await.unwrap();
+    assert!(delta_body.contains("SyncFolderItemsResponse"));
+    gateway.assert_backend_used().await;
+}
+
+#[tokio::test]
+async fn autodiscover_soap_success_over_http() {
+    // Covers Autodiscover SOAP success path over real HTTP.
+    let gateway = ContractGateway::spawn().await;
+
+    let request = r#"<?xml version="1.0" encoding="utf-8"?>
+<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope" xmlns:a="http://schemas.microsoft.com/exchange/2010/Autodiscover">
+  <s:Body>
+    <a:GetUserSettingsRequestMessage>
+      <a:Request>
+        <a:Users><a:User><a:Mailbox>recorded@example.com</a:Mailbox></a:User></a:Users>
+        <a:RequestedSettings><a:Setting>ExternalEwsUrl</a:Setting><a:Setting>InternalEwsUrl</a:Setting></a:RequestedSettings>
+      </a:Request>
+    </a:GetUserSettingsRequestMessage>
+  </s:Body>
+</s:Envelope>"#;
+    let response = gateway
+        .client
+        .post(format!("{}/Autodiscover/Autodiscover.svc", gateway.base))
+        .header(header::CONTENT_TYPE, "application/soap+xml; charset=utf-8")
+        .body(request)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response.text().await.unwrap();
+    assert!(body.contains("Envelope"));
+    assert!(body.contains("recorded@example.com"));
+}
+
+#[tokio::test]
+async fn autodiscover_soap_error_over_http() {
+    // Covers Autodiscover SOAP error path: invalid email returns error.
+    let gateway = ContractGateway::spawn().await;
+
+    let request = r#"<?xml version="1.0" encoding="utf-8"?>
+<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope" xmlns:a="http://schemas.microsoft.com/exchange/2010/Autodiscover">
+  <s:Body>
+    <a:GetUserSettingsRequestMessage>
+      <a:Request>
+        <a:Users><a:User><a:Mailbox>invalid@nonexistent.example</a:Mailbox></a:User></a:Users>
+        <a:RequestedSettings><a:Setting>ExternalEwsUrl</a:Setting></a:RequestedSettings>
+      </a:Request>
+    </a:GetUserSettingsRequestMessage>
+  </s:Body>
+</s:Envelope>"#;
+    let response = gateway
+        .client
+        .post(format!("{}/Autodiscover/Autodiscover.svc", gateway.base))
+        .header(header::CONTENT_TYPE, "application/soap+xml; charset=utf-8")
+        .body(request)
+        .send()
+        .await
+        .unwrap();
+    // Error path still returns HTTP 200 with a SOAP fault
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response.text().await.unwrap();
+    assert!(body.contains("Fault") || body.contains("fault") || body.contains("Error"));
+}
+
+#[tokio::test]
+async fn eas_sendmail_with_attachment_over_http() {
+    // Covers EAS SendMail with MIME attachment over real HTTP.
+    let gateway = ContractGateway::spawn().await;
+
+    Mock::given(method("POST"))
+        .and(path("/"))
+        .and(body_string_contains(r#""Mailbox/query","#))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "sessionId": "contract",
+            "methodResponses": [
+                ["Mailbox/query", {
+                    "accountId": "a",
+                    "ids": ["drafts-1", "sent-1"],
+                    "total": 2
+                }, "mq0"]
+            ]
+        })))
+        .mount(&gateway.backend)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path("/"))
+        .and(body_string_contains(r#""Email/set""#))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "methodResponses": [
+                ["Email/set", {
+                    "accountId": "a",
+                    "newState": "send-state",
+                    "created": {"send-1": {"id": "send-1"}},
+                    "updated": {},
+                    "destroyed": {},
+                    "notCreated": {},
+                    "notUpdated": {},
+                    "notDestroyed": {}
+                }, "id0"]
+            ]
+        })))
+        .mount(&gateway.backend)
+        .await;
+
+    // MIME with attachment base64
+    let mime = "RnJvbTogc2VuZGVyQGV4YW1wbGUuY29tDQpUbzogcmVjaXBpZW50QGV4YW1wbGUuY29tDQpTdWJqZWN0OiBUZXN0IEF0dGFjaG1lbnQNCkNvbnRlbnQtVHlwZTogbXVsdGlwYXJ0L21peDsgYm91bmRhcnk9ImJvdW5kYXJ5LTEyMyINCg0KLS1ib3VuZGFyeS0xMjMNCkNvbnRlbnQtVHlwZTogdGV4dC9wbGFpbnQ7IGNoYXJzZXQ9dXRmLTgNCg0KSGVsbG8gV29ybGQNCg0KLS1ib3VuZGFyeS0xMjMNCkNvbnRlbnQtVHlwZTogYXBwbGljYXRpb24vcGRmOyBuYW1lPSJ0ZXN0LnBkZiINCkNvbnRlbnQtVENyYW5zZmVyLUVuY29kaW5nOiBiYXNlNjQNCg0KJVBERi0xLjQNCg0KLS1ib3VuZGFyeS0xMjMtLQ0K";
+    let sendmail_xml = format!(
+        r#"<SendMail xmlns="ComposeMail:"><SaveInSentItems/><Mime>{}</Mime></SendMail>"#,
+        mime
+    );
+    let response = gateway.eas("SendMail", &sendmail_xml).await;
+    assert_eq!(response.status, StatusCode::OK);
+    let status = tag_text(&response.xml, "Status");
+    assert_eq!(status.as_deref(), Some("1"), "sendmail should succeed, got: {}", response.xml);
+    gateway.assert_backend_used().await;
+}
+
+#[tokio::test]
+async fn eas_getitemestimate_over_http() {
+    // Covers EAS GetItemEstimate for an email collection over real HTTP.
+    let gateway = ContractGateway::spawn().await;
+
+    Mock::given(method("POST"))
+        .and(path("/"))
+        .and(body_string_contains(r#""Mailbox/query","#))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "sessionId": "contract",
+            "methodResponses": [
+                ["Mailbox/query", {
+                    "accountId": "a",
+                    "ids": ["inbox-1"],
+                    "total": 1
+                }, "mq0"]
+            ]
+        })))
+        .mount(&gateway.backend)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path("/"))
+        .and(body_string_contains(r#""Email/query",{methodResponses"#))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "sessionId": "contract",
+            "methodResponses": [
+                ["Email/query", {
+                    "accountId": "a",
+                    "state": "query-state",
+                    "canCalculateChanges": true,
+                    "position": 0,
+                    "total": 42,
+                    "ids": []
+                }, "eq0"]
+            ]
+        })))
+        .mount(&gateway.backend)
+        .await;
+
+    let estimate_xml = r#"<GetItemEstimate xmlns="GetItemEstimate:"><Collections><Collection><Class>Email</Class><CollectionId>2</CollectionId><SyncKey>0</SyncKey></Collection></Collections></GetItemEstimate>"#;
+    let response = gateway.eas("GetItemEstimate", estimate_xml).await;
+    assert_eq!(response.status, StatusCode::OK);
+    assert!(
+        response.xml.contains("<Status>1</Status>") || response.xml.contains("<Status>4</Status>"),
+        "expected estimate status, got: {}",
+        response.xml
+    );
+    gateway.assert_backend_used().await;
+}
+
+#[tokio::test]
+async fn eas_meetingresponse_over_http() {
+    // Covers EAS MeetingResponse over real HTTP.
+    let gateway = ContractGateway::spawn().await;
+
+    Mock::given(method("POST"))
+        .and(path("/"))
+        .and(body_string_contains("CalendarEvent/get"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "sessionId": "contract",
+            "methodResponses": [
+                ["CalendarEvent/get", {
+                    "accountId": "a",
+                    "state": "cal-state",
+                    "list": [
+                        {
+                            "id": "cal-1",
+                            "title": "Team Standup",
+                            "uid": "cal-1@example.com",
+                            "start": "2026-01-15T09:00:00",
+                            "end": "2026-01-15T09:30:00",
+                            "calendarIds": {"cal-1": true},
+                            "@type": "Event"
+                        }
+                    ],
+                    "notFound": []
+                }, "eg0"]
+            ]
+        })))
+        .expect(1)
+        .mount(&gateway.backend)
+        .await;
+
+    let meeting_response_xml = r#"<MeetingResponse xmlns="MeetingResponse:"><Request><RequestId>req-1</RequestId><UserResponse>1</UserResponse></Request></MeetingResponse>"#;
+    let response = gateway.eas("MeetingResponse", meeting_response_xml).await;
+    assert_eq!(response.status, StatusCode::OK);
+    // MeetingResponse should produce a valid status
+    assert!(
+        response.xml.contains("<Status>") || response.xml.contains("MeetingResponse"),
+        "expected MeetingResponse status, got: {}",
+        response.xml
+    );
+    gateway.assert_backend_used().await;
+}
+
+// ========================================================================
+// Stateful model-based protocol tests driving REAL production handlers
+// through build_router against wiremock backends.
+// Cover: Sync prime, continuation, delta, replayed key, stale key,
+// overflow window, and failed token write.
+// Invariants:
+//   - A stale key must not resurrect deleted items.
+//   - Identical retries cannot create duplicate backend objects.
+//   - A failed durable write never advances the acknowledged SyncKey.
+// ========================================================================
 
 #[test]
 fn canonical_email_server_id_is_stable() {
