@@ -62,8 +62,8 @@ jobs:
       - name: Run Criterion benchmark smoke runs
         run: |
           set -euo pipefail
-          cargo bench --locked -- --list | head -1
-          cargo bench --locked -- --save-baseline baseline --min-time 1
+          cargo bench --locked --bench hot_paths -- --list | head -1
+          cargo bench --locked --bench hot_paths -- --save-baseline baseline --measurement-time 1
 
   dependabot:
     name: Dependabot coverage for /fuzz

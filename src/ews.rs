@@ -5304,22 +5304,32 @@ async fn handle_sync_email_folder_items(
     // arrival as held. A storage READ failure fails the whole call closed
     // (retryable): guessing either way would either drop a genuinely new message
     // (rendered as an Update for an unknown item) or duplicate a held one.
+    // Classify EVERY `created` id against the delivered-membership ledger in one
+    // pass. An `overlap_all` id (also in `destroyed`) is a held `Update` when the
+    // client already received it and a `Create` otherwise. A plain `created` id
+    // the client already holds is a message the prime delivered but the first
+    // delta lists again — the prime returns the query state captured BEFORE the
+    // message arrived — so it must NOT be re-sent as a duplicate Create.
     let mut overlap_held: std::collections::HashSet<&str> = std::collections::HashSet::new();
-    for id in &overlap_all {
+    let mut delivered_created: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    for id in &changes.created {
         match state
             .storage
             .has_email_delivered_membership(owner, &folder_id, id)
             .await
         {
             Ok(true) => {
-                overlap_held.insert(id);
+                delivered_created.insert(id.as_str());
+                if overlap_all.contains(id.as_str()) {
+                    overlap_held.insert(id.as_str());
+                }
             }
             Ok(false) => {}
             Err(e) => {
                 tracing::error!(
                     error = %e,
                     email_id = %id,
-                    "Failed to read the delivered-membership ledger to classify an overlap id; failing closed"
+                    "Failed to read the delivered-membership ledger to classify a changed id; failing closed"
                 );
                 return operation_error_response(
                     &EwsAction::SyncFolderItems,
@@ -5451,6 +5461,11 @@ async fn handle_sync_email_folder_items(
                     );
                 }
             }
+            continue;
+        }
+        if delivered_created.contains(email_id.as_str()) {
+            // Already delivered by the prime; a second Create would duplicate the
+            // item the client already holds.
             continue;
         }
         match jmap
@@ -15775,6 +15790,48 @@ mod tests {
             second.matches("<t:Create>").count(),
             1,
             "a later arrival must be delivered after a quiet delta: {second}"
+        );
+    }
+
+    /// A message the prime already delivered must NOT be re-sent as a Create
+    /// when the first delta's `Email/queryChanges` lists it as added: the prime
+    /// returns the query state captured BEFORE the message arrived, so an
+    /// in-prime arrival is reported again by the first delta. The
+    /// delivered-membership ledger proves the client already holds it.
+    #[tokio::test]
+    async fn sync_email_folder_items_delivered_prime_arrival_is_not_recreated() {
+        let base = spawn_quiet_then_arrival_delta_stub().await;
+        let (state, owner, folder_id) = quiet_then_arrival_state(base).await;
+        // The prime delivered `m1` (a recorded membership row), so the first
+        // delta must not send a second Create for it.
+        state
+            .storage
+            .record_email_delivered_membership(owner, &folder_id, "m1")
+            .await
+            .unwrap();
+
+        let first = response_body(
+            handle_sync_folder_items(&state, &meeting_auth(), &email_delta_request(Some("S0")))
+                .await,
+        )
+        .await;
+        let first_state = extract_email_sync_state(&first);
+
+        // The backend now reports `m1` in `added` only (not removed); it was
+        // delivered by the prime, so this delta must NOT emit a Create.
+        let second = response_body(
+            handle_sync_folder_items(
+                &state,
+                &meeting_auth(),
+                &email_delta_request(Some(&first_state)),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(
+            second.matches("<t:Create>").count(),
+            0,
+            "a prime-delivered arrival must not be re-created: {second}"
         );
     }
 

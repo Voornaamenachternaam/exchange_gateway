@@ -2203,15 +2203,13 @@ fn ping_superseded_response(wbxml: &Wbxml, as_wbxml: bool, request_id: &str) -> 
 /// Resolve the concrete JMAP mailbox id backing an EAS email CollectionId, for
 /// the mailbox-scoped `Email/queryChanges` feed. A user-created folder's EAS
 /// ServerId *is* the mailbox id; a system role (Inbox, Drafts, …) resolves
-/// through its JMAP role. `None` when the collection has no mailbox (Outbox,
-/// or a resolution failure), in which case the caller scopes to nothing rather
-/// than diffing the account-wide `Email/changes`.
-/// Resolve an EAS collection id to a JMAP mailbox id.
+/// through its JMAP role.
 ///
 /// Returns `Ok(Some(mailbox_id))` on successful resolution, `Ok(None)` when the
-/// collection is genuinely unknown (caller may fall back to the raw EAS id and
-/// report Status 8), and `Err` on a backend/lookup failure (caller must fail
-/// closed with a retryable Status 6).
+/// collection has no mailbox (Outbox) or is genuinely unknown (caller may fall
+/// back to the raw EAS id and report Status 8), and `Err` on a backend/lookup
+/// failure (caller must fail closed with a retryable server error, never a
+/// silent empty result).
 async fn resolve_email_mailbox_id(
     state: &Arc<AppState>,
     jmap: &Arc<JmapClient>,
@@ -6344,13 +6342,21 @@ async fn handle_sync_collections(ctx: &SyncCtx<'_>, collections: &[SyncCollectio
                         &email_mutation_responses,
                     ),
                     Err(e) => {
+                        // [MS-ASCMD] §2.2.3.177.17: Status 6 is an ITEM-scoped
+                        // "client/server conversion" error ("Stop sending the
+                        // item. This is not a transient condition"), so it must
+                        // not signal a retryable server-side failure such as a
+                        // transient `Mailbox/query` lookup. Answer Status 5
+                        // ("Server error", GLOBAL scope: "frequently a transient
+                        // condition … Retry the synchronization") with the
+                        // incoming key untouched so the next Sync retries.
                         tracing::warn!(
                             request_id = %request_id,
                             error = %e,
-                            "Email sync failed, returning Status 6"
+                            "Email sync failed, returning retryable Status 5"
                         );
                         format!(
-                            "<Collection><Class>Email</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>6</Status></Collection>",
+                            "<Collection><Class>Email</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>5</Status></Collection>",
                             xml_escape(incoming_key),
                             xml_escape(collection_id)
                         )
@@ -8378,7 +8384,7 @@ async fn handle_email_sync(ctx: &EmailSyncRequestCtx<'_>) -> anyhow::Result<Stri
                 // and no query state would make every later non-zero Sync take
                 // the empty-state path and skip the folder's existing mail
                 // until a manual re-prime. Propagate so the caller answers a
-                // retryable Status 6.
+                // retryable Status 5.
                 Err(e) => {
                     return Err(anyhow::anyhow!(
                         "failed to read folder mapping for collection {collection_id}: {e}"
@@ -8481,7 +8487,7 @@ async fn handle_email_sync(ctx: &EmailSyncRequestCtx<'_>) -> anyhow::Result<Stri
     // the id directly (its EAS ServerId *is* the mailbox id); a system role
     // resolves through its JMAP role. `None` (a role that genuinely has no
     // mailbox) scopes to nothing, so the delta answers empty rather than
-    // leaking; a resolution *failure* is a retryable error (Status 6), never a
+    // leaking; a resolution *failure* is a retryable error (Status 5), never a
     // silent empty window — see the error arm below.
     let resolved_mailbox_id: Option<String> = match explicit_mailbox_id.as_deref() {
         Some(id) => Some(id.to_string()),
@@ -8495,7 +8501,7 @@ async fn handle_email_sync(ctx: &EmailSyncRequestCtx<'_>) -> anyhow::Result<Stri
                 // "no mailbox": the delta path would then treat the collection
                 // as having no mailbox, clear the stored query state and answer
                 // an empty success window — losing every change made during the
-                // outage until a full re-prime. Fail closed (Status 6) with the
+                // outage until a full re-prime. Fail closed (Status 5) with the
                 // stored token untouched so the next Sync retries the same
                 // resolution and the change set is delivered once the backend
                 // recovers. A genuinely mailbox-less role is `Ok(empty)`, not an
@@ -8520,7 +8526,7 @@ async fn handle_email_sync(ctx: &EmailSyncRequestCtx<'_>) -> anyhow::Result<Stri
     // must NOT be flattened to "no cursor": the request would then be routed to
     // the delta path from the first page's query state (which already covers the
     // not-yet-delivered tail), permanently skipping those messages. Fail closed
-    // (Status 6) so the next Sync retries the same read.
+    // (Status 5) so the next Sync retries the same read.
     let cursor_present = match state
         .storage
         .get_email_sync_cursor(username, state_collection_id)
@@ -8786,7 +8792,7 @@ async fn handle_email_initial_sync(
             // the client's next non-zero Sync enters the delta path with no base
             // state and the folder is never populated until a manual re-prime.
             // Propagate so `handle_email_sync`'s caller answers a retryable
-            // Status 6 with the incoming key untouched, and the next Sync retries
+            // Status 5 with the incoming key untouched, and the next Sync retries
             // the same prime.
             tracing::warn!(error = %e, "Failed to fetch emails from JMAP for initial sync");
             return Err(anyhow::anyhow!(
@@ -9047,7 +9053,7 @@ async fn handle_email_delta_sync(ctx: &EmailSyncCtx<'_>) -> anyhow::Result<Strin
         let mut seeds: Vec<(String, Vec<String>)> = Vec::new();
         for op in deliver {
             // A transient fetch failure aborts the drain before any state is
-            // committed: the caller answers Status 6 and the queue (and the
+            // committed: the caller answers Status 5 and the queue (and the
             // stored token) stay intact, so the next Sync retries the same ops
             // instead of dropping a change the client never received.
             let (xml, seed) = render_pending_email_op(ctx, op).await?;
@@ -9106,7 +9112,7 @@ async fn handle_email_delta_sync(ctx: &EmailSyncCtx<'_>) -> anyhow::Result<Strin
         // commands; if the key advanced but the clear failed, the same ops would
         // be re-delivered from the stale queue. Either way the client sees
         // duplicates. On failure the delivered window is NOT acknowledged: the
-        // caller answers a retryable Status 6 carrying the incoming key, the
+        // caller answers a retryable Status 5 carrying the incoming key, the
         // queue and stored token are left untouched (the transaction rolled
         // back), and the same drain is retried once storage recovers.
         //
@@ -9114,7 +9120,7 @@ async fn handle_email_delta_sync(ctx: &EmailSyncCtx<'_>) -> anyhow::Result<Strin
         // overlapping Sync requests rendered the same ops, only the claimer
         // advances the token. A loser (`Ok(false)`) must NOT acknowledge its
         // window — answering success would re-deliver the ops the winner is
-        // already committing — so it also fails closed (retryable Status 6),
+        // already committing — so it also fails closed (retryable Status 5),
         // and its next Sync finds the queue gone and diffs from the winner's
         // advanced token instead of replaying.
         match state
@@ -9247,7 +9253,7 @@ async fn handle_email_delta_sync(ctx: &EmailSyncCtx<'_>) -> anyhow::Result<Strin
                 tracing::warn!(error = %e, "Failed to update email sync key");
             }
             // Backend hiccup: answer an empty, successful window rather
-            // than a Status 6 so the client retries the delta instead
+            // than a Status 5 so the client retries the delta instead
             // of forcing a full resync.
             return Ok(format!(
                 "<Collection><Class>Email</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>1</Status></Collection>",
@@ -9269,7 +9275,7 @@ async fn handle_email_delta_sync(ctx: &EmailSyncCtx<'_>) -> anyhow::Result<Strin
     for op in deliver {
         // A transient fetch failure aborts BEFORE any state is committed (no
         // token advance, no overflow queue, no seed write): the caller answers
-        // Status 6 carrying the incoming key, so the next Sync re-derives the
+        // Status 5 carrying the incoming key, so the next Sync re-derives the
         // same change set instead of dropping the op.
         let (xml, seed) = render_pending_email_op(ctx, op).await?;
         commands_xml.push_str(&xml);
@@ -9288,7 +9294,7 @@ async fn handle_email_delta_sync(ctx: &EmailSyncCtx<'_>) -> anyhow::Result<Strin
         // client holding the OLD key while the queue's `base_state` sits AHEAD of
         // it — a retry drains the queued remainder and advances past THIS
         // window's `deliver` ops (which are not in the queue), losing them. On
-        // failure the caller answers a retryable Status 6 and the same delta is
+        // failure the caller answers a retryable Status 5 and the same delta is
         // recomputed from the unchanged token.
         let queued_ok = match serde_json::to_string(leftover) {
             Ok(leftover_json) => match state
@@ -9318,7 +9324,7 @@ async fn handle_email_delta_sync(ctx: &EmailSyncCtx<'_>) -> anyhow::Result<Strin
         if !queued_ok {
             // The undelivered remainder could not be made durable together with
             // the response key. Fail closed with a retryable server error: the
-            // caller answers Status 6 carrying the incoming key and NO commands,
+            // caller answers Status 5 carrying the incoming key and NO commands,
             // the stored token is left untouched, and the same delta drains
             // cleanly once storage recovers. The flag baseline is likewise NOT
             // advanced, so a re-diff still re-derives the flag-only `<Change>`
@@ -12706,7 +12712,7 @@ mod tests {
     }
 
     /// A transient mailbox-role resolution failure must FAIL CLOSED: the whole
-    /// email Sync returns an error (the caller answers Status 6) with the stored
+    /// email Sync returns an error (the caller answers Status 5) with the stored
     /// query state untouched. Flattening the error to "no mailbox" would make
     /// the delta clear its stored token and answer an empty success window,
     /// losing every change made during the outage until a full re-prime.
@@ -14134,7 +14140,7 @@ mod tests {
     }
 
     /// A failed baseline SEED for a delivered `<Add>` must fail the whole delta
-    /// closed (Status 6) with the stored token untouched and no overflow queue,
+    /// closed (Status 5) with the stored token untouched and no overflow queue,
     /// so the next Sync re-derives and re-delivers the same Add. Acknowledging
     /// the Add without its baseline would let the rotating scan record the
     /// message's keywords as a first observation (no `<Change>`), leaving the
@@ -14327,7 +14333,7 @@ mod tests {
     }
 
     /// A transient `Email/get` failure for a queued created/changed op must fail
-    /// the delta closed (Status 6) with the stored token untouched — NOT be
+    /// the delta closed (Status 5) with the stored token untouched — NOT be
     /// treated as a vanished item that is silently dropped. Otherwise a
     /// transient backend error loses the email change permanently.
     #[tokio::test]
@@ -19598,7 +19604,7 @@ mod tests {
     }
 
     /// A transient `get_folder` failure while resolving a non-system
-    /// CollectionId must FAIL CLOSED (Status 6), not be conflated with an
+    /// CollectionId must FAIL CLOSED (Status 5), not be conflated with an
     /// unmapped collection — answering Status 1 with no cursor/query state
     /// would make every later non-zero Sync take the empty-state path and skip
     /// the folder's existing mail until a manual re-prime.

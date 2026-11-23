@@ -77,14 +77,20 @@ impl Arbitrary<'_> for WbxmlCollection {
 /// or corrupt it to produce malformed structural variants.
 fn render_wbxml_ast(root: &WbxmlElement, corrupt: bool) -> String {
     let mut s = String::new();
-    render_element(&mut s, root);
+    render_element(&mut s, root, corrupt);
     if corrupt {
         // Inject structural corruption: unclosed tags, truncated content.
         match s.len() {
             0 => s.push_str("<Sync"),
             1..=8 => s.push_str("</Sync>"),
             _ => {
-                let cut = s.len() / 2;
+                // `String::truncate` panics on a non-boundary index, and the
+                // grammar allows multi-byte UTF-8, so walk the midpoint back to
+                // the nearest character boundary before truncating.
+                let mut cut = s.len() / 2;
+                while !s.is_char_boundary(cut) {
+                    cut -= 1;
+                }
                 s.truncate(cut);
             }
         }
@@ -92,7 +98,26 @@ fn render_wbxml_ast(root: &WbxmlElement, corrupt: bool) -> String {
     s
 }
 
-fn render_element(s: &mut String, el: &WbxmlElement) {
+/// Real [MS-ASWBXML] `(namespace, local tag)` pairs. The structured (non-corrupt)
+/// generation picks from these so it emits elements the encoder can actually
+/// resolve — exercising code-page switching instead of being rejected outright.
+/// Every local name below is a token on its namespace's code page in
+/// `exchange_gateway::wbxml`'s tag tables.
+const SUPPORTED_ELEMENTS: &[(&str, &[&str])] = &[
+    ("Email", &["Subject", "From", "To", "Body"]),
+    ("AirSyncBase", &["Type", "Body", "Data"]),
+    ("Calendar", &["Timezone", "AllDayEvent", "BusyStatus"]),
+    ("Contacts", &["FirstName", "LastName"]),
+    ("Tasks", &["Subject"]),
+    ("Notes", &["Subject"]),
+];
+
+fn supported_element(page: u8, tag: u8) -> (&'static str, &'static str) {
+    let (prefix, locals) = SUPPORTED_ELEMENTS[page as usize % SUPPORTED_ELEMENTS.len()];
+    (prefix, locals[tag as usize % locals.len()])
+}
+
+fn render_element(s: &mut String, el: &WbxmlElement, corrupt: bool) {
     match el {
         WbxmlElement::Sync(sync) => {
             s.push_str("<Sync xmlns=\"AirSync:\"><Collections>");
@@ -105,19 +130,30 @@ fn render_element(s: &mut String, el: &WbxmlElement) {
             render_collection(s, coll);
         }
         WbxmlElement::Generic { page, tag, children, text } => {
-            // Emit a namespaced tag for non-root pages, unqualified for page 0.
-            if *page == 0 {
-                s.push_str(&format!("<tag{tag}>"));
-            } else {
+            if corrupt {
+                // Intentional malformation: a synthetic, mismatched qualified name.
                 s.push_str(&format!("<P{page}:tag{tag}>"));
+                if let Some(t) = text {
+                    s.push_str(&escape_xml(t));
+                }
+                for child in children {
+                    render_element(s, child, corrupt);
+                }
+                s.push_str(&format!("</tag{tag}>"));
+            } else {
+                // A supported name, emitted with the SAME qualified name on both
+                // tags so the document is well-formed and the encoder resolves it.
+                let (prefix, local) = supported_element(*page, *tag);
+                let name = format!("{prefix}:{local}");
+                s.push_str(&format!("<{name}>"));
+                if let Some(t) = text {
+                    s.push_str(&escape_xml(t));
+                }
+                for child in children {
+                    render_element(s, child, corrupt);
+                }
+                s.push_str(&format!("</{name}>"));
             }
-            if let Some(t) = text {
-                s.push_str(&escape_xml(t));
-            }
-            for child in children {
-                render_element(s, child);
-            }
-            s.push_str(&format!("</tag{tag}>"));
         }
     }
 }

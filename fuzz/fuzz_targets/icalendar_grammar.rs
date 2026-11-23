@@ -76,7 +76,13 @@ fn render_ical(root: &IcalElement, mutate: bool) -> String {
             0 => s.push_str("BEGIN:VCALENDAR"),
             1..=4 => s.push_str("\r\n"),
             _ => {
-                let cut = s.len() / 3;
+                // `String::truncate` panics on a non-boundary index, and the
+                // grammar allows multi-byte UTF-8, so walk the midpoint back to
+                // the nearest character boundary before truncating.
+                let mut cut = s.len() / 3;
+                while !s.is_char_boundary(cut) {
+                    cut -= 1;
+                }
                 s.truncate(cut);
                 s.push_str("\r\nEND:VCALENDAR");
             }

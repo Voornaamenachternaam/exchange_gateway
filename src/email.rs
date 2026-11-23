@@ -1906,7 +1906,7 @@ pub async fn fetch_emails_jmap(
             // empty result: it is indistinguishable from a genuinely empty
             // mailbox, so the EAS/EWS initial sync would complete with no emails
             // and no query state and the folder would be skipped until a manual
-            // re-prime. Propagate so the caller answers a retryable Status 6
+            // re-prime. Propagate so the caller answers a retryable Status 5
             // with the sync token untouched.
             tracing::warn!(error = %e, role = %normalized_role, "Failed to fetch mailbox IDs for role; failing closed");
             Err(e)
