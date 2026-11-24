@@ -564,9 +564,12 @@ own collection could deliver it. The delta path only records destroyed ids for
 the unscoped (default) folder, and the full-snapshot tombstone sweep is skipped
 entirely for scoped folders. (h) A `FolderCreate` whose backend object was
 created but whose mapping write then fails is never left as an unmappable
-orphan, and never destroys a live collection. The just-created JMAP mailbox
-(`Mailbox/set destroy`, contents included) is rolled back, so a retry starts
-clean instead of being rejected as a duplicate sibling name. A CalDAV
+orphan, and never destroys a live collection. The just-created JMAP mailbox is
+rolled back with `Mailbox/set destroy` and `onDestroyRemoveEmails=false`: the
+server refuses the destroy while the mailbox still holds mail, so mailbox
+CONTENTS are never removed by this rollback (the only case it can clear is an
+empty mailbox nobody has written to yet), and a retry starts clean instead of
+being rejected as a duplicate sibling name. A CalDAV
 collection is NOT deleted: between `MKCALENDAR` and the failed mapping write
 another client may already have written events into it, and a compensating
 `DELETE` would destroy them. Instead the create records a durable pending
@@ -574,9 +577,16 @@ intent BEFORE the mapping write, so the client's retry (whose `MKCALENDAR`
 answers 405) reconciles onto the SAME collection. If that reconciliation's
 mapping write also fails, the client receives the retryable Status 6 and the
 intent is RETAINED (clearing it would leave the live collection unmapped and the
-next retry answering Status 2); an unreadable intent fails the create closed
-(Status 6) BEFORE any backend work, so no collection can be created whose
-mapping could not be persisted. A failed JMAP compensation is logged and the
+next retry answering Status 2), so the retry reconciles again. An unreadable
+intent fails the create closed (Status 6) BEFORE any backend work, so no
+collection can be created whose mapping could not be persisted. The residual
+case is a DOUBLE storage failure on the create path — the intent insert AND the
+mapping write both fail after `MKCALENDAR` succeeded: the live collection is
+then left unmapped with no intent, and the client's retry answers Status 2 (a
+permanent name collision). The preflight intent read cannot prevent a LATER
+write failure, and the create does not delete the collection as compensation
+(another client may already have written events into it), so this state is
+operator-visible rather than silently retryable. A failed JMAP compensation is logged and the
 client still receives the retryable Status 6. (i) `GetHierarchy` fails CLOSED
 (HTTP 500, [MS-ASCMD] §2.2.1.8) when the user-created folder list cannot be
 read, instead of returning a hierarchy that silently omits those folders.

@@ -223,7 +223,14 @@ async fn eas_wbxml_sync_runs_prime_delta_invalid_key_and_clean_reprime_over_http
     let reprime = gateway.eas("Sync", &tasks_sync("0")).await;
     assert_eq!(reprime.status, StatusCode::OK);
     assert_eq!(tag_text(&reprime.xml, "Status").as_deref(), Some("1"));
-    assert_ne!(tag_text(&reprime.xml, "SyncKey").as_deref(), Some("0"));
+    // A re-prime must hand back a USABLE key: an absent or empty SyncKey leaves
+    // the client unable to resume, which the old `assert_ne!(.., Some("0"))`
+    // accepted because `None != Some("0")`.
+    let reprime_key = tag_text(&reprime.xml, "SyncKey");
+    assert!(
+        matches!(reprime_key.as_deref(), Some(key) if !key.is_empty() && key != "0"),
+        "re-prime must return a usable SyncKey, got {reprime_key:?}"
+    );
     gateway.assert_backend_used().await;
 }
 

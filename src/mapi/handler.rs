@@ -12723,39 +12723,54 @@ mod tests {
     /// its ancestors are left alone. The ROP still reports PartialCompletion.
     #[tokio::test]
     async fn rop_delete_folder_refusal_continues_with_independent_entries() {
-        let (base, calls) = spawn_delete_folder_stub_with(
-            vec![
-                ("root", None),
-                ("child-a", Some("root")),
-                ("child-b", Some("root")),
-            ],
-            Some("mailboxHasChild"),
-            None,
-            &["child-a"],
-        )
-        .await;
-        let (rv, partial) = run_delete_folder_rop_full(
-            &base,
-            "root",
-            DEL_FOLDERS | DEL_MESSAGES | DELETE_HARD_DELETE,
-        )
-        .await;
-        assert_eq!(rv, RopErrorCode::Success);
-        assert_eq!(partial, 1, "a surviving target is a partial completion");
-        let ids: Vec<String> = calls
-            .lock()
-            .await
-            .iter()
-            .map(|(id, _)| id.clone())
-            .collect();
-        assert!(
-            ids.contains(&"child-b".to_string()),
-            "an independent sibling must still be destroyed: {ids:?}"
-        );
-        assert!(
-            !ids.contains(&"root".to_string()),
-            "an ancestor of a refused mailbox must never be destroyed: {ids:?}"
-        );
+        // The visit order of two same-depth children is not part of the
+        // contract, so refuse EACH child in turn: whichever one is visited
+        // first, the refusal must not abort the walk before the independent
+        // sibling is attempted.
+        for refused in ["child-a", "child-b"] {
+            let sibling = if refused == "child-a" {
+                "child-b"
+            } else {
+                "child-a"
+            };
+            let (base, calls) = spawn_delete_folder_stub_with(
+                vec![
+                    ("root", None),
+                    ("child-a", Some("root")),
+                    ("child-b", Some("root")),
+                ],
+                Some("mailboxHasChild"),
+                None,
+                &[refused],
+            )
+            .await;
+            let (rv, partial) = run_delete_folder_rop_full(
+                &base,
+                "root",
+                DEL_FOLDERS | DEL_MESSAGES | DELETE_HARD_DELETE,
+            )
+            .await;
+            assert_eq!(rv, RopErrorCode::Success);
+            assert_eq!(partial, 1, "a surviving target is a partial completion");
+            let ids: Vec<String> = calls
+                .lock()
+                .await
+                .iter()
+                .map(|(id, _)| id.clone())
+                .collect();
+            assert!(
+                ids.contains(&refused.to_string()),
+                "the refused mailbox must still be attempted: {ids:?}"
+            );
+            assert!(
+                ids.contains(&sibling.to_string()),
+                "an independent sibling must still be destroyed after a refusal of {refused}: {ids:?}"
+            );
+            assert!(
+                !ids.contains(&"root".to_string()),
+                "an ancestor of a refused mailbox must never be destroyed: {ids:?}"
+            );
+        }
     }
 
     /// A JMAP method-level `error` on `Mailbox/set` is a hard failure, never a

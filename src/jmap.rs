@@ -2402,15 +2402,30 @@ impl JmapClient {
                 else {
                     return Ok(None);
                 };
-                let ids = thread
-                    .get("emailIds")
-                    .and_then(|v| v.as_array())
-                    .map(|a| {
-                        a.iter()
-                            .filter_map(|v| v.as_str().map(str::to_string))
-                            .collect()
+                let Some(ids) = thread.get("emailIds").and_then(|v| v.as_array()) else {
+                    // A returned thread without `emailIds` is not an empty
+                    // thread: RFC 8621 §5.2 requires the property, and treating
+                    // its absence as "no members" would let the caller report a
+                    // successful but EMPTY conversation. Fail so the caller's
+                    // retryable error path runs.
+                    return Err(anyhow!(
+                        "Thread/get returned thread {} without an emailIds array: {}",
+                        thread_id,
+                        thread
+                    ));
+                };
+                let ids: Vec<String> = ids
+                    .iter()
+                    .map(|v| {
+                        v.as_str().map(str::to_string).ok_or_else(|| {
+                            anyhow!(
+                                "Thread/get returned a non-string emailIds entry for thread {}: {}",
+                                thread_id,
+                                v
+                            )
+                        })
                     })
-                    .unwrap_or_default();
+                    .collect::<Result<Vec<String>>>()?;
                 return Ok(Some(ids));
             }
         }
@@ -3032,11 +3047,19 @@ impl JmapClient {
         Ok(())
     }
 
-    /// Copy an email into the given mailboxes with `Email/copy`
-    /// (RFC 8621 §4.6), leaving the source email's own mailbox membership
-    /// untouched, and return the id of the NEW email.
+    /// Copy an email into the given mailboxes, leaving the source email's own
+    /// mailbox membership untouched, and return the id of the NEW email.
     ///
-    /// FAIL-CLOSED: a method-level `error`, a missing `created` entry and a
+    /// The copy is a same-account `Email/set` create with the RFC 8621 §4.5
+    /// `copyFrom` argument — NOT `Email/copy`. RFC 8620 §5.3 requires
+    /// `fromAccountId` and `accountId` to be DIFFERENT accounts, and Stalwart
+    /// rejects a same-account `Email/copy` with `serverFail` while creating
+    /// nothing, so the EWS Inbox→Deleted-Items copy failed with
+    /// ErrorInternalServerError. `copyFrom` is the same-account server-side copy
+    /// the JMAP spec provides, and the gateway already relies on it for the
+    /// MAPI/EWS folder-item copies (`copy_emails`).
+    ///
+    /// FAIL-CLOSED: a method-level `error`, a per-item `notCreated` entry and a
     /// missing id all propagate. Returning the SOURCE id (as the previous
     /// mailbox-membership edit did) hands the client an ItemId for an object it
     /// never created — every later Get/Update on it hits the wrong message.
@@ -3048,6 +3071,11 @@ impl JmapClient {
         username: &str,
         password: &SecretString,
     ) -> Result<String> {
+        if mailbox_ids.is_empty() {
+            return Err(anyhow!(
+                "Email copy requires at least one destination mailbox"
+            ));
+        }
         let session = self.get_session(username, password).await?;
         let api_url = &session.api_url;
 
@@ -3056,11 +3084,10 @@ impl JmapClient {
             ids.insert(mb.clone(), serde_json::Value::Bool(true));
         }
         let method_calls = vec![(
-            "Email/copy",
+            "Email/set",
             serde_json::json!({
-                "fromAccountId": account_id,
                 "accountId": account_id,
-                "create": { "c0": { "id": email_id, "mailboxIds": ids } },
+                "create": { "c0": { "copyFrom": email_id, "mailboxIds": ids } },
             }),
             "ec0",
         )];
@@ -3077,9 +3104,9 @@ impl JmapClient {
 
         for (method, data, _) in resp.method_responses {
             if method == "error" {
-                return Err(anyhow!("Email/copy failed: {}", data));
+                return Err(anyhow!("Email copy failed: {}", data));
             }
-            if method == "Email/copy" {
+            if method == "Email/set" {
                 if let Some(id) = data
                     .get("created")
                     .and_then(|c| c.get("c0"))
@@ -3088,10 +3115,13 @@ impl JmapClient {
                 {
                     return Ok(id.to_string());
                 }
-                return Err(anyhow!("Email/copy created no object: {}", data));
+                if let Some(rejected) = data.get("notCreated").and_then(|c| c.get("c0")) {
+                    return Err(anyhow!("Email copy was rejected: {}", rejected));
+                }
+                return Err(anyhow!("Email copy created no object: {}", data));
             }
         }
-        Err(anyhow!("Email/copy returned no method response"))
+        Err(anyhow!("Email copy returned no method response"))
     }
 
     /// Inspectable `Email/set` update: returns an [`EmailSetOutcome`] so the
@@ -3559,10 +3589,26 @@ impl JmapClient {
                     password,
                 )
                 .await?;
+            // A method-level `Email/get` error (e.g. `requestTooLarge` from a
+            // server that clamps `maxObjectsInGet` below our batch) says
+            // NOTHING about whether those messages exist: treating the chunk as
+            // "absent" would silently drop them from the move and report a
+            // partial success the client never retries. Fail so the caller's
+            // retryable path runs. Genuinely missing ids come back as
+            // `notFound` and are still skipped by
+            // `build_move_update_patch`.
+            let mut saw_get = false;
             for (method, data, _) in &resp.method_responses {
+                if method == "error" {
+                    return Err(anyhow!(
+                        "Email/get failed while resolving move sources: {}",
+                        data
+                    ));
+                }
                 if method == "Email/get"
                     && let Some(list) = data.get("list").and_then(|v| v.as_array())
                 {
+                    saw_get = true;
                     for e in list {
                         let e_id = e.get("id").and_then(|v| v.as_str()).unwrap_or("");
                         if e_id.is_empty() {
@@ -3575,7 +3621,14 @@ impl JmapClient {
                             .unwrap_or_default();
                         current.insert(e_id.to_string(), mids);
                     }
+                } else if method == "Email/get" {
+                    saw_get = true;
                 }
+            }
+            if !saw_get {
+                return Err(anyhow!(
+                    "Email/get returned no method response while resolving move sources"
+                ));
             }
         }
         // Build the update patch keyed BY email id (not by response order). A
@@ -4429,7 +4482,14 @@ impl JmapClient {
 
         // Check for errors in Email/set and EmailSubmission/set
         let mut email_id = String::new();
-        for (method, data, _) in &response.method_responses {
+        for (method, data, call_id) in &response.method_responses {
+            // RFC 8620 §3.6.2: a failed invocation comes back as a method-level
+            // `error` entry. Treating it as "no notCreated" would let a REJECTED
+            // EmailSubmission/set read as a successful send, after which
+            // SendItem deletes the source draft and the message is lost.
+            if method == "error" {
+                return Err(anyhow!("JMAP invocation {call_id} failed: {data}"));
+            }
             if method == "Email/set" {
                 if let Some(not_created) = data.get("notCreated")
                     && !not_created.is_null()

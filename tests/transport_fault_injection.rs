@@ -3,12 +3,13 @@
 //! These tests use a raw scripted TCP server as the "backend" so we can inject
 //! failures at the transport layer that wiremock status codes cannot express:
 //! connection resets before/during/after headers, truncated bodies, incorrect
-//! Content-Length, premature EOF, delayed responses beyond client timeouts, and
-//! backend-mutation-committed-then-response-lost scenarios.
+//! Content-Length, premature EOF, and delayed responses beyond client timeouts.
 //!
 //! For each injected fault we assert the correct retryable classification, no
-//! auth error caching, no SyncKey advancement, and idempotent retry /
-//! reconciliation.
+//! auth error caching and no SyncKey advancement. The storage-level idempotence
+//! of a replayed folder-mapping upsert is also pinned here; a full
+//! backend-mutation-committed-then-response-lost replay through a protocol
+//! handler is NOT covered by this file.
 
 use std::io::{Read, Write};
 use std::net::{Shutdown, TcpListener};
@@ -294,8 +295,15 @@ async fn storage_upsert_of_identical_folder_params_is_idempotent() {
         .await
         .unwrap();
 
-    // Simulate retry with same params — the folder_map must not be duplicated.
+    // Simulate retry with same params — neither the folder_map nor the
+    // change_journal may gain an entry: the client already received the Add.
     let row1 = storage.get_folder(ALICE, "mb-1").await.unwrap().unwrap();
+    let journal_before = storage
+        .snapshot_folder_sync_data(ALICE, 0)
+        .await
+        .unwrap()
+        .journal
+        .len();
     storage
         .upsert_folder_journaled(
             FolderUpsertParams {
@@ -316,7 +324,45 @@ async fn storage_upsert_of_identical_folder_params_is_idempotent() {
         row1.server_id, row2.server_id,
         "retry must not create duplicate mapping"
     );
-    // Same row, not duplicated — folder_map has exactly one entry for mb-1.
+    let snapshot = storage.snapshot_folder_sync_data(ALICE, 0).await.unwrap();
+    assert_eq!(
+        snapshot.journal.len(),
+        journal_before,
+        "an identical replay must not append a second folder journal row"
+    );
+    assert_eq!(
+        snapshot.folders.len(),
+        1,
+        "folder_map must hold exactly one entry for mb-1"
+    );
+    // A REAL change still journals: the replay above must not have disabled it.
+    storage
+        .upsert_folder_journaled(
+            FolderUpsertParams {
+                owner: ALICE,
+                server_id: "mb-1",
+                parent_id: "0",
+                display_name: "Inbox renamed",
+                folder_type: 12,
+                backend_kind: "jmap",
+                backend_id: "mb-1",
+            },
+            "folder-update",
+        )
+        .await
+        .unwrap();
+    let after_change = storage.snapshot_folder_sync_data(ALICE, 0).await.unwrap();
+    assert_eq!(
+        after_change.journal.len(),
+        journal_before + 1,
+        "a changed mapping must journal its folder-update"
+    );
+    assert_eq!(after_change.journal.last().unwrap().op, "folder-update");
+    assert_eq!(
+        after_change.journal.last().unwrap().folder_type,
+        Some(12),
+        "the journal row must carry the folder Type"
+    );
 }
 
 #[tokio::test]

@@ -1674,7 +1674,8 @@ pub async fn move_email_to_mailbox_via_jmap(
     Ok(server_id.to_string())
 }
 
-/// Copy an email to another folder via `Email/copy` (RFC 8621 §4.6).
+/// Copy an email to another folder via a same-account JMAP `Email/set`
+/// `copyFrom` create (RFC 8621 §4.5).
 ///
 /// A copy is a NEW message in the destination; the source keeps its own
 /// mailbox membership. Returns the gateway ServerId of the COPY.
@@ -2062,7 +2063,18 @@ fn extract_first_tag_text_local(xml: &str, local: &str) -> Option<String> {
             }
             Ok(Event::CData(e)) => {
                 if capturing {
+                    // CDATA is literal by definition — no reference decoding.
                     out.push_str(e.as_ref());
+                }
+            }
+            Ok(Event::GeneralRef(r)) => {
+                // quick-xml 0.42 reports every reference (`&#68;`, `&amp;`) as
+                // its own event rather than folding it into the surrounding
+                // Text. Dropping it truncated the value (`QUJ&#68;` → `QUJ`
+                // instead of `QUJD`) and the caller base64-decodes the result
+                // before submission, so the message body was corrupted.
+                if capturing {
+                    out.push_str(&crate::util::resolve_xml_reference(r.as_ref()));
                 }
             }
             Ok(Event::Eof) | Err(_) => return None,
@@ -3734,6 +3746,29 @@ mod tests {
         assert_eq!(req.mime_data.as_deref(), Some("From: x@y.z"));
     }
 
+    /// A prefixed `Mime` carrying XML character references must decode to the
+    /// exact text the client base64-encoded: `QUJ&#68;` is `QUJD`, and dropping
+    /// the reference (the old behaviour) truncated the base64 payload.
+    #[test]
+    fn test_parse_eas_sendmail_decodes_references_in_prefixed_mime() {
+        let xml = r#"<?xml version="1.0" encoding="utf-8"?>
+<ComposeMail:SendMail xmlns:ComposeMail="ComposeMail:">
+  <ComposeMail:ClientId>c&#50;</ComposeMail:ClientId>
+  <ComposeMail:Mime>QUJ&#68;</ComposeMail:Mime>
+</ComposeMail:SendMail>"#;
+        let req = parse_eas_sendmail(xml).expect("must parse");
+        assert_eq!(req.client_id.as_deref(), Some("c2"));
+        assert_eq!(req.mime_data.as_deref(), Some("QUJD"));
+
+        // Named references resolve too, and CDATA stays literal.
+        let named = r#"<SendMail xmlns="ComposeMail:"><Mime>a&amp;b&#x3C;c</Mime></SendMail>"#;
+        let req = parse_eas_sendmail(named).expect("must parse");
+        assert_eq!(req.mime_data.as_deref(), Some("a&b<c"));
+        let cdata = r#"<SendMail xmlns="ComposeMail:"><Mime><![CDATA[a&amp;b]]></Mime></SendMail>"#;
+        let req = parse_eas_sendmail(cdata).expect("must parse");
+        assert_eq!(req.mime_data.as_deref(), Some("a&amp;b"));
+    }
+
     #[test]
     fn test_mime_header_id_list_strips_brackets() {
         // In mail-parser 1.0 `HeaderValue::TextList` wraps message IDs; the
@@ -4338,14 +4373,34 @@ Body\r\n";
             &results[1],
             EasEmailMutationResult::Delete { status: "6", .. }
         ));
+        // `deletes_as_moves = true` would express an unintended Delete as an
+        // `Email/set` UPDATE (a mailboxIds move), not a `destroy` array — so the
+        // assertion pins the EXACT set of Email/set calls: one keyword update
+        // for the Change's em-1 and nothing else.
         let calls = seen.lock().await;
+        let sets: Vec<&serde_json::Value> = calls
+            .iter()
+            .filter(|c| c.get(0).and_then(|v| v.as_str()) == Some("Email/set"))
+            .map(|c| &c[1])
+            .collect();
+        assert_eq!(
+            sets.len(),
+            1,
+            "the unresolved Delete must issue no Email/set at all: {sets:?}"
+        );
+        let update = sets[0]
+            .get("update")
+            .and_then(|v| v.as_object())
+            .expect("the sole Email/set must be the keyword update");
+        let changed_id = crate::email::jmap_id_from_email_server_id("em-1")
+            .expect("em-1 is a gateway email ServerId");
+        assert_eq!(
+            update.keys().collect::<Vec<_>>(),
+            vec![&changed_id],
+            "only the Change's message may be patched: {update:?}"
+        );
         assert!(
-            calls
-                .iter()
-                .filter(|c| c.get(0).and_then(|v| v.as_str()) == Some("Email/set")
-                    && c[1]["destroy"].is_array())
-                .count()
-                == 0,
+            sets[0].get("destroy").is_none(),
             "an unresolved source must never destroy the message"
         );
     }

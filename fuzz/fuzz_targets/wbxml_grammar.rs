@@ -183,11 +183,24 @@ fuzz_target!(|data: &[u8]| {
         let xml = render_wbxml_ast(&ast, corrupt);
         let codec = Wbxml::new();
 
-        // Encode → decode must be stable for well-formed docs.
+        // Encode → decode → re-encode must reach the codec's canonical fixed
+        // point. An INITIAL encode rejection stays allowed (a corrupt/malformed
+        // variant need not be representable), but once the encoder ACCEPTS a
+        // document the result must decode and re-encode to the SAME bytes —
+        // the guarantee `wbxml_roundtrip` asserts for AirSync-only documents,
+        // here extended to the generated cross-code-page ones. Discarding these
+        // results would only catch panics, not a silently unstable codec.
         if let Ok(encoded) = codec.encode(&xml) {
-            if let Ok(decoded) = codec.decode(&encoded) {
-                let _ = codec.encode(&decoded);
-            }
+            let decoded = codec
+                .decode(&encoded)
+                .expect("an encoded document must decode");
+            let reencoded = codec
+                .encode(&decoded)
+                .expect("decoded WBXML must re-encode");
+            assert_eq!(
+                encoded, reencoded,
+                "WBXML wire bytes changed after a round-trip"
+            );
         }
     }
 

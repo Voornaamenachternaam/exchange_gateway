@@ -21,7 +21,10 @@ jobs:
           fetch-depth: 0
 
       - name: Setup Rust toolchain
-        uses: dtolnay/rust-toolchain@master
+        # Pinned to a full commit SHA (master @ 2026-11-15) so CI never executes
+        # unreviewed code from a mutable branch; `toolchain: stable` still selects
+        # the compiler channel.
+        uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc
         with:
           profile: minimal
           toolchain: stable

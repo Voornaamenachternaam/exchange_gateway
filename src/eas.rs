@@ -13,6 +13,7 @@ use crate::util::{
     xml_escape,
 };
 use crate::wbxml::Wbxml;
+use anyhow::Context;
 use axum::extract::{Query, State};
 use axum::http::{HeaderMap, HeaderValue};
 use axum::{
@@ -1871,36 +1872,6 @@ async fn handle_folder_sync(
                 return xml_or_wbxml_response(wbxml, as_wbxml, xml, request_id);
             }
         }
-        // §16: a watermark below the pruned journal floor can no longer
-        // reconstruct its delta, so the client is forced to re-prime. A
-        // floor-lookup FAILURE is a different fact: answering Status 9 would
-        // tell the client its key is obsolete and silently drop the window it
-        // asked for, so it is reported as a retryable server error instead.
-        let stale = match state
-            .storage
-            .journal_window_stale(owner, stored_since)
-            .await
-        {
-            Ok(stale) => stale,
-            Err(e) => {
-                tracing::error!(
-                    user = %owner,
-                    since = stored_since,
-                    error = %e,
-                    "FolderSync could not read the journal prune floor"
-                );
-                return folder_sync_error_response(wbxml, as_wbxml, request_id);
-            }
-        };
-        if stale {
-            tracing::info!(
-                user = %owner,
-                since = stored_since,
-                "FolderSync watermark below the pruned journal floor; forcing re-prime"
-            );
-            let xml = r#"<?xml version="1.0" encoding="utf-8"?><FolderSync xmlns="FolderHierarchy:"><Status>9</Status><SyncKey>0</SyncKey></FolderSync>"#;
-            return xml_or_wbxml_response(wbxml, as_wbxml, xml, request_id);
-        }
     }
     // Replay any deferred folder-map prune (a `pending_folder_prune` row whose
     // backend destroy already succeeded but whose mirror failed) BEFORE the head
@@ -1918,7 +1889,7 @@ async fn handle_folder_sync(
     // journaled between the head read and the folder-map read is not folded into
     // this response's watermark, and the initial folder list does not reflect a
     // change newer than the captured journal head.
-    let (render_until, journal_rows, folder_rows) = match state
+    let snapshot = match state
         .storage
         .snapshot_folder_sync_data(owner, stored_since)
         .await
@@ -1929,6 +1900,24 @@ async fn handle_folder_sync(
             return folder_sync_error_response(wbxml, as_wbxml, request_id);
         }
     };
+    // §16: a watermark below the pruned journal floor can no longer reconstruct
+    // its delta, so the client is forced to re-prime. The floor comes from the
+    // SAME transaction as the rows above, so pruning cannot advance between the
+    // decision and the snapshot (and a floor-read failure surfaces as the
+    // snapshot error — a retryable server error — instead of a Status 9 that
+    // would silently drop the window the client asked for).
+    if incoming != "0" && stored_since < snapshot.pruned_through {
+        tracing::info!(
+            user = %owner,
+            since = stored_since,
+            floor = snapshot.pruned_through,
+            "FolderSync watermark below the pruned journal floor; forcing re-prime"
+        );
+        let xml = r#"<?xml version="1.0" encoding="utf-8"?><FolderSync xmlns="FolderHierarchy:"><Status>9</Status><SyncKey>0</SyncKey></FolderSync>"#;
+        return xml_or_wbxml_response(wbxml, as_wbxml, xml, request_id);
+    }
+    let (render_until, journal_rows, folder_rows) =
+        (snapshot.head, snapshot.journal, snapshot.folders);
     let new_sync_key = Uuid::new_v4().simple().to_string();
     let changes = if incoming == "0" {
         // Per MS-ASCMD §2.2.3.186.3 (FolderSync Type), the default-folder Type
@@ -2001,8 +1990,12 @@ async fn handle_folder_sync(
         }
     };
     // The watermark is exactly the head captured BEFORE rendering, so the
-    // acknowledged sequence never includes a row the response did not carry.
-    let latest_seq = render_until;
+    // acknowledged sequence never includes a row the response did not carry. A
+    // PRIME cites the greater of the head and the prune floor: a fully pruned
+    // journal reports head 0 while the floor has moved on, so a token of 0
+    // would be stale on the very next delta and the client would re-prime
+    // forever.
+    let latest_seq = render_until.max(snapshot.pruned_through);
     // Persist the new SyncKey + `seq:` token AND the journal watermark (which
     // Ping / GetItemEstimate read from `journal_seq`) in ONE transaction,
     // CONDITIONAL on the incoming key. Learnings:
@@ -5409,7 +5402,7 @@ async fn handle_folder_create(ctx: &FolderCmdCtx<'_>) -> Response {
     // atomically inside `create_folder`, so no separate journal call is needed
     // here (and a failure there already yields a non-success status).
     let sync_key = if result.status == 1 {
-        crate::eas_folders::rotate_hierarchy_sync_key(state, owner, device_id).await
+        crate::eas_folders::rotate_hierarchy_sync_key(state, owner, device_id, &supplied_key).await
     } else {
         crate::eas_folders::current_hierarchy_sync_key(state, owner, device_id).await
     };
@@ -5442,7 +5435,7 @@ async fn handle_folder_delete(ctx: &FolderCmdCtx<'_>) -> Response {
     // The `folder-delete` journal rows for the target and every descendant are
     // written atomically with the mirror prune inside `delete_folder`.
     let sync_key = if result.status == 1 {
-        crate::eas_folders::rotate_hierarchy_sync_key(state, owner, device_id).await
+        crate::eas_folders::rotate_hierarchy_sync_key(state, owner, device_id, &supplied_key).await
     } else {
         crate::eas_folders::current_hierarchy_sync_key(state, owner, device_id).await
     };
@@ -5489,7 +5482,7 @@ async fn handle_folder_update(ctx: &FolderCmdCtx<'_>) -> Response {
     // The mapping update AND its `folder-update` journal row are written
     // atomically inside `update_folder`.
     let sync_key = if result.status == 1 {
-        crate::eas_folders::rotate_hierarchy_sync_key(state, owner, device_id).await
+        crate::eas_folders::rotate_hierarchy_sync_key(state, owner, device_id, &supplied_key).await
     } else {
         crate::eas_folders::current_hierarchy_sync_key(state, owner, device_id).await
     };
@@ -6435,16 +6428,30 @@ async fn handle_sync_collections(ctx: &SyncCtx<'_>, collections: &[SyncCollectio
             // mutations: applying them first would PUT the Adds and record them
             // in the delivery ledger, and only then be answered with Status 3, so
             // the re-prime that follows would treat them as already delivered.
-            let stale_sync_key = if incoming_key == "0" {
-                false
+            // A MISSING key cannot be resumed, so it is stale; a storage READ
+            // failure is NOT evidence that the client's key is obsolete —
+            // answering Status 3 would tell it to throw the window away and
+            // re-prime. Report the read failure separately as a retryable server
+            // error with the incoming key untouched.
+            let (stale_sync_key, stale_key_read_failed) = if incoming_key == "0" {
+                (false, false)
             } else {
                 match state
                     .storage
                     .get_sync_key(username, &state_collection_id)
                     .await
                 {
-                    Ok(Some((stored, _))) => stored != incoming_key,
-                    _ => true,
+                    Ok(Some((stored, _))) => (stored != incoming_key, false),
+                    Ok(None) => (true, false),
+                    Err(e) => {
+                        tracing::warn!(
+                            request_id = %request_id,
+                            collection_id = %collection_id,
+                            error = %e,
+                            "SyncKey read failed; answering a retryable server error"
+                        );
+                        (false, true)
+                    }
                 }
             };
 
@@ -6499,7 +6506,17 @@ async fn handle_sync_collections(ctx: &SyncCtx<'_>, collections: &[SyncCollectio
             };
 
             // Compute the result XML, handling errors inline
-            let result_xml = if stale_sync_key {
+            let result_xml = if stale_key_read_failed {
+                // [MS-ASCMD] §2.2.3.177.17: Status 5 is a GLOBAL-scope server
+                // error ("frequently a transient condition … Retry the
+                // synchronization"); the incoming key is echoed untouched so the
+                // retry resumes the same window.
+                format!(
+                    "<Collection><Class>Calendar</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>5</Status></Collection>",
+                    xml_escape(incoming_key),
+                    xml_escape(collection_id)
+                )
+            } else if stale_sync_key {
                 format!(
                     "<Collection><Class>Calendar</Class><SyncKey>0</SyncKey><CollectionId>{}</CollectionId><Status>3</Status></Collection>",
                     xml_escape(collection_id)
@@ -8510,7 +8527,19 @@ async fn handle_email_sync(ctx: &EmailSyncRequestCtx<'_>) -> anyhow::Result<Stri
             .await
         {
             Ok(Some((stored, _))) => stored == incoming_sync_key,
-            _ => false,
+            Ok(None) => false,
+            // A storage READ failure is not a stale key: answering Status 3
+            // would discard a window the client legitimately holds. Propagate
+            // so the caller answers a retryable Status 5 with the incoming key.
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "Failed to read the stored email sync key; deferring"
+                );
+                return Err(anyhow::anyhow!(
+                    "failed to read the email sync key for collection {state_collection_id}: {e}"
+                ));
+            }
         };
         if !valid {
             return Ok(format!(
@@ -9018,38 +9047,28 @@ async fn handle_email_initial_sync(
     // client re-sends SyncKey 0 (a fresh prime), or, with the cursor still
     // present, re-runs this initial path; re-delivered `<Add>`s are
     // deduplicated by the client's ServerId keying.
-    let key_result = match base_state_token.as_deref() {
-        Some(token) => {
-            state
-                .storage
-                .set_sync_key(username, state_collection_id, &new_sync_key, Some(token))
-                .await
-        }
-        None => {
-            state
-                .storage
-                .set_sync_key(username, state_collection_id, &new_sync_key, None)
-                .await
-        }
-    };
-    if let Err(e) = key_result {
+    // The cursor is now redundant: the key/token is the delta base, and a
+    // leftover cursor would re-route EVERY later Sync to this initial path —
+    // empty pages and fresh keys, never a delta, so new mail would stop being
+    // delivered. Commit the key/token AND the cursor deletion in ONE
+    // transaction so that state is unreachable.
+    if let Err(e) = state
+        .storage
+        .set_sync_key_and_clear_email_cursor(
+            username,
+            state_collection_id,
+            &new_sync_key,
+            base_state_token.as_deref(),
+        )
+        .await
+    {
         tracing::warn!(
             error = %e,
-            "Failed to set initial email sync key; refusing to acknowledge the drained prime"
+            "Failed to persist initial email sync key and clear the cursor; refusing to acknowledge the drained prime"
         );
         return Err(anyhow::anyhow!(
             "failed to persist initial email sync key for collection {state_collection_id}"
         ));
-    }
-    // The cursor is now redundant: the key/token above is the delta base, and a
-    // leftover cursor would re-route the next Sync to this initial path. Drop it
-    // best-effort — a failure only costs one redundant re-prime, never data.
-    if let Err(e) = state
-        .storage
-        .clear_email_sync_cursor(username, state_collection_id)
-        .await
-    {
-        tracing::warn!(error = %e, "Failed to clear email initial-sync cursor");
     }
 
     let response = format!(
@@ -9128,22 +9147,26 @@ async fn handle_email_delta_sync(ctx: &EmailSyncCtx<'_>) -> anyhow::Result<Strin
             // so the queue remainder and sync key advance are atomic — a partial
             // failure leaves neither written and the next Sync retries from the
             // pre-window state instead of re-delivering or losing ops.
-            if let Ok(leftover_json) = serde_json::to_string(&leftover)
-                && let Err(e) = state
-                    .storage
-                    .set_email_sync_pending_and_key(
-                        username,
-                        state_collection_id,
-                        &leftover_json,
-                        &base_state,
-                        &new_sync_key,
-                        jmap_state_token.as_deref(),
-                        &seeds,
-                    )
-                    .await
-            {
-                tracing::warn!(error = %e, "Failed to persist email delta queue remainder and key atomically");
-            }
+            // FAIL CLOSED: a failed serialization or write must not acknowledge
+            // the window or hand out an unpersisted key. Propagating leaves the
+            // queue and stored token untouched, so the caller answers a
+            // retryable Status 5 carrying the incoming key and the next Sync
+            // retries the same window.
+            let leftover_json = serde_json::to_string(&leftover)
+                .context("serializing the email delta queue remainder")?;
+            state
+                .storage
+                .set_email_sync_pending_and_key(
+                    username,
+                    state_collection_id,
+                    &leftover_json,
+                    &base_state,
+                    &new_sync_key,
+                    jmap_state_token.as_deref(),
+                    &seeds,
+                )
+                .await
+                .context("persisting the email delta queue remainder and key")?;
             tracing::info!(
                 user = %username,
                 collection_id,
@@ -12010,7 +12033,7 @@ mod tests {
 
         // Device A performs a successful mutation, rotating its key.
         let new_key_a =
-            crate::eas_folders::rotate_hierarchy_sync_key(&state, owner, device_a).await;
+            crate::eas_folders::rotate_hierarchy_sync_key(&state, owner, device_a, &key_a).await;
         assert_ne!(new_key_a, key_a, "the mutating device's key must rotate");
 
         // Device A's next FolderSync (with the rotated key) must STILL see the

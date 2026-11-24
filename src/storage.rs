@@ -27,9 +27,12 @@ pub struct Storage {
     /// backend writes A-then-B but run their mirrors B-then-A, leaving the
     /// stored name/parent disagreeing with the backend while both requests
     /// report success. The lock is held across BOTH steps so each mutation is
-    /// one ordered operation. Keyed on `(owner, backend_id)`; the entry is kept
-    /// (never removed) so the lock identity is stable across requests — the map
-    /// is bounded by the number of folders a user creates.
+    /// one ordered operation.
+    ///
+    /// Keyed on `(owner, backend_id)`; an entry is removed once no holder and
+    /// no waiter still references its mutex (see [`Storage::lock_folder_mutation`]),
+    /// so the map is bounded by the number of folders with a mutation in flight
+    /// — folder churn cannot grow it without bound.
     folder_locks: Arc<dashmap::DashMap<String, Arc<tokio::sync::Mutex<()>>>>,
 }
 
@@ -43,17 +46,55 @@ impl Storage {
     /// `folder_map` mirror so the two steps form one ordered operation and a
     /// concurrent rename/move of the same folder (over ANY front door: EAS,
     /// EWS, or MAPI) cannot interleave a mirror derived from a stale snapshot.
-    pub async fn lock_folder_mutation(
-        &self,
-        owner: &str,
-        backend_id: &str,
-    ) -> tokio::sync::OwnedMutexGuard<()> {
-        let lock = self
-            .folder_locks
-            .entry(format!("{owner}:{backend_id}"))
-            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
-            .clone();
-        lock.lock_owned().await
+    ///
+    /// The returned guard prunes the map entry when it is released and no
+    /// other holder or waiter references the mutex, so the map stays bounded
+    /// while two concurrent callers on the SAME live folder still share one
+    /// mutex. A cancelled waiter drops its clone, so cancellation cannot pin an
+    /// entry either.
+    pub async fn lock_folder_mutation(&self, owner: &str, backend_id: &str) -> FolderMutationGuard {
+        let key = format!("{owner}:{backend_id}");
+        let mutex = match self.folder_locks.entry(key.clone()) {
+            dashmap::mapref::entry::Entry::Occupied(entry) => entry.get().clone(),
+            dashmap::mapref::entry::Entry::Vacant(entry) => {
+                let mutex = Arc::new(tokio::sync::Mutex::new(()));
+                entry.insert(mutex.clone());
+                mutex
+            }
+        };
+        let guard = mutex.clone().lock_owned().await;
+        FolderMutationGuard {
+            key,
+            locks: self.folder_locks.clone(),
+            guard: Some(guard),
+        }
+    }
+}
+
+/// Guard returned by [`Storage::lock_folder_mutation`].
+///
+/// It owns the per-`(owner, backend folder)` mutex for as long as it lives, so
+/// two operations on the same folder serialize, and it prunes the map entry on
+/// release once NO other holder or waiter references the mutex — bounding the
+/// map without ever handing a second, independent mutex to a concurrent caller
+/// (removing the entry while a guard was still held would break exactly that
+/// mutual exclusion).
+pub struct FolderMutationGuard {
+    key: String,
+    locks: Arc<dashmap::DashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    guard: Option<tokio::sync::OwnedMutexGuard<()>>,
+}
+
+impl Drop for FolderMutationGuard {
+    fn drop(&mut self) {
+        // Release the mutex FIRST: the reference count checked below must
+        // reflect only OTHER holders and waiters.
+        self.guard.take();
+        if let dashmap::mapref::entry::Entry::Occupied(entry) = self.locks.entry(self.key.clone())
+            && Arc::strong_count(entry.get()) == 1
+        {
+            entry.remove();
+        }
     }
 }
 
@@ -64,6 +105,12 @@ pub struct JournalRow {
     pub server_id: String,
     pub op: String,
     pub resource_href: Option<String>,
+    /// The EAS folder Type of a `folder` journal row ([MS-ASCMD] §2.2.3.186.3),
+    /// recorded when the row is written so a consumer can tell an EWS-advertised
+    /// mail folder (Type 12) from a CalDAV collection (Type 13) AFTER the
+    /// `folder_map` row is gone. Stored in the otherwise-unused `instance_id`
+    /// column; `None` for non-folder rows.
+    pub folder_type: Option<i64>,
 }
 
 impl SafeDebug for JournalRow {
@@ -350,6 +397,13 @@ pub struct MeetingRsvpRow {
 /// IDEMPOTENT: a stored href that is already escaped (or a live path carrying
 /// an encoded delimiter such as `%2F`) must not be escaped a second time
 /// (`%` → `%25`), which would make a live collection look deleted.
+///
+/// The set is the WHATWG path percent-encode set (C0 controls, space, `"`, `#`,
+/// `<`, `>`, `?`, backtick, `{`, `}`): those are exactly the characters a URL
+/// parser escapes in a path, so a RAW stored href (`Plan{A}`) normalizes to the
+/// same escaped form discovery reports (`Plan%7BA%7D`). Braces and backticks
+/// were missing before, so a collection whose name contained one looked deleted
+/// and had its live mapping pruned.
 const PATH_ENCODE_SET: AsciiSet = CONTROLS
     .add(b' ')
     .add(b'"')
@@ -357,7 +411,10 @@ const PATH_ENCODE_SET: AsciiSet = CONTROLS
     .add(b'%')
     .add(b'<')
     .add(b'>')
-    .add(b'?');
+    .add(b'?')
+    .add(b'`')
+    .add(b'{')
+    .add(b'}');
 
 pub(crate) fn normalize_caldav_path(path: &str) -> String {
     // Trim trailing slashes to match the live-set normalization
@@ -1603,7 +1660,7 @@ impl Storage {
         // for the folder's ServerId (the `Ok(None)` arm treats any unknown id
         // as purged) and consume a `MaxChangesReturned` slot.
         sqlx::query_as::<_, JournalRow>(
-            "SELECT id, server_id, op, resource_href FROM change_journal \
+            "SELECT id, server_id, op, resource_href, NULL AS folder_type FROM change_journal \
              WHERE owner = ?1 AND id > ?2 \
                AND (resource_href IS NULL OR resource_href <> 'folder') \
              ORDER BY id ASC",
@@ -2177,6 +2234,48 @@ impl Storage {
         .execute(&mut *tx)
         .await
         .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+        tx.commit()
+            .await
+            .map_err(|e| GatewayError::Storage(format!("Commit error: {}", e)))?;
+        Ok(())
+    }
+
+    /// Persist the drained EAS email prime's SyncKey + JMAP query token AND drop
+    /// the resume cursor in ONE transaction.
+    ///
+    /// Sync routing keys off CURSOR PRESENCE, so a cursor left behind by a
+    /// separate, best-effort clear sends every later Sync back through the
+    /// continuation path — empty pages and fresh keys, never a delta, so new
+    /// mail stops being delivered. Committing the delta base and the cursor
+    /// deletion together makes that state unreachable: either both land, or the
+    /// client re-primes.
+    pub async fn set_sync_key_and_clear_email_cursor(
+        &self,
+        owner: &str,
+        collection_id: &str,
+        sync_key: &str,
+        state_token: Option<&str>,
+    ) -> Result<()> {
+        let mut tx = sqlx::Acquire::begin(self.pool.as_ref())
+            .await
+            .map_err(|e| GatewayError::Storage(format!("Transaction error: {}", e)))?;
+        sqlx::query(
+            "INSERT INTO sync_state (owner, collection_id, sync_key, token) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(owner, collection_id) DO UPDATE SET sync_key = ?3, token = ?4, updated_at = CURRENT_TIMESTAMP",
+        )
+        .bind(owner)
+        .bind(collection_id)
+        .bind(sync_key)
+        .bind(state_token)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+        sqlx::query("DELETE FROM email_sync_cursor WHERE owner = ?1 AND collection_id = ?2")
+            .bind(owner)
+            .bind(collection_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
         tx.commit()
             .await
             .map_err(|e| GatewayError::Storage(format!("Commit error: {}", e)))?;
@@ -3041,7 +3140,7 @@ impl Storage {
         since: i64,
     ) -> Result<Vec<JournalRow>> {
         sqlx::query_as::<_, JournalRow>(
-            "SELECT id, server_id, op, resource_href FROM change_journal \
+            "SELECT id, server_id, op, resource_href, NULL AS folder_type FROM change_journal \
              WHERE owner = ?1 AND id > ?2 AND resource_href = ?3 ORDER BY id ASC",
         )
         .bind(owner)
@@ -4400,10 +4499,41 @@ impl Storage {
     /// transaction rolls back: the mapping is not written and the caller
     /// reports failure instead of returning a success an already-primed device
     /// could never learn about. `op` is `folder-add` or `folder-update`.
+    ///
+    /// The journal row is written only when the mapping actually CHANGES, so a
+    /// retried mutation whose first attempt committed leaves the journal (and
+    /// therefore the client's delta) untouched instead of replaying the same
+    /// Add/Update. The row records the folder Type so a later delete can be
+    /// routed to the front doors that advertise that family.
     pub async fn upsert_folder_journaled(&self, p: FolderUpsertParams<'_>, op: &str) -> Result<()> {
         let mut tx = sqlx::Acquire::begin(self.pool.as_ref())
             .await
             .map_err(|e| GatewayError::Storage(format!("Transaction error: {}", e)))?;
+
+        // An IDENTICAL replay (a retried mutation whose first attempt committed)
+        // must not append a second journal row: the client already received the
+        // change, and replaying the same Add/Update is pure noise. Compare
+        // against the stored row inside the same transaction so the decision and
+        // the write cannot interleave with another mutation.
+        let existing: Option<(String, String, i64, String, String)> = sqlx::query_as(
+            "SELECT parent_id, display_name, folder_type, backend_kind, backend_id \
+             FROM folder_map WHERE owner = ?1 AND server_id = ?2",
+        )
+        .bind(p.owner)
+        .bind(p.server_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+        let changed = match &existing {
+            None => true,
+            Some((parent_id, display_name, folder_type, backend_kind, backend_id)) => {
+                parent_id != p.parent_id
+                    || display_name != p.display_name
+                    || *folder_type != p.folder_type
+                    || backend_kind != p.backend_kind
+                    || backend_id != p.backend_id
+            }
+        };
 
         sqlx::query(
             "INSERT INTO folder_map \
@@ -4424,15 +4554,19 @@ impl Storage {
         .await
         .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
 
-        sqlx::query(
-            "INSERT INTO change_journal (owner, server_id, op, resource_href) VALUES (?1, ?2, ?3, 'folder')",
-        )
-        .bind(p.owner)
-        .bind(p.server_id)
-        .bind(op)
-        .execute(&mut *tx)
-        .await
-        .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+        if changed {
+            sqlx::query(
+                "INSERT INTO change_journal (owner, server_id, op, resource_href, instance_id) \
+                 VALUES (?1, ?2, ?3, 'folder', ?4)",
+            )
+            .bind(p.owner)
+            .bind(p.server_id)
+            .bind(op)
+            .bind(p.folder_type.to_string())
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+        }
 
         tx.commit()
             .await
@@ -4527,6 +4661,22 @@ impl Storage {
             .map_err(|e| GatewayError::Storage(format!("Transaction error: {}", e)))?;
 
         for server_id in server_ids {
+            // Read the Type BEFORE the delete: the journal row records it so a
+            // consumer that advertises only SOME folder families (EWS advertises
+            // Type 12 mail folders, never a Type 13 CalDAV collection) can still
+            // tell what was deleted once the mapping is gone. Reading it after
+            // the DELETE always yielded NULL and silently dropped every
+            // journaled delete from those consumers.
+            let folder_type: Option<String> = sqlx::query_scalar(
+                "SELECT CAST(folder_type AS TEXT) FROM folder_map \
+                 WHERE owner = ?1 AND server_id = ?2",
+            )
+            .bind(owner)
+            .bind(server_id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+
             let removed = sqlx::query("DELETE FROM folder_map WHERE owner = ?1 AND server_id = ?2")
                 .bind(owner)
                 .bind(server_id)
@@ -4537,10 +4687,12 @@ impl Storage {
 
             if removed > 0 {
                 sqlx::query(
-                    "INSERT INTO change_journal (owner, server_id, op, resource_href) VALUES (?1, ?2, 'folder-delete', 'folder')",
+                    "INSERT INTO change_journal (owner, server_id, op, resource_href, instance_id) \
+                     VALUES (?1, ?2, 'folder-delete', 'folder', ?3)",
                 )
                 .bind(owner)
                 .bind(server_id)
+                .bind(folder_type.as_deref())
                 .execute(&mut *tx)
                 .await
                 .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
@@ -4780,7 +4932,8 @@ impl Storage {
         until: i64,
     ) -> Result<Vec<JournalRow>> {
         sqlx::query_as::<_, JournalRow>(
-            "SELECT id, server_id, op, resource_href FROM change_journal \
+            "SELECT id, server_id, op, resource_href, CAST(instance_id AS INTEGER) AS folder_type \
+             FROM change_journal \
              WHERE owner = ?1 AND id > ?2 AND id <= ?3 AND resource_href = 'folder' ORDER BY id ASC",
         )
         .bind(owner)
@@ -4802,7 +4955,7 @@ impl Storage {
         &self,
         owner: &str,
         since: i64,
-    ) -> Result<(i64, Vec<JournalRow>, Vec<FolderRow>)> {
+    ) -> Result<FolderSyncSnapshot> {
         let mut tx = sqlx::Acquire::begin(self.pool.as_ref())
             .await
             .map_err(|e| GatewayError::Storage(format!("Transaction error: {}", e)))?;
@@ -4811,8 +4964,21 @@ impl Storage {
                 .fetch_one(&mut *tx)
                 .await
                 .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))?;
-        let rows = sqlx::query_as::<_, JournalRow>(
-            "SELECT id, server_id, op, resource_href FROM change_journal \
+        // The prune floor is read in the SAME transaction as the rows a delta
+        // needs: reading it separately would let pruning advance between the
+        // staleness decision and the snapshot, silently cutting rows out of a
+        // window that was just declared intact.
+        let pruned_through: i64 = sqlx::query_scalar::<_, i64>(
+            "SELECT COALESCE(pruned_through, 0) FROM journal_prune_state WHERE owner = ?1",
+        )
+        .bind(owner)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))?
+        .unwrap_or(0);
+        let journal = sqlx::query_as::<_, JournalRow>(
+            "SELECT id, server_id, op, resource_href, CAST(instance_id AS INTEGER) AS folder_type \
+             FROM change_journal \
              WHERE owner = ?1 AND id > ?2 AND id <= ?3 AND resource_href = 'folder' ORDER BY id ASC",
         )
         .bind(owner)
@@ -4832,8 +4998,27 @@ impl Storage {
         tx.commit()
             .await
             .map_err(|e| GatewayError::Storage(format!("Commit error: {}", e)))?;
-        Ok((head, rows, folders))
+        Ok(FolderSyncSnapshot {
+            head,
+            pruned_through,
+            journal,
+            folders,
+        })
     }
+}
+
+/// One consistent folder-hierarchy snapshot — see
+/// [`Storage::snapshot_folder_sync_data`].
+pub struct FolderSyncSnapshot {
+    /// The journal head captured BEFORE anything is rendered; it becomes the
+    /// acknowledged watermark.
+    pub head: i64,
+    /// The owner's prune floor, read in the same transaction.
+    pub pruned_through: i64,
+    /// The `folder` journal rows in `(since, head]`.
+    pub journal: Vec<JournalRow>,
+    /// The complete folder map.
+    pub folders: Vec<FolderRow>,
 }
 
 /// Parameters for [`Storage::upsert_folder_journaled`]. Grouped so the call
@@ -5244,6 +5429,16 @@ mod tests {
         assert_eq!(
             normalize_caldav_path("/dav/cal/u/100%"),
             "/dav/cal/u/100%25"
+        );
+        // Braces are escaped by every URL parser, so a RAW stored href and an
+        // ESCAPED discovered href must normalize to the SAME form.
+        assert_eq!(
+            normalize_caldav_path("/dav/cal/u/Plan{A}"),
+            "/dav/cal/u/Plan%7BA%7D"
+        );
+        assert_eq!(
+            normalize_caldav_path("/dav/cal/u/Plan%7BA%7D"),
+            "/dav/cal/u/Plan%7BA%7D"
         );
         // Non-ASCII is UTF-8 percent-encoded, so a RAW stored href and an
         // ESCAPED discovered href normalize to the SAME form — the invariant

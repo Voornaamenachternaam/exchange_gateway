@@ -27,10 +27,12 @@ async fn sqlite_lock_during_journaled_rename_rolls_back_without_data_loss() {
         )
         .await
         .unwrap();
-    let (journal_head, journal_rows, _) = storage
+    let before = storage
         .snapshot_folder_sync_data("u@example.com", 0)
         .await
         .unwrap();
+    let journal_head = before.head;
+    let journal_rows = before.journal;
     assert_eq!(journal_rows.len(), 1);
 
     let mut locker = SqliteConnection::connect(&database_url).await.unwrap();
@@ -61,10 +63,11 @@ async fn sqlite_lock_during_journaled_rename_rolls_back_without_data_loss() {
         .expect("the original mapping must survive");
     assert_eq!(row.display_name, "Original");
     assert_eq!(row.parent_id, "0");
-    let (new_head, new_rows, _) = storage
+    let after = storage
         .snapshot_folder_sync_data("u@example.com", 0)
         .await
         .unwrap();
+    let (new_head, new_rows) = (after.head, after.journal);
     assert_eq!(new_head, journal_head, "no journal row may be acknowledged");
     assert_eq!(new_rows.len(), journal_rows.len());
     assert_eq!(new_rows[0].op, "folder-add");

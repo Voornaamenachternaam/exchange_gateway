@@ -15,6 +15,16 @@ pub struct CaldavClient {
     client: reqwest::Client,
 }
 
+/// The properties of a single CalDAV collection read with a `Depth: 0`
+/// PROPFIND — see [`CaldavClient::get_calendar_collection`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CalendarCollectionProps {
+    /// Whether `DAV:resourcetype` identifies a `calendar` collection.
+    pub is_calendar: bool,
+    /// `DAV:displayname` as stored on the server, when it returned one.
+    pub display_name: Option<String>,
+}
+
 impl CaldavClient {
     pub fn new(cfg: &Config) -> Result<Self> {
         let client = reqwest::Client::builder()
@@ -604,6 +614,83 @@ impl CaldavClient {
         Ok(Some((resp.text().await?, etag)))
     }
 
+    /// Verify a calendar COLLECTION at `collection_href` with a `Depth: 0`
+    /// PROPFIND (RFC 4918 §9.1) requesting `DAV:resourcetype` and
+    /// `DAV:displayname`.
+    ///
+    /// A `GET` on a collection is NOT a substitute: it returns whatever body the
+    /// server chooses for a collection (often an empty 200), which says nothing
+    /// about whether the resource is a calendar or what display name it carries
+    /// — so it can neither confirm nor refute the collection identity a
+    /// lost-response replay needs. `Ok(None)` means 404 (the collection is
+    /// absent); a non-404 error status or an unparseable/empty multistatus is an
+    /// `Err`, so a caller never mistakes a transient read failure for absence.
+    pub async fn get_calendar_collection(
+        &self,
+        collection_href: &str,
+        username: &str,
+        password: &str,
+    ) -> Result<Option<CalendarCollectionProps>> {
+        let url = self.absolute_url(collection_href)?;
+        let propfind_body = r#"<?xml version="1.0" encoding="utf-8"?>
+<D:propfind xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav">
+  <D:prop>
+    <D:resourcetype/>
+    <D:displayname/>
+  </D:prop>
+</D:propfind>"#;
+        let resp = self
+            .client
+            .request(reqwest::Method::from_bytes(b"PROPFIND")?, &url)
+            .basic_auth(username, Some(password))
+            .header("Depth", "0")
+            .header("Content-Type", "application/xml; charset=utf-8")
+            .body(propfind_body)
+            .send()
+            .await?;
+        if resp.status() == reqwest::StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+        let status = resp.status();
+        if !status.is_success() && status != reqwest::StatusCode::MULTI_STATUS {
+            let body_preview = resp.text().await.unwrap_or_default();
+            return Err(anyhow!(
+                "PROPFIND {} returned {}: {}",
+                url,
+                status,
+                if body_preview.len() > 300 {
+                    "response truncated"
+                } else {
+                    &body_preview
+                }
+            ));
+        }
+        let body = resp.text().await?;
+        let multistatus: Multistatus = quick_xml::de::from_str(&body).map_err(|e| {
+            anyhow!(
+                "PROPFIND {} returned an unparseable multistatus: {}",
+                url,
+                e
+            )
+        })?;
+        let Some(response) = multistatus.responses.first() else {
+            return Err(anyhow!(
+                "PROPFIND {} returned a multistatus with no response element",
+                url
+            ));
+        };
+        Ok(Some(CalendarCollectionProps {
+            is_calendar: response
+                .propstats
+                .iter()
+                .any(|ps| ps.prop.resourcetype.calendar.is_some()),
+            display_name: response
+                .propstats
+                .iter()
+                .find_map(|ps| ps.prop.displayname.clone()),
+        }))
+    }
+
     /// DELETE a calendar object resource, tolerating "not found" (Ok(false)):
     /// an already-absent resource is as deleted as the caller wants it to be
     /// (RFC 4918 §9.6.1 allows 404 on DELETE of a vanished resource). Any
@@ -1122,6 +1209,8 @@ struct ResourceType {
 struct Prop {
     #[serde(rename = "resourcetype", default)]
     resourcetype: ResourceType,
+    #[serde(rename = "displayname", default)]
+    displayname: Option<String>,
 }
 
 #[derive(Deserialize, Debug)]

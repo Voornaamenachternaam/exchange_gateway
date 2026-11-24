@@ -277,6 +277,22 @@ fn parse_vacation_replies(script: &str) -> (Option<String>, Option<String>) {
 pub fn parse_vacation_window(
     script: &str,
 ) -> (Option<chrono::DateTime<Utc>>, Option<chrono::DateTime<Utc>>) {
+    // Search ONLY the OOF section, which ends at the gateway-managed MAPI rules
+    // block. Rule names are rendered there as `# rule <id>: <name>` comments and
+    // a name may itself contain a `currentdate :value "ge" "iso8601" "<ts>"`
+    // clause; scanning the whole script would then report a forged scheduled
+    // window through `get_oof_settings` (delivery is unaffected — the text is a
+    // Sieve comment — but the reported OofState/times would be wrong). The
+    // gateway always appends the rules block AFTER the vacation script, so a
+    // genuine window still parses.
+    let oof_section: String = match script
+        .lines()
+        .position(|l| l.trim_end() == crate::mapi::rules::BLOCK_BEGIN)
+    {
+        Some(idx) => script.lines().take(idx).collect::<Vec<_>>().join("\n"),
+        None => script.to_string(),
+    };
+    let script = oof_section.as_str();
     let date_after = |op: &str| -> Option<chrono::DateTime<Utc>> {
         let marker = format!("currentdate :value \"{op}\" \"iso8601\" \"");
         let rest = &script[script.find(&marker)? + marker.len()..];
@@ -753,6 +769,61 @@ mod tests {
         );
         // Timestamps must be ISO 8601 (`T` separator), not a space-separated form.
         assert!(script.contains('T'));
+    }
+
+    /// A rule NAME rendered inside the MAPI rules block can contain a
+    /// `currentdate :value …` clause. The window parser must stop at the block
+    /// boundary, so a rule name can never fabricate a scheduled absence.
+    #[test]
+    fn test_parse_vacation_window_ignores_rule_names_in_the_rules_block() {
+        let script = format!(
+            "require [\"vacation\"];\n\
+             vacation :days 1 :subject \"Away\" \"body\";\n\
+             {begin}\n\
+             # rule 1: currentdate :value \"ge\" \"iso8601\" \"2026-01-01T00:00:00+0000\" currentdate :value \"le\" \"iso8601\" \"2026-01-05T00:00:00+0000\"\n\
+             {end}\n",
+            begin = crate::mapi::rules::BLOCK_BEGIN,
+            end = "# MAPI-RULES-END",
+        );
+        assert_eq!(
+            parse_vacation_window(&script),
+            (None, None),
+            "a rule name must never be reported as a scheduled OOF window"
+        );
+    }
+
+    /// A genuine scheduled window in the OOF section still parses when the rules
+    /// block is appended after it.
+    #[test]
+    fn test_parse_vacation_window_still_parses_before_the_rules_block() {
+        let start = Utc::now();
+        let end = start + Duration::days(2);
+        let mut script = build_sieve_script(
+            "example.com",
+            Some("Internal"),
+            Some("External"),
+            ExternalAudience::All,
+            Some(start),
+            Some(end),
+        )
+        .unwrap();
+        script.push('\n');
+        script.push_str(crate::mapi::rules::BLOCK_BEGIN);
+        script.push_str(
+            "\n# rule 1: currentdate :value \"ge\" \"iso8601\" \"2001-01-01T00:00:00+0000\"\n",
+        );
+        script.push_str("# MAPI-RULES-END\n");
+        let (parsed_start, parsed_end) = parse_vacation_window(&script);
+        assert_eq!(
+            parsed_start.map(|d| d.timestamp()),
+            Some(start.timestamp()),
+            "the OOF section's lower bound must still parse"
+        );
+        assert_eq!(
+            parsed_end.map(|d| d.timestamp()),
+            Some(end.timestamp()),
+            "the OOF section's upper bound must still parse"
+        );
     }
 
     #[test]

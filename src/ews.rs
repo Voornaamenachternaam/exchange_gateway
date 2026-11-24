@@ -6221,6 +6221,7 @@ async fn handle_sync_folder_items(
                     server_id: r.server_id,
                     op: "upsert".to_string(),
                     resource_href: Some(r.resource_href),
+                    folder_type: None,
                 })
                 .collect(),
             Err(e) => {
@@ -6704,8 +6705,7 @@ async fn handle_sync_folder_hierarchy(
     // ONE consistent read: the head is captured BEFORE the hierarchy is
     // rendered and becomes the acknowledged watermark, so a mutation journaled
     // while rendering is delivered by the next delta instead of being skipped.
-    let (head, journal, folders) = match state.storage.snapshot_folder_sync_data(owner, since).await
-    {
+    let snapshot = match state.storage.snapshot_folder_sync_data(owner, since).await {
         Ok(v) => v,
         Err(e) => {
             tracing::error!(error = %e, "Failed to read the folder hierarchy snapshot");
@@ -6717,6 +6717,26 @@ async fn handle_sync_folder_hierarchy(
             );
         }
     };
+    // §16 stale-cursor guard: the floor is read in the SAME transaction as the
+    // journal rows, so pruning cannot advance between this decision and the
+    // snapshot. A CLIENT-SUPPLIED cursor below the floor has had part of its
+    // window pruned and must re-prime; the initial (null-SyncState) request is
+    // exempt because it re-sends the whole hierarchy.
+    if !is_initial && since < snapshot.pruned_through {
+        tracing::info!(
+            owner = %owner,
+            since,
+            floor = snapshot.pruned_through,
+            "Stale EWS folder-hierarchy SyncState below the pruned journal floor; forcing full resync"
+        );
+        return operation_error_response(
+            &EwsAction::SyncFolderHierarchy,
+            "ErrorInvalidSyncStateData",
+            "SyncState is stale; the requested folder change window was pruned, resync from a null SyncState",
+            StatusCode::OK,
+        );
+    }
+    let (head, journal, folders) = (snapshot.head, snapshot.journal, snapshot.folders);
     // The user-created MAIL folders this gateway knows about (EAS Type 12).
     // Calendar collections (Type 13) are not EWS folders — EWS exposes a single
     // distinguished Calendar — so they are never advertised here.
@@ -6740,10 +6760,17 @@ async fn handle_sync_folder_hierarchy(
         let mut changes = String::new();
         for row in &journal {
             if row.op == "folder-delete" {
-                changes.push_str(&format!(
-                    r#"<t:Delete><t:FolderId Id="{}" ChangeKey="1" /></t:Delete>"#,
-                    xml_escape(&row.server_id)
-                ));
+                // Only a Type 12 mail folder is ever advertised here (Create and
+                // Update below are restricted to `custom`, which is Type 12
+                // only). A Type 13 CalDAV collection that EAS created and then
+                // deleted is journaled too — deleting a FolderId this client was
+                // never given would be a protocol violation, so it is skipped.
+                if row.folder_type == Some(12) {
+                    changes.push_str(&format!(
+                        r#"<t:Delete><t:FolderId Id="{}" ChangeKey="1" /></t:Delete>"#,
+                        xml_escape(&row.server_id)
+                    ));
+                }
             } else if let Some(f) = custom.iter().find(|f| f.server_id == row.server_id) {
                 let tag = if row.op == "folder-add" {
                     "Create"
@@ -6755,7 +6782,11 @@ async fn handle_sync_folder_hierarchy(
         }
         changes
     };
-    let new_sync_state = encode_sync_state_cursor(head, head);
+    // The acknowledged cursor is at least the prune floor: a fully pruned
+    // journal reports head 0 while the floor has moved on, and a cursor of 0
+    // would be rejected as stale on the very next delta (an endless re-prime).
+    let cursor = head.max(snapshot.pruned_through);
+    let new_sync_state = encode_sync_state_cursor(cursor, cursor);
     if let Err(e) = state
         .storage
         .set_ews_sync_state(owner, &sync_state_key, &new_sync_state)
@@ -10034,13 +10065,29 @@ async fn handle_get_user_availability(
     // caller — answering every free/busy query with the caller's own calendar.
     let mailboxes = {
         let mut parsed: Vec<String> = Vec::new();
+        let mut malformed = false;
         for block in extract_all_tag_blocks(body, b"MailboxData") {
-            if let Some(addr) = extract_first_tag_text(&block, b"Address") {
-                let addr = addr.trim();
-                if !addr.is_empty() {
-                    parsed.push(addr.to_string());
-                }
+            // `FreeBusyResponse[i]` pairs with `MailboxData[i]`
+            // ([MS-OXWAVLS] §3.1.4.1.3.14), so a block that carries NO usable
+            // address cannot be skipped: dropping it would shift every later
+            // mailbox's result onto another attendee's position. Reject the
+            // whole request instead of answering someone else's calendar.
+            let addr = extract_first_tag_text(&block, b"Address")
+                .or_else(|| extract_first_tag_text(&block, b"EmailAddress"))
+                .map(|a| a.trim().to_string())
+                .filter(|a| !a.is_empty());
+            match addr {
+                Some(a) => parsed.push(a),
+                None => malformed = true,
             }
+        }
+        if malformed {
+            return operation_error_response(
+                &EwsAction::GetUserAvailability,
+                "ErrorInvalidRequest",
+                "every MailboxData must carry an Email/Address",
+                StatusCode::OK,
+            );
         }
         // Some clients populate a bare `<EmailAddress>` instead; keep that as a
         // fallback, but never invent the caller's address in its place.
@@ -10952,7 +10999,11 @@ async fn handle_get_conversation_items(
                         }
                         let total_nodes = emails.len();
                         resp_messages.push_str(&format!(
-                            r#"<m:GetConversationItemsResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:Conversations><t:Conversation><t:ConversationId Id="{}" /><t:SyncState/><t:ConversationNodes>{}</t:ConversationNodes><t:TotalConversationNodes>{}</t:TotalConversationNodes></t:Conversation></m:Conversations></m:GetConversationItemsResponseMessage>"#,
+                            // [MS-OXWSCONV] §3.1.4.3.3.6: the response message
+                            // carries a DIRECT `Conversation` child
+                            // (`t:ConversationResponseType`) — there is no
+                            // `Conversations` wrapper element in the schema.
+                            r#"<m:GetConversationItemsResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:Conversation><t:ConversationId Id="{}" /><t:SyncState/><t:ConversationNodes>{}</t:ConversationNodes><t:TotalConversationNodes>{}</t:TotalConversationNodes></m:Conversation></m:GetConversationItemsResponseMessage>"#,
                             xml_escape(&thread_id),
                             nodes_xml,
                             total_nodes
@@ -10968,11 +11019,13 @@ async fn handle_get_conversation_items(
                     }
                 }
             }
-            // A thread the server does not know is an empty conversation, not
-            // a failure (the client may hold a stale ConversationId).
+            // A CONFIRMED missing thread is a per-conversation
+            // ErrorItemNotFound, not an empty success: an empty Success claims
+            // the conversation exists with no items, which the client would
+            // cache as an authoritative (empty) conversation.
             Ok(None) => {
                 resp_messages.push_str(&format!(
-                    r#"<m:GetConversationItemsResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:Conversations><t:Conversation><t:ConversationId Id="{}" /><t:SyncState/><t:ConversationNodes/><t:TotalConversationNodes>0</t:TotalConversationNodes></t:Conversation></m:Conversations></m:GetConversationItemsResponseMessage>"#,
+                    r#"<m:GetConversationItemsResponseMessage ResponseClass="Error"><m:MessageText>The conversation no longer exists</m:MessageText><m:ResponseCode>ErrorItemNotFound</m:ResponseCode><m:DescriptiveLinkKey>0</m:DescriptiveLinkKey><m:Conversation><t:ConversationId Id="{}" /></m:Conversation></m:GetConversationItemsResponseMessage>"#,
                     xml_escape(&thread_id)
                 ));
                 continue;
@@ -10989,7 +11042,7 @@ async fn handle_get_conversation_items(
         // message for THIS conversation and keep resolving the rest. An empty
         // Success would tell the client the thread has no messages.
         resp_messages.push_str(&format!(
-            r#"<m:GetConversationItemsResponseMessage ResponseClass="Error"><m:MessageText>Failed to load the conversation</m:MessageText><m:ResponseCode>ErrorServerBusy</m:ResponseCode><m:DescriptiveLinkKey>0</m:DescriptiveLinkKey><m:Conversations><t:Conversation><t:ConversationId Id="{}" /></t:Conversation></m:Conversations></m:GetConversationItemsResponseMessage>"#,
+            r#"<m:GetConversationItemsResponseMessage ResponseClass="Error"><m:MessageText>Failed to load the conversation</m:MessageText><m:ResponseCode>ErrorServerBusy</m:ResponseCode><m:DescriptiveLinkKey>0</m:DescriptiveLinkKey><m:Conversation><t:ConversationId Id="{}" /></m:Conversation></m:GetConversationItemsResponseMessage>"#,
             xml_escape(&thread_id)
         ));
         continue;

@@ -68,8 +68,12 @@ async fn mock_backend_for(owner: &str) -> MockServer {
 }
 
 fn config_for(server: &MockServer) -> Config {
+    config_for_base(&server.uri())
+}
+
+fn config_for_base(base: &str) -> Config {
     Config {
-        jmap_base: server.uri(),
+        jmap_base: base.to_string(),
         caldav_base: String::new(),
         auth_probe_min_interval_ms: 0,
         auth_backend_failure_threshold: 50,
@@ -546,9 +550,28 @@ async fn auth_and_backend_failure_logs_never_emit_credentials() {
         let _ = verifier.verify_outcome(ALICE, SENTINEL_PW).await;
         assert!(!base.is_empty());
     }
-    // An unreachable backend (transport failure).
-    let verifier = AuthVerifier::new(&config_for(&MockServer::start().await));
-    let _ = verifier.verify_outcome(ALICE, SENTINEL_PW).await;
+    // An unreachable backend (transport failure). A TCP fixture ACCEPTS the
+    // connection and closes it without an HTTP response: a dropped `MockServer`
+    // would not do — wiremock returns its listener to a pool that keeps
+    // answering (404), so the probe would take the HTTP-error branch instead of
+    // the transport-error one this scenario exists to cover.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let closer = tokio::spawn(async move {
+        for _ in 0..8 {
+            match listener.accept().await {
+                Ok((stream, _)) => drop(stream),
+                Err(_) => break,
+            }
+        }
+    });
+    let verifier = AuthVerifier::new(&config_for_base(&format!("http://127.0.0.1:{port}")));
+    assert_eq!(
+        verifier.verify_outcome(ALICE, SENTINEL_PW).await,
+        AuthOutcome::BackendUnavailable,
+        "the fixture must exercise the transport-error branch, not an HTTP error"
+    );
+    closer.abort();
 
     let captured = String::from_utf8_lossy(&sink.lock().unwrap()).to_string();
     assert!(

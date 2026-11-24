@@ -60,7 +60,11 @@ pub const RULE_ROW_ADD: u8 = 0x01;
 pub const RULE_ROW_MODIFY: u8 = 0x02;
 pub const RULE_ROW_REMOVE: u8 = 0x04;
 
-const BLOCK_BEGIN: &str = "# MAPI-RULES-BEGIN v1";
+/// Start marker of the gateway-managed rules block. `pub(crate)` because the
+/// OOF manager must stop its vacation-window scan at this boundary: a rule NAME
+/// is rendered inside the block as a comment and may itself contain a
+/// `currentdate :value …` clause.
+pub(crate) const BLOCK_BEGIN: &str = "# MAPI-RULES-BEGIN v1";
 const BLOCK_GENERATED: &str = "# MAPI-RULES-GENERATED";
 const BLOCK_END: &str = "# MAPI-RULES-END";
 
