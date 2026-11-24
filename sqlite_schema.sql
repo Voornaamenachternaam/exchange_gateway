@@ -823,3 +823,21 @@ CREATE INDEX IF NOT EXISTS idx_pending_calendar_create_owner ON pending_calendar
 
 INSERT OR IGNORE INTO schema_version (version, description)
 VALUES (14, 'v14: pending_calendar_create records intent before MKCALENDAR so a lost-response retry can reconcile instead of returning Status 2 for an orphan');
+
+-- Per-user reminder action state ([MS-OXRWSMTGS] §3.1.4.7.4.1): a Dismiss or
+-- Snooze targets one reminder OCCURRENCE (the reminder-due instant the gateway
+-- computed), so the key includes it. `snooze_until` NULL = dismissed for that
+-- occurrence; otherwise the reminder re-surfaces at that instant.
+CREATE TABLE IF NOT EXISTS reminder_state (
+    owner TEXT NOT NULL,
+    item_server_id TEXT NOT NULL,
+    occurrence TEXT NOT NULL,
+    snooze_until TEXT,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (owner, item_server_id, occurrence)
+);
+
+CREATE INDEX IF NOT EXISTS idx_reminder_state_owner ON reminder_state(owner);
+
+INSERT OR IGNORE INTO schema_version (version, description)
+VALUES (15, 'v15: reminder_state persists EWS Dismiss/Snooze per reminder occurrence so GetReminders honours it');

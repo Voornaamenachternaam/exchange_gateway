@@ -237,8 +237,32 @@ async fn collection_folder_href(
         return Ok(Some(href));
     }
     match collection_id.rsplit_once("::") {
-        Some((visible, _)) => folder_caldav_href(state, owner, visible).await,
-        None => Ok(None),
+        Some((visible, _)) => match folder_caldav_href(state, owner, visible).await? {
+            Some(href) => Ok(Some(href)),
+            None => unmapped_calendar_collection(visible),
+        },
+        None => unmapped_calendar_collection(collection_id),
+    }
+}
+
+/// Classify a calendar CollectionId that has no `folder_map` row.
+///
+/// A SYSTEM folder (a numeric EAS id, or the distinguished `calendar` alias)
+/// keeps the default-calendar behavior. Any OTHER id is a user-created folder
+/// whose mapping is gone (deleted, or a stale client) — treating it as
+/// "unscoped" would silently sync the DEFAULT calendar into that folder, and an
+/// `<Add>` would write into the default calendar instead of the requested one.
+/// Fail closed instead: the caller answers a retryable error and the client's
+/// next FolderSync drops the vanished folder.
+fn unmapped_calendar_collection(collection_id: &str) -> Result<Option<String>> {
+    if crate::eas_folders::is_system_folder_id(collection_id)
+        || collection_id.eq_ignore_ascii_case("calendar")
+    {
+        Ok(None)
+    } else {
+        Err(anyhow!(
+            "calendar collection {collection_id} is not mapped to a CalDAV collection"
+        ))
     }
 }
 
@@ -329,6 +353,32 @@ pub async fn apply_client_sync_mutations(
                 {
                     Ok((resource_href, etag)) => {
                         let server_id = generate_server_id(state.cfg.hmac_secret(), &resource_href);
+                        // Replay identity FIRST: the CalDAV object now exists, and
+                        // every later step below can fail. If a failure left no
+                        // `(ClientId → ServerId)` record, the client's retry would
+                        // PUT a SECOND resource under a fresh href — a duplicated
+                        // event the user can see. The record makes the retry
+                        // resolve to the item already created.
+                        if let Some(client_id) = client_id.as_deref()
+                            && let Err(e) = state
+                                .storage
+                                .put_client_sync_command(
+                                    owner,
+                                    collection_id,
+                                    client_id,
+                                    Some(&server_id),
+                                    "1",
+                                )
+                                .await
+                        {
+                            tracing::error!(
+                                error = %e,
+                                client_id,
+                                server_id = %server_id,
+                                "EAS calendar Add: failed to record the replay identity; a retry may duplicate the event"
+                            );
+                            return Err(e.into());
+                        }
                         state
                             .storage
                             .upsert_item_map(
@@ -347,18 +397,6 @@ pub async fn apply_client_sync_mutations(
                             .storage
                             .upsert_calendar_delivery(owner, collection_id, &server_id, &etag)
                             .await?;
-                        if let Some(client_id) = client_id.as_deref() {
-                            state
-                                .storage
-                                .put_client_sync_command(
-                                    owner,
-                                    collection_id,
-                                    client_id,
-                                    Some(&server_id),
-                                    "1",
-                                )
-                                .await?;
-                        }
                         for att in &attachment_adds {
                             let name = if att.display_name.is_empty() {
                                 "attachment.dat"
@@ -5421,5 +5459,29 @@ mod tests {
             result.is_err(),
             "a folder_map read failure must fail the Sync closed, got: {result:?}"
         );
+    }
+
+    /// A calendar CollectionId with no `folder_map` row: the SYSTEM ids keep
+    /// the default-calendar behavior, while any other id (a user-created folder
+    /// whose mapping vanished) fails closed — treating it as "unscoped" would
+    /// silently sync the DEFAULT calendar into that folder.
+    #[test]
+    fn unmapped_calendar_collection_fails_closed_for_user_folders() {
+        for system in ["1", "7", "calendar", "Calendar"] {
+            assert_eq!(
+                super::unmapped_calendar_collection(system).expect("system ids resolve"),
+                None,
+                "{system} is a system collection"
+            );
+        }
+        for user in ["mb-custom", "/dav/cal/u/Team/", "f-user-1"] {
+            let err = super::unmapped_calendar_collection(user)
+                .expect_err("an unmapped user collection must fail closed");
+            assert!(
+                err.to_string()
+                    .contains("not mapped to a CalDAV collection"),
+                "unexpected error for {user}: {err}"
+            );
+        }
     }
 }

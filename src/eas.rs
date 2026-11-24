@@ -4386,6 +4386,54 @@ async fn handle_item_operations(ctx: &ItemOperationsCtx<'_>) -> Response {
     }
 }
 
+/// Resolve an EAS email collection id (system id, role alias, or a
+/// user-created folder's ServerId) to the JMAP mailbox id backing it.
+///
+/// `Ok(None)` = a collection with no JMAP mailbox (Outbox, or a non-mail
+/// folder); `Err` = the backend or storage could not answer, which is a
+/// retryable condition and must never be read as "no such folder".
+async fn eas_mail_collection_mailbox_id(
+    state: &Arc<AppState>,
+    jmap: &Arc<crate::jmap::JmapClient>,
+    account_id: &str,
+    collection_id: &str,
+    username: &str,
+    password: &SecretString,
+) -> anyhow::Result<Option<String>> {
+    let role = match collection_id {
+        "2" => Some("inbox"),
+        "3" => Some("drafts"),
+        "4" => Some("trash"),
+        "5" => Some("sent"),
+        "12" => Some("junk"),
+        "6" => return Ok(None),
+        other => match other.to_ascii_lowercase().as_str() {
+            "inbox" => Some("inbox"),
+            "drafts" => Some("drafts"),
+            "deleteditems" => Some("trash"),
+            "sentitems" => Some("sent"),
+            "junkemail" => Some("junk"),
+            "outbox" => return Ok(None),
+            _ => None,
+        },
+    };
+    if let Some(role) = role {
+        let ids = jmap
+            .get_mailbox_ids_for_role(account_id, role, username, password)
+            .await?;
+        return Ok(ids.into_iter().next());
+    }
+    match state.storage.get_folder(username, collection_id).await? {
+        Some(row) if row.backend_kind == "jmap" => Ok(Some(row.backend_id)),
+        // A mapped non-mail folder (a CalDAV calendar collection).
+        Some(_) => Ok(None),
+        // A user-created mail folder's EAS ServerId IS its JMAP mailbox id
+        // (FolderCreate returns it), so an unmapped id is still a candidate;
+        // the membership check below rejects it if nothing matches.
+        None => Ok(Some(collection_id.to_string())),
+    }
+}
+
 /// Handle EAS MoveItems command.
 ///
 /// Moves items between folders. Supports email (via JMAP) and calendar (within default calendar).
@@ -4428,18 +4476,34 @@ async fn handle_move_items(
             .and_then(|n| n.text())
             .map(String::from)
             .unwrap_or_default();
-        let _src_fld_id = move_elem
+        let src_fld_id = move_elem
             .children()
             .find(|n| n.is_element() && n.tag_name().name() == "SrcFldId")
             .and_then(|n| n.text())
             .map(String::from);
 
         if src_msg_id.is_empty() || dst_fld_id.is_empty() {
-            overall_status = 4; // ErrorInvalidIdMalformed or similar
+            // [MS-ASCMD] §2.2.3.177.10: 1 = invalid source Item ID,
+            // 2 = invalid destination collection ID. A malformed request is
+            // item-scoped, not "the source and destination are the same" (4).
+            overall_status = if src_msg_id.is_empty() { 1 } else { 2 };
             responses.push_str(&format!(
                 r#"<Response><SrcMsgId>{}</SrcMsgId><Status>{}</Status></Response>"#,
                 xml_escape(&src_msg_id),
                 overall_status
+            ));
+            continue;
+        }
+
+        // [MS-ASCMD] §2.2.3.177.10 status 4: the client supplied the same
+        // collection as source and destination.
+        if let Some(src) = src_fld_id.as_deref()
+            && !src.is_empty()
+            && src.eq_ignore_ascii_case(&dst_fld_id)
+        {
+            responses.push_str(&format!(
+                r#"<Response><SrcMsgId>{}</SrcMsgId><Status>4</Status></Response>"#,
+                xml_escape(&src_msg_id)
             ));
             continue;
         }
@@ -4474,9 +4538,11 @@ async fn handle_move_items(
                 "4" => MoveDest::Role("trash"),
                 "5" => MoveDest::Role("sent"),
                 "6" => {
-                    // Outbox not a real mailbox; special handling
+                    // Outbox is not a real mailbox: an invalid destination
+                    // collection ID is status 2, not 4 ("source and destination
+                    // are the same").
                     responses.push_str(&format!(
-                        r#"<Response><SrcMsgId>{}</SrcMsgId><Status>4</Status></Response>"#,
+                        r#"<Response><SrcMsgId>{}</SrcMsgId><Status>2</Status></Response>"#,
                         xml_escape(&src_msg_id)
                     ));
                     continue;
@@ -4496,8 +4562,8 @@ async fn handle_move_items(
                         Some(role) => MoveDest::Role(role),
                         None => {
                             // Resolve a user-created mail folder via `folder_map`.
-                            // A read failure must fail closed (retryable Status 8)
-                            // rather than be treated as "no such folder".
+                            // A read failure is a transient condition (status 7,
+                            // retry), never "no such folder" (status 2).
                             match state.storage.get_folder(username, other).await {
                                 Ok(Some(row)) if row.backend_kind == "jmap" => {
                                     MoveDest::Mailbox(row.backend_id)
@@ -4519,7 +4585,7 @@ async fn handle_move_items(
                                         "MoveItems: folder_map lookup failed for the destination"
                                     );
                                     responses.push_str(&format!(
-                                        r#"<Response><SrcMsgId>{}</SrcMsgId><Status>8</Status></Response>"#,
+                                        r#"<Response><SrcMsgId>{}</SrcMsgId><Status>7</Status></Response>"#,
                                         xml_escape(&src_msg_id)
                                     ));
                                     continue;
@@ -4530,10 +4596,11 @@ async fn handle_move_items(
                 }
             };
 
-            // Get JMAP client and account ID
+            // Get JMAP client and account ID. Both failures are transient
+            // server conditions: status 7 ("Retry the MoveItems command").
             let Some(jmap) = state.jmap_client.as_ref() else {
                 responses.push_str(&format!(
-                    r#"<Response><SrcMsgId>{}</SrcMsgId><Status>8</Status></Response>"#,
+                    r#"<Response><SrcMsgId>{}</SrcMsgId><Status>7</Status></Response>"#,
                     xml_escape(&src_msg_id)
                 ));
                 continue;
@@ -4544,12 +4611,95 @@ async fn handle_move_items(
                 Err(e) => {
                     tracing::error!(error = %e, "MoveItems: failed to get JMAP account ID");
                     responses.push_str(&format!(
-                        r#"<Response><SrcMsgId>{}</SrcMsgId><Status>8</Status></Response>"#,
+                        r#"<Response><SrcMsgId>{}</SrcMsgId><Status>7</Status></Response>"#,
                         xml_escape(&src_msg_id)
                     ));
                     continue;
                 }
             };
+
+            // [MS-ASCMD] §2.2.3.177.10 status 1: the SrcMsgId must currently
+            // belong to the SrcFldId collection ("the item … has been previously
+            // moved out of the folder"). Without this check a stale <Move> from
+            // folder A would relocate a message that now lives in folder B. The
+            // source collection is validated with the same owner-scoped mapping
+            // used for the destination; an unreadable mapping or a failed
+            // membership probe is transient (status 7), a confirmed absence or
+            // non-membership is status 1. A request that omits SrcFldId (not
+            // schema-valid, but harmless to accept) skips the check.
+            let source_mailbox: Option<String> = match src_fld_id.as_deref() {
+                Some(src) if !src.is_empty() => {
+                    match eas_mail_collection_mailbox_id(
+                        state,
+                        jmap,
+                        &account_id,
+                        src,
+                        username,
+                        password,
+                    )
+                    .await
+                    {
+                        Ok(Some(mb)) => Some(mb),
+                        Ok(None) => {
+                            responses.push_str(&format!(
+                                r#"<Response><SrcMsgId>{}</SrcMsgId><Status>1</Status></Response>"#,
+                                xml_escape(&src_msg_id)
+                            ));
+                            continue;
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                error = %e,
+                                src_fld_id = %src,
+                                "MoveItems: source collection resolution failed"
+                            );
+                            responses.push_str(&format!(
+                                r#"<Response><SrcMsgId>{}</SrcMsgId><Status>7</Status></Response>"#,
+                                xml_escape(&src_msg_id)
+                            ));
+                            continue;
+                        }
+                    }
+                }
+                _ => None,
+            };
+            if let Some(src_mb) = source_mailbox.as_deref() {
+                let Some(jmap_id) = crate::email::jmap_id_from_email_server_id(&src_msg_id) else {
+                    responses.push_str(&format!(
+                        r#"<Response><SrcMsgId>{}</SrcMsgId><Status>1</Status></Response>"#,
+                        xml_escape(&src_msg_id)
+                    ));
+                    continue;
+                };
+                match jmap
+                    .email_mailbox_membership(&account_id, jmap_id, src_mb, username, password)
+                    .await
+                {
+                    Ok(crate::jmap::EmailMailboxMembership::Member) => {}
+                    Ok(
+                        crate::jmap::EmailMailboxMembership::NotMember
+                        | crate::jmap::EmailMailboxMembership::Absent,
+                    ) => {
+                        responses.push_str(&format!(
+                            r#"<Response><SrcMsgId>{}</SrcMsgId><Status>1</Status></Response>"#,
+                            xml_escape(&src_msg_id)
+                        ));
+                        continue;
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            error = %e,
+                            src_msg_id = %src_msg_id,
+                            "MoveItems: source membership check failed"
+                        );
+                        responses.push_str(&format!(
+                            r#"<Response><SrcMsgId>{}</SrcMsgId><Status>7</Status></Response>"#,
+                            xml_escape(&src_msg_id)
+                        ));
+                        continue;
+                    }
+                }
+            }
 
             // Perform the move
             let move_result = match &target {
@@ -4560,6 +4710,7 @@ async fn handle_move_items(
                         &account_id,
                         &src_msg_id,
                         role,
+                        source_mailbox.as_deref(),
                         username,
                         password,
                     )
@@ -4572,6 +4723,7 @@ async fn handle_move_items(
                         &account_id,
                         &src_msg_id,
                         mailbox_id,
+                        source_mailbox.as_deref(),
                         username,
                         password,
                     )
@@ -4593,8 +4745,11 @@ async fn handle_move_items(
                 }
                 Err(e) => {
                     tracing::error!(error = %e, "MoveItems email move failed");
+                    // [MS-ASCMD] §2.2.3.177.10 status 7: a transient server
+                    // condition ("Retry the MoveItems command"). 8 is not a
+                    // MoveItems status at all.
                     responses.push_str(&format!(
-                        r#"<Response><SrcMsgId>{}</SrcMsgId><Status>8</Status></Response>"#,
+                        r#"<Response><SrcMsgId>{}</SrcMsgId><Status>7</Status></Response>"#,
                         xml_escape(&src_msg_id)
                     ));
                 }
@@ -4606,9 +4761,10 @@ async fn handle_move_items(
             // Destination folder must be the Calendar folder (id "1" or distinguished "calendar").
             // Also source must belong to the default calendar; we can check via DB if needed.
             if dst_fld_id != "1" && !dst_fld_id.eq_ignore_ascii_case("calendar") {
-                // Unsupported destination
+                // Unsupported destination collection: status 2
+                // ([MS-ASCMD] §2.2.3.177.10), not 6 (a general conversion error).
                 responses.push_str(&format!(
-                    r#"<Response><SrcMsgId>{}</SrcMsgId><Status>6</Status></Response>"#,
+                    r#"<Response><SrcMsgId>{}</SrcMsgId><Status>2</Status></Response>"#,
                     xml_escape(&src_msg_id)
                 ));
                 continue;
@@ -4619,9 +4775,10 @@ async fn handle_move_items(
             // but the item identifier does not change when moving within same calendar.
             // We'll return the same server ID.
             // However, if we had multiple calendars, we would perform a CalDAV MOVE here.
-            // For now, simply return success.
+            // Status 3 is the MoveItems success code (§2.2.3.177.10); 1 would
+            // report an invalid source item for a successful move.
             responses.push_str(&format!(
-                r#"<Response><SrcMsgId>{}</SrcMsgId><Status>1</Status><DstMsgId>{}</DstMsgId></Response>"#,
+                r#"<Response><SrcMsgId>{}</SrcMsgId><Status>3</Status><DstMsgId>{}</DstMsgId></Response>"#,
                 xml_escape(&src_msg_id),
                 xml_escape(&src_msg_id)
             ));
@@ -6308,6 +6465,48 @@ async fn handle_sync_collections(ctx: &SyncCtx<'_>, collections: &[SyncCollectio
         // §3.2.5.4.2). Matched on the raw AirSync tags; the Email class never
         // uses <Add> in a Sync request (drafts go through ComposeMail).
         let has_email_mutations = coll.xml.contains("<Change>") || coll.xml.contains("<Delete>");
+        // [MS-ASCMD] §2.2.3.181.4: a non-zero SyncKey MUST match the key this
+        // collection last issued. Validate it BEFORE applying the client's
+        // flag/read/delete mutations, exactly as the Calendar branch below does:
+        // a request whose window is rejected must not mutate the mailbox, and a
+        // stale-key RETRY must not re-apply the mutations. A MISSING key cannot
+        // be resumed, so it is stale; a storage READ failure is NOT evidence
+        // that the client's key is obsolete — it is a retryable server error
+        // with the incoming key echoed.
+        if is_email && state.can_read_email() && incoming_key != "0" {
+            let key_state = state
+                .storage
+                .get_sync_key(username, &state_collection_id)
+                .await;
+            let (stale, read_failed) = match key_state {
+                Ok(Some((stored, _))) => (stored != incoming_key, false),
+                Ok(None) => (true, false),
+                Err(e) => {
+                    tracing::warn!(
+                        request_id = %request_id,
+                        collection_id = %collection_id,
+                        error = %e,
+                        "Email SyncKey read failed; answering a retryable server error"
+                    );
+                    (false, true)
+                }
+            };
+            if read_failed || stale {
+                collection_responses.push(if read_failed {
+                    format!(
+                        "<Collection><Class>Email</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>5</Status></Collection>",
+                        xml_escape(incoming_key),
+                        xml_escape(collection_id)
+                    )
+                } else {
+                    format!(
+                        "<Collection><Class>Email</Class><SyncKey>0</SyncKey><CollectionId>{}</CollectionId><Status>3</Status></Collection>",
+                        xml_escape(collection_id)
+                    )
+                });
+                continue;
+            }
+        }
         let coll_xml = if is_email {
             if state.can_read_email() {
                 // `None` means the client's mutations could not be applied. The
@@ -6389,18 +6588,29 @@ async fn handle_sync_collections(ctx: &SyncCtx<'_>, collections: &[SyncCollectio
                 }
             } else {
                 let new_sync_key = Uuid::new_v4().simple().to_string();
-                if let Err(e) = state
+                // A key the client is told but the gateway never stored would be
+                // rejected as stale on the very next non-zero Sync (Status 3), so
+                // the client re-primes forever while storage is failing. Answer
+                // the retryable Status 5 with the incoming key instead.
+                match state
                     .storage
                     .set_sync_key(username, &state_collection_id, &new_sync_key, None)
                     .await
                 {
-                    tracing::warn!(error = %e, "Failed to set email sync key");
+                    Ok(()) => format!(
+                        "<Collection><Class>Email</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>1</Status></Collection>",
+                        xml_escape(&new_sync_key),
+                        xml_escape(collection_id)
+                    ),
+                    Err(e) => {
+                        tracing::warn!(request_id = %request_id, error = %e, "Failed to set email sync key; deferring");
+                        format!(
+                            "<Collection><Class>Email</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>5</Status></Collection>",
+                            xml_escape(incoming_key),
+                            xml_escape(collection_id)
+                        )
+                    }
                 }
-                format!(
-                    "<Collection><Class>Email</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>1</Status></Collection>",
-                    xml_escape(&new_sync_key),
-                    xml_escape(collection_id)
-                )
             }
         } else if is_calendar {
             let coll_xml_ref = &coll.xml;
@@ -8466,15 +8676,20 @@ async fn handle_email_sync(ctx: &EmailSyncRequestCtx<'_>) -> anyhow::Result<Stri
                 }
                 _ => {
                     // CollectionId has no JMAP mailbox (e.g. Outbox "6").
-                    // Return empty sync response — no emails to sync.
+                    // Return empty sync response — no emails to sync. The key must
+                    // be durably stored before it is handed out: an unpersisted
+                    // key makes the next non-zero Sync look stale (Status 3) and
+                    // the client re-primes forever while storage is failing.
                     let new_sync_key = Uuid::new_v4().simple().to_string();
-                    if let Err(e) = state
+                    state
                         .storage
                         .set_sync_key(username, state_collection_id, &new_sync_key, None)
                         .await
-                    {
-                        tracing::warn!(error = %e, "Failed to set email sync key");
-                    }
+                        .map_err(|e| {
+                            anyhow::anyhow!(
+                                "failed to persist the empty-collection sync key for {collection_id}: {e}"
+                            )
+                        })?;
                     return Ok(format!(
                         "<Collection><Class>Email</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>1</Status></Collection>",
                         new_sync_key, collection_id
@@ -8487,15 +8702,19 @@ async fn handle_email_sync(ctx: &EmailSyncRequestCtx<'_>) -> anyhow::Result<Stri
     let jmap = match &state.jmap_client {
         Some(j) => j.clone(),
         None => {
-            // JMAP not configured — return empty sync
+            // JMAP not configured — return empty sync. The key must be persisted
+            // first (see the empty-collection branch above): an unpersisted key
+            // makes the next non-zero Sync look stale.
             let new_sync_key = Uuid::new_v4().simple().to_string();
-            if let Err(e) = state
+            state
                 .storage
                 .set_sync_key(username, state_collection_id, &new_sync_key, None)
                 .await
-            {
-                tracing::warn!(error = %e, "Failed to set email sync key");
-            }
+                .map_err(|e| {
+                    anyhow::anyhow!(
+                        "failed to persist the sync key for collection {collection_id}: {e}"
+                    )
+                })?;
             return Ok(format!(
                 "<Collection><Class>Email</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>1</Status></Collection>",
                 new_sync_key, collection_id
@@ -8928,6 +9147,26 @@ async fn handle_email_initial_sync(
     let mut commands_xml = String::new();
     for email in &result.emails {
         let jmap_id = email.id.as_deref().unwrap_or("unknown");
+        // `Email/query` and `Email/get` are separate calls: a message can leave
+        // this mailbox between them. Its departure is reported by
+        // `Email/queryChanges` from the base state captured by the SAME query
+        // that returned its id, so delivering it as an `<Add>` would leave a
+        // ghost item the client must be told to delete — and a Delete for an id
+        // the client never received is a no-op. Membership comes from the
+        // already-fetched `mailboxIds` (no extra round trip); a row without a
+        // usable map is delivered (never silently dropped).
+        if let Some(mailbox_id) = delta_mailbox_id
+            && let Some(mids) = email.mailbox_ids.as_ref()
+            && !mids.get(mailbox_id).copied().unwrap_or(false)
+        {
+            tracing::debug!(
+                user = %username,
+                collection_id,
+                email_id = %jmap_id,
+                "Skipping an initial-sync message that left the mailbox before it was read"
+            );
+            continue;
+        }
         let server_id = crate::email::email_server_id_from_jmap_id(jmap_id);
         // Seed the flag baseline for a delivered `<Add>` (same rationale as the
         // delta path's `render_pending_email_op`): a message that arrived during
@@ -19903,6 +20142,224 @@ mod tests {
         assert!(
             result.is_err(),
             "a folder-read failure must fail the Sync closed, not answer empty: {result:?}"
+        );
+    }
+
+    /// [MS-ASCMD] §2.2.3.177.10 MoveItems per-item status matrix, end to end
+    /// against a JMAP stub: 3 success, 1 invalid source item (absent or not in
+    /// SrcFldId), 2 invalid destination (Outbox, unmapped folder), 4 same
+    /// source and destination, 7 retryable backend failure; plus the root
+    /// Status 5 for a request carrying no `<Move>` at all.
+    #[tokio::test]
+    async fn test_move_items_status_matrix_and_source_membership() {
+        use crate::models::AppState;
+        use axum::routing::{get, post};
+        use serde_json::{Value, json};
+        use std::sync::Arc as StdArc;
+
+        #[derive(Clone)]
+        struct Ctl {
+            base: String,
+        }
+
+        async fn session(axum::Extension(ctl): axum::Extension<Ctl>) -> axum::Json<Value> {
+            axum::Json(json!({
+                "apiUrl": ctl.base,
+                "downloadUrl": format!("{}/download/{{accountId}}/{{blobId}}", ctl.base),
+                "uploadUrl": format!("{}/upload/{{accountId}}", ctl.base),
+                "eventSourceUrl": format!("{}/eventsource", ctl.base),
+                "state": "s",
+                "username": "u",
+                "accounts": {"a": {"name": "u", "isPersonal": true, "isReadOnly": false, "accountCapabilities": {}}},
+                "primaryAccounts": {"urn:ietf:params:jmap:mail": "a"},
+                "capabilities": {"urn:ietf:params:jmap:core": {"maxObjectsInGet": 500}}
+            }))
+        }
+
+        // One stub answers every JMAP call the move path makes: role lookup
+        // (Mailbox/query), membership + source read (Email/get) and the move
+        // itself (Email/set). `m-fail` is refused by Email/set so the move
+        // reports a retryable failure.
+        async fn api(body: String) -> axum::response::Response {
+            let req: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
+            let mut responses = Vec::new();
+            for call in req
+                .get("methodCalls")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default()
+            {
+                let name = call.get(0).and_then(|v| v.as_str()).unwrap_or("");
+                let args = call.get(1).cloned().unwrap_or(Value::Null);
+                let cid = call.get(2).and_then(|v| v.as_str()).unwrap_or("c0");
+                let result = match name {
+                    "Mailbox/query" => {
+                        let role = args
+                            .get("filter")
+                            .and_then(|f| f.get("role"))
+                            .and_then(|r| r.as_str())
+                            .unwrap_or("");
+                        let ids = match role {
+                            "inbox" => json!(["mb-inbox"]),
+                            "sent" => json!(["mb-sent"]),
+                            _ => json!([]),
+                        };
+                        json!({"accountId": "a", "ids": ids})
+                    }
+                    "Email/get" => {
+                        let ids = args
+                            .get("ids")
+                            .and_then(|v| v.as_array())
+                            .cloned()
+                            .unwrap_or_default();
+                        let id = ids
+                            .first()
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        if id == "m-gone" {
+                            json!({"accountId": "a", "list": [], "notFound": ["m-gone"]})
+                        } else {
+                            json!({
+                                "accountId": "a",
+                                "state": "e1",
+                                "list": [{
+                                    "id": id,
+                                    "threadId": "t1",
+                                    "mailboxIds": {"mb-inbox": true},
+                                    "keywords": {},
+                                    "size": 1,
+                                    "receivedAt": "2026-01-01T00:00:00Z",
+                                }],
+                            })
+                        }
+                    }
+                    "Email/set" => {
+                        let update = args
+                            .get("update")
+                            .and_then(|v| v.as_object())
+                            .cloned()
+                            .unwrap_or_default();
+                        let mut updated = serde_json::Map::new();
+                        let mut not_updated = serde_json::Map::new();
+                        for id in update.keys() {
+                            if id == "m-fail" {
+                                not_updated.insert(id.clone(), json!({"type": "forbiddenToSend"}));
+                            } else {
+                                updated.insert(id.clone(), Value::Null);
+                            }
+                        }
+                        json!({
+                            "accountId": "a",
+                            "updated": Value::Object(updated),
+                            "notUpdated": Value::Object(not_updated),
+                        })
+                    }
+                    _ => json!({"accountId": "a"}),
+                };
+                responses.push(json!([name, result, cid]));
+            }
+            let resp = json!({"methodResponses": responses, "sessionState": "s"});
+            axum::response::Response::builder()
+                .status(200)
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(serde_json::to_vec(&resp).unwrap()))
+                .unwrap()
+        }
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
+        let ctl = Ctl { base: base.clone() };
+        let app = axum::Router::new()
+            .route("/session", get(session))
+            .route("/", post(api))
+            .layer(axum::Extension(ctl));
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let storage = crate::storage::Storage::new("sqlite::memory:")
+            .await
+            .expect("in-memory storage");
+        storage.init_schema().await.expect("schema init");
+        let cfg = crate::config::Config {
+            jmap_base: base,
+            email_enabled: true,
+            mail_domain: "example.com".to_string(),
+            hmac_secret: SecretString::from("a".repeat(32)),
+            ..Default::default()
+        };
+        let state = StdArc::new(AppState::new(cfg, StdArc::new(storage)));
+        let owner = "move-items@example.com";
+        // A user-created mail folder is addressable as a move destination.
+        state
+            .storage
+            .upsert_folder_journaled(
+                crate::storage::FolderUpsertParams {
+                    owner,
+                    server_id: "mb-custom",
+                    parent_id: "0",
+                    display_name: "Custom",
+                    folder_type: 12,
+                    backend_kind: "jmap",
+                    backend_id: "mb-custom",
+                },
+                "folder-add",
+            )
+            .await
+            .expect("persist folder");
+
+        let xml = r#"<?xml version="1.0" encoding="utf-8"?>
+<MoveItems xmlns="Move:">
+  <Move><SrcMsgId>em-m1</SrcMsgId><SrcFldId>2</SrcFldId><DstFldId>5</DstFldId></Move>
+  <Move><SrcMsgId>em-m1</SrcMsgId><SrcFldId>2</SrcFldId><DstFldId>2</DstFldId></Move>
+  <Move><SrcMsgId>em-m1</SrcMsgId><SrcFldId>2</SrcFldId><DstFldId>6</DstFldId></Move>
+  <Move><SrcMsgId>em-m-gone</SrcMsgId><SrcFldId>2</SrcFldId><DstFldId>5</DstFldId></Move>
+  <Move><SrcMsgId>em-m-fail</SrcMsgId><SrcFldId>2</SrcFldId><DstFldId>5</DstFldId></Move>
+  <Move><SrcMsgId>em-m1</SrcMsgId><SrcFldId>2</SrcFldId><DstFldId>mb-unmapped</DstFldId></Move>
+  <Move><SrcMsgId>em-m1</SrcMsgId><SrcFldId>2</SrcFldId><DstFldId>mb-custom</DstFldId></Move>
+  <Move><SrcMsgId>cal-1</SrcMsgId><DstFldId>1</DstFldId></Move>
+</MoveItems>"#;
+        let password = SecretString::from("pw");
+        let text = response_text(
+            handle_move_items(&state, owner, &password, xml, &Wbxml::new(), false, "move").await,
+        )
+        .await;
+
+        // The per-item `<Response>` elements are emitted in request order, so
+        // the status sequence pins each decision independently.
+        let statuses: Vec<String> = text
+            .split("<Response>")
+            .skip(1)
+            .filter_map(|r| extract_first_tag_text(r, b"Status"))
+            .collect();
+        assert_eq!(
+            statuses,
+            vec!["3", "4", "2", "1", "7", "2", "3", "3"],
+            "unexpected MoveItems status matrix: {text}"
+        );
+        assert!(
+            text.contains("<DstMsgId>em-m1</DstMsgId>"),
+            "a successful move must echo a DstMsgId: {text}"
+        );
+
+        // No <Move> at all: the root Status is 5 (invalid request).
+        let empty = response_text(
+            handle_move_items(
+                &state,
+                owner,
+                &password,
+                r#"<MoveItems xmlns="Move:"></MoveItems>"#,
+                &Wbxml::new(),
+                false,
+                "empty",
+            )
+            .await,
+        )
+        .await;
+        assert!(
+            empty.contains("<Status>5</Status>"),
+            "a MoveItems request with no <Move> must answer root Status 5: {empty}"
         );
     }
 }

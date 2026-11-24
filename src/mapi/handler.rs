@@ -12313,6 +12313,12 @@ mod tests {
                             json!({"accountId": "a", "destroyed": destroy})
                         }
                     }
+                    // RFC 8620 §3.6.2: every invocation gets a response. The
+                    // hard-delete walk batches `Email/query`+`Email/get`, and a
+                    // missing `Email/get` entry is a malformed reply the client
+                    // must fail closed on, so the stub answers both (empty).
+                    "Email/query" => json!({"accountId": "a", "ids": [], "total": 0}),
+                    "Email/get" => json!({"accountId": "a", "list": [], "state": "s"}),
                     _ => json!({"accountId": "a"}),
                 };
                 if name == "Mailbox/set" && ctl.method_error.is_some() {

@@ -191,6 +191,24 @@ async fn mailbox_set_503_mid_delete_preserves_mapping_and_prune_intent() {
         .expect(1)
         .mount(&server)
         .await;
+    // The descendant walk enumerates the authoritative hierarchy first (one
+    // batch carrying both calls), which is what proves a mapped child is still
+    // inside the subtree.
+    Mock::given(method("POST"))
+        .and(path("/"))
+        .and(body_string_contains("Mailbox/query"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "methodResponses": [
+                ["Mailbox/query", {"accountId": "a", "ids": ["mb-fault"], "total": 1}, "mq0"],
+                ["Mailbox/get", {"accountId": "a", "state": "s", "list": [
+                    {"id": "mb-fault", "name": "Fault injection", "parentId": null, "role": null}
+                ]}, "mg0"],
+            ],
+            "sessionState": "s",
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
     Mock::given(method("POST"))
         .and(path("/"))
         .and(body_string_contains("Mailbox/set"))

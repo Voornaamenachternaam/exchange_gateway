@@ -2539,6 +2539,17 @@ mod tests {
                                 "Email/query" => {
                                     ("Email/query", json!({"accountId": "a", "ids": [], "total": 0}))
                                 }
+                                // RFC 8620 §3.6.2: every invocation gets a
+                                // response. The gateway batches
+                                // `Email/query`+`Email/get`, and a missing
+                                // `Email/get` entry is a malformed reply the
+                                // client must fail closed on, so the stub
+                                // answers it (an empty page: no messages to
+                                // destroy).
+                                "Email/get" => (
+                                    "Email/get",
+                                    json!({"accountId": "a", "list": [], "state": "s"}),
+                                ),
                                 "Mailbox/set" => {
                                     let destroy: Vec<String> = args
                                         .get("destroy")

@@ -754,7 +754,9 @@ async fn eas_sendmail_over_http() {
         .mount(&gateway.backend)
         .await;
 
-    // Email/set mock (JMAP EmailSubmission) - proper JMAP method response format
+    // The submission batch (Email/set + EmailSubmission/set, RFC 8621 §7.5).
+    // The `created` ids echo the CLIENT's creation ids (`e0`/`s0`); a send is
+    // confirmed only by `EmailSubmission/set` `created.s0`.
     Mock::given(method("POST"))
         .and(path("/"))
         .and(body_string_contains(r#""Email/set""#))
@@ -763,13 +765,18 @@ async fn eas_sendmail_over_http() {
                 ["Email/set", {
                     "accountId": "a",
                     "newState": "send-state",
-                    "created": {"send-1": {"id": "send-1"}},
+                    "created": {"e0": {"id": "email-1"}},
                     "updated": {},
                     "destroyed": {},
                     "notCreated": {},
                     "notUpdated": {},
                     "notDestroyed": {}
-                }, "id0"]
+                }, "ec0"],
+                ["EmailSubmission/set", {
+                    "accountId": "a",
+                    "created": {"s0": {"id": "sub-1"}},
+                    "notCreated": {}
+                }, "ess0"]
             ]
         })))
         .mount(&gateway.backend)

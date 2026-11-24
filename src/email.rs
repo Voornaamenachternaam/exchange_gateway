@@ -1559,12 +1559,16 @@ pub async fn save_draft_via_jmap(
 /// This implements MoveItem by updating the email's mailboxIds.
 /// `server_id` is the gateway's server ID (em-<jmap_id>).
 /// `target_folder` is the distinguished folder name (e.g., "inbox", "sent", "drafts", "trash").
+/// `source_mailbox_id` is the mailbox the item is being moved OUT of, when the
+/// caller knows it (see [`move_email_to_mailbox_via_jmap`]).
+#[allow(clippy::too_many_arguments)]
 pub async fn move_email_via_jmap(
     state: &Arc<AppState>,
     jmap: &Arc<crate::jmap::JmapClient>,
     account_id: &str,
     server_id: &str,
     target_folder: &str,
+    source_mailbox_id: Option<&str>,
     username: &str,
     password: &SecretString,
 ) -> anyhow::Result<String> {
@@ -1582,6 +1586,7 @@ pub async fn move_email_via_jmap(
         account_id,
         server_id,
         &target_mb_id,
+        source_mailbox_id,
         username,
         password,
     )
@@ -1594,15 +1599,25 @@ pub async fn move_email_via_jmap(
 /// (they have no JMAP role, so role resolution cannot find them).
 /// `server_id` is the gateway's server ID (em-<jmap_id>).
 ///
-/// Preserves all existing mailbox memberships and adds only the destination
-/// mailbox. Returns Status 4 (no change) if the source and destination resolve
-/// to the same mailbox.
+/// A MOVE, not a re-file: `mailboxIds` is REPLACED wholesale by the JMAP
+/// `Email/set` update (RFC 8621 §4.6 — a full property value replaces the set;
+/// Stalwart implements it as `set_mailboxes`), so the patch is the current
+/// memberships MINUS `source_mailbox_id` PLUS the destination. Omitting the
+/// removal would leave the message in the folder the client moved it out of.
+/// `source_mailbox_id == None` means the caller does not know the source (EWS
+/// `MoveItem` carries only the destination), so the move replaces the whole set
+/// — Exchange folders are single-membership. A message already at the
+/// destination is a success (the desired end state).
+///
+/// Returns the (unchanged) server ID of the moved message.
+#[allow(clippy::too_many_arguments)]
 pub async fn move_email_to_mailbox_via_jmap(
     _state: &Arc<AppState>,
     jmap: &Arc<crate::jmap::JmapClient>,
     account_id: &str,
     server_id: &str,
     target_mb_id: &str,
+    source_mailbox_id: Option<&str>,
     username: &str,
     password: &SecretString,
 ) -> anyhow::Result<String> {
@@ -1612,8 +1627,8 @@ pub async fn move_email_to_mailbox_via_jmap(
         None => return Err(anyhow!("Invalid server ID format: {}", server_id)),
     };
 
-    // Read the email's current mailboxIds so we can preserve unrelated
-    // memberships and only add the destination mailbox.
+    // Read the email's current mailboxIds so we can drop the source membership
+    // and preserve every unrelated one.
     let Some(email) = jmap
         .get_email(account_id, &jmap_id, username, password, false)
         .await?
@@ -1622,22 +1637,26 @@ pub async fn move_email_to_mailbox_via_jmap(
     };
     let current_mailboxes: Option<&HashMap<String, bool>> = email.mailbox_ids.as_ref();
 
-    // If the email is already exclusively in the target mailbox, there is
-    // nothing to move — return Status 4 (no change) without writing.
+    // Already at the destination and no longer in the source: nothing to write.
     if let Some(ids) = current_mailboxes {
-        let only_target = ids.len() == 1 && ids.contains_key(target_mb_id);
-        if only_target {
-            return Err(anyhow!(
-                "Message already in destination mailbox {target_mb_id}"
-            ));
+        let in_target = ids.get(target_mb_id).copied().unwrap_or(false);
+        let in_source = source_mailbox_id
+            .and_then(|src| ids.get(src).copied())
+            .unwrap_or(false);
+        let only_target = ids.len() == 1 && in_target;
+        if in_target && !in_source && (source_mailbox_id.is_some() || only_target) {
+            return Ok(server_id.to_string());
         }
     }
 
-    // Build the update: preserve existing mailboxIds, add only the destination.
-    // Setting a mailboxId to `true` adds it; existing entries remain untouched.
     let mut mailbox_ids_patch = serde_json::Map::new();
-    if let Some(ids) = current_mailboxes {
+    if let Some(ids) = current_mailboxes
+        && let Some(src) = source_mailbox_id
+    {
         for (k, v) in ids {
+            if k.as_str() == src {
+                continue;
+            }
             mailbox_ids_patch.insert(k.clone(), serde_json::Value::Bool(*v));
         }
     }
@@ -2419,22 +2438,32 @@ pub async fn apply_eas_email_mutations(
                         // collection's mailbox. Without this check, a stale
                         // <Delete> from collection A for a message that moved
                         // to collection B would remove/destroy it from B.
+                        //
+                        // The read is the STRICT membership probe: a message
+                        // whose `mailboxIds` cannot be decoded is NOT evidence
+                        // that it is absent, and answering Status 8 ("Object not
+                        // found") for it would make the client drop a live
+                        // message from its view. Only a confirmed `notFound` (or
+                        // a confirmed non-membership) is Status 8; everything
+                        // uncertain is the retryable Status 6.
                         let in_source_mailbox = match jmap
-                            .get_email(account_id, jmap_id, username, password, false)
+                            .email_mailbox_membership(
+                                account_id,
+                                jmap_id,
+                                collection_id,
+                                username,
+                                password,
+                            )
                             .await
                         {
-                            Ok(emails) => emails.iter().any(|e| {
-                                e.mailbox_ids
-                                    .as_ref()
-                                    .map(|mids| {
-                                        mids.iter().any(|(m, _)| m.as_str() == collection_id)
-                                    })
-                                    .unwrap_or(false)
-                            }),
-                            // A transient backend lookup failure must NOT be
-                            // reported as "Object not found" (Status 8): the
-                            // message may still exist in the source folder.
-                            // Report Status 6 and continue the command loop.
+                            Ok(crate::jmap::EmailMailboxMembership::Member) => true,
+                            Ok(crate::jmap::EmailMailboxMembership::NotMember)
+                            | Ok(crate::jmap::EmailMailboxMembership::Absent) => false,
+                            // A transient backend lookup failure — or a response
+                            // that cannot be interpreted — must NOT be reported
+                            // as "Object not found" (Status 8): the message may
+                            // still exist in the source folder. Report Status 6
+                            // and continue the command loop.
                             Err(_) => {
                                 tracing::warn!(
                                     target: "eas",

@@ -4842,14 +4842,18 @@ async fn handle_sync_email_prime(
     // during pagination into the baseline as "already synchronized", so the
     // later delta would never report it. A capture failure fails the prime
     // closed (retryable).
+    // The mailbox backing this folder, when it is known: the prime's renders
+    // must prove membership against it (a message can leave the mailbox between
+    // `Email/query` and `Email/get`).
+    let mut prime_mailbox_id: Option<String> = None;
     if is_fresh_prime && mailbox_role != "outbox" {
         match jmap
             .get_mailbox_ids_for_role(account_id, mailbox_role, &auth.username, &auth.password)
             .await
         {
             Ok(ids) => {
-                if let Some(mailbox_id) = ids.into_iter().next()
-                    && let Err(e) = crate::eas::capture_email_keyword_baseline(
+                if let Some(mailbox_id) = ids.into_iter().next() {
+                    if let Err(e) = crate::eas::capture_email_keyword_baseline(
                         state,
                         jmap,
                         account_id,
@@ -4859,14 +4863,16 @@ async fn handle_sync_email_prime(
                         folder_id,
                     )
                     .await
-                {
-                    tracing::error!(error = %e, "Failed to capture EWS email keyword baseline");
-                    return operation_error_response(
-                        &EwsAction::SyncFolderItems,
-                        "ErrorServerBusy",
-                        "Failed to establish the email flag baseline",
-                        StatusCode::SERVICE_UNAVAILABLE,
-                    );
+                    {
+                        tracing::error!(error = %e, "Failed to capture EWS email keyword baseline");
+                        return operation_error_response(
+                            &EwsAction::SyncFolderItems,
+                            "ErrorServerBusy",
+                            "Failed to establish the email flag baseline",
+                            StatusCode::SERVICE_UNAVAILABLE,
+                        );
+                    }
+                    prime_mailbox_id = Some(mailbox_id);
                 }
             }
             Err(e) => {
@@ -4982,6 +4988,25 @@ async fn handle_sync_email_prime(
 
     let mut changes_xml = String::new();
     for email in &emails {
+        // A message that left the mailbox between the query and the get is a
+        // GHOST: it is inside the prime's query state, so no later delta will
+        // ever report its departure and the client would keep an item that
+        // cannot be opened, updated or deleted. The query is the membership
+        // source, `Email/get` the current truth — deliver only messages the
+        // mailbox still holds.
+        if let Some(mailbox_id) = prime_mailbox_id.as_deref()
+            && !email
+                .mailbox_ids
+                .as_ref()
+                .is_some_and(|m| m.contains_key(mailbox_id))
+        {
+            tracing::debug!(
+                email_id = %email.id.as_deref().unwrap_or("unknown"),
+                mailbox_id,
+                "EWS prime skipped a message that left the mailbox mid-snapshot"
+            );
+            continue;
+        }
         let jmap_id = email.id.as_deref().unwrap_or("unknown");
         let server_id = email_server_id_from_jmap_id(jmap_id);
         let change_key = server_id.clone();
@@ -6576,42 +6601,27 @@ async fn handle_sync_folder_items(
         (seen, ub)
     };
     // The prime's keyset progress is carried in `local_sync_cursor`, mirroring
-    // the EAS Tasks/Notes windowed initial sync: persist the highest delivered
-    // live server_id with the frozen baseline, or drop the cursor once the
-    // whole snapshot fits.
-    if is_prime {
-        if has_more {
-            // The keyset position MUST be durable before the page is
-            // acknowledged: the response cites the frozen baseline, so the
-            // follow-up is routed to a prime CONTINUATION keyed on this cursor.
-            // If the cursor were lost, the follow-up would be treated as a
-            // normal delta from the baseline and would deliver only the
-            // journal's post-baseline rows — silently dropping the rest of the
-            // snapshot. Fail closed (retryable) so the client re-primes.
-            if let Some(k) = last_returned_key.as_deref()
-                && let Err(e) = state
-                    .storage
-                    .set_local_sync_cursor(owner, &folder_id, k, prime_baseline)
-                    .await
-            {
-                tracing::error!(folder_id = %folder_id, error = %e, "Failed to persist EWS prime cursor; refusing to acknowledge clipped prime");
-                return operation_error_response(
-                    &EwsAction::SyncFolderItems,
-                    "ErrorServerBusy",
-                    "Failed to persist sync progress",
-                    StatusCode::SERVICE_UNAVAILABLE,
-                );
-            }
-        } else if let Err(e) = state
-            .storage
-            .clear_local_sync_cursor(owner, &folder_id)
-            .await
-        {
-            // No continuation follows a fully-drained prime, so a failed clear
-            // only costs one redundant re-prime — never data.
-            tracing::warn!(folder_id = %folder_id, error = %e, "Failed to clear EWS prime cursor");
+    // the EAS Tasks/Notes windowed initial sync: the highest delivered live
+    // server_id with the frozen baseline, or no cursor once the whole snapshot
+    // fits. It is written INSIDE the commit below, together with the SyncState
+    // and the ledger: the response cites the frozen baseline, so the follow-up
+    // is routed to a prime CONTINUATION keyed on this cursor. A cursor written
+    // ahead of a failed commit would make the client's retry (same SyncState,
+    // response lost) resume AFTER the page it never received — silently
+    // dropping the rest of the snapshot.
+    let prime_cursor = if !is_prime {
+        crate::storage::EwsPrimeCursor::Keep
+    } else if has_more {
+        match last_returned_key.as_deref() {
+            Some(k) => crate::storage::EwsPrimeCursor::Set {
+                last_key: k,
+                base_seq: prime_baseline,
+            },
+            None => crate::storage::EwsPrimeCursor::Keep,
         }
-    }
+    } else {
+        crate::storage::EwsPrimeCursor::Clear
+    };
     let new_sync_state = encode_sync_state_cursor(next_seen_seq, next_upper_bound);
     // Fail CLOSED: the delivery ledger and the cited cursor must commit
     // together. A ledger advanced past an unpersisted cursor would make the
@@ -6626,6 +6636,7 @@ async fn handle_sync_folder_items(
             !client_supplied_cursor,
             &delivered_now,
             &deleted_now,
+            prime_cursor,
         )
         .await
     {
@@ -8119,6 +8130,20 @@ async fn handle_create_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
                     StatusCode::SERVICE_UNAVAILABLE,
                 );
             }
+            Err(JmapCreateFailure::Uncertain(e)) => {
+                // The event MAY be on the JMAP backend: the CalDAV fallback
+                // could store a second copy, so the client retries instead.
+                tracing::error!(
+                    error = %e,
+                    "JMAP calendar create outcome unknown; refusing the CalDAV fallback"
+                );
+                return operation_error_response(
+                    &EwsAction::CreateItem,
+                    "ErrorServerBusy",
+                    "The item may have been created; retry later",
+                    StatusCode::SERVICE_UNAVAILABLE,
+                );
+            }
         }
     } else {
         // CalDAV forced or JMAP not available
@@ -9249,6 +9274,10 @@ async fn handle_move_item(state: &Arc<AppState>, auth: &AuthContext, body: &str)
             &account_id,
             &item_id,
             target_role,
+            // EWS `MoveItem` carries only the destination, so the move replaces
+            // the message's whole mailbox set (Exchange folders are
+            // single-membership) instead of leaving it in its old folder.
+            None,
             &auth.username,
             &auth.password,
         )
@@ -10192,15 +10221,17 @@ async fn handle_get_user_oof_settings(
         }
     };
 
-    // Map OOF settings to EWS XML. `Scheduled` stays distinct from `Enabled`
-    // ([MS-OXWOOF] §2.2.5.2): an enabled window that has not started yet is
-    // scheduled, not currently on.
+    // Map OOF settings to EWS XML. `Scheduled` describes the CONFIGURATION — an
+    // OOF that is "set to Enabled for the time period defined by the Duration
+    // element" ([MS-OXWOOF] §2.2.5.2) — so it is derived from whether a schedule
+    // is stored, NOT from whether its start time happens to be in the future. A
+    // stored schedule therefore stays `Scheduled` while the window is active and
+    // after it has passed (the user can then disable it), instead of flipping to
+    // `Enabled` (which claims OOF messages are being sent) or back to `Enabled`
+    // once the window expired.
     let oof_state = if !settings.enabled {
         "Disabled"
-    } else if settings
-        .start_time
-        .is_some_and(|start| start > chrono::Utc::now())
-    {
+    } else if settings.start_time.is_some() && settings.end_time.is_some() {
         "Scheduled"
     } else {
         "Enabled"
@@ -11334,10 +11365,13 @@ async fn handle_mark_as_junk(state: &Arc<AppState>, auth: &AuthContext, body: &s
             }
         },
     };
-    // `MoveItem` ([MS-OXCSPAM] §2.2.2.1, required): false means classify only.
-    // The gateway has no spam-classification store behind it — the mailbox move
-    // IS the classification — so it cannot honour a classify-without-move
-    // request and must say so instead of moving the message anyway.
+    // `MoveItem` ([MS-OXWSCORE] §3.1.4.1.3.2 `MarkAsJunkType`,
+    // `use="required"`): false means classify only. The gateway has no
+    // spam-classification store behind it — the mailbox move IS the
+    // classification — so it cannot honour a classify-without-move request and
+    // must say so instead of moving the message anyway. The attribute is
+    // mandatory on the wire, so an ABSENT one is a malformed request and must
+    // not move anything.
     if let Some(v) = extract_first_attr(body, b"MarkAsJunk", b"MoveItem") {
         match parse_xs_boolean(&v) {
             Some(true) => {}
@@ -11358,6 +11392,13 @@ async fn handle_mark_as_junk(state: &Arc<AppState>, auth: &AuthContext, body: &s
                 );
             }
         }
+    } else {
+        return operation_error_response(
+            &EwsAction::MarkAsJunk,
+            "ErrorInvalidRequest",
+            "MarkAsJunk requires the MoveItem attribute",
+            StatusCode::OK,
+        );
     }
     let target_role = if is_junk { "junk" } else { "inbox" };
 
@@ -11414,6 +11455,7 @@ async fn handle_mark_as_junk(state: &Arc<AppState>, auth: &AuthContext, body: &s
             &account_id,
             item_id,
             target_role,
+            None,
             &auth.username,
             &auth.password,
         )
@@ -11651,6 +11693,21 @@ async fn handle_get_reminders(state: &Arc<AppState>, auth: &AuthContext, body: &
     // Cap the returned set to bound the response for pathological data.
     let max_items = extract_int(body, b"MaxItems", 200).clamp(1, 2000);
 
+    // Recorded Dismiss/Snooze actions, keyed by (item, occurrence).
+    let reminder_state: std::collections::HashMap<(String, String), Option<String>> =
+        match state.storage.list_reminder_state(owner).await {
+            Ok(rows) => rows
+                .into_iter()
+                .map(|(id, occurrence, snooze)| ((id, occurrence), snooze))
+                .collect(),
+            Err(e) => {
+                // Serving the reminders is still correct without the suppression
+                // state; a storage failure must not black out the user's alerts.
+                tracing::error!(error = %e, "GetReminders: failed to load reminder state");
+                std::collections::HashMap::new()
+            }
+        };
+
     let mut reminders_xml = String::new();
     let mut count = 0usize;
     for current in &items {
@@ -11658,33 +11715,26 @@ async fn handle_get_reminders(state: &Arc<AppState>, auth: &AuthContext, body: &
             break;
         }
         let item = &current.item;
-        let Some(minutes) = item.reminder else {
+        let Some((occurrence_start, occurrence_end, reminder_due)) =
+            reminder_occurrence(item, window_start, window_end)
+        else {
             continue;
         };
-        // `reminder` stores "minutes before start" but may be signed depending
-        // on provenance (negative `-PT15M` from iCalendar, positive `15` from an
-        // EWS CreateItem); `unsigned_abs()` normalises both to the lead time
-        // without risk of overflowing on `i32::MIN`. Clamp to a year to guard
-        // against corrupt values producing an absurd due time.
-        let lead_minutes = i64::from(minutes.unsigned_abs().min(525_600));
-        // Search for an occurrence whose REMINDER falls inside the window, not
-        // for the next occurrence from `now`: with a 15-minute lead and a
-        // series whose next occurrence starts in five minutes, the next
-        // reminder is already due, and starting the search at `now` skipped
-        // the (in-window) reminder of the following occurrence.
-        let search_from = window_start + chrono::Duration::minutes(lead_minutes);
-        let Some(occurrence_start) = next_occurrence_start(item, search_from) else {
+        // A Dismiss/Snooze recorded for THIS occurrence suppresses it (or
+        // re-surfaces it at the snooze instant); the previous behaviour
+        // acknowledged the action and then showed respect for nothing.
+        let state_key = (
+            current.row.server_id.clone(),
+            reminder_occurrence_key(reminder_due),
+        );
+        let Some(reminder_due) = reminder_show_instant(
+            reminder_state.get(&state_key),
+            reminder_due,
+            now,
+            window_end,
+        ) else {
             continue;
         };
-        let occurrence_end = occurrence_start + (item.end - item.start);
-        let reminder_due = occurrence_start - chrono::Duration::minutes(lead_minutes);
-        // Only surface reminders within the requested window.
-        if reminder_due < window_start {
-            continue;
-        }
-        if reminder_due > window_end && occurrence_start > window_end {
-            continue;
-        }
 
         let ck = changekey_for_item(&current.row);
         let mut xml = String::new();
@@ -11723,6 +11773,76 @@ async fn handle_get_reminders(state: &Arc<AppState>, auth: &AuthContext, body: &
     soap_ok(inner)
 }
 
+/// The reminder instant of a calendar item inside `[window_start, window_end]`
+/// as `(occurrence_start, occurrence_end, reminder_due)`.
+fn reminder_occurrence(
+    item: &crate::calendar::CalendarItem,
+    window_start: chrono::DateTime<Utc>,
+    window_end: chrono::DateTime<Utc>,
+) -> Option<(
+    chrono::DateTime<Utc>,
+    chrono::DateTime<Utc>,
+    chrono::DateTime<Utc>,
+)> {
+    // `reminder` stores "minutes before start" but may be signed depending on
+    // provenance (negative `-PT15M` from iCalendar, positive `15` from an EWS
+    // CreateItem); `unsigned_abs()` normalises both to the lead time without
+    // risk of overflowing on `i32::MIN`. Clamp to a year to guard against
+    // corrupt values producing an absurd due time.
+    let lead_minutes = i64::from(item.reminder?.unsigned_abs().min(525_600));
+    // Search for an occurrence whose REMINDER falls inside the window, not for
+    // the next occurrence from `now`: with a 15-minute lead and a series whose
+    // next occurrence starts in five minutes, the next reminder is already due,
+    // and starting the search at `now` skipped the (in-window) reminder of the
+    // following occurrence.
+    let search_from = window_start + chrono::Duration::minutes(lead_minutes);
+    let occurrence_start = next_occurrence_start(item, search_from)?;
+    let occurrence_end = occurrence_start + (item.end - item.start);
+    let reminder_due = occurrence_start - chrono::Duration::minutes(lead_minutes);
+    // Only surface reminders within the requested window.
+    if reminder_due < window_start {
+        return None;
+    }
+    if reminder_due > window_end && occurrence_start > window_end {
+        return None;
+    }
+    Some((occurrence_start, occurrence_end, reminder_due))
+}
+
+/// The stable storage key of one reminder occurrence.
+fn reminder_occurrence_key(reminder_due: chrono::DateTime<Utc>) -> String {
+    reminder_due.to_rfc3339()
+}
+
+/// Apply a recorded reminder action to a due instant: `None` hides the
+/// reminder (it was dismissed), `Some(t)` is the instant to show it at (the
+/// original due time, or the snooze instant).
+fn reminder_show_instant(
+    state: Option<&Option<String>>,
+    reminder_due: chrono::DateTime<Utc>,
+    now: chrono::DateTime<Utc>,
+    window_end: chrono::DateTime<Utc>,
+) -> Option<chrono::DateTime<Utc>> {
+    match state {
+        None => Some(reminder_due),
+        Some(None) => None,
+        Some(Some(snooze)) => {
+            // An unreadable snooze instant must not hide the reminder forever:
+            // fail open to the original due time.
+            let Some(snooze_until) = crate::calendar::parse_datetime(snooze) else {
+                return Some(reminder_due);
+            };
+            // Still snoozed and beyond the window: nothing to show yet. A
+            // snooze instant that has passed re-surfaces the reminder (the
+            // client dismisses it again, which records a new action).
+            if snooze_until > now && snooze_until > window_end {
+                return None;
+            }
+            Some(snooze_until)
+        }
+    }
+}
+
 /// Parse the reminder request window (`BeginTime`/`EndTime`). Defaults to a
 /// bounded "now → now+14 days" window when the client omits either bound.
 fn parse_reminder_window(
@@ -11740,21 +11860,66 @@ fn parse_reminder_window(
     (start, end)
 }
 
-/// Handle EWS PerformReminderAction (MS-OXWSRMND §3.1.4.2).
+/// One `<t:ReminderItemAction>` ([MS-OXWSMTGS] §3.1.4.7.3.4).
+struct ReminderAction {
+    action_type: String,
+    item_id: String,
+    new_reminder_time: Option<String>,
+}
+
+impl ReminderAction {
+    /// `Some(true)` = Dismiss, `Some(false)` = Snooze, `None` = not one of the
+    /// two `t:ReminderActionType` values (§3.1.4.7.4.1).
+    fn dismissal(&self) -> Option<bool> {
+        match self.action_type.to_ascii_lowercase().as_str() {
+            "dismiss" => Some(true),
+            "snooze" => Some(false),
+            _ => None,
+        }
+    }
+
+    /// When a snoozed reminder must re-surface. `NewReminderTime` is optional
+    /// (§3.1.4.7.3.4) and the client normally sends its own snooze duration;
+    /// the Exchange default of five minutes applies when it is absent or
+    /// unreadable.
+    fn snooze_until(&self, now: chrono::DateTime<Utc>) -> chrono::DateTime<Utc> {
+        self.new_reminder_time
+            .as_deref()
+            .and_then(crate::calendar::parse_datetime)
+            .unwrap_or(now + chrono::Duration::minutes(5))
+    }
+}
+
+fn parse_reminder_actions(body: &str) -> Vec<ReminderAction> {
+    extract_all_tag_blocks(body, b"ReminderItemAction")
+        .into_iter()
+        .filter_map(|block| {
+            let item_id = extract_first_attr(&block, b"ItemId", b"Id")?;
+            Some(ReminderAction {
+                action_type: extract_first_tag_text(&block, b"ActionType").unwrap_or_default(),
+                item_id,
+                new_reminder_time: extract_first_tag_text(&block, b"NewReminderTime"),
+            })
+        })
+        .collect()
+}
+
+/// Handle EWS PerformReminderAction ([MS-OXWSCORE] §3.1.4.2 /
+/// [MS-OXWSMTGS] §3.1.4.7.4.1).
 ///
-/// Processes `Snooze`/`Dismiss` actions on reminder item ids and returns the
-/// updated item ids in `UpdatedItemIds`. Reminder state is derived from the
-/// calendar event's `ReminderMinutesBeforeStart`; the gateway does not persist
-/// a separate per-reminder snooze/dismiss store, so a `Dismiss` or `Snooze` is
-/// acknowledged for the referenced items and echoed back to the client so its
-/// local reminder UI clears without error.
+/// Each `ReminderItemAction` carries an `ActionType` (`Dismiss`/`Snooze`), the
+/// `ItemId` and, for a snooze, the optional `NewReminderTime`. The action is
+/// PERSISTED per reminder occurrence (`reminder_state`) and `GetReminders`
+/// honours it — the previous behaviour acknowledged both actions without
+/// recording anything, so a dismissed reminder came straight back on the next
+/// reminder read.
 async fn handle_perform_reminder_action(
     state: &Arc<AppState>,
     auth: &AuthContext,
     body: &str,
 ) -> Response {
-    let item_ids = extract_first_attrs(body, b"ItemId", b"Id");
-    if item_ids.is_empty() {
+    let actions = parse_reminder_actions(body);
+    if actions.is_empty() {
         return operation_error_response(
             &EwsAction::PerformReminderAction,
             "ErrorInvalidIdMalformed",
@@ -11762,12 +11927,69 @@ async fn handle_perform_reminder_action(
             StatusCode::BAD_REQUEST,
         );
     }
+    for action in &actions {
+        if action.item_id.is_empty() {
+            return operation_error_response(
+                &EwsAction::PerformReminderAction,
+                "ErrorInvalidIdMalformed",
+                "Each ReminderItemAction requires ItemId/@Id",
+                StatusCode::BAD_REQUEST,
+            );
+        }
+        if action.dismissal().is_none() {
+            return operation_error_response(
+                &EwsAction::PerformReminderAction,
+                "ErrorInvalidRequest",
+                "ActionType must be Dismiss or Snooze",
+                StatusCode::OK,
+            );
+        }
+    }
 
-    // `UpdatedItemIds` must carry each item's REAL ChangeKey: the previous
-    // implementation echoed the id as the ChangeKey, so a client that compared
-    // it against the id it held saw a phantom change.
+    // The occurrence an action targets is the reminder the client was shown,
+    // computed with the same helper `GetReminders` uses. `PerformReminderAction`
+    // carries no window of its own, so the default window applies — the same
+    // defaults a `GetReminders` request without explicit bounds gets.
+    let now = chrono::Utc::now();
+    let (window_start, window_end) = parse_reminder_window(body, now);
+    let owner = owner_from_username(&auth.username);
+    let password = auth.password.expose_secret();
+    let load_start = window_start.min(now).max(now - chrono::Duration::days(365));
+    let load_end = window_end.max(now).min(now + chrono::Duration::days(365));
+    let mut occurrence_by_id: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
+    if actions.iter().any(|a| a.dismissal() == Some(true)) {
+        match load_current_calendar_items(state, owner, password, Some((load_start, load_end)))
+            .await
+        {
+            Ok(items) => {
+                for current in &items {
+                    if let Some((_, _, due)) =
+                        reminder_occurrence(&current.item, window_start, window_end)
+                    {
+                        occurrence_by_id
+                            .insert(current.row.server_id.clone(), reminder_occurrence_key(due));
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "PerformReminderAction: failed to load calendar items");
+                return operation_error_response(
+                    &EwsAction::PerformReminderAction,
+                    "ErrorInternalServerError",
+                    "An internal error occurred while loading calendar items",
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                );
+            }
+        }
+    }
+
+    // `UpdatedItemIds` must carry each item's REAL ChangeKey: echoing the id as
+    // the ChangeKey made a client that compared it against the id it held see a
+    // phantom change.
     let mut updated_xml = String::new();
-    for item_id in &item_ids {
+    for action in &actions {
+        let item_id = &action.item_id;
         match state
             .storage
             .get_ews_item_by_server_id(&auth.username, item_id)
@@ -11780,6 +12002,39 @@ async fn handle_perform_reminder_action(
                     xml_escape(item_id),
                     xml_escape(&ck)
                 ));
+                // Record the action against the occurrence the client is acting
+                // on, so `GetReminders` stops showing it (Dismiss) or shows it
+                // again at the snooze instant (Snooze). Acknowledging an action
+                // that is not recorded makes the reminder reappear.
+                match occurrence_by_id.get(item_id) {
+                    Some(occurrence) => {
+                        let snooze = match action.dismissal() {
+                            Some(false) => Some(action.snooze_until(now).to_rfc3339()),
+                            _ => None,
+                        };
+                        if let Err(e) = state
+                            .storage
+                            .set_reminder_state(owner, item_id, occurrence, snooze.as_deref())
+                            .await
+                        {
+                            tracing::error!(
+                                error = %e,
+                                item_id = %item_id,
+                                "PerformReminderAction: failed to record the reminder action"
+                            );
+                            return operation_error_response(
+                                &EwsAction::PerformReminderAction,
+                                "ErrorInternalServerError",
+                                "Failed to record the reminder action",
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                            );
+                        }
+                    }
+                    None => tracing::warn!(
+                        item_id = %item_id,
+                        "PerformReminderAction: the item has no reminder occurrence in the reminder window; nothing to record"
+                    ),
+                }
             }
             Ok(None) => {
                 return operation_error_response(
@@ -12406,6 +12661,11 @@ enum JmapCreateFailure {
     /// and the event could not be removed again. A retry must not create a
     /// second copy, so the request fails instead of falling back.
     CommittedUnmapped(anyhow::Error),
+    /// The write may have been applied but could not be confirmed (lost
+    /// reply, unverifiable read-back whose orphan could not be removed).
+    /// Falling back to CalDAV could store a second copy, so the request fails
+    /// retryably instead.
+    Uncertain(anyhow::Error),
 }
 
 impl From<anyhow::Error> for JmapCreateFailure {
@@ -12541,6 +12801,14 @@ async fn try_jmap_create_calendar(
                     error = %e,
                     "JMAP calendar create stored an empty event; disabling JMAP calendar writes for this process"
                 );
+            }
+            if e.may_be_committed() {
+                tracing::error!(
+                    target: "ews",
+                    error = %e,
+                    "JMAP calendar create may have committed; refusing the CalDAV fallback"
+                );
+                return Err(JmapCreateFailure::Uncertain(anyhow::anyhow!("{e}")));
             }
             return Err(JmapCreateFailure::NotCommitted(anyhow!("{}", e)));
         }
@@ -13091,6 +13359,102 @@ mod tests {
         assert!(
             days >= 30,
             "daily recurrence should have advanced ~30 days: {days}"
+        );
+    }
+
+    /// `t:ReminderItemAction` parsing: ActionType/ItemId/NewReminderTime, the
+    /// two legal actions only, and one block per action.
+    #[test]
+    fn test_parse_reminder_actions_matrix() {
+        let body = r#"<t:PerformReminderAction>
+            <t:ReminderItemActions>
+              <t:ReminderItemAction>
+                <t:ActionType>Dismiss</t:ActionType>
+                <t:ItemId Id="cal-1" ChangeKey="ck" />
+              </t:ReminderItemAction>
+              <t:ReminderItemAction>
+                <t:ActionType>Snooze</t:ActionType>
+                <t:ItemId Id="cal-2" />
+                <t:NewReminderTime>2026-03-01T10:30:00Z</t:NewReminderTime>
+              </t:ReminderItemAction>
+            </t:ReminderItemActions>
+        </t:PerformReminderAction>"#;
+        let actions = parse_reminder_actions(body);
+        assert_eq!(actions.len(), 2);
+        assert_eq!(actions[0].item_id, "cal-1");
+        assert_eq!(actions[0].dismissal(), Some(true));
+        assert_eq!(actions[1].item_id, "cal-2");
+        assert_eq!(actions[1].dismissal(), Some(false));
+        let now = crate::calendar::parse_datetime("2026-03-01T10:00:00Z").unwrap();
+        assert_eq!(
+            actions[1].snooze_until(now),
+            crate::calendar::parse_datetime("2026-03-01T10:30:00Z").unwrap()
+        );
+        // An absent or unreadable NewReminderTime falls back to 5 minutes.
+        let no_time = ReminderAction {
+            action_type: "snooze".to_string(),
+            item_id: "cal-3".to_string(),
+            new_reminder_time: None,
+        };
+        assert_eq!(
+            no_time.snooze_until(now),
+            now + chrono::Duration::minutes(5)
+        );
+        // An unknown action is rejected by `dismissal()` (the handler answers
+        // ErrorInvalidRequest instead of acknowledging it).
+        let bogus = ReminderAction {
+            action_type: "Explode".to_string(),
+            item_id: "cal-4".to_string(),
+            new_reminder_time: None,
+        };
+        assert_eq!(bogus.dismissal(), None);
+    }
+
+    /// A recorded action decides whether a computed reminder is shown, and at
+    /// which instant.
+    #[test]
+    fn test_reminder_show_instant_honours_recorded_action() {
+        let due = crate::calendar::parse_datetime("2026-03-01T08:45:00Z").unwrap();
+        let now = crate::calendar::parse_datetime("2026-03-01T08:50:00Z").unwrap();
+        let window_end = crate::calendar::parse_datetime("2026-03-15T00:00:00Z").unwrap();
+        // No action recorded: shown at its due time.
+        assert_eq!(reminder_show_instant(None, due, now, window_end), Some(due));
+        // Dismissed: hidden.
+        assert_eq!(
+            reminder_show_instant(Some(&None), due, now, window_end),
+            None
+        );
+        // Snoozed into the future (inside the window): shown at the snooze time.
+        let snooze = "2026-03-01T09:10:00Z".to_string();
+        assert_eq!(
+            reminder_show_instant(Some(&Some(snooze.clone())), due, now, window_end),
+            Some(crate::calendar::parse_datetime(&snooze).unwrap())
+        );
+        // Snoozed past the requested window: not shown yet.
+        assert_eq!(
+            reminder_show_instant(
+                Some(&Some("2026-03-20T09:00:00Z".to_string())),
+                due,
+                now,
+                window_end
+            ),
+            None
+        );
+        // A snooze instant that already passed re-surfaces the reminder so the
+        // client can dismiss it again.
+        assert_eq!(
+            reminder_show_instant(
+                Some(&Some("2026-03-01T08:46:00Z".to_string())),
+                due,
+                now,
+                window_end
+            ),
+            Some(crate::calendar::parse_datetime("2026-03-01T08:46:00Z").unwrap())
+        );
+        // An unreadable snooze instant fails open to the original due time.
+        assert_eq!(
+            reminder_show_instant(Some(&Some("not-a-date".to_string())), due, now, window_end),
+            Some(due)
         );
     }
 
@@ -13861,6 +14225,37 @@ mod tests {
             username: "user@example.com".to_string(),
             password: SecretString::from("pw"),
         }
+    }
+
+    /// `MarkAsJunk`'s `MoveItem` attribute is `use="required"`
+    /// ([MS-OXWSCORE] §3.1.4.1.3.2): an absent attribute is a malformed
+    /// request and must not move (or even look up) anything, while an explicit
+    /// `false` is the unsupported classify-only mode.
+    #[tokio::test]
+    async fn mark_as_junk_rejects_missing_or_false_move_item() {
+        let state = meeting_test_state().await;
+        let auth = meeting_auth();
+        let body = |attrs: &str| {
+            format!(
+                r#"<m:MarkAsJunk {attrs}><m:ItemIds><t:ItemId Id="em-1"/></m:ItemIds></m:MarkAsJunk>"#
+            )
+        };
+
+        let resp = handle_mark_as_junk(&state, &auth, &body(r#"IsJunk="true""#)).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let text = response_body(resp).await;
+        assert!(
+            text.contains("MarkAsJunk requires the MoveItem attribute"),
+            "{text}"
+        );
+
+        let resp =
+            handle_mark_as_junk(&state, &auth, &body(r#"IsJunk="true" MoveItem="false""#)).await;
+        let text = response_body(resp).await;
+        assert!(
+            text.contains("MarkAsJunk without MoveItem=true is not supported"),
+            "{text}"
+        );
     }
 
     async fn response_body(resp: Response) -> String {
@@ -15702,6 +16097,125 @@ mod tests {
             seeded,
             Some(expected),
             "the delivered Create's keywords must be seeded into the flag baseline"
+        );
+    }
+
+    /// A message that leaves the mailbox between `Email/query` and `Email/get`
+    /// is a GHOST: it sits inside the prime's query state, so no later delta
+    /// ever reports its departure and the client would keep an item it cannot
+    /// open or change. The prime delivers only messages the mailbox still
+    /// holds.
+    #[tokio::test]
+    async fn sync_email_folder_items_prime_skips_message_that_left_the_mailbox() {
+        use axum::routing::{get, post};
+        use serde_json::{Value, json};
+        use std::sync::Arc as StdArc;
+
+        async fn session(axum::Extension(base): axum::Extension<String>) -> axum::Json<Value> {
+            axum::Json(json!({
+                "apiUrl": base,
+                "downloadUrl": format!("{base}/download/{{accountId}}/{{blobId}}"),
+                "uploadUrl": format!("{base}/upload/{{accountId}}"),
+                "eventSourceUrl": format!("{base}/eventsource"),
+                "state": "s",
+                "username": "u",
+                "accounts": {"a": {"name": "u", "isPersonal": true, "isReadOnly": false, "accountCapabilities": {}}},
+                "primaryAccounts": {"urn:ietf:params:jmap:mail": "a"},
+                "capabilities": {"urn:ietf:params:jmap:core": {"maxObjectsInGet": 500}}
+            }))
+        }
+
+        async fn api(body: String) -> axum::response::Response {
+            let req: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
+            let mut responses = Vec::new();
+            for call in req
+                .get("methodCalls")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default()
+            {
+                let name = call.get(0).and_then(|v| v.as_str()).unwrap_or("");
+                let cid = call.get(2).and_then(|v| v.as_str()).unwrap_or("c0");
+                let args = call.get(1).cloned().unwrap_or(Value::Null);
+                let result = match name {
+                    "Mailbox/query" => json!({"accountId":"a","ids":["mbx-inbox"],"total":1}),
+                    "Email/query" => json!({
+                        "accountId":"a","queryState":"QS0","ids":["m1","m2"],"total":2,"position":0
+                    }),
+                    "Email/get" => {
+                        // The capture only asks for keywords (no membership);
+                        // the delivery fetch reports current membership, where
+                        // `m2` has already moved to another mailbox.
+                        let only_keywords = args
+                            .get("properties")
+                            .and_then(|v| v.as_array())
+                            .map(|a| a.len() == 1 && a[0].as_str() == Some("keywords"))
+                            .unwrap_or(false);
+                        if only_keywords {
+                            json!({"accountId":"a","state":"D0","list":[
+                                {"id":"m1","keywords":{}},
+                                {"id":"m2","keywords":{}}
+                            ]})
+                        } else {
+                            json!({"accountId":"a","state":"D0","list":[
+                                {"id":"m1","mailboxIds":{"mbx-inbox":true},"keywords":{},"subject":"kept","receivedAt":"2026-01-01T00:00:00Z"},
+                                {"id":"m2","mailboxIds":{"mbx-other":true},"keywords":{},"subject":"ghost","receivedAt":"2026-01-02T00:00:00Z"}
+                            ]})
+                        }
+                    }
+                    _ => json!({"accountId":"a"}),
+                };
+                responses.push(json!([name, result, cid]));
+            }
+            let resp = json!({"methodResponses": responses, "sessionState": "s"});
+            axum::response::Response::builder()
+                .status(200)
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(serde_json::to_vec(&resp).unwrap()))
+                .unwrap()
+        }
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
+        let app = axum::Router::new()
+            .route("/session", get(session))
+            .route("/", post(api))
+            .layer(axum::Extension(base.clone()));
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let storage = crate::storage::Storage::new("sqlite::memory:")
+            .await
+            .unwrap();
+        storage.init_schema().await.unwrap();
+        let cfg = crate::config::Config {
+            jmap_base: base,
+            email_enabled: true,
+            mail_domain: "example.com".to_string(),
+            hmac_secret: SecretString::from("a".repeat(32)),
+            ..Default::default()
+        };
+        let state = StdArc::new(crate::models::AppState::new(cfg, StdArc::new(storage)));
+
+        let body = r#"<m:SyncFolderItems><m:ItemShape/><m:SyncFolderId><t:DistinguishedFolderId Id="inbox"/></m:SyncFolderId><m:MaxChangesReturned>100</m:MaxChangesReturned></m:SyncFolderItems>"#;
+        let text =
+            response_body(handle_sync_folder_items(&state, &meeting_auth(), body).await).await;
+        assert!(
+            text.contains("kept") && !text.contains("ghost"),
+            "only messages still in the mailbox may be delivered: {text}"
+        );
+        // The ghost must not enter the delivered-membership ledger either, or a
+        // later re-arrival of the same id would be classified as a held Update.
+        let owner = owner_from_username("user@example.com");
+        let folder_id = folder_id_for(owner, DistinguishedFolder::Inbox);
+        assert!(
+            !state
+                .storage
+                .has_email_delivered_membership(owner, &folder_id, "m2")
+                .await
+                .unwrap(),
+            "a skipped ghost must not be recorded as delivered"
         );
     }
 

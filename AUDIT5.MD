@@ -720,6 +720,71 @@ hierarchy, and an already-primed client receives their journaled
 `folder-add`/`folder-update`/`folder-delete` rows as `Create`/`Update`/`Delete`
 from the watermark in its opaque `SyncState` (Type 13 calendar collections are
 not EWS folders and are never advertised as mail folders).
+(ae) A non-zero EAS email `SyncKey` is validated against the last key the
+collection was issued BEFORE the request's flag/read/delete mutations are
+applied: a mismatch answers Status 3 with SyncKey 0 (the client re-primes), an
+unreadable stored key answers the retryable Status 5 with the incoming key
+echoed, and a stale-key RETRY never re-applies mutations. Every branch that
+hands the client a key now writes it first and fails closed when the write
+fails (empty collection, no JMAP client, collection with no mailbox), so a key
+the gateway never persisted can no longer make the next Sync look stale and
+re-prime forever while storage is failing. (af) The email delta's
+`Email/query`+`Email/get` batch fails closed when either response is missing
+(RFC 8620 §3.6.2): "the backend never answered" must not be stored as an empty
+page with a fresh query state. (ag) `MoveItems` answers the
+[MS-ASCMD] §2.2.3.177.10 status table — 3 success, 1 invalid source item
+(absent, or no longer in `SrcFldId`, checked through the strict membership
+probe), 2 invalid destination collection (Outbox, an unmapped folder, a
+non-calendar calendar move), 4 same source and destination, 7 retry (backend or
+storage failure) — and the root Status is 5 when the request carries no
+`<Move>`. A move is a MOVE: the source mailbox membership is dropped, so a
+message no longer lingers in the folder the client moved it out of (EWS
+`MoveItem`/`MarkAsJunk` carry only a destination, so there the whole set is
+replaced). The bulk move path also fails closed on a missing `mailboxIds`, an
+unaccounted id, or a method-level `Email/set` error instead of reporting a
+partial success. (ah) A copy is `Email/import` of the source's own raw blob
+(RFC 8621 §4.8), preserving `keywords` and `receivedAt`: `Email/copy` requires
+DIFFERENT accounts (RFC 8620 §5.3) and `copyFrom` is not an `Email/set` create
+property (Stalwart v1.1.0 rejects unknown create properties with
+`invalidProperties`), so both older forms copied nothing. (ai) A send is
+confirmed only by `EmailSubmission/set` `created.s0` and `Email/set`
+`created.e0`; an unconfirmed submission is an error, because `SendItem` deletes
+the source draft on success and an unreported send would lose the message.
+(aj) The EWS calendar prime's keyset continuation cursor commits INSIDE the
+sync transaction (with the SyncState and the delivery ledger), the EAS email
+initial sync skips a message that left the mailbox between `Email/query` and
+`Email/get` rather than delivering a ghost `<Add>`, and EWS `OofState`
+`Scheduled` is derived from a stored schedule (start AND end present), not from
+whether its start time is still in the future — [MS-OXWOOF] §2.2.5.2 defines it
+as a configuration state.
+
+(ak) EWS `PerformReminderAction` PERSISTS the action per reminder
+occurrence (`reminder_state`, keyed by `(owner, item, occurrence)`): `Dismiss`
+hides the occurrence from `GetReminders`, `Snooze` re-surfaces it at
+`NewReminderTime` (Exchange's five-minute default when absent or unreadable),
+and the next occurrence of a recurring series is a separate row, so dismissing
+this week's reminder never hides next week's. An unknown `ActionType`, or a
+missing `ItemId`, is `ErrorInvalidRequest`/`ErrorInvalidIdMalformed` instead of
+a silent acknowledgement, and `UpdatedItemIds` still carries each item's real
+ChangeKey. (al) `MarkAsJunk` requires the `MoveItem` attribute
+([MS-OXWSCORE] §3.1.4.1.3.2 declares it `use="required"`): an absent attribute
+is `ErrorInvalidRequest` and moves nothing, and `MoveItem=false` (classify
+without moving) is rejected because the gateway has no spam-classification
+store behind the move. (am) EAS `FolderDelete` FAILS CLOSED
+(retryable Status 6) when the authoritative JMAP mailbox enumeration fails: that
+enumeration is what proves a mapped descendant is still inside the subtree, so
+without it the walk could destroy a sub-folder another client moved out. (an)
+The EWS email prime skips a message that left the mailbox between `Email/query`
+and `Email/get` (it is inside the prime's query state, so no later delta would
+ever report its departure) and does not record it as delivered. (ao) An EAS
+calendar `Add` records its `(ClientId → ServerId)` replay identity IMMEDIATELY
+after the CalDAV `PUT` succeeds, BEFORE the mirror/ledger writes, so a storage
+failure after the PUT cannot make the client's retry create a SECOND event.
+(ap) A JMAP submission confirmed by `EmailSubmission/set` `created.s0` is a
+successful send even when a later invocation in the same batch answers a
+method-level `error` (the implicit `Email/set` that files the message into Sent
+shares the submission's call id): failing that send would make the SMTP
+fallback deliver the message twice.
 
 **Upgrade note (expected one-time re-prime).** Before this change the stored
 email delta token was the `Email/get` data-type state; the new delta passes it

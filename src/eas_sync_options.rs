@@ -325,7 +325,13 @@ pub struct EasSyncCollectionOptions {
     /// data is ever emitted and no truncation of it can occur. Parsed and
     /// persisted anyway for sticky-block wire fidelity.
     pub mime_truncation: Option<u8>,
-    /// `<airsync:MaxItems>` ([MS-ASCMD] §2.2.3.103.2).
+    /// `<airsync:MaxItems>` ([MS-ASCMD] §2.2.3.103.2). In a Sync request this
+    /// element caps the RECIPIENT INFORMATION CACHE only ("MUST only be
+    /// included … when the CollectionId maps to the recipient information
+    /// cache"); it is NOT a page size for Mail/Calendar, whose window is
+    /// `<WindowSize>` (§2.2.3.199). The gateway exposes no recipient-cache
+    /// collection, so the value is parsed for sticky-block fidelity and
+    /// deliberately not applied to any window.
     pub max_items: Option<u32>,
     /// `<airsync:Truncation>` ([MS-ASCMD] §2.2.3.185); EAS 2.5 only, kept for
     /// wire completeness.

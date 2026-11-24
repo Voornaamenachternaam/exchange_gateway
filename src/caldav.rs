@@ -680,10 +680,9 @@ impl CaldavClient {
             ));
         };
         Ok(Some(CalendarCollectionProps {
-            is_calendar: response
-                .propstats
-                .iter()
-                .any(|ps| ps.prop.resourcetype.calendar.is_some()),
+            is_calendar: response.propstats.iter().any(|ps| {
+                ps.prop.resourcetype.calendar.is_some() && ps.prop.resourcetype.collection.is_some()
+            }),
             display_name: response
                 .propstats
                 .iter()
@@ -1203,6 +1202,11 @@ use serde::Deserialize;
 struct ResourceType {
     #[serde(rename = "calendar", default)]
     calendar: Option<()>,
+    /// A calendar must ALSO be a `DAV:collection` (RFC 4791 §4.2): the
+    /// `calendar` element alone is a malformed resourcetype and must not be
+    /// accepted as a calendar collection identity.
+    #[serde(rename = "collection", default)]
+    collection: Option<()>,
 }
 
 #[derive(Deserialize, Debug)]

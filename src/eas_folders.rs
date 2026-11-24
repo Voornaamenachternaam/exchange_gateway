@@ -1421,15 +1421,21 @@ async fn collect_delete_subtree(
     };
     let mailboxes = match jmap.query_all_mailboxes(owner, password).await {
         Ok(list) => list.mailboxes,
-        // Degrade to the mirror walk with a warning: a hierarchy read outage
-        // must not block every delete, and anything the mirror misses surfaces
-        // as the backend's refusal (retryable Status 6).
+        // FAIL CLOSED. The authoritative enumeration is what proves a mapped
+        // descendant is still INSIDE the subtree: the mirror cannot see that
+        // another client moved a sub-folder out, and destroying it anyway would
+        // delete that folder (and, with `onDestroyRemoveEmails`, its mail).
+        // A retryable Status 6 makes the client retry once the backend is
+        // readable again, which is the safe outcome for a destructive command.
         Err(e) => {
             tracing::warn!(
                 error = %e,
-                "FolderDelete: failed to read the backend mailbox hierarchy"
+                "FolderDelete: failed to read the backend mailbox hierarchy; not destroying"
             );
-            return Ok(entries);
+            return Err(crate::error::GatewayError::Protocol {
+                context: format!("mailbox hierarchy unavailable: {e}"),
+                source: None,
+            });
         }
     };
 
@@ -2245,6 +2251,38 @@ mod tests {
                         };
                         ("Mailbox/query", json!({"accountId": "a", "ids": ids}))
                     }
+                    // RFC 8620 §5.1: a `Mailbox/get` for the ids the query
+                    // returned. The descendant walk needs a usable `list` (a
+                    // missing one is a hierarchy read failure), and every
+                    // mailbox it names is a root-level folder here.
+                    "Mailbox/get" => {
+                        let ids: Vec<String> = args
+                            .get("ids")
+                            .and_then(|v| v.as_array())
+                            .map(|a| {
+                                a.iter()
+                                    .filter_map(|v| v.as_str().map(str::to_string))
+                                    .collect()
+                            })
+                            .unwrap_or_default();
+                        let list: Vec<Value> = ids
+                            .iter()
+                            .map(|id| {
+                                json!({
+                                    "id": id,
+                                    "name": id,
+                                    "parentId": null,
+                                    "role": null,
+                                    "totalEmails": 0,
+                                    "unreadEmails": 0,
+                                })
+                            })
+                            .collect();
+                        (
+                            "Mailbox/get",
+                            json!({"accountId": "a", "list": list, "state": "s"}),
+                        )
+                    }
                     "Mailbox/set" => {
                         if let Some(create) = args.get("create").and_then(|v| v.as_object()) {
                             let created: serde_json::Map<String, Value> = create
@@ -2473,6 +2511,125 @@ mod tests {
         };
         let state = StdArc::new(AppState::new(cfg, StdArc::new(storage)));
         (state, jmap_calls, dav_calls)
+    }
+
+    /// A `Mailbox/get` failure during the descendant walk must ABORT the
+    /// destructive command with the retryable Status 6: without the
+    /// authoritative hierarchy the walk cannot tell a sub-folder that another
+    /// client moved out of the subtree (destroying it would delete it), so it
+    /// must not degrade to the stale mirror.
+    #[tokio::test]
+    async fn delete_folder_fails_closed_when_hierarchy_read_fails() {
+        use axum::response::Response;
+        use axum::routing::{get, post};
+
+        let jmap_calls: StdArc<TokioMutex<Vec<Value>>> = StdArc::new(TokioMutex::new(Vec::new()));
+        let calls_for_stub = jmap_calls.clone();
+
+        async fn session(axum::Extension(base): axum::Extension<String>) -> axum::Json<Value> {
+            axum::Json(json!({
+                "apiUrl": base,
+                "downloadUrl": format!("{base}/download/{{accountId}}/{{blobId}}"),
+                "uploadUrl": format!("{base}/upload/{{accountId}}"),
+                "eventSourceUrl": format!("{base}/eventsource"),
+                "state": "s",
+                "username": "u",
+                "accounts": {"a": {"name": "u", "isPersonal": true, "isReadOnly": false, "accountCapabilities": {}}},
+                "primaryAccounts": {"urn:ietf:params:jmap:mail": "a"},
+                "capabilities": {}
+            }))
+        }
+
+        async fn api(body: String, calls: StdArc<TokioMutex<Vec<Value>>>) -> Response {
+            let req: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
+            let mut responses = Vec::new();
+            for call in req
+                .get("methodCalls")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default()
+            {
+                let name = call.get(0).and_then(|v| v.as_str()).unwrap_or("");
+                let call_id = call.get(2).and_then(|v| v.as_str()).unwrap_or("c0");
+                calls.lock().await.push(json!({"method": name}));
+                let result = match name {
+                    // Enumerate one mailbox so `Mailbox/get` (which fails) is
+                    // actually reached.
+                    "Mailbox/query" => json!({"accountId": "a", "ids": ["mb-x"], "total": 1}),
+                    "Mailbox/get" => {
+                        json!({"accountId": "a", "notFound": ["mb-x"]})
+                    }
+                    _ => json!({"accountId": "a"}),
+                };
+                responses.push(json!([name, result, call_id]));
+            }
+            let resp = json!({"methodResponses": responses, "sessionState": "s"});
+            Response::builder()
+                .status(200)
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(serde_json::to_vec(&resp).unwrap()))
+                .unwrap()
+        }
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
+        let base_for_stub = base.clone();
+        let app = axum::Router::new()
+            .route("/session", get(session))
+            .route(
+                "/",
+                post(move |body: String| api(body, calls_for_stub.clone())),
+            )
+            .layer(axum::Extension(base_for_stub));
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let storage = crate::storage::Storage::new("sqlite::memory:")
+            .await
+            .expect("in-memory storage");
+        storage.init_schema().await.expect("schema init");
+        let cfg = crate::config::Config {
+            jmap_base: base,
+            email_enabled: true,
+            mail_domain: "example.com".to_string(),
+            hmac_secret: SecretString::from("a".repeat(32)),
+            ..Default::default()
+        };
+        let state = StdArc::new(AppState::new(cfg, StdArc::new(storage)));
+        state
+            .storage
+            .upsert_folder_journaled(
+                crate::storage::FolderUpsertParams {
+                    owner: "u@example.com",
+                    server_id: "mb-x",
+                    parent_id: "0",
+                    display_name: "Old",
+                    folder_type: 12,
+                    backend_kind: "jmap",
+                    backend_id: "mb-x",
+                },
+                "folder-add",
+            )
+            .await
+            .unwrap();
+
+        let r = delete_folder(&state, "u@example.com", &pw(), "mb-x").await;
+        assert_eq!(r.status, 6, "a hierarchy read failure must be retryable");
+        assert!(
+            state
+                .storage
+                .get_folder("u@example.com", "mb-x")
+                .await
+                .unwrap()
+                .is_some(),
+            "nothing may be destroyed or pruned when the walk cannot be completed"
+        );
+        let methods = jmap_methods(&jmap_calls).await;
+        assert!(
+            !methods.iter().any(|m| m == "Mailbox/set"),
+            "no destructive call may be issued: {methods:?}"
+        );
     }
 
     async fn jmap_methods(calls: &StdArc<TokioMutex<Vec<Value>>>) -> Vec<String> {

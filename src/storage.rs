@@ -47,6 +47,14 @@ impl Storage {
     /// concurrent rename/move of the same folder (over ANY front door: EAS,
     /// EWS, or MAPI) cannot interleave a mirror derived from a stale snapshot.
     ///
+    /// `backend_id` is the folder's id IN ITS OWN BACKEND, which is why the key
+    /// is backend-scoped by construction rather than by a prefix: a JMAP mail
+    /// folder is keyed by its mailbox id, a CalDAV collection by its collection
+    /// href. The two id spaces are disjoint (an href is never a bare mailbox
+    /// id), so a mailbox and a collection can never collide on one lock, while
+    /// EVERY front door of the same folder resolves the same id and therefore
+    /// the same lock.
+    ///
     /// The returned guard prunes the map entry when it is released and no
     /// other holder or waiter references the mutex, so the map stays bounded
     /// while two concurrent callers on the SAME live folder still share one
@@ -623,6 +631,22 @@ impl SafeDebug for SchedulingQueueRow {
             .field("processed_at", &self.processed_at)
             .finish()
     }
+}
+
+/// What an EWS calendar prime must do to its keyset continuation cursor.
+///
+/// Applied INSIDE the [`Storage::commit_ews_calendar_sync`] transaction so the
+/// cursor can never advance ahead of the `SyncState` the client is told: a
+/// cursor committed before a failed state write would make the client's retry
+/// (same SyncState, response lost) resume AFTER the page it never received.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EwsPrimeCursor<'a> {
+    /// Not a prime, or nothing to change.
+    Keep,
+    /// A clipped prime: persist the last delivered key with the frozen baseline.
+    Set { last_key: &'a str, base_seq: i64 },
+    /// A fully drained prime: drop the continuation.
+    Clear,
 }
 
 impl Storage {
@@ -1206,7 +1230,8 @@ impl Storage {
     /// Commit one EWS `SyncFolderItems` (calendar) response's durable state in
     /// ONE transaction: the new `SyncState` together with the delivery ledger
     /// (this folder stream's delivered items, the emitted `<t:Delete>`s'
-    /// removals). Atomicity matters in one direction only, but it is a hard
+    /// removals) and, for a prime, the keyset continuation cursor.
+    /// Atomicity matters in one direction only, but it is a hard
     /// requirement: the ledger must never advance AHEAD of the SyncState the
     /// client is told. If it did, the client's retry (same cursor) would see an
     /// item as already delivered and be told `<t:Update>` for one it never
@@ -1225,6 +1250,7 @@ impl Storage {
         reset: bool,
         deliveries: &[(String, String)],
         deletes: &[String],
+        cursor: EwsPrimeCursor<'_>,
     ) -> Result<()> {
         let mut tx = sqlx::Acquire::begin(self.pool.as_ref())
             .await
@@ -1273,6 +1299,38 @@ impl Storage {
         .execute(&mut *tx)
         .await
         .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+        // The prime's keyset continuation cursor commits WITH the state and the
+        // ledger. A cursor written ahead of a failed commit would make the
+        // client's retry (same SyncState, response lost) resume AFTER the page
+        // it never received — skipping it permanently.
+        match cursor {
+            EwsPrimeCursor::Keep => {}
+            EwsPrimeCursor::Set { last_key, base_seq } => {
+                sqlx::query(
+                    "INSERT INTO local_sync_cursor (owner, collection_id, last_key, base_seq)
+                     VALUES (?1, ?2, ?3, ?4)
+                     ON CONFLICT(owner, collection_id) DO UPDATE
+                     SET last_key = ?3, base_seq = ?4, updated_at = CURRENT_TIMESTAMP",
+                )
+                .bind(owner)
+                .bind(folder_id)
+                .bind(last_key)
+                .bind(base_seq)
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+            }
+            EwsPrimeCursor::Clear => {
+                sqlx::query(
+                    "DELETE FROM local_sync_cursor WHERE owner = ?1 AND collection_id = ?2",
+                )
+                .bind(owner)
+                .bind(folder_id)
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+            }
+        }
         tx.commit()
             .await
             .map_err(|e| GatewayError::Storage(format!("Commit error: {}", e)))?;
@@ -3215,6 +3273,59 @@ impl Storage {
             .await
             .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))?;
         Ok(row.map(|r| r.get(0)))
+    }
+
+    /// Record a reminder action ([MS-OXWSMTGS] §3.1.4.7.4.1) for one reminder
+    /// occurrence. `snooze_until` `None` = dismissed; `Some(instant)` = the
+    /// reminder re-surfaces at that instant.
+    pub async fn set_reminder_state(
+        &self,
+        owner: &str,
+        item_server_id: &str,
+        occurrence: &str,
+        snooze_until: Option<&str>,
+    ) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO reminder_state (owner, item_server_id, occurrence, snooze_until, updated_at)
+             VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+             ON CONFLICT(owner, item_server_id, occurrence)
+             DO UPDATE SET snooze_until = excluded.snooze_until, updated_at = CURRENT_TIMESTAMP",
+        )
+        .bind(owner)
+        .bind(item_server_id)
+        .bind(occurrence)
+        .bind(snooze_until)
+        .execute(self.pool())
+        .await
+        .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))?;
+        Ok(())
+    }
+
+    /// Every recorded reminder action for an owner, as
+    /// `(item_server_id, occurrence, snooze_until)` triples. Reminders are a
+    /// bounded set (one row per dismissed occurrence) and GetReminders already
+    /// re-reads the whole calendar, so filtering happens in the caller.
+    pub async fn list_reminder_state(
+        &self,
+        owner: &str,
+    ) -> Result<Vec<(String, String, Option<String>)>> {
+        let rows = sqlx::query(
+            "SELECT item_server_id, occurrence, snooze_until FROM reminder_state WHERE owner = ?",
+        )
+        .bind(owner)
+        .fetch_all(self.pool())
+        .await
+        .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))?;
+        Ok(rows
+            .into_iter()
+            .map(|r| {
+                (
+                    r.get::<String, _>(0),
+                    r.get::<String, _>(1),
+                    r.get::<Option<String>, _>(2),
+                )
+            })
+            .collect())
     }
 
     pub async fn set_ews_sync_state(
@@ -5226,6 +5337,66 @@ mod tests {
             .expect("in-memory storage");
         storage.init_schema().await.expect("schema init");
         storage
+    }
+
+    /// A reminder action is keyed by (owner, item, occurrence): a Dismiss is
+    /// stored as `snooze_until = NULL`, a later Snooze for the same occurrence
+    /// replaces it in place, another occurrence of the same item is
+    /// independent, and the listing is owner-scoped.
+    #[tokio::test]
+    async fn reminder_state_is_per_occurrence_and_upserts() {
+        let storage = mem_storage().await;
+        let owner = "reminders@example.com";
+
+        storage
+            .set_reminder_state(owner, "item-1", "2026-03-01T08:45:00+00:00", None)
+            .await
+            .expect("dismiss recorded");
+        let rows = storage.list_reminder_state(owner).await.expect("listing");
+        assert_eq!(
+            rows,
+            vec![(
+                "item-1".to_string(),
+                "2026-03-01T08:45:00+00:00".to_string(),
+                None
+            )]
+        );
+
+        // A snooze of the SAME occurrence replaces the dismissal …
+        storage
+            .set_reminder_state(
+                owner,
+                "item-1",
+                "2026-03-01T08:45:00+00:00",
+                Some("2026-03-01T09:10:00+00:00"),
+            )
+            .await
+            .expect("snooze recorded");
+        // … and the next occurrence of the same item is a separate row.
+        storage
+            .set_reminder_state(owner, "item-1", "2026-03-02T08:45:00+00:00", None)
+            .await
+            .expect("next occurrence dismissed");
+        let mut rows = storage.list_reminder_state(owner).await.expect("listing");
+        rows.sort();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(
+            rows[0],
+            (
+                "item-1".to_string(),
+                "2026-03-01T08:45:00+00:00".to_string(),
+                Some("2026-03-01T09:10:00+00:00".to_string())
+            )
+        );
+        assert_eq!(rows[1].2, None);
+        // Another owner sees nothing.
+        assert!(
+            storage
+                .list_reminder_state("other@example.com")
+                .await
+                .expect("listing")
+                .is_empty()
+        );
     }
 
     async fn journal_len(storage: &Storage, owner: &str) -> usize {
@@ -7859,5 +8030,84 @@ mod tests {
         )
         .await;
         assert!(again.is_ok(), "a released lock must be acquirable");
+    }
+
+    /// The EWS calendar prime's keyset cursor is written INSIDE the sync
+    /// commit. A cursor advanced ahead of the committed SyncState would make
+    /// the client's retry resume past the page it never received.
+    #[tokio::test]
+    async fn commit_ews_calendar_sync_applies_prime_cursor_atomically() {
+        let storage = mem_storage().await;
+        let owner = "ews-prime@example.com";
+        let folder = "calendar";
+        let scope = "calendar::dev-1";
+
+        // A clipped prime: the continuation key lands with the state + ledger.
+        storage
+            .commit_ews_calendar_sync(
+                owner,
+                folder,
+                scope,
+                "state-1",
+                true,
+                &[("ev-1".to_string(), "etag-1".to_string())],
+                &[],
+                EwsPrimeCursor::Set {
+                    last_key: "ev-1",
+                    base_seq: 42,
+                },
+            )
+            .await
+            .expect("commit");
+        assert_eq!(
+            storage.get_ews_sync_state(owner, folder).await.unwrap(),
+            Some("state-1".to_string())
+        );
+        assert_eq!(
+            storage.get_local_sync_cursor(owner, folder).await.unwrap(),
+            Some(("ev-1".to_string(), 42))
+        );
+
+        // A retry carrying Keep must NOT disturb the stored cursor.
+        storage
+            .commit_ews_calendar_sync(
+                owner,
+                folder,
+                scope,
+                "state-1",
+                false,
+                &[],
+                &[],
+                EwsPrimeCursor::Keep,
+            )
+            .await
+            .expect("commit");
+        assert_eq!(
+            storage.get_local_sync_cursor(owner, folder).await.unwrap(),
+            Some(("ev-1".to_string(), 42))
+        );
+
+        // A fully drained prime drops the continuation with the new state.
+        storage
+            .commit_ews_calendar_sync(
+                owner,
+                folder,
+                scope,
+                "state-2",
+                false,
+                &[],
+                &[],
+                EwsPrimeCursor::Clear,
+            )
+            .await
+            .expect("commit");
+        assert_eq!(
+            storage.get_local_sync_cursor(owner, folder).await.unwrap(),
+            None
+        );
+        assert_eq!(
+            storage.get_ews_sync_state(owner, folder).await.unwrap(),
+            Some("state-2".to_string())
+        );
     }
 }
