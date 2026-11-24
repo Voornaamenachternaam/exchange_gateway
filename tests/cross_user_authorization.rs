@@ -55,6 +55,41 @@ fn session_json(base: &str, owner: &str) -> Value {
     })
 }
 
+/// Per-user JMAP account id. A request served with Alice's session but Bob's
+/// credentials (or a session reused across users) is then visible: the POST
+/// mock rejects an `accountId` that does not belong to the authenticated user.
+fn account_id_for(owner: &str) -> String {
+    format!("acct-{owner}")
+}
+
+/// Answers `/session` with the account of the AUTHENTICATED user, so a shared
+/// or reused session cannot pass for another user's.
+struct PerUserSession(&'static str);
+
+impl Respond for PerUserSession {
+    fn respond(&self, request: &Request) -> ResponseTemplate {
+        let owner = basic_user(request);
+        ResponseTemplate::new(200).set_body_json(json!({
+            "apiUrl": self.0,
+            "downloadUrl": format!("{}/download/{{accountId}}/{{blobId}}", self.0),
+            "uploadUrl": format!("{}/upload/{{accountId}}", self.0),
+            "eventSourceUrl": format!("{}/eventsource", self.0),
+            "state": "cross-user",
+            "username": owner,
+            "accounts": {
+                account_id_for(&owner): {
+                    "name": owner,
+                    "isPersonal": true,
+                    "isReadOnly": false,
+                    "accountCapabilities": {}
+                }
+            },
+            "primaryAccounts": {"urn:ietf:params:jmap:mail": account_id_for(&owner)},
+            "capabilities": {}
+        }))
+    }
+}
+
 /// Create a MockServer that answers 200 to the session probe for `owner`.
 async fn mock_backend_for(owner: &str) -> MockServer {
     let server = MockServer::start().await;
@@ -160,6 +195,7 @@ fn basic_user(request: &Request) -> String {
 impl Respond for OwnerEchoBackend {
     fn respond(&self, request: &Request) -> ResponseTemplate {
         let owner = basic_user(request);
+        let expected_account = account_id_for(&owner);
         let req: Value = serde_json::from_slice(&request.body).unwrap_or(Value::Null);
         let mut responses = Vec::new();
         for call in req
@@ -171,10 +207,21 @@ impl Respond for OwnerEchoBackend {
             let name = call.get(0).and_then(|v| v.as_str()).unwrap_or("");
             let args = call.get(1).cloned().unwrap_or(Value::Null);
             let cid = call.get(2).and_then(|v| v.as_str()).unwrap_or("c0");
+            // A call addressed at another user's account is a cross-user leak:
+            // answer it as a method error so the front door fails loudly instead
+            // of silently operating on the wrong account.
+            if args.get("accountId").and_then(|v| v.as_str()) != Some(expected_account.as_str()) {
+                responses.push(json!([
+                    "error",
+                    {"type": "accountNotFound"},
+                    cid
+                ]));
+                continue;
+            }
             let result = match name {
                 // No pre-existing mailbox, so a FolderCreate never collides.
-                "Mailbox/query" => json!({"accountId": "a", "ids": [], "total": 0}),
-                "Mailbox/get" => json!({"accountId": "a", "state": "m1", "list": []}),
+                "Mailbox/query" => json!({"accountId": expected_account, "ids": [], "total": 0}),
+                "Mailbox/get" => json!({"accountId": expected_account, "state": "m1", "list": []}),
                 "Mailbox/set" => {
                     let mut created = serde_json::Map::new();
                     if let Some(create) = args.get("create").and_then(|v| v.as_object()) {
@@ -185,9 +232,9 @@ impl Respond for OwnerEchoBackend {
                             created.insert(client_id.clone(), json!({"id": format!("mb-{owner}")}));
                         }
                     }
-                    json!({"accountId": "a", "created": created})
+                    json!({"accountId": expected_account, "created": created})
                 }
-                _ => json!({"accountId": "a"}),
+                _ => json!({"accountId": expected_account}),
             };
             responses.push(json!([name, result, cid]));
         }
@@ -224,7 +271,7 @@ async fn eas_folder_create_is_scoped_to_the_authenticated_owner() {
     let base = server.uri();
     Mock::given(method("GET"))
         .and(path("/session"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(session_json(&base, "owner-echo")))
+        .respond_with(PerUserSession(Box::leak(base.clone().into_boxed_str())))
         .mount(&server)
         .await;
     Mock::given(method("POST"))
@@ -475,20 +522,50 @@ async fn auth_cache_keyed_by_username_password_not_username_only() {
 
 #[tokio::test]
 async fn ews_auth_failure_for_one_user_does_not_affect_other() {
-    let server_alice = mock_backend_for(ALICE).await;
-    let server_bob = mock_backend_for(BOB).await;
+    // ONE backend and ONE shared verifier: the backend rejects Alice (401) and
+    // accepts Bob (200). A single verifier instance therefore observes a real
+    // authentication failure AND a real success, so a failure leaking across
+    // users (a shared cache entry, a shared circuit, a shared client) is
+    // observable — with two healthy backends it never was.
+    struct AliceRejected(&'static str);
 
-    let verifier_a = AuthVerifier::new(&config_for(&server_alice));
-    let verifier_b = AuthVerifier::new(&config_for(&server_bob));
+    impl Respond for AliceRejected {
+        fn respond(&self, request: &Request) -> ResponseTemplate {
+            if basic_user(request) == ALICE {
+                ResponseTemplate::new(401)
+            } else {
+                PerUserSession(self.0).respond(request)
+            }
+        }
+    }
 
-    // Alice's backend is healthy → Verified.
+    let server = MockServer::start().await;
+    let base = server.uri();
+    Mock::given(method("GET"))
+        .and(path("/session"))
+        .respond_with(AliceRejected(Box::leak(base.clone().into_boxed_str())))
+        .mount(&server)
+        .await;
+
+    let verifier = AuthVerifier::new(&config_for(&server));
+
     assert_eq!(
-        verifier_a.verify_outcome(ALICE, PW_ALICE).await,
-        AuthOutcome::Verified
+        verifier.verify_outcome(ALICE, PW_ALICE).await,
+        AuthOutcome::InvalidCredentials,
+        "Alice's backend rejection must not be turned into a success"
     );
-    // Bob's backend is healthy → Verified.
     assert_eq!(
-        verifier_b.verify_outcome(BOB, PW_BOB).await,
+        verifier.verify_outcome(BOB, PW_BOB).await,
+        AuthOutcome::Verified,
+        "Bob must authenticate on the same verifier"
+    );
+    // Re-probes keep the two users independent in both directions.
+    assert_eq!(
+        verifier.verify_outcome(ALICE, PW_ALICE).await,
+        AuthOutcome::InvalidCredentials
+    );
+    assert_eq!(
+        verifier.verify_outcome(BOB, PW_BOB).await,
         AuthOutcome::Verified
     );
 }

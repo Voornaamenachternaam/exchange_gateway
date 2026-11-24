@@ -5531,6 +5531,14 @@ impl JmapClient {
         } else if status == reqwest::StatusCode::UNAUTHORIZED
             || status == reqwest::StatusCode::FORBIDDEN
         {
+            // A 403 is treated as an authoritative rejection of THIS backend so
+            // the verifier can still arbitrate to CalDAV: Stalwart may deny the
+            // JMAP session for an account whose credentials are valid. This
+            // deliberately differs from `CaldavClient::check_credentials`
+            // (where 403 is a backend error) because a CalDAV-only deployment
+            // would otherwise lock a valid user out with a 503; a deployment
+            // with NO CalDAV configured answers 401 for a 403, which the client
+            // resolves by re-entering the password.
             CredentialCheck::Invalid
         } else {
             let body = resp.text().await.unwrap_or_default();

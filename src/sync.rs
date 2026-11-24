@@ -464,6 +464,33 @@ pub async fn apply_client_sync_mutations(
                     .storage
                     .upsert_calendar_delivery(owner, collection_id, &server_id, &etag)
                     .await?;
+                // The durable completion record is written BEFORE the
+                // attachment writes: a retry after any later failure then
+                // replays Status 1 instead of resuming the writes again (which
+                // would create a SECOND copy of every attachment). Attachments
+                // stay best-effort — a failure is logged rather than failing the
+                // whole Sync, matching how an attachment failure is tolerated
+                // everywhere else.
+                if let Some(client_id) = client_id.as_deref()
+                    && let Err(e) = state
+                        .storage
+                        .put_client_sync_command(
+                            owner,
+                            collection_id,
+                            client_id,
+                            Some(&server_id),
+                            "1",
+                        )
+                        .await
+                {
+                    tracing::error!(
+                        error = %e,
+                        client_id,
+                        server_id = %server_id,
+                        "EAS calendar Add: failed to mark the item complete; a retry resumes the local writes"
+                    );
+                    return Err(e.into());
+                }
                 for att in &attachment_adds {
                     let name = if att.display_name.is_empty() {
                         "attachment.dat"
@@ -495,29 +522,6 @@ pub async fn apply_client_sync_mutations(
                             "Created attachment from EAS sync Add"
                         );
                     }
-                }
-                // Completion is recorded LAST: only now is every local write
-                // durable, so a retry of this ClientId replays Status 1 instead
-                // of resuming the writes again.
-                if let Some(client_id) = client_id.as_deref()
-                    && let Err(e) = state
-                        .storage
-                        .put_client_sync_command(
-                            owner,
-                            collection_id,
-                            client_id,
-                            Some(&server_id),
-                            "1",
-                        )
-                        .await
-                {
-                    tracing::error!(
-                        error = %e,
-                        client_id,
-                        server_id = %server_id,
-                        "EAS calendar Add: failed to mark the item complete; a retry resumes the local writes"
-                    );
-                    return Err(e.into());
                 }
                 results.push(ClientMutationResult::Add {
                     client_id,

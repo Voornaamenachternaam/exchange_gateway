@@ -54,7 +54,7 @@ impl WireGateway {
                 mail_host: "mail.example.com".to_string(),
                 gateway_host: "gateway.example.com".to_string(),
                 hmac_secret: SecretString::from("a".repeat(32)),
-                max_ping_heartbeat_secs: Some(1),
+                max_ping_heartbeat_secs: Some(5),
                 mapi_enabled: false,
                 ..Config::default()
             },
@@ -274,7 +274,10 @@ async fn eas_ping_times_out_cleanly_and_wakes_for_a_real_journaled_change() {
             item_id: "task-wire-wake".to_string(),
             change_key: "1".to_string(),
         });
-    let woken = tokio::time::timeout(Duration::from_secs(5), waiting)
+    // The deadline is strictly BELOW the 5s heartbeat (with ample slack after
+    // the 100 ms mutation), so a Status 2 can only have come from the
+    // subscription wake, never from the heartbeat expiring.
+    let woken = tokio::time::timeout(Duration::from_secs(3), waiting)
         .await
         .expect("Ping must wake before its heartbeat")
         .unwrap();

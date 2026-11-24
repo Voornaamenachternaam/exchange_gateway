@@ -443,7 +443,16 @@ walk aborted mid-subtree still prunes the descendants it already destroyed.
 The hierarchy-rotation tests
 `rotate_hierarchy_key_for_never_primed_device_returns_prime_key`,
 `rotate_hierarchy_key_preserves_primed_watermark` and
-`rotate_hierarchy_key_without_token_forces_prime` pin the fail-closed rotation;
+`rotate_hierarchy_key_without_token_forces_prime` pin the fail-closed rotation.
+`rotate_hierarchy_sync_key` answers the PRIME key `"0"` — never a carried key —
+whenever it cannot read this device's stored hierarchy watermark (a
+`get_sync_key` error) or the stored key no longer matches the key the request
+was validated against. In both cases the stored watermark is left untouched, so
+the operator sees TWO effects: the mutating command still succeeds, and the
+device's next `FolderSync` runs a FULL prime instead of continuing from the old
+key (a re-prime, not a lost update — the journal rows are still there for that
+prime). Any hierarchy re-prime is therefore expected after a storage hiccup or a
+concurrent hierarchy mutation, and it is self-healing;
 `create_calendar_folder_405_on_preexisting_collection_is_conflict` and
 `create_calendar_folder_405_with_existing_mapping_is_conflict` pin the
 no-adoption-on-405 rule, `create_calendar_folder_405_reconciles_pending_create_after_lost_response`
@@ -777,9 +786,15 @@ without it the walk could destroy a sub-folder another client moved out. (an)
 The EWS email prime skips a message that left the mailbox between `Email/query`
 and `Email/get` (it is inside the prime's query state, so no later delta would
 ever report its departure) and does not record it as delivered. (ao) An EAS
-calendar `Add` records its `(ClientId → ServerId)` replay identity IMMEDIATELY
-after the CalDAV `PUT` succeeds, BEFORE the mirror/ledger writes, so a storage
-failure after the PUT cannot make the client's retry create a SECOND event.
+calendar `Add` records its `(ClientId → ServerId, resource href)` replay
+identity IMMEDIATELY after the CalDAV `PUT` succeeds, BEFORE the mirror/ledger
+writes, so a storage failure after the PUT cannot make the client's retry create
+a SECOND event: the retry re-reads that href's ETag and resumes the local writes
+instead of issuing another `PUT` (a vanished resource falls back to a fresh
+create). The durable completion record is then written BEFORE the attachment
+writes, so a retry after any later failure replays Status 1 rather than
+re-running the attachment loop and duplicating every attachment; attachment
+creation stays best-effort.
 (ap) A JMAP submission confirmed by `EmailSubmission/set` `created.s0` is a
 successful send even when a later invocation in the same batch answers a
 method-level `error` (the implicit `Email/set` that files the message into Sent
