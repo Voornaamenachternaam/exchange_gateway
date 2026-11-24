@@ -212,8 +212,14 @@ EAS specs v20250520 (16.1); older EAS compat NOT needed.
   event another collection already delivered (the exact bug this ledger fixes),
   so instead every event in the stream's change set is delivered as `<Add>`
   (EAS keys items by ServerId, so an `<Add>` for an item the client already
-  holds updates it in place) — the safe upgrade path. The Sync response's
-  durable side effects (`item_map` + `change_journal` `op='upsert'` rows, the
+  holds updates it in place) — the safe upgrade path. A SCOPED collection whose
+  stream was never initialized (no `calendar_stream_init` marker — a custom
+  calendar created before the ledger existed) answers a NON-ZERO SyncKey with
+  Status 3 / SyncKey 0 instead of rendering the delta: with no record of what it
+  delivered, a partial delta could never report a vanished event as `<Delete>`,
+  so the one-time re-prime is required. An INITIALIZED stream with an empty
+  ledger is accepted and continues (re-priming it endlessly would trap the
+  client). The Sync response's durable side effects (`item_map` + `change_journal` `op='upsert'` rows, the
   per-scope ledger rows, the emitted `<Delete>`s' removals, the new
   SyncKey/token, the journal watermark) are written in ONE transaction
   (`Storage::commit_calendar_sync`) so the ledger can never advance ahead of the
@@ -244,6 +250,20 @@ EAS specs v20250520 (16.1); older EAS compat NOT needed.
   a failed write rolls everything back and leaves no seed behind.
   The completing branch's token write is fail-closed: a failed `set_sync_key`
   returns a retryable error and never advances the baseline.
+  EWS side of the same discipline: a calendar prime cites
+  `max(journal head, prune floor)` (a pruned-out journal reports head 0, below
+  the floor, so every later delta would be rejected as stale forever) and fails
+  retryably when either read fails; a delta NEVER turns a backend/storage
+  failure into a `<t:Delete>` (unparseable CalDAV body after a 200, failed
+  `item_map` upsert of the refreshed ETag whose value IS the ChangeKey, failed
+  `item_map` lookup all answer `ErrorServerBusy` from the unchanged cursor);
+  JMAP calendar update/delete address the account in the stored
+  `jmap://calendar/{account}/{id}` href, never the session's primary account;
+  and `SyncFolderHierarchy` renders the user-created Type-12 mail folders from
+  `folder_map` at prime plus their journaled add/update/delete rows as
+  Create/Update/Delete (Type 13 calendar collections are not EWS folders).
+  `MarkAsJunk` answers one message per requested item and a rejected id carries
+  no `MovedItemIds`.
 - AUDIT.md §10 (EAS Sync wire-exactness) is COMPLETE and its section now
   documents the delivered behavior — keep it accurate when touching Sync.
 - AUDIT.md §11 (WBXML conformance hardening) is COMPLETE (commit 7b7d242):

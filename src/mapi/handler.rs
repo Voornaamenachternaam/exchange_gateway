@@ -876,6 +876,28 @@ async fn mailbox_still_exists(
 /// `RopDeleteFolder` with `DEL_FOLDERS` uses this so a destroy never hits a
 /// parent that still has a child (JMAP rejects that with `mailboxHasChild`). An
 /// empty vector means the root mailbox is not present in the account.
+/// Every ancestor mailbox id of `id` within `mailboxes` (nearest first), with a
+/// cycle guard so a malformed `parentId` chain cannot loop.
+fn mailbox_ancestors(mailboxes: &[crate::jmap::JmapMailbox], id: &str) -> Vec<String> {
+    let mut parents: std::collections::HashMap<&str, &str> = std::collections::HashMap::new();
+    for mb in mailboxes {
+        if let (Some(child), Some(parent)) = (mb.id.as_deref(), mb.parent_id.as_deref()) {
+            parents.insert(child, parent);
+        }
+    }
+    let mut out = Vec::new();
+    let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    let mut current = id;
+    while let Some(parent) = parents.get(current) {
+        if *parent == current || !seen.insert(parent) {
+            break;
+        }
+        out.push((*parent).to_string());
+        current = parent;
+    }
+    out
+}
+
 fn mailbox_subtree_deepest_first(
     mailboxes: &[crate::jmap::JmapMailbox],
     root_id: &str,
@@ -5713,7 +5735,18 @@ async fn execute_one_rop(
                         // mailbox still exists, so its mapping must be preserved
                         // and its deferred record withdrawn.
                         let mut preserved_ids: Vec<String> = Vec::new();
+                        // A REFUSED mailbox blocks only itself and its ancestors
+                        // (destroying an ancestor would take the refused child
+                        // with it). Siblings and independent branches are still
+                        // attempted: the subtree walk is deepest-first, so a
+                        // refusal must not abort work JMAP can complete on its
+                        // own ([MS-OXCFOLD] §2.2.1.3.2 PartialCompletion).
+                        let mut blocked: std::collections::HashSet<String> =
+                            std::collections::HashSet::new();
                         for mb in &subtree {
+                            if blocked.contains(mb) {
+                                continue;
+                            }
                             // Record the destroy intent durably BEFORE the
                             // destructive call, so an outcome we cannot observe (a
                             // `Mailbox/set` transport error after the destroy
@@ -5758,10 +5791,13 @@ async fn execute_one_rop(
                                 Ok(crate::jmap::MailboxDestroyOutcome::Refused) => {
                                     tracing::warn!(
                                         mailbox = %mb,
-                                        "RopDeleteFolder: Mailbox/set refused the destroy"
+                                        "RopDeleteFolder: Mailbox/set refused the destroy; skipping its ancestors and continuing with independent entries"
                                     );
                                     preserved_ids.push(mb.clone());
-                                    break;
+                                    blocked.insert(mb.clone());
+                                    for ancestor in mailbox_ancestors(&mailboxes, mb) {
+                                        blocked.insert(ancestor);
+                                    }
                                 }
                                 Err(e) => {
                                     // UNKNOWN outcome: `Mailbox/set` may have
@@ -12152,6 +12188,10 @@ mod tests {
         /// When set, every `Mailbox/set destroy` is rejected with this SetError
         /// type (e.g. `mailboxHasEmail`), so the refusal path can be driven.
         refuse_with: Option<String>,
+        /// When non-empty, only these mailbox ids are refused (with
+        /// `refuse_with`); every other id is destroyed, so a partial refusal can
+        /// be driven.
+        refuse_ids: Vec<String>,
         /// When set, every `Mailbox/set destroy` is answered with a
         /// method-level `error` response of this type.
         method_error: Option<String>,
@@ -12167,7 +12207,7 @@ mod tests {
         String,
         std::sync::Arc<tokio::sync::Mutex<Vec<(String, bool)>>>,
     ) {
-        spawn_delete_folder_stub_with(mailboxes, None, None).await
+        spawn_delete_folder_stub_with(mailboxes, None, None, &[]).await
     }
 
     /// As [`spawn_delete_folder_stub`] but lets the caller script a refusal
@@ -12176,6 +12216,7 @@ mod tests {
         mailboxes: Vec<(&'static str, Option<&'static str>)>,
         refuse_with: Option<&'static str>,
         method_error: Option<&'static str>,
+        refuse_ids: &[&'static str],
     ) -> (
         String,
         std::sync::Arc<tokio::sync::Mutex<Vec<(String, bool)>>>,
@@ -12255,12 +12296,19 @@ mod tests {
                             json!({"type": t, "description": "scripted"})
                         } else if let Some(t) = &ctl.refuse_with {
                             let mut nd = serde_json::Map::new();
+                            let mut destroyed = Vec::new();
                             for id in &destroy {
                                 if let Some(s) = id.as_str() {
-                                    nd.insert(s.to_string(), json!({"type": t}));
+                                    if ctl.refuse_ids.is_empty()
+                                        || ctl.refuse_ids.iter().any(|r| r == s)
+                                    {
+                                        nd.insert(s.to_string(), json!({"type": t}));
+                                    } else {
+                                        destroyed.push(id.clone());
+                                    }
                                 }
                             }
-                            json!({"accountId": "a", "notDestroyed": nd})
+                            json!({"accountId": "a", "notDestroyed": nd, "destroyed": destroyed})
                         } else {
                             json!({"accountId": "a", "destroyed": destroy})
                         }
@@ -12293,6 +12341,7 @@ mod tests {
                 .collect(),
             calls: calls.clone(),
             refuse_with: refuse_with.map(str::to_string),
+            refuse_ids: refuse_ids.iter().map(|s| s.to_string()).collect(),
             method_error: method_error.map(str::to_string),
         };
         let app = axum::Router::new()
@@ -12662,11 +12711,51 @@ mod tests {
     #[tokio::test]
     async fn rop_delete_folder_refusal_sets_partial_completion() {
         let (base, _calls) =
-            spawn_delete_folder_stub_with(vec![("mb-1", None)], Some("mailboxHasEmail"), None)
+            spawn_delete_folder_stub_with(vec![("mb-1", None)], Some("mailboxHasEmail"), None, &[])
                 .await;
         let (rv, partial) = run_delete_folder_rop_full(&base, "mb-1", DELETE_HARD_DELETE).await;
         assert_eq!(rv, RopErrorCode::Success);
         assert_eq!(partial, 1, "a refused destroy is a partial completion");
+    }
+
+    /// A refused child must not abort the rest of the subtree walk: siblings and
+    /// independent branches are still destroyed, while the refused mailbox and
+    /// its ancestors are left alone. The ROP still reports PartialCompletion.
+    #[tokio::test]
+    async fn rop_delete_folder_refusal_continues_with_independent_entries() {
+        let (base, calls) = spawn_delete_folder_stub_with(
+            vec![
+                ("root", None),
+                ("child-a", Some("root")),
+                ("child-b", Some("root")),
+            ],
+            Some("mailboxHasChild"),
+            None,
+            &["child-a"],
+        )
+        .await;
+        let (rv, partial) = run_delete_folder_rop_full(
+            &base,
+            "root",
+            DEL_FOLDERS | DEL_MESSAGES | DELETE_HARD_DELETE,
+        )
+        .await;
+        assert_eq!(rv, RopErrorCode::Success);
+        assert_eq!(partial, 1, "a surviving target is a partial completion");
+        let ids: Vec<String> = calls
+            .lock()
+            .await
+            .iter()
+            .map(|(id, _)| id.clone())
+            .collect();
+        assert!(
+            ids.contains(&"child-b".to_string()),
+            "an independent sibling must still be destroyed: {ids:?}"
+        );
+        assert!(
+            !ids.contains(&"root".to_string()),
+            "an ancestor of a refused mailbox must never be destroyed: {ids:?}"
+        );
     }
 
     /// A JMAP method-level `error` on `Mailbox/set` is a hard failure, never a
@@ -12674,7 +12763,8 @@ mod tests {
     #[tokio::test]
     async fn rop_delete_folder_method_error_is_disk_error() {
         let (base, _calls) =
-            spawn_delete_folder_stub_with(vec![("mb-1", None)], None, Some("serverFail")).await;
+            spawn_delete_folder_stub_with(vec![("mb-1", None)], None, Some("serverFail"), &[])
+                .await;
         let (rv, _partial) = run_delete_folder_rop_full(&base, "mb-1", DELETE_HARD_DELETE).await;
         assert_eq!(rv, RopErrorCode::DiskError);
     }

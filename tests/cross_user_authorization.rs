@@ -1,16 +1,19 @@
 //! Cross-user authorization and cache-isolation tests.
 //!
-//! Two authenticated users with deliberately identical backend item IDs and
-//! interleaved requests. Exercise EAS, EWS, MAPI sessions, subscriptions, and
-//! cached delta responses.
+//! Two users with deliberately identical backend item IDs. The scenarios here
+//! are:
+//!   - Owner-scoped storage: `folder_map`/journal rows keyed by owner, so one
+//!     user's row is never returned for another's lookup.
+//!   - Auth-verifier cache isolation: per-user/per-credential entries and
+//!     password-change eviction that never touches another user.
+//!   - ONE protocol front door (`eas_folder_create_is_scoped_to_the_authenticated_owner`):
+//!     the owner is resolved from the authenticated request, and the backend
+//!     session used is that caller's, not a shared/cached one.
+//!   - Log hygiene: a captured log sink never receives the probed password or
+//!     its Basic-auth encoding.
 //!
-//! Assert that one user cannot:
-//!   - Read, modify, delete, or subscribe to another user's items.
-//!   - Reuse another user's session cookie, SyncState, SyncKey, or cached response.
-//!   - Cause identity churn or cache eviction for another user.
-//!
-//! Also verify that Authorization headers, passwords, message bodies, and
-//! credential-bearing backend URLs are never emitted in test logs.
+//! EWS and MAPI owner resolution are exercised by their own module suites; they
+//! are not duplicated here.
 
 use std::sync::Arc;
 
@@ -21,7 +24,7 @@ use exchange_gateway::storage::Storage;
 use secrecy::SecretString;
 use serde_json::{Value, json};
 use wiremock::matchers::{method, path};
-use wiremock::{Mock, MockServer, ResponseTemplate};
+use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
 
 const ALICE: &str = "alice@example.com";
 const BOB: &str = "bob@example.com";
@@ -130,6 +133,178 @@ async fn alice_cannot_read_bobs_items_with_same_backend_id() {
         .unwrap()
         .unwrap();
     assert_eq!(bob_folder.display_name, "Bob Inbox");
+}
+
+/// A backend that answers every JMAP call with the AUTHENTICATED user's identity
+/// (decoded from the request's Basic credentials) baked into the result, so a
+/// request served under the wrong owner is immediately visible.
+struct OwnerEchoBackend;
+
+fn basic_user(request: &Request) -> String {
+    use base64::Engine;
+    request
+        .headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Basic "))
+        .and_then(|v| base64::engine::general_purpose::STANDARD.decode(v).ok())
+        .and_then(|bytes| String::from_utf8(bytes).ok())
+        .and_then(|pair| pair.split_once(':').map(|(u, _)| u.to_string()))
+        .unwrap_or_default()
+}
+
+impl Respond for OwnerEchoBackend {
+    fn respond(&self, request: &Request) -> ResponseTemplate {
+        let owner = basic_user(request);
+        let req: Value = serde_json::from_slice(&request.body).unwrap_or(Value::Null);
+        let mut responses = Vec::new();
+        for call in req
+            .get("methodCalls")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default()
+        {
+            let name = call.get(0).and_then(|v| v.as_str()).unwrap_or("");
+            let args = call.get(1).cloned().unwrap_or(Value::Null);
+            let cid = call.get(2).and_then(|v| v.as_str()).unwrap_or("c0");
+            let result = match name {
+                // No pre-existing mailbox, so a FolderCreate never collides.
+                "Mailbox/query" => json!({"accountId": "a", "ids": [], "total": 0}),
+                "Mailbox/get" => json!({"accountId": "a", "state": "m1", "list": []}),
+                "Mailbox/set" => {
+                    let mut created = serde_json::Map::new();
+                    if let Some(create) = args.get("create").and_then(|v| v.as_object()) {
+                        for (client_id, _) in create {
+                            // The created id carries the owner the CALL used: a
+                            // request served under another user's credentials
+                            // returns that user's id instead.
+                            created.insert(client_id.clone(), json!({"id": format!("mb-{owner}")}));
+                        }
+                    }
+                    json!({"accountId": "a", "created": created})
+                }
+                _ => json!({"accountId": "a"}),
+            };
+            responses.push(json!([name, result, cid]));
+        }
+        ResponseTemplate::new(200).set_body_json(json!({
+            "methodResponses": responses,
+            "sessionState": "s"
+        }))
+    }
+}
+
+/// The EAS front door must resolve the OWNER from the authenticated request. Both
+/// users create the SAME folder name against one backend that stamps the
+/// caller's identity into the created id, so a request served under the wrong
+/// owner (or with a shared backend session) is visible in the response and in
+/// the owner-scoped folder store.
+#[tokio::test]
+async fn eas_folder_create_is_scoped_to_the_authenticated_owner() {
+    use axum::body::Bytes;
+    use axum::extract::{Query, State};
+    use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, header};
+    use exchange_gateway::eas::handle;
+    use exchange_gateway::models::AppState;
+    use exchange_gateway::wbxml::Wbxml;
+    use std::collections::HashMap;
+
+    fn basic_auth(user: &str, password: &str) -> HeaderValue {
+        use base64::Engine;
+        let raw = format!("{user}:{password}");
+        let encoded = base64::engine::general_purpose::STANDARD.encode(raw.as_bytes());
+        HeaderValue::from_str(&format!("Basic {encoded}")).expect("basic auth header")
+    }
+
+    let server = MockServer::start().await;
+    let base = server.uri();
+    Mock::given(method("GET"))
+        .and(path("/session"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(session_json(&base, "owner-echo")))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/"))
+        .respond_with(OwnerEchoBackend)
+        .mount(&server)
+        .await;
+
+    let storage = Arc::new(Storage::new("sqlite::memory:").await.unwrap());
+    storage.init_schema().await.unwrap();
+    let cfg = Config {
+        jmap_base: base.clone(),
+        email_enabled: true,
+        // The EAS front door canonicalizes the authenticated username against
+        // this domain, so it must be set or the owner key loses its domain.
+        mail_domain: "example.com".to_string(),
+        hmac_secret: SecretString::from("a".repeat(32)),
+        auth_probe_min_interval_ms: 0,
+        ..Config::default()
+    };
+    let state = Arc::new(AppState::new(cfg, storage.clone()));
+
+    async fn create_folder(
+        state: &Arc<AppState>,
+        user: &str,
+        password: &str,
+        device: &str,
+    ) -> String {
+        let mut headers = HeaderMap::new();
+        headers.insert(header::AUTHORIZATION, basic_auth(user, password));
+        headers.insert("x-forwarded-proto", HeaderValue::from_static("https"));
+        let body = Bytes::from(
+            Wbxml::new()
+                .encode(
+                    r#"<?xml version="1.0" encoding="utf-8"?><FolderCreate xmlns="FolderHierarchy:"><SyncKey>0</SyncKey><ParentId>0</ParentId><DisplayName>Shared</DisplayName><Type>12</Type></FolderCreate>"#,
+                )
+                .expect("encode FolderCreate"),
+        );
+        let mut query = HashMap::new();
+        query.insert("Cmd".to_string(), "FolderCreate".to_string());
+        query.insert("DeviceId".to_string(), device.to_string());
+        query.insert("SyncKey".to_string(), "0".to_string());
+        let response = handle(
+            State(state.clone()),
+            Method::POST,
+            Query(query),
+            headers,
+            body,
+        )
+        .await;
+        assert_eq!(
+            response.status(),
+            StatusCode::OK,
+            "FolderCreate must succeed"
+        );
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("response body");
+        Wbxml::new()
+            .decode(&bytes)
+            .expect("decode FolderCreate response")
+    }
+
+    let alice = create_folder(&state, ALICE, PW_ALICE, "dev-alice").await;
+    let bob = create_folder(&state, BOB, PW_BOB, "dev-bob").await;
+    assert!(
+        alice.contains(&format!("mb-{ALICE}")) && !alice.contains(&format!("mb-{BOB}")),
+        "Alice's create must use Alice's backend identity: {alice}"
+    );
+    assert!(
+        bob.contains(&format!("mb-{BOB}")) && !bob.contains(&format!("mb-{ALICE}")),
+        "Bob's create must use Bob's backend identity: {bob}"
+    );
+    // The owner-scoped folder store must hold exactly one row per user, each
+    // pointing at its own backend object.
+    for (user, other) in [(ALICE, BOB), (BOB, ALICE)] {
+        let rows = storage.list_folders(user).await.unwrap();
+        assert_eq!(rows.len(), 1, "{user} must own exactly one folder row");
+        assert_eq!(rows[0].server_id, format!("mb-{user}"));
+        assert!(
+            !rows.iter().any(|r| r.server_id == format!("mb-{other}")),
+            "{user} must never see {other}'s backend folder"
+        );
+    }
 }
 
 #[tokio::test]
@@ -314,8 +489,8 @@ async fn ews_auth_failure_for_one_user_does_not_affect_other() {
     );
 }
 
-#[tokio::test]
-async fn no_credential_leakage_in_logging() {
+#[test]
+fn redact_email_masks_the_domain() {
     let email = "alice@example.com";
     let redacted = exchange_gateway::util::redact_email(email);
     assert_eq!(
@@ -325,5 +500,72 @@ async fn no_credential_leakage_in_logging() {
     assert!(
         !redacted.contains("example.com"),
         "domain should be redacted"
+    );
+}
+
+/// Credentials must never reach the log sink. A writer captures everything the
+/// authentication path emits while a DISTINCTIVE password is probed against a
+/// rejecting backend, a failing backend, and an unreachable one; the captured
+/// text must contain neither the password nor its Basic-auth encoding.
+#[tokio::test(flavor = "current_thread")]
+async fn auth_and_backend_failure_logs_never_emit_credentials() {
+    use std::io::Write;
+    use std::sync::Mutex as StdMutex;
+
+    struct SharedSink(Arc<StdMutex<Vec<u8>>>);
+    impl Write for SharedSink {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    const SENTINEL_PW: &str = "SENTINEL-pw-7c1d-do-not-log";
+    let sink = Arc::new(StdMutex::new(Vec::new()));
+    let writer_sink = sink.clone();
+    let subscriber = tracing_subscriber::fmt()
+        .with_writer(move || SharedSink(writer_sink.clone()))
+        .with_ansi(false)
+        .with_max_level(tracing::Level::TRACE)
+        .finish();
+    let _guard = tracing::subscriber::set_default(subscriber);
+
+    // A rejecting backend (401) and a failing backend (503).
+    for status in [401u16, 503] {
+        let server = MockServer::start().await;
+        let base = server.uri();
+        Mock::given(method("GET"))
+            .and(path("/session"))
+            .respond_with(ResponseTemplate::new(status))
+            .mount(&server)
+            .await;
+        let verifier = AuthVerifier::new(&config_for(&server));
+        let _ = verifier.verify_outcome(ALICE, SENTINEL_PW).await;
+        assert!(!base.is_empty());
+    }
+    // An unreachable backend (transport failure).
+    let verifier = AuthVerifier::new(&config_for(&MockServer::start().await));
+    let _ = verifier.verify_outcome(ALICE, SENTINEL_PW).await;
+
+    let captured = String::from_utf8_lossy(&sink.lock().unwrap()).to_string();
+    assert!(
+        !captured.is_empty(),
+        "the authentication path must actually log, otherwise this test proves nothing"
+    );
+    assert!(
+        !captured.contains(SENTINEL_PW),
+        "the password must never reach the log sink: {captured}"
+    );
+    let basic = {
+        use base64::Engine;
+        base64::engine::general_purpose::STANDARD
+            .encode(format!("{ALICE}:{SENTINEL_PW}").as_bytes())
+    };
+    assert!(
+        !captured.contains(&basic),
+        "the Basic-auth credential encoding must never reach the log sink: {captured}"
     );
 }

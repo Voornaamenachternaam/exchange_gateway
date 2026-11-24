@@ -16,6 +16,16 @@ use serde_json::json;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
+/// Start a mock server that never retains request history: the auth benchmark
+/// reuses one server across every iteration and never reads the recording, so
+/// the default per-request bookkeeping would grow the measured workload.
+async fn start_unrecorded_mock_server() -> MockServer {
+    MockServer::builder()
+        .disable_request_recording()
+        .start()
+        .await
+}
+
 fn wbxml_source(collections: usize) -> String {
     let collections = (0..collections)
         .map(|n| {
@@ -140,7 +150,7 @@ fn bench_sync_delta_render(c: &mut Criterion) {
 fn bench_auth_probe_burst(c: &mut Criterion) {
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let (verifier, _server) = runtime.block_on(async {
-        let server = MockServer::start().await;
+        let server = start_unrecorded_mock_server().await;
         let base = server.uri();
         Mock::given(method("GET"))
             .and(path("/session"))

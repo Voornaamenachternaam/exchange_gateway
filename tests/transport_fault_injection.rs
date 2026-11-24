@@ -269,8 +269,12 @@ async fn auth_outage_not_cached_recovery_reprobes() {
     assert_eq!(outcome2, AuthOutcome::Verified);
 }
 
+/// Storage-level idempotence of the folder-mapping upsert: replaying identical
+/// parameters (the state a retried operation leaves behind) must not duplicate
+/// the row or the journal entry. The TRANSPORT-level lost-response scenario is
+/// covered by `auth_outage_not_cached_recovery_reprobes` above.
 #[tokio::test]
-async fn lost_response_after_commit_retry_is_idempotent() {
+async fn storage_upsert_of_identical_folder_params_is_idempotent() {
     let storage = Arc::new(Storage::new("sqlite::memory:").await.unwrap());
     storage.init_schema().await.unwrap();
 

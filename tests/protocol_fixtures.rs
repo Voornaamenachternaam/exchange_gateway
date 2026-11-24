@@ -10,8 +10,8 @@
 //! expected wire formats without spinning up servers.
 
 use exchange_gateway::protocol_fixtures::{
-    eas_sync_response, eas_folder_sync_response, eas_provision_response, autodiscover_response,
-    ews_soap_response, ews_error_response,
+    autodiscover_response, eas_folder_sync_response, eas_provision_response, eas_sync_response,
+    ews_error_response, ews_soap_response,
 };
 
 #[test]

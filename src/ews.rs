@@ -622,6 +622,48 @@ fn extract_first_tag_block(xml: &str, tag: &[u8]) -> Option<String> {
     }
 }
 
+/// Raw XML of EVERY element with local name `tag`, in document order
+/// (nesting-aware per occurrence, like [`extract_first_tag_block`]).
+fn extract_all_tag_blocks(xml: &str, tag: &[u8]) -> Vec<String> {
+    let mut reader = Reader::from_str(xml);
+    let mut buf = Vec::new();
+    let mut depth = 0i64;
+    let mut block_start = 0usize;
+    let mut inside = false;
+    let mut blocks = Vec::new();
+    loop {
+        let before = reader.buffer_position() as usize;
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(e)) => {
+                if !inside && e.name().local_name().as_ref().as_bytes() == tag {
+                    inside = true;
+                    block_start = before;
+                }
+                if inside {
+                    depth += 1;
+                }
+            }
+            Ok(Event::End(_)) if inside => {
+                depth -= 1;
+                if depth == 0 {
+                    inside = false;
+                    if let Some(s) = xml.get(block_start..reader.buffer_position() as usize) {
+                        blocks.push(s.to_string());
+                    }
+                }
+            }
+            Ok(Event::Empty(e)) if !inside && e.name().local_name().as_ref().as_bytes() == tag => {
+                if let Some(s) = xml.get(before..reader.buffer_position() as usize) {
+                    blocks.push(s.to_string());
+                }
+            }
+            Ok(Event::Eof) | Err(_) => return blocks,
+            _ => {}
+        }
+        buf.clear();
+    }
+}
+
 fn extract_tag_texts(xml: &str, tag: &[u8]) -> Vec<String> {
     let mut reader = Reader::from_str(xml);
     reader.config_mut().trim_text(true);
@@ -5423,10 +5465,13 @@ async fn handle_sync_email_folder_items(
     let mut pending_seeds: Vec<(String, Vec<String>)> = Vec::new();
     let mut rendered_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
     for email_id in &changes.created {
-        if overlap_held.contains(email_id.as_str()) {
-            // Already delivered — render as Update instead of Create so the
-            // client's copy is refreshed with current content. Skip if already
-            // rendered (an id may appear in both `created` and `destroyed`).
+        if delivered_created.contains(email_id.as_str()) {
+            // The client ALREADY holds this message in this folder (the prime or
+            // an earlier delta delivered it), so re-send it as an Update — never
+            // a second Create — and refresh the flag baseline with its current
+            // keywords. That keeps a flag edit made since delivery reportable
+            // even when the bounded scan has not reached the message yet.
+            // Skip if already rendered (an id may appear in both lists).
             if rendered_ids.contains(email_id) {
                 continue;
             }
@@ -5461,11 +5506,6 @@ async fn handle_sync_email_folder_items(
                     );
                 }
             }
-            continue;
-        }
-        if delivered_created.contains(email_id.as_str()) {
-            // Already delivered by the prime; a second Create would duplicate the
-            // item the client already holds.
             continue;
         }
         match jmap
@@ -6063,7 +6103,30 @@ async fn handle_sync_folder_items(
             StatusCode::OK,
         );
     }
-    let latest_seq = state.storage.get_latest_change_seq().await.unwrap_or(0);
+    // The prime's baseline is the journal head, but a fully PRUNED journal
+    // reports head 0 while the owner's prune floor has moved on — a cursor of 0
+    // is below that floor, so the next delta would be rejected as stale and the
+    // client would re-prime forever. Cite the greater of the two, and fail
+    // retryably rather than guessing a baseline when either read fails.
+    let latest_seq = match (
+        state.storage.get_latest_change_seq().await,
+        state.storage.pruned_through(owner).await,
+    ) {
+        (Ok(head), Ok(floor)) => head.max(floor),
+        (head, floor) => {
+            tracing::error!(
+                head_error = ?head.as_ref().err().map(|e| e.to_string()),
+                floor_error = ?floor.as_ref().err().map(|e| e.to_string()),
+                "Failed to read the journal head/prune floor for a SyncFolderItems request"
+            );
+            return operation_error_response(
+                &EwsAction::SyncFolderItems,
+                "ErrorServerBusy",
+                "Failed to read sync progress; retry later",
+                StatusCode::SERVICE_UNAVAILABLE,
+            );
+        }
+    };
     // The keyset cursor of an in-progress prime (if any). Its presence means
     // the last prime clipped before the whole live snapshot was delivered.
     let prime_cursor = state
@@ -6218,6 +6281,38 @@ async fn handle_sync_folder_items(
     } else {
         &journal_rows[..]
     };
+    // Delivery ledger for THIS sync stream. EWS carries no stream identifier on
+    // the wire, so a stream is one folder's cursor — the same granularity as
+    // `ews_sync_state` itself — and the scope is the folder. The ledger decides
+    // `<t:Create>` (the client does not hold the item) vs `<t:Update>` (it
+    // does): a `<t:Update>` for an item the client never received is dropped by
+    // the client and the item is lost until a manual resync, which is exactly
+    // what the old `is_prime` heuristic produced for every item that changed
+    // after the prime. A null-`SyncState` request re-primes (the client has
+    // forgotten its set), so its ledger starts empty.
+    let delivery_scope = format!("ews-cal:{folder_id}");
+    let delivered_before: HashSet<String> = if client_supplied_cursor {
+        match state
+            .storage
+            .list_calendar_deliveries(owner, &delivery_scope)
+            .await
+        {
+            Ok(map) => map.into_keys().collect(),
+            Err(e) => {
+                tracing::error!(folder_id = %folder_id, error = %e, "Failed to read the calendar delivery ledger");
+                return operation_error_response(
+                    &EwsAction::SyncFolderItems,
+                    "ErrorServerBusy",
+                    "Failed to read sync progress; retry later",
+                    StatusCode::SERVICE_UNAVAILABLE,
+                );
+            }
+        }
+    } else {
+        HashSet::new()
+    };
+    let mut delivered_now: Vec<(String, String)> = Vec::new();
+    let mut deleted_now: Vec<String> = Vec::new();
     let caldav = CaldavClient::new(&state.cfg).ok();
     let mut emitted_ids = HashSet::new();
     let mut changes_xml = String::new();
@@ -6231,6 +6326,7 @@ async fn handle_sync_folder_items(
             continue;
         }
         if row.op == "delete" {
+            deleted_now.push(row.server_id.clone());
             changes_xml.push_str(&format!(
                 r#"<t:Delete><t:ItemId Id="{}" /></t:Delete>"#,
                 xml_escape(&row.server_id)
@@ -6251,7 +6347,12 @@ async fn handle_sync_folder_items(
             } else {
                 Some(att_summaries.as_slice())
             };
-            let change_tag = if is_prime { "Create" } else { "Update" };
+            let change_tag = if delivered_before.contains(&item.row.server_id) {
+                "Update"
+            } else {
+                "Create"
+            };
+            delivered_now.push((item.row.server_id.clone(), ck.clone()));
             changes_xml.push_str(&format!(
                 r#"<t:{ct}>{}</t:{ct}>"#,
                 render_ews_calendar_item_xml_with_shape(
@@ -6276,34 +6377,62 @@ async fn handle_sync_folder_items(
                 .await
             {
                 Ok(Some(stored)) => {
-                    let fetched: Option<crate::calendar::CalendarItem> = if let Some(ref c) = caldav
+                    let fetched: Option<(crate::calendar::CalendarItem, String)> = if let Some(
+                        ref c,
+                    ) = caldav
                     {
                         match c
                             .get_event(&stored.resource_href, owner, auth.password.expose_secret())
                             .await
                         {
                             Ok((ics, etag)) => {
-                                if let Some(item) = parse_ics_event(&ics) {
-                                    // Update stored etag
-                                    if let Err(e) = state
-                                        .storage
-                                        .upsert_item_map(
-                                            owner,
-                                            stored.caldav_href.as_deref().unwrap_or(""),
-                                            &stored.resource_href,
-                                            &row.server_id,
-                                            &item.uid,
-                                            etag.as_deref()
-                                                .unwrap_or(stored.etag.as_deref().unwrap_or("")),
-                                        )
-                                        .await
-                                    {
-                                        tracing::warn!(server_id = %row.server_id, error = %e, "Failed to upsert item map in SyncFolderItems journal fetch");
-                                    }
-                                    Some(item)
-                                } else {
-                                    None
+                                // A 200 whose body the parser cannot read is not
+                                // evidence that the event is gone: tombstoning it
+                                // would erase a live item from the client. Fail
+                                // retryably instead, exactly as for a transport
+                                // error.
+                                let Some(item) = parse_ics_event(&ics) else {
+                                    tracing::error!(
+                                        server_id = %row.server_id,
+                                        "CalDAV event body could not be parsed; not tombstoning"
+                                    );
+                                    return operation_error_response(
+                                        &EwsAction::SyncFolderItems,
+                                        "ErrorServerBusy",
+                                        "A changed event could not be read; retry later",
+                                        StatusCode::SERVICE_UNAVAILABLE,
+                                    );
+                                };
+                                let effective_etag = etag
+                                    .clone()
+                                    .or_else(|| stored.etag.clone())
+                                    .unwrap_or_default();
+                                // The response ChangeKey is derived from this
+                                // ETag, so acknowledging the fetched version
+                                // without persisting it would hand the client a
+                                // ChangeKey the stored row does not carry and the
+                                // next conditional write would fail with 412.
+                                if let Err(e) = state
+                                    .storage
+                                    .upsert_item_map(
+                                        owner,
+                                        stored.caldav_href.as_deref().unwrap_or(""),
+                                        &stored.resource_href,
+                                        &row.server_id,
+                                        &item.uid,
+                                        &effective_etag,
+                                    )
+                                    .await
+                                {
+                                    tracing::error!(server_id = %row.server_id, error = %e, "Failed to upsert item map in SyncFolderItems journal fetch");
+                                    return operation_error_response(
+                                        &EwsAction::SyncFolderItems,
+                                        "ErrorServerBusy",
+                                        "Failed to record a changed event; retry later",
+                                        StatusCode::SERVICE_UNAVAILABLE,
+                                    );
                                 }
+                                Some((item, effective_etag))
                             }
                             Err(e) => {
                                 // A transient CalDAV GET failure must NOT be
@@ -6328,9 +6457,23 @@ async fn handle_sync_folder_items(
                     } else {
                         None
                     };
-                    if let Some(item) = fetched {
-                        let ck = changekey_for_item(&stored);
-                        let change_tag = if is_prime { "Create" } else { "Update" };
+                    if let Some((item, effective_etag)) = fetched {
+                        // Derive the ChangeKey from the ETag that was actually
+                        // persisted above, not from the pre-fetch row.
+                        let ck = changekey_for_item(&EwsItemRow {
+                            server_id: stored.server_id.clone(),
+                            caldav_href: stored.caldav_href.clone(),
+                            resource_href: stored.resource_href.clone(),
+                            uid: stored.uid.clone(),
+                            etag: Some(effective_etag),
+                            updated_at: stored.updated_at.clone(),
+                        });
+                        let change_tag = if delivered_before.contains(&row.server_id) {
+                            "Update"
+                        } else {
+                            "Create"
+                        };
+                        delivered_now.push((row.server_id.clone(), ck.clone()));
                         let att_list = state
                             .attachment_manager
                             .get_attachments_for_item(owner, &row.server_id)
@@ -6361,6 +6504,7 @@ async fn handle_sync_folder_items(
                             server_id = %row.server_id,
                             "Event not in CalDAV window/fetchable; emitting as Delete"
                         );
+                        deleted_now.push(row.server_id.clone());
                         if let Err(e) = state
                             .storage
                             .add_delete_tombstone(owner, &row.server_id)
@@ -6389,11 +6533,17 @@ async fn handle_sync_folder_items(
                     ));
                 }
                 Err(e) => {
-                    tracing::warn!(server_id = %row.server_id, error = %e, "Failed to look up journal item; emitting as Delete");
-                    changes_xml.push_str(&format!(
-                        r#"<t:Delete><t:ItemId Id="{}" /></t:Delete>"#,
-                        xml_escape(&row.server_id)
-                    ));
+                    // A storage failure is NOT proof that the item is gone:
+                    // emitting a Delete would remove a live item from the client
+                    // and the advanced cursor would never re-offer it. Fail
+                    // retryably from the same cursor instead.
+                    tracing::error!(server_id = %row.server_id, error = %e, "Failed to look up a journal item; failing the sync retryably");
+                    return operation_error_response(
+                        &EwsAction::SyncFolderItems,
+                        "ErrorServerBusy",
+                        "Failed to read a changed item; retry later",
+                        StatusCode::SERVICE_UNAVAILABLE,
+                    );
                 }
             }
         }
@@ -6462,12 +6612,29 @@ async fn handle_sync_folder_items(
         }
     }
     let new_sync_state = encode_sync_state_cursor(next_seen_seq, next_upper_bound);
+    // Fail CLOSED: the delivery ledger and the cited cursor must commit
+    // together. A ledger advanced past an unpersisted cursor would make the
+    // client's retry report `<t:Update>` for items it never received.
     if let Err(e) = state
         .storage
-        .set_ews_sync_state(owner, &folder_id, &new_sync_state)
+        .commit_ews_calendar_sync(
+            owner,
+            &folder_id,
+            &delivery_scope,
+            &new_sync_state,
+            !client_supplied_cursor,
+            &delivered_now,
+            &deleted_now,
+        )
         .await
     {
-        tracing::warn!(folder_id = %folder_id, error = %e, "Failed to set EWS sync state in SyncFolderItems");
+        tracing::error!(folder_id = %folder_id, error = %e, "Failed to commit EWS calendar sync state; refusing to acknowledge the window");
+        return operation_error_response(
+            &EwsAction::SyncFolderItems,
+            "ErrorServerBusy",
+            "Failed to persist sync progress; retry later",
+            StatusCode::SERVICE_UNAVAILABLE,
+        );
     }
     let response = format!(
         r#"<m:SyncFolderItemsResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:SyncFolderItemsResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:SyncState>{}</m:SyncState><m:IncludesLastItemInRange>{}</m:IncludesLastItemInRange><m:Changes>{}</m:Changes></m:SyncFolderItemsResponseMessage></m:ResponseMessages></m:SyncFolderItemsResponse>"#,
@@ -6478,6 +6645,31 @@ async fn handle_sync_folder_items(
         changes_xml
     );
     soap_ok(response)
+}
+
+/// Render one user-created mail folder as a `SyncFolderHierarchy` change.
+///
+/// The FolderId is the folder's EAS ServerId — the JMAP mailbox id, matching
+/// what `FindFolder` renders for a custom folder — so a client can address the
+/// folder it just learned about. A folder parented at the hierarchy root
+/// carries the MsgFolderRoot FolderId so the client can attach it.
+fn render_custom_folder_change(
+    owner: &str,
+    folder: &crate::storage::FolderRow,
+    tag: &str,
+) -> String {
+    let parent = if folder.parent_id.is_empty() || folder.parent_id == "0" {
+        folder_id_for(owner, DistinguishedFolder::MsgFolderRoot)
+    } else {
+        folder.parent_id.clone()
+    };
+    format!(
+        r#"<t:{tag}><t:Folder><t:FolderId Id="{id}" ChangeKey="1" /><t:ParentFolderId Id="{parent}" ChangeKey="1" /><t:DisplayName>{name}</t:DisplayName><t:FolderClass>IPF.Note</t:FolderClass><t:TotalCount>0</t:TotalCount><t:ChildFolderCount>0</t:ChildFolderCount><t:UnreadCount>0</t:UnreadCount></t:Folder></t:{tag}>"#,
+        tag = tag,
+        id = xml_escape(&folder.server_id),
+        parent = xml_escape(&parent),
+        name = xml_escape(&folder.display_name),
+    )
 }
 
 async fn handle_sync_folder_hierarchy(
@@ -6498,7 +6690,72 @@ async fn handle_sync_folder_hierarchy(
         .as_deref()
         .map(|s| s.is_empty())
         .unwrap_or(true);
-    let new_sync_state = encode_sync_state_cursor(0, 0);
+    // Resume position: the folder-journal watermark carried in the client's
+    // opaque SyncState. An unreadable token falls back to 0 — a full re-send of
+    // the live hierarchy plus the journal — which is safe because EWS keys
+    // folders by FolderId (a repeated Create updates in place).
+    let since = if is_initial {
+        0
+    } else {
+        parse_sync_state_marker(requested_state.clone())
+            .map(|(seq, _)| seq)
+            .unwrap_or(0)
+    };
+    // ONE consistent read: the head is captured BEFORE the hierarchy is
+    // rendered and becomes the acknowledged watermark, so a mutation journaled
+    // while rendering is delivered by the next delta instead of being skipped.
+    let (head, journal, folders) = match state.storage.snapshot_folder_sync_data(owner, since).await
+    {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::error!(error = %e, "Failed to read the folder hierarchy snapshot");
+            return operation_error_response(
+                &EwsAction::SyncFolderHierarchy,
+                "ErrorServerBusy",
+                "Could not read the folder hierarchy; retry later",
+                StatusCode::SERVICE_UNAVAILABLE,
+            );
+        }
+    };
+    // The user-created MAIL folders this gateway knows about (EAS Type 12).
+    // Calendar collections (Type 13) are not EWS folders — EWS exposes a single
+    // distinguished Calendar — so they are never advertised here.
+    let custom: Vec<&crate::storage::FolderRow> = folders
+        .iter()
+        .filter(|f| f.folder_type == 12 && resolve_folder_id(&f.server_id, owner).is_none())
+        .collect();
+    let changes = if is_initial {
+        let count = load_current_calendar_items(state, owner, auth.password.expose_secret(), None)
+            .await
+            .map(|v| v.len())
+            .unwrap_or(0);
+        // Return MsgFolderRoot first (clients need its FolderId for GetUserConfiguration),
+        // then Calendar, then all other child folders, then the user-created ones.
+        let mut changes = render_folder_hierarchy_creates(owner, count);
+        for f in &custom {
+            changes.push_str(&render_custom_folder_change(owner, f, "Create"));
+        }
+        changes
+    } else {
+        let mut changes = String::new();
+        for row in &journal {
+            if row.op == "folder-delete" {
+                changes.push_str(&format!(
+                    r#"<t:Delete><t:FolderId Id="{}" ChangeKey="1" /></t:Delete>"#,
+                    xml_escape(&row.server_id)
+                ));
+            } else if let Some(f) = custom.iter().find(|f| f.server_id == row.server_id) {
+                let tag = if row.op == "folder-add" {
+                    "Create"
+                } else {
+                    "Update"
+                };
+                changes.push_str(&render_custom_folder_change(owner, f, tag));
+            }
+        }
+        changes
+    };
+    let new_sync_state = encode_sync_state_cursor(head, head);
     if let Err(e) = state
         .storage
         .set_ews_sync_state(owner, &sync_state_key, &new_sync_state)
@@ -6506,17 +6763,6 @@ async fn handle_sync_folder_hierarchy(
     {
         tracing::warn!(folder_id = %sync_state_key, error = %e, "Failed to set EWS sync state in SyncFolderHierarchy");
     }
-    let changes = if is_initial {
-        let count = load_current_calendar_items(state, owner, auth.password.expose_secret(), None)
-            .await
-            .map(|v| v.len())
-            .unwrap_or(0);
-        // Return MsgFolderRoot first (clients need its FolderId for GetUserConfiguration),
-        // then Calendar, then all other child folders.
-        render_folder_hierarchy_creates(owner, count)
-    } else {
-        String::new()
-    };
     let response = format!(
         r#"<m:SyncFolderHierarchyResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:SyncFolderHierarchyResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:SyncState>{}</m:SyncState><m:IncludesLastFolderInRange>true</m:IncludesLastFolderInRange><m:Changes>{}</m:Changes></m:SyncFolderHierarchyResponseMessage></m:ResponseMessages></m:SyncFolderHierarchyResponse>"#,
         EWS_MSG_NS,
@@ -7770,7 +8016,6 @@ async fn handle_create_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
     let item = match parse_ews_calendar_item(body) {
         Ok(v) => v,
         Err(e) => {
-            eprintln!("DEBUG parse calendar item error: {}", e);
             tracing::error!(error = %e, "Failed to parse CalendarItem payload");
             return operation_error_response(
                 &EwsAction::CreateItem,
@@ -7825,9 +8070,23 @@ async fn handle_create_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
     {
         match try_jmap_create_calendar(state, owner, &password_secret, &item).await {
             Ok(row) => Ok(row),
-            Err(e) => {
+            Err(JmapCreateFailure::NotCommitted(e)) => {
                 tracing::warn!(error = %e, "JMAP calendar create failed, falling back to CalDAV");
                 Err(e)
+            }
+            Err(JmapCreateFailure::CommittedUnmapped(e)) => {
+                // The event IS on the JMAP backend: falling back would store a
+                // second copy and orphan this one.
+                tracing::error!(
+                    error = %e,
+                    "JMAP calendar create committed without a mapping; refusing the CalDAV fallback"
+                );
+                return operation_error_response(
+                    &EwsAction::CreateItem,
+                    "ErrorServerBusy",
+                    "The item was created but could not be recorded; retry later",
+                    StatusCode::SERVICE_UNAVAILABLE,
+                );
             }
         }
     } else {
@@ -8638,17 +8897,19 @@ async fn handle_delete_item(state: &Arc<AppState>, auth: &AuthContext, body: &st
     soap_ok(response)
 }
 
-/// Handle EWS SendItem operation (MS-OXWSCORE §3.1.4.7).
+/// Handle EWS SendItem operation ([MS-OXWSCORE] §3.1.4.8).
 ///
-/// Sends an email message. Two modes exist per MS-OXWSCORE:
-/// 1. **Inline send**: the request body contains a `<t:Message>` element
-///    with the full message content — parsed and sent via SMTP/JMAP.
-/// 2. **Draft send**: the request references a previously saved draft by
-///    ItemId only (no inline Message). Since the gateway does not store
-///    drafts, this mode returns `ErrorItemNotFound` to prevent silent
-///    email loss (the client must be told the operation cannot succeed).
+/// `SendItemType` (§3.1.4.8.3.2) carries `ItemIds` (a NON-EMPTY array, which
+/// MUST be present), an optional `SavedItemFolderId` and the required
+/// `SaveItemToFolder` attribute — there is no inline `<t:Message>` in the
+/// schema. Each referenced item must be a MESSAGE that is still a draft: the
+/// gateway stores drafts in the Drafts mailbox, so it reads the stored RFC 822
+/// blob and submits it through the same MIME pipeline EAS `SendMail` uses
+/// (JMAP `EmailSubmission` first, SMTP fallback), then removes the draft — a
+/// sent draft no longer belongs in Drafts. Reporting success without sending
+/// (the previous behaviour for anything but an off-schema inline message)
+/// would silently lose the user's message.
 async fn handle_send_item(state: &Arc<AppState>, auth: &AuthContext, body: &str) -> Response {
-    // Check if email is enabled
     if !state.cfg.email_enabled {
         return operation_error_response(
             &EwsAction::SendItem,
@@ -8658,42 +8919,211 @@ async fn handle_send_item(state: &Arc<AppState>, auth: &AuthContext, body: &str)
         );
     }
 
-    // Check if there's a <t:Message> element in the body (inline send)
-    if let Some(msg) = crate::email::parse_ews_message(body) {
-        match crate::email::send_email(state, &msg, &auth.username, &auth.password).await {
-            Ok(_message_id) => {}
-            Err(e) => {
-                tracing::error!(error = %e, "SMTP send failed for SendItem");
+    // `SaveItemToFolder` is required by the schema; absent → default true
+    // (keep a copy in Sent). An invalid lexical form is rejected rather than
+    // guessed.
+    let save_item = match extract_first_attr(body, b"SendItem", b"SaveItemToFolder") {
+        None => true,
+        Some(v) => match parse_xs_boolean(&v) {
+            Some(b) => b,
+            None => {
                 return operation_error_response(
                     &EwsAction::SendItem,
-                    "ErrorInternalServerError",
-                    "Failed to send email message",
-                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "ErrorInvalidRequest",
+                    "SaveItemToFolder must be an xs:boolean (true, false, 1, 0)",
+                    StatusCode::OK,
                 );
             }
-        }
-    } else {
-        // No inline <t:Message> — the client is referencing a saved draft by ItemId.
-        // Since the gateway does not store drafts, we cannot retrieve or send the
-        // message. Returning success here would cause silent email loss (Outlook
-        // believes the draft was sent, but no email is actually delivered).
-        // Return ErrorItemNotFound per MS-OXWSCORE to inform the client.
-        tracing::warn!(
-            "SendItem without inline Message — draft send is not supported (drafts are not stored on the gateway)"
-        );
+        },
+    };
+    if body.contains("SavedItemFolderId") && !save_item {
+        // [MS-OXWSCDATA] §2.2.3.38.1 `ErrorInvalidSendItemSaveSettings`.
         return operation_error_response(
             &EwsAction::SendItem,
-            "ErrorItemNotFound",
-            "Sending saved drafts is not supported — drafts are not stored on this server",
+            "ErrorInvalidSendItemSaveSettings",
+            "SavedItemFolderId cannot be combined with SaveItemToFolder=false",
             StatusCode::OK,
         );
     }
 
+    let item_ids = extract_first_attrs(body, b"ItemId", b"Id");
+    if item_ids.is_empty() {
+        return operation_error_response(
+            &EwsAction::SendItem,
+            "ErrorInvalidRequest",
+            "SendItem requires a non-empty ItemIds array",
+            StatusCode::OK,
+        );
+    }
+
+    let Some(jmap) = state.jmap_client.as_ref() else {
+        return operation_error_response(
+            &EwsAction::SendItem,
+            "ErrorServerBusy",
+            "The mail backend is not configured",
+            StatusCode::SERVICE_UNAVAILABLE,
+        );
+    };
+    let account_id = match jmap.get_account_id(&auth.username, &auth.password).await {
+        Ok(id) => id,
+        Err(e) => {
+            tracing::error!(error = %e, "SendItem: failed to resolve the JMAP account");
+            return operation_error_response(
+                &EwsAction::SendItem,
+                "ErrorServerBusy",
+                "The mail backend is unavailable; retry later",
+                StatusCode::SERVICE_UNAVAILABLE,
+            );
+        }
+    };
+    // Resolved once: a message is a draft only while it belongs to Drafts.
+    let drafts_id = match jmap
+        .get_mailbox_ids_for_role(&account_id, "drafts", &auth.username, &auth.password)
+        .await
+    {
+        Ok(ids) => ids.into_iter().next(),
+        Err(e) => {
+            tracing::error!(error = %e, "SendItem: failed to resolve the Drafts mailbox");
+            return operation_error_response(
+                &EwsAction::SendItem,
+                "ErrorServerBusy",
+                "The mail backend is unavailable; retry later",
+                StatusCode::SERVICE_UNAVAILABLE,
+            );
+        }
+    };
+
+    let mut resp_messages = String::new();
+    for item_id in &item_ids {
+        let error = match crate::email::jmap_id_from_email_server_id(item_id) {
+            Some(jmap_id) if !jmap_id.is_empty() => {
+                send_draft_item(
+                    state,
+                    jmap,
+                    &account_id,
+                    &auth.username,
+                    &auth.password,
+                    jmap_id,
+                    drafts_id.as_deref(),
+                    save_item,
+                )
+                .await
+            }
+            // Not a message the gateway backs with a JMAP email: only message
+            // items can be sent ([MS-OXWSCDATA] §2.2.3.38.1
+            // ErrorInvalidItemForOperationSendItem).
+            _ => Some((
+                "ErrorInvalidItemForOperationSendItem",
+                "Only draft messages can be sent",
+            )),
+        };
+        match error {
+            None => resp_messages.push_str(
+                r#"<m:SendItemResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode></m:SendItemResponseMessage>"#,
+            ),
+            Some((code, text)) => resp_messages.push_str(&format!(
+                r#"<m:SendItemResponseMessage ResponseClass="Error"><m:MessageText>{}</m:MessageText><m:ResponseCode>{}</m:ResponseCode></m:SendItemResponseMessage>"#,
+                xml_escape(text),
+                code
+            )),
+        }
+    }
+
     let response = format!(
-        r#"<m:SendItemResponse xmlns:m="{}"><m:ResponseMessages><m:SendItemResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode></m:SendItemResponseMessage></m:ResponseMessages></m:SendItemResponse>"#,
-        EWS_MSG_NS
+        r#"<m:SendItemResponse xmlns:m="{}"><m:ResponseMessages>{}</m:ResponseMessages></m:SendItemResponse>"#,
+        EWS_MSG_NS, resp_messages
     );
     soap_ok(response)
+}
+
+/// Submit one stored draft ([MS-OXWSCORE] §3.1.4.8) and remove it from Drafts.
+///
+/// Returns `None` on success, or the `(ResponseCode, MessageText)` pair for a
+/// per-item error. A draft that cannot be read, sent or confirmed is reported
+/// as an error — never silently acknowledged.
+#[allow(clippy::too_many_arguments)]
+async fn send_draft_item(
+    state: &Arc<AppState>,
+    jmap: &Arc<crate::jmap::JmapClient>,
+    account_id: &str,
+    username: &str,
+    password: &SecretString,
+    jmap_id: &str,
+    drafts_id: Option<&str>,
+    save_item: bool,
+) -> Option<(&'static str, &'static str)> {
+    // The email's own `blobId` IS the stored RFC 822 message (RFC 8621
+    // §4.1.3), so it can be submitted verbatim through the MIME send path.
+    let email = match jmap
+        .get_email(account_id, jmap_id, username, password, false)
+        .await
+    {
+        Ok(email) => email,
+        Err(e) => {
+            tracing::warn!(error = %e, item_id = %jmap_id, "SendItem: draft lookup failed");
+            return Some((
+                "ErrorServerBusy",
+                "The mail backend is unavailable; retry later",
+            ));
+        }
+    };
+    let Some(email) = email else {
+        return Some(("ErrorItemNotFound", "The draft no longer exists"));
+    };
+    // A message is a draft only while it belongs to the Drafts mailbox.
+    let is_draft = email
+        .mailbox_ids
+        .as_ref()
+        .zip(drafts_id)
+        .is_some_and(|(mids, drafts)| mids.get(drafts).copied().unwrap_or(false));
+    if !is_draft {
+        return Some((
+            "ErrorInvalidOperation",
+            "Only messages still in Drafts can be sent",
+        ));
+    }
+    let Some(blob_id) = email.blob_id.clone() else {
+        return Some(("ErrorItemNotFound", "The draft has no stored message"));
+    };
+    let raw = match jmap
+        .download_blob(account_id, &blob_id, username, password)
+        .await
+    {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!(error = %e, item_id = %jmap_id, "SendItem: draft download failed");
+            return Some((
+                "ErrorServerBusy",
+                "The mail backend is unavailable; retry later",
+            ));
+        }
+    };
+    if let Err(e) = crate::email::send_eas_mime_message(
+        state,
+        username,
+        password,
+        &raw,
+        crate::email::EasSmartKind::SendMail,
+        None,
+        save_item,
+    )
+    .await
+    {
+        tracing::error!(error = %e, item_id = %jmap_id, "SendItem: submission failed");
+        // Do NOT delete the draft: the user can retry and nothing is lost.
+        return Some(("ErrorInternalServerError", "Failed to send the message"));
+    }
+
+    // The draft was sent. Removing it is best-effort: a failure here must NOT
+    // fail the operation, or the client would resubmit and the recipient would
+    // receive a duplicate.
+    if let Err(e) = jmap
+        .destroy_emails(account_id, &[jmap_id.to_string()], username, password)
+        .await
+    {
+        tracing::warn!(error = %e, item_id = %jmap_id, "SendItem: sent draft could not be removed");
+    }
+    None
 }
 
 /// Handle EWS MoveItem operation (MS-OXWSCORE §3.1.4.4).
@@ -8909,92 +9339,42 @@ async fn handle_move_item(state: &Arc<AppState>, auth: &AuthContext, body: &str)
             return soap_ok(response);
         }
 
-        // Source collection href (caldav_href) should be set for CalDAV items
-        let src_collection_href = match &lookup.caldav_href {
-            Some(h) => h,
-            None => {
-                return operation_error_response(
-                    &EwsAction::MoveItem,
-                    "ErrorInvalidOperation",
-                    "Source item has no calendar collection",
-                    StatusCode::OK,
-                );
-            }
-        };
-
-        // Extract the resource name (href relative to collection) from full resource_href
-        let src_href = lookup
-            .resource_href
-            .trim_start_matches(src_collection_href)
-            .trim_start_matches('/');
-
-        // Destination collection href: should be same as source because only default calendar supported
-        let dst_collection_href = src_collection_href;
-
-        // Initialize CalDAV client
-        let caldav = match CaldavClient::new(&state.cfg) {
-            Ok(c) => c,
-            Err(e) => {
-                tracing::error!(error = %e, "MoveItem: CalDAV client init failed");
-                return operation_error_response(
-                    &EwsAction::MoveItem,
-                    "ErrorInternalServerError",
-                    "CalDAV unavailable",
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                );
-            }
-        };
-
-        // Perform the move. This returns a new ETag.
-        match caldav
-            .move_event(
-                src_href,
-                src_collection_href,
-                dst_collection_href,
-                &auth.username,
-                auth.password.expose_secret(),
-            )
-            .await
-        {
-            Ok(new_etag) => {
-                // If the move was within the same collection, server_id unchanged.
-                // If it were to a different collection, we'd need to update storage with new resource_href and server_id.
-                // For now, we only support same collection, so server_id remains the same.
-                // ChangeKey can be the new etag.
-                let change_key = new_etag;
-                publish_event(
-                    state,
-                    NotificationEvent::ItemModified {
-                        owner: auth.username.clone(),
-                        folder_id: folder_id_for(&auth.username, DistinguishedFolder::Calendar),
-                        item_id: item_id.clone(),
-                        change_key: change_key.clone(),
-                    },
-                );
-                let response = format!(
-                    r#"<m:MoveItemResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:MoveItemResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:Items><t:CalendarItem><t:ItemId Id="{}" ChangeKey="{}" /></t:CalendarItem></m:Items></m:MoveItemResponseMessage></m:ResponseMessages></m:MoveItemResponse>"#,
-                    EWS_MSG_NS,
-                    EWS_TYPE_NS,
-                    xml_escape(&item_id),
-                    xml_escape(&change_key)
-                );
-                soap_ok(response)
-            }
-            Err(e) => {
-                tracing::error!(error = %e, "MoveItem: CalDAV MOVE failed");
-                operation_error_response(
-                    &EwsAction::MoveItem,
-                    "ErrorInternalServerError",
-                    "Failed to move calendar item",
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                )
-            }
-        }
+        // Only ONE calendar is exposed (the destination was validated above),
+        // so a calendar move is always within the same collection: the item's
+        // href, ServerId and mapping are unchanged and the move is a no-op —
+        // exactly the JMAP branch's documented semantics.
+        //
+        // The previous implementation still issued a CalDAV MOVE whose
+        // Destination URL equalled the source URL. RFC 4918 §9.9.4 says a
+        // server MUST NOT perform such a move (403 is expected), and any
+        // cross-collection move that did rename the resource would leave
+        // `item_map.resource_href` pointing at the old href, so every later
+        // GetItem would 404.
+        let change_key = changekey_for_item(&lookup);
+        publish_event(
+            state,
+            NotificationEvent::ItemModified {
+                owner: auth.username.clone(),
+                folder_id: folder_id_for(&auth.username, DistinguishedFolder::Calendar),
+                item_id: item_id.clone(),
+                change_key: change_key.clone(),
+            },
+        );
+        let response = format!(
+            r#"<m:MoveItemResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:MoveItemResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:Items><t:CalendarItem><t:ItemId Id="{}" ChangeKey="{}" /></t:CalendarItem></m:Items></m:MoveItemResponseMessage></m:ResponseMessages></m:MoveItemResponse>"#,
+            EWS_MSG_NS,
+            EWS_TYPE_NS,
+            xml_escape(&item_id),
+            xml_escape(&change_key)
+        );
+        soap_ok(response)
     }
 }
 
-/// Copies an item (email only currently) to another folder.
-/// For email: maps to JMAP Email/set adding a mailboxId (does not remove existing ones).
+/// Copies an item to another folder.
+/// For email: maps to JMAP `Email/copy` (RFC 8621 §4.6), which creates a NEW
+/// message in the destination and leaves the source in place; the response
+/// carries the copy's own ItemId.
 async fn handle_copy_item(state: &Arc<AppState>, auth: &AuthContext, body: &str) -> Response {
     let item_id = extract_first_attr(body, b"ItemId", b"Id").unwrap_or_default();
     let to_folder_id = extract_first_attr(body, b"DistinguishedFolderId", b"Id")
@@ -9086,22 +9466,31 @@ async fn handle_copy_item(state: &Arc<AppState>, auth: &AuthContext, body: &str)
         )
         .await
         {
-            Ok(_new_change_key) => {
+            Ok(new_item_id) => {
+                let dest_folder = match target_role {
+                    "drafts" => DistinguishedFolder::Drafts,
+                    "sent" => DistinguishedFolder::SentItems,
+                    "trash" => DistinguishedFolder::DeletedItems,
+                    "junk" => DistinguishedFolder::JunkEmail,
+                    _ => DistinguishedFolder::Inbox,
+                };
                 publish_event(
                     state,
                     NotificationEvent::ItemCreated {
                         owner: auth.username.clone(),
-                        folder_id: folder_id_for(&auth.username, DistinguishedFolder::Inbox),
-                        item_id: item_id.clone(),
-                        change_key: _new_change_key.clone(),
+                        folder_id: folder_id_for(&auth.username, dest_folder),
+                        item_id: new_item_id.clone(),
+                        change_key: new_item_id.clone(),
                     },
                 );
+                // The ItemId must name the COPY, never the source: the client
+                // uses it for every later Get/Update/Delete.
                 let response = format!(
                     r#"<m:CopyItemResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:CopyItemResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:Items><t:Message><t:ItemId Id="{}" ChangeKey="{}" /></t:Message></m:Items></m:CopyItemResponseMessage></m:ResponseMessages></m:CopyItemResponse>"#,
                     EWS_MSG_NS,
                     EWS_TYPE_NS,
-                    xml_escape(&item_id),
-                    xml_escape(&_new_change_key)
+                    xml_escape(&new_item_id),
+                    xml_escape(&new_item_id)
                 );
                 soap_ok(response)
             }
@@ -9316,20 +9705,44 @@ async fn handle_copy_item(state: &Arc<AppState>, auth: &AuthContext, body: &str)
             );
             let resource_href = format!("jmap://calendar/{}/{}", account_id, event_id);
 
-            // Upsert mapping into storage
-            if let Err(e) = state
-                .storage
-                .upsert_item_map(
-                    &auth.username,
-                    "",
-                    &resource_href,
-                    &server_id,
-                    &copied_item.uid,
-                    &etag,
-                )
-                .await
+            // Persist the mapping. FAIL-CLOSED: without it the returned ItemId
+            // can never be resolved by a later Get/Update, so a success
+            // response would hand the client an unusable id. The copy IS
+            // committed, so on a persistent mapping failure the event is
+            // removed again — otherwise every client retry would duplicate it.
+            if !persist_new_calendar_mapping(
+                state,
+                &auth.username,
+                &resource_href,
+                &server_id,
+                &copied_item.uid,
+                &etag,
+            )
+            .await
             {
-                tracing::error!(error = %e, "CopyItem: failed to upsert item map");
+                tracing::error!("CopyItem: failed to persist the copied event's mapping");
+                let removed = rollback_unmapped_calendar_event(
+                    state,
+                    &auth.username,
+                    &auth.password,
+                    &account_id,
+                    &event_id,
+                )
+                .await;
+                return operation_error_response(
+                    &EwsAction::CopyItem,
+                    if removed {
+                        "ErrorServerBusy"
+                    } else {
+                        "ErrorInternalServerError"
+                    },
+                    if removed {
+                        "Failed to persist the copied event; nothing was copied"
+                    } else {
+                        "Failed to persist the copied event, which could not be removed again"
+                    },
+                    StatusCode::SERVICE_UNAVAILABLE,
+                );
             }
 
             // Compute ChangeKey
@@ -9444,20 +9857,45 @@ async fn handle_copy_item(state: &Arc<AppState>, auth: &AuthContext, body: &str)
             // Generate server_id
             let server_id = generate_server_id(state.cfg.hmac_secret(), &new_href);
 
-            // Upsert mapping
-            if let Err(e) = state
-                .storage
-                .upsert_item_map(
-                    &auth.username,
-                    "",
-                    &new_href,
-                    &server_id,
-                    &copied_item.uid,
-                    &new_etag,
-                )
-                .await
+            // Persist the mapping. The copy is already committed on the backend,
+            // so a failure here cannot be answered with success: the returned
+            // ItemId would resolve to nothing. Either the mapping becomes
+            // durable, or the copy is removed again (so the retry is clean), or
+            // the request fails.
+            if !persist_new_calendar_mapping(
+                state,
+                &auth.username,
+                &new_href,
+                &server_id,
+                &copied_item.uid,
+                &new_etag,
+            )
+            .await
             {
-                tracing::error!(error = %e, "CopyItem: failed to upsert item map");
+                let removed = caldav
+                    .delete_event(
+                        &new_href,
+                        &auth.username,
+                        auth.password.expose_secret(),
+                        None,
+                    )
+                    .await
+                    .is_ok();
+                tracing::error!(
+                    copy_removed = removed,
+                    href = %new_href,
+                    "CopyItem: failed to persist the copy's mapping"
+                );
+                return operation_error_response(
+                    &EwsAction::CopyItem,
+                    "ErrorServerBusy",
+                    if removed {
+                        "Failed to record the copy; nothing was created, retry later"
+                    } else {
+                        "Failed to record the copy; the created item may already exist, retry later"
+                    },
+                    StatusCode::SERVICE_UNAVAILABLE,
+                );
             }
 
             // Compute ChangeKey (using CalDAV etag)
@@ -9589,17 +10027,39 @@ async fn handle_get_user_availability(
     auth: &AuthContext,
     body: &str,
 ) -> Response {
+    // Each `<MailboxData>` carries its own `<Email><Address>` ([MS-OXWAVLS]
+    // §3.1.4.1.3.14 example), so read the address from EACH block in request
+    // order and keep the mailbox association. Scanning the whole document for
+    // a bare `<EmailAddress>` matched nothing here and then fell back to the
+    // caller — answering every free/busy query with the caller's own calendar.
     let mailboxes = {
-        let parsed = extract_tag_texts(body, b"EmailAddress")
-            .into_iter()
-            .filter(|v| !v.is_empty())
-            .collect::<Vec<_>>();
-        if parsed.is_empty() {
-            vec![auth.username.clone()]
-        } else {
-            parsed
+        let mut parsed: Vec<String> = Vec::new();
+        for block in extract_all_tag_blocks(body, b"MailboxData") {
+            if let Some(addr) = extract_first_tag_text(&block, b"Address") {
+                let addr = addr.trim();
+                if !addr.is_empty() {
+                    parsed.push(addr.to_string());
+                }
+            }
         }
+        // Some clients populate a bare `<EmailAddress>` instead; keep that as a
+        // fallback, but never invent the caller's address in its place.
+        if parsed.is_empty() {
+            parsed = extract_tag_texts(body, b"EmailAddress")
+                .into_iter()
+                .filter(|v| !v.is_empty())
+                .collect();
+        }
+        parsed
     };
+    if mailboxes.is_empty() {
+        return operation_error_response(
+            &EwsAction::GetUserAvailability,
+            "ErrorInvalidRequest",
+            "GetUserAvailability requires at least one MailboxData with an Email/Address",
+            StatusCode::OK,
+        );
+    }
     let start = extract_first_tag_text(body, b"StartTime")
         .and_then(|v| crate::calendar::parse_datetime(&v))
         .unwrap_or_else(chrono::Utc::now);
@@ -9685,11 +10145,18 @@ async fn handle_get_user_oof_settings(
         }
     };
 
-    // Map OOF settings to EWS XML.
-    let oof_state = if settings.enabled {
-        "Enabled"
-    } else {
+    // Map OOF settings to EWS XML. `Scheduled` stays distinct from `Enabled`
+    // ([MS-OXWOOF] §2.2.5.2): an enabled window that has not started yet is
+    // scheduled, not currently on.
+    let oof_state = if !settings.enabled {
         "Disabled"
+    } else if settings
+        .start_time
+        .is_some_and(|start| start > chrono::Utc::now())
+    {
+        "Scheduled"
+    } else {
+        "Enabled"
     };
     let external_audience = match settings.external_audience {
         crate::oof::ExternalAudience::External => "External",
@@ -9750,9 +10217,31 @@ async fn handle_set_user_oof_settings(
     // Parse the incoming OOF settings from the XML body.
     // We'll extract OofState, ExternalAudience, Duration (StartTime/EndTime), InternalReply, ExternalReply.
 
-    let oof_state_text =
-        extract_first_tag_text(body, b"OofState").unwrap_or_else(|| "Disabled".to_string());
-    let enabled = oof_state_text.eq_ignore_ascii_case("Enabled");
+    // `OofState` ([MS-OXWOOF] §2.2.5.2) is Disabled | Enabled | Scheduled. A
+    // `Scheduled` request previously fell through `eq_ignore_ascii_case("Enabled")`
+    // as DISABLED and the manager removed the user's vacation script outright.
+    let oof_state_text = extract_first_tag_text(body, b"OofState").unwrap_or_default();
+    let scheduled = match oof_state_text.trim().to_ascii_lowercase().as_str() {
+        "disabled" | "enabled" => false,
+        "scheduled" => true,
+        "" => {
+            return operation_error_response(
+                &EwsAction::SetUserOofSettings,
+                "ErrorInvalidRequest",
+                "OofState is required (Disabled, Enabled or Scheduled)",
+                StatusCode::OK,
+            );
+        }
+        other => {
+            return operation_error_response(
+                &EwsAction::SetUserOofSettings,
+                "ErrorInvalidRequest",
+                &format!("Unknown OofState '{other}'"),
+                StatusCode::OK,
+            );
+        }
+    };
+    let enabled = !oof_state_text.trim().eq_ignore_ascii_case("Disabled");
 
     let external_audience_text =
         extract_first_tag_text(body, b"ExternalAudience").unwrap_or_else(|| "All".to_string());
@@ -9770,6 +10259,24 @@ async fn handle_set_user_oof_settings(
         .and_then(|s| chrono::DateTime::parse_from_rfc3339(&s).ok())
         .map(|dt| dt.with_timezone(&chrono::Utc));
 
+    // `Duration` MUST be present for `Scheduled` ([MS-OXWOOF] §2.2.4);
+    // a plain `Enabled` carries the 2000-01-01 sentinel and must not schedule.
+    let (start_time, end_time) = if scheduled {
+        match (start_time, end_time) {
+            (Some(start), Some(end)) => (Some(start), Some(end)),
+            _ => {
+                return operation_error_response(
+                    &EwsAction::SetUserOofSettings,
+                    "ErrorInvalidRequest",
+                    "Scheduled OOF requires a Duration with StartTime and EndTime",
+                    StatusCode::OK,
+                );
+            }
+        }
+    } else {
+        (None, None)
+    };
+
     // Replies
     let internal_reply = extract_first_tag_text(body, b"InternalReply");
     let external_reply = extract_first_tag_text(body, b"ExternalReply");
@@ -9784,81 +10291,38 @@ async fn handle_set_user_oof_settings(
         end_time,
     };
 
-    // Apply OOF settings if manager is available.
-    let result = if let Some(oof_mgr) = &state.oof_manager {
-        match oof_mgr.set_oof_settings(&auth.username, settings.clone()) {
-            Ok(_) => {
-                // Success: return same structure as GetUserOofSettings would return.
-                // To avoid duplication, we could call handle_get_user_oof_settings but that needs the same state/auth/body.
-                // Instead, we'll construct a success GetUserOofSettingsResponse.
-                // Let's call get again to confirm.
-                match oof_mgr.get_oof_settings(&auth.username) {
-                    Ok(confirmed) => confirmed,
-                    Err(e) => {
-                        tracing::warn!(target: "ews", user = %auth.username, error = %e, "Failed to get OOF settings after set");
-                        settings
-                    }
-                }
-            }
-            Err(e) => {
-                tracing::warn!(target: "ews", user = %auth.username, error = %e, "Failed to set OOF settings");
-                // Return the settings we attempted to set (per spec, we return what was set)
-                settings
-            }
-        }
-    } else {
-        // No manager, just echo back the settings.
-        settings
+    // Apply OOF settings. A failure must NOT be reported as
+    // `ResponseClass="Success"`: the client would believe its auto-reply is
+    // active while the backend still holds the old settings.
+    let Some(oof_mgr) = state.oof_manager.as_ref() else {
+        return operation_error_response(
+            &EwsAction::SetUserOofSettings,
+            "ErrorNotSupported",
+            "Out-of-office settings are not available on this server",
+            StatusCode::OK,
+        );
     };
+    if let Err(e) = oof_mgr.set_oof_settings(&auth.username, settings) {
+        tracing::warn!(target: "ews", user = %auth.username, error = %e, "Failed to set OOF settings");
+        return operation_error_response(
+            &EwsAction::SetUserOofSettings,
+            "ErrorInternalServerError",
+            "Failed to store the out-of-office settings",
+            StatusCode::INTERNAL_SERVER_ERROR,
+        );
+    }
 
-    // Build response identical to GetUserOofSettings.
-    let oof_state = if result.enabled {
-        "Enabled"
-    } else {
-        "Disabled"
-    };
-    let external_audience = match result.external_audience {
-        crate::oof::ExternalAudience::External => "External",
-        crate::oof::ExternalAudience::KnownExternal => "KnownExternal",
-        crate::oof::ExternalAudience::All => "All",
-    };
-    let (start_time, end_time) =
-        if let (Some(start), Some(end)) = (result.start_time, result.end_time) {
-            (format_ews_datetime(&start), format_ews_datetime(&end))
-        } else {
-            (
-                "2000-01-01T00:00:00Z".to_string(),
-                "2000-01-01T00:00:00Z".to_string(),
-            )
-        };
-    let internal_reply = result.internal_reply.as_deref().unwrap_or("");
-    let external_reply = result.external_reply.as_deref().unwrap_or("");
-
+    // `SetUserOofSettingsResponse` carries a `ResponseMessage` and nothing
+    // else ([MS-OXWOOF] §3.1.4.2.3.1): a client reads the settings back with
+    // GetUserOofSettings, so echoing an off-schema `<m:OofSettings>` block here
+    // adds nothing and could contradict what the backend actually stored.
     let inner = format!(
         r#"<m:SetUserOofSettingsResponse xmlns:m="{}" xmlns:t="{}">
   <m:ResponseMessage ResponseClass="Success">
     <m:ResponseCode>NoError</m:ResponseCode>
   </m:ResponseMessage>
-  <m:OofSettings>
-    <t:OofState>{}</t:OofState>
-    <t:ExternalAudience>{}</t:ExternalAudience>
-    <t:Duration>
-      <t:StartTime>{}</t:StartTime>
-      <t:EndTime>{}</t:EndTime>
-    </t:Duration>
-    <t:InternalReply>{}</t:InternalReply>
-    <t:ExternalReply>{}</t:ExternalReply>
-  </m:OofSettings>
-  <m:AllowExternalOof>true</m:AllowExternalOof>
 </m:SetUserOofSettingsResponse>"#,
-        EWS_MSG_NS,
-        EWS_TYPE_NS,
-        oof_state,
-        external_audience,
-        start_time,
-        end_time,
-        xml_escape(internal_reply),
-        xml_escape(external_reply)
+        EWS_MSG_NS, EWS_TYPE_NS
     );
     soap_ok(inner)
 }
@@ -9965,6 +10429,17 @@ fn get_server_time_zones_wants_names_only(body: &str) -> bool {
 /// case-insensitively — keeps invalid spellings on the full-data default.
 fn is_xs_boolean_false(value: &str) -> bool {
     matches!(value.trim(), "false" | "0")
+}
+
+/// Full `xs:boolean` value space: `true`/`1` → `Some(true)`, `false`/`0` →
+/// `Some(false)`, anything else → `None` (an invalid lexical form, which the
+/// caller must reject rather than coerce to a default).
+fn parse_xs_boolean(value: &str) -> Option<bool> {
+    match value.trim() {
+        "true" | "1" => Some(true),
+        "false" | "0" => Some(false),
+        _ => None,
+    }
 }
 
 /// The `t:Ids`/`t:Id` list of a GetServerTimeZones request, in request order
@@ -10412,93 +10887,119 @@ async fn handle_get_conversation_items(
     // Honour the client's size cap; default to a bounded page when absent.
     let max_items = extract_int(body, b"MaxItemsToReturn", 100).clamp(1, 512);
 
-    let mut conversations_xml = String::new();
+    // One `GetConversationItemsResponseMessage` per requested conversation
+    // (MS-OXWSCONV), so a failed thread query can be reported as an Error for
+    // that conversation alone instead of being flattened into a successful
+    // empty thread (which would silently lose the thread's messages).
+    let mut resp_messages = String::new();
     for conversation_id in conversation_ids {
         let thread_id = conversation_id;
-        // RFC 8621 §4.3.1: Email/query filter on threadId yields every message
-        // in the thread. Order oldest-first so the thread reads naturally.
-        let query = match jmap
-            .query_emails(crate::jmap::QueryEmailsParams {
-                account_id: &account_id,
-                filter: Some(serde_json::json!({ "threadId": thread_id })),
-                sort: Some(vec![serde_json::json!({
-                    "property": "receivedAt",
-                    "isAscending": true,
-                })]),
-                position: 0,
-                limit: max_items as u64,
-                anchor: None,
-                anchor_offset: 0,
-                username: &auth.username,
-                password: &auth.password,
-            })
+        // RFC 8621 §4.2: `Thread/get` is the standard way to enumerate a
+        // conversation. `Email/query`'s `FilterCondition` (§4.4.1) has NO
+        // thread selector, so filtering on `threadId` was ignored by a
+        // conforming server and returned the whole mailbox.
+        match jmap
+            .get_thread(&account_id, &thread_id, &auth.username, &auth.password)
             .await
         {
-            Ok(q) => q,
-            Err(e) => {
-                tracing::warn!(
-                    error = %e,
-                    thread_id = %xml_escape(&thread_id),
-                    "GetConversationItems: JMAP thread query failed"
-                );
-                // A failed thread query is not a whole-request failure: emit an
-                // Error item for this conversation and keep resolving the rest.
-                conversations_xml.push_str(&format!(
-                    r#"<t:Conversation><t:ConversationId Id="{}" /><t:SyncState/><t:ConversationNodes/><t:TotalConversationNodes>0</t:TotalConversationNodes></t:Conversation>"#,
+            Ok(Some(ids)) => {
+                match jmap
+                    .get_emails(
+                        &account_id,
+                        &ids,
+                        None,
+                        &auth.username,
+                        &auth.password,
+                        true,
+                    )
+                    .await
+                {
+                    Ok(mut emails) => {
+                        // Oldest first so the thread reads naturally, then
+                        // honour the client's page size.
+                        emails.sort_by(|a, b| a.received_at.cmp(&b.received_at));
+                        emails.truncate(max_items);
+                        let mut nodes_xml = String::new();
+                        for email in &emails {
+                            let server_id = crate::email::email_server_id_from_jmap_id(
+                                email.id.as_deref().unwrap_or_default(),
+                            );
+                            let change_key = server_id.clone();
+                            let internet_message_id = email
+                                .message_id
+                                .as_deref()
+                                .map(|m| xml_escape(m).into_owned())
+                                .unwrap_or_default();
+                            let parent_message_id = email
+                                .in_reply_to
+                                .as_ref()
+                                .and_then(|v| v.first())
+                                .map(|m| xml_escape(m).into_owned())
+                                .unwrap_or_default();
+                            // One node per message; the Items element carries the
+                            // email rendered as an EWS Message (same shape as
+                            // GetItem) so the client has subject, sender,
+                            // received time and preview for the expanded thread.
+                            let message_xml = crate::email::render_jmap_email_as_ews_message(
+                                email,
+                                &server_id,
+                                &change_key,
+                            );
+                            nodes_xml.push_str(&format!(
+                                r#"<t:ConversationNode><t:InternetMessageId>{}</t:InternetMessageId><t:ParentInternetMessageId>{}</t:ParentInternetMessageId><t:Items>{}</t:Items></t:ConversationNode>"#,
+                                internet_message_id, parent_message_id, message_xml
+                            ));
+                        }
+                        let total_nodes = emails.len();
+                        resp_messages.push_str(&format!(
+                            r#"<m:GetConversationItemsResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:Conversations><t:Conversation><t:ConversationId Id="{}" /><t:SyncState/><t:ConversationNodes>{}</t:ConversationNodes><t:TotalConversationNodes>{}</t:TotalConversationNodes></t:Conversation></m:Conversations></m:GetConversationItemsResponseMessage>"#,
+                            xml_escape(&thread_id),
+                            nodes_xml,
+                            total_nodes
+                        ));
+                        continue;
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            error = %e,
+                            thread_id = %xml_escape(&thread_id),
+                            "GetConversationItems: Email/get for the thread failed"
+                        );
+                    }
+                }
+            }
+            // A thread the server does not know is an empty conversation, not
+            // a failure (the client may hold a stale ConversationId).
+            Ok(None) => {
+                resp_messages.push_str(&format!(
+                    r#"<m:GetConversationItemsResponseMessage ResponseClass="Success"><m:ResponseCode>NoError</m:ResponseCode><m:Conversations><t:Conversation><t:ConversationId Id="{}" /><t:SyncState/><t:ConversationNodes/><t:TotalConversationNodes>0</t:TotalConversationNodes></t:Conversation></m:Conversations></m:GetConversationItemsResponseMessage>"#,
                     xml_escape(&thread_id)
                 ));
                 continue;
             }
-        };
-
-        let emails = query.emails;
-        let mut nodes_xml = String::new();
-        for email in &emails {
-            let server_id =
-                crate::email::email_server_id_from_jmap_id(email.id.as_deref().unwrap_or_default());
-            let change_key = server_id.clone();
-            let internet_message_id = email
-                .message_id
-                .as_deref()
-                .map(|m| xml_escape(m).into_owned())
-                .unwrap_or_default();
-            let parent_message_id = email
-                .in_reply_to
-                .as_ref()
-                .and_then(|v| v.first())
-                .map(|m| xml_escape(m).into_owned())
-                .unwrap_or_default();
-
-            // One node per message; the Items element carries the email rendered
-            // as an EWS Message (same shape as GetItem) so the client has subject,
-            // sender, received time and preview for the expanded thread.
-            let message_xml =
-                crate::email::render_jmap_email_as_ews_message(email, &server_id, &change_key);
-            nodes_xml.push_str(&format!(
-                r#"<t:ConversationNode><t:InternetMessageId>{}</t:InternetMessageId><t:ParentInternetMessageId>{}</t:ParentInternetMessageId><t:Items>{}</t:Items></t:ConversationNode>"#,
-                internet_message_id, parent_message_id, message_xml
-            ));
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    thread_id = %xml_escape(&thread_id),
+                    "GetConversationItems: Thread/get failed"
+                );
+            }
         }
-
-        let total_nodes = emails.len();
-        conversations_xml.push_str(&format!(
-            r#"<t:Conversation><t:ConversationId Id="{}" /><t:SyncState/><t:ConversationNodes>{}</t:ConversationNodes><t:TotalConversationNodes>{}</t:TotalConversationNodes></t:Conversation>"#,
-            xml_escape(&thread_id),
-            nodes_xml,
-            total_nodes
+        // A failed lookup is not a whole-request failure: report an Error
+        // message for THIS conversation and keep resolving the rest. An empty
+        // Success would tell the client the thread has no messages.
+        resp_messages.push_str(&format!(
+            r#"<m:GetConversationItemsResponseMessage ResponseClass="Error"><m:MessageText>Failed to load the conversation</m:MessageText><m:ResponseCode>ErrorServerBusy</m:ResponseCode><m:DescriptiveLinkKey>0</m:DescriptiveLinkKey><m:Conversations><t:Conversation><t:ConversationId Id="{}" /></t:Conversation></m:Conversations></m:GetConversationItemsResponseMessage>"#,
+            xml_escape(&thread_id)
         ));
+        continue;
     }
 
     let inner = format!(
         r#"<m:GetConversationItemsResponse xmlns:m="{}" xmlns:t="{}">
-  <m:ResponseMessages>
-    <m:GetConversationItemsResponseMessage ResponseClass="Success">
-      <m:ResponseCode>NoError</m:ResponseCode>
-      <m:Conversations>{}</m:Conversations>
-    </m:GetConversationItemsResponseMessage>
-  </m:ResponseMessages>
+  <m:ResponseMessages>{}</m:ResponseMessages>
 </m:GetConversationItemsResponse>"#,
-        EWS_MSG_NS, EWS_TYPE_NS, conversations_xml
+        EWS_MSG_NS, EWS_TYPE_NS, resp_messages
     );
     soap_ok(inner)
 }
@@ -10762,11 +11263,49 @@ async fn handle_mark_as_junk(state: &Arc<AppState>, auth: &AuthContext, body: &s
         );
     }
 
-    // IsJunk attribute on the MarkAsJunk element: true → move to junk,
-    // false → the user marked it as *not* junk (move back to inbox).
-    let is_junk = extract_first_attr(body, b"MarkAsJunk", b"IsJunk")
-        .map(|v| v.eq_ignore_ascii_case("true"))
-        .unwrap_or(true);
+    // `IsJunk` ([MS-OXCSPAM] §2.2.2.1, xs:boolean): true/1 → junk, false/0 →
+    // not junk (move back to inbox). An invalid lexical form is rejected
+    // instead of being coerced to `true`, which would silently move a message
+    // the client asked to keep.
+    let is_junk = match extract_first_attr(body, b"MarkAsJunk", b"IsJunk") {
+        None => true,
+        Some(v) => match parse_xs_boolean(&v) {
+            Some(b) => b,
+            None => {
+                return operation_error_response(
+                    &EwsAction::MarkAsJunk,
+                    "ErrorInvalidRequest",
+                    "IsJunk must be an xs:boolean (true, false, 1, 0)",
+                    StatusCode::OK,
+                );
+            }
+        },
+    };
+    // `MoveItem` ([MS-OXCSPAM] §2.2.2.1, required): false means classify only.
+    // The gateway has no spam-classification store behind it — the mailbox move
+    // IS the classification — so it cannot honour a classify-without-move
+    // request and must say so instead of moving the message anyway.
+    if let Some(v) = extract_first_attr(body, b"MarkAsJunk", b"MoveItem") {
+        match parse_xs_boolean(&v) {
+            Some(true) => {}
+            Some(false) => {
+                return operation_error_response(
+                    &EwsAction::MarkAsJunk,
+                    "ErrorInvalidRequest",
+                    "MarkAsJunk without MoveItem=true is not supported",
+                    StatusCode::OK,
+                );
+            }
+            None => {
+                return operation_error_response(
+                    &EwsAction::MarkAsJunk,
+                    "ErrorInvalidRequest",
+                    "MoveItem must be an xs:boolean (true, false, 1, 0)",
+                    StatusCode::OK,
+                );
+            }
+        }
+    }
     let target_role = if is_junk { "junk" } else { "inbox" };
 
     if !state.email_available() {
@@ -10804,13 +11343,16 @@ async fn handle_mark_as_junk(state: &Arc<AppState>, auth: &AuthContext, body: &s
     };
 
     // Move each email, collecting ids that actually moved and any failures.
-    // A non-email id (e.g. a calendar/contact id) is silently skipped:
-    // MarkAsJunk applies to messages and the client should never send those
-    // ids here in practice.
-    let mut moved_xml = String::new();
+    // MarkAsJunk applies to messages only. A non-email id (calendar/contact)
+    // gets an explicit per-item Error below rather than being silently skipped.
+    let mut moved_items: Vec<String> = Vec::new();
     let mut failed_items = Vec::new();
+    let mut rejected_items = Vec::new();
     for item_id in &item_ids {
         if !crate::email::is_email_server_id(item_id) {
+            // EWS expects one response message per requested item; a silently
+            // dropped id leaves the client waiting for a verdict on it.
+            rejected_items.push(item_id.clone());
             continue;
         }
         match crate::email::move_email_via_jmap(
@@ -10824,13 +11366,7 @@ async fn handle_mark_as_junk(state: &Arc<AppState>, auth: &AuthContext, body: &s
         )
         .await
         {
-            Ok(_new_change_key) => {
-                moved_xml.push_str(&format!(
-                    r#"<t:ItemId Id="{}" ChangeKey="{}" />"#,
-                    xml_escape(item_id),
-                    xml_escape(item_id)
-                ));
-            }
+            Ok(_new_change_key) => moved_items.push(item_id.clone()),
             Err(e) => {
                 tracing::warn!(error = %e, item_id = %item_id, "MarkAsJunk: failed to move email");
                 failed_items.push(item_id);
@@ -10841,14 +11377,18 @@ async fn handle_mark_as_junk(state: &Arc<AppState>, auth: &AuthContext, body: &s
     // Build per-item responses, one MarkAsJunkResponseMessage per input item
     // in request order. A successful move reports its ItemId under MovedItemIds;
     // a transient backend failure reports a retryable server error (not
-    // ErrorItemNotFound, which must mean a confirmed missing item).
+    // ErrorItemNotFound, which must mean a confirmed missing item), and a
+    // rejected id reports the malformed-id error with NO MovedItemIds — nothing
+    // was moved, so advertising a moved id would be a lie.
     let mut resp_messages = String::new();
     for item_id in &item_ids {
-        if !crate::email::is_email_server_id(item_id) {
+        if rejected_items.iter().any(|r| r == item_id) {
+            resp_messages.push_str(
+                r#"<m:MarkAsJunkResponseMessage ResponseClass="Error"><m:MessageText>Only messages can be marked as junk.</m:MessageText><m:ResponseCode>ErrorInvalidIdMalformed</m:ResponseCode><m:DescriptiveLinkKey>0</m:DescriptiveLinkKey></m:MarkAsJunkResponseMessage>"#,
+            );
             continue;
         }
-        // Determine if this item succeeded or failed.
-        if moved_xml.contains(&format!(r#"Id="{}""#, xml_escape(item_id))) {
+        if moved_items.iter().any(|m| m == item_id) {
             resp_messages.push_str(&format!(
                 r#"<m:MarkAsJunkResponseMessage ResponseClass="Success">
 <m:ResponseCode>NoError</m:ResponseCode>
@@ -10943,43 +11483,31 @@ async fn handle_uninstall_app() -> Response {
 /// an `Id`, `TokenType`, and (for `CallerIdentity`) a `ExtensionId`.
 ///
 /// The gateway does not broker tokens on behalf of any third-party identity
-/// provider, so it cannot mint a real `TokenValue`. To remain spec-compliant
-/// while disclosing nothing, it returns one `<t:ClientAccessTokenResponse>`
-/// entry per request with an empty `TokenValue` and the matching `Id`, letting
-/// the client proceed without treating the operation as an error. This is the
-/// correct "no token issued" shape (MS-OXWSCORE §2.2.5.4.3) rather than the
-/// previous hard-coded empty `<Token/>` nop.
+/// provider, so it cannot mint a real `TokenValue`. An empty `TokenValue`
+/// inside a Success response is worse than an error: the client treats the
+/// blank string as a token it holds. The operation therefore answers
+/// `ResponseClass="Error"` with `ErrorNotSupported`, and the client falls back
+/// to its own credentials.
 async fn handle_get_client_access_token(
     _state: &Arc<AppState>,
     _auth: &AuthContext,
-    body: &str,
+    _body: &str,
 ) -> Response {
-    let token_requests = extract_first_attrs(body, b"TokenRequest", b"Id");
-
-    let mut tokens_xml = String::new();
-    if token_requests.is_empty() {
-        // No recognisable TokenRequest: emit a single empty entry so the
-        // response is well-formed for clients that echo a bare request.
-        tokens_xml.push_str(r#"<t:ClientAccessTokenResponse><t:Id/><t:TokenType>CallerIdentity</t:TokenType><t:TokenValue/></t:ClientAccessTokenResponse>"#);
-    } else {
-        for id in token_requests {
-            tokens_xml.push_str(&format!(
-                r#"<t:ClientAccessTokenResponse><t:Id>{}</t:Id><t:TokenType>CallerIdentity</t:TokenType><t:TokenValue/></t:ClientAccessTokenResponse>"#,
-                xml_escape(&id)
-            ));
-        }
-    }
-
+    // The gateway has no token-issuing service behind it. Answering Success
+    // with an EMPTY `<t:TokenValue/>` told the client it held a token that
+    // grants nothing; a per-request Error is the honest answer (the client then
+    // falls back to its own credentials).
     let inner = format!(
         r#"<m:GetClientAccessTokenResponse xmlns:m="{}" xmlns:t="{}">
 <m:ResponseMessages>
-<m:GetClientAccessTokenResponseMessage ResponseClass="Success">
-<m:ResponseCode>NoError</m:ResponseCode>
-<m:Token>{}</m:Token>
+<m:GetClientAccessTokenResponseMessage ResponseClass="Error">
+<m:MessageText>Client access tokens are not supported</m:MessageText>
+<m:ResponseCode>ErrorNotSupported</m:ResponseCode>
+<m:DescriptiveLinkKey>0</m:DescriptiveLinkKey>
 </m:GetClientAccessTokenResponseMessage>
 </m:ResponseMessages>
 </m:GetClientAccessTokenResponse>"#,
-        EWS_MSG_NS, EWS_TYPE_NS, tokens_xml
+        EWS_MSG_NS, EWS_TYPE_NS
     );
     soap_ok(inner)
 }
@@ -10992,14 +11520,14 @@ async fn handle_get_client_access_token(
 /// malformed (but still stored) event does not silently lose its reminder.
 fn next_occurrence_start(
     item: &crate::calendar::CalendarItem,
-    now: chrono::DateTime<Utc>,
-) -> chrono::DateTime<Utc> {
+    search_from: chrono::DateTime<Utc>,
+) -> Option<chrono::DateTime<Utc>> {
     let start_utc = item.start;
     let Some(rrule) = item.rrule.as_deref() else {
-        return start_utc;
+        return Some(start_utc);
     };
     if rrule.trim().is_empty() {
-        return start_utc;
+        return Some(start_utc);
     }
 
     // The rrule crate only accepts the *basic* iCalendar date-time form
@@ -11016,20 +11544,22 @@ fn next_occurrence_start(
 
     let parsed: Option<rrule::RRuleSet> = block.parse().ok();
     let Some(set) = parsed else {
-        return start_utc;
+        // An uninterpretable rule must not drop the reminder: fall back to the
+        // event's own start (the pre-existing fail-open behaviour).
+        return Some(start_utc);
     };
 
     // The rrule crate's `Tz` wrapper is not a `chrono::TimeZone`, so building a
     // `DateTime<rrule::Tz>` for `RRuleSet::after` is awkward from `DateTime<Utc>`.
     // Instead iterate occurrences in ascending order and pick the first one that
-    // is still at/after "now". The iterator respects COUNT/UNTIL/EXDATE and
-    // terminates; the `.take()` bound is a defence against a pathological
-    // unbounded rule producing an unmanageable walk.
+    // is still at/after `search_from`. The iterator respects COUNT/UNTIL/EXDATE
+    // and terminates; the `.take()` bound is a defence against a pathological
+    // unbounded rule producing an unmanageable walk. `None` when the series has
+    // no occurrence at/after `search_from` (fully elapsed).
     set.into_iter()
         .take(100_000)
         .map(|d| d.with_timezone(&Utc))
-        .find(|d| *d >= now)
-        .unwrap_or(start_utc)
+        .find(|d| *d >= search_from)
 }
 
 /// Handle EWS GetReminders (MS-OXWSRMND §3.1.4.1).
@@ -11084,11 +11614,18 @@ async fn handle_get_reminders(state: &Arc<AppState>, auth: &AuthContext, body: &
         // without risk of overflowing on `i32::MIN`. Clamp to a year to guard
         // against corrupt values producing an absurd due time.
         let lead_minutes = i64::from(minutes.unsigned_abs().min(525_600));
-        let occurrence_start = next_occurrence_start(item, now);
+        // Search for an occurrence whose REMINDER falls inside the window, not
+        // for the next occurrence from `now`: with a 15-minute lead and a
+        // series whose next occurrence starts in five minutes, the next
+        // reminder is already due, and starting the search at `now` skipped
+        // the (in-window) reminder of the following occurrence.
+        let search_from = window_start + chrono::Duration::minutes(lead_minutes);
+        let Some(occurrence_start) = next_occurrence_start(item, search_from) else {
+            continue;
+        };
         let occurrence_end = occurrence_start + (item.end - item.start);
         let reminder_due = occurrence_start - chrono::Duration::minutes(lead_minutes);
-        // Only surface reminders within the requested window; a reminder whose
-        // occurrence already fully passed is out of scope.
+        // Only surface reminders within the requested window.
         if reminder_due < window_start {
             continue;
         }
@@ -11159,8 +11696,8 @@ fn parse_reminder_window(
 /// acknowledged for the referenced items and echoed back to the client so its
 /// local reminder UI clears without error.
 async fn handle_perform_reminder_action(
-    _state: &Arc<AppState>,
-    _auth: &AuthContext,
+    state: &Arc<AppState>,
+    auth: &AuthContext,
     body: &str,
 ) -> Response {
     let item_ids = extract_first_attrs(body, b"ItemId", b"Id");
@@ -11173,13 +11710,42 @@ async fn handle_perform_reminder_action(
         );
     }
 
+    // `UpdatedItemIds` must carry each item's REAL ChangeKey: the previous
+    // implementation echoed the id as the ChangeKey, so a client that compared
+    // it against the id it held saw a phantom change.
     let mut updated_xml = String::new();
     for item_id in &item_ids {
-        updated_xml.push_str(&format!(
-            r#"<t:ItemId Id="{}" ChangeKey="{}" />"#,
-            xml_escape(item_id),
-            xml_escape(item_id)
-        ));
+        match state
+            .storage
+            .get_ews_item_by_server_id(&auth.username, item_id)
+            .await
+        {
+            Ok(Some(row)) => {
+                let ck = changekey_for_item(&row);
+                updated_xml.push_str(&format!(
+                    r#"<t:ItemId Id="{}" ChangeKey="{}" />"#,
+                    xml_escape(item_id),
+                    xml_escape(&ck)
+                ));
+            }
+            Ok(None) => {
+                return operation_error_response(
+                    &EwsAction::PerformReminderAction,
+                    "ErrorItemNotFound",
+                    "Reminder item not found",
+                    StatusCode::OK,
+                );
+            }
+            Err(e) => {
+                tracing::error!(error = %e, item_id = %item_id, "PerformReminderAction: item lookup failed");
+                return operation_error_response(
+                    &EwsAction::PerformReminderAction,
+                    "ErrorInternalServerError",
+                    "Failed to load the reminder item",
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                );
+            }
+        }
     }
 
     let inner = format!(
@@ -11267,7 +11833,17 @@ async fn handle_get_persona(state: &Arc<AppState>, auth: &AuthContext, body: &st
         }
     }
 
-    // No directory: self persona only (directory-less look-alike behaviour).
+    // No directory: only the CALLER's own persona can be resolved. A supplied
+    // identifier naming anyone else must be reported as not found rather than
+    // answered with the caller's identity under someone else's name.
+    let normalized = target.trim().trim_start_matches("mailto:");
+    if !normalized.eq_ignore_ascii_case(&auth.username) {
+        let inner = format!(
+            r#"<m:GetPersonaResponse xmlns:m="{}" xmlns:t="{}"><m:ResponseMessages><m:GetPersonaResponseMessage ResponseClass="Error"><m:ResponseCode>ErrorItemNotFound</m:ResponseCode></m:GetPersonaResponseMessage></m:ResponseMessages></m:GetPersonaResponse>"#,
+            EWS_MSG_NS, EWS_TYPE_NS,
+        );
+        return soap_ok(inner);
+    }
     let self_contact = Contact {
         display_name: auth.username.clone(),
         email: auth.username.clone(),
@@ -11765,13 +12341,99 @@ async fn create_calendar_via_caldav(
     })
 }
 
+/// Outcome of a failed [`try_jmap_create_calendar`].
+///
+/// The distinction is load-bearing: once `CalendarEvent/set` has committed,
+/// falling back to CalDAV would leave the JMAP copy orphaned AND store a second
+/// copy, so only `NotCommitted` may trigger the CalDAV fallback.
+enum JmapCreateFailure {
+    /// Nothing was stored on the backend — the CalDAV fallback is safe.
+    NotCommitted(anyhow::Error),
+    /// The event exists on the backend but its mapping could not be persisted
+    /// and the event could not be removed again. A retry must not create a
+    /// second copy, so the request fails instead of falling back.
+    CommittedUnmapped(anyhow::Error),
+}
+
+impl From<anyhow::Error> for JmapCreateFailure {
+    fn from(e: anyhow::Error) -> Self {
+        Self::NotCommitted(e)
+    }
+}
+
+/// Persist the mapping for a calendar event this request just created.
+///
+/// A transient SQLite lock is the realistic failure, so retry briefly before
+/// giving up. Returns whether the mapping is durable.
+async fn persist_new_calendar_mapping(
+    state: &Arc<AppState>,
+    owner: &str,
+    resource_href: &str,
+    server_id: &str,
+    uid: &str,
+    etag: &str,
+) -> bool {
+    for attempt in 0..3u32 {
+        match state
+            .storage
+            .upsert_item_map(owner, "", resource_href, server_id, uid, etag)
+            .await
+        {
+            Ok(()) => return true,
+            Err(e) => {
+                tracing::warn!(
+                    attempt,
+                    error = %e,
+                    "Failed to persist a calendar item mapping; retrying"
+                );
+                tokio::time::sleep(std::time::Duration::from_millis(
+                    20 * u64::from(1u32 << attempt),
+                ))
+                .await;
+            }
+        }
+    }
+    false
+}
+
+/// Remove a calendar event whose mapping could not be persisted.
+///
+/// Compensation, not cleanup: a committed-but-unmapped event makes every
+/// client retry create a duplicate. Returns whether the event is confirmed
+/// gone.
+async fn rollback_unmapped_calendar_event(
+    state: &Arc<AppState>,
+    owner: &str,
+    password: &SecretString,
+    account_id: &str,
+    event_id: &str,
+) -> bool {
+    let Some(jmap) = state.jmap_client.as_ref() else {
+        return false;
+    };
+    match jmap
+        .destroy_calendar_events(account_id, &[event_id.to_string()], owner, password)
+        .await
+    {
+        Ok(()) => true,
+        Err(e) => {
+            tracing::error!(
+                error = %e,
+                event_id,
+                "Failed to remove a committed calendar event with no mapping; a retry may duplicate it"
+            );
+            false
+        }
+    }
+}
+
 /// Create a calendar item via JMAP CalendarEvent/set.
 async fn try_jmap_create_calendar(
     state: &Arc<AppState>,
     owner: &str,
     password: &SecretString,
     item: &crate::calendar::CalendarItem,
-) -> Result<EwsItemRow, anyhow::Error> {
+) -> Result<EwsItemRow, JmapCreateFailure> {
     let jmap = state
         .jmap_client
         .as_ref()
@@ -11779,7 +12441,9 @@ async fn try_jmap_create_calendar(
 
     // Ensure JMAP Calendar is supported
     if !jmap.supports_calendar(owner, password).await {
-        return Err(anyhow!("JMAP Calendar not supported by server"));
+        return Err(JmapCreateFailure::NotCommitted(anyhow!(
+            "JMAP Calendar not supported by server"
+        )));
     }
 
     // Get the account ID for calendar operations
@@ -11788,7 +12452,9 @@ async fn try_jmap_create_calendar(
     // Discover the primary calendar (first one)
     let calendars = jmap.query_calendars(owner, password).await?;
     let Some(calendar) = calendars.calendars.first() else {
-        return Err(anyhow!("No calendars available in JMAP"));
+        return Err(JmapCreateFailure::NotCommitted(anyhow!(
+            "No calendars available in JMAP"
+        )));
     };
     let calendar_id = calendar
         .id
@@ -11823,7 +12489,7 @@ async fn try_jmap_create_calendar(
                     "JMAP calendar create stored an empty event; disabling JMAP calendar writes for this process"
                 );
             }
-            return Err(anyhow!("{}", e));
+            return Err(JmapCreateFailure::NotCommitted(anyhow!("{}", e)));
         }
     };
 
@@ -11834,13 +12500,23 @@ async fn try_jmap_create_calendar(
     );
     let resource_href = format!("jmap://calendar/{}/{}", account_id, event_id);
 
-    // Persist mapping
-    if let Err(e) = state
-        .storage
-        .upsert_item_map(owner, "", &resource_href, &server_id, &item.uid, &etag)
+    // Persist mapping. The event is already committed, so a failure here must
+    // NOT fall back to the CalDAV create path: either the mapping is made
+    // durable, or the event is removed again, or the request fails.
+    if !persist_new_calendar_mapping(state, owner, &resource_href, &server_id, &item.uid, &etag)
         .await
     {
-        return Err(anyhow!("Failed to upsert item map: {}", e));
+        let removed =
+            rollback_unmapped_calendar_event(state, owner, password, &account_id, &event_id).await;
+        return Err(if removed {
+            JmapCreateFailure::NotCommitted(anyhow!(
+                "Failed to persist the calendar item mapping; the created event was removed"
+            ))
+        } else {
+            JmapCreateFailure::CommittedUnmapped(anyhow!(
+                "Failed to persist the calendar item mapping and the created event could not be removed"
+            ))
+        });
     }
 
     Ok(EwsItemRow {
@@ -12001,9 +12677,10 @@ async fn try_jmap_update_calendar(
         return Err(anyhow!("JMAP Calendar not supported"));
     }
 
-    let account_id: String = jmap.get_account_id(owner, password).await?;
-
     // Parse stored resource_href: jmap://calendar/{account_id}/{event_id}
+    // The href's account is authoritative — re-deriving it from the session
+    // (the primary account) would target a different account for an event that
+    // lives in a shared or secondary calendar.
     let href = &stored_item.resource_href;
     if !href.starts_with("jmap://calendar/") {
         return Err(anyhow!("Invalid JMAP resource_href format: {}", href));
@@ -12015,6 +12692,7 @@ async fn try_jmap_update_calendar(
     if parts.len() != 2 {
         return Err(anyhow!("Invalid JMAP resource_href parts: {}", href));
     }
+    let account_id = parts[0];
     let event_id = parts[1];
 
     // Render iCalendar
@@ -12024,7 +12702,7 @@ async fn try_jmap_update_calendar(
     // `PayloadDiscarded` failure disables the JMAP write path for the process.
     let (updated_event_id, uid, etag): (String, String, String) = match jmap
         .set_calendar_event(SetCalendarEventParams {
-            account_id: &account_id,
+            account_id,
             calendar_id: None, // Not needed for update; we pass event_id
             event_id: Some(event_id),
             ics: &ics,
@@ -12215,8 +12893,10 @@ async fn try_jmap_delete_calendar(
         return Err(anyhow!("JMAP Calendar not supported"));
     }
 
-    let account_id: String = jmap.get_account_id(owner, password).await?;
-
+    // The account is the one recorded in the resource href — the account the
+    // event was created in. Re-deriving it from the session (the primary
+    // account) would address a different account as soon as the stored event
+    // belongs to a shared or secondary calendar.
     let href = &stored_item.resource_href;
     if !href.starts_with("jmap://calendar/") {
         return Err(anyhow!("Invalid JMAP resource_href format: {}", href));
@@ -12228,9 +12908,10 @@ async fn try_jmap_delete_calendar(
     if parts.len() != 2 {
         return Err(anyhow!("Invalid JMAP resource_href parts: {}", href));
     }
+    let account_id = parts[0];
     let event_id = parts[1];
 
-    jmap.destroy_calendar_events(&account_id, &[event_id.to_string()], owner, password)
+    jmap.destroy_calendar_events(account_id, &[event_id.to_string()], owner, password)
         .await?;
 
     Ok(())
@@ -12333,7 +13014,7 @@ mod tests {
             ..Default::default()
         };
         // No rrule → the base start is the next (only) occurrence.
-        assert_eq!(next_occurrence_start(&item, now), start);
+        assert_eq!(next_occurrence_start(&item, now), Some(start));
     }
 
     #[test]
@@ -12347,7 +13028,7 @@ mod tests {
             rrule: Some("FREQ=DAILY".to_string()),
             ..Default::default()
         };
-        let next = next_occurrence_start(&item, now);
+        let next = next_occurrence_start(&item, now).expect("an occurrence must be found");
         assert!(
             next >= now,
             "next occurrence must be at/after now: {next:?}"
@@ -16713,6 +17394,116 @@ mod tests {
         assert!(
             text.contains("m0") && text.contains("m1") && !text.contains("m2"),
             "the restart must deliver the head, not the recorded position: {text}"
+        );
+    }
+
+    /// §2: a user-created (EAS `FolderCreate`) mail folder must appear in the
+    /// EWS folder hierarchy and its later deletion must reach an already-primed
+    /// client as a `<t:Delete>` — the hierarchy previously reported only the
+    /// built-in folders and answered every follow-up with no changes.
+    #[tokio::test]
+    async fn sync_folder_hierarchy_includes_custom_folders_and_journaled_deletes() {
+        let state = meeting_test_state().await;
+        let owner = "user@example.com";
+        let seed =
+            |server_id: &'static str, name: &'static str| crate::storage::FolderUpsertParams {
+                owner,
+                server_id,
+                parent_id: "0",
+                display_name: name,
+                folder_type: 12,
+                backend_kind: "jmap",
+                backend_id: server_id,
+            };
+        state
+            .storage
+            .upsert_folder_journaled(seed("mb-projects", "Projects"), "folder-add")
+            .await
+            .expect("seed custom folder");
+        // A Type 13 (calendar collection) folder is NOT an EWS folder.
+        state
+            .storage
+            .upsert_folder_journaled(
+                crate::storage::FolderUpsertParams {
+                    folder_type: 13,
+                    backend_kind: "caldav",
+                    ..seed("https://dav.example/cal/u/Team/", "Team")
+                },
+                "folder-add",
+            )
+            .await
+            .expect("seed calendar folder");
+
+        let prime = response_body(
+            handle_sync_folder_hierarchy(
+                &state,
+                &meeting_auth(),
+                r#"<SyncFolderHierarchy><FolderShape/><SyncState/></SyncFolderHierarchy>"#,
+            )
+            .await,
+        )
+        .await;
+        assert!(
+            prime.contains(r#"<t:FolderId Id="mb-projects""#),
+            "the prime must list the custom mail folder: {prime}"
+        );
+        assert!(prime.contains("Projects"), "{prime}");
+        assert!(
+            !prime.contains("Team"),
+            "a calendar collection must not be advertised as a mail folder: {prime}"
+        );
+        assert!(
+            prime.contains("Top of Information Store") && prime.contains("<t:CalendarFolder>"),
+            "the built-in hierarchy is still rendered: {prime}"
+        );
+        let token = extract_first_tag_text(&prime, b"SyncState").expect("SyncState");
+
+        // A journaled delete must reach the already-primed client.
+        state
+            .storage
+            .delete_folders_journaled(owner, &["mb-projects".to_string()])
+            .await
+            .expect("delete custom folder");
+        let delta = response_body(
+            handle_sync_folder_hierarchy(
+                &state,
+                &meeting_auth(),
+                &format!(
+                    "<SyncFolderHierarchy><FolderShape/><SyncState>{}</SyncState></SyncFolderHierarchy>",
+                    xml_escape(&token)
+                ),
+            )
+            .await,
+        )
+        .await;
+        assert!(
+            delta.contains(r#"<t:Delete><t:FolderId Id="mb-projects""#),
+            "the journaled delete must be reported: {delta}"
+        );
+        assert!(
+            !delta.contains("Top of Information Store") && !delta.contains("Projects"),
+            "a delta must not re-send the whole hierarchy: {delta}"
+        );
+    }
+
+    /// A prime must FAIL CLOSED when the journal head/prune-floor pair cannot be
+    /// read: citing a guessed baseline would either be below the prune floor
+    /// (every later delta rejected as stale, so the client re-primes forever) or
+    /// ahead of the journal (dropping the changes in between).
+    #[tokio::test]
+    async fn calendar_prime_fails_closed_when_prune_floor_is_unavailable() {
+        let state = meeting_test_state().await;
+        sqlx::query("DROP TABLE journal_prune_state")
+            .execute(state.storage.pool())
+            .await
+            .expect("drop prune state table");
+
+        let body = r#"<m:SyncFolderItems><m:ItemShape/><m:SyncFolderId><t:DistinguishedFolderId Id="calendar"/></m:SyncFolderId><m:MaxChangesReturned>100</m:MaxChangesReturned></m:SyncFolderItems>"#;
+        let text =
+            response_body(handle_sync_folder_items(&state, &meeting_auth(), body).await).await;
+        assert!(
+            text.contains("ErrorServerBusy"),
+            "an unreadable prune floor must fail the prime retryably: {text}"
         );
     }
 }

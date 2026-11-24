@@ -1260,11 +1260,9 @@ pub async fn send_email(
 
     // Prefer JMAP EmailSubmission when available
     if let Some(jmap) = &state.jmap_client {
-        eprintln!("send_email: trying JMAP submission");
         match send_email_jmap(state, jmap, msg, username, password).await {
             Ok(id) => return Ok(id),
             Err(e) => {
-                eprintln!("send_email: JMAP submission failed: {}", e);
                 tracing::warn!(
                     error = %e,
                     "JMAP EmailSubmission failed, falling back to SMTP"
@@ -1676,10 +1674,11 @@ pub async fn move_email_to_mailbox_via_jmap(
     Ok(server_id.to_string())
 }
 
-/// Copy an email to another folder via JMAP Email/set.
+/// Copy an email to another folder via `Email/copy` (RFC 8621 §4.6).
 ///
-/// This implements CopyItem by adding the target mailboxId without removing from the current mailbox(es).
-/// `server_id` is the gateway's server ID (em-<jmap_id>).
+/// A copy is a NEW message in the destination; the source keeps its own
+/// mailbox membership. Returns the gateway ServerId of the COPY.
+/// `server_id` is the gateway's server ID (em-<jmap_id>) of the source.
 /// `dest_folder` is the distinguished folder name (e.g., "inbox", "sent", "drafts", "trash").
 pub async fn copy_email_via_jmap(
     _state: &Arc<AppState>,
@@ -1706,27 +1705,16 @@ pub async fn copy_email_via_jmap(
     }
 
     // Use first mailbox ID for simplicity
-    let dest_mb_id = &dest_mailbox_ids[0];
+    let dest_mb_ids = vec![dest_mailbox_ids[0].clone()];
 
-    // Build the update patch: add the destination mailboxId to the existing set.
-    // We use "mailboxIds": { dest_mb_id: true } which does not remove existing ones
-    // unless we explicitly clear them. Per JMAP, setting to true adds, false removes.
-    let update_patch = json!({
-        "mailboxIds": { (dest_mb_id): true },
-    });
-
-    jmap.update_email(
-        account_id,
-        &json!({
-            (jmap_id): update_patch,
-        }),
-        username,
-        password,
-    )
-    .await?;
-
-    // Return same change key (since content unchanged)
-    Ok(server_id.to_string())
+    // EWS CopyItem must create a NEW item in the destination and leave the
+    // source untouched. Adding the destination mailbox to the source's
+    // `mailboxIds` (the previous behavior) moved/re-filed the original message
+    // and returned its own id as if it were the copy.
+    let new_id = jmap
+        .copy_email(account_id, &jmap_id, &dest_mb_ids, username, password)
+        .await?;
+    Ok(email_server_id_from_jmap_id(&new_id))
 }
 
 /// Send an email via SMTP on behalf of a user.
@@ -2034,23 +2022,86 @@ fn extract_first_tag_text(xml: &str, tag: &[u8]) -> Option<String> {
     None
 }
 
+/// Extract the text of the first element whose LOCAL name matches `local`,
+/// ignoring any namespace prefix.
+///
+/// Raw XML SendMail bodies reach the parser without WBXML decoding, and the
+/// protocol does not fix namespace prefixes, so a client may send
+/// `<ComposeMail:Mime>` rather than a default-namespaced `<Mime>`. A literal
+/// `<Mime>` search would miss it and the message would never be sent.
+fn extract_first_tag_text_local(xml: &str, local: &str) -> Option<String> {
+    use quick_xml::events::Event;
+    use quick_xml::reader::Reader;
+
+    let mut reader = Reader::from_str(xml);
+    let mut buf = Vec::new();
+    let mut depth = 0usize;
+    let mut capturing = false;
+    let mut out = String::new();
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(e)) => {
+                if capturing {
+                    depth += 1;
+                } else if e.name().local_name().as_ref() == local {
+                    capturing = true;
+                }
+            }
+            Ok(Event::End(_)) => {
+                if capturing {
+                    if depth == 0 {
+                        return Some(out);
+                    }
+                    depth -= 1;
+                }
+            }
+            Ok(Event::Text(e)) => {
+                if capturing {
+                    out.push_str(e.as_ref());
+                }
+            }
+            Ok(Event::CData(e)) => {
+                if capturing {
+                    out.push_str(e.as_ref());
+                }
+            }
+            Ok(Event::Eof) | Err(_) => return None,
+            _ => {}
+        }
+        buf.clear();
+    }
+}
+
 /// Parse EAS SendMail request to extract MIME message and recipients.
 ///
 /// Per MS-ASCMD §2.2.1.17, SendMail contains a ClientId and either
 /// a MIME message or individual email elements.
 pub fn parse_eas_sendmail(xml: &str) -> Option<EasSendMailRequest> {
-    let client_id = extract_first_tag_text(xml, b"ClientId");
-    let mime_data =
-        extract_first_tag_text(xml, b"MIMEData").or_else(|| extract_first_tag_text(xml, b"Mime"));
+    // Raw-XML SendMail bodies are never WBXML-decoded, so a client may send the
+    // whole document namespace-qualified: every lookup below matches by LOCAL
+    // name first, with the literal helper as a fallback for malformed markup.
+    let client_id = extract_first_tag_text_local(xml, "ClientId")
+        .or_else(|| extract_first_tag_text(xml, b"ClientId"));
+    // `Mime` is the [MS-ASCMD] §2.2.3.109 element; `MIMEData` is the legacy
+    // name older clients still send. Match either by LOCAL name so a
+    // namespace-qualified raw-XML body is parsed too, and keep the literal
+    // helpers as a fallback for malformed markup.
+    let mime_data = extract_first_tag_text_local(xml, "MIMEData")
+        .or_else(|| extract_first_tag_text_local(xml, "Mime"))
+        .or_else(|| extract_first_tag_text(xml, b"MIMEData"))
+        .or_else(|| extract_first_tag_text(xml, b"Mime"));
     let save_in_sent = xml.contains("<SaveInSentItems") || xml.contains(":SaveInSentItems");
     // Per MS-ASCMD §2.2.1.19/20, SmartReply and SmartForward reference the
     // original message via CollectionId + ItemId so the gateway can wire
     // In-Reply-To/References threading headers.
     // MS-ASCMD §2.2.1.19/20: EAS 14.x clients name the source folder tag
     // `airsync:CollectionId`; older clients use `FolderId`. Accept both.
-    let collection_id = extract_first_tag_text(xml, b"CollectionId")
+    let collection_id = extract_first_tag_text_local(xml, "CollectionId")
+        .or_else(|| extract_first_tag_text_local(xml, "FolderId"))
+        .or_else(|| extract_first_tag_text(xml, b"CollectionId"))
         .or_else(|| extract_first_tag_text(xml, b"FolderId"));
-    let item_id = extract_first_tag_text(xml, b"ItemId");
+    let item_id = extract_first_tag_text_local(xml, "ItemId")
+        .or_else(|| extract_first_tag_text(xml, b"ItemId"));
 
     Some(EasSendMailRequest {
         client_id,
@@ -2295,7 +2346,7 @@ pub async fn apply_eas_email_mutations(
     account_id: &str,
     username: &str,
     password: &SecretString,
-    collection_id: &str,
+    source_mailbox_id: Option<&str>,
     xml: &str,
     deletes_as_moves: bool,
 ) -> Vec<EasEmailMutationResult> {
@@ -2332,6 +2383,23 @@ pub async fn apply_eas_email_mutations(
                 server_id,
                 deletes_as_moves,
             } => {
+                // An unresolved source collection must NOT be compared with the
+                // backend mailbox ids: the raw EAS id ("2" for Inbox) lives in a
+                // different identifier space, so the membership check would fail
+                // and answer a permanent Status 8 for a live message. Apply no
+                // mutation and report a retryable Status 6 instead.
+                let Some(collection_id) = source_mailbox_id else {
+                    tracing::warn!(
+                        target: "eas",
+                        server_id = %server_id,
+                        "Delete in an unresolved source collection; reporting retryable Status 6"
+                    );
+                    results.push(EasEmailMutationResult::Delete {
+                        server_id,
+                        status: "6",
+                    });
+                    continue;
+                };
                 let status = match crate::email::jmap_id_from_email_server_id(&server_id) {
                     Some(jmap_id) if !jmap_id.is_empty() => {
                         // [MS-ASEMAIL] §3.2.5.4.2: a Delete addressed to a
@@ -3647,6 +3715,26 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_eas_sendmail_accepts_prefixed_mime_and_mimedata() {
+        // Raw XML SendMail bodies are not WBXML-decoded, so the client may
+        // namespace-qualify the element. `Mime` is the current name and
+        // `MIMEData` the legacy one; both must resolve by local name.
+        let prefixed = r#"<?xml version="1.0" encoding="utf-8"?>
+<ComposeMail:SendMail xmlns:ComposeMail="ComposeMail:">
+  <ComposeMail:ClientId>c-1</ComposeMail:ClientId>
+  <ComposeMail:Mime>From: a@b.c</ComposeMail:Mime>
+</ComposeMail:SendMail>"#;
+        let req = parse_eas_sendmail(prefixed).expect("must parse");
+        assert_eq!(req.client_id.as_deref(), Some("c-1"));
+        assert_eq!(req.mime_data.as_deref(), Some("From: a@b.c"));
+
+        let legacy =
+            r#"<SendMail xmlns="ComposeMail:"><MIMEData>From: x@y.z</MIMEData></SendMail>"#;
+        let req = parse_eas_sendmail(legacy).expect("must parse");
+        assert_eq!(req.mime_data.as_deref(), Some("From: x@y.z"));
+    }
+
+    #[test]
     fn test_mime_header_id_list_strips_brackets() {
         // In mail-parser 1.0 `HeaderValue::TextList` wraps message IDs; the
         // test verifies `mime_header_id_list` splits on whitespace and
@@ -4110,7 +4198,7 @@ Body\r\n";
         let xml = r#"<Commands>
           <Change><ServerId>em-abc</ServerId><ApplicationData><Email:Read>1</Email:Read><Email:Flag><Email:Status>2</Email:Status></Email:Flag></ApplicationData></Change>
         </Commands>"#;
-        let results = apply_eas_email_mutations(&client, "a", "u", &pw, "1", xml, true).await;
+        let results = apply_eas_email_mutations(&client, "a", "u", &pw, Some("1"), xml, true).await;
         assert_eq!(results.len(), 1);
         assert!(matches!(
             &results[0],
@@ -4132,7 +4220,7 @@ Body\r\n";
         let client = std::sync::Arc::new(crate::jmap::JmapClient::new(&base).unwrap());
         let pw = secrecy::SecretString::from("pw");
         let xml = r#"<Commands><Change><ServerId>em-1</ServerId><ApplicationData><Email:Read>0</Email:Read></ApplicationData></Change></Commands>"#;
-        let results = apply_eas_email_mutations(&client, "a", "u", &pw, "1", xml, true).await;
+        let results = apply_eas_email_mutations(&client, "a", "u", &pw, Some("1"), xml, true).await;
         assert!(matches!(
             &results[0],
             EasEmailMutationResult::Change { status: "1", .. }
@@ -4142,9 +4230,11 @@ Body\r\n";
             .iter()
             .find(|c| c.get(0).and_then(|v| v.as_str()) == Some("Email/set"))
             .unwrap();
+        // A presence check, not indexing: JSON indexing also yields `Null` for
+        // a key that is absent, which would pass if the patch never cleared it.
         assert_eq!(
-            set[1]["update"]["1"]["keywords/$seen"],
-            serde_json::json!(null)
+            set[1]["update"]["1"].get("keywords/$seen"),
+            Some(&serde_json::json!(null))
         );
     }
 
@@ -4154,7 +4244,7 @@ Body\r\n";
         let client = std::sync::Arc::new(crate::jmap::JmapClient::new(&base).unwrap());
         let pw = secrecy::SecretString::from("pw");
         let xml = r#"<Commands><Change><ServerId>2:999</ServerId><ApplicationData><Email:Read>1</Email:Read></ApplicationData></Change></Commands>"#;
-        let results = apply_eas_email_mutations(&client, "a", "u", &pw, "1", xml, true).await;
+        let results = apply_eas_email_mutations(&client, "a", "u", &pw, Some("1"), xml, true).await;
         assert!(matches!(
             &results[0],
             EasEmailMutationResult::Change { status: "8", .. }
@@ -4167,7 +4257,7 @@ Body\r\n";
         let client = std::sync::Arc::new(crate::jmap::JmapClient::new(&base).unwrap());
         let pw = secrecy::SecretString::from("pw");
         let xml = r#"<Commands><Change><ServerId>em-1</ServerId><ApplicationData><Email:Read>1</Email:Read></ApplicationData></Change></Commands>"#;
-        let results = apply_eas_email_mutations(&client, "a", "u", &pw, "1", xml, true).await;
+        let results = apply_eas_email_mutations(&client, "a", "u", &pw, Some("1"), xml, true).await;
         assert!(matches!(
             &results[0],
             EasEmailMutationResult::Change { status: "6", .. }
@@ -4180,7 +4270,8 @@ Body\r\n";
         let client = std::sync::Arc::new(crate::jmap::JmapClient::new(&base).unwrap());
         let pw = secrecy::SecretString::from("pw");
         let xml = r#"<Commands><Delete><ServerId>em-7</ServerId></Delete></Commands>"#;
-        let results = apply_eas_email_mutations(&client, "a", "u", &pw, "inbox1", xml, true).await;
+        let results =
+            apply_eas_email_mutations(&client, "a", "u", &pw, Some("inbox1"), xml, true).await;
         assert!(matches!(
             &results[0],
             EasEmailMutationResult::Delete { status: "1", .. }
@@ -4198,9 +4289,11 @@ Body\r\n";
             set[1]["update"]["7"]["mailboxIds/trash1"],
             serde_json::json!(true)
         );
+        // Presence check: indexing would also yield `Null` for an absent key,
+        // so this would pass even if the source mailbox were never removed.
         assert_eq!(
-            set[1]["update"]["7"]["mailboxIds/inbox1"],
-            serde_json::json!(null)
+            set[1]["update"]["7"].get("mailboxIds/inbox1"),
+            Some(&serde_json::json!(null))
         );
     }
 
@@ -4210,7 +4303,8 @@ Body\r\n";
         let client = std::sync::Arc::new(crate::jmap::JmapClient::new(&base).unwrap());
         let pw = secrecy::SecretString::from("pw");
         let xml = r#"<Commands><Delete><ServerId>em-7</ServerId></Delete></Commands>"#;
-        let results = apply_eas_email_mutations(&client, "a", "u", &pw, "inbox1", xml, false).await;
+        let results =
+            apply_eas_email_mutations(&client, "a", "u", &pw, Some("inbox1"), xml, false).await;
         assert!(matches!(
             &results[0],
             EasEmailMutationResult::Delete { status: "1", .. }
@@ -4224,12 +4318,45 @@ Body\r\n";
     }
 
     #[tokio::test]
+    async fn apply_email_mutations_unresolved_collection_skips_delete_but_applies_change() {
+        let (base, seen) = spawn_email_mutation_stub("ok").await;
+        let client = std::sync::Arc::new(crate::jmap::JmapClient::new(&base).unwrap());
+        let pw = secrecy::SecretString::from("pw");
+        let xml = r#"<Commands>
+          <Change><ServerId>em-1</ServerId><ApplicationData><Email:Read>1</Email:Read></ApplicationData></Change>
+          <Delete><ServerId>em-7</ServerId></Delete>
+        </Commands>"#;
+        let results = apply_eas_email_mutations(&client, "a", "u", &pw, None, xml, true).await;
+        assert_eq!(results.len(), 2);
+        assert!(matches!(
+            &results[0],
+            EasEmailMutationResult::Change { status: "1", .. }
+        ));
+        // The raw EAS CollectionId must never be compared with backend
+        // mailbox ids, so the Delete applies nothing and stays retryable.
+        assert!(matches!(
+            &results[1],
+            EasEmailMutationResult::Delete { status: "6", .. }
+        ));
+        let calls = seen.lock().await;
+        assert!(
+            calls
+                .iter()
+                .filter(|c| c.get(0).and_then(|v| v.as_str()) == Some("Email/set")
+                    && c[1]["destroy"].is_array())
+                .count()
+                == 0,
+            "an unresolved source must never destroy the message"
+        );
+    }
+
+    #[tokio::test]
     async fn apply_email_mutations_empty_when_no_commands() {
         let (base, seen) = spawn_email_mutation_stub("ok").await;
         let client = std::sync::Arc::new(crate::jmap::JmapClient::new(&base).unwrap());
         let pw = secrecy::SecretString::from("pw");
         let xml = r#"<Sync><Collections><Collection><SyncKey>1</SyncKey></Collection></Collections></Sync>"#;
-        let results = apply_eas_email_mutations(&client, "a", "u", &pw, "1", xml, true).await;
+        let results = apply_eas_email_mutations(&client, "a", "u", &pw, Some("1"), xml, true).await;
         assert!(results.is_empty());
         assert!(
             seen.lock().await.is_empty(),

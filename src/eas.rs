@@ -1872,14 +1872,26 @@ async fn handle_folder_sync(
             }
         }
         // §16: a watermark below the pruned journal floor can no longer
-        // reconstruct its delta. Fail CLOSED (a floor-lookup error is treated as
-        // stale) and force a re-prime rather than silently resuming across a
-        // re-keyed gap and missing folder changes.
-        let stale = state
+        // reconstruct its delta, so the client is forced to re-prime. A
+        // floor-lookup FAILURE is a different fact: answering Status 9 would
+        // tell the client its key is obsolete and silently drop the window it
+        // asked for, so it is reported as a retryable server error instead.
+        let stale = match state
             .storage
             .journal_window_stale(owner, stored_since)
             .await
-            .unwrap_or(true);
+        {
+            Ok(stale) => stale,
+            Err(e) => {
+                tracing::error!(
+                    user = %owner,
+                    since = stored_since,
+                    error = %e,
+                    "FolderSync could not read the journal prune floor"
+                );
+                return folder_sync_error_response(wbxml, as_wbxml, request_id);
+            }
+        };
         if stale {
             tracing::info!(
                 user = %owner,
@@ -1991,32 +2003,35 @@ async fn handle_folder_sync(
     // The watermark is exactly the head captured BEFORE rendering, so the
     // acknowledged sequence never includes a row the response did not carry.
     let latest_seq = render_until;
-    // A failure to persist the new SyncKey must NOT be acknowledged with
-    // Status 1: the client would store a key the gateway never wrote and every
-    // follow-up request would be rejected as an invalid SyncKey. Answer the
-    // server-error response so the client retries instead.
-    if let Err(e) = state
+    // Persist the new SyncKey + `seq:` token AND the journal watermark (which
+    // Ping / GetItemEstimate read from `journal_seq`) in ONE transaction,
+    // CONDITIONAL on the incoming key. Learnings:
+    //  - acknowledging a key the gateway never wrote makes every follow-up
+    //    request fail as an invalid SyncKey, so a write failure is a server
+    //    error, not Status 1;
+    //  - the key comparison must be atomic with the write: two concurrent
+    //    FolderSync requests for this device-collection would otherwise both
+    //    pass the in-memory check and the later write would overwrite the pin
+    //    the first one issued.
+    match state
         .storage
-        .set_sync_key(
-            owner,
-            &collection_id,
-            &new_sync_key,
-            Some(&format!("seq:{}", latest_seq)),
-        )
+        .commit_folder_sync(owner, &collection_id, incoming, &new_sync_key, latest_seq)
         .await
     {
-        tracing::warn!(error = %e, "FolderSync: failed to persist new sync key");
-        return folder_sync_error_response(wbxml, as_wbxml, request_id);
-    }
-    // Also record the watermark through the journal-watermark API so Ping /
-    // GetItemEstimate (which read the `journal_seq` column) see the folder
-    // collection's progress, not just the `seq:` token.
-    if let Err(e) = state
-        .storage
-        .set_journal_watermark(owner, &collection_id, latest_seq)
-        .await
-    {
-        tracing::warn!(error = %e, "FolderSync: failed to persist journal watermark");
+        Ok(true) => {}
+        Ok(false) => {
+            tracing::warn!(
+                user = %owner,
+                collection_id,
+                "FolderSync: stored SyncKey changed during the request; asking the client to re-prime"
+            );
+            let xml = r#"<?xml version="1.0" encoding="utf-8"?><FolderSync xmlns="FolderHierarchy:"><Status>9</Status><SyncKey>0</SyncKey></FolderSync>"#;
+            return xml_or_wbxml_response(wbxml, as_wbxml, xml, request_id);
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "FolderSync: failed to persist new sync key");
+            return folder_sync_error_response(wbxml, as_wbxml, request_id);
+        }
     }
     let resp_xml = format!(
         r#"<?xml version="1.0" encoding="utf-8"?><FolderSync xmlns="FolderHierarchy:"><Status>1</Status><SyncKey>{}</SyncKey>{}</FolderSync>"#,
@@ -2218,20 +2233,26 @@ async fn resolve_email_mailbox_id(
     password: &SecretString,
     collection_id: &str,
 ) -> anyhow::Result<Option<String>> {
-    if let Ok(Some(row)) = state.storage.get_folder(owner, collection_id).await
-        && row.backend_kind == "jmap"
-    {
-        return Ok(Some(row.backend_id));
+    // A storage or backend failure must PROPAGATE: flattening it to `None`
+    // would answer a retryable outage as "this collection has no mailbox"
+    // (Status 8, a permanent client error) and the folder would stop syncing
+    // until a manual re-prime.
+    match state.storage.get_folder(owner, collection_id).await {
+        Ok(Some(row)) if row.backend_kind == "jmap" => return Ok(Some(row.backend_id)),
+        Ok(_) => {}
+        Err(e) => {
+            return Err(anyhow::anyhow!(
+                "failed to resolve folder {collection_id} for email sync: {e}"
+            ));
+        }
     }
-    let role = match crate::email::eas_collection_id_to_mailbox_role(collection_id) {
-        Some(r) => r,
-        None => return Ok(None),
+    let Some(role) = crate::email::eas_collection_id_to_mailbox_role(collection_id) else {
+        return Ok(None);
     };
-    Ok(jmap
+    let ids = jmap
         .get_mailbox_ids_for_role(account_id, role, owner, password)
-        .await
-        .ok()
-        .and_then(|ids| ids.into_iter().next()))
+        .await?;
+    Ok(ids.into_iter().next())
 }
 
 /// Per-folder mailbox-scoped `Email/queryChanges` probe: returns the pinged
@@ -6296,6 +6317,13 @@ async fn handle_sync_collections(ctx: &SyncCtx<'_>, collections: &[SyncCollectio
         let has_email_mutations = coll.xml.contains("<Change>") || coll.xml.contains("<Delete>");
         let coll_xml = if is_email {
             if state.can_read_email() {
+                // `None` means the client's mutations could not be applied. The
+                // whole collection is then answered with a retryable Status 5
+                // and the delta is NOT rendered: running it would advance the
+                // SyncKey past changes the client never received while its own
+                // flag/read/delete edits were dropped. Injecting a nested
+                // `<Collection>` into the delta (the previous behavior) also
+                // produced a malformed response.
                 let email_mutation_responses = if has_email_mutations {
                     match apply_email_client_mutations(
                         state,
@@ -6307,40 +6335,44 @@ async fn handle_sync_collections(ctx: &SyncCtx<'_>, collections: &[SyncCollectio
                     )
                     .await
                     {
-                        Ok(resp) => resp,
+                        Ok(resp) => Some(resp),
                         Err(e) => {
                             tracing::warn!(
                                 request_id = %request_id,
                                 error = %e,
-                                "Email mutation apply failed, returning Status 6"
+                                "Email mutation apply failed, returning retryable Status 5"
                             );
-                            format!(
-                                "<Collection><Class>Email</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>6</Status></Collection>",
-                                xml_escape(incoming_key),
-                                xml_escape(collection_id)
-                            )
+                            None
                         }
                     }
                 } else {
-                    String::new()
+                    Some(String::new())
                 };
-                match handle_email_sync(&EmailSyncRequestCtx {
-                    state,
-                    username,
-                    password,
-                    collection_id,
-                    state_collection_id: &state_collection_id,
-                    incoming_sync_key: incoming_key,
-                    window: effective_collection_window,
-                    options: resolved_options.as_ref(),
-                    conversation_mode: coll.conversation_mode,
-                })
-                .await
-                {
-                    Ok(xml_str) => crate::email::inject_collection_responses(
-                        xml_str,
-                        &email_mutation_responses,
-                    ),
+                let email_sync_result = match email_mutation_responses {
+                    None => Err(anyhow::anyhow!(
+                        "client email mutations could not be applied; retry the Sync"
+                    )),
+                    Some(responses) => match handle_email_sync(&EmailSyncRequestCtx {
+                        state,
+                        username,
+                        password,
+                        collection_id,
+                        state_collection_id: &state_collection_id,
+                        incoming_sync_key: incoming_key,
+                        window: effective_collection_window,
+                        options: resolved_options.as_ref(),
+                        conversation_mode: coll.conversation_mode,
+                    })
+                    .await
+                    {
+                        Ok(xml_str) => Ok(crate::email::inject_collection_responses(
+                            xml_str, &responses,
+                        )),
+                        Err(e) => Err(e),
+                    },
+                };
+                match email_sync_result {
+                    Ok(xml_str) => xml_str,
                     Err(e) => {
                         // [MS-ASCMD] §2.2.3.177.17: Status 6 is an ITEM-scoped
                         // "client/server conversion" error ("Stop sending the
@@ -6398,6 +6430,24 @@ async fn handle_sync_collections(ctx: &SyncCtx<'_>, collections: &[SyncCollectio
                 || coll_xml_ref.contains(":Change")
                 || coll_xml_ref.contains(":Delete");
 
+            // [MS-ASCMD] §2.2.3.181.4: a non-zero SyncKey MUST match the key
+            // this collection last issued. Validate it BEFORE applying client
+            // mutations: applying them first would PUT the Adds and record them
+            // in the delivery ledger, and only then be answered with Status 3, so
+            // the re-prime that follows would treat them as already delivered.
+            let stale_sync_key = if incoming_key == "0" {
+                false
+            } else {
+                match state
+                    .storage
+                    .get_sync_key(username, &state_collection_id)
+                    .await
+                {
+                    Ok(Some((stored, _))) => stored != incoming_key,
+                    _ => true,
+                }
+            };
+
             let mut mutation_responses = String::new();
             let proceed = if has_mutations {
                 let mut ok = true;
@@ -6449,7 +6499,12 @@ async fn handle_sync_collections(ctx: &SyncCtx<'_>, collections: &[SyncCollectio
             };
 
             // Compute the result XML, handling errors inline
-            let result_xml = if has_mutations && !proceed {
+            let result_xml = if stale_sync_key {
+                format!(
+                    "<Collection><Class>Calendar</Class><SyncKey>0</SyncKey><CollectionId>{}</CollectionId><Status>3</Status></Collection>",
+                    xml_escape(collection_id)
+                )
+            } else if has_mutations && !proceed {
                 tracing::warn!(
                     request_id = %request_id,
                     collection_id = %collection_id,
@@ -8288,13 +8343,15 @@ async fn apply_email_client_mutations(
     //
     // A lookup failure is fail-closed: returning Status 6 for the affected
     // Delete rather than falling back to the raw EAS id (which could hit
-    // Status 8 on a message that exists under its true JMAP mailbox id).
+    // Status 8 on a message that exists under its true JMAP mailbox id). An
+    // UNRESOLVED collection therefore stays `None` and never supplies the raw
+    // EAS id to the Delete membership check; `Change` commands do not use the
+    // source mailbox, so a flag-only batch still applies.
     let resolved_mailbox_id =
         match resolve_email_mailbox_id(state, jmap, &account_id, username, password, collection_id)
             .await
         {
-            Ok(Some(m)) => m,
-            Ok(None) => collection_id.to_string(),
+            Ok(m) => m,
             Err(e) => {
                 return Err(anyhow::anyhow!(
                     "failed to resolve source mailbox id for collection {collection_id}: {e}"
@@ -8307,7 +8364,7 @@ async fn apply_email_client_mutations(
         &account_id,
         username,
         password,
-        &resolved_mailbox_id,
+        resolved_mailbox_id.as_deref(),
         collection_xml,
         deletes_as_moves,
     )
@@ -8318,7 +8375,7 @@ async fn apply_email_client_mutations(
     tracing::info!(
         user = %username,
         collection_id = %collection_id,
-        resolved_mailbox = %resolved_mailbox_id,
+        resolved_mailbox = resolved_mailbox_id.as_deref().unwrap_or("<unresolved>"),
         applied = results.len(),
         "Applied EAS email client mutations"
     );
@@ -9239,26 +9296,14 @@ async fn handle_email_delta_sync(ctx: &EmailSyncCtx<'_>) -> anyhow::Result<Strin
                     collection_id
                 ));
             }
-            tracing::warn!(error = %e, "JMAP Email/queryChanges failed; deferring delta sync");
-            if let Err(e) = state
-                .storage
-                .set_sync_key(
-                    username,
-                    state_collection_id,
-                    &new_sync_key,
-                    jmap_state_token.as_deref(),
-                )
-                .await
-            {
-                tracing::warn!(error = %e, "Failed to update email sync key");
-            }
-            // Backend hiccup: answer an empty, successful window rather
-            // than a Status 5 so the client retries the delta instead
-            // of forcing a full resync.
-            return Ok(format!(
-                "<Collection><Class>Email</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>1</Status></Collection>",
-                new_sync_key, collection_id
-            ));
+            // Any other failure is transient (backend outage, transport): it
+            // must NOT be acknowledged. Answering an empty Status 1 window
+            // would tell the client it is up to date, and rewriting the stored
+            // key/token would advance past changes that were never delivered.
+            // Propagate so the caller answers a retryable Status 5 with the
+            // incoming key and the stored query state untouched.
+            tracing::warn!(error = %e, "JMAP Email/queryChanges failed; failing the delta retryably");
+            return Err(e);
         }
     };
 
@@ -9557,10 +9602,13 @@ pub async fn handle(
         return bad_request_response(&request_id, "Cannot determine EAS command");
     }
     // GetHierarchy has no request body; GetAttachment can supply AttachmentName
-    // in the URI without XML. Allow an empty body for these commands only,
-    // preserving authentication/policy checks and validation of nonempty bodies.
-    let legacy_bodyless = req.command.eq_ignore_ascii_case("GetHierarchy")
-        || req.command.eq_ignore_ascii_case("GetAttachment");
+    // in the URI without XML. Allow an empty body for these commands only —
+    // a NON-empty body still goes through `validate_payload`, so a malformed
+    // document cannot slip past validation just because the command is one of
+    // these two.
+    let legacy_bodyless = xml.trim().is_empty()
+        && (req.command.eq_ignore_ascii_case("GetHierarchy")
+            || req.command.eq_ignore_ascii_case("GetAttachment"));
     if !legacy_bodyless && let Err(e) = validate_payload(&req.command, &xml) {
         return bad_request_response(&request_id, e);
     }
@@ -17813,39 +17861,173 @@ mod tests {
         assert!(!resp.headers().contains_key(header::WWW_AUTHENTICATE));
     }
 
-    /// A backend outage that resolves on the next request is not sticky.
+    /// A backend outage that RESOLVES on the next request is not cached into a
+    /// sticky rejection: the first probe answers 503, the very next one with the
+    /// same credentials must authenticate and serve the request.
     #[tokio::test]
-    async fn handle_backend_outage_is_not_cached() {
-        let state = auth_outage_state().await;
+    async fn handle_backend_outage_is_not_cached_and_recovers() {
+        use axum::routing::{get, post};
+        use serde_json::{Value, json};
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        #[derive(Clone)]
+        struct Ctl {
+            base: String,
+            up: Arc<AtomicBool>,
+        }
+
+        async fn session(axum::Extension(ctl): axum::Extension<Ctl>) -> axum::response::Response {
+            if !ctl.up.load(Ordering::SeqCst) {
+                return axum::response::Response::builder()
+                    .status(503)
+                    .body(axum::body::Body::empty())
+                    .unwrap();
+            }
+            axum::response::Response::builder()
+                .status(200)
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(
+                    serde_json::to_vec(&json!({
+                        "apiUrl": ctl.base,
+                        "downloadUrl": format!("{}/download/{{accountId}}/{{blobId}}", ctl.base),
+                        "uploadUrl": format!("{}/upload/{{accountId}}", ctl.base),
+                        "eventSourceUrl": format!("{}/eventsource", ctl.base),
+                        "state": "s",
+                        "username": "u",
+                        "accounts": {"a": {"name": "u", "isPersonal": true, "isReadOnly": false, "accountCapabilities": {}}},
+                        "primaryAccounts": {"urn:ietf:params:jmap:mail": "a"},
+                        "capabilities": {}
+                    }))
+                    .unwrap(),
+                ))
+                .unwrap()
+        }
+
+        async fn api(body: String) -> axum::response::Response {
+            let req: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
+            let mut responses = Vec::new();
+            for call in req
+                .get("methodCalls")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default()
+            {
+                let name = call.get(0).and_then(|v| v.as_str()).unwrap_or("");
+                let cid = call.get(2).and_then(|v| v.as_str()).unwrap_or("c0");
+                let result = match name {
+                    "Mailbox/query" => json!({"accountId":"a","ids":["mb-inbox"],"total":1}),
+                    "Mailbox/get" => json!({"accountId":"a","state":"m1","list":[
+                        {"id":"mb-inbox","name":"Inbox","role":"inbox","parentId":null,
+                         "sortOrder":0,"totalEmails":0,"unreadEmails":0,"totalThreads":0,
+                         "unreadThreads":0,"myRights":{"mayRead":true,"mayAddItems":true,
+                         "mayRemoveItems":true,"maySetSeen":true,"maySetKeywords":true,
+                         "mayCreateChild":false,"mayRename":false,"mayDelete":false,
+                         "maySubmit":false}}
+                    ]}),
+                    _ => json!({"accountId":"a"}),
+                };
+                responses.push(json!([name, result, cid]));
+            }
+            let resp = json!({"methodResponses": responses, "sessionState": "s"});
+            axum::response::Response::builder()
+                .status(200)
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(serde_json::to_vec(&resp).unwrap()))
+                .unwrap()
+        }
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
+        let up = Arc::new(AtomicBool::new(false));
+        let ctl = Ctl {
+            base: base.clone(),
+            up: up.clone(),
+        };
+        let app = axum::Router::new()
+            .route("/session", get(session))
+            .route("/", post(api))
+            .layer(axum::Extension(ctl));
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let storage = crate::storage::Storage::new("sqlite::memory:")
+            .await
+            .expect("in-memory storage");
+        storage.init_schema().await.expect("schema init");
+        let cfg = crate::config::Config {
+            jmap_base: base,
+            caldav_base: String::new(),
+            email_enabled: true,
+            mail_domain: "example.com".to_string(),
+            hmac_secret: SecretString::from("a".repeat(32)),
+            // Keep the probe rate cap out of the way: this test measures cache
+            // stickiness, not probe spacing.
+            auth_probe_min_interval_ms: 0,
+            ..Default::default()
+        };
+        let state = Arc::new(AppState::new(cfg, Arc::new(storage)));
+
         let mut headers = HeaderMap::new();
         headers.insert(
             header::AUTHORIZATION,
             basic_auth_header_value("user@example.com", "pw"),
         );
         headers.insert("x-forwarded-proto", HeaderValue::from_static("https"));
-        let body = Bytes::from_static(b"<?xml version=\"1.0\"?><FolderSync xmlns=\"AirSync:\"><SyncKey>0</SyncKey></FolderSync>");
+        // The front door decodes the body as WBXML unconditionally, so a real
+        // encoded FolderSync prime is required to reach the handler.
+        let body = Bytes::from(
+            Wbxml::new()
+                .encode(
+                    r#"<?xml version="1.0" encoding="utf-8"?><FolderSync xmlns="FolderHierarchy:"><SyncKey>0</SyncKey></FolderSync>"#,
+                )
+                .expect("encode FolderSync prime"),
+        );
+        let mut query = HashMap::new();
+        query.insert("Cmd".to_string(), "FolderSync".to_string());
+        query.insert("DeviceId".to_string(), "dev-recover".to_string());
+        query.insert("SyncKey".to_string(), "0".to_string());
 
         let first = handle(
             State(state.clone()),
             Method::POST,
-            Query(HashMap::new()),
+            Query(query.clone()),
             headers.clone(),
             body.clone(),
         )
         .await;
-        assert_eq!(first.status(), StatusCode::SERVICE_UNAVAILABLE);
-        let second = handle(
-            State(state),
-            Method::POST,
-            Query(HashMap::new()),
-            headers,
-            body,
-        )
-        .await;
+        assert_eq!(
+            first.status(),
+            StatusCode::SERVICE_UNAVAILABLE,
+            "the first probe must see the outage"
+        );
+
+        // The backend recovers; the SAME credentials must now authenticate.
+        up.store(true, Ordering::SeqCst);
+        let second = handle(State(state), Method::POST, Query(query), headers, body).await;
         assert_eq!(
             second.status(),
-            StatusCode::SERVICE_UNAVAILABLE,
-            "the outage must not be cached into a sticky rejection"
+            StatusCode::OK,
+            "the outage must not be cached: the second request must authenticate"
+        );
+        let second_is_wbxml = second
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|ct| ct.contains("wbxml"));
+        let text = if second_is_wbxml {
+            let bytes = axum::body::to_bytes(second.into_body(), usize::MAX)
+                .await
+                .expect("response body");
+            Wbxml::new()
+                .decode(&bytes)
+                .expect("decode FolderSync response")
+        } else {
+            response_text(second).await
+        };
+        assert!(
+            text.contains("<FolderSync") && text.contains("<SyncKey>"),
+            "the recovered request must serve the folder hierarchy, got: {text}"
         );
     }
 

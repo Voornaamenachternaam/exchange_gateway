@@ -265,6 +265,29 @@ fn parse_vacation_replies(script: &str) -> (Option<String>, Option<String>) {
     (internal, external)
 }
 
+/// Recover the scheduled-OOF window from the `currentdate` wrapper that
+/// [`build_sieve_script`] emits (RFC 5260):
+///
+/// ```text
+/// if allof (currentdate :value "ge" "iso8601" "2026-01-01T00:00:00+0000",
+///           currentdate :value "le" "iso8601" "2026-01-05T00:00:00+0000") { ... }
+/// ```
+///
+/// Returns `(None, None)` when the script carries no window.
+pub fn parse_vacation_window(
+    script: &str,
+) -> (Option<chrono::DateTime<Utc>>, Option<chrono::DateTime<Utc>>) {
+    let date_after = |op: &str| -> Option<chrono::DateTime<Utc>> {
+        let marker = format!("currentdate :value \"{op}\" \"iso8601\" \"");
+        let rest = &script[script.find(&marker)? + marker.len()..];
+        let value = &rest[..rest.find('"')?];
+        chrono::DateTime::parse_from_str(value, "%Y-%m-%dT%H:%M:%S%z")
+            .ok()
+            .map(|d| d.with_timezone(&Utc))
+    };
+    (date_after("ge"), date_after("le"))
+}
+
 /// Locate every real `vacation` command in a Sieve script, in document order,
 /// each tagged `(is_internal, body)`. Skips the `"vacation"` capability string
 /// inside `require [ ... ]` (where the keyword is a quoted literal, not a
@@ -486,13 +509,20 @@ impl OofManager for JmapOofManager {
             .as_deref()
             .map(parse_vacation_replies)
             .unwrap_or((None, None));
+        // Recover a `Scheduled` window from the emitted `currentdate` wrapper so
+        // GetUserOofSettings can report `Scheduled` with its real Duration
+        // instead of collapsing every scheduled OOF into a plain `Enabled`.
+        let (start_time, end_time) = script_opt
+            .as_deref()
+            .map(parse_vacation_window)
+            .unwrap_or((None, None));
         Ok(OofSettings {
             enabled,
             external_audience: ExternalAudience::All,
             internal_reply,
             external_reply,
-            start_time: None,
-            end_time: None,
+            start_time,
+            end_time,
         })
     }
 

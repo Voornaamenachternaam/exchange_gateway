@@ -42,44 +42,53 @@ fn delete_attempt(state: &Arc<Mutex<DeleteModel>>, outcome: Option<MailboxDestro
     }
 }
 
+/// A successful destroy races a failed one. The WINNER is varied: with a
+/// confirmed destroy the folder is gone, with a refusal it stays live — so the
+/// live-folder branch is genuinely reachable and the invariant is checked in
+/// both final states.
 #[test]
 fn loom_success_failure_delete_interleavings_never_drop_a_live_folder() {
-    for failure in [Some(MailboxDestroyOutcome::Refused), None] {
-        loom::model(move || {
-            let state = Arc::new(Mutex::new(DeleteModel::live()));
-            let destroyer = {
-                let state = Arc::clone(&state);
-                thread::spawn(move || {
-                    delete_attempt(&state, Some(MailboxDestroyOutcome::Destroyed));
-                })
-            };
-            let failed = {
-                let state = Arc::clone(&state);
-                thread::spawn(move || delete_attempt(&state, failure))
-            };
-            destroyer.join().unwrap();
-            failed.join().unwrap();
+    for winner in [
+        MailboxDestroyOutcome::Destroyed,
+        MailboxDestroyOutcome::Refused,
+    ] {
+        for failure in [Some(MailboxDestroyOutcome::Refused), None] {
+            loom::model(move || {
+                let state = Arc::new(Mutex::new(DeleteModel::live()));
+                let destroyer = {
+                    let state = Arc::clone(&state);
+                    thread::spawn(move || {
+                        delete_attempt(&state, Some(winner));
+                    })
+                };
+                let failed = {
+                    let state = Arc::clone(&state);
+                    thread::spawn(move || delete_attempt(&state, failure))
+                };
+                destroyer.join().unwrap();
+                failed.join().unwrap();
 
-            let final_state = state.lock().unwrap();
-            if final_state.backend_present {
-                assert!(
-                    final_state.mapping_present,
-                    "a live backend folder lost its mirror"
-                );
-                assert!(
-                    final_state.prune_intent,
-                    "a failed delete dropped the live folder's replay intent"
-                );
-            } else {
-                assert!(
-                    !final_state.mapping_present,
-                    "a confirmed delete left the mirror advertised"
-                );
-                // A late failed attempt may record an orphan intent after the
-                // winner's prune. Reconciliation drops that harmless residue;
-                // it is not the unsafe loss of a live folder's intent.
-            }
-        });
+                let final_state = state.lock().unwrap();
+                if final_state.backend_present {
+                    assert!(
+                        final_state.mapping_present,
+                        "a live backend folder lost its mirror"
+                    );
+                    assert!(
+                        final_state.prune_intent,
+                        "a failed delete dropped the live folder's replay intent"
+                    );
+                } else {
+                    assert!(
+                        !final_state.mapping_present,
+                        "a confirmed delete left the mirror advertised"
+                    );
+                    // A late failed attempt may record an orphan intent after the
+                    // winner's prune. Reconciliation drops that harmless residue;
+                    // it is not the unsafe loss of a live folder's intent.
+                }
+            });
+        }
     }
 }
 

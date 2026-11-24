@@ -327,11 +327,8 @@ pub async fn create_folder(
     };
     match state.storage.list_folders(owner).await {
         Ok(rows) => {
-            if rows.iter().any(|r| {
-                r.parent_id == parent_id && r.display_name.eq_ignore_ascii_case(display_name)
-            }) {
-                return FolderMutationResult::status(2);
-            }
+            // A sanitized display name that maps to a collection owned by a
+            // DIFFERENT folder is a hard collision.
             if let Some(coll) = caldav_href.as_ref()
                 && rows.iter().any(|r| {
                     r.backend_kind == "caldav"
@@ -340,6 +337,36 @@ pub async fn create_folder(
                 })
             {
                 return FolderMutationResult::status(2);
+            }
+            let duplicate_name = rows.iter().any(|r| {
+                r.parent_id == parent_id && r.display_name.eq_ignore_ascii_case(display_name)
+            });
+            if duplicate_name {
+                // LOST-RESPONSE REPLAY: if the colliding folder is THIS
+                // command's own collection (the href is derived deterministically
+                // from owner + display name) and its create intent is still
+                // retained, the client simply never learned the ServerId. Fall
+                // through to `create_caldav_folder`, whose 405 reconciliation
+                // verifies the backend collection and replays the ServerId
+                // instead of reporting a permanent collision.
+                let replayable = match caldav_href.as_ref() {
+                    Some(coll) => {
+                        let same_collection = rows.iter().any(|r| {
+                            r.backend_kind == "caldav"
+                                && r.backend_id == coll.href
+                                && r.display_name.eq_ignore_ascii_case(display_name)
+                        });
+                        let intent_matches = matches!(
+                            state.storage.get_pending_calendar_create(owner, &coll.href).await,
+                            Ok(Some(intent)) if intent.display_name.eq_ignore_ascii_case(display_name)
+                        );
+                        same_collection && intent_matches
+                    }
+                    None => false,
+                };
+                if !replayable {
+                    return FolderMutationResult::status(2);
+                }
             }
         }
         Err(e) => {
@@ -495,11 +522,20 @@ async fn create_caldav_folder(
     // a retry whose backend response was lost: the prior attempt committed the
     // collection but never told the client, so we reconcile via the intent
     // instead of refusing with Status 2 for an orphan.
-    let prior_intent = state
+    // A storage READ failure is fail-closed: flattening it to `None` would answer
+    // a lost-response retry with Status 2 (a permanent name collision) instead of
+    // a retryable server error, and the collection would stay unmapped.
+    let prior_intent = match state
         .storage
         .get_pending_calendar_create(owner, &coll.href)
         .await
-        .unwrap_or(None);
+    {
+        Ok(intent) => intent,
+        Err(e) => {
+            tracing::warn!(error = %e, "FolderCreate: failed to read the pending calendar create intent");
+            return FolderMutationResult::status(6);
+        }
+    };
 
     match caldav
         .create_calendar_collection(
@@ -546,21 +582,18 @@ async fn create_caldav_folder(
                 )
                 .await
             {
-                // The collection was created but the mapping write failed.
-                // Compensate by deleting the just-created collection, so a
-                // retry starts clean rather than 405ing on an orphan that can
-                // never be mapped (the gateway no longer adopts on 405).
-                tracing::warn!(error = %e, "FolderCreate: failed to persist folder mapping");
-                if let Err(del) = caldav
-                    .delete_collection(&coll.href, owner, password.expose_secret())
-                    .await
-                {
-                    tracing::warn!(
-                        error = %del,
-                        collection = %coll.name,
-                        "FolderCreate: failed to roll back the created calendar collection"
-                    );
-                }
+                // The collection was created but the mapping write failed. Do
+                // NOT delete it as compensation: between the MKCALENDAR and
+                // this failure another client may already have written events
+                // into it, and a delete would destroy them. The pending intent
+                // recorded above is retained instead, so the client's retry
+                // (which sees 405) reconciles and maps the SAME collection —
+                // an idempotent recovery rather than a destructive rollback.
+                tracing::warn!(
+                    error = %e,
+                    collection = %coll.name,
+                    "FolderCreate: failed to persist folder mapping; the pending intent is retained for a reconciling retry"
+                );
                 return FolderMutationResult::status(6);
             }
             FolderMutationResult::created(coll.href)
@@ -573,16 +606,75 @@ async fn create_caldav_folder(
             // collection (MKCALENDAR returned 201) but the client never learned
             // of it — this is exactly the lost-response case.
             if let Some(intent) = prior_intent {
-                let exists = caldav
+                // Fail CLOSED on a verification failure: a transient GET error
+                // must be answered as a retryable Status 6, never as "the
+                // collection does not exist" (Status 2), which the client would
+                // treat as a permanent name collision.
+                let exists = match caldav
                     .get_calendar_resource(&coll.href, owner, password.expose_secret())
                     .await
-                    .map(|o| o.is_some())
-                    .unwrap_or(false);
-                if exists {
+                {
+                    Ok(found) => found.is_some(),
+                    Err(e) => {
+                        tracing::warn!(
+                            error = %e,
+                            collection = %coll.name,
+                            "FolderCreate: failed to verify the pending calendar collection"
+                        );
+                        return FolderMutationResult::status(6);
+                    }
+                };
+                // The href is derived deterministically from owner + display
+                // name, and the intent was recorded only after THIS gateway's
+                // MKCALENDAR succeeded, so existence + a matching intent name
+                // identifies the collection the failed attempt created.
+                let belongs_to_intent = intent.display_name.eq_ignore_ascii_case(display_name);
+                if !exists {
+                    // The intent describes a collection that no longer exists, so
+                    // it can never justify adopting anything. Drop it: keeping it
+                    // would let a LATER 405 adopt a collection the user created
+                    // outside EAS with the same display name.
+                    if let Err(e) = state
+                        .storage
+                        .clear_pending_calendar_create(owner, &coll.href)
+                        .await
+                    {
+                        tracing::warn!(error = %e, "FolderCreate: failed to clear a stale pending calendar create");
+                    }
+                }
+                if exists && belongs_to_intent {
                     tracing::info!(
                         collection = %coll.name,
                         "FolderCreate: reconciling pending calendar create on 405"
                     );
+                    // The mapping may already be durable (the earlier attempt
+                    // persisted it and only the RESPONSE was lost): replaying it
+                    // must not journal a second `folder-add` for a folder the
+                    // client already knows.
+                    match state.storage.get_folder(owner, &coll.href).await {
+                        Ok(Some(existing))
+                            if existing
+                                .display_name
+                                .eq_ignore_ascii_case(&intent.display_name) =>
+                        {
+                            if let Err(e) = state
+                                .storage
+                                .clear_pending_calendar_create(owner, &coll.href)
+                                .await
+                            {
+                                tracing::warn!(error = %e, "FolderCreate: failed to clear pending calendar create");
+                            }
+                            return FolderMutationResult::created(coll.href);
+                        }
+                        Ok(_) => {}
+                        Err(e) => {
+                            tracing::warn!(
+                                error = %e,
+                                "FolderCreate: failed to read the folder mapping during reconciliation"
+                            );
+                            return FolderMutationResult::status(6);
+                        }
+                    }
                     let result = state
                         .storage
                         .upsert_folder_journaled(
@@ -598,18 +690,28 @@ async fn create_caldav_folder(
                             "folder-add",
                         )
                         .await;
-                    // The intent is consumed by a successful reconciliation.
-                    if let Err(e) = state
-                        .storage
-                        .clear_pending_calendar_create(owner, &coll.href)
-                        .await
-                    {
-                        tracing::warn!(error = %e, "FolderCreate: failed to clear pending calendar create");
-                    }
                     match result {
-                        Ok(()) => return FolderMutationResult::created(coll.href),
+                        Ok(()) => {
+                            // The intent is consumed only by a SUCCESSFUL
+                            // reconciliation: clearing it after a failed mapping
+                            // write would leave the live collection unmapped and
+                            // the next retry answering Status 2 (a permanent name
+                            // collision) instead of reconciling again.
+                            if let Err(e) = state
+                                .storage
+                                .clear_pending_calendar_create(owner, &coll.href)
+                                .await
+                            {
+                                tracing::warn!(error = %e, "FolderCreate: failed to clear pending calendar create");
+                            }
+                            return FolderMutationResult::created(coll.href);
+                        }
                         Err(e) => {
-                            tracing::warn!(error = %e, "FolderCreate: failed to persist folder mapping on reconcile");
+                            tracing::warn!(
+                                error = %e,
+                                collection = %coll.name,
+                                "FolderCreate: failed to persist folder mapping on reconcile; the pending intent is retained for another reconciling retry"
+                            );
                             return FolderMutationResult::status(6);
                         }
                     }
@@ -699,8 +801,11 @@ pub async fn delete_folder(
 
     // Collect the folder and every descendant, deepest-first, so a parent is
     // never destroyed while it still has children (JMAP rejects that with
-    // `mailboxHasChild`).
-    let subtree = match collect_folder_subtree(state, owner, server_id).await {
+    // `mailboxHasChild`). The walk spans the MIRROR and the BACKEND hierarchy:
+    // a sub-folder created by another client (JMAP/IMAP/EWS) exists in the JMAP
+    // hierarchy but has no `folder_map` row, and destroying the parent would be
+    // refused while it exists.
+    let subtree = match collect_delete_subtree(state, owner, password, server_id).await {
         Ok(v) => v,
         Err(e) => {
             tracing::warn!(error = %e, "FolderDelete: failed to enumerate descendants");
@@ -718,6 +823,43 @@ pub async fn delete_folder(
     // still-present rows, so the destroyed child could never be re-derived.
     let mut destroyed_ids: Vec<String> = Vec::new();
     for folder in &subtree {
+        // A backend-only descendant (no `folder_map` row) is not part of the
+        // EAS hierarchy: it is destroyed with its parent but NEVER journaled or
+        // pruned, because the gateway has no mapping to remove and no
+        // `folder-delete` to advertise.
+        let Some(folder) = folder.row.as_ref() else {
+            let Some(jmap) = state.jmap_client.clone() else {
+                prune_destroyed_folder_ids(state, owner, &destroyed_ids).await;
+                return FolderMutationResult::status(6);
+            };
+            let account_id = match jmap.get_account_id(owner, password).await {
+                Ok(id) => id,
+                Err(e) => {
+                    tracing::warn!(error = %e, "FolderDelete: JMAP account lookup failed");
+                    prune_destroyed_folder_ids(state, owner, &destroyed_ids).await;
+                    return FolderMutationResult::status(6);
+                }
+            };
+            match jmap
+                .destroy_mailbox(&account_id, &folder.backend_id, true, owner, password)
+                .await
+            {
+                Ok(outcome) if outcome.is_gone() => continue,
+                Ok(_) => {
+                    tracing::warn!(
+                        backend_id = %folder.backend_id,
+                        "FolderDelete: Mailbox/set refused the destroy of a backend-only child"
+                    );
+                    prune_destroyed_folder_ids(state, owner, &destroyed_ids).await;
+                    return FolderMutationResult::status(6);
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "FolderDelete: JMAP destroy of a backend-only child failed");
+                    prune_destroyed_folder_ids(state, owner, &destroyed_ids).await;
+                    return FolderMutationResult::status(6);
+                }
+            }
+        };
         // Revalidate subtree membership against a FRESH read before destroying:
         // a concurrent move (which updates `folder_map` under the target's
         // mutation lock) may have reparented this folder OUT of the subtree
@@ -1151,6 +1293,132 @@ pub(crate) async fn reconcile_deferred_folder_prunes(
 /// The target folder and every descendant, ordered deepest-first (children
 /// before parents) so a backend destroy never hits a parent that still has a
 /// child.
+/// One target of a FolderDelete walk.
+struct DeleteSubtreeEntry {
+    /// The EAS mapping row; `None` for a backend-only descendant discovered in
+    /// the JMAP hierarchy that the gateway never mapped (destroyed with its
+    /// parent but never journaled).
+    row: Option<FolderRow>,
+    backend_id: String,
+    /// Distance below the delete root (0 = the root itself).
+    depth: usize,
+}
+
+/// Enumerate every target of a FolderDelete, deepest-first.
+///
+/// The mirror (`folder_map`) is NOT the system of record: a sub-folder another
+/// client created through JMAP/IMAP/EWS exists in the backend hierarchy without
+/// a mapping row, and a parent cannot be destroyed while it still has children.
+/// The walk therefore unions the mapped subtree with the JMAP mailbox subtree;
+/// backend-only entries are destroyed but never journaled, and a SYSTEM mailbox
+/// (non-empty `role`) is never destroyed by a side effect.
+async fn collect_delete_subtree(
+    state: &Arc<AppState>,
+    owner: &str,
+    password: &SecretString,
+    root_server_id: &str,
+) -> crate::error::Result<Vec<DeleteSubtreeEntry>> {
+    let mapped = collect_folder_subtree(state, owner, root_server_id).await?;
+    // Cloned out so `mapped` can be moved into the entries below.
+    let root_row = mapped
+        .iter()
+        .find(|r| r.server_id == root_server_id)
+        .cloned();
+    let mapped_len = mapped.len();
+    let mut entries: Vec<DeleteSubtreeEntry> = mapped
+        .into_iter()
+        .enumerate()
+        .map(|(idx, row)| DeleteSubtreeEntry {
+            backend_id: row.backend_id.clone(),
+            depth: mapped_len - idx,
+            row: Some(row),
+        })
+        .collect();
+
+    // Only a JMAP mail subtree can hold descendants the mirror does not know:
+    // a CalDAV collection is a leaf.
+    let Some(root_row) = root_row else {
+        return Ok(entries);
+    };
+    if root_row.backend_kind != "jmap" {
+        return Ok(entries);
+    }
+    let Some(jmap) = state.jmap_client.clone() else {
+        // No client: the mirror walk stands. The backend then refuses a parent
+        // that still has children, which the client sees as a retryable error.
+        return Ok(entries);
+    };
+    let mailboxes = match jmap.query_all_mailboxes(owner, password).await {
+        Ok(list) => list.mailboxes,
+        // Degrade to the mirror walk with a warning: a hierarchy read outage
+        // must not block every delete, and anything the mirror misses surfaces
+        // as the backend's refusal (retryable Status 6).
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                "FolderDelete: failed to read the backend mailbox hierarchy"
+            );
+            return Ok(entries);
+        }
+    };
+
+    // Depth of every mailbox below the delete root, following `parentId`.
+    let mut depth_of: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+    depth_of.insert(root_row.backend_id.as_str(), 0);
+    let mut frontier: Vec<&str> = vec![root_row.backend_id.as_str()];
+    while let Some(parent) = frontier.pop() {
+        let parent_depth = depth_of[parent];
+        for mb in &mailboxes {
+            let Some(id) = mb.id.as_deref() else { continue };
+            if mb.parent_id.as_deref() != Some(parent) || depth_of.contains_key(id) {
+                continue;
+            }
+            depth_of.insert(id, parent_depth + 1);
+            frontier.push(id);
+        }
+    }
+    // Mapped entries take the backend depth when the backend still knows them,
+    // so a mailbox reparented under a backend-only parent is destroyed first.
+    for entry in &mut entries {
+        if let Some(depth) = depth_of.get(entry.backend_id.as_str()) {
+            entry.depth = *depth;
+        }
+    }
+    let known: std::collections::HashSet<String> =
+        entries.iter().map(|e| e.backend_id.clone()).collect();
+    let roles: std::collections::HashMap<&str, Option<&str>> = mailboxes
+        .iter()
+        .filter_map(|m| m.id.as_deref().map(|id| (id, m.role.as_deref())))
+        .collect();
+    let discovered: Vec<(&str, usize)> = depth_of
+        .iter()
+        .map(|(id, depth)| (*id, *depth))
+        .filter(|(id, _)| !known.contains(*id))
+        .collect();
+    for (id, depth) in discovered {
+        if roles
+            .get(id)
+            .copied()
+            .flatten()
+            .is_some_and(|r| !r.is_empty())
+        {
+            tracing::info!(
+                backend_id = id,
+                "FolderDelete: skipping a system mailbox found under the delete root"
+            );
+            continue;
+        }
+        entries.push(DeleteSubtreeEntry {
+            row: None,
+            backend_id: id.to_string(),
+            depth,
+        });
+    }
+    // Deepest first; the root (depth 0) is always last.
+    entries.sort_by_key(|a| std::cmp::Reverse(a.depth));
+    Ok(entries)
+}
+
 async fn collect_folder_subtree(
     state: &Arc<AppState>,
     owner: &str,
@@ -1595,8 +1863,9 @@ pub async fn rotate_hierarchy_sync_key(
     device_id: &str,
 ) -> String {
     let collection_id = crate::eas::scoped_collection_id("folderhierarchy", device_id);
-    let carried_token = match state.storage.get_sync_key(owner, &collection_id).await {
-        Ok(Some((_, Some(token)))) => token,
+    let (carried_key, carried_token) = match state.storage.get_sync_key(owner, &collection_id).await
+    {
+        Ok(Some((key, Some(token)))) => (key, token),
         // No stored watermark (or a stored key with no token): force a prime.
         Ok(_) => return "0".to_string(),
         Err(e) => {
@@ -1612,15 +1881,35 @@ pub async fn rotate_hierarchy_sync_key(
         }
     };
     let new_key = uuid::Uuid::new_v4().simple().to_string();
-    if let Err(e) = state
+    // Compare-and-swap on the pair that was read: a concurrent FolderSync may
+    // have advanced the watermark between the read and this write, and an
+    // unconditional write would carry the OLD token over the new one — the
+    // device would then skip every change in that window.
+    match state
         .storage
-        .set_sync_key(owner, &collection_id, &new_key, Some(&carried_token))
+        .replace_sync_key_if_unchanged(
+            owner,
+            &collection_id,
+            &carried_key,
+            Some(&carried_token),
+            &new_key,
+            Some(&carried_token),
+        )
         .await
     {
-        tracing::warn!(error = %e, "FolderSync: failed to persist rotated hierarchy sync key");
-        return current_hierarchy_sync_key(state, owner, device_id).await;
+        Ok(true) => new_key,
+        Ok(false) => {
+            tracing::warn!(
+                user = %owner,
+                "FolderSync: hierarchy watermark advanced during key rotation; keeping the current key"
+            );
+            current_hierarchy_sync_key(state, owner, device_id).await
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "FolderSync: failed to persist rotated hierarchy sync key");
+            current_hierarchy_sync_key(state, owner, device_id).await
+        }
     }
-    new_key
 }
 
 #[cfg(test)]
@@ -1656,6 +1945,18 @@ mod tests {
         /// test can flip the status between calls to simulate a lost response
         /// (first MKCALENDAR returns 201, the retry sees 405).
         mkcalendar_status: StdArc<std::sync::atomic::AtomicU16>,
+        /// Body the CalDAV stub answers `PROPFIND` with (207). `None` keeps the
+        /// empty-200 default, which models an empty home.
+        propfind_body: Option<String>,
+        /// Status the CalDAV stub answers `GET` with. `None` keeps the 200
+        /// default (a collection that exists); `Some(404)` models a collection
+        /// that vanished between the MKCALENDAR 405 and the verification read.
+        get_status: Option<u16>,
+        /// When set, the stub closes the storage pool while answering
+        /// `MKCALENDAR` (before returning 201), so the caller observes a
+        /// committed collection whose mapping write cannot execute. Filled in
+        /// after `AppState` exists (the stub is built first).
+        pool_closer: Option<StdArc<tokio::sync::OnceCell<StdArc<AppState>>>>,
     }
 
     async fn spawn_backend_stub() -> (
@@ -1666,15 +1967,15 @@ mod tests {
         spawn_backend_stub_with(None).await
     }
 
-    /// As [`spawn_backend_stub_with`] but scripts mixed `Mailbox/set destroy`
-    /// outcomes (success / refused / error) across calls, exercising the
+    /// As [`spawn_backend_stub_with`] but ENABLES the mixed `Mailbox/set
+    /// destroy` cycle (success / refused / error) across calls, exercising the
     /// concurrent-delete race on pending prune intents.
     async fn spawn_backend_stub_varied() -> (
         StdArc<AppState>,
         StdArc<TokioMutex<Vec<Value>>>,
         StdArc<TokioMutex<Vec<(String, String)>>>,
     ) {
-        spawn_backend_stub_full(None, 201).await
+        spawn_backend_stub_full(None, 201, 1).await
     }
 
     /// As [`spawn_backend_stub`] but scripts the `Mailbox/set destroy` reply
@@ -1686,7 +1987,7 @@ mod tests {
         StdArc<TokioMutex<Vec<Value>>>,
         StdArc<TokioMutex<Vec<(String, String)>>>,
     ) {
-        spawn_backend_stub_full(destroy_mode, 201).await
+        spawn_backend_stub_full(destroy_mode, 201, 0).await
     }
 
     /// As [`spawn_backend_stub_with`] but also scripts the `MKCALENDAR` status
@@ -1694,6 +1995,72 @@ mod tests {
     async fn spawn_backend_stub_full(
         destroy_mode: Option<&str>,
         mkcalendar_status: u16,
+        destroy_variety_start: u16,
+    ) -> (
+        StdArc<AppState>,
+        StdArc<TokioMutex<Vec<Value>>>,
+        StdArc<TokioMutex<Vec<(String, String)>>>,
+    ) {
+        spawn_backend_stub_ext(destroy_mode, mkcalendar_status, destroy_variety_start, None).await
+    }
+
+    /// As [`spawn_backend_stub_full`] but also scripts the CalDAV `PROPFIND`
+    /// multistatus body, so the folder-hierarchy reconciliation can be driven
+    /// against a real discovered collection list.
+    async fn spawn_backend_stub_ext(
+        destroy_mode: Option<&str>,
+        mkcalendar_status: u16,
+        destroy_variety_start: u16,
+        propfind_body: Option<String>,
+    ) -> (
+        StdArc<AppState>,
+        StdArc<TokioMutex<Vec<Value>>>,
+        StdArc<TokioMutex<Vec<(String, String)>>>,
+    ) {
+        spawn_backend_stub_get_status(
+            destroy_mode,
+            mkcalendar_status,
+            destroy_variety_start,
+            propfind_body,
+            None,
+        )
+        .await
+    }
+
+    /// As [`spawn_backend_stub_ext`] but also scripts the CalDAV `GET` status
+    /// (`Some(404)` models a collection that is verifiably absent).
+    async fn spawn_backend_stub_get_status(
+        destroy_mode: Option<&str>,
+        mkcalendar_status: u16,
+        destroy_variety_start: u16,
+        propfind_body: Option<String>,
+        get_status: Option<u16>,
+    ) -> (
+        StdArc<AppState>,
+        StdArc<TokioMutex<Vec<Value>>>,
+        StdArc<TokioMutex<Vec<(String, String)>>>,
+    ) {
+        spawn_backend_stub_pool_closer(
+            destroy_mode,
+            mkcalendar_status,
+            destroy_variety_start,
+            propfind_body,
+            get_status,
+            None,
+        )
+        .await
+    }
+
+    /// As [`spawn_backend_stub_get_status`] but optionally hands back the cell
+    /// the caller fills with the `AppState` so the stub can close the storage
+    /// pool while answering `MKCALENDAR`.
+    async fn spawn_backend_stub_pool_closer(
+        destroy_mode: Option<&str>,
+        mkcalendar_status: u16,
+        destroy_variety_start: u16,
+        propfind_body: Option<String>,
+        get_status: Option<u16>,
+        pool_closer: Option<StdArc<tokio::sync::OnceCell<StdArc<AppState>>>>,
     ) -> (
         StdArc<AppState>,
         StdArc<TokioMutex<Vec<Value>>>,
@@ -1707,7 +2074,7 @@ mod tests {
         let jmap_calls: StdArc<TokioMutex<Vec<Value>>> = StdArc::new(TokioMutex::new(Vec::new()));
         let dav_calls: StdArc<TokioMutex<Vec<(String, String)>>> =
             StdArc::new(TokioMutex::new(Vec::new()));
-        let destroy_variety = StdArc::new(AtomicU16::new(0));
+        let destroy_variety = StdArc::new(AtomicU16::new(destroy_variety_start));
         let mkcalendar_status = StdArc::new(AtomicU16::new(mkcalendar_status));
 
         async fn session(axum::Extension(ctl): axum::Extension<Ctl>) -> axum::Json<Value> {
@@ -1784,6 +2151,17 @@ mod tests {
                             // `delete_folder` calls observe mixed results.
                             if ctl.destroy_variety.load(Ordering::Relaxed) != 0 {
                                 let n = ctl.destroy_variety.fetch_add(1, Ordering::Relaxed) % 3;
+                                // Record which outcome this call served so a
+                                // test can prove the mixed cycle ran.
+                                let outcome = match n {
+                                    0 => "destroyed",
+                                    1 => "refused",
+                                    _ => "error",
+                                };
+                                ctl.jmap_calls.lock().await.push(json!({
+                                    "method": "stub-destroy-outcome",
+                                    "args": { "outcome": outcome }
+                                }));
                                 match n {
                                     0 => (
                                         "Mailbox/set",
@@ -1869,16 +2247,25 @@ mod tests {
                 .lock()
                 .await
                 .push((method.as_str().to_string(), uri.path().to_string()));
+            if method.as_str() == "MKCALENDAR"
+                && let Some(cell) = ctl.pool_closer.as_ref()
+                && let Some(app) = cell.get()
+            {
+                app.storage.pool().close().await;
+            }
             let status = match method.as_str() {
                 "MKCALENDAR" => ctl
                     .mkcalendar_status
                     .load(std::sync::atomic::Ordering::Relaxed),
+                "PROPFIND" => 207,
+                "GET" => ctl.get_status.unwrap_or(200),
                 _ => 200,
             };
-            Response::builder()
-                .status(status)
-                .body(axum::body::Body::empty())
-                .unwrap()
+            let body = match (method.as_str(), ctl.propfind_body.as_deref()) {
+                ("PROPFIND", Some(xml)) => axum::body::Body::from(xml.to_string()),
+                _ => axum::body::Body::empty(),
+            };
+            Response::builder().status(status).body(body).unwrap()
         }
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1891,6 +2278,9 @@ mod tests {
             destroy_mode,
             destroy_variety,
             mkcalendar_status,
+            propfind_body,
+            get_status,
+            pool_closer,
         };
         let app = axum::Router::new()
             .route("/session", get(session))
@@ -2455,7 +2845,7 @@ mod tests {
     /// it never adopts one — a pre-existing collection must stay Status 2.
     #[tokio::test]
     async fn create_calendar_folder_405_on_preexisting_collection_is_conflict() {
-        let (state, _, _) = spawn_backend_stub_full(None, 405).await;
+        let (state, _, _) = spawn_backend_stub_full(None, 405, 0).await;
         let r = create_folder(&state, "u@example.com", &pw(), "0", "default", 13).await;
         assert_eq!(
             r.status, 2,
@@ -2476,7 +2866,7 @@ mod tests {
     /// Status 2 — the gateway never adopts on 405.
     #[tokio::test]
     async fn create_calendar_folder_405_with_existing_mapping_is_conflict() {
-        let (state, _, _) = spawn_backend_stub_full(None, 405).await;
+        let (state, _, _) = spawn_backend_stub_full(None, 405, 0).await;
         // Pre-seed a folder that already owns the target href — but with a
         // different display name and `backend_kind: "jmap"` so neither the
         // duplicate-name check nor the caldav-collision check fires first.
@@ -2516,7 +2906,7 @@ mod tests {
         // response was lost after MKCALENDAR committed. GET is not scripted in
         // the stub (returns 200 empty body), so get_calendar_resource observes
         // the collection as present and the retry upserts the mapping.
-        let (state, _, dav_calls) = spawn_backend_stub_full(None, 405).await;
+        let (state, _, dav_calls) = spawn_backend_stub_full(None, 405, 0).await;
         state
             .storage
             .record_pending_calendar_create(
@@ -2570,12 +2960,132 @@ mod tests {
         );
     }
 
+    /// A pending create intent for a collection the backend no longer reports
+    /// must be dropped: keeping it would let a LATER 405 adopt a collection the
+    /// user created outside EAS with the same display name.
+    #[tokio::test]
+    async fn create_calendar_folder_405_clears_stale_intent_when_collection_absent() {
+        let (state, _, _) = spawn_backend_stub_get_status(None, 405, 0, None, Some(404)).await;
+        state
+            .storage
+            .record_pending_calendar_create("u@example.com", "/cal/u@example.com/Gone/", "Gone")
+            .await
+            .expect("record pending intent");
+        let coll = caldav_collection_for("", "u@example.com", "Gone", 13)
+            .expect("caldav collection descriptor");
+        let r = create_caldav_folder(&state, "u@example.com", &pw(), "Gone", 13, coll).await;
+        assert_eq!(
+            r.status, 2,
+            "a 405 whose collection is verifiably absent is a name collision"
+        );
+        let intent = state
+            .storage
+            .get_pending_calendar_create("u@example.com", "/cal/u@example.com/Gone/")
+            .await
+            .unwrap();
+        assert!(
+            intent.is_none(),
+            "an intent for a vanished collection must be dropped, never left to adopt a later collection"
+        );
+    }
+
+    /// An unreadable pending-create intent must fail the create CLOSED: treating
+    /// it as "no intent" would answer a lost-response retry with Status 2 (a
+    /// permanent name collision) while the collection stays live and unmapped.
+    #[tokio::test]
+    async fn create_calendar_folder_fails_closed_when_intent_read_fails() {
+        let (state, _, _) = spawn_backend_stub_full(None, 405, 0).await;
+        state
+            .storage
+            .record_pending_calendar_create("u@example.com", "/cal/u@example.com/Retain/", "Retain")
+            .await
+            .expect("record pending intent");
+        // The intent row is durable, but the pool is closed so neither the intent
+        // nor the mapping can be read: the create must answer a retryable error,
+        // never Status 2.
+        state.storage.pool().close().await;
+        let coll = caldav_collection_for("", "u@example.com", "Retain", 13)
+            .expect("caldav collection descriptor");
+        let r = create_caldav_folder(&state, "u@example.com", &pw(), "Retain", 13, coll).await;
+        assert_eq!(
+            r.status, 6,
+            "an unreadable intent must be retryable, not a name collision"
+        );
+    }
+
+    /// A retained prune intent must NOT prune a collection the backend still
+    /// reports, even when the hrefs only match AFTER percent-encoding: the
+    /// mapping may hold a raw space while the discovered href arrives escaped
+    /// (`Side%20Project`). Losing that match would drop a live folder's mapping
+    /// and strand its events.
+    #[tokio::test]
+    async fn prune_reconcile_keeps_live_collection_whose_href_needs_escaping() {
+        let propfind = r#"<?xml version="1.0" encoding="utf-8"?>
+<D:multistatus xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav">
+  <D:response>
+    <D:href>/cal/u%40example.com/Side%20Project/</D:href>
+    <D:propstat>
+      <D:prop><D:resourcetype><C:calendar/></D:resourcetype></D:prop>
+      <D:status>HTTP/1.1 200 OK</D:status>
+    </D:propstat>
+  </D:response>
+</D:multistatus>"#;
+        let (state, _, _) = spawn_backend_stub_ext(None, 201, 0, Some(propfind.to_string())).await;
+        // A CalDAV folder's EAS ServerId IS its collection href. Stored RAW (with
+        // spaces and a bare `@`); the backend reports the ESCAPED form.
+        const HREF: &str = "/cal/u@example.com/Side Project";
+        state
+            .storage
+            .upsert_folder_journaled(
+                crate::storage::FolderUpsertParams {
+                    owner: "u@example.com",
+                    server_id: HREF,
+                    parent_id: "0",
+                    display_name: "Side Project",
+                    folder_type: 13,
+                    backend_kind: "caldav",
+                    backend_id: HREF,
+                },
+                "folder-add",
+            )
+            .await
+            .unwrap();
+        // Intent left over from a FolderDelete whose backend DELETE had an
+        // unknown outcome.
+        state
+            .storage
+            .record_pending_folder_prunes("u@example.com", &[HREF.to_string()])
+            .await
+            .unwrap();
+
+        reconcile_deferred_folder_prunes(&state, "u@example.com", &pw()).await;
+
+        assert!(
+            state
+                .storage
+                .get_folder("u@example.com", HREF)
+                .await
+                .unwrap()
+                .is_some(),
+            "a collection the backend still reports must keep its mapping"
+        );
+        assert_eq!(
+            state
+                .storage
+                .list_pending_folder_prunes("u@example.com")
+                .await
+                .unwrap(),
+            vec![HREF.to_string()],
+            "the unresolved intent must be retained for the next reconcile"
+        );
+    }
+
     /// A display name that sanitizes to a system collection (`Tasks.` →
     /// `Tasks`) must be rejected, not created or adopted: a later FolderDelete
     /// would otherwise DELETE the gateway's shared Tasks/Notes collection.
     #[tokio::test]
     async fn create_calendar_folder_rejects_sanitized_system_collection_name() {
-        let (state, _, dav_calls) = spawn_backend_stub_full(None, 201).await;
+        let (state, _, dav_calls) = spawn_backend_stub_full(None, 201, 0).await;
         for name in ["Tasks.", ".Tasks", "Notes.", "tasks"] {
             let r = create_folder(&state, "u@example.com", &pw(), "0", name, 13).await;
             assert_eq!(r.status, 2, "`{name}` must not map a system collection");
@@ -2606,22 +3116,49 @@ mod tests {
     }
 
     /// When the CalDAV collection is created but the mapping write fails, the
-    /// just-created collection must be deleted so a retry does not 405 on an
-    /// orphan (the gateway no longer adopts on 405).
+    /// just-created collection must NOT be deleted as compensation: another
+    /// client may already have written events into it. The create intent
+    /// (recorded before the mapping write) is the recovery path — a retry's
+    /// MKCALENDAR answers 405 and reconciles onto the SAME collection.
     #[tokio::test]
-    async fn create_caldav_folder_rolls_back_collection_when_mapping_write_fails() {
-        let (state, _, dav_calls) = spawn_backend_stub_full(None, 201).await;
-        state.storage.pool().close().await;
+    async fn create_caldav_folder_never_deletes_collection_when_mapping_write_fails() {
+        let pool_closer = StdArc::new(tokio::sync::OnceCell::new());
+        let (state, _, dav_calls) =
+            spawn_backend_stub_pool_closer(None, 201, 0, None, None, Some(pool_closer.clone()))
+                .await;
+        // The stub closes the pool while answering MKCALENDAR, so the create is
+        // committed on the backend and the mapping write then fails.
+        pool_closer.set(state.clone()).ok().expect("cell is empty");
         let coll = caldav_collection_for("", "u@example.com", "Rollback", 13)
             .expect("caldav collection descriptor");
         let r = create_caldav_folder(&state, "u@example.com", &pw(), "Rollback", 13, coll).await;
         assert_eq!(r.status, 6, "a failed mapping write must report failure");
         let calls = dav_calls.lock().await;
         assert!(
-            calls
-                .iter()
-                .any(|(m, p)| m == "DELETE" && p.contains("/cal/u@example.com/Rollback/")),
-            "the orphaned collection must be deleted as compensation: {calls:?}"
+            calls.iter().any(|(m, _)| m == "MKCALENDAR"),
+            "the collection was created before the mapping write failed: {calls:?}"
+        );
+        assert!(
+            !calls.iter().any(|(m, _)| m == "DELETE"),
+            "the created collection must never be deleted as compensation: {calls:?}"
+        );
+    }
+
+    /// With the storage unavailable BEFORE any backend work, a CalDAV folder
+    /// create must not touch the backend at all: a collection whose mapping
+    /// cannot be written is an orphan, and its intent cannot be recorded either,
+    /// so no retry could ever reconcile it.
+    #[tokio::test]
+    async fn create_caldav_folder_does_not_touch_backend_when_storage_is_down() {
+        let (state, _, dav_calls) = spawn_backend_stub_full(None, 201, 0).await;
+        state.storage.pool().close().await;
+        let coll = caldav_collection_for("", "u@example.com", "Down", 13)
+            .expect("caldav collection descriptor");
+        let r = create_caldav_folder(&state, "u@example.com", &pw(), "Down", 13, coll).await;
+        assert_eq!(r.status, 6, "a storage outage must be retryable");
+        assert!(
+            dav_calls.lock().await.is_empty(),
+            "no backend collection may be created when its mapping cannot be persisted"
         );
     }
 
@@ -3056,28 +3593,74 @@ mod tests {
         );
     }
 
-    /// Concurrent `delete_folder` calls against the same mailbox must not
-    /// drop the pending prune intent when a `Refused` destroy races with an
-    /// earlier in-flight destroy whose outcome is still unknown.
-    ///
-    /// The stub cycles destroy outcomes [success, refused, error] so each
-    /// concurrent caller observes a different backend result. Regardless of
-    /// which call "wins," exactly one of these invariants must hold at the
-    /// end:
-    ///
-    /// * at least one destroy committed (`deleted`): the folder_map row is
-    ///   pruned, a `folder-delete` is journaled, and no pending intent
-    ///   survives;
-    /// * no destroy committed (`not deleted`): the mapping row survives and
-    ///   its intent is retained so a later folder-sync replay can prune it.
-    ///
-    /// The failure mode this guards against: a `Refused` arm clearing the
-    /// intent row while an earlier `Err` (unknown outcome) destroy is still
-    /// in flight — that earlier destroy may commit afterward, leaving the
-    /// mailbox gone from the backend but still advertised by EAS.
+    /// Mixed destroy outcomes (success / refused / error), applied one at a
+    /// time so the assertion is deterministic: a REFUSED destroy and a
+    /// method-level `error` both leave the mailbox in place, so the mirror row
+    /// AND its pending prune intent must survive; only a committed destroy
+    /// prunes the row and clears the intent in the same transaction.
+    #[tokio::test]
+    async fn mixed_destroy_outcomes_keep_intent_until_a_destroy_commits() {
+        // Start the cycle at 1: the first call is `refused`, the second a
+        // method `error`, the third a committed destroy.
+        let (state, _, _) = spawn_backend_stub_full(None, 201, 1).await;
+        for (id, expect_status, expect_kept) in [
+            ("mb-refused", 6u16, true),
+            ("mb-error", 6u16, true),
+            ("mb-destroyed", 1u16, false),
+        ] {
+            state
+                .storage
+                .record_pending_folder_prunes(
+                    "u@example.com",
+                    std::slice::from_ref(&id.to_string()),
+                )
+                .await
+                .expect("seed pending prune intent");
+            state
+                .storage
+                .upsert_folder_journaled(
+                    crate::storage::FolderUpsertParams {
+                        owner: "u@example.com",
+                        server_id: id,
+                        parent_id: "0",
+                        display_name: id,
+                        folder_type: 12,
+                        backend_kind: "jmap",
+                        backend_id: id,
+                    },
+                    "folder-add",
+                )
+                .await
+                .expect("seed folder mapping");
+
+            let r = delete_folder(&state, "u@example.com", &pw(), id).await;
+            assert_eq!(r.status, expect_status, "{id}: unexpected status");
+            let row_present = state
+                .storage
+                .get_folder("u@example.com", id)
+                .await
+                .expect("folder lookup")
+                .is_some();
+            let intent_present = state
+                .storage
+                .list_pending_folder_prunes("u@example.com")
+                .await
+                .expect("list intents")
+                .contains(&id.to_string());
+            assert_eq!(row_present, expect_kept, "{id}: mirror row state");
+            assert_eq!(intent_present, expect_kept, "{id}: pending intent state");
+        }
+    }
+
+    /// Concurrent `delete_folder` calls against the same mailbox with the
+    /// mixed destroy cycle ENABLED must leave a consistent durable state:
+    /// either a destroy committed (row pruned, no intent left) or none did
+    /// (row and intent both retained). The failure mode this guards against is
+    /// a `Refused` arm clearing the intent while an earlier destroy with an
+    /// unknown outcome is still in flight.
     #[tokio::test]
     async fn concurrent_delete_folder_keeps_prune_intent_safe() {
-        let (state, _, _) = spawn_backend_stub_varied().await;
+        let (state, calls, _) = spawn_backend_stub_varied().await;
         state
             .storage
             .record_pending_folder_prunes(
@@ -3143,6 +3726,34 @@ mod tests {
             assert!(
                 intent,
                 "not-deleted folder must retain its pending prune intent"
+            );
+        }
+
+        // The mixed cycle must actually have run (this is the assertion the
+        // previous version lacked: the variety counter was never enabled, so
+        // every destroy silently succeeded).
+        let outcomes: Vec<String> = calls
+            .lock()
+            .await
+            .iter()
+            .filter(|c| c.get("method").and_then(|v| v.as_str()) == Some("stub-destroy-outcome"))
+            .filter_map(|c| c["args"]["outcome"].as_str().map(str::to_string))
+            .collect();
+        assert!(
+            !outcomes.is_empty(),
+            "the mixed destroy cycle must be exercised"
+        );
+        // The counter starts at 1, so any TWO recorded destroys are exactly
+        // {refused, error}: both failure arms of the destroy cycle are
+        // reached, not just the success path.
+        if outcomes.len() >= 2 {
+            assert!(
+                outcomes.iter().any(|o| o == "refused"),
+                "the refusal arm must be exercised: {outcomes:?}"
+            );
+            assert!(
+                outcomes.iter().any(|o| o == "error"),
+                "the method-error arm must be exercised: {outcomes:?}"
             );
         }
 

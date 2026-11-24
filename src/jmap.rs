@@ -2362,6 +2362,61 @@ impl JmapClient {
         Ok(Vec::new())
     }
 
+    /// Fetch one `Thread` (RFC 8621 §4.2) and return its member email ids.
+    ///
+    /// This is the STANDARD way to enumerate a conversation: `Email/query`'s
+    /// `FilterCondition` (§4.4.1) has no thread selector, so a `threadId`
+    /// filter is ignored by a conforming server and yields the whole mailbox.
+    /// `Ok(None)` when the server reports the thread as `notFound`.
+    pub async fn get_thread(
+        &self,
+        account_id: &str,
+        thread_id: &str,
+        username: &str,
+        password: &SecretString,
+    ) -> Result<Option<Vec<String>>> {
+        let session = self.get_session(username, password).await?;
+        let api_url = &session.api_url;
+        let response = self
+            .api_call(
+                api_url,
+                &["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:mail"],
+                vec![(
+                    "Thread/get",
+                    json!({ "accountId": account_id, "ids": [thread_id] }),
+                    "t0",
+                )],
+                username,
+                password,
+            )
+            .await?;
+
+        for (method, data, _) in response.method_responses {
+            if method == "Thread/get" {
+                let Some(found) = data.get("list").and_then(|l| l.as_array()) else {
+                    return Err(anyhow!("Thread/get response carries no list: {}", data));
+                };
+                let Some(thread) = found
+                    .iter()
+                    .find(|t| t.get("id").and_then(|v| v.as_str()) == Some(thread_id))
+                else {
+                    return Ok(None);
+                };
+                let ids = thread
+                    .get("emailIds")
+                    .and_then(|v| v.as_array())
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|v| v.as_str().map(str::to_string))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                return Ok(Some(ids));
+            }
+        }
+        Err(anyhow!("Unexpected JMAP response structure for Thread/get"))
+    }
+
     /// Get specific emails by ID.
     ///
     /// Maps to `Email/get` (RFC 8621 §4.1). `fetch_bodies` opts in to the
@@ -2975,6 +3030,68 @@ impl JmapClient {
             .await?;
 
         Ok(())
+    }
+
+    /// Copy an email into the given mailboxes with `Email/copy`
+    /// (RFC 8621 §4.6), leaving the source email's own mailbox membership
+    /// untouched, and return the id of the NEW email.
+    ///
+    /// FAIL-CLOSED: a method-level `error`, a missing `created` entry and a
+    /// missing id all propagate. Returning the SOURCE id (as the previous
+    /// mailbox-membership edit did) hands the client an ItemId for an object it
+    /// never created — every later Get/Update on it hits the wrong message.
+    pub async fn copy_email(
+        &self,
+        account_id: &str,
+        email_id: &str,
+        mailbox_ids: &[String],
+        username: &str,
+        password: &SecretString,
+    ) -> Result<String> {
+        let session = self.get_session(username, password).await?;
+        let api_url = &session.api_url;
+
+        let mut ids = serde_json::Map::new();
+        for mb in mailbox_ids {
+            ids.insert(mb.clone(), serde_json::Value::Bool(true));
+        }
+        let method_calls = vec![(
+            "Email/copy",
+            serde_json::json!({
+                "fromAccountId": account_id,
+                "accountId": account_id,
+                "create": { "c0": { "id": email_id, "mailboxIds": ids } },
+            }),
+            "ec0",
+        )];
+
+        let resp = self
+            .api_call(
+                api_url,
+                &["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:mail"],
+                method_calls,
+                username,
+                password,
+            )
+            .await?;
+
+        for (method, data, _) in resp.method_responses {
+            if method == "error" {
+                return Err(anyhow!("Email/copy failed: {}", data));
+            }
+            if method == "Email/copy" {
+                if let Some(id) = data
+                    .get("created")
+                    .and_then(|c| c.get("c0"))
+                    .and_then(|c| c.get("id"))
+                    .and_then(|v| v.as_str())
+                {
+                    return Ok(id.to_string());
+                }
+                return Err(anyhow!("Email/copy created no object: {}", data));
+            }
+        }
+        Err(anyhow!("Email/copy returned no method response"))
     }
 
     /// Inspectable `Email/set` update: returns an [`EmailSetOutcome`] so the
@@ -5843,9 +5960,28 @@ impl JmapClient {
         let mut query_state = String::new();
         let mut state = String::new();
         let mut unparseable = 0usize;
+        let mut saw_query = false;
+        let mut saw_get = false;
 
         for (method, data, _) in response.method_responses {
+            // RFC 8620 §3.3: a failed method is an ["error", {...}, id]
+            // response. Reporting it as an EMPTY successful page would be
+            // indistinguishable from "this calendar has no events", and the
+            // prime path treats an empty snapshot as authoritative — it would
+            // tombstone every stored event on the client. Fail so the caller
+            // falls back to CalDAV (or answers a retryable error).
+            if method == "error" {
+                let err_type = data
+                    .get("type")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown");
+                return Err(anyhow!(
+                    "CalendarEvent/query or CalendarEvent/get returned method error: {}",
+                    err_type
+                ));
+            }
             if method == "CalendarEvent/query" {
+                saw_query = true;
                 total = data.get("total").and_then(|v| v.as_u64()).unwrap_or(0);
                 query_state = data
                     .get("queryState")
@@ -5854,6 +5990,7 @@ impl JmapClient {
                     .to_string();
             }
             if method == "CalendarEvent/get" {
+                saw_get = true;
                 state = data
                     .get("state")
                     .and_then(|v| v.as_str())
@@ -5863,6 +6000,11 @@ impl JmapClient {
                 events = parsed;
                 unparseable = skipped;
             }
+        }
+        if !saw_query || !saw_get {
+            return Err(anyhow!(
+                "CalendarEvent/query or CalendarEvent/get response missing from the batch"
+            ));
         }
 
         Ok(CalendarEventListResult {
@@ -6088,7 +6230,9 @@ impl JmapClient {
         let entry = match crate::jscalendar::ics_to_jscalendar_event(params.ics) {
             Some(e) => e,
             None => {
-                eprintln!("DEBUG set_calendar_event: ics_to_jscalendar_event FAILED");
+                tracing::warn!(
+                    "JMAP calendar write: rendered iCalendar could not be converted to JSCalendar"
+                );
                 return Err(anyhow!(
                     "failed to convert rendered iCalendar into a JSCalendar event payload"
                 )
@@ -6140,14 +6284,7 @@ impl JmapClient {
                 .find(|(m, _, _)| m == "CalendarEvent/set")
                 .map(|(_, a, _)| a)
             {
-                Some(args) => {
-                    eprintln!(
-                        "DEBUG set_calendar_event: CalendarEvent/set found, args keys={:?}",
-                        args.as_object()
-                            .map(|o| o.keys().cloned().collect::<Vec<_>>())
-                    );
-                    args
-                }
+                Some(args) => args,
                 None => {
                     return Err(anyhow!("CalendarEvent/set returned no response").into());
                 }

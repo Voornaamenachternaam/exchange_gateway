@@ -62,7 +62,7 @@ jobs:
       - name: Run Criterion benchmark smoke runs
         run: |
           set -euo pipefail
-          cargo bench --locked --bench hot_paths -- --list | head -1
+          cargo bench --locked --bench hot_paths -- --list | sed -n '1p'
           cargo bench --locked --bench hot_paths -- --save-baseline baseline --measurement-time 1
 
   dependabot:

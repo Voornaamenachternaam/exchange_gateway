@@ -446,11 +446,16 @@ The hierarchy-rotation tests
 `rotate_hierarchy_key_without_token_forces_prime` pin the fail-closed rotation;
 `create_calendar_folder_405_on_preexisting_collection_is_conflict` and
 `create_calendar_folder_405_with_existing_mapping_is_conflict` pin the
-no-adoption-on-405 rule, `create_calendar_folder_rejects_sanitized_system_collection_name`
+no-adoption-on-405 rule, `create_calendar_folder_405_reconciles_pending_create_after_lost_response`
+pins the one adopted case (a matching pending create intent),
+`create_calendar_folder_405_clears_stale_intent_when_collection_absent` and
+`create_calendar_folder_fails_closed_when_intent_read_fails` pin the intent
+lifecycle, `create_calendar_folder_rejects_sanitized_system_collection_name`
 pins the reserved-collection guard, and
 `create_mail_folder_rolls_back_mailbox_when_mapping_write_fails` /
-`create_caldav_folder_rolls_back_collection_when_mapping_write_fails` pin the
-create compensation; and the sync suite gains
+`create_caldav_folder_never_deletes_collection_when_mapping_write_fails` /
+`create_caldav_folder_does_not_touch_backend_when_storage_is_down` pin the
+create compensation and its CalDAV counterpart; and the sync suite gains
 `scoped_calendar_delta_does_not_tombstone_foreign_destroyed_event`,
 `scoped_calendar_prime_does_not_tombstone_foreign_event` and
 `unscoped_calendar_delta_tombstones_destroyed_event` pinning the scoped-folder
@@ -524,11 +529,17 @@ this delta, so the Add's fresh seed wins over the older scan snapshot (no
 duplicate flag `<Change>` on the next delta).
 
 **PR-review hardening (post-commit).** (d) A `FolderCreate` whose
-`MKCALENDAR` answers 405 is reported as Status 2 and NEVER adopted: the gateway
-cannot tell an orphan left by a failed mapping write from a collection the user
-created outside EAS, so adopting would silently link a new EAS folder to a
-collection whose events it does not own. Orphans are instead prevented up front
-by the create-compensation below. A display name that sanitizes to a system
+`MKCALENDAR` answers 405 is reported as Status 2 and is NEVER adopted, with ONE
+exception: a pending create intent recorded by an earlier attempt of THIS
+gateway for the same href, whose collection is verified PRESENT and whose
+display name matches — the lost-response retry, which reconciles onto the
+collection it created instead of answering a permanent name collision. No other
+405 is adopted: the gateway cannot tell an orphan left by a failed mapping write
+from a collection the user created outside EAS, so adopting would silently link
+a new EAS folder to a collection whose events it does not own. The intent is
+dropped when the collection is verifiably ABSENT (a stale intent must never
+adopt a later user-created collection) and is otherwise consumed only by a
+SUCCESSFUL reconciliation. A display name that sanitizes to a system
 collection (`Tasks.`/`.Tasks` → `Tasks`, `Notes.` → `Notes`) is rejected before
 `MKCALENDAR`, so a later `FolderDelete` can never destroy the shared
 Tasks/Notes store (`is_reserved_collection_name`). (e) A MAPI mirror-write
@@ -552,11 +563,20 @@ for an event the client never held AND remove the shared row before the event's
 own collection could deliver it. The delta path only records destroyed ids for
 the unscoped (default) folder, and the full-snapshot tombstone sweep is skipped
 entirely for scoped folders. (h) A `FolderCreate` whose backend object was
-created but whose mapping write then fails is COMPENSATED, not left as an
-orphan: the just-created JMAP mailbox (`Mailbox/set destroy`, contents included)
-or CalDAV collection (`DELETE`) is rolled back, so a retry starts clean instead
-of being rejected as a duplicate sibling name (JMAP) or 405ing on an unmappable
-orphan (CalDAV, which no longer adopts). A failed compensation is logged and the
+created but whose mapping write then fails is never left as an unmappable
+orphan, and never destroys a live collection. The just-created JMAP mailbox
+(`Mailbox/set destroy`, contents included) is rolled back, so a retry starts
+clean instead of being rejected as a duplicate sibling name. A CalDAV
+collection is NOT deleted: between `MKCALENDAR` and the failed mapping write
+another client may already have written events into it, and a compensating
+`DELETE` would destroy them. Instead the create records a durable pending
+intent BEFORE the mapping write, so the client's retry (whose `MKCALENDAR`
+answers 405) reconciles onto the SAME collection. If that reconciliation's
+mapping write also fails, the client receives the retryable Status 6 and the
+intent is RETAINED (clearing it would leave the live collection unmapped and the
+next retry answering Status 2); an unreadable intent fails the create closed
+(Status 6) BEFORE any backend work, so no collection can be created whose
+mapping could not be persisted. A failed JMAP compensation is logged and the
 client still receives the retryable Status 6. (i) `GetHierarchy` fails CLOSED
 (HTTP 500, [MS-ASCMD] §2.2.1.8) when the user-created folder list cannot be
 read, instead of returning a hierarchy that silently omits those folders.
@@ -670,6 +690,26 @@ and the delivered item can be deleted. (x) MAPI `destroy_emails`' success
 branch compares the destroyed count with `ids.len()`, preserving
 `PartialCompletion` when only some messages were deleted. (y) `dav_status_code`
 rejects a malformed status without slicing at a non-UTF-8 boundary.
+(z) The EWS calendar prime cites `max(journal head, owner prune floor)` as its
+baseline and fails retryably (`ErrorServerBusy`) when either read fails: a
+fully pruned journal reports head 0, which is BELOW the floor, so the very next
+delta would be rejected as stale and the client would re-prime forever.
+(aa) An EWS calendar delta never converts a backend/storage FAILURE into a
+deletion: an unparseable CalDAV body after a 200, a failed `item_map` upsert of
+the refreshed ETag (the response ChangeKey is derived from that ETag), and a
+failed `item_map` lookup all answer `ErrorServerBusy` from the unchanged cursor
+instead of emitting `<t:Delete>` and advancing past the change. (ab) JMAP
+calendar update/delete address the account carried by the stored
+`jmap://calendar/{account}/{id}` href rather than re-deriving the session's
+primary account, so an event in a secondary/shared calendar is written where it
+lives. (ac) `MarkAsJunk` reports one response message per requested item, and a
+rejected (non-message) id carries NO `MovedItemIds` — nothing was moved.
+(ad) EWS `SyncFolderHierarchy` now advertises the user-created MAIL folders
+(EAS `FolderCreate` Type 12, read from `folder_map`) alongside the built-in
+hierarchy, and an already-primed client receives their journaled
+`folder-add`/`folder-update`/`folder-delete` rows as `Create`/`Update`/`Delete`
+from the watermark in its opaque `SyncState` (Type 13 calendar collections are
+not EWS folders and are never advertised as mail folders).
 
 **Upgrade note (expected one-time re-prime).** Before this change the stored
 email delta token was the `Email/get` data-type state; the new delta passes it

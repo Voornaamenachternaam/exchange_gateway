@@ -340,11 +340,16 @@ pub struct MeetingRsvpRow {
 /// Percent-encode a CalDAV href path for comparison with the live-set entries
 /// returned by `find_user_calendars`. Those entries come through `Url::path()`,
 /// which preserves percent-encoding (e.g. `My Calendar` → `My%20Calendar`).
-/// The stored `folder_map.backend_id` holds the raw path (e.g. `My Calendar`),
+/// The stored `folder_map.backend_id` may hold the raw path (e.g. `My Calendar`),
 /// so we encode it to the same escaped form before comparing. This prevents a
 /// still-live collection whose href contains spaces or non-ASCII from being
 /// mistaken for deleted and having its EAS mapping pruned. `/` and other
 /// path-safe characters are preserved.
+///
+/// Existing `%XX` escapes are copied verbatim, making normalisation
+/// IDEMPOTENT: a stored href that is already escaped (or a live path carrying
+/// an encoded delimiter such as `%2F`) must not be escaped a second time
+/// (`%` → `%25`), which would make a live collection look deleted.
 const PATH_ENCODE_SET: AsciiSet = CONTROLS
     .add(b' ')
     .add(b'"')
@@ -360,7 +365,44 @@ pub(crate) fn normalize_caldav_path(path: &str) -> String {
     // then percent-encode to the same escaped form so candidates whose
     // href contains spaces or non-ASCII are not mistaken for deleted.
     let trimmed = path.trim_end_matches('/');
-    utf8_percent_encode(trimmed, &PATH_ENCODE_SET).collect::<String>()
+    let bytes = trimmed.as_bytes();
+    let mut out = String::with_capacity(trimmed.len());
+    let mut raw_start = 0usize;
+    let mut i = 0usize;
+    while i < bytes.len() {
+        // Canonicalize an existing `%XX` escape and encode only the raw run
+        // before it. `%` and the two hex digits are ASCII, so these byte offsets
+        // are always char boundaries.
+        //
+        // An escape for an UNRESERVED character (RFC 3986 §2.3) is decoded, so
+        // the same collection seen from two clients normalizes identically.
+        // `@` is decoded too: the gateway's own hrefs carry the raw user
+        // principal (`/cal/u@example.com/…`) while a server may escape it, and
+        // `@` can never act as a path delimiter. Every other escape is KEPT
+        // (decoding `%2F` would turn a path separator into a real separator) and
+        // its hex digits are upper-cased so a lower-case escape still matches.
+        if bytes[i] == b'%'
+            && i + 2 < bytes.len()
+            && bytes[i + 1].is_ascii_hexdigit()
+            && bytes[i + 2].is_ascii_hexdigit()
+        {
+            out.push_str(
+                &utf8_percent_encode(&trimmed[raw_start..i], &PATH_ENCODE_SET).to_string(),
+            );
+            let byte = u8::from_str_radix(&trimmed[i + 1..i + 3], 16).unwrap_or(b'%');
+            if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~' | b'@') {
+                out.push(byte as char);
+            } else {
+                out.push_str(&format!("%{byte:02X}"));
+            }
+            i += 3;
+            raw_start = i;
+        } else {
+            i += 1;
+        }
+    }
+    out.push_str(&utf8_percent_encode(&trimmed[raw_start..], &PATH_ENCODE_SET).to_string());
+    out
 }
 
 /// Parameters for recording one delivered iTIP REPLY in the duplicate-RSVP
@@ -1104,6 +1146,82 @@ impl Storage {
         Ok(())
     }
 
+    /// Commit one EWS `SyncFolderItems` (calendar) response's durable state in
+    /// ONE transaction: the new `SyncState` together with the delivery ledger
+    /// (this folder stream's delivered items, the emitted `<t:Delete>`s'
+    /// removals). Atomicity matters in one direction only, but it is a hard
+    /// requirement: the ledger must never advance AHEAD of the SyncState the
+    /// client is told. If it did, the client's retry (same cursor) would see an
+    /// item as already delivered and be told `<t:Update>` for one it never
+    /// received — the item would be lost until a manual resync.
+    ///
+    /// `reset` drops the whole scope ledger first (a null-`SyncState` prime:
+    /// the client has forgotten its item set, so every delivered item must be a
+    /// `<t:Create>` again).
+    #[allow(clippy::too_many_arguments)]
+    pub async fn commit_ews_calendar_sync(
+        &self,
+        owner: &str,
+        folder_id: &str,
+        scope_id: &str,
+        sync_state: &str,
+        reset: bool,
+        deliveries: &[(String, String)],
+        deletes: &[String],
+    ) -> Result<()> {
+        let mut tx = sqlx::Acquire::begin(self.pool.as_ref())
+            .await
+            .map_err(|e| GatewayError::Storage(format!("Transaction error: {}", e)))?;
+        if reset {
+            sqlx::query("DELETE FROM calendar_delivery_map WHERE owner = ?1 AND scope_id = ?2")
+                .bind(owner)
+                .bind(scope_id)
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+        }
+        for (server_id, etag) in deliveries {
+            sqlx::query(
+                "INSERT INTO calendar_delivery_map (owner, scope_id, server_id, etag)
+                 VALUES (?1, ?2, ?3, ?4)
+                 ON CONFLICT(owner, scope_id, server_id) DO UPDATE
+                 SET etag = ?4, updated_at = CURRENT_TIMESTAMP",
+            )
+            .bind(owner)
+            .bind(scope_id)
+            .bind(server_id)
+            .bind(etag)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+        }
+        for server_id in deletes {
+            sqlx::query(
+                "DELETE FROM calendar_delivery_map WHERE owner = ?1 AND scope_id = ?2 AND server_id = ?3",
+            )
+            .bind(owner)
+            .bind(scope_id)
+            .bind(server_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+        }
+        sqlx::query(
+            "INSERT INTO ews_sync_state (user_email, folder_id, sync_state) VALUES (?1, ?2, ?3)
+             ON CONFLICT(user_email, folder_id) DO UPDATE SET sync_state = ?3",
+        )
+        .bind(owner)
+        .bind(folder_id)
+        .bind(sync_state)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+        tx.commit()
+            .await
+            .map_err(|e| GatewayError::Storage(format!("Commit error: {}", e)))?;
+        Ok(())
+    }
+
     /// Commit ONE calendar Sync response's durable side effects in a single
     /// transaction: the delivered items' `item_map` + `change_journal` rows and
     /// this scope's delivery-ledger rows, the emitted `<Delete>`s'
@@ -1133,10 +1251,10 @@ impl Storage {
     /// for callers that deliberately want the commit-time head; it risks the
     /// delayed-wake race above.
     ///
-    /// `item_map`/ledger DELETE failures are non-fatal (the caller's earlier
-    /// best-effort behavior is preserved) — a missing row only re-delivers, it
-    /// never loses data — but the delivery, SyncKey and watermark writes are
-    /// fatal.
+    /// EVERY write in this transaction is fatal, the `<Delete>` removals
+    /// included: a partially applied response would leave the client's view and
+    /// the stored state disagreeing, so any failure rolls the whole commit back
+    /// and the retry re-derives the identical window.
     #[allow(clippy::too_many_arguments)]
     pub async fn commit_calendar_sync(
         &self,
@@ -1173,12 +1291,23 @@ impl Storage {
             // `jmap://` pseudo-href). Overwriting would make EWS and later EAS
             // reads depend on JMAP being reachable when a CalDAV href was
             // available; the real href is strictly more useful.
+            //
+            // The ETag is preserved WITH the href it belongs to. A JMAP-derived
+            // token (Stalwart exposes no `@etag`, so it is a hash of the event
+            // object) is meaningless to the CalDAV backend, and the stored row's
+            // ETag is used as the `If-Match` on an EAS client Change/Delete
+            // (`sync.rs`). Mixing a DAV href with a JMAP token makes those
+            // conditional requests fail with 412 forever. The per-scope delivery
+            // ledger still records the token THIS delivery used, which is what
+            // the delta's Add/Change decision compares.
             sqlx::query(
                 "INSERT INTO item_map (owner, caldav_href, resource_href, server_id, uid, etag) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
                  ON CONFLICT(owner, server_id) DO UPDATE SET
                    caldav_href = CASE WHEN excluded.resource_href LIKE 'jmap://%' AND item_map.caldav_href IS NOT NULL AND item_map.caldav_href NOT LIKE 'jmap://%' THEN item_map.caldav_href ELSE excluded.caldav_href END,
                    resource_href = CASE WHEN excluded.resource_href LIKE 'jmap://%' AND item_map.resource_href NOT LIKE 'jmap://%' THEN item_map.resource_href ELSE excluded.resource_href END,
-                   uid = ?5, etag = ?6, updated_at = CURRENT_TIMESTAMP",
+                   uid = ?5,
+                   etag = CASE WHEN excluded.resource_href LIKE 'jmap://%' AND item_map.resource_href NOT LIKE 'jmap://%' THEN item_map.etag ELSE excluded.etag END,
+                   updated_at = CURRENT_TIMESTAMP",
             )
             .bind(owner)
             .bind(d.resource_href)
@@ -1591,6 +1720,116 @@ impl Storage {
         .await
         .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
         Ok(())
+    }
+
+    /// Commit a FolderSync window: the new `sync_key` + `seq:` token and the
+    /// journal watermark, in ONE transaction, CONDITIONAL on the stored key.
+    ///
+    /// The check-and-write must be atomic: two concurrent FolderSync requests
+    /// for the same device-collection could otherwise both pass the in-memory
+    /// key comparison and the later write would silently overwrite the pin the
+    /// first one issued (the client holding the loser key would be rejected
+    /// forever until a re-prime).
+    ///
+    /// Match rule: `expected` is the request's incoming key. `"0"` is always
+    /// accepted (an explicit re-prime, including the very first request when no
+    /// row exists). Any other value must equal the stored key; a missing row
+    /// then means the client's view is stale. Returns `Ok(false)` when the key
+    /// no longer matches — nothing is written in that case.
+    pub async fn commit_folder_sync(
+        &self,
+        owner: &str,
+        collection_id: &str,
+        expected: &str,
+        sync_key: &str,
+        seq: i64,
+    ) -> Result<bool> {
+        let mut tx = sqlx::Acquire::begin(self.pool.as_ref())
+            .await
+            .map_err(|e| GatewayError::Storage(format!("Transaction error: {}", e)))?;
+        if expected != "0" {
+            let stored: Option<String> = sqlx::query_scalar(
+                "SELECT sync_key FROM sync_state WHERE owner = ?1 AND collection_id = ?2",
+            )
+            .bind(owner)
+            .bind(collection_id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+            if stored.as_deref() != Some(expected) {
+                return Ok(false);
+            }
+        }
+        sqlx::query(
+            "INSERT INTO sync_state (owner, collection_id, sync_key, token, journal_seq)
+             VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(owner, collection_id) DO UPDATE
+             SET sync_key = ?3, token = ?4, journal_seq = ?5, updated_at = CURRENT_TIMESTAMP",
+        )
+        .bind(owner)
+        .bind(collection_id)
+        .bind(sync_key)
+        .bind(Some(format!("seq:{}", seq)))
+        .bind(seq)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+        tx.commit()
+            .await
+            .map_err(|e| GatewayError::Storage(format!("Commit error: {}", e)))?;
+        Ok(true)
+    }
+
+    /// Replace a collection's `(sync_key, token)` pair ONLY when it still
+    /// equals the pair the caller read.
+    ///
+    /// Compare-and-swap for writers that carry state forward (e.g. the folder
+    /// hierarchy key rotation): an unconditional write would clobber a
+    /// watermark a concurrent request advanced between the read and the write,
+    /// making the device skip every change in between. Returns `Ok(false)` when
+    /// another writer won — nothing is written.
+    pub async fn replace_sync_key_if_unchanged(
+        &self,
+        owner: &str,
+        collection_id: &str,
+        expected_key: &str,
+        expected_token: Option<&str>,
+        new_key: &str,
+        token: Option<&str>,
+    ) -> Result<bool> {
+        let mut tx = sqlx::Acquire::begin(self.pool.as_ref())
+            .await
+            .map_err(|e| GatewayError::Storage(format!("Transaction error: {}", e)))?;
+        let stored: Option<(String, Option<String>)> = sqlx::query_as(
+            "SELECT sync_key, token FROM sync_state WHERE owner = ?1 AND collection_id = ?2",
+        )
+        .bind(owner)
+        .bind(collection_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+        let matches = matches!(
+            stored.as_ref(),
+            Some((key, token)) if key == expected_key && token.as_deref() == expected_token
+        );
+        if !matches {
+            return Ok(false);
+        }
+        sqlx::query(
+            "UPDATE sync_state SET sync_key = ?3, token = ?4, updated_at = CURRENT_TIMESTAMP
+             WHERE owner = ?1 AND collection_id = ?2",
+        )
+        .bind(owner)
+        .bind(collection_id)
+        .bind(new_key)
+        .bind(token)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+        tx.commit()
+            .await
+            .map_err(|e| GatewayError::Storage(format!("Commit error: {}", e)))?;
+        Ok(true)
     }
 
     /// Record the current journal head as the collection's watermark — the
@@ -4919,6 +5158,104 @@ mod tests {
                 .len(),
             1,
             "another scope's ledger survives B's prime clear"
+        );
+    }
+
+    /// A JMAP delivery of an event that already has a REAL CalDAV href must not
+    /// replace that href's ETag with a JMAP-derived token: the stored ETag is
+    /// the `If-Match` for an EAS client Change/Delete, and a JMAP hash is
+    /// meaningless to CalDAV (every conditional request would 412). The token
+    /// this delivery used belongs in the per-scope ledger, which is what the
+    /// delta compares.
+    #[tokio::test]
+    async fn commit_calendar_sync_keeps_dav_etag_with_its_href() {
+        let storage = mem_storage().await;
+        let owner = "etag-user@example.com";
+        let scope = "1::dev";
+        storage
+            .upsert_item_map(owner, "dav-href", "dav-href", "srv-1", "uid-1", "dav-etag")
+            .await
+            .unwrap();
+
+        let deliveries = [CalendarDeliveryWrite {
+            server_id: "srv-1",
+            resource_href: "jmap://calendar/a/e1",
+            uid: "uid-1",
+            etag: "jmap-hash",
+        }];
+        storage
+            .commit_calendar_sync(
+                owner,
+                scope,
+                "key-1",
+                Some("tok"),
+                Some(1),
+                false,
+                &deliveries,
+                &[],
+            )
+            .await
+            .expect("commit");
+
+        let row = storage
+            .get_ews_item_by_server_id(owner, "srv-1")
+            .await
+            .unwrap()
+            .expect("row survives");
+        assert_eq!(
+            row.resource_href, "dav-href",
+            "the real DAV href must win over the JMAP pseudo-href"
+        );
+        assert_eq!(
+            row.etag.as_deref(),
+            Some("dav-etag"),
+            "the ETag must stay paired with the DAV href it belongs to"
+        );
+        let ledger = storage
+            .list_calendar_deliveries(owner, scope)
+            .await
+            .unwrap();
+        assert_eq!(
+            ledger.get("srv-1").map(String::as_str),
+            Some("jmap-hash"),
+            "the delivery's own token is recorded in the scoped ledger"
+        );
+    }
+
+    #[tokio::test]
+    async fn normalize_caldav_path_is_idempotent_and_keeps_encoded_delimiters() {
+        // Raw → escaped.
+        assert_eq!(
+            normalize_caldav_path("/dav/cal/u/My Calendar/"),
+            "/dav/cal/u/My%20Calendar"
+        );
+        // Already escaped → unchanged (no `%` → `%25` double-encoding).
+        assert_eq!(
+            normalize_caldav_path("/dav/cal/u/My%20Calendar/"),
+            "/dav/cal/u/My%20Calendar"
+        );
+        // An encoded delimiter survives, so a live collection is not mistaken
+        // for deleted.
+        assert_eq!(
+            normalize_caldav_path("/dav/cal/u/Side%2FProject"),
+            "/dav/cal/u/Side%2FProject"
+        );
+        // A bare `%` is still escaped.
+        assert_eq!(
+            normalize_caldav_path("/dav/cal/u/100%"),
+            "/dav/cal/u/100%25"
+        );
+        // Non-ASCII is UTF-8 percent-encoded, so a RAW stored href and an
+        // ESCAPED discovered href normalize to the SAME form — the invariant
+        // that keeps a live collection from being mistaken for deleted. (A
+        // fully unescaped form would not round-trip `%C3%9C`.)
+        assert_eq!(
+            normalize_caldav_path("/dav/cal/u/Kalender Ü"),
+            "/dav/cal/u/Kalender%20%C3%9C"
+        );
+        assert_eq!(
+            normalize_caldav_path("/dav/cal/u/Kalender%20%C3%9C"),
+            "/dav/cal/u/Kalender%20%C3%9C"
         );
     }
 

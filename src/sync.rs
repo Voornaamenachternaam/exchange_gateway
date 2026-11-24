@@ -1464,64 +1464,86 @@ async fn query_all_calendar_events(
     username: &str,
     password: &SecretString,
 ) -> Result<crate::jmap::CalendarEventListResult> {
-    let first = jmap
-        .query_calendar_events(crate::jmap::QueryCalendarEventsParams {
-            account_id,
-            calendar_id,
-            start,
-            end,
-            position: 0,
-            limit: PRIME_QUERY_PAGE_SIZE,
-            username,
-            password,
-        })
-        .await?;
-    let total = first.total;
-    let mut events = first.events;
-    let mut seen: HashSet<String> = events.iter().filter_map(|e| e.id.clone()).collect();
-    // Page while more ids remain behind the accumulated distinct set.
-    loop {
-        if (events.len() as u64) >= total {
-            break;
-        }
-        let page = jmap
+    // A snapshot assembled across pages is only coherent if the query result
+    // set did not change while it was paged: `queryState` is the JMAP contract
+    // for exactly that (RFC 8620 §5.5). A walk that observed a change would
+    // persist a `state`/`queryState` pair that does not describe the assembled
+    // set, and the next delta could then skip an event that arrived (or kept an
+    // event that left) mid-walk. Restart the whole walk on drift and give up
+    // after a bounded number of attempts so the caller falls back to CalDAV.
+    const MAX_SNAPSHOT_ATTEMPTS: usize = 3;
+    for _attempt in 0..MAX_SNAPSHOT_ATTEMPTS {
+        let first = jmap
             .query_calendar_events(crate::jmap::QueryCalendarEventsParams {
                 account_id,
                 calendar_id,
                 start,
                 end,
-                position: events.len() as u64,
+                position: 0,
                 limit: PRIME_QUERY_PAGE_SIZE,
                 username,
                 password,
             })
             .await?;
-        if page.events.is_empty() {
-            break;
+        let total = first.total;
+        let query_state = first.query_state.clone();
+        let mut events = first.events;
+        let mut seen: HashSet<String> = events.iter().filter_map(|e| e.id.clone()).collect();
+        let mut drifted = false;
+        // Page while more ids remain behind the accumulated distinct set.
+        loop {
+            if (events.len() as u64) >= total {
+                break;
+            }
+            let page = jmap
+                .query_calendar_events(crate::jmap::QueryCalendarEventsParams {
+                    account_id,
+                    calendar_id,
+                    start,
+                    end,
+                    position: events.len() as u64,
+                    limit: PRIME_QUERY_PAGE_SIZE,
+                    username,
+                    password,
+                })
+                .await?;
+            if page.query_state != query_state {
+                drifted = true;
+                break;
+            }
+            if page.events.is_empty() {
+                break;
+            }
+            let new_ids: Vec<_> = page
+                .events
+                .into_iter()
+                .filter(|e| e.id.as_ref().is_some_and(|id| seen.insert(id.clone())))
+                .collect();
+            if new_ids.is_empty() {
+                // The backend stopped making progress: surface an incomplete
+                // snapshot (`total > len`) so the caller never persists a
+                // state that would skip the unseen events.
+                break;
+            }
+            events.extend(new_ids);
+            if (events.len() as u64) >= total {
+                break;
+            }
         }
-        let new_ids: Vec<_> = page
-            .events
-            .into_iter()
-            .filter(|e| e.id.as_ref().is_some_and(|id| seen.insert(id.clone())))
-            .collect();
-        if new_ids.is_empty() {
-            // The backend stopped making progress: surface an incomplete
-            // snapshot (`total > len`) so the caller never persists a
-            // state that would skip the unseen events.
-            break;
+        if drifted {
+            continue;
         }
-        events.extend(new_ids);
-        if (events.len() as u64) >= total {
-            break;
-        }
+        return Ok(crate::jmap::CalendarEventListResult {
+            events,
+            total,
+            query_state,
+            state: first.state,
+            unparseable: first.unparseable,
+        });
     }
-    Ok(crate::jmap::CalendarEventListResult {
-        events,
-        total,
-        query_state: first.query_state,
-        state: first.state,
-        unparseable: first.unparseable,
-    })
+    Err(anyhow!(
+        "calendar snapshot kept changing while paging (queryState drifted on every attempt)"
+    ))
 }
 
 pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
@@ -2984,6 +3006,10 @@ mod tests {
         /// real backend (paging a sorted id list), instead of returning the
         /// whole list on every call.
         honour_position: std::sync::Arc<AtomicBool>,
+        /// When true, each `CalendarEvent/query` page reports a DIFFERENT
+        /// `queryState` (the position is appended), modelling a result set that
+        /// changes while it is paged.
+        query_state_drift: std::sync::Arc<AtomicBool>,
         /// Calendar objects returned by `Calendar/get`, used by the folder
         /// scoping path (`resolve_calendar_id_for_href`).
         calendars: std::sync::Arc<Mutex<Vec<Value>>>,
@@ -3114,9 +3140,15 @@ mod tests {
                         } else {
                             ids
                         };
+                        let position = args.get("position").and_then(|v| v.as_u64()).unwrap_or(0);
+                        let query_state = if s.query_state_drift.load(Ordering::SeqCst) {
+                            format!("{}-{position}", s.query_state)
+                        } else {
+                            s.query_state.as_str().to_string()
+                        };
                         responses.push(json!([
                             "CalendarEvent/query",
-                            { "ids": page_ids, "total": total, "queryState": s.query_state.as_str() },
+                            { "ids": page_ids, "total": total, "queryState": query_state },
                             id
                         ]));
                     }
@@ -3263,6 +3295,7 @@ mod tests {
             changes_error: std::sync::Arc::new(changes_error),
             query_total: std::sync::Arc::new(AtomicUsize::new(0)),
             honour_position: std::sync::Arc::new(AtomicBool::new(false)),
+            query_state_drift: std::sync::Arc::new(AtomicBool::new(false)),
             calendars: std::sync::Arc::new(Mutex::new(Vec::new())),
             dav_calls: std::sync::Arc::new(Mutex::new(Vec::new())),
         };
@@ -3734,6 +3767,36 @@ mod tests {
             positions[0], 0,
             "the first query page starts at position 0: {recorded:?}"
         );
+    }
+
+    /// A snapshot walk whose `queryState` changes between pages describes a
+    /// result set that moved while it was read. Persisting its `state` would
+    /// make the next delta skip whatever arrived mid-walk, so the walk is
+    /// restarted and, after a bounded number of attempts, failed so the caller
+    /// falls back to CalDAV.
+    #[tokio::test]
+    async fn calendar_snapshot_rejects_query_state_drift() {
+        // More than one page (PRIME_QUERY_PAGE_SIZE = 100) so the walk pages.
+        let events: Vec<Value> = (0..150)
+            .map(|n| stub_event(&format!("e{n}"), &format!("uid-e{n}"), "Event"))
+            .collect();
+        let stub = spawn_calendar_stub(vec![], events, "query-7", "get-9", None).await;
+        stub.honour_position.store(true, Ordering::SeqCst);
+        stub.query_state_drift.store(true, Ordering::SeqCst);
+        let client = crate::jmap::JmapClient::new(&stub.base).unwrap();
+        let pw = secrecy::SecretString::from("pw");
+        let err = query_all_calendar_events(
+            &client,
+            "acct",
+            None,
+            "2026-01-01T00:00:00Z",
+            "2027-01-01T00:00:00Z",
+            "u",
+            &pw,
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("drifted"), "{err:?}");
     }
 
     /// A `CalendarEvent/changes` drain that stops at its cap with
