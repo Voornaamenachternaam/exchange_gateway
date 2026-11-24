@@ -2717,6 +2717,21 @@ mod tests {
         assert_eq!(sanitize_collection_name("  ..hidden..  "), "hidden");
         assert_eq!(sanitize_collection_name("Tab\there"), "Tab_here");
         assert_eq!(sanitize_collection_name("   "), "");
+        assert_eq!(sanitize_collection_name("Side Project"), "Side Project");
+    }
+
+    /// `.` and `..` cannot survive the dot-trimming, so they can never form a
+    /// CalDAV path segment that walks out of the calendar home; both are
+    /// rejected as an unusable name instead of being joined into an href.
+    #[test]
+    fn dot_only_collection_names_are_rejected() {
+        for name in [".", "..", "...", " . "] {
+            assert_eq!(sanitize_collection_name(name), "", "{name:?}");
+            assert!(
+                caldav_collection_for("", "u@example.com", name, 13).is_none(),
+                "{name:?} must not yield a collection"
+            );
+        }
     }
 
     // ---- wire rendering -------------------------------------------------

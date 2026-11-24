@@ -815,30 +815,46 @@ impl RopMoveFolderSuccess {
 /// consumed the `RopId`, the body is:
 ///   `LogonId · SourceHandleIndex · DestHandleIndex · WantCopy(1) ·
 ///    FolderId(8 LE) · DestFolderId(8 LE)`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RopCopyFolderRequest {
     pub logon_id: u8,
     pub source_handle_index: u8,
     pub dest_handle_index: u8,
-    pub want_copy: u8,
+    pub want_asynchronous: u8,
+    pub want_recursive: u8,
+    pub use_unicode: u8,
+    /// FID of the folder being copied (the destination PARENT is the
+    /// `DestHandleIndex` handle; there is no second FID on the wire).
     pub folder_id: u64,
-    pub dest_folder_id: u64,
+    /// NUL-terminated name for the copy (UTF-16LE when `UseUnicode` is set).
+    pub new_folder_name: String,
 }
 impl RopCopyFolderRequest {
+    /// MS-OXCROPS §2.2.4.8.1 wire order:
+    /// `LogonId · SourceHandleIndex · DestHandleIndex · WantAsynchronous ·
+    ///  WantRecursive · UseUnicode · FolderId(8 LE) · NewFolderName(NUL)`.
     pub fn decode(buf: &mut Buf<'_>) -> Result<Self, DecodeError> {
         let logon_id = buf.take_u8()?;
         let source_handle_index = buf.take_u8()?;
         let dest_handle_index = buf.take_u8()?;
-        let want_copy = buf.take_u8()?;
+        let want_asynchronous = buf.take_u8()?;
+        let want_recursive = buf.take_u8()?;
+        let use_unicode = buf.take_u8()?;
         let folder_id = buf.take_u64_le()?;
-        let dest_folder_id = buf.take_u64_le()?;
+        let new_folder_name = if use_unicode != 0 {
+            take_terminated_utf16(buf)?
+        } else {
+            take_terminated_mbcs(buf)?
+        };
         Ok(Self {
             logon_id,
             source_handle_index,
             dest_handle_index,
-            want_copy,
+            want_asynchronous,
+            want_recursive,
+            use_unicode,
             folder_id,
-            dest_folder_id,
+            new_folder_name,
         })
     }
 }
@@ -4661,6 +4677,53 @@ impl RopGetPerUserLongTermIdsRequest {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// MS-OXCROPS §2.2.4.8.1: the CopyFolder request is
+    /// `LogonId · SourceHandleIndex · DestHandleIndex · WantAsynchronous ·
+    /// WantRecursive · UseUnicode · FolderId(8) · NewFolderName(NUL)`. The
+    /// decoder is fed the buffer AFTER the RopId byte. A trailing ROP byte
+    /// proves the name terminator, not a fixed length, bounds the read.
+    #[test]
+    fn rop_copy_folder_request_decodes_ansi_name_and_leaves_next_rop() {
+        let mut buf = vec![
+            0x01, // LogonId
+            0x02, // SourceHandleIndex
+            0x03, // DestHandleIndex
+            0x00, // WantAsynchronous
+            0x01, // WantRecursive
+            0x00, // UseUnicode (multibyte name)
+        ];
+        buf.extend(0x1122_3344_5566_7788u64.to_le_bytes()); // FolderId
+        buf.extend(b"Copy of Inbox\0");
+        buf.push(0x01); // the NEXT ROP's RopId (RopRelease)
+        let mut cur = Buf::new(&buf);
+        let req = RopCopyFolderRequest::decode(&mut cur).unwrap();
+        assert_eq!(req.logon_id, 0x01);
+        assert_eq!(req.source_handle_index, 0x02);
+        assert_eq!(req.dest_handle_index, 0x03);
+        assert_eq!(req.want_asynchronous, 0x00);
+        assert_eq!(req.want_recursive, 0x01);
+        assert_eq!(req.use_unicode, 0x00);
+        assert_eq!(req.folder_id, 0x1122_3344_5566_7788);
+        assert_eq!(req.new_folder_name, "Copy of Inbox");
+        assert_eq!(cur.take_u8().unwrap(), 0x01, "the next ROP must survive");
+    }
+
+    #[test]
+    fn rop_copy_folder_request_decodes_utf16_name() {
+        let mut buf = vec![0x01, 0x02, 0x03, 0x00, 0x00, 0x01];
+        buf.extend(7u64.to_le_bytes());
+        for unit in "Kopie".encode_utf16() {
+            buf.extend(unit.to_le_bytes());
+        }
+        buf.extend(0u16.to_le_bytes());
+        let mut cur = Buf::new(&buf);
+        let req = RopCopyFolderRequest::decode(&mut cur).unwrap();
+        assert!(req.use_unicode != 0);
+        assert_eq!(req.folder_id, 7);
+        assert_eq!(req.new_folder_name, "Kopie");
+        assert_eq!(cur.remaining(), 0);
+    }
 
     #[test]
     fn ropid_roundtrips_known_ids() {

@@ -5662,7 +5662,9 @@ async fn handle_get_hierarchy(ctx: &FolderCmdCtx<'_>) -> Response {
         ..
     } = *ctx;
     if !state.can_read_email() {
-        let body = r#"<?xml version="1.0" encoding="utf-8"?><GetHierarchy xmlns="FolderHierarchy:"><Folders></Folders></GetHierarchy>"#;
+        // [MS-ASCMD] §2.2.1.8: unlike other commands there is NO `GetHierarchy`
+        // top-level element — `<Folders>` IS the response root (§6.19 schema).
+        let body = r#"<?xml version="1.0" encoding="utf-8"?><Folders xmlns="FolderHierarchy:"></Folders>"#;
         return wbxml_response(body, as_wbxml, wbxml, request_id);
     }
     // [MS-ASCMD] §6.19: emit no <Add> wrapper — the FolderSync entry shape
@@ -5716,8 +5718,10 @@ async fn handle_get_hierarchy(ctx: &FolderCmdCtx<'_>) -> Response {
             xml_escape(&row.parent_id),
         ));
     }
+    // [MS-ASCMD] §2.2.1.8/§6.19: `<Folders>` is the top-level element (there is
+    // no `GetHierarchy` response root), with bare `<Folder>` children.
     let body = format!(
-        r#"<?xml version="1.0" encoding="utf-8"?><GetHierarchy xmlns="FolderHierarchy:"><Folders>{folders}</Folders></GetHierarchy>"#
+        r#"<?xml version="1.0" encoding="utf-8"?><Folders xmlns="FolderHierarchy:">{folders}</Folders>"#
     );
     wbxml_response(&body, as_wbxml, wbxml, request_id)
 }
@@ -8976,9 +8980,15 @@ async fn handle_email_initial_sync(
         window,
         options,
         conversation_mode,
-        mailbox_id: _,
+        mailbox_id,
         delta_mailbox_id,
     } = *ctx;
+    // The ONE concrete mailbox this collection resolves to: a user-created
+    // folder's ServerId IS its mailbox id, otherwise the caller's single
+    // `Mailbox/query` result. The page fetch, the keyword baseline and the
+    // membership filter all use it, so a role that moves mid-sync cannot make
+    // one of them read a different mailbox than another.
+    let collection_mailbox_id = mailbox_id.or(delta_mailbox_id);
     // A previous initial sync may have left a resume cursor (window filled
     // before the mailbox drained). Spec-wise the client follows up with the
     // new SyncKey, and this is the request that must continue, not restart.
@@ -9020,7 +9030,7 @@ async fn handle_email_initial_sync(
     // edit would never be sent as a `<Change>`. A continuation page
     // (`start_position > 0`) keeps the baseline the first page captured.
     if start_position == 0
-        && let Some(mailbox_id) = delta_mailbox_id
+        && let Some(mailbox_id) = collection_mailbox_id
     {
         capture_email_keyword_baseline(
             state,
@@ -9049,7 +9059,7 @@ async fn handle_email_initial_sync(
             username,
             password,
             search_filter: None,
-            mailbox_id: ctx.mailbox_id,
+            mailbox_id: collection_mailbox_id,
         },
     )
     .await;
@@ -9084,7 +9094,7 @@ async fn handle_email_initial_sync(
                 username,
                 password,
                 search_filter: None,
-                mailbox_id: ctx.mailbox_id,
+                mailbox_id: collection_mailbox_id,
             },
         )
         .await;
@@ -9155,7 +9165,7 @@ async fn handle_email_initial_sync(
         // the client never received is a no-op. Membership comes from the
         // already-fetched `mailboxIds` (no extra round trip); a row without a
         // usable map is delivered (never silently dropped).
-        if let Some(mailbox_id) = delta_mailbox_id
+        if let Some(mailbox_id) = collection_mailbox_id
             && let Some(mids) = email.mailbox_ids.as_ref()
             && !mids.get(mailbox_id).copied().unwrap_or(false)
         {
@@ -12428,6 +12438,36 @@ mod tests {
         assert!(
             !text.contains("cal-folder"),
             "a CalDAV calendar folder must be excluded from GetHierarchy: {text}"
+        );
+        // [MS-ASCMD] §2.2.1.8/§6.19: the response root is `<Folders>`; a
+        // `GetHierarchy` wrapper is not part of the response.
+        assert!(
+            text.contains("<Folders") && !text.contains("<GetHierarchy"),
+            "the response root must be Folders: {text}"
+        );
+    }
+
+    /// An EMPTY successful GetHierarchy still answers a `<Folders/>` root — an
+    /// empty body would leave the client with no hierarchy at all.
+    #[tokio::test]
+    async fn test_get_hierarchy_empty_response_root_is_folders() {
+        let state = test_ping_state().await;
+        let owner = "hierarchy-empty@example.com";
+        let wbxml = Wbxml::new();
+        let ctx = FolderCmdCtx {
+            state: &state,
+            owner,
+            password: &SecretString::from("pw"),
+            device_id: "dev",
+            xml: "",
+            wbxml: &wbxml,
+            as_wbxml: false,
+            request_id: "gh-empty",
+        };
+        let text = response_text(handle_get_hierarchy(&ctx).await).await;
+        assert!(
+            text.contains("<Folders") && !text.contains("<GetHierarchy"),
+            "an empty response root must be Folders: {text}"
         );
     }
 

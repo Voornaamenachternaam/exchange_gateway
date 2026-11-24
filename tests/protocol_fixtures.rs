@@ -85,11 +85,19 @@ fn eas_sync_document_declares_airsync_namespace() {
 #[test]
 fn eas_itemoperations_fetch_declares_namespaces() {
     // An ItemOperations document rooted on code page 20 must declare
-    // xmlns:AirSync and xmlns:Search for its prefixed tags to encode.
-    let body = r#"<ItemOperations xmlns="ItemOperations:" xmlns:AirSync="AirSync:" xmlns:Search="Search:"><Fetch><AirSync:CollectionId>2</AirSync:CollectionId><AirSync:ServerId>msg-1</AirSync:ServerId><AirSync:Class>Email</AirSync:Class><Properties/></Fetch></ItemOperations>"#;
+    // xmlns:AirSync and xmlns:Search for its prefixed tags to encode. The
+    // REQUEST `<Fetch>` ([MS-ASCMD] §2.2.3.69.1) carries the `Store` (with its
+    // `Name`/`Mailbox`), the collection/server ids and `Options`/`Range`;
+    // `Class`, `Status`, `Part`, `Total` and `Properties` are RESPONSE-only
+    // elements and must not appear in a request.
+    let body = r#"<ItemOperations xmlns="ItemOperations:" xmlns:AirSync="AirSync:" xmlns:Search="Search:"><Fetch><Store><Name>Mailbox</Name><Mailbox>user@example.com</Mailbox></Store><AirSync:CollectionId>2</AirSync:CollectionId><AirSync:ServerId>msg-1</AirSync:ServerId></Fetch></ItemOperations>"#;
     assert!(body.contains("xmlns:AirSync=\"AirSync:\""));
     assert!(body.contains("xmlns:Search=\"Search:\""));
-    assert!(body.contains("<AirSync:Class>Email</AirSync:Class>"));
+    assert!(body.contains("<Store><Name>Mailbox</Name>"));
+    assert!(body.contains("<AirSync:CollectionId>2</AirSync:CollectionId>"));
+    assert!(body.contains("<AirSync:ServerId>msg-1</AirSync:ServerId>"));
+    assert!(!body.contains("AirSync:Class"));
+    assert!(!body.contains("<Properties"));
 }
 
 #[test]
@@ -102,17 +110,25 @@ fn eas_foldercreate_type_13_is_calendar() {
 
 #[test]
 fn eas_meetingresponse_root_is_page_8() {
-    // MeetingResponse root is code page 8
-    let body = r#"<MeetingResponse xmlns="MeetingResponse:"><Request><RequestId>req-1</RequestId><UserResponse>1</UserResponse></Request></MeetingResponse>"#;
+    // MeetingResponse root is code page 8. A `<Request>` ([MS-ASCMD]
+    // §2.2.3.91.2) carries the containing `CollectionId` when it addresses the
+    // item by ServerId (`search:LongId` is the alternative), so the request is
+    // invalid without it.
+    let body = r#"<MeetingResponse xmlns="MeetingResponse:"><Request><CollectionId>1</CollectionId><RequestId>req-1</RequestId><UserResponse>1</UserResponse></Request></MeetingResponse>"#;
     assert!(body.contains("xmlns=\"MeetingResponse:\""));
+    assert!(body.contains("<CollectionId>1</CollectionId>"));
     assert!(body.contains("<RequestId>req-1</RequestId>"));
 }
 
 #[test]
 fn eas_getitemestimate_email_class() {
-    let body = r#"<GetItemEstimate xmlns="GetItemEstimate:"><Collections><Collection><Class>Email</Class><CollectionId>2</CollectionId><SyncKey>0</SyncKey></Collection></Collections></GetItemEstimate>"#;
-    assert!(body.contains("<Class>Email</Class>"));
+    // [MS-ASWBXML] §2.1.2.1.7 note 1: for protocol versions 14.0 and later the
+    // `Class` tag lives in code page 0 (AirSync), not the GetItemEstimate
+    // page, and `SyncKey` is an AirSync-page tag too — both must be prefixed.
+    let body = r#"<GetItemEstimate xmlns="GetItemEstimate:" xmlns:AirSync="AirSync:"><Collections><Collection><AirSync:Class>Email</AirSync:Class><CollectionId>2</CollectionId><AirSync:SyncKey>0</AirSync:SyncKey></Collection></Collections></GetItemEstimate>"#;
+    assert!(body.contains("<AirSync:Class>Email</AirSync:Class>"));
     assert!(body.contains("<CollectionId>2</CollectionId>"));
+    assert!(body.contains("<AirSync:SyncKey>0</AirSync:SyncKey>"));
 }
 
 #[test]

@@ -1097,6 +1097,20 @@ const CALENDAR_EVENT_PROPERTIES: &[&str] = &[
     "@etag",
 ];
 
+/// The `CalendarEvent/query` filter shared by the snapshot query and its
+/// `queryState` stability probe (draft-ietf-jmap-calendars §5.11.1): a
+/// half-open `[start, end)` window, optionally narrowed to one calendar.
+fn calendar_query_filter(start: &str, end: &str, calendar_id: Option<&str>) -> Value {
+    let mut filter = json!({
+        "after": start,
+        "before": end,
+    });
+    if let Some(cal_id) = calendar_id {
+        filter["inCalendarIds"] = json!([cal_id]);
+    }
+    filter
+}
+
 /// Parse the `list` array of a `CalendarEvent/get` response into events,
 /// retaining each raw object so iCalendar can be reconstructed on demand.
 ///
@@ -3993,8 +4007,11 @@ impl JmapClient {
         let api_url = &session.api_url;
         let mut created = 0usize;
         // Chunked so neither `Email/get` nor `Email/import` exceeds the
-        // server's `maxObjectsInGet`/`maxObjectsInSet` (RFC 8620 §2).
-        for chunk in email_ids.chunks(Self::COPY_BATCH) {
+        // server's advertised `maxObjectsInGet`/`maxObjectsInSet` (RFC 8620
+        // §2); a server advertising a lower cap than `COPY_BATCH` would reject
+        // the whole explicit-id lookup.
+        let batch = Self::COPY_BATCH.min(session_max_objects_in_get(&session).max(1));
+        for chunk in email_ids.chunks(batch) {
             // Source lookup: one `Email/get` for the chunk, keyed by id so a
             // reordered or partial response cannot mis-associate a blob.
             let calls = vec![(
@@ -6356,13 +6373,7 @@ impl JmapClient {
         let api_url = &session.api_url;
 
         // Build filter per draft-ietf-jmap-calendars §5.11.1
-        let mut filter = json!({
-            "after": params.start,
-            "before": params.end,
-        });
-        if let Some(cal_id) = params.calendar_id {
-            filter["inCalendarIds"] = json!([cal_id]);
-        }
+        let filter = calendar_query_filter(params.start, params.end, params.calendar_id);
 
         let method_calls = vec![
             (
@@ -6461,6 +6472,69 @@ impl JmapClient {
             state,
             unparseable,
         })
+    }
+
+    /// The `queryState` (RFC 8620 §5.5) of the calendar-event QUERY for the same
+    /// filter [`Self::query_calendar_events`] uses, without fetching any event.
+    ///
+    /// A prime takes its id set from `CalendarEvent/query` and its delta
+    /// baseline from the `CalendarEvent/get` `state`. A change committed on the
+    /// server between those two method invocations of the same batch is folded
+    /// into the baseline while its id never reaches the snapshot, so no later
+    /// `CalendarEvent/changes` would ever report it. Re-reading the query state
+    /// after the snapshot proves the result set did not move.
+    pub async fn query_calendar_event_query_state(
+        &self,
+        account_id: &str,
+        calendar_id: Option<&str>,
+        start: &str,
+        end: &str,
+        username: &str,
+        password: &SecretString,
+    ) -> Result<String> {
+        let session = self.get_session(username, password).await?;
+        let api_url = &session.api_url;
+        let method_calls = vec![(
+            "CalendarEvent/query",
+            json!({
+                "accountId": account_id,
+                "filter": calendar_query_filter(start, end, calendar_id),
+                "sort": [{ "property": "start", "isAscending": true }],
+                "position": 0,
+                "limit": 0,
+                "calculateTotal": false,
+            }),
+            "eq0",
+        )];
+        let response = self
+            .api_call(
+                api_url,
+                &["urn:ietf:params:jmap:core", JMAP_CAL_CAPABILITY],
+                method_calls,
+                username,
+                password,
+            )
+            .await?;
+        for (method, data, _) in response.method_responses {
+            if method == "error" {
+                return Err(anyhow!(
+                    "CalendarEvent/query state probe returned method error: {}",
+                    data.get("type")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("unknown")
+                ));
+            }
+            if method == "CalendarEvent/query" {
+                return Ok(data
+                    .get("queryState")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string());
+            }
+        }
+        Err(anyhow!(
+            "CalendarEvent/query state probe response missing from the batch"
+        ))
     }
 
     /// Get a single calendar event by ID via CalendarEvent/get

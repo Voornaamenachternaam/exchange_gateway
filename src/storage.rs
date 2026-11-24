@@ -1111,6 +1111,57 @@ impl Storage {
         Ok(row.map(|r| (r.get(0), r.get(1))))
     }
 
+    /// Record a calendar `Add` whose backend `PUT` has committed but whose
+    /// local bookkeeping (`item_map`, the delivery ledger, attachments) is not
+    /// yet durable. `resource_href` is kept in the `instance_id` column so a
+    /// retry can resume against the SAME resource instead of creating a second
+    /// one — the identity is written BEFORE those writes can fail, and the
+    /// status only becomes `"1"` once every one of them succeeded.
+    pub async fn put_client_sync_add_pending(
+        &self,
+        owner: &str,
+        collection_id: &str,
+        client_id: &str,
+        server_id: &str,
+        resource_href: &str,
+    ) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO client_sync_command (owner, collection_id, client_id, server_id, instance_id, status) VALUES (?1, ?2, ?3, ?4, ?5, 'pending')
+             ON CONFLICT(owner, collection_id, client_id) DO UPDATE SET server_id = ?4, instance_id = ?5, status = 'pending', updated_at = CURRENT_TIMESTAMP"
+        )
+        .bind(owner)
+        .bind(collection_id)
+        .bind(client_id)
+        .bind(server_id)
+        .bind(resource_href)
+        .execute(self.pool.as_ref())
+        .await
+        .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+        Ok(())
+    }
+
+    /// The pending (backend-committed, locally unfinished) calendar `Add` for
+    /// `(owner, collection_id, client_id)`, as `(server_id, resource_href)`.
+    pub async fn get_client_sync_add_pending(
+        &self,
+        owner: &str,
+        collection_id: &str,
+        client_id: &str,
+    ) -> Result<Option<(String, String)>> {
+        let row = sqlx::query(
+            "SELECT server_id, instance_id FROM client_sync_command
+             WHERE owner = ?1 AND collection_id = ?2 AND client_id = ?3
+               AND status = 'pending' AND server_id IS NOT NULL AND instance_id IS NOT NULL",
+        )
+        .bind(owner)
+        .bind(collection_id)
+        .bind(client_id)
+        .fetch_optional(self.pool.as_ref())
+        .await
+        .map_err(|e| GatewayError::Storage(format!("Query error: {}", e)))?;
+        Ok(row.map(|r| (r.get(0), r.get(1))))
+    }
+
     pub async fn put_client_sync_command(
         &self,
         owner: &str,

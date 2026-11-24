@@ -1,7 +1,22 @@
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use exchange_gateway::storage::{FolderUpsertParams, Storage};
 use sqlx::{Connection, Executor, SqliteConnection};
+
+/// Removes the test's SQLite database and its WAL/SHM sidecars however the test
+/// ends, so an assertion failure leaves nothing behind in the temp directory.
+struct TempDatabase(PathBuf);
+
+impl Drop for TempDatabase {
+    fn drop(&mut self) {
+        for suffix in ["", "-wal", "-shm"] {
+            let mut path = self.0.clone().into_os_string();
+            path.push(suffix);
+            let _ = std::fs::remove_file(Path::new(&path));
+        }
+    }
+}
 
 #[tokio::test]
 async fn sqlite_lock_during_journaled_rename_rolls_back_without_data_loss() {
@@ -9,6 +24,7 @@ async fn sqlite_lock_during_journaled_rename_rolls_back_without_data_loss() {
         "exchange-gateway-lock-fault-{}.sqlite",
         uuid::Uuid::new_v4()
     ));
+    let _temp_db = TempDatabase(path.clone());
     let database_url = format!("sqlite://{}?mode=rwc", path.display());
     let storage = Storage::new(&database_url).await.unwrap();
     storage.init_schema().await.unwrap();
@@ -74,7 +90,4 @@ async fn sqlite_lock_during_journaled_rename_rolls_back_without_data_loss() {
 
     locker.close().await.unwrap();
     storage.pool().close().await;
-    for suffix in ["", "-wal", "-shm"] {
-        let _ = std::fs::remove_file(format!("{}{suffix}", path.display()));
-    }
 }

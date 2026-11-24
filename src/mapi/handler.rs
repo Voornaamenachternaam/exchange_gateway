@@ -57,7 +57,7 @@ use crate::mapi::session::{
 };
 use crate::mapi::store;
 use crate::mapi::transport::{MapiRequest, MapiRequestType, MapiResponse, ResponseCode, RpcKind};
-use secrecy::ExposeSecret;
+use secrecy::{ExposeSecret, SecretString};
 
 use crate::mapi::fxics::{IcsStreamBuilder, Marker, Tokenizer};
 use crate::mapi::restrict::{CellForMatcher, SRestriction, restriction_referenced_tags};
@@ -5387,9 +5387,10 @@ async fn execute_one_rop(
             .encode(out);
         }
         RopId::ROP_COPY_FOLDER => {
-            // MS-OXCROPS §2.2.4.6.1: folder copy. `source` is the folder
-            // handle to copy; `dest` is the destination parent folder; the
-            // wire body carries an additional `DestFolderId` after `FolderId`.
+            // MS-OXCROPS §2.2.4.8.1: the source FOLDER is identified by the
+            // source handle (and its FID); the destination PARENT is the
+            // destination handle. The wire body carries one FID and the
+            // NUL-terminated name for the copy.
             let req = RopCopyFolderRequest::decode(cur)?;
             let src_backend = sessions
                 .with_handle(session_id, req.source_handle_index, |h| match h {
@@ -5435,46 +5436,16 @@ async fn execute_one_rop(
                         outcome = RopErrorCode::NotFound;
                         partial = 0;
                     } else {
-                        // Copy: create the destination mailbox under the
-                        // destination parent. The new mailbox is named after
-                        // the source folder's display name (with a "(copy)"
-                        // suffix) so Outlook's folder tree renders a
-                        // meaningful name.
-                        let src_name = jc
-                            .query_mailboxes(username, pw)
-                            .await
-                            .ok()
-                            .and_then(|mbs| {
-                                mbs.mailboxes
-                                    .iter()
-                                    .find(|m| m.id.as_deref() == Some(src.as_str()))
-                                    .and_then(|m| m.name.as_deref().map(str::to_owned))
-                            })
-                            .unwrap_or_else(|| "Untitled Folder".to_string());
-                        let dst_name = format!("{} (copy)", src_name);
-                        match jc
-                            .create_mailbox(
-                                &account_id,
-                                &dst_name,
-                                Some(dest.as_str()),
-                                username,
-                                pw,
-                            )
-                            .await
-                        {
-                            Ok(_) => {
-                                outcome = RopErrorCode::Success;
-                                partial = 1;
-                            }
-                            Err(e) => {
-                                tracing::warn!(
-                                    error = %e,
-                                    "RopCopyFolder: destination mailbox creation failed"
-                                );
-                                outcome = RopErrorCode::DiskError;
-                                partial = 0;
-                            }
-                        }
+                        (outcome, partial) = rop_copy_folder(
+                            jc,
+                            username,
+                            pw,
+                            &account_id,
+                            src,
+                            dest,
+                            &req.new_folder_name,
+                        )
+                        .await;
                     }
                 }
             }
@@ -6774,6 +6745,12 @@ async fn execute_one_rop(
                                                 {
                                                     preserved_ids.push(child_id.clone());
                                                 } else {
+                                                    // Inventory confirms the
+                                                    // child is GONE: the destroy
+                                                    // did land even though its
+                                                    // reply was lost, so it counts
+                                                    // toward partial completion.
+                                                    destroyed_any = true;
                                                     destroyed_ids.push(child_id.clone());
                                                 }
                                                 subfolders_ok = false;
@@ -6909,6 +6886,16 @@ async fn execute_one_rop(
                                     let total = jids.len();
                                     match jc.destroy_emails(&account_id, &jids, username, pw).await
                                     {
+                                        // Nothing destroyed out of a non-empty
+                                        // submission is a failure, not a
+                                        // partial success: the backend
+                                        // rejected the whole batch.
+                                        Ok(0) => {
+                                            tracing::warn!(
+                                                "JMAP Email/destroy confirmed 0 of {total} deletions"
+                                            );
+                                            outcome = RopErrorCode::DiskError;
+                                        }
                                         Ok(n) => {
                                             outcome = RopErrorCode::Success;
                                             if n < total {
@@ -9248,6 +9235,108 @@ async fn handle_disconnect(req: MapiRequest, state: &MapiState) -> MapiResponse 
         state.sessions.remove(&id);
     }
     MapiResponse::success(req.request_id, "Disconnect", None, Vec::new())
+}
+
+/// `RopCopyFolder` ([MS-OXCFOLD] §2.2.1.5): create the destination mailbox and
+/// copy the source folder's messages into it.
+///
+/// The source inventory is read BEFORE anything is created, so an unreadable
+/// source leaves no stray empty folder behind. The folder TREE is not
+/// replicated: a source holding child folders, or a copy that came up short,
+/// is reported as PARTIAL completion instead of a plain success.
+async fn rop_copy_folder(
+    jc: &crate::jmap::JmapClient,
+    username: &str,
+    password: &SecretString,
+    account_id: &str,
+    src: &str,
+    dest: &str,
+    requested_name: &str,
+) -> (RopErrorCode, u8) {
+    const PAGE: u64 = 256;
+    let listing = match jc.query_mailboxes(username, password).await {
+        Ok(listing) => listing,
+        Err(e) => {
+            tracing::warn!(error = %e, "RopCopyFolder: source folder list failed");
+            return (RopErrorCode::DiskError, 0);
+        }
+    };
+    let src_name = listing
+        .mailboxes
+        .iter()
+        .find(|m| m.id.as_deref() == Some(src))
+        .and_then(|m| m.name.clone())
+        .unwrap_or_else(|| "Untitled Folder".to_string());
+    let has_children = listing
+        .mailboxes
+        .iter()
+        .any(|m| m.parent_id.as_deref() == Some(src));
+
+    let mut message_ids: Vec<String> = Vec::new();
+    let mut position = 0u64;
+    loop {
+        let page = match jc
+            .query_email_ids(crate::jmap::QueryEmailsParams {
+                account_id,
+                filter: Some(serde_json::json!({ "inMailbox": src })),
+                sort: None,
+                position,
+                limit: PAGE,
+                anchor: None,
+                anchor_offset: 0,
+                username,
+                password,
+            })
+            .await
+        {
+            Ok(ids) => ids,
+            Err(e) => {
+                tracing::warn!(error = %e, "RopCopyFolder: source message enumeration failed");
+                return (RopErrorCode::DiskError, 0);
+            }
+        };
+        let received = page.len() as u64;
+        message_ids.extend(page);
+        if received < PAGE {
+            break;
+        }
+        position += received;
+    }
+
+    // The client's own `NewFolderName` wins; the derived name is the fallback
+    // for a request that carries none.
+    let dst_name = if requested_name.is_empty() {
+        format!("{src_name} (copy)")
+    } else {
+        requested_name.to_string()
+    };
+    let new_mailbox = match jc
+        .create_mailbox(account_id, &dst_name, Some(dest), username, password)
+        .await
+    {
+        Ok(id) => id,
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                "RopCopyFolder: destination mailbox creation failed"
+            );
+            return (RopErrorCode::DiskError, 0);
+        }
+    };
+    let copied = match jc
+        .copy_emails(account_id, &message_ids, &new_mailbox, username, password)
+        .await
+    {
+        Ok(copied) => copied,
+        Err(e) => {
+            // The destination folder exists but holds nothing: report partial
+            // completion rather than a success the caller cannot trust.
+            tracing::warn!(error = %e, "RopCopyFolder: message copy failed");
+            return (RopErrorCode::DiskError, 1);
+        }
+    };
+    let complete = !has_children && copied == message_ids.len();
+    (RopErrorCode::Success, u8::from(!complete))
 }
 
 #[cfg(test)]

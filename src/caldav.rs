@@ -266,9 +266,11 @@ impl CaldavClient {
     /// declared to hold (e.g. `["VTODO"]`, `["VJOURNAL"]`). The request body
     /// carries the component-set so task/note objects are legal members.
     ///
-    /// Returns `Ok(())` when the collection exists afterwards (created now,
-    /// already present — 405 per RFC 4791 §6.3 when the resource exists — or
-    /// an opaque error whose subsequent REPORT still succeeds).
+    /// Returns `Ok(())` when the collection exists afterwards: created now,
+    /// already present (405 per RFC 4791 §6.3 when the resource exists), or an
+    /// opaque MKCALENDAR refusal that a verifying Depth:0 PROPFIND confirms was
+    /// against a live calendar collection. A creation error is returned when the
+    /// collection is verifiably absent (or cannot be verified).
     pub async fn ensure_calendar_collection(
         &self,
         username: &str,
@@ -279,7 +281,7 @@ impl CaldavClient {
     ) -> Result<()> {
         // 405 (already exists) is tolerated: Tasks/Notes reuse a fixed
         // collection name and a re-run must be idempotent.
-        let _ = self
+        match self
             .create_calendar_collection(
                 username,
                 password,
@@ -287,8 +289,34 @@ impl CaldavClient {
                 components,
                 displayname,
             )
-            .await?;
-        Ok(())
+            .await
+        {
+            Ok(_) => Ok(()),
+            Err(creation_err) => {
+                // MKCALENDAR failed. For a FIXED-NAME collection (Tasks/Notes)
+                // that can still be perfectly usable (some servers answer a
+                // re-create with 207, 403, or another refusal while the
+                // collection exists), failing the whole Tasks/Notes sync would
+                // strand every object. Verify the collection is present and IS a
+                // calendar with a Depth:0 PROPFIND; only then is the error
+                // tolerated. A verified absence — or a verification failure —
+                // keeps the creation error, which is what callers that need to
+                // know the collection was NOT created rely on.
+                let url = format!(
+                    "{}/cal/{}/{}/",
+                    self.base.trim_end_matches('/'),
+                    username,
+                    collection_name.trim_end_matches('/')
+                );
+                match self.get_calendar_collection(&url, username, password).await {
+                    Ok(Some(props)) if props.is_calendar => Ok(()),
+                    Ok(_) => Err(creation_err),
+                    Err(verify_err) => Err(creation_err.context(format!(
+                        "and verifying the existing collection failed: {verify_err}"
+                    ))),
+                }
+            }
+        }
     }
 
     /// Create a calendar collection, reporting whether it was newly created.

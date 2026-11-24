@@ -1606,8 +1606,9 @@ pub async fn move_email_via_jmap(
 /// removal would leave the message in the folder the client moved it out of.
 /// `source_mailbox_id == None` means the caller does not know the source (EWS
 /// `MoveItem` carries only the destination), so the move replaces the whole set
-/// — Exchange folders are single-membership. A message already at the
-/// destination is a success (the desired end state).
+/// — Exchange folders are single-membership. With a KNOWN source the move fails
+/// closed when the read omits `mailboxIds` or no longer shows that membership:
+/// the replacement would otherwise drop memberships it could not see.
 ///
 /// Returns the (unchanged) server ID of the moved message.
 #[allow(clippy::too_many_arguments)]
@@ -1636,6 +1637,30 @@ pub async fn move_email_to_mailbox_via_jmap(
         return Err(anyhow!("Email not found for JMAP id {jmap_id}"));
     };
     let current_mailboxes: Option<&HashMap<String, bool>> = email.mailbox_ids.as_ref();
+
+    // A known-source move is expressed as a FULL replacement of `mailboxIds`
+    // (RFC 8621 §4.6), built by dropping the source and keeping every other
+    // membership. Without the current set that patch would contain only the
+    // destination, silently removing the message from every unrelated folder
+    // (e.g. a project mailbox). Fail closed: the caller answers a retryable
+    // error and the message keeps its memberships.
+    if source_mailbox_id.is_some() && current_mailboxes.is_none() {
+        return Err(anyhow!(
+            "Email/get returned no mailboxIds for JMAP id {jmap_id}; refusing a move that would replace unknown memberships"
+        ));
+    }
+
+    // The source membership must be visible in THIS read — the same read the
+    // replacement is built from. If the message already left the source (a
+    // concurrent move), the request is stale: reporting success would move it
+    // out of a folder it no longer belongs to.
+    if let (Some(ids), Some(src)) = (current_mailboxes, source_mailbox_id)
+        && !ids.get(src).copied().unwrap_or(false)
+    {
+        return Err(anyhow!(
+            "Email {jmap_id} is no longer a member of the source mailbox {src}; stale move"
+        ));
+    }
 
     // Already at the destination and no longer in the source: nothing to write.
     if let Some(ids) = current_mailboxes {

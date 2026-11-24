@@ -324,18 +324,34 @@ pub async fn apply_client_sync_mutations(
                 item,
                 attachment_adds,
             } => {
-                if let Some(client_id) = client_id.as_deref()
-                    && let Some((server_id, status)) = state
+                // A completed prior attempt answers Status 1 without re-PUTting.
+                // An UNFINISHED one (the backend PUT committed but a local write
+                // failed) is resumed against the SAME resource: replaying Status
+                // 1 there would skip `item_map`, the delivery ledger, and the
+                // attachments for an event the client believes it created.
+                let mut resume: Option<(String, String)> = None;
+                if let Some(client_id) = client_id.as_deref() {
+                    match state
                         .storage
                         .get_client_sync_command(owner, collection_id, client_id)
                         .await?
-                {
-                    results.push(ClientMutationResult::Add {
-                        client_id: Some(client_id.to_string()),
-                        server_id,
-                        status: if status == "1" { "1" } else { "6" },
-                    });
-                    continue;
+                    {
+                        Some((server_id, status)) if status == "1" => {
+                            results.push(ClientMutationResult::Add {
+                                client_id: Some(client_id.to_string()),
+                                server_id,
+                                status: "1",
+                            });
+                            continue;
+                        }
+                        Some(_) => {
+                            resume = state
+                                .storage
+                                .get_client_sync_add_pending(owner, collection_id, client_id)
+                                .await?;
+                        }
+                        None => {}
+                    }
                 }
                 let mut item = item;
                 if item.uid.is_empty() {
@@ -347,110 +363,167 @@ pub async fn apply_client_sync_mutations(
                 let owner_email = crate::util::user_primary_email(username, &state.cfg.mail_domain);
                 crate::calendar::ensure_organizer_for_scheduling(&mut item, owner_email.as_deref());
                 let ics = render_ics(&item);
-                match caldav
-                    .put_event(&collection_href, None, &ics, username, password, None)
-                    .await
-                {
-                    Ok((resource_href, etag)) => {
-                        let server_id = generate_server_id(state.cfg.hmac_secret(), &resource_href);
-                        // Replay identity FIRST: the CalDAV object now exists, and
-                        // every later step below can fail. If a failure left no
-                        // `(ClientId → ServerId)` record, the client's retry would
-                        // PUT a SECOND resource under a fresh href — a duplicated
-                        // event the user can see. The record makes the retry
-                        // resolve to the item already created.
-                        if let Some(client_id) = client_id.as_deref()
-                            && let Err(e) = state
-                                .storage
-                                .put_client_sync_command(
-                                    owner,
-                                    collection_id,
-                                    client_id,
-                                    Some(&server_id),
-                                    "1",
-                                )
-                                .await
-                        {
-                            tracing::error!(
-                                error = %e,
-                                client_id,
-                                server_id = %server_id,
-                                "EAS calendar Add: failed to record the replay identity; a retry may duplicate the event"
-                            );
-                            return Err(e.into());
-                        }
-                        state
-                            .storage
-                            .upsert_item_map(
-                                owner,
-                                &collection_href,
-                                &resource_href,
-                                &server_id,
-                                &item.uid,
-                                &etag,
-                            )
-                            .await?;
-                        // The client already holds this item (it just created it),
-                        // so record it in this scope's ledger: the follow-up Sync
-                        // must filter it out instead of re-emitting `<Add>`.
-                        state
-                            .storage
-                            .upsert_calendar_delivery(owner, collection_id, &server_id, &etag)
-                            .await?;
-                        for att in &attachment_adds {
-                            let name = if att.display_name.is_empty() {
-                                "attachment.dat"
-                            } else {
-                                &att.display_name
-                            };
-                            let content_type = if att.content_type.is_empty() {
-                                crate::attachment::mime_type_for_filename(name).to_string()
-                            } else {
-                                att.content_type.clone()
-                            };
-                            if let Ok(created) = state
-                                .attachment_manager
-                                .create_file_attachment(
-                                    &crate::attachment::CreateAttachmentParams {
-                                        owner,
-                                        parent_item_server_id: &server_id,
-                                        name,
-                                        content_type: &content_type,
-                                        content_base64: &att.content_base64,
-                                        is_inline: att.is_inline,
-                                        content_id: att.content_id.as_deref(),
-                                        content_location: att.content_location.as_deref(),
-                                    },
-                                )
-                                .await
-                            {
-                                tracing::debug!(
-                                    attachment_id = %created.id,
-                                    parent = %server_id,
-                                    "Created attachment from EAS sync Add"
+                // A resumed Add reuses the resource the earlier attempt already
+                // created: re-PUTting the ORIGINAL payload would clobber an edit
+                // another client made in between, so its CURRENT etag is taken
+                // instead. A resource that vanished (None) falls through to a
+                // fresh create.
+                let created: Option<(String, String, String)> = match resume {
+                    Some((server_id, resource_href)) => {
+                        match caldav.get_etag(&resource_href, username, password).await {
+                            Ok(Some(etag)) => Some((server_id, resource_href, etag)),
+                            Ok(None) => None,
+                            Err(e) => {
+                                tracing::warn!(
+                                    error = %e,
+                                    client_id = client_id.as_deref().unwrap_or_default(),
+                                    "EAS calendar Add resume: failed to read the pending resource; retrying later"
                                 );
+                                return Err(e);
                             }
                         }
-                        results.push(ClientMutationResult::Add {
-                            client_id,
-                            server_id: Some(server_id),
-                            status: "1",
-                        });
                     }
-                    Err(_) => {
-                        if let Some(client_id) = client_id.as_deref() {
-                            let _ = state
-                                .storage
-                                .put_client_sync_command(owner, collection_id, client_id, None, "6")
-                                .await;
+                    None => None,
+                };
+                let created = match created {
+                    Some(done) => done,
+                    None => match caldav
+                        .put_event(&collection_href, None, &ics, username, password, None)
+                        .await
+                    {
+                        Ok((resource_href, etag)) => {
+                            let server_id =
+                                generate_server_id(state.cfg.hmac_secret(), &resource_href);
+                            // The backend object now exists and every later step
+                            // below can fail. Record the identity as PENDING (with
+                            // the resource href) so the client's retry resumes
+                            // this item instead of PUTting a SECOND resource under
+                            // a fresh href — a duplicated event the user can see.
+                            // Failing to record it is fatal: a retry could
+                            // otherwise duplicate the event.
+                            if let Some(client_id) = client_id.as_deref()
+                                && let Err(e) = state
+                                    .storage
+                                    .put_client_sync_add_pending(
+                                        owner,
+                                        collection_id,
+                                        client_id,
+                                        &server_id,
+                                        &resource_href,
+                                    )
+                                    .await
+                            {
+                                tracing::error!(
+                                    error = %e,
+                                    client_id,
+                                    server_id = %server_id,
+                                    "EAS calendar Add: failed to record the pending replay identity; a retry may duplicate the event"
+                                );
+                                return Err(e.into());
+                            }
+                            (server_id, resource_href, etag)
                         }
-                        results.push(ClientMutationResult::Add {
-                            client_id,
-                            server_id: None,
-                            status: "6",
-                        });
+                        Err(_) => {
+                            if let Some(client_id) = client_id.as_deref() {
+                                let _ = state
+                                    .storage
+                                    .put_client_sync_command(
+                                        owner,
+                                        collection_id,
+                                        client_id,
+                                        None,
+                                        "6",
+                                    )
+                                    .await;
+                            }
+                            results.push(ClientMutationResult::Add {
+                                client_id,
+                                server_id: None,
+                                status: "6",
+                            });
+                            continue;
+                        }
+                    },
+                };
+                let (server_id, resource_href, etag) = created;
+                state
+                    .storage
+                    .upsert_item_map(
+                        owner,
+                        &collection_href,
+                        &resource_href,
+                        &server_id,
+                        &item.uid,
+                        &etag,
+                    )
+                    .await?;
+                // The client already holds this item (it just created it), so
+                // record it in this scope's ledger: the follow-up Sync must
+                // filter it out instead of re-emitting `<Add>`.
+                state
+                    .storage
+                    .upsert_calendar_delivery(owner, collection_id, &server_id, &etag)
+                    .await?;
+                for att in &attachment_adds {
+                    let name = if att.display_name.is_empty() {
+                        "attachment.dat"
+                    } else {
+                        &att.display_name
+                    };
+                    let content_type = if att.content_type.is_empty() {
+                        crate::attachment::mime_type_for_filename(name).to_string()
+                    } else {
+                        att.content_type.clone()
+                    };
+                    if let Ok(created) = state
+                        .attachment_manager
+                        .create_file_attachment(&crate::attachment::CreateAttachmentParams {
+                            owner,
+                            parent_item_server_id: &server_id,
+                            name,
+                            content_type: &content_type,
+                            content_base64: &att.content_base64,
+                            is_inline: att.is_inline,
+                            content_id: att.content_id.as_deref(),
+                            content_location: att.content_location.as_deref(),
+                        })
+                        .await
+                    {
+                        tracing::debug!(
+                            attachment_id = %created.id,
+                            parent = %server_id,
+                            "Created attachment from EAS sync Add"
+                        );
                     }
                 }
+                // Completion is recorded LAST: only now is every local write
+                // durable, so a retry of this ClientId replays Status 1 instead
+                // of resuming the writes again.
+                if let Some(client_id) = client_id.as_deref()
+                    && let Err(e) = state
+                        .storage
+                        .put_client_sync_command(
+                            owner,
+                            collection_id,
+                            client_id,
+                            Some(&server_id),
+                            "1",
+                        )
+                        .await
+                {
+                    tracing::error!(
+                        error = %e,
+                        client_id,
+                        server_id = %server_id,
+                        "EAS calendar Add: failed to mark the item complete; a retry resumes the local writes"
+                    );
+                    return Err(e.into());
+                }
+                results.push(ClientMutationResult::Add {
+                    client_id,
+                    server_id: Some(server_id),
+                    status: "1",
+                });
             }
             EasSyncMutation::Change {
                 server_id,
@@ -1459,6 +1532,30 @@ fn calendar_event_deleted(
     !delta_partial || destroyed_server_ids.contains(server_id)
 }
 
+/// A CalDAV href (absolute URL or path-only) reduced to its path with no
+/// trailing slash, so an event href and a collection href are comparable
+/// regardless of which form the server returned.
+fn canonical_resource_path(href: &str) -> String {
+    let path = reqwest::Url::parse(href)
+        .map(|u| u.path().to_string())
+        .unwrap_or_else(|_| href.to_string());
+    path.trim_end_matches('/').to_string()
+}
+
+/// Whether a stored event's `resource_href` names a resource INSIDE
+/// `collection_path` (a path from [`canonical_resource_path`]). A JMAP
+/// pseudo-href (`jmap://calendar/…`) never matches, which is intended: a CalDAV
+/// REPORT says nothing about a JMAP-backed event.
+fn href_within_collection(href: Option<&str>, collection_path: &str) -> bool {
+    let Some(href) = href else {
+        return false;
+    };
+    let path = canonical_resource_path(href);
+    path.len() > collection_path.len()
+        && path.starts_with(collection_path)
+        && path.as_bytes()[collection_path.len()] == b'/'
+}
+
 /// Sync-state token stored while a snapshot prime is still being delivered
 /// in clipped windows: `prime-cursor:<last-delivered-href>`. The href
 /// ordering matches the deterministic `events.sort_by(href)` delivery order,
@@ -1570,6 +1667,33 @@ async fn query_all_calendar_events(
         }
         if drifted {
             continue;
+        }
+        // Prove the result set did not move while the pages were read. A
+        // creation that commits between a page's `CalendarEvent/query` and its
+        // `CalendarEvent/get` is folded into the get's `state` (the stored delta
+        // baseline) while its id never enters the snapshot, and no later
+        // `CalendarEvent/changes` from that baseline would report it — the event
+        // would stay invisible until something else edited it. Re-reading the
+        // query state closes that window for a single-page prime too (the
+        // per-page drift check above only runs while paging).
+        if !query_state.is_empty() {
+            let confirmed = jmap
+                .query_calendar_event_query_state(
+                    account_id,
+                    calendar_id,
+                    start,
+                    end,
+                    username,
+                    password,
+                )
+                .await?;
+            if confirmed != query_state {
+                tracing::debug!(
+                    target: "sync",
+                    "JMAP calendar prime queryState moved between the snapshot and its confirmation; retrying"
+                );
+                continue;
+            }
         }
         return Ok(crate::jmap::CalendarEventListResult {
             events,
@@ -1738,6 +1862,14 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
     // than the owner-global `item_map`: otherwise an empty single-calendar
     // snapshot would queue `<Delete>`s for every other calendar's events.
     let mut caldav_single_collection = false;
+    // The single collection a CalDAV fallback REPORT covered, normalized to a
+    // path, plus each stored event's own resource href. The fallback is
+    // authoritative ONLY for events inside that collection: an event of another
+    // calendar (or a JMAP-backed `jmap://calendar/…` event) is outside its
+    // scope, so its absence from the REPORT proves nothing.
+    let mut fallback_collection_path: Option<String> = None;
+    let mut item_hrefs: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
     // Server IDs the delta explicitly reported as destroyed.
     let mut jmap_destroyed_server_ids: HashSet<String> = HashSet::new();
     // True when the JMAP drain stopped at its accumulation/page cap with
@@ -2188,6 +2320,14 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
         let mut in_href = false;
         let mut in_getetag = false;
         let mut caldata_buf = String::new();
+        // A REPORT that names an event resource but supplies no usable
+        // `calendar-data` (a property that failed, a truncated body, or an
+        // unparseable payload) is NOT a complete snapshot: treating its omission
+        // as a deletion would tombstone a live event and drop its shared
+        // mapping. The collection's own `<response>` legitimately carries no
+        // calendar-data, so it is identified by its href and excluded.
+        let collection_path = canonical_resource_path(&collection_href);
+        let mut report_incomplete = false;
 
         loop {
             match reader.read_event_into(&mut buf) {
@@ -2249,11 +2389,21 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
                         {
                             current.item = item;
                             events.push(current.clone());
-                        } else if !current.href.is_empty() && current.ics.is_empty() {
-                            tracing::debug!(
-                                "sync: skipping href {} (no calendar-data element - likely calendar collection root)",
-                                current.href
-                            );
+                        } else if !current.href.is_empty() {
+                            if canonical_resource_path(&current.href) == collection_path {
+                                tracing::debug!(
+                                    "sync: skipping href {} (calendar collection root)",
+                                    current.href
+                                );
+                            } else {
+                                // An EVENT resource without usable data: the
+                                // snapshot cannot prove it is gone.
+                                report_incomplete = true;
+                                tracing::warn!(
+                                    href = %current.href,
+                                    "sync: CalDAV REPORT returned an event resource without usable calendar-data; snapshot treated as incomplete"
+                                );
+                            }
                         }
                         current = EventItem {
                             href: String::new(),
@@ -2269,6 +2419,25 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
             }
             buf.clear();
         }
+        if report_incomplete {
+            // An incomplete REPORT is a PARTIAL change set: its omission of a
+            // delivered event proves nothing, so the sweep must not delete it and
+            // the snapshot must not be acknowledged with a token (the
+            // `incomplete_prime` branch stores none, forcing a re-prime).
+            calendar_delta_partial = true;
+        }
+        // Bound the deletion sweep to the ONE collection this REPORT covered.
+        // A stored event whose resource href lives elsewhere (another calendar,
+        // or a JMAP pseudo-href) could not have been returned by this query, so
+        // its absence is not evidence of deletion — keep it and let a later
+        // broader read decide.
+        fallback_collection_path = Some(collection_path);
+        item_hrefs = storage
+            .list_item_map_identities(params.owner)
+            .await?
+            .into_iter()
+            .map(|(_, resource_href, server_id)| (server_id, resource_href))
+            .collect();
     }
 
     // Deterministic delivery order: the EAS response window is applied to
@@ -2439,6 +2608,16 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
         // can re-derive it from the stored href (the resource_href is
         // `jmap://calendar/{account}/{event_id}`).
         let is_scoped_out = folder_scoped && scoped_out_server_ids.contains(server_id);
+        // A CalDAV fallback REPORT covers exactly ONE collection. An event whose
+        // stored resource href lives elsewhere could not have been returned by
+        // that query, so its absence is NOT evidence of deletion: only an event
+        // provably inside the queried collection may be tombstoned.
+        let fallback_covers = match fallback_collection_path.as_deref() {
+            Some(path) => {
+                href_within_collection(item_hrefs.get(server_id).map(String::as_str), path)
+            }
+            None => true,
+        };
         let deleted = if folder_scoped {
             // A scoped folder's deletion sweep must NOT tombstone unchanged
             // events that merely didn't appear in this partial delta, nor
@@ -2447,7 +2626,8 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
             // scope or explicitly destroyed. Bounding to the ledger is what
             // prevents an empty single-calendar CalDAV snapshot from
             // tombstoning every other calendar's events.
-            delivered_map.contains_key(server_id)
+            fallback_covers
+                && delivered_map.contains_key(server_id)
                 && (is_scoped_out
                     || calendar_event_deleted(
                         calendar_delta_partial,
@@ -2455,12 +2635,13 @@ pub async fn perform_sync(params: &PerformSyncParams<'_>) -> Result<String> {
                         server_id,
                     ))
         } else {
-            !existing_map.contains(server_id)
-                || calendar_event_deleted(
-                    calendar_delta_partial,
-                    &jmap_destroyed_server_ids,
-                    server_id,
-                )
+            fallback_covers
+                && (!existing_map.contains(server_id)
+                    || calendar_event_deleted(
+                        calendar_delta_partial,
+                        &jmap_destroyed_server_ids,
+                        server_id,
+                    ))
         };
         if deleted {
             // Queue the tombstone now (it carries the journal seq and

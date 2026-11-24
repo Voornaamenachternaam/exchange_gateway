@@ -784,7 +784,41 @@ failure after the PUT cannot make the client's retry create a SECOND event.
 successful send even when a later invocation in the same batch answers a
 method-level `error` (the implicit `Email/set` that files the message into Sent
 shares the submission's call id): failing that send would make the SMTP
-fallback deliver the message twice.
+fallback deliver the message twice. (aq) The EAS email prime resolves ONE
+concrete mailbox id (`mailbox_id.or(delta_mailbox_id)`) and reuses it for the
+page fetch, the keyword baseline and the membership filter, so a role that moves
+mid-sync cannot make the baseline and the rendered page describe different
+mailboxes; the EWS prime resolves the same mailbox on EVERY page (a
+continuation page renders its own `Create`s and must prove membership against
+it), while the flag baseline is still captured only once, at the start of a
+fresh prime. (ar) `MarkAsJunk` renders one verdict per REQUESTED item in request
+order from positional outcomes, so duplicate `ItemId`s keep their own result
+(searching an id-keyed vector reported the first attempt's outcome for every
+repeat). (as) `SendItem` resolves `SavedItemFolderId` and rejects any destination
+other than Sent (`5`/`sent`/`sentitems`/the resolved Sent mailbox id) BEFORE
+anything is submitted: the submission pipeline always keeps the sent copy in
+Sent Items, and silently filing it elsewhere would be a lie the user cannot
+detect. (at) `SetUserOofSettings` enforces [MS-OXWOOF] §2.2.3.2.1: a `Scheduled`
+state without a usable `Duration`, an end not after its start, or an end that
+is not in the future is `ErrorInvalidScheduledOofDuration` and writes nothing.
+(au) A fresh EWS email prime FAILS CLOSED (retryable `ErrorServerBusy`) when the
+delivered-membership ledger cannot be reset: a surviving stale row would make a
+re-arriving id look like an in-place `Update` instead of a `Create`. (av) The
+EWS `SyncFolderItems` journal window is re-checked (`journal_window_stale`)
+AFTER the journal read and before anything is built or advanced, because a
+prune can land between the initial floor scan and that read; a failed check
+counts as stale (fail closed). (aw) MAPI `RopDeleteMessages` reports a failure
+(not a partial success) when a non-empty batch confirms ZERO deletions, and
+`RopHardDeleteMessagesAndSubfolders` counts a child whose absence the inventory
+confirms after a LOST destroy reply toward `PartialCompletion`, so the client is
+told what actually happened. (ax) MAPI `RopCopyFolder` is decoded per
+[MS-OXCROPS] §2.2.4.8.1 — `WantAsynchronous`/`WantRecursive`/`UseUnicode`,
+ONE `FolderId` and a NUL-terminated `NewFolderName` (the destination parent is
+the destination HANDLE, not a second FID) — and it now copies the source's
+messages into the created folder (bounded by the session's `maxObjectsInGet`),
+honouring the client's `NewFolderName`; the folder TREE is not replicated, so a
+source holding child folders, or a copy that came up short, is reported as
+`PartialCompletion` rather than a plain success.
 
 **Upgrade note (expected one-time re-prime).** Before this change the stored
 email delta token was the `Email/get` data-type state; the new delta passes it

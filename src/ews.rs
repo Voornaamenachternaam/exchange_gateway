@@ -4829,7 +4829,16 @@ async fn handle_sync_email_prime(
             .clear_email_delivered_membership(owner, folder_id)
             .await
     {
-        tracing::warn!(folder_id = %folder_id, error = %e, "Failed to clear EWS delivered-membership ledger on fresh prime");
+        // Fail closed: acknowledging a prime whose stale ledger survived would
+        // make a re-arriving id look like an in-place Update instead of a
+        // Create. The client retries once storage recovers.
+        tracing::error!(folder_id = %folder_id, error = %e, "Failed to clear EWS delivered-membership ledger on fresh prime");
+        return operation_error_response(
+            &EwsAction::SyncFolderItems,
+            "ErrorServerBusy",
+            "Failed to reset the delivered-membership ledger",
+            StatusCode::SERVICE_UNAVAILABLE,
+        );
     }
     let (start_position, anchor_id, mut query_state) = if is_fresh_prime {
         (0u64, None, String::new())
@@ -4845,24 +4854,29 @@ async fn handle_sync_email_prime(
     // The mailbox backing this folder, when it is known: the prime's renders
     // must prove membership against it (a message can leave the mailbox between
     // `Email/query` and `Email/get`).
+    // The mailbox is resolved for EVERY prime page, not only the fresh one: a
+    // continuation page renders its own `Create`s and must prove membership the
+    // same way, or a message that left the mailbox mid-pagination is delivered
+    // as a ghost the client can never refresh away.
     let mut prime_mailbox_id: Option<String> = None;
-    if is_fresh_prime && mailbox_role != "outbox" {
+    if mailbox_role != "outbox" {
         match jmap
             .get_mailbox_ids_for_role(account_id, mailbox_role, &auth.username, &auth.password)
             .await
         {
             Ok(ids) => {
                 if let Some(mailbox_id) = ids.into_iter().next() {
-                    if let Err(e) = crate::eas::capture_email_keyword_baseline(
-                        state,
-                        jmap,
-                        account_id,
-                        &mailbox_id,
-                        &auth.username,
-                        &auth.password,
-                        folder_id,
-                    )
-                    .await
+                    if is_fresh_prime
+                        && let Err(e) = crate::eas::capture_email_keyword_baseline(
+                            state,
+                            jmap,
+                            account_id,
+                            &mailbox_id,
+                            &auth.username,
+                            &auth.password,
+                            folder_id,
+                        )
+                        .await
                     {
                         tracing::error!(error = %e, "Failed to capture EWS email keyword baseline");
                         return operation_error_response(
@@ -6273,6 +6287,35 @@ async fn handle_sync_folder_items(
             }
         }
     };
+    // A prune can land between the floor scan above and the journal read that
+    // follows it, so the window is re-checked AFTER the read: an incomplete
+    // delta would otherwise be delivered as a complete one. Primes re-enumerate
+    // the live snapshot and are unaffected.
+    // A failed read is treated as stale (fail closed), matching every other
+    // `journal_window_stale` call site.
+    let window_stale = if is_prime {
+        false
+    } else {
+        state
+            .storage
+            .journal_window_stale(owner, since)
+            .await
+            .unwrap_or(true)
+    };
+    if window_stale {
+        tracing::info!(
+            owner = %owner,
+            folder_id = %folder_id,
+            since,
+            "EWS journal window pruned during the read; forcing full resync"
+        );
+        return operation_error_response(
+            &EwsAction::SyncFolderItems,
+            "ErrorInvalidSyncStateData",
+            "SyncState is stale; the requested change window was pruned, resync from a null SyncState",
+            StatusCode::OK,
+        );
+    }
     let items = match prime_loaded {
         Some(items) => items,
         None => {
@@ -9001,6 +9044,16 @@ async fn handle_send_item(state: &Arc<AppState>, auth: &AuthContext, body: &str)
             StatusCode::OK,
         );
     }
+    // The submission pipeline keeps the sent copy in Sent Items. A client that
+    // names a DIFFERENT folder must not be told the copy went there: resolve the
+    // request and reject anything but Sent before anything is submitted.
+    let saved_folder_id = if body.contains("SavedItemFolderId") {
+        extract_first_attr(body, b"DistinguishedFolderId", b"Id")
+            .or_else(|| extract_first_attr(body, b"FolderId", b"Id"))
+            .unwrap_or_default()
+    } else {
+        String::new()
+    };
 
     let item_ids = extract_first_attrs(body, b"ItemId", b"Id");
     if item_ids.is_empty() {
@@ -9048,6 +9101,35 @@ async fn handle_send_item(state: &Arc<AppState>, auth: &AuthContext, body: &str)
             );
         }
     };
+    // The backend lookup runs ONLY for an id that is not already a
+    // distinguished Sent alias, so an ordinary send pays no extra round trip.
+    // A failed lookup is not fatal: the request is then judged on its alias
+    // alone, and the submission still files the copy in Sent Items.
+    if !saved_folder_id.is_empty()
+        && !matches!(
+            saved_folder_id.to_ascii_lowercase().as_str(),
+            "5" | "sent" | "sentitems"
+        )
+    {
+        let sent_id = match jmap
+            .get_mailbox_ids_for_role(&account_id, "sent", &auth.username, &auth.password)
+            .await
+        {
+            Ok(ids) => ids.into_iter().next(),
+            Err(e) => {
+                tracing::warn!(error = %e, "SendItem: failed to resolve the Sent mailbox");
+                None
+            }
+        };
+        if Some(saved_folder_id.as_str()) != sent_id.as_deref() {
+            return operation_error_response(
+                &EwsAction::SendItem,
+                "ErrorInvalidRequest",
+                "SavedItemFolderId is not supported: the sent copy is kept in Sent Items",
+                StatusCode::OK,
+            );
+        }
+    }
 
     let mut resp_messages = String::new();
     for item_id in &item_ids {
@@ -10340,13 +10422,16 @@ async fn handle_set_user_oof_settings(
     // `Duration` MUST be present for `Scheduled` ([MS-OXWOOF] §2.2.4);
     // a plain `Enabled` carries the 2000-01-01 sentinel and must not schedule.
     let (start_time, end_time) = if scheduled {
+        // [MS-OXWOOF] §2.2.3.2.1 `ErrorInvalidScheduledOofDuration`: the
+        // duration is required for `Scheduled`, its end must be after its
+        // start, and its end must still be in the future.
         match (start_time, end_time) {
-            (Some(start), Some(end)) => (Some(start), Some(end)),
+            (Some(start), Some(end)) if end > start && end > Utc::now() => (Some(start), Some(end)),
             _ => {
                 return operation_error_response(
                     &EwsAction::SetUserOofSettings,
-                    "ErrorInvalidRequest",
-                    "Scheduled OOF requires a Duration with StartTime and EndTime",
+                    "ErrorInvalidScheduledOofDuration",
+                    "The scheduled Out of Office duration is not valid.",
                     StatusCode::OK,
                 );
             }
@@ -11436,17 +11521,22 @@ async fn handle_mark_as_junk(state: &Arc<AppState>, auth: &AuthContext, body: &s
         }
     };
 
-    // Move each email, collecting ids that actually moved and any failures.
-    // MarkAsJunk applies to messages only. A non-email id (calendar/contact)
-    // gets an explicit per-item Error below rather than being silently skipped.
-    let mut moved_items: Vec<String> = Vec::new();
-    let mut failed_items = Vec::new();
-    let mut rejected_items = Vec::new();
+    // One verdict PER REQUESTED ITEM, in request order. Recording into three
+    // id-keyed vectors and looking an id up afterwards collapses duplicate ids
+    // onto the FIRST attempt's outcome; the outcome is kept positionally so a
+    // repeated id keeps its own result.
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum JunkOutcome {
+        Moved,
+        Failed,
+        Rejected,
+    }
+    let mut outcomes: Vec<JunkOutcome> = Vec::with_capacity(item_ids.len());
     for item_id in &item_ids {
         if !crate::email::is_email_server_id(item_id) {
             // EWS expects one response message per requested item; a silently
             // dropped id leaves the client waiting for a verdict on it.
-            rejected_items.push(item_id.clone());
+            outcomes.push(JunkOutcome::Rejected);
             continue;
         }
         match crate::email::move_email_via_jmap(
@@ -11461,10 +11551,10 @@ async fn handle_mark_as_junk(state: &Arc<AppState>, auth: &AuthContext, body: &s
         )
         .await
         {
-            Ok(_new_change_key) => moved_items.push(item_id.clone()),
+            Ok(_new_change_key) => outcomes.push(JunkOutcome::Moved),
             Err(e) => {
                 tracing::warn!(error = %e, item_id = %item_id, "MarkAsJunk: failed to move email");
-                failed_items.push(item_id);
+                outcomes.push(JunkOutcome::Failed);
             }
         }
     }
@@ -11476,30 +11566,26 @@ async fn handle_mark_as_junk(state: &Arc<AppState>, auth: &AuthContext, body: &s
     // rejected id reports the malformed-id error with NO MovedItemIds — nothing
     // was moved, so advertising a moved id would be a lie.
     let mut resp_messages = String::new();
-    for item_id in &item_ids {
-        if rejected_items.iter().any(|r| r == item_id) {
-            resp_messages.push_str(
+    for (item_id, outcome) in item_ids.iter().zip(outcomes.iter()) {
+        match outcome {
+            JunkOutcome::Rejected => resp_messages.push_str(
                 r#"<m:MarkAsJunkResponseMessage ResponseClass="Error"><m:MessageText>Only messages can be marked as junk.</m:MessageText><m:ResponseCode>ErrorInvalidIdMalformed</m:ResponseCode><m:DescriptiveLinkKey>0</m:DescriptiveLinkKey></m:MarkAsJunkResponseMessage>"#,
-            );
-            continue;
-        }
-        if moved_items.iter().any(|m| m == item_id) {
-            resp_messages.push_str(&format!(
+            ),
+            JunkOutcome::Moved => resp_messages.push_str(&format!(
                 r#"<m:MarkAsJunkResponseMessage ResponseClass="Success">
 <m:ResponseCode>NoError</m:ResponseCode>
 <m:MovedItemIds><t:ItemId Id="{}" ChangeKey="{}" /></m:MovedItemIds>
 </m:MarkAsJunkResponseMessage>"#,
                 xml_escape(item_id),
                 xml_escape(item_id)
-            ));
-        } else if failed_items.iter().any(|f| f.as_str() == item_id.as_str()) {
-            resp_messages.push_str(
+            )),
+            JunkOutcome::Failed => resp_messages.push_str(
                 r#"<m:MarkAsJunkResponseMessage ResponseClass="Error">
 <m:MessageText>The item could not be moved.</m:MessageText>
 <m:ResponseCode>ErrorServerBusy</m:ResponseCode>
 <m:DescriptiveLinkKey>0</m:DescriptiveLinkKey>
 </m:MarkAsJunkResponseMessage>"#,
-            );
+            ),
         }
     }
 

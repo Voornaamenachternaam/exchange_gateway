@@ -14,7 +14,7 @@
 use std::io::{Read, Write};
 use std::net::{Shutdown, TcpListener};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread;
 use std::time::Duration;
 
@@ -377,21 +377,34 @@ async fn concurrent_same_credential_probes_collapse() {
     let probe_count = Arc::new(AtomicU64::new(0));
     let probe_count2 = probe_count.clone();
 
-    thread::spawn(move || {
-        for _ in 0..5 {
-            let (stream, _) = listener.accept().unwrap();
-            let _ = stream.set_read_timeout(Some(Duration::from_secs(30)));
-            let _ = stream.set_write_timeout(Some(Duration::from_secs(30)));
-            let mut stream = stream;
-            let _req = read_request(&mut stream, 65536);
-            let _response = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
-                session_str.len(),
-                session_str
-            );
-            let _ = stream.write_all(_response.as_bytes());
-            probe_count2.fetch_add(1, Ordering::SeqCst);
-            let _ = stream.shutdown(Shutdown::Both);
+    // The dedup under test can collapse the burst into FEWER connections than
+    // attempts, so the loop must be stoppable and the thread joined: a fixed
+    // accept count would block forever on the surplus iterations.
+    let stop = Arc::new(AtomicBool::new(false));
+    let stop_accept = stop.clone();
+    listener.set_nonblocking(true).unwrap();
+    let acceptor = thread::spawn(move || {
+        while !stop_accept.load(Ordering::SeqCst) {
+            match listener.accept() {
+                Ok((stream, _)) => {
+                    let _ = stream.set_read_timeout(Some(Duration::from_secs(30)));
+                    let _ = stream.set_write_timeout(Some(Duration::from_secs(30)));
+                    let mut stream = stream;
+                    let _req = read_request(&mut stream, 65536);
+                    let _response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                        session_str.len(),
+                        session_str
+                    );
+                    let _ = stream.write_all(_response.as_bytes());
+                    probe_count2.fetch_add(1, Ordering::SeqCst);
+                    let _ = stream.shutdown(Shutdown::Both);
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    thread::sleep(Duration::from_millis(5));
+                }
+                Err(_) => break,
+            }
         }
     });
 
@@ -410,4 +423,6 @@ async fn concurrent_same_credential_probes_collapse() {
 
     let hits = probe_count.load(Ordering::SeqCst);
     assert!(hits >= 1, "at least one probe must reach the backend");
+    stop.store(true, Ordering::SeqCst);
+    acceptor.join().unwrap();
 }
