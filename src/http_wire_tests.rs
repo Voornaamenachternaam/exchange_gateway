@@ -251,7 +251,23 @@ async fn eas_ping_times_out_cleanly_and_wakes_for_a_real_journaled_change() {
     let waiting = tokio::spawn(async move {
         post_eas(&client, &base, &device_id, "Ping", mixed_ping_request()).await
     });
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    // Wait for the OBSERVABLE subscription signal: the Ping registers a raw
+    // receiver on the notification feed before it starts waiting, so a nonzero
+    // count proves the wake cannot be missed. (A fixed sleep only hoped the
+    // Ping had reached its wait loop.)
+    let subscribed = tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            if gateway.state.subscription_manager.raw_receiver_count() > 0 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await;
+    assert!(
+        subscribed.is_ok(),
+        "the waiting Ping must register a notification subscription"
+    );
     gateway
         .state
         .storage

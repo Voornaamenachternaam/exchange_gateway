@@ -654,6 +654,21 @@ async fn create_caldav_folder(
                 // the intent's display name identifies the collection the failed
                 // attempt created.
                 let exists = props.is_some();
+                // A collection whose `DAV:displayname` could not be READ (a
+                // per-property failure inside a 207, RFC 4918 §9.1) is
+                // INCONCLUSIVE: answering Status 2 would be a permanent name
+                // conflict for a collection this gateway may well have created.
+                // Answer a retryable server error instead.
+                if let Some(p) = props.as_ref()
+                    && p.is_calendar
+                    && !p.display_name_verified
+                {
+                    tracing::warn!(
+                        collection = %coll.name,
+                        "FolderCreate: collection exists but its display name could not be verified"
+                    );
+                    return FolderMutationResult::status(6);
+                }
                 let belongs_to_intent = props.as_ref().is_some_and(|p| {
                     p.is_calendar
                         && p.display_name
@@ -923,6 +938,15 @@ pub async fn delete_folder(
             }
         };
         let folder = mapped;
+        // Serialize the membership check with the backend destroy: a gateway
+        // move takes this SAME per-folder mutation lock, so it can no longer
+        // reparent the folder between the revalidation below and the destroy.
+        // Only ONE guard is held at a time (released each iteration), so a
+        // concurrent two-folder move can never deadlock against this walk.
+        let _folder_lock = state
+            .storage
+            .lock_folder_mutation(owner, &folder.backend_id)
+            .await;
         // Revalidate subtree membership against a FRESH read before destroying:
         // a concurrent move (which updates `folder_map` under the target's
         // mutation lock) may have reparented this folder OUT of the subtree

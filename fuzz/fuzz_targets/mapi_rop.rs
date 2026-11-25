@@ -19,9 +19,11 @@ fuzz_target!(|data: &[u8]| {
     let _ = buf.take_u32_le();
     let _ = buf.take_u64_le();
 
-    // Attempt to decode a full ROP logon request; failures must be clean
-    // errors, never panics.
-    let _ = exchange_gateway::mapi::rops::RopLogonRequest::decode(&mut buf);
+    // Attempt to decode a full ROP logon request from a FRESH reader over the
+    // same bytes: the scalar reads above consume the first 8 bytes, which would
+    // otherwise hide the request header from this decoder.
+    let mut rop = Buf::new(data);
+    let _ = exchange_gateway::mapi::rops::RopLogonRequest::decode(&mut rop);
 
     // Consume remaining bytes as raw — must not panic.
     let _ = buf.remaining();

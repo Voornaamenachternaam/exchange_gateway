@@ -70,12 +70,17 @@ impl Storage {
                 mutex
             }
         };
-        let guard = mutex.clone().lock_owned().await;
-        FolderMutationGuard {
+        // The cleanup guard is built BEFORE awaiting the lock: a waiter that is
+        // CANCELLED then still drops its reference and prunes the entry when
+        // nothing else uses the mutex, instead of leaving it in the map forever.
+        let mut guard = FolderMutationGuard {
             key,
             locks: self.folder_locks.clone(),
-            guard: Some(guard),
-        }
+            mutex: Some(mutex.clone()),
+            guard: None,
+        };
+        guard.guard = Some(mutex.lock_owned().await);
+        guard
     }
 }
 
@@ -90,14 +95,19 @@ impl Storage {
 pub struct FolderMutationGuard {
     key: String,
     locks: Arc<dashmap::DashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    /// This guard's own reference to the mutex, held for its whole lifetime
+    /// (including while still WAITING) so the prune below can never remove an
+    /// entry another waiter still needs.
+    mutex: Option<Arc<tokio::sync::Mutex<()>>>,
     guard: Option<tokio::sync::OwnedMutexGuard<()>>,
 }
 
 impl Drop for FolderMutationGuard {
     fn drop(&mut self) {
-        // Release the mutex FIRST: the reference count checked below must
-        // reflect only OTHER holders and waiters.
+        // Release the mutex and this guard's reference FIRST: the count checked
+        // below must reflect only OTHER holders and waiters.
         self.guard.take();
+        self.mutex.take();
         if let dashmap::mapref::entry::Entry::Occupied(entry) = self.locks.entry(self.key.clone())
             && Arc::strong_count(entry.get()) == 1
         {
@@ -4978,34 +4988,56 @@ impl Storage {
         Ok(())
     }
 
-    /// Drop the deferred-prune record for `owner`'s `server_ids` WITHOUT
-    /// pruning their `folder_map` rows. Used when a backend destroy did NOT
-    /// happen (a refused destroy, or a reconciled-present mailbox): the folder
-    /// still exists, so its mapping must be preserved and any intent recorded
-    /// before the attempt must be withdrawn.
-    pub async fn clear_pending_folder_prunes(
+    /// Record (or overwrite) the state of the SendMail request identified by
+    /// `client_id` ([MS-ASCMD] §2.2.3.28). Rows older than a week are pruned on
+    /// write so the ledger stays bounded.
+    pub async fn set_email_submission_state(
         &self,
         owner: &str,
-        server_ids: &[String],
+        client_id: &str,
+        state: &str,
     ) -> Result<()> {
-        if server_ids.is_empty() {
-            return Ok(());
-        }
-        let mut tx = sqlx::Acquire::begin(self.pool.as_ref())
+        let now = chrono::Utc::now().timestamp();
+        sqlx::query(
+            "INSERT INTO email_submission_log (owner, client_id, state, updated_at)
+             VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(owner, client_id) DO UPDATE SET state = ?3, updated_at = ?4",
+        )
+        .bind(owner)
+        .bind(client_id)
+        .bind(state)
+        .bind(now)
+        .execute(self.pool.as_ref())
+        .await
+        .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+        sqlx::query("DELETE FROM email_submission_log WHERE owner = ?1 AND updated_at < ?2")
+            .bind(owner)
+            .bind(now - 7 * 24 * 3600)
+            .execute(self.pool.as_ref())
             .await
-            .map_err(|e| GatewayError::Storage(format!("Transaction error: {}", e)))?;
-        for server_id in server_ids {
-            sqlx::query("DELETE FROM pending_folder_prune WHERE owner = ?1 AND server_id = ?2")
-                .bind(owner)
-                .bind(server_id)
-                .execute(&mut *tx)
-                .await
-                .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
-        }
-        tx.commit()
-            .await
-            .map_err(|e| GatewayError::Storage(format!("Commit error: {}", e)))?;
+            .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
         Ok(())
+    }
+
+    /// The recorded SendMail state for `client_id`, with the age in seconds.
+    pub async fn get_email_submission_state(
+        &self,
+        owner: &str,
+        client_id: &str,
+    ) -> Result<Option<(String, i64)>> {
+        let row: Option<(String, i64)> = sqlx::query_as(
+            "SELECT state, updated_at FROM email_submission_log
+             WHERE owner = ?1 AND client_id = ?2",
+        )
+        .bind(owner)
+        .bind(client_id)
+        .fetch_optional(self.pool.as_ref())
+        .await
+        .map_err(|e| GatewayError::Storage(format!("DB error: {}", e)))?;
+        Ok(row.map(|(state, updated_at)| {
+            let age = chrono::Utc::now().timestamp().saturating_sub(updated_at);
+            (state, age)
+        }))
     }
 
     /// The folder ids with an outstanding prune for `owner`, oldest first.

@@ -49,11 +49,25 @@ fn eas_provision_response_has_policy_key() {
 
 #[test]
 fn ews_soap_response_wraps_inner() {
-    let inner = "<m:GetFolderResponse><m:ResponseMessages /></m:GetFolderResponse>";
+    // The fragment declares the EWS messages namespace it uses, so the
+    // document below is well-formed XML rather than relying on the assertion
+    // only matching text.
+    let inner = "<m:GetFolderResponse xmlns:m=\"http://schemas.microsoft.com/exchange/services/2006/messages\">\
+                 <m:ResponseMessages /></m:GetFolderResponse>";
     let resp = ews_soap_response(inner);
     assert!(resp.contains("Envelope"));
     assert!(resp.contains("ServerVersionInfo"));
     assert!(resp.contains(inner));
+    // Parsing rejects an undeclared prefix, so this also proves the envelope
+    // binds every prefix the fragment uses.
+    let mut reader = quick_xml::Reader::from_str(&resp);
+    loop {
+        match reader.read_event() {
+            Ok(quick_xml::events::Event::Eof) => break,
+            Ok(_) => {}
+            Err(e) => panic!("EWS SOAP envelope is not well-formed XML: {e}"),
+        }
+    }
 }
 
 #[test]

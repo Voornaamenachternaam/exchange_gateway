@@ -89,6 +89,27 @@ fn sync_seq_to_token(seq: i64) -> String {
 /// joined: the href-derived identity is used instead. `by_resource` maps an
 /// explicit `resource_href` to the ServerId its mapping was stored under, so an
 /// explicitly destroyed JMAP id resolves to the same identity.
+/// The comparison identity of a resource href: the PATH (+query) of an absolute
+/// `http(s)` URL, else the href verbatim.
+///
+/// The same resource is addressed both absolutely (a stored CalDAV href, or the
+/// URL a REPORT echoes back) and path-only (what `put_event` returns), so keying
+/// the identity map on the full string would mint a SECOND ServerId for one
+/// event. JMAP pseudo-hrefs (`jmap://…`) are opaque ids and stay verbatim.
+fn resource_identity(href: &str) -> std::borrow::Cow<'_, str> {
+    let rest = href
+        .strip_prefix("https://")
+        .or_else(|| href.strip_prefix("http://"));
+    match rest {
+        None => std::borrow::Cow::Borrowed(href),
+        Some(rest) => match rest.find('/') {
+            Some(idx) => std::borrow::Cow::Borrowed(&rest[idx..]),
+            // A bare origin (`https://host`) has the identity `/`.
+            None => std::borrow::Cow::Borrowed("/"),
+        },
+    }
+}
+
 struct CalendarIdentity {
     /// UID → `(ServerId, stored_href_is_jmap)`. The href KIND is kept so a UID
     /// join happens ONLY across backends (see [`CalendarIdentity::for_event`]).
@@ -121,14 +142,16 @@ impl CalendarIdentity {
                     }
                 }
             }
-            by_resource.entry(resource_href).or_insert(server_id);
+            by_resource
+                .entry(resource_identity(&resource_href).into_owned())
+                .or_insert(server_id);
         }
         // The durable JMAP alias table links a JMAP pseudo-href to the canonical
         // ServerId an event was delivered under (a CalDAV-created event read back
         // through JMAP). It overrides the item_map href entry, which after a
         // preserved real href no longer carries the pseudo-href.
         for (resource_href, server_id) in state.storage.list_jmap_id_aliases(owner).await? {
-            by_resource.insert(resource_href, server_id);
+            by_resource.insert(resource_identity(&resource_href).into_owned(), server_id);
         }
         Ok(Self {
             by_uid,
@@ -165,7 +188,7 @@ impl CalendarIdentity {
     /// resource when one exists, else the derived ServerId.
     fn for_href(&self, secret: &str, href: &str) -> String {
         self.by_resource
-            .get(href)
+            .get(resource_identity(href).as_ref())
             .cloned()
             .unwrap_or_else(|| generate_server_id(secret, href))
     }
@@ -3489,6 +3512,19 @@ mod tests {
                     .status(207)
                     .header("content-type", "application/xml; charset=utf-8")
                     .body(axum::body::Body::from(body))
+                    .unwrap();
+            }
+            if method.as_str() == "REPORT" {
+                // RFC 4791 §7.8: a `calendar-query` REPORT answers 207 with a
+                // DAV multistatus. This stub's calendar-query snapshot is empty
+                // (events are delivered over JMAP by the other tests).
+                return Response::builder()
+                    .status(207)
+                    .header("content-type", "application/xml; charset=utf-8")
+                    .body(axum::body::Body::from(
+                        "<?xml version=\"1.0\" encoding=\"utf-8\"?>\
+<D:multistatus xmlns:D=\"DAV:\" />",
+                    ))
                     .unwrap();
             }
             if method.as_str() == "PUT" {

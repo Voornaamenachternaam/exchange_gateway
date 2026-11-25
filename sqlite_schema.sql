@@ -841,3 +841,21 @@ CREATE INDEX IF NOT EXISTS idx_reminder_state_owner ON reminder_state(owner);
 
 INSERT OR IGNORE INTO schema_version (version, description)
 VALUES (15, 'v15: reminder_state persists EWS Dismiss/Snooze per reminder occurrence so GetReminders honours it');
+
+-- Per-user SendMail ClientId ledger ([MS-ASCMD] §2.2.3.28): the ClientId
+-- identifies one send request, so a retry of the SAME request must not submit
+-- the message a second time. `state` is 'pending' (attempt recorded, outcome
+-- unknown), 'submitted' (JMAP/SMTP accepted it) or 'rejected' (a definitive
+-- failure, safe to resend).
+CREATE TABLE IF NOT EXISTS email_submission_log (
+    owner TEXT NOT NULL,
+    client_id TEXT NOT NULL,
+    state TEXT NOT NULL,
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY (owner, client_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_email_submission_log_owner ON email_submission_log(owner, updated_at);
+
+INSERT OR IGNORE INTO schema_version (version, description)
+VALUES (16, 'v16: email_submission_log deduplicates EAS SendMail by ClientId so a retry cannot submit the same message twice');

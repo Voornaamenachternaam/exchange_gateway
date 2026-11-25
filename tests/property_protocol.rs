@@ -260,6 +260,10 @@ proptest! {
 #[test]
 fn arbitrary_derived_raw_inputs_exercise_all_three_parsers_without_panics() {
     let mut seed = 0x6a09_e667_f3bc_c909u64;
+    // Derivation can fail (an arbitrary `String` field rejects invalid UTF-8),
+    // so count what actually reached the parsers: a run that skipped every
+    // buffer would pass without exercising anything.
+    let mut derived = 0usize;
     for _ in 0..256 {
         let mut entropy = [0u8; 512];
         for byte in &mut entropy {
@@ -272,6 +276,7 @@ fn arbitrary_derived_raw_inputs_exercise_all_three_parsers_without_panics() {
         let Ok(input) = AdversarialInput::arbitrary(&mut unstructured) else {
             continue;
         };
+        derived += 1;
         let result = catch_unwind(AssertUnwindSafe(|| {
             let codec = Wbxml::new();
             let _ = codec.decode(&input.wbxml);
@@ -281,6 +286,7 @@ fn arbitrary_derived_raw_inputs_exercise_all_three_parsers_without_panics() {
         }));
         assert!(result.is_ok(), "derived adversarial input caused a panic");
     }
+    assert!(derived > 0, "no adversarial input was derived; the test proved nothing");
 }
 
 #[test]

@@ -1731,8 +1731,13 @@ pub async fn move_email_to_mailbox_via_jmap(
     Ok(server_id.to_string())
 }
 
-/// Copy an email to another folder via a same-account JMAP `Email/set`
-/// `copyFrom` create (RFC 8621 §4.5).
+/// Copy an email to another folder by re-importing its raw blob through JMAP
+/// `Email/import` (RFC 8621 §4.8) — see [`JmapClient::copy_email`], which reads
+/// the source `blobId` with `Email/get` and creates a new message from it.
+///
+/// `Email/set` with `copyFrom` is deliberately NOT used: it cannot express a
+/// same-account copy under the capability the gateway negotiates, and a
+/// `mailboxIds` patch would MOVE the original instead of copying it.
 ///
 /// A copy is a NEW message in the destination; the source keeps its own
 /// mailbox membership. Returns the gateway ServerId of the COPY.

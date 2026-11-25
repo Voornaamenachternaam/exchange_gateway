@@ -798,6 +798,10 @@ fn parse_event_lines(
                     fields.all_day = Some(true);
                 }
             }
+            k if k.starts_with("DURATION") => {
+                fields.duration = parse_duration_minutes(value)
+                    .map(|minutes| chrono::Duration::minutes(i64::from(minutes)));
+            }
             k if k.starts_with("DTEND") => {
                 let tzid = parse_tzid_from_key(k);
                 let supplied = tzid.is_some();
@@ -897,6 +901,11 @@ struct CalendarEventFields {
     uid: Option<String>,
     start: Option<chrono::DateTime<Utc>>,
     end: Option<chrono::DateTime<Utc>>,
+    /// RFC 5545 §3.3.6 `DURATION`: the alternative to `DTEND`. Stalwart's
+    /// JSCalendar events carry `duration` (not `end`), and the calcard
+    /// exporter renders it as `DURATION`, so a reader that only honours
+    /// `DTEND` cannot read the gateway's own JMAP-derived events.
+    duration: Option<chrono::Duration>,
     all_day: Option<bool>,
     dtstamp: Option<chrono::DateTime<Utc>>,
     recurrence_id: Option<chrono::DateTime<Utc>>,
@@ -919,6 +928,31 @@ struct CalendarEventFields {
     client_uid: Option<String>,
     timezone: Option<String>,
     deleted: bool,
+}
+
+/// Resolve a component's end instant per RFC 5545 §3.6.1: `DTEND` when
+/// present, else `DTSTART` + `DURATION`, else a zero-length event (one day for
+/// a DATE-valued `DTSTART`).
+fn derive_component_end(
+    start: Option<chrono::DateTime<Utc>>,
+    end: Option<chrono::DateTime<Utc>>,
+    duration: Option<chrono::Duration>,
+    all_day: bool,
+) -> Option<chrono::DateTime<Utc>> {
+    match (end, start) {
+        (Some(end), _) => Some(end),
+        (None, Some(start)) => Some(
+            start
+                + duration.unwrap_or_else(|| {
+                    if all_day {
+                        chrono::Duration::days(1)
+                    } else {
+                        chrono::Duration::zero()
+                    }
+                }),
+        ),
+        (None, None) => None,
+    }
 }
 
 pub fn parse_ics_event(ics: &str) -> Option<CalendarItem> {
@@ -952,7 +986,12 @@ pub fn parse_ics_event(ics: &str) -> Option<CalendarItem> {
                 description: fields.description,
                 location: fields.location,
                 start: fields.start,
-                end: fields.end,
+                end: derive_component_end(
+                    fields.start,
+                    fields.end,
+                    fields.duration,
+                    fields.all_day.unwrap_or(false),
+                ),
                 all_day: fields.all_day,
                 busy_status: fields.busy_status,
                 sensitivity: fields.sensitivity,
@@ -989,7 +1028,12 @@ pub fn parse_ics_event(ics: &str) -> Option<CalendarItem> {
             description: fields.description.unwrap_or_default(),
             location: fields.location.unwrap_or_default(),
             start: fields.start?,
-            end: fields.end?,
+            end: derive_component_end(
+                fields.start,
+                fields.end,
+                fields.duration,
+                fields.all_day.unwrap_or(false),
+            )?,
             all_day: fields.all_day.unwrap_or(false),
             dtstamp: fields.dtstamp,
             timezone: fields.timezone,
@@ -2079,6 +2123,27 @@ fn extract_ews_field_doc(doc: &Document, tag: &[u8]) -> Option<String> {
         .find_map(|n| n.text().map(|s| s.to_string()))
 }
 
+/// [`extract_ews_field`] for a field whose local name can also occur in the SOAP
+/// ENVELOPE: never matches the envelope's own `s:Body` (a direct child of
+/// `s:Envelope`, SOAP 1.1 §4.1.1). Without this a request that carries no
+/// `t:Body` yields the envelope's indentation text as the message body, which
+/// ERASES the stored description on any update that reaches the legacy
+/// whole-envelope extraction path.
+pub fn extract_ews_item_field(xml: &str, tag: &[u8]) -> Option<String> {
+    let tag_str = std::str::from_utf8(tag).ok()?;
+    match Document::parse(xml) {
+        Ok(doc) => doc
+            .descendants()
+            .filter(|n| n.is_element() && n.tag_name().name() == tag_str)
+            .filter(|n| {
+                n.parent_element()
+                    .is_none_or(|p| !p.tag_name().name().eq_ignore_ascii_case("Envelope"))
+            })
+            .find_map(|n| n.text().map(|s| s.to_string())),
+        Err(_) => extract_ews_field_lenient(xml, tag),
+    }
+}
+
 /// Extract the request-wide timezone from the SOAP `t:TimeZoneContext` header
 /// ([MS-OXWSCORE] §2.2.1.12): a `t:TimeZoneDefinition` child whose `Id`
 /// attribute (or element text, for the gateway's own legacy emits) carries the
@@ -2645,8 +2710,15 @@ pub fn parse_ews_calendar_item(xml: &str) -> Result<CalendarItem> {
     let uid = extract_ews_field_doc(&doc, b"UID")
         .or_else(|| extract_ews_field_doc(&doc, b"ClientUid"))
         .unwrap_or_else(|| Uuid::new_v4().to_string());
-    let description = extract_ews_field_doc(&doc, b"Body")
-        .or_else(|| extract_ews_field_doc(&doc, b"TextBody"))
+    let description = doc
+        .descendants()
+        .filter(|n| {
+            n.is_element()
+                && matches!(n.tag_name().name(), "Body" | "TextBody")
+                && n.parent_element()
+                    .is_none_or(|p| !p.tag_name().name().eq_ignore_ascii_case("Envelope"))
+        })
+        .find_map(|n| n.text().map(|s| s.to_string()))
         .unwrap_or_default();
     let location = extract_ews_field_doc(&doc, b"Location").unwrap_or_default();
     let all_day = extract_ews_field_doc(&doc, b"IsAllDayEvent")
@@ -2883,6 +2955,103 @@ mod scheduling_tests {
             ev.end,
             parse_datetime("20250701T160000Z").unwrap(),
             "DTEND must localize in Europe/Berlin (18:00 CEST), not LA"
+        );
+    }
+
+    #[test]
+    fn item_field_extraction_never_matches_the_soap_envelope_body() {
+        // A legacy UpdateItem without a real `t:Body` used to read the SOAP
+        // envelope's own `<s:Body>` indentation as the message body and store it
+        // as the event description, erasing the stored one.
+        let envelope_without_body = r#"<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" xmlns:m="http://schemas.microsoft.com/exchange/services/2006/messages" xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types">
+  <s:Body>
+    <m:UpdateItem><m:ItemChanges><t:ItemChange><t:ItemId Id="cal-1"/></t:ItemChange></m:ItemChanges></m:UpdateItem>
+  </s:Body>
+</s:Envelope>"#;
+        assert_eq!(
+            extract_ews_item_field(envelope_without_body, b"Body"),
+            None,
+            "the SOAP envelope's own Body is not the item body"
+        );
+
+        let envelope_with_body = r#"<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types">
+  <s:Body>
+    <t:CalendarItem><t:Body BodyType="Text">Agenda text</t:Body></t:CalendarItem>
+  </s:Body>
+</s:Envelope>"#;
+        assert_eq!(
+            extract_ews_item_field(envelope_with_body, b"Body").as_deref(),
+            Some("Agenda text"),
+            "a real item Body is still extracted from inside the envelope"
+        );
+
+        let text_body = r#"<t:CalendarItem><t:TextBody>Plain</t:TextBody></t:CalendarItem>"#;
+        assert_eq!(
+            extract_ews_item_field(text_body, b"TextBody").as_deref(),
+            Some("Plain")
+        );
+    }
+
+    #[test]
+    fn parse_ews_calendar_item_ignores_the_envelope_body() {
+        let xml = r#"<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" xmlns:t="http://schemas.microsoft.com/exchange/services/2006/types">
+  <s:Body>
+    <t:CalendarItem>
+      <t:Subject>Envelope body must not leak</t:Subject>
+      <t:Start>2025-07-01T09:00:00Z</t:Start>
+      <t:End>2025-07-01T10:00:00Z</t:End>
+    </t:CalendarItem>
+  </s:Body>
+</s:Envelope>"#;
+        let item = parse_ews_calendar_item(xml).expect("parses");
+        assert_eq!(
+            item.description, "",
+            "the envelope Body is not a description"
+        );
+        assert_eq!(item.subject, "Envelope body must not leak");
+    }
+
+    #[test]
+    fn duration_only_event_derives_its_end() {
+        // Stalwart's JSCalendar events carry `duration` (never `end`), and the
+        // calcard exporter renders it as `DURATION`. A reader that only honours
+        // `DTEND` cannot read the gateway's own JMAP-derived events at all.
+        let ics = "BEGIN:VCALENDAR\r\n\
+             VERSION:2.0\r\n\
+             BEGIN:VEVENT\r\n\
+             UID:duration-only@example.com\r\n\
+             DTSTART:20260115T090000Z\r\n\
+             DURATION:PT30M\r\n\
+             SUMMARY:Half hour\r\n\
+             END:VEVENT\r\n\
+             END:VCALENDAR\r\n";
+        let ev = parse_ics_event(ics).expect("a DURATION-only event must parse");
+        assert_eq!(ev.start, parse_datetime("20260115T090000Z").unwrap());
+        assert_eq!(
+            ev.end,
+            parse_datetime("20260115T093000Z").unwrap(),
+            "DTSTART + DURATION is the end instant (RFC 5545 §3.6.1)"
+        );
+        assert_eq!(ev.subject, "Half hour");
+    }
+
+    #[test]
+    fn missing_dtend_and_duration_yields_zero_length_or_all_day_span() {
+        let timed = "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:t@example.com\r\n\
+             DTSTART:20260115T090000Z\r\nSUMMARY:Point\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+        let ev = parse_ics_event(timed).expect("a timed event needs no DTEND");
+        assert_eq!(
+            ev.end, ev.start,
+            "a timed event without DTEND is zero-length"
+        );
+
+        let all_day = "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:a@example.com\r\n\
+             DTSTART;VALUE=DATE:20260115\r\nSUMMARY:Day\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+        let ev = parse_ics_event(all_day).expect("a DATE event needs no DTEND");
+        assert_eq!(
+            ev.end.signed_duration_since(ev.start),
+            chrono::Duration::days(1),
+            "a DATE-valued DTSTART spans one day (RFC 5545 §3.6.1)"
         );
     }
 

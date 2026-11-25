@@ -847,6 +847,41 @@ async fn enumerate_mailboxes(
         })
 }
 
+/// Resolve the `FolderId` of a `RopCopyFolder` request to the backend mailbox it
+/// names. [MS-OXCROPS] §2.2.4.8.1: `FolderId` "specifies the folder to be
+/// copied", interpreted under the SOURCE handle — so the copy source is a CHILD
+/// of that handle, not the handle's own folder. The id is a FID
+/// (`store::folder_id_from_backend`), so the hierarchy is inverted by hashing
+/// every live mailbox id.
+///
+/// `Ok(None)` = no such child under the source folder (the caller answers
+/// NotFound); `Err(())` = the inventory could not be read (retryable).
+async fn resolve_copy_source(
+    jmap: &crate::jmap::JmapClient,
+    username: &str,
+    password: &secrecy::SecretString,
+    parent_backend_id: &str,
+    folder_id: u64,
+) -> Result<Option<String>, ()> {
+    // A client that omits the FID (or repeats the handle's own FID) means "the
+    // folder this handle names".
+    if folder_id == 0 || crate::mapi::store::folder_id_from_backend(parent_backend_id) == folder_id
+    {
+        return Ok(Some(parent_backend_id.to_string()));
+    }
+    let mailboxes = enumerate_mailboxes(jmap, username, password).await?;
+    Ok(mailboxes
+        .iter()
+        .find(|mb| {
+            mb.parent_id.as_deref() == Some(parent_backend_id)
+                && mb
+                    .id
+                    .as_deref()
+                    .is_some_and(|id| crate::mapi::store::folder_id_from_backend(id) == folder_id)
+        })
+        .and_then(|mb| mb.id.clone()))
+}
+
 /// Whether `mailbox_id` still exists in the live JMAP hierarchy. Used to
 /// reconcile an UNKNOWN destroy outcome (a transport error after `Mailbox/set`
 /// may have committed): a still-present mailbox means the destroy did NOT happen
@@ -2424,9 +2459,22 @@ async fn execute_one_rop(
                                                 if n == req.message_ids.len() { 0 } else { 1 };
                                         }
                                         Err(e) => {
-                                            tracing::warn!(error = %e, "JMAP copy failed");
-                                            outcome = RopErrorCode::DiskError;
-                                            partial = 0;
+                                            // A copy that stopped partway already
+                                            // created some messages: report PARTIAL
+                                            // completion so the client retries only
+                                            // the remainder instead of duplicating
+                                            // the copies already made.
+                                            if e.downcast_ref::<crate::jmap::CopyPartialFailure>()
+                                                .is_some()
+                                            {
+                                                tracing::warn!(error = %e, "JMAP copy stopped partway");
+                                                outcome = RopErrorCode::Success;
+                                                partial = 1;
+                                            } else {
+                                                tracing::warn!(error = %e, "JMAP copy failed");
+                                                outcome = RopErrorCode::DiskError;
+                                                partial = 0;
+                                            }
                                         }
                                     }
                                 } else {
@@ -5205,12 +5253,23 @@ async fn execute_one_rop(
                                                 partial = u8::from(copied < total);
                                             }
                                             Err(e) => {
-                                                tracing::warn!(
-                                                    error = %e,
-                                                    "JMAP copy-folder email copy failed"
-                                                );
-                                                outcome = RopErrorCode::DiskError;
-                                                partial = 0;
+                                                if e.downcast_ref::<crate::jmap::CopyPartialFailure>()
+                                                    .is_some()
+                                                {
+                                                    tracing::warn!(
+                                                        error = %e,
+                                                        "JMAP copy-folder email copy stopped partway"
+                                                    );
+                                                    outcome = RopErrorCode::Success;
+                                                    partial = 1;
+                                                } else {
+                                                    tracing::warn!(
+                                                        error = %e,
+                                                        "JMAP copy-folder email copy failed"
+                                                    );
+                                                    outcome = RopErrorCode::DiskError;
+                                                    partial = 0;
+                                                }
                                             }
                                         }
                                     }
@@ -5436,16 +5495,36 @@ async fn execute_one_rop(
                         outcome = RopErrorCode::NotFound;
                         partial = 0;
                     } else {
-                        (outcome, partial) = rop_copy_folder(
-                            jc,
-                            username,
-                            pw,
-                            &account_id,
-                            src,
-                            dest,
-                            &req.new_folder_name,
-                        )
-                        .await;
+                        // [MS-OXCROPS] §2.2.4.8.1: `FolderId` names the folder
+                        // to copy, resolved under the SOURCE handle — the
+                        // handle's own folder is only the parent.
+                        match resolve_copy_source(jc, username, pw, src, req.folder_id).await {
+                            Ok(Some(copy_src)) => {
+                                (outcome, partial) = rop_copy_folder(
+                                    jc,
+                                    username,
+                                    pw,
+                                    &account_id,
+                                    &copy_src,
+                                    dest,
+                                    &req.new_folder_name,
+                                    req.want_recursive != 0,
+                                )
+                                .await;
+                            }
+                            Ok(None) => {
+                                tracing::warn!(
+                                    folder_id = req.folder_id,
+                                    "RopCopyFolder: no such folder under the source handle"
+                                );
+                                outcome = RopErrorCode::NotFound;
+                                partial = 0;
+                            }
+                            Err(()) => {
+                                outcome = RopErrorCode::DiskError;
+                                partial = 0;
+                            }
+                        }
                     }
                 }
             }
@@ -5702,10 +5781,12 @@ async fn execute_one_rop(
                         // Backend mailbox ids CONFIRMED destroyed (the deferred
                         // record is KEPT for these and the prune runs below).
                         let mut destroyed_ids: Vec<String> = Vec::new();
-                        // Ids whose destroy was REFUSED or did NOT happen: the
-                        // mailbox still exists, so its mapping must be preserved
-                        // and its deferred record withdrawn.
-                        let mut preserved_ids: Vec<String> = Vec::new();
+                        // Ids whose destroy was REFUSED or did NOT happen keep
+                        // their deferred prune intent: the reconcile verifies the
+                        // live set before pruning anything, and retaining the
+                        // record is the only way to recover a mailbox a
+                        // CONCURRENT destroy removed while its own reply was
+                        // lost.
                         // A REFUSED mailbox blocks only itself and its ancestors
                         // (destroying an ancestor would take the refused child
                         // with it). Siblings and independent branches are still
@@ -5764,7 +5845,6 @@ async fn execute_one_rop(
                                         mailbox = %mb,
                                         "RopDeleteFolder: Mailbox/set refused the destroy; skipping its ancestors and continuing with independent entries"
                                     );
-                                    preserved_ids.push(mb.clone());
                                     blocked.insert(mb.clone());
                                     for ancestor in mailbox_ancestors(&mailboxes, mb) {
                                         blocked.insert(ancestor);
@@ -5777,9 +5857,7 @@ async fn execute_one_rop(
                                     // a mailbox that is actually gone is treated
                                     // as destroyed.
                                     tracing::warn!(error = %e, "JMAP Mailbox/set destroy failed; reconciling");
-                                    if mailbox_still_exists(jc, username, pw, mb).await {
-                                        preserved_ids.push(mb.clone());
-                                    } else {
+                                    if !mailbox_still_exists(jc, username, pw, mb).await {
                                         destroyed_ids.push(mb.clone());
                                         destroyed_count += 1;
                                     }
@@ -5788,21 +5866,11 @@ async fn execute_one_rop(
                                 }
                             }
                         }
-                        // Withdraw the deferred record for every mailbox that
-                        // still exists (a refused destroy or a reconciled-present
-                        // outcome): its mapping must survive, so it must not be
-                        // pruned by a later folder-sync replay.
-                        if let Some(storage) = storage
-                            && !preserved_ids.is_empty()
-                            && let Err(e) = storage
-                                .clear_pending_folder_prunes(username, &preserved_ids)
-                                .await
-                        {
-                            tracing::warn!(
-                                error = %e,
-                                "RopDeleteFolder: failed to withdraw the deferred prune for preserved mailboxes"
-                            );
-                        }
+                        // A mailbox that still exists keeps its deferred prune
+                        // intent: the reconcile checks the live hierarchy before
+                        // pruning, so a live mailbox is never removed, and a
+                        // CONCURRENT destroy whose own reply was lost keeps its
+                        // only recovery record.
                         // Mirror the CONFIRMED destroyed mailboxes into the EAS
                         // folder store: prune any `folder_map` row whose ServerId
                         // is a destroyed mailbox and journal a `folder-delete`, so
@@ -6670,10 +6738,11 @@ async fn execute_one_rop(
                         // EAS surface stops advertising them. The root folder is
                         // not deleted, so it is never in this set.
                         let mut destroyed_ids: Vec<String> = Vec::new();
-                        // Children whose destroy was REFUSED or did NOT happen:
-                        // the mailbox still exists, so its mapping must survive and
-                        // any recorded destroy intent must be withdrawn.
-                        let mut preserved_ids: Vec<String> = Vec::new();
+                        // A child whose destroy was REFUSED or did NOT happen
+                        // keeps its deferred prune intent: the reconcile checks
+                        // the live hierarchy before pruning, so a live child is
+                        // never removed, and a CONCURRENT destroy whose reply was
+                        // lost keeps its only recovery record.
                         if rop_id == RopId::ROP_HARD_DELETE_MESSAGES_AND_SUBFOLDERS {
                             match enumerate_mailboxes(jc, username, pw).await {
                                 Ok(mailboxes) => {
@@ -6731,7 +6800,6 @@ async fn execute_one_rop(
                                                     mailbox = %child_id,
                                                     "JMAP Mailbox/set refused subfolder destroy"
                                                 );
-                                                preserved_ids.push(child_id.clone());
                                                 subfolders_ok = false;
                                             }
                                             Err(e) => {
@@ -6740,11 +6808,9 @@ async fn execute_one_rop(
                                                 // a child that is actually gone is
                                                 // treated as destroyed.
                                                 tracing::warn!(error = %e, "JMAP Mailbox/set subfolder destroy failed; reconciling");
-                                                if mailbox_still_exists(jc, username, pw, child_id)
+                                                if !mailbox_still_exists(jc, username, pw, child_id)
                                                     .await
                                                 {
-                                                    preserved_ids.push(child_id.clone());
-                                                } else {
                                                     // Inventory confirms the
                                                     // child is GONE: the destroy
                                                     // did land even though its
@@ -6764,21 +6830,9 @@ async fn execute_one_rop(
                                 }
                             }
                         }
-                        // Withdraw the deferred record for every child that still
-                        // exists (a refused destroy or a reconciled-present
-                        // outcome): its mapping must survive, so it must not be
-                        // pruned by a later folder-sync replay.
-                        if let Some(storage) = storage
-                            && !preserved_ids.is_empty()
-                            && let Err(e) = storage
-                                .clear_pending_folder_prunes(username, &preserved_ids)
-                                .await
-                        {
-                            tracing::warn!(
-                                error = %e,
-                                "HardDelete: failed to withdraw the deferred prune for preserved subfolders"
-                            );
-                        }
+                        // A child that still exists keeps its deferred prune
+                        // intent (see `RopDeleteFolder`): the reconcile verifies
+                        // the live hierarchy, so nothing live is pruned.
                         // Keep the EAS folder mirror consistent with the
                         // destroyed subfolders (see `RopDeleteFolder`). A
                         // no-op for ids with no mapping row. A failed mirror
@@ -9244,6 +9298,7 @@ async fn handle_disconnect(req: MapiRequest, state: &MapiState) -> MapiResponse 
 /// source leaves no stray empty folder behind. The folder TREE is not
 /// replicated: a source holding child folders, or a copy that came up short,
 /// is reported as PARTIAL completion instead of a plain success.
+#[allow(clippy::too_many_arguments)]
 async fn rop_copy_folder(
     jc: &crate::jmap::JmapClient,
     username: &str,
@@ -9252,8 +9307,12 @@ async fn rop_copy_folder(
     src: &str,
     dest: &str,
     requested_name: &str,
+    recursive: bool,
 ) -> (RopErrorCode, u8) {
     const PAGE: u64 = 256;
+    /// Hard bound on the inventory walk: a server that ignores `position` would
+    /// otherwise loop forever. Reaching it reports partial completion.
+    const MAX_PAGES: usize = 10_000;
     let listing = match jc.query_mailboxes(username, password).await {
         Ok(listing) => listing,
         Err(e) => {
@@ -9273,8 +9332,25 @@ async fn rop_copy_folder(
         .any(|m| m.parent_id.as_deref() == Some(src));
 
     let mut message_ids: Vec<String> = Vec::new();
+    // Positional paging over a mailbox that changes underneath can repeat an
+    // id; the copy must not create it twice.
+    let mut seen_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut position = 0u64;
+    // A page SHORTER than `PAGE` is not the end: a server may clamp `limit`
+    // below what was asked for, and treating that as the end silently truncates
+    // the copy. Only an EMPTY page ends the walk.
+    let mut truncated = false;
+    let mut pages = 0usize;
     loop {
+        if pages >= MAX_PAGES {
+            tracing::warn!(
+                pages,
+                "RopCopyFolder: source enumeration hit the page bound"
+            );
+            truncated = true;
+            break;
+        }
+        pages += 1;
         let page = match jc
             .query_email_ids(crate::jmap::QueryEmailsParams {
                 account_id,
@@ -9296,9 +9372,13 @@ async fn rop_copy_folder(
             }
         };
         let received = page.len() as u64;
-        message_ids.extend(page);
-        if received < PAGE {
+        if received == 0 {
             break;
+        }
+        for id in page {
+            if seen_ids.insert(id.clone()) {
+                message_ids.push(id);
+            }
         }
         position += received;
     }
@@ -9335,7 +9415,60 @@ async fn rop_copy_folder(
             return (RopErrorCode::DiskError, 1);
         }
     };
-    let complete = !has_children && copied == message_ids.len();
+    // A concurrent insert/delete can shift a positional offset and make the
+    // inventory miss a message that was in the source the whole time. Verify
+    // the collected ids against the source once the copy finished: an id the
+    // source still holds but the copy never included makes the result PARTIAL
+    // (reporting only — nothing is copied twice). A verification read failure
+    // is treated the same way, never as a clean success.
+    let mut verified = true;
+    if !truncated {
+        let mut position = 0u64;
+        let mut pages = 0usize;
+        let known: std::collections::HashSet<&str> =
+            message_ids.iter().map(String::as_str).collect();
+        loop {
+            if pages >= MAX_PAGES {
+                verified = false;
+                break;
+            }
+            pages += 1;
+            let page = match jc
+                .query_email_ids(crate::jmap::QueryEmailsParams {
+                    account_id,
+                    filter: Some(serde_json::json!({ "inMailbox": src })),
+                    sort: None,
+                    position,
+                    limit: PAGE,
+                    anchor: None,
+                    anchor_offset: 0,
+                    username,
+                    password,
+                })
+                .await
+            {
+                Ok(ids) => ids,
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        "RopCopyFolder: post-copy source verification failed"
+                    );
+                    verified = false;
+                    break;
+                }
+            };
+            if page.is_empty() {
+                break;
+            }
+            if page.iter().any(|id| !known.contains(id.as_str())) {
+                verified = false;
+                break;
+            }
+            position += page.len() as u64;
+        }
+    }
+    let complete =
+        (!has_children || !recursive) && !truncated && verified && copied == message_ids.len();
     (RopErrorCode::Success, u8::from(!complete))
 }
 

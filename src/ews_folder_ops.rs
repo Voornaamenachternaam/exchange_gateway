@@ -1053,10 +1053,23 @@ fn copy_folder_recursive<'a>(
             .into_iter()
             .map(|(jid, _)| jid)
             .collect();
-        if !ids.is_empty() {
-            ctx.jmap
+        if !ids.is_empty()
+            && let Err(e) = ctx
+                .jmap
                 .copy_emails(ctx.account_id, &ids, &new_id, ctx.username, ctx.password)
-                .await?;
+                .await
+        {
+            // Surface how much of the folder was copied before the failure: the
+            // destination folder already exists and holds those copies.
+            if let Some(partial) = e.downcast_ref::<crate::jmap::CopyPartialFailure>() {
+                tracing::warn!(
+                    error = %e,
+                    copied = partial.created,
+                    total = ids.len(),
+                    "CopyFolder: message copy stopped partway"
+                );
+            }
+            return Err(e);
         }
 
         // Recurse: children of the source become children of the copy.
@@ -1448,6 +1461,36 @@ pub(crate) async fn handle_delete_folder(
                 }
             }
         }
+        // [MS-OXWSFOLD]: a mailbox that carries a JMAP ROLE is a distinguished
+        // folder (Inbox, Sent, Drafts, Trash, Junk, Archive, …) and must never be
+        // destroyed — including when a raw `FolderId` names one. Check the WHOLE
+        // subtree BEFORE the first destructive call, so a request whose subtree
+        // contains a protected role is rejected with nothing emptied.
+        if let Some(protected) = destruction_order.iter().find(|id| {
+            hierarchy
+                .mailboxes
+                .iter()
+                .any(|m| m.id.as_deref() == Some(id.as_str()) && m.role.is_some())
+        }) {
+            let role = hierarchy
+                .mailboxes
+                .iter()
+                .find(|m| m.id.as_deref() == Some(protected.as_str()))
+                .and_then(|m| m.role.as_deref())
+                .unwrap_or_default();
+            tracing::warn!(
+                mailbox = %protected,
+                role = %role,
+                "EWS DeleteFolder: refusing to hard-delete a distinguished folder"
+            );
+            return operation_error_response(
+                &action,
+                "ErrorDeleteDistinguishedFolder",
+                "A default folder cannot be deleted",
+                StatusCode::OK,
+            );
+        }
+
         for cb_id in destruction_order.iter().rev() {
             let ids_in = match jmap
                 .list_email_ids_in_mailbox(&account_id, cb_id, &auth.username, &auth.password)
@@ -1511,23 +1554,15 @@ pub(crate) async fn handle_delete_folder(
                     destroyed_ids.push(cb_id.clone());
                 }
                 Ok(crate::jmap::MailboxDestroyOutcome::Refused) => {
-                    // The mailbox still exists; withdraw the destroy intent so a
-                    // later folder-sync replay does not prune a live folder.
+                    // The mailbox still exists. Its deferred prune intent is
+                    // KEPT: the reconcile checks the live hierarchy before
+                    // pruning, so a live mailbox is never removed, and retaining
+                    // the record is the only way to recover a mailbox that a
+                    // CONCURRENT destroy removed while its own reply was lost.
                     tracing::warn!(
                         mailbox = %cb_id,
                         "EWS DeleteFolder: Mailbox/set refused the destroy"
                     );
-                    if let Err(e) = state
-                        .storage
-                        .clear_pending_folder_prunes(&owner, std::slice::from_ref(cb_id))
-                        .await
-                    {
-                        tracing::warn!(
-                            error = %e,
-                            mailbox = %cb_id,
-                            "EWS DeleteFolder: failed to withdraw the deferred prune for a refused destroy"
-                        );
-                    }
                     destroy_failure = Some(operation_error_response(
                         &action,
                         "ErrorCannotDeleteObject",
@@ -1557,24 +1592,14 @@ pub(crate) async fn handle_delete_folder(
                                 .mailboxes
                                 .iter()
                                 .any(|mb| mb.id.as_deref() == Some(cb_id.as_str()));
-                            if still_present {
-                                if let Err(e) = state
-                                    .storage
-                                    .clear_pending_folder_prunes(
-                                        &owner,
-                                        std::slice::from_ref(cb_id),
-                                    )
-                                    .await
-                                {
-                                    tracing::warn!(
-                                        error = %e,
-                                        mailbox = %cb_id,
-                                        "EWS DeleteFolder: failed to withdraw the deferred prune for a present mailbox"
-                                    );
-                                }
-                            } else {
+                            if !still_present {
                                 destroyed_ids.push(cb_id.clone());
                             }
+                            // Still present: keep the deferred prune intent. The
+                            // reconcile verifies the live set, so it never prunes
+                            // a live mailbox, and retaining the record preserves
+                            // the recovery path for a concurrent destroy whose
+                            // reply was lost.
                         }
                         Err(recon_err) => {
                             // Unknown: leave the durable intent in place.

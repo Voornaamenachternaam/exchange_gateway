@@ -15,6 +15,23 @@ pub struct CaldavClient {
     client: reqwest::Client,
 }
 
+/// Whether `body`'s document element is `DAV:multistatus` (prefix-agnostic).
+fn body_has_multistatus_root(body: &str) -> bool {
+    let mut reader = quick_xml::Reader::from_str(body);
+    let mut buf = Vec::new();
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(quick_xml::events::Event::Start(ref e))
+            | Ok(quick_xml::events::Event::Empty(ref e)) => {
+                return e.name().local_name().as_ref() == "multistatus";
+            }
+            Ok(quick_xml::events::Event::Eof) => return false,
+            Ok(_) => {}
+            Err(_) => return false,
+        }
+    }
+}
+
 /// The properties of a single CalDAV collection read with a `Depth: 0`
 /// PROPFIND — see [`CaldavClient::get_calendar_collection`].
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -23,6 +40,11 @@ pub struct CalendarCollectionProps {
     pub is_calendar: bool,
     /// `DAV:displayname` as stored on the server, when it returned one.
     pub display_name: Option<String>,
+    /// Whether `DAV:displayname` was returned by a SUCCESSFUL propstat. RFC 4918
+    /// §9.1 reports property failures separately from the response status, so a
+    /// missing name may mean "the server could not read it" (inconclusive)
+    /// rather than "the collection has no name" (a real difference).
+    pub display_name_verified: bool,
 }
 
 impl CaldavClient {
@@ -715,6 +737,10 @@ impl CaldavClient {
                 .propstats
                 .iter()
                 .find_map(|ps| ps.prop.displayname.clone()),
+            display_name_verified: response
+                .propstats
+                .iter()
+                .any(|ps| ps.is_success() && ps.prop.displayname.is_some()),
         }))
     }
 
@@ -824,7 +850,11 @@ impl CaldavClient {
         };
 
         let status = resp.status();
-        if !status.is_success() && status != reqwest::StatusCode::MULTI_STATUS {
+        // RFC 4791 §7.8: a successful `calendar-query` REPORT answers
+        // 207 Multi-Status. A 200 (a proxy's error page, a captive portal) is
+        // NOT a snapshot: returning its body would parse as "no events" and the
+        // caller's deletion sweep would tombstone every event it holds.
+        if status != reqwest::StatusCode::MULTI_STATUS {
             let body_preview = resp.text().await.unwrap_or_default();
             tracing::error!(
                 "caldav: REPORT on {} returned status {}: {}",
@@ -837,7 +867,7 @@ impl CaldavClient {
                 }
             );
             return Err(anyhow::anyhow!(
-                "CalDAV server returned {}: {}",
+                "CalDAV REPORT returned {} (expected 207 Multi-Status): {}",
                 status,
                 if body_preview.len() > 200 {
                     "response truncated"
@@ -858,6 +888,18 @@ impl CaldavClient {
                 return Err(anyhow::anyhow!("Failed to read CalDAV response: {}", e));
             }
         };
+
+        // The body must BE a DAV multistatus (RFC 4918 §13). An empty or
+        // non-DAV 207 is not an authoritative empty snapshot.
+        if !body_has_multistatus_root(&body) {
+            tracing::error!(
+                "caldav: REPORT on {} returned a body that is not a DAV multistatus",
+                collection_href
+            );
+            return Err(anyhow::anyhow!(
+                "CalDAV REPORT on {collection_href} did not return a DAV multistatus"
+            ));
+        }
 
         Ok(body)
     }
@@ -1261,6 +1303,26 @@ struct DavResponse {
 #[derive(Deserialize, Debug)]
 struct Propstat {
     prop: Prop,
+    /// RFC 4918 §14.22: the status of the enclosed properties. Absent on a
+    /// server that omits it; a present non-2xx status marks a property failure.
+    #[serde(default)]
+    status: Option<String>,
+}
+
+impl Propstat {
+    /// Whether this propstat's properties were returned successfully. A missing
+    /// status line is treated as success (lenient: RFC 4918 requires it, but the
+    /// caller only needs to detect an EXPLICIT per-property failure).
+    fn is_success(&self) -> bool {
+        match self.status.as_deref().map(str::trim) {
+            None => true,
+            Some(line) => line
+                .split_whitespace()
+                .nth(1)
+                .and_then(|code| code.parse::<u16>().ok())
+                .is_none_or(|code| (200..300).contains(&code)),
+        }
+    }
 }
 
 /// Returns `(confirmed_calendars, all_seen_hrefs)`.

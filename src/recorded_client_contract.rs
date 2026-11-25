@@ -342,17 +342,39 @@ fn jmap_query_changes_response(added: &[String], removed: &[String], updated: &[
 }
 
 /// One contract calendar event as `CalendarEvent/get` returns it.
+/// The fixture start instant: DISTINCTIVE on purpose, so a test can prove a
+/// partial update preserved the untouched time rather than defaulting it.
+const CONTRACT_EVENT_START: &str = "2026-01-15T09:00:00";
+/// The fixture location name, preserved across a subject-only update.
+const CONTRACT_EVENT_LOCATION: &str = "Room 4B";
+
 fn contract_calendar_event(id: &str, subject: &str) -> Value {
     json!({
         "id": id,
         "uid": format!("{id}@example.com"),
         "title": subject,
-        "start": "2026-01-15T09:00:00",
+        "start": CONTRACT_EVENT_START,
         "timeZone": "Etc/UTC",
         "duration": "PT30M",
+        "locations": {"loc-1": {"@type": "Location", "name": CONTRACT_EVENT_LOCATION}},
         "calendarIds": {"cal-1": true},
         "@type": "Event"
     })
+}
+
+/// Matcher: the request body contains `needle` and does NOT contain `absent`.
+/// Used to separate a standalone `CalendarEvent/get` (the update's base read)
+/// from the batch that also carries the `CalendarEvent/set`.
+struct BodyContainsAndNot {
+    needle: &'static str,
+    absent: &'static str,
+}
+
+impl wiremock::Match for BodyContainsAndNot {
+    fn matches(&self, request: &wiremock::Request) -> bool {
+        let body = String::from_utf8_lossy(&request.body);
+        body.contains(self.needle) && !body.contains(self.absent)
+    }
 }
 
 fn contract_email(seen: bool) -> Value {
@@ -787,11 +809,29 @@ async fn eas_sendmail_over_http() {
     assert_eq!(response.status, StatusCode::OK);
     let status = tag_text(&response.xml, "Status");
 
-    assert_ne!(
+    assert_eq!(
         status.as_deref(),
-        Some("4"),
-        "SendMail should not return 'email disabled' error when email is enabled, got XML: {}",
+        Some("1"),
+        "a submitted message must answer the EAS SendMail success status, got XML: {}",
         response.xml
+    );
+    // A Status 1 alone does not prove the message was SUBMITTED: assert the
+    // recorded wire traffic carried the `EmailSubmission/set` half of the
+    // RFC 8621 §7.5 batch (a bare `Email/set` would only have staged a draft).
+    let requests = gateway
+        .backend
+        .received_requests()
+        .await
+        .unwrap_or_default();
+    assert!(
+        requests
+            .iter()
+            .any(|r| String::from_utf8_lossy(&r.body).contains("\"EmailSubmission/set\"")),
+        "SendMail must reach EmailSubmission/set, recorded bodies: {:?}",
+        requests
+            .iter()
+            .map(|r| String::from_utf8_lossy(&r.body).to_string())
+            .collect::<Vec<_>>()
     );
     gateway.assert_backend_used().await;
 }
@@ -1090,16 +1130,55 @@ async fn eas_itemoperations_multipart_fetch_over_http() {
     let xml = Wbxml::new()
         .decode(&parts[0])
         .expect("the first part must be the WBXML document");
-    assert!(
-        xml.contains("<Status>1</Status>"),
-        "expected success status, got: {xml}"
+    // Validate each `<Fetch>` block INDIVIDUALLY: its status, the echoed
+    // FileReference and the `<Part>` index it names must all agree with the
+    // bytes in `parts`. Checking the document as a whole would accept swapped
+    // part references as long as the binary parts stayed in order.
+    let blocks: Vec<&str> = xml
+        .split("<Fetch>")
+        .skip(1)
+        .filter_map(|b| b.split("</Fetch>").next())
+        .collect();
+    assert_eq!(
+        blocks.len(),
+        2,
+        "one response Fetch per request, got: {xml}"
     );
-    assert!(
-        xml.contains("<Part>1</Part>") && xml.contains("<Part>2</Part>"),
-        "each attachment must be referenced by its part index, got: {xml}"
+    let mut referenced = Vec::new();
+    for block in &blocks {
+        assert!(
+            block.contains("<Status>1</Status>"),
+            "every Fetch must succeed, got: {block}"
+        );
+        let file_ref = if block.contains("<AirSyncBase:FileReference>attach-1") {
+            "attach-1"
+        } else if block.contains("<AirSyncBase:FileReference>attach-2") {
+            "attach-2"
+        } else {
+            panic!("Fetch block must echo its FileReference, got: {block}")
+        };
+        let part: usize = block
+            .split("<Part>")
+            .nth(1)
+            .and_then(|rest| rest.split("</Part>").next())
+            .and_then(|v| v.trim().parse().ok())
+            .unwrap_or_else(|| panic!("Fetch block must name its part index, got: {block}"));
+        let expected: &[u8] = match file_ref {
+            "attach-1" => b"raw-attachment-bytes-1",
+            _ => b"raw-attachment-bytes-2",
+        };
+        assert_eq!(
+            parts.get(part).map(Vec::as_slice),
+            Some(expected),
+            "part {part} must carry the bytes of {file_ref}"
+        );
+        referenced.push(part);
+    }
+    assert_eq!(
+        referenced.len(),
+        parts.len() - 1,
+        "every binary part must be referenced exactly once"
     );
-    assert_eq!(parts[1], b"raw-attachment-bytes-1");
-    assert_eq!(parts[2], b"raw-attachment-bytes-2");
     gateway.assert_backend_used().await;
 }
 
@@ -1416,11 +1495,40 @@ async fn ews_updateitem_calendar_success_over_http() {
 
     // The update batch reads the current event, writes the patched one, and
     // reads it back to verify the write: the responder echoes the written
-    // object so the read-back matches it property-for-property.
+    // object so the read-back matches it property-for-property. The written
+    // payload is also CAPTURED, so the test can assert a subject-only update
+    // preserved the untouched start/location instead of trusting the echo.
+    // The base event the update patches MUST come from the backend: mount a
+    // standalone `CalendarEvent/get` (a request that carries no set call) so
+    // the untouched start/location come from the fixture instead of the
+    // gateway's blank fallback template.
+    Mock::given(method("POST"))
+        .and(path("/"))
+        .and(BodyContainsAndNot {
+            needle: "CalendarEvent/get",
+            absent: "CalendarEvent/set",
+        })
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "sessionId": "contract",
+            "methodResponses": [
+                ["CalendarEvent/get", {
+                    "accountId": "a",
+                    "state": "cal-state",
+                    "list": [contract_calendar_event("cal-1", "Team Standup")],
+                    "notFound": []
+                }, "eg0"]
+            ]
+        })))
+        .mount(&gateway.backend)
+        .await;
+
+    let written_payloads: Arc<std::sync::Mutex<Vec<Value>>> =
+        Arc::new(std::sync::Mutex::new(Vec::new()));
+    let capture = written_payloads.clone();
     Mock::given(method("POST"))
         .and(path("/"))
         .and(body_string_contains("CalendarEvent/set"))
-        .respond_with(|req: &wiremock::Request| {
+        .respond_with(move |req: &wiremock::Request| {
             let body: Value = serde_json::from_slice(&req.body).unwrap_or(Value::Null);
             let calls = body["methodCalls"].as_array().cloned().unwrap_or_default();
             let written = calls
@@ -1432,6 +1540,7 @@ async fn ews_updateitem_calendar_success_over_http() {
                     event
                 })
                 .unwrap_or_else(|| contract_calendar_event("cal-1", "Team Standup"));
+            capture.lock().unwrap().push(written.clone());
             let responses: Vec<Value> = calls
                 .iter()
                 .map(|call| {
@@ -1480,8 +1589,8 @@ async fn ews_updateitem_calendar_success_over_http() {
           <t:ItemId Id="cal-1"/>
           <t:Updates>
             <t:SetItemField>
-              <t:FieldURI FieldURI="calendar:Subject"/>
-              <t:CalendarItem><t:Subject>Updated Meeting</t:Subject></CalendarItem>
+              <t:FieldURI FieldURI="item:Subject"/>
+              <t:CalendarItem><t:Subject>Updated Meeting</t:Subject></t:CalendarItem>
             </t:SetItemField>
           </t:Updates>
         </t:ItemChange>
@@ -1494,6 +1603,40 @@ async fn ews_updateitem_calendar_success_over_http() {
     let body = response.text().await.unwrap();
     assert!(body.contains("UpdateItemResponse"));
     assert!(body.contains("ResponseClass=\"Success\""));
+    let captured = written_payloads.lock().unwrap().clone();
+    let written = captured
+        .first()
+        .expect("the update must have issued a CalendarEvent/set");
+    assert_eq!(
+        written["title"].as_str(),
+        Some("Updated Meeting"),
+        "the subject-only update must be written"
+    );
+    assert_eq!(
+        written["start"].as_str(),
+        Some(CONTRACT_EVENT_START),
+        "a subject-only update must preserve the event start"
+    );
+    // The location keeps its NAME but the gateway mints its own location id, so
+    // assert on the name rather than the fixture's id.
+    let location_names: Vec<&str> = written["locations"]
+        .as_object()
+        .map(|m| {
+            m.values()
+                .filter_map(|l| l["name"].as_str())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    assert_eq!(
+        location_names,
+        vec![CONTRACT_EVENT_LOCATION],
+        "a subject-only update must preserve the event location (written: {written})"
+    );
+    assert!(
+        written["description"].is_null()
+            || written["description"].as_str().is_none_or(str::is_empty),
+        "a subject-only update must not invent a description (written: {written})"
+    );
     gateway.assert_backend_used().await;
 }
 
@@ -1679,6 +1822,23 @@ async fn ews_syncfolderitems_delta_over_http() {
     let sync_state = tag_text(&prime_body, "SyncState").expect("sync state");
     assert!(!sync_state.is_empty());
 
+    // Journal a REAL change after the prime (the delta feed is the local
+    // journal, not the backend's `CalendarEvent/changes`): the event is
+    // re-stored with a new ETag, which is what a backend edit produces.
+    gateway
+        .state
+        .storage
+        .upsert_item_map(
+            OWNER,
+            "jmap://calendar/a",
+            "jmap://calendar/a/cal-1",
+            "cal-1",
+            "cal-1@example.com",
+            "ck-2",
+        )
+        .await
+        .unwrap();
+
     Mock::given(method("POST"))
         .and(path("/"))
         .and(body_string_contains("CalendarEvent/changes"))
@@ -1719,6 +1879,21 @@ async fn ews_syncfolderitems_delta_over_http() {
     assert_eq!(delta.status(), StatusCode::OK);
     let delta_body = delta.text().await.unwrap();
     assert!(delta_body.contains("SyncFolderItemsResponse"));
+    // The mocked change is an UPDATE of `cal-1`: the delta must report it as
+    // such (an empty delta or an operation error would silently lose the
+    // client's view of the event).
+    assert!(
+        delta_body.contains("NoError"),
+        "the delta must succeed, got: {delta_body}"
+    );
+    assert!(
+        delta_body.contains("<t:Update>"),
+        "the changed event must be reported as an Update, got: {delta_body}"
+    );
+    assert!(
+        delta_body.contains("Team Standup"),
+        "the Update must carry the event's current data, got: {delta_body}"
+    );
     gateway.assert_backend_used().await;
 }
 
@@ -1877,13 +2052,46 @@ async fn eas_getitemestimate_over_http() {
 
     // [MS-ASWBXML] §2.1.2.1.7: code page 6 has no `Class`/`SyncKey` tokens for
     // protocol 16.1 — both come from the AirSync page and must be declared.
-    let estimate_xml = r#"<GetItemEstimate xmlns="GetItemEstimate:" xmlns:AirSync="AirSync:"><Collections><Collection><AirSync:Class>Email</AirSync:Class><CollectionId>2</CollectionId><AirSync:SyncKey>0</AirSync:SyncKey></Collection></Collections></GetItemEstimate>"#;
-    let response = gateway.eas("GetItemEstimate", estimate_xml).await;
+    // Prime the collection first and use the ISSUED SyncKey: an estimate is
+    // only meaningful for a window the gateway actually handed out (key 0 is
+    // the un-primed state, which the gateway answers with status 4).
+    let prime = gateway.eas("Sync", &email_sync("0")).await;
+    assert_eq!(prime.status, StatusCode::OK);
+    assert_eq!(tag_text(&prime.xml, "Status").as_deref(), Some("1"));
+    let prime_key = tag_text(&prime.xml, "SyncKey").expect("prime key");
+    assert_ne!(prime_key, "0");
+
+    let estimate_xml = format!(
+        r#"<GetItemEstimate xmlns="GetItemEstimate:" xmlns:AirSync="AirSync:"><Collections><Collection><AirSync:Class>Email</AirSync:Class><CollectionId>2</CollectionId><AirSync:SyncKey>{prime_key}</AirSync:SyncKey></Collection></Collections></GetItemEstimate>"#
+    );
+    let response = gateway.eas("GetItemEstimate", &estimate_xml).await;
     assert_eq!(response.status, StatusCode::OK);
-    assert!(
-        response.xml.contains("<Status>1</Status>") || response.xml.contains("<Status>4</Status>"),
-        "expected estimate status, got: {}",
+    assert_eq!(
+        tag_text(&response.xml, "Status").as_deref(),
+        Some("1"),
+        "an estimate for the issued SyncKey must succeed, got: {}",
         response.xml
+    );
+    assert!(
+        tag_text(&response.xml, "Estimate").is_some(),
+        "a successful GetItemEstimate must carry the Estimate count, got: {}",
+        response.xml
+    );
+
+    // Invalid-key recovery is a SEPARATE concern: an unissued key answers
+    // status 4 ([MS-ASCMD] §2.2.3.177.8).
+    let stale = gateway
+        .eas(
+            "GetItemEstimate",
+            r#"<GetItemEstimate xmlns="GetItemEstimate:" xmlns:AirSync="AirSync:"><Collections><Collection><AirSync:Class>Email</AirSync:Class><CollectionId>2</CollectionId><AirSync:SyncKey>never-issued</AirSync:SyncKey></Collection></Collections></GetItemEstimate>"#,
+        )
+        .await;
+    assert_eq!(stale.status, StatusCode::OK);
+    assert_eq!(
+        tag_text(&stale.xml, "Status").as_deref(),
+        Some("4"),
+        "an unissued SyncKey must answer status 4, got: {}",
+        stale.xml
     );
     gateway.assert_backend_used().await;
 }
@@ -1952,23 +2160,31 @@ async fn eas_meetingresponse_over_http() {
 // ========================================================================
 // Stateful model-based protocol tests driving REAL production handlers
 // through build_router against wiremock backends.
-// Cover: Sync prime, continuation, delta, replayed key, stale key,
-// overflow window, and failed token write.
+// Cover: Sync prime, continuation, delta, replayed key, stale key and the
+// overflow window (see `eas_email_sync_prime_delta_invalid_key_reprime_over_http`,
+// `eas_email_sync_overflow_window_over_http`, `ews_syncfolderitems_delta_over_http`).
+// The SyncKey FORMAT itself is not asserted here: the issued key is validated
+// by those wire tests (prime → delta must accept the key the prime returned,
+// and an unissued key must answer Status 3).
 // Invariants:
 //   - A stale key must not resurrect deleted items.
 //   - Identical retries cannot create duplicate backend objects.
-//   - A failed durable write never advances the acknowledged SyncKey.
+//   - A failed durable write never advances the acknowledged SyncKey (covered
+//     by `eas::tests` and `storage::tests`, which can inject the write fault).
 // ========================================================================
 
 #[test]
 fn canonical_email_server_id_is_stable() {
+    use exchange_gateway::email::{
+        email_server_id_from_jmap_id, is_email_server_id, jmap_id_from_email_server_id,
+    };
     let jmap_id = "msg-abc123-def456";
-    assert!(!jmap_id.is_empty());
-}
-
-#[test]
-fn canonical_sync_key_format() {
-    let key = "sync-20260115T100000Z";
-    assert_ne!(key, "0");
-    assert!(!key.is_empty());
+    let first = email_server_id_from_jmap_id(jmap_id);
+    // The formatter is DETERMINISTIC (the same JMAP id always yields the same
+    // EAS ServerId, so a client's stored id stays valid across calls) and
+    // REVERSIBLE (every EAS operation maps the id back to the JMAP id).
+    assert_eq!(first, email_server_id_from_jmap_id(jmap_id));
+    assert!(is_email_server_id(&first));
+    assert_eq!(jmap_id_from_email_server_id(&first), Some(jmap_id));
+    assert_ne!(first, email_server_id_from_jmap_id("msg-other"));
 }

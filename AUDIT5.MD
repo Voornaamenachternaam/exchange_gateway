@@ -135,12 +135,17 @@ gateway restarts and surface in `FolderSync`/`GetHierarchy`.
   request can record a NEW intent and create its mailbox after the query; that
   newer intent is left for the next reconcile, never classified against the
   older live set), and a candidate the backend STILL holds keeps its intent
-  (RETAINED, not withdrawn): the initiating destroy operation owns clearing it —
-  on refusal, or by pruning after a confirmed destroy — and a process stop
-  between the backend destroy and its direct prune would otherwise lose the only
-  recovery record for a mailbox already gone from the live hierarchy. A retained
-  intent for a live folder is harmless: it is re-evaluated on the next reconcile
-  and never prunes a live row.
+  (RETAINED, not withdrawn). NO destroy path withdraws an intent: not a REFUSED
+  `Mailbox/set` destroy, not a reconciled-present mailbox, and not a refusal in
+  the EAS `FolderDelete`, EWS `DeleteFolder` or MAPI `RopDeleteFolder` /
+  `RopHardDeleteMessagesAndSubfolders` handlers. The intent is CLEARED only by
+  the reconcile itself, and only after it confirms the mailbox is gone from the
+  live hierarchy (the confirmed-destroy prune writes the `folder_map` delete and
+  the intent removal together). Retention is the safe direction: the reconcile
+  never prunes a live row, so a retained intent for a live folder is harmless,
+  while withdrawing one would lose the only recovery record when a CONCURRENT
+  destroy of the same mailbox committed but its reply was lost — the stale
+  `folder_map` row would then be advertised by EAS forever.
 - **`FolderUpdate`** (§2.2.1.6): rename and/or move. A system folder → 2; an
   unknown folder → 4; otherwise JMAP `Mailbox/set update` (patch `name` and/or
   `parentId`) or a CalDAV `PROPPATCH` `<D:displayname>`; the CalDAV collection
@@ -833,7 +838,10 @@ the destination HANDLE, not a second FID) — and it now copies the source's
 messages into the created folder (bounded by the session's `maxObjectsInGet`),
 honouring the client's `NewFolderName`; the folder TREE is not replicated, so a
 source holding child folders, or a copy that came up short, is reported as
-`PartialCompletion` rather than a plain success.
+`PartialCompletion` rather than a plain success. "Came up short" is VERIFIED,
+not inferred from the copy replies: the destination is re-listed and must hold
+every source message id (a dropped copy reply, or a backend that accepted the
+copy without materialising it, otherwise reads as a complete copy).
 
 **Upgrade note (expected one-time re-prime).** Before this change the stored
 email delta token was the `Email/get` data-type state; the new delta passes it

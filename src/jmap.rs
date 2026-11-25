@@ -293,6 +293,46 @@ pub struct JmapResponse {
     pub method_responses: Vec<(String, Value, String)>,
 }
 
+/// A message copy that stopped partway through: `created` messages were already
+/// copied before the failure. Reporting a bare error would make the caller treat
+/// the whole request as failed and re-copy those messages on retry (duplicating
+/// them), so the count travels with the error.
+#[derive(Debug)]
+pub struct CopyPartialFailure {
+    pub created: usize,
+    pub source: anyhow::Error,
+}
+
+impl std::fmt::Display for CopyPartialFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "email copy stopped after {} copied message(s): {}",
+            self.created, self.source
+        )
+    }
+}
+
+impl std::error::Error for CopyPartialFailure {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(self.source.as_ref())
+    }
+}
+
+/// One page of [`JmapClient::list_email_ids_with_keywords_page`].
+pub struct EmailKeywordPage {
+    /// `(jmap id, sorted keyword names)` for the page.
+    pub entries: Vec<(String, Vec<String>)>,
+    /// Absolute query position to resume at.
+    pub next_position: u64,
+    /// Mailbox size reported by the page (`calculateTotal: true`).
+    pub total: u64,
+    /// Whether a further page exists.
+    pub more: bool,
+    /// The `Email/query` state this page was computed from (RFC 8620 §5.5).
+    pub query_state: String,
+}
+
 /// JMAP Email object (RFC 8621 §4.1)
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -2288,8 +2328,16 @@ impl JmapClient {
 
         for (method, data, _) in response.method_responses {
             if method == "Email/query" {
-                saw_query = data.get("ids").is_some_and(|v| v.is_array());
-                total = data.get("total").and_then(|v| v.as_u64()).unwrap_or(0);
+                // The request sets `calculateTotal: true`, so RFC 8620 §5.5
+                // REQUIRES `total` in the response. A page without a usable
+                // total must not be accepted: `total` defaults to 0, the caller
+                // computes `remaining == 0`, and the prime would store the
+                // pre-page query state — permanently skipping the rest of the
+                // mailbox. An explicit total of 0 with an empty `ids` array is a
+                // legitimate empty mailbox and still counts.
+                let page_total = data.get("total").and_then(|v| v.as_u64());
+                saw_query = data.get("ids").is_some_and(|v| v.is_array()) && page_total.is_some();
+                total = page_total.unwrap_or(0);
                 can_calc = data
                     .get("canCalculateChanges")
                     .and_then(|v| v.as_bool())
@@ -2690,17 +2738,23 @@ impl JmapClient {
                     .get("mailboxIds")
                     .and_then(|v| v.as_object())
                     .ok_or_else(|| anyhow!("Email/get row {email_id} has no usable mailboxIds"))?;
-                return Ok(
-                    if mailboxes
-                        .get(mailbox_id)
-                        .and_then(|v| v.as_bool())
-                        .unwrap_or(false)
-                    {
-                        EmailMailboxMembership::Member
-                    } else {
-                        EmailMailboxMembership::NotMember
-                    },
-                );
+                // RFC 8621 §4.1.1: `mailboxIds` is `Id[Boolean]`. A PRESENT key
+                // with a non-boolean value is a malformed response, not a
+                // non-membership — silently reading it as `false` would report a
+                // delivered message as removed. Fail so the caller retries.
+                let membership = match mailboxes.get(mailbox_id) {
+                    None => false,
+                    Some(value) => value.as_bool().ok_or_else(|| {
+                        anyhow!(
+                            "Email/get row {email_id} has a non-boolean mailboxIds value for {mailbox_id}"
+                        )
+                    })?,
+                };
+                return Ok(if membership {
+                    EmailMailboxMembership::Member
+                } else {
+                    EmailMailboxMembership::NotMember
+                });
             }
             // RFC 8620 §5.1: `notFound` lists the requested ids that do not
             // exist. Its absence means none were missing, so an id in neither
@@ -3693,7 +3747,7 @@ impl JmapClient {
         limit: u64,
         username: &str,
         password: &SecretString,
-    ) -> Result<(Vec<(String, Vec<String>)>, u64, u64, bool)> {
+    ) -> Result<EmailKeywordPage> {
         let session = self.get_session(username, password).await?;
         let api_url = &session.api_url;
         // The back-referenced `Email/get` is subject to the session's
@@ -3745,6 +3799,10 @@ impl JmapClient {
         let mut total: u64 = 0;
         let mut fetched: u64 = 0;
         let mut saw_query = false;
+        // RFC 8620 §5.5: the query state this page was computed from. Offset
+        // paging is only sound while it is stable across pages — a caller that
+        // saves a COMPLETE baseline compares it page to page.
+        let mut query_state = String::new();
         for (method, data, _) in response.method_responses {
             if method == "error" {
                 return Err(anyhow!("Email/query error: {}", data));
@@ -3752,6 +3810,11 @@ impl JmapClient {
             if method == "Email/query" {
                 saw_query = true;
                 total = data.get("total").and_then(|v| v.as_u64()).unwrap_or(0);
+                query_state = data
+                    .get("queryState")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
                 fetched = data
                     .get("ids")
                     .and_then(|v| v.as_array())
@@ -3789,7 +3852,13 @@ impl JmapClient {
         }
         let next_position = position + fetched;
         let more = fetched > 0 && next_position < total;
-        Ok((out, next_position, total, more))
+        Ok(EmailKeywordPage {
+            entries: out,
+            next_position,
+            total,
+            more,
+            query_state,
+        })
     }
 
     /// Move emails from their current mailbox(es) to a target mailbox by
@@ -4026,98 +4095,133 @@ impl JmapClient {
         // the whole explicit-id lookup.
         let batch = Self::COPY_BATCH.min(session_max_objects_in_get(&session).max(1));
         for chunk in email_ids.chunks(batch) {
-            // Source lookup: one `Email/get` for the chunk, keyed by id so a
-            // reordered or partial response cannot mis-associate a blob.
-            let calls = vec![(
-                "Email/get",
-                json!({
-                    "accountId": account_id,
-                    "ids": chunk,
-                    "properties": ["id", "blobId", "keywords", "receivedAt"],
-                }),
-                "g0",
-            )];
-            let resp = self
-                .api_call(
+            match self
+                .copy_email_chunk(
+                    account_id,
                     api_url,
-                    &["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:mail"],
-                    calls,
+                    chunk,
+                    target_mailbox_id,
                     username,
                     password,
                 )
-                .await?;
-            let mut sources: std::collections::HashMap<String, Value> =
-                std::collections::HashMap::new();
-            for (method, data, _) in &resp.method_responses {
-                if method == "error" {
-                    return Err(anyhow!("Email copy source lookup failed: {}", data));
-                }
-                if method != "Email/get" {
-                    continue;
-                }
-                let list = data
-                    .get("list")
-                    .and_then(|v| v.as_array())
-                    .ok_or_else(|| anyhow!("Email copy source lookup returned no usable list"))?;
-                for row in list {
-                    if let Some(id) = row.get("id").and_then(|v| v.as_str()) {
-                        sources.insert(id.to_string(), row.clone());
-                    }
+                .await
+            {
+                Ok(n) => created += n,
+                // Carry the copies already made with the failure: the caller
+                // must report PARTIAL completion, or its retry would copy
+                // those messages a second time.
+                Err(source) => {
+                    return Err(anyhow::Error::new(CopyPartialFailure { created, source }));
                 }
             }
+        }
+        Ok(created)
+    }
 
-            let mut imports = serde_json::Map::new();
-            for (i, src) in chunk.iter().enumerate() {
-                let Some(source) = sources.get(src) else {
-                    // A source that vanished between the caller's read and the
-                    // copy is partial completion (reported by the caller as a
-                    // non-copy), never a silent success.
-                    tracing::warn!(email_id = %src, "Email copy source was not found");
-                    continue;
-                };
-                let entry = copy_import_entry(source, json!({ (target_mailbox_id): true }))?;
-                imports.insert(format!("i{i}"), entry);
+    /// One chunk of [`Self::copy_emails`]: look the sources up by id, then
+    /// `Email/import` them into `target_mailbox_id`. Returns the number of
+    /// copies created.
+    async fn copy_email_chunk(
+        &self,
+        account_id: &str,
+        api_url: &str,
+        chunk: &[String],
+        target_mailbox_id: &str,
+        username: &str,
+        password: &SecretString,
+    ) -> Result<usize> {
+        let mut created = 0usize;
+        // Source lookup: one `Email/get` for the chunk, keyed by id so a
+        // reordered or partial response cannot mis-associate a blob.
+        let calls = vec![(
+            "Email/get",
+            json!({
+                "accountId": account_id,
+                "ids": chunk,
+                "properties": ["id", "blobId", "keywords", "receivedAt"],
+            }),
+            "g0",
+        )];
+        let resp = self
+            .api_call(
+                api_url,
+                &["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:mail"],
+                calls,
+                username,
+                password,
+            )
+            .await?;
+        let mut sources: std::collections::HashMap<String, Value> =
+            std::collections::HashMap::new();
+        for (method, data, _) in &resp.method_responses {
+            if method == "error" {
+                return Err(anyhow!("Email copy source lookup failed: {}", data));
             }
-            if imports.is_empty() {
+            if method != "Email/get" {
                 continue;
             }
-            let calls = vec![(
-                "Email/import",
-                json!({
-                    "accountId": account_id,
-                    "emails": Value::Object(imports),
-                }),
-                "ei0",
-            )];
-            let resp = self
-                .api_call(
-                    api_url,
-                    &["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:mail"],
-                    calls,
-                    username,
-                    password,
-                )
-                .await?;
-            for (method, data, _) in resp.method_responses {
-                if method == "error" {
-                    return Err(anyhow!("Email copy import failed: {}", data));
+            let list = data
+                .get("list")
+                .and_then(|v| v.as_array())
+                .ok_or_else(|| anyhow!("Email copy source lookup returned no usable list"))?;
+            for row in list {
+                if let Some(id) = row.get("id").and_then(|v| v.as_str()) {
+                    sources.insert(id.to_string(), row.clone());
                 }
-                if method == "Email/import" {
-                    if let Some(c) = data.get("created").and_then(|v| v.as_object()) {
-                        created += c.len();
-                    }
-                    if let Some(not_created) = data.get("notCreated")
-                        && !not_created.is_null()
-                        && not_created.as_object().is_none_or(|o| !o.is_empty())
-                    {
-                        // Per-item copy failures are partial completion, not a
-                        // hard error, matching RopMoveCopyMessages semantics.
-                        tracing::warn!(
-                            "JMAP Email/import copy partial failure: {} not created: {}",
-                            not_created.as_object().map(|o| o.len()).unwrap_or(0),
-                            not_created
-                        );
-                    }
+            }
+        }
+
+        let mut imports = serde_json::Map::new();
+        for (i, src) in chunk.iter().enumerate() {
+            let Some(source) = sources.get(src) else {
+                // A source that vanished between the caller's read and the
+                // copy is partial completion (reported by the caller as a
+                // non-copy), never a silent success.
+                tracing::warn!(email_id = %src, "Email copy source was not found");
+                continue;
+            };
+            let entry = copy_import_entry(source, json!({ (target_mailbox_id): true }))?;
+            imports.insert(format!("i{i}"), entry);
+        }
+        if imports.is_empty() {
+            return Ok(0);
+        }
+        let calls = vec![(
+            "Email/import",
+            json!({
+                "accountId": account_id,
+                "emails": Value::Object(imports),
+            }),
+            "ei0",
+        )];
+        let resp = self
+            .api_call(
+                api_url,
+                &["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:mail"],
+                calls,
+                username,
+                password,
+            )
+            .await?;
+        for (method, data, _) in resp.method_responses {
+            if method == "error" {
+                return Err(anyhow!("Email copy import failed: {}", data));
+            }
+            if method == "Email/import" {
+                if let Some(c) = data.get("created").and_then(|v| v.as_object()) {
+                    created += c.len();
+                }
+                if let Some(not_created) = data.get("notCreated")
+                    && !not_created.is_null()
+                    && not_created.as_object().is_none_or(|o| !o.is_empty())
+                {
+                    // Per-item copy failures are partial completion, not a
+                    // hard error, matching RopMoveCopyMessages semantics.
+                    tracing::warn!(
+                        "JMAP Email/import copy partial failure: {} not created: {}",
+                        not_created.as_object().map(|o| o.len()).unwrap_or(0),
+                        not_created
+                    );
                 }
             }
         }
@@ -4920,6 +5024,15 @@ impl JmapClient {
             return Ok(email_id);
         }
         if let Some((call_id, data)) = method_error {
+            // RFC 8620 §3.6.6 `serverPartialFail`: the server failed partway
+            // through the call, so the submission may have been accepted even
+            // though no confirmation came back. Reporting a plain error would
+            // make `send_email` fall back to SMTP and deliver the message twice.
+            if data.get("type").and_then(|v| v.as_str()) == Some("serverPartialFail") {
+                return Err(anyhow::Error::new(SubmissionUnconfirmed(format!(
+                    "JMAP invocation {call_id} failed partway through: {data}"
+                ))));
+            }
             return Err(anyhow!("JMAP invocation {call_id} failed: {data}"));
         }
         if email_id.is_empty() {
@@ -6920,6 +7033,17 @@ impl JmapClient {
                 }
             };
 
+            // RFC 8620 §3.6.2: an invocation that fails produces an `error`
+            // response INSTEAD of the method response, carrying the failed call
+            // id. A DEFINITIVE method error means nothing was created, so the
+            // CalDAV fallback cannot duplicate the event; only `serverPartialFail`
+            // leaves the outcome unknown (the server may have applied part of the
+            // call before failing).
+            let set_method_error = response
+                .method_responses
+                .iter()
+                .find(|(m, _, call_id)| m == "error" && call_id == "es0")
+                .map(|(_, args, _)| args);
             let set_args = match response
                 .method_responses
                 .iter()
@@ -6928,8 +7052,14 @@ impl JmapClient {
             {
                 Some(args) => args,
                 // No `CalendarEvent/set` entry: the same "may have applied"
-                // uncertainty as a lost reply (RFC 8620 §3.6.2).
+                // uncertainty as a lost reply (RFC 8620 §3.6.2) — UNLESS the
+                // batch carries a definitive error for this call.
                 None => {
+                    if let Some(err) = set_method_error
+                        && err.get("type").and_then(|v| v.as_str()) != Some("serverPartialFail")
+                    {
+                        return Err(anyhow!("CalendarEvent/set failed: {}", err).into());
+                    }
                     return Err(CalendarWriteError::Ambiguous {
                         message: "CalendarEvent/set returned no response".to_string(),
                         payload_discarded: false,
@@ -6951,6 +7081,13 @@ impl JmapClient {
                 .and_then(|v| v.as_str())
                 .map(str::to_string)
             else {
+                // A success claim with no created id: ambiguous, unless the batch
+                // also carries a definitive method error for this call.
+                if let Some(err) = set_method_error
+                    && err.get("type").and_then(|v| v.as_str()) != Some("serverPartialFail")
+                {
+                    return Err(anyhow!("CalendarEvent/set failed: {}", err).into());
+                }
                 return Err(CalendarWriteError::Ambiguous {
                     message: "CalendarEvent/set create returned no created event".to_string(),
                     payload_discarded: false,

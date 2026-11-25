@@ -4474,19 +4474,6 @@ async fn handle_move_items(
             continue;
         }
 
-        // [MS-ASCMD] §2.2.3.177.10 status 4: the client supplied the same
-        // collection as source and destination.
-        if let Some(src) = src_fld_id.as_deref()
-            && !src.is_empty()
-            && src.eq_ignore_ascii_case(&dst_fld_id)
-        {
-            responses.push_str(&format!(
-                r#"<Response><SrcMsgId>{}</SrcMsgId><Status>4</Status></Response>"#,
-                xml_escape(&src_msg_id)
-            ));
-            continue;
-        }
-
         // Determine item type by server ID prefix
         let is_email = crate::email::is_email_server_id(&src_msg_id);
 
@@ -4648,6 +4635,30 @@ async fn handle_move_items(
                     continue;
                 }
             };
+            // [MS-ASCMD] §2.2.3.177.10 status 4: source and destination are the
+            // SAME collection. The identity is the CONCRETE JMAP mailbox id, not
+            // the wire string: a system alias ("2", "inbox") and the backend id
+            // name the same folder, and JMAP ids are opaque (case-SENSITIVE), so
+            // a raw string comparison is both too lenient and too strict.
+            let dest_mailbox: Option<String> = match &target {
+                MoveDest::Mailbox(mb) => Some(mb.clone()),
+                MoveDest::Role(role) => jmap
+                    .get_mailbox_ids_for_role(&account_id, role, username, password)
+                    .await
+                    .ok()
+                    .and_then(|ids| ids.into_iter().next()),
+            };
+            if let (Some(src_mb), Some(dst_mb)) =
+                (source_mailbox.as_deref(), dest_mailbox.as_deref())
+                && src_mb == dst_mb
+            {
+                responses.push_str(&format!(
+                    r#"<Response><SrcMsgId>{}</SrcMsgId><Status>4</Status></Response>"#,
+                    xml_escape(&src_msg_id)
+                ));
+                continue;
+            }
+
             if let Some(src_mb) = source_mailbox.as_deref() {
                 let Some(jmap_id) = crate::email::jmap_id_from_email_server_id(&src_msg_id) else {
                     responses.push_str(&format!(
@@ -6131,6 +6142,12 @@ async fn handle_gal_search(
     xml_or_wbxml_response(wbxml, as_wbxml, &response, request_id)
 }
 
+/// How long a `pending` SendMail ledger row (an UNKNOWN submission outcome)
+/// blocks a resubmission of the same ClientId before the earlier attempt is
+/// treated as failed. Long enough to cover a slow submission, short enough that
+/// a genuinely failed send is not stuck.
+const SENDMAIL_UNKNOWN_RETRY_AFTER_SECS: u64 = 300;
+
 /// Handle EAS SendMail / SmartReply / SmartForward commands
 /// (MS-ASCMD §2.2.1.17/2.2.1.19/2.2.1.20).
 ///
@@ -6153,7 +6170,6 @@ async fn handle_send_mail(
     request_id: &str,
 ) -> Response {
     if !state.cfg.email_enabled {
-        eprintln!("SendMail: email_enabled=false");
         return xml_or_wbxml_response(
             wbxml,
             as_wbxml,
@@ -6164,12 +6180,6 @@ async fn handle_send_mail(
             request_id,
         );
     }
-    eprintln!(
-        "SendMail: email_enabled={}, jmap_client.is_some()={}",
-        state.cfg.email_enabled,
-        state.jmap_client.is_some()
-    );
-
     // Parse the EAS SendMail/SmartReply/SmartForward request and extract the
     // client-supplied MIME content plus (for SmartReply/SmartForward) the
     // referenced original message.
@@ -6230,11 +6240,89 @@ async fn handle_send_mail(
         req_ref.and_then(|r| r.item_id.as_deref())
     };
 
+    // [MS-ASCMD] §2.2.3.28: the ClientId identifies THIS send request, and the
+    // server is expected to remember it (§2.2.3.177.8 status 118 "Message
+    // Previously Sent"). The ledger below makes a client retry — a lost
+    // response, a network drop — idempotent instead of submitting the message a
+    // second time.
+    let client_id = req_ref
+        .and_then(|r| r.client_id.as_deref())
+        .map(str::trim)
+        .filter(|id| !id.is_empty());
+    if let Some(client_id) = client_id {
+        match state
+            .storage
+            .get_email_submission_state(username, client_id)
+            .await
+        {
+            // A confirmed submission: report 118 instead of sending twice.
+            Ok(Some((state, _))) if state == "submitted" => {
+                tracing::info!(
+                    client_id,
+                    "SendMail: ClientId was already submitted; reporting MessagePreviouslySent"
+                );
+                return xml_or_wbxml_response(
+                    wbxml,
+                    as_wbxml,
+                    r#"<?xml version="1.0" encoding="utf-8"?><Status xmlns="ComposeMail:">118</Status>"#,
+                    request_id,
+                );
+            }
+            // An UNKNOWN outcome from an earlier attempt. Resubmitting
+            // immediately could duplicate the message, so the retry is answered
+            // retryably until the cool-down elapses; after that the earlier
+            // attempt is treated as failed (there is no atomic transaction with
+            // the mail store, so a bounded wait is the reconciliation).
+            Ok(Some((state, age)))
+                if state == "pending" && age < SENDMAIL_UNKNOWN_RETRY_AFTER_SECS as i64 =>
+            {
+                tracing::warn!(
+                    client_id,
+                    age_secs = age,
+                    "SendMail: earlier attempt has an unknown outcome; refusing to resubmit yet"
+                );
+                return xml_or_wbxml_response(
+                    wbxml,
+                    as_wbxml,
+                    r#"<?xml version="1.0" encoding="utf-8"?><Status xmlns="ComposeMail:">4</Status>"#,
+                    request_id,
+                );
+            }
+            Ok(_) => {}
+            // A failed ledger READ must not silently disable the dedupe: answer
+            // retryably rather than risk a second submission.
+            Err(e) => {
+                tracing::error!(error = %e, "SendMail: failed to read the submission ledger");
+                return xml_or_wbxml_response(
+                    wbxml,
+                    as_wbxml,
+                    r#"<?xml version="1.0" encoding="utf-8"?><Status xmlns="ComposeMail:">4</Status>"#,
+                    request_id,
+                );
+            }
+        }
+        // Record the attempt BEFORE the send: a crash or a lost response then
+        // leaves a `pending` row instead of an untracked duplicate.
+        if let Err(e) = state
+            .storage
+            .set_email_submission_state(username, client_id, "pending")
+            .await
+        {
+            tracing::error!(error = %e, "SendMail: failed to record the submission attempt");
+            return xml_or_wbxml_response(
+                wbxml,
+                as_wbxml,
+                r#"<?xml version="1.0" encoding="utf-8"?><Status xmlns="ComposeMail:">4</Status>"#,
+                request_id,
+            );
+        }
+    }
+
     // Parse the MIME with mail-parser, re-express it via JMAP
     // EmailSubmission when it is structurally simple (lossless), otherwise
     // relay the bytes over SMTP with a minimal header rewrite and, when
     // SaveInSentItems is set, import the copy into Sent via JMAP Email/import.
-    match crate::email::send_eas_mime_message(
+    let send_result = crate::email::send_eas_mime_message(
         state,
         username,
         password,
@@ -6243,22 +6331,45 @@ async fn handle_send_mail(
         reference_item_id,
         req_ref.map(|r| r.save_in_sent).unwrap_or(true),
     )
-    .await
-    {
-        Ok(_) => {}
-        Err(e) => {
-            eprintln!("SendMail error: {}", e);
-            tracing::error!(
-                error = %e,
-                "Failed to send EAS SendMail/SmartReply/SmartForward message"
-            );
-            return xml_or_wbxml_response(
-                wbxml,
-                as_wbxml,
-                r#"<?xml version="1.0" encoding="utf-8"?><Status xmlns="ComposeMail:">4</Status>"#,
-                request_id,
-            );
+    .await;
+    if let Some(client_id) = client_id {
+        // A confirmed send is `submitted` (a later retry answers 118); a
+        // definitive failure is `rejected` (a retry may resend); an UNCONFIRMED
+        // outcome stays `pending` so the cool-down above applies.
+        let unconfirmed = send_result.as_ref().err().is_some_and(|e| {
+            e.downcast_ref::<crate::jmap::SubmissionUnconfirmed>()
+                .is_some()
+        });
+        let next = if send_result.is_ok() {
+            Some("submitted")
+        } else if unconfirmed {
+            None
+        } else {
+            Some("rejected")
+        };
+        if let Some(next) = next
+            && let Err(e) = state
+                .storage
+                .set_email_submission_state(username, client_id, next)
+                .await
+        {
+            // The message was (or was not) sent either way; the ledger write is
+            // best-effort here so a storage hiccup cannot turn a completed send
+            // into a client-visible failure.
+            tracing::error!(error = %e, state = next, "SendMail: failed to record the submission outcome");
         }
+    }
+    if let Err(e) = send_result {
+        tracing::error!(
+            error = %e,
+            "Failed to send EAS SendMail/SmartReply/SmartForward message"
+        );
+        return xml_or_wbxml_response(
+            wbxml,
+            as_wbxml,
+            r#"<?xml version="1.0" encoding="utf-8"?><Status xmlns="ComposeMail:">4</Status>"#,
+            request_id,
+        );
     }
 
     // Per MS-ASCMD, SendMail/SmartReply/SmartForward return Status 1 on success
@@ -8070,10 +8181,18 @@ pub(crate) async fn persist_keyword_scan(
     collection_id: &str,
     outcome: &KeywordScanOutcome,
     seeded: &HashSet<String>,
+    undelivered: &HashSet<String>,
 ) -> anyhow::Result<()> {
     let mut all_written = true;
     for (id, keywords) in &outcome.upserts {
         if seeded.contains(id) {
+            continue;
+        }
+        // A delivered op that rendered NO command (the message vanished, or the
+        // op was filtered) never reached the client, so its scan baseline must
+        // not be seeded: a later flag edit would otherwise emit a `<Change>` for
+        // an item the client does not hold.
+        if undelivered.contains(id) {
             continue;
         }
         if let Err(e) = state
@@ -8197,7 +8316,7 @@ pub(crate) async fn scan_email_keyword_changes(
         }
     };
     for _ in 0..KEYWORD_SCAN_MAX_PAGES {
-        let (entries, next_position, _total, more) = match jmap
+        let page = match jmap
             .list_email_ids_with_keywords_page(
                 account_id,
                 mailbox_id,
@@ -8216,6 +8335,8 @@ pub(crate) async fn scan_email_keyword_changes(
                 return outcome;
             }
         };
+        let entries = page.entries;
+        let more = page.more;
         if entries.is_empty() {
             // Reached the end of the mailbox. If we started from a saved
             // position > 0, the prefix (0..saved_position) was never scanned
@@ -8287,7 +8408,7 @@ pub(crate) async fn scan_email_keyword_changes(
             }
             outcome.upserts.push((id, keywords));
         }
-        position = next_position;
+        position = page.next_position;
         if !more {
             position = 0;
             complete = true;
@@ -8327,33 +8448,61 @@ pub(crate) async fn capture_email_keyword_baseline(
     password: &SecretString,
     state_collection_id: &str,
 ) -> anyhow::Result<()> {
+    // Offset paging is only sound while the mailbox's query state is stable: an
+    // insert or removal shifts every later offset and would silently skip
+    // messages, saving an INCOMPLETE baseline as complete (their flag edits
+    // would then never be reported). Recapture once on a state change, then
+    // fail closed so the caller retries the whole prime.
     let mut entries: Vec<(String, Vec<String>)> = Vec::new();
-    let mut position: u64 = 0;
-    loop {
-        match jmap
-            .list_email_ids_with_keywords_page(
-                account_id,
-                mailbox_id,
-                position,
-                KEYWORD_SCAN_PAGE,
-                username,
-                password,
-            )
-            .await
-        {
-            Ok((mut page, next, _total, more)) => {
-                entries.append(&mut page);
-                position = next;
-                if !more {
+    let mut stable = false;
+    for _attempt in 0..2 {
+        entries.clear();
+        let mut position: u64 = 0;
+        let mut state_seen: Option<String> = None;
+        let mut changed = false;
+        loop {
+            let page = match jmap
+                .list_email_ids_with_keywords_page(
+                    account_id,
+                    mailbox_id,
+                    position,
+                    KEYWORD_SCAN_PAGE,
+                    username,
+                    password,
+                )
+                .await
+            {
+                Ok(v) => v,
+                Err(e) => {
+                    return Err(anyhow::anyhow!(
+                        "failed to capture email keyword baseline: {e}"
+                    ));
+                }
+            };
+            if let Some(first) = state_seen.as_deref() {
+                if !page.query_state.is_empty() && page.query_state != first {
+                    changed = true;
                     break;
                 }
+            } else {
+                state_seen = Some(page.query_state.clone());
             }
-            Err(e) => {
-                return Err(anyhow::anyhow!(
-                    "failed to capture email keyword baseline: {e}"
-                ));
+            let more = page.more;
+            position = page.next_position;
+            entries.extend(page.entries);
+            if !more {
+                break;
             }
         }
+        if !changed {
+            stable = true;
+            break;
+        }
+    }
+    if !stable {
+        return Err(anyhow::anyhow!(
+            "mailbox changed while capturing the email keyword baseline; retrying"
+        ));
     }
     let map: std::collections::BTreeMap<String, Vec<String>> = entries.into_iter().collect();
     let json = serde_json::to_string(&map)
@@ -9648,12 +9797,18 @@ async fn handle_email_delta_sync(ctx: &EmailSyncCtx<'_>) -> anyhow::Result<Strin
     // ATOMICALLY with the window's acknowledgement (never eagerly), so a failed
     // window leaves no advanced baseline behind.
     let mut seeds: Vec<(String, Vec<String>)> = Vec::new();
+    // Ids whose op rendered NO command: the client never receives them, so the
+    // flag scan must not record a baseline row for them.
+    let mut undelivered: HashSet<String> = HashSet::new();
     for op in deliver {
         // A transient fetch failure aborts BEFORE any state is committed (no
         // token advance, no overflow queue, no seed write): the caller answers
         // Status 5 carrying the incoming key, so the next Sync re-derives the
         // same change set instead of dropping the op.
         let (xml, seed) = render_pending_email_op(ctx, op).await?;
+        if xml.is_empty() {
+            undelivered.insert(op.id.clone());
+        }
         commands_xml.push_str(&xml);
         if let Some(seed) = seed {
             seeds.push(seed);
@@ -9723,8 +9878,15 @@ async fn handle_email_delta_sync(ctx: &EmailSyncCtx<'_>) -> anyhow::Result<Strin
         // remaining flag-scan baseline rows + rotating position (the seeded ids
         // were already written atomically above, so they are skipped).
         let seeded: HashSet<String> = seeds.iter().map(|(id, _)| id.clone()).collect();
-        if let Err(e) =
-            persist_keyword_scan(state, username, state_collection_id, &keyword_scan, &seeded).await
+        if let Err(e) = persist_keyword_scan(
+            state,
+            username,
+            state_collection_id,
+            &keyword_scan,
+            &seeded,
+            &undelivered,
+        )
+        .await
         {
             // Best effort: the window, its queue and its key are already
             // committed, so failing here would answer an error whose retry
@@ -9798,8 +9960,15 @@ async fn handle_email_delta_sync(ctx: &EmailSyncCtx<'_>) -> anyhow::Result<Strin
     // guarantees a crash before this point re-scans the same window rather than
     // swallowing the updates.
     let seeded: HashSet<String> = seeds.iter().map(|(id, _)| id.clone()).collect();
-    if let Err(e) =
-        persist_keyword_scan(state, username, state_collection_id, &keyword_scan, &seeded).await
+    if let Err(e) = persist_keyword_scan(
+        state,
+        username,
+        state_collection_id,
+        &keyword_scan,
+        &seeded,
+        &undelivered,
+    )
+    .await
     {
         // Best effort, for the same reason as the overflow branch above: the
         // token that acknowledges this window is already committed, so an error
@@ -12132,10 +12301,15 @@ mod tests {
         use axum::routing::{get, post};
         use serde_json::{Value, json};
         use std::sync::Arc as StdArc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
 
         #[derive(Clone)]
         struct Ctl {
             base: String,
+            /// Number of `Mailbox/query` calls the reconcile made: proves the
+            /// delta actually consulted the live hierarchy (a test that never
+            /// hit the backend could pass for the wrong reason).
+            mailbox_queries: StdArc<AtomicUsize>,
         }
 
         async fn session(axum::Extension(ctl): axum::Extension<Ctl>) -> axum::Json<Value> {
@@ -12152,8 +12326,12 @@ mod tests {
             }))
         }
 
-        // The LIVE hierarchy still holds `mbx-1`, so the intent must be withdrawn.
-        async fn api(body: String) -> axum::response::Response {
+        // The LIVE hierarchy still holds `mbx-1`, so the intent must be retained
+        // and the mapping kept.
+        async fn api(
+            axum::Extension(ctl): axum::Extension<Ctl>,
+            body: String,
+        ) -> axum::response::Response {
             let req: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
             let mut responses = Vec::new();
             for call in req
@@ -12165,7 +12343,10 @@ mod tests {
                 let name = call.get(0).and_then(|v| v.as_str()).unwrap_or("");
                 let cid = call.get(2).and_then(|v| v.as_str()).unwrap_or("c0");
                 let result = match name {
-                    "Mailbox/query" => json!({"accountId":"a","ids":["mbx-1"],"total":1}),
+                    "Mailbox/query" => {
+                        ctl.mailbox_queries.fetch_add(1, Ordering::SeqCst);
+                        json!({"accountId":"a","ids":["mbx-1"],"total":1})
+                    }
                     "Mailbox/get" => json!({"accountId":"a","state":"m1","list":[
                         {"id":"mbx-1","name":"Still Here"}
                     ]}),
@@ -12183,7 +12364,11 @@ mod tests {
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let base = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
-        let ctl = Ctl { base: base.clone() };
+        let mailbox_queries = StdArc::new(AtomicUsize::new(0));
+        let ctl = Ctl {
+            base: base.clone(),
+            mailbox_queries: mailbox_queries.clone(),
+        };
         let app = axum::Router::new()
             .route("/session", get(session))
             .route("/", post(api))
@@ -12282,8 +12467,16 @@ mod tests {
         )
         .await;
         assert!(
+            delta_text.contains("<Status>1</Status>"),
+            "the delta must SUCCEED while keeping the live folder, got: {delta_text}"
+        );
+        assert!(
             !delta_text.contains("<Delete>"),
             "a live folder must NOT be deleted, got: {delta_text}"
+        );
+        assert!(
+            mailbox_queries.load(Ordering::SeqCst) > 0,
+            "the delta must reconcile the intent against the LIVE hierarchy"
         );
         assert!(
             state
@@ -13898,11 +14091,85 @@ mod tests {
     }
 
     /// A SYSTEM collection's class is inferable from its id alone, so a
-    /// Class-omitted Sync of one must NOT touch `folder_map` and therefore must
-    /// not fail even when the mapping read would error.
+    /// Class-omitted Sync of one must NOT touch `folder_map` and must instead
+    /// reach the LIVE email handler: with the mapping table unavailable and a
+    /// backend that resolves the role to an empty mailbox, the collection still
+    /// succeeds with Status 1.
     #[tokio::test]
     async fn test_sync_collection_class_omitted_system_folder_ignores_folder_map() {
-        let state = test_sync_state().await;
+        use crate::models::AppState;
+        use axum::routing::{get, post};
+        use serde_json::{Value, json};
+        use std::sync::Arc as StdArc;
+
+        #[derive(Clone)]
+        struct Ctl {
+            base: String,
+        }
+
+        async fn session(axum::Extension(ctl): axum::Extension<Ctl>) -> axum::Json<Value> {
+            axum::Json(json!({
+                "apiUrl": ctl.base,
+                "downloadUrl": format!("{}/download/{{accountId}}/{{blobId}}", ctl.base),
+                "uploadUrl": format!("{}/upload/{{accountId}}", ctl.base),
+                "eventSourceUrl": format!("{}/eventsource", ctl.base),
+                "state": "s",
+                "username": "u",
+                "accounts": {"a": {"name": "u", "isPersonal": true, "isReadOnly": false, "accountCapabilities": {}}},
+                "primaryAccounts": {"urn:ietf:params:jmap:mail": "a"},
+                "capabilities": {"urn:ietf:params:jmap:core": {"maxObjectsInGet": 500}}
+            }))
+        }
+
+        // The Junk role resolves to NO mailbox and the mailbox query is empty:
+        // the delta scopes to nothing and succeeds with an empty window.
+        async fn api(body: String) -> axum::Json<Value> {
+            let req: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
+            let mut responses = Vec::new();
+            for call in req
+                .get("methodCalls")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default()
+            {
+                let name = call.get(0).and_then(|v| v.as_str()).unwrap_or("");
+                let cid = call.get(2).and_then(|v| v.as_str()).unwrap_or("c0");
+                let result = match name {
+                    "Mailbox/query" => json!({"accountId":"a","ids":[],"total":0,"queryState":"q0"}),
+                    "Mailbox/get" => json!({"accountId":"a","state":"m1","list":[]}),
+                    "Email/queryChanges" => json!({
+                        "accountId": "a", "oldQueryState": "q0", "newQueryState": "q1",
+                        "added": [], "removed": []
+                    }),
+                    _ => json!({"accountId":"a"}),
+                };
+                responses.push(json!([name, result, cid]));
+            }
+            axum::Json(json!({"methodResponses": responses, "sessionState": "s"}))
+        }
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
+        let app = axum::Router::new()
+            .route("/session", get(session))
+            .route("/", post(api))
+            .layer(axum::Extension(Ctl { base: base.clone() }));
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let storage = crate::storage::Storage::new("sqlite::memory:")
+            .await
+            .unwrap();
+        storage.init_schema().await.unwrap();
+        let cfg = crate::config::Config {
+            jmap_base: base.clone(),
+            email_enabled: true,
+            mail_domain: "example.com".to_string(),
+            hmac_secret: SecretString::from("a".repeat(32)),
+            ..Default::default()
+        };
+        let state = StdArc::new(AppState::new(cfg, StdArc::new(storage)));
         let owner = "user@example.com";
         let device = "device-system";
         sqlx::query("DROP TABLE folder_map")
@@ -13934,8 +14201,8 @@ mod tests {
             "a system folder must route by id, never via folder_map: {text}"
         );
         assert!(
-            !text.contains("<Status>6</Status>"),
-            "a system folder must not be blocked by a folder_map read failure: {text}"
+            text.contains("<Status>1</Status>"),
+            "the live email handler must answer the empty window with Status 1: {text}"
         );
     }
 
