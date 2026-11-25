@@ -1262,6 +1262,19 @@ pub async fn send_email(
     if let Some(jmap) = &state.jmap_client {
         match send_email_jmap(state, jmap, msg, username, password).await {
             Ok(id) => return Ok(id),
+            Err(e)
+                if e.downcast_ref::<crate::jmap::SubmissionUnconfirmed>()
+                    .is_some() =>
+            {
+                // The submission outcome is UNKNOWN: the message may already be
+                // on its way, so an SMTP retry could deliver it twice. Report the
+                // failure and let the client retry the send instead.
+                tracing::error!(
+                    error = %e,
+                    "JMAP submission is unconfirmed; not retrying over SMTP"
+                );
+                return Err(e);
+            }
             Err(e) => {
                 tracing::warn!(
                     error = %e,

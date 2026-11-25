@@ -1187,6 +1187,20 @@ pub struct CalendarEventListResult {
 #[error("CalendarEvent/changes cannot calculate changes: {0}")]
 pub struct CannotCalculateChanges(pub String);
 
+/// The submission outcome is UNKNOWN: the request may have been accepted but no
+/// confirmation came back. The caller must NOT retry over SMTP — the message may
+/// already be on its way, so a fallback could deliver it twice.
+#[derive(Debug)]
+pub struct SubmissionUnconfirmed(pub String);
+
+impl std::fmt::Display for SubmissionUnconfirmed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "JMAP submission unconfirmed: {}", self.0)
+    }
+}
+
+impl std::error::Error for SubmissionUnconfirmed {}
+
 /// Result of a CalendarEvent/changes call.
 #[derive(Clone, Debug)]
 pub struct CalendarEventChangesResult {
@@ -4913,14 +4927,18 @@ impl JmapClient {
                 "JMAP Email/set reported no created email for the submission"
             ));
         }
+        // The response arrived but carries no confirmation for this submission:
+        // the message may still have been accepted, so the outcome is UNKNOWN.
+        // A typed error keeps the caller from "recovering" over SMTP and
+        // delivering the message a second time.
         if !saw_submission_response {
-            return Err(anyhow!(
-                "JMAP EmailSubmission/set returned no method response; the send is unconfirmed"
-            ));
+            return Err(anyhow::Error::new(SubmissionUnconfirmed(
+                "JMAP EmailSubmission/set returned no method response".to_string(),
+            )));
         }
-        Err(anyhow!(
-            "JMAP EmailSubmission/set did not confirm the submission; the send is unconfirmed"
-        ))
+        Err(anyhow::Error::new(SubmissionUnconfirmed(
+            "JMAP EmailSubmission/set did not confirm the submission".to_string(),
+        )))
     }
 
     /// Get all mailbox IDs for a given JMAP role (e.g., "inbox", "sent").

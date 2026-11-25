@@ -880,7 +880,10 @@ fn parse_global_window_size(xml: &str) -> Option<usize> {
 
 fn parse_sync_collections(xml: &str) -> Vec<SyncCollection> {
     let mut reader = Reader::from_str(xml);
-    reader.config_mut().trim_text(true);
+    // Text is NOT trimmed per event: a value containing an entity is split into
+    // several text events, and trimming each one would drop the whitespace
+    // around the entity. Values are trimmed once, when committed.
+    reader.config_mut().trim_text(false);
     let mut buf = Vec::new();
     let mut collections = Vec::new();
     let mut current_collection: Option<SyncCollection> = None;
@@ -889,6 +892,11 @@ fn parse_sync_collections(xml: &str) -> Vec<SyncCollection> {
     let mut depth: usize = 0;
     // Current tag name when we are at depth 1 (direct child of Collection).
     let mut current_tag: Option<Vec<u8>> = None;
+    // Accumulates a direct child's character data across every event quick-xml
+    // splits it into. A value containing an entity (`&amp;` in a CalDAV href)
+    // arrives as Text + GeneralRef + Text, so assigning per event would keep
+    // only the LAST segment and silently truncate the CollectionId.
+    let mut child_text = String::new();
 
     loop {
         let start_pos = reader.buffer_position();
@@ -904,6 +912,7 @@ fn parse_sync_collections(xml: &str) -> Vec<SyncCollection> {
                 } else if depth == 1 && current_collection.is_some() {
                     // Direct child of Collection: track its tag name for potential text capture.
                     current_tag = Some(name.as_ref().as_bytes().to_vec());
+                    child_text.clear();
                     depth = 2;
                 } else if depth >= 2 {
                     // Nested further inside; increment depth.
@@ -911,62 +920,25 @@ fn parse_sync_collections(xml: &str) -> Vec<SyncCollection> {
                 }
             }
             Ok(Event::Text(t)) => {
-                if depth == 1 {
-                    // Should not happen: text directly inside Collection is not expected.
-                    // But we ignore it.
-                } else if depth == 2 {
-                    // Text content of a direct child element.
-                    if let Some(tag) = current_tag.as_ref()
-                        && let Some(coll) = current_collection.as_mut()
-                    {
-                        let text = t.to_string();
-                        match tag.as_slice() {
-                            b"SyncKey" => coll.sync_key = Some(text),
-                            b"CollectionId" => coll.collection_id = Some(text),
-                            b"Class" => coll.class = Some(text),
-                            b"WindowSize" => coll.window_size = text.parse().ok(),
-                            b"FilterType" => coll.filter_type = text.parse().ok(),
-                            b"GetChanges" => coll.get_changes = text.trim() != "0",
-                            _ => {}
-                        }
-                    }
+                // Text content of a direct child element. `decode` borrows when
+                // the bytes are already valid UTF-8, so no allocation happens
+                // for the common case.
+                if depth == 2 {
+                    child_text.push_str(t.as_ref());
                 }
                 // For depth > 2 we ignore text inside deeper nested structures.
             }
             Ok(Event::CData(cdata)) => {
-                // Treat CDATA exactly like Text; decode to String.
-                if depth == 2
-                    && let Some(tag) = current_tag.as_ref()
-                    && let Some(coll) = current_collection.as_mut()
-                {
-                    let text = cdata.to_string();
-                    match tag.as_slice() {
-                        b"SyncKey" => coll.sync_key = Some(text),
-                        b"CollectionId" => coll.collection_id = Some(text),
-                        b"Class" => coll.class = Some(text),
-                        b"WindowSize" => coll.window_size = text.parse().ok(),
-                        b"FilterType" => coll.filter_type = text.parse().ok(),
-                        b"GetChanges" => coll.get_changes = text.trim() != "0",
-                        _ => {}
-                    }
+                // Treat CDATA exactly like Text.
+                if depth == 2 {
+                    child_text.push_str(cdata.as_ref());
                 }
             }
             Ok(Event::GeneralRef(r)) => {
-                // Treat entity references like Text/CDATA.
-                if depth == 2
-                    && let Some(tag) = current_tag.as_ref()
-                    && let Some(coll) = current_collection.as_mut()
-                {
-                    let text = resolve_xml_reference(r.as_ref());
-                    match tag.as_slice() {
-                        b"SyncKey" => coll.sync_key = Some(text),
-                        b"CollectionId" => coll.collection_id = Some(text),
-                        b"Class" => coll.class = Some(text),
-                        b"WindowSize" => coll.window_size = text.parse().ok(),
-                        b"FilterType" => coll.filter_type = text.parse().ok(),
-                        b"GetChanges" => coll.get_changes = text.trim() != "0",
-                        _ => {}
-                    }
+                // An entity inside a direct child's text: append the DECODED
+                // character so the accumulated value is the complete string.
+                if depth == 2 {
+                    child_text.push_str(&resolve_xml_reference(r.as_ref()));
                 }
             }
             Ok(Event::End(e)) => {
@@ -1005,8 +977,23 @@ fn parse_sync_collections(xml: &str) -> Vec<SyncCollection> {
                     depth = 0;
                     current_tag = None;
                 } else if depth == 2 {
-                    // Closing a direct child element of Collection.
-                    current_tag = None;
+                    // Closing a direct child element of Collection: the value is
+                    // complete now, so commit it (moving the buffer, not cloning).
+                    if let Some(tag) = current_tag.take()
+                        && let Some(coll) = current_collection.as_mut()
+                    {
+                        let text = std::mem::take(&mut child_text);
+                        let value = text.trim();
+                        match tag.as_slice() {
+                            b"SyncKey" => coll.sync_key = Some(value.to_string()),
+                            b"CollectionId" => coll.collection_id = Some(value.to_string()),
+                            b"Class" => coll.class = Some(value.to_string()),
+                            b"WindowSize" => coll.window_size = value.parse().ok(),
+                            b"FilterType" => coll.filter_type = value.parse().ok(),
+                            b"GetChanges" => coll.get_changes = value != "0",
+                            _ => {}
+                        }
+                    }
                     depth = 1;
                 } else if depth > 2 {
                     depth -= 1;
@@ -1944,13 +1931,7 @@ async fn handle_folder_sync(
 
         // User-created folders persisted by FolderCreate ([MS-ASCMD] §2.2.1.3),
         // rendered from the folder map captured in the same snapshot.
-        let user_folders = match render_user_folders_add(state, owner, &folder_rows).await {
-            Ok(xml) => xml,
-            Err(e) => {
-                tracing::warn!(error = %e, "FolderSync: failed to list user-created folders");
-                return folder_sync_error_response(wbxml, as_wbxml, request_id);
-            }
-        };
+        let user_folders = render_user_folders_add(&folder_rows);
         let user_count = user_folders.matches("<Add>").count();
 
         // Calendar(1) + Tasks(1) + Notes(1) [+ Contacts(1)] [+ 6 email folders]
@@ -2046,12 +2027,10 @@ fn folder_sync_error_response(wbxml: &Wbxml, as_wbxml: bool, request_id: &str) -
     xml_or_wbxml_response(wbxml, as_wbxml, xml, request_id)
 }
 
-/// Render the `<Add>` entries for every user-created folder owned by `owner`.
-async fn render_user_folders_add(
-    _state: &Arc<AppState>,
-    _owner: &str,
-    folders: &[crate::storage::FolderRow],
-) -> crate::error::Result<String> {
+/// Render the `<Add>` entries for every user-created folder in the captured
+/// snapshot. Pure: it renders exactly the rows the caller read, so the
+/// hierarchy and the entries describe the same instant.
+fn render_user_folders_add(folders: &[crate::storage::FolderRow]) -> String {
     let mut xml = String::new();
     for row in folders {
         let (server_id, parent_id, display_name, folder_type) =
@@ -2064,7 +2043,7 @@ async fn render_user_folders_add(
             folder_type,
         ));
     }
-    Ok(xml)
+    xml
 }
 
 /// Render the incremental FolderSync `<Changes>` for folder-hierarchy journal
@@ -4627,41 +4606,47 @@ async fn handle_move_items(
             // membership probe is transient (status 7), a confirmed absence or
             // non-membership is status 1. A request that omits SrcFldId (not
             // schema-valid, but harmless to accept) skips the check.
-            let source_mailbox: Option<String> = match src_fld_id.as_deref() {
-                Some(src) if !src.is_empty() => {
-                    match eas_mail_collection_mailbox_id(
-                        state,
-                        jmap,
-                        &account_id,
-                        src,
-                        username,
-                        password,
-                    )
-                    .await
-                    {
-                        Ok(Some(mb)) => Some(mb),
-                        Ok(None) => {
-                            responses.push_str(&format!(
-                                r#"<Response><SrcMsgId>{}</SrcMsgId><Status>1</Status></Response>"#,
-                                xml_escape(&src_msg_id)
-                            ));
-                            continue;
-                        }
-                        Err(e) => {
-                            tracing::warn!(
-                                error = %e,
-                                src_fld_id = %src,
-                                "MoveItems: source collection resolution failed"
-                            );
-                            responses.push_str(&format!(
-                                r#"<Response><SrcMsgId>{}</SrcMsgId><Status>7</Status></Response>"#,
-                                xml_escape(&src_msg_id)
-                            ));
-                            continue;
-                        }
-                    }
+            // [MS-ASCMD] §2.2.3.117 (`Move`): `SrcFldId` is REQUIRED. Without it
+            // the move helper would rewrite the message's whole membership set
+            // instead of removing exactly the named source, so the request is
+            // rejected before anything is touched (status 5, invalid request).
+            let Some(src_folder_id) = src_fld_id.as_deref().filter(|s| !s.is_empty()) else {
+                responses.push_str(&format!(
+                    r#"<Response><SrcMsgId>{}</SrcMsgId><Status>5</Status></Response>"#,
+                    xml_escape(&src_msg_id)
+                ));
+                continue;
+            };
+            let source_mailbox: Option<String> = match eas_mail_collection_mailbox_id(
+                state,
+                jmap,
+                &account_id,
+                src_folder_id,
+                username,
+                password,
+            )
+            .await
+            {
+                Ok(Some(mb)) => Some(mb),
+                Ok(None) => {
+                    responses.push_str(&format!(
+                        r#"<Response><SrcMsgId>{}</SrcMsgId><Status>1</Status></Response>"#,
+                        xml_escape(&src_msg_id)
+                    ));
+                    continue;
                 }
-                _ => None,
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        src_fld_id = %src_folder_id,
+                        "MoveItems: source collection resolution failed"
+                    );
+                    responses.push_str(&format!(
+                        r#"<Response><SrcMsgId>{}</SrcMsgId><Status>7</Status></Response>"#,
+                        xml_escape(&src_msg_id)
+                    ));
+                    continue;
+                }
             };
             if let Some(src_mb) = source_mailbox.as_deref() {
                 let Some(jmap_id) = crate::email::jmap_id_from_email_server_id(&src_msg_id) else {
@@ -4770,13 +4755,38 @@ async fn handle_move_items(
                 continue;
             }
 
-            // For calendar, moving within the same (only) collection is effectively a no-op
-            // since there is no other calendar. The Exchange protocol expects a new DstMsgId,
-            // but the item identifier does not change when moving within same calendar.
-            // We'll return the same server ID.
-            // However, if we had multiple calendars, we would perform a CalDAV MOVE here.
-            // Status 3 is the MoveItems success code (§2.2.3.177.10); 1 would
-            // report an invalid source item for a successful move.
+            // For calendar, moving within the same (only) collection is a no-op:
+            // the item identifier does not change. That is only true of an item
+            // this account actually HAS — reporting success for an unknown id
+            // would tell the client a move happened for an item it can never
+            // refresh. [MS-ASCMD] §2.2.3.177.10 status 1 = invalid source item;
+            // 7 = transient (a failed lookup must not look like a vanished item).
+            match state
+                .storage
+                .get_ews_item_by_server_id(username, &src_msg_id)
+                .await
+            {
+                Ok(Some(_)) => {}
+                Ok(None) => {
+                    responses.push_str(&format!(
+                        r#"<Response><SrcMsgId>{}</SrcMsgId><Status>1</Status></Response>"#,
+                        xml_escape(&src_msg_id)
+                    ));
+                    continue;
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        src_msg_id = %src_msg_id,
+                        "MoveItems: calendar item lookup failed"
+                    );
+                    responses.push_str(&format!(
+                        r#"<Response><SrcMsgId>{}</SrcMsgId><Status>7</Status></Response>"#,
+                        xml_escape(&src_msg_id)
+                    ));
+                    continue;
+                }
+            }
             responses.push_str(&format!(
                 r#"<Response><SrcMsgId>{}</SrcMsgId><Status>3</Status><DstMsgId>{}</DstMsgId></Response>"#,
                 xml_escape(&src_msg_id),
@@ -5664,19 +5674,23 @@ async fn handle_get_hierarchy(ctx: &FolderCmdCtx<'_>) -> Response {
     if !state.can_read_email() {
         // [MS-ASCMD] §2.2.1.8: unlike other commands there is NO `GetHierarchy`
         // top-level element — `<Folders>` IS the response root (§6.19 schema).
-        let body = r#"<?xml version="1.0" encoding="utf-8"?><Folders xmlns="FolderHierarchy:"></Folders>"#;
+        let body =
+            r#"<?xml version="1.0" encoding="utf-8"?><Folders xmlns="FolderHierarchy:"></Folders>"#;
         return wbxml_response(body, as_wbxml, wbxml, request_id);
     }
     // [MS-ASCMD] §6.19: emit no <Add> wrapper — the FolderSync entry shape
     // is invalid here; use bare <Folder> children in spec order.
     let mut folders = String::new();
+    // [MS-ASCMD] §2.2.3.186.4 (Type (GetHierarchy)): 1 = user-created folder
+    // (generic), 2 = Inbox, 3 = Drafts, 4 = Deleted Items, 5 = Sent Items,
+    // 6 = Outbox. Junk Email has no legacy distinguished type, so it is 1.
     for (id, parent_id, display_name, folder_type) in [
-        ("2", "0", "Inbox", 1u8),
-        ("3", "0", "Drafts", 2),
-        ("4", "0", "Deleted Items", 3),
-        ("5", "0", "Sent Items", 4),
-        ("6", "0", "Outbox", 5),
-        ("12", "0", "Junk Email", 6),
+        ("2", "0", "Inbox", 2u8),
+        ("3", "0", "Drafts", 3),
+        ("4", "0", "Deleted Items", 4),
+        ("5", "0", "Sent Items", 5),
+        ("6", "0", "Outbox", 6),
+        ("12", "0", "Junk Email", 1),
     ] {
         folders.push_str(&format!(
             "<Folder><DisplayName>{display_name}</DisplayName><ServerId>{id}</ServerId><Type>{folder_type}</Type><ParentId>{parent_id}</ParentId></Folder>"
@@ -6399,7 +6413,7 @@ async fn handle_sync_collections(ctx: &SyncCtx<'_>, collections: &[SyncCollectio
                         "Failed to read folder mapping for Class-omitted Sync; deferring"
                     );
                     collection_responses.push(format!(
-                        "<Collection><Class>{}</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>6</Status></Collection>",
+                        "<Collection><Class>{}</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>5</Status></Collection>",
                         xml_escape(coll.class.as_deref().unwrap_or("")),
                         xml_escape(incoming_key),
                         xml_escape(collection_id)
@@ -6569,6 +6583,14 @@ async fn handle_sync_collections(ctx: &SyncCtx<'_>, collections: &[SyncCollectio
                 };
                 match email_sync_result {
                     Ok(xml_str) => xml_str,
+                    Err(e) if e.downcast_ref::<EmailPrimeRequired>().is_some() => {
+                        // [MS-ASCMD] §2.2.3.177.8 status 3 with SyncKey 0: the
+                        // client discards its key and re-primes the collection.
+                        format!(
+                            "<Collection><Class>Email</Class><SyncKey>0</SyncKey><CollectionId>{}</CollectionId><Status>3</Status></Collection>",
+                            xml_escape(collection_id)
+                        )
+                    }
                     Err(e) => {
                         // [MS-ASCMD] §2.2.3.177.17: Status 6 is an ITEM-scoped
                         // "client/server conversion" error ("Stop sending the
@@ -7928,7 +7950,7 @@ async fn accumulate_email_changes(
     // newly moved into this mailbox is an `<Add>`.
     let delivered = match state
         .storage
-        .list_email_delivered_membership(owner, collection_id)
+        .list_email_delivered_membership(owner, state_collection_id)
         .await
     {
         Ok(d) => d,
@@ -9338,6 +9360,20 @@ async fn handle_email_initial_sync(
 /// first, then diff the mailbox-scoped `Email/queryChanges` feed from the
 /// stored query state, honoring the
 /// response window with `<MoreAvailable/>` (MS-ASCMD §2.2.3.199).
+/// The collection's JMAP state token is missing while its mailbox exists, so a
+/// delta cannot be computed. The caller answers Status 3 + SyncKey 0, which
+/// makes the client perform a fresh initial sync (and capture a new token).
+#[derive(Debug)]
+struct EmailPrimeRequired;
+
+impl std::fmt::Display for EmailPrimeRequired {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("email delta requires a re-prime: no JMAP state token")
+    }
+}
+
+impl std::error::Error for EmailPrimeRequired {}
+
 async fn handle_email_delta_sync(ctx: &EmailSyncCtx<'_>) -> anyhow::Result<String> {
     let EmailSyncCtx {
         state,
@@ -9502,20 +9538,43 @@ async fn handle_email_delta_sync(ctx: &EmailSyncCtx<'_>) -> anyhow::Result<Strin
     }
 
     // ---- 2) Fresh diff from the stored JMAP state token. ---------------
+    // A mailbox that RESOLVES but has no stored JMAP state token cannot be
+    // diffed: answering an empty success would silently stop delivering mail
+    // for this collection forever. The client must re-prime instead (the
+    // caller answers Status 3 + SyncKey 0, exactly like an invalid SyncKey).
+    if delta_mailbox_id.is_some() && jmap_state_token.is_none() {
+        tracing::warn!(
+            user = %username,
+            collection_id,
+            "Email delta has a resolved mailbox but no JMAP state token; forcing a re-prime"
+        );
+        return Err(anyhow::Error::new(EmailPrimeRequired));
+    }
     let Some(old_state) = jmap_state_token
         .clone()
         .filter(|_| delta_mailbox_id.is_some())
     else {
-        // No usable state token yet (e.g. the initial sync never captured
-        // one because the role had no JMAP mailbox), or the collection has no
-        // mailbox at all. Keep the client's progress valid and let the next
+        // The collection has no JMAP mailbox at all (e.g. the role was never
+        // provisioned). Keep the client's progress valid and let the next
         // initial sync establish a base.
         if let Err(e) = state
             .storage
             .set_sync_key(username, state_collection_id, &new_sync_key, None)
             .await
         {
-            tracing::warn!(error = %e, "Failed to update email sync key");
+            // The key is the durable record that this window was acknowledged,
+            // so it must be persisted BEFORE it is handed to the client:
+            // answering a key the gateway never stored would make the client's
+            // next Sync present an unknown key. Fail closed (retryable).
+            tracing::warn!(
+                error = %e,
+                user = %username,
+                collection_id,
+                "Failed to update email sync key; refusing to acknowledge"
+            );
+            return Err(anyhow::anyhow!(
+                "failed to update email sync key for collection {state_collection_id}"
+            ));
         }
         return Ok(format!(
             "<Collection><Class>Email</Class><SyncKey>{}</SyncKey><CollectionId>{}</CollectionId><Status>1</Status></Collection>",
@@ -9667,15 +9726,17 @@ async fn handle_email_delta_sync(ctx: &EmailSyncCtx<'_>) -> anyhow::Result<Strin
         if let Err(e) =
             persist_keyword_scan(state, username, state_collection_id, &keyword_scan, &seeded).await
         {
-            tracing::warn!(
+            // Best effort: the window, its queue and its key are already
+            // committed, so failing here would answer an error whose retry
+            // presents the OLD key and forces a full re-prime. A held scan
+            // position only makes the next delta re-derive (and re-deliver, which
+            // EAS treats idempotently) the flag `<Change>`s it had not recorded.
+            tracing::error!(
                 error = %e,
                 user = %username,
                 collection_id,
-                "Failed to persist email keyword baseline after overflow; refusing to acknowledge"
+                "Failed to persist email keyword baseline after overflow; the next delta re-scans"
             );
-            return Err(anyhow::anyhow!(
-                "failed to persist email keyword baseline for collection {state_collection_id}"
-            ));
         }
         tracing::info!(
             user = %username,
@@ -9740,15 +9801,15 @@ async fn handle_email_delta_sync(ctx: &EmailSyncCtx<'_>) -> anyhow::Result<Strin
     if let Err(e) =
         persist_keyword_scan(state, username, state_collection_id, &keyword_scan, &seeded).await
     {
-        tracing::warn!(
+        // Best effort, for the same reason as the overflow branch above: the
+        // token that acknowledges this window is already committed, so an error
+        // here would only make the client retry with the old key.
+        tracing::error!(
             error = %e,
             user = %username,
             collection_id,
-            "Failed to persist email keyword baseline after token commit; refusing to acknowledge"
+            "Failed to persist email keyword baseline after token commit; the next delta re-scans"
         );
-        return Err(anyhow::anyhow!(
-            "failed to persist email keyword baseline for collection {state_collection_id}"
-        ));
     }
 
     tracing::info!(
@@ -9860,7 +9921,16 @@ pub async fn handle(
         .get(header::CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())
         .map(|ct| ct.to_ascii_lowercase().contains("wbxml"))
-        .unwrap_or(payload.first().is_some_and(|b| *b != b'<'));
+        // A bodyless request has no byte to sniff. GetHierarchy is the only
+        // bodyless command (its clients are the legacy WBXML ones — 14.0+
+        // uses FolderSync), so an absent Content-Type there means WBXML.
+        // GetAttachment's response is raw bytes either way.
+        .unwrap_or_else(|| {
+            payload.first().map(|b| *b != b'<').unwrap_or_else(|| {
+                value_from_query(&query, "Cmd")
+                    .is_some_and(|cmd| cmd.eq_ignore_ascii_case("GetHierarchy"))
+            })
+        });
     let xml = if payload.is_empty() {
         String::new()
     } else {
@@ -10528,6 +10598,33 @@ mod tests {
         let xml_zero = r#"<Collection><SyncKey>0</SyncKey><CollectionId>1</CollectionId><GetChanges>0</GetChanges></Collection>"#;
         let colls = parse_sync_collections(xml_zero);
         assert!(!colls[0].get_changes, "GetChanges=0 must be false");
+    }
+
+    #[test]
+    fn test_parse_sync_collections_preserves_entity_split_collection_id() {
+        // A Type 13 folder named `R&D` has a CalDAV href containing `&`;
+        // FolderSync escapes it as `&amp;` on the wire, so quick-xml delivers
+        // the value as Text + GeneralRef + Text. The parser must rebuild the
+        // COMPLETE decoded id — assigning per event kept only the last segment
+        // and the follow-up Sync missed the stored collection (Status 4).
+        let server_id = "/cal/user/R&D/";
+        let wire = xml_escape(server_id);
+        assert!(
+            wire.contains("&amp;"),
+            "fixture must exercise an entity: {wire}"
+        );
+        let xml = format!(
+            "<Collection><SyncKey>0</SyncKey><CollectionId>{wire}</CollectionId><Class>Calendar</Class></Collection>"
+        );
+        let collections = parse_sync_collections(&xml);
+        assert_eq!(collections.len(), 1);
+        assert_eq!(
+            collections[0].collection_id.as_deref(),
+            Some(server_id),
+            "the entity-split id must be reassembled exactly"
+        );
+        assert_eq!(collections[0].class.as_deref(), Some("Calendar"));
+        assert_eq!(collections[0].sync_key.as_deref(), Some("0"));
     }
 
     #[test]
@@ -12427,10 +12524,32 @@ mod tests {
             text.contains("<ServerId>mb-mail</ServerId>"),
             "a mail folder must be listed: {text}"
         );
+        // Each assertion is scoped to its OWN <Folder> element so one folder's
+        // value can never satisfy another folder's expectation.
+        fn folder_block<'a>(text: &'a str, server_id: &str) -> &'a str {
+            let needle = format!("<ServerId>{server_id}</ServerId>");
+            let at = text.find(&needle).expect("folder must be present");
+            let start = text[..at].rfind("<Folder>").expect("folder start");
+            let end = text[at..].find("</Folder>").expect("folder end") + at;
+            &text[start..end]
+        }
         assert!(
-            text.contains("<Type>1</Type>"),
+            folder_block(&text, "mb-mail").contains("<Type>1</Type>"),
             "a user mail folder must render as GetHierarchy Type 1: {text}"
         );
+        for (server_id, legacy_type) in [
+            ("2", "2"),
+            ("3", "3"),
+            ("4", "4"),
+            ("5", "5"),
+            ("6", "6"),
+            ("12", "1"),
+        ] {
+            assert!(
+                folder_block(&text, server_id).contains(&format!("<Type>{legacy_type}</Type>")),
+                "folder {server_id} must render Type {legacy_type} in its own element: {text}"
+            );
+        }
         assert!(
             !text.contains("<Type>12</Type>") && !text.contains("<Type>13</Type>"),
             "GetHierarchy must not emit a Type outside 1–6: {text}"
@@ -13769,7 +13888,7 @@ mod tests {
         let resp = handle_sync_collections(&ctx, &[coll]).await;
         let text = response_text(resp).await;
         assert!(
-            text.contains("<Status>6</Status>"),
+            text.contains("<Status>5</Status>"),
             "a folder-map read failure must fail the collection closed: {text}"
         );
         assert!(
@@ -20359,6 +20478,7 @@ mod tests {
   <Move><SrcMsgId>em-m1</SrcMsgId><SrcFldId>2</SrcFldId><DstFldId>mb-unmapped</DstFldId></Move>
   <Move><SrcMsgId>em-m1</SrcMsgId><SrcFldId>2</SrcFldId><DstFldId>mb-custom</DstFldId></Move>
   <Move><SrcMsgId>cal-1</SrcMsgId><DstFldId>1</DstFldId></Move>
+  <Move><SrcMsgId>em-m1</SrcMsgId><DstFldId>5</DstFldId></Move>
 </MoveItems>"#;
         let password = SecretString::from("pw");
         let text = response_text(
@@ -20374,8 +20494,12 @@ mod tests {
             .filter_map(|r| extract_first_tag_text(r, b"Status"))
             .collect();
         assert_eq!(
+            // `cal-1` is not in this account's item map, so the calendar move is
+            // an invalid source (1), never a fabricated success. An email `Move`
+            // with no `SrcFldId` is an invalid request (5) — rejected before any
+            // write, because the source membership could not be named.
             statuses,
-            vec!["3", "4", "2", "1", "7", "2", "3", "3"],
+            vec!["3", "4", "2", "1", "7", "2", "3", "1", "5"],
             "unexpected MoveItems status matrix: {text}"
         );
         assert!(

@@ -281,6 +281,28 @@ pub(crate) fn operation_error_response(
     ews_response(status, xml)
 }
 
+/// `SetUserOofSettings` errors use the operation's OWN response shape: a single
+/// `<m:ResponseMessage>` that is a DIRECT child of `<m:SetUserOofSettingsResponse>`
+/// ([MS-OXWOOF] §3.1.4.2.3.1) — not the `<m:SetUserOofSettingsResponseMessage>`
+/// inside `<m:ResponseMessages>` that the generic renderer produces, which is
+/// off-schema for this operation.
+fn set_user_oof_error_response(code: &str, message: &str) -> Response {
+    let inner = format!(
+        r#"<m:SetUserOofSettingsResponse xmlns:m="{}" xmlns:t="{}">
+  <m:ResponseMessage ResponseClass="Error">
+    <m:MessageText>{}</m:MessageText>
+    <m:ResponseCode>{}</m:ResponseCode>
+    <m:DescriptiveLinkKey>0</m:DescriptiveLinkKey>
+  </m:ResponseMessage>
+</m:SetUserOofSettingsResponse>"#,
+        EWS_MSG_NS,
+        EWS_TYPE_NS,
+        xml_escape(message),
+        xml_escape(code)
+    );
+    soap_ok(inner)
+}
+
 fn ews_response(status: StatusCode, xml: String) -> Response {
     (status, [("Content-Type", "text/xml; charset=utf-8")], xml).into_response()
 }
@@ -4815,7 +4837,15 @@ async fn handle_sync_email_prime(
     // A fresh prime restarts the stream: any cached delta replay keyed on an old
     // cursor is obsolete, so drop it. (A continuation leaves it in place.)
     if is_fresh_prime && let Err(e) = state.storage.clear_ews_delta_replay(owner, folder_id).await {
-        tracing::warn!(folder_id = %folder_id, error = %e, "Failed to clear EWS delta replay on fresh prime");
+        // Fail closed, like the ledger clear below: a stale replay cache would
+        // let the fresh prime replay ops from the abandoned stream.
+        tracing::error!(folder_id = %folder_id, error = %e, "Failed to clear EWS delta replay on fresh prime");
+        return operation_error_response(
+            &EwsAction::SyncFolderItems,
+            "ErrorServerBusy",
+            "Failed to reset the delta replay cache",
+            StatusCode::SERVICE_UNAVAILABLE,
+        );
     }
     // A fresh prime also resets the delivered-membership ledger: the client is
     // told to forget the folder, so the rows recording what it holds must be
@@ -9121,7 +9151,16 @@ async fn handle_send_item(state: &Arc<AppState>, auth: &AuthContext, body: &str)
                 None
             }
         };
-        if Some(saved_folder_id.as_str()) != sent_id.as_deref() {
+        // Outlook may send the gateway-issued Sent Items folder id (the id this
+        // server rendered for `DistinguishedFolderId Id="sentitems"`) rather
+        // than the backend mailbox id, so both are accepted.
+        let gateway_sent_id = crate::ews_folders::folder_id_for(
+            &auth.username,
+            crate::ews_folders::DistinguishedFolder::SentItems,
+        );
+        if Some(saved_folder_id.as_str()) != sent_id.as_deref()
+            && saved_folder_id != gateway_sent_id
+        {
             return operation_error_response(
                 &EwsAction::SendItem,
                 "ErrorInvalidRequest",
@@ -10385,19 +10424,15 @@ async fn handle_set_user_oof_settings(
         "disabled" | "enabled" => false,
         "scheduled" => true,
         "" => {
-            return operation_error_response(
-                &EwsAction::SetUserOofSettings,
+            return set_user_oof_error_response(
                 "ErrorInvalidRequest",
                 "OofState is required (Disabled, Enabled or Scheduled)",
-                StatusCode::OK,
             );
         }
         other => {
-            return operation_error_response(
-                &EwsAction::SetUserOofSettings,
+            return set_user_oof_error_response(
                 "ErrorInvalidRequest",
                 &format!("Unknown OofState '{other}'"),
-                StatusCode::OK,
             );
         }
     };
@@ -10428,11 +10463,9 @@ async fn handle_set_user_oof_settings(
         match (start_time, end_time) {
             (Some(start), Some(end)) if end > start && end > Utc::now() => (Some(start), Some(end)),
             _ => {
-                return operation_error_response(
-                    &EwsAction::SetUserOofSettings,
+                return set_user_oof_error_response(
                     "ErrorInvalidScheduledOofDuration",
                     "The scheduled Out of Office duration is not valid.",
-                    StatusCode::OK,
                 );
             }
         }
@@ -10458,20 +10491,16 @@ async fn handle_set_user_oof_settings(
     // `ResponseClass="Success"`: the client would believe its auto-reply is
     // active while the backend still holds the old settings.
     let Some(oof_mgr) = state.oof_manager.as_ref() else {
-        return operation_error_response(
-            &EwsAction::SetUserOofSettings,
+        return set_user_oof_error_response(
             "ErrorNotSupported",
             "Out-of-office settings are not available on this server",
-            StatusCode::OK,
         );
     };
     if let Err(e) = oof_mgr.set_oof_settings(&auth.username, settings) {
         tracing::warn!(target: "ews", user = %auth.username, error = %e, "Failed to set OOF settings");
-        return operation_error_response(
-            &EwsAction::SetUserOofSettings,
+        return set_user_oof_error_response(
             "ErrorInternalServerError",
             "Failed to store the out-of-office settings",
-            StatusCode::INTERNAL_SERVER_ERROR,
         );
     }
 
@@ -11801,23 +11830,19 @@ async fn handle_get_reminders(state: &Arc<AppState>, auth: &AuthContext, body: &
             break;
         }
         let item = &current.item;
-        let Some((occurrence_start, occurrence_end, reminder_due)) =
-            reminder_occurrence(item, window_start, window_end)
-        else {
-            continue;
-        };
         // A Dismiss/Snooze recorded for THIS occurrence suppresses it (or
-        // re-surfaces it at the snooze instant); the previous behaviour
-        // acknowledged the action and then showed respect for nothing.
-        let state_key = (
-            current.row.server_id.clone(),
-            reminder_occurrence_key(reminder_due),
-        );
-        let Some(reminder_due) = reminder_show_instant(
-            reminder_state.get(&state_key),
-            reminder_due,
-            now,
+        // re-surfaces it at the snooze instant). The occurrence is chosen by
+        // walking forward from the window (minus a snooze lookback) and testing
+        // the EFFECTIVE instant, so a reminder snoozed INTO the window is still
+        // surfaced — the previous code rejected it on its original due time
+        // before the snooze state was ever consulted.
+        let Some((occurrence_start, occurrence_end, reminder_due)) = reminder_occurrence_in_window(
+            item,
+            &current.row.server_id,
+            &reminder_state,
+            window_start,
             window_end,
+            now,
         ) else {
             continue;
         };
@@ -11859,40 +11884,83 @@ async fn handle_get_reminders(state: &Arc<AppState>, auth: &AuthContext, body: &
     soap_ok(inner)
 }
 
-/// The reminder instant of a calendar item inside `[window_start, window_end]`
-/// as `(occurrence_start, occurrence_end, reminder_due)`.
-fn reminder_occurrence(
+/// The reminder occurrence to DISPLAY for `item`, as
+/// `(occurrence_start, occurrence_end, reminder_due)`.
+///
+/// Occurrences are walked from `window_start` minus [`SNOOZE_LOOKBACK_MINUTES`]
+/// so a reminder snoozed into the window is still surfaced, and window
+/// membership is decided on the EFFECTIVE instant (the recorded snooze when
+/// there is one, otherwise the original due time).
+fn reminder_occurrence_in_window(
     item: &crate::calendar::CalendarItem,
+    server_id: &str,
+    reminder_state: &std::collections::HashMap<(String, String), Option<String>>,
     window_start: chrono::DateTime<Utc>,
     window_end: chrono::DateTime<Utc>,
+    now: chrono::DateTime<Utc>,
 ) -> Option<(
     chrono::DateTime<Utc>,
     chrono::DateTime<Utc>,
     chrono::DateTime<Utc>,
 )> {
-    // `reminder` stores "minutes before start" but may be signed depending on
-    // provenance (negative `-PT15M` from iCalendar, positive `15` from an EWS
-    // CreateItem); `unsigned_abs()` normalises both to the lead time without
-    // risk of overflowing on `i32::MIN`. Clamp to a year to guard against
-    // corrupt values producing an absurd due time.
-    let lead_minutes = i64::from(item.reminder?.unsigned_abs().min(525_600));
-    // Search for an occurrence whose REMINDER falls inside the window, not for
-    // the next occurrence from `now`: with a 15-minute lead and a series whose
-    // next occurrence starts in five minutes, the next reminder is already due,
-    // and starting the search at `now` skipped the (in-window) reminder of the
-    // following occurrence.
-    let search_from = window_start + chrono::Duration::minutes(lead_minutes);
-    let occurrence_start = next_occurrence_start(item, search_from)?;
-    let occurrence_end = occurrence_start + (item.end - item.start);
-    let reminder_due = occurrence_start - chrono::Duration::minutes(lead_minutes);
-    // Only surface reminders within the requested window.
-    if reminder_due < window_start {
-        return None;
+    /// How far before the window a snoozed reminder may still be shown. A
+    /// snooze is minutes-to-days in practice; this bound keeps the walk finite
+    /// for a long-running series.
+    const SNOOZE_LOOKBACK_MINUTES: i64 = 60 * 24 * 30;
+    /// Backstop against a pathological recurrence rule.
+    const MAX_OCCURRENCES: usize = 512;
+    let lead = chrono::Duration::minutes(i64::from(item.reminder?.unsigned_abs().min(525_600)));
+    let mut cursor = window_start + lead - chrono::Duration::minutes(SNOOZE_LOOKBACK_MINUTES);
+    for _ in 0..MAX_OCCURRENCES {
+        let occurrence_start = next_occurrence_start(item, cursor)?;
+        let occurrence_end = occurrence_start + (item.end - item.start);
+        let reminder_due = occurrence_start - lead;
+        if reminder_due > window_end && occurrence_start > window_end {
+            return None;
+        }
+        let state_key = (server_id.to_string(), reminder_occurrence_key(reminder_due));
+        if let Some(show_at) = reminder_show_instant(
+            reminder_state.get(&state_key),
+            reminder_due,
+            now,
+            window_end,
+        ) && show_at >= window_start
+            && show_at <= window_end
+        {
+            return Some((occurrence_start, occurrence_end, reminder_due));
+        }
+        cursor = occurrence_start + chrono::Duration::seconds(1);
     }
-    if reminder_due > window_end && occurrence_start > window_end {
-        return None;
+    None
+}
+
+/// The occurrence a reminder ACTION targets: the one whose reminder is closest
+/// to `now` (the client acts on the reminder it is currently showing), searched
+/// over a bounded ±1 year window. `PerformReminderAction` carries no window of
+/// its own, so it must not depend on the window a previous `GetReminders` used.
+fn reminder_occurrence_for_action(
+    item: &crate::calendar::CalendarItem,
+    now: chrono::DateTime<Utc>,
+) -> Option<chrono::DateTime<Utc>> {
+    const HORIZON_DAYS: i64 = 365;
+    const MAX_OCCURRENCES: usize = 512;
+    let lead = chrono::Duration::minutes(i64::from(item.reminder?.unsigned_abs().min(525_600)));
+    let horizon = chrono::Duration::days(HORIZON_DAYS);
+    let mut cursor = now - horizon + lead;
+    let mut best: Option<(chrono::Duration, chrono::DateTime<Utc>)> = None;
+    for _ in 0..MAX_OCCURRENCES {
+        let occurrence_start = next_occurrence_start(item, cursor)?;
+        let reminder_due = occurrence_start - lead;
+        if reminder_due > now + horizon {
+            break;
+        }
+        let distance = (reminder_due - now).abs();
+        if best.as_ref().is_none_or(|(d, _)| distance < *d) {
+            best = Some((distance, reminder_due));
+        }
+        cursor = occurrence_start + chrono::Duration::seconds(1);
     }
-    Some((occurrence_start, occurrence_end, reminder_due))
+    best.map(|(_, due)| due)
 }
 
 /// The stable storage key of one reminder occurrence.
@@ -11979,13 +12047,13 @@ impl ReminderAction {
 fn parse_reminder_actions(body: &str) -> Vec<ReminderAction> {
     extract_all_tag_blocks(body, b"ReminderItemAction")
         .into_iter()
-        .filter_map(|block| {
-            let item_id = extract_first_attr(&block, b"ItemId", b"Id")?;
-            Some(ReminderAction {
-                action_type: extract_first_tag_text(&block, b"ActionType").unwrap_or_default(),
-                item_id,
-                new_reminder_time: extract_first_tag_text(&block, b"NewReminderTime"),
-            })
+        .map(|block| ReminderAction {
+            // A missing ItemId keeps the action (with an empty id) so the
+            // request-level validation rejects the WHOLE request instead of the
+            // action being silently dropped.
+            action_type: extract_first_tag_text(&block, b"ActionType").unwrap_or_default(),
+            item_id: extract_first_attr(&block, b"ItemId", b"Id").unwrap_or_default(),
+            new_reminder_time: extract_first_tag_text(&block, b"NewReminderTime"),
         })
         .collect()
 }
@@ -12044,15 +12112,21 @@ async fn handle_perform_reminder_action(
     let load_end = window_end.max(now).min(now + chrono::Duration::days(365));
     let mut occurrence_by_id: std::collections::HashMap<String, String> =
         std::collections::HashMap::new();
-    if actions.iter().any(|a| a.dismissal() == Some(true)) {
+    // BOTH actions need the occurrence: a snooze is recorded against it just
+    // like a dismissal, and a Snooze-only request that resolved nothing used to
+    // be acknowledged without recording anything (the reminder then re-appeared
+    // at its original due time).
+    {
         match load_current_calendar_items(state, owner, password, Some((load_start, load_end)))
             .await
         {
             Ok(items) => {
                 for current in &items {
-                    if let Some((_, _, due)) =
-                        reminder_occurrence(&current.item, window_start, window_end)
-                    {
+                    // The client acts on the reminder it is SHOWING, which is the
+                    // occurrence closest to `now` — not whichever occurrence the
+                    // request's reminder window happens to bracket (a client may
+                    // read reminders with a wide window and then act).
+                    if let Some(due) = reminder_occurrence_for_action(&current.item, now) {
                         occurrence_by_id
                             .insert(current.row.server_id.clone(), reminder_occurrence_key(due));
                     }
