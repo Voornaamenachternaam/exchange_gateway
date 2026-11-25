@@ -1656,6 +1656,23 @@ pub async fn update_folder(
             }) {
                 return FolderMutationResult::status(2);
             }
+            // A move into the folder itself, or into one of its own
+            // descendants, would create a cycle: the whole subtree becomes
+            // unreachable from the root and every later hierarchy walk depends on
+            // a cycle guard. Reject it as an invalid parent (10) BEFORE the
+            // backend is touched.
+            if parent_id != row.parent_id && parent_id != "0" {
+                let mut cur = parent_id.clone();
+                for _ in 0..=rows.len() {
+                    if cur == row.server_id {
+                        return FolderMutationResult::status(10);
+                    }
+                    match rows.iter().find(|r| r.server_id == cur) {
+                        Some(r) => cur = r.parent_id.clone(),
+                        None => break,
+                    }
+                }
+            }
         }
         Err(e) => {
             tracing::warn!(error = %e, "FolderUpdate: failed to list existing folders");
@@ -4246,6 +4263,49 @@ mod tests {
         let r = update_folder(&state, "u@example.com", &pw(), "2", "0", "Renamed").await;
         assert_eq!(r.status, 2);
         assert!(jmap_methods(&calls).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn update_rejects_move_into_itself_or_a_descendant() {
+        let (state, calls, _) = spawn_backend_stub().await;
+        for (id, parent, name) in [
+            ("mb-a", "0", "A"),
+            ("mb-b", "mb-a", "B"),
+            ("mb-c", "mb-b", "C"),
+        ] {
+            state
+                .storage
+                .upsert_folder_journaled(
+                    crate::storage::FolderUpsertParams {
+                        owner: "u@example.com",
+                        server_id: id,
+                        parent_id: parent,
+                        display_name: name,
+                        folder_type: 12,
+                        backend_kind: "jmap",
+                        backend_id: id,
+                    },
+                    "folder-add",
+                )
+                .await
+                .unwrap();
+        }
+        // Into itself.
+        let r = update_folder(&state, "u@example.com", &pw(), "mb-a", "mb-a", "A").await;
+        assert_eq!(r.status, 10);
+        // Into its own grandchild.
+        let r = update_folder(&state, "u@example.com", &pw(), "mb-a", "mb-c", "A").await;
+        assert_eq!(r.status, 10);
+        // A legitimate reparent still works (and reaches the backend).
+        let r = update_folder(&state, "u@example.com", &pw(), "mb-c", "mb-a", "C").await;
+        assert_eq!(r.status, 1, "a non-cyclic reparent must succeed");
+        assert!(
+            jmap_methods(&calls)
+                .await
+                .iter()
+                .any(|m| m == "Mailbox/set"),
+            "the legitimate reparent must reach the backend"
+        );
     }
 
     #[tokio::test]
